@@ -1,0 +1,26 @@
+diff --git a/test/grounding/kernel-lifecycle.test.js b/test/grounding/kernel-lifecycle.test.js
+index 0b79d33f..82fc1546 100644
+--- a/test/grounding/kernel-lifecycle.test.js
++++ b/test/grounding/kernel-lifecycle.test.js
+@@ -36,7 +36,8 @@ async function seedIssue(kernel, id) {
+ 
+ // Wrap a driver so its methods still hit the real :memory: kernel, but close()
+ // is counted instead of actually closing (so the shared db stays usable across
+-// assertions).
++// assertions). `dispose` closes the REAL underlying driver so each test can
++// release its :memory: handle in a finally — the wrapper only counts closes.
+ function withCloseCounter(driver) {
+   const counter = { count: 0 };
+   const wrapped = {};
+@@ -44,7 +45,10 @@ function withCloseCounter(driver) {
+     wrapped[key] = typeof driver[key] === 'function' ? driver[key].bind(driver) : driver[key];
+   }
+   wrapped.close = () => { counter.count += 1; };
+-  return { driver: wrapped, counter };
++  const dispose = () => {
++    try { if (typeof driver.close === 'function') driver.close(); } catch { /* cleanup only */ }
++  };
++  return { driver: wrapped, counter, dispose };
+ }
+ 
+ describe('grounding kernel-driver lifecycle', () => {

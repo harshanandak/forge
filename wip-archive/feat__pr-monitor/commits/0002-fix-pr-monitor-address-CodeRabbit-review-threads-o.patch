@@ -1,0 +1,640 @@
+From 8bba9599a5d498e197ed7458c24eb54a3ef92e7e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 12:02:10 +0530
+Subject: [PATCH] fix(pr-monitor): address CodeRabbit review threads on PR #367
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- journal: scope dedup to snapshot appliedSeq cursor, not whole history —
+  a fail→green→fail cycle on the same sha re-emits instead of being
+  suppressed forever (CR journal.js:83). Regression test added.
+- journal+monitor: serialize the read→diff→dedup→append→snapshot critical
+  section across processes with a crash-recoverable lock-directory
+  (withJournalLock) so concurrent passes never interleave appends or reuse
+  a seq (CR monitor.js:78). Concurrent-append test added.
+- shepherd: wire the DEFAULT failed-check enrichment into `events` so a
+  plain `forge shepherd events` attaches check.failed log excerpts, and
+  forward an injected enrich to pollEvents (CR shepherd.js:157). Integration
+  test added.
+- pr-pull: fail closed when the base refresh fails — fetchBase failure now
+  records `unreadable` (not just degraded) so a stale ref can't yield a
+  false-clean verdict; verdict → UNKNOWN (CR pr-pull.js:1073). Test added.
+- docs: rename design.md → plan.md per the work-artifact convention and
+  update the gather.js reference (CR design.md:1).
+- test/commands/shepherd.test.js:133 duplication already absent in HEAD.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../{design.md => plan.md}                    |   0
+ lib/commands/shepherd.js                      |  60 +++++++-
+ lib/pr-monitor/gather.js                      |   2 +-
+ lib/pr-monitor/journal.js                     | 132 ++++++++++++++++--
+ lib/pr-monitor/monitor.js                     |  59 ++++++--
+ lib/pr-pull.js                                |   7 +-
+ test/commands/shepherd.test.js                |  23 +++
+ test/pr-monitor-snapshot.test.js              |  14 ++
+ test/pr-monitor/journal.test.js               |  53 +++++++
+ test/pr-monitor/monitor.test.js               |  39 ++++++
+ 10 files changed, 356 insertions(+), 33 deletions(-)
+ rename docs/work/2026-07-13-pr-monitor/{design.md => plan.md} (100%)
+
+diff --git a/docs/work/2026-07-13-pr-monitor/design.md b/docs/work/2026-07-13-pr-monitor/plan.md
+similarity index 100%
+rename from docs/work/2026-07-13-pr-monitor/design.md
+rename to docs/work/2026-07-13-pr-monitor/plan.md
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index fd0c1166..64b135e4 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -36,6 +36,7 @@ const { validatePrStateAdapter } = require('../pr-state-validator');
+ const { gatherMonitorSnapshot } = require('../pr-monitor/gather');
+ const { pollEvents } = require('../pr-monitor/monitor');
+ const monitorJournal = require('../pr-monitor/journal');
++const { EVENT_TYPES: T } = require('../pr-monitor/events');
+ 
+ const DEFAULT_RERUN_BUDGET = 3;
+ 
+@@ -109,6 +110,45 @@ function formatAction(action) {
+   }
+ }
+ 
++/**
++ * Build the DEFAULT `check.failed` enrichment hook for the events pull surface.
++ *
++ * The monitor design specifies that newly-failed checks are enriched with their
++ * failure log excerpts before the journal append. `pollEvents` accepts an
++ * `enrich` hook but `handleEvents` must supply the default one, or a plain
++ * `forge shepherd events` call would emit bare `check.failed` events with no
++ * `data.excerpt` (only direct monitor callers could attach them).
++ *
++ * The hook is BEST-EFFORT: it fetches the compact pull signal ONCE (only when a
++ * pass actually produced a `check.failed`), maps excerpts by check name, and
++ * decorates matching records. Any failure to gather excerpts leaves the events
++ * intact rather than aborting the pass — enrichment must never block the journal.
++ *
++ * @param {object} pullCtx - ctx forwarded to `gatherPull` (owner/repo/base/adapter/runGh/self).
++ * @returns {(records: object[]) => Promise<void>}
++ */
++function makeCheckFailureEnricher(pullCtx) {
++  const gatherPull = pullCtx.gatherPull || gatherPullSignal;
++  return async (records) => {
++    if (!Array.isArray(records) || !records.some((r) => r.type === T.CHECK_FAILED)) return;
++    let failures;
++    try {
++      const pull = await gatherPull(pullCtx);
++      failures = Array.isArray(pull && pull.failures) ? pull.failures : [];
++    } catch (_err) {
++      return; // best-effort: never let enrichment abort the pass
++    }
++    const byName = new Map(failures.map((f) => [f.name, f]));
++    for (const r of records) {
++      if (r.type !== T.CHECK_FAILED) continue;
++      const f = byName.get(r.data && r.data.name);
++      if (!f) continue;
++      if (f.excerpt) r.data.excerpt = f.excerpt;
++      if (f.jobUrl) r.data.jobUrl = f.jobUrl;
++    }
++  };
++}
++
+ /** Parse `--since <seq>` from the raw arg list (default 0). */
+ function parseSince(args) {
+   const i = (args || []).indexOf('--since');
+@@ -139,6 +179,10 @@ async function handleEvents(args, projectRoot, deps = {}) {
+ 
+   let dir = deps.dir;
+   let gather = deps.gather;
++  // enrich decorates newly-failed checks with log excerpts before the journal
++  // append. handleEvents MUST supply the default (not just forward an injected
++  // one), or a plain `forge shepherd events` call emits bare check.failed events.
++  let enrich = deps.enrich;
+   if (!gather || !dir) {
+     const gh = deps.gh || defaultGhRunner;
+     const git = deps.git || gh;
+@@ -151,10 +195,23 @@ async function handleEvents(args, projectRoot, deps = {}) {
+     }
+     dir = dir || monitorJournal.journalDir({ root: projectRoot || process.cwd(), repo: ctx.repo, pr: ctx.pr });
+     gather = gather || (() => gatherMonitorSnapshot({ ...ctx, adapter, self: deps.self }));
++    enrich = enrich || makeCheckFailureEnricher({
++      ...ctx,
++      adapter,
++      self: deps.self,
++      runGh: (ghArgs) => gh('gh', ghArgs),
++      gatherPull: deps.gatherPull,
++    });
++  } else if (!enrich && deps.gatherPull) {
++    // Injected gather (tests / programmatic callers) still gets the default
++    // enrichment when a pull-signal source is supplied.
++    enrich = makeCheckFailureEnricher({
++      pr, adapter: deps.adapter, self: deps.self, runGh: deps.runGh, gatherPull: deps.gatherPull,
++    });
+   }
+ 
+   const poll = deps.pollEvents || pollEvents;
+-  const result = await poll({ dir, gather, since, now: deps.now, watcherRunning: deps.watcherRunning });
++  const result = await poll({ dir, gather, since, now: deps.now, watcherRunning: deps.watcherRunning, enrich });
+   // `output` is the agent-agnostic pull surface: NDJSON, one event per line. The
+   // registry CLI dispatch prints `result.output` (same contract as --pull/--bundle),
+   // so this handler does NOT write to stdout itself (that would double-print).
+@@ -270,6 +327,7 @@ module.exports = {
+   usage: 'Usage: forge shepherd <pr> [--auto-rebase] [--bundle --json] [--pull --json] | forge shepherd events <pr> --since <seq> [--json]',
+   handler,
+   handleEvents,
++  makeCheckFailureEnricher,
+   parseSince,
+   defaultBuildContext,
+   isWorkingTreeClean,
+diff --git a/lib/pr-monitor/gather.js b/lib/pr-monitor/gather.js
+index 07d0ca01..9e4470bc 100644
+--- a/lib/pr-monitor/gather.js
++++ b/lib/pr-monitor/gather.js
+@@ -4,7 +4,7 @@
+  * PR-monitor gather — turn ONE `gatherPrSnapshot` read (the SAME shared read the
+  * `--pull` verdict uses) into the normalized snapshot the differ compares. Because
+  * the verdict and the monitor events both derive from this one read, they can
+- * never disagree (the frame in docs/work/2026-07-13-pr-monitor/design.md).
++ * never disagree (the frame in docs/work/2026-07-13-pr-monitor/plan.md).
+  *
+  * The normalized snapshot is the diff subject:
+  *   { repo, pr, headSha, prState, draft, verdict:{state,reason},
+diff --git a/lib/pr-monitor/journal.js b/lib/pr-monitor/journal.js
+index ace6a4a2..d85146ed 100644
+--- a/lib/pr-monitor/journal.js
++++ b/lib/pr-monitor/journal.js
+@@ -8,9 +8,20 @@
+  * cursor and reads new events with `readEventsSince`.
+  *
+  * Ordering contract (exactly-once): a monitor pass APPENDS events, THEN writes
+- * the snapshot. If a crash lands between, the next pass re-diffs the old snapshot
+- * and recomputes the same `(type,key)` events — `seenIdentities` filters the ones
+- * already appended, so no duplicate is ever journaled.
++ * the snapshot together with an `appliedSeq` cursor (the highest seq that
++ * snapshot accounts for). If a crash lands between the append and the snapshot
++ * write, the persisted `appliedSeq` still points BEFORE the just-appended tail,
++ * so the next pass re-diffs the old snapshot, recomputes the same `(type,key)`
++ * events, and `seenIdentities(dir, appliedSeq)` filters exactly that pending tail
++ * — no duplicate is ever journaled. Crucially the dedup is scoped to that
++ * pending/crash-recovery window, NOT the whole journal history: a value that
++ * flips back to a prior state (fail → green → fail on the same sha) legitimately
++ * re-emits, because the earlier identity sits at/below `appliedSeq`.
++ *
++ * Concurrency: multiple processes/worktrees can poll the same PR. The
++ * read→diff→dedup→append→snapshot critical section is serialized across
++ * processes by `withJournalLock` (a crash-recoverable lock-directory), so
++ * concurrent passes can never interleave appends or reuse a sequence number.
+  *
+  * @module pr-monitor/journal
+  */
+@@ -39,6 +50,7 @@ function journalDir({ root, repo, pr }) {
+ function journalPath(dir) { return path.join(dir, 'events.ndjson'); }
+ function snapshotPath(dir) { return path.join(dir, 'snapshot.json'); }
+ function pidPath(dir) { return path.join(dir, 'watch.pid'); }
++function lockPath(dir) { return path.join(dir, 'journal.lock'); }
+ 
+ /**
+  * Read all journal records (NDJSON), skipping any unparseable line so one
+@@ -75,10 +87,26 @@ function lastSeq(dir) {
+   return max;
+ }
+ 
+-/** Set of `(type,key)` identities already journaled — the dedup guard. */
+-function seenIdentities(dir) {
++/**
++ * Set of `(type,key)` identities journaled with `seq > sinceSeq` — the dedup
++ * guard, SCOPED to the crash-recovery/pending window above the snapshot cursor.
++ *
++ * With `sinceSeq = 0` (no snapshot, or an explicit full scan) it covers the
++ * whole history, which is the correct behaviour during crash recovery when the
++ * snapshot is missing. With `sinceSeq = appliedSeq` it covers only the events
++ * the current snapshot has NOT yet accounted for, so an identity that recurs
++ * after a full round-trip (e.g. fail → green → fail) is NOT suppressed forever.
++ *
++ * @param {string} dir
++ * @param {number} [sinceSeq=0]
++ * @returns {Set<string>}
++ */
++function seenIdentities(dir, sinceSeq = 0) {
++  const since = Number(sinceSeq) || 0;
+   const set = new Set();
+-  for (const e of readAllEvents(dir)) set.add(eventIdentity(e));
++  for (const e of readAllEvents(dir)) {
++    if ((Number(e.seq) || 0) > since) set.add(eventIdentity(e));
++  }
+   return set;
+ }
+ 
+@@ -90,33 +118,107 @@ function appendEvents(dir, records) {
+ }
+ 
+ /**
+- * Read the persisted snapshot + fingerprint, or null when absent/unreadable.
++ * Read the persisted snapshot + fingerprint + `appliedSeq`, or null when
++ * absent/unreadable. `appliedSeq` is the highest journal seq this snapshot
++ * accounts for (0 for legacy snapshots written before the cursor existed); it
++ * bounds the dedup window in `seenIdentities`.
+  *
+  * @param {string} dir
+- * @returns {{ snapshot: object, fingerprint: string }|null}
++ * @returns {{ snapshot: object, fingerprint: string, appliedSeq: number }|null}
+  */
+ function readSnapshot(dir) {
+   const file = snapshotPath(dir);
+   if (!fs.existsSync(file)) return null;
+   try {
+     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+-    return { snapshot: data.snapshot || null, fingerprint: data.fingerprint || null };
++    return {
++      snapshot: data.snapshot || null,
++      fingerprint: data.fingerprint || null,
++      appliedSeq: Number(data.appliedSeq) || 0,
++    };
+   } catch { return null; }
+ }
+ 
+ /**
+- * Atomically persist the snapshot + fingerprint (write temp, then rename). The
+- * rename is atomic on the same filesystem, so a reader never sees a half-write.
++ * Atomically persist the snapshot + fingerprint + `appliedSeq` (write temp, then
++ * rename). The rename is atomic on the same filesystem, so a reader never sees a
++ * half-write.
+  *
+  * @param {string} dir
+- * @param {{ snapshot: object, fingerprint: string }} payload
++ * @param {{ snapshot: object, fingerprint: string, appliedSeq?: number }} payload
+  */
+-function writeSnapshot(dir, { snapshot, fingerprint }) {
++function writeSnapshot(dir, { snapshot, fingerprint, appliedSeq = 0 }) {
+   const tmp = path.join(dir, `.snapshot.${process.pid}.${Date.now()}.tmp`);
+-  fs.writeFileSync(tmp, JSON.stringify({ snapshot, fingerprint }));
++  fs.writeFileSync(tmp, JSON.stringify({ snapshot, fingerprint, appliedSeq: Number(appliedSeq) || 0 }));
+   fs.renameSync(tmp, snapshotPath(dir));
+ }
+ 
++/** Non-blocking sleep for the lock retry loop. */
++function delay(ms) { return new Promise((resolve) => { setTimeout(resolve, ms); }); }
++
++/**
++ * Is the held lock stale? A lock is stale when its owner process is dead, or
++ * when it has out-lived `staleMs` (guards against a reused pid or a crash that
++ * left no readable owner file). Either way it is safe to steal.
++ */
++function lockIsStale(lock, staleMs) {
++  let ownerPid = null;
++  let stampedAt = null;
++  try {
++    const [pidStr, tsStr] = fs.readFileSync(path.join(lock, 'owner'), 'utf8').split(':');
++    ownerPid = Number.parseInt(pidStr, 10);
++    stampedAt = Number.parseInt(tsStr, 10);
++  } catch { /* owner file missing/unreadable → fall through to age check */ }
++  if (ownerPid && !pidAlive(ownerPid)) return true;
++  let ageBase = stampedAt;
++  if (!Number.isFinite(ageBase)) {
++    try { ageBase = fs.statSync(lock).mtimeMs; } catch { return true; }
++  }
++  return Date.now() - ageBase > staleMs;
++}
++
++/** Remove a lock directory (owner file + dir), best-effort. */
++function releaseLock(lock) {
++  try { fs.rmSync(lock, { recursive: true, force: true }); } catch { /* already gone */ }
++}
++
++/**
++ * Run `fn` while holding the per-PR journal lock, serializing the
++ * read→diff→dedup→append→snapshot critical section across processes and
++ * worktrees. The lock is a directory created with an atomic `mkdir` (fails with
++ * EEXIST when held); a crash-recoverable staleness check lets a later caller
++ * steal a lock whose owner died or that out-lived `staleMs`. The lock is always
++ * released in a `finally`, on success or throw.
++ *
++ * @param {string} dir - journal directory.
++ * @param {() => Promise<T>|T} fn - critical section.
++ * @param {{ staleMs?: number, retries?: number, waitMs?: number }} [opts]
++ * @returns {Promise<T>}
++ * @template T
++ */
++async function withJournalLock(dir, fn, opts = {}) {
++  const { staleMs = 30000, retries = 600, waitMs = 25 } = opts;
++  const lock = lockPath(dir);
++  let acquired = false;
++  for (let i = 0; i < retries && !acquired; i += 1) {
++    try {
++      fs.mkdirSync(lock);
++      acquired = true;
++    } catch (err) {
++      if (err.code !== 'EEXIST') throw err;
++      if (lockIsStale(lock, staleMs)) { releaseLock(lock); continue; }
++      await delay(waitMs);
++    }
++  }
++  if (!acquired) throw new Error(`journal lock busy after ${retries} tries: ${lock}`);
++  try {
++    fs.writeFileSync(path.join(lock, 'owner'), `${process.pid}:${Date.now()}`);
++    return await fn();
++  } finally {
++    releaseLock(lock);
++  }
++}
++
+ /** Write the watcher pid file. */
+ function writePid(dir, pid) {
+   fs.writeFileSync(pidPath(dir), String(pid == null ? process.pid : pid));
+@@ -160,6 +262,8 @@ module.exports = {
+   journalPath,
+   snapshotPath,
+   pidPath,
++  lockPath,
++  withJournalLock,
+   readAllEvents,
+   readEventsSince,
+   lastSeq,
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index 59884f75..c8b33a37 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -38,47 +38,76 @@ function finalizeRecords(candidates, { baseSeq, ts, snapshot }) {
+ }
+ 
+ /**
+- * Run ONE bounded monitor pass: gather the current snapshot, diff it against the
+- * persisted one, dedup by content identity, APPEND new events, THEN persist the
+- * snapshot (this order is what makes a crash between the two idempotent).
++ * The read→diff→dedup→sequence→append→snapshot critical section of a single
++ * pass. Runs ONLY while holding the journal lock (see `runMonitorPass`), so it
++ * may assume no concurrent writer.
+  *
+- * @param {object} ctx
+- * @param {string} ctx.dir - journal directory (from journal.journalDir).
+- * @param {() => Promise<object>} ctx.gather - returns a normalized snapshot.
+- * @param {() => string} [ctx.now] - timestamp source (test injection).
+- * @param {(records: object[]) => Promise<void>|void} [ctx.enrich] - optional hook
+- *   to enrich records (e.g. attach log excerpts to check.failed) before append.
+- * @returns {Promise<{ events: object[], changed: boolean, fingerprint: string }>}
++ * Dedup is SCOPED to the snapshot's `appliedSeq` cursor: only identities the
++ * current snapshot has not yet accounted for filter a candidate. When the
++ * snapshot is missing (crash recovery) `appliedSeq` is 0, so the guard falls
++ * back to the full history and no duplicate survives a crash between append and
++ * snapshot write. When the snapshot is current, the window is empty, so a state
++ * that flips back to a prior value (fail → green → fail on the same sha) emits a
++ * fresh event instead of being suppressed forever.
+  */
+-async function runMonitorPass(ctx) {
++async function runMonitorPassLocked(ctx) {
+   const { dir, gather, now = defaultNow, enrich } = ctx;
+   const next = await gather();
+   const prevRecord = journal.readSnapshot(dir);
+   const prev = prevRecord ? prevRecord.snapshot : null;
++  const appliedSeq = prevRecord ? prevRecord.appliedSeq || 0 : 0;
+   const fp = fingerprint(next);
+ 
+   const candidates = diffSnapshots(prev, next);
+-  const filtered = dedupeAgainstJournal(candidates, journal.seenIdentities(dir));
++  const filtered = dedupeAgainstJournal(candidates, journal.seenIdentities(dir, appliedSeq));
+ 
+   if (!filtered.length) {
+     // Backpressure: only rewrite the snapshot when the fingerprint actually moved.
+     const changed = !prevRecord || prevRecord.fingerprint !== fp;
+-    if (changed) journal.writeSnapshot(dir, { snapshot: next, fingerprint: fp });
++    // Even with no new events, advance the cursor to the current tail so the
++    // dedup window stays anchored at the snapshot (prevents unbounded scans).
++    if (changed) {
++      journal.writeSnapshot(dir, { snapshot: next, fingerprint: fp, appliedSeq: journal.lastSeq(dir) });
++    }
+     return { events: [], changed, fingerprint: fp };
+   }
+ 
++  const baseSeq = journal.lastSeq(dir);
+   const records = finalizeRecords(filtered, {
+-    baseSeq: journal.lastSeq(dir),
++    baseSeq,
+     ts: now(),
+     snapshot: next,
+   });
+   if (typeof enrich === 'function') await enrich(records);
+ 
+   journal.appendEvents(dir, records);
+-  journal.writeSnapshot(dir, { snapshot: next, fingerprint: fp });
++  // appliedSeq = the new tail, so the next pass's dedup window starts empty and
++  // only a crash BEFORE this write leaves the tail inside the recovery window.
++  journal.writeSnapshot(dir, { snapshot: next, fingerprint: fp, appliedSeq: baseSeq + records.length });
+   return { events: records, changed: true, fingerprint: fp };
+ }
+ 
++/**
++ * Run ONE bounded monitor pass: gather the current snapshot, diff it against the
++ * persisted one, dedup by content identity, APPEND new events, THEN persist the
++ * snapshot (this order is what makes a crash between the two idempotent). The
++ * whole critical section — including the gather and the no-events snapshot
++ * update path — runs under a cross-process journal lock so concurrent passes
++ * from other processes/worktrees can never interleave appends or reuse a seq.
++ *
++ * @param {object} ctx
++ * @param {string} ctx.dir - journal directory (from journal.journalDir).
++ * @param {() => Promise<object>} ctx.gather - returns a normalized snapshot.
++ * @param {() => string} [ctx.now] - timestamp source (test injection).
++ * @param {(records: object[]) => Promise<void>|void} [ctx.enrich] - optional hook
++ *   to enrich records (e.g. attach log excerpts to check.failed) before append.
++ * @param {object} [ctx.lockOpts] - override lock staleMs/retries/waitMs (tests).
++ * @returns {Promise<{ events: object[], changed: boolean, fingerprint: string }>}
++ */
++async function runMonitorPass(ctx) {
++  return journal.withJournalLock(ctx.dir, () => runMonitorPassLocked(ctx), ctx.lockOpts);
++}
++
+ /**
+  * `forge shepherd events <pr> --since <seq>` core: run one inline pass when no
+  * watcher owns this PR, then return every journaled event with `seq > since`.
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index 523053e7..7f157f6f 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -1065,11 +1065,14 @@ async function gatherPrSnapshot(ctx) {
+ 
+   // Fetch the base ref FIRST so divergence/conflicts compare against the CURRENT
+   // origin/<base>, not a stale local ref (audit A6: a stale ref yields a false
+-  // behind=0 / false "no conflict"). Degraded-surfaced, never fatal, optional cap.
++  // behind=0 / false "no conflict"). Fail CLOSED: a failed refresh is verdict-
++  // relevant — record it in `unreadable` (not just `degraded`) so the divergence
++  // and conflict reads that follow cannot produce a clean verdict from a stale
++  // ref; computeVerdict flips to UNKNOWN instead of a false "not behind".
+   await safeRead(
+     'fetchBase',
+     () => callIfPresent(adapter, 'fetchBase', { baseRef: ctx.baseRef, cwd }, null),
+-    { degraded, fallback: null },
++    { degraded, unreadable, fallback: null },
+   );
+ 
+   // Branch divergence (behind base → needs an update/rebase).
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 885180d7..54f7d328 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -157,4 +157,27 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(res.success).toBe(true);
+     expect(res.events).toBeDefined();
+   });
++
++  test('the events command enriches check.failed with the documented log excerpt', async () => {
++    // Regression: handleEvents must supply the DEFAULT failed-check enrichment,
++    // not only forward an injected one — otherwise a plain `forge shepherd events`
++    // emits bare check.failed events with no data.excerpt.
++    const green = { ...snap(), checks: [{ name: 'ci', class: 'green' }] };
++    const failed = { ...snap(), checks: [{ name: 'ci', class: 'failed' }] };
++    const gatherPull = async () => ({
++      failures: [{ name: 'ci', excerpt: 'AssertionError: boom', jobUrl: 'https://ci/job/1' }],
++    });
++    // Baseline pass (green) establishes the snapshot; no check.failed yet.
++    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
++      dir, gather: async () => green, now, watcherRunning: () => false, gatherPull,
++    });
++    // Transition to failed → check.failed emitted and enriched by the default hook.
++    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, {
++      dir, gather: async () => failed, now, watcherRunning: () => false, gatherPull,
++    });
++    const cf = res.events.find((e) => e.type === T.CHECK_FAILED);
++    expect(cf).toBeDefined();
++    expect(cf.data.excerpt).toBe('AssertionError: boom');
++    expect(cf.data.jobUrl).toBe('https://ci/job/1');
++  });
+ });
+diff --git a/test/pr-monitor-snapshot.test.js b/test/pr-monitor-snapshot.test.js
+index 7b5d0b0f..3eef2884 100644
+--- a/test/pr-monitor-snapshot.test.js
++++ b/test/pr-monitor-snapshot.test.js
+@@ -47,6 +47,20 @@ describe('gatherPrSnapshot — the shared monitor gather', () => {
+     expect(Array.isArray(snap.reviews)).toBe(true);
+     expect(Array.isArray(snap.issueComments)).toBe(true);
+   });
++
++  test('a failed base refresh fails CLOSED: fetchBase → unreadable → UNKNOWN verdict (A6)', async () => {
++    const adapter = recordingAdapter([]);
++    // A stale-ref refresh that throws must NOT let divergence/conflicts produce a
++    // false-clean verdict — it is verdict-relevant and marks the read unreadable.
++    adapter.fetchBase = () => { throw new Error('fetch failed: network'); };
++    const snap = await gatherPrSnapshot({
++      pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter, self: 'forge-bot', now: 2000, settleWindowMs: 0,
++    });
++    expect(snap.unreadable).toContain('fetchBase');
++    expect(snap.degraded.some((d) => d.source === 'fetchBase')).toBe(true);
++    expect(snap.verdict).toBe('UNKNOWN');
++  });
+ });
+ 
+ describe('isFailed — STALE conclusion (A5)', () => {
+diff --git a/test/pr-monitor/journal.test.js b/test/pr-monitor/journal.test.js
+index 2c1e4655..02ff58e6 100644
+--- a/test/pr-monitor/journal.test.js
++++ b/test/pr-monitor/journal.test.js
+@@ -53,4 +53,57 @@ describe('journal', () => {
+     journal.removePid(dir);
+     expect(journal.readPid(dir)).toBe(null);
+   });
++
++  test('writeSnapshot/readSnapshot carry an appliedSeq cursor (0 for legacy)', () => {
++    journal.writeSnapshot(dir, { snapshot: { headSha: 's' }, fingerprint: 'fp', appliedSeq: 5 });
++    expect(journal.readSnapshot(dir).appliedSeq).toBe(5);
++    // Legacy snapshot without the field reads back as 0.
++    fs.writeFileSync(journal.snapshotPath(dir), JSON.stringify({ snapshot: {}, fingerprint: 'fp' }));
++    expect(journal.readSnapshot(dir).appliedSeq).toBe(0);
++  });
++
++  test('seenIdentities is scoped to seq > sinceSeq (not the whole history)', () => {
++    journal.appendEvents(dir, [
++      { v: 1, seq: 1, type: 'check.failed', key: 'ci:sha' },
++      { v: 1, seq: 2, type: 'check.recovered', key: 'ci:sha' },
++    ]);
++    // Full-history default still sees the early identity...
++    expect(journal.seenIdentities(dir).has(eventIdentity({ type: 'check.failed', key: 'ci:sha' }))).toBe(true);
++    // ...but scoped past seq 2, the earlier check.failed is NOT suppressed, so a
++    // re-failure on the same sha can legitimately re-emit.
++    expect(journal.seenIdentities(dir, 2).has(eventIdentity({ type: 'check.failed', key: 'ci:sha' }))).toBe(false);
++  });
++});
++
++describe('withJournalLock (cross-process serialization)', () => {
++  test('serializes concurrent critical sections — no interleave', async () => {
++    const order = [];
++    const section = (id) => journal.withJournalLock(dir, async () => {
++      order.push(`${id}:enter`);
++      await new Promise((r) => { setTimeout(r, 15); });
++      order.push(`${id}:exit`);
++    });
++    await Promise.all([section('A'), section('B')]);
++    // Whoever entered first must exit before the other enters (no A:enter,B:enter,...).
++    expect(order).toHaveLength(4);
++    expect(order[1]).toBe(order[0].replace(':enter', ':exit'));
++    expect(order[3]).toBe(order[2].replace(':enter', ':exit'));
++  });
++
++  test('releases the lock on success AND on throw', async () => {
++    await expect(journal.withJournalLock(dir, () => { throw new Error('boom'); }))
++      .rejects.toThrow('boom');
++    expect(fs.existsSync(journal.lockPath(dir))).toBe(false);
++    // Lock is reusable after the throw.
++    const got = await journal.withJournalLock(dir, () => 'ok');
++    expect(got).toBe('ok');
++  });
++
++  test('steals a stale lock whose owner process is dead', async () => {
++    // Simulate a crashed holder: a lock dir with a dead pid stamped long ago.
++    fs.mkdirSync(journal.lockPath(dir));
++    fs.writeFileSync(path.join(journal.lockPath(dir), 'owner'), '999999999:1');
++    const got = await journal.withJournalLock(dir, () => 'recovered', { retries: 5, waitMs: 5 });
++    expect(got).toBe('recovered');
++  });
+ });
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+index 0a5b1ccb..a36e8ebb 100644
+--- a/test/pr-monitor/monitor.test.js
++++ b/test/pr-monitor/monitor.test.js
+@@ -58,6 +58,45 @@ describe('runMonitorPass', () => {
+     expect(journal.readAllEvents(dir)).toHaveLength(1);
+   });
+ 
++  test('fail → green → fail on the same sha re-emits: 3 check events, not 2', async () => {
++    // The dedup guard must be scoped to the snapshot cursor, NOT the whole
++    // journal history. A check that breaks, recovers, then breaks again keeps the
++    // same (type,key) identity (name+sha), so a history-wide guard would swallow
++    // the SECOND failure forever — a silent gap for a check that re-breaks.
++    const ci = (cls) => snap({ headSha: 'shaX', checks: [{ name: 'ci', class: cls }] });
++    await runMonitorPass({ dir, gather: async () => ci('green'), now });   // baseline
++    await runMonitorPass({ dir, gather: async () => ci('failed'), now });  // fail #1
++    await runMonitorPass({ dir, gather: async () => ci('green'), now });   // recover
++    await runMonitorPass({ dir, gather: async () => ci('failed'), now });  // fail #2 (re-emit)
++
++    const checkEvents = journal.readAllEvents(dir)
++      .filter((e) => e.type === T.CHECK_FAILED || e.type === T.CHECK_RECOVERED)
++      .map((e) => e.type);
++    expect(checkEvents).toEqual([T.CHECK_FAILED, T.CHECK_RECOVERED, T.CHECK_FAILED]);
++    expect(checkEvents.filter((t) => t === T.CHECK_FAILED)).toHaveLength(2);
++  });
++
++  test('concurrent passes do not duplicate events or reuse a sequence number', async () => {
++    // Two watchers/events callers racing on the same PR. The cross-process lock
++    // must serialize them: the second pass sees the first's snapshot and emits
++    // nothing, so exactly one check.failed lands with a unique seq.
++    await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'green' }] }), now });
++    const failGather = async () => {
++      await new Promise((r) => { setTimeout(r, 5); }); // widen the race window
++      return snap({ checks: [{ name: 'ci', class: 'failed' }] });
++    };
++    await Promise.all([
++      runMonitorPass({ dir, gather: failGather, now }),
++      runMonitorPass({ dir, gather: failGather, now }),
++    ]);
++    const all = journal.readAllEvents(dir);
++    const failed = all.filter((e) => e.type === T.CHECK_FAILED);
++    expect(failed).toHaveLength(1);
++    const seqs = all.map((e) => e.seq);
++    expect(new Set(seqs).size).toBe(seqs.length);           // unique
++    expect([...seqs].sort((a, b) => a - b)).toEqual(seqs);  // monotonic in journal order
++  });
++
+   test('an enrich hook can decorate records before they are appended', async () => {
+     // Establish the baseline first, then transition a check to failed so the
+     // pass actually produces a check.failed record for the enricher to touch.
+-- 
+2.51.0.windows.1
+

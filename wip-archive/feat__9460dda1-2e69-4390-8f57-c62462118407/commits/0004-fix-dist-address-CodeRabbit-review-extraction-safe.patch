@@ -1,0 +1,516 @@
+From 7392deb155ec75a5d5419bbe73f72fee068561c9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 20:08:20 +0530
+Subject: [PATCH] =?UTF-8?q?fix(dist):=20address=20CodeRabbit=20review=20?=
+ =?UTF-8?q?=E2=80=94=20extraction=20safety,=20fail-closed=20gen,=20docs?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Code:
+- package-root: backslash-safe traversal guard (split on / AND \) — a `\`-key no
+  longer bypasses the `..` check on Windows.
+- package-root: cache identity now includes an asset-content fingerprint
+  (ASSET_FINGERPRINT from the generator) so same-version rebuilds with a changed
+  asset set never reuse a stale extraction (supersedes 7f627647).
+- package-root: fast-path reuse re-runs the stat-check (assertAllPresent) before
+  trusting the sentinel; count assertion replaced by a real per-file exists+non-empty
+  stat-check.
+- generator: fail CLOSED when a configured ASSET_ROOT is missing (was silent skip);
+  drop the non-existent docs/{TOOLCHAIN,VALIDATION}.md entries (copyEssentialDocs
+  no-op) so fail-closed holds.
+- config-writer: resolve project-local .skills/skills FIRST; packaged fallback is
+  lazy + non-throwing (skill lookup no longer triggers/awaits extraction).
+- reset: resolve package root AFTER the force guard (unforced reset can't do
+  extraction work or fail with an asset error).
+- parity-check: try/finally so temp git dirs never leak on failure paths.
+- package.json: asset scripts invoke bun, not node.
+
+Docs: rename design.md → plan.md (repo convention 80:1); correct extraction-dir
+path (per-user cache), executable mode (0o700), and completeness claim (stat-check).
+
+Regenerated manifest (fingerprint 62a68d64); re-proven in a compiled binary
+(per-user+fingerprint cache, nested paths intact). 142 unit+drift+regression green,
+eslint clean.
+
+Issue: 9460dda1-2e69-4390-8f57-c62462118407
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                                  |  2 +-
+ .../{design.md => plan.md}                    | 29 ++++++----
+ lib/config-writer.js                          | 42 +++++++++++---
+ lib/package-root.js                           | 39 +++++++++----
+ lib/reset.js                                  |  9 ++-
+ package.json                                  |  6 +-
+ scripts/gen-embedded-assets.mjs               | 35 ++++++++++--
+ scripts/parity-check.mjs                      | 55 ++++++++++---------
+ test/embedded-assets-drift.test.js            | 19 ++++++-
+ test/package-root.test.js                     |  3 +
+ 10 files changed, 175 insertions(+), 64 deletions(-)
+ rename docs/work/2026-07-12-single-binary-step2/{design.md => plan.md} (88%)
+
+diff --git a/bin/forge.js b/bin/forge.js
+index 1cad8c45..dacc46b8 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4200,7 +4200,7 @@ async function main() {
+     } else {
+       // `forge docs` reads packaged docs; route through the asset root so any
+       // embedded topic resolves in a compiled binary too. (Full docs/ embedding
+-      // for arbitrary topics is deferred to step 3 — see the design note.)
++      // for arbitrary topics is deferred to step 3 — see the step-2 plan note.)
+       const result = getTopicContent(topic, getPackageRoot(packageDir));
+       if (result.error) {
+         console.error(`  Error: ${result.error}`);
+diff --git a/docs/work/2026-07-12-single-binary-step2/design.md b/docs/work/2026-07-12-single-binary-step2/plan.md
+similarity index 88%
+rename from docs/work/2026-07-12-single-binary-step2/design.md
+rename to docs/work/2026-07-12-single-binary-step2/plan.md
+index adedd0de..c926537f 100644
+--- a/docs/work/2026-07-12-single-binary-step2/design.md
++++ b/docs/work/2026-07-12-single-binary-step2/plan.md
+@@ -16,9 +16,11 @@ the npm/npx channel byte-identical.
+ `lib/package-root.js` exposes `getPackageRoot(diskFallback)`:
+ 
+ - **npm/npx/dev**: returns the real on-disk package root (verified to carry assets).
+-- **compiled binary**: lazily extracts the embedded assets to a version-stamped temp
+-  dir (`os.tmpdir()/forge-assets-<version>`) and returns it. Every existing copy path
+-  then reads real files from a real dir — no per-consumer rewrite.
++- **compiled binary**: lazily extracts the embedded assets to a per-USER cache dir
++  keyed by version + asset fingerprint (`%LOCALAPPDATA%\forge\assets-<version>-<fp>` on
++  Windows, `$XDG_CACHE_HOME|~/.cache/forge/assets-<version>-<fp>` on POSIX, `0o700`), then
++  returns it. Every existing copy path then reads real files from a real dir — no
++  per-consumer rewrite.
+ 
+ Two distinct uses of `packageDir` were separated: **module `require()`s** (bundler
+ concern, left alone) vs **asset reads** (routed through the helper).
+@@ -57,8 +59,8 @@ manifest-path → blob and NEVER derives paths from embedded names (guidance #2)
+ - Relative POSIX paths are split and re-joined with the platform separator only at write
+   time (guidance #2).
+ - Executable bit: files-only embedding drops mode, so the manifest records
+-  `EXECUTABLE_ASSETS` (`.sh` + `.forge/hooks/*`); extraction `chmod 0o755` (no-op on
+-  Windows) (guidance #7).
++  `EXECUTABLE_ASSETS` (`.sh` + `.forge/hooks/*`); extraction `chmod 0o700` (owner-only
++  rwx — this is a per-user cache dir; no-op on Windows) (guidance #7).
+ - Symlinks are never embedded — the generator skips them; content is materialized
+   (guidance #7).
+ 
+@@ -70,12 +72,17 @@ manifest-path → blob and NEVER derives paths from embedded names (guidance #2)
+ - **Safe default**: `getPackageRoot` tries the on-disk package first (real assets win),
+   then the embedded channel; if BOTH fail it THROWS listing both attempted sources —
+   never returns an asset-less dir that lets setup "succeed" with nothing.
+-- **Post-extract assertion**: extraction asserts written-file-count == manifest-entry-count,
+-  else throws (covers a binary missing embeds).
+-- **Completion sentinel**: `.forge-assets-complete` (holds the version) is written only
+-  after a fully-successful extraction; a later run reuses the dir only if the sentinel
+-  matches — a crash mid-extraction or a concurrent process forces a clean re-extract
+-  (guidance #8 / open-Q3).
++- **Post-extract stat-check**: after extraction, `assertAllPresent` stats every expected
++  relpath and asserts it exists + is non-empty (throws listing any missing) — a real
++  content check, not a count of the same manifest it iterates.
++- **Completion sentinel + content re-validation**: `.forge-assets-complete` (holds the
++  version) is written only after a fully-successful extraction; the fast-path reuse
++  re-runs the stat-check before trusting the sentinel, so a truncated/partly-deleted
++  cache re-extracts rather than being adopted. A crash mid-extraction or a concurrent
++  process can never bless a partial dir (atomic rename, below) (guidance #8 / open-Q3).
++- **Cache identity includes an asset fingerprint**: the dir name embeds a content hash
++  (`ASSET_FINGERPRINT`) emitted by the generator, so a same-version rebuild with a
++  changed asset set lands in a different dir and never reuses a stale extraction.
+ 
+ ## Drift / completeness guard (guidance #1 / reconciliation A)
+ 
+diff --git a/lib/config-writer.js b/lib/config-writer.js
+index fec091f6..de3fca53 100644
+--- a/lib/config-writer.js
++++ b/lib/config-writer.js
+@@ -126,17 +126,35 @@ function removeConfigOverride(projectRoot, keyPath) {
+   return { config, configPath: writeRawConfig(projectRoot, config), removed: true };
+ }
+ 
++/** Project-local skill dirs (highest precedence), independent of any extraction. */
++function localSkillSearchDirs(projectRoot = process.cwd()) {
++  return [path.join(projectRoot, '.skills'), path.join(projectRoot, 'skills')];
++}
++
++/**
++ * The packaged (shipped-default) skills dir — resolved LAZILY and NON-throwing.
++ * In a compiled binary this triggers asset extraction, so it must only run after
++ * the project-local dirs miss (and must never abort skill resolution if assets
++ * cannot be resolved). Returns null if unavailable.
++ */
++function packagedSkillsDir() {
++  try {
++    return path.join(getPackageRoot(PACKAGE_ROOT), 'skills');
++  } catch {
++    return null;
++  }
++}
++
+ /**
+  * Directories searched (in precedence order) when resolving a skill name.
+  * Mirrors the skills-sync precedence: `.skills/` shadow wins over canonical
+- * `skills/`, then the installed package's shipped defaults.
++ * `skills/`, then the installed package's shipped defaults (resolved lazily).
+  */
+ function skillSearchDirs(projectRoot = process.cwd()) {
+-  return [
+-    path.join(projectRoot, '.skills'),
+-    path.join(projectRoot, 'skills'),
+-    path.join(getPackageRoot(PACKAGE_ROOT), 'skills'),
+-  ];
++  const dirs = localSkillSearchDirs(projectRoot);
++  const packaged = packagedSkillsDir();
++  if (packaged) dirs.push(packaged);
++  return dirs;
+ }
+ 
+ /**
+@@ -155,12 +173,22 @@ function resolveSkill(projectRoot, name) {
+     || name === '.' || name === '..') {
+     return null;
+   }
+-  for (const dir of skillSearchDirs(projectRoot)) {
++  // Check project-local dirs FIRST — these never trigger extraction, so a
++  // project-local skill resolves without touching the packaged fallback.
++  for (const dir of localSkillSearchDirs(projectRoot)) {
+     const skillMd = path.join(dir, name, 'SKILL.md');
+     if (fs.existsSync(skillMd)) {
+       return { name, dir, path: skillMd };
+     }
+   }
++  // Only now resolve the packaged fallback (lazy, non-throwing).
++  const packaged = packagedSkillsDir();
++  if (packaged) {
++    const skillMd = path.join(packaged, name, 'SKILL.md');
++    if (fs.existsSync(skillMd)) {
++      return { name, dir: packaged, path: skillMd };
++    }
++  }
+   return null;
+ }
+ 
+diff --git a/lib/package-root.js b/lib/package-root.js
+index 74dd28bc..1ae07f2a 100644
+--- a/lib/package-root.js
++++ b/lib/package-root.js
+@@ -52,17 +52,20 @@ const SENTINEL_FILE = '.forge-assets-complete';
+  * test/embedded-assets-drift.test.js):
+  *   - skills/**            → populateAgentSkills, listCanonicalSkills, codex skills, reset
+  *   - rules/**             → renderRulesForHarness (agents-config)
+- *   - docs/{TOOLCHAIN,VALIDATION}.md → copyEssentialDocs
+  *   - AGENTS.md            → workflow contract copied into the project
+  *   - .claude/scripts/**   → load-env.sh, review-resolve.sh
+  *   - .forge/hooks/**      → check-tdd.js, forge-native-hook.js
+  *   - scripts/**           → WORKFLOW_RUNTIME_ASSETS (team + workflow scripts), `forge team`
++ *
++ * NOTE: the essential docs (TOOLCHAIN.md / VALIDATION.md) are intentionally NOT
++ * embedded — copyEssentialDocs reads `docs/<doc>` which does not exist (the files
++ * live under docs/reference/ + docs/forge/), so it is a no-op in BOTH channels
++ * today. Embedding follows the copyEssentialDocs source-path fix (deferred). Every
++ * root listed here MUST exist on disk — the generator fails closed if one is absent.
+  */
+ const ASSET_ROOTS = Object.freeze([
+   'skills',
+   'rules',
+-  'docs/TOOLCHAIN.md',
+-  'docs/VALIDATION.md',
+   'AGENTS.md',
+   '.claude/scripts',
+   '.forge/hooks',
+@@ -133,9 +136,13 @@ function loadEmbeddedManifest() {
+   return require('./embedded-assets.generated.mjs');
+ }
+ 
+-/** Split a POSIX relative path into segments for platform-correct joining. */
++/**
++ * Split a relative path into segments for platform-correct joining. Splits on
++ * BOTH `/` and `\` so a backslash-separated key cannot smuggle a `..` segment
++ * past the traversal guard on Windows.
++ */
+ function relSegments(relPosix) {
+-  return relPosix.split('/').filter(Boolean);
++  return relPosix.split(/[/\\]/).filter(Boolean);
+ }
+ 
+ /**
+@@ -259,16 +266,28 @@ let _extractedRoot = null;
+ function ensureExtracted() {
+   if (_extractedRoot) return _extractedRoot;
+   const version = resolveVersion();
++  const manifest = loadEmbeddedManifest();
+   const cacheRoot = userCacheRoot();
+-  const finalDir = path.join(cacheRoot, `assets-${version}`);
+ 
+-  // Fast path: a completed extraction for this exact version already exists.
++  // Cache identity = version + an asset-content FINGERPRINT (emitted by the
++  // generator). Same-version rebuilds with a changed asset set therefore land in
++  // a DIFFERENT dir, so a stale extraction is never silently reused.
++  const fp = String(manifest.ASSET_FINGERPRINT || 'nofp').slice(0, 16);
++  const finalDir = path.join(cacheRoot, `assets-${version}-${fp}`);
++
++  // Fast path: a completed extraction already exists — but do NOT trust the
++  // sentinel alone; verify the expected files are actually present + non-empty
++  // (a truncated/partly-deleted cache must re-extract, not be adopted).
+   if (isCompleteExtraction(finalDir, version)) {
+-    _extractedRoot = finalDir;
+-    return finalDir;
++    try {
++      assertAllPresent(finalDir, manifest.EMBEDDED_ASSETS);
++      _extractedRoot = finalDir;
++      return finalDir;
++    } catch {
++      // Cache incomplete/corrupt — fall through to a fresh extraction.
++    }
+   }
+ 
+-  const manifest = loadEmbeddedManifest();
+   const tmpDir = fs.mkdtempSync(path.join(cacheRoot, `.assets-${version}-`));
+   try {
+     extractEmbeddedAssets(tmpDir, manifest.EMBEDDED_ASSETS, manifest.EXECUTABLE_ASSETS || []);
+diff --git a/lib/reset.js b/lib/reset.js
+index d9594916..6d787b96 100644
+--- a/lib/reset.js
++++ b/lib/reset.js
+@@ -184,11 +184,16 @@ function resetSoft(projectRoot, { force = false } = {}) {
+  * @param {{ force?: boolean }} options
+  * @returns {{ removed: string[], preserved: string[] }}
+  */
+-function resetHard(projectRoot, { force = false, sourceRoot = getPackageRoot(FORGE_PACKAGE_ROOT) } = {}) {
++function resetHard(projectRoot, { force = false, sourceRoot } = {}) {
+   if (!force) {
+     throw new Error('Hard reset requires --force flag. This will remove ALL forge files.');
+   }
+ 
++  // Resolve the package/asset root AFTER the force guard so an unforced reset
++  // never triggers extraction work or fails with an asset-resolution error
++  // instead of the intended safety message.
++  const resolvedSourceRoot = sourceRoot ?? getPackageRoot(FORGE_PACKAGE_ROOT);
++
+   const removed = [];
+   const preserved = [];
+   const inventory = getForgeFiles(projectRoot);
+@@ -245,7 +250,7 @@ function resetHard(projectRoot, { force = false, sourceRoot = getPackageRoot(FOR
+   // skills. Scope removal to the canonical Forge skill set so user work is
+   // preserved; the surrounding dir is removed only if nothing else remains.
+   const forgeSkillNames = new Set(
+-    listCanonicalSkills(sourceRoot).map((s) => s.name)
++    listCanonicalSkills(resolvedSourceRoot).map((s) => s.name)
+   );
+   for (const dir of inventory.skillDirs) {
+     const skillsRoot = path.join(projectRoot, dir);
+diff --git a/package.json b/package.json
+index b3bb6bb9..87191848 100644
+--- a/package.json
++++ b/package.json
+@@ -25,9 +25,9 @@
+     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
+     "setup": "node ./bin/forge.js setup",
+     "help": "node ./bin/forge.js --help",
+-    "gen:assets": "node scripts/gen-embedded-assets.mjs",
+-    "build:binary": "node scripts/gen-embedded-assets.mjs && bun build --compile --define FORGE_COMPILED=true ./bin/forge.js --outfile forge-bin",
+-    "parity:binary": "node scripts/parity-check.mjs",
++    "gen:assets": "bun scripts/gen-embedded-assets.mjs",
++    "build:binary": "bun scripts/gen-embedded-assets.mjs && bun build --compile --define FORGE_COMPILED=true ./bin/forge.js --outfile forge-bin",
++    "parity:binary": "bun scripts/parity-check.mjs",
+     "validate:yaml": "find . \\( -name '*.yml' -o -name '*.yaml' \\) | grep -v node_modules | while IFS= read -r file; do echo \"Checking $file...\" && bun x js-yaml \"$file\" > /dev/null || exit 1; done",
+     "test:mutation": "npx stryker run",
+     "test:benchmark": "node scripts/benchmark.js --output test-results/benchmark-results.json --profile-dir test-results/benchmark-profiles",
+diff --git a/scripts/gen-embedded-assets.mjs b/scripts/gen-embedded-assets.mjs
+index ee397df8..d16a72a7 100644
+--- a/scripts/gen-embedded-assets.mjs
++++ b/scripts/gen-embedded-assets.mjs
+@@ -16,6 +16,7 @@
+ 
+ import fs from 'node:fs';
+ import path from 'node:path';
++import crypto from 'node:crypto';
+ import { fileURLToPath } from 'node:url';
+ import pkgRoot from '../lib/package-root.js';
+ 
+@@ -53,13 +54,36 @@ export function collectAssetFiles(repoRoot = REPO_ROOT, roots = ASSET_ROOTS) {
+   const files = [];
+   for (const root of roots) {
+     const abs = path.join(repoRoot, root);
+-    if (!fs.existsSync(abs)) continue;
++    if (!fs.existsSync(abs)) {
++      // Fail CLOSED: a configured asset root that is absent would silently ship an
++      // incomplete manifest. Error instead so the build stops loudly.
++      throw new Error(
++        `Configured ASSET_ROOT does not exist: ${root} (looked in ${abs}). ` +
++          'Fix ASSET_ROOTS in lib/package-root.js or restore the missing path.'
++      );
++    }
+     walk(abs, root.split(path.sep).join('/'), files);
+   }
+   return [...new Set(files)].sort(byteCompare);
+ }
+ 
+-function render(files) {
++/**
++ * Content fingerprint over the asset SET: sha256 of each relpath + its bytes, in
++ * sorted order. Emitted into the manifest so the runtime cache dir identity
++ * changes whenever any asset content or the set changes (invalidates stale
++ * same-version extractions). Deterministic across machines.
++ */
++export function assetFingerprint(repoRoot = REPO_ROOT, files = collectAssetFiles(repoRoot)) {
++  const h = crypto.createHash('sha256');
++  for (const rel of files) {
++    h.update(rel);
++    h.update('\0');
++    h.update(fs.readFileSync(path.join(repoRoot, ...rel.split('/'))));
++  }
++  return h.digest('hex');
++}
++
++function render(files, fingerprint) {
+   const imports = [];
+   const entries = [];
+   const execEntries = [];
+@@ -84,16 +108,19 @@ function render(files) {
+     ...execEntries,
+     '];',
+     '',
++    `export const ASSET_FINGERPRINT = ${JSON.stringify(fingerprint)};`,
++    '',
+   ].join('\n');
+ }
+ 
+ function main() {
+   const files = collectAssetFiles();
++  const fingerprint = assetFingerprint(REPO_ROOT, files);
+   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
+-  fs.writeFileSync(OUT_FILE, render(files), 'utf8');
++  fs.writeFileSync(OUT_FILE, render(files, fingerprint), 'utf8');
+   const execCount = files.filter(isExecutableAsset).length;
+   console.log(
+-    `Embedded ${files.length} asset file(s) (${execCount} executable) → ${path.relative(REPO_ROOT, OUT_FILE)}`
++    `Embedded ${files.length} asset file(s) (${execCount} executable), fingerprint ${fingerprint.slice(0, 16)} → ${path.relative(REPO_ROOT, OUT_FILE)}`
+   );
+ }
+ 
+diff --git a/scripts/parity-check.mjs b/scripts/parity-check.mjs
+index 62ff641a..bae555db 100644
+--- a/scripts/parity-check.mjs
++++ b/scripts/parity-check.mjs
+@@ -81,36 +81,41 @@ function main() {
+   const setupArgs = ['setup', '--quick', '--yes'];
+   const npmDir = makeProject('npm');
+   const binDir = makeProject('bin');
+-  runSetup('npm', 'node', [path.join(REPO, 'bin', 'forge.js'), ...setupArgs], npmDir);
+-  runSetup('bin', BIN_PATH, setupArgs, binDir);
+ 
+-  // 3. Compare trees.
+-  const a = hashTree(npmDir);
+-  const b = hashTree(binDir);
+-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+-  const missingInBin = [];
+-  const missingInNpm = [];
+-  const differing = [];
+-  for (const k of keys) {
+-    if (!(k in b)) missingInBin.push(k);
+-    else if (!(k in a)) missingInNpm.push(k);
+-    else if (a[k] !== b[k]) differing.push(k);
+-  }
++  // try/finally so the throwaway temp git projects are removed even when setup
++  // or the comparison throws (no leaked dirs on any failure path).
++  try {
++    runSetup('npm', 'node', [path.join(REPO, 'bin', 'forge.js'), ...setupArgs], npmDir);
++    runSetup('bin', BIN_PATH, setupArgs, binDir);
+ 
+-  const problems = missingInBin.length + missingInNpm.length + differing.length;
+-  console.log(`\nParity: ${Object.keys(a).length} npm files vs ${Object.keys(b).length} binary files.`);
+-  if (missingInBin.length) console.log(`  Missing in binary: ${missingInBin.join(', ')}`);
+-  if (missingInNpm.length) console.log(`  Missing in npm:    ${missingInNpm.join(', ')}`);
+-  if (differing.length) console.log(`  Differing bytes:   ${differing.join(', ')}`);
++    // 3. Compare trees.
++    const a = hashTree(npmDir);
++    const b = hashTree(binDir);
++    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
++    const missingInBin = [];
++    const missingInNpm = [];
++    const differing = [];
++    for (const k of keys) {
++      if (!(k in b)) missingInBin.push(k);
++      else if (!(k in a)) missingInNpm.push(k);
++      else if (a[k] !== b[k]) differing.push(k);
++    }
+ 
+-  fs.rmSync(npmDir, { recursive: true, force: true });
+-  fs.rmSync(binDir, { recursive: true, force: true });
++    const problems = missingInBin.length + missingInNpm.length + differing.length;
++    console.log(`\nParity: ${Object.keys(a).length} npm files vs ${Object.keys(b).length} binary files.`);
++    if (missingInBin.length) console.log(`  Missing in binary: ${missingInBin.join(', ')}`);
++    if (missingInNpm.length) console.log(`  Missing in npm:    ${missingInNpm.join(', ')}`);
++    if (differing.length) console.log(`  Differing bytes:   ${differing.join(', ')}`);
+ 
+-  if (problems > 0) {
+-    console.error(`\nPARITY FAILED (${problems} discrepancies).`);
+-    process.exit(1);
++    if (problems > 0) {
++      console.error(`\nPARITY FAILED (${problems} discrepancies).`);
++      process.exit(1);
++    }
++    console.log('\nPARITY OK — npm and compiled binary produced byte-identical setup trees.');
++  } finally {
++    fs.rmSync(npmDir, { recursive: true, force: true });
++    fs.rmSync(binDir, { recursive: true, force: true });
+   }
+-  console.log('\nPARITY OK — npm and compiled binary produced byte-identical setup trees.');
+ }
+ 
+ main();
+diff --git a/test/embedded-assets-drift.test.js b/test/embedded-assets-drift.test.js
+index 531a88ba..d0127ed9 100644
+--- a/test/embedded-assets-drift.test.js
++++ b/test/embedded-assets-drift.test.js
+@@ -11,7 +11,11 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+ const { ASSET_ROOTS, DISK_PACKAGE_ROOT } = require('../lib/package-root');
+-const { collectAssetFiles, isExecutableAsset } = require('../scripts/gen-embedded-assets.mjs');
++const {
++  collectAssetFiles,
++  isExecutableAsset,
++  assetFingerprint,
++} = require('../scripts/gen-embedded-assets.mjs');
+ const { ESSENTIAL_DOCS } = require('../lib/docs-copy');
+ 
+ const REPO = DISK_PACKAGE_ROOT;
+@@ -95,6 +99,19 @@ test('executable assets are exactly the .sh + .forge/hooks files', () => {
+   }
+ });
+ 
++test('assetFingerprint is a deterministic 64-hex digest over the asset set', () => {
++  const fp1 = assetFingerprint(REPO);
++  const fp2 = assetFingerprint(REPO);
++  expect(fp1).toMatch(/^[0-9a-f]{64}$/);
++  expect(fp1).toBe(fp2);
++});
++
++test('collectAssetFiles fails closed when a configured root is missing', () => {
++  expect(() => collectAssetFiles(REPO, ['skills', 'does-not-exist-root'])).toThrow(
++    /does not exist/i
++  );
++});
++
+ test('embedded text assets are LF-only (no CRLF) so cross-platform embed bytes match', () => {
+   const TEXT = new Set(['.md', '.sh', '.js', '.mjs', '.cjs', '.json', '.yml', '.yaml', '.txt']);
+   const embed = collectAssetFiles(REPO, ASSET_ROOTS);
+diff --git a/test/package-root.test.js b/test/package-root.test.js
+index a0612420..ddb76191 100644
+--- a/test/package-root.test.js
++++ b/test/package-root.test.js
+@@ -112,6 +112,9 @@ test('extractEmbeddedAssets() refuses unsafe manifest keys (traversal / absolute
+ 
+   expect(() => extractEmbeddedAssets(destDir, { '../escape.md': src })).toThrow(/unsafe/i);
+   expect(() => extractEmbeddedAssets(destDir, { 'a/../../escape.md': src })).toThrow(/unsafe/i);
++  // Backslash-separated traversal must also be rejected (Windows bypass).
++  expect(() => extractEmbeddedAssets(destDir, { '..\\escape.md': src })).toThrow(/unsafe/i);
++  expect(() => extractEmbeddedAssets(destDir, { 'a\\..\\..\\escape.md': src })).toThrow(/unsafe/i);
+   const abs = process.platform === 'win32' ? 'C:\\evil.md' : '/evil.md';
+   expect(() => extractEmbeddedAssets(destDir, { [abs]: src })).toThrow(/unsafe/i);
+ 
+-- 
+2.51.0.windows.1
+

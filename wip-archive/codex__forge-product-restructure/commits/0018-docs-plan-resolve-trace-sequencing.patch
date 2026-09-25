@@ -1,0 +1,30 @@
+From e3111349bf9673520ad45ae5595e491449648904 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 16:45:01 +0530
+Subject: [PATCH] docs(plan): resolve trace sequencing
+
+---
+ .../2026-08-09-forge-product-restructure/decisions.md  | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/docs/work/2026-08-09-forge-product-restructure/decisions.md b/docs/work/2026-08-09-forge-product-restructure/decisions.md
+index a57527dc..901cb7a1 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/decisions.md
++++ b/docs/work/2026-08-09-forge-product-restructure/decisions.md
+@@ -9,3 +9,13 @@
+ **Route**: BLOCKED
+ **Choice made**: Keep `forge control` limited to mandatory/optional/permission policy configuration. Keep approval authority on the existing issue-bound gate event surface: `forge gate approve <issue-id> <gate-id>`. If bounded expiry is required, extend that existing event with `--ttl`; do not add project-scoped approval or a new `forge issue approve`/`forge control approve` command. Unscoped approval fails closed.
+ **Status**: RESOLVED
++
++## Decision 2
++
++**Date**: 2026-08-09
++**Task**: PR 1 lane C — production issue/PR trace emission
++**Gap**: The trace primitive correctly requires issue revision, exact head SHA, WorkPacket hash, risk-manifest digest, and gate receipts, but current ship/merge callers do not possess the full authoritative envelope. PR 2 owns WorkPacket/receipt contracts, while PR 4B owns ship/merge lifecycle wiring. Synthesizing or accepting caller-asserted evidence in PR 1 would weaken authority.
++**Score**: 12/14; mandatory override — authority/security and persistent contract boundary
++**Route**: BLOCKED
++**Choice made**: Do not integrate the unused PR 1 trace commits. Move the production linkage outcome to PR 4B after PR 2 freezes the Memory-owned evidence contract, then wire ship/merge using the validated immutable receipt. Keep the Kernel primitive branch available for rebasing rather than inventing evidence.
++**Status**: RESOLVED
+-- 
+2.51.0.windows.1
+

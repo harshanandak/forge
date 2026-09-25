@@ -1,0 +1,46 @@
+From 26c3a456925b87804aff084669d3016edf3601fa Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 14:21:12 +0530
+Subject: [PATCH] test(memory): remove Windows timing flake
+
+---
+ .../memory/test/pr-lifecycle-authority.test.js    | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 6aeedabe..a14865fc 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -414,19 +414,24 @@ describe('public PR lifecycle authority', () => {
+ 
+   test('reconciles consequential provider completion instead of reporting a false timeout', async () => {
+     let writes = 0;
++    let releaseWrite;
++    const writeGate = new Promise(resolve => { releaseWrite = resolve; });
+     const workPacket = packet();
+     const authority = createPrLifecycleAuthority({
+       provider: provider({ recordPrLinkage: async () => {
+-        await new Promise(resolve => setTimeout(resolve, 15));
++        await writeGate;
+         writes += 1;
+         return { ok: true };
+       } }),
+       timeoutMs: 5,
+     });
+-    const started = Date.now();
+-    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
+-      .resolves.toMatchObject({ merged: true });
+-    expect(Date.now() - started).toBeGreaterThanOrEqual(5);
++    let settled = false;
++    const merge = authority.mergeWorkPacket({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
++      .finally(() => { settled = true; });
++    await new Promise(resolve => setTimeout(resolve, 15));
++    expect(settled).toBe(false);
++    releaseWrite();
++    await expect(merge).resolves.toMatchObject({ merged: true });
+     expect(writes).toBe(1);
+   });
+ 
+-- 
+2.51.0.windows.1
+

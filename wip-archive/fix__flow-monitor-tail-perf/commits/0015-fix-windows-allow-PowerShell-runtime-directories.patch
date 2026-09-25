@@ -1,0 +1,125 @@
+From efd923ca1cd1c3616a9d2f56fc6c69c8dbe43218 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 08:01:00 +0530
+Subject: [PATCH] fix(windows): allow PowerShell runtime directories
+
+---
+ lib/kernel/sqlite-driver.js             | 27 ++++++++++++---
+ test/kernel/legacy-claim-repair.test.js | 44 +++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+), 4 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 9cfeb0ed..1fe47a17 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4607,15 +4607,34 @@ function resolveWindowsPowerShellPath(environment = process.env) {
+ 	return path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+ }
+ 
++function windowsAclRuntimeDirectory(value, fsApi = fs) {
++	if (typeof value !== 'string' || !/^[A-Za-z]:[\\/]/.test(value)) return null;
++	try {
++		return fsApi.statSync(value).isDirectory() ? value : null;
++	} catch {
++		return null;
++	}
++}
++
++function windowsAclChildEnvironment(environment, filePaths, fsApi = fs) {
++	const childEnvironment = {
++		FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
++		SystemRoot: environment.SystemRoot,
++		WINDIR: environment.SystemRoot,
++	};
++	for (const name of ['TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA']) {
++		const directory = windowsAclRuntimeDirectory(environment[name], fsApi);
++		if (directory) childEnvironment[name] = directory;
++	}
++	return childEnvironment;
++}
++
+ async function secureWindowsPathsAclWithPowerShell(filePaths, options = {}) {
+ 	const execute = options.execFile || execFileSync;
+ 	const environment = options.environment || process.env;
+ 	const powerShellPath = resolveWindowsPowerShellPath(environment);
+ 	const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', options.script || WINDOWS_PRIVATE_ACL_SCRIPT];
+-	const childEnvironment = {
+-		FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
+-		SystemRoot: environment.SystemRoot,
+-	};
++	const childEnvironment = windowsAclChildEnvironment(environment, filePaths, options.fsApi);
+ 	const runtime = options.runtime || (process.versions.bun ? 'bun' : 'node');
+ 	if (runtime === 'bun') {
+ 		const spawn = options.bunSpawn || globalThis.Bun.spawn;
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index e8eb5d49..39f596f6 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -237,6 +237,7 @@ describe('legacy claim repair preflight', () => {
+ 			env: {
+ 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite","restore-dir"]',
+ 				SystemRoot: 'C:\\Windows',
++				WINDIR: 'C:\\Windows',
+ 			},
+ 			stderr: 'ignore',
+ 			stdout: 'ignore',
+@@ -246,6 +247,48 @@ describe('legacy claim repair preflight', () => {
+ 		expect(clearedTimer).toBe(17);
+ 	});
+ 
++	test('allowlists only existing local Windows runtime directories for PowerShell startup', async () => {
++		let childEnvironment;
++		const environment = {
++			SystemRoot: 'C:\\Windows',
++			TEMP: 'C:\\Temp',
++			TMP: 'relative-temp',
++			USERPROFILE: 'D:\\Users\\runner',
++			LOCALAPPDATA: 'C:\\missing',
++			PATH: 'secret-path-sentinel',
++			PATHEXT: 'secret-pathext-sentinel',
++			COMSPEC: 'secret-comspec-sentinel',
++			PSModulePath: 'C:\\hostile-modules',
++			APPDATA: 'C:\\secret-appdata',
++			ProgramData: 'C:\\secret-program-data',
++			FORGE_API_TOKEN: 'secret-token-sentinel',
++		};
++		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
++			runtime: 'bun',
++			environment,
++			fsApi: {
++				statSync(directory) {
++					if (['C:\\Temp', 'D:\\Users\\runner'].includes(directory)) return { isDirectory: () => true };
++					throw new Error('missing');
++				},
++			},
++			bunSpawn(_command, options) {
++				childEnvironment = options.env;
++				return { exited: Promise.resolve(0), kill() {} };
++			},
++			setTimer() { return 21; },
++			clearTimer() {},
++		});
++		expect(childEnvironment).toEqual({
++			FORGE_PRIVATE_ACL_TARGETS: '["C:\\\\private\\\\backup.sqlite"]',
++			SystemRoot: 'C:\\Windows',
++			WINDIR: 'C:\\Windows',
++			TEMP: 'C:\\Temp',
++			USERPROFILE: 'D:\\Users\\runner',
++		});
++		expect(JSON.stringify(childEnvironment)).not.toMatch(/sentinel|PSModulePath|TOKEN|APPDATA|ProgramData|PATH|PATHEXT|COMSPEC/);
++	});
++
+ 	test('prechecks every owner and verifies one protected current-SID DACL without changing ownership', async () => {
+ 		let script;
+ 		await secureWindowsPathsAcl(['backup.sqlite'], {
+@@ -319,6 +362,7 @@ describe('legacy claim repair preflight', () => {
+ 			env: {
+ 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
+ 				SystemRoot: 'C:\\Windows',
++				WINDIR: 'C:\\Windows',
+ 			},
+ 			stdio: 'pipe',
+ 			timeout: 15_000,
+-- 
+2.51.0.windows.1
+

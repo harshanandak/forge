@@ -1,0 +1,152 @@
+From 1d60f7f203482fe5f7352c24339715e5d908455a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 19:18:48 +0530
+Subject: [PATCH] fix(shepherd): carry proven PID reuse into terminal
+ completion
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+gatherObserved() proves a terminal_pending watcher's PID was inherited by an
+unrelated process, but the completeTerminal handler dropped that proof and the
+authority re-probed the bare PID, returned pid_live, and left the row active
+indefinitely — the daemon could never retire and a reopened PR was never
+rewatched. Forward pidReuseProven from the observed row and gate completion on
+the same pidDeadOrProvenReused() re-derivation every other recovery path uses,
+against the row's own watcher-written heartbeat marker.
+---
+ lib/pr-monitor/reconcile-executor.js       |  1 +
+ lib/pr-monitor/watch-owner.js              |  9 ++++-
+ test/pr-monitor/reconcile-executor.test.js | 27 ++++++++++++++-
+ test/pr-monitor/watch-owner.test.js        | 38 ++++++++++++++++++++++
+ 4 files changed, 73 insertions(+), 2 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index f0d91a9a..3d0e42b5 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -315,6 +315,7 @@ const ACTION_HANDLERS = {
+ 	async completeTerminal(action, s) {
+ 		return s.authority.completeTerminal(identity(action.owner), {
+ 			...operationInput(action.owner),
++			pidReuseProven: action.owner.watcherPidReuseProven === true,
+ 			terminalReceiptId: action.owner.terminalReceiptId,
+ 		}, s.options);
+ 	},
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 7847527a..eece4a8c 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -927,7 +927,14 @@ async function completeTerminal(ctx, input, opts = {}) {
+ 		&& prior.watcher_pid === Number(watcherPid)
+ 		&& prior.terminal_receipt_id === terminalReceiptId;
+ 	if (!exactCompletedReplay && !boundToSubmission) return invalid('stale_evidence');
+-	if (!exactCompletedReplay && await pidState(Number(watcherPid), boundOpts) !== false) return invalid('pid_live');
++	// A bare "the PID exists" answer keeps a terminal_pending row active forever once
++	// the exited watcher's number is inherited by an unrelated process: the daemon can
++	// never retire and a reopened PR is never rewatched. Accept the caller's reuse
++	// proof under the SAME re-derivation every other recovery path uses — the row's
++	// own watcher-written heartbeat marker.
++	if (!exactCompletedReplay && !await pidDeadOrProvenReused(
++		Number(watcherPid), prior.heartbeat_at, input, boundOpts,
++	)) return invalid('pid_live');
+ 	return invoke('watchOwnerCompleteTerminal', value, {
+ 		watcherPid: Number(watcherPid), terminalReceiptId,
+ 		expectedSnapshot: captured.snapshot,
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 3360edbc..5f1e5915 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -200,7 +200,9 @@ describe('execute — owner-row watcher lifecycle', () => {
+ 		const authority = {
+ 			completeTerminal: async (_identity, input) => {
+ 				attempts += 1;
+-				expect(input).toEqual({ generation: 'generation-7', pid: 70, terminalReceiptId: 'receipt-7' });
++				expect(input).toEqual({
++					generation: 'generation-7', pid: 70, pidReuseProven: false, terminalReceiptId: 'receipt-7',
++				});
+ 				return attempts === 1
+ 					? { ok: false, changed: false, reason: 'receipt_unverified', record: terminal }
+ 					: { ok: true, changed: true, reason: 'complete', record: { ...terminal, phase: 'complete' } };
+@@ -211,6 +213,29 @@ describe('execute — owner-row watcher lifecycle', () => {
+ 		expect(attempts).toBe(2);
+ 	});
+ 
++	test('forwards proven watcher PID reuse into terminal completion', async () => {
++		// gatherObserved proved the exited watcher's PID was inherited by an unrelated
++		// process. Dropping that proof here makes the authority re-probe the bare PID,
++		// see it live, and leave the row terminal_pending forever.
++		const terminal = {
++			...OWNER, phase: 'terminal_pending', terminalReceiptId: 'receipt-7',
++			watcherPidReuseProven: true,
++		};
++		let observed;
++		const result = await execute([{ type: 'completeTerminal', owner: terminal }], {
++			authority: {
++				completeTerminal: async (_identity, input) => {
++					observed = input;
++					return { ok: true, changed: true, reason: 'complete', record: { ...terminal, phase: 'complete' } };
++				},
++			},
++		});
++		expect(result.ok).toBe(true);
++		expect(observed).toEqual({
++			generation: 'generation-7', pid: 70, pidReuseProven: true, terminalReceiptId: 'receipt-7',
++		});
++	});
++
+ 	test('upsert and retire use the Kernel broker without filesystem owner markers', async () => {
+ 		const calls = [];
+ 		const result = await execute([
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 745aeda2..c308a45e 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -752,6 +752,44 @@ describe('watch owner SQLite authority', () => {
+ 			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+ 	});
+ 
++	test('completes a terminal_pending row whose watcher PID was reused', async () => {
++		const ctx = { repo: 'acme/forge', pr: 61 };
++		const base = { driver, now: LATER, verifyTerminalReceipt: async () => true };
++		const start = await owner.reserveStarting(ctx, { controllerPid: 116, startedAt: NOW }, base);
++		await owner.bindRunning(ctx, {
++			generation: start.record.generation, controllerPid: 116, pid: 216, updatedAt: LATER,
++		}, base);
++		await owner.recordTerminal(ctx, {
++			generation: start.record.generation, pid: 216, terminalReceiptId: 'receipt-61', updatedAt: LATER,
++		}, base);
++		const input = {
++			generation: start.record.generation, pid: 216,
++			terminalReceiptId: 'receipt-61', updatedAt: NEXT,
++		};
++		// PID 216 exists, but its process booted an hour after the watcher stamped this
++		// row's heartbeat, so it is an unrelated process that inherited the number.
++		const live = {
++			...base,
++			isPidAlive: () => true,
++			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
++		};
++
++		// Without the proof input a live PID still blocks completion.
++		expect(await owner.completeTerminal(ctx, input, live))
++			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++		// The claim alone is never enough: an unknown process start time keeps the live
++		// PID authoritative.
++		expect(await owner.completeTerminal(ctx, { ...input, pidReuseProven: true }, {
++			...live, pidStartedAt: async () => null,
++		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++
++		const completed = await owner.completeTerminal(ctx, { ...input, pidReuseProven: true }, live);
++		expect(completed).toMatchObject({
++			ok: true, changed: true, reason: 'complete',
++			record: { phase: 'complete', watcherPid: null, terminalReceiptId: 'receipt-61' },
++		});
++	});
++
+ 	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 58 };
+ 		const base = { driver, now: LATER };
+-- 
+2.51.0.windows.1
+

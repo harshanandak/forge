@@ -1,0 +1,196 @@
+From 7a6ac25a8eb621866910d4af75c8754d6f4f5c64 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 14:58:05 +0530
+Subject: [PATCH] fix(validate): preserve diagnostics across terminal outcomes
+
+---
+ .../2026-09-18-delivery-budget/decisions.md   |  10 ++
+ lib/commands/validate.js                      |  13 +-
+ test/commands/validate.test.js                | 112 +++++++++++++++++-
+ 3 files changed, 129 insertions(+), 6 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-budget/decisions.md b/docs/work/2026-09-18-delivery-budget/decisions.md
+index ec6e7f07..0f4407c2 100644
+--- a/docs/work/2026-09-18-delivery-budget/decisions.md
++++ b/docs/work/2026-09-18-delivery-budget/decisions.md
+@@ -81,6 +81,16 @@ The revised validate test file passed 67 tests with 13 skips, zero failures and
+ 168 assertions in 14.42s; strict file lint passed. Sonar's nested-ternary and
+ generic-error findings were corrected without suppressions or message changes.
+ 
++Further review exposed a shared formatting gap: a passing test message could
++become the error for a failed lint check, and accepted budget evidence disappeared
++when tests failed. Terminal diagnostics must derive from actual failed checks,
++including caught exceptions, while ignoring intentionally skipped checks. Budget
++evidence is independent of the overall outcome. Verify this outcome matrix at
++the public handler boundary rather than adding isolated example-specific fixes.
++The four missed scenarios reproduced before the shared correction. The outcome
++matrix then passed 18 tests; the complete focused file passed 73 tests with
++13 skips, zero failures and 178 assertions in 15.55s. Strict file lint passed.
++
+ The largest attributed test file was `test/protected-state-surfaces.test.js`
+ at 99.037s. Repeated Git fixture setup is a hypothesis to measure separately in
+ issue `6eb0147a-ea09-4c8a-83dd-ed8c74acb7bc`, preserving all isolation and authority
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index e3e37736..2af2bde0 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -1025,18 +1025,21 @@ module.exports = {
+ 			rootDir: projectRoot,
+ 			resourceBudget,
+ 		});
+-		if (!result.success) {
+-			const error = result.error || result.message || result.checks?.tests?.message;
+-			return error ? { ...result, error } : result;
++		const errorParts = Array.isArray(result.errors) ? result.errors.filter(Boolean) : [];
++		for (const check of Object.values(result.checks || {})) {
++			if (check?.success !== false || check.skipped === true || !check.message) continue;
++			if (!errorParts.some(error => error.endsWith(check.message))) errorParts.push(check.message);
+ 		}
+-
+ 		const budget = result.checks?.tests?.resourceBudget;
+ 		const budgetOutput = Number.isInteger(budget?.effective)
+ 			? `Full suite resource budget: requested=${budget.requested ?? 'default'} effective=${budget.effective}`
+ 			: null;
++		const output = [result.success ? result.summary : null, budgetOutput].filter(Boolean).join('\n');
++		const error = result.error || result.message || errorParts.join('; ') || result.summary;
+ 		return {
+ 			...result,
+-			output: [result.summary, budgetOutput].filter(Boolean).join('\n'),
++			...(output ? { output } : {}),
++			...(!result.success && error ? { error } : {}),
+ 		};
+ 	},
+ 	runTypeCheck,
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 8d83b9e9..3732d7b8 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -55,7 +55,11 @@ describe('Validate Command - Validation Orchestration', () => {
+ 		});
+ 
+ 		test('surfaces an accepted budget through the registry dispatcher output contract', async () => {
+-			const tests = { success: true, resourceBudget: { requested: 2, effective: 2 } };
++			const tests = {
++				success: true,
++				message: 'All 8777 tests passed',
++				resourceBudget: { requested: 2, effective: 2 },
++			};
+ 			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+ 				executeValidate: async () => ({ success: true, summary: 'validated', checks: { tests } }),
+ 			});
+@@ -67,6 +71,112 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			].join('\n'));
+ 		});
+ 
++		test('surfaces the automatic default budget through the registry dispatcher output contract', async () => {
++			const tests = {
++				success: true,
++				message: 'All 8777 tests passed',
++				resourceBudget: { requested: null, effective: 4 },
++			};
++			const result = await validateHandler([], {}, 'C:/repo', {
++				executeValidate: async () => ({ success: true, summary: 'validated', checks: { tests } }),
++			});
++
++			expect(result.output).toBe([
++				'validated',
++				'Full suite resource budget: requested=default effective=4',
++			].join('\n'));
++		});
++
++		test('retains an accepted budget when tests fail after starting', async () => {
++			const tests = {
++				success: false,
++				skipped: 3,
++				message: '2/8777 tests failed',
++				resourceBudget: { requested: 2, effective: 2 },
++			};
++			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
++				executeValidate: async () => ({
++					success: false,
++					summary: 'Checks failed: tests',
++					checks: { tests },
++					failedChecks: ['tests'],
++				}),
++			});
++
++			expect(result).toMatchObject({ success: false, error: '2/8777 tests failed', checks: { tests } });
++			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
++		});
++
++		test('reports only the failed check when tests pass', async () => {
++			const lint = { success: false, message: 'Linting failed: 2 errors, 0 warnings' };
++			const tests = {
++				success: true,
++				message: 'All 8777 tests passed',
++				resourceBudget: { requested: 2, effective: 2 },
++			};
++			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
++				executeValidate: async () => ({
++					success: false,
++					summary: 'Checks failed: lint',
++					checks: { lint, tests },
++					failedChecks: ['lint'],
++				}),
++			});
++
++			expect(result.error).toBe('Linting failed: 2 errors, 0 warnings');
++			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
++		});
++
++		test('reports every failed check and retains the accepted budget', async () => {
++			const lint = { success: false, message: 'Linting failed: 2 errors, 0 warnings' };
++			const tests = {
++				success: false,
++				message: '2/8777 tests failed',
++				resourceBudget: { requested: 2, effective: 2 },
++			};
++			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
++				executeValidate: async () => ({
++					success: false,
++					summary: 'Checks failed: lint, tests',
++					checks: { lint, tests },
++					failedChecks: ['lint', 'tests'],
++				}),
++			});
++
++			expect(result.error).toBe('Linting failed: 2 errors, 0 warnings; 2/8777 tests failed');
++			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
++		});
++
++		test('uses caught check errors and ignores skipped checks when failedChecks is incomplete', async () => {
++			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
++				executeValidate: async () => ({
++					success: false,
++					summary: 'Checks failed: ',
++					errors: ['Lint error: lint crashed'],
++					checks: {
++						lint: { success: false, message: 'lint crashed' },
++						typeCheck: { success: false, skipped: true, message: 'TypeScript not configured' },
++						tests: {
++							success: true,
++							message: 'All 8777 tests passed',
++							resourceBudget: { requested: 2, effective: 2 },
++						},
++					},
++				}),
++			});
++
++			expect(result.error).toBe('Lint error: lint crashed');
++			expect(result.output).toBe('Full suite resource budget: requested=2 effective=2');
++		});
++
++		test('preserves an explicit error without tests or budget evidence', async () => {
++			const result = await validateHandler([], {}, 'C:/repo', {
++				executeValidate: async () => ({ success: false, error: 'Explicit validation failure' }),
++			});
++
++			expect(result).toEqual({ success: false, error: 'Explicit validation failure' });
++		});
++
+ 		test('surfaces a rejected budget through the registry dispatcher error contract', async () => {
+ 			const message = 'Full suite resource budget rejected: requested=1 minimum=2';
+ 			const tests = {
+-- 
+2.51.0.windows.1
+

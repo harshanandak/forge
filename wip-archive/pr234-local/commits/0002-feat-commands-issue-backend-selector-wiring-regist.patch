@@ -1,0 +1,460 @@
+From ed9e854dd706383c9dbb7fd2a1ac14800f9b628a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 24 Jun 2026 14:52:13 +0530
+Subject: [PATCH] feat(commands): issue-backend selector wiring + registry
+ commandOpts (D20)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+resolveCommandOpts strips the selector tokens (--kernel / --issue-backend)
+from issue-command args and resolves the backend via the existing backend
+authority (lib/issue-backend.js): CLI flag tokens map to its deps.issueBackend
+signal, env/config/default precedence comes from the resolver. For the kernel
+backend it assembles the driver + migrated broker (B1/B2). executeCommand now
+forwards the resolved opts as the handler's 4th arg (defaults to {} —
+backward-compatible with existing 3-arg handlers).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/commands/_registry.js                   |   8 +-
+ lib/commands/_resolve-command-opts.js       | 175 ++++++++++++++++++++
+ test/commands/_registry-opts.test.js        |  82 +++++++++
+ test/commands/_resolve-command-opts.test.js | 128 ++++++++++++++
+ 4 files changed, 391 insertions(+), 2 deletions(-)
+ create mode 100644 lib/commands/_resolve-command-opts.js
+ create mode 100644 test/commands/_registry-opts.test.js
+ create mode 100644 test/commands/_resolve-command-opts.test.js
+
+diff --git a/lib/commands/_registry.js b/lib/commands/_registry.js
+index ac147da2..e0e25f5e 100644
+--- a/lib/commands/_registry.js
++++ b/lib/commands/_registry.js
+@@ -17,7 +17,7 @@ const { normalizeStageId } = require('../workflow/stages');
+  * @typedef {Object} CommandModule
+  * @property {string} name - Command name used for routing
+  * @property {string} description - Human-readable description
+- * @property {function(Array, Object, string): Promise<*>} handler - Async command handler
++ * @property {function(Array, Object, string, Object=): Promise<*>} handler - Async command handler (4th arg: resolved command opts)
+  * @property {string} [usage] - Usage string (optional)
+  * @property {Object<string, string>} [flags] - Flag descriptions (optional)
+  */
+@@ -161,7 +161,11 @@ async function executeCommand(commands, commandName, args, flags, projectRoot, o
+       }
+     }
+ 
+-    return await command.handler(args, flags, projectRoot);
++    // Forward a resolved per-command opts object as the handler's 4th arg. Issue/
++    // alias handlers read it (shouldUseKernelBroker(opts)); other handlers ignore
++    // it. Backward-compatible: defaults to {} so existing 3-arg handlers are
++    // unaffected.
++    return await command.handler(args, flags, projectRoot, options.commandOpts ?? {});
+   } catch (err) {
+     return {
+       success: false,
+diff --git a/lib/commands/_resolve-command-opts.js b/lib/commands/_resolve-command-opts.js
+new file mode 100644
+index 00000000..6748d7f5
+--- /dev/null
++++ b/lib/commands/_resolve-command-opts.js
+@@ -0,0 +1,175 @@
++'use strict';
++
++/**
++ * Resolve the per-command opts object that bin/forge.js threads to the registry
++ * handler (the 4th arg). For issue/alias commands this:
++ *
++ *   1. Strips the selector tokens (`--kernel`, `--issue-backend <val>`) from the
++ *      args BEFORE they reach the handler / bd. This is load-bearing: bin
++ *      parseFlags() early-returns for issue passthrough commands, so these tokens
++ *      otherwise flow untouched into the handler and (beads path) into bd, which
++ *      rejects the unknown flag — and the positional `kernel`/`beads` value would
++ *      be mistaken for an issue id.
++ *   2. Resolves the backend (flag > env > config > default) via the backend
++ *      authority module (lib/issue-backend.js). The CLI flag tokens are mapped to
++ *      that module's `deps.issueBackend` signal; env/config/default precedence is
++ *      applied by the resolver itself.
++ *   3. When kernel, assembles the kernel deps (driver + flag) via the CLI broker
++ *      factory so createKernelIssueBackend has a real driver (B1).
++ *
++ * Non-issue commands get an empty opts object and untouched args.
++ *
++ * @module commands/resolve-command-opts
++ */
++
++const { resolveIssueBackend } = require('../issue-backend');
++const {
++  buildMigratedKernelIssueDeps: defaultBuildKernelIssueDeps,
++} = require('../kernel/cli-broker-factory');
++
++// Commands that route issue operations and therefore honor the selector. Mirrors
++// the alias wrappers in lib/commands/ plus the `issue`/`issues` grouping commands.
++const ISSUE_COMMANDS = new Set([
++  'create',
++  'update',
++  'claim',
++  'release',
++  'comment',
++  'close',
++  'show',
++  'list',
++  'ready',
++  'search',
++  'stats',
++  'dep',
++  'issue',
++  'issues',
++]);
++
++const ISSUE_BACKEND_FLAG = '--issue-backend';
++const KERNEL_FLAG = '--kernel';
++const KERNEL = 'kernel';
++
++/**
++ * Remove the issue-backend selector tokens from an args array and report what
++ * they selected. Handles `--kernel`, `--issue-backend <val>` (space form), and
++ * `--issue-backend=<val>` (= form). All other tokens pass through unchanged.
++ *
++ * @param {string[]} rawArgs
++ * @returns {{ args: string[], flags: { kernel?: boolean, issueBackend?: string } }}
++ */
++function stripSelectorTokens(rawArgs = []) {
++  const args = [];
++  const flags = {};
++  for (let i = 0; i < rawArgs.length; i += 1) {
++    const token = rawArgs[i];
++    if (token === KERNEL_FLAG) {
++      flags.kernel = true;
++      continue;
++    }
++    if (token === ISSUE_BACKEND_FLAG) {
++      // Space form: consume the following value token as the backend name.
++      const next = rawArgs[i + 1];
++      if (typeof next === 'string') {
++        flags.issueBackend = next;
++        i += 1;
++      }
++      continue;
++    }
++    if (typeof token === 'string' && token.startsWith(`${ISSUE_BACKEND_FLAG}=`)) {
++      flags.issueBackend = token.slice(ISSUE_BACKEND_FLAG.length + 1);
++      continue;
++    }
++    args.push(token);
++  }
++  return { args, flags };
++}
++
++/**
++ * Reduce the stripped selector flags to a single explicit backend value (or null
++ * when no flag selects one), honoring `--kernel` / `--issue-backend` equivalence
++ * and rejecting a mutually-exclusive conflict. Returned values are NOT validated
++ * here — the backend authority module normalizes/warns on unknown values.
++ *
++ * @param {{ kernel?: boolean, issueBackend?: string }} flags
++ * @returns {string|null}
++ * @throws {Error} when --kernel and --issue-backend select different backends.
++ */
++function resolveFlagBackend(flags = {}) {
++  const fromBackend = typeof flags.issueBackend === 'string' && flags.issueBackend.trim()
++    ? flags.issueBackend.trim()
++    : null;
++  const fromKernel = flags.kernel === true ? KERNEL : null;
++
++  if (fromKernel && fromBackend && fromKernel !== fromBackend.toLowerCase()) {
++    throw new Error(
++      `Conflicting issue backend flags: --kernel selects '${KERNEL}' but `
++      + `--issue-backend selects '${fromBackend}'. These are mutually exclusive.`,
++    );
++  }
++
++  return fromKernel || fromBackend || null;
++}
++
++/**
++ * Resolve the command opts and selector-stripped args for a dispatched command.
++ *
++ * @param {string} command - The command name (e.g. 'close').
++ * @param {string[]} rawArgs - The command args (already `args.slice(1)`).
++ * @param {Object} [deps]
++ * @param {Object} [deps.env] - Environment snapshot (default process.env).
++ * @param {string} [deps.projectRoot] - Repo root for env/config resolution + kernel DB.
++ * @param {Function} [deps.buildKernelIssueDeps] - Factory override (tests). May be
++ *   sync or async; its result is awaited.
++ * @returns {Promise<{ commandOpts: Object, args: string[] }>}
++ * @throws {Error} on conflicting flags (surfaced to user).
++ */
++async function resolveCommandOpts(command, rawArgs = [], deps = {}) {
++  if (!ISSUE_COMMANDS.has(command)) {
++    return { commandOpts: {}, args: rawArgs };
++  }
++
++  const env = deps.env || process.env;
++  const buildKernelIssueDeps = deps.buildKernelIssueDeps || defaultBuildKernelIssueDeps;
++
++  const { args, flags } = stripSelectorTokens(rawArgs);
++  const flagBackend = resolveFlagBackend(flags);
++  const issueBackend = resolveIssueBackend({
++    deps: flagBackend ? { issueBackend: flagBackend } : {},
++    env,
++    projectRoot: deps.projectRoot,
++  });
++
++  if (issueBackend !== KERNEL) {
++    return {
++      commandOpts: {
++        issueBackend,
++        useKernelBroker: false,
++      },
++      args,
++    };
++  }
++
++  // Kernel backend: assemble the driver (B1) + migrated broker (B2). The factory
++  // builder constructs the driver, builds the broker, and runs initialize().
++  const kernelDeps = await buildKernelIssueDeps({
++    projectRoot: deps.projectRoot,
++    databasePath: deps.databasePath,
++    gitCommonDir: deps.gitCommonDir,
++  });
++
++  return {
++    commandOpts: {
++      issueBackend: KERNEL,
++      ...kernelDeps,
++    },
++    args,
++  };
++}
++
++module.exports = {
++  resolveCommandOpts,
++  stripSelectorTokens,
++  resolveFlagBackend,
++  ISSUE_COMMANDS,
++};
+diff --git a/test/commands/_registry-opts.test.js b/test/commands/_registry-opts.test.js
+new file mode 100644
+index 00000000..59d44b7d
+--- /dev/null
++++ b/test/commands/_registry-opts.test.js
+@@ -0,0 +1,82 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const { executeCommand } = require('../../lib/commands/_registry');
++
++const TIMEOUT = 5000;
++
++function registryWith(handler) {
++  return new Map([
++    ['probe', { name: 'probe', description: 'probe', handler }],
++  ]);
++}
++
++describe('executeCommand — opts/commandOpts threading (T2)', () => {
++  test(
++    'forwards options.commandOpts to the handler as the 4th argument',
++    async () => {
++      let received;
++      const commands = registryWith(async (args, flags, projectRoot, opts) => {
++        received = { args, flags, projectRoot, opts };
++        return { success: true };
++      });
++
++      await executeCommand(commands, 'probe', ['x'], { f: 1 }, '/repo', {
++        commandOpts: { useKernelBroker: true, issueBackend: 'kernel' },
++      });
++
++      expect(received.args).toEqual(['x']);
++      expect(received.flags).toEqual({ f: 1 });
++      expect(received.projectRoot).toBe('/repo');
++      expect(received.opts).toEqual({ useKernelBroker: true, issueBackend: 'kernel' });
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'passes an empty object as the 4th arg when no commandOpts supplied (backward-compat)',
++    async () => {
++      let received;
++      const commands = registryWith(async (args, flags, projectRoot, opts) => {
++        received = opts;
++        return { success: true };
++      });
++
++      await executeCommand(commands, 'probe', [], {}, '/repo');
++
++      expect(received).toEqual({});
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'existing 3-arg handlers are unaffected (ignore the 4th arg)',
++    async () => {
++      const commands = registryWith(async (args, flags, projectRoot) => ({
++        success: true,
++        echo: `${args.join(',')}|${projectRoot}`,
++      }));
++
++      const result = await executeCommand(commands, 'probe', ['a', 'b'], {}, '/repo', {
++        commandOpts: { useKernelBroker: true },
++      });
++
++      expect(result).toEqual({ success: true, echo: 'a,b|/repo' });
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'unknown command still returns the standard error shape',
++    async () => {
++      const commands = registryWith(async () => ({ success: true }));
++      const result = await executeCommand(commands, 'nope', [], {}, '/repo', {
++        commandOpts: { useKernelBroker: true },
++      });
++      expect(result.success).toBe(false);
++      expect(result.error).toContain('nope');
++    },
++    TIMEOUT,
++  );
++});
+diff --git a/test/commands/_resolve-command-opts.test.js b/test/commands/_resolve-command-opts.test.js
+new file mode 100644
+index 00000000..9c61cfed
+--- /dev/null
++++ b/test/commands/_resolve-command-opts.test.js
+@@ -0,0 +1,128 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const {
++  resolveCommandOpts,
++  ISSUE_COMMANDS,
++  stripSelectorTokens,
++} = require('../../lib/commands/_resolve-command-opts');
++
++const TIMEOUT = 5000;
++
++describe('stripSelectorTokens — consume + remove --kernel / --issue-backend', () => {
++  test('removes --kernel boolean flag from args', () => {
++    const { args, flags } = stripSelectorTokens(['kap-10', '--kernel', '--reason=x']);
++    expect(args).toEqual(['kap-10', '--reason=x']);
++    expect(flags.kernel).toBe(true);
++  });
++
++  test('removes --issue-backend kernel (space form) and its value', () => {
++    const { args, flags } = stripSelectorTokens(['kap-10', '--issue-backend', 'kernel']);
++    expect(args).toEqual(['kap-10']);
++    expect(flags.issueBackend).toBe('kernel');
++  });
++
++  test('removes --issue-backend=kernel (= form)', () => {
++    const { args, flags } = stripSelectorTokens(['kap-10', '--issue-backend=beads']);
++    expect(args).toEqual(['kap-10']);
++    expect(flags.issueBackend).toBe('beads');
++  });
++
++  test('leaves non-selector flags (e.g. --reason) untouched', () => {
++    const { args } = stripSelectorTokens(['a', 'b', '--reason=Merged on master']);
++    expect(args).toEqual(['a', 'b', '--reason=Merged on master']);
++  });
++});
++
++describe('resolveCommandOpts — issue commands', () => {
++  test(
++    'default (no flag/env) → beads, no kernel deps, args unchanged',
++    async () => {
++      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--reason=x'], {
++        env: {},
++        projectRoot: '/repo',
++      });
++      expect(commandOpts.issueBackend).toBe('beads');
++      expect(commandOpts.useKernelBroker).toBeFalsy();
++      expect(commandOpts.kernelDriver).toBeUndefined();
++      expect(args).toEqual(['kap-10', '--reason=x']);
++    },
++    TIMEOUT,
++  );
++
++  test(
++    '--kernel flag → kernel deps assembled, selector token stripped from args',
++    async () => {
++      const built = [];
++      const { commandOpts, args } = await resolveCommandOpts('close', ['kap-10', '--kernel', '--reason=x'], {
++        env: {},
++        projectRoot: '/repo',
++        // Inject the factory so the test does not touch a real SQLite runtime.
++        buildKernelIssueDeps: (opts) => {
++          built.push(opts);
++          return { useKernelBroker: true, kernelDriver: { exec() {} }, kernelDatabasePath: ':memory:' };
++        },
++      });
++
++      expect(commandOpts.useKernelBroker).toBe(true);
++      expect(commandOpts.kernelDriver).toBeDefined();
++      expect(commandOpts.issueBackend).toBe('kernel');
++      // selector token removed; the real close args remain
++      expect(args).toEqual(['kap-10', '--reason=x']);
++      expect(built).toHaveLength(1);
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'FORGE_ISSUE_BACKEND=kernel env → kernel deps (no flag needed)',
++    async () => {
++      const { commandOpts } = await resolveCommandOpts('close', ['kap-10'], {
++        env: { FORGE_ISSUE_BACKEND: 'kernel' },
++        projectRoot: '/repo',
++        buildKernelIssueDeps: () => ({ useKernelBroker: true, kernelDriver: { exec() {} } }),
++      });
++      expect(commandOpts.useKernelBroker).toBe(true);
++      expect(commandOpts.issueBackend).toBe('kernel');
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'non-issue commands get an empty opts object and untouched args',
++    async () => {
++      const { commandOpts, args } = await resolveCommandOpts('validate', ['--kernel'], {
++        env: {},
++        projectRoot: '/repo',
++      });
++      expect(commandOpts).toEqual({});
++      expect(args).toEqual(['--kernel']);
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'ISSUE_COMMANDS includes the alias verbs and the issue grouping command',
++    () => {
++      for (const verb of ['close', 'create', 'update', 'claim', 'release', 'comment', 'show', 'list', 'ready', 'issue']) {
++        expect(ISSUE_COMMANDS.has(verb)).toBe(true);
++      }
++    },
++    TIMEOUT,
++  );
++
++  test(
++    'conflicting --kernel + --issue-backend beads rejects (surfaced to the user)',
++    async () => {
++      await expect(
++        resolveCommandOpts('close', ['kap-10', '--kernel', '--issue-backend', 'beads'], {
++          env: {},
++          projectRoot: '/repo',
++          buildKernelIssueDeps: () => ({ useKernelBroker: true }),
++        }),
++      ).rejects.toThrow(/conflict|mutually.exclusive/i);
++    },
++    TIMEOUT,
++  );
++});
+-- 
+2.51.0.windows.1
+

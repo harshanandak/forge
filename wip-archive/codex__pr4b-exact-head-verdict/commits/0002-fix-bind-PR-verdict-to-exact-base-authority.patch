@@ -1,0 +1,383 @@
+From f854b61afe12f868f96ed05998002b70a2c56ccf Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 03:00:32 +0530
+Subject: [PATCH] fix: bind PR verdict to exact base authority
+
+---
+ lib/merge-rules.js              |  7 ++++-
+ lib/pr-monitor/differ.js        | 24 +++++++++++++---
+ lib/pr-monitor/verdict.js       | 44 +++++++++++++++++++++++------
+ test/merge-rules.test.js        | 30 +++++++++++++++++++-
+ test/pr-monitor/differ.test.js  | 19 +++++++++++++
+ test/pr-monitor/verdict.test.js | 49 +++++++++++++++++++++++++++++++--
+ 6 files changed, 155 insertions(+), 18 deletions(-)
+
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index 8536c974..398d9b9c 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -236,17 +236,22 @@ function verdictClean(ctx) {
+   const verdict = ctx.verdict;
+   const head = fullSha(ctx.headSha);
+   const expected = fullSha(ctx.expectedHeadSha);
++  const base = fullSha(ctx.baseSha);
++  const expectedBase = fullSha(ctx.expectedBaseSha);
+   if (!verdict || typeof verdict !== 'object' || Array.isArray(verdict)) {
+     return fail('current-head verdict is missing or malformed (fail-closed).');
+   }
+   const verdictHead = fullSha(verdict.headSha);
+   const verdictBase = fullSha(verdict.baseSha);
+-  if (!head || !expected || !verdictHead || !verdictBase) {
++  if (!head || !expected || !base || !expectedBase || !verdictHead || !verdictBase) {
+     return fail('exact head lease, verdict head, or verdict base is missing or malformed (fail-closed).');
+   }
+   if (head !== expected || verdictHead !== head) {
+     return fail('current-head verdict does not match the exact caller head lease.');
+   }
++  if (base !== expectedBase || verdictBase !== base) {
++    return fail('current-head verdict does not match the exact caller base lease.');
++  }
+   if (verdict.state !== 'MERGE_READY') {
+     return fail(`current-head verdict is ${String(verdict.state || 'INCOMPLETE')}, not MERGE_READY.`);
+   }
+diff --git a/lib/pr-monitor/differ.js b/lib/pr-monitor/differ.js
+index 3aece96a..623a0dc5 100644
+--- a/lib/pr-monitor/differ.js
++++ b/lib/pr-monitor/differ.js
+@@ -36,7 +36,9 @@ function normalizedReasonCodes(verdict) {
+ }
+ 
+ function normalizeCurrentVerdict(verdict, { absent = false } = {}) {
+-  if (absent && verdict == null) return { state: null, headSha: null, reasons: [] };
++  if (absent && verdict == null) {
++    return { state: null, headSha: null, baseSha: null, reasons: [] };
++  }
+   const valid = verdict && typeof verdict === 'object' && !Array.isArray(verdict)
+     && CURRENT_VERDICT_STATES.has(verdict.state)
+     && normalizeSha(verdict.headSha)
+@@ -45,9 +47,19 @@ function normalizeCurrentVerdict(verdict, { absent = false } = {}) {
+   if (!valid || reasons === null
+     || (verdict.state === VERDICT_STATES.MERGE_READY && reasons.length > 0)
+     || (verdict.state !== VERDICT_STATES.MERGE_READY && reasons.length === 0)) {
+-    return { state: VERDICT_STATES.INCOMPLETE, headSha: null, reasons: ['malformed_verdict'] };
++    return {
++      state: VERDICT_STATES.INCOMPLETE,
++      headSha: null,
++      baseSha: null,
++      reasons: ['malformed_verdict'],
++    };
+   }
+-  return { state: verdict.state, headSha: normalizeSha(verdict.headSha), reasons };
++  return {
++    state: verdict.state,
++    headSha: normalizeSha(verdict.headSha),
++    baseSha: normalizeSha(verdict.baseSha),
++    reasons,
++  };
+ }
+ 
+ function difference(left, right) {
+@@ -62,14 +74,18 @@ function diffVerdictEvidence(previous, next) {
+   const addedReasons = difference(after.reasons, before.reasons);
+   const removedReasons = difference(before.reasons, after.reasons);
+   const headChanged = before.headSha !== after.headSha;
++  const baseChanged = before.baseSha !== after.baseSha;
+   const stateChanged = before.state !== after.state;
+   return {
+-    changed: headChanged || stateChanged || addedReasons.length > 0 || removedReasons.length > 0,
++    changed: headChanged || baseChanged || stateChanged
++      || addedReasons.length > 0 || removedReasons.length > 0,
+     headChanged,
+     stateChanged,
++    baseChanged,
+     from: before.state,
+     to: after.state,
+     headSha: after.headSha,
++    baseSha: after.baseSha,
+     addedReasons,
+     removedReasons,
+   };
+diff --git a/lib/pr-monitor/verdict.js b/lib/pr-monitor/verdict.js
+index 1dea0727..c4e1a2e0 100644
+--- a/lib/pr-monitor/verdict.js
++++ b/lib/pr-monitor/verdict.js
+@@ -21,6 +21,13 @@ function object(value) {
+   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+ }
+ 
++function normalizeRepository(value) {
++  if (typeof value !== 'string') return null;
++  const normalized = value.trim().toLowerCase();
++  const parts = normalized.split('/');
++  return parts.length === 2 && parts.every((part) => part && !/\s/.test(part)) ? normalized : null;
++}
++
+ function reason(code, detail) {
+   return detail === undefined ? { code } : { code, detail };
+ }
+@@ -57,29 +64,42 @@ function normalizeCheckEntry(entry) {
+ 
+ function evaluateIdentity(input, groups) {
+   const expectedHead = normalizeSha(input.expectedHeadSha);
++  const expectedBase = normalizeSha(input.expectedBaseSha);
+   const head = object(input.head);
+   const base = object(input.base);
+   const observedHead = normalizeSha(head && head.sha);
+   const baseSha = normalizeSha(base && base.sha);
++  const headRepository = normalizeRepository(head && head.repository);
++  const baseRepository = normalizeRepository(base && base.repository);
+ 
+   if (!expectedHead) addReason(groups, 'incomplete', 'invalid_expected_head');
++  if (!expectedBase) addReason(groups, 'incomplete', 'invalid_expected_base');
+   if (!observedHead) addReason(groups, 'incomplete', 'invalid_observed_head');
+   if (!baseSha) addReason(groups, 'incomplete', 'invalid_base');
+   if (expectedHead && observedHead && expectedHead !== observedHead) {
+     addReason(groups, 'stale', 'head_mismatch');
+   }
+-
+-  const source = head && head.source;
+-  if (!HEAD_SOURCES.has(source)) addReason(groups, 'incomplete', 'head_source_unknown');
+-  if ((source === 'fork' || source === 'external') && head.acquired !== true) {
+-    addReason(groups, 'incomplete', 'external_head_not_acquired');
++  if (expectedBase && baseSha && expectedBase !== baseSha) {
++    addReason(groups, 'stale', 'base_mismatch');
+   }
+-  if (!head || typeof head.repository !== 'string' || !head.repository.trim()
+-    || !base || typeof base.repository !== 'string' || !base.repository.trim()) {
++
++  if (!headRepository || !baseRepository) {
+     addReason(groups, 'incomplete', 'repository_identity_incomplete');
++  } else {
++    const source = head && head.source;
++    const sameRepository = headRepository === baseRepository;
++    if (!HEAD_SOURCES.has(source)) {
++      addReason(groups, 'incomplete', 'head_source_unknown');
++    } else if ((sameRepository && source !== 'same-repository')
++      || (!sameRepository && source === 'same-repository')) {
++      addReason(groups, 'incomplete', 'head_source_conflict');
++    }
++    if (!sameRepository && head.acquired !== true) {
++      addReason(groups, 'incomplete', 'external_head_not_acquired');
++    }
+   }
+ 
+-  return { expectedHead, observedHead, baseSha };
++  return { expectedHead, expectedBase, observedHead, baseSha };
+ }
+ 
+ function evaluateAncestry(input, identity, groups) {
+@@ -92,6 +112,9 @@ function evaluateAncestry(input, identity, groups) {
+   const ancestryBase = normalizeSha(ancestry.baseSha);
+   if (!ancestryBase) addReason(groups, 'incomplete', 'ancestry_base_invalid');
+   else if (identity.baseSha && ancestryBase !== identity.baseSha) addReason(groups, 'stale', 'ancestry_base_stale');
++  else if (identity.expectedBase && ancestryBase !== identity.expectedBase) {
++    addReason(groups, 'stale', 'ancestry_base_stale');
++  }
+ 
+   if (typeof ancestry.containsBase !== 'boolean'
+     || !Number.isSafeInteger(ancestry.behindBy) || ancestry.behindBy < 0
+@@ -183,7 +206,8 @@ function evaluateReview(input, expectedHead, groups) {
+     return;
+   }
+   currentSurface(groups, review, expectedHead, 'review');
+-  if (typeof review.required !== 'boolean' || typeof review.decision !== 'string') {
++  if (typeof review.required !== 'boolean' || typeof review.decision !== 'string'
++    || typeof review.conflicting !== 'boolean') {
+     addReason(groups, 'incomplete', 'review_malformed');
+     return;
+   }
+@@ -194,6 +218,8 @@ function evaluateReview(input, expectedHead, groups) {
+   }
+   if (review.conflicting === true) {
+     addReason(groups, 'incomplete', 'review_state_conflict');
++  } else if (!review.required && decision === 'REVIEW_REQUIRED') {
++    addReason(groups, 'incomplete', 'review_state_conflict');
+   } else if (decision === 'CHANGES_REQUESTED') {
+     addReason(groups, 'blocked', 'changes_requested');
+   } else if (review.required && decision !== 'APPROVED') {
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index 22673be5..92e283fb 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -241,6 +241,8 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     const ctx = greenContext({
+       headSha: head,
+       expectedHeadSha: head,
++      baseSha: 'a'.repeat(40),
++      expectedBaseSha: 'a'.repeat(40),
+       verdict: { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [] },
+     });
+     expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+@@ -262,7 +264,33 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     expect(evaluateMergeRules(greenContext({ verdict, expectedHeadSha: head }), ['verdict_clean']).allowed).toBe(false);
+     expect(evaluateMergeRules(greenContext({ verdict, headSha: 'short', expectedHeadSha: 'short' }), ['verdict_clean']).allowed).toBe(false);
+     expect(evaluateMergeRules({
+-      ...greenContext(), headSha: head, expectedHeadSha: head, verdict: { ...verdict, baseSha: 'short' },
++      ...greenContext(),
++      headSha: head,
++      expectedHeadSha: head,
++      baseSha: 'a'.repeat(40),
++      expectedBaseSha: 'a'.repeat(40),
++      verdict: { ...verdict, baseSha: 'short' },
+     }, ['verdict_clean']).allowed).toBe(false);
+   });
++
++  test('verdict_clean requires the observed, expected, and verdict base SHAs to match exactly', () => {
++    const head = '1'.repeat(40);
++    const base = 'a'.repeat(40);
++    const ctx = greenContext({
++      headSha: head,
++      expectedHeadSha: head,
++      baseSha: base,
++      expectedBaseSha: base,
++      verdict: { state: 'MERGE_READY', headSha: head, baseSha: base, reasons: [] },
++    });
++    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
++    for (const mutation of [
++      { expectedBaseSha: undefined },
++      { baseSha: undefined },
++      { expectedBaseSha: 'b'.repeat(40) },
++      { verdict: { ...ctx.verdict, baseSha: 'b'.repeat(40) } },
++    ]) {
++      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
++    }
++  });
+ });
+diff --git a/test/pr-monitor/differ.test.js b/test/pr-monitor/differ.test.js
+index e5cf0172..2ac74c97 100644
+--- a/test/pr-monitor/differ.test.js
++++ b/test/pr-monitor/differ.test.js
+@@ -57,9 +57,11 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
+       changed: true,
+       headChanged: true,
+       stateChanged: true,
++      baseChanged: false,
+       from: 'BLOCKED',
+       to: 'MERGE_READY',
+       headSha: head2,
++      baseSha: 'a'.repeat(40),
+       addedReasons: [],
+       removedReasons: ['required_check_not_successful'],
+     });
+@@ -78,6 +80,23 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
+     expect(change.to).toBe('INCOMPLETE');
+     expect(change.addedReasons).toContain('malformed_verdict');
+   });
++
++  test('retains the exact base and treats a base-only advance as a material change', () => {
++    const previous = verdict('MERGE_READY', head1);
++    const next = { ...previous, baseSha: 'b'.repeat(40) };
++    expect(diffVerdictEvidence(previous, next)).toEqual({
++      changed: true,
++      headChanged: false,
++      stateChanged: false,
++      baseChanged: true,
++      from: 'MERGE_READY',
++      to: 'MERGE_READY',
++      headSha: head1,
++      baseSha: 'b'.repeat(40),
++      addedReasons: [],
++      removedReasons: [],
++    });
++  });
+ });
+ 
+ describe('diffSnapshots — per-type transitions', () => {
+diff --git a/test/pr-monitor/verdict.test.js b/test/pr-monitor/verdict.test.js
+index e64e689b..c37c3de0 100644
+--- a/test/pr-monitor/verdict.test.js
++++ b/test/pr-monitor/verdict.test.js
+@@ -10,6 +10,7 @@ const BASE = 'a'.repeat(40);
+ function completeEvidence(overrides = {}) {
+   return {
+     expectedHeadSha: HEAD,
++    expectedBaseSha: BASE,
+     head: { sha: HEAD, repository: 'owner/repo', source: 'same-repository', acquired: true },
+     base: { sha: BASE, repository: 'owner/repo' },
+     ancestry: {
+@@ -25,7 +26,9 @@ function completeEvidence(overrides = {}) {
+         { name: 'lint', appId: null, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
+       ],
+     },
+-    review: { complete: true, headSha: HEAD, required: false, decision: 'NONE' },
++    review: {
++      complete: true, headSha: HEAD, required: false, decision: 'NONE', conflicting: false,
++    },
+     threads: { complete: true, headSha: HEAD, items: [] },
+     ...overrides,
+   };
+@@ -47,10 +50,16 @@ describe('evaluateCurrentHeadVerdict', () => {
+ 
+   test('fails closed when the expected, observed, or base SHA is absent or malformed', () => {
+     expectState(completeEvidence({ expectedHeadSha: 'short' }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_head');
++    expectState(completeEvidence({ expectedBaseSha: 'short' }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_base');
+     expectState(completeEvidence({ head: { ...completeEvidence().head, sha: null } }), VERDICT_STATES.INCOMPLETE, 'invalid_observed_head');
+     expectState(completeEvidence({ base: { sha: '', repository: 'owner/repo' } }), VERDICT_STATES.INCOMPLETE, 'invalid_base');
+   });
+ 
++  test('leases the exact base SHA and classifies observed base drift as stale', () => {
++    expectState(completeEvidence({ expectedBaseSha: OTHER_HEAD }), VERDICT_STATES.STALE, 'base_mismatch');
++    expectState(completeEvidence({ expectedBaseSha: undefined }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_base');
++  });
++
+   test('classifies a moved head or stale surface as STALE, never merge-ready', () => {
+     expectState(completeEvidence({ head: { ...completeEvidence().head, sha: OTHER_HEAD } }), VERDICT_STATES.STALE, 'head_mismatch');
+     expectState(completeEvidence({ checks: { ...completeEvidence().checks, headSha: OTHER_HEAD } }), VERDICT_STATES.STALE, 'checks_stale');
+@@ -65,11 +74,29 @@ describe('evaluateCurrentHeadVerdict', () => {
+ 
+   test('requires an external or fork head to be explicitly acquired before ancestry is trusted', () => {
+     for (const source of ['fork', 'external']) {
+-      expectState(completeEvidence({ head: { ...completeEvidence().head, source, acquired: false } }), VERDICT_STATES.INCOMPLETE, 'external_head_not_acquired');
+-      expectState(completeEvidence({ head: { ...completeEvidence().head, source, acquired: true } }), VERDICT_STATES.MERGE_READY);
++      const externalHead = { ...completeEvidence().head, repository: 'contributor/fork', source };
++      expectState(completeEvidence({ head: { ...externalHead, acquired: false } }), VERDICT_STATES.INCOMPLETE, 'external_head_not_acquired');
++      expectState(completeEvidence({ head: { ...externalHead, acquired: true } }), VERDICT_STATES.MERGE_READY);
+     }
+   });
+ 
++  test('derives head source from normalized repository identity and rejects contradictory claims', () => {
++    expectState(completeEvidence({
++      head: { ...completeEvidence().head, repository: ' OWNER/REPO ', source: 'same-repository' },
++    }), VERDICT_STATES.MERGE_READY);
++    expectState(completeEvidence({
++      head: { ...completeEvidence().head, source: 'fork' },
++    }), VERDICT_STATES.INCOMPLETE, 'head_source_conflict');
++    expectState(completeEvidence({
++      head: {
++        ...completeEvidence().head, repository: 'contributor/fork', source: 'same-repository', acquired: true,
++      },
++    }), VERDICT_STATES.INCOMPLETE, 'head_source_conflict');
++    expectState(completeEvidence({
++      head: { ...completeEvidence().head, repository: 'contributor/fork', source: 'fork', acquired: true },
++    }), VERDICT_STATES.MERGE_READY);
++  });
++
+   test('requires every protected check exactly once and literally COMPLETED/SUCCESS', () => {
+     const checks = completeEvidence().checks;
+     expectState(completeEvidence({ checks: { ...checks, observations: checks.observations.slice(0, 1) } }), VERDICT_STATES.BLOCKED, 'required_check_missing');
+@@ -147,6 +174,22 @@ describe('evaluateCurrentHeadVerdict', () => {
+     } }), VERDICT_STATES.INCOMPLETE, 'thread_state_conflict');
+   });
+ 
++  test('requires an explicit boolean review conflict signal and rejects policy contradictions', () => {
++    const review = completeEvidence().review;
++    expectState(completeEvidence({
++      review: { ...review, conflicting: undefined },
++    }), VERDICT_STATES.INCOMPLETE, 'review_malformed');
++    expectState(completeEvidence({
++      review: { ...review, conflicting: 'false' },
++    }), VERDICT_STATES.INCOMPLETE, 'review_malformed');
++    expectState(completeEvidence({
++      review: { ...review, required: false, decision: 'REVIEW_REQUIRED' },
++    }), VERDICT_STATES.INCOMPLETE, 'review_state_conflict');
++    expectState(completeEvidence({
++      review: { ...review, required: false, decision: 'NONE', conflicting: false },
++    }), VERDICT_STATES.MERGE_READY);
++  });
++
+   test('accepts an optional approval because it does not conflict with a non-required policy', () => {
+     expectState(completeEvidence({ review: {
+       ...completeEvidence().review, required: false, decision: 'APPROVED',
+-- 
+2.51.0.windows.1
+

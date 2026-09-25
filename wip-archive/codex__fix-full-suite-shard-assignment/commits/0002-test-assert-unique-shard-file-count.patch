@@ -1,0 +1,25 @@
+From 034ad42de953edcac0c9371da2ee91cdebd69f8e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 20:42:00 +0530
+Subject: [PATCH] test: assert unique shard file count
+
+---
+ test/scripts/test-full-suite.test.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index a14ac80a..2de3b580 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -43,7 +43,7 @@ describe('scripts/test-full-suite.js', () => {
+ 
+     expect(specs).toHaveLength(2);
+     expect(assignedFiles).toHaveLength(4);
+-    expect(new Set(assignedFiles)).toHaveLength(4);
++    expect(new Set(assignedFiles).size).toBe(4);
+     expect(assignedFiles.sort()).toEqual([
+       'packages/skills/test/a.test.js',
+       'test/a.test.js',
+-- 
+2.51.0.windows.1
+

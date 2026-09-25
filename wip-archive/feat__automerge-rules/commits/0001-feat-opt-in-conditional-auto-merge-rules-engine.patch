@@ -1,0 +1,879 @@
+From 1ed951f1a57ec70addfbee458145368448d0ce8e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 16:25:15 +0530
+Subject: [PATCH] feat: opt-in conditional auto-merge rules engine
+
+Add a pure, unit-testable merge-rules evaluator plus a thin, opt-in
+'forge merge --auto <pr>' command. The evaluator ANDs composable,
+config-driven rules over an already-fetched PR context (no network);
+the command reads merge.auto from .forge/config.yaml and merges only
+when enabled AND all rules pass. Absent/disabled config is a strict
+no-op, preserving the never-auto-merge-by-default invariant.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                |   1 +
+ lib/commands/merge.js       | 228 ++++++++++++++++++++++++++
+ lib/merge-rules.js          | 310 ++++++++++++++++++++++++++++++++++++
+ test/commands/merge.test.js | 114 +++++++++++++
+ test/merge-rules.test.js    | 163 +++++++++++++++++++
+ 5 files changed, 816 insertions(+)
+ create mode 100644 lib/commands/merge.js
+ create mode 100644 lib/merge-rules.js
+ create mode 100644 test/commands/merge.test.js
+ create mode 100644 test/merge-rules.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 03654642..139f5f37 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -17,6 +17,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ - **Onboarding now auto-migrates Beads → Kernel and self-installs git hooks.** `forge setup` (quick, `--yes`, and interactive agent paths) and `forge init` now detect an existing jsonl-backed `.beads` store and **auto-import** its issues, comments, and dependencies into the Kernel — reusing the idempotent `forge migrate --from beads` spine, reading the committed jsonl sidecars directly (no external issue-tracker CLI required, so it works even when the legacy SQL backend is offline) and surfacing the same honest field-gap report. A fresh `forge init` also now installs git hooks, so `forge validate`/`plan` are no longer immediately blocked by `HOOKS_NOT_ACTIVE` — closing the init → hooks catch-22. Both steps are idempotent and degrade to a warning rather than aborting onboarding.
+ - `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fields with no dedicated Kernel column are folded into the issue `metadata` blob instead of being dropped: beads `owner` → `assignee` (falling back after an explicit assignee, else `metadata.beads_owner`), plus `metadata.beads_external_ref` (linked GitHub issue/run) and `metadata.beads_started_at`; `design`/`assignee` land on their Kernel columns. The loader also tolerates a split `.beads` layout (events under `.beads/backup/`, interactions at `.beads/interactions.jsonl`) so neither sidecar is silently half-read. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. The **only remaining reported gap is `dependencies.created_by`** (the Kernel dependency row has no creator column); beads-internal/derived fields such as `content_hash` are intentionally not carried (not user data).
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
++- **Opt-in conditional auto-merge rules engine (default OFF).** A new pure evaluator `lib/merge-rules.js` — `evaluateMergeRules(prContext, rules) → { allowed, unmet }` — decides whether a PR may merge by ANDing a list of composable, config-driven rules over an already-fetched PR context (no network in the evaluator). Built-in rule types: `checks_green`, `threads_resolved`, `not_behind`, `min_approvals:N`, `settle_min:N` (quiet since the last comment), `idle_min:N` (quiet since the last activity), `last_comment_by:X`, `approved_by:[..]`, `not_commented_by:[..]`, composed with `any_of:[..]` groups and a `not:` wrapper; an unknown or malformed rule, or unreadable context, is surfaced as unmet (fail-closed). A thin `forge merge --auto <pr>` command reads the opt-in `merge.auto` section of `.forge/config.yaml` (`{ enabled: false, rules: [...] }`), fetches the PR context via `gh` behind an injectable seam, and merges **only** when `enabled === true` **and** every rule passes — printing the unmet rules and doing nothing otherwise. Absent config or `enabled` not true is a strict no-op, so the test-enforced never-auto-merge-by-default invariant is preserved; it merely promotes the proven `settle-merge.sh` baseline to a native capability. The bring-your-own custom-predicate seam is a documented follow-up.
+ 
+ ### Changed
+ 
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+new file mode 100644
+index 00000000..118d56cf
+--- /dev/null
++++ b/lib/commands/merge.js
+@@ -0,0 +1,228 @@
++'use strict';
++
++/**
++ * merge command — opt-in conditional auto-merge.
++ *
++ * `forge merge --auto <pr>` is the ONLY path by which Forge will merge a PR on
++ * its own, and it stays OFF unless the user has explicitly opted in. It reads
++ * the `merge.auto` section of `.forge/config.yaml`:
++ *
++ *   merge:
++ *     auto:
++ *       enabled: true           # default false / absent → strict NO-OP
++ *       rules:                  # ALL must pass (see lib/merge-rules.js)
++ *         - checks_green
++ *         - threads_resolved
++ *         - not_behind
++ *         - settle_min: 10
++ *
++ * Flow: with no config (or `enabled` not true) the command is a strict NO-OP —
++ * it prints why and merges nothing, preserving the test-enforced
++ * never-auto-merge-by-default invariant. When enabled, it fetches the PR
++ * context via `gh`, evaluates the rules with the pure `evaluateMergeRules`, and
++ * merges ONLY when every rule passes. The gh-fetch and the merge action are
++ * isolated behind injectable `fetchPrContext` / `mergePr` seams so the decision
++ * path is unit-testable without the network.
++ *
++ * A bring-your-own custom-predicate seam (registered via `forge add`) is a
++ * documented follow-up and intentionally NOT wired here.
++ *
++ * @module commands/merge
++ */
++
++const { execFileSync } = require('node:child_process');
++
++const { loadRawConfig } = require('../config-writer');
++const { evaluateMergeRules } = require('../merge-rules');
++
++/** Default `gh` runner. Only reached by the default fetch/merge seams (never in unit tests). */
++function defaultGh(args, options = {}) {
++  return execFileSync('gh', args, { encoding: 'utf8', ...options });
++}
++
++/** Parse `gh ... --json` output, returning `null` on any failure (callers fail closed). */
++function ghJson(gh, args) {
++  try {
++    return JSON.parse(gh(args) || '{}');
++  } catch (_err) {
++    return null;
++  }
++}
++
++/**
++ * Read the unresolved review-thread count via the GraphQL API. `reviewThreads`
++ * is not a valid `gh pr view --json` field, so this needs a dedicated query.
++ * Returns `undefined` on any failure so `threads_resolved` fails closed.
++ */
++function fetchUnresolvedThreadCount(gh, pr) {
++  try {
++    const repo = ghJson(gh, ['repo', 'view', '--json', 'owner,name']);
++    const owner = repo && repo.owner && repo.owner.login;
++    const name = repo && repo.name;
++    if (!owner || !name) return undefined;
++    const query = 'query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n)'
++      + '{pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}';
++    const out = gh(['api', 'graphql', '-f', `query=${query}`,
++      '-F', `o=${owner}`, '-F', `n=${name}`, '-F', `pr=${Number(pr)}`]);
++    const data = JSON.parse(out || '{}');
++    const nodes = (((data.data || {}).repository || {}).pullRequest || {}).reviewThreads;
++    const list = (nodes && nodes.nodes) || [];
++    return list.filter((t) => t && t.isResolved === false && t.isOutdated === false).length;
++  } catch (_err) {
++    return undefined;
++  }
++}
++
++/**
++ * Default PR-context fetcher (the network seam). Assembles the shape consumed
++ * by `evaluateMergeRules` from `gh`. Anything it cannot read is left absent so
++ * the dependent rule fails closed rather than guessing. Fully replaced by
++ * `deps.fetchPrContext` in tests.
++ *
++ * @returns {object} prContext
++ */
++function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
++  const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
++    'number,state,mergeStateStatus,statusCheckRollup,reviews,comments,updatedAt']) || {};
++
++  const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : null;
++  const checks = (rollup || []).map((c) => ({
++    name: c.name || c.context || '?',
++    conclusion: String(c.conclusion || c.state || c.status || ''),
++  }));
++
++  const comments = Array.isArray(view.comments)
++    ? view.comments.map((c) => ({
++      author: (c.author && c.author.login) || '',
++      at: c.createdAt || c.submittedAt || '',
++    }))
++    : [];
++
++  const reviews = Array.isArray(view.reviews) ? view.reviews : [];
++  const approvals = reviews
++    .filter((r) => String(r.state).toUpperCase() === 'APPROVED')
++    .map((r) => ({ author: (r.author && r.author.login) || '' }));
++
++  // Behind-base from GitHub's mergeStateStatus. Only a known set maps to a
++  // definite answer; anything else stays undefined so `not_behind` fails closed.
++  const mergeStateStatus = String(view.mergeStateStatus || '').toUpperCase();
++  let behindBase;
++  if (mergeStateStatus === 'BEHIND') behindBase = true;
++  else if (['CLEAN', 'UNSTABLE', 'HAS_HOOKS', 'BLOCKED', 'DIRTY'].includes(mergeStateStatus)) behindBase = false;
++
++  const stamps = [
++    ...comments.map((c) => c.at),
++    ...reviews.map((r) => r.submittedAt || r.createdAt || ''),
++    view.updatedAt || '',
++  ].map((s) => Date.parse(s)).filter((n) => !Number.isNaN(n));
++  const lastActivityAt = stamps.length ? Math.max(...stamps) : undefined;
++
++  return {
++    checks,
++    requiredChecksKnown: rollup !== null,
++    unresolvedThreads: fetchUnresolvedThreadCount(gh, pr),
++    behindBase,
++    approvals,
++    comments,
++    lastActivityAt,
++    now,
++  };
++}
++
++/** Default merge action (squash). Fully replaced by `deps.mergePr` in tests. */
++function defaultMergePr({ pr, gh = defaultGh }) {
++  gh(['pr', 'merge', String(pr), '--squash']);
++  return { merged: true, method: 'squash' };
++}
++
++/**
++ * Command handler.
++ *
++ * @param {string[]} args - Positional + flag args (first positional is the PR).
++ * @param {object} _flags - Parsed flags (unused; flags are read from args).
++ * @param {string} projectRoot - Project root.
++ * @param {object} [deps] - Injected seams for testing: loadConfig, fetchPrContext, mergePr, gh, now.
++ * @returns {Promise<object>} result envelope.
++ */
++async function handler(args, _flags, projectRoot, deps = {}) {
++  const argv = Array.isArray(args) ? args : [];
++  const positional = argv.filter((a) => !String(a).startsWith('--'));
++  const flags = new Set(argv.filter((a) => String(a).startsWith('--')));
++  const pr = positional[0];
++  const root = projectRoot || process.cwd();
++
++  if (!flags.has('--auto')) {
++    return { success: false, error: 'Usage: forge merge --auto <pr>  (opt-in conditional auto-merge; OFF by default)' };
++  }
++  if (!pr) {
++    return { success: false, error: 'Usage: forge merge --auto <pr>' };
++  }
++
++  const loadConfig = deps.loadConfig || loadRawConfig;
++  const config = loadConfig(root) || {};
++  const auto = (config.merge && config.merge.auto) || {};
++  const enabled = auto.enabled === true;
++  const rules = Array.isArray(auto.rules) ? auto.rules : [];
++
++  // Invariant: absent config or `enabled` not true → strict NO-OP. Forge never
++  // auto-merges unless the user has explicitly opted in via .forge/config.yaml.
++  if (!enabled) {
++    const reason = 'Auto-merge is OPT-IN and OFF by default (merge.auto.enabled is not true in .forge/config.yaml). No action taken.';
++    process.stdout.write(`${reason}\n`);
++    return { success: true, merged: false, enabled: false, reason };
++  }
++
++  // Opted in but no rules → refuse (fail-closed): an empty ruleset is vacuously
++  // "allowed", which would merge unconditionally. Treat that as misconfiguration.
++  if (rules.length === 0) {
++    const reason = 'merge.auto.enabled is true but no rules are configured — refusing to auto-merge (fail-closed). Add rules under merge.auto.rules.';
++    process.stdout.write(`${reason}\n`);
++    return { success: false, merged: false, enabled: true, reason };
++  }
++
++  const fetchPrContext = deps.fetchPrContext || defaultFetchPrContext;
++  const mergePr = deps.mergePr || defaultMergePr;
++  const gh = deps.gh || defaultGh;
++
++  let prContext;
++  try {
++    prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
++  }
++
++  const { allowed, unmet } = evaluateMergeRules(prContext, rules);
++
++  if (!allowed) {
++    process.stdout.write(`Auto-merge conditions NOT met for PR #${pr} — ${unmet.length} unmet rule(s):\n`);
++    for (const item of unmet) {
++      process.stdout.write(`  x ${item.rule} — ${item.reason}\n`);
++    }
++    return { success: true, merged: false, enabled: true, allowed: false, unmet, reason: 'auto-merge conditions not met' };
++  }
++
++  try {
++    const mergeResult = await mergePr({ pr, projectRoot: root, gh });
++    process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
++    return {
++      success: true,
++      merged: true,
++      enabled: true,
++      allowed: true,
++      reason: 'all merge rules passed',
++      ...(mergeResult && typeof mergeResult === 'object' ? mergeResult : {}),
++    };
++  } catch (err) {
++    return { success: false, merged: false, error: `Merge failed: ${err.message}` };
++  }
++}
++
++module.exports = {
++  name: 'merge',
++  description: 'Opt-in conditional auto-merge: merge a PR only when all user-configured rules pass (OFF by default)',
++  usage: 'Usage: forge merge --auto <pr>',
++  handler,
++  // Exported seams for testing / reuse.
++  defaultFetchPrContext,
++  defaultMergePr,
++};
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+new file mode 100644
+index 00000000..54e0f4fd
+--- /dev/null
++++ b/lib/merge-rules.js
+@@ -0,0 +1,310 @@
++'use strict';
++
++/**
++ * @module merge-rules
++ *
++ * PURE, network-free evaluator for the opt-in conditional auto-merge RULES
++ * ENGINE (the vision-roadmap "Candidate feature" that promotes the proven
++ * `settle-merge.sh` baseline to a native, config-driven forge capability).
++ *
++ * `evaluateMergeRules(prContext, rules)` decides whether a merge is ALLOWED by
++ * ANDing a list of composable rules over an already-fetched PR context. It does
++ * NO I/O: the caller fetches the PR context (checks, threads, approvals,
++ * comments, timestamps) and passes it in, which keeps this the single
++ * unit-testable decision surface. The command layer (`lib/commands/merge.js`)
++ * owns the gh-fetch and the merge action, and only ever runs this when the user
++ * has explicitly opted in — so the never-auto-merge-by-default invariant holds.
++ *
++ * Fail-closed is the guiding principle: an unknown rule type, a malformed rule,
++ * or a piece of context we cannot read is surfaced as UNMET, never silently
++ * satisfied. A merge only proceeds when every rule is affirmatively met.
++ *
++ * PR context shape (all fields optional; absence is treated fail-closed by the
++ * rules that need them):
++ *   - checks:             Array<{ name, conclusion }>  CI check rollup
++ *   - requiredChecksKnown: boolean                     is the required set readable?
++ *   - unresolvedThreads:  number | Array               open review threads
++ *   - behindBase:         number | boolean             commits behind base
++ *   - approvals:          Array<string | { author }>   approving reviewers
++ *   - comments:           Array<{ author, at }>         PR/review comments
++ *   - lastActivityAt:     number | string (epoch ms or ISO)
++ *   - now:                number | string (epoch ms or ISO)
++ *
++ * Built-in rule types (compose as a list, ANDed by default):
++ *   checks_green | threads_resolved | not_behind | min_approvals:N |
++ *   settle_min:N | idle_min:N | last_comment_by:X | approved_by:[..] |
++ *   not_commented_by:[..]
++ * Composition wrappers:
++ *   { any_of: [rule, ...] }  passes if ANY member passes
++ *   { not: rule }            passes if the inner rule FAILS
++ *
++ * A custom-predicate seam (bring-your-own script via `forge add`) is a
++ * documented follow-up and intentionally NOT implemented here.
++ */
++
++const SUCCESS_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'PASS', 'PASSED']);
++const MS_PER_MIN = 60_000;
++
++/** Coerce an epoch-ms number, a Date, or an ISO string to epoch ms (NaN if unparseable). */
++function toMs(value) {
++  if (typeof value === 'number' && Number.isFinite(value)) return value;
++  if (value instanceof Date) return value.getTime();
++  if (typeof value === 'string' && value.trim() !== '') {
++    const parsed = Date.parse(value);
++    return Number.isNaN(parsed) ? NaN : parsed;
++  }
++  return NaN;
++}
++
++/** Normalize an actor reference (string or `{ author | login | user | actor }`) to a lowercased login. */
++function normLogin(entry) {
++  if (typeof entry === 'string') return entry.trim().toLowerCase();
++  if (entry && typeof entry === 'object') {
++    const login = entry.author ?? entry.login ?? entry.user ?? entry.actor ?? '';
++    return String(login).trim().toLowerCase();
++  }
++  return '';
++}
++
++/** Coerce a rule argument to a lowercased list of accounts. */
++function toAccountList(arg) {
++  if (Array.isArray(arg)) return arg.map((x) => String(x).trim().toLowerCase()).filter(Boolean);
++  if (arg === undefined || arg === null || arg === '') return [];
++  return [String(arg).trim().toLowerCase()];
++}
++
++/** A CI check is green if its conclusion is a success-class conclusion. */
++function isCheckGreen(check) {
++  if (!check || typeof check !== 'object') return false;
++  const conclusion = String(check.conclusion ?? check.state ?? check.status ?? '').toUpperCase();
++  return SUCCESS_CONCLUSIONS.has(conclusion);
++}
++
++/** The most recent comment by timestamp; ties and unparseable stamps fall back to array order. */
++function lastComment(prContext) {
++  const comments = Array.isArray(prContext.comments) ? prContext.comments : [];
++  let latest = null;
++  let latestRank = -Infinity;
++  for (const comment of comments) {
++    const ms = toMs(comment && comment.at);
++    const rank = Number.isNaN(ms) ? -Infinity : ms;
++    if (rank >= latestRank) {
++      latestRank = rank;
++      latest = comment;
++    }
++  }
++  return latest;
++}
++
++/** Lowercased logins of every approving reviewer. */
++function approverLogins(prContext) {
++  const approvals = Array.isArray(prContext.approvals) ? prContext.approvals : [];
++  return approvals.map(normLogin).filter(Boolean);
++}
++
++const pass = () => ({ ok: true });
++const fail = (reason) => ({ ok: false, reason });
++
++// --- Built-in rule predicates. Each returns { ok } or { ok:false, reason }. ---
++
++function checksGreen(ctx) {
++  if (ctx.requiredChecksKnown !== true) {
++    return fail('required-check set is not known to be readable — cannot confirm green (fail-closed).');
++  }
++  if (!Array.isArray(ctx.checks)) {
++    return fail('check results are missing from the PR context (fail-closed).');
++  }
++  const notGreen = ctx.checks.filter((c) => !isCheckGreen(c));
++  if (notGreen.length > 0) {
++    const names = notGreen.map((c) => (c && c.name) || '?').join(', ');
++    return fail(`${notGreen.length} check(s) not green: ${names}.`);
++  }
++  return pass();
++}
++
++function threadsResolved(ctx) {
++  const unresolved = ctx.unresolvedThreads;
++  if (typeof unresolved === 'number') {
++    return unresolved > 0 ? fail(`${unresolved} unresolved review thread(s).`) : pass();
++  }
++  if (Array.isArray(unresolved)) {
++    return unresolved.length > 0 ? fail(`${unresolved.length} unresolved review thread(s).`) : pass();
++  }
++  return fail('unresolved-thread count is unknown (fail-closed).');
++}
++
++function notBehind(ctx) {
++  const behind = ctx.behindBase;
++  if (typeof behind === 'boolean') return behind ? fail('branch is behind its base.') : pass();
++  if (typeof behind === 'number') {
++    return behind > 0 ? fail(`branch is ${behind} commit(s) behind base.`) : pass();
++  }
++  return fail('behind-base status is unknown (fail-closed).');
++}
++
++function minApprovals(ctx, arg) {
++  const need = Number.parseInt(arg, 10);
++  if (!Number.isFinite(need)) return fail('min_approvals requires a numeric argument, e.g. "min_approvals:2".');
++  const count = approverLogins(ctx).length;
++  return count >= need ? pass() : fail(`only ${count} approval(s); need ${need}.`);
++}
++
++function settleMin(ctx, arg) {
++  const need = Number(arg);
++  if (!Number.isFinite(need)) return fail('settle_min requires a numeric minute argument.');
++  const nowMs = toMs(ctx.now);
++  if (Number.isNaN(nowMs)) return fail('current time (now) is missing/unparseable (fail-closed).');
++  const lc = lastComment(ctx);
++  if (!lc) return pass(); // nothing has been said → nothing to settle
++  const atMs = toMs(lc.at);
++  if (Number.isNaN(atMs)) return fail('last comment timestamp is unparseable (fail-closed).');
++  const ageMin = (nowMs - atMs) / MS_PER_MIN;
++  return ageMin >= need ? pass() : fail(`last comment was ${ageMin.toFixed(1)}m ago; need >= ${need}m of quiet.`);
++}
++
++function idleMin(ctx, arg) {
++  const need = Number(arg);
++  if (!Number.isFinite(need)) return fail('idle_min requires a numeric minute argument.');
++  const nowMs = toMs(ctx.now);
++  if (Number.isNaN(nowMs)) return fail('current time (now) is missing/unparseable (fail-closed).');
++  const activityMs = toMs(ctx.lastActivityAt);
++  if (Number.isNaN(activityMs)) return fail('lastActivityAt is missing/unparseable (fail-closed).');
++  const ageMin = (nowMs - activityMs) / MS_PER_MIN;
++  return ageMin >= need ? pass() : fail(`last activity was ${ageMin.toFixed(1)}m ago; need >= ${need}m idle.`);
++}
++
++function lastCommentBy(ctx, arg) {
++  const allowed = toAccountList(arg);
++  if (allowed.length === 0) return fail('last_comment_by requires at least one account.');
++  const lc = lastComment(ctx);
++  if (!lc) return fail(`no comments yet; last comment is not by ${allowed.join('/')}.`);
++  const author = normLogin(lc);
++  return allowed.includes(author) ? pass() : fail(`last comment is by "${author}", not ${allowed.join('/')}.`);
++}
++
++function approvedBy(ctx, arg) {
++  const required = toAccountList(arg);
++  if (required.length === 0) return fail('approved_by requires at least one account.');
++  const approvers = new Set(approverLogins(ctx));
++  const missing = required.filter((account) => !approvers.has(account));
++  return missing.length === 0 ? pass() : fail(`missing approval from: ${missing.join(', ')}.`);
++}
++
++function notCommentedBy(ctx, arg) {
++  const blocked = toAccountList(arg);
++  if (blocked.length === 0) return fail('not_commented_by requires at least one account.');
++  const lc = lastComment(ctx);
++  if (!lc) return pass(); // no comments → no blocked account had the last word
++  const author = normLogin(lc);
++  return blocked.includes(author)
++    ? fail(`the most recent comment is by "${author}", which is blocked from having the last word.`)
++    : pass();
++}
++
++function anyOf(ctx, arg) {
++  if (!Array.isArray(arg) || arg.length === 0) {
++    return fail('any_of requires a non-empty list of member rules (fail-closed).');
++  }
++  const memberReasons = [];
++  for (const member of arg) {
++    const res = evalRule(ctx, member);
++    if (res.ok) return pass();
++    memberReasons.push(`${res.label}: ${res.reason}`);
++  }
++  return fail(`none of the any_of members passed — ${memberReasons.join(' | ')}`);
++}
++
++function notWrapper(ctx, arg) {
++  if (arg === undefined || arg === null) return fail('not requires an inner rule (fail-closed).');
++  const res = evalRule(ctx, arg);
++  return res.ok
++    ? fail(`inner rule "${res.label}" passed, but "not" requires it to fail.`)
++    : pass();
++}
++
++const PREDICATES = {
++  checks_green: (ctx) => checksGreen(ctx),
++  threads_resolved: (ctx) => threadsResolved(ctx),
++  not_behind: (ctx) => notBehind(ctx),
++  min_approvals: (ctx, arg) => minApprovals(ctx, arg),
++  settle_min: (ctx, arg) => settleMin(ctx, arg),
++  idle_min: (ctx, arg) => idleMin(ctx, arg),
++  last_comment_by: (ctx, arg) => lastCommentBy(ctx, arg),
++  approved_by: (ctx, arg) => approvedBy(ctx, arg),
++  not_commented_by: (ctx, arg) => notCommentedBy(ctx, arg),
++  any_of: (ctx, arg) => anyOf(ctx, arg),
++  not: (ctx, arg) => notWrapper(ctx, arg),
++};
++
++/** Produce a stable label for an unmet-list entry from a rule's type + scalar arg. */
++function scalarLabel(type, arg) {
++  if (arg === undefined || arg === null || Array.isArray(arg) || typeof arg === 'object') return type;
++  return `${type}:${arg}`;
++}
++
++/**
++ * Normalize a rule (string `"type"` / `"type:arg"` or single-key object
++ * `{ type: arg }`) to `{ type, arg, label, malformed }`.
++ */
++function normalizeRule(rule) {
++  if (typeof rule === 'string') {
++    const idx = rule.indexOf(':');
++    if (idx === -1) return { type: rule.trim(), arg: undefined, label: rule.trim() };
++    const type = rule.slice(0, idx).trim();
++    const arg = rule.slice(idx + 1).trim();
++    return { type, arg, label: rule.trim() };
++  }
++  if (rule && typeof rule === 'object' && !Array.isArray(rule)) {
++    const keys = Object.keys(rule);
++    if (keys.length !== 1) {
++      return { type: null, arg: undefined, label: `object(${keys.join(',') || 'empty'})`, malformed: true };
++    }
++    const type = keys[0];
++    return { type, arg: rule[type], label: scalarLabel(type, rule[type]) };
++  }
++  return { type: null, arg: undefined, label: String(rule), malformed: true };
++}
++
++/** Evaluate a single rule against the context. Returns `{ ok, reason, label }`. */
++function evalRule(prContext, rule) {
++  const { type, arg, label, malformed } = normalizeRule(rule);
++  let res;
++  if (malformed || !type) {
++    res = fail('malformed rule: expected a string or a single-key object (exactly one key).');
++  } else if (Object.prototype.hasOwnProperty.call(PREDICATES, type)) {
++    res = PREDICATES[type](prContext, arg);
++  } else {
++    res = fail(`unknown rule type "${type}" (fail-closed).`);
++  }
++  return { ok: res.ok, reason: res.reason, label };
++}
++
++/**
++ * Evaluate a list of merge rules over a PR context.
++ *
++ * Rules are ANDed: a merge is ALLOWED only when every rule is met. An empty (or
++ * non-array) rule list is vacuously allowed — the command layer separately
++ * requires `merge.auto.enabled === true` before ever calling this, which is
++ * what preserves the opt-in / never-auto-merge-by-default invariant.
++ *
++ * @param {object} prContext - Already-fetched PR context (no I/O performed here).
++ * @param {Array} rules - Composable rule list.
++ * @returns {{ allowed: boolean, unmet: Array<{ rule: string, reason: string }> }}
++ */
++function evaluateMergeRules(prContext, rules) {
++  const context = prContext && typeof prContext === 'object' ? prContext : {};
++  const list = Array.isArray(rules) ? rules : [];
++  const unmet = [];
++  for (const rule of list) {
++    const res = evalRule(context, rule);
++    if (!res.ok) unmet.push({ rule: res.label, reason: res.reason });
++  }
++  return { allowed: unmet.length === 0, unmet };
++}
++
++module.exports = {
++  evaluateMergeRules,
++  // Exported for focused testing / reuse; not part of the stable public surface.
++  isCheckGreen,
++  normalizeRule,
++};
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+new file mode 100644
+index 00000000..bf075834
+--- /dev/null
++++ b/test/commands/merge.test.js
+@@ -0,0 +1,114 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, test, expect } = require('bun:test');
++
++const YAML = require('yaml');
++
++const mergeCmd = require('../../lib/commands/merge');
++const { validateCommand } = require('../../lib/commands/_registry');
++
++const tempRoots = [];
++
++/** Create an isolated temp project; when `configObj` is given, write it to `.forge/config.yaml`. */
++function makeProject(configObj) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-merge-cmd-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  if (configObj !== undefined) {
++    fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), YAML.stringify(configObj));
++  }
++  return root;
++}
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('merge command — opt-in conditional auto-merge', () => {
++  test('satisfies the _registry { name, description, handler } contract', () => {
++    expect(validateCommand(mergeCmd)).toEqual({ valid: true });
++    expect(mergeCmd.name).toBe('merge');
++    expect(typeof mergeCmd.handler).toBe('function');
++  });
++
++  test('NO-OP when .forge/config.yaml is absent (invariant: auto-merge is OFF by default)', async () => {
++    const root = makeProject(undefined);
++    let mergeCalled = false;
++    const out = await mergeCmd.handler(['123', '--auto'], {}, root, {
++      fetchPrContext: async () => { throw new Error('must not fetch when disabled'); },
++      mergePr: async () => { mergeCalled = true; },
++    });
++    expect(out.success).toBe(true);
++    expect(out.merged).toBe(false);
++    expect(out.enabled).toBe(false);
++    expect(mergeCalled).toBe(false);
++  });
++
++  test('NO-OP when merge.auto.enabled is false', async () => {
++    const root = makeProject({ merge: { auto: { enabled: false, rules: ['checks_green'] } } });
++    let mergeCalled = false;
++    const out = await mergeCmd.handler(['7', '--auto'], {}, root, {
++      fetchPrContext: async () => { throw new Error('must not fetch when disabled'); },
++      mergePr: async () => { mergeCalled = true; },
++    });
++    expect(out.merged).toBe(false);
++    expect(out.enabled).toBe(false);
++    expect(mergeCalled).toBe(false);
++  });
++
++  test('does NOTHING (no merge) when a configured rule is unmet', async () => {
++    const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:10'] } } });
++    let mergeCalled = false;
++    const out = await mergeCmd.handler(['9', '--auto'], {}, root, {
++      fetchPrContext: async () => ({
++        comments: [{ author: 'x', at: '2026-07-04T11:58:00Z' }], // 2 min before `now`
++        now: Date.parse('2026-07-04T12:00:00Z'),
++      }),
++      mergePr: async () => { mergeCalled = true; },
++    });
++    expect(out.merged).toBe(false);
++    expect(out.allowed).toBe(false);
++    expect(mergeCalled).toBe(false);
++    expect(out.unmet[0].rule).toContain('settle_min');
++  });
++
++  test('MERGES when enabled and every rule passes', async () => {
++    const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green', 'threads_resolved'] } } });
++    let mergedPr = null;
++    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
++      fetchPrContext: async () => ({
++        checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
++        requiredChecksKnown: true,
++        unresolvedThreads: 0,
++      }),
++      mergePr: async ({ pr }) => { mergedPr = pr; return { merged: true }; },
++    });
++    expect(out.success).toBe(true);
++    expect(out.merged).toBe(true);
++    expect(out.allowed).toBe(true);
++    expect(mergedPr).toBe('42');
++  });
++
++  test('refuses (fail-closed) when opted in with an empty ruleset', async () => {
++    const root = makeProject({ merge: { auto: { enabled: true, rules: [] } } });
++    let mergeCalled = false;
++    const out = await mergeCmd.handler(['5', '--auto'], {}, root, {
++      fetchPrContext: async () => ({}),
++      mergePr: async () => { mergeCalled = true; },
++    });
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(mergeCalled).toBe(false);
++  });
++
++  test('requires the --auto flag and a PR number', async () => {
++    const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
++    expect((await mergeCmd.handler(['1'], {}, root, {})).success).toBe(false);
++    expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
++  });
++});
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+new file mode 100644
+index 00000000..e159e52e
+--- /dev/null
++++ b/test/merge-rules.test.js
+@@ -0,0 +1,163 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const { evaluateMergeRules } = require('../lib/merge-rules');
++
++const NOW = Date.parse('2026-07-04T12:00:00Z');
++const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
++
++/**
++ * A PR context in which every built-in rule is satisfied. Individual tests
++ * override single fields to drive one rule to fail at a time.
++ */
++function greenContext(overrides = {}) {
++  return {
++    checks: [
++      { name: 'ci', conclusion: 'SUCCESS' },
++      { name: 'lint', conclusion: 'SUCCESS' },
++    ],
++    requiredChecksKnown: true,
++    unresolvedThreads: 0,
++    behindBase: 0,
++    approvals: [{ author: 'alice' }, { author: 'bob' }],
++    comments: [
++      { author: 'alice', at: minAgo(60) },
++      { author: 'bob', at: minAgo(15) },
++    ],
++    lastActivityAt: minAgo(15),
++    now: NOW,
++    ...overrides,
++  };
++}
++
++describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
++  // ---- The five RED-first cases from the feature brief ----
++
++  test('(a) settle_min:10 is UNMET when the last comment is only 3 minutes old', () => {
++    const ctx = greenContext({ comments: [{ author: 'bob', at: minAgo(3) }] });
++    const { allowed, unmet } = evaluateMergeRules(ctx, ['settle_min:10']);
++    expect(allowed).toBe(false);
++    expect(unmet).toHaveLength(1);
++    expect(unmet[0].rule).toContain('settle_min');
++    expect(typeof unmet[0].reason).toBe('string');
++  });
++
++  test('(b) checks_green + threads_resolved + settle_min:10 all satisfied → allowed', () => {
++    const { allowed, unmet } = evaluateMergeRules(
++      greenContext(),
++      ['checks_green', 'threads_resolved', 'settle_min:10'],
++    );
++    expect(unmet).toEqual([]);
++    expect(allowed).toBe(true);
++  });
++
++  test('(c) not_commented_by:[bot] FAILS when bot is the last commenter', () => {
++    const ctx = greenContext({
++      comments: [
++        { author: 'alice', at: minAgo(30) },
++        { author: 'bot', at: minAgo(2) },
++      ],
++    });
++    const { allowed, unmet } = evaluateMergeRules(ctx, [{ not_commented_by: ['bot'] }]);
++    expect(allowed).toBe(false);
++    expect(unmet[0].rule).toContain('not_commented_by');
++  });
++
++  test('(d) any_of passes if ONE member passes (even though another member fails)', () => {
++    const ctx = greenContext({ behindBase: 5 }); // not_behind would fail
++    const { allowed, unmet } = evaluateMergeRules(ctx, [{ any_of: ['not_behind', 'checks_green'] }]);
++    expect(unmet).toEqual([]);
++    expect(allowed).toBe(true);
++  });
++
++  test('(e) unknown rule type → NOT allowed (fail-closed)', () => {
++    const { allowed, unmet } = evaluateMergeRules(greenContext(), ['definitely_not_a_rule']);
++    expect(allowed).toBe(false);
++    expect(unmet[0].reason).toMatch(/unknown/i);
++  });
++
++  // ---- Complementary coverage of the built-in rule set ----
++
++  test('not_commented_by:[bot] PASSES when a human commented last', () => {
++    const ctx = greenContext({
++      comments: [
++        { author: 'bot', at: minAgo(30) },
++        { author: 'alice', at: minAgo(2) },
++      ],
++    });
++    expect(evaluateMergeRules(ctx, [{ not_commented_by: ['bot'] }]).allowed).toBe(true);
++  });
++
++  test('any_of fails (fail-closed) when NO member passes', () => {
++    const ctx = greenContext({ behindBase: 5, requiredChecksKnown: false });
++    const { allowed, unmet } = evaluateMergeRules(ctx, [{ any_of: ['not_behind', 'checks_green'] }]);
++    expect(allowed).toBe(false);
++    expect(unmet[0].rule).toContain('any_of');
++  });
++
++  test('an empty ruleset is vacuously allowed (the command layer gates on `enabled`)', () => {
++    expect(evaluateMergeRules(greenContext(), [])).toEqual({ allowed: true, unmet: [] });
++  });
++
++  test('checks_green is fail-closed when the required-check set is unknown', () => {
++    const { allowed, unmet } = evaluateMergeRules(greenContext({ requiredChecksKnown: false }), ['checks_green']);
++    expect(allowed).toBe(false);
++    expect(unmet[0].rule).toContain('checks_green');
++  });
++
++  test('checks_green fails when any check is not green', () => {
++    const ctx = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
++    expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
++  });
++
++  test('threads_resolved fails with open threads (number OR array form)', () => {
++    expect(evaluateMergeRules(greenContext({ unresolvedThreads: 2 }), ['threads_resolved']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ unresolvedThreads: [{}, {}] }), ['threads_resolved']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ unresolvedThreads: undefined }), ['threads_resolved']).allowed).toBe(false);
++  });
++
++  test('min_approvals:2 requires two approvals', () => {
++    expect(evaluateMergeRules(greenContext({ approvals: [{ author: 'alice' }] }), ['min_approvals:2']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext(), ['min_approvals:2']).allowed).toBe(true);
++  });
++
++  test('approved_by requires the named reviewer to have approved', () => {
++    expect(evaluateMergeRules(greenContext(), [{ approved_by: ['carol'] }]).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext(), [{ approved_by: ['alice'] }]).allowed).toBe(true);
++  });
++
++  test('not_behind fails when the branch is behind base', () => {
++    expect(evaluateMergeRules(greenContext({ behindBase: 3 }), ['not_behind']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ behindBase: true }), ['not_behind']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ behindBase: undefined }), ['not_behind']).allowed).toBe(false);
++  });
++
++  test('idle_min:30 requires 30 minutes since the last activity', () => {
++    expect(evaluateMergeRules(greenContext({ lastActivityAt: minAgo(5) }), ['idle_min:30']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ lastActivityAt: minAgo(45) }), ['idle_min:30']).allowed).toBe(true);
++  });
++
++  test('the `not:` wrapper inverts an inner rule', () => {
++    // not_behind passes (behind 0) → not{not_behind} must fail
++    expect(evaluateMergeRules(greenContext(), [{ not: 'not_behind' }]).allowed).toBe(false);
++    // not_behind fails (behind 5) → not{not_behind} must pass
++    expect(evaluateMergeRules(greenContext({ behindBase: 5 }), [{ not: 'not_behind' }]).allowed).toBe(true);
++  });
++
++  test('last_comment_by names the required last commenter', () => {
++    expect(evaluateMergeRules(greenContext(), [{ last_comment_by: 'bob' }]).allowed).toBe(true);
++    expect(evaluateMergeRules(greenContext(), [{ last_comment_by: 'alice' }]).allowed).toBe(false);
++  });
++
++  test('a malformed multi-key rule object is fail-closed', () => {
++    const { allowed, unmet } = evaluateMergeRules(greenContext(), [{ checks_green: true, not_behind: true }]);
++    expect(allowed).toBe(false);
++    expect(unmet[0].reason).toMatch(/one key|malformed|exactly/i);
++  });
++
++  test('login matching is case-insensitive', () => {
++    const ctx = greenContext({ comments: [{ author: 'BoT', at: minAgo(2) }] });
++    expect(evaluateMergeRules(ctx, [{ not_commented_by: ['bot'] }]).allowed).toBe(false);
++  });
++});
+-- 
+2.51.0.windows.1
+

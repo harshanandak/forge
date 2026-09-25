@@ -1,0 +1,37 @@
+From 6b0e7720e5fcf36ecc775ae3d078710aca43b71d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 19:34:30 +0530
+Subject: [PATCH] docs(skills): document invocation metadata
+
+---
+ AGENTS.md    | 1 +
+ CHANGELOG.md | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 8d59a894..0cc2f9c3 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -333,6 +333,7 @@ runtime rail. Turn it off only deliberately: `forge gate disable rail.kernel_tra
+ - **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
+ - **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
+ - **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. `.agents/skills` (Codex's repo-local discovery path) is committed so a fresh clone gets discovery without `forge setup` — a pre-commit hook keeps it byte-identical to `skills/` and the drift gate enforces it. The other mirrors (`.claude/skills`, `.codex/skills`, `.cursor/skills`, `.hermes/skills`) are gitignored and regenerated at `forge setup`. Never hand-edit a generated mirror — edit the canonical `skills/` source.
++- **Skill invocation metadata**: Canonical skill frontmatter may declare `invocation: model|user`; omission means `model`. Only `ship`, `review`, and `rollback` are currently user-invoked. Keep the field harness-neutral and preserve it byte-identically in every generated mirror.
+ 
+ ## Session Completion
+ 
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 66467a0e..32414024 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Changed
+ 
++- Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
+ - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
+ 
+ ## [0.1.0-beta.3] - 2026-07-17
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,128 @@
+From 1babbf0adc4f9ad9ad734c2a469639f2a11deacf Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 13:39:08 +0530
+Subject: [PATCH] fix: harden hook self-heal backups
+
+---
+ lib/hook-renderer.js          |  6 +++++-
+ lib/upgrade-safety.js         | 27 +++++++++++++++------------
+ test/commands/upgrade.test.js |  1 +
+ test/hook-renderer.test.js    | 23 +++++++++++++++++++++++
+ 4 files changed, 44 insertions(+), 13 deletions(-)
+
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index 84061691..9491915b 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -524,7 +524,11 @@ function backupHookConfig(filePath) {
+   for (let suffix = 0; ; suffix += 1) {
+     const candidate = `${filePath}.bak${suffix ? `.${suffix}` : ''}`;
+     if (!fs.existsSync(candidate)) return backupFile(filePath);
+-    if (source.equals(fs.readFileSync(candidate))) return candidate;
++    try {
++      if (source.equals(fs.readFileSync(candidate))) return candidate;
++    } catch {
++      // An unreadable backup cannot prove the source is already safe.
++    }
+   }
+ }
+ 
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index f3676691..8b299498 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -61,23 +61,26 @@ function buildSelfHealCandidates(projectRoot) {
+       description: 'Create missing Forge audit log file',
+     });
+   }
+-  const claudeSettings = path.join(projectRoot, '.claude', 'settings.json');
+-  const existing = fs.existsSync(claudeSettings) ? fs.readFileSync(claudeSettings, 'utf8') : '';
+-  try {
+-    if (!hasForgeClaudeHooks(existing, FORGE_HOOK_CONTRACT)) {
++  const claudeDir = path.join(projectRoot, '.claude');
++  if (fs.existsSync(claudeDir)) {
++    const claudeSettings = path.join(claudeDir, 'settings.json');
++    const existing = fs.existsSync(claudeSettings) ? fs.readFileSync(claudeSettings, 'utf8') : '';
++    try {
++      if (!hasForgeClaudeHooks(existing, FORGE_HOOK_CONTRACT)) {
++        candidates.push({
++          id: 'claude-hooks',
++          path: '.claude/settings.json',
++          description: 'Merge missing Forge-owned Claude lifecycle hooks',
++        });
++      }
++    } catch (error) {
++      if (!(error instanceof HookConfigParseError)) throw error;
+       candidates.push({
+         id: 'claude-hooks',
+         path: '.claude/settings.json',
+-        description: 'Merge missing Forge-owned Claude lifecycle hooks',
++        description: 'Back up malformed Claude settings before hook repair',
+       });
+     }
+-  } catch (error) {
+-    if (!(error instanceof HookConfigParseError)) throw error;
+-    candidates.push({
+-      id: 'claude-hooks',
+-      path: '.claude/settings.json',
+-      description: 'Back up malformed Claude settings before hook repair',
+-    });
+   }
+   return candidates;
+ }
+diff --git a/test/commands/upgrade.test.js b/test/commands/upgrade.test.js
+index 73bbb9f1..44ca2fd8 100644
+--- a/test/commands/upgrade.test.js
++++ b/test/commands/upgrade.test.js
+@@ -58,6 +58,7 @@ describe('forge upgrade command', () => {
+     expect(first.success).toBe(true);
+     expect(first.output).toContain('Self-heal applied');
+     expect(fs.existsSync(path.join(root, '.forge', 'log.jsonl'))).toBe(true);
++    expect(fs.existsSync(path.join(root, '.claude'))).toBe(false);
+ 
+     const second = await upgradeCommand.handler(['--self-heal'], {}, root);
+     expect(second.success).toBe(true);
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index d0320a3e..c3a2e597 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -1,6 +1,9 @@
+ 'use strict';
+ 
+ const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
+ 
+ const {
+   FORGE_HOOK_CONTRACT,
+@@ -299,6 +302,26 @@ describe('renderHookConfig — global-config harnesses are honestly skipped, nev
+   });
+ });
+ 
++describe('renderHookConfig — malformed project config safety', () => {
++  test('skips unreadable backup candidates while preserving the malformed source', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    try {
++      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++      fs.writeFileSync(settingsPath, '{ malformed json\n');
++      fs.mkdirSync(`${settingsPath}.bak`);
++
++      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
++
++      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
++      expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ malformed json\n');
++      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
++
+ describe('mergeClaudeSettings (read -> merge -> write, preserve user config)', () => {
+   test('adds the Forge hooks block to an empty settings file', () => {
+     const merged = mergeClaudeSettings('', FORGE_HOOK_CONTRACT);
+-- 
+2.51.0.windows.1
+

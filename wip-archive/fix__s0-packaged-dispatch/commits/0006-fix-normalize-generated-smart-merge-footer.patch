@@ -1,0 +1,69 @@
+From 5d98c27cd744684a5214c5967f550e6ed4ca743e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 1 Aug 2026 00:50:44 +0530
+Subject: [PATCH] fix: normalize generated smart merge footer
+
+---
+ lib/smart-merge.js       |  6 +++---
+ test/smart-merge.test.js | 21 +++++++++++++++++++++
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/lib/smart-merge.js b/lib/smart-merge.js
+index 0d9d3b54..74c25bd9 100644
+--- a/lib/smart-merge.js
++++ b/lib/smart-merge.js
+@@ -4,6 +4,7 @@ const IMPROVEMENT_FOOTER = `---\n\n## Improving This Workflow\n\nEvery time you
+ 
+ function extractUnmanagedContent(existingContent) {
+   let unmanagedContent = existingContent
++    .replace(/\r\n?/g, '\n')
+     .replace(/<!-- FORGE:SETUP-INSTRUCTIONS[\s\S]*?-->/g, '')
+     .replace(/<!-- FORGE:START.*?-->[\s\S]*?<!-- FORGE:END -->/g, '')
+     .trim();
+@@ -11,9 +12,8 @@ function extractUnmanagedContent(existingContent) {
+   unmanagedContent = unmanagedContent.replace(/^# AGENTS\.md\s*/, '').trim();
+ 
+   const footer = IMPROVEMENT_FOOTER.trim();
+-  while (unmanagedContent.endsWith(footer)) {
+-    unmanagedContent = unmanagedContent.slice(0, -footer.length).trim();
+-  }
++  // The generated footer may precede user-appended text; remove every exact managed copy.
++  unmanagedContent = unmanagedContent.split(footer).join('').trim();
+ 
+   return unmanagedContent;
+ }
+diff --git a/test/smart-merge.test.js b/test/smart-merge.test.js
+index 5b561bd0..2e6a9176 100644
+--- a/test/smart-merge.test.js
++++ b/test/smart-merge.test.js
+@@ -147,6 +147,27 @@ describe('smartMergeAgentsMd', () => {
+       expect(third.match(/## Improving This Workflow/g)).toHaveLength(1);
+       expect(third).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+     });
++
++    it('removes the generated footer before preserving trailing user text', () => {
++      const generated = smartMergeAgentsMd('', newContent);
++      const existing = `${generated}\nProject instructions after the generated footer`;
++
++      const result = smartMergeAgentsMd(existing, newContent);
++
++      expect(result).toContain('<!-- USER:START -->');
++      expect(result).toContain('Project instructions after the generated footer');
++      expect(result).toContain('<!-- USER:END -->');
++      expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
++    });
++
++    it('recognizes generated wrapper content with CRLF line endings', () => {
++      const existing = smartMergeAgentsMd('', newContent).replace(/\n/g, '\r\n');
++
++      const result = smartMergeAgentsMd(existing, newContent);
++
++      expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
++      expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
++    });
+   });
+ 
+   describe('empty existing content', () => {
+-- 
+2.51.0.windows.1
+

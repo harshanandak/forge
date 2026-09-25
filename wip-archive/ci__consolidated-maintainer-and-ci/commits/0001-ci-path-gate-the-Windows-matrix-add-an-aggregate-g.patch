@@ -1,0 +1,838 @@
+From e006f1132339e5fe8a36e5216c8112b2611080f7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 02:01:59 +0530
+Subject: [PATCH] ci: path-gate the Windows matrix, add an aggregate gate, fix
+ the local test lane
+
+Measured 2026-08-16: Windows Full Matrix median 11.5 min vs 2.2 min on ubuntu
+(5.2x) and it ran on 100% of 25 sampled PR runs. Pipeline wall median 12.3 min.
+
+- test.yml: new `changes` job classifies the PR diff; `full-matrix` now runs only
+  when OS-sensitive paths change. Every non-pull_request event (push to master,
+  the new merge_group trigger, schedule, workflow_dispatch) still runs the full
+  3-OS x 2-Node matrix unconditionally, and an unresolvable diff fails safe to it.
+  Cross-OS signal on a skipped PR still comes from Windows Smoke, macOS Smoke and
+  the windows-node22 Targeted PR Tests lane.
+- test.yml: new `CI Gate` job aggregates every real lane with `if: always()`,
+  passing on success-or-skipped and failing on any failure/cancellation. Intended
+  to replace `Cross-OS Gate` as the single required context (branch protection is
+  NOT changed here).
+- required-checks-bypass.yml: matching `CI Gate` no-op, and paths-ignore aligned
+  with test.yml's paths so the two workflows can no longer both post a check.
+- concurrency + cancel-in-progress on the PR-triggered workflows that lacked it
+  (pr-monitor keeps its documented opt-out).
+- timeout-minutes on every job in every hand-maintained workflow.
+- Local test lane: bun.lock was never targetable (the list only knew the older
+  bun.lockb), and validation/, eval/, rules/, plugin/, lefthook.yml,
+  eslint.config.js and the plugin marketplace manifest resolved zero tests. All
+  now map to their real suites. Measured over the last 300 commits on master this
+  drops the full-suite fallback rate from 19.0% to 12.3%.
+- test/QUARANTINE.md plus the AGENTS.md rule: flaky tests get quarantined and an
+  issue filed, never retried until green. No auto-retry mechanism is introduced.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ .github/workflows/build-binary.yml            |   4 +
+ .../workflows/check-agentic-workflow-sync.yml |   5 +
+ .github/workflows/codeql.yml                  |   5 +
+ .github/workflows/coderabbit-after-tests.yml  |   1 +
+ .github/workflows/dependency-review.yml       |   5 +
+ .../workflows/detect-command-file-changes.yml |   1 +
+ .github/workflows/docs-validation.yml         |   2 +
+ .github/workflows/eslint.yml                  |   5 +
+ .github/workflows/greptile-quality-gate.yml   |   1 +
+ .github/workflows/npm-publish.yml             |   3 +
+ .github/workflows/pr-monitor.yml              |   1 +
+ .github/workflows/required-checks-bypass.yml  |  25 ++++
+ .github/workflows/size-check.yml              |   5 +
+ .github/workflows/test.yml                    | 116 ++++++++++++++++++
+ .github/workflows/yaml-lint.yml               |   5 +
+ AGENTS.md                                     |   4 +
+ lib/commands/test.js                          |  35 ++++++
+ scripts/test.js                               |  19 +++
+ test/QUARANTINE.md                            |  27 ++++
+ test/ci-workflow.test.js                      |  75 ++++++++++-
+ 20 files changed, 342 insertions(+), 2 deletions(-)
+ create mode 100644 test/QUARANTINE.md
+
+diff --git a/.github/workflows/build-binary.yml b/.github/workflows/build-binary.yml
+index e6516f6c..18fb5e69 100644
+--- a/.github/workflows/build-binary.yml
++++ b/.github/workflows/build-binary.yml
+@@ -41,6 +41,7 @@ jobs:
+   set-matrix:
+     name: Select targets
+     runs-on: ubuntu-latest
++    timeout-minutes: 10
+     outputs:
+       targets: ${{ steps.gen.outputs.targets }}
+     steps:
+@@ -56,6 +57,7 @@ jobs:
+     name: Compile ${{ matrix.target }}
+     needs: set-matrix
+     runs-on: ubuntu-latest
++    timeout-minutes: 30
+     strategy:
+       fail-fast: false
+       matrix:
+@@ -152,6 +154,7 @@ jobs:
+   parity:
+     name: npm-vs-binary parity
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+@@ -190,6 +193,7 @@ jobs:
+     # Depend on BOTH build (produces the binaries) and parity (the authoritative
+     # npm-vs-binary drift gate). Publishing must not proceed if either fails.
+     needs: [build, parity]
++    timeout-minutes: 20
+     if: startsWith(github.ref, 'refs/tags/v')
+     runs-on: ubuntu-latest
+     permissions:
+diff --git a/.github/workflows/check-agentic-workflow-sync.yml b/.github/workflows/check-agentic-workflow-sync.yml
+index 3f633289..a6cdaaef 100644
+--- a/.github/workflows/check-agentic-workflow-sync.yml
++++ b/.github/workflows/check-agentic-workflow-sync.yml
+@@ -11,9 +11,14 @@ on:
+ permissions:
+   contents: read
+ 
++concurrency:
++  group: agentic-workflow-sync-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   sync-check:
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     env:
+       GH_TOKEN: ${{ github.token }}
+     steps:
+diff --git a/.github/workflows/codeql.yml b/.github/workflows/codeql.yml
+index 172bb7ce..da717a89 100644
+--- a/.github/workflows/codeql.yml
++++ b/.github/workflows/codeql.yml
+@@ -19,9 +19,14 @@ on:
+   schedule:
+     - cron: '19 20 * * 4'
+ 
++concurrency:
++  group: codeql-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   analyze:
+     name: Analyze (${{ matrix.language }})
++    timeout-minutes: 60
+     # Runner size impacts CodeQL analysis time. To learn more, please see:
+     #   - https://gh.io/recommended-hardware-resources-for-running-codeql
+     #   - https://gh.io/supported-runners-and-hardware-resources
+diff --git a/.github/workflows/coderabbit-after-tests.yml b/.github/workflows/coderabbit-after-tests.yml
+index a1eb494f..bbd516a6 100644
+--- a/.github/workflows/coderabbit-after-tests.yml
++++ b/.github/workflows/coderabbit-after-tests.yml
+@@ -13,6 +13,7 @@ permissions:
+ jobs:
+   trigger-coderabbit:
+     name: Trigger CodeRabbit after tests pass
++    timeout-minutes: 10
+     if: >-
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success' &&
+diff --git a/.github/workflows/dependency-review.yml b/.github/workflows/dependency-review.yml
+index ffc08fef..487c7267 100644
+--- a/.github/workflows/dependency-review.yml
++++ b/.github/workflows/dependency-review.yml
+@@ -28,9 +28,14 @@ permissions:
+   # Write permissions for pull-requests are required for using the `comment-summary-in-pr` option, comment out if you aren't using this option
+   pull-requests: write
+ 
++concurrency:
++  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   dependency-review:
+     runs-on: ubuntu-latest
++    timeout-minutes: 10
+     steps:
+       - name: 'Checkout repository'
+         uses: actions/checkout@v7
+diff --git a/.github/workflows/detect-command-file-changes.yml b/.github/workflows/detect-command-file-changes.yml
+index 562291fa..31a6ad06 100644
+--- a/.github/workflows/detect-command-file-changes.yml
++++ b/.github/workflows/detect-command-file-changes.yml
+@@ -12,6 +12,7 @@ permissions:
+ jobs:
+   detect:
+     runs-on: ubuntu-latest
++    timeout-minutes: 5
+     steps:
+       - name: Command files changed
+         run: echo "Command file changes detected — triggering behavioral test via workflow_run"
+diff --git a/.github/workflows/docs-validation.yml b/.github/workflows/docs-validation.yml
+index 5becd20f..78f8f3ca 100644
+--- a/.github/workflows/docs-validation.yml
++++ b/.github/workflows/docs-validation.yml
+@@ -47,6 +47,7 @@ jobs:
+   docs:
+     name: Docs Linker And Docstring Coverage
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+@@ -68,6 +69,7 @@ jobs:
+   doc-gate:
+     name: Doc Gate (code change requires a doc update)
+     runs-on: ubuntu-latest
++    timeout-minutes: 15
+     # PR-only: the gate compares the PR's base...head. On push there is no PR.
+     if: github.event_name == 'pull_request'
+     steps:
+diff --git a/.github/workflows/eslint.yml b/.github/workflows/eslint.yml
+index 97619aae..0fce8b3e 100644
+--- a/.github/workflows/eslint.yml
++++ b/.github/workflows/eslint.yml
+@@ -15,10 +15,15 @@ on:
+   pull_request:
+     branches: [ "master" ]
+ 
++concurrency:
++  group: eslint-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   eslint:
+     name: Run eslint scanning
+     runs-on: ubuntu-latest
++    timeout-minutes: 15
+     permissions:
+       contents: read
+       security-events: write
+diff --git a/.github/workflows/greptile-quality-gate.yml b/.github/workflows/greptile-quality-gate.yml
+index 63f6a57f..22a319a7 100644
+--- a/.github/workflows/greptile-quality-gate.yml
++++ b/.github/workflows/greptile-quality-gate.yml
+@@ -8,6 +8,7 @@ jobs:
+   quality-gate:
+     name: Greptile Quality Gate (≥4/5)
+     runs-on: ubuntu-latest
++    timeout-minutes: 15
+     if: github.event.check_run.name == 'Greptile Review'
+     permissions:
+       contents: read
+diff --git a/.github/workflows/npm-publish.yml b/.github/workflows/npm-publish.yml
+index dcf76973..53407eaa 100644
+--- a/.github/workflows/npm-publish.yml
++++ b/.github/workflows/npm-publish.yml
+@@ -12,6 +12,7 @@ jobs:
+   resolve-release:
+     name: Resolve immutable release SHA
+     runs-on: ubuntu-latest
++    timeout-minutes: 10
+     permissions:
+       contents: read
+     outputs:
+@@ -39,6 +40,7 @@ jobs:
+   build:
+     needs: resolve-release
+     runs-on: ubuntu-latest
++    timeout-minutes: 25
+     permissions:
+       contents: read
+     outputs:
+@@ -75,6 +77,7 @@ jobs:
+   publish-npm:
+     needs: [resolve-release, build]
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     permissions:
+       contents: read
+       id-token: write
+diff --git a/.github/workflows/pr-monitor.yml b/.github/workflows/pr-monitor.yml
+index 2247ee6b..62493d99 100644
+--- a/.github/workflows/pr-monitor.yml
++++ b/.github/workflows/pr-monitor.yml
+@@ -70,6 +70,7 @@ jobs:
+   monitor:
+     name: Surface PR review + check state
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     steps:
+       - name: Resolve PR number
+         id: resolve
+diff --git a/.github/workflows/required-checks-bypass.yml b/.github/workflows/required-checks-bypass.yml
+index 48de9edb..60c870f7 100644
+--- a/.github/workflows/required-checks-bypass.yml
++++ b/.github/workflows/required-checks-bypass.yml
+@@ -24,16 +24,24 @@ on:
+       - 'scripts/**'
+       - 'packages/**'
+       - 'skills/**'
++      - 'test/**'
++      - 'test-env/**'
+       - 'package.json'
++      - 'bunfig.toml'
+       - '*.js'
+       - '.claude/**/*.js'
+       - '.forge/hooks/**'
+       - '.github/workflows/**'
++      - '.github/agentic-workflows/**'
+ 
+ # Limit permissions — most jobs only echo a message. The test-suite job needs
+ # `contents: read` to check the repo out, so it grants that at the job level.
+ permissions: {}
+ 
++concurrency:
++  group: required-checks-bypass-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   # Job names MUST match the required check names exactly.
+ 
+@@ -47,6 +55,7 @@ jobs:
+   test-suite:
+     name: Test Suite
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     permissions:
+       contents: read
+     steps:
+@@ -67,23 +76,39 @@ jobs:
+   code-coverage:
+     name: Code Coverage
+     runs-on: ubuntu-latest
++    timeout-minutes: 5
+     steps:
+       - run: echo "No code changes — coverage check not needed"
+ 
+   e2e-tests:
+     name: E2E Tests
+     runs-on: ubuntu-latest
++    timeout-minutes: 5
+     steps:
+       - run: echo "No code changes — E2E tests not needed"
+ 
+   test-dashboard:
+     name: Test Dashboard (PR)
+     runs-on: ubuntu-latest
++    timeout-minutes: 5
+     steps:
+       - run: echo "No code changes — dashboard not needed"
+ 
+   cross-os-gate:
+     name: Cross-OS Gate
+     runs-on: ubuntu-latest
++    timeout-minutes: 5
+     steps:
+       - run: echo "No code changes — cross-OS smoke not needed"
++
++  # Aggregate gate from .github/workflows/test.yml. Same bypass contract as the
++  # lanes above: when a PR changes no code paths the Tests workflow never runs, so
++  # this no-op satisfies the required "CI Gate" context. The Test Suite job above
++  # still runs the doc-asserting suites for changed markdown, so a doc-only PR is
++  # not merged without the checks that actually read that markdown.
++  ci-gate:
++    name: CI Gate
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - run: echo "No code changes — full test workflow not needed"
+diff --git a/.github/workflows/size-check.yml b/.github/workflows/size-check.yml
+index a8fe8990..a77b2e42 100644
+--- a/.github/workflows/size-check.yml
++++ b/.github/workflows/size-check.yml
+@@ -30,10 +30,15 @@ on:
+       - 'AGENTS.md'
+       - 'lefthook.yml'
+ 
++concurrency:
++  group: size-check-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   size-check:
+     name: Check Package Size
+     runs-on: ubuntu-latest
++    timeout-minutes: 15
+     permissions:
+       contents: read
+       pull-requests: write
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 9b7e8a96..6ba33aa2 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -28,6 +28,7 @@ on:
+       - 'bunfig.toml'
+       - '.github/workflows/**'
+       - '.github/agentic-workflows/**'
++  merge_group:
+   workflow_dispatch:
+   schedule:
+     - cron: '0 3 * * 0'
+@@ -40,9 +41,64 @@ concurrency:
+   cancel-in-progress: true
+ 
+ jobs:
++  changes:
++    # Classifies the PR diff so the expensive 3-OS x 2-Node Full Matrix only runs
++    # when the change can plausibly behave differently per operating system.
++    # Anything that is not a pull_request (push to master, merge_group, schedule,
++    # workflow_dispatch) is always treated as OS-sensitive.
++    name: Classify Changed Paths
++    runs-on: ubuntu-latest
++    timeout-minutes: 10
++    outputs:
++      os_sensitive: ${{ steps.filter.outputs.os_sensitive }}
++    steps:
++      - name: Checkout code
++        uses: actions/checkout@v7
++        with:
++          fetch-depth: 0
++      - name: Classify diff
++        id: filter
++        shell: bash
++        env:
++          EVENT_NAME: ${{ github.event_name }}
++          BASE_SHA: ${{ github.event.pull_request.base.sha }}
++          HEAD_SHA: ${{ github.sha }}
++        run: |
++          set -uo pipefail
++          if [ "$EVENT_NAME" != "pull_request" ]; then
++            echo "Non-PR event ($EVENT_NAME): full matrix always runs."
++            echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
++            exit 0
++          fi
++          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
++            echo "::warning::Could not resolve the PR diff; failing safe to the full matrix."
++            echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
++            exit 0
++          fi
++          # Surfaces where Windows/macOS genuinely diverge from Linux:
++          # process/CLI entry points, native + packaged deps, filesystem/path/symlink
++          # helpers, git-hook + installer plumbing, the SQLite kernel (Windows file
++          # handle/EBUSY history), and this workflow itself.
++          os_sensitive_pattern='^(bin/|packages/|test-env/|plugin/hooks/|lib/core/|lib/kernel/|lib/activation/|lib/preflight/|lib/commands/(worktree|setup|init|install)|lib/(shell-utils|symlink-utils|file-utils|file-hash|package-root|forge-lock|detect-worktree|protected-path-manifest|hook-global-installer|hook-renderer|lefthook-check|lefthook-wiring|husky-migration|setup|setup-utils|reset)\.js$|install\.sh$|scripts/install\.|lefthook\.yml$|bunfig\.toml$|package\.json$|bun\.lock$|\.github/workflows/test\.yml$)'
++          echo "Changed files:"
++          printf '%s\n' "$changed"
++          if printf '%s\n' "$changed" | grep -Eq "$os_sensitive_pattern"; then
++            echo "OS-sensitive paths changed: running the full matrix."
++            echo "os_sensitive=true" >> "$GITHUB_OUTPUT"
++          else
++            echo "No OS-sensitive paths changed: full matrix skipped on this PR."
++            echo "Cross-OS coverage on this PR still comes from Windows Smoke, macOS Smoke"
++            echo "and the windows-node22 Targeted PR Tests lane; the full matrix re-runs on"
++            echo "merge_group, on every push to master, and on the weekly schedule."
++            echo "os_sensitive=false" >> "$GITHUB_OUTPUT"
++          fi
++
+   full-matrix:
+     name: Full Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})
++    needs: [changes]
++    if: ${{ needs.changes.outputs.os_sensitive == 'true' }}
+     runs-on: ${{ matrix.os }}
++    timeout-minutes: 30
+     strategy:
+       fail-fast: false
+       matrix:
+@@ -88,6 +144,7 @@ jobs:
+     name: Unit Shard ${{ matrix.shard-index }}
+     if: github.event_name == 'pull_request'
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     strategy:
+       fail-fast: false
+       max-parallel: 4
+@@ -134,6 +191,7 @@ jobs:
+     name: Windows Smoke
+     if: github.event_name == 'pull_request'
+     runs-on: windows-latest
++    timeout-minutes: 25
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+@@ -173,6 +231,7 @@ jobs:
+     name: macOS Smoke
+     if: github.event_name == 'pull_request'
+     runs-on: macos-latest
++    timeout-minutes: 25
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+@@ -219,6 +278,7 @@ jobs:
+     if: ${{ always() && github.event_name == 'pull_request' }}
+     needs: [windows-smoke, macos-smoke]
+     runs-on: ubuntu-latest
++    timeout-minutes: 10
+     steps:
+       - name: Require Windows + macOS smoke to pass
+         run: |
+@@ -237,6 +297,7 @@ jobs:
+     name: Targeted PR Tests (${{ matrix.label }})
+     if: github.event_name == 'pull_request'
+     runs-on: ${{ matrix.os }}
++    timeout-minutes: 30
+     strategy:
+       fail-fast: false
+       matrix:
+@@ -352,6 +413,7 @@ jobs:
+   coverage:
+     name: Code Coverage
+     runs-on: ubuntu-latest
++    timeout-minutes: 30
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+@@ -407,6 +469,7 @@ jobs:
+   e2e:
+     name: E2E Tests
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+@@ -445,6 +508,7 @@ jobs:
+   mutation:
+     name: Mutation Testing
+     runs-on: ubuntu-latest
++    timeout-minutes: 60
+     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+     steps:
+       - name: Checkout code
+@@ -477,6 +541,7 @@ jobs:
+     if: github.event_name == 'pull_request'
+     runs-on: ubuntu-latest
+     needs: [unit-shard, windows-smoke, macos-smoke, coverage, e2e]
++    timeout-minutes: 15
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+@@ -503,11 +568,62 @@ jobs:
+             cat test-dashboard.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Tests: {d[\"testCount\"]}'); print(f'Suite duration: {d[\"suiteDurationMs\"]}ms'); print(f'Integration skipped: {d[\"integrationSkipped\"]}'); print('Slowest files:'); [print(f'- {item[\"file\"]}: {item[\"durationMs\"]}ms') for item in d.get(\"slowestFiles\", [])[:5]]" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Dashboard generated" >> $GITHUB_STEP_SUMMARY
+           fi
+ 
++  ci-gate:
++    # Single aggregate status for the whole Tests workflow. Mark THIS Required in
++    # branch protection instead of the individual lanes: it stays green when a lane
++    # is legitimately skipped by the path gate above, and red the moment any lane
++    # fails or is cancelled. Adding a lane to `needs` is all that is required to
++    # bring it under the gate.
++    name: CI Gate
++    if: ${{ always() }}
++    needs:
++      - changes
++      - full-matrix
++      - unit-shard
++      - windows-smoke
++      - macos-smoke
++      - cross-os-gate
++      - followup-tests
++      - coverage
++      - e2e
++    runs-on: ubuntu-latest
++    timeout-minutes: 10
++    steps:
++      - name: Aggregate lane results
++        shell: bash
++        env:
++          RESULTS: |
++            changes=${{ needs.changes.result }}
++            full-matrix=${{ needs.full-matrix.result }}
++            unit-shard=${{ needs.unit-shard.result }}
++            windows-smoke=${{ needs.windows-smoke.result }}
++            macos-smoke=${{ needs.macos-smoke.result }}
++            cross-os-gate=${{ needs.cross-os-gate.result }}
++            followup-tests=${{ needs.followup-tests.result }}
++            coverage=${{ needs.coverage.result }}
++            e2e=${{ needs.e2e.result }}
++        run: |
++          set -uo pipefail
++          echo "$RESULTS"
++          failed=0
++          while IFS='=' read -r lane result; do
++            [ -n "$lane" ] || continue
++            case "$result" in
++              success|skipped) ;;
++              *) echo "::error::Lane '$lane' finished as '$result'"; failed=1 ;;
++            esac
++          done <<< "$RESULTS"
++          if [ "$failed" -ne 0 ]; then
++            exit 1
++          fi
++          echo "All test lanes passed or were skipped by the path gate."
++
+   dashboard-confidence:
+     name: Test Dashboard (Confidence Lane)
+     if: github.event_name != 'pull_request'
+     runs-on: ubuntu-latest
+     needs: [full-matrix, coverage, e2e]
++    timeout-minutes: 15
+     steps:
+       - name: Checkout code
+         uses: actions/checkout@v7
+diff --git a/.github/workflows/yaml-lint.yml b/.github/workflows/yaml-lint.yml
+index b1efd0bb..2c0dd730 100644
+--- a/.github/workflows/yaml-lint.yml
++++ b/.github/workflows/yaml-lint.yml
+@@ -13,10 +13,15 @@ on:
+ permissions:
+   contents: read
+ 
++concurrency:
++  group: yaml-lint-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
+ jobs:
+   yaml-lint:
+     name: Validate YAML Syntax
+     runs-on: ubuntu-latest
++    timeout-minutes: 10
+ 
+     steps:
+       - name: Checkout code
+diff --git a/AGENTS.md b/AGENTS.md
+index 0dbd9467..cfab79bc 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -118,6 +118,10 @@ Task 2: Validation logic
+   ✓ Quality review: ✅
+ ```
+ 
++**Flaky tests:** a test that changes result without the code changing gets
++quarantined and an issue filed — never retried until green. Register it in
++`test/QUARANTINE.md`. Reviewers reject a "re-run CI" as a fix.
++
+ ## State Management (Single Source of Truth)
+ 
+ **Current implementation**: The Forge Kernel is the sole issue-state authority — every issue command reads and writes the kernel store, with no backend to select. Beads exists only as an inbound migration path: `forge migrate --from beads` imports an existing Beads store into the kernel once, and no Forge command depends on Beads at runtime. **Direction (D45)**: the Kernel owns issue/workflow/run authority outright; Beads is retired as a live feature. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 11e90611..ea6eb658 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -54,8 +54,37 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'lib/skill-eval.js': ['test/skill-eval.test.js', 'test/skill-accuracy.test.js'],
+ 	'lib/upgrade-safety.js': ['test/commands/upgrade.test.js'],
+ 	'scripts/test.js': ['test/scripts/test-runner.test.js'],
++	// The repo's lockfile is `bun.lock`, but PACKAGE_LEVEL_PATHS in scripts/test.js
++	// only ever listed the older `bun.lockb`. A lockfile-only change therefore
++	// resolved to zero tests and fell through to the 10-minute full-suite lane
++	// (measured: the 3rd most common full-lane trigger on origin/master).
++	'bun.lock': [
++		'test/bun-lockfile-proof.test.js',
++		'test/commands/preflight-lockfile.test.js',
++		'test/package-manager-remediation.test.js',
++	],
++	'lefthook.yml': [
++		'test/lefthook-check.test.js',
++		'test/lefthook-wiring.test.js',
++		'test/commands/lefthook-user-config.test.js',
++	],
++	'eslint.config.js': ['test/lint-script.test.js'],
++	'.claude-plugin/marketplace.json': [
++		'test/activation/plugin-scaffold.test.js',
++		'test/plugin-catalog.test.js',
++	],
+ });
+ 
++// Directory-level mappings for source trees that own a dedicated suite. Without
++// these a change under any of them resolves to zero tests and forces the full
++// suite (see hasZeroResolvedTests in scripts/test.js).
++const PREFIX_TEST_TARGETS = Object.freeze([
++	['validation/', ['test/validation/risk-manifest.test.js', 'test/validation/risk-manifest-generator.test.js']],
++	['eval/', ['test/eval/eval-sets.test.js']],
++	['rules/', ['test/rules-sync.test.js', 'test/skill-dispatch-parity.test.js']],
++	['plugin/', ['test/activation/plugin-scaffold.test.js', 'test/plugin-catalog.test.js', 'test/release-readiness.test.js']],
++]);
++
+ // Skill sources (canonical `skills/**` and the committed `.agents/skills/**` mirror)
+ // map to the fast skill suite. This is what keeps a skills-only PR on the targeted
+ // lane instead of the full ~1500-test suite. `skills-sync-drift` guards the mirror.
+@@ -215,6 +244,12 @@ function getTestCandidatesForChangedFile(file) {
+ 		return [...SKILL_TEST_TARGETS];
+ 	}
+ 
++	for (const [prefix, targets] of PREFIX_TEST_TARGETS) {
++		if (file.startsWith(prefix)) {
++			return [...targets];
++		}
++	}
++
+ 	if (file === 'README.md'
+ 		|| file === 'QUICKSTART.md'
+ 		|| file === 'CHANGELOG.md'
+diff --git a/scripts/test.js b/scripts/test.js
+index 5ebd9215..969d9636 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -41,8 +41,23 @@ const KNOWN_TARGETABLE_PREFIXES = [
+   '.github/agentic-workflows/',
+   '.github/workflows/',
+   'test/',
++  // Source trees with a dedicated suite; see PREFIX_TEST_TARGETS in
++  // lib/commands/test.js for the tests each one resolves to. Without both halves
++  // (targetable here + a resolved test there) a change falls to the full-suite lane.
++  'validation/',
++  'eval/',
++  'rules/',
++  'plugin/',
+ ];
+ 
++// Individually mapped root files (see DIRECT_TEST_CANDIDATES in lib/commands/test.js).
++const KNOWN_TARGETABLE_FILES = new Set([
++  'bun.lock',
++  'lefthook.yml',
++  'eslint.config.js',
++  '.claude-plugin/marketplace.json',
++]);
++
+ const ALWAYS_RUN_RISK_TEST_TARGETS = [
+   // Windows + concurrent filesystem locking has failed post-merge; keep this
+   // in the fast PR lane until enough full-matrix runs prove it stable.
+@@ -183,6 +198,10 @@ function isKnownTargetablePath(file) {
+     return true;
+   }
+ 
++  if (KNOWN_TARGETABLE_FILES.has(file)) {
++    return true;
++  }
++
+   if (file === 'README.md'
+     || file === 'bin/forge.js'
+     || file === 'bin/forge-cmd.js'
+diff --git a/test/QUARANTINE.md b/test/QUARANTINE.md
+new file mode 100644
+index 00000000..1b659a75
+--- /dev/null
++++ b/test/QUARANTINE.md
+@@ -0,0 +1,27 @@
++# Quarantined Tests
++
++A flaky test is a test whose result changes without the code changing. It is a
++**bug report**, not a CI inconvenience.
++
++## The rule
++
++When a test is observed flaky:
++
++1. **Quarantine it** — skip it in the suite and add a row below.
++2. **File a kernel issue** for the underlying cause and put the id in the row.
++3. **Never** re-run CI until it goes green, and **never** wrap it in a retry.
++
++A retried flaky test still fails in production; it just stops telling you. This
++repo has no auto-retry mechanism in CI and must not grow one — if a lane needs
++retries to pass, the lane is broken.
++
++A quarantined test is unblocked work, not resolved work: the row leaves this file
++only when the issue is closed and the test has been un-skipped.
++
++## Registry
++
++| Test | First seen | Issue | Notes |
++| --- | --- | --- | --- |
++| `test/patch-intent.test.js` | 2026-08-16 | `b7a20a71` | ENOTCONN under load in the **local** full suite; kills the suite mid-run with no failing-test output. Not reproduced on CI runners. Not skipped yet — tracked here so the next occurrence is recognised rather than re-diagnosed. |
++
++<!-- Add a row above. Keep it one line per test; details belong in the issue. -->
+diff --git a/test/ci-workflow.test.js b/test/ci-workflow.test.js
+index 282bef69..71ba1596 100644
+--- a/test/ci-workflow.test.js
++++ b/test/ci-workflow.test.js
+@@ -73,14 +73,35 @@ describe('CI Workflow Configuration', () => {
+   });
+ 
+   describe('Confidence Lane', () => {
+-    test('full matrix job runs for PR events', () => {
++    test('full matrix job is gated on the changed-path classifier, not skipped outright', () => {
+       expectSection('full-matrix');
+       expect(workflowContent.includes("full-matrix:\n    name: Full Matrix")).toBe(true);
+-      expect(workflowContent.includes("full-matrix:\n    name: Full Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})\n    if:")).toBe(false);
++      // The matrix is the slowest lane in the pipeline (Windows median ~11.5 min vs
++      // ~2.2 min on ubuntu) and ran on 100% of PRs. It is now conditioned on the
++      // `changes` classifier, which returns true for every non-pull_request event —
++      // so push to master, merge_group, schedule and workflow_dispatch still run the
++      // full 3-OS x 2-Node matrix unconditionally.
++      expect(workflowContent.includes('needs: [changes]')).toBe(true);
++      expect(workflowContent.includes("if: ${{ needs.changes.outputs.os_sensitive == 'true' }}")).toBe(true);
+       expect(workflowContent.includes('os: [ubuntu-latest, macos-latest, windows-latest]')).toBe(true);
+       expect(workflowContent.includes('node-version: [22, 24]')).toBe(true);
+     });
+ 
++    test('changes classifier always demands the full matrix off pull requests', () => {
++      expectSection('changes');
++      expect(workflowContent.includes('os_sensitive: ${{ steps.filter.outputs.os_sensitive }}')).toBe(true);
++      expect(workflowContent.includes('if [ "$EVENT_NAME" != "pull_request" ]; then')).toBe(true);
++      // A diff that cannot be resolved must fail safe to the expensive lane.
++      expect(workflowContent.includes('failing safe to the full matrix')).toBe(true);
++    });
++
++    test('cross-OS smoke still covers every pull request', () => {
++      // The lanes that keep Windows/macOS signal on PRs where the matrix is skipped.
++      expect(workflowContent.includes("windows-smoke:\n    name: Windows Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
++      expect(workflowContent.includes("macos-smoke:\n    name: macOS Smoke\n    if: github.event_name == 'pull_request'")).toBe(true);
++      expect(workflowContent.includes('label: windows-node22')).toBe(true);
++    });
++
+     test('Bun test commands use the repo timeout in CI', () => {
+       const directBunTestCommands = workflowContent
+         .split('\n')
+@@ -139,5 +160,55 @@ describe('CI Workflow Configuration', () => {
+       expect(workflowContent.includes('workflow_dispatch:')).toBe(true);
+       expect(workflowContent.includes('schedule:')).toBe(true);
+     });
++
++    test('workflow runs in the merge queue so skipped PR lanes are re-run before merge', () => {
++      expect(workflowContent.includes('merge_group:')).toBe(true);
++    });
++  });
++
++  describe('Aggregate Gate', () => {
++    test('ci-gate aggregates every real lane and tolerates path-gated skips', () => {
++      expectSection('ci-gate');
++      expect(workflowContent.includes('name: CI Gate')).toBe(true);
++      expect(workflowContent.includes('if: ${{ always() }}')).toBe(true);
++      for (const lane of [
++        'changes',
++        'full-matrix',
++        'unit-shard',
++        'windows-smoke',
++        'macos-smoke',
++        'cross-os-gate',
++        'followup-tests',
++        'coverage',
++        'e2e',
++      ]) {
++        expect(workflowContent.includes(`      - ${lane}\n`)).toBe(true);
++        expect(workflowContent.includes(`${lane}=\${{ needs.${lane}.result }}`)).toBe(true);
++      }
++      expect(workflowContent.includes('success|skipped) ;;')).toBe(true);
++    });
++
++    test('every job declares a timeout so a hung runner cannot poison the queue', () => {
++      const lines = workflowContent.split('\n');
++      const jobsStart = lines.indexOf('jobs:');
++      expect(jobsStart).toBeGreaterThan(-1);
++      const jobHeaders = lines
++        .map((line, index) => ({ line, index }))
++        .filter(({ line, index }) => index > jobsStart && /^ {2}[a-z0-9-]+:$/.test(line));
++
++      expect(jobHeaders.length).toBeGreaterThan(0);
++      for (const { line, index } of jobHeaders) {
++        let end = lines.length;
++        for (let i = index + 1; i < lines.length; i += 1) {
++          if (/^ {2}[a-z0-9-]+:$/.test(lines[i])) {
++            end = i;
++            break;
++          }
++        }
++        const body = lines.slice(index, end).join('\n');
++        expect({ job: line.trim(), hasTimeout: / {4}timeout-minutes: \d+/.test(body) })
++          .toEqual({ job: line.trim(), hasTimeout: true });
++      }
++    });
+   });
+ });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,1063 @@
+From 5dc2c57a67840791d80be2fcf435a8f5d15877b6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 19:36:43 +0530
+Subject: [PATCH] fix(review): close PR 497 feedback
+
+---
+ CHANGELOG.md                                  |  2 +-
+ .../acceptance-contracts.md                   |  8 +-
+ .../admission-evidence.v1.json                | 15 +++-
+ .../facade-routing.md                         |  3 +-
+ .../plan.md                                   | 30 +++----
+ .../tasks.md                                  |  2 +-
+ lib/commands/gate.js                          | 24 +++--
+ lib/commands/plan.js                          |  9 +-
+ lib/forge-issues.js                           | 33 ++++---
+ lib/issue-render.js                           |  9 +-
+ lib/kernel/claim-reconciler.js                |  2 +-
+ lib/kernel/readiness-model.js                 | 88 ++++++++++---------
+ lib/kernel/sqlite-driver.js                   |  2 +
+ lib/validation/risk-manifest.js               | 11 ++-
+ lib/workflow/enforce-stage.js                 | 13 ++-
+ scripts/process-tree.js                       |  8 +-
+ test/commands/gate-events-cli.test.js         | 11 +++
+ test/commands/plan-link-issue.test.js         | 25 ++++++
+ test/forge-issues.test.js                     | 18 ++++
+ test/issue-render.test.js                     | 20 +++++
+ test/kernel/claim-reconciler.test.js          | 21 +++++
+ test/scripts/process-tree.test.js             | 24 +++++
+ test/validation/risk-manifest.test.js         | 15 ++++
+ test/workflow/enforce-stage-kernel.test.js    | 88 +++++++++++++++++++
+ validation/risk-manifest.source.yaml          |  4 +-
+ validation/risk-manifest.v1.json              |  9 +-
+ 26 files changed, 385 insertions(+), 109 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2e8cd194..2e9c6ba1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Added
+ 
+-- **Forge 0.1.0 control-plane foundations.** Adds executable issue-readiness contracts, dead-run claim reconciliation, issue-scoped approval receipts, Kernel-authoritative plan snapshots, fail-closed risk-to-test selection, and distinct npm beta/RC release channels. (#497; issues `4ee7f9a9-4fa0-42c1-bd96-96638cc9feff`, `9b69a551-f5a0-4057-9d9f-96fb0d744fd3`, `b977b0a2-11f6-40d7-a230-8e2ff5f79115`, `b811a974-a866-47e0-8f83-3f5d2423aded`, `7a6a3fb3-c82c-48e7-86ee-630c171b924c`, `3e46debd-11c3-4b1c-b59a-17304c37cb03`)
++- **Forge 0.1.0 control-plane foundations.** Adds executable issue-readiness contracts, dead-run claim reconciliation, issue-scoped approval receipts, Kernel-authoritative plan snapshots, fail-closed risk-to-test selection, and distinct npm beta, RC, and stable release channels. (#497; issues `4ee7f9a9-4fa0-42c1-bd96-96638cc9feff`, `9b69a551-f5a0-4057-9d9f-96fb0d744fd3`, `b977b0a2-11f6-40d7-a230-8e2ff5f79115`, `b811a974-a866-47e0-8f83-3f5d2423aded`, `7a6a3fb3-c82c-48e7-86ee-630c171b924c`, `3e46debd-11c3-4b1c-b59a-17304c37cb03`)
+ 
+ ## [0.1.0-beta.5] - 2026-08-09
+ 
+diff --git a/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md b/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+index 4fa9eedc..93bb3900 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
++++ b/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+@@ -25,7 +25,6 @@ Common acceptance rules for every row below:
+ | `765a4cd8` | Merge authority accepts passing required checks plus successful optional `SKIPPED`/`NEUTRAL` observations. Required failure, optional failure, stale head, or unresolved actionable thread blocks; neutral `forge/pr-monitor` never becomes a false blocker. |
+ | `7f8c8471` | Packaged Smith/claim-safety references resolve or use a documented supported primitive. Asset scan finds every reference; invocation succeeds or deterministically falls back; claim-safety still proves a live owned lease and rejects foreign/expired leases. |
+ | `94f782e0` | Foreign-lease reconcile child exits deterministically on Windows. Repeated affected Windows/Node fixture exits successfully within its bound; a valid lease remains active and untouched; recurrent environmental failure becomes separate evidence/fix, not a weakened assertion. |
+-| `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
+ | `b977b0a2` | Existing `forge gate approve <issue-id> <gate-id>` events remain the only approval surface and gain bounded issue-scoped TTL where required. Valid approval satisfies the gate; expired/rejected/missing/wrong-issue/wrong-gate evidence fails closed; replay is idempotent and audit-visible. `forge control` remains policy classification, and unscoped/project-scoped approval is rejected. |
+ | `c29f3952` | Kernel status honestly exposes live sessions, held leases, and last-seen. Active fixture reports actor/issues/activity; closed/expired/unverifiable session is offline; read does not mutate leases. |
+ | `eea2f9ce` | Claim-safety refuses work without a current actor-owned unexpired lease. Owned/unexpired passes; foreign/expired/missing/duplicate-collapsed fails before work; proof comes from live Kernel state rather than a local claim token. |
+@@ -62,6 +61,7 @@ Common acceptance rules for every row below:
+ 
+ | Issue | Outcome and machine-verifiable acceptance |
+ | --- | --- |
++| `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
+ | `57fb8889` | Shepherd reconciles PRs independently of sessions, survives restart/reboot, and retires cleanly. Replay covers restart/reclaim/orphan/closure and deduplicated events; no model polling or merge authority. Epic closes only after mapped Shepherd children. |
+ | `9af1ee0a` | Every reproducible Fable Shepherd audit gap is fixed or represented by an owned regression, including pull/bundle paths. Audit checklist has zero unowned reproducible gaps; exact-head Shepherd/pull/bundle replay passes. |
+ | `c2d398e5` | Singleton agent-agnostic monitor reconciles all PRs and emits only new actionable events. Tick/replay proves coverage, deduplication, event order, and stop when no PR remains; no per-agent scheduler/model poll. Epic closes only after mapped monitor/event children. |
+@@ -83,11 +83,13 @@ Common acceptance rules for every row below:
+ 
+ ## PR 5 — Facade, harness, and capabilities
+ 
++`e8e72233` was created after the approved snapshot with acceptance criteria already present and verified at revision 0. It is therefore a pre-admitted exclusion from the 48-issue amendment batch, as recorded by the evidence selection rule.
++
+ | Issue | Outcome and machine-verifiable acceptance |
+ | --- | --- |
+ | `7268bc9b` | Hook adapter evaluates mandatory/optional/permission controls and reports honest per-harness downgrade. Policy matrix covers deny/warn/TTL approval/expiry; observational-only harnesses never claim enforcement; decisions are auditable. |
+ | `9658c21a` | MCP registry renders/drift-checks control state and consent at render time only. Fixtures cover control types, toggles, drift, consent expiry, and stable capability/config digests without claiming runtime enforcement. |
+-| `e8e72233` | `forge doctor` is the one read-only, bounded, manifest-driven Health surface and is exhaustive across canonical command families. Versioned JSON reports `PASS|WARN|FAIL|INCOMPLETE`, privacy-safe evidence and remediation; scope/check selectors, parity, no-side-effect, timeout, unsupported-provider, redaction, deterministic ordering, and Windows/macOS/Linux fixtures pass. No competing health verb exists. |
++| `e8e72233` | `forge doctor` is the one read-only, bounded, manifest-driven Health surface and is exhaustive across canonical command families. Versioned JSON reports `PASS\|WARN\|FAIL\|INCOMPLETE`, privacy-safe evidence and remediation; scope/check selectors, parity, no-side-effect, timeout, unsupported-provider, redaction, deterministic ordering, and Windows/macOS/Linux fixtures pass. No competing health verb exists. |
+ 
+ ## PR 6 — Migration and extraction readiness
+ 
+@@ -112,6 +114,6 @@ After proposal approval and before any implementation branch or WorkPacket:
+ 1. Generate a canonical amendment batch for the 48 actionable `AC=no` issues from this document.
+ 2. For each issue, compare the expected revision from the approved snapshot, write its contract to the Kernel, and read it back.
+ 3. Refuse partial silent success: conflicts remain unadmitted and are reported; successfully amended issues retain their new revision and receipt.
+-4. Recompute the disposition snapshot and prove every one of the 71 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
++4. Recompute the disposition snapshot and prove every one of the 68 architecture/control outcomes and three release-gate outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
+ 5. Epic admission additionally requires an explicit mapped-child list; epic closure remains impossible while a mapped child lacks accepted completion or approved deferral evidence.
+ 6. Publish `admission-evidence.v1.json` with before/after revisions, contract hashes, conflicts, and aggregate `PASS|FAIL|INCOMPLETE`. Only aggregate `PASS` authorizes PR 1 implementation.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/admission-evidence.v1.json b/docs/work/2026-08-09-forge-product-restructure/admission-evidence.v1.json
+index 8c843515..451c1816 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/admission-evidence.v1.json
++++ b/docs/work/2026-08-09-forge-product-restructure/admission-evidence.v1.json
+@@ -5,7 +5,18 @@
+   "epic_id": "d6a74dc8-10f7-4be9-9761-2467c3df4798",
+   "source_plan_commit": "cf1d6b4a8dd42cd11e83066d74eac6a887400b7e",
+   "source_ledger_sha256": "6c51735a75e89cea81d43c622808f260d1c11d59d9ccc2893c7519337caa79ca",
+-  "source_acceptance_contracts_sha256": "a289e673790895eefa1a076f5d072700754a9c8dea792b77695a7133d0f2d29e",
++  "source_acceptance_contracts_sha256": "dd6647769f1127f2cae12171bd1df89394e4a73e2f9e32ea6d2bbb06a741f2c6",
++  "selection_rule": {
++    "id": "approved-snapshot-actionable-ac-no.v1",
++    "predicate": "approved snapshot row has action implement or migrate and acceptance criteria absent",
++    "pre_admitted_exclusions": [
++      {
++        "issue_id": "e8e72233-c31f-4a59-a4e4-deca433d00f8",
++        "verified_revision": 0,
++        "reason": "created after the approved snapshot with acceptance criteria already present"
++      }
++    ]
++  },
+   "expected_count": 48,
+   "observed_count": 48,
+   "admitted_count": 48,
+@@ -125,7 +136,7 @@
+     {
+       "issue_id": "9f6ffb42-6ee0-4a9c-a2ac-ca428866f6e9",
+       "title": "P0 kernel linkage: issue->worktree->work-folder->files provenance (kernel_worktrees writes)",
+-      "delivery": "PR1",
++      "delivery": "PR4B",
+       "product_owner": "Memory",
+       "validation_owner": "Memory Kernel provenance/authority suite",
+       "bucket": "control-plane/debt",
+diff --git a/docs/work/2026-08-09-forge-product-restructure/facade-routing.md b/docs/work/2026-08-09-forge-product-restructure/facade-routing.md
+index 0ed8ad44..340ee68a 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/facade-routing.md
++++ b/docs/work/2026-08-09-forge-product-restructure/facade-routing.md
+@@ -16,10 +16,11 @@ The facade routes but owns no product authority. Bare legacy commands are compat
+ | `migrate --from beads`; Kernel `export` | Memory / migration/export capability | Native Memory authority; inbound Beads only | `FORGE_MEMORY_UNAVAILABLE` |
+ | `sync`, `team`, `inbox` | Memory / team sync/inbox | Server acceptance required for team writes | `FORGE_MEMORY_UNAVAILABLE` |
+ | `stage`; `gate` policy/config; `control`; `role` | Memory / workflow graph and gates | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `gate approve <issue-id> <gate-id>` | Memory / issue-bound gate approval | Exact issue and gate scope; bounded TTL where required | `FORGE_MEMORY_UNAVAILABLE`; wrong/missing scope fails closed |
+ | `options`, `explain`, `skill for` | Memory / workflow/provider read | Memory read | `FORGE_MEMORY_UNAVAILABLE` |
+ | `skill eval` | Flow / evaluator execution | Memory-authorized WorkPacket; Memory ingests receipt | Flow or Memory unavailable diagnostic |
+ | `skill scores`, `skill coverage` | Memory / evaluator evidence read | Memory read | `FORGE_MEMORY_UNAVAILABLE` |
+-| `doctor` | Facade aggregation of `memory doctor` and optional `flow doctor` | Memory required; Flow state explicit | Memory absence is failure; Flow absence reported, never hidden |
++| `doctor` | Facade aggregation of the current filesystem check, non-fatal Memory check, and optional `flow doctor` | Filesystem check determines the current overall result; Memory and Flow state remain explicit | Memory or Flow absence is reported without changing the filesystem-derived overall result |
+ | `status`, `prime`, `orient`, `recap` | Facade read aggregation | Memory read required; optional Flow runtime view | Memory absence is failure; Flow absence is explicit partial state |
+ | `plan` | Flow / `flow.plan.v1` | Memory creates/links issue and authorizes packet/run | Flow or Memory unavailable diagnostic |
+ | `dev`, `validate` | Flow / execute/validate | Current lease required before shared mutation; Memory records stage/gates | Flow, Memory, or capability unavailable diagnostic |
+diff --git a/docs/work/2026-08-09-forge-product-restructure/plan.md b/docs/work/2026-08-09-forge-product-restructure/plan.md
+index 891be080..0d193338 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/plan.md
++++ b/docs/work/2026-08-09-forge-product-restructure/plan.md
+@@ -1,6 +1,6 @@
+ # Forge 0.1.0 Product Restructuring
+ 
+-**Status:** Approved development plan; implementation is gated by §9 admission evidence
++**Status:** Approved development plan; §9 admission completed with passing evidence
+ **Date:** 2026-08-09
+ **Epic:** `d6a74dc8-10f7-4be9-9761-2467c3df4798`
+ **Classification:** Critical architecture and migration
+@@ -268,7 +268,7 @@ The common envelope is field-level normative:
+ | `provenance` | object containing source kind, actor class/id, repository identity when applicable, and exact head when applicable |
+ | `content_hash` | 64-character lowercase SHA-256 hex over the canonical object with this field omitted |
+ | `payload` | contract-specific object; unknown top-level payload fields are rejected unless registered by that schema version |
+-| `extensions` | object keyed by namespaced extension id; each value is `{ impact: advisory|consequential, schema_version, value }` |
++| `extensions` | object keyed by namespaced extension id; each value is `{ impact: advisory\|consequential, schema_version, value }` |
+ 
+ Unknown advisory extensions are preserved byte-for-byte through read/write cycles and may be ignored. Unknown consequential extensions reject the object before execution or transition.
+ 
+@@ -591,7 +591,7 @@ An issue enters the 0.1.0 train only if it is required to:
+ 
+ Every included issue must have acceptance criteria, owner wave, product owner, affected contract, and validation owner. Current labels alone are insufficient.
+ 
+-The snapshot maps 70 candidate work outcomes, but 47 implementation/migration candidates and the stable-release tracking root currently lack explicit Kernel acceptance criteria. They are not admitted merely because they appear in the ledger. The approved contracts in [acceptance-contracts.md](./acceptance-contracts.md) must be revision-checked, written to Kernel authority, read back, and aggregated into a passing `admission-evidence.v1.json` before PR 1 implementation begins. This is a pre-implementation admission checkpoint, not an eighth code PR.
++The train maps 68 architecture/control outcomes plus three release-gate outcomes. The approved snapshot contained 48 actionable implementation/migration issues without acceptance criteria; `e8e72233` was added afterward with acceptance criteria already verified at revision 0 and is explicitly excluded from that amendment population. The 48 issues were revision-checked, written to Kernel authority, read back, and aggregated into passing [`admission-evidence.v1.json`](./admission-evidence.v1.json). The admission checkpoint is complete and authorizes PR 1; it is not an eighth code PR.
+ 
+ ### 9.2 Existing release issues
+ 
+@@ -855,31 +855,29 @@ The train stops before merge or release when any of the following occurs:
+ 
+ ## 16. Requirement traceability and completion definition
+ 
+-| Required planning dimension | Authoritative evidence | Remaining decision |
++| Required planning dimension | Authoritative evidence | Decision state |
+ | --- | --- | --- |
+-| Product boundaries and architecture | §§4–6; `decision-register.md` R6–R10; `facade-routing.md` | Approve R6–R10 |
+-| Migration, cutover, and rollback | §8; PR 6 in §10; G5 and the RC matrix in `validation-matrix.md` | Approve sole-writer and extraction timing |
+-| Beta.5 compatibility | §§6.5, 8.3–8.4; facade routing ledger; beta.5 corpus gates | Approve R9–R10 |
+-| Release sequencing and provenance | §§6.6, 13; G8; signed BOM/verifier rules | Approve R12–R13 |
+-| Issue disposition and admission | §9; `issue-disposition.md`; `acceptance-contracts.md` | Approve R11, then perform revision-checked Kernel admission before code |
+-| Implementation waves and merge order | §§10–11; seven milestones/eight PRs; disjoint ownership table | Approve R2/R11 train details |
+-| Validation and token efficiency | §§7.1, 12; `validation-matrix.md`; risk manifest and 20/30/35/39 policy | Approve targeted-plus-final-matrix strategy |
++| Product boundaries and architecture | §§4–6; `decision-register.md` R6–R10; `facade-routing.md` | Approved and locked |
++| Migration, cutover, and rollback | §8; PR 6 in §10; G5 and the RC matrix in `validation-matrix.md` | Approved and locked |
++| Beta.5 compatibility | §§6.5, 8.3–8.4; facade routing ledger; beta.5 corpus gates | Approved and locked |
++| Release sequencing and provenance | §§6.6, 13; G8; signed BOM/verifier rules | Approved and locked |
++| Issue disposition and admission | §9; `issue-disposition.md`; `acceptance-contracts.md` | Approved; admission complete with aggregate `PASS` |
++| Implementation waves and merge order | §§10–11; seven milestones/eight PRs; disjoint ownership table | Approved and locked |
++| Validation and token efficiency | §§7.1, 12; `validation-matrix.md`; risk manifest and 20/30/35/39 policy | Approved and locked |
+ | Market, standards, harnesses, and security | §§3.4–3.5; advisory Parallel reports; Context7/official-doc evidence; OWASP/TDD mapping | Re-probe capability manifests during PR 5; no assumption becomes a gate |
+ 
+-Every row has normative evidence and an explicit authority. The only unresolved planning state is user disposition of proposed decisions R6–R14; there is no hidden technical prerequisite to that decision.
+-
+-Planning is complete only when the user approves:
++Every row has normative evidence and an explicit authority. The user approved the decisions below, and the revision-checked admission gate completed with aggregate `PASS`:
+ 
+ - the asymmetric Memory-foundation/optional-Flow ownership;
+ - package, repository, and CLI topology;
+ - beta.5 compatibility and rollback guarantees;
+ - seven-milestone/eight-PR implementation train and merge order;
+-- 67-issue architecture/control train, three separate release gates, and disposition rules;
++- 68-issue architecture/control train, three separate release gates, and disposition rules;
+ - risk-based validation lanes and budgets;
+ - beta.6/beta.7/RC/stable sequence;
+ - evaluation boundary and stop conditions.
+ 
+-Implementation is not authorized by approving this draft. After approval, this document is committed and opened as a strategic proposal PR. Implementation planning and task decomposition begin only after that proposal merges.
++Planning and admission are complete. PR 1 is the authorized implementation action; later PRs remain sequenced behind their documented predecessors and stage gates.
+ 
+ ## 17. Approval questions
+ 
+diff --git a/docs/work/2026-08-09-forge-product-restructure/tasks.md b/docs/work/2026-08-09-forge-product-restructure/tasks.md
+index 4b87dbbf..b589347b 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/tasks.md
++++ b/docs/work/2026-08-09-forge-product-restructure/tasks.md
+@@ -100,4 +100,4 @@
+ 
+ ## Development start
+ 
+-The next authorized action is Task 0. Production implementation begins only after its admission evidence passes; the first code branch is PR 1, not PR 4A or the Shepherd specialization.
++Task 0 is complete with passing admission evidence. The next authorized action is PR 1, not PR 4A or the Shepherd specialization.
+diff --git a/lib/commands/gate.js b/lib/commands/gate.js
+index e195e19b..431d46bb 100644
+--- a/lib/commands/gate.js
++++ b/lib/commands/gate.js
+@@ -147,8 +147,11 @@ function gateJsonResult(action, result, context = {}) {
+     command: `gate.${action}`,
+     ok: result.success === true,
+     issue_id: event?.issue_id ?? result.issueId ?? context.issueId ?? null,
+-    gate_id: event?.gate ?? context.gateId ?? null,
+   };
++  const gateId = event?.gate ?? context.gateId;
++  if (action !== 'status' && gateId !== undefined && gateId !== null) {
++    envelope.gate_id = gateId;
++  }
+   if (action === 'approve' || action === 'reject') {
+     envelope.duplicate = result.duplicate === true;
+     envelope.decision = event?.decision ?? (action === 'approve' ? 'approved' : 'rejected');
+@@ -218,11 +221,9 @@ function handleToggle(action, gateId, projectRoot) {
+   };
+ }
+ 
+-async function handleDecision(action, issueId, gateId, flags, rawArgs, projectRoot, opts) {
+-  const input = parseDecisionInput(action, rawArgs, flags);
++async function handleDecision(action, input, projectRoot, opts) {
+   if (!input.ok) return { success: false, error: input.error };
+-  issueId = input.issueId;
+-  gateId = input.gateId;
++  const { issueId, gateId } = input;
+   const known = validateKnownGate(gateId);
+   if (!known.ok) return { success: false, error: known.error };
+ 
+@@ -337,21 +338,26 @@ async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {})
+   }
+   if (EVENT_ACTIONS.has(action)) {
+     let result;
++    let input;
+     if (action === 'status') {
+-      const input = parseReadInput(action, rest);
++      input = parseReadInput(action, rest);
+       result = input.ok
+         ? await handleStatus(input.issueId, flags, projectRoot, opts)
+         : { success: false, issueId: rest[0], error: input.error };
+     } else if (action === 'check') {
+-      const input = parseReadInput(action, rest);
++      input = parseReadInput(action, rest);
+       result = input.ok
+         ? await handleCheck(input.issueId, input.gateId, projectRoot, opts)
+         : { success: false, issueId: rest[0], approved: false, error: input.error };
+     } else {
+-      result = await handleDecision(action, rest[0], rest[1], flags, rest, projectRoot, opts);
++      input = parseDecisionInput(action, rest, flags);
++      result = await handleDecision(action, input, projectRoot, opts);
+     }
++    const context = input.ok
++      ? { issueId: input.issueId, ...(input.gateId ? { gateId: input.gateId } : {}) }
++      : { issueId: rest[0] };
+     return wantsJson
+-      ? gateJsonResult(action, result, { issueId: rest[0], gateId: rest[1] })
++      ? gateJsonResult(action, result, context)
+       : result;
+   }
+ 
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index 1e45ce82..e12b3e2f 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -992,12 +992,15 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 				let existing;
+ 				try {
+ 					existing = driver.loadPlanSnapshot({ issue_id: issue.issueId }, {});
+-				} catch {
++				} catch (error) {
+ 					// Injectable issue runners used by embedding callers may not persist into
+ 					// this driver's store. With no repository artifacts there is nothing to
+ 					// reconcile; preserve that legacy embedding contract.
+-					if (!workFolder) return null;
+-					throw new Error(`Issue ${issue.issueId} is not available for plan authority persistence`);
++					if (/^Issue .* not found in the kernel$/i.test(error.message)) {
++						if (!workFolder) return null;
++						throw new Error(`Issue ${issue.issueId} is not available for plan authority persistence`);
++					}
++					throw error;
+ 				}
+ 				if (!existing && !workFolder) return null;
+ 				return reconcilePlanAuthority({
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 62ccd648..8aa643e7 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -201,17 +201,7 @@ function resolveLeaseTtlMs(env = {}) {
+   return ttl;
+ }
+ 
+-function resolveIssueContractPolicy(projectRoot, deps = {}) {
+-	const loadConfig = deps.loadRuntimeGraphConfig || loadRuntimeGraphConfig;
+-	const loaded = loadConfig({ projectRoot });
+-	const fail = message => {
+-		const error = new Error(`FORGE_ISSUE_CONTRACT_CONFIG_INVALID: ${message}`);
+-		error.code = 'FORGE_ISSUE_CONTRACT_CONFIG_INVALID';
+-		throw error;
+-	};
+-	if (Array.isArray(loaded?.errors) && loaded.errors.length > 0) {
+-		fail(loaded.errors.map(error => error.message || error.code || String(error)).join('; '));
+-	}
++function readIssueContractValues(loaded, fail) {
+ 	const missing = Symbol('missing issue contract config');
+ 	const ownDataValue = (object, key, path) => {
+ 		if (!object || (typeof object !== 'object' && typeof object !== 'function')) return missing;
+@@ -227,8 +217,7 @@ function resolveIssueContractPolicy(projectRoot, deps = {}) {
+ 	const configured = readiness === missing
+ 		? missing
+ 		: ownDataValue(readiness, 'contracts', 'issues.readiness.contracts');
+-	if (configured === missing) return null;
+-	if (configured == null) return null;
++	if (configured === missing || configured == null) return null;
+ 	if (typeof configured !== 'object'
+ 		|| Array.isArray(configured)
+ 		|| Object.getPrototypeOf(configured) !== Object.prototype) {
+@@ -248,6 +237,22 @@ function resolveIssueContractPolicy(projectRoot, deps = {}) {
+ 		}
+ 		values[key] = descriptor.value;
+ 	}
++	return values;
++}
++
++function resolveIssueContractPolicy(projectRoot, deps = {}) {
++	const loadConfig = deps.loadRuntimeGraphConfig || loadRuntimeGraphConfig;
++	const loaded = loadConfig({ projectRoot });
++	const fail = message => {
++		const error = new Error(`FORGE_ISSUE_CONTRACT_CONFIG_INVALID: ${message}`);
++		error.code = 'FORGE_ISSUE_CONTRACT_CONFIG_INVALID';
++		throw error;
++	};
++	if (Array.isArray(loaded?.errors) && loaded.errors.length > 0) {
++		fail(loaded.errors.map(error => error.message || error.code || String(error)).join('; '));
++	}
++	const values = readIssueContractValues(loaded, fail);
++	if (values === null) return null;
+ 	if (values.enabled !== undefined && typeof values.enabled !== 'boolean') {
+ 		fail('issues.readiness.contracts.enabled must be a boolean');
+ 	}
+@@ -272,6 +277,7 @@ async function runIssueOperation(operation, rawArgs, projectRoot, deps = {}) {
+     backend: createKernelIssueBackend({ projectRoot, deps }),
+   }));
+ 
++  const contractPolicy = resolveIssueContractPolicy(projectRoot, deps);
+   const service = createService();
+   // Thread a distinct per-agent actor (and, when present, a stable session id) into the
+   // mutation context so the Kernel's claim idempotency key is scoped per agent rather than
+@@ -289,7 +295,6 @@ async function runIssueOperation(operation, rawArgs, projectRoot, deps = {}) {
+   const isClaim = operation === 'claim';
+   const worktreeId = isClaim ? resolveWorktreeId(projectRoot, actorEnv, deps) : undefined;
+   const leaseTtlMs = isClaim ? resolveLeaseTtlMs(actorEnv) : undefined;
+-	const contractPolicy = resolveIssueContractPolicy(projectRoot, deps);
+ 	const isTrustedAdoption = typeof deps.verifyIssueContractAdoption === 'function'
+ 		? deps.verifyIssueContractAdoption
+ 		: undefined;
+diff --git a/lib/issue-render.js b/lib/issue-render.js
+index 319cf6f8..1bdb433c 100644
+--- a/lib/issue-render.js
++++ b/lib/issue-render.js
+@@ -117,7 +117,14 @@ function pushSection(lines, label, text) {
+ function renderReadinessReason(reason) {
+ 	if (!reason || typeof reason !== 'object') return String(reason ?? 'unknown');
+ 	const detail = reason.field || reason.issue_id || reason.gate || reason.actor || reason.status;
+-	return detail ? `${reason.code} (${detail})` : String(reason.code || 'unknown');
++	const parts = [];
++	if (detail) parts.push(String(detail));
++	if (reason.expected !== undefined) parts.push(`expected ${JSON.stringify(reason.expected)}`);
++	if (reason.actual !== undefined) parts.push(`actual ${JSON.stringify(reason.actual)}`);
++	if (reason.declared !== undefined) parts.push(`declared ${JSON.stringify(reason.declared)}`);
++	return parts.length > 0
++		? `${reason.code} (${parts.join(', ')})`
++		: String(reason.code || 'unknown');
+ }
+ 
+ // forge show: the full detail view. This is the surface that prints the FULL id
+diff --git a/lib/kernel/claim-reconciler.js b/lib/kernel/claim-reconciler.js
+index 3aa7b161..87bd9637 100644
+--- a/lib/kernel/claim-reconciler.js
++++ b/lib/kernel/claim-reconciler.js
+@@ -200,7 +200,7 @@ async function reconcileKernelClaims(options = {}) {
+ 	let claims;
+ 	try {
+ 		if (typeof driver.listActiveClaims === 'function') {
+-			claims = await driver.listActiveClaims();
++			claims = await driver.listActiveClaims(options.context || {}, options.config || {});
+ 		} else {
+ 			const response = await driver.issueOperation('claims', [], options.context || {}, options.config || {});
+ 			claims = response?.data?.claims;
+diff --git a/lib/kernel/readiness-model.js b/lib/kernel/readiness-model.js
+index a28a18a4..cf513ecc 100644
+--- a/lib/kernel/readiness-model.js
++++ b/lib/kernel/readiness-model.js
+@@ -185,16 +185,7 @@ function normalizeIds(ids) {
+ 		.sort((left, right) => left.localeCompare(right));
+ }
+ 
+-/**
+- * Validate only the presence, shape, and authority agreement of an issue contract.
+- * The policy deliberately does not score prose, dictate reasoning, or require headings.
+- */
+-function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+-	const workClasses = Array.isArray(policy.workClasses) ? policy.workClasses : [];
+-	const applicable = policy.enabled === true && workClasses.includes(issue.type);
+-	if (!applicable) return { applicable: false, valid: true, reasons: [] };
+-
+-	const { contract, metadata } = getIssueContract(issue);
++function collectContractFieldReasons(issue, contract, context) {
+ 	const reasons = [];
+ 	if (!nonEmptyText(issue.body)) reasons.push({ code: READINESS_REASONS.CONTRACT_MISSING, field: 'purpose' });
+ 	if (!nonEmptyText(issue.acceptance_criteria)) {
+@@ -204,7 +195,6 @@ function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+ 	const dependencies = ownDataProperty(contract, 'dependencies');
+ 	const outOfScope = ownDataProperty(contract, 'out_of_scope');
+ 	const version = ownDataProperty(contract, 'version');
+-	const adoptedBy = ownDataProperty(contract, 'adopted_by');
+ 	if (!nonEmptyText(risk)) reasons.push({ code: READINESS_REASONS.CONTRACT_MISSING, field: 'risk' });
+ 	if (!Array.isArray(dependencies)) {
+ 		reasons.push({ code: READINESS_REASONS.CONTRACT_MISSING, field: 'dependencies' });
+@@ -220,7 +210,6 @@ function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+ 			actual: version ?? null,
+ 		});
+ 	}
+-
+ 	if (Array.isArray(dependencies) && Array.isArray(context.dependencyIds)) {
+ 		const declared = normalizeIds(dependencies);
+ 		const expected = normalizeIds(context.dependencyIds);
+@@ -233,40 +222,57 @@ function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+ 			});
+ 		}
+ 	}
++	return reasons;
++}
+ 
++function isTrustedContractAdoption(issue, metadata, adoptedBy, version, context) {
++	const revision = ownDataProperty(issue, 'revision') ?? ownDataProperty(issue, 'entity_revision');
++	const issueId = ownDataProperty(issue, 'id');
++	if (typeof context.isTrustedAdoption !== 'function'
++		|| !nonEmptyText(issueId)
++		|| !Number.isInteger(revision)) return false;
++	try {
++		return context.isTrustedAdoption({
++			actor: adoptedBy,
++			issue_id: issueId,
++			revision,
++			metadata,
++			contract_version: version,
++		}) === true;
++	} catch {
++		return false;
++	}
++}
++
++function collectAdoptionReasons(issue, metadata, contract, context) {
+ 	const origin = ownDataProperty(issue, 'origin')
+ 		?? ownDataProperty(metadata, 'origin')
+ 		?? ownDataProperty(metadata, 'source');
+-	if (['import', 'imported', 'fork', 'fork_pr'].includes(origin)) {
+-		if (!nonEmptyText(adoptedBy)) {
+-			reasons.push({ code: READINESS_REASONS.CONTRACT_ADOPTION_REQUIRED });
+-		} else {
+-			const revision = ownDataProperty(issue, 'revision') ?? ownDataProperty(issue, 'entity_revision');
+-			const issueId = ownDataProperty(issue, 'id');
+-			let trusted = false;
+-			if (typeof context.isTrustedAdoption === 'function'
+-				&& nonEmptyText(issueId)
+-				&& Number.isInteger(revision)) {
+-				try {
+-					trusted = context.isTrustedAdoption({
+-						actor: adoptedBy,
+-						issue_id: issueId,
+-						revision,
+-						metadata,
+-						contract_version: version,
+-					}) === true;
+-				} catch {
+-					trusted = false;
+-				}
+-			}
+-			if (!trusted) {
+-				reasons.push({
+-					code: READINESS_REASONS.CONTRACT_ADOPTION_UNVERIFIED,
+-					adopter: adoptedBy,
+-				});
+-			}
+-		}
++	if (!['import', 'imported', 'fork', 'fork_pr'].includes(origin)) return [];
++	const adoptedBy = ownDataProperty(contract, 'adopted_by');
++	if (!nonEmptyText(adoptedBy)) {
++		return [{ code: READINESS_REASONS.CONTRACT_ADOPTION_REQUIRED }];
+ 	}
++	const version = ownDataProperty(contract, 'version');
++	return isTrustedContractAdoption(issue, metadata, adoptedBy, version, context)
++		? []
++		: [{ code: READINESS_REASONS.CONTRACT_ADOPTION_UNVERIFIED, adopter: adoptedBy }];
++}
++
++/**
++ * Validate only the presence, shape, and authority agreement of an issue contract.
++ * The policy deliberately does not score prose, dictate reasoning, or require headings.
++ */
++function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
++	const workClasses = Array.isArray(policy.workClasses) ? policy.workClasses : [];
++	const applicable = policy.enabled === true && workClasses.includes(issue.type);
++	if (!applicable) return { applicable: false, valid: true, reasons: [] };
++
++	const { contract, metadata } = getIssueContract(issue);
++	const reasons = [
++		...collectContractFieldReasons(issue, contract, context),
++		...collectAdoptionReasons(issue, metadata, contract, context),
++	];
+ 
+ 	return { applicable: true, valid: reasons.length === 0, reasons };
+ }
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 839f9152..2e8f6847 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1157,6 +1157,8 @@ function releaseExactKernelClaimIfWorktreeMissing(runtime, db, claim, expectedWo
+ 			],
+ 		);
+ 		const exact = rows.length === 1 && rows[0];
++		// This check deliberately runs under BEGIN IMMEDIATE to close the
++		// worktree-state TOCTOU window. Keep callbacks synchronous, local, and fast.
+ 		if (!exact || isMissing(exact.path, exact) !== true) {
+ 			execSql(runtime, db, 'ROLLBACK;');
+ 			return false;
+diff --git a/lib/validation/risk-manifest.js b/lib/validation/risk-manifest.js
+index 2ad11a9d..d7664b01 100644
+--- a/lib/validation/risk-manifest.js
++++ b/lib/validation/risk-manifest.js
+@@ -146,7 +146,9 @@ function assertOwnershipMappingsDoNotOverlap(selectors, packageRoots) {
+   }
+ }
+ 
+-function validateFallback(manifest, laneIds) {
++const REQUIRED_CONSERVATIVE_GATES = ['G0', 'G1', 'G3', 'G6'];
++
++function validateFallback(manifest, laneIds, gateIds) {
+   assert(manifest.unknown_owner_fallback?.lane === 'repository-baseline',
+     'unknown_owner_fallback must select repository-baseline');
+   assert(laneIds.has(manifest.unknown_owner_fallback?.lane), 'unknown_owner_fallback references an unknown lane');
+@@ -155,6 +157,11 @@ function validateFallback(manifest, laneIds) {
+   assert(Array.isArray(manifest.unknown_owner_fallback.required_gates)
+     && manifest.unknown_owner_fallback.required_gates.length > 0,
+   'unknown_owner_fallback must declare required_gates');
++  for (const gateId of REQUIRED_CONSERVATIVE_GATES) {
++    assert(gateIds.has(gateId), `conservative fallback references unknown gate ${gateId}`);
++    assert(manifest.unknown_owner_fallback.required_gates.includes(gateId),
++      `conservative fallback must require ${gateId}`);
++  }
+ }
+ 
+ function validateManifest(manifest, { verifyHash = true } = {}) {
+@@ -171,7 +178,7 @@ function validateManifest(manifest, { verifyHash = true } = {}) {
+   const riskIds = validateRisks(manifest.risks, gateIds);
+   const mappings = collectOwnershipMappings(manifest.owners, riskIds, laneIds);
+   assertOwnershipMappingsDoNotOverlap(mappings.selectors, mappings.packageRoots);
+-  validateFallback(manifest, laneIds);
++  validateFallback(manifest, laneIds, gateIds);
+ 
+   if (verifyHash) {
+     assert(/^sha256:[a-f0-9]{64}$/.test(manifest.manifest_hash), 'manifest_hash must be a SHA-256 digest');
+diff --git a/lib/workflow/enforce-stage.js b/lib/workflow/enforce-stage.js
+index fd8882d8..000d7b1a 100644
+--- a/lib/workflow/enforce-stage.js
++++ b/lib/workflow/enforce-stage.js
+@@ -221,12 +221,12 @@ function linkedWorkFolder(driver, issueId, branch) {
+ }
+ 
+ function planRepairCommand(branch, issueId) {
+-  const slug = String(branch || 'feature').replace(/^[^/]+\//, '');
+-  return `forge plan ${JSON.stringify(slug.split('-').filter(Boolean).join(' '))} --issue ${issueId}`;
++  const normalized = String(branch || '').replace(/^[^/]+\//, '').split('-').filter(Boolean).join(' ');
++  return `forge plan ${JSON.stringify(normalized || 'feature')} --issue ${issueId}`;
+ }
+ 
+ function enforcePlanAuthorityForDev({ driver, issueId, projectRoot, branch }) {
+-  if (!driver || typeof driver.loadPlanSnapshot !== 'function') return;
++  if (!projectRoot || !driver || typeof driver.loadPlanSnapshot !== 'function') return;
+   const snapshot = readPlanSnapshot(driver, issueId);
+   const slug = String(branch || '').replace(/^[^/]+\//, '');
+   const workFolder = linkedWorkFolder(driver, issueId, branch)
+@@ -451,16 +451,15 @@ async function enforceStageEntry({
+     : { driver: null, issueId: null };
+   const kernelActive = Boolean(kernelEnabled && driver && issueId);
+ 
+-  if (kernelActive && stageId === 'dev') {
+-    enforcePlanAuthorityForDev({ driver, issueId, projectRoot, branch: branch || detectBranchName(projectRoot) });
+-  }
+-
+   // On an allowed entry, record the stage as started (active) AND return a
+   // recordCompletion() the command runner calls after the handler SUCCEEDS — so
+   // a stage only counts as 'done' when its command actually passed (the ship
+   // gate below requires the predecessor to be done, not merely entered).
+   const finish = (result) => {
+     if (kernelActive) {
++      if (stageId === 'dev') {
++        enforcePlanAuthorityForDev({ driver, issueId, projectRoot, branch: branch || detectBranchName(projectRoot) });
++      }
+       recordStageRunSafe(driver, issueId, stageId, 'start', warn);
+       invalidateDownstreamStages(driver, issueId, stageId, warn);
+       result.recordCompletion = () => recordStageRunSafe(driver, issueId, stageId, 'complete', warn);
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index 6cf45c05..c3969c75 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -330,7 +330,8 @@ function createProcessTree(options = {}) {
+   // A Forge claim records FORGE_SESSION_ID. Use that same stable runtime token
+   // for the root manifest, while preserving an inherited manifest token for
+   // nested process trees that are already attached to their parent run.
+-  const token = String(options.token || env[TOKEN_ENV] || env[SESSION_ENV] || randomUUID());
++  const inheritedToken = nonEmptyString(options.token) || nonEmptyString(env[TOKEN_ENV]);
++  const token = String(inheritedToken || env[SESSION_ENV] || randomUUID());
+   const explicitManifestPath = nonEmptyString(options.manifestPath);
+   const environmentManifestPath = nonEmptyString(env[MANIFEST_ENV]);
+   const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
+@@ -355,7 +356,10 @@ function createProcessTree(options = {}) {
+   const existing = readProcessManifest(manifestPath, fsApi, processApi);
+   // An environment-provided path may belong to another run. Treat that as
+   // unverifiable and fail closed; never overwrite or reap another run's marker.
+-  const usable = !markerExists || (existing && existing.token === token);
++  const inheritedManifestVerified = !environmentManifestPath
++    || Boolean(inheritedToken && existing?.token === inheritedToken);
++  const usable = inheritedManifestVerified
++    && (!markerExists || (existing && existing.token === token));
+   let manifest = existing && existing.token === token
+     ? existing
+     : (usable ? createInitialManifest(token, processApi, getProcessIdentity, instanceId) : null);
+diff --git a/test/commands/gate-events-cli.test.js b/test/commands/gate-events-cli.test.js
+index f22c834f..a9e72fe2 100644
+--- a/test/commands/gate-events-cli.test.js
++++ b/test/commands/gate-events-cli.test.js
+@@ -69,6 +69,7 @@ describe('real forge gate CLI JSON and global flags', () => {
+       ok: true,
+       issue_id: ISSUE_ID,
+     });
++    expect(parseJson(status.stdout)).not.toHaveProperty('gate_id');
+ 
+     const check = run(__dirname, [
+       'gate', 'check', ISSUE_ID, 'gate.merge', '--json', '--path', root,
+@@ -121,4 +122,14 @@ describe('real forge gate CLI JSON and global flags', () => {
+       });
+     }
+   });
++
++  test('invalid decision input never reports an option token as gate_id', () => {
++    const root = tempRoots[0];
++    const invalid = run(__dirname, [
++      'gate', 'approve', ISSUE_ID, '--ttl', '5m', '--json', '--path', root,
++    ]);
++
++    expect(invalid.status).toBe(1);
++    expect(parseJson(invalid.stdout)).not.toHaveProperty('gate_id');
++  });
+ });
+diff --git a/test/commands/plan-link-issue.test.js b/test/commands/plan-link-issue.test.js
+index 846cd833..b971f861 100644
+--- a/test/commands/plan-link-issue.test.js
++++ b/test/commands/plan-link-issue.test.js
+@@ -100,6 +100,31 @@ describe('B4: plan --issue links an existing issue instead of forking a new one'
+     });
+   });
+ 
++  test('executePlan does not hide arbitrary plan snapshot read failures', async () => {
++    const repo = makeRepoWithResearch('snapshot-failure', 'Snapshot Failure');
++    nodeExecFileSync('git', ['checkout', '-q', '-b', 'feat/snapshot-failure'], { cwd: repo });
++    const existingId = 'kernel-snapshot-failure';
++    const driver = {
++      listWorktrees: () => [],
++      registerWorktree: () => {},
++      loadPlanSnapshot: () => {
++        throw new Error('corrupt issue metadata');
++      },
++    };
++
++    await withRepo(repo, async () => {
++      const result = await executePlan('snapshot failure', {
++        projectRoot: repo,
++        issue: existingId,
++        driver,
++        runIssueOperation: async () => ({ ok: true, data: { id: existingId } }),
++      });
++
++      expect(result.success).toBe(false);
++      expect(result.error).toContain('corrupt issue metadata');
++    });
++  });
++
+   test('F5: --issue with no value errors and never creates a duplicate', async () => {
+     const repo = makeRepoWithResearch('novalue-demo', 'No Value Demo');
+     const ops = [];
+diff --git a/test/forge-issues.test.js b/test/forge-issues.test.js
+index c4711694..d8f3fe9e 100644
+--- a/test/forge-issues.test.js
++++ b/test/forge-issues.test.js
+@@ -435,6 +435,24 @@ describe('forge issue service contract', () => {
+ 		});
+ 	});
+ 
++	test('rejects invalid issue-contract policy before creating a service', async () => {
++		const { runIssueOperation } = require('../lib/forge-issues');
++		let created = 0;
++
++		await expect(runIssueOperation('ready', [], '/repo', {
++			createService: () => {
++				created += 1;
++				return { run: async () => ({ success: true }) };
++			},
++			loadRuntimeGraphConfig: () => ({
++				config: { issues: { readiness: { contracts: { enabled: 'true' } } } },
++				errors: [],
++			}),
++		})).rejects.toThrow('issues.readiness.contracts.enabled must be a boolean');
++
++		expect(created).toBe(0);
++	});
++
+ 	test('threads only an injected authoritative adoption verifier, never configured strings', async () => {
+ 		const { runIssueOperation } = require('../lib/forge-issues');
+ 		const verifier = () => true;
+diff --git a/test/issue-render.test.js b/test/issue-render.test.js
+index cd6eb044..40a34b40 100644
+--- a/test/issue-render.test.js
++++ b/test/issue-render.test.js
+@@ -146,6 +146,26 @@ describe('renderIssueShow', () => {
+ 		expect(out).toContain('contract_missing (risk)');
+ 	});
+ 
++	test('renders expected, actual, and declared contract reason values', () => {
++		const out = renderIssueShow(envelope('issue.show', {
++			...data,
++			readiness_reasons: [
++				{ code: 'contract_invalid', field: 'version', expected: 1, actual: 2 },
++				{
++					code: 'contract_mismatch',
++					field: 'dependencies',
++					expected: ['issue-a'],
++					declared: ['issue-b'],
++				},
++			],
++		}));
++
++		expect(out).toContain('contract_invalid (version, expected 1, actual 2)');
++		expect(out).toContain(
++			'contract_mismatch (dependencies, expected ["issue-a"], declared ["issue-b"])',
++		);
++	});
++
+   test('renders the body and acceptance criteria', () => {
+     const out = renderIssueShow(envelope('issue.show', data));
+     expect(out).toContain('Default output becomes text');
+diff --git a/test/kernel/claim-reconciler.test.js b/test/kernel/claim-reconciler.test.js
+index 9933dd34..da9c986a 100644
+--- a/test/kernel/claim-reconciler.test.js
++++ b/test/kernel/claim-reconciler.test.js
+@@ -43,6 +43,27 @@ function manifestFor(candidate, overrides = {}) {
+ }
+ 
+ describe('kernel claim reconciler', () => {
++	test('forwards claim read context and config to the driver', async () => {
++		const received = [];
++		const context = { actor: 'review-agent' };
++		const config = { backend: 'kernel' };
++		const result = await reconcileKernelClaims({
++			driver: {
++				listWorktrees: () => [],
++				releaseExactClaimIfWorktreeMissing: () => false,
++				listActiveClaims: (...args) => {
++					received.push(args);
++					return [];
++				},
++			},
++			context,
++			config,
++		});
++
++		expect(received).toEqual([[context, config]]);
++		expect(result).toEqual({ examined: 0, released: [] });
++	});
++
+ 	test('uses one propagated runtime token for the process manifest and claim session', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-runtime-'));
+ 		tempDirs.push(root);
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index a0c34882..8a3e3f1b 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -114,6 +114,30 @@ describe('scripts/process-tree.js', () => {
+     expect(result.killed).toEqual([9012]);
+   });
+ 
++  test('rejects an inherited manifest that only matches the session id', () => {
++    const manifestPath = path.join(makeTempDir(), 'run.json');
++    createProcessTree({
++      manifestPath,
++      token: 'shared-session',
++      platform: 'linux',
++      processApi: { pid: 9000 },
++      getProcessIdentity: () => 'parent-start',
++    });
++
++    const stale = createProcessTree({
++      env: {
++        [MANIFEST_ENV]: manifestPath,
++        FORGE_SESSION_ID: 'shared-session',
++      },
++      platform: 'linux',
++      processApi: { pid: 9001 },
++      getProcessIdentity: () => 'other-start',
++    });
++
++    expect(stale.envFor({})[MANIFEST_ENV]).toBeUndefined();
++    expect(readProcessManifest(manifestPath).owner.pid).toBe(9000);
++  });
++
+   test('escalates a signal cleanup to timeout cleanup without double-killing', () => {
+     const manifestPath = path.join(makeTempDir(), 'run.json');
+     const kills = [];
+diff --git a/test/validation/risk-manifest.test.js b/test/validation/risk-manifest.test.js
+index d4c41dc0..ba8966de 100644
+--- a/test/validation/risk-manifest.test.js
++++ b/test/validation/risk-manifest.test.js
+@@ -53,6 +53,7 @@ describe('risk-owned validation manifest', () => {
+     expect(selected.required_gates).toEqual(['G0', 'G1', 'G4']);
+     expect(selected.test_ids).toEqual([
+       'test/kernel/**/*.test.js',
++      'test/validation/risk-manifest-generator.test.js',
+       'test/validation/risk-manifest.test.js',
+     ]);
+     expect(selected.changed_surfaces.map((surface) => surface.value)).toEqual([
+@@ -100,6 +101,10 @@ describe('risk-owned validation manifest', () => {
+ 
+     expect(exactFile.status).toBe('exact');
+     expect(exactFile.owner_ids).toEqual(['validation-control']);
++    expect(exactFile.test_ids).toEqual([
++      'test/validation/risk-manifest-generator.test.js',
++      'test/validation/risk-manifest.test.js',
++    ]);
+     expect(directoryRoot.status).toBe('exact');
+     expect(directoryRoot.owner_ids).toEqual(['kernel-authority']);
+   });
+@@ -204,6 +209,8 @@ describe('risk-owned validation manifest', () => {
+       'validation.command.g0-static',
+       'validation.command.g1-manifest-check',
+       'validation.command.g1-selector',
++      'validation.command.g3-contract',
++      'validation.command.g6-platform',
+       'validation.command.repository-baseline',
+     ]);
+   });
+@@ -238,6 +245,14 @@ describe('risk-owned validation manifest', () => {
+     expect(() => loadRiskManifest(original)).toThrow(/unknown command/i);
+   });
+ 
++  test('rejects a conservative fallback that drops a mandatory gate', () => {
++    const original = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
++    original.unknown_owner_fallback.required_gates = ['G0', 'G1', 'G3'];
++    original.manifest_hash = hashManifest(original);
++
++    expect(() => loadRiskManifest(original)).toThrow(/conservative fallback.*G6/i);
++  });
++
+   test('normalizes and de-duplicates changed surfaces before selection', () => {
+     const manifest = loadRiskManifest(MANIFEST_PATH);
+     const selected = selectValidation({
+diff --git a/test/workflow/enforce-stage-kernel.test.js b/test/workflow/enforce-stage-kernel.test.js
+index fdb22982..3d8a15b2 100644
+--- a/test/workflow/enforce-stage-kernel.test.js
++++ b/test/workflow/enforce-stage-kernel.test.js
+@@ -19,6 +19,7 @@ const path = require('node:path');
+ const { enforceStageEntry } = require('../../lib/workflow/enforce-stage');
+ const { createLocalBroker } = require('../../lib/kernel/broker');
+ const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const { writeWorkflowState } = require('../../lib/workflow/state');
+ 
+ const TIMEOUT = 15000;
+ 
+@@ -26,6 +27,16 @@ const TIMEOUT = 15000;
+ // workflow-state logic (health prerequisites are covered elsewhere).
+ const HEALTHY = { healthy: true, hardStop: false, diagnostics: [] };
+ 
++function createWorkflowState(currentStage, classification) {
++  return {
++    currentStage,
++    completedStages: [],
++    skippedStages: [],
++    workflowDecisions: { classification, reason: 'fixture', userOverride: false, overrides: [] },
++    parallelTracks: [],
++  };
++}
++
+ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () => {
+   let tmpDir;
+   let driver;
+@@ -206,6 +217,83 @@ describe('B1: enforceStageEntry uses the kernel as stage-state authority', () =>
+     expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('dev');
+   }, TIMEOUT);
+ 
++  test('dev without a project root preserves the legacy unmanaged path', async () => {
++    const snapshotDriver = {
++      loadPlanSnapshot: () => ({ schema: 'forge.plan.v1' }),
++      listStageRuns: () => [],
++      recordStageRun: () => {},
++    };
++
++    const result = await enforceStageEntry({
++      commandName: 'dev',
++      kernelDriver: snapshotDriver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    });
++
++    expect(result.allowed).toBe(true);
++  }, TIMEOUT);
++
++  test('empty normalized branch slugs use feature in the plan repair command', async () => {
++    const repairDriver = {
++      loadPlanSnapshot: () => null,
++      listWorktrees: () => [{
++        issue_id: issueId,
++        branch: 'feat/---',
++        state: 'active',
++        work_folder: 'docs/work/missing',
++      }],
++      listStageRuns: () => [],
++      recordStageRun: () => {},
++    };
++
++    await expect(enforceStageEntry({
++      commandName: 'dev',
++      projectRoot,
++      kernelDriver: repairDriver,
++      activeIssueId: issueId,
++      branch: 'feat/---',
++      health: HEALTHY,
++    })).rejects.toThrow(`forge plan "feature" --issue ${issueId}`);
++  }, TIMEOUT);
++
++  test('a rejected file-state gate does not persist plan authority or start dev', async () => {
++    const workFolder = path.join('docs', 'work', 'rejected-dev');
++    fs.mkdirSync(path.join(projectRoot, workFolder), { recursive: true });
++    fs.writeFileSync(path.join(projectRoot, workFolder, 'plan.md'), '# Plan\n');
++    fs.writeFileSync(path.join(projectRoot, workFolder, 'tasks.md'), '# Tasks\n');
++    fs.writeFileSync(
++      path.join(projectRoot, '.forge-state.json'),
++      writeWorkflowState(createWorkflowState('ship', 'standard')),
++    );
++    let snapshotTransitions = 0;
++    let stageWrites = 0;
++    const gatedDriver = {
++      loadPlanSnapshot: () => null,
++      listWorktrees: () => [{
++        issue_id: issueId,
++        branch: 'feat/rejected-dev',
++        state: 'active',
++        work_folder: workFolder.replaceAll('\\', '/'),
++      }],
++      recordPlanSnapshotTransition: () => { snapshotTransitions += 1; },
++      recordStageRun: () => { stageWrites += 1; },
++      listStageRuns: () => [],
++    };
++
++    await expect(enforceStageEntry({
++      commandName: 'dev',
++      projectRoot,
++      kernelDriver: gatedDriver,
++      activeIssueId: issueId,
++      branch: 'feat/rejected-dev',
++      health: HEALTHY,
++    })).rejects.toThrow(/blocked/i);
++
++    expect(snapshotTransitions).toBe(0);
++    expect(stageWrites).toBe(0);
++  }, TIMEOUT);
++
+   test('B1: ship with a linked issue and empty stage history is allowed, warns, and records ship start', async () => {
+     // Fresh setup / in-flight branch: an issue IS linked but no plan->validate
+     // history was ever walked. Degrade-to-warn (default) so incremental adoption
+diff --git a/validation/risk-manifest.source.yaml b/validation/risk-manifest.source.yaml
+index babcae71..04de3fef 100644
+--- a/validation/risk-manifest.source.yaml
++++ b/validation/risk-manifest.source.yaml
+@@ -144,7 +144,7 @@ owners:
+       - { kind: path, prefix: "validation/" }
+       - { kind: schema, prefix: "forge.validation." }
+     risk_ids: [validation-selection]
+-    canonical_test_ids: ["test/validation/risk-manifest.test.js"]
++    canonical_test_ids: ["test/validation/risk-manifest.test.js", "test/validation/risk-manifest-generator.test.js"]
+     dependent_routes: [work-packet, run-receipt]
+     platform_runtime_additions: []
+     lanes: [validation-selector]
+@@ -163,4 +163,4 @@ owners:
+ 
+ unknown_owner_fallback:
+   lane: repository-baseline
+-  required_gates: [G0, G1]
++  required_gates: [G0, G1, G3, G6]
+diff --git a/validation/risk-manifest.v1.json b/validation/risk-manifest.v1.json
+index fe543c0a..fdb09c59 100644
+--- a/validation/risk-manifest.v1.json
++++ b/validation/risk-manifest.v1.json
+@@ -256,7 +256,7 @@
+       "id": "validation-selector"
+     }
+   ],
+-  "manifest_hash": "sha256:403354dc63f2f0cb7344bedcce8e4fba1022577ca58f3bd848bc42a970a6803a",
++  "manifest_hash": "sha256:d7b0d384d2e3636e37d6544f79aaf881ef63850acb20439e1d8a5cf80ab300b6",
+   "owners": [
+     {
+       "canonical_test_ids": [
+@@ -367,6 +367,7 @@
+     },
+     {
+       "canonical_test_ids": [
++        "test/validation/risk-manifest-generator.test.js",
+         "test/validation/risk-manifest.test.js"
+       ],
+       "dependent_routes": [
+@@ -508,12 +509,14 @@
+     }
+   ],
+   "schema_id": "forge.validation.risk-manifest.v1",
+-  "source_hash": "sha256:4dde512a7669b83e5e6c87cebbac69b525ed8864d4fa95b7cd3ece91b4295fe4",
++  "source_hash": "sha256:c8bc469125e76a562d62218e25bbfa60bb4541190c9012b22421bcb3f5d87d96",
+   "unknown_owner_fallback": {
+     "lane": "repository-baseline",
+     "required_gates": [
+       "G0",
+-      "G1"
++      "G1",
++      "G3",
++      "G6"
+     ]
+   }
+ }
+-- 
+2.51.0.windows.1
+

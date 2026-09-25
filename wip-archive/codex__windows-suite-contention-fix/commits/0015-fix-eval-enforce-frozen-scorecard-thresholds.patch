@@ -1,0 +1,112 @@
+From 7fc2826c1f7ba85226f7a76473d0d2d737e1daea Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 16:01:30 +0530
+Subject: [PATCH] fix(eval): enforce frozen scorecard thresholds
+
+---
+ scripts/lib/promotion-scorecard.js    | 18 ++++++++----------
+ test/eval/promotion-scorecard.test.js | 20 ++++++++++++++++----
+ 2 files changed, 24 insertions(+), 14 deletions(-)
+
+diff --git a/scripts/lib/promotion-scorecard.js b/scripts/lib/promotion-scorecard.js
+index 4b57e3d6..8c802e0e 100644
+--- a/scripts/lib/promotion-scorecard.js
++++ b/scripts/lib/promotion-scorecard.js
+@@ -76,6 +76,11 @@ function collectMatrix(pairs) {
+ function pairingError(tier, models, cases, seen) {
+   if (models.length !== 2) return 'model_pair_incomplete';
+   if (cases.size !== tier) return 'case_count_incomplete';
++  const splitCounts = { DEV: 0, TEST: 0 };
++  for (const { split } of cases.values()) splitCounts[split] += 1;
++  if (splitCounts.DEV !== tier * 0.6 || splitCounts.TEST !== tier * 0.4) {
++    return 'split_count_incomplete';
++  }
+ 
+   for (const caseId of cases.keys()) {
+     for (const model of models) {
+@@ -228,13 +233,7 @@ function casePassRate(pairs, armName) {
+   return [...cases.values()].filter(Boolean).length / cases.size;
+ }
+ 
+-function hasTokenException(exception) {
+-  return exception?.preregistered === true
+-    && typeof exception.reason === 'string'
+-    && exception.reason.trim().length > 0;
+-}
+-
+-function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, operations, tokenCapException }) {
++function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, operations }) {
+   const perModelDelta = models.every((model) => {
+     const stats = absolute.byModel[model];
+     return stats.bounded.rate - stats.current.rate >= 0;
+@@ -250,7 +249,7 @@ function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, ope
+     perModelDelta,
+     highRiskRegression: highRiskDelta >= -0.02,
+     latency: operations.latencyP95 <= 1.25,
+-    tokens: operations.tokenMedian <= 1.20 || hasTokenException(tokenCapException),
++    tokens: operations.tokenMedian <= 1.20,
+   };
+ }
+ 
+@@ -279,7 +278,7 @@ function incomplete(tier, reason) {
+   };
+ }
+ 
+-function scorePromotion({ tier, pairs, tokenCapException } = {}) {
++function scorePromotion({ tier, pairs } = {}) {
+   const validation = validatePairs(tier, pairs);
+   if (validation.error) return incomplete(tier, validation.error);
+ 
+@@ -294,7 +293,6 @@ function scorePromotion({ tier, pairs, tokenCapException } = {}) {
+     absolute,
+     bootstrap,
+     operations,
+-    tokenCapException,
+   });
+   if (tier === 30) {
+     return {
+diff --git a/test/eval/promotion-scorecard.test.js b/test/eval/promotion-scorecard.test.js
+index a2cb9bf1..1e11c654 100644
+--- a/test/eval/promotion-scorecard.test.js
++++ b/test/eval/promotion-scorecard.test.js
+@@ -102,6 +102,17 @@ describe('promotion scorecard', () => {
+     });
+   });
+ 
++  test.each([30, 100, 300])('requires the frozen 60/40 unique-case split at tier %i', (tier) => {
++    const wrongSplit = completePairs(tier);
++    for (const pair of wrongSplit) {
++      const caseNumber = Number.parseInt(pair.caseId.slice('case-'.length), 10);
++      if (pair.split === 'TEST' && caseNumber <= tier - 3) pair.split = 'DEV';
++    }
++    expect(scorePromotion({ tier, pairs: wrongSplit })).toMatchObject({
++      status: 'INCOMPLETE', winner: null, reasons: ['split_count_incomplete'],
++    });
++  });
++
+   test('applies hard-failure and high-risk TEST vetoes', () => {
+     const hardFailure = completePairs(100);
+     hardFailure[0].bounded.hardFailure = true;
+@@ -155,14 +166,15 @@ describe('promotion scorecard', () => {
+     }).reasons).toContain('token_cap');
+   });
+ 
+-  test('accepts only an explicit preregistered token-cap exception', () => {
++  test('never permits an exception to the token cap', () => {
+     const pairs = completePairs(100, { boundedTokens: 121 });
+-    expect(scorePromotion({ tier: 100, pairs, tokenCapException: true }).status).toBe('FAIL');
+-    expect(scorePromotion({
++    const score = scorePromotion({
+       tier: 100,
+       pairs,
+       tokenCapException: { preregistered: true, reason: 'approved long-context arm' },
+-    })).toMatchObject({ status: 'PASS', winner: 'bounded' });
++    });
++    expect(score).toMatchObject({ status: 'FAIL', winner: null });
++    expect(score.reasons).toContain('token_cap');
+   });
+ 
+   test('uses the 300-case tier only as confirmation and never grants merge authority', () => {
+-- 
+2.51.0.windows.1
+

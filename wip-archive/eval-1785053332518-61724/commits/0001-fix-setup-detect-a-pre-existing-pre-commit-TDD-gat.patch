@@ -1,0 +1,783 @@
+From de8cffd3ab8230bfd60fa23e53107cf343577ee0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 13:15:19 +0530
+Subject: [PATCH] fix(setup): detect a pre-existing pre-commit TDD gate and
+ defer instead of stacking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An adopter whose repo already gates pre-commit on source/test coupling (e.g.
+scripts/check-source-test-coupling.mjs) came out of `forge setup` with TWO TDD
+gates blocking the same commit: theirs plus Forge's default-ON rail.tdd_intent.
+There was no detection and no reconciliation — the only way out was the
+`forge gate disable rail.tdd_intent` workaround.
+
+`forge setup` now detects an existing pre-commit TDD/coupling gate BEFORE wiring
+anything and defers to it:
+  - no forge-tdd job in a freshly written lefthook.yml
+  - no native .git/hooks/pre-commit (pre-push is still wired)
+  - rail.tdd_intent turned off in .forge/config.yaml so the hook scripts are
+    genuinely inert rather than silently redundant
+
+The deferral is VISIBLE, never a silent skip: setup prints what it detected,
+what it did not install, and the one-line `forge gate enable rail.tdd_intent`
+opt-in. An explicit rail.tdd_intent setting is never overwritten, so choosing
+Forge's gate survives later setup runs.
+
+Detection is by MECHANISM, not a filename list: it enumerates the pre-commit
+commands whatever runner is actually installed will execute (lefthook, husky,
+the pre-commit framework, a raw .git/hooks/pre-commit) and classifies those
+command strings. Forge's own gate is excluded first, so a second `forge setup`
+never defers to the gate its own first run installed. A pre-commit mechanism
+that cannot be read falls to the safe side — defer and report, since stacking
+is the reported failure.
+
+Repos with no existing gate are unaffected: rail.tdd_intent stays default-ON.
+
+Fixes: 7eca930c-e0d5-4866-bbfa-e6ebd0fa100e
+Fixes: 2699b234-de35-4308-b0fd-210032acf3c5
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ AGENTS.md                      |   1 +
+ lib/commands/setup.js          |  68 +++++++-
+ lib/existing-tdd-gate.js       | 253 ++++++++++++++++++++++++++++++
+ lib/lefthook-wiring.js         |  22 ++-
+ test/existing-tdd-gate.test.js | 273 +++++++++++++++++++++++++++++++++
+ 5 files changed, 614 insertions(+), 3 deletions(-)
+ create mode 100644 lib/existing-tdd-gate.js
+ create mode 100644 test/existing-tdd-gate.test.js
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 8df1abab..7e9e475c 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -149,6 +149,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated
+ - Offers guided recovery (add tests now, skip with tech debt tracking, emergency override)
+ - No AI decision required - automatic validation
+ - **Strong default, not a hard floor.** The TDD gate is the default-ON `rail.tdd_intent` rail; turn it off with `forge gate disable rail.tdd_intent` (the `minimal` adoption profile ships it off). The installed hooks read the resolved config at run time, so a disabled rail makes them genuinely inert — enforcement honestly follows your config.
++- **Defers to a gate you already have.** If your repo already runs a TDD / source-test coupling check on pre-commit (any runner: lefthook, husky, the `pre-commit` framework, a raw `.git/hooks/pre-commit`), `forge setup` detects it, does **not** install a second gate on the same commit, turns `rail.tdd_intent` off, and says so. Prefer Forge's gate? Remove yours and run `forge gate enable rail.tdd_intent` — an explicit setting is never overwritten by a later setup.
+ 
+ **Pre-push hook validates tests:**
+ - Branch protection: blocks direct push to `main`/`master`
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 1b5d5d20..bdb42fd9 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -69,11 +69,13 @@ const { smartMergeAgentsMd } = require('../smart-merge');
+ const { checkLefthookStatus } = require('../lefthook-check');
+ const {
+   FORGE_USER_LEFTHOOK_YML,
++  FORGE_USER_LEFTHOOK_YML_NO_TDD,
+   forgeShouldWriteLefthookConfig,
+   installNativeGitHooks,
+   verifyHooksActive,
+   resolveGitHooksDir,
+ } = require('../lefthook-wiring');
++const { detectExistingTddGate, describeExistingGateDeferral } = require('../existing-tdd-gate');
+ const { resolveShellRuntime } = require('../runtime-health');
+ const {
+   buildCodexSkillInstallPlan,
+@@ -2749,6 +2751,40 @@ function resolveHookEnforcementState(root = projectRoot) {
+   }
+ }
+ 
++// True when .forge/config.yaml already states a rail.tdd_intent choice EXPLICITLY (either
++// config shape the resolver accepts). Setup must never overwrite that: otherwise the
++// `forge gate enable rail.tdd_intent` we advertise would be undone by the next `forge setup`.
++function hasExplicitTddRailChoice(root) {
++  try {
++    const { loadRawConfig } = require('../config-writer');
++    const config = loadRawConfig(root) || {};
++    const viaGates = config.workflow && config.workflow.gates && config.workflow.gates['rail.tdd_intent'];
++    const viaRails = config.rails && config.rails['rail.tdd_intent'];
++    return Boolean(
++      (viaGates && viaGates.enabled !== undefined) || (viaRails && viaRails.enabled !== undefined)
++    );
++  } catch {
++    return false; // unreadable config → treat as unset; setConfigOverride reports any real failure
++  }
++}
++
++/**
++ * Defer Forge's TDD gate to a pre-existing one: turn `rail.tdd_intent` off in
++ * .forge/config.yaml so the installed hook scripts are genuinely inert, instead of stacking a
++ * second gate on the same commit (kernel 5b425a85 / 2699b234). No-op when nothing was detected
++ * (a repo with no gate keeps the default-ON rail) or when the user already chose explicitly.
++ *
++ * @returns {{ deferred: boolean, reason?: string }}
++ */
++function applyExistingGateDeferral(root, detection) {
++  if (!detection || !detection.found) return { deferred: false, reason: 'no-existing-gate' };
++  if (hasExplicitTddRailChoice(root)) return { deferred: false, reason: 'explicit-user-choice' };
++
++  const { setConfigOverride } = require('../config-writer');
++  setConfigOverride(root, ['workflow', 'gates', 'rail.tdd_intent', 'enabled'], false);
++  return { deferred: true };
++}
++
+ function describeHookEnforcement(root = projectRoot) {
+   const state = resolveHookEnforcementState(root);
+   if (!state.resolved) {
+@@ -2830,6 +2866,21 @@ function installGitHooks(options = {}) { // NOSONAR — Extracted as-is from bin
+   // init deliberately degrades to a warning rather than failing, and repair runs inside
+   // another command's flow.
+   const loud = options.loud === true;
++
++  // BEFORE wiring anything: does this repo already enforce TDD/source-test coupling on
++  // pre-commit? If so, defer to it rather than silently stacking a second gate on the same
++  // commit — the in-the-wild beta.3 report (kernel 5b425a85 / 2699b234). The deferral is
++  // VISIBLE (report below) and reversible with one command.
++  const existingGate = detectExistingTddGate(projectRoot);
++  const deferral = applyExistingGateDeferral(projectRoot, existingGate);
++  if (existingGate.found) {
++    console.warn(describeExistingGateDeferral(existingGate));
++    if (!deferral.deferred && deferral.reason === 'explicit-user-choice') {
++      console.log('    (rail.tdd_intent is already set explicitly in .forge/config.yaml — leaving your choice alone.)');
++    }
++    addSetupNote(`Deferred Forge's TDD gate to the existing pre-commit gate in ${existingGate.source}.`);
++  }
++
+   // Honest header: when the TDD gate is disabled in config the hooks install but are inert,
+   // so don't announce "(TDD enforcement)" for a state the user turned off (issue eda6d866).
+   console.log(
+@@ -2869,7 +2920,13 @@ function installGitHooks(options = {}) { // NOSONAR — Extracted as-is from bin
+     // clobber a config that already has active jobs (kernel c713fce7).
+     const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
+     if (forgeShouldWriteLefthookConfig(lefthookTarget)) {
+-      fs.writeFileSync(lefthookTarget, FORGE_USER_LEFTHOOK_YML, 'utf8');
++      // When the repo already gates pre-commit on TDD/coupling, write the variant WITHOUT
++      // Forge's forge-tdd job so the commit is never blocked by two gates.
++      fs.writeFileSync(
++        lefthookTarget,
++        existingGate.found ? FORGE_USER_LEFTHOOK_YML_NO_TDD : FORGE_USER_LEFTHOOK_YML,
++        'utf8'
++      );
+       actionLog.add('lefthook.yml', 'created');
+       console.log('  ✓ Created lefthook.yml');
+     }
+@@ -2917,7 +2974,12 @@ function installGitHooks(options = {}) { // NOSONAR — Extracted as-is from bin
+   // inert (B3). This repair path only warns (never sets a failure exit code) since it can
+   // run mid-stage under enforce-stage's repairWorkflowRuntimeAssets().
+   if (!lefthookInstalled) {
+-    const native = installNativeGitHooks(projectRoot);
++    // Skip the native pre-commit hook when the repo already has its own TDD/coupling gate —
++    // pre-push is still wired, so only the double-gated surface is given up.
++    const native = installNativeGitHooks(
++      projectRoot,
++      existingGate.found ? { skipHooks: ['pre-commit'] } : {}
++    );
+     if (native.installed) {
+       console.log(`  ✓ Native git hooks installed (${native.written.join(', ')}) - lefthook fallback`);
+     } else if (native.skipped && native.skipped.length > 0) {
+@@ -4377,6 +4439,8 @@ module.exports = {
+   ensureGitHooksInstalled,
+   forgeShouldWriteLefthookConfig,
+   FORGE_USER_LEFTHOOK_YML,
++  applyExistingGateDeferral,
++  installGitHooks,
+   setupClaudeMcpConfig,
+   setupCursorMcpConfig,
+   setupClaudePermissions,
+diff --git a/lib/existing-tdd-gate.js b/lib/existing-tdd-gate.js
+new file mode 100644
+index 00000000..942c3f36
+--- /dev/null
++++ b/lib/existing-tdd-gate.js
+@@ -0,0 +1,253 @@
++/**
++ * Detect a repo's PRE-EXISTING pre-commit TDD / source-test coupling gate, so `forge setup`
++ * can DEFER to it instead of stacking Forge's own `rail.tdd_intent` gate on top.
++ *
++ * The in-the-wild beta.3 adoption report (kernel 5b425a85, predecessor 2699b234): a repo that
++ * already ships e.g. `scripts/check-source-test-coupling.mjs` on pre-commit ended up with TWO
++ * TDD gates blocking the same commit, with no detection and no reconciliation.
++ *
++ * Detection is by MECHANISM, not by a filename list: we enumerate the pre-commit COMMANDS that
++ * whatever pre-commit runner is actually installed (lefthook / husky / the `pre-commit`
++ * framework / a raw `.git/hooks/pre-commit`) will really execute, then classify those command
++ * strings. A repo's gate can be named anything, so the mechanism is what we key on.
++ *
++ * @module lib/existing-tdd-gate
++ */
++
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++const YAML = require('yaml');
++
++const {
++  FORGE_NATIVE_HOOK_SENTINEL,
++  resolveGitHooksDir,
++} = require('./lefthook-wiring');
++
++// A pre-commit command is a TDD/coupling gate when its text carries one of these narrow
++// tokens: a `tdd` word, a source↔test coupling phrase, or an explicit require/check/enforce
++// tests task. Deliberately narrow — a plain test RUNNER (`npm test`) or a formatter is not a
++// TDD-intent gate and must not trigger a deferral.
++const TDD_GATE_PATTERNS = [
++  /(^|[^a-z0-9])tdd([^a-z0-9]|$)/i,
++  /(source[-_. ]?test|test[-_. ]?source)/i,
++  /((test|spec)[-_. ]?coupling|coupling[-_. ]?(test|spec|check))/i,
++  /(require|enforce|verify|guard)[-_. ]?(tests?|specs?)([^a-z0-9]|$)/i,
++  /check[-_. ]?(tests?|specs?)([^a-z0-9]|$)/i,
++];
++
++// Commands that ARE Forge's own gate. Excluded before classification so a second `forge setup`
++// never "detects" the gate its own first run installed and defers to itself.
++const FORGE_OWN_COMMAND_MARKERS = ['check-tdd.js', 'forge-native-hook.js'];
++
++// Signatures of a hook lefthook GENERATED (a disposable artifact that only dispatches to
++// lefthook.yml, which we read directly) — mirrors lib/lefthook-wiring.js's own classifier.
++const LEFTHOOK_GENERATED_MARKERS = ['call_lefthook', 'LEFTHOOK_BIN'];
++
++const LEFTHOOK_CONFIG_FILES = [
++  'lefthook.yml',
++  'lefthook.yaml',
++  '.lefthook.yml',
++  '.lefthook.yaml',
++  'lefthook-local.yml',
++  'lefthook-local.yaml',
++];
++
++const PRE_COMMIT_FRAMEWORK_FILES = ['.pre-commit-config.yaml', '.pre-commit-config.yml'];
++
++function isForgeOwnCommand(text) {
++  return FORGE_OWN_COMMAND_MARKERS.some((marker) => text.includes(marker));
++}
++
++function looksLikeTddGate(text) {
++  return TDD_GATE_PATTERNS.some((pattern) => pattern.test(text));
++}
++
++function readFileOrNull(absolute) {
++  try {
++    return fs.readFileSync(absolute, 'utf8');
++  } catch {
++    return null;
++  }
++}
++
++// One candidate = one command string a pre-commit runner will execute, plus where it came from.
++function candidate(source, command) {
++  return { source, command: String(command).trim() };
++}
++
++// Shell-script hooks (husky, raw .git/hooks): every meaningful line is a command.
++function commandsFromScript(source, body) {
++  return body
++    .split(/\r?\n/)
++    .map((line) => line.trim())
++    .filter((line) => line.length > 0 && !line.startsWith('#'))
++    .map((line) => candidate(source, line));
++}
++
++// lefthook pre-commit: `commands.<name>.run`, `scripts.<name>`, and the v1.11+ `jobs` list.
++// The job NAME carries signal too (a job called `tdd-guard`), so both are collected.
++function commandsFromLefthookPreCommit(source, preCommit) {
++  const out = [];
++  if (!preCommit || typeof preCommit !== 'object') return out;
++
++  for (const [name, job] of Object.entries(preCommit.commands || {})) {
++    out.push(candidate(source, `${name}: ${(job && job.run) || ''}`));
++  }
++  for (const [name, job] of Object.entries(preCommit.scripts || {})) {
++    out.push(candidate(source, `${name} ${(job && job.runner) || ''}`));
++  }
++  for (const job of Array.isArray(preCommit.jobs) ? preCommit.jobs : []) {
++    if (job && typeof job === 'object') {
++      out.push(candidate(source, `${job.name || ''}: ${job.run || ''}`));
++    }
++  }
++  return out;
++}
++
++// Returns { candidates } normally, or { unknown: true } when a pre-commit mechanism is present
++// but its content cannot be read/parsed — we cannot rule out a TDD gate, so the caller defers.
++function collectFromLefthookConfigs(projectRoot) {
++  const candidates = [];
++  for (const name of LEFTHOOK_CONFIG_FILES) {
++    const absolute = path.join(projectRoot, name);
++    if (!fs.existsSync(absolute)) continue;
++    const body = readFileOrNull(absolute);
++    if (body === null) return { unknown: true, source: name };
++
++    let doc;
++    try {
++      doc = YAML.parse(body);
++    } catch {
++      // Unparseable: only ambiguous if it actually declares a pre-commit section.
++      if (body.includes('pre-commit')) return { unknown: true, source: name };
++      continue;
++    }
++    if (!doc || typeof doc !== 'object') continue;
++    candidates.push(...commandsFromLefthookPreCommit(name, doc['pre-commit']));
++  }
++  return { candidates };
++}
++
++function collectFromHusky(projectRoot) {
++  const relative = '.husky/pre-commit'; // display label — always POSIX-style, never OS-separated
++  const absolute = path.join(projectRoot, '.husky', 'pre-commit');
++  if (!fs.existsSync(absolute)) return { candidates: [] };
++  const body = readFileOrNull(absolute);
++  if (body === null) return { unknown: true, source: relative };
++  return { candidates: commandsFromScript(relative, body) };
++}
++
++function collectFromPreCommitFramework(projectRoot) {
++  const candidates = [];
++  for (const name of PRE_COMMIT_FRAMEWORK_FILES) {
++    const absolute = path.join(projectRoot, name);
++    if (!fs.existsSync(absolute)) continue;
++    const body = readFileOrNull(absolute);
++    if (body === null) return { unknown: true, source: name };
++
++    let doc;
++    try {
++      doc = YAML.parse(body);
++    } catch {
++      return { unknown: true, source: name };
++    }
++    for (const repo of (doc && Array.isArray(doc.repos)) ? doc.repos : []) {
++      for (const hook of (repo && Array.isArray(repo.hooks)) ? repo.hooks : []) {
++        if (!hook || typeof hook !== 'object') continue;
++        candidates.push(candidate(name, `${hook.id || ''} ${hook.name || ''} ${hook.entry || ''}`));
++      }
++    }
++  }
++  return { candidates };
++}
++
++// The raw hook git will actually run. Forge's own native hook and a lefthook-GENERATED
++// dispatcher are skipped: neither is a third-party gate (the latter's real jobs live in
++// lefthook.yml, which collectFromLefthookConfigs already read).
++function collectFromNativeHook(projectRoot) {
++  const hooksDir = resolveGitHooksDir(projectRoot);
++  if (!hooksDir) return { candidates: [] };
++  const absolute = path.join(hooksDir, 'pre-commit');
++  if (!fs.existsSync(absolute)) return { candidates: [] };
++  const body = readFileOrNull(absolute);
++  if (body === null) return { unknown: true, source: 'pre-commit (git hooks dir)' };
++  if (body.includes(FORGE_NATIVE_HOOK_SENTINEL)) return { candidates: [] };
++  if (LEFTHOOK_GENERATED_MARKERS.some((marker) => body.includes(marker))) return { candidates: [] };
++  return { candidates: commandsFromScript('pre-commit (git hooks dir)', body) };
++}
++
++/**
++ * Detect a pre-existing pre-commit TDD / source-test coupling gate in the project.
++ *
++ * @param {string} projectRoot - Absolute path to the project root.
++ * @returns {{ found: boolean, source?: string, command?: string, unknown?: boolean }}
++ *   `found:true` with `source`/`command` for a classified gate; `found:true, unknown:true`
++ *   when a pre-commit mechanism exists but could not be read (defer — the safe side);
++ *   `found:false` when nothing pre-existing enforces TDD.
++ */
++function detectExistingTddGate(projectRoot) {
++  const collectors = [
++    collectFromLefthookConfigs,
++    collectFromHusky,
++    collectFromPreCommitFramework,
++    collectFromNativeHook,
++  ];
++
++  let ambiguous = null;
++  const candidates = [];
++  for (const collect of collectors) {
++    let result;
++    try {
++      result = collect(projectRoot);
++    } catch {
++      continue; // a collector failure must never break setup
++    }
++    if (result.unknown) {
++      ambiguous = ambiguous || { source: result.source };
++      continue;
++    }
++    candidates.push(...(result.candidates || []));
++  }
++
++  for (const item of candidates) {
++    if (isForgeOwnCommand(item.command)) continue;
++    if (looksLikeTddGate(item.command)) {
++      return { found: true, source: item.source, command: item.command };
++    }
++  }
++
++  if (ambiguous) {
++    return { found: true, unknown: true, source: ambiguous.source, command: '' };
++  }
++  return { found: false };
++}
++
++/**
++ * The user-facing deferral report. Silent stacking and silent skipping are BOTH wrong — the
++ * adopter must see what was detected, what Forge did not install, and how to choose otherwise.
++ *
++ * @param {{ found: boolean, source?: string, command?: string, unknown?: boolean }} detection
++ * @returns {string|null} Report text, or null when there is nothing to defer to.
++ */
++function describeExistingGateDeferral(detection) {
++  if (!detection || !detection.found) return null;
++
++  const what = detection.unknown
++    ? `an existing pre-commit hook Forge could not read (${detection.source})`
++    : `an existing pre-commit TDD/coupling gate in ${detection.source}:\n      ${detection.command}`;
++
++  return [
++    `  ⚠ Detected ${what}`,
++    '    Forge did NOT install its own TDD gate on pre-commit — deferring to yours, so you',
++    '    do not get two gates blocking the same commit. rail.tdd_intent is off in .forge/config.yaml.',
++    "    Prefer Forge's gate instead? Remove or disable your own, then run:",
++    '      forge gate enable rail.tdd_intent',
++  ].join('\n');
++}
++
++module.exports = {
++  detectExistingTddGate,
++  describeExistingGateDeferral,
++};
+diff --git a/lib/lefthook-wiring.js b/lib/lefthook-wiring.js
+index d3ce5583..351122ef 100644
+--- a/lib/lefthook-wiring.js
++++ b/lib/lefthook-wiring.js
+@@ -55,6 +55,20 @@ pre-push:
+       run: npm test --if-present
+ `;
+ 
++// The same config MINUS the TDD pre-commit job, written when the project already has its own
++// pre-commit TDD/coupling gate (kernel 5b425a85 / 2699b234). Stacking a second gate on the same
++// commit is the reported bug, so Forge defers on pre-commit but still wires pre-push.
++const FORGE_USER_LEFTHOOK_YML_NO_TDD = `# Forge git hooks — installed by \`forge setup\` / \`forge init\`.
++# Your project already has its own pre-commit TDD/coupling gate, so Forge did NOT add a second
++# one here. To use Forge's gate instead, remove yours and run: forge gate enable rail.tdd_intent
++# Edit freely to add your own checks — Forge only replaces a fully-commented stub.
++
++pre-push:
++  commands:
++    tests:
++      run: npm test --if-present
++`;
++
+ /**
+  * A fresh `lefthook install` (run by lefthook's own npm postinstall) drops a stock
+  * EXAMPLE lefthook.yml with every hook commented out. That disposable stub used to
+@@ -221,10 +235,13 @@ npm test --if-present || exit 1
+  * `skipped`) rather than destroyed.
+  *
+  * @param {string} projectRoot - Absolute path to the project root.
++ * @param {{ skipHooks?: string[] }} [options] - Hook names to leave alone entirely. `forge setup`
++ *   passes `['pre-commit']` when the project already has its own pre-commit TDD/coupling gate,
++ *   so Forge defers instead of stacking a second one (kernel 5b425a85 / 2699b234).
+  * @returns {{ installed: boolean, method?: string, hooksDir?: string,
+  *   written?: string[], skipped?: string[], reason?: string }}
+  */
+-function installNativeGitHooks(projectRoot) {
++function installNativeGitHooks(projectRoot, options = {}) {
+   const hooksDir = resolveGitHooksDir(projectRoot);
+   if (!hooksDir) {
+     return { installed: false, reason: 'not-a-git-repo' };
+@@ -235,9 +252,11 @@ function installNativeGitHooks(projectRoot) {
+     return { installed: false, reason: `hooks-dir-unwritable: ${error.message}` };
+   }
+ 
++  const skipHooks = new Set(Array.isArray(options.skipHooks) ? options.skipHooks : []);
+   const written = [];
+   const skipped = [];
+   for (const [name, body] of Object.entries(NATIVE_HOOK_BODIES)) {
++    if (skipHooks.has(name)) continue;
+     const outcome = writeNativeHook(path.join(hooksDir, name), body);
+     (outcome === 'written' ? written : skipped).push(name);
+   }
+@@ -406,6 +425,7 @@ function verifyHooksActive(projectRoot) {
+ module.exports = {
+   FORGE_NATIVE_HOOK_SENTINEL,
+   FORGE_USER_LEFTHOOK_YML,
++  FORGE_USER_LEFTHOOK_YML_NO_TDD,
+   forgeShouldWriteLefthookConfig,
+   resolveGitHooksDir,
+   installNativeGitHooks,
+diff --git a/test/existing-tdd-gate.test.js b/test/existing-tdd-gate.test.js
+new file mode 100644
+index 00000000..9f5c1484
+--- /dev/null
++++ b/test/existing-tdd-gate.test.js
+@@ -0,0 +1,273 @@
++'use strict';
++
++/**
++ * `forge setup` must DETECT a repo's pre-existing pre-commit TDD / source-test coupling
++ * gate and DEFER to it instead of silently stacking Forge's own `rail.tdd_intent` gate on
++ * top — the in-the-wild beta.3 adoption report (kernel 5b425a85, predecessor 2699b234):
++ * "TWO TDD gates firing on the same commit ... no detection/reconciliation".
++ *
++ * Detection is by MECHANISM (whatever pre-commit runner is actually installed), not by a
++ * hardcoded filename list, and the deferral must be VISIBLE — never a silent skip.
++ */
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  detectExistingTddGate,
++  describeExistingGateDeferral,
++} = require('../lib/existing-tdd-gate');
++const {
++  FORGE_USER_LEFTHOOK_YML,
++  FORGE_USER_LEFTHOOK_YML_NO_TDD,
++  installNativeGitHooks,
++} = require('../lib/lefthook-wiring');
++const setup = require('../lib/commands/setup');
++
++let root;
++
++beforeEach(() => {
++  root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-tdd-gate-detect-'));
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++});
++
++afterEach(() => {
++  fs.rmSync(root, { recursive: true, force: true });
++});
++
++function write(relative, content) {
++  const abs = path.join(root, relative);
++  fs.mkdirSync(path.dirname(abs), { recursive: true });
++  fs.writeFileSync(abs, content, 'utf8');
++  return abs;
++}
++
++// A minimal real `.git` directory so resolveGitHooksDir() resolves without a git spawn.
++function initGitDir() {
++  fs.mkdirSync(path.join(root, '.git', 'hooks'), { recursive: true });
++}
++
++describe('detectExistingTddGate — finds a pre-existing coupling/TDD gate by mechanism', () => {
++  test('lefthook.yml pre-commit running a source/test coupling script is detected', () => {
++    write('lefthook.yml', [
++      'pre-commit:',
++      '  commands:',
++      '    coupling:',
++      '      run: node scripts/check-source-test-coupling.mjs',
++    ].join('\n'));
++
++    const detection = detectExistingTddGate(root);
++
++    expect(detection.found).toBe(true);
++    expect(detection.source).toContain('lefthook.yml');
++    expect(detection.command).toContain('check-source-test-coupling.mjs');
++  });
++
++  test('husky pre-commit running a TDD check is detected', () => {
++    write('.husky/pre-commit', '#!/bin/sh\nnpm run tdd-check\n');
++
++    const detection = detectExistingTddGate(root);
++
++    expect(detection.found).toBe(true);
++    expect(detection.source).toContain('.husky/pre-commit');
++  });
++
++  test('a native .git/hooks/pre-commit coupling gate is detected', () => {
++    initGitDir();
++    write('.git/hooks/pre-commit', '#!/bin/sh\nnode tools/require-tests.js || exit 1\n');
++
++    const detection = detectExistingTddGate(root);
++
++    expect(detection.found).toBe(true);
++    expect(detection.source).toContain('pre-commit');
++  });
++
++  test('.pre-commit-config.yaml hook entry enforcing tests is detected', () => {
++    write('.pre-commit-config.yaml', [
++      'repos:',
++      '  - repo: local',
++      '    hooks:',
++      '      - id: tdd-guard',
++      '        name: TDD guard',
++      '        entry: python tools/tdd_guard.py',
++    ].join('\n'));
++
++    const detection = detectExistingTddGate(root);
++
++    expect(detection.found).toBe(true);
++  });
++});
++
++describe('detectExistingTddGate — does not over-trigger', () => {
++  test('a repo with no pre-commit mechanism at all → nothing detected', () => {
++    expect(detectExistingTddGate(root).found).toBe(false);
++  });
++
++  test("a pre-commit that is NOT a TDD/coupling gate (formatting) → nothing detected", () => {
++    write('lefthook.yml', [
++      'pre-commit:',
++      '  commands:',
++      '    format:',
++      '      run: npx prettier --write {staged_files}',
++    ].join('\n'));
++
++    expect(detectExistingTddGate(root).found).toBe(false);
++  });
++
++  // Re-run safety: Forge's OWN gate must never be mistaken for a pre-existing third-party
++  // gate, or a second `forge setup` would defer to the gate it installed on the first run.
++  test("Forge's own check-tdd.js pre-commit job is NOT counted as a pre-existing gate", () => {
++    write('lefthook.yml', FORGE_USER_LEFTHOOK_YML);
++
++    expect(detectExistingTddGate(root).found).toBe(false);
++  });
++
++  // Real shape from Forge's OWN dev lefthook.yml: the job NAME (`tdd-check`) matches the
++  // classifier, but the command it runs is Forge's own gate — exclusion must win.
++  test("a job NAMED like a TDD check but RUNNING Forge's own gate is not counted", () => {
++    write('lefthook.yml', [
++      'pre-commit:',
++      '  commands:',
++      '    tdd-check:',
++      '      run: node .forge/hooks/check-tdd.js',
++      '      tags: tdd',
++    ].join('\n'));
++
++    expect(detectExistingTddGate(root).found).toBe(false);
++  });
++
++  test("Forge's own native pre-commit hook is NOT counted as a pre-existing gate", () => {
++    initGitDir();
++    write('lefthook.yml', FORGE_USER_LEFTHOOK_YML);
++    installNativeGitHooks(root);
++
++    expect(detectExistingTddGate(root).found).toBe(false);
++  });
++});
++
++describe('detectExistingTddGate — unknown content falls to the SAFE side (defer, not stack)', () => {
++  test('an unparseable lefthook config with a pre-commit section defers rather than stacks', () => {
++    write('lefthook.yml', 'pre-commit:\n  commands:\n   :::not: valid: yaml: [\n');
++
++    const detection = detectExistingTddGate(root);
++
++    expect(detection.found).toBe(true);
++    expect(detection.unknown).toBe(true);
++  });
++});
++
++describe('describeExistingGateDeferral — the deferral must be VISIBLE', () => {
++  test('report names what was detected, what was NOT installed, and how to opt in', () => {
++    write('lefthook.yml', [
++      'pre-commit:',
++      '  commands:',
++      '    coupling:',
++      '      run: node scripts/check-source-test-coupling.mjs',
++    ].join('\n'));
++
++    const report = describeExistingGateDeferral(detectExistingTddGate(root));
++
++    expect(report).toContain('check-source-test-coupling.mjs'); // what was detected
++    expect(report).toMatch(/did not install|not installed|deferred/i); // what Forge did NOT do
++    expect(report).toContain('forge gate enable rail.tdd_intent'); // the one-line opt-in
++  });
++});
++
++describe('deferral wiring — no second pre-commit TDD gate is installed', () => {
++  test('the deferred lefthook.yml keeps pre-push but carries NO Forge TDD pre-commit job', () => {
++    expect(FORGE_USER_LEFTHOOK_YML).toContain('check-tdd.js'); // baseline: the normal config wires it
++    expect(FORGE_USER_LEFTHOOK_YML_NO_TDD).not.toContain('check-tdd.js');
++    expect(FORGE_USER_LEFTHOOK_YML_NO_TDD).toContain('pre-push');
++  });
++
++  test('installNativeGitHooks can skip pre-commit so the repo keeps its own gate alone', () => {
++    initGitDir();
++
++    const result = installNativeGitHooks(root, { skipHooks: ['pre-commit'] });
++
++    expect(result.written).not.toContain('pre-commit');
++    expect(result.written).toContain('pre-push');
++    expect(fs.existsSync(path.join(root, '.git', 'hooks', 'pre-commit'))).toBe(false);
++  });
++
++  test('applying the deferral makes rail.tdd_intent resolve as inactive (no double gate)', () => {
++    write('lefthook.yml', [
++      'pre-commit:',
++      '  commands:',
++      '    coupling:',
++      '      run: node scripts/check-source-test-coupling.mjs',
++    ].join('\n'));
++
++    expect(setup.resolveHookEnforcementState(root).tddActive).toBe(true); // default-ON baseline
++
++    setup.applyExistingGateDeferral(root, detectExistingTddGate(root));
++
++    expect(setup.resolveHookEnforcementState(root).tddActive).toBe(false);
++  });
++
++  test('a repo with NO existing gate keeps rail.tdd_intent default-ON (untouched)', () => {
++    setup.applyExistingGateDeferral(root, detectExistingTddGate(root));
++
++    expect(setup.resolveHookEnforcementState(root).tddActive).toBe(true);
++  });
++
++  // The user already chose Forge's gate despite having their own — a re-run of `forge setup`
++  // must not undo it, or the `forge gate enable rail.tdd_intent` we advertise would not stick.
++  test('an explicit rail.tdd_intent choice survives the deferral', () => {
++    write('lefthook.yml', 'pre-commit:\n  commands:\n    c:\n      run: node scripts/check-source-test-coupling.mjs\n');
++    write('.forge/config.yaml', 'workflow:\n  gates:\n    rail.tdd_intent:\n      enabled: true\n');
++
++    const result = setup.applyExistingGateDeferral(root, detectExistingTddGate(root));
++
++    expect(result.deferred).toBe(false);
++    expect(result.reason).toBe('explicit-user-choice');
++    expect(setup.resolveHookEnforcementState(root).tddActive).toBe(true);
++  });
++});
++
++// The adopter's reported symptom, end to end (kernel 5b425a85): a repo whose husky pre-commit
++// already runs its own coupling gate must NOT come out of `forge setup` with a second one.
++describe('installGitHooks — adopter repo with a pre-existing coupling gate', () => {
++  let savedRoot;
++
++  beforeEach(() => {
++    savedRoot = setup._getState().projectRoot;
++    fs.mkdirSync(path.join(root, '.git', 'hooks'), { recursive: true });
++    write('.husky/pre-commit', '#!/bin/sh\nnode scripts/check-source-test-coupling.mjs\n');
++    setup._setState({ projectRoot: root });
++  });
++
++  afterEach(() => {
++    setup._setState({ projectRoot: savedRoot });
++  });
++
++  test('defers visibly instead of stacking a second TDD gate', () => {
++    const messages = [];
++    const restore = [console.log, console.warn, console.info, console.error];
++    console.log = console.warn = console.info = console.error = (...args) => messages.push(args.join(' '));
++    try {
++      setup.installGitHooks();
++    } finally {
++      [console.log, console.warn, console.info, console.error] = restore;
++    }
++    const output = messages.join('\n');
++
++    // Visible: the adopter can see what was detected and how to choose Forge's gate instead.
++    expect(output).toContain('check-source-test-coupling.mjs');
++    expect(output).toContain('forge gate enable rail.tdd_intent');
++
++    // Not stacked: Forge's gate is inert and no Forge pre-commit hook was wired.
++    expect(setup.resolveHookEnforcementState(root).tddActive).toBe(false);
++    expect(fs.existsSync(path.join(root, '.git', 'hooks', 'pre-commit'))).toBe(false);
++    const lefthookYml = path.join(root, 'lefthook.yml');
++    if (fs.existsSync(lefthookYml)) {
++      expect(fs.readFileSync(lefthookYml, 'utf8')).not.toContain('check-tdd.js');
++    }
++
++    // The adopter's own gate is untouched.
++    expect(fs.readFileSync(path.join(root, '.husky', 'pre-commit'), 'utf8'))
++      .toContain('check-source-test-coupling.mjs');
++  });
++});
+-- 
+2.51.0.windows.1
+

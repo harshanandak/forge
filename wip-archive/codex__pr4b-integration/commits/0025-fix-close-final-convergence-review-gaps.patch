@@ -1,0 +1,464 @@
+From d2c481a2d10e9b6752e88da61b50f488393d2f04 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 05:14:31 +0530
+Subject: [PATCH] fix: close final convergence review gaps
+
+---
+ lib/commands/merge.js                      | 89 +++++++++++-----------
+ lib/pr-monitor/flow-monitor.js             | 27 ++++---
+ lib/pr-monitor/reconcile-executor.js       |  5 +-
+ lib/pr-monitor/review-preflight.js         |  8 +-
+ lib/pr-monitor/watch.js                    | 25 +++---
+ test/commands/merge-authority.test.js      | 31 +++++++-
+ test/pr-monitor/flow-monitor.test.js       | 16 ++++
+ test/pr-monitor/reconcile-executor.test.js | 13 ++++
+ test/pr-monitor/review-preflight.test.js   | 14 ++++
+ test/pr-monitor/watch.test.js              | 15 ++++
+ 10 files changed, 173 insertions(+), 70 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 6f0e828f..6b163aa2 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -369,12 +369,16 @@ async function defaultPrepareMergeDecision({
+   requireMergeGate = true,
+   config,
+   projectRoot,
++  env = process.env,
+   now = Date.now,
+   runIssue = runIssueOperation,
+ }) {
+   const timestamp = currentTimestamp(now);
++  const frozenEnv = { ...env, FORGE_ACTOR: actor };
++  if (sessionId) frozenEnv.FORGE_SESSION_ID = sessionId;
++  else delete frozenEnv.FORGE_SESSION_ID;
+   const issue = await runIssue('show', [issueId], projectRoot, {
+-    env: { FORGE_ACTOR: actor, ...(sessionId ? { FORGE_SESSION_ID: sessionId } : {}) },
++    env: frozenEnv,
+   });
+   const revision = issue?.data?.revision;
+   if (issue?.ok !== true || !Number.isInteger(revision) || revision < 0) {
+@@ -723,6 +727,7 @@ async function recoverMergedTerminal({
+     binding,
+     actor: ownershipActor,
+     sessionId: ownershipSessionId,
++    env: deps.env || process.env,
+     requireMergeGate: gateApproval?.disabled !== true,
+     config,
+     projectRoot: root,
+@@ -991,6 +996,44 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     };
+   }
+ 
++  const verifyIssueOwnership = deps.verifyIssueOwnership || defaultVerifyIssueOwnership;
++  const ownershipEnv = deps.env || process.env;
++  const ownershipActor = resolveOwnershipActor(ownershipEnv);
++  const ownershipSessionId = typeof ownershipEnv.FORGE_SESSION_ID === 'string'
++    && ownershipEnv.FORGE_SESSION_ID.trim()
++    ? ownershipEnv.FORGE_SESSION_ID.trim()
++    : null;
++  const ownershipInput = {
++    issueId: parsed.issueId,
++    projectRoot: root,
++    actor: ownershipActor,
++    env: { ...ownershipEnv },
++  };
++  const fetchPrContext = deps.fetchPrContext || defaultFetchPrContext;
++  const mergePr = deps.mergePr || defaultMergePr;
++  const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
++  const gh = deps.gh || defaultGh;
++  const exactMergeIdentity = !parsed.error && parsed.expectedHead && parsed.issueId;
++  let prContext; let prState = '';
++  if (exactMergeIdentity) {
++    try {
++      prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
++    } catch (err) {
++      return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
++    }
++    prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
++    if (prState === 'MERGED') {
++      try {
++        const replay = await recoverMergedTerminal({
++          pr, parsed, root, config: {}, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
++        });
++        if (replay.replayMissing !== true) return replay;
++      } catch (error) {
++        return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
++      }
++    }
++  }
++
+   const loadConfig = deps.loadConfig || loadRawConfig;
+   let config;
+   try {
+@@ -1022,53 +1065,12 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, enabled: true, reason };
+   }
+ 
+-  if (parsed.error || !parsed.expectedHead || !parsed.issueId) {
++  if (!exactMergeIdentity) {
+     const reason = parsed.error
+       || 'Enabled auto-merge requires --expect-head <full 40-character SHA> and --issue <Forge issue ID>.';
+     return { success: false, merged: false, enabled: true, error: reason };
+   }
+ 
+-  const verifyIssueOwnership = deps.verifyIssueOwnership || defaultVerifyIssueOwnership;
+-  const ownershipEnv = deps.env || process.env;
+-  const ownershipActor = resolveOwnershipActor(ownershipEnv);
+-  const ownershipSessionId = typeof ownershipEnv.FORGE_SESSION_ID === 'string'
+-    && ownershipEnv.FORGE_SESSION_ID.trim()
+-    ? ownershipEnv.FORGE_SESSION_ID.trim()
+-    : null;
+-  const ownershipInput = {
+-    issueId: parsed.issueId,
+-    projectRoot: root,
+-    actor: ownershipActor,
+-    env: { ...ownershipEnv },
+-  };
+-
+-  const fetchPrContext = deps.fetchPrContext || defaultFetchPrContext;
+-  const mergePr = deps.mergePr || defaultMergePr;
+-  const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
+-  const gh = deps.gh || defaultGh;
+-
+-  let prContext;
+-  try {
+-    prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
+-  } catch (err) {
+-    return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
+-  }
+-
+-  // Pre-flight: a PR that is already merged or closed is terminal. Re-running the
+-  // command must be an idempotent NO-OP — never an error and never a second merge
+-  // attempt. (An absent/unknown state falls through to the fail-closed rules.)
+-  const prState = prContext && prContext.state ? String(prContext.state).toUpperCase() : '';
+-  if (prState === 'MERGED') {
+-    try {
+-      const replay = await recoverMergedTerminal({
+-        pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
+-      });
+-      if (replay.replayMissing !== true) return replay;
+-    } catch (error) {
+-      return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
+-    }
+-  }
+-
+   let ownership;
+   try {
+     ownership = await verifyIssueOwnership(ownershipInput);
+@@ -1240,6 +1242,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       binding: freshBinding,
+       actor: ownershipActor,
+       sessionId: ownershipSessionId,
++      env: ownershipEnv,
+       requireMergeGate: gateApproval?.disabled !== true,
+       config,
+       projectRoot: root,
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index d00764e0..5367bf47 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -387,17 +387,20 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+   if (cursor < firstSequence - 1 || cursor > lastSequence) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable delivery cursor is outside the restart checkpoint');
+   }
+-  if (cursor > 0 && durableEvents.some(event => event.payload.sequence === cursor)) {
++  const cursorEvent = durableEvents.find(event => event.payload.sequence === cursor);
++  if (cursorEvent && cursorEvent.payload.actionability !== 'advisory' && cursor > 0) {
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: cursor }).state;
+   }
+-  for (const event of durableEvents.filter(item => (
+-    item.payload.sequence > cursor && item.payload.actionability !== 'advisory'
+-  ))) {
+-    await ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id);
++  for (const event of durableEvents.filter(item => item.payload.sequence > cursor)) {
++    if (event.payload.actionability !== 'advisory') {
++      await ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id);
++    }
+     const receipt = deliveryReceipt(ctx, event, now());
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+-    state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: event.payload.sequence }).state;
++    if (event.payload.actionability !== 'advisory') {
++      state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: event.payload.sequence }).state;
++    }
+   }
+   return { state, receiptIds };
+ }
+@@ -415,14 +418,12 @@ async function persistRecords(ctx, bridge, spec, {
+     const event = monitorEvent(ctx, record, snapshot, subjectRevision);
+     const transition = reduceMonitor(spec, state, { kind: 'observation', event });
+     await bridge.persistEvent(event);
+-    if (event.payload.actionability === 'advisory') {
+-      state = transition.state;
+-      continue;
+-    }
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+-    state = reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
++    state = event.payload.actionability === 'advisory'
++      ? transition.state
++      : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
+   }
+   return { state, receiptIds };
+ }
+@@ -480,7 +481,9 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const bridge = createMonitorDurabilityBridge({
+     store: bridgeStore(ctx.store),
+     deliveryTargets: [DELIVERY_TARGET],
+-    deliver: async (event) => ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id),
++    deliver: async (event) => event.payload.actionability === 'advisory'
++      ? undefined
++      : ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id),
+   });
+   const replayed = await redeliverOutstanding(ctx, bridge, spec, state, durableEvents, deliveryState, now);
+   state = replayed.state;
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 589f18ba..80508b7f 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -32,6 +32,7 @@
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const crypto = require('node:crypto');
+ const { spawn } = require('node:child_process');
+ const { createProcessState, reduceProcessLifecycle } = require('../../packages/flow');
+ 
+@@ -118,7 +119,9 @@ function normalizeWatcher(entry) {
+ }
+ 
+ function processIdentity(entry) {
+-	return `watcher:${entry.repo ?? 'unknown'}:${entry.pr}:${entry.pid}`;
++	const identity = `watcher:${entry.repo ?? 'unknown'}:${entry.pr}:${entry.pid}`;
++	if (identity.length <= 128) return identity;
++	return `watcher:${crypto.createHash('sha256').update(identity).digest('hex')}`;
+ }
+ 
+ function lifecycleOptions(entry) {
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 7626700f..d597e99f 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -121,9 +121,11 @@ function deterministicFindings(results) {
+ }
+ 
+ function notApplicableResult(context) {
+-  const exactHeadAvailable = typeof context.expectedHead === 'string'
+-    && /^[0-9a-f]{40}$/i.test(context.expectedHead);
+-  const exactHeadCheckedOut = exactHeadAvailable && context.localHead === context.expectedHead;
++  const expectedHead = typeof context.expectedHead === 'string'
++    && /^[0-9a-f]{40}$/i.test(context.expectedHead) ? context.expectedHead.toLowerCase() : null;
++  const localHead = typeof context.localHead === 'string' ? context.localHead.toLowerCase() : null;
++  const exactHeadAvailable = expectedHead !== null;
++  const exactHeadCheckedOut = exactHeadAvailable && localHead === expectedHead;
+   if (exactHeadCheckedOut && context.cleanTree === true) return null;
+   const dirtyCheckout = exactHeadCheckedOut && context.cleanTree !== true;
+   const summary = dirtyCheckout
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index 381c3575..a64c6ab3 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -144,6 +144,20 @@ function confirmHeld(pending, contra, emit) {
+   }
+ }
+ 
++function emitTerminalPass(state, events, emit) {
++  const { failures, terminal, others } = partition(events);
++  const contra = contradictions(events);
++  const heldNames = new Set(state.pending.keys());
++  confirmHeld(state.pending, contra, emit);
++  state.pending = new Map();
++  for (const event of others) {
++    if (event.type === T.CHECK_RECOVERED && heldNames.has(checkName(event))) continue;
++    emit(event);
++  }
++  for (const failure of failures.values()) emit(failure);
++  for (const event of terminal) emit(event);
++}
++
+ /**
+  * Run ONE watch tick: a bounded monitor pass, then stream its events with the
+  * 2-pass flap debounce applied. Mutates `state.pending` (the held failures).
+@@ -157,18 +171,9 @@ async function runWatchPass(state, ctx, emit) {
+     ...ctx, dir: ctx.dir, gather: ctx.gather, now: ctx.now, enrich: ctx.enrich, lockOpts: ctx.lockOpts,
+   });
+   const events = ctx.dir ? journal.readEventsSince(ctx.dir, journalCursor) : rawEvents;
+-  if (terminalReceiptId && events.length === 0) {
+-    for (const failure of state.pending.values()) emit(failure);
+-    state.pending = new Map();
+-    return { terminal: true };
+-  }
+   const { failures, terminal, others } = partition(events);
+   if (terminalReceiptId) {
+-    for (const failure of state.pending.values()) emit(failure);
+-    state.pending = new Map();
+-    for (const event of others) emit(event);
+-    for (const failure of failures.values()) emit(failure);
+-    for (const event of terminal) emit(event);
++    emitTerminalPass(state, events, emit);
+     return { terminal: true };
+   }
+   const contra = contradictions(events);
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 636b27b7..8103b653 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -228,6 +228,27 @@ describe('merge command — mandatory release authority', () => {
+     expect(gateChecks).toBe(0);
+   });
+ 
++  test('replays existing terminal evidence after auto-merge configuration is disabled', async () => {
++    let ownershipChecks = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      loadConfig: () => ({ merge: { auto: { enabled: false } } }),
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      verifyIssueOwnership: async () => { ownershipChecks += 1; return { owned: false }; },
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        terminalEvidence: {
++          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++        },
++      }),
++    }));
++
++    expect(out).toMatchObject({
++      success: true, merged: true, recovered: true,
++      decisionId: 'decision-existing', receiptId: 'receipt-existing',
++    });
++    expect(ownershipChecks).toBe(0);
++  });
++
+   test('replays existing terminal evidence after the live ownership claim expires', async () => {
+     let ownershipChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -290,6 +311,7 @@ describe('merge command — mandatory release authority', () => {
+   });
+ 
+   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
++    let issueEnv;
+     const decision = await mergeCmd.defaultPrepareMergeDecision({
+       issueId: ISSUE,
+       pr: 42,
+@@ -301,7 +323,14 @@ describe('merge command — mandatory release authority', () => {
+       config: ENABLED,
+       projectRoot: process.cwd(),
+       now: '2026-08-01T12:00:00.000Z',
+-      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
++      env: { PATH: '/trusted/bin', HOME: '/trusted/home', FORGE_ACTOR: 'ambient-actor' },
++      runIssue: async (_operation, _args, _root, options) => {
++        issueEnv = options.env;
++        return { ok: true, data: { revision: 7 } };
++      },
++    });
++    expect(issueEnv).toMatchObject({
++      PATH: '/trusted/bin', HOME: '/trusted/home', FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session',
+     });
+     expect(decision.packet.payload).toMatchObject({
+       issue_id: ISSUE,
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index c6316537..87570b87 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -311,6 +311,22 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.some(event => event.payload.type === 'monitor.checkpoint')).toBe(true);
+   });
+ 
++  test('advances delivery authority across more than one bounded tail of advisory checkpoints', async () => {
++    const store = durableStore();
++    let revision = 0;
++    const delivered = [];
++    const ctx = context(store, async () => snapshot({ diagnosticRevision: revision }), async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++
++    for (revision = 1; revision <= 130; revision += 1) await runFlowMonitorPass(ctx);
++
++    const delivery = await store.readDeliveryState(ctx.monitorId);
++    expect(delivery.cursors).toContainEqual(expect.objectContaining({
++      target: 'legacy-journal', sequence: store.events.at(-1).payload.sequence,
++    }));
++    expect(delivered.every(record => record.type !== 'monitor.checkpoint')).toBe(true);
++  }, 15_000);
++
+   test('retains transition identity beyond the first three snapshot entries', async () => {
+     const store = durableStore();
+     let next = snapshot({
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 5d891675..8e6c356e 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -72,6 +72,19 @@ describe('execute — watcher lifecycle', () => {
+ 		expect(restarted).toEqual(first);
+ 	});
+ 
++	test('bounds watcher lifecycle identities before a detached child is recorded', async () => {
++		const watchers = await executor.execute(
++			[{ type: 'startWatcher', pr: { repo: `owner/${'r'.repeat(180)}`, number: 42 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
++				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
++			},
++		);
++
++		expect(watchers[0].lifecycle.processId.length).toBeLessThanOrEqual(128);
++		expect(watchers[0].lifecycle.processId).toMatch(/^watcher:[0-9a-f]{64}$/);
++	});
++
+ 	test('fails closed before process mutation when a persisted lifecycle checkpoint conflicts', async () => {
+ 		let killed = false;
+ 		await expect(executor.execute(
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index 18cb9798..9f388e8a 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -98,6 +98,20 @@ describe('bounded local review preflight', () => {
+     expect(calls).toBe(0);
+   });
+ 
++  test('matches validated exact heads case-insensitively', async () => {
++    let calls = 0;
++    const result = await runLocalReviewPreflight({
++      ...EXACT_HEAD_CONTEXT, expectedHead: 'A'.repeat(40), localHead: 'a'.repeat(40),
++    }, {
++      probeCodeRabbit: async () => { calls += 1; return { available: true }; },
++      runCodeRabbit: async () => ({ ok: true, summary: 'clean', findings: [] }),
++      runDeterministic: async () => { calls += 1; return { success: true, results: [] }; },
++    });
++
++    expect(result.status).toBe('PASS');
++    expect(calls).toBe(2);
++  });
++
+   test('does not review a checkout when the authoritative PR head is unavailable', async () => {
+     let calls = 0;
+     const result = await runLocalReviewPreflight({
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index 261fdec2..618b4d3a 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -70,6 +70,21 @@ describe('watchLoop', () => {
+     expect(emitted).toEqual([held, current, terminal]);
+     expect(state.pending.size).toBe(0);
+   });
++  test('reconciles recovered checks before flushing held failures on a terminal receipt', async () => {
++    const held = { type: T.CHECK_FAILED, key: 'ci', data: { name: 'ci' } };
++    const recovered = { type: T.CHECK_RECOVERED, key: 'ci', data: { name: 'ci' } };
++    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
++    const state = { pending: new Map([['ci', held]]) };
++    const emitted = [];
++
++    const result = await runWatchPass(state, {
++      runMonitorPass: async () => ({ events: [recovered, terminal], terminalReceiptId: 'receipt-terminal' }),
++    }, event => emitted.push(event));
++
++    expect(result).toEqual({ terminal: true });
++    expect(emitted).toEqual([terminal]);
++    expect(state.pending.size).toBe(0);
++  });
+   test('streams a confirmed check.failed as an emitted event on change', async () => {
+     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
+     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
+-- 
+2.51.0.windows.1
+

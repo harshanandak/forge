@@ -1,0 +1,204 @@
+From 7c6b5f211c7956bb64f2c69173263194b0079664 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 20:33:45 +0530
+Subject: [PATCH] fix(quality): close beta5 Sonar findings
+
+---
+ lib/beta5-compatibility-evidence.js           | 48 ++++++++++++-------
+ lib/fixtures/beta5-corpus/v1/manifest.json    |  4 +-
+ lib/fixtures/beta5-corpus/v1/state/kernel.sql |  2 +-
+ 3 files changed, 34 insertions(+), 20 deletions(-)
+
+diff --git a/lib/beta5-compatibility-evidence.js b/lib/beta5-compatibility-evidence.js
+index 03347447..bb75f792 100644
+--- a/lib/beta5-compatibility-evidence.js
++++ b/lib/beta5-compatibility-evidence.js
+@@ -147,8 +147,9 @@ function isSafeRelativePath(relativePath) {
+ }
+ 
+ function aggregateHash(files) {
+-  const canonical = [...files]
+-    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
++  const sortedFiles = [...files];
++  sortedFiles.sort((left, right) => left.path.localeCompare(right.path));
++  const canonical = sortedFiles
+     .map(file => `${file.path}\0${file.sha256}\n`)
+     .join('');
+   return sha256(canonical);
+@@ -229,7 +230,8 @@ function scanCorpusTree(corpusRoot, budget) {
+   } finally {
+     directory.closeSync();
+   }
+-  return { files: files.sort(), rootIdentity };
++  files.sort((left, right) => left.localeCompare(right));
++  return { files, rootIdentity };
+ }
+ 
+ function validateCorpusMetadata(manifest) {
+@@ -339,7 +341,7 @@ function verifyBeta5Corpus(corpusRoot = BETA5_CORPUS_ROOT, options = {}) {
+     fileCount: observedFiles.length,
+     sourceBlobCount: metadata.sourceBlobs.length,
+     contentHash: observedContentHash,
+-    reasons: [...new Set(reasons)].sort(),
++    reasons: [...new Set(reasons)].toSorted((left, right) => left.localeCompare(right)),
+   };
+ }
+ 
+@@ -410,7 +412,7 @@ function inspectPackage(filePath, options = {}) {
+     const declared = [value.version, value.dependencies?.['forge-workflow'], value.devDependencies?.['forge-workflow']]
+       .filter(Boolean);
+     return { status: 'PASS', present: true, beta5Declared: declared.includes(BETA5_VERSION) };
+-  } catch (_error) {
++  } catch (_error) { // NOSONAR S2486 -- malformed input is intentionally reported as incomplete.
+     return { status: 'INCOMPLETE', present: true, reason: 'unreadable_or_malformed' };
+   }
+ }
+@@ -422,7 +424,7 @@ function inspectPresence(filePath) {
+     return stat.isFile() && !stat.isSymbolicLink()
+       ? { status: 'PASS', present: true, bytes: stat.size }
+       : { status: 'INCOMPLETE', present: true, reason: 'not_regular_file' };
+-  } catch (_error) {
++  } catch (_error) { // NOSONAR S2486 -- unreadable input is intentionally reported as incomplete.
+     return { status: 'INCOMPLETE', present: true, reason: 'unreadable' };
+   }
+ }
+@@ -520,7 +522,7 @@ function inspectKernel(filePath, options = {}) {
+       additionalTableCount: Math.max(0, tableNames.size - REQUIRED_KERNEL_TABLES.length),
+       unknowns,
+     };
+-  } catch (_error) {
++  } catch (_error) { // NOSONAR S2486 -- unsupported state is intentionally reported as incomplete.
+     return { status: 'INCOMPLETE', present: true, reason: 'unreadable_or_unsupported', unknowns: ['kernel_schema'] };
+   } finally {
+     closeDatabase(database);
+@@ -549,7 +551,7 @@ function buildPrivacySafeInventory(projectRoot, options = {}) {
+     schemaVersion: 'forge.beta5-inventory.v1',
+     status: unknowns.length === 0 ? 'PASS' : 'INCOMPLETE',
+     surfaces,
+-    unknowns: [...new Set(unknowns)].sort(),
++    unknowns: [...new Set(unknowns)].toSorted((left, right) => left.localeCompare(right)),
+   };
+ }
+ 
+@@ -609,21 +611,27 @@ function scanStateTree(projectRoot, options = {}) {
+   } catch (error) {
+     reasons.push(error.reason || 'state_tree_unreadable');
+   }
+-  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
++  files.sort((left, right) => left.path.localeCompare(right.path));
+   return {
+     status: reasons.length === 0 ? 'PASS' : 'INCOMPLETE',
+     fileCount: files.length,
+     hash: aggregateHash(files),
+     categories: summarizeCategories(files),
+     files,
+-    reasons: [...new Set(reasons)].sort(),
++    reasons: [...new Set(reasons)].toSorted((left, right) => left.localeCompare(right)),
+   };
+ }
+ 
+ /** Build a bounded content manifest for the supported project state tree. */
+ function buildStateTreeManifest(projectRoot, options = {}) {
+-  const { files: _files, ...manifest } = scanStateTree(projectRoot, options);
+-  return manifest;
++  const tree = scanStateTree(projectRoot, options);
++  return {
++    status: tree.status,
++    fileCount: tree.fileCount,
++    hash: tree.hash,
++    categories: tree.categories,
++    reasons: tree.reasons,
++  };
+ }
+ 
+ function isKernelSidecar(relativePath) {
+@@ -746,7 +754,9 @@ function normalizeSqlValue(value) {
+ }
+ 
+ function normalizeSqlRow(row) {
+-  return Object.fromEntries(Object.keys(row).sort().map(key => [key, normalizeSqlValue(row[key])]));
++  const keys = Object.keys(row);
++  keys.sort((left, right) => left.localeCompare(right));
++  return Object.fromEntries(keys.map(key => [key, normalizeSqlValue(row[key])]));
+ }
+ 
+ function quoteIdentifier(identifier) {
+@@ -778,7 +788,8 @@ function boundedTableRows(runtime, database, table, count, budget) {
+       rowHashes.push(sha256(encoded));
+     }
+   }
+-  return { contentBytes, rowHashes: rowHashes.sort() };
++  rowHashes.sort((left, right) => left.localeCompare(right));
++  return { contentBytes, rowHashes };
+ }
+ 
+ function appendTableSignature(runtime, database, table, budget, contentHash, counts, totals) {
+@@ -879,7 +890,7 @@ async function createKernelBackup(sourcePath, destinationContext, relativePath,
+     } else if (typeof database.backup === 'function') {
+       await database.backup(backupPath);
+     } else {
+-      throw new Error('node sqlite backup unavailable');
++      throw new TypeError('node sqlite backup unavailable');
+     }
+     const targetStat = fs.lstatSync(backupPath);
+     if (!targetStat.isFile() || targetStat.isSymbolicLink()) throw new SecurityEvidenceError('destination_link_refused');
+@@ -908,7 +919,7 @@ function validateProofRoots(sourceRoot, proofRoot) {
+     if (isContained(source, proof) || isContained(proof, source)) return { error: 'proof_root_overlaps_source' };
+     if (fs.readdirSync(proofRoot).length > 0) return { error: 'proof_destination_not_empty' };
+     return { proofIdentity: proof };
+-  } catch (_error) {
++  } catch (_error) { // NOSONAR S2486 -- invalid proof roots fail closed to a stable reason.
+     return { error: 'proof_root_unavailable' };
+   }
+ }
+@@ -1039,9 +1050,12 @@ async function runBeta5MigrationDryRun(projectRoot, options = {}) {
+   const failed = corpus.status === 'FAIL' || backup.status === 'FAIL' || sourceMutated;
+   const incomplete = corpus.status === 'INCOMPLETE' || inventory.status === 'INCOMPLETE' || backup.status === 'INCOMPLETE'
+     || before.status === 'INCOMPLETE' || after.status === 'INCOMPLETE';
++  let status = 'PASS';
++  if (failed) status = 'FAIL';
++  else if (incomplete) status = 'INCOMPLETE';
+   return {
+     schemaVersion: 'forge.beta5-migration-dry-run.v1',
+-    status: failed ? 'FAIL' : incomplete ? 'INCOMPLETE' : 'PASS',
++    status,
+     corpus,
+     inventory,
+     backup,
+diff --git a/lib/fixtures/beta5-corpus/v1/manifest.json b/lib/fixtures/beta5-corpus/v1/manifest.json
+index 8b8f7ffd..cadd2dae 100644
+--- a/lib/fixtures/beta5-corpus/v1/manifest.json
++++ b/lib/fixtures/beta5-corpus/v1/manifest.json
+@@ -10,7 +10,7 @@
+     "lib/workflow/stages.js": "0b7ae32bddcbb9bd6dd52a07ca22e43364621918"
+   },
+   "hash_algorithm": "sha256",
+-  "content_hash": "abfa1a73c9590069267fe03785883b21e34665168b55d628395a456be4a88082",
++  "content_hash": "747d00eb4846877d1f5127961cfbeb6ac37694370493db1d622c5e1c217f8787",
+   "files": [
+     { "path": "README.md", "sha256": "3cfcc78856e397f2cfd3fee9fa2fffb630e27ea3e76ee8d8b5d9a77cb366a709" },
+     { "path": "contract/command-contract.json", "sha256": "8b4f885091fa8afe72b7b5a5a8039869c871f4fb1dc3344728b2c4322f491a84" },
+@@ -20,6 +20,6 @@
+     { "path": "state/config.yaml", "sha256": "0b877d9180cf14951657254b50cd771e131970e92582a7c0337f36418a35e1c0" },
+     { "path": "state/dependencies.jsonl", "sha256": "52320d34a6dd702396ea292f3f10fce7f9e31f545f473e12c18b1aae1ac0aee8" },
+     { "path": "state/issues.jsonl", "sha256": "579f2455b2c4c23c93a584990153356ba7cc633af8b74c6284edf622217e064d" },
+-    { "path": "state/kernel.sql", "sha256": "f053d579b777355c4d6f6042174435dde291dc41bce2150050c05c8d43834145" }
++    { "path": "state/kernel.sql", "sha256": "e768ae54329017361f5c3fc3782ba33b6fd98b0c36aefe8533c7949b7de440b2" }
+   ]
+ }
+diff --git a/lib/fixtures/beta5-corpus/v1/state/kernel.sql b/lib/fixtures/beta5-corpus/v1/state/kernel.sql
+index 3830278d..103f5275 100644
+--- a/lib/fixtures/beta5-corpus/v1/state/kernel.sql
++++ b/lib/fixtures/beta5-corpus/v1/state/kernel.sql
+@@ -9,7 +9,7 @@ CREATE TABLE kernel_stage_runs (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, sta
+ CREATE TABLE kernel_projections (id TEXT PRIMARY KEY, target TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, status TEXT NOT NULL);
+ CREATE TABLE kernel_events (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL);
+ INSERT INTO kernel_migrations VALUES ('001_initial_kernel_schema', '2026-08-09T00:00:00.000Z');
+-INSERT INTO kernel_issues VALUES ('synthetic-issue-1', 'Synthetic issue', 'open', 2);
++INSERT INTO kernel_issues VALUES ('synthetic-issue-1', 'Synthetic issue', 'open', 2); -- NOSONAR S1192: repeated synthetic foreign key preserves fixture readability.
+ INSERT INTO kernel_comments VALUES ('synthetic-comment-1', 'synthetic-issue-1', 'Synthetic comment', 'fixture');
+ INSERT INTO kernel_dependencies VALUES ('synthetic-dependency-1', 'synthetic-issue-1', 'synthetic-issue-2');
+ INSERT INTO kernel_claims VALUES ('synthetic-claim-1', 'synthetic-issue-1', 'fixture', 'active');
+-- 
+2.51.0.windows.1
+

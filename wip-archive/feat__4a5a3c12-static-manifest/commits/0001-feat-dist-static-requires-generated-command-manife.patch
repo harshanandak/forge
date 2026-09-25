@@ -1,0 +1,641 @@
+From 346f7ff179d14dde3dbdedc0c8e2356975eb3be0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 16:23:41 +0530
+Subject: [PATCH] feat(dist): static requires + generated command manifest
+ (unblock bun --compile)
+
+Static bundlers (bun build --compile) need a static require graph, but the
+registry discovered commands via fs.readdirSync + require(filePath), and
+bin/forge.js + lib/commands/setup.js loaded lib modules via
+require(path.join(packageDir, ...)).
+
+- Add scripts/gen-command-manifest.js: scans lib/commands/*.js and emits the
+  checked-in lib/commands/_manifest.js, which require()s every command by a
+  static relative path (deterministic, timestamp-free, write-if-changed).
+- _registry.js loadCommands: consume the manifest as the fast, bundleable path
+  (applied for the canonical commands dir), keeping readdir auto-discovery as a
+  dev/extension fallback so new command files load without regenerating.
+- Convert dynamic require(path.join(packageDir,...)) sites in bin/forge.js and
+  lib/commands/setup.js to static relative requires (packageDir retained for
+  asset copying).
+- Add drift guard test/structural/command-manifest-drift.test.js + colocated
+  unit test test/commands/_manifest.test.js.
+- Wire generation into build via package.json (gen:manifest, prebuild).
+
+Refs 4a5a3c12-fda7-47c8-ac8b-f70347c39c13 (epic 6f11d483, step 1)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                                  |  20 +--
+ lib/commands/_manifest.js                     |  87 ++++++++++
+ lib/commands/_registry.js                     |  96 +++++++----
+ lib/commands/setup.js                         |  20 +--
+ package.json                                  |   3 +
+ scripts/gen-command-manifest.js               | 153 ++++++++++++++++++
+ test/commands/_manifest.test.js               |  44 +++++
+ .../structural/command-manifest-drift.test.js |  69 ++++++++
+ 8 files changed, 443 insertions(+), 49 deletions(-)
+ create mode 100644 lib/commands/_manifest.js
+ create mode 100644 scripts/gen-command-manifest.js
+ create mode 100644 test/commands/_manifest.test.js
+ create mode 100644 test/structural/command-manifest-drift.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index dba7d737..53faafa3 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -40,9 +40,11 @@ const path = require('node:path');
+ const readline = require('node:readline');
+ const { execSync } = require('node:child_process');
+ 
+-// Get version from package.json (single source of truth)
++// Get version from package.json (single source of truth). packageDir stays a
++// runtime value for asset copying, but the require is a static relative path so
++// `bun build --compile` can bundle package.json.
+ const packageDir = path.dirname(__dirname);
+-const packageJson = require(path.join(packageDir, 'package.json'));
++const packageJson = require('../package.json');
+ const VERSION = packageJson.version;
+ 
+ // Load PluginManager for discoverable agent architecture
+@@ -62,15 +64,15 @@ const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
+ const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
+ const { normalizeStageId } = require('../lib/workflow/stages');
+ 
+-// Load enhanced onboarding modules
+-const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
+-const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
++// Load enhanced onboarding modules (static relative requires — bundleable)
++const contextMerge = require('../lib/context-merge');
++const projectDiscovery = require('../lib/project-discovery');
+ 
+ // Load lib modules for symlink, beads, and PAT setup
+-const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
+-const beadsSetupLib = require(path.join(packageDir, 'lib', 'beads-setup'));
+-const { beadsHealthCheck } = require(path.join(packageDir, 'lib', 'beads-health-check'));
+-const { scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
++const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require('../lib/symlink-utils');
++const beadsSetupLib = require('../lib/beads-setup');
++const { beadsHealthCheck } = require('../lib/beads-health-check');
++const { scaffoldBeadsSync } = require('../lib/beads-sync-scaffold');
+ 
+ // Load incremental setup modules
+ const { detectEnvironment } = require('../lib/detect-agent');
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+new file mode 100644
+index 00000000..ac46e04c
+--- /dev/null
++++ b/lib/commands/_manifest.js
+@@ -0,0 +1,87 @@
++/**
++ * Static Command Manifest — GENERATED FILE, DO NOT EDIT.
++ *
++ * Regenerate with: node scripts/gen-command-manifest.js
++ * Drift is enforced by test/structural/command-manifest-drift.test.js.
++ *
++ * This module `require`s every command by a static relative path so
++ * `bun build --compile` can statically bundle the command graph. The registry
++ * (lib/commands/_registry.js) consumes `commands` as its fast, bundleable path
++ * and falls back to `fs.readdirSync` auto-discovery for dev/extension commands.
++ *
++ * @module commands/_manifest
++ */
++
++'use strict';
++
++/**
++ * @typedef {Object} ManifestEntry
++ * @property {string} file - Command filename (e.g. `status.js`)
++ * @property {import("./_registry").CommandModule} module - The required command module
++ */
++
++/** @type {ManifestEntry[]} */
++const commands = [
++  { file: "adapter.js", module: require("./adapter") },
++  { file: "add.js", module: require("./add") },
++  { file: "audit.js", module: require("./audit") },
++  { file: "blocked.js", module: require("./blocked") },
++  { file: "board.js", module: require("./board") },
++  { file: "claim.js", module: require("./claim") },
++  { file: "claims.js", module: require("./claims") },
++  { file: "clean.js", module: require("./clean") },
++  { file: "close.js", module: require("./close") },
++  { file: "comment.js", module: require("./comment") },
++  { file: "create.js", module: require("./create") },
++  { file: "dev.js", module: require("./dev") },
++  { file: "doc-gate.js", module: require("./doc-gate") },
++  { file: "doctor.js", module: require("./doctor") },
++  { file: "explain.js", module: require("./explain") },
++  { file: "export.js", module: require("./export") },
++  { file: "gate.js", module: require("./gate") },
++  { file: "hooks.js", module: require("./hooks") },
++  { file: "init.js", module: require("./init") },
++  { file: "insights.js", module: require("./insights") },
++  { file: "issue.js", module: require("./issue") },
++  { file: "issues.js", module: require("./issues") },
++  { file: "lint.js", module: require("./lint") },
++  { file: "list.js", module: require("./list") },
++  { file: "merge.js", module: require("./merge") },
++  { file: "migrate.js", module: require("./migrate") },
++  { file: "new.js", module: require("./new") },
++  { file: "options.js", module: require("./options") },
++  { file: "orient.js", module: require("./orient") },
++  { file: "orphans.js", module: require("./orphans") },
++  { file: "patch.js", module: require("./patch") },
++  { file: "plan.js", module: require("./plan") },
++  { file: "prime.js", module: require("./prime") },
++  { file: "push.js", module: require("./push") },
++  { file: "ready.js", module: require("./ready") },
++  { file: "recall.js", module: require("./recall") },
++  { file: "recap.js", module: require("./recap") },
++  { file: "recommend.js", module: require("./recommend") },
++  { file: "release.js", module: require("./release") },
++  { file: "remember.js", module: require("./remember") },
++  { file: "role.js", module: require("./role") },
++  { file: "setup.js", module: require("./setup") },
++  { file: "shepherd.js", module: require("./shepherd") },
++  { file: "ship.js", module: require("./ship") },
++  { file: "show.js", module: require("./show") },
++  { file: "stage.js", module: require("./stage") },
++  { file: "stale.js", module: require("./stale") },
++  { file: "status.js", module: require("./status") },
++  { file: "sync.js", module: require("./sync") },
++  { file: "team.js", module: require("./team") },
++  { file: "test.js", module: require("./test") },
++  { file: "update.js", module: require("./update") },
++  { file: "upgrade.js", module: require("./upgrade") },
++  { file: "validate.js", module: require("./validate") },
++  { file: "worktree.js", module: require("./worktree") },
++];
++
++module.exports = {
++  // Absolute path of the canonical commands directory this manifest describes.
++  // The registry applies the manifest only when asked to load this exact dir.
++  dir: __dirname,
++  commands,
++};
+diff --git a/lib/commands/_registry.js b/lib/commands/_registry.js
+index e0e25f5e..1dd94089 100644
+--- a/lib/commands/_registry.js
++++ b/lib/commands/_registry.js
+@@ -13,6 +13,18 @@ const { existsSync, readdirSync } = require('node:fs');
+ const path = require('node:path');
+ const { normalizeStageId } = require('../workflow/stages');
+ 
++// Static command manifest (bundleable fast path). This is a static require so
++// `bun build --compile` can bundle the command graph; the file is generated by
++// scripts/gen-command-manifest.js and drift-checked in test/structural. In a dev
++// checkout before generation (or if removed) it may be absent — fall back to
++// readdir auto-discovery below.
++let STATIC_MANIFEST = null;
++try {
++  STATIC_MANIFEST = require('./_manifest');
++} catch (_err) {
++  STATIC_MANIFEST = null;
++}
++
+ /**
+  * @typedef {Object} CommandModule
+  * @property {string} name - Command name used for routing
+@@ -57,46 +69,68 @@ function validateCommand(mod) {
+  * @param {string} commandsDir - Absolute path to the commands directory
+  * @returns {{ commands: Map<string, CommandModule>, getHelp: () => string }}
+  */
+-function loadCommands(commandsDir) {
+-  /** @type {Map<string, CommandModule>} */
+-  const commands = new Map();
++function addCommand(commands, file, mod) {
++  const validation = validateCommand(mod);
++  if (!validation.valid) {
++    console.warn(`[registry] Skipping ${file}: ${validation.reason}`);
++    return;
++  }
+ 
+-  if (!commandsDir || !existsSync(commandsDir)) {
+-    return {
+-      commands,
+-      getHelp: () => buildHelp(commands),
+-    };
++  if (commands.has(mod.name)) {
++    console.warn(
++      `[registry] Skipping ${file}: duplicate command name "${mod.name}"`
++    );
++    return;
+   }
+ 
+-  const files = readdirSync(commandsDir)
+-    .filter(f => f.endsWith('.js') && !f.startsWith('_'))
+-    .sort(); // deterministic order — first file wins on duplicates
++  commands.set(mod.name, mod);
++}
+ 
+-  for (const file of files) {
+-    const filePath = path.join(commandsDir, file);
++function loadCommands(commandsDir) {
++  /** @type {Map<string, CommandModule>} */
++  const commands = new Map();
+ 
+-    let mod;
+-    try {
+-      mod = require(filePath);
+-    } catch (_err) {
+-      console.warn(`[registry] Skipping ${file}: failed to load — ${_err.message}`);
+-      continue;
++  // Files already contributed by the static manifest — skip re-requiring them
++  // during the readdir pass so they neither double-load nor warn as duplicates.
++  const seenFiles = new Set();
++
++  // 1) Static manifest fast path (bundleable). Applied only when the caller asks
++  //    for the exact canonical commands dir the manifest describes; extension
++  //    dirs fall through to readdir below. In a compiled binary there is no real
++  //    commands dir on disk, so the manifest is the only path that resolves.
++  if (
++    STATIC_MANIFEST &&
++    Array.isArray(STATIC_MANIFEST.commands) &&
++    commandsDir &&
++    path.resolve(commandsDir) === path.resolve(STATIC_MANIFEST.dir)
++  ) {
++    for (const entry of STATIC_MANIFEST.commands) {
++      seenFiles.add(entry.file);
++      addCommand(commands, entry.file, entry.module);
+     }
++  }
+ 
+-    const validation = validateCommand(mod);
+-    if (!validation.valid) {
+-      console.warn(`[registry] Skipping ${file}: ${validation.reason}`);
+-      continue;
+-    }
++  // 2) readdir auto-discovery (dev/extension fallback). Picks up command files
++  //    not covered by the manifest — including brand-new files a developer or
++  //    user drops in without regenerating the manifest — preserving extensibility.
++  if (commandsDir && existsSync(commandsDir)) {
++    const files = readdirSync(commandsDir)
++      .filter(f => f.endsWith('.js') && !f.startsWith('_'))
++      .sort(); // deterministic order — first file wins on duplicates
++
++    for (const file of files) {
++      if (seenFiles.has(file)) continue;
++
++      let mod;
++      try {
++        mod = require(path.join(commandsDir, file));
++      } catch (_err) {
++        console.warn(`[registry] Skipping ${file}: failed to load — ${_err.message}`);
++        continue;
++      }
+ 
+-    if (commands.has(mod.name)) {
+-      console.warn(
+-        `[registry] Skipping ${file}: duplicate command name "${mod.name}"`
+-      );
+-      continue;
++      addCommand(commands, file, mod);
+     }
+-
+-    commands.set(mod.name, mod);
+   }
+ 
+   return {
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 11cb0977..b75c3d79 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -15,9 +15,11 @@ const path = require('node:path');
+ const readline = require('node:readline');
+ const { execSync } = require('node:child_process');
+ 
+-// Compute packageDir relative to this file (lib/commands/setup.js -> project root)
++// Compute packageDir relative to this file (lib/commands/setup.js -> project root).
++// packageDir stays a runtime value for asset copying; requires use static
++// relative paths so `bun build --compile` can bundle the module graph.
+ const packageDir = path.resolve(__dirname, '..', '..');
+-const packageJson = require(path.join(packageDir, 'package.json'));
++const packageJson = require('../../package.json');
+ const VERSION = packageJson.version;
+ 
+ // Load PluginManager for discoverable agent architecture
+@@ -40,15 +42,15 @@ const CONTEXT7_MCP_DESCRIPTOR = {
+ const { secureExecFileSync } = require('../shell-utils');
+ const { askYesNo: _askYesNoBase } = require('../ui-utils');
+ 
+-// Load enhanced onboarding modules
+-const contextMerge = require(path.join(packageDir, 'lib', 'context-merge'));
+-const projectDiscovery = require(path.join(packageDir, 'lib', 'project-discovery'));
++// Load enhanced onboarding modules (static relative requires — bundleable)
++const contextMerge = require('../context-merge');
++const projectDiscovery = require('../project-discovery');
+ 
+ // Load lib modules for symlink, beads, and PAT setup
+-const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require(path.join(packageDir, 'lib', 'symlink-utils'));
+-const { scaffoldBeadsSync } = require(path.join(packageDir, 'lib', 'beads-sync-scaffold'));
+-const { resolveSyncBackend } = require(path.join(packageDir, 'lib', 'sync-backend'));
+-const { buildMigratedKernelIssueDeps } = require(path.join(packageDir, 'lib', 'kernel', 'cli-broker-factory'));
++const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require('../symlink-utils');
++const { scaffoldBeadsSync } = require('../beads-sync-scaffold');
++const { resolveSyncBackend } = require('../sync-backend');
++const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+ 
+ // Load incremental setup modules
+ const { detectEnvironment } = require('../detect-agent');
+diff --git a/package.json b/package.json
+index ecfdd6ae..e9afb182 100644
+--- a/package.json
++++ b/package.json
+@@ -17,6 +17,9 @@
+     "test:coverage": "c8 --check-coverage bun test --timeout 15000",
+     "test:ci:shard": "node scripts/test-ci-shard.js",
+     "typecheck": "echo 'No TypeScript in project - skipping type check'",
++    "gen:manifest": "node scripts/gen-command-manifest.js",
++    "gen:manifest:check": "node scripts/gen-command-manifest.js --check",
++    "prebuild": "node scripts/gen-command-manifest.js",
+     "lint": "eslint . --max-warnings 0",
+     "check": "node scripts/validate.js",
+     "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
+diff --git a/scripts/gen-command-manifest.js b/scripts/gen-command-manifest.js
+new file mode 100644
+index 00000000..9d8bd219
+--- /dev/null
++++ b/scripts/gen-command-manifest.js
+@@ -0,0 +1,153 @@
++#!/usr/bin/env node
++'use strict';
++
++/**
++ * Generate the static command manifest — scripts/gen-command-manifest.js
++ *
++ * Static bundlers (`bun build --compile`) need a static require graph, but the
++ * command registry discovers commands at runtime via `fs.readdirSync` +
++ * `require(filePath)`. This generator walks `lib/commands/*.js` and emits
++ * `lib/commands/_manifest.js`, a checked-in module that `require`s every command
++ * module by a *static* relative path. The registry loads the manifest as its
++ * fast, bundleable path and keeps readdir auto-discovery as a dev/extension
++ * fallback (see lib/commands/_registry.js).
++ *
++ * The output is deterministic (sorted by filename) and timestamp-free, and the
++ * file is only rewritten when its content actually changes, so no-op
++ * regeneration never dirties the working tree.
++ *
++ * Usage:
++ *   node scripts/gen-command-manifest.js            # write if changed
++ *   node scripts/gen-command-manifest.js --check    # exit 1 if out of date
++ *
++ * @module scripts/gen-command-manifest
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const COMMANDS_DIR = path.resolve(__dirname, '..', 'lib', 'commands');
++const MANIFEST_PATH = path.join(COMMANDS_DIR, '_manifest.js');
++
++/**
++ * List the command module filenames the manifest should enumerate.
++ *
++ * Mirrors the registry's own filter: `.js` files that do not start with `_`
++ * (underscore-prefixed files are registry internals, not commands), sorted for
++ * deterministic output.
++ *
++ * @param {string} [commandsDir] - Directory to scan (defaults to lib/commands)
++ * @returns {string[]} Sorted command filenames (e.g. `['add.js', 'audit.js']`)
++ */
++function listCommandFiles(commandsDir = COMMANDS_DIR) {
++  return fs
++    .readdirSync(commandsDir)
++    .filter(f => f.endsWith('.js') && !f.startsWith('_'))
++    .sort();
++}
++
++/**
++ * Render the manifest source from a list of command filenames.
++ *
++ * @param {string[]} files - Sorted command filenames
++ * @returns {string} Full source text for lib/commands/_manifest.js
++ */
++function renderManifest(files) {
++  const header = [
++    '/**',
++    ' * Static Command Manifest — GENERATED FILE, DO NOT EDIT.',
++    ' *',
++    ' * Regenerate with: node scripts/gen-command-manifest.js',
++    ' * Drift is enforced by test/structural/command-manifest-drift.test.js.',
++    ' *',
++    ' * This module `require`s every command by a static relative path so',
++    ' * `bun build --compile` can statically bundle the command graph. The registry',
++    ' * (lib/commands/_registry.js) consumes `commands` as its fast, bundleable path',
++    ' * and falls back to `fs.readdirSync` auto-discovery for dev/extension commands.',
++    ' *',
++    ' * @module commands/_manifest',
++    ' */',
++    '',
++    "'use strict';",
++    '',
++    '/**',
++    ' * @typedef {Object} ManifestEntry',
++    ' * @property {string} file - Command filename (e.g. `status.js`)',
++    ' * @property {import("./_registry").CommandModule} module - The required command module',
++    ' */',
++    '',
++    '/** @type {ManifestEntry[]} */',
++    'const commands = [',
++  ];
++
++  const entries = files.map(file => {
++    const modPath = `./${file.replace(/\.js$/, '')}`;
++    return `  { file: ${JSON.stringify(file)}, module: require(${JSON.stringify(modPath)}) },`;
++  });
++
++  const footer = [
++    '];',
++    '',
++    'module.exports = {',
++    '  // Absolute path of the canonical commands directory this manifest describes.',
++    '  // The registry applies the manifest only when asked to load this exact dir.',
++    '  dir: __dirname,',
++    '  commands,',
++    '};',
++    '',
++  ];
++
++  return [...header, ...entries, ...footer].join('\n');
++}
++
++/**
++ * Generate (or check) the manifest.
++ *
++ * @param {{ check?: boolean, commandsDir?: string, manifestPath?: string }} [opts]
++ * @returns {{ changed: boolean, files: string[], path: string }}
++ */
++function generate(opts = {}) {
++  const commandsDir = opts.commandsDir ?? COMMANDS_DIR;
++  const manifestPath = opts.manifestPath ?? MANIFEST_PATH;
++  const files = listCommandFiles(commandsDir);
++  const next = renderManifest(files);
++
++  const current = fs.existsSync(manifestPath)
++    ? fs.readFileSync(manifestPath, 'utf8')
++    : null;
++
++  const changed = current !== next;
++
++  if (changed && !opts.check) {
++    fs.writeFileSync(manifestPath, next, 'utf8');
++  }
++
++  return { changed, files, path: manifestPath };
++}
++
++module.exports = { listCommandFiles, renderManifest, generate, COMMANDS_DIR, MANIFEST_PATH };
++
++// CLI entry point
++if (require.main === module) {
++  const check = process.argv.includes('--check');
++  const result = generate({ check });
++
++  if (check && result.changed) {
++    console.error(
++      '[gen-command-manifest] lib/commands/_manifest.js is out of date.\n' +
++      'Run: node scripts/gen-command-manifest.js'
++    );
++    process.exit(1);
++  }
++
++  if (result.changed) {
++    console.log(
++      `[gen-command-manifest] wrote ${path.relative(process.cwd(), result.path)} ` +
++      `(${result.files.length} commands)`
++    );
++  } else {
++    console.log(
++      `[gen-command-manifest] up to date (${result.files.length} commands)`
++    );
++  }
++}
+diff --git a/test/commands/_manifest.test.js b/test/commands/_manifest.test.js
+new file mode 100644
+index 00000000..d0a43a8d
+--- /dev/null
++++ b/test/commands/_manifest.test.js
+@@ -0,0 +1,44 @@
++/**
++ * Unit tests for the generated static command manifest.
++ *
++ * `lib/commands/_manifest.js` is generated by scripts/gen-command-manifest.js
++ * and consumed by the registry as the bundleable fast path. These tests assert
++ * the module's runtime contract (shape + every entry is a real command module).
++ * The disk-vs-manifest drift guard lives in
++ * test/structural/command-manifest-drift.test.js.
++ */
++
++const { describe, test, expect } = require('bun:test');
++const path = require('node:path');
++
++const manifest = require('../../lib/commands/_manifest');
++const { validateCommand } = require('../../lib/commands/_registry');
++
++describe('lib/commands/_manifest', () => {
++  test('exports { dir, commands } with dir pointing at lib/commands', () => {
++    expect(typeof manifest.dir).toBe('string');
++    expect(path.basename(manifest.dir)).toBe('commands');
++    expect(Array.isArray(manifest.commands)).toBe(true);
++    expect(manifest.commands.length).toBeGreaterThan(0);
++  });
++
++  test('every entry has a filename and a valid command module', () => {
++    for (const entry of manifest.commands) {
++      expect(typeof entry.file).toBe('string');
++      expect(entry.file.endsWith('.js')).toBe(true);
++      const validation = validateCommand(entry.module);
++      expect(validation.valid).toBe(true);
++    }
++  });
++
++  test('entries are sorted by filename (deterministic)', () => {
++    const files = manifest.commands.map(e => e.file);
++    const sorted = [...files].sort();
++    expect(files).toEqual(sorted);
++  });
++
++  test('command names are unique across entries', () => {
++    const names = manifest.commands.map(e => e.module.name);
++    expect(new Set(names).size).toBe(names.length);
++  });
++});
+diff --git a/test/structural/command-manifest-drift.test.js b/test/structural/command-manifest-drift.test.js
+new file mode 100644
+index 00000000..3969ce96
+--- /dev/null
++++ b/test/structural/command-manifest-drift.test.js
+@@ -0,0 +1,69 @@
++/**
++ * Drift guard for the static command manifest.
++ *
++ * `lib/commands/_manifest.js` is a GENERATED file that statically `require`s
++ * every command module so `bun build --compile` can bundle the command graph.
++ * It must stay in lockstep with the actual command files in `lib/commands/`:
++ * every non-underscore `.js` command file must appear in the manifest, and the
++ * manifest must not list files that no longer exist.
++ *
++ * Regenerate with: node scripts/gen-command-manifest.js
++ *
++ * This mirrors the registry-drift guards — it fails loudly when a command file
++ * is added/removed without regenerating the manifest.
++ */
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const {
++  listCommandFiles,
++  renderManifest,
++  MANIFEST_PATH,
++  COMMANDS_DIR,
++} = require('../../scripts/gen-command-manifest');
++
++const manifest = require('../../lib/commands/_manifest');
++
++describe('static command manifest drift', () => {
++  test('_manifest.js exists', () => {
++    expect(fs.existsSync(MANIFEST_PATH)).toBe(true);
++  });
++
++  test('manifest exposes { dir, commands } shape', () => {
++    expect(manifest).toBeTruthy();
++    expect(typeof manifest.dir).toBe('string');
++    expect(Array.isArray(manifest.commands)).toBe(true);
++    expect(path.resolve(manifest.dir)).toBe(path.resolve(COMMANDS_DIR));
++  });
++
++  test('every command file on disk is listed in the manifest', () => {
++    const onDisk = new Set(listCommandFiles());
++    const inManifest = new Set(manifest.commands.map(e => e.file));
++
++    const missing = [...onDisk].filter(f => !inManifest.has(f));
++    expect(missing).toEqual([]);
++  });
++
++  test('manifest lists no files that are missing from disk', () => {
++    const onDisk = new Set(listCommandFiles());
++    const stale = manifest.commands.map(e => e.file).filter(f => !onDisk.has(f));
++    expect(stale).toEqual([]);
++  });
++
++  test('every manifest entry resolves to a valid command module', () => {
++    for (const entry of manifest.commands) {
++      expect(typeof entry.file).toBe('string');
++      expect(entry.module).toBeTruthy();
++      expect(typeof entry.module.name).toBe('string');
++      expect(typeof entry.module.handler).toBe('function');
++    }
++  });
++
++  test('committed manifest is byte-identical to a fresh generation (no drift)', () => {
++    const expected = renderManifest(listCommandFiles());
++    const actual = fs.readFileSync(MANIFEST_PATH, 'utf8');
++    expect(actual).toBe(expected);
++  });
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,43 @@
+From 07c018d27d687847c46a6075bb4a8cf8f2197a36 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 22:00:01 +0530
+Subject: [PATCH] fix: reject empty full-suite receipts
+
+---
+ scripts/test-full-suite.js           | 3 ++-
+ test/scripts/test-full-suite.test.js | 5 +++++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index 39f81027..de1c03b2 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -155,7 +155,8 @@ function aggregateShardReceipts(receipts, expectedCount) {
+   let failedProcess = false;
+ 
+   for (const receipt of receipts) {
+-    if (!Number.isInteger(receipt.index)
++    if (receipt === null || typeof receipt !== 'object'
++      || !Number.isInteger(receipt.index)
+       || receipt.index < 0
+       || receipt.index >= expectedCount
+       || seen.has(receipt.index)) {
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index a7b74b8e..dd13c8b3 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -376,6 +376,11 @@ describe('scripts/test-full-suite.js', () => {
+   });
+ 
+   test('aggregates complete shard receipts and fails closed when one is malformed', () => {
++    for (const receipt of [null, undefined]) {
++      const aggregate = aggregateShardReceipts([receipt], 1);
++      expect(aggregate.status).toBe('INCOMPLETE');
++      expect(aggregate.exitCode).toBe(1);
++    }
+     expect(aggregateShardReceipts([
+       { code: 0, index: 0, output: '<testsuites tests="12" assertions="15" failures="0" skipped="2"></testsuites>' },
+       { code: 1, index: 1, output: '<testsuites tests="9" assertions="12" failures="1" errors="1" skipped="0"></testsuites>' },
+-- 
+2.51.0.windows.1
+

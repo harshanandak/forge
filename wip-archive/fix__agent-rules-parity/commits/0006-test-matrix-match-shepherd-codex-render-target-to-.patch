@@ -1,0 +1,37 @@
+From bf72bf56b0cbb5df88945b6200e7db90a0379b90 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 18:02:08 +0530
+Subject: [PATCH] test(matrix): match shepherd codex render target to
+ $CODEX_HOME/skills
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Tier-1 consistently changed all codex skill/stage render targets to the
+install path $CODEX_HOME/skills (.codex/skills is the staging mirror). The
+shepherd stage-graph test still asserted the old .codex/skills path — update
+it to match. (The full suite wasn't run under --quick, so this slipped.)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/harness-capability-matrix-shepherd.test.js | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/test/harness-capability-matrix-shepherd.test.js b/test/harness-capability-matrix-shepherd.test.js
+index 99fa0dc7..9941127c 100644
+--- a/test/harness-capability-matrix-shepherd.test.js
++++ b/test/harness-capability-matrix-shepherd.test.js
+@@ -28,7 +28,9 @@ describe('shepherd in the harness capability matrix', () => {
+     expect(shepherd.subskills.length).toBeGreaterThan(0);
+     expect(shepherd.renderTargets.claude.skill).toBe('.claude/skills/shepherd/SKILL.md');
+     expect(shepherd.renderTargets.cursor.skill).toBe('.cursor/skills/shepherd/SKILL.md');
+-    expect(shepherd.renderTargets.codex.skill).toBe('.codex/skills/shepherd/SKILL.md');
++    // Codex render target is the install path $CODEX_HOME/skills; .codex/skills is the
++    // committed staging mirror (see harness-capability-matrix codex skill knownIssue).
++    expect(shepherd.renderTargets.codex.skill).toBe('$CODEX_HOME/skills/shepherd/SKILL.md');
+   });
+ 
+   test('shepherd is NOT a workflow stage in the stage graph', () => {
+-- 
+2.51.0.windows.1
+

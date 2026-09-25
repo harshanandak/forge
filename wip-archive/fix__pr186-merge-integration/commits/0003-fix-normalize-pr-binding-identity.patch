@@ -1,0 +1,236 @@
+From 5f3df8482277c3d9ca361c9b978ad77a06f416e3 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 13:13:35 +0530
+Subject: [PATCH] fix: normalize pr binding identity
+
+---
+ lib/commands/merge.js                 | 23 ++++++++--
+ lib/commands/pr.js                    |  3 +-
+ test/commands/merge-authority.test.js | 66 +++++++++++++++++++++++++++
+ test/commands/pr-link.test.js         | 22 +++++++--
+ 4 files changed, 105 insertions(+), 9 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 02999346..6f34d15e 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -40,6 +40,7 @@
+  */
+ 
+ const { execFileSync } = require('node:child_process');
++const path = require('node:path');
+ 
+ const { loadRawConfig } = require('../config-writer');
+ const { evaluateMergeRules } = require('../merge-rules');
+@@ -117,6 +118,12 @@ function normalizeRepository(value) {
+   return typeof value === 'string' && REPOSITORY_NAME.test(value) ? value.toLowerCase() : null;
+ }
+ 
++function normalizeCommonDir(value) {
++  if (typeof value !== 'string' || !value) return null;
++  const resolved = path.resolve(value);
++  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++}
++
+ function defaultResolveLocalRepository({ projectRoot, git = execFileSync }) {
+   try {
+     const remote = git('git', ['remote', 'get-url', 'origin'], {
+@@ -274,22 +281,27 @@ async function defaultVerifyIssueOwnership({
+   };
+ }
+ 
+-function selectPrBindingRow(rows, repository, number, gitCommonDir = null) {
++function selectPrBindingRow(rows, repository, number, gitCommonDir = null, issueId = null) {
+   if (!Array.isArray(rows)) return { error: 'Kernel PR linkage is unreadable.' };
+   const repositoryRows = repository
+     ? rows.filter(row => normalizeRepository(row?.repo) === repository)
+     : rows;
+   const candidateRows = gitCommonDir
+-    ? repositoryRows.filter(row => row?.git_common_dir === gitCommonDir)
++    ? repositoryRows.filter(row => normalizeCommonDir(row?.git_common_dir) === normalizeCommonDir(gitCommonDir))
+     : repositoryRows;
+   if (candidateRows.some(row => !normalizeKernelPrNumber(row.number))) {
+     return { error: 'Kernel PR linkage contains a malformed PR number.' };
+   }
+   const matches = candidateRows.filter(row => normalizeKernelPrNumber(row.number) === number);
+   if (matches.length === 0) return { missing: true, error: 'Kernel PR linkage is missing.' };
+-  if (matches.length > 1) return { error: 'Kernel PR linkage is ambiguous.' };
+-  if (!normalizeRepository(matches[0]?.repo)) return { error: 'Kernel PR repository identity is unreadable.' };
+-  return { row: matches[0] };
++  const conflicting = issueId && matches.some(row => row.issue_id != null && row.issue_id !== issueId);
++  const linked = issueId ? matches.filter(row => row.issue_id === issueId) : matches;
++  if (conflicting || linked.length > 1 || (linked.length === 0 && matches.length > 1)) {
++    return { error: 'Kernel PR linkage is ambiguous.' };
++  }
++  const row = linked[0] || matches[0];
++  if (!normalizeRepository(row?.repo)) return { error: 'Kernel PR repository identity is unreadable.' };
++  return { row };
+ }
+ 
+ async function openPrBindingBroker(projectRoot, buildBroker) {
+@@ -381,6 +393,7 @@ async function defaultVerifyPrIssueBinding({
+       repository,
+       number,
+       allowRetired ? built.gitCommonDir : null,
++      issueId,
+     );
+     if (!selection.row) {
+       const cleanRetiredAbsence = allowRetired && selection.missing === true
+diff --git a/lib/commands/pr.js b/lib/commands/pr.js
+index 511da76e..44df13dd 100644
+--- a/lib/commands/pr.js
++++ b/lib/commands/pr.js
+@@ -160,9 +160,10 @@ async function linkExistingPr(args, _flags, projectRoot, opts = {}) {
+     const topLevel = commandText(exec, 'git', ['rev-parse', '--show-toplevel'], root);
+     const branch = commandText(exec, 'git', ['branch', '--show-current'], root);
+     const localHead = merge.normalizeFullHeadSha(commandText(exec, 'git', ['rev-parse', 'HEAD'], root));
+-    const gitCommonDir = commandText(
++    const rawGitCommonDir = commandText(
+       exec, 'git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], root,
+     );
++    const gitCommonDir = rawGitCommonDir ? path.resolve(rawGitCommonDir) : null;
+     if (normalizePath(topLevel) !== normalizePath(root) || !branch || !localHead || !gitCommonDir) {
+       return { success: false, error: 'Run forge pr link from the PR branch worktree root.' };
+     }
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index b28e0e12..4efa9bb3 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -414,6 +414,72 @@ describe('merge command — mandatory release authority', () => {
+     expect(merges).toBe(1);
+   });
+ 
++  test('prefers the exact linked open row over a legacy unlinked duplicate', async () => {
++    let fetches = 0;
++    let merges = 0;
++    const linked = {
++      id: 'pr-linked', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
++      git_common_dir: '/repo/.git/.', head_sha: HEAD, iterations: [],
++    };
++    const legacy = {
++      id: 'pr-legacy', repo: 'acme/forge', number: 42, issue_id: null, state: 'open',
++      git_common_dir: '/repo/.git', head_sha: HEAD, iterations: [],
++    };
++    const injected = deps({
++      fetchPrContext: async () => { fetches += 1; return context(); },
++      mergePr: async () => { merges += 1; return { merged: true }; },
++      resolveLocalRepository: () => 'acme/forge',
++      buildPrBindingBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: {
++          readTrace: async () => ({
++            gaps: [
++              'pull_requests:pr-legacy:unlinked_issue',
++              'iterations:pr-linked:missing',
++              'iterations:pr-legacy:missing',
++            ],
++            pull_requests: [linked, legacy],
++          }),
++          listOpenPrs: async () => [linked, legacy],
++        },
++        driver: { close() {} },
++      }),
++    });
++    delete injected.verifyPrIssueBinding;
++
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
++
++    expect(out).toMatchObject({ success: true, merged: true });
++    expect(fetches).toBe(2);
++    expect(merges).toBe(1);
++  });
++
++  test('fails closed when a duplicate PR row has a conflicting non-null issue link', async () => {
++    const out = await mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context(),
++      allowRetired: true,
++      buildBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: { readTrace: async () => ({
++          gaps: [],
++          pull_requests: [{
++            id: 'pr-linked', repo: 'acme/forge', number: 42, issue_id: ISSUE,
++            git_common_dir: '/repo/.git', state: 'open', iterations: [],
++          }, {
++            id: 'pr-conflict', repo: 'acme/forge', number: 42,
++            issue_id: '11111111-1111-4111-8111-111111111111',
++            git_common_dir: '/repo/.git', state: 'open', iterations: [],
++          }],
++        }) },
++      }),
++    });
++
++    expect(out).toMatchObject({ bound: false, error: 'Kernel PR linkage is ambiguous.' });
++  });
++
+   test('does not treat missing retired rows as clean absence when trace gaps are unreadable', async () => {
+     for (const gaps of [
+       null,
+diff --git a/test/commands/pr-link.test.js b/test/commands/pr-link.test.js
+index 16396bef..dc49df20 100644
+--- a/test/commands/pr-link.test.js
++++ b/test/commands/pr-link.test.js
+@@ -19,6 +19,7 @@ function buildHarness(overrides = {}) {
+   let persisted = overrides.existingPr || null;
+   let upserts = 0;
+   let reads = 0;
++  const readKeys = [];
+   const worktrees = overrides.worktrees || [{
+     id: 'WT-1',
+     path: ROOT,
+@@ -33,7 +34,9 @@ function buildHarness(overrides = {}) {
+     if (key === 'git rev-parse --show-toplevel') return `${ROOT}\n`;
+     if (key === 'git branch --show-current') return `${BRANCH}\n`;
+     if (key === 'git rev-parse HEAD') return `${overrides.localHead || HEAD}\n`;
+-    if (key === 'git rev-parse --path-format=absolute --git-common-dir') return `${COMMON}\n`;
++    if (key === 'git rev-parse --path-format=absolute --git-common-dir') {
++      return `${overrides.commonDirOutput || COMMON}\n`;
++    }
+     if (key === 'gh repo view --json nameWithOwner,isFork,parent') {
+       return JSON.stringify({ nameWithOwner: REPO, isFork: false, parent: null });
+     }
+@@ -50,8 +53,9 @@ function buildHarness(overrides = {}) {
+     throw new Error(`unexpected command: ${key}`);
+   };
+   const broker = {
+-    listOpenPrs: async () => {
++    listOpenPrs: async (gitCommonDir) => {
+       reads += 1;
++      readKeys.push(gitCommonDir);
+       if (overrides.openPrRows) return overrides.openPrRows;
+       if (overrides.readBackFailure && upserts > 0) return [];
+       return persisted ? [persisted] : [];
+@@ -91,7 +95,7 @@ function buildHarness(overrides = {}) {
+     opts,
+     broker,
+     driver,
+-    calls: () => ({ upserts, reads, persisted }),
++    calls: () => ({ upserts, reads, readKeys, persisted }),
+   };
+ }
+ 
+@@ -143,6 +147,18 @@ describe('forge pr link', () => {
+     });
+   });
+ 
++  test('normalizes the git common directory before every Kernel read and write', async () => {
++    const rawCommonDir = process.platform === 'win32'
++      ? COMMON.replaceAll('\\', '/')
++      : `${COMMON}${path.sep}.`;
++    const harness = buildHarness({ commonDirOutput: rawCommonDir });
++
++    expect((await link(harness)).success).toBe(true);
++
++    expect(harness.calls().readKeys).toEqual([COMMON, COMMON]);
++    expect(harness.calls().persisted.git_common_dir).toBe(COMMON);
++  });
++
+   test('is idempotent and preserves existing linkage metadata', async () => {
+     const existingPr = {
+       git_common_dir: COMMON,
+-- 
+2.51.0.windows.1
+

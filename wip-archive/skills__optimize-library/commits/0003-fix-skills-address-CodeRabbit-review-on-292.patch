@@ -1,0 +1,85 @@
+From b9555e7b4f59cdf05ccdd1971a7a143e88ab9945 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 14:01:19 +0530
+Subject: [PATCH] fix(skills): address CodeRabbit review on #292
+
+- dev eval: reword the "build out the task list from the design doc" case (plan
+  framing) to unambiguous dev work ("implement the already-planned tasks, TDD each")
+  so the dev router doesn't accept a planning request.
+- verify: scope the merged-PR lookup to the current HEAD SHA
+  (`--search "$(git rev-parse HEAD)"`) instead of `--limit 1` newest, so cleanup
+  and issue closure attach to the right change.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/dev/evals/evals.json | 2 +-
+ .codex/skills/verify/SKILL.md      | 5 +++--
+ skills/dev/evals/evals.json        | 2 +-
+ skills/verify/SKILL.md             | 5 +++--
+ 4 files changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/.codex/skills/dev/evals/evals.json b/.codex/skills/dev/evals/evals.json
+index 416391f0..12fd33fe 100644
+--- a/.codex/skills/dev/evals/evals.json
++++ b/.codex/skills/dev/evals/evals.json
+@@ -12,7 +12,7 @@
+     "should_trigger": true
+   },
+   {
+-    "query": "Build out the task list from the design doc using red-green-refactor",
++    "query": "Implement the already-planned tasks one at a time, red-green-refactor each",
+     "should_trigger": true
+   },
+   {
+diff --git a/.codex/skills/verify/SKILL.md b/.codex/skills/verify/SKILL.md
+index 3194ca0a..72945683 100644
+--- a/.codex/skills/verify/SKILL.md
++++ b/.codex/skills/verify/SKILL.md
+@@ -41,10 +41,11 @@ Confirm the merge actually landed on master. If the PR isn't merged yet, stop an
+ 
+ ### Step 2: Confirm PR Is Merged
+ 
+-Detect the most recently merged PR from the current HEAD commit:
++Detect the PR that produced the current HEAD commit — scope the lookup to that
++commit's SHA so you don't pick up an unrelated newer merge:
+ 
+ ```bash
+-gh pr list --state merged --base master --limit 1 --json number,state,mergedAt,mergedBy
++gh pr list --state merged --base master --search "$(git rev-parse HEAD)" --limit 1 --json number,state,mergedAt,mergedBy
+ ```
+ 
+ - `state` should be `MERGED`
+diff --git a/skills/dev/evals/evals.json b/skills/dev/evals/evals.json
+index 416391f0..12fd33fe 100644
+--- a/skills/dev/evals/evals.json
++++ b/skills/dev/evals/evals.json
+@@ -12,7 +12,7 @@
+     "should_trigger": true
+   },
+   {
+-    "query": "Build out the task list from the design doc using red-green-refactor",
++    "query": "Implement the already-planned tasks one at a time, red-green-refactor each",
+     "should_trigger": true
+   },
+   {
+diff --git a/skills/verify/SKILL.md b/skills/verify/SKILL.md
+index 3194ca0a..72945683 100644
+--- a/skills/verify/SKILL.md
++++ b/skills/verify/SKILL.md
+@@ -41,10 +41,11 @@ Confirm the merge actually landed on master. If the PR isn't merged yet, stop an
+ 
+ ### Step 2: Confirm PR Is Merged
+ 
+-Detect the most recently merged PR from the current HEAD commit:
++Detect the PR that produced the current HEAD commit — scope the lookup to that
++commit's SHA so you don't pick up an unrelated newer merge:
+ 
+ ```bash
+-gh pr list --state merged --base master --limit 1 --json number,state,mergedAt,mergedBy
++gh pr list --state merged --base master --search "$(git rev-parse HEAD)" --limit 1 --json number,state,mergedAt,mergedBy
+ ```
+ 
+ - `state` should be `MERGED`
+-- 
+2.51.0.windows.1
+

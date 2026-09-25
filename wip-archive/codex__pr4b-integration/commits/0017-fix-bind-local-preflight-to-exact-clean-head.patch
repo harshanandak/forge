@@ -1,0 +1,166 @@
+From 90b75e05369b551aabc2973e73732f18688ba6d3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 02:56:57 +0530
+Subject: [PATCH] fix: bind local preflight to exact clean head
+
+---
+ lib/commands/shepherd.js                 | 20 +++++++++++++++++++-
+ lib/pr-monitor/review-preflight.js       | 13 +++++++++----
+ test/commands/shepherd.test.js           | 21 +++++++++++++++++++++
+ test/pr-monitor/review-preflight.test.js | 16 +++++++++++++++-
+ 4 files changed, 64 insertions(+), 6 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index b370d2d0..32bd16d4 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -596,6 +596,8 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   const runPreflight = deps.runLocalPreflight || runLocalReviewPreflight;
++  const preflightHead = ctx.headSha;
++  const cleanTree = isWorkingTreeClean(git);
+   let localPreflight;
+   try {
+     localPreflight = await runPreflight({
+@@ -605,6 +607,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       pr: String(pr),
+       expectedHead: ctx.headSha,
+       localHead: ctx.localHead,
++      cleanTree,
+     });
+   } catch (error) {
+     localPreflight = {
+@@ -619,7 +622,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     ...ctx,
+     adapter,
+     autoRebase,
+-    cleanTree: autoRebase ? isWorkingTreeClean(git) : false,
++    cleanTree: autoRebase ? cleanTree : false,
+     rerunBudget: deps.rerunBudget || DEFAULT_RERUN_BUDGET,
+     rerunsUsed: deps.rerunsUsed || 0,
+     dryRun: localPreflight.blocking === true,
+@@ -644,6 +647,21 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     };
+   }
+ 
++  if (localPreflight.blocking !== true && result.state === 'MERGE_READY'
++    && preflightHead && result.expectedHead && result.expectedHead !== preflightHead) {
++    return {
++      success: false,
++      state: 'INCOMPLETE',
++      remoteState: result.state,
++      reason: 'Local preflight head changed; rerun convergence on the current head',
++      actions: result.actions || [],
++      localPreflight,
++      deltas: evidence.deltas,
++      deltaOverflow: evidence.deltaOverflow,
++      receiptIds: evidence.receiptIds,
++    };
++  }
++
+   let confirmedResult = result;
+   if (localPreflight.blocking !== true && result.state === 'MERGE_READY') {
+     const confirmation = await runPass({
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 50b19781..d2487e17 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -91,19 +91,24 @@ function deterministicFindings(results) {
+ function notApplicableResult(context) {
+   const exactHeadAvailable = typeof context.expectedHead === 'string'
+     && /^[0-9a-f]{40}$/i.test(context.expectedHead);
+-  if (exactHeadAvailable && context.localHead === context.expectedHead) return null;
++  const exactHeadCheckedOut = exactHeadAvailable && context.localHead === context.expectedHead;
++  if (exactHeadCheckedOut && context.cleanTree === true) return null;
++  const dirtyCheckout = exactHeadCheckedOut && context.cleanTree !== true;
++  const summary = dirtyCheckout
++    ? 'local checkout has uncommitted changes'
++    : (exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable');
+   return {
+     status: 'INCOMPLETE',
+-    blocking: false,
++    blocking: dirtyCheckout,
+     providers: {
+       coderabbit: providerResult(
+         'NOT_APPLICABLE',
+         false,
+-        exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable',
++        summary,
+       ),
+       deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
+     },
+-    findings: [],
++    findings: dirtyCheckout ? [{ provider: 'local-preflight', detail: summary }] : [],
+   };
+ }
+ 
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 0db88768..b541ccee 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -181,6 +181,27 @@ describe('shepherd command handler', () => {
+     expect(out.handoff).toBeUndefined();
+   });
+ 
++  test('fails closed when a merge-ready pass moved beyond the locally reviewed head', async () => {
++    const oldHead = 'a'.repeat(40);
++    const newHead = 'b'.repeat(40);
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: newHead }),
++      collectConvergenceEvidence: async () => ({
++        deltas: [], deltaOverflow: false, receiptIds: [], exactHead: newHead,
++      }),
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: oldHead, localHead: oldHead,
++      }),
++      git: () => '',
++    });
++
++    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
++    expect(out.reason).toMatch(/local preflight.*head changed/i);
++    expect(out.handoff).toBeUndefined();
++  });
++
+   test('uses the pass-verified post-rebase head for convergence evidence', async () => {
+     const oldHead = 'a'.repeat(40);
+     const newHead = 'b'.repeat(40);
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index 616c366f..31640b69 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -9,7 +9,7 @@ const {
+ } = require('../../lib/pr-monitor/review-preflight');
+ 
+ const EXACT_HEAD_CONTEXT = {
+-  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40),
++  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
+ };
+ 
+ describe('bounded local review preflight', () => {
+@@ -88,6 +88,20 @@ describe('bounded local review preflight', () => {
+     expect(calls).toBe(0);
+   });
+ 
++  test('blocks exact-head preflight when the local checkout has uncommitted changes', async () => {
++    let calls = 0;
++    const result = await runLocalReviewPreflight({ ...EXACT_HEAD_CONTEXT, cleanTree: false }, {
++      probeCodeRabbit: async () => { calls += 1; },
++      runDeterministic: async () => { calls += 1; },
++    });
++
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
++    expect(result.findings).toEqual([{
++      provider: 'local-preflight', detail: 'local checkout has uncommitted changes',
++    }]);
++    expect(calls).toBe(0);
++  });
++
+   test('classifies unavailable CodeRabbit without manufacturing a pass', async () => {
+     const result = await runLocalReviewPreflight(EXACT_HEAD_CONTEXT, {
+       probeCodeRabbit: async () => ({ available: false, reason: 'not installed' }),
+-- 
+2.51.0.windows.1
+

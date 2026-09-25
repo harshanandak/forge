@@ -1,0 +1,114 @@
+From 7ae13ffd853731d2d2425595a5140fa0fa2e0c0a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 03:48:15 +0530
+Subject: [PATCH] fix(flow): classify hostile provider failures safely
+
+---
+ packages/flow/src/monitor-durability.js       | 22 ++++++++++--
+ packages/flow/test/monitor-durability.test.js | 35 +++++++++++++++++--
+ 2 files changed, 52 insertions(+), 5 deletions(-)
+
+diff --git a/packages/flow/src/monitor-durability.js b/packages/flow/src/monitor-durability.js
+index 79faf6fc..6fd5d6a5 100644
+--- a/packages/flow/src/monitor-durability.js
++++ b/packages/flow/src/monitor-durability.js
+@@ -127,8 +127,27 @@ function assertTargets(value) {
+   return Object.freeze([...new Set(snapshot)]);
+ }
+ 
++function readProviderCode(error) {
++  if (
++    (typeof error !== "object" && typeof error !== "function") ||
++    error === null ||
++    types.isProxy(error)
++  ) {
++    return "";
++  }
++  let descriptor;
++  try {
++    descriptor = Object.getOwnPropertyDescriptor(error, "code");
++  } catch {
++    return "";
++  }
++  return descriptor && Object.hasOwn(descriptor, "value") && typeof descriptor.value === "string"
++    ? descriptor.value
++    : "";
++}
++
+ function mapProviderFailure(error) {
+-  const code = typeof error?.code === "string" ? error.code : "";
++  const code = readProviderCode(error);
+   if ([
+     "MONITOR_EVENT_CONFLICT",
+     "MONITOR_TARGET_SET_CONFLICT",
+@@ -156,7 +175,6 @@ async function providerCall(operation) {
+   try {
+     return await operation();
+   } catch (error) {
+-    if (error instanceof MonitorDurabilityError) throw error;
+     throw mapProviderFailure(error);
+   }
+ }
+diff --git a/packages/flow/test/monitor-durability.test.js b/packages/flow/test/monitor-durability.test.js
+index a90b9c9c..964efd12 100644
+--- a/packages/flow/test/monitor-durability.test.js
++++ b/packages/flow/test/monitor-durability.test.js
+@@ -250,9 +250,7 @@ function createDurableDriver() {
+   };
+ }
+ 
+-function bridge(driver, deliver = async () => undefined) {
+-  const store = createMonitorStore(driver);
+-  delete store.listEvents;
++function bridgeWithStore(store, deliver = async () => undefined) {
+   return createMonitorDurabilityBridge({
+     store,
+     deliveryTargets: ['target-1'],
+@@ -260,6 +258,12 @@ function bridge(driver, deliver = async () => undefined) {
+   });
+ }
+ 
++function bridge(driver, deliver = async () => undefined) {
++  const store = createMonitorStore(driver);
++  delete store.listEvents;
++  return bridgeWithStore(store, deliver);
++}
++
+ describe('monitor durability bridge', () => {
+   test('persists a validated event before delivery and retries safely after restart', async () => {
+     const driver = createDurableDriver();
+@@ -315,6 +319,31 @@ describe('monitor durability bridge', () => {
+     });
+   });
+ 
++  test('classifies revoked proxies and hostile code accessors without reflecting on them', async () => {
++    const driver = createDurableDriver();
++    const store = createMonitorStore(driver);
++    delete store.listEvents;
++    const revoked = Proxy.revocable({}, {});
++    revoked.revoke();
++    let getterCalls = 0;
++    const accessor = {};
++    Object.defineProperty(accessor, 'code', {
++      get() {
++        getterCalls += 1;
++        throw new Error('code accessor executed');
++      },
++    });
++
++    for (const thrown of [revoked.proxy, accessor]) {
++      store.appendEvent = () => { throw thrown; };
++      await expect(bridgeWithStore(store).persistEvent(monitorEvent())).rejects.toMatchObject({
++        name: 'MonitorDurabilityError',
++        code: 'PROVIDER_UNAVAILABLE',
++      });
++    }
++    expect(getterCalls).toBe(0);
++  });
++
+   test('rejects hash-consistent structurally invalid events and receipts before provider calls', async () => {
+     const driver = createDurableDriver();
+     const deliver = mock(async () => undefined);
+-- 
+2.51.0.windows.1
+

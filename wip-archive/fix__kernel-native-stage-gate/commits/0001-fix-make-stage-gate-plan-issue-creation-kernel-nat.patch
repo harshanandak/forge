@@ -1,0 +1,1085 @@
+From 15bcbd7a893b197376ca4a3b0fe54163bc5fcb46 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 3 Jul 2026 16:33:57 +0530
+Subject: [PATCH] fix: make stage gate + plan issue creation kernel-native (bd
+ optional)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Release blocker: all 6 workflow stages threw when the `bd` binary was
+absent, even though the kernel is the default issue backend — breaking
+the "no Beads install required" contract.
+
+Root fix — bd is now conditional on the resolved issue backend:
+- lib/runtime-health.js: checkRuntimeHealth resolves the issue backend
+  (env > .forge/config.yaml > default 'kernel'). A missing bd is a
+  hard-stop diagnostic ONLY when backend=beads; on kernel it is a
+  non-blocking advisory (new `advisories` array). gh and jq stay
+  unconditional hard requirements. Adds `checks.issueBackend`.
+- lib/workflow/enforce-stage.js: resolves the backend and threads it
+  into checkRuntimeHealth; adds an injectable `checkHealth` seam
+  (consistent with the existing `health`/`repairRuntime` seams).
+
+Kernel-native plan issue creation:
+- lib/commands/plan.js: `forge plan` now routes issue creation through
+  the kernel broker (runIssueOperation) when backend=kernel, instead of
+  shelling to `bd create`. New `createKernelIssue`; executePlan resolves
+  the backend and dispatches; the beads path (createBeadsIssue) is
+  preserved for backend=beads. Extracts a shared description builder.
+
+Tests (TDD): runtime-health (bd advisory on kernel, blocks on beads,
+gh stays hard), enforce-stage (backend resolution + gate), plan
+(createKernelIssue + executePlan kernel routing, no bd). Updated the
+existing "missing bd" test to assert the beads path.
+
+Regenerated docs/work/.../bd-call-site-kill-list.md (release-check D20
+audit artifact) to reflect the new bd reference map.
+
+Note: touched files renormalize CRLF->LF per .gitattributes (eol=lf);
+pre-existing CRLF blobs cause EOL-only diff lines in test/commands/plan.test.js.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                 |  14 +-
+ lib/commands/plan.js                          | 146 +++++-
+ lib/runtime-health.js                         |  52 +-
+ lib/workflow/enforce-stage.js                 |  15 +-
+ test/commands/plan.test.js                    | 453 +++++++++++-------
+ test/runtime-health.test.js                   |  59 ++-
+ test/workflow/enforce-stage.test.js           |  61 +++
+ 7 files changed, 587 insertions(+), 213 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 5d3a31ee..a7b8e282 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ 
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+-| command | 64 | 8 |
+-| runtime | 250 | 33 |
++| command | 68 | 8 |
++| runtime | 256 | 34 |
+ | docs | 394 | 47 |
+ | skills | 1 | 1 |
+ | hooks | 0 | 0 |
+@@ -23,8 +23,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 466 (bd)
+ - [ ] lib/commands/migrate.js (14)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 306 (.beads)
+-- [ ] lib/commands/plan.js (5)
+-  - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
++- [ ] lib/commands/plan.js (9)
++  - lines: 237 (bd), 273 (bd), 275 (bd), 289 (bd), 310 (bd), 321 (bd), 324 (bd), 718 (bd), 753 (bd)
+ - [ ] lib/commands/status.js (10)
+   - lines: 228 (.beads), 229 (.beads), 230 (.beads), 231 (.beads), 232 (.beads), 233 (.beads), 234 (.beads), 236 (.beads), 356 (bd), 414 (bd)
+ - [ ] lib/commands/test.js (5)
+@@ -70,10 +70,12 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 23 (bd), 33 (bd)
+ - [ ] lib/protected-state-surfaces.js (4)
+   - lines: 43 (.beads), 50 (.beads), 51 (bd), 362 (bd)
+-- [ ] lib/runtime-health.js (9)
+-  - lines: 176 (bd), 217 (.beads), 276 (.beads), 334 (.beads), 490 (bd), 518 (bd), 521 (bd), 522 (bd), 561 (bd)
++- [ ] lib/runtime-health.js (13)
++  - lines: 177 (bd), 218 (.beads), 277 (.beads), 335 (.beads), 507 (bd), 538 (bd), 540 (bd), 543 (bd), 544 (bd), 547 (bd), 552 (bd), 553 (bd), 596 (bd)
+ - [ ] lib/status/beads-snapshot.js (1)
+   - lines: 31 (.beads)
++- [ ] lib/workflow/enforce-stage.js (2)
++  - lines: 118 (bd), 119 (bd)
+ - [ ] scripts/beads-migrate-to-dolt.sh (1)
+   - lines: 7 (dolt)
+ - [ ] scripts/beads-upgrade-smoke.sh (1)
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index 0090c836..e5b1196b 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -11,6 +11,8 @@
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { execFileSync } = require('node:child_process');
++const { resolveIssueBackend } = require('../issue-backend');
++const { runIssueOperation } = require('../forge-issues');
+ 
+ // Constants for security
+ // Note: cwd is resolved at call-time via getExecOptions() to avoid stale require-time snapshots
+@@ -58,6 +60,33 @@ function validateFeatureSlug(slug) {
+ 	return { valid: true };
+ }
+ 
++/**
++ * Build the issue description shared by both issue backends (kernel and beads).
++ * Strategic scope appends a design-doc pointer derived from a sanitized slug.
++ *
++ * @param {string} featureName
++ * @param {string} researchPath
++ * @param {'tactical'|'strategic'} scope
++ * @returns {{description: string}|{error: string}}
++ * @private
++ */
++function buildFeatureIssueDescription(featureName, researchPath, scope) {
++	let description = `Research: ${researchPath}`;
++
++	if (scope === 'strategic') {
++		// Sanitize derived slug: keep only safe characters (OWASP A03)
++		const featureSlug = featureName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/(?:^-+|-+$)/g, '').slice(0, MAX_SLUG_LENGTH);  // NOSONAR S5852 - non-overlapping anchors, no backtracking
++		const slugValidation = validateFeatureSlug(featureSlug);
++		if (!slugValidation.valid) {
++			return { error: `Cannot generate valid slug from feature name: ${slugValidation.error}` };
++		}
++		const dateSlug = new Date().toISOString().slice(0, 10);
++		description += `\n\nDesign: docs/work/${dateSlug}-${featureSlug}/design.md`;
++	}
++
++	return { description };
++}
++
+ /**
+  * Read research document from file
+  *
+@@ -235,18 +264,11 @@ function createBeadsIssue(featureName, researchPath, scope) {
+ 	}
+ 
+ 	try {
+-		let description = `Research: ${researchPath}`;
+-
+-		if (scope === 'strategic') {
+-			// Sanitize derived slug: keep only safe characters (OWASP A03)
+-			const featureSlug = featureName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/(?:^-+|-+$)/g, '').slice(0, MAX_SLUG_LENGTH);  // NOSONAR S5852 - non-overlapping anchors, no backtracking
+-			const slugValidation = validateFeatureSlug(featureSlug);
+-			if (!slugValidation.valid) {
+-				return { success: false, error: `Cannot generate valid slug from feature name: ${slugValidation.error}` };
+-			}
+-			const dateSlug = new Date().toISOString().slice(0, 10);
+-			description += `\n\nDesign: docs/work/${dateSlug}-${featureSlug}/design.md`;
++		const built = buildFeatureIssueDescription(featureName, researchPath, scope);
++		if (built.error) {
++			return { success: false, error: built.error };
+ 		}
++		const description = built.description;
+ 
+ 		// Execute bd create command using execFileSync for safety (OWASP A03)
+ 		const result = execFileSync(  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
+@@ -295,6 +317,79 @@ function createBeadsIssue(featureName, researchPath, scope) {
+ 	}
+ }
+ 
++/**
++ * Create an issue via the Forge Kernel backend (bd-free).
++ *
++ * Mirrors `forge issue create` on the kernel: routes through runIssueOperation with
++ * the kernel broker instead of shelling out to `bd create`. Used by `forge plan` when
++ * the resolved issue backend is the kernel (the default), so planning needs no Beads
++ * install. The beads path (createBeadsIssue) is preserved for backend=beads.
++ *
++ * @param {string} featureName
++ * @param {string} researchPath
++ * @param {'tactical'|'strategic'} scope
++ * @param {object} [options]
++ * @param {string} [options.projectRoot] - Repo root for the kernel store (defaults to cwd)
++ * @param {object} [options.kernelBroker] - Pre-built kernel broker (optional)
++ * @param {Function} [options.runIssueOperation] - Injectable runner (tests)
++ * @returns {Promise<{success: boolean, issueId?: string, description?: string, error?: string}>}
++ */
++async function createKernelIssue(featureName, researchPath, scope, options = {}) {
++	if (!featureName || !researchPath) {
++		return {
++			success: false,
++			error: 'Feature name and research path are required',
++		};
++	}
++
++	if (scope !== 'tactical' && scope !== 'strategic') {
++		return {
++			success: false,
++			error: `Invalid scope '${scope}'. Must be 'tactical' or 'strategic'`,
++		};
++	}
++
++	const built = buildFeatureIssueDescription(featureName, researchPath, scope);
++	if (built.error) {
++		return { success: false, error: built.error };
++	}
++	const description = built.description;
++
++	const run = options.runIssueOperation || runIssueOperation;
++	const projectRoot = options.projectRoot || process.cwd();
++
++	try {
++		const result = await run(
++			'create',
++			[`--title=${featureName}`, `--description=${description}`, '--type=feature', '--priority=2'],
++			projectRoot,
++			{ issueBackend: 'kernel', useKernelBroker: true, kernelBroker: options.kernelBroker },
++		);
++
++		// The kernel returns the issue-command contract ({ ok, data: { id } }); a failure
++		// is { ok:false, error }. Guard both the contract shape and any { success:false }.
++		if (!result || result.ok === false || result.success === false) {
++			const message = result?.error || 'Kernel issue creation failed';
++			return { success: false, error: `Failed to create kernel issue: ${message}` };
++		}
++
++		const issueId = result?.data?.id ?? result?.issueId ?? result?.id;
++		if (!issueId) {
++			return {
++				success: false,
++				error: 'Failed to extract issue ID from kernel create result',
++			};
++		}
++
++		return { success: true, issueId, description };
++	} catch (error) {
++		return {
++			success: false,
++			error: `Failed to create kernel issue: ${error.message}`,
++		};
++	}
++}
++
+ /**
+  * Create feature branch
+  * Creates and checks out a new git branch following feat/<slug> convention
+@@ -611,7 +706,7 @@ function applyYAGNIFilter({ task, tasks, designDoc } = {}) {
+  *   console.log('Next:', result.nextCommand);
+  * }
+  */
+-async function executePlan(featureName) { // NOSONAR S3776
++async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 	if (!featureName || typeof featureName !== 'string') {
+ 		return {
+ 			success: false,
+@@ -619,6 +714,15 @@ async function executePlan(featureName) { // NOSONAR S3776
+ 		};
+ 	}
+ 
++	// Resolve the active issue backend (explicit opts > env > .forge/config.yaml >
++	// default 'kernel'). Kernel is bd-free, so planning works with no Beads install.
++	const issueBackend = resolveIssueBackend({
++		deps: options,
++		env: options.env || process.env,
++		projectRoot: options.projectRoot,
++		warn: () => {},
++	});
++
+ 	const featureSlug = featureName.toLowerCase()
+ 		.replaceAll(/[^a-z0-9-]/g, '-')
+ 		.split('-').filter(Boolean).join('-');
+@@ -645,12 +749,15 @@ async function executePlan(featureName) { // NOSONAR S3776
+ 		// Step 2: Detect scope (tactical vs strategic)
+ 		const scope = detectScope(research.content);
+ 
+-		// Step 3: Create Beads issue
+-		const beads = createBeadsIssue(featureName, research.path, scope.type);
+-		if (!beads.success) {
++		// Step 3: Create the tracking issue via the active backend. Kernel (default)
++		// routes through the kernel broker (no bd); beads preserves the bd path.
++		const issue = issueBackend === 'kernel'
++			? await createKernelIssue(featureName, research.path, scope.type, options)
++			: createBeadsIssue(featureName, research.path, scope.type);
++		if (!issue.success) {
+ 			return {
+ 				success: false,
+-				error: `Failed to create Beads issue: ${beads.error}`,
++				error: `Failed to create issue: ${issue.error}`,
+ 			};
+ 		}
+ 
+@@ -667,7 +774,7 @@ async function executePlan(featureName) { // NOSONAR S3776
+ 		const result = {
+ 			success: true,
+ 			scope: scope.type,
+-			beadsIssueId: beads.issueId,
++			beadsIssueId: issue.issueId,
+ 			branchName: branch.branchName,
+ 			summary: `Plan created for ${featureName} (${scope.type} scope)`,
+ 			// Strategic path: /propose not yet implemented — falls through to /dev until it is
+@@ -686,8 +793,8 @@ async function executePlan(featureName) { // NOSONAR S3776
+ module.exports = {
+ 	name: 'plan',
+ 	description: 'Create implementation plan from researched feature context',
+-	handler: async (args) => {
+-		const result = await executePlan(args[0]);
++	handler: async (args, _flags, projectRoot, opts = {}) => {
++		const result = await executePlan(args[0], { ...opts, projectRoot });
+ 		if (!result.success) {
+ 			return result;
+ 		}
+@@ -705,6 +812,7 @@ module.exports = {
+ 	readResearchDoc,
+ 	detectScope,
+ 	createBeadsIssue,
++	createKernelIssue,
+ 	createFeatureBranch,
+ 	extractDesignDecisions,
+ 	extractTasksFromResearch,
+diff --git a/lib/runtime-health.js b/lib/runtime-health.js
+index bea6c5dd..486e6df6 100644
+--- a/lib/runtime-health.js
++++ b/lib/runtime-health.js
+@@ -12,6 +12,7 @@ const path = require('node:path');
+ const { execFileSync: defaultExecFileSync } = require('node:child_process');
+ 
+ const { checkLefthookStatus } = require('./lefthook-check');
++const { resolveIssueBackend } = require('./issue-backend');
+ 
+ const WINDOWS_GIT_BASH_CANDIDATES = [
+   String.raw`C:\Program Files\Git\bin\bash.exe`,
+@@ -181,11 +182,11 @@ function invokesBeadsHook(line, hookName) {
+   ));
+ }
+ 
+-function createDiagnostic(code, subject, message, repair) {
++function createDiagnostic(code, subject, message, repair, severity = 'hard-stop') {
+   return {
+     code,
+     subject,
+-    severity: 'hard-stop',
++    severity,
+     message,
+     ...(repair ? { repair } : {})
+   };
+@@ -481,6 +482,22 @@ function normalizeProjectRoot(projectRoot) {
+     : process.cwd();
+ }
+ 
++// Resolve the active issue backend for the health gate. An already-normalized
++// `options.issueBackend` (passed by enforce-stage) wins; otherwise fall back to the
++// shared resolver (env > .forge/config.yaml > default 'kernel'). Never throws and
++// never warns from the health path.
++function resolveHealthIssueBackend(options, projectRoot) {
++  if (options.issueBackend === 'kernel' || options.issueBackend === 'beads') {
++    return options.issueBackend;
++  }
++  return resolveIssueBackend({
++    deps: options.backendDeps || {},
++    env: options.env || process.env,
++    projectRoot,
++    warn: () => {}
++  });
++}
++
+ function checkRuntimeHealth(projectRoot, options = {}) {
+   const platform = options.platform || process.platform;
+   const root = normalizeProjectRoot(projectRoot);
+@@ -492,7 +509,10 @@ function checkRuntimeHealth(projectRoot, options = {}) {
+   const jq = checkCommandAvailability('jq', root, options);
+   const shell = normalizeShellRuntime(options.shellRuntime, platform, options);
+ 
++  const issueBackend = resolveHealthIssueBackend(options, root);
++
+   const diagnostics = [];
++  const advisories = [];
+ 
+   const lefthookMissing = lefthook.state === 'missing-dependency'
+     || lefthook.state === 'missing-binary';
+@@ -516,11 +536,25 @@ function checkRuntimeHealth(projectRoot, options = {}) {
+   }
+ 
+   if (!bd.available) {
+-    diagnostics.push(createDiagnostic(
+-      'BD_MISSING',
+-      'bd',
+-      'bd is required for stage-entry workflow checks.'
+-    ));
++    if (issueBackend === 'beads') {
++      // Beads is the active issue backend, so bd is a genuine hard prerequisite.
++      diagnostics.push(createDiagnostic(
++        'BD_MISSING',
++        'bd',
++        'bd is required for stage-entry workflow checks when the beads issue backend is selected.'
++      ));
++    } else {
++      // Kernel is the default issue backend and needs no bd binary, so a missing bd
++      // must NOT hard-stop stage entry (the "no Beads install required" contract).
++      // Surface it as a non-blocking advisory instead.
++      advisories.push(createDiagnostic(
++        'BD_MISSING',
++        'bd',
++        'bd is not installed. The kernel issue backend does not require it; install bd only if you switch to the beads backend.',
++        undefined,
++        'advisory'
++      ));
++    }
+   }
+ 
+   if (!gh.available) {
+@@ -554,6 +588,7 @@ function checkRuntimeHealth(projectRoot, options = {}) {
+     ready: healthy,
+     hardStop: !healthy,
+     diagnostics,
++    advisories,
+     checks: {
+       projectRoot: root,
+       lefthook,
+@@ -561,7 +596,8 @@ function checkRuntimeHealth(projectRoot, options = {}) {
+       bd,
+       gh,
+       jq,
+-      shell
++      shell,
++      issueBackend
+     }
+   };
+ }
+diff --git a/lib/workflow/enforce-stage.js b/lib/workflow/enforce-stage.js
+index b1ea3beb..2747c8df 100644
+--- a/lib/workflow/enforce-stage.js
++++ b/lib/workflow/enforce-stage.js
+@@ -2,6 +2,7 @@
+ 
+ const { repairWorkflowRuntimeAssets } = require('../commands/setup');
+ const { checkRuntimeHealth } = require('../runtime-health');
++const { resolveIssueBackend } = require('../issue-backend');
+ const { normalizeStageId } = require('./stages');
+ const {
+   getAllowedTransitionsForWorkflowState,
+@@ -103,7 +104,7 @@ function formatDiagnostics(diagnostics = []) {
+     .join('; ');
+ }
+ 
+-async function enforceStageEntry({ commandName, args = [], flags = {}, projectRoot, workflowState, health, repairRuntime } = {}) {
++async function enforceStageEntry({ commandName, args = [], flags = {}, projectRoot, workflowState, health, repairRuntime, checkHealth } = {}) {
+   const stageId = normalizeStageId(commandName);
+   if (!stageId) {
+     return { allowed: true };
+@@ -113,7 +114,17 @@ async function enforceStageEntry({ commandName, args = [], flags = {}, projectRo
+     repairWorkflowRuntimeAssets(projectRoot);
+   }
+ 
+-  let runtimeHealth = health || checkRuntimeHealth(projectRoot);
++  // Resolve the active issue backend (env > .forge/config.yaml > default 'kernel') so
++  // the runtime gate only treats bd as a hard prerequisite for the beads backend. The
++  // kernel default needs no bd, so stages must run without it.
++  const issueBackend = resolveIssueBackend({
++    deps: {},
++    env: process.env,
++    projectRoot,
++    warn: () => {}
++  });
++  const runHealthCheck = checkHealth || checkRuntimeHealth;
++  let runtimeHealth = health || runHealthCheck(projectRoot, { issueBackend });
+   if (runtimeHealth.hardStop && typeof repairRuntime === 'function') {
+     const repairedHealth = await repairRuntime({
+       commandName,
+diff --git a/test/commands/plan.test.js b/test/commands/plan.test.js
+index 09a838ec..3610a029 100644
+--- a/test/commands/plan.test.js
++++ b/test/commands/plan.test.js
+@@ -1,182 +1,281 @@
+-const { describe, test, expect } = require('bun:test');
+-const {
+-	readResearchDoc,
+-	detectScope,
+-	createBeadsIssue,
+-	createFeatureBranch,
+-	extractDesignDecisions,
+-	extractTasksFromResearch,
+-	executePlan,
+-} = require('../../lib/commands/plan.js');
+-
+-describe('Plan Command - Beads Integration', () => {
+-	describe('Research document analysis', () => {
+-		test.skip('should read research document from path', () => {
+-			const featureSlug = 'test-feature';
+-
+-			const research = readResearchDoc(featureSlug);
+-			expect(research.content).toBeTruthy();
+-			expect(research.path).toBe('docs/research/test-feature.md');
+-		});
+-
+-		test('should handle missing research document', () => {
+-			const featureSlug = 'nonexistent-feature';
+-
+-			const result = readResearchDoc(featureSlug);
+-			expect(result.success).toBe(false);
+-			expect(result.error).toBeTruthy();
+-		});
+-	});
+-
+-	describe('Scope detection', () => {
+-		test('should detect tactical scope (quick fix, <1 day)', () => {
+-			const researchContent = `
+-# Test Feature Research
+-
+-## Scope Assessment
+-**Complexity**: Low
+-**Timeline**: 2-3 hours
+-**Strategic/Tactical**: Tactical
+-`;
+-
+-			const scope = detectScope(researchContent);
+-			expect(scope.type).toBe('tactical');
+-			expect(scope.requiresDesignDoc).toBe(false);
+-		});
+-
+-		test('should detect strategic scope (architecture change)', () => {
+-			const researchContent = `
+-# Payment Integration Research
+-
+-## Scope Assessment
+-**Complexity**: High
+-**Timeline**: 3-4 days
+-**Strategic/Tactical**: Strategic (architecture change)
+-`;
+-
+-			const scope = detectScope(researchContent);
+-			expect(scope.type).toBe('strategic');
+-			expect(scope.requiresDesignDoc).toBe(true);
+-		});
+-
+-		test('should detect strategic scope based on keywords', () => {
+-			const researchContent = `
+-# Database Migration Research
+-
+-This requires changes to the database schema and API endpoints.
+-Major architectural impact.
+-`;
+-
+-			const scope = detectScope(researchContent);
+-			expect(scope.type).toBe('strategic');
+-			expect(scope.reason).toBeTruthy();
+-		});
+-	});
+-
+-	describe('Beads issue creation', () => {
+-		test.skip('should create Beads issue for tactical scope', () => {
+-			const featureName = 'fix-validation-bug';
+-			const researchPath = 'docs/research/fix-validation-bug.md';
+-
+-			const result = createBeadsIssue(featureName, researchPath, 'tactical');
+-			expect(result.issueId).toBeTruthy();
+-			expect(result.issueId).toMatch(/^forge-[a-z0-9]+$/);
+-			expect(result.success).toBe(true);
+-		});
+-
+-		test.skip('should create Beads issue with design doc link for strategic (requires Beads CLI — PR #64)', () => {
+-			const featureName = 'payment-integration';
+-			const researchPath = 'docs/research/payment-integration.md';
+-
++const { describe, test, expect } = require('bun:test');
++const {
++	readResearchDoc,
++	detectScope,
++	createBeadsIssue,
++	createKernelIssue,
++	createFeatureBranch,
++	extractDesignDecisions,
++	extractTasksFromResearch,
++	executePlan,
++} = require('../../lib/commands/plan.js');
++
++const nodeFs = require('node:fs');
++const nodeOs = require('node:os');
++const nodePath = require('node:path');
++const { execFileSync: nodeExecFileSync } = require('node:child_process');
++
++describe('Plan Command - Beads Integration', () => {
++	describe('Research document analysis', () => {
++		test.skip('should read research document from path', () => {
++			const featureSlug = 'test-feature';
++
++			const research = readResearchDoc(featureSlug);
++			expect(research.content).toBeTruthy();
++			expect(research.path).toBe('docs/research/test-feature.md');
++		});
++
++		test('should handle missing research document', () => {
++			const featureSlug = 'nonexistent-feature';
++
++			const result = readResearchDoc(featureSlug);
++			expect(result.success).toBe(false);
++			expect(result.error).toBeTruthy();
++		});
++	});
++
++	describe('Scope detection', () => {
++		test('should detect tactical scope (quick fix, <1 day)', () => {
++			const researchContent = `
++# Test Feature Research
++
++## Scope Assessment
++**Complexity**: Low
++**Timeline**: 2-3 hours
++**Strategic/Tactical**: Tactical
++`;
++
++			const scope = detectScope(researchContent);
++			expect(scope.type).toBe('tactical');
++			expect(scope.requiresDesignDoc).toBe(false);
++		});
++
++		test('should detect strategic scope (architecture change)', () => {
++			const researchContent = `
++# Payment Integration Research
++
++## Scope Assessment
++**Complexity**: High
++**Timeline**: 3-4 days
++**Strategic/Tactical**: Strategic (architecture change)
++`;
++
++			const scope = detectScope(researchContent);
++			expect(scope.type).toBe('strategic');
++			expect(scope.requiresDesignDoc).toBe(true);
++		});
++
++		test('should detect strategic scope based on keywords', () => {
++			const researchContent = `
++# Database Migration Research
++
++This requires changes to the database schema and API endpoints.
++Major architectural impact.
++`;
++
++			const scope = detectScope(researchContent);
++			expect(scope.type).toBe('strategic');
++			expect(scope.reason).toBeTruthy();
++		});
++	});
++
++	describe('Beads issue creation', () => {
++		test.skip('should create Beads issue for tactical scope', () => {
++			const featureName = 'fix-validation-bug';
++			const researchPath = 'docs/research/fix-validation-bug.md';
++
++			const result = createBeadsIssue(featureName, researchPath, 'tactical');
++			expect(result.issueId).toBeTruthy();
++			expect(result.issueId).toMatch(/^forge-[a-z0-9]+$/);
++			expect(result.success).toBe(true);
++		});
++
++		test.skip('should create Beads issue with design doc link for strategic (requires Beads CLI — PR #64)', () => {
++			const featureName = 'payment-integration';
++			const researchPath = 'docs/research/payment-integration.md';
++
+ 			const result = createBeadsIssue(featureName, researchPath, 'strategic');
+ 			expect(result.issueId).toBeTruthy();
+ 			expect(result.description.includes('docs/work')).toBeTruthy();
+ 			expect(result.description.endsWith('/design.md')).toBeTruthy();
+ 		});
+-
+-		test.skip('should handle Beads command failures (requires Beads CLI — PR #64)', () => {
+-			const featureName = 'test-feature';
+-
+-			// Mock bd command to fail
+-			const result = createBeadsIssue(featureName, 'path', 'tactical');
+-			expect(result.success).toBe(false);
+-			expect(result.error).toBeTruthy();
+-		});
+-	});
+-
+-	describe('Branch creation', () => {
+-		test.skip('should create feature branch with correct naming', () => {
+-			const featureSlug = 'payment-integration';
+-
+-			const result = createFeatureBranch(featureSlug);
+-			expect(result.branchName).toBe('feat/payment-integration');
+-			expect(result.success).toBe(true);
+-		});
+-
+-		test.skip('should handle existing branch gracefully', () => {
+-			const featureSlug = 'existing-feature';
+-
+-			// Mock git to show branch exists
+-			const result = createFeatureBranch(featureSlug);
+-			expect(result.success).toBe(false);
+-			expect(result.error).toBeTruthy();
+-		});
+-	});
+-
+-	describe('Design document creation', () => {
+-		test('should extract decisions from research for design.md', () => {
+-			const researchContent = `
+-## Key Decisions
+-### Decision 1: Use Stripe SDK v4
+-**Reasoning**: Better retry logic
+-`;
+-
+-			const design = extractDesignDecisions(researchContent);
+-			expect(design.decisions.length > 0).toBeTruthy();
+-			expect(design.decisions[0].includes('Stripe SDK v4')).toBeTruthy();
+-		});
+-
+-		test('should create TDD-ordered tasks from research scenarios', () => {
+-			const researchContent = `
+-## TDD Test Scenarios
+-### Scenario 1: Validate payment input
+-### Scenario 2: Process payment
+-`;
+-
+-			const tasks = extractTasksFromResearch(researchContent);
+-			expect(tasks.length > 0).toBeTruthy();
+-			expect(tasks[0].phase).toBeTruthy(); // RED, GREEN, or REFACTOR
+-		});
+-	});
+-
+-	describe('Command execution', () => {
+-		test.skip('should execute tactical workflow (no design doc) (requires Beads CLI — PR #64)', async () => {
+-			const featureName = 'fix-validation';
+-
+-			const result = await executePlan(featureName);
+-			expect(result.success).toBe(true);
+-			expect(result.scope).toBe('tactical');
+-			expect(result.beadsIssueId).toBeTruthy();
+-			expect(result.branchName).toBeTruthy();
+-		});
+-
+-		test.skip('should execute strategic workflow (with design doc) (requires Beads CLI — PR #64)', async () => {
+-			const featureName = 'payment-integration';
+-
+-			const result = await executePlan(featureName);
+-			expect(result.success).toBe(true);
+-			expect(result.scope).toBe('strategic');
+-			expect(result.beadsIssueId).toBeTruthy();
+-			expect(result.branchName).toBeTruthy();
+-		});
+-
+-		test.skip('should return actionable output', async () => {
+-			const featureName = 'test-feature';
+-
+-			const result = await executePlan(featureName);
+-			expect(result.summary).toBeTruthy();
+-			expect(result.nextCommand).toBeTruthy();
+-			expect(result.nextCommand === '/dev' || result.nextCommand === 'wait').toBeTruthy();
+-		});
+-	});
+-});
++
++		test.skip('should handle Beads command failures (requires Beads CLI — PR #64)', () => {
++			const featureName = 'test-feature';
++
++			// Mock bd command to fail
++			const result = createBeadsIssue(featureName, 'path', 'tactical');
++			expect(result.success).toBe(false);
++			expect(result.error).toBeTruthy();
++		});
++	});
++
++	describe('Branch creation', () => {
++		test.skip('should create feature branch with correct naming', () => {
++			const featureSlug = 'payment-integration';
++
++			const result = createFeatureBranch(featureSlug);
++			expect(result.branchName).toBe('feat/payment-integration');
++			expect(result.success).toBe(true);
++		});
++
++		test.skip('should handle existing branch gracefully', () => {
++			const featureSlug = 'existing-feature';
++
++			// Mock git to show branch exists
++			const result = createFeatureBranch(featureSlug);
++			expect(result.success).toBe(false);
++			expect(result.error).toBeTruthy();
++		});
++	});
++
++	describe('Design document creation', () => {
++		test('should extract decisions from research for design.md', () => {
++			const researchContent = `
++## Key Decisions
++### Decision 1: Use Stripe SDK v4
++**Reasoning**: Better retry logic
++`;
++
++			const design = extractDesignDecisions(researchContent);
++			expect(design.decisions.length > 0).toBeTruthy();
++			expect(design.decisions[0].includes('Stripe SDK v4')).toBeTruthy();
++		});
++
++		test('should create TDD-ordered tasks from research scenarios', () => {
++			const researchContent = `
++## TDD Test Scenarios
++### Scenario 1: Validate payment input
++### Scenario 2: Process payment
++`;
++
++			const tasks = extractTasksFromResearch(researchContent);
++			expect(tasks.length > 0).toBeTruthy();
++			expect(tasks[0].phase).toBeTruthy(); // RED, GREEN, or REFACTOR
++		});
++	});
++
++	describe('Command execution', () => {
++		test.skip('should execute tactical workflow (no design doc) (requires Beads CLI — PR #64)', async () => {
++			const featureName = 'fix-validation';
++
++			const result = await executePlan(featureName);
++			expect(result.success).toBe(true);
++			expect(result.scope).toBe('tactical');
++			expect(result.beadsIssueId).toBeTruthy();
++			expect(result.branchName).toBeTruthy();
++		});
++
++		test.skip('should execute strategic workflow (with design doc) (requires Beads CLI — PR #64)', async () => {
++			const featureName = 'payment-integration';
++
++			const result = await executePlan(featureName);
++			expect(result.success).toBe(true);
++			expect(result.scope).toBe('strategic');
++			expect(result.beadsIssueId).toBeTruthy();
++			expect(result.branchName).toBeTruthy();
++		});
++
++		test.skip('should return actionable output', async () => {
++			const featureName = 'test-feature';
++
++			const result = await executePlan(featureName);
++			expect(result.summary).toBeTruthy();
++			expect(result.nextCommand).toBeTruthy();
++			expect(result.nextCommand === '/dev' || result.nextCommand === 'wait').toBeTruthy();
++		});
++	});
++
++	describe('Kernel-native issue creation', () => {
++		test('createKernelIssue routes through the kernel broker (never bd) and returns the created id', async () => {
++			const calls = [];
++			const fakeRun = async (operation, args, projectRoot, deps) => {
++				calls.push({ operation, args, projectRoot, deps });
++				return {
++					ok: true,
++					schema_version: 'forge.issue.v1',
++					command: 'issue.create',
++					data: { id: 'k-abc123', revision: 0, priority: 'P2' },
++					next_commands: [],
++				};
++			};
++
++			const result = await createKernelIssue(
++				'Payment Integration',
++				'docs/research/payment-integration.md',
++				'tactical',
++				{ projectRoot: '/tmp/repo', runIssueOperation: fakeRun },
++			);
++
++			expect(result.success).toBe(true);
++			expect(result.issueId).toBe('k-abc123');
++			expect(calls).toHaveLength(1);
++			expect(calls[0].operation).toBe('create');
++			expect(calls[0].projectRoot).toBe('/tmp/repo');
++			// Kernel-native: deps must route to the kernel broker, not bd.
++			expect(calls[0].deps.issueBackend).toBe('kernel');
++			expect(calls[0].deps.useKernelBroker).toBe(true);
++			expect(calls[0].args).toContain('--type=feature');
++			expect(calls[0].args.some(a => a.startsWith('--title='))).toBe(true);
++			expect(calls[0].args.some(a => a.startsWith('--description='))).toBe(true);
++		});
++
++		test('createKernelIssue surfaces a kernel failure result', async () => {
++			const fakeRun = async () => ({ ok: false, error: 'kernel exploded' });
++
++			const result = await createKernelIssue(
++				'Feature X',
++				'docs/research/feature-x.md',
++				'tactical',
++				{ projectRoot: '/tmp/repo', runIssueOperation: fakeRun },
++			);
++
++			expect(result.success).toBe(false);
++			expect(result.error).toBeTruthy();
++		});
++
++		test('executePlan creates its issue via the kernel (no bd) when the kernel backend is active', async () => {
++			const repo = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-plan-kernel-'));
++			const gitEnv = {
++				...process.env,
++				GIT_AUTHOR_NAME: 'test',
++				GIT_AUTHOR_EMAIL: 'test@example.com',
++				GIT_COMMITTER_NAME: 'test',
++				GIT_COMMITTER_EMAIL: 'test@example.com',
++			};
++			nodeExecFileSync('git', ['init', '-q'], { cwd: repo });
++			nodeExecFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo, env: gitEnv });
++			nodeFs.mkdirSync(nodePath.join(repo, 'docs', 'research'), { recursive: true });
++			nodeFs.writeFileSync(
++				nodePath.join(repo, 'docs', 'research', 'kernel-plan-demo.md'),
++				'# Kernel Plan Demo\n\n**Timeline**: 2 hours\n**Strategic/Tactical**: Tactical\n',
++			);
++
++			const prevCwd = process.cwd();
++			const prevEnv = process.env.FORGE_ISSUE_BACKEND;
++			delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
++			process.chdir(repo);
++			try {
++				let kernelRunnerCalled = false;
++				const fakeRun = async () => {
++					kernelRunnerCalled = true;
++					return { ok: true, command: 'issue.create', data: { id: 'kernel-xyz' }, next_commands: [] };
++				};
++
++				const result = await executePlan('kernel plan demo', {
++					projectRoot: repo,
++					runIssueOperation: fakeRun,
++				});
++
++				expect(result.success).toBe(true);
++				expect(kernelRunnerCalled).toBe(true);
++				expect(result.beadsIssueId).toBe('kernel-xyz');
++			} finally {
++				process.chdir(prevCwd);
++				if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
++				else process.env.FORGE_ISSUE_BACKEND = prevEnv;
++				nodeFs.rmSync(repo, { recursive: true, force: true });
++			}
++		});
++	});
++});
+diff --git a/test/runtime-health.test.js b/test/runtime-health.test.js
+index e80505f0..66d0ab5f 100644
+--- a/test/runtime-health.test.js
++++ b/test/runtime-health.test.js
+@@ -129,12 +129,13 @@ describe('runtime health checks', () => {
+     expect(lefthookStatus.binaryAvailable).toBe(true);
+   });
+ 
+-  test('missing bd produces a hard-stop diagnostic', () => {
++  test('missing bd produces a hard-stop diagnostic when the beads backend is selected', () => {
+     const projectRoot = createProjectRoot();
+ 
+     const result = checkRuntimeHealth(projectRoot, {
+       _exec: createExecStub({ missing: new Set(['bd']) }),
+       platform: 'linux',
++      issueBackend: 'beads',
+       shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
+     });
+ 
+@@ -149,6 +150,62 @@ describe('runtime health checks', () => {
+     expect(result.checks.bd.available).toBe(false);
+   });
+ 
++  test('missing bd is advisory-only (not a hard-stop) when the kernel backend is selected', () => {
++    const projectRoot = createProjectRoot();
++
++    const result = checkRuntimeHealth(projectRoot, {
++      _exec: createExecStub({ missing: new Set(['bd']) }),
++      platform: 'linux',
++      issueBackend: 'kernel',
++      _canExecuteHook: () => true,
++      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
++    });
++
++    // Kernel is the default issue backend and needs no bd binary: stage entry must run.
++    expect(result.healthy).toBe(true);
++    expect(result.hardStop).toBe(false);
++    expect(result.diagnostics).not.toContainEqual(
++      expect.objectContaining({ code: 'BD_MISSING' })
++    );
++    // Still surfaced, but only as a non-blocking advisory.
++    expect(result.advisories).toContainEqual(
++      expect.objectContaining({ code: 'BD_MISSING', severity: 'advisory' })
++    );
++    expect(result.checks.bd.available).toBe(false);
++    expect(result.checks.issueBackend).toBe('kernel');
++  });
++
++  test('missing bd defaults to the kernel backend (no signal) and does not hard-stop', () => {
++    const projectRoot = createProjectRoot();
++
++    const result = checkRuntimeHealth(projectRoot, {
++      _exec: createExecStub({ missing: new Set(['bd']) }),
++      platform: 'linux',
++      env: {}, // no FORGE_ISSUE_BACKEND signal → resolver defaults to kernel
++      _canExecuteHook: () => true,
++      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
++    });
++
++    expect(result.hardStop).toBe(false);
++    expect(result.checks.issueBackend).toBe('kernel');
++  });
++
++  test('missing gh still hard-stops on the kernel backend (gh stays a hard requirement)', () => {
++    const projectRoot = createProjectRoot();
++
++    const result = checkRuntimeHealth(projectRoot, {
++      _exec: createExecStub({ missing: new Set(['gh']) }),
++      platform: 'linux',
++      issueBackend: 'kernel',
++      shellRuntime: { available: true, command: '/bin/sh', policy: 'system-shell' }
++    });
++
++    expect(result.hardStop).toBe(true);
++    expect(result.diagnostics).toContainEqual(
++      expect.objectContaining({ code: 'GH_MISSING', severity: 'hard-stop' })
++    );
++  });
++
+   test('missing jq produces a hard-stop diagnostic', () => {
+     const projectRoot = createProjectRoot();
+ 
+diff --git a/test/workflow/enforce-stage.test.js b/test/workflow/enforce-stage.test.js
+index cf362c28..62f12f5b 100644
+--- a/test/workflow/enforce-stage.test.js
++++ b/test/workflow/enforce-stage.test.js
+@@ -91,6 +91,67 @@ describe('workflow enforce-stage', () => {
+     })).rejects.toThrow(/BD_MISSING/);
+   });
+ 
++  test('enforceStageEntry resolves the kernel backend (default) and allows stage entry when bd is absent', async () => {
++    const prev = process.env.FORGE_ISSUE_BACKEND;
++    delete process.env.FORGE_ISSUE_BACKEND;
++    try {
++      let seenOptions = null;
++      const result = await enforceStageEntry({
++        commandName: 'validate',
++        flags: {},
++        projectRoot: process.cwd(),
++        workflowState: createWorkflowState('validate', 'standard'),
++        // Injected health check (same style as the `health`/`repairRuntime` seams):
++        // simulates the kernel-native gate where a missing bd is advisory-only.
++        checkHealth: (_root, options) => {
++          seenOptions = options;
++          return {
++            healthy: true,
++            hardStop: false,
++            diagnostics: [],
++            advisories: [{ code: 'BD_MISSING', severity: 'advisory' }]
++          };
++        }
++      });
++
++      expect(seenOptions).not.toBeNull();
++      expect(seenOptions.issueBackend).toBe('kernel');
++      expect(result.allowed).toBe(true);
++    } finally {
++      if (prev === undefined) delete process.env.FORGE_ISSUE_BACKEND;
++      else process.env.FORGE_ISSUE_BACKEND = prev;
++    }
++  });
++
++  test('enforceStageEntry still blocks stage entry when beads is selected and bd is missing', async () => {
++    const prev = process.env.FORGE_ISSUE_BACKEND;
++    process.env.FORGE_ISSUE_BACKEND = 'beads';
++    try {
++      let seenOptions = null;
++      await expect(enforceStageEntry({
++        commandName: 'validate',
++        flags: {},
++        projectRoot: process.cwd(),
++        workflowState: createWorkflowState('validate', 'standard'),
++        checkHealth: (_root, options) => {
++          seenOptions = options;
++          // With beads selected, checkRuntimeHealth still hard-stops on missing bd.
++          return {
++            healthy: false,
++            hardStop: true,
++            diagnostics: [{ code: 'BD_MISSING', message: 'bd required for the beads backend' }]
++          };
++        }
++      })).rejects.toThrow(/BD_MISSING/);
++
++      expect(seenOptions).not.toBeNull();
++      expect(seenOptions.issueBackend).toBe('beads');
++    } finally {
++      if (prev === undefined) delete process.env.FORGE_ISSUE_BACKEND;
++      else process.env.FORGE_ISSUE_BACKEND = prev;
++    }
++  });
++
+   test('enforceStageEntry reads workflow-state and override payloads from raw CLI args', async () => {
+     const result = await enforceStageEntry({
+       commandName: 'ship',
+-- 
+2.51.0.windows.1
+

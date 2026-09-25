@@ -1,0 +1,93 @@
+From e01e7418303e7039c70b4225d403d857d5cdbe88 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 13:58:03 +0530
+Subject: [PATCH] fix(shepherd): BEHIND verdict tracks mergeStateStatus, not
+ raw behind-count (5291f2d2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The verdict escalated to BEHIND whenever the compareCommits behind-count was >0,
+even on PRs GitHub considers mergeable/up-to-date (e.g. #402: behind=25 but
+mss=UNSTABLE, `gh pr update-branch` → already up-to-date). Once the pr-verdict:*
+label ships, that PR would get a misleading `pr-verdict:behind` label + headline —
+the exact false signal that erodes label trust.
+
+Fix: gate the BEHIND rung on `mergeStateStatus === 'BEHIND'` (GitHub sets this only
+when strict-up-to-date protection actually blocks), not on behind-count>0. The
+count is still surfaced in evidence/blockers as the WHY — it just no longer drives
+the verdict.
+
+Verified live: #402 --pull no longer reports BEHIND (now reflects its real
+actionable state). Regression tests cover UNSTABLE+behind, CLEAN+behind, and
+mss=BEHIND (with and without a commit count). Fixes 5291f2d2.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/pr-pull.js       |  9 +++++++--
+ test/pr-pull.test.js | 31 +++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index 1b4fb783..bf763bce 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -884,9 +884,14 @@ function rankConflict(v) {
+   return null;
+ }
+ 
+-/** Rank 3: branch behind base. */
++/** Rank 3: branch behind base. Gate on GitHub's actual blocking state
++ * (mergeStateStatus=BEHIND — set only when branch protection requires branches be
++ * up to date), NOT a raw compareCommits behind-count: a count>0 is often stale or
++ * non-blocking (strict-up-to-date not required), so escalating on it falsely
++ * labels a mergeable PR `behind` (issue 5291f2d2). The count is still surfaced in
++ * `evidence.behind`/blockers as WHY — it just no longer drives the verdict. */
+ function rankBehind(v) {
+-  return (v.mss === 'BEHIND' || v.behind > 0) ? 'BEHIND' : null;
++  return (v.mss === 'BEHIND') ? 'BEHIND' : null;
+ }
+ 
+ /** Rank 4: checks — failing/missing/skipped/pending REQUIRED checks, a failing
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index 48026a54..1544372d 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -772,3 +772,34 @@ describe('pull payload carries the merge verdict (c01936be regression)', () => {
+     expect(verdictLabel('not-a-verdict')).toBe('pr-verdict:unknown');
+   });
+ });
++
++// Regression for 5291f2d2: the BEHIND verdict must track GitHub's actual blocking
++// state (mergeStateStatus=BEHIND), NOT a raw compareCommits behind-count. A stale
++// or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
++// pr-verdict label falsely reads `behind` on a PR GitHub considers up-to-date.
++describe('BEHIND verdict reconciles with mergeStateStatus (5291f2d2)', () => {
++  const settled = { headOidStart: 'h', headOidEnd: 'h' };
++
++  test('behind-count>0 but mss=UNSTABLE (the #402 case) is NOT BEHIND', () => {
++    const { verdict } = computeVerdict({ mergeStateStatus: 'UNSTABLE', behind: 25, ...settled });
++    expect(verdict).not.toBe('BEHIND');
++    expect(verdict).toBe('BLOCKED-CHECKS'); // UNSTABLE routes to the checks rung
++  });
++
++  test('behind-count>0 but mss=CLEAN stays CLEAN-MERGEABLE (count ignored)', () => {
++    const { verdict } = computeVerdict({
++      mergeStateStatus: 'CLEAN', behind: 5, headPushKnown: true, ...settled,
++    });
++    expect(verdict).toBe('CLEAN-MERGEABLE');
++  });
++
++  test('mss=BEHIND still yields BEHIND (GitHub actually blocks)', () => {
++    const { verdict } = computeVerdict({ mergeStateStatus: 'BEHIND', behind: 25, ...settled });
++    expect(verdict).toBe('BEHIND');
++  });
++
++  test('mss=BEHIND yields BEHIND even when the commit count is unavailable', () => {
++    const { verdict } = computeVerdict({ mergeStateStatus: 'BEHIND', behind: 0, ...settled });
++    expect(verdict).toBe('BEHIND');
++  });
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,795 @@
+From 762bbe4bbdc02b572ff13c934c040dc1b91a7da5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 16:38:35 +0530
+Subject: [PATCH] =?UTF-8?q?feat(dist):=20Step=204=20=E2=80=94=20install=20?=
+ =?UTF-8?q?script=20+=20release=20docs?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Single-binary distribution epic 6f11d483, step 4 (issue 50afbc47).
+
+- Add scripts/install.sh (POSIX): detects os/arch/libc, maps to the
+  release asset, downloads from GitHub Releases (latest or --version),
+  installs to ~/.local/bin/forge with a PATH note. Hidden --print-asset
+  mode makes the mapping unit-testable.
+- Add scripts/install.ps1 (PowerShell) for windows-x64: downloads
+  forge-windows-x64.exe to %LOCALAPPDATA%\Programs\forge.
+- Add scripts/lib/release-asset.mjs: canonical os/arch/libc -> asset
+  mapping (single source of truth for all 7 targets).
+- Add scripts/release-asset.test.js: covers all 7 targets and
+  cross-checks install.sh --print-asset against the JS contract.
+- Wire a Release-upload job into .github/workflows/build-binary.yml:
+  on v* tags, download the build artifacts, strip the internal bun-
+  prefix to clean forge-<os>-<arch>[-musl][.exe] asset names, and
+  gh release upload them (Step 3 was artifact-only).
+- Add docs/reference/INSTALL.md (one-line install, manual download,
+  supported-platforms table, npm/npx alternative, prerequisites);
+  link it from README.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/build-binary.yml |  54 ++++++++
+ README.md                          |  16 +++
+ docs/reference/INSTALL.md          | 147 ++++++++++++++++++++
+ scripts/install.ps1                | 100 ++++++++++++++
+ scripts/install.sh                 | 208 +++++++++++++++++++++++++++++
+ scripts/lib/release-asset.mjs      |  68 ++++++++++
+ scripts/release-asset.test.js      |  98 ++++++++++++++
+ 7 files changed, 691 insertions(+)
+ create mode 100644 docs/reference/INSTALL.md
+ create mode 100644 scripts/install.ps1
+ create mode 100644 scripts/install.sh
+ create mode 100644 scripts/lib/release-asset.mjs
+ create mode 100644 scripts/release-asset.test.js
+
+diff --git a/.github/workflows/build-binary.yml b/.github/workflows/build-binary.yml
+index 7d61fc13..ac764a09 100644
+--- a/.github/workflows/build-binary.yml
++++ b/.github/workflows/build-binary.yml
+@@ -175,3 +175,57 @@ jobs:
+ 
+       - name: Run parity check (npm vs compiled binary)
+         run: bun scripts/parity-check.mjs
++
++  # Step 4 (50afbc47): publish the compiled binaries to the GitHub Release on v*
++  # tags. This is the piece the install scripts (scripts/install.sh / install.ps1)
++  # download from. Runs ONLY on tag pushes; pull_request and workflow_dispatch
++  # runs stay artifact-only. Downloads every artifact from the build matrix,
++  # renames each to a clean per-OS/arch asset name by stripping the internal
++  # `bun-` target prefix (so `forge-bun-linux-x64-musl` -> `forge-linux-x64-musl`
++  # and `forge-bun-windows-x64.exe` -> `forge-windows-x64.exe`), then uploads them
++  # to the release for the tag. The names must match resolve_asset() in
++  # scripts/install.sh and releaseAssetName() in scripts/lib/release-asset.mjs.
++  release:
++    name: Publish GitHub Release
++    needs: build
++    if: startsWith(github.ref, 'refs/tags/v')
++    runs-on: ubuntu-latest
++    permissions:
++      # Write access is scoped to THIS job only (top-level default stays read) so
++      # the release upload can create/attach assets via the built-in GITHUB_TOKEN.
++      contents: write
++    steps:
++      - name: Download all binary artifacts
++        uses: actions/download-artifact@v7
++        with:
++          path: artifacts
++
++      - name: Flatten and rename assets
++        run: |
++          mkdir -p release
++          found=0
++          for f in artifacts/forge-bun-*/forge-bun-*; do
++            [ -e "$f" ] || continue
++            base="$(basename "$f")"
++            asset="forge-${base#forge-bun-}"
++            cp "$f" "release/${asset}"
++            found=$((found + 1))
++            echo "  ${f} -> release/${asset}"
++          done
++          # A v* tag builds all seven canonical targets, so a short count means a
++          # matrix leg silently failed — fail the release rather than ship partial.
++          if [ "$found" -ne 7 ]; then
++            echo "::error::expected 7 release assets, found ${found}"
++            exit 1
++          fi
++          ls -l release
++
++      - name: Upload assets to the GitHub Release
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          TAG="${GITHUB_REF_NAME}"
++          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
++            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
++          fi
++          gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
+diff --git a/README.md b/README.md
+index 1c0a1969..dfc492d8 100644
+--- a/README.md
++++ b/README.md
+@@ -199,6 +199,21 @@ bunx forge status                  # human one-glance view
+ bunx forge prime                   # session-entry orientation for agents
+ ```
+ 
++Prefer a standalone binary (no Node/Bun runtime)? Install it in one line:
++
++```bash
++# macOS / Linux
++curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh
++```
++
++```powershell
++# Windows (PowerShell)
++irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1 | iex
++```
++
++See the [installation guide](docs/reference/INSTALL.md) for the supported
++platforms, pinned versions, manual downloads, and the npm/npx alternative.
++
+ <details>
+ <summary><strong>Per-agent setup notes</strong></summary>
+ 
+@@ -224,6 +239,7 @@ The full, honest per-agent delivery status lives in the
+ Full guides:
+ 
+ - [Quickstart](QUICKSTART.md) — clean first run, step by step
++- [Installation guide](docs/reference/INSTALL.md) — standalone binary + npm/npx
+ - [Setup guide](docs/guides/SETUP.md)
+ - [Support and troubleshooting](docs/guides/SUPPORT.md)
+ - [Command reference](docs/reference/COMMANDS.md)
+diff --git a/docs/reference/INSTALL.md b/docs/reference/INSTALL.md
+new file mode 100644
+index 00000000..9394d488
+--- /dev/null
++++ b/docs/reference/INSTALL.md
+@@ -0,0 +1,147 @@
++# Installing Forge
++
++Forge ships two ways to install:
++
++1. **Standalone binary** (this page) — a single compiled executable, no Node or
++   Bun runtime required. Best for a global CLI you run everywhere.
++2. **npm / npx** — the `forge-workflow` package, if you already live in Node and
++   want Forge as a project dev-dependency. See [npm / npx channel](#npm--npx-channel).
++
++Both deliver the same Forge. The binary bundles Forge's own JavaScript, but **not**
++its external prerequisites — see [Prerequisites](#prerequisites).
++
++---
++
++## One-line install
++
++### macOS / Linux
++
++```sh
++curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh
++```
++
++Install a specific version:
++
++```sh
++curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh -s -- --version v1.2.3
++```
++
++The script detects your OS, CPU architecture and (on Linux) your libc, downloads
++the matching binary from the latest [GitHub Release](https://github.com/harshanandak/forge/releases),
++makes it executable, and installs it to `~/.local/bin/forge`. If that directory
++is not on your `PATH`, the script prints the line to add.
++
++### Windows (PowerShell)
++
++```powershell
++irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1 | iex
++```
++
++Install a specific version (download the script, then run it with an argument):
++
++```powershell
++$s = irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1
++& ([scriptblock]::Create($s)) -Version v1.2.3
++```
++
++This installs `forge.exe` to `%LOCALAPPDATA%\Programs\forge\` and prints how to
++add it to your `PATH`.
++
++After installing, run `forge setup` inside a git repository to wire Forge up for
++your agent.
++
++---
++
++## Supported platforms
++
++Each GitHub Release publishes these assets. The install scripts pick the right one
++automatically; the table is for manual downloads.
++
++| OS | Architecture | libc | Release asset |
++|----|--------------|------|---------------|
++| macOS | Apple Silicon (arm64) | — | `forge-darwin-arm64` |
++| macOS | Intel (x64) | — | `forge-darwin-x64` |
++| Linux | x64 | glibc | `forge-linux-x64` |
++| Linux | arm64 | glibc | `forge-linux-arm64` |
++| Linux | x64 | musl (e.g. Alpine) | `forge-linux-x64-musl` |
++| Linux | arm64 | musl (e.g. Alpine) | `forge-linux-arm64-musl` |
++| Windows | x64 | — | `forge-windows-x64.exe` |
++
++On an unsupported platform the install script fails with a clear message. Use the
++[npm / npx channel](#npm--npx-channel) instead.
++
++---
++
++## Manual download and run
++
++If you prefer not to pipe a script to your shell, download the asset for your
++platform directly from the [latest release](https://github.com/harshanandak/forge/releases/latest)
++and run it.
++
++### macOS / Linux
++
++```sh
++# Pick the asset for your platform from the table above (here: linux x64 glibc)
++curl -fsSL -o forge \
++  https://github.com/harshanandak/forge/releases/latest/download/forge-linux-x64
++chmod +x forge
++./forge --version
++# Optionally move it onto your PATH:
++mkdir -p ~/.local/bin && mv forge ~/.local/bin/forge
++```
++
++### Windows (PowerShell)
++
++```powershell
++irm https://github.com/harshanandak/forge/releases/latest/download/forge-windows-x64.exe -OutFile forge.exe
++.\forge.exe --version
++```
++
++A pinned version uses the same URLs with `download/<tag>/` instead of
++`latest/download/`, e.g.
++`https://github.com/harshanandak/forge/releases/download/v1.2.3/forge-linux-x64`.
++
++---
++
++## npm / npx channel
++
++If you already have Node.js, you can skip the binary entirely:
++
++```sh
++# Global install
++npm i -g forge-workflow
++forge --version
++
++# Or run once without installing
++npx forge-workflow status
++
++# Or as a project dev-dependency (recommended for teams)
++bun add -D forge-workflow   # or: npm install --save-dev forge-workflow
++bunx forge setup --agents claude --yes
++```
++
++The npm package and the standalone binary are the same Forge and stay in lockstep
++on every release.
++
++---
++
++## Prerequisites
++
++The binary bundles Forge's JavaScript, but relies on a few external tools being
++installed and on your `PATH`:
++
++- **git** — required for all repository operations.
++- **gh** (GitHub CLI) — required for the PR / review workflow.
++- **Git Bash** (Windows only) — Forge's helper-backed stage flows run under Git
++  Bash on Windows.
++
++These are runtime prerequisites checked by `forge`'s own health checks; the
++installer does not install them for you.
++
++---
++
++## Uninstall
++
++- Binary: delete the installed file (`~/.local/bin/forge`, or
++  `%LOCALAPPDATA%\Programs\forge\forge.exe` on Windows).
++- npm: `npm rm -g forge-workflow`.
+diff --git a/scripts/install.ps1 b/scripts/install.ps1
+new file mode 100644
+index 00000000..562098af
+--- /dev/null
++++ b/scripts/install.ps1
+@@ -0,0 +1,100 @@
++<#
++.SYNOPSIS
++  Forge single-binary installer for Windows (x64).
++
++.DESCRIPTION
++  Downloads the forge-windows-x64.exe binary from the GitHub Release, installs it
++  to %LOCALAPPDATA%\Programs\forge\forge.exe, and prints a PATH note plus the next
++  step. The binary bundles Forge's JavaScript but NOT its external prerequisites:
++  git, gh (GitHub CLI) and Git Bash must still be installed separately.
++
++.PARAMETER Version
++  Release tag to install (default: latest), e.g. v1.2.3.
++
++.PARAMETER Dir
++  Install directory (default: $env:LOCALAPPDATA\Programs\forge).
++
++.PARAMETER PrintAsset
++  Print the resolved asset name and exit (used for verification/testing).
++
++.EXAMPLE
++  irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1 | iex
++
++.EXAMPLE
++  # Pin a version (download the script, then run it with an argument):
++  $s = irm https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.ps1
++  & ([scriptblock]::Create($s)) -Version v1.2.3
++#>
++[CmdletBinding()]
++param(
++	[string]$Version = 'latest',
++	[string]$Dir = (Join-Path $env:LOCALAPPDATA 'Programs\forge'),
++	[switch]$PrintAsset
++)
++
++$ErrorActionPreference = 'Stop'
++Set-StrictMode -Version Latest
++
++$Repo = if ($env:FORGE_REPO) { $env:FORGE_REPO } else { 'harshanandak/forge' }
++if ($Version -eq 'latest' -and $env:FORGE_VERSION) { $Version = $env:FORGE_VERSION }
++
++# Canonical asset-name mapping for Windows - the only target this script installs.
++# Mirrors scripts/lib/release-asset.mjs (forge-<os>-<arch>[.exe]).
++$Arch = if ($env:FORGE_ARCH) { $env:FORGE_ARCH } else { 'x64' }
++if ($Arch -ne 'x64') {
++	throw "forge-install: unsupported architecture '$Arch'. Only windows-x64 is published."
++}
++$Asset = "forge-windows-$Arch.exe"
++
++if ($PrintAsset) {
++	Write-Output $Asset
++	return
++}
++
++# Resolve version + URL. The /releases/latest/download/<asset> path redirects to
++# the newest release, so no JSON API call is needed to download.
++if ($Version -eq 'latest') {
++	$Url = "https://github.com/$Repo/releases/latest/download/$Asset"
++	try {
++		$rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
++			-Headers @{ 'User-Agent' = 'forge-install' }
++		$ResolvedVersion = $rel.tag_name
++	} catch {
++		$ResolvedVersion = 'latest'
++	}
++} else {
++	$Url = "https://github.com/$Repo/releases/download/$Version/$Asset"
++	$ResolvedVersion = $Version
++}
++
++Write-Host "forge-install: platform windows / $Arch -> asset $Asset"
++Write-Host "forge-install: downloading $Asset ($ResolvedVersion)"
++
++New-Item -ItemType Directory -Force -Path $Dir | Out-Null
++$Dest = Join-Path $Dir 'forge.exe'
++$Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-install-" + [System.Guid]::NewGuid().ToString('N') + ".exe")
++
++try {
++	Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing
++} catch {
++	throw "forge-install: download failed from $Url - is the release published for windows-x64? ($_)"
++}
++if (-not (Test-Path $Tmp) -or (Get-Item $Tmp).Length -eq 0) {
++	throw "forge-install: downloaded file is empty - asset '$Asset' may not exist in release '$ResolvedVersion'."
++}
++Move-Item -Force -Path $Tmp -Destination $Dest
++
++Write-Host ""
++Write-Host "forge-install: installed forge $ResolvedVersion -> $Dest"
++
++# PATH note: check the user PATH, not just the current process.
++$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
++if (-not ($userPath -and ($userPath -split ';' | Where-Object { $_ -eq $Dir }))) {
++	Write-Host ""
++	Write-Host "$Dir is not on your PATH. Add it (new terminals will pick it up):"
++	Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"$Dir;`$([Environment]::GetEnvironmentVariable('Path','User'))`", 'User')"
++}
++
++Write-Host ""
++Write-Host "Next: run 'forge setup' in a git repo to wire up Forge."
++Write-Host "Note: git, gh (GitHub CLI) and Git Bash must be installed separately - the binary bundles Forge, not those tools."
+diff --git a/scripts/install.sh b/scripts/install.sh
+new file mode 100644
+index 00000000..a24abf5d
+--- /dev/null
++++ b/scripts/install.sh
+@@ -0,0 +1,208 @@
++#!/bin/sh
++# Forge single-binary installer for macOS and Linux (POSIX sh).
++#
++# One-line install:
++#   curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh
++#
++# Install a specific version:
++#   curl -fsSL https://raw.githubusercontent.com/harshanandak/forge/master/scripts/install.sh | sh -s -- --version v1.2.3
++#
++# What it does: detects your OS (darwin/linux), CPU arch (x64/arm64) and, on
++# Linux, your libc (glibc/musl), downloads the matching binary from the GitHub
++# Release, makes it executable, and installs it to ~/.local/bin/forge.
++#
++# The binary bundles Forge's own JavaScript, but NOT its external prerequisites:
++# git, gh (GitHub CLI) and — on Windows only — Git Bash still need to be on PATH.
++#
++# The asset-name mapping implemented by resolve_asset() below is the canonical
++# contract shared with scripts/lib/release-asset.mjs and is exercised by
++# scripts/release-asset.test.js via the hidden --print-asset mode.
++
++set -eu
++
++REPO="${FORGE_REPO:-harshanandak/forge}"
++INSTALL_DIR="${FORGE_INSTALL_DIR:-$HOME/.local/bin}"
++BIN_NAME="forge"
++VERSION="latest"
++
++# --- tiny helpers ----------------------------------------------------------
++err() { printf '%s\n' "forge-install: $*" >&2; }
++die() { err "$*"; exit 1; }
++
++# --- argument parsing ------------------------------------------------------
++PRINT_ASSET=0
++while [ $# -gt 0 ]; do
++	case "$1" in
++		--version)
++			[ $# -ge 2 ] || die "--version requires an argument (e.g. --version v1.2.3)"
++			VERSION="$2"; shift 2 ;;
++		--version=*)
++			VERSION="${1#--version=}"; shift ;;
++		--dir)
++			[ $# -ge 2 ] || die "--dir requires a path argument"
++			INSTALL_DIR="$2"; shift 2 ;;
++		--dir=*)
++			INSTALL_DIR="${1#--dir=}"; shift ;;
++		# Hidden: print the resolved asset name and exit (used by the test suite).
++		# Honors FORGE_OS / FORGE_ARCH / FORGE_LIBC overrides so the mapping can be
++		# unit-tested for every target without touching this host's real platform.
++		--print-asset)
++			PRINT_ASSET=1; shift ;;
++		-h|--help)
++			cat <<'EOF'
++Usage: install.sh [--version <tag>] [--dir <path>]
++  --version <tag>   Install a specific release (default: latest), e.g. v1.2.3
++  --dir <path>      Install directory (default: ~/.local/bin)
++Environment overrides: FORGE_REPO, FORGE_INSTALL_DIR, FORGE_VERSION
++EOF
++			exit 0 ;;
++		*)
++			die "unknown argument: $1 (try --help)" ;;
++	esac
++done
++# Env fallback for version (arg wins over env).
++if [ "$VERSION" = "latest" ] && [ -n "${FORGE_VERSION:-}" ]; then
++	VERSION="$FORGE_VERSION"
++fi
++
++# --- platform detection ----------------------------------------------------
++detect_os() {
++	if [ -n "${FORGE_OS:-}" ]; then printf '%s' "$FORGE_OS"; return; fi
++	case "$(uname -s)" in
++		Darwin) printf 'darwin' ;;
++		Linux) printf 'linux' ;;
++		*) printf 'unsupported' ;;
++	esac
++}
++
++detect_arch() {
++	if [ -n "${FORGE_ARCH:-}" ]; then printf '%s' "$FORGE_ARCH"; return; fi
++	case "$(uname -m)" in
++		x86_64|amd64) printf 'x64' ;;
++		arm64|aarch64) printf 'arm64' ;;
++		*) printf 'unsupported' ;;
++	esac
++}
++
++# Best-effort libc detection on Linux: musl vs glibc. Order of evidence:
++# 1) explicit override, 2) a musl loader in /lib, 3) `ldd --version` text,
++# 4) getconf glibc version. Defaults to glibc when nothing proves musl.
++detect_libc() {
++	if [ -n "${FORGE_LIBC:-}" ]; then printf '%s' "$FORGE_LIBC"; return; fi
++	# Non-Linux platforms have no libc variants.
++	[ "$(detect_os)" = "linux" ] || { printf 'none'; return; }
++	for f in /lib/ld-musl-* /lib/libc.musl-*; do
++		[ -e "$f" ] && { printf 'musl'; return; }
++	done
++	if ldd_out="$(ldd --version 2>&1)"; then
++		case "$ldd_out" in
++			*musl*) printf 'musl'; return ;;
++			*GNU*|*GLIBC*|*glibc*) printf 'glibc'; return ;;
++		esac
++	fi
++	if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then printf 'glibc'; return; fi
++	printf 'glibc'
++}
++
++# Canonical asset-name mapping — MUST stay in sync with
++# scripts/lib/release-asset.mjs (guarded by scripts/release-asset.test.js).
++resolve_asset() {
++	_os="$1"; _arch="$2"; _libc="$3"
++	case "$_os" in
++		darwin|linux|windows) ;;
++		*) die "unsupported OS: '$_os' (need darwin, linux or windows)" ;;
++	esac
++	case "$_arch" in
++		x64|arm64) ;;
++		*) die "unsupported arch: '$_arch' (need x64 or arm64)" ;;
++	esac
++	_name="forge-${_os}-${_arch}"
++	if [ "$_os" = "linux" ] && [ "$_libc" = "musl" ]; then
++		_name="${_name}-musl"
++	fi
++	if [ "$_os" = "windows" ]; then
++		_name="${_name}.exe"
++	fi
++	printf '%s' "$_name"
++}
++
++OS="$(detect_os)"
++ARCH="$(detect_arch)"
++LIBC="$(detect_libc)"
++
++[ "$OS" != "unsupported" ] || die "unsupported operating system: $(uname -s). Supported: macOS (darwin), Linux."
++[ "$ARCH" != "unsupported" ] || die "unsupported CPU architecture: $(uname -m). Supported: x86_64/amd64 (x64), arm64/aarch64 (arm64)."
++
++ASSET="$(resolve_asset "$OS" "$ARCH" "$LIBC")"
++
++if [ "$PRINT_ASSET" -eq 1 ]; then
++	printf '%s\n' "$ASSET"
++	exit 0
++fi
++
++# --- downloader ------------------------------------------------------------
++if command -v curl >/dev/null 2>&1; then
++	DL='curl -fSL --retry 3 -o'
++	DL_QUIET='curl -fsSL'
++elif command -v wget >/dev/null 2>&1; then
++	DL='wget -O'
++	DL_QUIET='wget -qO-'
++else
++	die "need either curl or wget installed to download the binary."
++fi
++
++download_to() { # url dest
++	# shellcheck disable=SC2086
++	if command -v curl >/dev/null 2>&1; then
++		curl -fSL --retry 3 -o "$2" "$1"
++	else
++		wget -O "$2" "$1"
++	fi
++}
++
++# --- resolve version + URL -------------------------------------------------
++if [ "$VERSION" = "latest" ]; then
++	# The /releases/latest/download/<asset> path redirects to the newest release,
++	# so we can download without hitting the JSON API. We still try to resolve the
++	# human-readable tag for the summary line (best-effort, never fatal).
++	URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
++	RESOLVED_VERSION="$(
++		$DL_QUIET "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
++			| sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
++			| head -n1
++	)" || true
++	[ -n "${RESOLVED_VERSION:-}" ] || RESOLVED_VERSION="latest"
++else
++	URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
++	RESOLVED_VERSION="$VERSION"
++fi
++
++printf 'forge-install: platform %s / %s / %s -> asset %s\n' "$OS" "$ARCH" "$LIBC" "$ASSET"
++printf 'forge-install: downloading %s (%s)\n' "$ASSET" "$RESOLVED_VERSION"
++
++# --- download + install ----------------------------------------------------
++TMP="$(mktemp -d "${TMPDIR:-/tmp}/forge-install.XXXXXX")"
++trap 'rm -rf "$TMP"' EXIT INT TERM
++TMP_BIN="$TMP/$BIN_NAME"
++
++download_to "$URL" "$TMP_BIN" || die "download failed from $URL — is the release published for your platform?"
++[ -s "$TMP_BIN" ] || die "downloaded file is empty — the asset '$ASSET' may not exist in release '$RESOLVED_VERSION'."
++chmod +x "$TMP_BIN"
++
++mkdir -p "$INSTALL_DIR"
++DEST="$INSTALL_DIR/$BIN_NAME"
++mv -f "$TMP_BIN" "$DEST"
++
++printf '\nforge-install: installed forge %s -> %s\n' "$RESOLVED_VERSION" "$DEST"
++
++# --- PATH note + next step -------------------------------------------------
++case ":${PATH}:" in
++	*":${INSTALL_DIR}:"*) : ;;  # already on PATH
++	*)
++		printf '\n%s is not on your PATH. Add it, e.g.:\n' "$INSTALL_DIR"
++		printf '  echo '\''export PATH="%s:$PATH"'\'' >> ~/.profile && . ~/.profile\n' "$INSTALL_DIR"
++		;;
++esac
++
++printf '\nNext: run '\''forge setup'\'' in a git repo to wire up Forge.\n'
++printf 'Note: git and gh (GitHub CLI) must be installed separately — the binary bundles Forge, not those tools.\n'
+diff --git a/scripts/lib/release-asset.mjs b/scripts/lib/release-asset.mjs
+new file mode 100644
+index 00000000..503f87c5
+--- /dev/null
++++ b/scripts/lib/release-asset.mjs
+@@ -0,0 +1,68 @@
++// Canonical GitHub Release asset-name mapping for the single-binary distribution
++// (epic 6f11d483, Step 4 / issue 50afbc47). This is the SINGLE SOURCE OF TRUTH
++// for how a detected platform (os / arch / libc) maps to the release asset that
++// `scripts/install.sh` and `scripts/install.ps1` download.
++//
++// The CI workflow `.github/workflows/build-binary.yml` compiles seven canonical
++// bun targets and publishes each to the GitHub Release under the names produced
++// here. The install scripts re-derive the same name from the host platform, so
++// this table is exercised by `scripts/release-asset.test.js` (which also
++// cross-checks the shell script's own detection against it) to guarantee the two
++// sides never drift.
++//
++// bun target            -> release asset
++// bun-windows-x64        -> forge-windows-x64.exe
++// bun-darwin-arm64       -> forge-darwin-arm64
++// bun-darwin-x64         -> forge-darwin-x64
++// bun-linux-x64          -> forge-linux-x64
++// bun-linux-arm64        -> forge-linux-arm64
++// bun-linux-x64-musl     -> forge-linux-x64-musl
++// bun-linux-arm64-musl   -> forge-linux-arm64-musl
++
++/** Operating systems we publish binaries for. */
++export const SUPPORTED_OS = ['windows', 'darwin', 'linux'];
++/** CPU architectures we publish binaries for. */
++export const SUPPORTED_ARCH = ['x64', 'arm64'];
++
++/**
++ * Map a detected platform to its GitHub Release asset filename.
++ *
++ * @param {object} p
++ * @param {string} p.os    - 'windows' | 'darwin' | 'linux'
++ * @param {string} p.arch  - 'x64' | 'arm64'
++ * @param {string} [p.libc] - 'glibc' | 'musl' (linux only; ignored elsewhere)
++ * @returns {string} asset filename, e.g. 'forge-linux-x64-musl' or 'forge-windows-x64.exe'
++ * @throws {Error} on an unsupported os/arch combination
++ */
++export function releaseAssetName({ os, arch, libc } = {}) {
++	if (!SUPPORTED_OS.includes(os)) {
++		throw new Error(`Unsupported OS: ${os} (supported: ${SUPPORTED_OS.join(', ')})`);
++	}
++	if (!SUPPORTED_ARCH.includes(arch)) {
++		throw new Error(`Unsupported arch: ${arch} (supported: ${SUPPORTED_ARCH.join(', ')})`);
++	}
++	// Only x64 exists for Windows and only arm64/x64 for the rest — but every
++	// os/arch pair in the matrix below is real, so no further pruning is needed.
++	let name = `forge-${os}-${arch}`;
++	if (os === 'linux' && libc === 'musl') {
++		name += '-musl';
++	}
++	if (os === 'windows') {
++		name += '.exe';
++	}
++	return name;
++}
++
++/**
++ * The full set of seven canonical assets, in the same order as the CI matrix.
++ * Exported for tests and for anyone enumerating the published release.
++ */
++export const CANONICAL_ASSETS = [
++	{ os: 'windows', arch: 'x64', libc: undefined, asset: 'forge-windows-x64.exe' },
++	{ os: 'darwin', arch: 'arm64', libc: undefined, asset: 'forge-darwin-arm64' },
++	{ os: 'darwin', arch: 'x64', libc: undefined, asset: 'forge-darwin-x64' },
++	{ os: 'linux', arch: 'x64', libc: 'glibc', asset: 'forge-linux-x64' },
++	{ os: 'linux', arch: 'arm64', libc: 'glibc', asset: 'forge-linux-arm64' },
++	{ os: 'linux', arch: 'x64', libc: 'musl', asset: 'forge-linux-x64-musl' },
++	{ os: 'linux', arch: 'arm64', libc: 'musl', asset: 'forge-linux-arm64-musl' },
++];
+diff --git a/scripts/release-asset.test.js b/scripts/release-asset.test.js
+new file mode 100644
+index 00000000..f71a6124
+--- /dev/null
++++ b/scripts/release-asset.test.js
+@@ -0,0 +1,98 @@
++/* eslint-disable no-undef -- Bun globals are provided by the Bun runtime */
++// Tests the canonical release asset-name mapping (scripts/lib/release-asset.mjs)
++// for all seven published targets, and cross-checks that the shipping installer
++// scripts/install.sh derives the SAME names via its hidden --print-asset mode.
++// This is the drift guard between the JS contract and the shell implementation.
++
++const path = require('node:path');
++const { execFileSync } = require('node:child_process');
++const { describe, test, expect } = require('bun:test');
++const { resolveBashCommand } = require('../test/helpers/bash.js');
++const {
++	releaseAssetName,
++	CANONICAL_ASSETS,
++	SUPPORTED_OS,
++	SUPPORTED_ARCH,
++} = require('./lib/release-asset.mjs');
++
++const INSTALL_SH = path.join(__dirname, 'install.sh');
++
++// The exhaustive expected mapping: input platform -> asset filename, one row per
++// canonical bun target in the CI matrix (build-binary.yml set-matrix step).
++const EXPECTED = [
++	{ os: 'windows', arch: 'x64', libc: undefined, asset: 'forge-windows-x64.exe' },
++	{ os: 'darwin', arch: 'arm64', libc: undefined, asset: 'forge-darwin-arm64' },
++	{ os: 'darwin', arch: 'x64', libc: undefined, asset: 'forge-darwin-x64' },
++	{ os: 'linux', arch: 'x64', libc: 'glibc', asset: 'forge-linux-x64' },
++	{ os: 'linux', arch: 'arm64', libc: 'glibc', asset: 'forge-linux-arm64' },
++	{ os: 'linux', arch: 'x64', libc: 'musl', asset: 'forge-linux-x64-musl' },
++	{ os: 'linux', arch: 'arm64', libc: 'musl', asset: 'forge-linux-arm64-musl' },
++];
++
++describe('releaseAssetName (canonical JS mapping)', () => {
++	test('covers exactly the 7 published targets', () => {
++		expect(EXPECTED).toHaveLength(7);
++		expect(CANONICAL_ASSETS).toHaveLength(7);
++	});
++
++	for (const { os, arch, libc, asset } of EXPECTED) {
++		test(`${os}/${arch}/${libc ?? 'n/a'} -> ${asset}`, () => {
++			expect(releaseAssetName({ os, arch, libc })).toBe(asset);
++		});
++	}
++
++	test('exported CANONICAL_ASSETS agrees with releaseAssetName()', () => {
++		for (const row of CANONICAL_ASSETS) {
++			expect(releaseAssetName(row)).toBe(row.asset);
++		}
++	});
++
++	test('all asset names are unique', () => {
++		const names = EXPECTED.map((e) => e.asset);
++		expect(new Set(names).size).toBe(names.length);
++	});
++
++	test('linux libc defaults to glibc (undefined libc -> no -musl suffix)', () => {
++		expect(releaseAssetName({ os: 'linux', arch: 'x64' })).toBe('forge-linux-x64');
++	});
++
++	test('rejects unsupported os', () => {
++		expect(() => releaseAssetName({ os: 'plan9', arch: 'x64' })).toThrow(/Unsupported OS/);
++	});
++
++	test('rejects unsupported arch', () => {
++		expect(() => releaseAssetName({ os: 'linux', arch: 'riscv' })).toThrow(/Unsupported arch/);
++	});
++
++	test('supported sets are as expected', () => {
++		expect(SUPPORTED_OS).toEqual(['windows', 'darwin', 'linux']);
++		expect(SUPPORTED_ARCH).toEqual(['x64', 'arm64']);
++	});
++});
++
++// Drift guard: the shell installer must resolve the same asset names as the JS
++// contract. install.sh --print-asset honors FORGE_OS/FORGE_ARCH/FORGE_LIBC so we
++// can force each target regardless of the host we run the test on.
++describe('install.sh --print-asset matches the JS mapping', () => {
++	function shAsset(os, arch, libc) {
++		return execFileSync(resolveBashCommand(), [INSTALL_SH, '--print-asset'], {
++			env: {
++				...process.env,
++				FORGE_OS: os,
++				FORGE_ARCH: arch,
++				FORGE_LIBC: libc ?? 'none',
++			},
++			encoding: 'utf8',
++		}).trim();
++	}
++
++	// Only the six non-Windows targets are installable by install.sh; the Windows
++	// asset is covered by the JS mapping above and install.ps1.
++	const UNIX = EXPECTED.filter((e) => e.os !== 'windows');
++
++	for (const { os, arch, libc, asset } of UNIX) {
++		test(`sh: ${os}/${arch}/${libc ?? 'n/a'} -> ${asset}`, () => {
++			expect(shAsset(os, arch, libc)).toBe(asset);
++		});
++	}
++});
+-- 
+2.51.0.windows.1
+

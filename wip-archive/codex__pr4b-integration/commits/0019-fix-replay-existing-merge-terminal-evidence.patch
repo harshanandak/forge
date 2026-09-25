@@ -1,0 +1,148 @@
+From b96824467c5ec8263f86bc5aa8a9a8831f37b90e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 03:11:20 +0530
+Subject: [PATCH] fix: replay existing merge terminal evidence
+
+---
+ lib/commands/merge.js                         | 39 +++++++++++++++++++
+ ...merge-authority-review-regressions.test.js | 10 +++++
+ test/commands/merge-authority.test.js         | 23 +++++++++++
+ 3 files changed, 72 insertions(+)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index f65bcb16..47c101d9 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -117,6 +117,27 @@ function normalizeRepository(value) {
+   return typeof value === 'string' && REPOSITORY_NAME.test(value) ? value.toLowerCase() : null;
+ }
+ 
++function terminalEvidenceFromTrace(row, { issueId, repository, number, expectedHead }) {
++  const merged = (Array.isArray(row?.iterations) ? row.iterations : [])
++    .filter(iteration => iteration?.type === 'pr.merged');
++  if (merged.length === 0) return null;
++  const exact = merged.filter(iteration => iteration.issue_id === issueId
++    && Number.isInteger(iteration.issue_revision) && iteration.issue_revision >= 0
++    && normalizeFullHeadSha(iteration.head_sha) === expectedHead
++    && typeof iteration.at === 'string' && Number.isFinite(Date.parse(iteration.at))
++    && /^[0-9a-f]{64}$/.test(iteration.work_packet_hash)
++    && /^[0-9a-f]{64}$/.test(iteration.run_receipt_hash));
++  if (exact.length !== 1) return { invalid: true };
++  const iteration = exact[0];
++  const decisionSeed = `${issueId}:${iteration.issue_revision}:${repository}:${number}:${expectedHead}`;
++  return {
++    decisionId: uuidFromSeed(`merge-packet:${decisionSeed}`),
++    receiptId: uuidFromSeed(`merge-receipt:${iteration.work_packet_hash}`),
++    receiptHash: iteration.run_receipt_hash,
++    occurredAt: iteration.at,
++  };
++}
++
+ function parseMergeArgs(argv) {
+   const values = { auto: false, pr: null, expectedHead: null, issueId: null, error: null };
+   const seen = new Set();
+@@ -275,6 +296,17 @@ async function defaultVerifyPrIssueBinding({
+     }
+     const row = matches[0];
+     const bound = (allowRetired || row.state === 'open') && row.issue_id === issueId;
++    const terminalEvidence = allowRetired && bound
++      ? terminalEvidenceFromTrace(row, {
++        issueId,
++        repository,
++        number: Number(number),
++        expectedHead: normalizeFullHeadSha(prContext?.headSha),
++      })
++      : null;
++    if (terminalEvidence?.invalid) {
++      return { bound: false, error: 'Kernel merged PR evidence is incomplete or ambiguous.' };
++    }
+     return {
+       bound,
+       repository,
+@@ -284,6 +316,7 @@ async function defaultVerifyPrIssueBinding({
+       url: row.url || null,
+       gitCommonDir: row.git_common_dir || built.gitCommonDir,
+       error: bound ? null : 'Kernel PR row is not open or is linked to a different issue.',
++      ...(terminalEvidence ? { terminalEvidence } : {}),
+     };
+   } catch (err) {
+     return { bound: false, error: `Kernel PR linkage verification failed: ${err.message}` };
+@@ -646,6 +679,12 @@ async function recoverMergedTerminal({
+   if (gateApproval !== true && gateApproval?.approved !== true && gateApproval?.disabled !== true) {
+     return { success: false, merged: true, error: `${MERGE_GATE} is not approved for this issue.` };
+   }
++  if (binding.terminalEvidence) {
++    return {
++      success: true, merged: true, enabled: true, recovered: true,
++      ...binding.terminalEvidence,
++    };
++  }
+   const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
+   const decision = await prepareMergeDecision({
+     issueId: parsed.issueId,
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index b9a30a02..5e314880 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -600,6 +600,11 @@ describe('merge authority — exact reviewer regressions', () => {
+             pull_requests: [{
+               repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+               branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
++              iterations: [{
++                id: 'merged-event', type: 'pr.merged', at: '2026-08-01T12:00:00.000Z',
++                issue_id: ISSUE, issue_revision: 7, head_sha: HEAD,
++                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
++              }],
+             }],
+           }),
+         },
+@@ -609,7 +614,12 @@ describe('merge authority — exact reviewer regressions', () => {
+ 
+     expect(result).toMatchObject({
+       bound: true, issueId: ISSUE, branch: 'feature/merge', gitCommonDir: '/repo/.git',
++      terminalEvidence: {
++        occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
++      },
+     });
++    expect(result.terminalEvidence.decisionId).toMatch(/^[0-9a-f-]{36}$/);
++    expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
+   });
+ 
+   test('leases normalized repository identity across both reads and final mutation', async () => {
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index f9d672f3..2073e10d 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -169,6 +169,29 @@ describe('merge command — mandatory release authority', () => {
+     expect(records).toBe(1);
+   });
+ 
++  test('replays existing terminal evidence without regenerating retry-time receipts', async () => {
++    let decisions = 0;
++    let records = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        terminalEvidence: {
++          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++        },
++      }),
++      prepareMergeDecision: async () => { decisions += 1; },
++      recordMergeDecision: async () => { records += 1; },
++    }));
++
++    expect(out).toMatchObject({
++      success: true, merged: true, recovered: true,
++      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++    });
++    expect(decisions).toBe(0);
++    expect(records).toBe(0);
++  });
++
+   test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
+     let receiptRequirements;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+-- 
+2.51.0.windows.1
+

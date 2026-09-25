@@ -1,0 +1,110 @@
+From 2a6f505c01f9c8df0705aa2bc59f012c0421234e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 23:26:02 +0530
+Subject: [PATCH] fix(memory): address CodeRabbit review on #397 (capture
+ ownership + note cap)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- MAJOR (lib/hook-renderer.js): the capture-hook Forge-ownership marker keyed
+  on the bare `hooks capture` verb, so a user's own hook command that merely
+  contained that substring would be treated as Forge-owned and DELETED on
+  re-merge. Match the FULL resolved Forge invocation (`node "<abs
+  bin/forge.js>" hooks capture`) instead — only Forge's own rendered command
+  carries it. Regression test: a user command containing "hooks capture"
+  survives a double-merge while exactly one Forge capture group is maintained.
+- MINOR (lib/commands/hooks.js): the note hard-cap appended an ellipsis after
+  slicing to CAPTURE_NOTE_CAP, yielding a 1001-char note. Reserve one char so
+  the final note (incl. '…') is ≤ 1000. Token-bound test now asserts ≤ 1000.
+
+Kernel issue: 3867b9c2-17f8-4e34-9636-7870faeb5e59
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/hooks.js      |  4 +++-
+ lib/hook-renderer.js       |  8 +++++++-
+ test/hook-renderer.test.js | 17 +++++++++++++++++
+ test/hooks-capture.test.js |  4 ++--
+ 4 files changed, 29 insertions(+), 4 deletions(-)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 3c1109bc..1633b617 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -84,7 +84,9 @@ function buildCaptureNote(trigger, issues) {
+   const body = lines.length
+     ? `Session boundary (${trigger}) — in-progress:\n${lines.join('\n')}${more}`
+     : `Session boundary (${trigger}) — no in-progress issues.`;
+-  return body.length > CAPTURE_NOTE_CAP ? `${body.slice(0, CAPTURE_NOTE_CAP)}…` : body;
++  // Reserve one char for the appended ellipsis so the FINAL note (incl. '…') is ≤ the cap,
++  // never CAPTURE_NOTE_CAP + 1.
++  return body.length > CAPTURE_NOTE_CAP ? `${body.slice(0, CAPTURE_NOTE_CAP - 1)}…` : body;
+ }
+ 
+ /** Wrap a digest into a harness-native SessionStart payload, or '' when unsupported. */
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index 5c3bf3af..beee140b 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -78,7 +78,13 @@ const FORGE_INBOX_CONTEXT_MARKER = 'hooks inbox-pickup';
+ // The capture-on-exit context hook (PreCompact + Stop tier). A THIRD context marker so a
+ // re-merge recognizes + replaces the Forge-owned PreCompact/Stop entries in place. Both
+ // events share this one marker (they differ only by a --trigger suffix on the command).
+-const FORGE_CAPTURE_CONTEXT_MARKER = 'hooks capture';
++//
++// It matches the FULL resolved Forge invocation (`node "<abs bin/forge.js>" hooks capture`),
++// NOT the bare `hooks capture` verb: a bare-substring check would treat ANY user hook command
++// that merely mentions "hooks capture" as Forge-owned and DELETE it on re-merge (data-integrity
++// bug, CodeRabbit on #397). Only Forge's own rendered capture command contains this prefix, so
++// the merge replaces exactly Forge's group and preserves the user's.
++const FORGE_CAPTURE_CONTEXT_MARKER = `${FORGE_CLI} hooks capture`;
+ 
+ // Per-harness SessionStart context-injection capability. Honest capability matrix —
+ // only Claude exposes a native session-start surface that can inject additionalContext.
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index 393d778f..82b68855 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -203,6 +203,23 @@ describe('PreCompact + Stop capture-on-exit (memory capture)', () => {
+     expect(stopCommands).toContain('node user-stop.js');
+     expect(stopCommands.filter(c => c.includes('hooks capture')).length).toBe(1);
+   });
++
++  test('a user hook that merely CONTAINS "hooks capture" survives re-merge (not clobbered)', () => {
++    // CodeRabbit MAJOR on #397: the Forge-ownership check must key on the full resolved Forge
++    // invocation, NOT the bare `hooks capture` verb — otherwise a user's own command that just
++    // mentions "hooks capture" would be treated as Forge-owned and DELETED on re-merge.
++    const userCmd = 'node my-capture-tool.js hooks capture --to sentry';
++    const existing = JSON.stringify({
++      hooks: { Stop: [{ hooks: [{ type: 'command', command: userCmd }] }] },
++    }, null, 2);
++    const once = mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT);
++    const twice = mergeClaudeSettings(once, FORGE_HOOK_CONTRACT);
++    const b = JSON.parse(twice);
++    const stopCommands = b.hooks.Stop.flatMap(g => g.hooks.map(h => h.command));
++    expect(stopCommands).toContain(userCmd); // user hook preserved across a double-merge
++    // exactly one Forge capture group is maintained (the resolved forge.js invocation).
++    expect(stopCommands.filter(c => c.includes('forge.js') && c.includes('hooks capture')).length).toBe(1);
++  });
+ });
+ 
+ describe('renderCursorHooks (.cursor/hooks.json)', () => {
+diff --git a/test/hooks-capture.test.js b/test/hooks-capture.test.js
+index 085332ca..4690bc14 100644
+--- a/test/hooks-capture.test.js
++++ b/test/hooks-capture.test.js
+@@ -154,8 +154,8 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
+       fetchIssues: (_r, k) => (k === 'ready' ? [] : many),
+     });
+     expect(store.writes).toHaveLength(1);
+-    // A hard ceiling keeps the injected-at-next-session digest small.
+-    expect(store.writes[0].note.length).toBeLessThan(1200);
++    // A hard ceiling (incl. the appended ellipsis) keeps the next-session digest small.
++    expect(store.writes[0].note.length).toBeLessThanOrEqual(1000);
+   });
+ });
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,393 @@
+From 989b975ccb1bf4f46e82d8cb91f32245617dcf22 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 22:42:22 +0530
+Subject: [PATCH] test: avoid Git processes in Windows fixtures
+
+---
+ lib/kernel/broker.js                     | 11 ++++
+ test/e2e/skill-eval-cli.test.js          |  4 +-
+ test/helpers/kernel-project-root.js      | 21 ++----
+ test/helpers/kernel-project-root.test.js | 50 +++-----------
+ test/helpers/skill-eval-fixture.js       | 84 +++++++++++++-----------
+ test/helpers/skill-eval-fixture.test.js  | 33 ++++++++++
+ test/kernel/broker.test.js               | 35 ++++++++++
+ 7 files changed, 139 insertions(+), 99 deletions(-)
+ create mode 100644 test/helpers/skill-eval-fixture.test.js
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 00349f73..7195320e 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
+ const path = require('node:path');
+ const { randomUUID } = require('node:crypto');
+ const { buildConflict, evaluateKernelEvent, normalizePayload } = require('./evaluators');
+@@ -56,6 +57,16 @@ function resolveGitCommonDir(projectRoot, deps = {}) {
+ 		throw new Error('projectRoot is required to resolve the Kernel broker common-dir');
+ 	}
+ 
++	const conventionalDir = defaultGitCommonDir(projectRoot);
++	try {
++		if (fs.lstatSync(conventionalDir).isDirectory()) {
++			return conventionalDir;
++		}
++	} catch {
++		// Missing/unreadable .git or a linked-worktree .git file needs Git's
++		// authoritative common-dir resolution below.
++	}
++
+ 	const exec = deps.execFileSync || execFileSync;
+ 	let rawCommonDir;
+ 	try {
+diff --git a/test/e2e/skill-eval-cli.test.js b/test/e2e/skill-eval-cli.test.js
+index 6cb0367a..9b26e5c9 100644
+--- a/test/e2e/skill-eval-cli.test.js
++++ b/test/e2e/skill-eval-cli.test.js
+@@ -2,6 +2,7 @@
+ 
+ const { describe, expect, test } = require('bun:test');
+ const { spawnSync } = require('node:child_process');
++const fs = require('node:fs');
+ const path = require('node:path');
+ const { performance } = require('node:perf_hooks');
+ const {
+@@ -21,7 +22,7 @@ describe('forge skill eval behavioral CLI', () => {
+       const root = fixture.root;
+       const started = performance.now();
+       const result = spawnSync(process.execPath, [
+-        FORGE_BIN, 'skill', 'eval', 'demo', '--full', '--tier', '30', '--json',
++        FORGE_BIN, 'skill', 'eval', fixture.skillName, '--full', '--tier', '30', '--json',
+       ], {
+         cwd: root,
+         encoding: 'utf8',
+@@ -54,6 +55,7 @@ describe('forge skill eval behavioral CLI', () => {
+       expect(output.issueId).toBeUndefined();
+       expect(output.pr).toBeUndefined();
+       expect(result.stderr).not.toContain('arms.invalid');
++      expect(fs.existsSync(fixture.kernelDatabasePath)).toBe(false);
+     } catch (error) {
+       const diagnostics = formatPhaseDiagnostics(phases);
+       throw new Error(`${error.message}${diagnostics ? ` [${diagnostics}]` : ''}`);
+diff --git a/test/helpers/kernel-project-root.js b/test/helpers/kernel-project-root.js
+index 01b5e378..41eb3543 100644
+--- a/test/helpers/kernel-project-root.js
++++ b/test/helpers/kernel-project-root.js
+@@ -1,6 +1,5 @@
+ 'use strict';
+ 
+-const { execFileSync: defaultExecFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+@@ -20,26 +19,16 @@ function rmrfWithRetry(dir) {
+   }
+ }
+ 
+-// Per-suite factory: each test file gets its own tracked list of throwaway git-repo
+-// project roots (the kernel store path resolves from the git common dir), plus a
+-// cleanup that drains them. `prefix` names the tmp dirs so leaks are attributable.
+-function createKernelProjectRoots(prefix, deps = {}) {
++// Per-suite factory: each test file gets isolated Kernel project roots with the
++// conventional .git directory used by the store, plus cleanup that drains them.
++// `prefix` names the tmp dirs so leaks are attributable.
++function createKernelProjectRoots(prefix) {
+   const tempDirs = [];
+-  const execFileSync = deps.execFileSync || defaultExecFileSync;
+ 
+   function makeProjectRoot() {
+     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+-    // Track for cleanup BEFORE the git call. mkdtempSync has already created the
+-    // dir on disk, so if `git init` throws (e.g. the best-effort timeout below
+-    // fires, or git errors) the dir must still be drained by cleanup() rather
+-    // than leaking in the tmp tree.
+     tempDirs.push(dir);
+-    // Best-effort timeout, not a hard 5s ceiling: execFileSync still waits for
+-    // git to exit after the timeout signals SIGTERM, so a genuinely hung git can
+-    // delay setup past 5s. It bounds the common Windows hang (issue ba388d01) so
+-    // the suite fails fast in practice instead of stalling to the outer lane
+-    // ceiling. A strict bound would need a killable process-tree supervisor.
+-    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: 5000 });
++    fs.mkdirSync(path.join(dir, '.git'));
+     return dir;
+   }
+ 
+diff --git a/test/helpers/kernel-project-root.test.js b/test/helpers/kernel-project-root.test.js
+index dc90091f..0a98e21b 100644
+--- a/test/helpers/kernel-project-root.test.js
++++ b/test/helpers/kernel-project-root.test.js
+@@ -7,60 +7,26 @@ const path = require('node:path');
+ const { createKernelProjectRoots } = require('./kernel-project-root');
+ 
+ describe('createKernelProjectRoots helper', () => {
+-  test('makeProjectRoot creates a throwaway git repo and cleanup drains it', () => {
++  test('makeProjectRoot creates a conventional .git directory and cleanup drains it', () => {
+     const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-krp-ok-');
+     const dir = makeProjectRoot();
+ 
+     expect(fs.existsSync(dir)).toBe(true);
+-    expect(fs.existsSync(path.join(dir, '.git'))).toBe(true);
++    expect(fs.statSync(path.join(dir, '.git')).isDirectory()).toBe(true);
+ 
+     cleanup();
+     expect(fs.existsSync(dir)).toBe(false);
+   });
+ 
+-  test('a failed git init still tracks the temp dir so cleanup removes it (no leak)', () => {
+-    // mkdtempSync creates the dir before git init runs; simulate the Windows
+-    // git hang/timeout by throwing from execFileSync and assert the already-created
+-    // dir is still drained by cleanup() rather than leaking in the tmp tree.
+-    let capturedDir;
+-    const failingExec = (_command, _args, options) => {
+-      capturedDir = options.cwd;
+-      const error = new Error('git init timed out');
+-      error.code = 'ETIMEDOUT';
+-      throw error;
+-    };
++  test('makeProjectRoot never spawns git', () => {
++    const helperSource = fs.readFileSync(require.resolve('./kernel-project-root'), 'utf8');
++    expect(helperSource).not.toMatch(/node:child_process|execFileSync|spawnSync/);
+ 
+-    const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-krp-fail-', {
+-      execFileSync: failingExec,
+-    });
+-
+-    expect(() => makeProjectRoot()).toThrow();
+-    expect(capturedDir).toBeTruthy();
+-    // The temp dir exists on disk (mkdtempSync ran before the failing git init).
+-    expect(fs.existsSync(capturedDir)).toBe(true);
+-
+-    // cleanup() must remove it despite makeProjectRoot throwing — proving the dir
+-    // was tracked before the git call.
+-    cleanup();
+-    expect(fs.existsSync(capturedDir)).toBe(false);
+-  });
+-
+-  test('makeProjectRoot passes a bounded (best-effort) timeout to git init', () => {
+-    const calls = [];
+-    const recordingExec = (command, args, options) => {
+-      calls.push({ command, args, options });
+-    };
+-
+-    const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-krp-timeout-', {
+-      execFileSync: recordingExec,
+-    });
++    const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-krp-no-spawn-');
+ 
+     try {
+-      makeProjectRoot();
+-      expect(calls).toHaveLength(1);
+-      expect(calls[0].command).toBe('git');
+-      expect(calls[0].args).toEqual(['init', '-q']);
+-      expect(calls[0].options.timeout).toBe(5000);
++      const dir = makeProjectRoot();
++      expect(fs.statSync(path.join(dir, '.git')).isDirectory()).toBe(true);
+     } finally {
+       cleanup();
+     }
+diff --git a/test/helpers/skill-eval-fixture.js b/test/helpers/skill-eval-fixture.js
+index ede88f6d..40c08c38 100644
+--- a/test/helpers/skill-eval-fixture.js
++++ b/test/helpers/skill-eval-fixture.js
+@@ -1,34 +1,38 @@
+ 'use strict';
+ 
+-const { spawnSync } = require('node:child_process');
++const { createHash } = require('node:crypto');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ const { performance } = require('node:perf_hooks');
++const zlib = require('node:zlib');
+ 
+-const GIT_TIMEOUT_MS = 5000;
+-
+-function formatResult(result) {
+-  return [
+-    `status=${result.status === null ? 'null' : result.status}`,
+-    `signal=${result.signal || 'none'}`,
+-    result.error ? `error=${result.error.message}` : null,
+-  ].filter(Boolean).join(' ');
++function writeLooseObject(gitDir, type, body) {
++  const content = Buffer.isBuffer(body) ? body : Buffer.from(body);
++  const object = Buffer.concat([Buffer.from(`${type} ${content.length}\0`), content]);
++  const objectId = createHash('sha1').update(object).digest('hex');
++  const objectDir = path.join(gitDir, 'objects', objectId.slice(0, 2));
++  fs.mkdirSync(objectDir, { recursive: true });
++  fs.writeFileSync(path.join(objectDir, objectId.slice(2)), zlib.deflateSync(object));
++  return objectId;
+ }
+ 
+-function runGit(root, args, phase) {
+-  const started = performance.now();
+-  const result = spawnSync('git', args, {
+-    cwd: root,
+-    encoding: 'utf8',
+-    timeout: GIT_TIMEOUT_MS,
+-    windowsHide: true,
+-  });
+-  const elapsedMs = Math.round(performance.now() - started);
+-  if (result.status !== 0) {
+-    throw new Error(`skill-eval fixture phase=${phase} elapsedMs=${elapsedMs} ${formatResult(result)}`);
+-  }
+-  return { elapsedMs, phase };
++function createConventionalGitDir(root) {
++  const gitDir = path.join(root, '.git');
++  fs.mkdirSync(path.join(gitDir, 'refs', 'heads'), { recursive: true });
++  const tree = writeLooseObject(gitDir, 'tree', Buffer.alloc(0));
++  const identity = 'Eval Test <eval@example.test> 946684800 +0000';
++  const commit = writeLooseObject(gitDir, 'commit', [
++    `tree ${tree}`,
++    `author ${identity}`,
++    `committer ${identity}`,
++    '',
++    'fixture',
++    '',
++  ].join('\n'));
++  fs.writeFileSync(path.join(gitDir, 'HEAD'), 'ref: refs/heads/skill-eval-fixture\n');
++  fs.writeFileSync(path.join(gitDir, 'refs', 'heads', 'skill-eval-fixture'), `${commit}\n`);
++  return gitDir;
+ }
+ 
+ function formatPhaseDiagnostics(phases) {
+@@ -44,29 +48,29 @@ function formatPhaseDiagnostics(phases) {
+ }
+ 
+ function createSkillEvalFixture() {
++  const started = performance.now();
+   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-eval-cli-'));
+   try {
+-    fs.mkdirSync(path.join(root, 'skills', 'demo'), { recursive: true });
++    const gitCommonDir = createConventionalGitDir(root);
++    const skillName = 'demo';
++    fs.mkdirSync(path.join(root, 'skills', skillName), { recursive: true });
+     fs.writeFileSync(path.join(root, 'AGENTS.md'), '# test\n');
+-    fs.writeFileSync(
+-      path.join(root, 'skills', 'demo', 'SKILL.md'),
+-      '---\nname: demo\ndescription: behavioral demo\n---\nbody\n',
+-    );
+-
+-    const phases = {
+-      gitInit: runGit(root, ['-c', 'init.defaultBranch=skill-eval-fixture', 'init', '-q'], 'git-init'),
+-      gitCommit: runGit(root, [
+-        '-c', 'user.email=eval@example.test',
+-        '-c', 'user.name=Eval Test',
+-        '-c', 'commit.gpgsign=false',
+-        '-c', 'core.hooksPath=',
+-        'commit', '--allow-empty', '-qm', 'fixture',
+-      ], 'git-commit'),
+-    };
++    fs.writeFileSync(path.join(root, 'skills', skillName, 'SKILL.md'), [
++      '---',
++      `name: ${skillName}`,
++      'description: behavioral demo',
++      '---',
++      'body',
++      '',
++    ].join('\n'));
++    const setupMs = Math.round(performance.now() - started);
+     return {
+       root,
+-      phases,
+-      setupMs: phases.gitInit.elapsedMs + phases.gitCommit.elapsedMs,
++      skillName,
++      gitCommonDir,
++      kernelDatabasePath: path.join(gitCommonDir, 'forge', 'kernel.sqlite'),
++      phases: { fixtureSetup: { phase: 'fixture-setup', elapsedMs: setupMs } },
++      setupMs,
+       cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+     };
+   } catch (error) {
+diff --git a/test/helpers/skill-eval-fixture.test.js b/test/helpers/skill-eval-fixture.test.js
+new file mode 100644
+index 00000000..e579f8c0
+--- /dev/null
++++ b/test/helpers/skill-eval-fixture.test.js
+@@ -0,0 +1,33 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { createSkillEvalFixture } = require('./skill-eval-fixture');
++
++describe('createSkillEvalFixture', () => {
++  test('creates an isolated behavioral fixture without Git process phases', () => {
++    const helperSource = fs.readFileSync(require.resolve('./skill-eval-fixture'), 'utf8');
++    expect(helperSource).not.toMatch(/node:child_process|execFileSync|spawnSync|\bbun\b/i);
++
++    const fixture = createSkillEvalFixture();
++    const repositoryRoot = path.resolve(__dirname, '../..');
++    try {
++      expect(fixture.root).not.toBe(repositoryRoot);
++      expect(path.relative(os.tmpdir(), fixture.root)).not.toStartWith('..');
++      expect(fixture.gitCommonDir).toBe(path.join(fixture.root, '.git'));
++      expect(fs.statSync(fixture.gitCommonDir).isDirectory()).toBe(true);
++      expect(fixture.kernelDatabasePath).toBe(path.join(fixture.gitCommonDir, 'forge', 'kernel.sqlite'));
++      expect(fs.existsSync(fixture.kernelDatabasePath)).toBe(false);
++      expect(fs.existsSync(path.join(fixture.root, 'skills', fixture.skillName, 'SKILL.md'))).toBe(true);
++      expect(fixture.phases.gitInit).toBeUndefined();
++      expect(fixture.phases.gitCommit).toBeUndefined();
++      expect(fixture.setupMs).toBeGreaterThanOrEqual(0);
++    } finally {
++      fixture.cleanup();
++    }
++    expect(fs.existsSync(fixture.root)).toBe(false);
++  });
++});
+diff --git a/test/kernel/broker.test.js b/test/kernel/broker.test.js
+index 28462dce..82fc37af 100644
+--- a/test/kernel/broker.test.js
++++ b/test/kernel/broker.test.js
+@@ -1,8 +1,43 @@
+ const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ 
+ describe('local Kernel broker contract', () => {
++	test('resolves an ordinary .git directory without spawning git', () => {
++		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
++		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-common-dir-fast-path-'));
++		const gitDir = path.join(projectRoot, '.git');
++		fs.mkdirSync(gitDir);
++
++		try {
++			const commonDir = resolveGitCommonDir(projectRoot, {
++				execFileSync: () => { throw new Error('git must not spawn for an ordinary .git directory'); },
++			});
++			expect(commonDir).toBe(gitDir);
++		} finally {
++			fs.rmSync(projectRoot, { recursive: true, force: true });
++		}
++	});
++
++	test('preserves the git probe for a linked-worktree .git file', () => {
++		const { resolveGitCommonDir } = require('../../lib/kernel/broker');
++		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-common-dir-worktree-'));
++		const commonDir = path.join(os.tmpdir(), 'forge-linked-common-dir');
++		fs.writeFileSync(path.join(projectRoot, '.git'), 'gitdir: ../main/.git/worktrees/fixture\n');
++		let calls = 0;
++
++		try {
++			const resolved = resolveGitCommonDir(projectRoot, {
++				execFileSync: () => { calls += 1; return commonDir; },
++			});
++			expect(resolved).toBe(path.resolve(commonDir));
++			expect(calls).toBe(1);
++		} finally {
++			fs.rmSync(projectRoot, { recursive: true, force: true });
++		}
++	});
++
+ 	test('keys the local broker by git common-dir instead of worktree path', () => {
+ 		const {
+ 			buildLocalBrokerConfig,
+-- 
+2.51.0.windows.1
+

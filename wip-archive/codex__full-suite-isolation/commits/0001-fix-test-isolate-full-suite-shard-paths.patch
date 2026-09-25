@@ -1,0 +1,156 @@
+From 06aa68b900159d2a64d504f2ddf30123106e5b24 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 22:02:03 +0530
+Subject: [PATCH] fix(test): isolate full-suite shard paths
+
+---
+ scripts/test-full-suite.js           | 24 ++++++----
+ test/scripts/test-full-suite.test.js | 66 ++++++++++++++++++++++++++++
+ 2 files changed, 82 insertions(+), 8 deletions(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index a27233da..fb02202e 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -128,6 +128,18 @@ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
+   return specs;
+ }
+ 
++function buildShardTestArgs({ junitPath, files, root = rootDir }) {
++  return [
++    'test',
++    '--timeout',
++    '30000',
++    '--reporter=junit',
++    '--reporter-outfile',
++    junitPath,
++    ...files.map((file) => path.resolve(root, file)),
++  ];
++}
++
+ function spawnShard(shard, options = {}) {
+   const spawn = options.spawn || defaultSpawn;
+   const env = options.env || process.env;
+@@ -151,15 +163,10 @@ function spawnShard(shard, options = {}) {
+ 
+     let child;
+     try {
+-      child = spawn(bunCommand, [
+-        'test',
+-        '--timeout',
+-        '30000',
+-        '--reporter=junit',
+-        '--reporter-outfile',
++      child = spawn(bunCommand, buildShardTestArgs({
+         junitPath,
+-        ...shard.files,
+-      ], {
++        files: shard.files,
++      }), {
+         cwd: rootDir,
+         env,
+         shell: false,
+@@ -258,6 +265,7 @@ if (require.main === module) {
+ 
+ module.exports = {
+   assertExactShardAssignment,
++  buildShardTestArgs,
+   buildShardSpecs,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 2de3b580..0f589f8c 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -1,15 +1,21 @@
+ 'use strict';
+ 
++const fs = require('node:fs');
+ const { EventEmitter } = require('node:events');
++const os = require('node:os');
++const path = require('node:path');
++const { spawnSync } = require('node:child_process');
+ const { describe, expect, test } = require('bun:test');
+ 
+ const {
+   assertExactShardAssignment,
++  buildShardTestArgs,
+   buildShardSpecs,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
+   parseArgs,
+   runFullSuiteInParallel,
++  spawnShard,
+ } = require('../../scripts/test-full-suite');
+ 
+ describe('scripts/test-full-suite.js', () => {
+@@ -52,6 +58,66 @@ describe('scripts/test-full-suite.js', () => {
+     ]);
+   });
+ 
++  test('passes absolute shard files to Bun children', async () => {
++    const calls = [];
++    const processTree = {
++      reserveChild: () => ({ id: 'absolute-paths' }),
++      registerChild: (_reservation, child) => child,
++      unregisterChild: () => {},
++    };
++    const spawn = (_command, args) => {
++      calls.push(args);
++      const child = new EventEmitter();
++      process.nextTick(() => child.emit('close', 0));
++      return child;
++    };
++
++    await spawnShard({ index: 0, files: ['test/example.test.js'] }, {
++      labelPrefix: 'absolute-paths',
++      processTree,
++      spawn,
++    });
++
++    expect(path.isAbsolute(calls[0].at(-1))).toBe(true);
++  });
++
++  test('nested worktree copies cannot add tests to a shard', () => {
++    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-isolation-'));
++    try {
++      const relativeFile = 'test/isolation-probe.test.js';
++      const activeFile = path.join(fixtureRoot, relativeFile);
++      const nestedFile = path.join(fixtureRoot, '.worktrees', 'stale', relativeFile);
++      fs.mkdirSync(path.dirname(activeFile), { recursive: true });
++      fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
++      fs.writeFileSync(activeFile, [
++        "const { test } = require('bun:test');",
++        "test('active checkout', () => {});",
++      ].join('\n'));
++      fs.writeFileSync(nestedFile, [
++        "const { test } = require('bun:test');",
++        "test('nested stale checkout', () => { throw new Error('nested copy executed'); });",
++      ].join('\n'));
++
++      const args = buildShardTestArgs({
++        junitPath: path.join(fixtureRoot, 'test-results', 'isolation.xml'),
++        files: [relativeFile],
++        root: fixtureRoot,
++      });
++      const result = spawnSync(process.env.BUN_EXE || 'bun', args, {
++        cwd: fixtureRoot,
++        encoding: 'utf8',
++        windowsHide: true,
++      });
++      const output = `${result.stdout || ''}\n${result.stderr || ''}`;
++
++      expect(result.status).toBe(0);
++      expect(output).toContain('active checkout');
++      expect(output).not.toContain('nested stale checkout');
++    } finally {
++      fs.rmSync(fixtureRoot, { recursive: true, force: true });
++    }
++  });
++
+   test('rejects duplicate test files instead of accepting overlapping shard evidence', () => {
+     expect(() => buildShardSpecs([
+       'test/a.test.js',
+-- 
+2.51.0.windows.1
+

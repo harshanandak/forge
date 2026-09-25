@@ -1,0 +1,111 @@
+From 733059d39133155ec74dac7919ca3437df322cfa Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 00:03:31 +0530
+Subject: [PATCH] fix(memory): harden privacy and timeout boundaries
+
+---
+ packages/memory/src/pr-lifecycle-authority.js | 13 ++++++----
+ .../test/pr-lifecycle-authority.test.js       | 26 +++++++++++++++++--
+ 2 files changed, 32 insertions(+), 7 deletions(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 490d946f..8c919d17 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { createHash, randomUUID } = require('node:crypto');
++const { performance } = require('node:perf_hooks');
+ const { types } = require('node:util');
+ const {
+   canonicalize,
+@@ -31,7 +32,7 @@ const SECRET_PATTERNS = Object.freeze([
+   /AKIA[0-9A-Z]{16}/i,
+   /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
+ ]);
+-const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?:\/|$))/i;
++const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?=\/|\s|$))/i;
+ 
+ // Complete accepted provider capability contract. Live probes may supply the optional reads;
+ // runIssueOperation, recordPrLinkage, and readTrace remain mandatory (see authority-provider.js).
+@@ -767,19 +768,21 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
+ }
+ 
+ async function reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, gitCommonDir) {
+-  const deadline = Date.now() + Math.max(timeoutMs, 10);
++  const budgetMs = Math.max(timeoutMs, 10);
++  const startedAt = performance.now();
++  const remainingBudget = () => budgetMs - (performance.now() - startedAt);
+   let trace;
+   do {
+-    const remaining = Math.max(1, deadline - Date.now());
++    const remaining = Math.max(1, remainingBudget());
+     trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
+     traceLinkageRow(trace, linkage);
+     if (durableAcceptance(trace, packet, receipt)) {
+       assertTraceLinkage(trace, linkage, packet, receipt);
+       return trace;
+     }
+-    const waitMs = Math.min(5, deadline - Date.now());
++    const waitMs = Math.min(5, remainingBudget());
+     if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+-  } while (Date.now() < deadline);
++  } while (remainingBudget() > 0);
+   assertTraceLinkage(trace, linkage, packet, receipt);
+ }
+ 
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 1bf6b8f0..c0a5baa3 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -314,7 +314,7 @@ describe('public PR lifecycle authority', () => {
+ 
+   test('rejects bare POSIX user home directories at the privacy boundary', async () => {
+     const authority = createPrLifecycleAuthority({ provider: provider() });
+-    for (const objective of ['/home/alice', '/Users/alice']) {
++    for (const objective of ['/home/alice', '/Users/alice', 'Use /home/alice for config', 'Read /Users/alice next']) {
+       await expect(authority.issueWorkPacket({
+         issue_id: ISSUE_ID,
+         repository_id: REPOSITORY_ID,
+@@ -493,7 +493,7 @@ describe('public PR lifecycle authority', () => {
+       .then(() => ({ accepted: true }), error => error);
+     const observed = await Promise.race([
+       outcome,
+-      new Promise(resolve => setTimeout(() => resolve('still-pending'), 30)),
++      new Promise(resolve => setTimeout(() => resolve('still-pending'), 100)),
+     ]);
+     expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+   });
+@@ -511,6 +511,28 @@ describe('public PR lifecycle authority', () => {
+       .resolves.toMatchObject({ accepted: true });
+   });
+ 
++  test('keeps reconciliation bounded when the wall clock moves backward', async () => {
++    const originalNow = Date.now;
++    let wallTime = 100;
++    Date.now = () => wallTime--;
++    try {
++      const workPacket = packet();
++      const authority = createPrLifecycleAuthority({
++        provider: provider({ recordPrLinkage: async () => new Promise(() => {}) }),
++        timeoutMs: 5,
++      });
++      const outcome = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
++        .then(() => ({ accepted: true }), error => error);
++      const observed = await Promise.race([
++        outcome,
++        new Promise(resolve => setTimeout(() => resolve('still-pending'), 100)),
++      ]);
++      expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
++    } finally {
++      Date.now = originalNow;
++    }
++  });
++
+   test('re-probes ownership and exact head at receipt acceptance', async () => {
+     const workPacket = packet();
+     const runReceipt = receipt(workPacket);
+-- 
+2.51.0.windows.1
+

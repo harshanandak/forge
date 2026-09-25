@@ -1,0 +1,542 @@
+From e319168423ee7f92f31b63be43d5310f8fa6cc4d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:58:34 +0530
+Subject: [PATCH] feat(memory): expose authority and feedback APIs
+
+---
+ bun.lock                                      |   3 +
+ packages/memory/index.js                      |   6 +-
+ packages/memory/index.test.js                 |   4 +-
+ packages/memory/package.json                  |   3 +
+ packages/memory/src/authority-provider.js     |  45 ++++
+ packages/memory/src/feedback-intake.js        | 207 ++++++++++++++++++
+ .../memory/test/authority-provider.test.js    |  44 ++++
+ packages/memory/test/feedback-intake.test.js  | 144 ++++++++++++
+ 8 files changed, 454 insertions(+), 2 deletions(-)
+ create mode 100644 packages/memory/src/authority-provider.js
+ create mode 100644 packages/memory/src/feedback-intake.js
+ create mode 100644 packages/memory/test/authority-provider.test.js
+ create mode 100644 packages/memory/test/feedback-intake.test.js
+
+diff --git a/bun.lock b/bun.lock
+index 59594da5..a97fbb92 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -40,6 +40,9 @@
+     "packages/memory": {
+       "name": "@forge/memory",
+       "version": "0.1.0-beta.6",
++      "dependencies": {
++        "@forge/memory-contracts": "0.1.0-beta.6",
++      },
+     },
+     "packages/memory-contracts": {
+       "name": "@forge/memory-contracts",
+diff --git a/packages/memory/index.js b/packages/memory/index.js
+index 82eae44b..5b651bb0 100644
+--- a/packages/memory/index.js
++++ b/packages/memory/index.js
+@@ -1,3 +1,7 @@
+ 'use strict';
+ 
+-module.exports = require('./src/backend-registry');
++module.exports = {
++  ...require('./src/authority-provider'),
++  ...require('./src/backend-registry'),
++  ...require('./src/feedback-intake'),
++};
+diff --git a/packages/memory/index.test.js b/packages/memory/index.test.js
+index 56d04353..67ec627d 100644
+--- a/packages/memory/index.test.js
++++ b/packages/memory/index.test.js
+@@ -1,6 +1,8 @@
+ 'use strict';
+ 
+-const { expect, test } = require('bun:test');
++const { expect, mock, test } = require('bun:test');
++const contracts = require('../memory-contracts');
++mock.module('@forge/memory-contracts', () => contracts);
+ const memory = require('./index');
+ 
+ test('@forge/memory exposes the stable backend registry entrypoint', () => {
+diff --git a/packages/memory/package.json b/packages/memory/package.json
+index d8a0620c..a1e4e4bd 100644
+--- a/packages/memory/package.json
++++ b/packages/memory/package.json
+@@ -11,6 +11,9 @@
+   "scripts": {
+     "test": "bun test"
+   },
++  "dependencies": {
++    "@forge/memory-contracts": "0.1.0-beta.6"
++  },
+   "engines": {
+     "node": ">=20.0.0"
+   },
+diff --git a/packages/memory/src/authority-provider.js b/packages/memory/src/authority-provider.js
+new file mode 100644
+index 00000000..4e8d6f87
+--- /dev/null
++++ b/packages/memory/src/authority-provider.js
+@@ -0,0 +1,45 @@
++'use strict';
++
++const MEMORY_AUTHORITY_METHODS = Object.freeze([
++  'initialize',
++  'runIssueOperation',
++  'runGuardedEvent',
++  'importIssues',
++  'listRecentEvents',
++  'listOpenPrs',
++  'upsertPr',
++  'updatePrVerdict',
++  'retirePr',
++  'listProjectionOutbox',
++  'loadProjectionModel',
++  'markProjectionDelivered',
++  'recordProjectionFailure',
++  'deadLetterProjection',
++]);
++
++function assertMemoryAuthorityProvider(provider, label = 'Memory authority provider') {
++  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
++    throw new TypeError(`${label} must be an object`);
++  }
++  for (const method of MEMORY_AUTHORITY_METHODS) {
++    if (typeof provider[method] !== 'function') {
++      throw new TypeError(`${label} must implement ${method}()`);
++    }
++  }
++  return provider;
++}
++
++function createMemoryAuthorityProvider({ broker } = {}) {
++  assertMemoryAuthorityProvider(broker, 'Kernel broker');
++  const provider = {};
++  for (const method of MEMORY_AUTHORITY_METHODS) {
++    provider[method] = (...args) => broker[method](...args);
++  }
++  return Object.freeze(provider);
++}
++
++module.exports = {
++  MEMORY_AUTHORITY_METHODS,
++  assertMemoryAuthorityProvider,
++  createMemoryAuthorityProvider,
++};
+diff --git a/packages/memory/src/feedback-intake.js b/packages/memory/src/feedback-intake.js
+new file mode 100644
+index 00000000..dbe718b4
+--- /dev/null
++++ b/packages/memory/src/feedback-intake.js
+@@ -0,0 +1,207 @@
++'use strict';
++
++const { createHash, randomUUID: defaultRandomUUID } = require('node:crypto');
++const {
++  canonicalize,
++  computeContentHash,
++  semanticIdentity,
++  validateContractStructure,
++} = require('@forge/memory-contracts');
++
++const FEEDBACK_SCHEMA_ID = 'forge.memory.feedback-report.v1';
++const ASSIGNED_SECRET = /((?:api[_-]?key|token|secret|password)\s*[:=]\s*)\S{8,}/gi;
++const BARE_SECRET = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16})/gi;
++const USER_PATH = /(?:[A-Za-z]:\\Users\\[^\\\s]+\\|\/(?:Users|home)\/[^/\s]+\/)/gi;
++
++class FeedbackIntakeError extends Error {
++  constructor(code, message) {
++    super(message);
++    this.name = 'FeedbackIntakeError';
++    this.code = code;
++  }
++}
++
++function requiredString(value, name) {
++  if (typeof value !== 'string' || value.length === 0) {
++    throw new TypeError(`${name} must be a non-empty string`);
++  }
++  return value;
++}
++
++function redactString(value) {
++  return value
++    .replace(USER_PATH, '<user-path>/')
++    .replace(ASSIGNED_SECRET, '[REDACTED]')
++    .replace(BARE_SECRET, '[REDACTED]');
++}
++
++function redactValue(value) {
++  if (typeof value === 'string') return redactString(value);
++  if (Array.isArray(value)) return value.map(redactValue);
++  if (!value || typeof value !== 'object') return value;
++  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactValue(child)]));
++}
++
++function sha256(value) {
++  return createHash('sha256').update(canonicalize(value), 'utf8').digest('hex');
++}
++
++function assertFeedbackReport(report) {
++  const validation = validateContractStructure(report);
++  if (report?.schema_id !== FEEDBACK_SCHEMA_ID || !validation.ok) {
++    const codes = validation.errors.map(item => item.code).join(', ') || 'WRONG_SCHEMA';
++    throw new FeedbackIntakeError('FEEDBACK_REPORT_INVALID', `FeedbackReport is invalid: ${codes}`);
++  }
++  return report;
++}
++
++function createFeedbackReport(input = {}, options = {}) {
++  const randomUUID = options.randomUUID || defaultRandomUUID;
++  const now = options.now || (() => new Date().toISOString());
++  const reportId = randomUUID();
++  const reproductionSteps = input.reproductionSteps;
++  if (!Array.isArray(reproductionSteps) || reproductionSteps.length === 0) {
++    throw new TypeError('reproductionSteps must be a non-empty array');
++  }
++  const redactedSteps = reproductionSteps.map((step, index) =>
++    redactString(requiredString(step, `reproductionSteps[${index}]`)));
++  const stableErrorCode = requiredString(input.stableErrorCode, 'stableErrorCode');
++  const affectedCapability = requiredString(input.affectedCapability, 'affectedCapability');
++  const expectedClassification = requiredString(input.expectedClassification, 'expectedClassification');
++  const actualClassification = requiredString(input.actualClassification, 'actualClassification');
++  const productVersion = requiredString(input.productVersion, 'productVersion');
++  const redactionPolicyRevision = requiredString(input.redactionPolicyRevision, 'redactionPolicyRevision');
++  const consentEventId = requiredString(input.consentEventId, 'consentEventId');
++  const occurrenceCount = input.occurrenceCount ?? 1;
++  if (!Number.isInteger(occurrenceCount) || occurrenceCount < 1) {
++    throw new TypeError('occurrenceCount must be a positive integer');
++  }
++
++  const payload = {
++    report_id: reportId,
++    product_version: productVersion,
++    contract_version: 1,
++    stable_error_code: stableErrorCode,
++    affected_capability: affectedCapability,
++    redacted_reproduction_steps: redactedSteps,
++    expected_classification: expectedClassification,
++    actual_classification: actualClassification,
++    occurrence_count: occurrenceCount,
++    content_fingerprint: sha256({
++      stable_error_code: stableErrorCode,
++      affected_capability: affectedCapability,
++      redacted_reproduction_steps: redactedSteps,
++      expected_classification: expectedClassification,
++      actual_classification: actualClassification,
++    }),
++    consent_event_id: consentEventId,
++    redaction_policy_revision: redactionPolicyRevision,
++  };
++  if (input.proposedFix !== undefined) {
++    payload.proposed_fix = redactString(requiredString(input.proposedFix, 'proposedFix'));
++  }
++  if (input.returnChannel !== undefined) payload.return_channel = redactValue(input.returnChannel);
++
++  const report = {
++    schema_id: FEEDBACK_SCHEMA_ID,
++    schema_version: 1,
++    object_id: reportId,
++    created_at: now(),
++    producer: {
++      product_id: 'forge-memory',
++      product_version: productVersion,
++      instance_id: reportId,
++    },
++    capabilities_used: [],
++    provenance: {
++      source_kind: 'feedback',
++      actor_class: 'anonymous-user',
++      actor_id: reportId,
++    },
++    payload,
++    extensions: {},
++  };
++  report.content_hash = computeContentHash(report);
++  return assertFeedbackReport(report);
++}
++
++function assertConsent(report, consent) {
++  if (!consent || consent.approved !== true) return false;
++  if (consent.eventId !== report.payload.consent_event_id
++      || consent.redactionPolicyRevision !== report.payload.redaction_policy_revision) {
++    throw new FeedbackIntakeError(
++      'FEEDBACK_CONSENT_MISMATCH',
++      'Feedback consent must match this report and redaction-policy revision',
++    );
++  }
++  return true;
++}
++
++function createFeedbackIntake({ acceptFeedback, deliverFeedback } = {}) {
++  if (typeof acceptFeedback !== 'function') {
++    throw new TypeError('acceptFeedback must be an atomic durable acceptance function');
++  }
++  if (deliverFeedback !== undefined && typeof deliverFeedback !== 'function') {
++    throw new TypeError('deliverFeedback must be a function when provided');
++  }
++
++  function preview(report) {
++    assertFeedbackReport(report);
++    return { status: 'pending-consent', report: structuredClone(report) };
++  }
++
++  async function submit(report, consent) {
++    assertFeedbackReport(report);
++    if (!assertConsent(report, consent)) {
++      return {
++        status: consent?.approved === false ? 'declined' : 'pending-consent',
++        accepted: false,
++        delivered: false,
++      };
++    }
++
++    const identity = semanticIdentity(report);
++    const result = await acceptFeedback({
++      identity,
++      content_hash: report.content_hash,
++      report: structuredClone(report),
++    });
++    if (result?.status === 'identity-conflict') {
++      throw new FeedbackIntakeError(
++        'FEEDBACK_IDENTITY_CONFLICT',
++        'Feedback report identity was already accepted with different content',
++      );
++    }
++    if (result?.status === 'retry-identical') {
++      return { status: 'retry-identical', accepted: false, delivered: false, receipt: result.receipt };
++    }
++    if (result?.status !== 'accepted') {
++      throw new FeedbackIntakeError('FEEDBACK_ACCEPTANCE_INVALID', 'Feedback authority returned an invalid result');
++    }
++    if (!deliverFeedback) {
++      return { status: 'accepted-local', accepted: true, delivered: false, receipt: result.receipt };
++    }
++    try {
++      const delivery = await deliverFeedback(structuredClone(report), { receipt: result.receipt });
++      return { status: 'accepted', accepted: true, delivered: true, receipt: result.receipt, delivery };
++    } catch {
++      return {
++        status: 'accepted-local',
++        accepted: true,
++        delivered: false,
++        receipt: result.receipt,
++        delivery_error: { code: 'FEEDBACK_DELIVERY_FAILED' },
++      };
++    }
++  }
++
++  return Object.freeze({ preview, submit });
++}
++
++module.exports = {
++  FEEDBACK_SCHEMA_ID,
++  FeedbackIntakeError,
++  createFeedbackIntake,
++  createFeedbackReport,
++  redactString,
++};
+diff --git a/packages/memory/test/authority-provider.test.js b/packages/memory/test/authority-provider.test.js
+new file mode 100644
+index 00000000..8ca635b6
+--- /dev/null
++++ b/packages/memory/test/authority-provider.test.js
+@@ -0,0 +1,44 @@
++'use strict';
++
++const { describe, expect, mock, test } = require('bun:test');
++const contracts = require('../../memory-contracts');
++mock.module('@forge/memory-contracts', () => contracts);
++const {
++  MEMORY_AUTHORITY_METHODS,
++  assertMemoryAuthorityProvider,
++  createMemoryAuthorityProvider,
++} = require('..');
++
++function brokerStub(calls) {
++  return Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async (...args) => {
++    calls.push({ method, args });
++    return { method, args };
++  }]));
++}
++
++describe('Memory authority provider', () => {
++  test('exposes the existing Kernel authority primitives through one frozen public seam', async () => {
++    const calls = [];
++    const broker = brokerStub(calls);
++    broker.config = { databasePath: 'private.sqlite' };
++    const provider = createMemoryAuthorityProvider({ broker });
++
++    expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS]);
++    expect(Object.isFrozen(provider)).toBe(true);
++    expect(provider.config).toBeUndefined();
++    await provider.runIssueOperation('show', ['issue-1'], { actor: 'agent-1' });
++    await provider.runGuardedEvent({ type: 'run.accepted' }, { actor: 'agent-1' });
++
++    expect(calls).toEqual([
++      { method: 'runIssueOperation', args: ['show', ['issue-1'], { actor: 'agent-1' }] },
++      { method: 'runGuardedEvent', args: [{ type: 'run.accepted' }, { actor: 'agent-1' }] },
++    ]);
++    expect(assertMemoryAuthorityProvider(provider)).toBe(provider);
++  });
++
++  test('fails closed when an authority primitive is missing', () => {
++    const broker = brokerStub([]);
++    delete broker.runGuardedEvent;
++    expect(() => createMemoryAuthorityProvider({ broker })).toThrow('runGuardedEvent()');
++  });
++});
+diff --git a/packages/memory/test/feedback-intake.test.js b/packages/memory/test/feedback-intake.test.js
+new file mode 100644
+index 00000000..b7f61ed3
+--- /dev/null
++++ b/packages/memory/test/feedback-intake.test.js
+@@ -0,0 +1,144 @@
++'use strict';
++
++const { describe, expect, mock, test } = require('bun:test');
++const contracts = require('../../memory-contracts');
++mock.module('@forge/memory-contracts', () => contracts);
++const {
++  FeedbackIntakeError,
++  createFeedbackIntake,
++  createFeedbackReport,
++} = require('..');
++const { classifySemanticAttempt, computeContentHash, validateContractStructure } = contracts;
++
++const IDS = [
++  '00000000-0000-4000-8000-000000000101',
++  '00000000-0000-4000-8000-000000000102',
++];
++
++function report(overrides = {}, id = IDS[0]) {
++  return createFeedbackReport({
++    productVersion: '0.1.0-beta.7',
++    instanceId: 'local-test',
++    stableErrorCode: 'FORGE_TEST_FAILED',
++    affectedCapability: 'memory.recall',
++    reproductionSteps: ['Run C:\\Users\\alice\\forge with token=ghp_123456789012345678901234567890'],
++    expectedClassification: 'PASS',
++    actualClassification: 'FAIL',
++    occurrenceCount: 2,
++    consentEventId: 'consent-101',
++    redactionPolicyRevision: 'redaction-1',
++    rawPrompt: 'must never enter the report',
++    userId: 'must-never-enter-the-report',
++    ...overrides,
++  }, {
++    randomUUID: () => id,
++    now: () => '2026-08-10T05:00:00.000Z',
++  });
++}
++
++function atomicFeedbackStore() {
++  const accepted = new Map();
++  const calls = [];
++  return {
++    calls,
++    async acceptFeedback(attempt) {
++      calls.push(attempt);
++      const prior = accepted.get(attempt.identity);
++      if (!prior) {
++        accepted.set(attempt.identity, attempt.report);
++        return { status: 'accepted', receipt: { event_id: `feedback:${attempt.identity}` } };
++      }
++      const classification = classifySemanticAttempt(prior, attempt.report);
++      if (classification.status === 'retry-identical') {
++        return { status: 'retry-identical', receipt: { event_id: `feedback:${attempt.identity}` } };
++      }
++      return { status: 'identity-conflict' };
++    },
++  };
++}
++
++describe('structured feedback intake', () => {
++  test('constructs a bounded anonymous report and deterministically redacts secrets and user paths', () => {
++    const value = report();
++
++    expect(validateContractStructure(value)).toEqual({ ok: true, errors: [] });
++    expect(value.provenance).toEqual({
++      source_kind: 'feedback',
++      actor_class: 'anonymous-user',
++      actor_id: IDS[0],
++    });
++    expect(value.payload.redacted_reproduction_steps).toEqual([
++      'Run <user-path>/forge with [REDACTED]',
++    ]);
++    expect(JSON.stringify(value)).not.toContain('alice');
++    expect(JSON.stringify(value)).not.toContain('rawPrompt');
++    expect(JSON.stringify(value)).not.toContain('userId');
++  });
++
++  test('preview is side-effect free and submission requires exact per-report consent', async () => {
++    const store = atomicFeedbackStore();
++    let deliveries = 0;
++    const intake = createFeedbackIntake({
++      acceptFeedback: store.acceptFeedback,
++      deliverFeedback: async () => { deliveries += 1; },
++    });
++    const value = report();
++
++    expect(intake.preview(value)).toMatchObject({ status: 'pending-consent', report: value });
++    expect(await intake.submit(value)).toMatchObject({ status: 'pending-consent', accepted: false, delivered: false });
++    expect(store.calls).toHaveLength(0);
++    expect(deliveries).toBe(0);
++
++    await expect(intake.submit(value, {
++      approved: true,
++      eventId: 'wrong-consent',
++      redactionPolicyRevision: 'redaction-1',
++    })).rejects.toMatchObject({ code: 'FEEDBACK_CONSENT_MISMATCH' });
++    expect(store.calls).toHaveLength(0);
++  });
++
++  test('accepts once, suppresses an identical retry, and rejects identity reuse with changed content', async () => {
++    const store = atomicFeedbackStore();
++    const delivered = [];
++    const intake = createFeedbackIntake({
++      acceptFeedback: store.acceptFeedback,
++      deliverFeedback: async value => delivered.push(value.content_hash),
++    });
++    const value = report();
++    const consent = {
++      approved: true,
++      eventId: 'consent-101',
++      redactionPolicyRevision: 'redaction-1',
++    };
++
++    expect(await intake.submit(value, consent)).toMatchObject({ status: 'accepted', accepted: true, delivered: true });
++    expect(await intake.submit(value, consent)).toMatchObject({ status: 'retry-identical', accepted: false, delivered: false });
++    expect(delivered).toHaveLength(1);
++
++    const conflict = structuredClone(value);
++    conflict.payload.occurrence_count = 3;
++    conflict.content_hash = computeContentHash(conflict);
++    await expect(intake.submit(conflict, consent)).rejects.toBeInstanceOf(FeedbackIntakeError);
++    await expect(intake.submit(conflict, consent)).rejects.toMatchObject({ code: 'FEEDBACK_IDENTITY_CONFLICT' });
++    expect(delivered).toHaveLength(1);
++  });
++
++  test('keeps an accepted local report when optional delivery fails', async () => {
++    const store = atomicFeedbackStore();
++    const intake = createFeedbackIntake({
++      acceptFeedback: store.acceptFeedback,
++      deliverFeedback: async () => { throw new Error('offline'); },
++    });
++
++    expect(await intake.submit(report(), {
++      approved: true,
++      eventId: 'consent-101',
++      redactionPolicyRevision: 'redaction-1',
++    })).toMatchObject({
++      status: 'accepted-local',
++      accepted: true,
++      delivered: false,
++      delivery_error: { code: 'FEEDBACK_DELIVERY_FAILED' },
++    });
++  });
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,83 @@
+From b83f6cfb9116c1387690df6c73e986c8e3184673 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 15:41:20 +0530
+Subject: [PATCH] fix: consume rejected async adapter promises
+
+---
+ lib/pr-monitor/watch-owner.js       | 16 +++++++++++++---
+ test/pr-monitor/watch-owner.test.js | 18 ++++++++++++++++++
+ 2 files changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 7dffdaf1..8e4cbf19 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -445,7 +445,11 @@ function invoke(method, identity, input, opts) {
+ 	if (typeof operation !== 'function') return invalid('authority_unavailable');
+ 	try {
+ 		const result = operation({ ...identity, ...input }, opts.databaseConfig || {});
+-		if (result && typeof result.then === 'function') return invalid('invalid_operation');
++		if (result && typeof result.then === 'function') {
++			// Consume the orphaned rejection so a rejecting async adapter cannot crash the host.
++			Promise.resolve(result).then(() => {}, () => {});
++			return invalid('invalid_operation');
++		}
+ 		if (!result || typeof result !== 'object' || Array.isArray(result)) return invalid('corrupt');
+ 		// Snapshot once: accessor-backed results must not flip between
+ 		// validation and the returned envelope.
+@@ -471,7 +475,10 @@ function captureAuthoritySnapshot(ctx, opts) {
+ 	if (typeof operation !== 'function') return { ok: false, reason: 'authority_unavailable' };
+ 	try {
+ 		const result = operation(identity, opts.databaseConfig || {});
+-		if (result && typeof result.then === 'function') return { ok: false, reason: 'invalid_operation' };
++		if (result && typeof result.then === 'function') {
++			Promise.resolve(result).then(() => {}, () => {});
++			return { ok: false, reason: 'invalid_operation' };
++		}
+ 		if (!result || typeof result !== 'object' || Array.isArray(result)) return { ok: false, reason: 'corrupt' };
+ 		// Snapshot once: accessor-backed results must not flip between the
+ 		// read-invariant probe and the evidence snapshot taken from them.
+@@ -1011,7 +1018,10 @@ function invokeGate(method, input, opts) {
+ 	if (typeof operation !== 'function') return { ok: false, changed: false, reason: 'authority_unavailable', gate: null };
+ 	try {
+ 		const result = operation(input, opts.databaseConfig || {});
+-		if (result && typeof result.then === 'function') return invalidGate('invalid_operation');
++		if (result && typeof result.then === 'function') {
++			Promise.resolve(result).then(() => {}, () => {});
++			return invalidGate('invalid_operation');
++		}
+ 		if (!result || typeof result !== 'object' || Array.isArray(result)) return invalidGate('corrupt');
+ 		// Snapshot once: accessor-backed results must not flip between
+ 		// validation and the returned envelope.
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index c8ff1fd1..3f1f568a 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2310,6 +2310,24 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result.ok).toBe(false);
+ 	});
+ 
++	test('consumes rejected async adapter promises without crashing the host', async () => {
++		let unhandled = 0;
++		const onUnhandled = () => { unhandled += 1; };
++		process.on('unhandledRejection', onUnhandled);
++		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 979 }, {
++			controllerPid: CONTROLLER_PID, startedAt: NOW,
++		}, authorityOpts({
++			...driver,
++			watchOwnerReserveStarting: async () => {
++				throw new Error('async adapter rejected');
++			},
++		}));
++		await new Promise(resolve => setImmediate(resolve));
++		process.off('unhandledRejection', onUnhandled);
++		expect(result.ok).toBe(false);
++		expect(unhandled).toBe(0);
++	});
++
+ 	test('rejects idempotent import claims made without a captured prior row', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 959 };
+ 		await seedGate(ctx);
+-- 
+2.51.0.windows.1
+

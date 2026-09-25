@@ -1,0 +1,25 @@
+From 671a63580b46fc77eaf8fddf6ece0b9a73ae3331 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 14:17:51 +0530
+Subject: [PATCH] docs(shepherd): clarify supported session trigger
+
+---
+ docs/reference/shepherd.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index 9a86ceaf..1ac98be3 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -106,7 +106,7 @@ seconds and cancel-in-progress. The shepherd itself never waits in-process.
+ 
+ ## Automatic singleton attachment (`rail.auto_shepherd`)
+ 
+-Successful session start, push, and non-dry-run ship operations wake the
++Successful supported session start, push, and non-dry-run ship operations wake the
+ repository-wide singleton. Push never requires a locally resolved PR number:
+ the daemon owns GitHub enumeration, so even a push with no local open-PR match
+ still fires and can adopt open or draft PRs created elsewhere. Push and ship no
+-- 
+2.51.0.windows.1
+

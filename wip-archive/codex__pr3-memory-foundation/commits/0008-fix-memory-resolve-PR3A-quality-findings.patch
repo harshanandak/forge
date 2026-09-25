@@ -1,0 +1,77 @@
+From 8dd13cc8332689a043958488fb2299a333b1ba19 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:32:30 +0530
+Subject: [PATCH] fix(memory): resolve PR3A quality findings
+
+---
+ lib/commands/remember.js       |  6 +++++-
+ lib/memory-digest.js           |  2 +-
+ test/commands/remember.test.js | 16 ++++++++++++++++
+ 3 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/remember.js b/lib/commands/remember.js
+index dd23478e..aa3ff200 100644
+--- a/lib/commands/remember.js
++++ b/lib/commands/remember.js
+@@ -108,7 +108,11 @@ async function handler(args, _flags, projectRoot) {
+ 
+   // The type rides as a reserved tag so it is stored and filterable without a schema change.
+   const contentHash = type === 'session-summary'
+-    ? crypto.createHash('sha256').update(JSON.stringify({ body, tags: [...tags].sort(), type }), 'utf8').digest('hex')
++    ? crypto.createHash('sha256').update(JSON.stringify({
++      body,
++      tags: [...tags].sort((left, right) => left.localeCompare(right)),
++      type,
++    }), 'utf8').digest('hex')
+     : null;
+   const metadata = contentHash ? { kind: 'session-summary', content_hash: contentHash } : undefined;
+   const hashTag = contentHash ? `${CONTENT_HASH_TAG_PREFIX}${contentHash}` : null;
+diff --git a/lib/memory-digest.js b/lib/memory-digest.js
+index 3663dd24..372edc65 100644
+--- a/lib/memory-digest.js
++++ b/lib/memory-digest.js
+@@ -190,7 +190,7 @@ function sessionSummarySection(claimed) {
+ }
+ 
+ function normalizePath(value) {
+-  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
++  return String(value || '').replaceAll('\\', '/').replace(/^\.\//, '').toLowerCase();
+ }
+ 
+ function notePaths(note) {
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index 73aaabdd..ce11b62d 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -1,5 +1,6 @@
+ 'use strict';
+ 
++const crypto = require('node:crypto');
+ const { afterEach, describe, test, expect } = require('bun:test');
+ 
+ const remember = require('../../lib/commands/remember');
+@@ -152,6 +153,21 @@ describe('forge remember command', () => {
+     });
+   });
+ 
++  test('session-summary metadata canonicalizes tags with locale-aware ordering', async () => {
++    const projectRoot = makeProjectRoot();
++    const payload = JSON.parse((await remember.handler(
++      ['--session-summary', '--what', 'implemented hook', '--tag', 'z', '--tag', 'ä', '--json'],
++      {},
++      projectRoot
++    )).output);
++    const expected = crypto.createHash('sha256').update(JSON.stringify({
++      body: 'What: implemented hook',
++      tags: ['ä', 'z'],
++      type: 'session-summary',
++    }), 'utf8').digest('hex');
++    expect(payload.metadata.content_hash).toBe(expected);
++  });
++
+   test('session-summary idempotency is not limited to the newest 100 memories', async () => {
+     const projectRoot = makeProjectRoot();
+     const args = ['--session-summary', '--what', 'implemented hook', '--json'];
+-- 
+2.51.0.windows.1
+

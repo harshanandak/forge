@@ -1,0 +1,269 @@
+From a301680138013cf6964882cbcac9f23869f374f3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 05:47:52 +0530
+Subject: [PATCH] fix: close terminal convergence review gaps
+
+---
+ lib/commands/shepherd.js                 |  6 ++-
+ lib/pr-monitor/flow-monitor.js           |  4 +-
+ lib/pr-monitor/review-preflight.js       | 51 +++++++++++++++++++++---
+ test/commands/shepherd.test.js           | 14 +++++++
+ test/pr-monitor/flow-monitor.test.js     | 23 +++++++++++
+ test/pr-monitor/review-preflight.test.js | 43 ++++++++++++++++++++
+ 6 files changed, 132 insertions(+), 9 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 96065240..34fb9c37 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -737,10 +737,12 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   const effectiveState = localPreflight.blocking === true && confirmedResult.state === 'MERGE_READY'
+-    ? 'PENDING'
++    ? (localPreflight.status === 'INCOMPLETE' ? 'INCOMPLETE' : 'PENDING')
+     : confirmedResult.state;
+   const effectiveReason = effectiveState !== confirmedResult.state
+-    ? 'Local review preflight is blocking merge readiness.'
++    ? (effectiveState === 'INCOMPLETE'
++      ? 'Local review preflight is incomplete; merge readiness is not established.'
++      : 'Local review preflight is blocking merge readiness.')
+     : confirmedResult.reason;
+ 
+   // Surface the pass outcome so the monitor is legible when run interactively or
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 5367bf47..6974dc4c 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -492,7 +492,9 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const gathered = await ctx.gather();
+   const next = compactSnapshot(gathered);
+   const previousSnapshot = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
+-  const previous = comparableSnapshot(previousSnapshot);
++  const previous = previousSnapshot == null
++    ? null
++    : comparableSnapshot(compactSnapshot(previousSnapshot));
+   const candidates = diffSnapshots(previous, comparableSnapshot(next, gathered));
+   if (candidates.length === 0) {
+     const snapshotChanged = computeContentHash(previousSnapshot) !== computeContentHash(next);
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index d597e99f..ca24c389 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -48,9 +48,9 @@ function parseCodeRabbitEvents(output) {
+   return { events, malformed };
+ }
+ 
+-async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync) {
++async function defaultRunCodeRabbit({ projectRoot, base, baseCommit }, exec = execFileSync) {
+   try {
+-    const output = exec('coderabbit', ['review', '--agent', '--base', base], {
++    const output = exec('coderabbit', ['review', '--agent', '--base', baseCommit || base], {
+       cwd: projectRoot,
+       encoding: 'utf8',
+       timeout: 180_000,
+@@ -96,8 +96,8 @@ async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync)
+   }
+ }
+ 
+-async function defaultRunDeterministic({ projectRoot, base, baseRef: resolvedBaseRef }, exec = execFileSync) {
+-  const baseRef = resolvedBaseRef || (String(base || '').startsWith('origin/')
++async function defaultRunDeterministic({ projectRoot, base, baseCommit, baseRef: resolvedBaseRef }, exec = execFileSync) {
++  const baseRef = baseCommit || resolvedBaseRef || (String(base || '').startsWith('origin/')
+     ? String(base)
+     : `origin/${String(base || '')}`);
+   return preflightCommand.handler([], {}, projectRoot, {
+@@ -106,6 +106,21 @@ async function defaultRunDeterministic({ projectRoot, base, baseRef: resolvedBas
+   });
+ }
+ 
++async function defaultResolveBaseCommit({ projectRoot, base, baseRef }, exec = execFileSync) {
++  const ref = baseRef || (String(base || '').startsWith('origin/')
++    ? String(base)
++    : `origin/${String(base || '')}`);
++  const resolved = String(exec('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
++    cwd: projectRoot,
++    encoding: 'utf8',
++    timeout: 10_000,
++    stdio: ['ignore', 'pipe', 'pipe'],
++    windowsHide: true,
++  }) || '').trim().toLowerCase();
++  if (!/^[0-9a-f]{40}$/.test(resolved)) throw new Error(`PR base commit is unavailable for ${ref}`);
++  return resolved;
++}
++
+ function providerResult(status, ok, summary, findings = []) {
+   return { status, ok, summary, findings: findings.slice(0, MAX_FINDINGS) };
+ }
+@@ -179,8 +194,31 @@ async function runLocalReviewPreflight(context, deps = {}) {
+   const notApplicable = notApplicableResult(context);
+   if (notApplicable) return notApplicable;
+ 
+-  const coderabbit = await codeRabbitResult(context, probeCodeRabbit, runCodeRabbit);
+-  const deterministic = await deterministicResult(context, runDeterministic);
++  let reviewContext = context;
++  const shouldResolveBase = typeof deps.resolveBaseCommit === 'function'
++    || (!deps.runCodeRabbit && !deps.runDeterministic);
++  if (shouldResolveBase) {
++    const resolveBaseCommit = deps.resolveBaseCommit || defaultResolveBaseCommit;
++    try {
++      const baseCommit = String(await resolveBaseCommit(context) || '').trim().toLowerCase();
++      if (!/^[0-9a-f]{40}$/.test(baseCommit)) throw new Error('PR base commit resolver returned an invalid commit');
++      reviewContext = { ...context, baseCommit };
++    } catch (error) {
++      const detail = error?.message || String(error);
++      return {
++        status: 'INCOMPLETE',
++        blocking: true,
++        providers: {
++          coderabbit: providerResult('NOT_APPLICABLE', false, detail),
++          deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
++        },
++        findings: [{ provider: 'local-preflight', detail }],
++      };
++    }
++  }
++
++  const coderabbit = await codeRabbitResult(reviewContext, probeCodeRabbit, runCodeRabbit);
++  const deterministic = await deterministicResult(reviewContext, runDeterministic);
+   const gateResults = Array.isArray(deterministic?.results) ? deterministic.results : [];
+   const deterministicOk = deterministic?.success === true;
+   const findings = [
+@@ -219,6 +257,7 @@ module.exports = {
+   MAX_FINDINGS,
+   boundedLines,
+   defaultProbeCodeRabbit,
++  defaultResolveBaseCommit,
+   defaultRunCodeRabbit,
+   defaultRunDeterministic,
+   runLocalReviewPreflight,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 75990fc4..839d62e0 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -154,6 +154,20 @@ describe('shepherd command handler', () => {
+     expect(out.localPreflight.findings).toEqual([{ provider: 'lint', detail: 'error' }]);
+   });
+ 
++  test('preserves an incomplete local preflight instead of reporting a pending remote result', async () => {
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runLocalPreflight: async () => ({
++        status: 'INCOMPLETE', blocking: true, providers: {}, findings: [],
++      }),
++      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'remote ready' }),
++      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
++    });
++
++    expect(out).toMatchObject({ state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
++    expect(out.reason).toMatch(/local review preflight is incomplete/i);
++  });
++
+   test('fails closed when the PR head changes immediately before merge handoff', async () => {
+     const oldHead = 'a'.repeat(40);
+     const newHead = 'b'.repeat(40);
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 87570b87..1ccb3b73 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -163,6 +163,29 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(delivered).toHaveLength(1);
+   });
+ 
++  test('normalizes a legacy raw snapshot before comparing compact transition identities', async () => {
++    const store = durableStore();
++    const current = snapshot({
++      checks: [{ name: 'Windows / test', class: 'failed' }],
++      reviews: [{ author: 'coderabbitai', state: 'COMMENTED', commitOid: 'a'.repeat(40), submittedAt: 't1' }],
++    });
++    const delivered = [];
++    await runFlowMonitorPass(context(store, async () => current, async record => delivered.push(record)));
++
++    const event = store.events.at(-1);
++    event.payload.bounded_payload.snapshot = structuredClone(current);
++    event.content_hash = computeContentHash(event);
++    const before = delivered.length;
++
++    const restarted = await runFlowMonitorPass(context(
++      store, async () => structuredClone(current), async record => delivered.push(record),
++    ));
++
++    expect(restarted.events.map(record => record.type)).not.toContain('check.failed');
++    expect(restarted.events.map(record => record.type)).not.toContain('review.submitted');
++    expect(delivered).toHaveLength(before);
++  });
++
+   test('fails closed without writing legacy compatibility state when Memory is unavailable', async () => {
+     const store = durableStore();
+     store.appendEvent = async () => {
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index 9f388e8a..71ac784a 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
+ 
+ const preflightCommand = require('../../lib/commands/preflight');
+ const {
++  defaultResolveBaseCommit,
+   defaultRunCodeRabbit,
+   defaultRunDeterministic,
+   runLocalReviewPreflight,
+@@ -14,6 +15,21 @@ const EXACT_HEAD_CONTEXT = {
+ };
+ 
+ describe('bounded local review preflight', () => {
++  test('resolves the target ref to one exact commit', async () => {
++    const calls = [];
++    const sha = await defaultResolveBaseCommit({
++      projectRoot: '/repo', base: 'master', baseRef: 'upstream/master',
++    }, (command, args, options) => {
++      calls.push({ command, args, cwd: options.cwd });
++      return `${'B'.repeat(40)}\n`;
++    });
++
++    expect(sha).toBe('b'.repeat(40));
++    expect(calls).toEqual([{
++      command: 'git', args: ['rev-parse', '--verify', '--quiet', 'upstream/master^{commit}'], cwd: '/repo',
++    }]);
++  });
++
+   test('accepts only a structured terminal CodeRabbit result with zero findings', async () => {
+     const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => [
+       JSON.stringify({ type: 'status', phase: 'reviewing' }),
+@@ -84,6 +100,33 @@ describe('bounded local review preflight', () => {
+     expect(changeSet.baseRef).toBe('upstream/master');
+   });
+ 
++  test('uses one exact resolved base commit for both local review providers', async () => {
++    const seen = [];
++    const result = await runLocalReviewPreflight({
++      ...EXACT_HEAD_CONTEXT, baseRef: 'origin/master',
++    }, {
++      resolveBaseCommit: async context => {
++        expect(context.baseRef).toBe('origin/master');
++        return 'b'.repeat(40);
++      },
++      probeCodeRabbit: async () => ({ available: true }),
++      runCodeRabbit: async context => {
++        seen.push(['coderabbit', context.baseCommit]);
++        return { ok: true, summary: 'clean', findings: [] };
++      },
++      runDeterministic: async context => {
++        seen.push(['deterministic', context.baseCommit]);
++        return { success: true, results: [] };
++      },
++    });
++
++    expect(result.status).toBe('PASS');
++    expect(seen).toEqual([
++      ['coderabbit', 'b'.repeat(40)],
++      ['deterministic', 'b'.repeat(40)],
++    ]);
++  });
++
+   test('does not review an unrelated local checkout as if it were the PR head', async () => {
+     let calls = 0;
+     const result = await runLocalReviewPreflight({
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,752 @@
+From 682f065f5ee5385a9c74cf7dc0180eea0325b954 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 14:31:38 +0530
+Subject: [PATCH] =?UTF-8?q?feat(shepherd):=20watch=20loop=20=E2=80=94=20co?=
+ =?UTF-8?q?nstant=20PR=20monitor=20push=20surface?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add lib/pr-monitor/watch.js: watchLoop self-drives a ~60s jittered cadence,
+runs ONE bounded runMonitorPass per tick, streams each new event as NDJSON to
+stdout, applies a 2-pass flap confirm, and self-stops on pr.merged/pr.closed
+(terminal event emitted last). Every effect is injectable (emit/sleep/rng/now/
+gather/watcherRunning/writePid/removePid) so tests use a fake clock + fake gh.
+
+Wire `forge shepherd watch <pr>`: extract shared buildMonitorContext from
+handleEvents; handleWatch reuses it, wires SIGINT/SIGTERM to an AbortController,
+and returns { started, passes, stopped } (no output — the loop streams live).
+
+Epic c2d398e5-26cf-4963-b47a-70b4102636bb (PR-B).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-13-pr-monitor-prb/design.md |  79 +++++++
+ lib/commands/shepherd.js                      | 143 +++++++++++--
+ lib/pr-monitor/watch.js                       | 192 ++++++++++++++++++
+ test/pr-monitor/shepherd-watch.test.js        |  63 ++++++
+ test/pr-monitor/watch.test.js                 | 150 ++++++++++++++
+ 5 files changed, 606 insertions(+), 21 deletions(-)
+ create mode 100644 docs/work/2026-07-13-pr-monitor-prb/design.md
+ create mode 100644 lib/pr-monitor/watch.js
+ create mode 100644 test/pr-monitor/shepherd-watch.test.js
+ create mode 100644 test/pr-monitor/watch.test.js
+
+diff --git a/docs/work/2026-07-13-pr-monitor-prb/design.md b/docs/work/2026-07-13-pr-monitor-prb/design.md
+new file mode 100644
+index 00000000..fccc7c0b
+--- /dev/null
++++ b/docs/work/2026-07-13-pr-monitor-prb/design.md
+@@ -0,0 +1,79 @@
++# PR Monitor PR-B — watch loop + ship lifecycle
++
++Epic: `c2d398e5-26cf-4963-b47a-70b4102636bb` — *Constant agent-agnostic PR monitor*.
++Builds ON TOP of PR-A (now merged to master): `lib/pr-monitor/{events,differ,journal,gather,monitor}.js`
++and `forge shepherd events <pr> --since <seq>`.
++
++## Goal
++
++Make the monitor RUN CONSTANTLY and PUSH events, agent-agnostically:
++
++1. `forge shepherd watch <pr>` — a long-running command that every ~60s (jittered) runs ONE bounded
++   `runMonitorPass` (PR-A), diffs vs the journal snapshot, appends new events, and STREAMS each new
++   event as one NDJSON line to stdout. Any harness reads stdout. Self-stops (clean exit) on
++   `pr.merged`/`pr.closed`, emitting that terminal event LAST.
++2. Lifecycle — auto-start the watcher, detached + idempotent, on `forge ship` success. Never blocks or
++   fails ship.
++
++## Design
++
++### `lib/pr-monitor/watch.js` — the streaming loop (pure, injectable)
++
++`watchLoop(ctx)` where ctx = `{ dir, gather, now?, enrich?, lockOpts?, emit?, sleep?, rng?, intervalMs?,
++maxPasses?, signal?, watcherRunning?, writePid?, removePid? }`.
++
++- **Idempotent claim:** if `journal.watcherRunning(dir)` a live *other* watcher owns the PR → no-op
++  (`{ started: false, reason: 'watcher-already-running' }`). Otherwise `journal.writePid(dir)`.
++- **Each pass** delegates to PR-A's `runMonitorPass` (gather → diff → dedup → append → snapshot, all
++  UNDER `withJournalLock`, so the cross-process lock + heartbeat are respected and concurrent runs never
++  corrupt the journal). The returned `events` are streamed.
++- **Backpressure:** `runMonitorPass` only returns events on a fingerprint change, so an unchanged pass
++  emits nothing.
++- **Terminal:** when a pass yields `pr.merged`/`pr.closed`, flush any held failures, emit the terminal
++  event LAST, and exit the loop cleanly (`stopped: true`).
++- **Cadence:** between passes `await sleep(jitter(intervalMs, rng))` — base 60s ± 20%. `sleep`/`rng`/`now`
++  are injected so tests never wait real time. The loop self-drives; no agent need be running.
++- **Interruptible / no-hang:** the loop checks `signal.aborted` each iteration; every gh call inside
++  `gather` has its own 30s timeout (PR-A). `maxPasses` bounds the loop in tests. `removePid` runs in
++  a `finally`.
++- **2-pass flap confirm (stream layer only):** a `check.failed` is HELD one pass; it is emitted on the
++  next pass only if it was not contradicted by a `check.recovered`/`checks.green` for the same check
++  name. A flap (fail→green within one interval) is suppressed from the pushed stream. The JOURNAL still
++  records every event (authority), so `events --since` replay is complete — the hold only debounces the
++  live push.
++
++Helpers (each well under cognitive-complexity 15): `jitter`, `partition`, `contradictions`,
++`isContradicted`, `confirmHeld`, `runWatchPass`.
++
++### `forge shepherd watch <pr>` (lib/commands/shepherd.js)
++
++`handler` routes `positional[0] === 'watch'` to `handleWatch`, mirroring the existing `events` route.
++The context build (journal dir + gather + check-failure enricher) is extracted from `handleEvents` into
++a shared `buildMonitorContext` helper that both handlers call. `handleWatch` wires an `AbortController`
++to `SIGINT`/`SIGTERM`, calls `watchLoop` with the default stdout NDJSON `emit`, and returns
++`{ success, started, passes, stopped }` with NO `output` field (the loop streams live to stdout itself —
++returning output would double-print).
++
++### Ship lifecycle hook (lib/pr-monitor/watch-lifecycle.js + lib/commands/ship.js)
++
++`startPrWatcherDetached({ prNumber, cwd, ... })` (fully injectable, NEVER throws):
++- Best-effort idempotency: resolve the repo slug from `git remote get-url origin`, compute the journal
++  dir, and skip if `journal.watcherRunning(dir)`. On any failure it falls through to spawn — the
++  watchLoop's own `watcherRunning` guard is the authoritative de-dup.
++- Detached start: `spawn(process.execPath, [bin/forge.js, 'shepherd', 'watch', <pr>], { detached: true,
++  stdio: 'ignore', windowsHide: true })` then `child.unref()` → returns immediately (non-blocking).
++- `executeShip` calls it after `prNumber` is known, guarded so a hook failure can never fail ship
++  (`!dryRun && result.prNumber` only; the function has its own try/catch).
++
++Stop-on-merge is handled entirely by the watch loop's terminal pass — no separate stopper.
++
++## Testing (injected fakes; no live GitHub, no real 60s sleep)
++
++- `test/pr-monitor/watch.test.js`: emits NDJSON on change; no emit when unchanged; terminal event last
++  then exit; idempotent no-op when a watcher runs; bounded via fake clock + `maxPasses` (asserts jitter
++  range, no real timers); flap held/suppressed vs confirmed; pid written on start, removed on exit.
++- `test/pr-monitor/watch-lifecycle.test.js`: detached+unref start; non-blocking (returns synchronously);
++  no-op when pid live (spawn not called); never throws when spawn throws.
++- `test/pr-monitor/shepherd-watch.test.js`: `handleWatch` streams injected events and returns success.
++
++Gates: affected tests + `eslint --max-warnings 0` + `eslint-plugin-sonarjs` cognitive-complexity 15.
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 939b5fc1..0aefdd63 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -35,6 +35,7 @@ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+ const { validatePrStateAdapter } = require('../pr-state-validator');
+ const { gatherMonitorSnapshot } = require('../pr-monitor/gather');
+ const { pollEvents } = require('../pr-monitor/monitor');
++const { watchLoop } = require('../pr-monitor/watch');
+ const monitorJournal = require('../pr-monitor/journal');
+ const { EVENT_TYPES: T } = require('../pr-monitor/events');
+ 
+@@ -159,30 +160,22 @@ function parseSince(args) {
+ }
+ 
+ /**
+- * `forge shepherd events <pr> --since <seq> [--json]` — the agent-agnostic PULL
+- * surface. Runs one bounded gather+diff (inline, unless a watcher owns the PR),
+- * appends new events to the per-PR journal, and prints every journaled event
+- * with `seq > since` as NDJSON, one per line, to stdout. Nothing under .claude.
++ * Build the shared monitor context — journal `dir`, bounded `gather`, and the
++ * default `check.failed` enricher — that BOTH the `events` pull surface and the
++ * `watch` streaming loop feed to the monitor core. Injected `dir`/`gather`/
++ * `enrich` (tests, programmatic callers) short-circuit the live gh build.
+  *
+- * @param {string[]} args
++ * @param {string|number} pr
+  * @param {string} projectRoot
+- * @param {object} [deps]
+- * @returns {Promise<object>}
++ * @param {object} deps
++ * @returns {Promise<{ dir?: string, gather?: Function, enrich?: Function, error?: string }>}
+  */
+-async function handleEvents(args, projectRoot, deps = {}) {
+-  const rawArgs = args || [];
+-  const sinceIdx = rawArgs.indexOf('--since');
+-  const pr = rawArgs.find((a, idx) => !String(a).startsWith('--') && a !== 'events' && idx !== sinceIdx + 1);
+-  if (!pr) {
+-    return { success: false, error: 'Usage: forge shepherd events <pr> --since <seq> [--json]' };
+-  }
+-  const since = parseSince(rawArgs);
+-
++async function buildMonitorContext(pr, projectRoot, deps) {
+   let dir = deps.dir;
+   let gather = deps.gather;
+   // enrich decorates newly-failed checks with log excerpts before the journal
+-  // append. handleEvents MUST supply the default (not just forward an injected
+-  // one), or a plain `forge shepherd events` call emits bare check.failed events.
++  // append. The caller MUST supply the default (not just forward an injected
++  // one), or a plain `forge shepherd events`/`watch` emits bare check.failed events.
+   let enrich = deps.enrich;
+   if (!gather || !dir) {
+     const gh = deps.gh || defaultGhRunner;
+@@ -192,7 +185,7 @@ async function handleEvents(args, projectRoot, deps = {}) {
+     const adapter = deps.adapter || new PrStateAdapter({ gh, git });
+     const validation = validatePrStateAdapter(adapter);
+     if (!validation.valid) {
+-      return { success: false, error: `Invalid pr-state adapter: ${validation.errors.join('; ')}` };
++      return { error: `Invalid pr-state adapter: ${validation.errors.join('; ')}` };
+     }
+     dir = dir || monitorJournal.journalDir({ root: projectRoot || process.cwd(), repo: ctx.repo, pr: ctx.pr });
+     gather = gather || (() => gatherMonitorSnapshot({ ...ctx, adapter, self: deps.self }));
+@@ -210,6 +203,32 @@ async function handleEvents(args, projectRoot, deps = {}) {
+       pr, adapter: deps.adapter, self: deps.self, runGh: deps.runGh, gatherPull: deps.gatherPull,
+     });
+   }
++  return { dir, gather, enrich };
++}
++
++/**
++ * `forge shepherd events <pr> --since <seq> [--json]` — the agent-agnostic PULL
++ * surface. Runs one bounded gather+diff (inline, unless a watcher owns the PR),
++ * appends new events to the per-PR journal, and prints every journaled event
++ * with `seq > since` as NDJSON, one per line, to stdout. Nothing under .claude.
++ *
++ * @param {string[]} args
++ * @param {string} projectRoot
++ * @param {object} [deps]
++ * @returns {Promise<object>}
++ */
++async function handleEvents(args, projectRoot, deps = {}) {
++  const rawArgs = args || [];
++  const sinceIdx = rawArgs.indexOf('--since');
++  const pr = rawArgs.find((a, idx) => !String(a).startsWith('--') && a !== 'events' && idx !== sinceIdx + 1);
++  if (!pr) {
++    return { success: false, error: 'Usage: forge shepherd events <pr> --since <seq> [--json]' };
++  }
++  const since = parseSince(rawArgs);
++
++  const built = await buildMonitorContext(pr, projectRoot, deps);
++  if (built.error) return { success: false, error: built.error };
++  const { dir, gather, enrich } = built;
+ 
+   const poll = deps.pollEvents || pollEvents;
+   const result = await poll({ dir, gather, since, now: deps.now, watcherRunning: deps.watcherRunning, enrich });
+@@ -220,6 +239,82 @@ async function handleEvents(args, projectRoot, deps = {}) {
+   return { success: true, events: result.events, since: result.since, output };
+ }
+ 
++/**
++ * Wire an AbortController to SIGINT/SIGTERM so a long-running watch loop stops
++ * cleanly on Ctrl-C. Returns the signal plus a `cleanup` that detaches the
++ * one-shot handlers (always called in a finally so the loop leaves no listeners).
++ *
++ * @returns {{ signal: object, cleanup: () => void }}
++ */
++function wireSignals() {
++  const controller = new AbortController();
++  const onSignal = () => controller.abort();
++  process.once('SIGINT', onSignal);
++  process.once('SIGTERM', onSignal);
++  const cleanup = () => {
++    process.off('SIGINT', onSignal);
++    process.off('SIGTERM', onSignal);
++  };
++  return { signal: controller.signal, cleanup };
++}
++
++/**
++ * `forge shepherd watch <pr>` — the agent-agnostic PUSH surface. A long-running
++ * loop that every ~60s (jittered) runs ONE bounded monitor pass and STREAMS each
++ * new event as an NDJSON line to stdout, self-stopping on `pr.merged`/`pr.closed`.
++ * The loop streams live via the default stdout emit, so this handler returns NO
++ * `output` field (returning one would double-print). SIGINT/SIGTERM stop it clean.
++ *
++ * @param {string[]} args
++ * @param {string} projectRoot
++ * @param {object} [deps]
++ * @returns {Promise<object>}
++ */
++async function handleWatch(args, projectRoot, deps = {}) {
++  const rawArgs = args || [];
++  const pr = rawArgs.find((a) => !String(a).startsWith('--') && a !== 'watch');
++  if (!pr) {
++    return { success: false, error: 'Usage: forge shepherd watch <pr>' };
++  }
++
++  const built = await buildMonitorContext(pr, projectRoot, deps);
++  if (built.error) return { success: false, error: built.error };
++  const { dir, gather, enrich } = built;
++
++  const loop = deps.watchLoop || watchLoop;
++  // Injected signal (tests) suppresses real process handlers; otherwise wire them.
++  const wired = deps.signal ? { signal: deps.signal, cleanup: () => {} } : wireSignals();
++  let result;
++  try {
++    result = await loop({
++      dir,
++      gather,
++      enrich,
++      now: deps.now,
++      emit: deps.emit,
++      sleep: deps.sleep,
++      rng: deps.rng,
++      intervalMs: deps.intervalMs,
++      maxPasses: deps.maxPasses,
++      lockOpts: deps.lockOpts,
++      signal: wired.signal,
++      watcherRunning: deps.watcherRunning,
++      writePid: deps.writePid,
++      removePid: deps.removePid,
++    });
++  } finally {
++    wired.cleanup();
++  }
++
++  return {
++    success: true,
++    started: result.started,
++    passes: result.passes,
++    stopped: result.stopped,
++    ...(result.reason ? { reason: result.reason } : {}),
++  };
++}
++
+ /**
+  * Command handler.
+  *
+@@ -233,10 +328,14 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const positional = (args || []).filter((a) => !String(a).startsWith('--'));
+   const flags = new Set((args || []).filter((a) => String(a).startsWith('--')));
+ 
+-  // Subcommand routing: `events` is the monitor pull surface (its own arg shape).
++  // Subcommand routing: `events` is the monitor pull surface (its own arg shape);
++  // `watch` is the constant monitor push surface (long-running stream).
+   if (positional[0] === 'events') {
+     return handleEvents(args, projectRoot, deps);
+   }
++  if (positional[0] === 'watch') {
++    return handleWatch(args, projectRoot, deps);
++  }
+ 
+   const pr = positional[0];
+ 
+@@ -325,9 +424,11 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+ module.exports = {
+   name: 'shepherd',
+   description: 'Run one bounded monitor pass over a PR (rerun flaky checks, escalate, hand off — never merges)',
+-  usage: 'Usage: forge shepherd <pr> [--auto-rebase] [--bundle --json] [--pull --json] | forge shepherd events <pr> --since <seq> [--json]',
++  usage: 'Usage: forge shepherd <pr> [--auto-rebase] [--bundle --json] [--pull --json] | forge shepherd events <pr> --since <seq> [--json] | forge shepherd watch <pr>',
+   handler,
+   handleEvents,
++  handleWatch,
++  buildMonitorContext,
+   makeCheckFailureEnricher,
+   parseSince,
+   defaultBuildContext,
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+new file mode 100644
+index 00000000..c99d9761
+--- /dev/null
++++ b/lib/pr-monitor/watch.js
+@@ -0,0 +1,192 @@
++'use strict';
++
++/**
++ * PR-monitor watch loop — the CONSTANT, agent-agnostic push surface. `watchLoop`
++ * self-drives a ~60s (jittered) cadence: each tick runs ONE bounded
++ * `runMonitorPass` (PR-A: gather → diff → dedup → append → snapshot, all under the
++ * cross-process journal lock), then STREAMS every new event as a single NDJSON
++ * line to stdout. Any harness (Claude Code background Bash, Codex bg exec, a
++ * Cursor per-turn poll, a plain shell) consumes stdout — nothing under `.claude`.
++ *
++ * Backpressure: `runMonitorPass` only returns events when the snapshot fingerprint
++ * moved, so an unchanged tick emits nothing. Terminal: when a tick yields
++ * `pr.merged`/`pr.closed` the loop flushes, emits that terminal event LAST, and
++ * exits cleanly (stop-on-merge). Flap debounce: a `check.failed` is held one tick
++ * and only pushed if the next tick did not recover/green it — the JOURNAL still
++ * records everything (authority), so `events --since` replay stays complete.
++ *
++ * Every external effect is injectable (emit/sleep/rng/now/gather/watcherRunning/
++ * writePid/removePid, plus `maxPasses`/`signal`) so tests exercise the loop with a
++ * fake clock and fake gh, never touching live GitHub or waiting 60s.
++ *
++ * @module pr-monitor/watch
++ */
++
++const { runMonitorPass } = require('./monitor');
++const journal = require('./journal');
++const { EVENT_TYPES: T } = require('./events');
++
++const DEFAULT_INTERVAL_MS = 60000;
++const JITTER_RATIO = 0.2;
++const TERMINAL_TYPES = new Set([T.PR_MERGED, T.PR_CLOSED]);
++
++/** Default push sink: one NDJSON line per event to stdout. */
++function defaultEmit(event) {
++  process.stdout.write(`${JSON.stringify(event)}\n`);
++}
++
++/** Non-blocking sleep (overridden in tests by a fake clock). */
++function defaultSleep(ms) {
++  return new Promise((resolve) => { setTimeout(resolve, ms); });
++}
++
++/** The check name an event refers to (check.failed / check.recovered). */
++function checkName(event) {
++  return event.data?.name ?? event.key;
++}
++
++/** Base interval ± JITTER_RATIO, so many watchers never align their gh calls. */
++function jitter(intervalMs, rng) {
++  const spread = intervalMs * JITTER_RATIO;
++  return Math.round(intervalMs - spread + rng() * spread * 2);
++}
++
++/** True once the caller's abort signal (AbortSignal-like) has fired. */
++function isAborted(signal) {
++  return Boolean(signal && signal.aborted);
++}
++
++/**
++ * Split a pass's events into: held-candidate failures (by check name), terminal
++ * events (pr.merged/closed), and everything else (emitted immediately).
++ */
++function partition(events) {
++  const failures = new Map();
++  const terminal = [];
++  const others = [];
++  for (const e of events) {
++    if (e.type === T.CHECK_FAILED) failures.set(checkName(e), e);
++    else if (TERMINAL_TYPES.has(e.type)) terminal.push(e);
++    else others.push(e);
++  }
++  return { failures, terminal, others };
++}
++
++/**
++ * Which held failures a pass contradicts: an explicit `checks.green` clears ALL
++ * pending failures; a `check.recovered` clears just its own check name.
++ */
++function contradictions(events) {
++  let allGreen = false;
++  const names = new Set();
++  for (const e of events) {
++    if (e.type === T.CHECKS_GREEN) allGreen = true;
++    else if (e.type === T.CHECK_RECOVERED) names.add(checkName(e));
++  }
++  return { allGreen, names };
++}
++
++/** Was a held failure for `name` cleared by this pass? */
++function isContradicted(name, contra) {
++  return contra.allGreen || contra.names.has(name);
++}
++
++/** Emit the prior tick's held failures that survived (still failing this tick). */
++function confirmHeld(pending, contra, emit) {
++  for (const [name, event] of pending) {
++    if (!isContradicted(name, contra)) emit(event);
++  }
++}
++
++/**
++ * Run ONE watch tick: a bounded monitor pass, then stream its events with the
++ * 2-pass flap debounce applied. Mutates `state.pending` (the held failures).
++ *
++ * @returns {Promise<{ terminal: boolean }>} terminal=true → stop the loop.
++ */
++async function runWatchPass(state, ctx, emit) {
++  const { events } = await runMonitorPass({
++    dir: ctx.dir, gather: ctx.gather, now: ctx.now, enrich: ctx.enrich, lockOpts: ctx.lockOpts,
++  });
++  const { failures, terminal, others } = partition(events);
++  const contra = contradictions(events);
++  const heldNames = new Set(state.pending.keys());
++
++  confirmHeld(state.pending, contra, emit);
++  for (const e of others) {
++    // Drop a recovered event that only cancels a failure we held but never pushed.
++    if (e.type === T.CHECK_RECOVERED && heldNames.has(checkName(e))) continue;
++    emit(e);
++  }
++
++  if (terminal.length) {
++    for (const failure of failures.values()) emit(failure);
++    for (const t of terminal) emit(t);
++    return { terminal: true };
++  }
++  state.pending = failures;
++  return { terminal: false };
++}
++
++/**
++ * Run the constant watch loop over one PR. Long-running by default; self-stops on
++ * a terminal event. Returns a summary when the loop ends.
++ *
++ * @param {object} ctx
++ * @param {string} ctx.dir - journal directory (journal.journalDir).
++ * @param {() => Promise<object>} ctx.gather - bounded snapshot read.
++ * @param {(event: object) => void} [ctx.emit] - push sink (default: stdout NDJSON).
++ * @param {(ms: number) => Promise<void>} [ctx.sleep] - cadence sleep (test injection).
++ * @param {() => number} [ctx.rng] - jitter source in [0,1) (test injection).
++ * @param {() => string} [ctx.now] - timestamp source (test injection).
++ * @param {number} [ctx.intervalMs=60000] - base cadence.
++ * @param {number} [ctx.maxPasses=Infinity] - bound the loop (tests).
++ * @param {{ aborted: boolean }} [ctx.signal] - cooperative interrupt (SIGINT).
++ * @param {(records: object[]) => Promise<void>|void} [ctx.enrich] - PR-A enrich hook.
++ * @returns {Promise<{ started: boolean, passes: number, stopped: boolean, reason?: string }>}
++ */
++async function watchLoop(ctx) {
++  const { dir } = ctx;
++  const emit = ctx.emit || defaultEmit;
++  const sleep = ctx.sleep || defaultSleep;
++  const rng = ctx.rng || Math.random;
++  const intervalMs = ctx.intervalMs ?? DEFAULT_INTERVAL_MS;
++  const maxPasses = ctx.maxPasses ?? Infinity;
++  const watcherRunning = ctx.watcherRunning || journal.watcherRunning;
++  const writePid = ctx.writePid || journal.writePid;
++  const removePid = ctx.removePid || journal.removePid;
++
++  // Idempotent claim: a live OTHER watcher already owns this PR → no-op.
++  if (watcherRunning(dir)) {
++    return { started: false, passes: 0, stopped: false, reason: 'watcher-already-running' };
++  }
++  writePid(dir);
++
++  const state = { pending: new Map() };
++  let passes = 0;
++  let stopped = false;
++  try {
++    while (passes < maxPasses && !isAborted(ctx.signal)) {
++      const result = await runWatchPass(state, ctx, emit);
++      passes += 1;
++      if (result.terminal) { stopped = true; break; }
++      if (passes >= maxPasses || isAborted(ctx.signal)) break;
++      await sleep(jitter(intervalMs, rng));
++    }
++  } finally {
++    removePid(dir);
++  }
++  return { started: true, passes, stopped };
++}
++
++module.exports = {
++  watchLoop,
++  runWatchPass,
++  jitter,
++  partition,
++  contradictions,
++  isContradicted,
++  confirmHeld,
++  DEFAULT_INTERVAL_MS,
++  TERMINAL_TYPES,
++};
+diff --git a/test/pr-monitor/shepherd-watch.test.js b/test/pr-monitor/shepherd-watch.test.js
+new file mode 100644
+index 00000000..b8519f07
+--- /dev/null
++++ b/test/pr-monitor/shepherd-watch.test.js
+@@ -0,0 +1,63 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const shepherd = require('../../lib/commands/shepherd');
++
++describe('forge shepherd watch <pr>', () => {
++  test('routes `watch <pr>` to the watch loop and forwards its summary', async () => {
++    let seen = null;
++    const deps = {
++      dir: '/tmp/journal-x',
++      gather: async () => ({ prState: 'OPEN' }),
++      enrich: () => {},
++      emit: () => {},
++      signal: { aborted: false }, // suppress real SIGINT/SIGTERM handlers
++      maxPasses: 2,
++      watchLoop: async (ctx) => { seen = ctx; return { started: true, passes: 2, stopped: true }; },
++    };
++    const res = await shepherd.handleWatch(['watch', '123'], '/repo', deps);
++    expect(res.success).toBe(true);
++    expect(res.started).toBe(true);
++    expect(res.passes).toBe(2);
++    expect(res.stopped).toBe(true);
++    // No `output` field: the loop streams live to stdout (returning output double-prints).
++    expect(res.output).toBeUndefined();
++    // Context threaded straight through to the loop.
++    expect(seen.dir).toBe('/tmp/journal-x');
++    expect(seen.emit).toBe(deps.emit);
++    expect(seen.signal).toBe(deps.signal);
++    expect(typeof seen.gather).toBe('function');
++  });
++
++  test('the top-level handler dispatches `watch` to handleWatch', async () => {
++    const deps = {
++      dir: '/tmp/journal-y',
++      gather: async () => ({ prState: 'OPEN' }),
++      signal: { aborted: false },
++      watchLoop: async () => ({ started: true, passes: 1, stopped: false }),
++    };
++    const res = await shepherd.handler(['watch', '77'], {}, '/repo', deps);
++    expect(res.success).toBe(true);
++    expect(res.passes).toBe(1);
++  });
++
++  test('surfaces a reason when a live watcher already owns the PR', async () => {
++    const deps = {
++      dir: '/tmp/journal-z',
++      gather: async () => ({ prState: 'OPEN' }),
++      signal: { aborted: false },
++      watchLoop: async () => ({ started: false, passes: 0, stopped: false, reason: 'watcher-already-running' }),
++    };
++    const res = await shepherd.handleWatch(['watch', '5'], '/repo', deps);
++    expect(res.success).toBe(true);
++    expect(res.started).toBe(false);
++    expect(res.reason).toBe('watcher-already-running');
++  });
++
++  test('rejects a missing PR argument with a usage error', async () => {
++    const res = await shepherd.handleWatch(['watch'], '/repo', {});
++    expect(res.success).toBe(false);
++    expect(res.error).toMatch(/Usage: forge shepherd watch/);
++  });
++});
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+new file mode 100644
+index 00000000..c8e6dbe3
+--- /dev/null
++++ b/test/pr-monitor/watch.test.js
+@@ -0,0 +1,150 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const journal = require('../../lib/pr-monitor/journal');
++const { watchLoop, jitter, DEFAULT_INTERVAL_MS } = require('../../lib/pr-monitor/watch');
++const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
++
++function snap(over = {}) {
++  return {
++    repo: 'acme-forge', pr: '1', headSha: 'sha1', prState: 'OPEN', draft: false,
++    verdict: { state: 'CLEAN-MERGEABLE', reason: null },
++    checks: [], threads: [], reviews: [], comments: [], behind: 0, conflicts: false, degraded: [],
++    ...over,
++  };
++}
++
++/** A gather that yields each snapshot once, then repeats the last (no-change). */
++function gatherQueue(snaps) {
++  let i = 0;
++  return async () => {
++    const s = snaps[Math.min(i, snaps.length - 1)];
++    i += 1;
++    return s;
++  };
++}
++
++const now = () => '2026-07-13T00:00:00.000Z';
++const rngMid = () => 0.5; // jitter(interval, 0.5) === interval exactly
++
++let root; let dir;
++beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-w-')); dir = journal.journalDir({ root, repo: 'acme-forge', pr: '1' }); });
++afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
++
++describe('watchLoop', () => {
++  test('streams a confirmed check.failed as an emitted event on change', async () => {
++    const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
++    const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
++    const emitted = [];
++    const res = await watchLoop({
++      dir, gather: gatherQueue([green, failed, failed]),
++      now, rng: rngMid, sleep: async () => {}, maxPasses: 3,
++      emit: (e) => emitted.push(e),
++    });
++    expect(res.started).toBe(true);
++    expect(res.passes).toBe(3);
++    expect(res.stopped).toBe(false);
++    // Held one pass, then confirmed on the no-change third pass → pushed.
++    expect(emitted.map((e) => e.type)).toContain(T.CHECK_FAILED);
++  });
++
++  test('emits nothing after the baseline when the snapshot never changes', async () => {
++    const emitted = [];
++    const sleeps = [];
++    await watchLoop({
++      dir, gather: gatherQueue([snap()]),
++      now, rng: rngMid, maxPasses: 4,
++      sleep: (ms) => { sleeps.push(ms); return Promise.resolve(); },
++      emit: (e) => emitted.push(e),
++    });
++    // Only the first-pass baseline verdict event is ever pushed.
++    expect(emitted).toHaveLength(1);
++    expect(emitted[0].type).toBe(T.VERDICT_CHANGED);
++    // No real timers: 3 injected sleeps between 4 passes, each within jitter band.
++    expect(sleeps).toHaveLength(3);
++    for (const ms of sleeps) {
++      expect(ms).toBeGreaterThanOrEqual(DEFAULT_INTERVAL_MS * 0.8);
++      expect(ms).toBeLessThanOrEqual(DEFAULT_INTERVAL_MS * 1.2);
++    }
++  });
++
++  test('emits the terminal pr.merged event LAST and exits the loop', async () => {
++    const open = snap();
++    const merged = snap({ prState: 'MERGED' });
++    const emitted = [];
++    const res = await watchLoop({
++      dir, gather: gatherQueue([open, merged]),
++      now, rng: rngMid, sleep: async () => {}, maxPasses: 5,
++      emit: (e) => emitted.push(e),
++    });
++    expect(res.stopped).toBe(true);
++    expect(res.passes).toBe(2); // stopped early, well before maxPasses
++    expect(emitted[emitted.length - 1].type).toBe(T.PR_MERGED);
++  });
++
++  test('is an idempotent no-op when another live watcher owns the PR', async () => {
++    const emitted = [];
++    let wrotepid = false;
++    const res = await watchLoop({
++      dir, gather: async () => { throw new Error('must not gather'); },
++      watcherRunning: () => true,
++      writePid: () => { wrotepid = true; },
++      removePid: () => {},
++      emit: (e) => emitted.push(e), maxPasses: 3,
++    });
++    expect(res.started).toBe(false);
++    expect(res.reason).toBe('watcher-already-running');
++    expect(res.passes).toBe(0);
++    expect(wrotepid).toBe(false);
++    expect(emitted).toHaveLength(0);
++  });
++
++  test('suppresses a flap: fail→green within one interval is never pushed', async () => {
++    const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
++    const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
++    const emitted = [];
++    await watchLoop({
++      dir, gather: gatherQueue([green, failed, green]),
++      now, rng: rngMid, sleep: async () => {}, maxPasses: 3,
++      emit: (e) => emitted.push(e),
++    });
++    // The transient failure recovered next pass → the stream never pushed it.
++    expect(emitted.map((e) => e.type)).not.toContain(T.CHECK_FAILED);
++  });
++
++  test('writes the pid on start and removes it on exit', async () => {
++    const writes = [];
++    const removes = [];
++    await watchLoop({
++      dir, gather: gatherQueue([snap()]),
++      now, rng: rngMid, sleep: async () => {}, maxPasses: 1,
++      writePid: (d) => writes.push(d),
++      removePid: (d) => removes.push(d),
++      emit: () => {},
++    });
++    expect(writes).toEqual([dir]);
++    expect(removes).toEqual([dir]);
++  });
++
++  test('removes the pid even when a pass throws (finally cleanup)', async () => {
++    const removes = [];
++    await expect(watchLoop({
++      dir, gather: async () => { throw new Error('boom'); },
++      writePid: () => {}, removePid: (d) => removes.push(d),
++      emit: () => {}, maxPasses: 1,
++    })).rejects.toThrow('boom');
++    expect(removes).toEqual([dir]);
++  });
++});
++
++describe('jitter', () => {
++  test('stays within ±20% of the base interval', () => {
++    expect(jitter(1000, () => 0)).toBe(800);
++    expect(jitter(1000, () => 0.9999999)).toBeLessThanOrEqual(1200);
++    expect(jitter(1000, () => 0.5)).toBe(1000);
++  });
++});
+-- 
+2.51.0.windows.1
+

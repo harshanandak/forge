@@ -1,0 +1,26 @@
+From 89040adb5a14ee8345b5b9dee35d23a735811d6c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 17:45:02 +0530
+Subject: [PATCH] style(skills): keep parameterized test call contiguous
+
+---
+ test/skills/context-cost.test.js | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/test/skills/context-cost.test.js b/test/skills/context-cost.test.js
+index 1138f935..d20812d0 100644
+--- a/test/skills/context-cost.test.js
++++ b/test/skills/context-cost.test.js
+@@ -74,8 +74,7 @@ describe('skill context cost', () => {
+   });
+ 
+   test.each(['invocation:', 'invocation: Model', 'invocation: true',
+-    'invocation: [model]', 'invocation: automatic'])
+-  ('invalid invocation fails visibly for %j', (line) => {
++    'invocation: [model]', 'invocation: automatic'])('invalid invocation fails visibly for %j', (line) => {
+     const invocation = parseFrontmatter(
+       `---\nname: invalid\n${line}\ndescription: Invalid\n---\n# Invalid\n`,
+     ).invocation;
+-- 
+2.51.0.windows.1
+

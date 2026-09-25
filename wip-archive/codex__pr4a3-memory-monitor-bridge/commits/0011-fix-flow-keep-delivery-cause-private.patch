@@ -1,0 +1,84 @@
+From 52a25425473d4e4b009c84d17c6abe47b3eb7c05 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 05:40:19 +0530
+Subject: [PATCH] fix(flow): keep delivery cause private
+
+---
+ packages/flow/src/monitor-durability.js       |  2 +-
+ packages/flow/test/monitor-durability.test.js | 24 +++++++++++++++----
+ 2 files changed, 21 insertions(+), 5 deletions(-)
+
+diff --git a/packages/flow/src/monitor-durability.js b/packages/flow/src/monitor-durability.js
+index 42683a6c..3912cd43 100644
+--- a/packages/flow/src/monitor-durability.js
++++ b/packages/flow/src/monitor-durability.js
+@@ -15,7 +15,7 @@ const TARGET = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+ 
+ class MonitorDurabilityError extends Error {
+   constructor(code, message, details = {}) {
+-    super(message);
++    super(message, Object.hasOwn(details, "cause") ? { cause: details.cause } : undefined);
+     this.name = "MonitorDurabilityError";
+     this.code = code;
+     Object.assign(this, details);
+diff --git a/packages/flow/test/monitor-durability.test.js b/packages/flow/test/monitor-durability.test.js
+index a377578c..d46452f3 100644
+--- a/packages/flow/test/monitor-durability.test.js
++++ b/packages/flow/test/monitor-durability.test.js
+@@ -302,7 +302,7 @@ describe('monitor durability bridge', () => {
+     await durability.acknowledgeDelivery('monitor-1', deliveryReceipt(event), acknowledgementConfig);
+     await durability.recordTerminalReceipt(terminalReceipt([event]), terminalConfig);
+ 
+-    expect(driver.state.configCalls).toEqual([
++    const expectedCalls = [
+       ['appendMonitorEvent', persistConfig],
+       ['getMonitorEvent', acknowledgementConfig],
+       ['readMonitorDeliveryState', acknowledgementConfig],
+@@ -310,7 +310,12 @@ describe('monitor durability bridge', () => {
+       ['readMonitorDeliveryState', terminalConfig],
+       ['readMonitorEventTail', terminalConfig],
+       ['recordMonitorTerminalReceipt', terminalConfig],
+-    ]);
++    ];
++    expect(driver.state.configCalls).toEqual(expectedCalls);
++    driver.state.configCalls.forEach(([, config], index) => {
++      expect(config).not.toBe(expectedCalls[index][1]);
++      expect(Object.isFrozen(config)).toBe(true);
++    });
+   });
+ 
+   test('rejects event identity/content conflicts without delivering the conflicting event', async () => {
+@@ -434,17 +439,28 @@ describe('monitor durability bridge', () => {
+ 
+   test('reports delivery failure without hiding that the event is already durable', async () => {
+     const driver = createDurableDriver();
+-    const deliveryError = new Error("delivery provider lost");
++    const deliveryError = Object.assign(new Error("delivery provider lost"), {
++      authorization: 'Bearer secret-transport-token',
++    });
+     const deliver = mock(async () => {
+       throw deliveryError;
+     });
+ 
+-    await expect(bridge(driver, deliver).persistEvent(monitorEvent())).rejects.toMatchObject({
++    let failure;
++    try {
++      await bridge(driver, deliver).persistEvent(monitorEvent());
++    } catch (error) {
++      failure = error;
++    }
++    expect(failure).toMatchObject({
+       code: "DELIVERY_FAILED",
+       persisted: true,
+       eventId: "event-0",
+       cause: deliveryError,
+     });
++    expect(Object.getOwnPropertyDescriptor(failure, 'cause')).toMatchObject({ enumerable: false });
++    expect(JSON.stringify(failure)).not.toContain('secret-transport-token');
++    expect(failure.cause).toBe(deliveryError);
+     expect(driver.state.events.has("event-0")).toBe(true);
+   });
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,272 @@
+From 321d222ee30852335af43517d18f0dd0f20a245c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:14:29 +0530
+Subject: [PATCH] fix(shepherd): harden terminal cleanup evidence
+
+---
+ lib/pr-monitor/flow-monitor.js             | 14 ++---
+ lib/pr-monitor/reconcile-executor.js       | 35 +++++++++++-
+ test/pr-monitor/flow-monitor.test.js       |  3 +
+ test/pr-monitor/reconcile-executor.test.js | 66 ++++++++++++++++++++--
+ 4 files changed, 104 insertions(+), 14 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 47566d01..61760db7 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -571,9 +571,10 @@ function terminalPrState(snapshot) {
+   return null;
+ }
+ 
+-async function recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt) {
++async function recordTerminalHandoff(ctx, bridge, spec, state, snapshot) {
+   const terminalState = terminalPrState(snapshot);
+   if (!terminalState) return null;
++  const createdAt = (ctx.now || defaultNow)();
+   const terminating = reduceMonitor(spec, state, { kind: 'subject-terminal', terminalState }).state;
+   const terminal = reduceMonitor(spec, terminating, {
+     kind: 'cleanup-complete',
+@@ -1019,10 +1020,9 @@ async function finalizePass(ctx, bridge, spec, {
+   state,
+   snapshot,
+   receiptIds,
+-  createdAt,
+   records,
+ }) {
+-  const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt);
++  const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, snapshot);
+   if (terminalReceiptId) receiptIds.push(terminalReceiptId);
+   return {
+     events: records,
+@@ -1079,7 +1079,7 @@ async function resumeSegmentedBatch(ctx, bridge, spec, state, segmented, subject
+   });
+   receiptIds.push(...persisted.receiptIds);
+   return finalizePass(ctx, bridge, spec, {
+-    state: persisted.state, snapshot: segmented.snapshot, receiptIds, createdAt: timestamp, records: remaining,
++    state: persisted.state, snapshot: segmented.snapshot, receiptIds, records: remaining,
+   });
+ }
+ 
+@@ -1111,7 +1111,7 @@ async function resumeRetainedBatch(ctx, bridge, spec, state, pendingEvents, subj
+   });
+   receiptIds.push(...persisted.receiptIds);
+   return finalizePass(ctx, bridge, spec, {
+-    state: persisted.state, snapshot: batch.snapshot, receiptIds, createdAt: timestamp, records: remaining,
++    state: persisted.state, snapshot: batch.snapshot, receiptIds, records: remaining,
+   });
+ }
+ 
+@@ -1126,7 +1126,7 @@ async function persistFreshSnapshot(ctx, bridge, spec, {
+     candidates.push(makeEvent(T.SNAPSHOT_CHECKPOINT, computeContentHash(next), {}));
+   }
+   if (candidates.length === 0) {
+-    return finalizePass(ctx, bridge, spec, { state, snapshot: next, receiptIds, createdAt: now(), records: [] });
++    return finalizePass(ctx, bridge, spec, { state, snapshot: next, receiptIds, records: [] });
+   }
+   const timestamp = now();
+   const records = finalizeRecords(candidates, {
+@@ -1146,7 +1146,7 @@ async function persistFreshSnapshot(ctx, bridge, spec, {
+   }
+   receiptIds.push(...persisted.receiptIds);
+   return finalizePass(ctx, bridge, spec, {
+-    state: persisted.state, snapshot: next, receiptIds, createdAt: timestamp, records: persisted.records || records,
++    state: persisted.state, snapshot: next, receiptIds, records: persisted.records || records,
+   });
+ }
+ 
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 7c953f8f..a564a70f 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -50,6 +50,8 @@ const GH_COMMAND_TIMEOUT_MS = 30_000;
+ const LINKAGE_FIELDS = ['issue_id', 'worktree_id', 'journal_ptr'];
+ const MAX_ACTIONS_PER_PASS = 128;
+ const MAX_PROCESS_EVENTS = 8;
++const NEW_WATCHER_KILL_ATTEMPTS = 3;
++const NEW_WATCHER_KILL_RETRY_MS = 10;
+ 
+ function normalizeRepository(value) {
+ 	return typeof value === 'string' && CANONICAL_REPOSITORY.test(value.trim())
+@@ -616,10 +618,37 @@ function buildExecutionState(ctx) {
+ 	};
+ }
+ 
+-function cleanupNewWatchers(s, seedIdentities) {
++async function cleanupNewWatchers(s, seedIdentities) {
++	const survivors = [];
++	const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
++	const waitForRetry = s.ctx.waitForKillRetry
++		|| (delayMs => new Promise(resolve => setTimeout(resolve, delayMs)));
+ 	for (const entry of s.watchers.filter(watcher => !seedIdentities.has(processIdentity(watcher)))) {
+-		if (verifiedKill(entry, s.ctx, 'SIGKILL')) s.removeClaim(entry);
++		let terminated = false;
++		for (let attempt = 0; attempt < NEW_WATCHER_KILL_ATTEMPTS; attempt += 1) {
++			verifiedKill(entry, s.ctx, 'SIGKILL');
++			if (!isAlive(entry.pid)) {
++				s.removeClaim(entry);
++				terminated = true;
++				break;
++			}
++			if (attempt + 1 < NEW_WATCHER_KILL_ATTEMPTS) await waitForRetry(NEW_WATCHER_KILL_RETRY_MS);
++		}
++		if (!terminated) survivors.push(entry);
++	}
++	if (survivors.length === 0) return;
++	try {
++		if (s.persistLifecycleCheckpoint(s.watchers) !== false) return;
++	} catch (cause) {
++		const error = new Error('New watcher cleanup failed and the surviving watcher checkpoint was not persisted', { cause });
++		error.code = 'WATCHER_CLEANUP_FAILED';
++		error.watchers = survivors.map(normalizeWatcher);
++		throw error;
+ 	}
++	const error = new Error('New watcher cleanup failed and the surviving watcher checkpoint was rejected');
++	error.code = 'WATCHER_CLEANUP_FAILED';
++	error.watchers = survivors.map(normalizeWatcher);
++	throw error;
+ }
+ 
+ /**
+@@ -644,7 +673,7 @@ async function execute(actions, ctx = {}) {
+ 			if (handler && (await handler(action, s)) === false) break;
+ 		}
+ 	} catch (error) {
+-		cleanupNewWatchers(s, seedIdentities);
++		await cleanupNewWatchers(s, seedIdentities);
+ 		throw error;
+ 	}
+ 	return s.watchers;
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 497e6bbc..f4949cac 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -267,10 +267,13 @@ describe('Flow-backed PR monitor authority', () => {
+ 
+     store.appendEvent = appendEvent;
+     ctx.gather = async () => { throw new Error('pending recovery must precede changed provider state'); };
++    ctx.now = () => '2026-08-13T12:00:00.000Z';
+     const resumed = await runFlowMonitorPass(ctx);
+ 
+     expect(resumed.events.map(event => event.type)).toEqual(['pr.merged']);
+     expect(delivered.map(event => event.type)).toEqual(['verdict.changed', 'pr.merged']);
++    expect(store.events[0].created_at).toBe('2026-08-12T12:00:00.000Z');
++    expect(store.terminalReceipt.created_at).toBe('2026-08-13T12:00:00.000Z');
+     expect(resumed.terminalReceiptId).toBeString();
+   });
+ 
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 30f6385c..a8d109f0 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -217,6 +217,7 @@ describe('execute — watcher lifecycle', () => {
+ 
+ 	test('terminates a newly spawned watcher when its authority checkpoint fails', async () => {
+ 		let writes = 0;
++		let alive = true;
+ 		const killed = [];
+ 		await expect(executor.execute(
+ 			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+@@ -225,15 +226,68 @@ describe('execute — watcher lifecycle', () => {
+ 				spawnWatcher: () => ({ pid: 1234 }),
+ 				persistLifecycleCheckpoint: () => { writes += 1; return writes === 1; },
+ 				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+-				isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
++				isAlive: () => alive,
++				kill: (pid, signal) => { killed.push([pid, signal]); alive = false; },
++				waitForKillRetry: async () => {},
+ 			},
+ 		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+ 		expect(killed).toEqual([[1234, 'SIGKILL']]);
+ 	});
+ 
++	test('retries verified cleanup when the first SIGKILL leaves a new watcher alive', async () => {
++		let alive = true;
++		let attempts = 0;
++		let removed = false;
++		await expect(executor.execute(
++			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
++				spawnWatcher: () => ({ pid: 1234 }),
++				persistLifecycleCheckpoint: current => current.length === 0,
++				writeClaim: () => {}, removeClaim: () => { removed = true; },
++				readClaim: () => '1970-01-01T00:00:01.000Z', isAlive: () => alive,
++				kill: () => {
++					attempts += 1;
++					if (attempts === 1) throw new Error('transient kill failure');
++					alive = false;
++				},
++				waitForKillRetry: async () => {},
++			},
++		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++		expect(attempts).toBe(2);
++		expect(removed).toBe(true);
++	});
++
++	test('checkpoints a surviving new watcher when bounded SIGKILL retries all fail', async () => {
++		let writes = 0;
++		let attempts = 0;
++		let preserved = [];
++		await expect(executor.execute(
++			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
++				spawnWatcher: () => ({ pid: 1234 }),
++				persistLifecycleCheckpoint: current => {
++					writes += 1;
++					if (writes === 2) return false;
++					preserved = structuredClone(current);
++					return true;
++				},
++				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
++				isAlive: () => true,
++				kill: () => { attempts += 1; throw new Error('still alive'); },
++				waitForKillRetry: async () => {},
++			},
++		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++		expect(attempts).toBe(3);
++		expect(preserved).toHaveLength(1);
++		expect(preserved[0]).toMatchObject({ pid: 1234, pr: 42, repo: 'forge' });
++	});
++
+ 	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {
+ 		let writes = 0;
+ 		let nextPid = 1000;
++		const alive = new Set([1000, 1001]);
+ 		const killed = [];
+ 		await expect(executor.execute([
+ 			{ type: 'startWatcher', pr: { repo: 'forge', number: 41 } },
+@@ -243,7 +297,9 @@ describe('execute — watcher lifecycle', () => {
+ 			spawnWatcher: () => ({ pid: nextPid++ }),
+ 			persistLifecycleCheckpoint: () => { writes += 1; return writes < 4; },
+ 			writeClaim: () => {}, removeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+-			isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
++			isAlive: pid => alive.has(pid),
++			kill: (pid, signal) => { killed.push([pid, signal]); alive.delete(pid); },
++			waitForKillRetry: async () => {},
+ 		})).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+ 
+ 		expect(killed.sort((a, b) => a[0] - b[0])).toEqual([
+@@ -679,6 +735,7 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
+ 	});
+ 
+ 	test('convergeOnce reaps a new watcher when its authority checkpoint exceeds capacity', async () => {
++		let alive = true;
+ 		const killed = [];
+ 		const capacityError = Object.assign(new RangeError('too large'), {
+ 			code: 'WATCHER_CHECKPOINT_CAPACITY_EXCEEDED',
+@@ -692,8 +749,9 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
+ 			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
+ 			spawnWatcher: () => ({ pid: 1 }),
+ 			writeClaim: () => {}, removeClaim: () => {},
+-			readClaim: () => '1970-01-01T00:00:00.000Z', isAlive: () => true,
+-			kill: (pid, signal) => killed.push([pid, signal]),
++			readClaim: () => '1970-01-01T00:00:00.000Z', isAlive: () => alive,
++			kill: (pid, signal) => { killed.push([pid, signal]); alive = false; },
++			waitForKillRetry: async () => {},
+ 			updateWatchers: (_root, current) => {
+ 				if (current.length === 0) return true;
+ 				throw capacityError;
+-- 
+2.51.0.windows.1
+

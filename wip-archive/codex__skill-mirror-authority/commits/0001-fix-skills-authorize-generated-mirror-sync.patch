@@ -1,0 +1,537 @@
+From 0520f68388be5cc534ac6b00f36be1e49f960cf2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 19:29:30 +0530
+Subject: [PATCH] fix(skills): authorize generated mirror sync
+
+---
+ lib/protected-state-authority.js         | 130 ++++++++++++++++++++++-
+ scripts/sync-agent-skills.js             | 121 +++++++++++++++------
+ test/protected-state-authority.test.js   |  63 +++++++++++
+ test/sync-agent-skills-authority.test.js | 108 +++++++++++++++++++
+ 4 files changed, 384 insertions(+), 38 deletions(-)
+ create mode 100644 test/sync-agent-skills-authority.test.js
+
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 0038f51b..26f7c8c2 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -16,6 +16,25 @@ const PROTECTED_STATE_AUTHORIZATION_CONSUMED = 'protected_state.authorization.co
+ const PROTECTED_STATE_AUTHORIZATION_VERSION = 1;
+ const PROTECTED_STATE_AUTHORIZATION_ORIGIN = 'cli';
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
++const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
++
++function owningWriter(pathname, surface) {
++	if (surface === 'workflows' && pathname === '.github/workflows/npm-publish.yml') {
++		return {
++			sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
++			issueOperation: 'generate_npm_workflow',
++			completionOperation: 'generate_npm_workflow_completed',
++		};
++	}
++	if (surface === 'generated_harness' && /^\.agents\/skills\/[^/]+\/.+/.test(pathname)) {
++		return {
++			sourceCommand: SKILL_MIRROR_SOURCE_COMMAND,
++			issueOperation: 'sync_agent_skill',
++			completionOperation: 'sync_agent_skill_completed',
++		};
++	}
++	return null;
++}
+ 
+ function resolveWorktreeScope(projectRoot, deps = {}) {
+ 	const resolved = path.resolve(projectRoot);
+@@ -108,8 +127,10 @@ function evaluateAuthorization(request, rows = []) {
+ 		return blockedDecision(request, 'Protected-state authority is ambiguous because multiple unconsumed authorizations exist; failing closed.');
+ 	}
+ 	const latest = active[0];
++	const writer = owningWriter(latest.path, latest.surface);
+ 
+ 	const structurallyValid =
++		writer !== null &&
+ 		latest.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
+ 		typeof latest.capabilityId === 'string' && latest.capabilityId.length > 0 &&
+ 		latest.origin === PROTECTED_STATE_AUTHORIZATION_ORIGIN &&
+@@ -117,7 +138,8 @@ function evaluateAuthorization(request, rows = []) {
+ 		latest.worktreeScope === expected.worktreeScope &&
+ 		latest.entityId === authorizationEntityId(expected.worktreeScope, latest.path) &&
+ 		latest.viaForgeApi === true &&
+-		latest.sourceCommand === NPM_WORKFLOW_SOURCE_COMMAND &&
++		latest.sourceCommand === writer?.sourceCommand &&
++		latest.operation === writer?.issueOperation &&
+ 		/^[0-9a-f]{40}$/.test(latest.sourceHead || '');
+ 	if (!structurallyValid) {
+ 		return blockedDecision(request, 'The latest Forge-owned authorization is malformed or was not issued by the owning command.');
+@@ -148,9 +170,9 @@ function evaluateAuthorization(request, rows = []) {
+ 			event.contentHash === latest.contentHash &&
+ 			event.sourceHead === latest.sourceHead &&
+ 			event.worktreeScope === latest.worktreeScope &&
+-			event.operation === 'generate_npm_workflow_completed' &&
++			event.operation === writer.completionOperation &&
+ 			event.viaForgeApi === true &&
+-			event.sourceCommand === NPM_WORKFLOW_SOURCE_COMMAND
++			event.sourceCommand === writer.sourceCommand
+ 		);
+ 	if (matchingCompletions.length !== 1) {
+ 		return blockedDecision(request, 'The latest Forge-owned authorization is not completed by its owning writer; failing closed.');
+@@ -367,6 +389,106 @@ async function completeNpmPublishWorkflowAuthorization(projectRoot, params = {},
+ 	}
+ }
+ 
++function resolveCanonicalSkillMirror(projectRoot, mirrorPath) {
++	const normalizedPath = normalizeRepoPath(mirrorPath);
++	const match = /^\.agents\/skills\/([^/]+)\/(.+)$/.exec(normalizedPath);
++	if (!match || match[1] === '.' || match[1] === '..') return null;
++	const skillRoot = path.resolve(projectRoot, 'skills', match[1]);
++	const canonicalPath = path.resolve(skillRoot, match[2]);
++	if (canonicalPath !== skillRoot && !canonicalPath.startsWith(`${skillRoot}${path.sep}`)) return null;
++	try {
++		const stat = fs.lstatSync(canonicalPath);
++		if (!stat.isFile() || stat.isSymbolicLink()) return null;
++		return { normalizedPath, content: fs.readFileSync(canonicalPath) };
++	} catch {
++		return null;
++	}
++}
++
++async function issueGeneratedHarnessSkillAuthorization(projectRoot, params = {}, options = {}) {
++	if (!/^[0-9a-f]{40}$/.test(params.sourceHead || '')) {
++		return { success: false, error: 'Protected skill mirror authorization requires a full 40-character lowercase source HEAD.' };
++	}
++	const canonical = resolveCanonicalSkillMirror(projectRoot, params.path);
++	if (!canonical) {
++		return { success: false, error: 'Protected skill mirror authorization requires a canonical .agents/skills/<name>/<file> path.' };
++	}
++	return issueProtectedStateAuthorization(projectRoot, {
++		actor: params.actor,
++		surface: 'generated_harness',
++		path: canonical.normalizedPath,
++		content: canonical.content,
++		operation: 'sync_agent_skill',
++		viaForgeApi: true,
++		sourceCommand: SKILL_MIRROR_SOURCE_COMMAND,
++		sourceHead: params.sourceHead,
++	}, options);
++}
++
++async function completeGeneratedHarnessSkillAuthorization(projectRoot, params = {}, options = {}) {
++	if (!/^[0-9a-f]{40}$/.test(params.sourceHead || '') || !params.capabilityId) {
++		return { success: false, error: 'Protected skill mirror completion requires a capability id and full source HEAD.' };
++	}
++	const canonical = resolveCanonicalSkillMirror(projectRoot, params.path);
++	if (!canonical) {
++		return { success: false, error: 'Protected skill mirror completion requires a canonical .agents/skills/<name>/<file> path.' };
++	}
++	const actor = params.actor;
++	const contentHash = hashProtectedContent(canonical.content);
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
++	const entityId = authorizationEntityId(worktreeScope, canonical.normalizedPath);
++	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
++	try {
++		const rows = await kernel.driver.listKernelEvents(PROTECTED_STATE_ENTITY_TYPE, entityId, {}, kernel.config);
++		const issued = (rows || [])
++			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_ISSUED)
++			.map(parseAuthorizationEvent)
++			.find(event => event.capabilityId === params.capabilityId);
++		const consumed = (rows || [])
++			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)
++			.map(parseAuthorizationEvent)
++			.some(event => event.capabilityId === params.capabilityId);
++		const exactIssued = issued &&
++			issued.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
++			issued.origin === PROTECTED_STATE_AUTHORIZATION_ORIGIN &&
++			issued.actor === actor && issued.payloadActor === actor &&
++			issued.entityId === entityId && issued.path === canonical.normalizedPath &&
++			issued.surface === 'generated_harness' && issued.contentHash === contentHash &&
++			issued.sourceHead === params.sourceHead && issued.worktreeScope === worktreeScope &&
++			issued.operation === 'sync_agent_skill' && issued.viaForgeApi === true &&
++			issued.sourceCommand === SKILL_MIRROR_SOURCE_COMMAND;
++		if (!exactIssued || consumed) {
++			return { success: false, error: 'Protected skill mirror completion does not match one active exact authorization.' };
++		}
++		const inserted = await kernel.driver.insertKernelEvent({
++			entity_type: PROTECTED_STATE_ENTITY_TYPE,
++			entity_id: entityId,
++			event_type: PROTECTED_STATE_WRITE_COMPLETED,
++			idempotency_key: `${PROTECTED_STATE_WRITE_COMPLETED}:${params.capabilityId}`,
++			expected_revision: 0,
++			actor,
++			origin: PROTECTED_STATE_AUTHORIZATION_ORIGIN,
++			payload: {
++				version: PROTECTED_STATE_AUTHORIZATION_VERSION,
++				capabilityId: params.capabilityId,
++				actor,
++				path: canonical.normalizedPath,
++				surface: 'generated_harness',
++				contentHash,
++				sourceHead: params.sourceHead,
++				worktreeScope,
++				operation: 'sync_agent_skill_completed',
++				viaForgeApi: true,
++				sourceCommand: SKILL_MIRROR_SOURCE_COMMAND,
++			},
++			created_at: options.now || new Date().toISOString(),
++		}, {}, kernel.config);
++		return { success: true, capabilityId: params.capabilityId, event: parseAuthorizationEvent(inserted) };
++	} finally {
++		closeIfOwned(kernel);
++	}
++}
++
+ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [], options = {}) {
+ 	if (requests.length === 0) return { success: true, decisions: [] };
+ 	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
+@@ -437,5 +559,7 @@ module.exports = {
+ 	evaluateAuthorization,
+ 	issueNpmPublishWorkflowAuthorization,
+ 	completeNpmPublishWorkflowAuthorization,
++	issueGeneratedHarnessSkillAuthorization,
++	completeGeneratedHarnessSkillAuthorization,
+ 	authorizeAndConsumeProtectedStateWrites,
+ };
+diff --git a/scripts/sync-agent-skills.js b/scripts/sync-agent-skills.js
+index 37c3ef43..c449c53c 100644
+--- a/scripts/sync-agent-skills.js
++++ b/scripts/sync-agent-skills.js
+@@ -1,26 +1,17 @@
+ #!/usr/bin/env node
+ 'use strict';
+ 
+-/**
+- * Pre-commit auto-sync for the committed `.agents/skills` mirror.
+- *
+- * `.agents/skills` is Codex's repo-local discovery path and the ONE skill mirror
+- * committed to the repo (so a teammate who clones WITHOUT running `forge setup`
+- * still gets Forge skills/stages auto-discovered). It must stay byte-identical to
+- * the canonical `skills/` source, which the structural drift gate enforces.
+- *
+- * This hook removes the regen friction: whenever `skills/**` is staged, it
+- * regenerates `.agents/skills` from `skills/` (reusing the same
+- * `populateCodexRepoSkills` / `populateAgentSkills` sync the drift gate checks
+- * against) and re-stages it, so the committed mirror never drifts from canonical.
+- *
+- * It is intentionally scoped to `skills/**` via lefthook's `glob`, so it only runs
+- * when the canonical source actually changes.
+- */
++/** Command-owned pre-commit sync for the committed `.agents/skills` mirror. */
+ 
++const fs = require('node:fs');
+ const path = require('node:path');
+ const { execFileSync } = require('node:child_process');
+ const { populateCodexRepoSkills, resolveCodexRepoSkillsDir } = require('../lib/codex-skills');
++const { listCanonicalSkills } = require('../lib/skills-sync');
++const {
++  completeGeneratedHarnessSkillAuthorization,
++  issueGeneratedHarnessSkillAuthorization,
++} = require('../lib/protected-state-authority');
+ 
+ function repoRoot() {
+   try {
+@@ -33,30 +24,90 @@ function repoRoot() {
+   }
+ }
+ 
+-function main() {
+-  const root = repoRoot();
+-  let written = [];
+-  try {
+-    // clean: true so skills removed from canonical are dropped from the mirror too.
+-    ({ written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true }));
+-  } catch (error) {
+-    console.error(`sync-agent-skills: failed to regenerate .agents/skills — ${error.message}`);
+-    process.exit(1);
+-  }
++function actorFromEnv(env) {
++  return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
++}
+ 
++function changedSkillFiles(root) {
+   const mirror = resolveCodexRepoSkillsDir(root);
+-  try {
+-    // Stage the regenerated mirror (and any deletions within it).
+-    execFileSync('git', ['add', '--all', '--', mirror], {
+-      cwd: root,
+-      stdio: ['ignore', 'ignore', 'inherit'],
++  const changed = [];
++  function walk(name, sourceRoot, current = sourceRoot) {
++    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
++      const sourcePath = path.join(current, entry.name);
++      if (entry.isDirectory()) {
++        walk(name, sourceRoot, sourcePath);
++        continue;
++      }
++      if (!entry.isFile()) continue;
++      const relative = path.relative(sourceRoot, sourcePath).replace(/\\/g, '/');
++      const canonical = fs.readFileSync(sourcePath);
++      const mirrorPath = path.join(mirror, name, relative);
++      try {
++        if (canonical.equals(fs.readFileSync(mirrorPath))) continue;
++      } catch (error) {
++        if (error.code !== 'ENOENT') throw error;
++      }
++      changed.push({ path: `.agents/skills/${name}/${relative}`, canonical });
++    }
++  }
++  for (const { name, sourcePath } of listCanonicalSkills(root)) walk(name, sourcePath);
++  return changed;
++}
++
++async function syncAgentSkills(options = {}) {
++  const root = options.root || repoRoot();
++  const env = options.env || process.env;
++  const runGit = options.execFileSync || execFileSync;
++  const issueAuthorization = options.issueAuthorization || issueGeneratedHarnessSkillAuthorization;
++  const completeAuthorization = options.completeAuthorization || completeGeneratedHarnessSkillAuthorization;
++  const actor = actorFromEnv(env);
++  const sourceHead = runGit('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
++    cwd: root,
++    encoding: 'utf8',
++    stdio: ['ignore', 'pipe', 'pipe'],
++  }).trim();
++  if (!/^[0-9a-f]{40}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
++
++  const changed = changedSkillFiles(root);
++  const authorizations = [];
++  for (const file of changed) {
++    const authorization = await issueAuthorization(root, { actor, path: file.path, sourceHead });
++    if (!authorization.success) throw new Error(`authorization failed for ${file.path}: ${authorization.error}`);
++    authorizations.push({ ...file, capabilityId: authorization.capabilityId });
++  }
++
++  const { written } = populateCodexRepoSkills({ sourceRoot: root, projectRoot: root, clean: true });
++  for (const file of authorizations) {
++    if (!file.canonical.equals(fs.readFileSync(path.join(root, file.path)))) {
++      throw new Error(`canonical byte equality failed for ${file.path}`);
++    }
++    const completion = await completeAuthorization(root, {
++      actor,
++      path: file.path,
++      sourceHead,
++      capabilityId: file.capabilityId,
+     });
+-  } catch (error) {
+-    console.error(`sync-agent-skills: failed to stage .agents/skills — ${error.message}`);
+-    process.exit(1);
++    if (!completion.success) throw new Error(`completion failed for ${file.path}: ${completion.error}`);
+   }
+ 
++  const mirror = resolveCodexRepoSkillsDir(root);
++  runGit('git', ['add', '--all', '--', mirror], {
++    cwd: root,
++    stdio: ['ignore', 'ignore', 'inherit'],
++  });
+   console.log(`sync-agent-skills: .agents/skills in sync with skills/ (${written.length} skills)`);
++  return { written, changed: changed.map(file => file.path), sourceHead };
+ }
+ 
+-main();
++async function main() {
++  try {
++    await syncAgentSkills();
++  } catch (error) {
++    console.error(`sync-agent-skills: failed — ${error.message}`);
++    process.exitCode = 1;
++  }
++}
++
++if (require.main === module) main();
++
++module.exports = { actorFromEnv, changedSkillFiles, syncAgentSkills };
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index 45834333..c008d935 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -11,6 +11,7 @@ const {
+ } = require('../lib/protected-state-authority');
+ 
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
++const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
+ const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
+ const TEST_HEAD = 'a'.repeat(40);
+ 
+@@ -89,6 +90,68 @@ describe('protected-state Kernel authority', () => {
+ 		});
+ 	});
+ 
++	test('accepts only an exact command-owned canonical skill mirror capability', () => {
++		const skillTarget = {
++			actor: 'forge-skill-sync',
++			surface: 'generated_harness',
++			path: '.agents/skills/review/SKILL.md',
++			content: 'canonical review skill\n',
++			worktreeScope: 'scope-skills',
++			sourceHead: TEST_HEAD,
++		};
++		const skillEvent = (eventType, overrides = {}) => ({
++			entity_type: 'protected_state',
++			entity_id: authorizationEntityId(
++				overrides.worktreeScope || skillTarget.worktreeScope,
++				overrides.path || skillTarget.path,
++			),
++			event_type: eventType,
++			actor: overrides.actor || skillTarget.actor,
++			origin: 'cli',
++			created_at: '2026-08-12T00:00:00.000Z',
++			payload_json: JSON.stringify({
++				version: 1,
++				capabilityId: 'skill-capability',
++				actor: overrides.payloadActor || overrides.actor || skillTarget.actor,
++				path: overrides.path || skillTarget.path,
++				surface: overrides.surface || skillTarget.surface,
++				contentHash: hashProtectedContent(overrides.content || skillTarget.content),
++				worktreeScope: overrides.worktreeScope || skillTarget.worktreeScope,
++				operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
++					? 'sync_agent_skill'
++					: 'sync_agent_skill_completed',
++				viaForgeApi: true,
++				sourceHead: overrides.sourceHead || skillTarget.sourceHead,
++				sourceCommand: overrides.sourceCommand || SKILL_MIRROR_SOURCE_COMMAND,
++			}),
++		});
++		const exactRows = [
++			skillEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED),
++			skillEvent(PROTECTED_STATE_WRITE_COMPLETED),
++		];
++
++		expect(evaluateAuthorization(skillTarget, exactRows)).toMatchObject({
++			allowed: true,
++			capabilityId: 'skill-capability',
++		});
++		for (const request of [
++			{ ...skillTarget, actor: 'foreign-actor' },
++			{ ...skillTarget, path: '.agents/skills/ship/SKILL.md' },
++			{ ...skillTarget, content: 'foreign bytes\n' },
++			{ ...skillTarget, sourceHead: 'b'.repeat(40) },
++		]) {
++			expect(evaluateAuthorization(request, exactRows).allowed).toBe(false);
++		}
++		expect(evaluateAuthorization(skillTarget, [
++			skillEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, { sourceCommand: 'raw node script' }),
++			skillEvent(PROTECTED_STATE_WRITE_COMPLETED, { sourceCommand: 'raw node script' }),
++		]).allowed).toBe(false);
++		expect(evaluateAuthorization(skillTarget, [
++			...exactRows,
++			skillEvent(PROTECTED_STATE_AUTHORIZATION_CONSUMED),
++		]).allowed).toBe(false);
++	});
++
+ 	test('denies a pre-write authorization until the owning writer records completion', () => {
+ 		const decision = evaluateAuthorization(target, [
+ 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
+diff --git a/test/sync-agent-skills-authority.test.js b/test/sync-agent-skills-authority.test.js
+new file mode 100644
+index 00000000..d18b8c1c
+--- /dev/null
++++ b/test/sync-agent-skills-authority.test.js
+@@ -0,0 +1,108 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { spawnSync } = require('node:child_process');
++const { syncAgentSkills } = require('../scripts/sync-agent-skills');
++
++const HEAD = 'a'.repeat(40);
++
++function fixture() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-authority-'));
++  fs.mkdirSync(path.join(root, 'skills', 'review'), { recursive: true });
++  fs.mkdirSync(path.join(root, '.agents', 'skills', 'review'), { recursive: true });
++  fs.writeFileSync(path.join(root, 'skills', 'review', 'SKILL.md'), 'canonical bytes\n');
++  fs.writeFileSync(path.join(root, '.agents', 'skills', 'review', 'SKILL.md'), 'old bytes\n');
++  return root;
++}
++
++describe('command-owned agent skill sync', () => {
++  test('authorizes before writing, proves exact bytes, completes, then stages', async () => {
++    const root = fixture();
++    const calls = [];
++    try {
++      const result = await syncAgentSkills({
++        root,
++        env: { FORGE_ACTOR: 'skill-sync-owner' },
++        execFileSync: (_command, args) => {
++          if (args[0] === 'rev-parse') return `${HEAD}\n`;
++          calls.push('stage');
++          return '';
++        },
++        issueAuthorization: async (_root, params) => {
++          calls.push('authorize');
++          expect(params).toEqual({
++            actor: 'skill-sync-owner',
++            path: '.agents/skills/review/SKILL.md',
++            sourceHead: HEAD,
++          });
++          expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('old bytes\n');
++          return { success: true, capabilityId: 'capability-1' };
++        },
++        completeAuthorization: async (_root, params) => {
++          calls.push('complete');
++          expect(params.capabilityId).toBe('capability-1');
++          expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('canonical bytes\n');
++          return { success: true };
++        },
++      });
++
++      expect(calls).toEqual(['authorize', 'complete', 'stage']);
++      expect(result.changed).toEqual(['.agents/skills/review/SKILL.md']);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('fails closed without authority and leaves mirror bytes untouched', async () => {
++    const root = fixture();
++    let staged = false;
++    try {
++      await expect(syncAgentSkills({
++        root,
++        env: { FORGE_ACTOR: 'skill-sync-owner' },
++        execFileSync: (_command, args) => {
++          if (args[0] === 'rev-parse') return `${HEAD}\n`;
++          staged = true;
++          return '';
++        },
++        issueAuthorization: async () => ({ success: false, error: 'missing authority' }),
++      })).rejects.toThrow('authorization failed');
++      expect(staged).toBe(false);
++      expect(fs.readFileSync(path.join(root, '.agents/skills/review/SKILL.md'), 'utf8')).toBe('old bytes\n');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('real hook accepts one exact sync and denies replay or foreign actor', async () => {
++    const root = fixture();
++    const actor = 'skill-sync-integration';
++    const checker = path.resolve(__dirname, '../scripts/protected-state-check.js');
++    const run = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
++    const check = (checkActor = actor) => spawnSync(process.execPath, [checker], {
++      cwd: root,
++      encoding: 'utf8',
++      env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: checkActor },
++    });
++    try {
++      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'old bytes\n');
++      expect(run(['init']).status).toBe(0);
++      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
++      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
++      expect(run(['add', '.']).status).toBe(0);
++      expect(run(['commit', '-m', 'base']).status).toBe(0);
++      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'canonical bytes\n');
++      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
++
++      await syncAgentSkills({ root, env: { FORGE_ACTOR: actor } });
++      expect(check('foreign-actor').status).toBe(1);
++      expect(check().status).toBe(0);
++      expect(check().status).toBe(1);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  }, 30_000);
++});
+-- 
+2.51.0.windows.1
+

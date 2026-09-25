@@ -1,0 +1,25 @@
+From 8297ea438364f20894b6116a280a1fbd516b54ec Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 02:23:14 +0530
+Subject: [PATCH] test(pr-monitor): clarify flow monitor test title
+
+---
+ test/pr-monitor/flow-monitor.test.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index cc8dac9e..ff90cbe2 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -970,7 +970,7 @@ describe('Flow-backed PR monitor authority', () => {
+       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+   });
+ 
+-  test('rejects a getEvent row whose envelope hash is self-consistent but content is tampered', async () => {
++  test('rejects a getEvent row whose content_hash agrees with the envelope claim but the envelope content hash is invalid', async () => {
+     const store = durableStore();
+     const { markerId, markerSequence, template } = await seedExternalPlanTail(store);
+     const marker = structuredClone(template);
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,411 @@
+From c920f306988c5e5a0ae6a092b09b3154a5463d6e Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 14:28:15 +0530
+Subject: [PATCH] perf(flow): bound segmented checkpoint planning
+
+---
+ CHANGELOG.md                         |   1 +
+ lib/pr-monitor/flow-monitor.js       | 151 +++++++++++++++++++-----
+ test/pr-monitor/flow-monitor.test.js | 165 ++++++++++++++++++++++++++-
+ 3 files changed, 290 insertions(+), 27 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f86fd077..234e2e67 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ - **Exact version queries avoid loading the command graph.** Direct `forge --version` and `forge -V` print the packaged version before loading command modules, reducing cold startup during standalone installation checks. Imported helpers and mixed command arguments keep their existing behavior. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
+ - **The workflow projection hook test avoids a duplicate Git scan.** It retains the real commit-hook rejection and verifies the exact projection mismatch and zero authority consumption through existing fixture readers, without changing test deadlines or production authorization. (issue `e70683d6-f8df-471b-b859-a6dacb69825c`)
++- **Segmented Flow monitor checkpoints no longer repeat full-tail compression searches.** Recovery planning bounds records once and adapts from the last accepted segment width while preserving payload limits, ordered records, integrity metadata, terminal snapshot placement, and fail-closed interrupted-plan recovery. (issues `9eb98ac0-ebe1-4604-a57a-5fefadad6682`, `6648ef9b-381a-4a19-ad9a-06341e62676f`)
+ - **The test workflow template marker no longer resembles a credential assignment.** Internal renderer code now describes `__BUN_VERSION__` as a placeholder, so the shipped-library secret scan accepts the deterministic workflow writer without weakening its detection rules or changing generated workflow bytes. (issue `0acc4a68-ab0a-4008-83bf-6e954d075007`)
+ 
+ ## [0.1.0-beta.7] - 2026-09-11
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index afaca154..e729c9e2 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -139,7 +139,7 @@ function durableMonitorRecord(record) {
+   };
+ }
+ 
+-function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
++function encodeBoundedPendingBatch(ctx, subjectRevision, records, snapshot) {
+   if (records.length < 1 || records.length > PENDING_BATCH_RECORD_LIMIT) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its record bound');
+   }
+@@ -147,7 +147,7 @@ function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
+     monitor_id: ctx.monitorId,
+     subject_revision: subjectRevision,
+     snapshot_identity: snapshot === null ? null : snapshotIdentity(snapshot),
+-    records: records.map(durableMonitorRecord),
++    records,
+     snapshot,
+   };
+   const serialized = JSON.stringify({
+@@ -164,6 +164,18 @@ function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
+   return encoded;
+ }
+ 
++function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
++  if (records.length < 1 || records.length > PENDING_BATCH_RECORD_LIMIT) {
++    throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its record bound');
++  }
++  return encodeBoundedPendingBatch(
++    ctx,
++    subjectRevision,
++    records.map(durableMonitorRecord),
++    snapshot,
++  );
++}
++
+ function decodePendingBatch(value, ctx, subjectRevision) {
+   if (typeof value !== 'string' || value.length > PENDING_BATCH_LIMIT) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition batch is missing');
+@@ -196,41 +208,126 @@ function segmentablePendingBatchError(error) {
+     ].includes(error.message);
+ }
+ 
+-function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+-  const batches = [];
+-  let offset = 0;
+-  while (offset < records.length) {
++function findAdaptiveBatchBoundary(maxCount, preferredCount, encode) {
++  if (!Number.isSafeInteger(maxCount) || maxCount < 1) return null;
++  let accepted = null;
++  const attempt = (count) => {
+     try {
+-      const encoded = encodePendingBatch(ctx, subjectRevision, records.slice(offset), snapshot);
+-      appendPendingBatch(batches, { encoded, records: records.slice(offset), snapshot });
+-      break;
++      accepted = { count, encoded: encode(count) };
++      return true;
+     } catch (error) {
+       if (!segmentablePendingBatchError(error)) throw error;
++      return false;
+     }
+-
++  };
++  const initialCount = Math.min(maxCount, Math.max(1, preferredCount || 1));
++  if (!attempt(initialCount)) {
+     let low = 1;
+-    let high = records.length - offset - 1;
+-    let accepted = null;
++    let high = initialCount - 1;
+     while (low <= high) {
+       const count = Math.floor((low + high) / 2);
+-      const candidate = records.slice(offset, offset + count);
+-      try {
+-        accepted = {
+-          count,
+-          encoded: encodePendingBatch(ctx, subjectRevision, candidate, null),
+-          records: candidate,
+-          snapshot: null,
+-        };
+-        low = count + 1;
+-      } catch (error) {
+-        if (!segmentablePendingBatchError(error)) throw error;
+-        high = count - 1;
+-      }
++      if (attempt(count)) low = count + 1;
++      else high = count - 1;
++    }
++    return accepted;
++  }
++
++  let low = initialCount + 1;
++  let probe = Math.min(maxCount, Math.max(low, initialCount * 2));
++  while (low <= maxCount) {
++    if (attempt(probe)) {
++      low = probe + 1;
++      if (probe === maxCount) break;
++      probe = Math.min(maxCount, Math.max(low, probe * 2));
++      continue;
++    }
++    let high = probe - 1;
++    while (low <= high) {
++      const count = Math.floor((low + high) / 2);
++      if (attempt(count)) low = count + 1;
++      else high = count - 1;
++    }
++    break;
++  }
++  return accepted;
++}
++
++function splitPendingBatches(
++  ctx,
++  subjectRevision,
++  records,
++  snapshot,
++  encodeBatch = encodeBoundedPendingBatch,
++) {
++  const batches = [];
++  if (records.length === 0) return batches;
++  if (records.length > PENDING_BATCH_RECORD_LIMIT) {
++    throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its record bound');
++  }
++  const boundedRecords = records.map(durableMonitorRecord);
++  let offset = 0;
++  let preferredCount = 1;
++  let failedTerminalCount = null;
++  const appendTerminalBatch = (start) => {
++    const remainingCount = records.length - start;
++    try {
++      const encoded = encodeBatch(ctx, subjectRevision, boundedRecords.slice(start), snapshot);
++      appendPendingBatch(batches, { encoded, records: records.slice(start), snapshot });
++      return true;
++    } catch (error) {
++      if (!segmentablePendingBatchError(error)) throw error;
++      failedTerminalCount = remainingCount;
++      return false;
++    }
++  };
++
++  if (appendTerminalBatch(0)) return batches;
++
++  while (offset < records.length) {
++    const remainingCount = records.length - offset;
++    let accepted = findAdaptiveBatchBoundary(
++      remainingCount,
++      preferredCount,
++      count => encodeBatch(
++        ctx,
++        subjectRevision,
++        boundedRecords.slice(offset, offset + count),
++        null,
++      ),
++    );
++    if (!accepted && failedTerminalCount !== remainingCount && appendTerminalBatch(offset)) break;
++    if (accepted?.count === remainingCount && failedTerminalCount !== remainingCount) {
++      if (appendTerminalBatch(offset)) break;
++    }
++    if (accepted?.count === remainingCount) {
++      accepted = findAdaptiveBatchBoundary(
++        remainingCount - 1,
++        Math.min(preferredCount, remainingCount - 1),
++        count => encodeBatch(
++          ctx,
++          subjectRevision,
++          boundedRecords.slice(offset, offset + count),
++          null,
++        ),
++      );
++    }
++    if (accepted?.count < remainingCount
++      && batches.length === BATCH_PLAN_SEGMENT_LIMIT - 1) {
++      if (failedTerminalCount !== remainingCount && appendTerminalBatch(offset)) break;
++      throw new FlowMonitorError(
++        'INVALID_OBSERVATION',
++        'Pending monitor transition plan exceeds its segment bound',
++      );
+     }
+     if (!accepted) {
+       throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition record exceeds its durable bound');
+     }
+-    appendPendingBatch(batches, accepted);
++    appendPendingBatch(batches, {
++      encoded: accepted.encoded,
++      records: records.slice(offset, offset + accepted.count),
++      snapshot: null,
++    });
++    preferredCount = accepted.count;
+     offset += accepted.count;
+   }
+   return batches;
+@@ -1418,7 +1515,9 @@ module.exports = {
+     appendPendingBatch,
+     decodePrivateSafeBase64,
+     encodePrivateSafeBase64,
++    findAdaptiveBatchBoundary,
+     remainingSegmentedRecords,
++    splitPendingBatches,
+     validOrphanedPrecommitPlan,
+   },
+ };
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index e99a3453..3cbb4cf3 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -6,7 +6,7 @@ const { describe, expect, test } = require('bun:test');
+ const crypto = require('node:crypto');
+ const zlib = require('node:zlib');
+ 
+-const { _internals, runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
++const { FlowMonitorError, _internals, runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+ const { computeContentHash } = require('../../packages/contracts');
+ 
+ function snapshot(overrides = {}) {
+@@ -598,6 +598,169 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(batches).toHaveLength(128);
+   });
+ 
++  test.each([
++    ['reuses a stable width', 8, 2, 2, 2, 3],
++    ['shrinks after a larger width stops fitting', 8, 4, 2, 2, 3],
++    ['grows when later records allow a wider batch', 9, 2, 5, 5, 5],
++  ])('adaptively probes an encodable segment boundary: %s', (
++    _scenario,
++    maxCount,
++    preferredCount,
++    acceptedLimit,
++    expectedCount,
++    maximumProbes,
++  ) => {
++    const probes = [];
++    const result = _internals.findAdaptiveBatchBoundary(maxCount, preferredCount, count => {
++      probes.push(count);
++      if (count > acceptedLimit) {
++        throw new FlowMonitorError(
++          'INVALID_OBSERVATION',
++          'Pending monitor transition batch exceeds its durable bound',
++        );
++      }
++      return `encoded-${count}`;
++    });
++
++    expect(result).toEqual({ count: expectedCount, encoded: `encoded-${expectedCount}` });
++    expect(probes.length).toBeLessThanOrEqual(maximumProbes);
++  });
++
++  test('adaptive segment probing preserves non-capacity failures', () => {
++    const unexpected = new Error('unexpected encoder failure');
++    let thrown;
++    try {
++      _internals.findAdaptiveBatchBoundary(4, 2, () => { throw unexpected; });
++    } catch (error) {
++      thrown = error;
++    }
++    expect(thrown).toBe(unexpected);
++  });
++
++  test('segmented planning preserves record order and keeps the snapshot on the terminal batch', () => {
++    const records = Array.from({ length: 3 }, (_, index) => ({
++      seq: index + 1,
++      type: 'check.failed',
++      key: `check-${index}`,
++      ts: '2026-08-12T12:00:00.000Z',
++      data: { name: `check-${index}` },
++      repo: `owner/${index}-${Array.from(
++        { length: 160 },
++        (_value, salt) => crypto.createHash('sha256')
++          .update(`${index}:${salt}`)
++          .digest('base64url')
++          .replace(/[-_A]/g, '.'),
++      ).join('')}`,
++    }));
++    const terminalSnapshot = { headSha: 'f'.repeat(40) };
++    const batches = _internals.splitPendingBatches(
++      { monitorId: 'pr:owner/forge:42' },
++      'owner/forge#42',
++      records,
++      terminalSnapshot,
++    );
++    const decoded = batches.map(batch => JSON.parse(zlib.gunzipSync(
++      _internals.decodePrivateSafeBase64(batch.encoded),
++    )));
++
++    expect(batches.length).toBeGreaterThan(1);
++    expect(decoded.slice(0, -1).every(batch => batch.snapshot === null)).toBe(true);
++    expect(decoded.at(-1).snapshot).toEqual(terminalSnapshot);
++    expect(decoded.flatMap(batch => batch.records).map(record => record.seq)).toEqual([1, 2, 3]);
++
++    expect(() => _internals.splitPendingBatches(
++      { monitorId: 'pr:owner/forge:42' },
++      'owner/forge#42',
++      [records[0]],
++      { evidence: 'x'.repeat(262_144) },
++    )).toThrow('Pending monitor transition record exceeds its durable bound');
++  });
++
++  test('segmented planning rejects an oversized record set before bounding its records', () => {
++    const records = Array.from({ length: 539 }, (_, index) => ({ seq: index + 1 }));
++    Object.defineProperty(records[0], 'repo', {
++      get() { throw new Error('oversized records must not be bounded'); },
++    });
++
++    expect(_internals.splitPendingBatches(
++      { monitorId: 'pr:owner/forge:42' },
++      'owner/forge#42',
++      [],
++      null,
++    )).toEqual([]);
++    expect(() => _internals.splitPendingBatches(
++      { monitorId: 'pr:owner/forge:42' },
++      'owner/forge#42',
++      records,
++      null,
++    )).toThrow('Pending monitor transition batch exceeds its record bound');
++  });
++
++  test('segmented planning falls back to a terminal snapshot when the null probe fails', () => {
++    const records = [1, 2].map(seq => ({ seq }));
++    const terminalSnapshot = { headSha: 'f'.repeat(40) };
++    const capacityError = () => new FlowMonitorError(
++      'INVALID_OBSERVATION',
++      'Pending monitor transition batch exceeds its durable bound',
++    );
++    const encode = (_ctx, _subjectRevision, candidate, snapshotValue) => {
++      if (snapshotValue !== null && candidate.length === 1 && candidate[0].seq === 2) {
++        return 'terminal-2';
++      }
++      if (snapshotValue === null && candidate.length === 1 && candidate[0].seq === 1) {
++        return 'intermediate-1';
++      }
++      throw capacityError();
++    };
++
++    const batches = _internals.splitPendingBatches(
++      { monitorId: 'pr:owner/forge:42' },
++      'owner/forge#42',
++      records,
++      terminalSnapshot,
++      encode,
++    );
++
++    expect(batches.map(batch => batch.encoded)).toEqual(['intermediate-1', 'terminal-2']);
++    expect(batches.flatMap(batch => batch.records).map(record => record.seq)).toEqual([1, 2]);
++    expect(batches.map(batch => batch.snapshot)).toEqual([null, terminalSnapshot]);
++  });
++
++  test('segmented planning tries the terminal snapshot before consuming its last segment slot', () => {
++    const records = Array.from({ length: 129 }, (_, index) => ({ seq: index + 1 }));
++    const terminalSnapshot = { headSha: 'f'.repeat(40) };
++    const capacityError = () => new FlowMonitorError(
++      'INVALID_OBSERVATION',
++      'Pending monitor transition batch exceeds its durable bound',
++    );
++    const encode = (_ctx, _subjectRevision, candidate, snapshotValue) => {
++      if (snapshotValue !== null && candidate.length === 2 && candidate[0].seq === 128) {
++        return 'terminal-128-129';
++      }
++      if (snapshotValue === null && candidate.length === 1) {
++        return `intermediate-${candidate[0].seq}`;
++      }
++      throw capacityError();
++    };
++
++    const batches = _internals.splitPendingBatches(
++      { monitorId: 'pr:owner/forge:42' },
++      'owner/forge#42',
++      records,
++      terminalSnapshot,
++      encode,
++    );
++
++    expect(batches).toHaveLength(128);
++    expect(batches.at(-1)).toEqual({
++      encoded: 'terminal-128-129',
++      records: records.slice(-2),
++      snapshot: terminalSnapshot,
++    });
++    expect(batches.flatMap(batch => batch.records).map(record => record.seq))
++      .toEqual(records.map(record => record.seq));
++  });
++
+   test('continues a complete 128-segment pre-commit plan before provider observation', async () => {
+     const store = durableStore();
+     const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+-- 
+2.51.0.windows.1
+

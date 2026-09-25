@@ -1,0 +1,148 @@
+From 28d419ce69897927448e1c695d2705dc0df23a41 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 03:24:07 +0530
+Subject: [PATCH] fix: preserve terminal and event identity
+
+---
+ lib/commands/merge.js                 | 12 ++++++------
+ lib/pr-monitor/flow-monitor.js        | 16 +++++++++++++++-
+ test/commands/merge-authority.test.js | 20 ++++++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js  | 27 +++++++++++++++++++++++++++
+ 4 files changed, 68 insertions(+), 7 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 47c101d9..a268aaf4 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -671,6 +671,12 @@ async function recoverMergedTerminal({
+   if (binding?.bound !== true) {
+     return { success: false, merged: true, error: 'Merged PR is not authoritatively linked to the supplied Forge issue.' };
+   }
++  if (binding.terminalEvidence) {
++    return {
++      success: true, merged: true, enabled: true, recovered: true,
++      ...binding.terminalEvidence,
++    };
++  }
+   const decisionAt = currentTimestamp(deps.now || Date.now);
+   const verifyMergeGate = deps.verifyMergeGate || defaultVerifyMergeGate;
+   const gateApproval = await verifyMergeGate({
+@@ -679,12 +685,6 @@ async function recoverMergedTerminal({
+   if (gateApproval !== true && gateApproval?.approved !== true && gateApproval?.disabled !== true) {
+     return { success: false, merged: true, error: `${MERGE_GATE} is not approved for this issue.` };
+   }
+-  if (binding.terminalEvidence) {
+-    return {
+-      success: true, merged: true, enabled: true, recovered: true,
+-      ...binding.terminalEvidence,
+-    };
+-  }
+   const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
+   const decision = await prepareMergeDecision({
+     issueId: parsed.issueId,
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 54276bc0..f4b680b7 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -48,6 +48,20 @@ function identityToken(value) {
+   return crypto.createHash('sha256').update(String(value ?? '')).digest('base64url').slice(0, 12);
+ }
+ 
++function boundIdentity(value) {
++  if (typeof value !== 'string' || value.length <= SNAPSHOT_TEXT_LIMIT) return value;
++  return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
++}
++
++function boundMonitorRecord(record) {
++  const bounded = boundSnapshotScalar(record);
++  bounded.key = boundIdentity(record.key);
++  for (const field of ['name', 'threadId', 'author', 'commitOid', 'surface']) {
++    if (typeof record.data?.[field] === 'string') bounded.data[field] = boundIdentity(record.data[field]);
++  }
++  return bounded;
++}
++
+ function reopenedMonitorId(monitorId, terminalReceiptId) {
+   const lifecycleSeed = `${monitorId}:${terminalReceiptId}`;
+   const lifecycleHash = crypto.createHash('sha256').update(lifecycleSeed).digest('hex');
+@@ -207,7 +221,7 @@ function monitorSpec(ctx, subjectRevision) {
+ function monitorEvent(ctx, record, snapshot, subjectRevision) {
+   const seed = `${ctx.monitorId}:${record.seq}:${record.type}:${record.key}`;
+   const boundedRecord = {
+-    ...boundSnapshotScalar(record),
++    ...boundMonitorRecord(record),
+     ...(typeof record.repo === 'string' ? { repo: record.repo } : {}),
+   };
+   return envelope(
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 2073e10d..e48404bc 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -192,6 +192,26 @@ describe('merge command — mandatory release authority', () => {
+     expect(records).toBe(0);
+   });
+ 
++  test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
++    let gateChecks = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        terminalEvidence: {
++          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++        },
++      }),
++      verifyMergeGate: async () => { gateChecks += 1; return false; },
++    }));
++
++    expect(out).toMatchObject({
++      success: true, merged: true, recovered: true,
++      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++    });
++    expect(gateChecks).toBe(0);
++  });
++
+   test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
+     let receiptRequirements;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index cc71c5cd..bb812fa3 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -226,6 +226,33 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(delivered.at(-1).repo).toBe(repo);
+   });
+ 
++  test('keeps long compatibility event identities collision-resistant', async () => {
++    const store = durableStore();
++    const sharedPrefix = 'check-'.padEnd(80, 'x');
++    let next = snapshot({
++      checks: [
++        { name: `${sharedPrefix}-one`, class: 'green' },
++        { name: `${sharedPrefix}-two`, class: 'green' },
++      ],
++    });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({
++      checks: [
++        { name: `${sharedPrefix}-one`, class: 'failed' },
++        { name: `${sharedPrefix}-two`, class: 'failed' },
++      ],
++    });
++
++    await runFlowMonitorPass(ctx);
++
++    const failures = delivered.filter(record => record.type === 'check.failed');
++    expect(failures).toHaveLength(2);
++    expect(new Set(failures.map(record => record.key)).size).toBe(2);
++    expect(new Set(failures.map(record => record.data.name)).size).toBe(2);
++  });
++
+   test('checkpoints non-event snapshot changes so recurring failures are observed', async () => {
+     const store = durableStore();
+     let next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
+-- 
+2.51.0.windows.1
+

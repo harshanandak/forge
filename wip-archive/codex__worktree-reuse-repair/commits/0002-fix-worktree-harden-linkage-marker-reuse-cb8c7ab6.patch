@@ -1,0 +1,266 @@
+From 14da9b50d473b50506ef78fbe5ff2adafe76d178 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 13:47:52 +0530
+Subject: [PATCH] fix(worktree): harden linkage marker reuse cb8c7ab6
+
+---
+ lib/commands/worktree.js               | 117 +++++++++++++++++--------
+ test/commands/worktree-linkage.test.js |  89 +++++++++++++++++++
+ 2 files changed, 171 insertions(+), 35 deletions(-)
+
+diff --git a/lib/commands/worktree.js b/lib/commands/worktree.js
+index 3e7720d3..44f83c20 100644
+--- a/lib/commands/worktree.js
++++ b/lib/commands/worktree.js
+@@ -4,6 +4,11 @@ const { execFileSync, spawnSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { detectDefaultBranch } = require('../git-defaults');
++const {
++  resolveRepoRelativePath,
++  assertNoAncestorSymlinkEscape,
++  assertNoSymlinkEscape,
++} = require('../protected-state-surfaces');
+ 
+ /**
+  * Forge Worktree Command
+@@ -252,6 +257,72 @@ function setupWorktreeDeps(worktreePath, projectRoot, { spawnFn, fsApi, platform
+   return runInstall(worktreePath, projectRoot, spawnFn, fsApi);
+ }
+ 
++function readExistingWorktreeLinkage(driver, worktreePath, reuse) {
++  if (!reuse || !driver || typeof driver.getWorktreeLinkage !== 'function') return null;
++  return driver.getWorktreeLinkage({ path: worktreePath }) || null;
++}
++
++function detectLinkageConflict({ projectRoot, existing, issueId, workFolder, reuse }) {
++  if (!reuse || !existing) return null;
++  const existingIssue = existing.issue_id || null;
++  const existingFolder = existing.work_folder || null;
++  const folderChanged = workFolder && existingFolder
++    && path.resolve(projectRoot, workFolder) !== path.resolve(projectRoot, existingFolder);
++  if (!((issueId && existingIssue && issueId !== existingIssue) || folderChanged)) return null;
++  return {
++    issueId: issueId || existingIssue,
++    workFolder: workFolder || existingFolder,
++    reason: 'worktree linkage mismatch; existing issue/work-folder was not changed',
++    conflict: true,
++  };
++}
++
++function isAbsoluteWorkFolder(workFolder) {
++  return path.isAbsolute(workFolder) || path.posix.isAbsolute(workFolder) || path.win32.isAbsolute(workFolder);
++}
++
++function markerPathConflict(reason) {
++  return { conflict: true, reason: `worktree linkage marker path rejected: ${reason}` };
++}
++
++function validateMarkerTarget(projectRoot, workFolder, fsApi) {
++  if (!workFolder) return null;
++  if (isAbsoluteWorkFolder(workFolder)) return markerPathConflict('work-folder must be repo-relative');
++
++  const resolved = resolveRepoRelativePath(projectRoot, workFolder);
++  if (!resolved.insideRoot) return markerPathConflict('work-folder escapes project root');
++  const ancestorEscape = assertNoAncestorSymlinkEscape(resolved.root, resolved.target);
++  if (ancestorEscape) return markerPathConflict(ancestorEscape.reason);
++
++  const statSync = fsApi.statSync || fs.statSync;
++  const folderStat = fsApi.existsSync(resolved.target) ? statSync.call(fsApi, resolved.target) : null;
++  if (folderStat && !folderStat.isDirectory()) return markerPathConflict('work-folder is not a directory');
++  const markerPath = path.join(resolved.target, '.forge-issue');
++  const markerEscape = assertNoSymlinkEscape(resolved.root, markerPath);
++  if (markerEscape) {
++    return markerPathConflict(markerEscape.reason);
++  }
++  return { folderAbs: resolved.target, markerPath, folderExists: Boolean(folderStat) };
++}
++
++function reconcileIssueMarker({ target, linkedIssue, linkedFolder, fsApi }) {
++  if (!target || !linkedIssue || !target.folderExists) return null;
++  let markerIssue = null;
++  try {
++    if (fsApi.existsSync(target.markerPath)) markerIssue = fsApi.readFileSync(target.markerPath, 'utf8').trim() || null;
++  } catch { /* unreadable marker — let the write below repair it */ }
++  if (markerIssue && markerIssue !== linkedIssue) {
++    return {
++      issueId: linkedIssue,
++      workFolder: linkedFolder,
++      reason: 'worktree linkage mismatch; existing issue marker was not changed',
++      conflict: true,
++    };
++  }
++  fsApi.writeFileSync(target.markerPath, `${linkedIssue}\n`, 'utf8');
++  return null;
++}
++
+ /**
+  * Best-effort: record the issue → worktree → work-folder linkage in the Kernel so
+  * `forge worktree list` and orientation READ it instead of guessing the work-folder by
+@@ -288,45 +359,21 @@ async function registerWorktreeLinkage({ projectRoot, worktreePath, branch, issu
+       }
+     }
+ 
+-    const existing = reuse && driver && typeof driver.getWorktreeLinkage === 'function'
+-      ? driver.getWorktreeLinkage({ path: worktreePath }) || null
+-      : null;
++    const existing = readExistingWorktreeLinkage(driver, worktreePath, reuse);
++    const linkageConflict = detectLinkageConflict({ projectRoot, existing, issueId, workFolder, reuse });
++    if (linkageConflict) return { registered: false, ...linkageConflict };
++
+     const existingIssue = existing?.issue_id || null;
+     const existingFolder = existing?.work_folder || null;
+-    const folderChanged = workFolder && existingFolder
+-      && path.resolve(projectRoot, workFolder) !== path.resolve(projectRoot, existingFolder);
+-    if (reuse && ((issueId && existingIssue && issueId !== existingIssue) || folderChanged)) {
+-      return {
+-        registered: false,
+-        issueId: issueId || existingIssue,
+-        workFolder: workFolder || existingFolder,
+-        reason: 'worktree linkage mismatch; existing issue/work-folder was not changed',
+-        conflict: true,
+-      };
+-    }
+-
+     const linkedIssue = issueId || (reuse ? existingIssue : null);
+     const linkedFolder = workFolder || (reuse ? existingFolder : null);
+-    // A missing work-folder is created by the user/plan later; do not create it here.
+-    if (linkedFolder && linkedIssue) {
+-      const folderAbs = path.resolve(projectRoot, linkedFolder);
+-      if (fsApi.existsSync(folderAbs)) {
+-        const markerPath = path.join(folderAbs, '.forge-issue');
+-        let markerIssue = null;
+-        try {
+-          if (fsApi.existsSync(markerPath)) markerIssue = fsApi.readFileSync(markerPath, 'utf8').trim() || null;
+-        } catch { /* unreadable marker — let the write below repair it */ }
+-        if (markerIssue && markerIssue !== linkedIssue) {
+-          return {
+-            registered: false,
+-            issueId: linkedIssue,
+-            workFolder: linkedFolder,
+-            reason: 'worktree linkage mismatch; existing issue marker was not changed',
+-            conflict: true,
+-          };
+-        }
+-        fsApi.writeFileSync(markerPath, `${linkedIssue}\n`, 'utf8');
+-      }
++    const markerTarget = validateMarkerTarget(projectRoot, linkedFolder, fsApi);
++    if (markerTarget?.conflict) {
++      return { registered: false, issueId: linkedIssue || null, workFolder: linkedFolder || null, ...markerTarget };
++    }
++    const markerConflict = reconcileIssueMarker({ target: markerTarget, linkedIssue, linkedFolder, fsApi });
++    if (markerConflict) {
++      return { registered: false, ...markerConflict };
+     }
+ 
+     if (!driver) {
+diff --git a/test/commands/worktree-linkage.test.js b/test/commands/worktree-linkage.test.js
+index b3b658b7..3cad8e98 100644
+--- a/test/commands/worktree-linkage.test.js
++++ b/test/commands/worktree-linkage.test.js
+@@ -25,6 +25,22 @@ const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-fa
+ const TIMEOUT = 15000;
+ const cleanups = [];
+ 
++function probeDirectoryLinkSupport() {
++  const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-link-probe-'));
++  const linkPath = path.join(probeRoot, 'link');
++  try {
++    fs.symlinkSync(probeRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
++    return true;
++  } catch (error) {
++    if (error.code === 'EPERM') return false;
++    throw error;
++  } finally {
++    try { fs.rmSync(probeRoot, { recursive: true, force: true }); } catch { /* best effort */ }
++  }
++}
++
++const directoryEscapeTest = probeDirectoryLinkSupport() ? test : test.skip;
++
+ function writeFile(root, relativePath, content) {
+   const filePath = path.join(root, relativePath);
+   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+@@ -209,6 +225,79 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', ()
+     expect(fs.existsSync(path.join(root, otherFolder))).toBe(false);
+     expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
+   }, TIMEOUT);
++
++  test('rejects relative and absolute work-folder escapes before marker or registry mutation', async () => {
++    const { root, gitCommonDir, driver } = await setup();
++    const outsideRelative = path.resolve(root, '..', `forge-linkage-relative-${path.basename(root)}`);
++    const outsideAbsolute = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-absolute-'));
++    cleanups.push(() => {
++      try { fs.rmSync(outsideRelative, { recursive: true, force: true }); } catch { /* ignore */ }
++      try { fs.rmSync(outsideAbsolute, { recursive: true, force: true }); } catch { /* ignore */ }
++    });
++    fs.mkdirSync(outsideRelative, { recursive: true });
++    const relativeMarker = path.join(outsideRelative, '.forge-issue');
++    const absoluteMarker = path.join(outsideAbsolute, '.forge-issue');
++
++    const opts = {
++      _exec: gitStub(gitCommonDir, root),
++      _spawn: () => ({ status: 0 }),
++      _platform: 'linux',
++      _kernelDriver: driver,
++    };
++    const relative = await worktree.handler(
++      ['create', 'escape-relative', '--branch', 'feat/escape-relative', '--issue', 'forge-relative', '--work-folder', path.relative(root, outsideRelative)],
++      {}, root, opts,
++    );
++    const absolute = await worktree.handler(
++      ['create', 'escape-absolute', '--branch', 'feat/escape-absolute', '--issue', 'forge-absolute', '--work-folder', outsideAbsolute],
++      {}, root, opts,
++    );
++
++    expect(relative.success).toBe(false);
++    expect(relative.error).toMatch(/outside|absolute|inside|path/i);
++    expect(absolute.success).toBe(false);
++    expect(absolute.error).toMatch(/outside|absolute|inside|path/i);
++    expect(fs.existsSync(relativeMarker)).toBe(false);
++    expect(fs.existsSync(absoluteMarker)).toBe(false);
++    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toHaveLength(0);
++  }, TIMEOUT);
++
++  directoryEscapeTest('rejects a symlink or junction work-folder escape before marker or registry mutation', async () => {
++    const { root, gitCommonDir, driver } = await setup();
++    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-symlink-outside-'));
++    cleanups.push(() => {
++      try { fs.rmSync(outside, { recursive: true, force: true }); } catch { /* ignore */ }
++    });
++    const outsideMarker = path.join(outside, '.forge-issue');
++    const linkParent = path.join(root, 'docs', 'work');
++    const linkedFolder = path.join(linkParent, 'escape-link');
++    fs.mkdirSync(linkParent, { recursive: true });
++    fs.symlinkSync(outside, linkedFolder, process.platform === 'win32' ? 'junction' : 'dir');
++
++    const worktreePath = path.resolve(root, '.worktrees', 'escape-link');
++    fs.mkdirSync(worktreePath, { recursive: true });
++    driver.registerWorktree({
++      git_common_dir: path.resolve(gitCommonDir),
++      path: worktreePath,
++      branch: 'feat/escape-link',
++      actor: null,
++      issue_id: 'forge-symlink',
++      work_folder: 'docs/work/escape-link',
++      registered_at: new Date().toISOString(),
++      state: 'active',
++    });
++    const before = await driver.queryAll('SELECT * FROM kernel_worktrees');
++    const result = await worktree.handler(
++      ['create', 'escape-link', '--branch', 'feat/escape-link', '--issue', 'forge-symlink'],
++      {}, root,
++      { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver },
++    );
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/symlink|junction|escape|outside|path/i);
++    expect(fs.existsSync(outsideMarker)).toBe(false);
++    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
++  }, TIMEOUT);
+ });
+ 
+ describe('P0 kernel linkage: orientation resolves work-folder via the kernel', () => {
+-- 
+2.51.0.windows.1
+

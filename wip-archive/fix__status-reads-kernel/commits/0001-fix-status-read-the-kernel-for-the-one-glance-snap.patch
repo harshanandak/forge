@@ -1,0 +1,438 @@
+From 7c455868d4d8bce09ef5a0f4dca5ad98860f2398 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 11:28:42 +0530
+Subject: [PATCH] fix(status): read the kernel for the one-glance snapshot, not
+ the retired Beads store
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`forge status` built its snapshot from readBeadsSnapshot (.beads/issues.jsonl,
+the retired store), so on a kernel-default repo it showed "Ready: none" and the
+dead-end "/plan" fallback while the Kernel held a full backlog (bug 40f35797).
+
+- lib/status/snapshot.js: readStatusSnapshot resolves the active issue backend
+  (Kernel by default; Beads only when explicitly selected) and reads the Kernel
+  via the authoritative ready/blocked/stale/list ops, mapping them into the same
+  bucket shape readBeadsSnapshot produced so the presenter consumes either backend
+  identically. Resilient by contract: a failed read degrades to an empty bucket.
+- lib/commands/status.js: zero-arg status now awaits readStatusSnapshot.
+- test/status-command.test.js: pin createTempBeadsRepo to the Beads backend via
+  .forge/config.yaml (it seeds .beads) so those fixtures keep exercising the Beads
+  snapshot path; the kernel-default path is covered by the new test below.
+- test/status/snapshot.test.js: TDD regression coverage — a real seeded kernel
+  with ready issues -> snapshot.ready populated -> "Ready: N" + claim fallback
+  (never the empty-state /plan dead end); plus readStatusSnapshot backend routing.
+- Regenerated the D20 bd call-site kill-list artifact (status.js line shift only;
+  counts/tokens unchanged) so `release check` stays at 0 blockers.
+
+Before: Ready: none / "no ready issues. Next: /plan".
+After:  Ready: 194 more / "forge claim forge-2agy.2, then /plan".
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/commands/status.js                        |  11 +-
+ lib/status/snapshot.js                        | 179 ++++++++++++++++++
+ test/status-command.test.js                   |   8 +
+ test/status/snapshot.test.js                  | 132 +++++++++++++
+ 5 files changed, 329 insertions(+), 3 deletions(-)
+ create mode 100644 lib/status/snapshot.js
+ create mode 100644 test/status/snapshot.test.js
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 4ca8d459..edff62d7 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -26,7 +26,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/plan.js (9)
+   - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 738 (bd), 773 (bd)
+ - [ ] lib/commands/status.js (10)
+-  - lines: 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 245 (.beads), 247 (.beads), 367 (bd), 426 (bd)
++  - lines: 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 245 (.beads), 247 (.beads), 368 (bd), 427 (bd)
+ - [ ] lib/commands/test.js (5)
+   - lines: 8 (dolt), 60 (bd), 63 (bd), 67 (bd), 70 (bd)
+ - [ ] lib/commands/validate.js (1)
+diff --git a/lib/commands/status.js b/lib/commands/status.js
+index 56d7bcca..061a9550 100644
+--- a/lib/commands/status.js
++++ b/lib/commands/status.js
+@@ -9,7 +9,7 @@ const {
+ } = require('../workflow/state');
+ const { STAGE_IDS } = require('../workflow/stages');
+ const { detectWorktree } = require('../detect-worktree');
+-const { readBeadsSnapshot } = require('../status/beads-snapshot');
++const { readStatusSnapshot } = require('../status/snapshot');
+ const {
+ 	buildPersonalStatusJson,
+ 	formatRunNextLines,
+@@ -363,6 +363,7 @@ function parseStatusInputs(args = [], flags = {}) {
+ 
+ 	return {
+ 		issueId: firstDefined(flags.issueId, flags['--issue-id'], getInlineValue('--issue-id'), getNextValue('--issue-id')),
++		issueBackend: firstDefined(flags.issueBackend, flags['--issue-backend'], getInlineValue('--issue-backend'), getNextValue('--issue-backend')) || null,
+ 		workflowState: firstDefined(flags.workflowState, flags['--workflow-state'], getInlineValue('--workflow-state'), getNextValue('--workflow-state')),
+ 		bdComments: firstDefined(flags.bdComments, flags['--bd-comments'], getInlineValue('--bd-comments'), getNextValue('--bd-comments')),
+ 		projectRoot: firstDefined(flags.projectRoot, flags['--project-root'], getInlineValue('--project-root'), getNextValue('--project-root')) || null,
+@@ -768,9 +769,15 @@ module.exports = {
+ 
+ 		if (isZeroArgStatus) {
+ 			context = detectRepoContext(effectiveProjectRoot);
+-			snapshot = readBeadsSnapshot(effectiveProjectRoot, {
++			// Read from the active issue backend (Kernel by default; Beads only when
++			// explicitly selected). Previously hard-wired to the retired Beads
++			// issues.jsonl, which is empty on a kernel-default repo — so the flagship
++			// view showed "Ready: none" despite a populated kernel (bug 40f35797).
++			snapshot = await readStatusSnapshot(effectiveProjectRoot, {
+ 				now: inputs.now,
+ 				staleAfterDays: inputs.staleAfterDays,
++				issueBackend: inputs.issueBackend,
++				env: process.env,
+ 			});
+ 			const discoveredIssue = discoverCurrentIssue(snapshot, context, effectiveProjectRoot);
+ 			if (discoveredIssue) {
+diff --git a/lib/status/snapshot.js b/lib/status/snapshot.js
+new file mode 100644
+index 00000000..78324db8
+--- /dev/null
++++ b/lib/status/snapshot.js
+@@ -0,0 +1,179 @@
++'use strict';
++
++const { resolveIssueBackend } = require('../issue-backend.js');
++const { runIssueOperation: defaultRunIssueOperation } = require('../forge-issues.js');
++const { readBeadsSnapshot, getDeveloperIdentity } = require('./beads-snapshot.js');
++
++// Kernel status vocabulary: 'open' (ready / blocked / in-progress work) and the
++// terminal 'done' / 'cancelled'. There is no 'in_progress' status — an issue is "in
++// progress" when it is OPEN and carries a live claim (claimed_by). These buckets
++// mirror the shape readBeadsSnapshot produces so lib/status/presenter.js consumes
++// either backend's snapshot identically.
++const KERNEL_LIMITS = Object.freeze([
++	'Reads Forge Kernel issue authority (ready/blocked/stale/active).',
++	'Does not read GitHub review, CI, project, or sync freshness state.',
++]);
++
++function parseTimestampOrZero(value) {
++	if (!value) {
++		return 0;
++	}
++	const parsed = Date.parse(value);
++	return Number.isNaN(parsed) ? 0 : parsed;
++}
++
++function sortByUpdatedAtDesc(left, right) {
++	return parseTimestampOrZero(right.updated_at) - parseTimestampOrZero(left.updated_at);
++}
++
++// The kernel issue record exposes richer fields than the presenter's summary shape,
++// which was written for Beads (owner / dependency_count). Map the kernel equivalents
++// so `forge status --json` (toIssueSummary) stays informative without the presenter
++// needing to know about kernel-specific columns.
++function annotateKernelIssue(issue) {
++	if (!issue || typeof issue !== 'object') {
++		return issue;
++	}
++	const blockedBy = Array.isArray(issue.blocked_by) ? issue.blocked_by : [];
++	return {
++		...issue,
++		owner: issue.owner || issue.assignee || issue.claimed_by || null,
++		dependency_count: Number(issue.dependency_count ?? blockedBy.length ?? 0),
++	};
++}
++
++// Kernel read operations return the issue contract envelope
++// `{ ok, schema_version, command, data: { issues, count }, next_commands }`.
++function issuesFromEnvelope(result) {
++	if (result && result.ok && result.data && Array.isArray(result.data.issues)) {
++		return result.data.issues;
++	}
++	return [];
++}
++
++// Build the set of identities the current developer might be recorded under so
++// "active assigned" can match a claim. Kernel claims are keyed by actor id
++// (FORGE_ACTOR / FORGE_SESSION_ID), which may differ from the git identity, so match
++// claimed_by against any of them.
++function buildIdentitySet(developer, env) {
++	const ids = new Set();
++	const add = (value) => {
++		if (typeof value === 'string' && value.trim()) {
++			ids.add(value.trim().toLowerCase());
++		}
++	};
++	add(env.FORGE_ACTOR);
++	add(env.FORGE_SESSION_ID);
++	add(developer && developer.email);
++	add(developer && developer.name);
++	return ids;
++}
++
++function isActiveKernelIssue(issue) {
++	return issue.status === 'open' && Boolean(issue.claimed_by);
++}
++
++function emptyKernelSnapshot(developer) {
++	return {
++		developer,
++		issues: [],
++		active: [],
++		activeAssigned: [],
++		ready: [],
++		blocked: [],
++		stale: [],
++		recentCompleted: [],
++		limits: KERNEL_LIMITS,
++	};
++}
++
++/**
++ * Build the status snapshot from the Forge Kernel (the default issue authority).
++ * Reuses the authoritative kernel read ops (ready/blocked/stale) so the buckets match
++ * `forge ready`/`forge issue blocked` exactly, and derives active/in-progress and
++ * recent completions from the full issue list. Resilient by contract: any failed read
++ * degrades to an empty bucket, and a hard failure returns an empty snapshot — status
++ * must never crash.
++ *
++ * @param {string} projectRoot
++ * @param {object} [options]
++ * @param {function} [options.runIssueOperation] — injectable kernel read (tests)
++ * @param {object} [options.env]
++ * @returns {Promise<object>} snapshot shaped like readBeadsSnapshot's output
++ */
++async function readKernelSnapshot(projectRoot, options = {}) {
++	const runIssueOperation = options.runIssueOperation || defaultRunIssueOperation;
++	const env = options.env || process.env;
++	const developer = getDeveloperIdentity(projectRoot);
++
++	try {
++		const deps = { issueBackend: 'kernel', env };
++		const runRead = async (operation) => {
++			try {
++				return issuesFromEnvelope(await runIssueOperation(operation, [], projectRoot, deps));
++			} catch (_error) {
++				// One failing bucket must not blank the whole view.
++				return [];
++			}
++		};
++
++		// Sequential (not Promise.all): each op opens its own broker, and the first
++		// call lazily runs kernel migrations — serializing avoids a first-use init race.
++		const ready = await runRead('ready');
++		const blocked = await runRead('blocked');
++		const stale = await runRead('stale');
++		const all = await runRead('list');
++
++		const identities = buildIdentitySet(developer, env);
++		const active = all.filter(isActiveKernelIssue).sort(sortByUpdatedAtDesc);
++		const activeAssigned = active.filter(issue => identities.has(String(issue.claimed_by || '').toLowerCase()));
++		const recentCompleted = all.filter(issue => issue.status === 'done').sort(sortByUpdatedAtDesc);
++
++		return {
++			developer,
++			issues: all.map(annotateKernelIssue),
++			active: active.map(annotateKernelIssue),
++			activeAssigned: activeAssigned.map(annotateKernelIssue),
++			ready: ready.map(annotateKernelIssue),
++			blocked: [...blocked].sort(sortByUpdatedAtDesc).map(annotateKernelIssue),
++			stale: [...stale].sort(sortByUpdatedAtDesc).map(annotateKernelIssue),
++			recentCompleted: recentCompleted.map(annotateKernelIssue),
++			limits: KERNEL_LIMITS,
++		};
++	} catch (_error) {
++		return emptyKernelSnapshot(developer);
++	}
++}
++
++/**
++ * Read the personal/board status snapshot from the active issue backend. Reads the
++ * Kernel by default (the flagship `forge status` view); reads Beads only when Beads is
++ * explicitly selected (--issue-backend beads / FORGE_ISSUE_BACKEND=beads /
++ * issueBackend: beads in .forge/config.yaml). Resolution reuses lib/issue-backend.js
++ * so the snapshot never drifts from the issue commands' backend authority.
++ *
++ * @param {string} projectRoot
++ * @param {object} [options] — forwarded to the backend reader; `issueBackend` selects
++ *   an explicit backend, `env` overrides process.env, `backend` short-circuits resolution.
++ * @returns {Promise<object>} snapshot for lib/status/presenter.js
++ */
++async function readStatusSnapshot(projectRoot, options = {}) {
++	const backend = options.backend || resolveIssueBackend({
++		deps: options.issueBackend ? { issueBackend: options.issueBackend } : {},
++		env: options.env || process.env,
++		projectRoot,
++		warn: () => {},
++	});
++
++	if (backend === 'beads') {
++		return readBeadsSnapshot(projectRoot, options);
++	}
++
++	return readKernelSnapshot(projectRoot, { ...options, backend });
++}
++
++module.exports = {
++	readStatusSnapshot,
++	readKernelSnapshot,
++	KERNEL_LIMITS,
++};
+diff --git a/test/status-command.test.js b/test/status-command.test.js
+index 6d238acf..e73007b0 100644
+--- a/test/status-command.test.js
++++ b/test/status-command.test.js
+@@ -32,6 +32,14 @@ function createTempBeadsRepo(entries, options = {}) {
+     'utf8'
+   );
+ 
++  // This fixture seeds the retired Beads store (.beads/issues.jsonl), so pin the repo
++  // to the Beads backend. Status now reads the Kernel by default (bug 40f35797), so
++  // without this pin these Beads fixtures would be ignored and every bucket empty.
++  // The kernel-default status path is covered separately in test/status/snapshot.test.js.
++  const forgeDir = path.join(repoRoot, '.forge');
++  fs.mkdirSync(forgeDir, { recursive: true });
++  fs.writeFileSync(path.join(forgeDir, 'config.yaml'), 'issueBackend: beads\n', 'utf8');
++
+   execFileSync('git', ['init'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+   execFileSync('git', ['config', 'user.email', options.email || 'harshanandak@users.noreply.github.com'], {
+     cwd: repoRoot,
+diff --git a/test/status/snapshot.test.js b/test/status/snapshot.test.js
+new file mode 100644
+index 00000000..e9b40bc5
+--- /dev/null
++++ b/test/status/snapshot.test.js
+@@ -0,0 +1,132 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { readKernelSnapshot, readStatusSnapshot } = require('../../lib/status/snapshot.js');
++const { formatZeroArgStatus } = require('../../lib/status/presenter.js');
++const { runIssueOperation } = require('../../lib/forge-issues.js');
++
++// Regression coverage for bug 40f35797: `forge status` built its one-glance snapshot
++// from the retired Beads store (.beads/issues.jsonl), so on a kernel-default repo it
++// showed "Ready: none" and the dead-end "/plan" fallback while the Kernel held a full
++// backlog. These tests drive the REAL kernel read path end to end (create -> ready ->
++// snapshot -> presenter) so the flagship view can never silently blank again.
++
++// Point create/read ops at one throwaway kernel DB. Mirrors makeKernelDeps in
++// test/forge-issues.test.js so the seed writes and the snapshot reads share a store.
++function makeKernelRepo() {
++	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-kernel-'));
++	const gitCommonDir = path.join(dir, '.git');
++	fs.mkdirSync(gitCommonDir, { recursive: true });
++	const kernelDeps = {
++		issueBackend: 'kernel',
++		gitCommonDir,
++		kernelDatabasePath: path.join(gitCommonDir, 'forge', 'kernel.sqlite'),
++	};
++	return { dir, kernelDeps };
++}
++
++// readKernelSnapshot invokes its injected reader as (operation, [], projectRoot, deps).
++// Fold the throwaway-DB deps in so every bucket read resolves to the seeded kernel.
++function kernelReaderFor(kernelDeps) {
++	return (operation, args, projectRoot, deps) =>
++		runIssueOperation(operation, args, projectRoot, { ...deps, ...kernelDeps });
++}
++
++async function createIssue(dir, kernelDeps, title) {
++	const created = await runIssueOperation(
++		'create',
++		['--title', title, '--type', 'task'],
++		dir,
++		kernelDeps,
++	);
++	expect(created.ok).toBe(true);
++	return created.data.id;
++}
++
++function cleanup(dir) {
++	// The builtin SQLite driver keeps the DB file open for the process lifetime, so on
++	// Windows rmSync can hit EBUSY during teardown. Cleanup is not the assertion.
++	try {
++		fs.rmSync(dir, { recursive: true, force: true });
++	} catch {
++		// ignore: OS reclaims the temp dir.
++	}
++}
++
++const baseContext = {
++	branch: 'feat/status-kernel',
++	inWorktree: true,
++	worktreePath: '/repo/.worktrees/status-kernel',
++	mainWorktree: '/repo',
++	workingTree: { clean: true, summary: 'clean' },
++};
++
++describe('readKernelSnapshot — the flagship status snapshot reads the Kernel', () => {
++	test('populates ready from a kernel that holds ready issues (bug 40f35797)', async () => {
++		const { dir, kernelDeps } = makeKernelRepo();
++		try {
++			const idA = await createIssue(dir, kernelDeps, 'Kernel ready one');
++			const idB = await createIssue(dir, kernelDeps, 'Kernel ready two');
++
++			const snapshot = await readKernelSnapshot(dir, {
++				runIssueOperation: kernelReaderFor(kernelDeps),
++				env: {},
++			});
++
++			const readyIds = snapshot.ready.map(issue => issue.id);
++			expect(readyIds).toContain(idA);
++			expect(readyIds).toContain(idB);
++			expect(snapshot.ready.length).toBe(2);
++			// The Beads-shaped bucket contract the presenter consumes must be present.
++			expect(Array.isArray(snapshot.blocked)).toBe(true);
++			expect(Array.isArray(snapshot.stale)).toBe(true);
++			expect(Array.isArray(snapshot.recentCompleted)).toBe(true);
++		} finally {
++			cleanup(dir);
++		}
++	}, 20000);
++
++	test('the one-glance view shows the ready count and a claim fallback, not "/plan"', async () => {
++		const { dir, kernelDeps } = makeKernelRepo();
++		try {
++			const idA = await createIssue(dir, kernelDeps, 'Top ready');
++			const idB = await createIssue(dir, kernelDeps, 'Second ready');
++
++			const snapshot = await readKernelSnapshot(dir, {
++				runIssueOperation: kernelReaderFor(kernelDeps),
++				env: {},
++			});
++			const out = formatZeroArgStatus({ context: baseContext, snapshot, workflowResult: null });
++
++			expect(out).toContain('Ready: 2 more (forge issue ready)');
++			// State-aware fallback points at the TOP ready issue — never the empty-state /plan dead end.
++			const topReadyId = snapshot.ready[0].id;
++			expect([idA, idB]).toContain(topReadyId);
++			expect(out).toContain(`forge claim ${topReadyId}`);
++			expect(out).not.toContain('no ready issues. Next: /plan');
++		} finally {
++			cleanup(dir);
++		}
++	}, 20000);
++});
++
++describe('readStatusSnapshot — backend routing', () => {
++	test('defaults to the Kernel reader when no backend is selected', async () => {
++		const calls = [];
++		const snapshot = await readStatusSnapshot('/repo', {
++			env: {},
++			runIssueOperation: async (operation) => {
++				calls.push(operation);
++				return { ok: true, data: { issues: [], count: 0 } };
++			},
++		});
++
++		// It read the kernel (ready/blocked/stale/list), not the Beads jsonl file.
++		expect(calls).toContain('ready');
++		expect(snapshot.limits.join(' ')).toContain('Kernel');
++	});
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,36 @@
+From 2bc1eb1e7dac58b0ed33a7a9b27b2c2dfb3fbc68 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 17:24:28 +0530
+Subject: [PATCH] test(merge): require pre-merge recovery authority
+
+---
+ test/commands/merge.test.js | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 43e6e7c8..bcbebcea 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -271,7 +271,7 @@ describe('merge command — opt-in conditional auto-merge', () => {
+     expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
+   });
+ 
+-  test('pre-flight reconciles terminal evidence without a second merge when the PR is already MERGED', async () => {
++  test('pre-flight leaves missing terminal evidence incomplete when the PR is already MERGED', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
+     let mergeCalled = false;
+     const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+@@ -279,8 +279,8 @@ describe('merge command — opt-in conditional auto-merge', () => {
+       fetchPrContext: async () => authorizedContext({ state: 'MERGED' }),
+       mergePr: async () => { mergeCalled = true; },
+     });
+-    expect(out.success).toBe(true);
+-    expect(out).toMatchObject({ merged: true, recovered: true, receiptId: 'receipt-1' });
++    expect(out).toMatchObject({ success: false, merged: true, replayMissing: true });
++    expect(out.error).toMatch(/pre-merge authority/i);
+     expect(mergeCalled).toBe(false);
+   });
+ 
+-- 
+2.51.0.windows.1
+

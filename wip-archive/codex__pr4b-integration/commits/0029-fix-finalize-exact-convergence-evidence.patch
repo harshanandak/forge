@@ -1,0 +1,591 @@
+From f4a435a32bd914112c24e39b713cb204e75c3a9a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 06:05:40 +0530
+Subject: [PATCH] fix: finalize exact convergence evidence
+
+---
+ lib/commands/merge.js                         | 19 ++++-
+ lib/commands/shepherd.js                      | 24 +++++-
+ lib/pr-monitor/flow-monitor.js                | 19 ++++-
+ lib/pr-monitor/monitor.js                     | 73 ++++++++++++-------
+ lib/pr-monitor/review-preflight.js            | 11 ++-
+ lib/pr-monitor/watch.js                       |  7 +-
+ ...merge-authority-review-regressions.test.js |  5 +-
+ test/commands/merge-authority.test.js         | 35 +++++----
+ test/commands/shepherd.test.js                | 38 +++++++++-
+ test/pr-monitor/flow-monitor.test.js          | 19 +++++
+ test/pr-monitor/monitor.test.js               | 12 +++
+ test/pr-monitor/review-preflight.test.js      | 21 +++++-
+ test/pr-monitor/watch.test.js                 |  4 +
+ 13 files changed, 229 insertions(+), 58 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 618c630a..fa280274 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -373,6 +373,9 @@ async function defaultPrepareMergeDecision({
+   now = Date.now,
+   runIssue = runIssueOperation,
+ }) {
++  if (requireMergeGate !== true) {
++    throw new Error('A disabled merge gate cannot produce broker-verifiable terminal authority.');
++  }
+   const timestamp = currentTimestamp(now);
+   const frozenEnv = { ...env, FORGE_ACTOR: actor };
+   if (sessionId) frozenEnv.FORGE_SESSION_ID = sessionId;
+@@ -453,7 +456,7 @@ async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedH
+       evidence_refs: [{ kind: 'pr', repository, pr_number: Number(pr), head_sha: expectedHead }],
+       validation: { status: 'PASS', decision_id: decision.decisionId },
+       cleanup: { status: 'NOT_REQUIRED' },
+-      mutations_attempted: recovered ? [] : ['pr.merged'],
++      mutations_attempted: ['pr.merged'],
+       mutations_authorized: ['pr.merged'],
+     },
+   );
+@@ -718,6 +721,13 @@ async function recoverMergedTerminal({
+   if (gateApproval !== true && gateApproval?.approved !== true && gateApproval?.disabled !== true) {
+     return { success: false, merged: true, error: `${MERGE_GATE} is not approved for this issue.` };
+   }
++  if (gateApproval?.disabled === true) {
++    return {
++      success: false,
++      merged: true,
++      error: 'The disabled merge gate cannot produce broker-verifiable terminal authority.',
++    };
++  }
+   const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
+   const decision = await prepareMergeDecision({
+     issueId: parsed.issueId,
+@@ -1230,6 +1240,13 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   if (gateApproval !== true && gateApproval?.approved !== true && gateApproval?.disabled !== true) {
+     return { success: false, merged: false, error: `${MERGE_GATE} is not approved for this issue.` };
+   }
++  if (gateApproval?.disabled === true) {
++    return {
++      success: false,
++      merged: false,
++      error: 'The disabled merge gate cannot produce broker-verifiable terminal authority; refusing to mutate GitHub.',
++    };
++  }
+ 
+   const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
+   let decision;
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 34fb9c37..d4e70459 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -657,6 +657,28 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     };
+   }
+ 
++  if (localPreflight.blocking !== true) {
++    let postPreflightHead = null;
++    try {
++      const candidate = git('git', ['rev-parse', 'HEAD']).trim();
++      if (/^[0-9a-f]{40}$/i.test(candidate)) postPreflightHead = candidate.toLowerCase();
++    } catch {
++      /* unreadable mutable checkout fails the fence below */
++    }
++    const expectedLocalHead = typeof ctx.localHead === 'string' ? ctx.localHead.toLowerCase() : null;
++    if (!postPreflightHead || postPreflightHead !== expectedLocalHead || !isWorkingTreeClean(git)) {
++      localPreflight = {
++        ...localPreflight,
++        status: 'INCOMPLETE',
++        blocking: true,
++        findings: [
++          ...(Array.isArray(localPreflight.findings) ? localPreflight.findings : []),
++          { provider: 'local-preflight', detail: 'Local checkout changed during local review; rerun on the exact clean PR head.' },
++        ],
++      };
++    }
++  }
++
+   const result = await runPass({
+     ...ctx,
+     adapter,
+@@ -758,7 +780,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   return {
+-    success: effectiveState !== 'HARD_STOP',
++    success: effectiveState !== 'HARD_STOP' && effectiveState !== 'INCOMPLETE',
+     state: effectiveState,
+     ...(effectiveState !== confirmedResult.state ? { remoteState: confirmedResult.state } : {}),
+     reason: effectiveReason,
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 6974dc4c..14df4fa4 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -100,12 +100,25 @@ function compactSnapshot(value) {
+     degraded: (Array.isArray(source.degraded) ? source.degraded : [])
+       .map(item => [identityToken(item?.surface)]),
+   };
+-  return {
++  const evidenceJson = JSON.stringify(evidence);
++  const durableScalar = {
+     ...compact,
+     ...(typeof source.repo === 'string' ? { repo: source.repo } : {}),
+     _snapshotFormat: SNAPSHOT_FORMAT,
+-    _snapshotEvidence: zlib.gzipSync(JSON.stringify(evidence), { level: 9 }).toString('base64url'),
+   };
++  return {
++    ...durableScalar,
++    _snapshotIdentity: crypto.createHash('sha256')
++      .update(JSON.stringify({ snapshot: durableScalar, evidence }))
++      .digest('hex'),
++    _snapshotEvidence: zlib.gzipSync(evidenceJson, { level: 9 }).toString('base64url'),
++  };
++}
++
++function snapshotIdentity(snapshot) {
++  return typeof snapshot?._snapshotIdentity === 'string'
++    ? snapshot._snapshotIdentity
++    : computeContentHash(snapshot);
+ }
+ 
+ function comparableSnapshot(compact, source = null) {
+@@ -497,7 +510,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+     : comparableSnapshot(compactSnapshot(previousSnapshot));
+   const candidates = diffSnapshots(previous, comparableSnapshot(next, gathered));
+   if (candidates.length === 0) {
+-    const snapshotChanged = computeContentHash(previousSnapshot) !== computeContentHash(next);
++    const snapshotChanged = snapshotIdentity(previousSnapshot) !== snapshotIdentity(next);
+     if (snapshotChanged) {
+       candidates.push(makeEvent(T.SNAPSHOT_CHECKPOINT, computeContentHash(next), {}));
+     }
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index e77d5673..d48a2f80 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -39,12 +39,33 @@ function finalizeRecords(candidates, { baseSeq, ts, snapshot }) {
+   }));
+ }
+ 
+-function appendCompatibilityEvent(dir, record, memoryEventId) {
+-  if (memoryEventId && journal.readAllEvents(dir).some(event => event.memoryEventId === memoryEventId)) return;
++function createCompatibilityAppender(dir) {
++  const deliveredIds = new Set(journal.readAllEvents(dir)
++    .map(event => event.memoryEventId).filter(Boolean));
+   const snapshotRecord = journal.readSnapshot(dir);
+   const appliedSeq = snapshotRecord?.appliedSeq || 0;
+-  if (journal.seenIdentities(dir, appliedSeq).has(eventIdentity(record))) return;
+-  journal.appendEvents(dir, [{ ...record, seq: journal.lastSeq(dir) + 1, ...(memoryEventId ? { memoryEventId } : {}) }]);
++  const seen = journal.seenIdentities(dir, appliedSeq);
++  const journalCursor = journal.lastSeq(dir);
++  let nextSeq = journalCursor;
++  return {
++    journalCursor,
++    append(record, memoryEventId) {
++      const identity = eventIdentity(record);
++      if ((memoryEventId && deliveredIds.has(memoryEventId)) || seen.has(identity)) return;
++      nextSeq += 1;
++      journal.appendEvents(dir, [{ ...record, seq: nextSeq, ...(memoryEventId ? { memoryEventId } : {}) }]);
++      if (memoryEventId) deliveredIds.add(memoryEventId);
++      seen.add(identity);
++    },
++    finish(snapshot) {
++      if (!snapshot) return;
++      journal.writeSnapshot(dir, {
++        snapshot,
++        fingerprint: fingerprint(snapshot),
++        appliedSeq: nextSeq,
++      });
++    },
++  };
+ }
+ 
+ /**
+@@ -117,28 +138,30 @@ async function runMonitorPassLocked(ctx) {
+ async function runMonitorPass(ctx) {
+   if (ctx.store) {
+     const { runFlowMonitorPass } = require('./flow-monitor');
+-    let latestSnapshot;
+-    const deliverLegacy = ctx.deliverLegacy || (async (record, memoryEventId) => {
+-      appendCompatibilityEvent(ctx.dir, record, memoryEventId);
+-      if (latestSnapshot) {
+-        journal.writeSnapshot(ctx.dir, {
+-          snapshot: latestSnapshot,
+-          fingerprint: fingerprint(latestSnapshot),
+-          appliedSeq: journal.lastSeq(ctx.dir),
+-        });
+-      }
+-    });
+-    return journal.withJournalLock(ctx.dir, () => runFlowMonitorPass({
+-      ...ctx,
+-      gather: async () => {
+-        const snapshot = await ctx.gather();
+-        latestSnapshot = snapshot;
+-        return snapshot;
+-      },
+-      deliverLegacy,
+-    }), ctx.lockOpts);
++    return journal.withJournalLock(ctx.dir, async () => {
++      let latestSnapshot;
++      const compatibility = createCompatibilityAppender(ctx.dir);
++      const deliverLegacy = ctx.deliverLegacy || (async (record, memoryEventId) => {
++        compatibility.append(record, memoryEventId);
++      });
++      const result = await runFlowMonitorPass({
++        ...ctx,
++        gather: async () => {
++          const snapshot = await ctx.gather();
++          latestSnapshot = snapshot;
++          return snapshot;
++        },
++        deliverLegacy,
++      });
++      if (!ctx.deliverLegacy) compatibility.finish(latestSnapshot);
++      return { ...result, journalCursor: compatibility.journalCursor };
++    }, ctx.lockOpts);
+   }
+-  return journal.withJournalLock(ctx.dir, () => runMonitorPassLocked(ctx), ctx.lockOpts);
++  return journal.withJournalLock(ctx.dir, async () => {
++    const journalCursor = journal.lastSeq(ctx.dir);
++    const result = await runMonitorPassLocked(ctx);
++    return { ...result, journalCursor };
++  }, ctx.lockOpts);
+ }
+ 
+ /**
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index ca24c389..3e69ba4d 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -195,10 +195,13 @@ async function runLocalReviewPreflight(context, deps = {}) {
+   if (notApplicable) return notApplicable;
+ 
+   let reviewContext = context;
+-  const shouldResolveBase = typeof deps.resolveBaseCommit === 'function'
+-    || (!deps.runCodeRabbit && !deps.runDeterministic);
++  const suppliedBaseCommit = typeof context.baseCommit === 'string'
++    && /^[0-9a-f]{40}$/i.test(context.baseCommit);
++  const shouldResolveBase = deps.resolveBaseCommit !== false && !suppliedBaseCommit;
+   if (shouldResolveBase) {
+-    const resolveBaseCommit = deps.resolveBaseCommit || defaultResolveBaseCommit;
++    const resolveBaseCommit = typeof deps.resolveBaseCommit === 'function'
++      ? deps.resolveBaseCommit
++      : defaultResolveBaseCommit;
+     try {
+       const baseCommit = String(await resolveBaseCommit(context) || '').trim().toLowerCase();
+       if (!/^[0-9a-f]{40}$/.test(baseCommit)) throw new Error('PR base commit resolver returned an invalid commit');
+@@ -215,6 +218,8 @@ async function runLocalReviewPreflight(context, deps = {}) {
+         findings: [{ provider: 'local-preflight', detail }],
+       };
+     }
++  } else if (suppliedBaseCommit) {
++    reviewContext = { ...context, baseCommit: context.baseCommit.toLowerCase() };
+   }
+ 
+   const coderabbit = await codeRabbitResult(reviewContext, probeCodeRabbit, runCodeRabbit);
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index a64c6ab3..df635814 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -166,11 +166,12 @@ function emitTerminalPass(state, events, emit) {
+  */
+ async function runWatchPass(state, ctx, emit) {
+   const monitorPass = ctx.runMonitorPass || runMonitorPass;
+-  const journalCursor = ctx.dir ? journal.lastSeq(ctx.dir) : 0;
+-  const { events: rawEvents, terminalReceiptId } = await monitorPass({
++  const { events: rawEvents, terminalReceiptId, journalCursor } = await monitorPass({
+     ...ctx, dir: ctx.dir, gather: ctx.gather, now: ctx.now, enrich: ctx.enrich, lockOpts: ctx.lockOpts,
+   });
+-  const events = ctx.dir ? journal.readEventsSince(ctx.dir, journalCursor) : rawEvents;
++  const events = ctx.dir && Number.isSafeInteger(journalCursor)
++    ? journal.readEventsSince(ctx.dir, journalCursor)
++    : rawEvents;
+   const { failures, terminal, others } = partition(events);
+   if (terminalReceiptId) {
+     emitTerminalPass(state, events, emit);
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 3557a8b3..4cfbd2d7 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -618,8 +618,9 @@ describe('merge authority — exact reviewer regressions', () => {
+         occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
+       },
+     });
+-    expect(result.terminalEvidence.decisionId).toMatch(/^[0-9a-f-]{36}$/);
+-    expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
++    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
++    expect(result.terminalEvidence.decisionId).toMatch(uuid);
++    expect(result.terminalEvidence.receiptId).toMatch(uuid);
+   });
+ 
+   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 31df4007..ffe44558 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -298,20 +298,17 @@ describe('merge command — mandatory release authority', () => {
+     expect(records).toBe(0);
+   });
+ 
+-  test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
+-    let receiptRequirements;
++  test('fails closed before recovery evidence when a disabled gate cannot satisfy the broker contract', async () => {
++    let decisions = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => context({ state: 'MERGED' }),
+       verifyMergeGate: async () => ({ success: true, disabled: true }),
+-      prepareMergeDecision: async input => {
+-        receiptRequirements = input.requireMergeGate;
+-        return { decisionId: 'decision-disabled-gate' };
+-      },
+-      recordMergeDecision: async () => ({ receiptId: 'receipt-disabled-gate' }),
++      prepareMergeDecision: async () => { decisions += 1; },
+     }));
+ 
+-    expect(out).toMatchObject({ success: true, merged: true, recovered: true });
+-    expect(receiptRequirements).toBe(false);
++    expect(out).toMatchObject({ success: false, merged: true });
++    expect(out.error).toMatch(/disabled.*terminal authority/i);
++    expect(decisions).toBe(0);
+   });
+ 
+   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
+@@ -386,12 +383,12 @@ describe('merge command — mandatory release authority', () => {
+     });
+     expect(calls[0][0].run_receipt.payload).toMatchObject({
+       executor: { mode: 'guarded-exact-head-recovery' },
+-      mutations_attempted: [],
++      mutations_attempted: ['pr.merged'],
+     });
+   });
+ 
+-  test('omits a disabled merge gate from terminal receipt requirements', async () => {
+-    const decision = await mergeCmd.defaultPrepareMergeDecision({
++  test('refuses to construct broker-invalid terminal evidence for a disabled merge gate', async () => {
++    await expect(mergeCmd.defaultPrepareMergeDecision({
+       issueId: ISSUE,
+       pr: 42,
+       expectedHead: HEAD,
+@@ -404,9 +401,19 @@ describe('merge command — mandatory release authority', () => {
+       projectRoot: process.cwd(),
+       now: '2026-08-01T12:00:00.000Z',
+       runIssue: async () => ({ ok: true, data: { revision: 7 } }),
+-    });
++    })).rejects.toThrow(/disabled.*terminal authority/i);
++  });
+ 
+-    expect(decision.packet.payload.receipt_requirements).toEqual({ gate_ids: [] });
++  test('fails closed before GitHub mutation when a disabled gate cannot satisfy terminal authority', async () => {
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyMergeGate: async () => ({ success: true, disabled: true }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(out.error).toMatch(/disabled.*terminal authority/i);
++    expect(merges).toBe(0);
+   });
+ 
+   test('requires one full expected head and issue before ownership or provider I/O', async () => {
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 839d62e0..9f818595 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -107,7 +107,11 @@ describe('shepherd command handler', () => {
+       runPass: async () => ({
+         state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40),
+       }),
+-      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
++      }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
+     });
+     expect(out.state).toBe('MERGE_READY');
+     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
+@@ -125,8 +129,10 @@ describe('shepherd command handler', () => {
+           : { state: 'NEEDS_REVIEW', actions: [], reason: 'new review feedback' };
+       },
+       buildContext: async () => ({
+-        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master', headSha: 'a'.repeat(40),
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
+       }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
+     });
+ 
+     expect(passes).toBe(2);
+@@ -165,9 +171,33 @@ describe('shepherd command handler', () => {
+     });
+ 
+     expect(out).toMatchObject({ state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
++    expect(out.success).toBe(false);
+     expect(out.reason).toMatch(/local review preflight is incomplete/i);
+   });
+ 
++  test('fails closed when the checkout changes while local providers are running', async () => {
++    const oldHead = 'a'.repeat(40);
++    const newHead = 'b'.repeat(40);
++    let dryRun;
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
++      runPass: async context => {
++        dryRun = context.dryRun;
++        return { state: 'MERGE_READY', actions: [], reason: 'remote ready' };
++      },
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: oldHead, localHead: oldHead,
++      }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${newHead}\n` : ''),
++    });
++
++    expect(dryRun).toBe(true);
++    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
++    expect(out.localPreflight.findings[0].detail).toMatch(/changed during local review/i);
++  });
++
+   test('fails closed when the PR head changes immediately before merge handoff', async () => {
+     const oldHead = 'a'.repeat(40);
+     const newHead = 'b'.repeat(40);
+@@ -237,7 +267,7 @@ describe('shepherd command handler', () => {
+         rerunFailedChecks: async () => {}, replyToThread: async () => {},
+       },
+       store: {}, monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
+-      git: () => '',
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${lowerHead}\n` : ''),
+     });
+ 
+     expect(out).toMatchObject({ success: true, state: 'MERGE_READY' });
+@@ -257,7 +287,7 @@ describe('shepherd command handler', () => {
+         pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+         headSha: oldHead, localHead: oldHead,
+       }),
+-      git: () => '',
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${oldHead}\n` : ''),
+     });
+ 
+     expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', remoteState: 'MERGE_READY' });
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 1ccb3b73..1eb3b5f8 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { describe, expect, test } = require('bun:test');
++const zlib = require('node:zlib');
+ 
+ const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+ const { computeContentHash } = require('../../packages/memory-contracts');
+@@ -186,6 +187,24 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(delivered).toHaveLength(before);
+   });
+ 
++  test('does not checkpoint when only the gzip representation of snapshot evidence changes', async () => {
++    const store = durableStore();
++    const current = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
++    await runFlowMonitorPass(context(store, async () => current, async () => {}));
++    const before = store.events.length;
++    const event = store.events.at(-1);
++    const evidence = zlib.gunzipSync(Buffer.from(
++      event.payload.bounded_payload.snapshot._snapshotEvidence, 'base64url',
++    ));
++    event.payload.bounded_payload.snapshot._snapshotEvidence = zlib.gzipSync(evidence, { level: 1 }).toString('base64url');
++    event.content_hash = computeContentHash(event);
++
++    const restarted = await runFlowMonitorPass(context(store, async () => current, async () => {}));
++
++    expect(restarted.events).toEqual([]);
++    expect(store.events).toHaveLength(before);
++  });
++
+   test('fails closed without writing legacy compatibility state when Memory is unavailable', async () => {
+     const store = durableStore();
+     store.appendEvent = async () => {
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+index 733d801b..2102dd9e 100644
+--- a/test/pr-monitor/monitor.test.js
++++ b/test/pr-monitor/monitor.test.js
+@@ -125,6 +125,18 @@ describe('runMonitorPass', () => {
+     expect(delivered[0].seq).toBe(41);
+   });
+ 
++  test('returns the lock-protected compatibility cursor for watch consumers', async () => {
++    journal.appendEvents(dir, [{
++      seq: 40, ts: now(), type: T.VERDICT_CHANGED, key: 'legacy',
++      repo: 'acme-forge', pr: '1', headSha: 'old', data: {},
++    }]);
++
++    const result = await runMonitorPass(memoryContext(memoryStore(), async () => snap()));
++
++    expect(result.journalCursor).toBe(40);
++    expect(journal.readEventsSince(dir, result.journalCursor)).toHaveLength(1);
++  });
++
+   test('Memory compatibility delivery preserves recurring event identities', async () => {
+     const store = memoryStore();
+     const current = { value: snap({ headSha: 'shaX', checks: [{ name: 'ci', class: 'green' }] }) };
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index 71ac784a..c627fafe 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -11,7 +11,8 @@ const {
+ } = require('../../lib/pr-monitor/review-preflight');
+ 
+ const EXACT_HEAD_CONTEXT = {
+-  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
++  projectRoot: '/repo', base: 'master', baseCommit: 'b'.repeat(40),
++  expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
+ };
+ 
+ describe('bounded local review preflight', () => {
+@@ -103,7 +104,7 @@ describe('bounded local review preflight', () => {
+   test('uses one exact resolved base commit for both local review providers', async () => {
+     const seen = [];
+     const result = await runLocalReviewPreflight({
+-      ...EXACT_HEAD_CONTEXT, baseRef: 'origin/master',
++      ...EXACT_HEAD_CONTEXT, baseRef: 'origin/master', baseCommit: undefined,
+     }, {
+       resolveBaseCommit: async context => {
+         expect(context.baseRef).toBe('origin/master');
+@@ -127,6 +128,22 @@ describe('bounded local review preflight', () => {
+     ]);
+   });
+ 
++  test('explicitly opts out of base resolution without coupling behavior to injected providers', async () => {
++    const result = await runLocalReviewPreflight({
++      ...EXACT_HEAD_CONTEXT, baseCommit: undefined,
++    }, {
++      resolveBaseCommit: false,
++      probeCodeRabbit: async () => ({ available: true }),
++      runCodeRabbit: async context => {
++        expect(context.baseCommit).toBeUndefined();
++        return { ok: true, summary: 'clean', findings: [] };
++      },
++      runDeterministic: async () => ({ success: true, results: [] }),
++    });
++
++    expect(result.status).toBe('PASS');
++  });
++
+   test('does not review an unrelated local checkout as if it were the PR head', async () => {
+     let calls = 0;
+     const result = await runLocalReviewPreflight({
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index 618b4d3a..4b5e43bd 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -110,8 +110,12 @@ describe('watchLoop', () => {
+     await runWatchPass({ pending: new Map() }, {
+       dir,
+       runMonitorPass: async () => {
++        journal.appendEvents(dir, [{
++          ...compatibility, seq: 1, type: T.COMMENT_POSTED, key: 'pre-pass',
++        }]);
+         journal.appendEvents(dir, [compatibility]);
+         return {
++          journalCursor: 1,
+           events: [
+             { ...compatibility, seq: 2, type: 'monitor.checkpoint' },
+             { ...compatibility, seq: 3 },
+-- 
+2.51.0.windows.1
+

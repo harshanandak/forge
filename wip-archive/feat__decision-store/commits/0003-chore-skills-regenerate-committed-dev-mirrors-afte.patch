@@ -1,0 +1,47 @@
+From 1e559b784248991f54d4ca3f37887e9e5ebf97e2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 15:55:43 +0530
+Subject: [PATCH] chore(skills): regenerate committed dev mirrors after
+ canonical edit (#340)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+skills/dev/SKILL.md changed (design.md -> plan.md) but the two GIT-TRACKED agent
+mirrors (.codex/skills, .agents/skills — the packaging/Codex staging dirs) were not
+regenerated, tripping the skills-sync drift gate. Regenerated via populateAgentSkills
+(only:dev); drift test now passes.
+---
+ .agents/skills/dev/SKILL.md | 2 +-
+ .codex/skills/dev/SKILL.md  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.agents/skills/dev/SKILL.md b/.agents/skills/dev/SKILL.md
+index 5b58ec65..412fa519 100644
+--- a/.agents/skills/dev/SKILL.md
++++ b/.agents/skills/dev/SKILL.md
+@@ -2,7 +2,7 @@
+ name: dev
+ description: >
+   Forge DEV stage — implement an already-planned /plan task list into committed, test-backed
+-  code. Reads tasks.md + design.md, then drives each task through a subagent TDD loop
++  code. Reads tasks.md + plan.md, then drives each task through a subagent TDD loop
+   (implementer → spec-compliance reviewer → code-quality reviewer) with RED-GREEN-REFACTOR,
+   HARD-GATE evidence checks, and a spec-gap decision score. Use when a plan and task list
+   already exist and it is time to implement — triggers: "/dev", "start the dev stage", "build
+diff --git a/.codex/skills/dev/SKILL.md b/.codex/skills/dev/SKILL.md
+index 5b58ec65..412fa519 100644
+--- a/.codex/skills/dev/SKILL.md
++++ b/.codex/skills/dev/SKILL.md
+@@ -2,7 +2,7 @@
+ name: dev
+ description: >
+   Forge DEV stage — implement an already-planned /plan task list into committed, test-backed
+-  code. Reads tasks.md + design.md, then drives each task through a subagent TDD loop
++  code. Reads tasks.md + plan.md, then drives each task through a subagent TDD loop
+   (implementer → spec-compliance reviewer → code-quality reviewer) with RED-GREEN-REFACTOR,
+   HARD-GATE evidence checks, and a spec-gap decision score. Use when a plan and task list
+   already exist and it is time to implement — triggers: "/dev", "start the dev stage", "build
+-- 
+2.51.0.windows.1
+

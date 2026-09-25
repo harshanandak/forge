@@ -1,0 +1,113 @@
+From 9c97525a114166487078c568825f262b3943c026 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 22:57:17 +0530
+Subject: [PATCH] fix(setup): preserve existing Claude import
+
+---
+ lib/commands/setup.js     |  3 ++-
+ lib/symlink-utils.js      | 11 ++++++++---
+ test/symlink-flag.test.js | 38 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 48 insertions(+), 4 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 0a4bf49d..37f781ee 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2058,7 +2058,8 @@ function createAgentLinkFile(agent, symlinkOnly = false) {
+ 
+   const result = createSymlinkOrCopy('AGENTS.md', agent.linkFile, { symlinkOnly });
+   if (result) {
+-    console.log(`  ${result === 'linked' ? 'Linked' : 'Copied'}: ${agent.linkFile}`);
++    const action = result === 'linked' ? 'Linked' : result === 'copied' ? 'Copied' : 'Preserved import';
++    console.log(`  ${action}: ${agent.linkFile}`);
+   }
+ }
+ 
+diff --git a/lib/symlink-utils.js b/lib/symlink-utils.js
+index 459d4099..663338b0 100644
+--- a/lib/symlink-utils.js
++++ b/lib/symlink-utils.js
+@@ -28,7 +28,7 @@ const HEADER_COMMENT =
+  * @param {string} linkPath - Absolute path for the symlink/copy (e.g., CLAUDE.md)
+  * @param {Object} [options={}] - Options
+  * @param {boolean} [options.symlinkOnly=false] - When true, skip copy fallback (--symlink flag)
+- * @returns {'linked'|'copied'|''} Result indicator
++ * @returns {'linked'|'copied'|'existing-import'|''} Result indicator
+  */
+ function createSymlinkOrCopy(target, linkPath, options = {}) {
+   try {
+@@ -38,7 +38,8 @@ function createSymlinkOrCopy(target, linkPath, options = {}) {
+       return '';
+     }
+ 
+-    // Remove existing file/symlink at linkPath
++    // Existing agent files belong to the user. A thin import is already the
++    // desired projection; anything else must be left untouched.
+     if (fs.existsSync(linkPath)) {
+       const stat = fs.lstatSync(linkPath);
+       if (stat.isDirectory()) {
+@@ -47,7 +48,11 @@ function createSymlinkOrCopy(target, linkPath, options = {}) {
+         );
+         return '';
+       }
+-      fs.unlinkSync(linkPath);
++      if (fs.readFileSync(linkPath, 'utf8').trim() === '@AGENTS.md') {
++        return 'existing-import';
++      }
++      console.warn(`  Warning: Skipped ${linkPath} (existing file is not an @AGENTS.md import).`);
++      return '';
+     }
+ 
+     // Ensure parent directory exists
+diff --git a/test/symlink-flag.test.js b/test/symlink-flag.test.js
+index 95fc060e..71ce0502 100644
+--- a/test/symlink-flag.test.js
++++ b/test/symlink-flag.test.js
+@@ -143,6 +143,44 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     }
+   });
+ 
++  test('preserves an existing @AGENTS.md import byte-for-byte', () => {
++    const tmpDir = makeTmpDir();
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      const existingImport = '\uFEFF  @AGENTS.md\r\n';
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.writeFileSync(linkPath, existingImport);
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('existing-import');
++      expect(fs.readFileSync(linkPath)).toEqual(Buffer.from(existingImport));
++    } finally {
++      cleanTmpDir(tmpDir);
++    }
++  });
++
++  test('does not overwrite an existing non-import file', () => {
++    const tmpDir = makeTmpDir();
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      const userContent = '# User instructions\nKeep this content.\n';
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.writeFileSync(linkPath, userContent);
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('');
++      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
++    } finally {
++      cleanTmpDir(tmpDir);
++    }
++  });
++
+   test('HEADER_COMMENT constant is exported', () => {
+     const { HEADER_COMMENT } = require('../lib/symlink-utils');
+     expect(typeof HEADER_COMMENT).toBe('string');
+-- 
+2.51.0.windows.1
+

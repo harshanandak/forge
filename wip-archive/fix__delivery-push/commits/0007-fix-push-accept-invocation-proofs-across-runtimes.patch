@@ -1,0 +1,160 @@
+From 9637e736a425acb70f1585aa6df64d78a7a94049 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 04:37:42 +0530
+Subject: [PATCH] fix(push): accept invocation proofs across runtimes
+
+---
+ .../2026-09-18-delivery-push/decisions.md     | 14 ++++++
+ lib/commands/push.js                          |  2 +-
+ lib/validation-receipt.js                     | 11 ++++-
+ test/check-forge-token.test.js                | 47 +++++++++++++++++--
+ 4 files changed, 68 insertions(+), 6 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-push/decisions.md b/docs/work/2026-09-18-delivery-push/decisions.md
+index 70d6a000..c53d4448 100644
+--- a/docs/work/2026-09-18-delivery-push/decisions.md
++++ b/docs/work/2026-09-18-delivery-push/decisions.md
+@@ -92,3 +92,17 @@
+ **Canonical RED**: `node bin/forge.js validate` exited 1 after 771,201 ms. The retained root-attribute aggregate contains 31 reports, 8,774 tests, 8,740 passes, 1 failure, 0 errors, and 33 skips. The only failure was `automatic singleton trigger wiring > successful push triggers once` in `local-full-shard-5.xml`: expected `true`, received `false`, in 1.0756 seconds. The run used the changed-files-only JUnit retainer; elapsed time remains observational because the host workload and instrumentation differ from prior runs.
+ 
+ **Focused GREEN**: `bun test --timeout 15000 test/commands/push.test.js test/embedded-assets-drift.test.js test/validation-receipt.test.js test/check-forge-token.test.js test/scripts/test-runner.test.js test/pr-monitor/auto-trigger-wiring.test.js test/commands/github-indirect-routes.test.js test/push-backing-issue.test.js` passed 187 tests with 1,062 expectations and 0 failures in 15.54 seconds. The corrected `successful push triggers once` case passed in 0.60 ms through the asynchronous spawn seam.
++
++## Decision 8
++
++**Date**: 2026-09-20
++**Task**: Make signed push authorization portable across the issuer and hook runtimes
++**Gap**: Push proofs reused the validation receipt's runtime-strict state comparison. A proof issued by Forge under Bun therefore failed the unchanged Node hook checker even when its repository state, test-runtime identity, runner, gates, owner, and signature still matched.
++**Score**: 0 / 14
++**Route**: PROCEED within the existing signed-proof issue
++**Choice made**: Exclude only the issuing runtime from push-proof state. Keep validation receipts runtime-strict, and keep push proofs bound to a clean worktree, exact HEAD, resolved Bun and Node test runtimes, runner identity, symbolic branch, gate set, live owner, and HMAC signature.
++**Status**: RESOLVED IN SOURCE; CANONICAL RECHECK PENDING
++
++**RED**: The real Bun issuer wrote a signed full proof without a runtime-identity seam, then the unchanged Node `scripts/check-forge-token.js` exited 1 for that proof (0 passed, 1 failed in 2.08 seconds).
++**GREEN**: The same named regression passed after the push-only state correction (1 passed in 3.38 seconds). The three-file focused run passed 78 tests with 206 expectations and 0 failures in 18.18 seconds; it retained strict validation-receipt runtime rejection and push-proof rejection for changed HEAD, test runtime, runner, tracked or untracked state, branch, worktree, gates, signature, and owner identity.
++**Compiled boundary**: An independent disposable compiled issuer captured a real clean Git state, wrote the proof, and invoked the unchanged Node checker while its owner process remained live. Compilation exited 0 in 586 ms; execution exited 0 in 2.393 seconds with Node status 0 and no spawn error, then consumed the proof. The reviewer made no repository edits.
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 871089e1..d3033736 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -391,7 +391,7 @@ async function runSupervisedTestCommand({
+ /**
+  * Run tests unless in quick mode, logging warnings for first push.
+  * @param {object} options - Test execution dependencies and state
+- * @returns {boolean|undefined} True if tests passed, undefined if skipped
++ * @returns {Promise<boolean|undefined>} True if tests passed, undefined if skipped
+  */
+ async function runTests({
+ 	spawnAsyncFn,
+diff --git a/lib/validation-receipt.js b/lib/validation-receipt.js
+index 07e9ce9c..f7601e1b 100644
+--- a/lib/validation-receipt.js
++++ b/lib/validation-receipt.js
+@@ -96,14 +96,21 @@ function sameState(left, right) {
+ function capturePushState(projectRoot, deps = {}) {
+ 	if (deps.capturePushState) return deps.capturePushState(projectRoot);
+ 	const root = resolveGitRoot(projectRoot, deps);
++	const { runtime: _verifierRuntime, ...state } = captureState(root, deps);
+ 	return {
+-		...captureState(root, deps),
++		...state,
+ 		branch: git(root, ['symbolic-ref', '--quiet', 'HEAD'], deps),
+ 	};
+ }
+ 
+ function samePushState(left, right) {
+-	return sameState(left, right) && left?.branch === right?.branch;
++	return left?.clean === true
++		&& right?.clean === true
++		&& left.worktree === right.worktree
++		&& left.head === right.head
++		&& left.testRuntime === right.testRuntime
++		&& left.runner === right.runner
++		&& left.branch === right.branch;
+ }
+ 
+ function hasExactGates(mode, gates) {
+diff --git a/test/check-forge-token.test.js b/test/check-forge-token.test.js
+index d8b9ff5d..ae041188 100644
+--- a/test/check-forge-token.test.js
++++ b/test/check-forge-token.test.js
+@@ -1,6 +1,6 @@
+ 'use strict';
+ 
+-const { spawn } = require('node:child_process');
++const { execFileSync, spawn, spawnSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const os = require('node:os');
+@@ -56,6 +56,16 @@ function tokenEnv(token, extra = {}) {
+   return { [NONCE_ENV]: token.nonce, ...extra };
+ }
+ 
++function initializeRepo(root) {
++  fs.writeFileSync(path.join(root, 'tracked.txt'), 'initial\n');
++  execFileSync('git', ['init', '-q'], { cwd: root });
++  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root });
++  execFileSync('git', ['config', 'user.email', 'push-proof@example.test'], { cwd: root });
++  execFileSync('git', ['config', 'user.name', 'Push Proof Test'], { cwd: root });
++  execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
++  execFileSync('git', ['commit', '-qm', 'initial'], { cwd: root });
++}
++
+ describe('check-forge-token', () => {
+   let root;
+ 
+@@ -78,6 +88,37 @@ describe('check-forge-token', () => {
+     })).toBe(true);
+   });
+ 
++  test('accepts a Bun-issued proof in the real Node hook checker', () => {
++    initializeRepo(root);
++    const homeDir = path.join(root, '.git', 'forge-test-home');
++    fs.mkdirSync(homeDir);
++    const snapshot = _pushProof.begin(root, { homeDir });
++    expect(snapshot).toBeTruthy();
++    const token = forgeToken.write(root, {
++      homeDir,
++      snapshot,
++      mode: 'full',
++      gates: FULL_GATES,
++      receiptIdentity: 'fresh-tests',
++    });
++    const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || globalThis.Bun?.which?.('node') || 'node';
++    const result = spawnSync(nodeExecutable, [path.resolve(__dirname, '../scripts/check-forge-token.js')], {
++      cwd: root,
++      encoding: 'utf8',
++      env: {
++        ...process.env,
++        HOME: homeDir,
++        USERPROFILE: homeDir,
++        [NONCE_ENV]: token.nonce,
++      },
++      timeout: 10_000,
++      windowsHide: true,
++    });
++
++    expect({ status: result.status, errorCode: result.error?.code || null })
++      .toEqual({ status: 0, errorCode: null });
++  });
++
+   test('accepts quick only with its exact gate set and explicit quick child lane', () => {
+     const { token, options } = issue(root, 'quick');
+     expect(forgeToken.isValid(root, {
+@@ -138,12 +179,12 @@ describe('check-forge-token', () => {
+     })).toThrow();
+   });
+ 
+-  test('rejects changed HEAD, runtime, test runtime, tracked content, and untracked content', () => {
++  test('rejects changed HEAD, test runtime, runner, tracked content, and untracked content', () => {
+     const issued = issue(root);
+     for (const changed of [
+       { head: 'b'.repeat(40) },
+-      { runtime: 'other-runtime' },
+       { testRuntime: 'other-test-runtime' },
++      { runner: 'other-runner' },
+       { clean: false },
+     ]) {
+       expect(forgeToken.isValid(root, {
+-- 
+2.51.0.windows.1
+

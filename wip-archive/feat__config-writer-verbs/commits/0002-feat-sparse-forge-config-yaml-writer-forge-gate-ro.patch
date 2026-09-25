@@ -1,0 +1,958 @@
+From 3863c8e5d5240b570da687e98b04e067874b96eb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 11:07:37 +0530
+Subject: [PATCH] feat: sparse .forge/config.yaml writer + forge gate/role
+ verbs
+
+Add lib/config-writer.js, a sparse read-modify-write for the
+schema-validated .forge/config.yaml surface (array key-paths so gate
+ids containing dots are never split). Two thin verbs ride it:
+
+- `forge gate <enable|disable> <gate-id>` -> workflow.gates.<id>.enabled
+  (consumed by the shipped applyEnabledConfig reader; forge options
+  gates --json reflects it with zero new read code).
+- `forge role <role> --use <skill> [--ideology <name>]` ->
+  roles.<role>.skill / roles.<role>.ideology.
+
+runtime-graph.js gains an additive, backward-compatible `roles` section
+(sibling to workflow.gates) plus applyRoleConfig with OPEN-WORLD skill
+validation: role names are the closed STAGE_IDS set, but the bound
+skill/ideology names are validated only as non-empty strings and never
+against the PLAN_SUBSKILL enum (which stays scoped to
+planning.template.partialInvocation). forge options gains a `roles`
+collection so `forge options roles --json` reflects resolved bindings.
+
+Write-time validation: unknown gate id, unknown role, or unresolvable
+skill (no SKILL.md under .skills/ > skills/) errors before any write,
+never mid-run.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                  |   1 +
+ lib/commands/gate.js          |  69 ++++++++++++++
+ lib/commands/options.js       |  10 +-
+ lib/commands/role.js          |  93 ++++++++++++++++++
+ lib/config-writer.js          | 173 ++++++++++++++++++++++++++++++++++
+ lib/core/runtime-graph.js     |  88 +++++++++++++++++
+ test/commands/gate.test.js    |  72 ++++++++++++++
+ test/commands/options.test.js |  56 +++++++++++
+ test/commands/role.test.js    |  86 +++++++++++++++++
+ test/config-writer.test.js    | 101 ++++++--------------
+ 10 files changed, 674 insertions(+), 75 deletions(-)
+ create mode 100644 lib/commands/gate.js
+ create mode 100644 lib/commands/role.js
+ create mode 100644 lib/config-writer.js
+ create mode 100644 test/commands/gate.test.js
+ create mode 100644 test/commands/options.test.js
+ create mode 100644 test/commands/role.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index dc9b2c21..e8071531 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Added
+ 
++- Toggle-driven workflow config: a sparse writer for the schema-validated `.forge/config.yaml` surface (`lib/config-writer.js`) plus two thin verbs over it. `forge gate <enable|disable> <gate-id>` writes `workflow.gates.<gate-id>.enabled` and `forge role <role> --use <skill> [--ideology <name>]` writes `roles.<role>.skill` / `roles.<role>.ideology`, so users re-carve the assembly with config writes instead of editing Forge code. The reader gains an additive, backward-compatible `roles` section (siblings to `workflow.gates`) with open-world skill validation — the closed `PLAN_SUBSKILL` enum stays scoped to `planning.template.partialInvocation` and never blocks a `roles.<role>.skill` value — and `forge options roles --json` now reflects the resolved bindings. Both verbs validate at write time: an unknown gate id, unknown role, or unresolvable skill (no `SKILL.md` under `.skills/ > skills/`) errors before anything is written, never mid-run.
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+ 
+ ### Changed
+diff --git a/lib/commands/gate.js b/lib/commands/gate.js
+new file mode 100644
+index 00000000..4aa34a66
+--- /dev/null
++++ b/lib/commands/gate.js
+@@ -0,0 +1,69 @@
++'use strict';
++
++/**
++ * `forge gate <enable|disable> <gate-id>`
++ *
++ * Thin TOGGLE verb over the sparse config writer: sets
++ * `workflow.gates.<gate-id>.enabled` true/false in `.forge/config.yaml`. The
++ * shipped resolver (`applyEnabledConfig`) already consumes this field, so
++ * `forge options gates --json` reflects the flip with zero new read code.
++ *
++ * Write-time validation: an unknown gate id (or a locked gate being disabled)
++ * errors BEFORE anything is written — never mid-run.
++ *
++ * NOTE: `gate approve` (gates-as-events) is intentionally NOT implemented here.
++ */
++
++const path = require('node:path');
++const { setConfigOverride } = require('../config-writer');
++const { getDefaultRuntimeGraph } = require('../core/runtime-graph');
++
++function usage() {
++  return 'Usage: forge gate <enable|disable> <gate-id>';
++}
++
++function knownGates() {
++  return new Map(getDefaultRuntimeGraph().gates.map(gate => [gate.id, gate]));
++}
++
++async function handler(args, _flags, projectRoot = process.cwd()) {
++  const [action, gateId] = args;
++
++  if (!action || (action !== 'enable' && action !== 'disable')) {
++    return { success: false, error: `Expected 'enable' or 'disable'.\n${usage()}` };
++  }
++  if (!gateId) {
++    return { success: false, error: `Missing gate id.\n${usage()}` };
++  }
++
++  const gates = knownGates();
++  const gate = gates.get(gateId);
++  if (!gate) {
++    return {
++      success: false,
++      error: `Unknown gate '${gateId}'. Known gates: ${[...gates.keys()].join(', ')}`,
++    };
++  }
++  if (action === 'disable' && gate.locked === true) {
++    return { success: false, error: `Cannot disable locked gate '${gateId}'.` };
++  }
++
++  const enabled = action === 'enable';
++  const { configPath } = setConfigOverride(
++    projectRoot,
++    ['workflow', 'gates', gateId, 'enabled'],
++    enabled,
++  );
++  const where = path.relative(projectRoot, configPath) || configPath;
++  return {
++    success: true,
++    output: `${action}d gate '${gateId}' (workflow.gates.${gateId}.enabled=${enabled}) in ${where}`,
++  };
++}
++
++module.exports = {
++  name: 'gate',
++  description: 'Enable or disable a workflow gate in .forge/config.yaml',
++  usage: usage(),
++  handler,
++};
+diff --git a/lib/commands/options.js b/lib/commands/options.js
+index 7b215dd5..05ec3515 100644
+--- a/lib/commands/options.js
++++ b/lib/commands/options.js
+@@ -10,6 +10,7 @@ const COLLECTIONS = {
+   stages: { key: 'phases', label: 'Stages' },
+   gates: { key: 'gates', label: 'Gates' },
+   adapters: { key: 'adapters', label: 'Adapters' },
++  roles: { key: 'roles', label: 'Roles' },
+ };
+ 
+ function hasJson(args) {
+@@ -24,7 +25,14 @@ function jsonOutput(value) {
+   return `${JSON.stringify(value, null, 2)}\n`;
+ }
+ 
++function summarizeRole(item) {
++  const parts = [`skill=${item.skill}`];
++  if (item.ideology) parts.push(`ideology=${item.ideology}`);
++  return `${item.id} (${parts.join(', ')})`;
++}
++
+ function summarizeItem(item) {
++  if (item.role) return summarizeRole(item);
+   const state = item.enabled === false ? 'disabled' : 'enabled';
+   const locked = item.locked ? ', locked' : '';
+   return `${item.id} (${state}${locked}) - ${item.label ?? item.kind ?? item.command ?? 'graph primitive'}`;
+@@ -133,7 +141,7 @@ function renderLint(result) {
+ 
+ function usage() {
+   return [
+-    'Usage: forge options <stages|gates|adapters|diff|why <id>|lint> [--json]',
++    'Usage: forge options <stages|gates|adapters|roles|diff|why <id>|lint> [--json]',
+     '',
+     'Inspect resolved runtime graph primitives and project config effects.',
+   ].join('\n');
+diff --git a/lib/commands/role.js b/lib/commands/role.js
+new file mode 100644
+index 00000000..9d0efc29
+--- /dev/null
++++ b/lib/commands/role.js
+@@ -0,0 +1,93 @@
++'use strict';
++
++/**
++ * `forge role <role> --use <skill> [--ideology <name>]`
++ *
++ * Thin SWAP verb over the sparse config writer: binds a role to a skill and/or
++ * ideology by writing `roles.<role>.skill` / `roles.<role>.ideology` in
++ * `.forge/config.yaml`. `forge options roles --json` reflects the binding
++ * through the shipped resolver (`applyRoleConfig`).
++ *
++ * Write-time validation errors BEFORE anything is written:
++ *  - unknown role (not in the KNOWN closed set ROLE_IDS)
++ *  - unresolvable skill (no SKILL.md under `.skills/ > skills/`)
++ *
++ * The skill name is OPEN-WORLD (a bring-your-own skill is fine) — it is checked
++ * for existence/trust, never against the closed PLAN_SUBSKILL enum.
++ */
++
++const { setConfigOverride, resolveSkill } = require('../config-writer');
++const { ROLE_IDS } = require('../core/runtime-graph');
++
++function usage() {
++  return 'Usage: forge role <role> --use <skill> [--ideology <name>]';
++}
++
++function parseArgs(args) {
++  const parsed = { role: args[0], skill: undefined, ideology: undefined };
++  for (let i = 1; i < args.length; i += 1) {
++    const token = args[i];
++    if (token === '--use' || token === '--skill') {
++      parsed.skill = args[i + 1];
++      i += 1;
++    } else if (token === '--ideology') {
++      parsed.ideology = args[i + 1];
++      i += 1;
++    } else {
++      return { error: `Unknown argument '${token}'.` };
++    }
++  }
++  return { parsed };
++}
++
++async function handler(args, _flags, projectRoot = process.cwd()) {
++  const { parsed, error } = parseArgs(args);
++  if (error) {
++    return { success: false, error: `${error}\n${usage()}` };
++  }
++  if (!parsed.role) {
++    return { success: false, error: usage() };
++  }
++  if (!ROLE_IDS.has(parsed.role)) {
++    return {
++      success: false,
++      error: `Unknown role '${parsed.role}'. Known roles: ${[...ROLE_IDS].join(', ')}`,
++    };
++  }
++  if (parsed.skill === undefined && parsed.ideology === undefined) {
++    return { success: false, error: `Nothing to set — pass --use and/or --ideology.\n${usage()}` };
++  }
++  if (parsed.skill !== undefined) {
++    if (typeof parsed.skill !== 'string' || parsed.skill === '') {
++      return { success: false, error: `--use requires a skill name.\n${usage()}` };
++    }
++    if (!resolveSkill(projectRoot, parsed.skill)) {
++      return {
++        success: false,
++        error: `Unknown skill '${parsed.skill}' — no SKILL.md found under .skills/ or skills/.`,
++      };
++    }
++  }
++  if (parsed.ideology !== undefined && (typeof parsed.ideology !== 'string' || parsed.ideology === '')) {
++    return { success: false, error: `--ideology requires a name.\n${usage()}` };
++  }
++
++  const writes = [];
++  if (parsed.skill !== undefined) {
++    setConfigOverride(projectRoot, ['roles', parsed.role, 'skill'], parsed.skill);
++    writes.push(`roles.${parsed.role}.skill=${parsed.skill}`);
++  }
++  if (parsed.ideology !== undefined) {
++    setConfigOverride(projectRoot, ['roles', parsed.role, 'ideology'], parsed.ideology);
++    writes.push(`roles.${parsed.role}.ideology=${parsed.ideology}`);
++  }
++
++  return { success: true, output: `Updated ${writes.join(', ')}` };
++}
++
++module.exports = {
++  name: 'role',
++  description: 'Bind a role to a skill/ideology in .forge/config.yaml',
++  usage: usage(),
++  handler,
++};
+diff --git a/lib/config-writer.js b/lib/config-writer.js
+new file mode 100644
+index 00000000..fb9a0bfa
+--- /dev/null
++++ b/lib/config-writer.js
+@@ -0,0 +1,173 @@
++'use strict';
++
++/**
++ * @module config-writer
++ *
++ * Sparse read-modify-write for the ONE schema-validated config surface,
++ * `.forge/config.yaml` (the file `lib/core/runtime-graph.js` reads via
++ * `loadRuntimeGraphConfig`). This is the single missing primitive behind the
++ * `forge gate` / `forge role` verbs: create-or-update the file, set/remove one
++ * nested key, and preserve every other key untouched.
++ *
++ * Design: docs/work/2026-07-04-kernel-native-skills/extensibility-architecture.md
++ * (§9 "the sparse writer"). This is NOT a generalization of the legacy
++ * `.forge/adapters.json` review writer — that path stays where it is.
++ *
++ * Key paths are ARRAYS of segments, not dotted strings, because real keys
++ * contain dots (e.g. the gate id `gate.plan-exit`). Splitting on `.` would
++ * corrupt them, so callers pass `['workflow', 'gates', 'gate.plan-exit',
++ * 'enabled']`.
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++const YAML = require('yaml');
++
++/** Root of the installed Forge package (ships the canonical `skills/` dir). */
++const PACKAGE_ROOT = path.join(__dirname, '..');
++
++const CONFIG_RELATIVE = path.join('.forge', 'config.yaml');
++
++function getConfigPath(projectRoot = process.cwd()) {
++  return path.join(projectRoot, '.forge', 'config.yaml');
++}
++
++function assertKeyPath(keyPath) {
++  if (!Array.isArray(keyPath) || keyPath.length === 0
++    || keyPath.some(seg => typeof seg !== 'string' || seg === '')) {
++    throw new Error('config-writer: keyPath must be a non-empty array of non-empty string segments.');
++  }
++}
++
++/** Load the raw config object (or `{}` if the file is absent/empty). */
++function loadRawConfig(projectRoot = process.cwd()) {
++  const configPath = getConfigPath(projectRoot);
++  if (!fs.existsSync(configPath)) return {};
++  const raw = fs.readFileSync(configPath, 'utf8');
++  if (raw.trim() === '') return {};
++  const parsed = YAML.parse(raw);
++  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
++    throw new Error(`${CONFIG_RELATIVE} root must be an object.`);
++  }
++  return parsed;
++}
++
++function writeRawConfig(projectRoot, config) {
++  const configPath = getConfigPath(projectRoot);
++  fs.mkdirSync(path.dirname(configPath), { recursive: true });
++  fs.writeFileSync(configPath, YAML.stringify(config));
++  return configPath;
++}
++
++/**
++ * Set a nested key to `value`, creating intermediate objects as needed and
++ * preserving all sibling keys. Creates `.forge/config.yaml` if absent.
++ *
++ * @param {string} projectRoot
++ * @param {string[]} keyPath - Segments, e.g. ['roles', 'plan', 'skill'].
++ * @param {*} value
++ * @returns {{config: object, configPath: string}}
++ */
++function setConfigOverride(projectRoot, keyPath, value) {
++  assertKeyPath(keyPath);
++  const config = loadRawConfig(projectRoot);
++  let node = config;
++  for (let i = 0; i < keyPath.length - 1; i += 1) {
++    const key = keyPath[i];
++    if (!node[key] || typeof node[key] !== 'object' || Array.isArray(node[key])) {
++      node[key] = {};
++    }
++    node = node[key];
++  }
++  node[keyPath[keyPath.length - 1]] = value;
++  return { config, configPath: writeRawConfig(projectRoot, config) };
++}
++
++/**
++ * Remove a nested key (a "reset" to the profile/default). Prunes ancestor
++ * objects that become empty so the surface stays sparse. No-op if the key is
++ * absent or the file does not exist.
++ *
++ * @param {string} projectRoot
++ * @param {string[]} keyPath
++ * @returns {{config: object, configPath: string, removed: boolean}}
++ */
++function removeConfigOverride(projectRoot, keyPath) {
++  assertKeyPath(keyPath);
++  const configPath = getConfigPath(projectRoot);
++  if (!fs.existsSync(configPath)) {
++    return { config: {}, configPath, removed: false };
++  }
++  const config = loadRawConfig(projectRoot);
++  const chain = [config];
++  let node = config;
++  for (let i = 0; i < keyPath.length - 1; i += 1) {
++    const key = keyPath[i];
++    if (!node[key] || typeof node[key] !== 'object' || Array.isArray(node[key])) {
++      return { config, configPath, removed: false };
++    }
++    node = node[key];
++    chain.push(node);
++  }
++  const leaf = keyPath[keyPath.length - 1];
++  if (!Object.hasOwn(node, leaf)) {
++    return { config, configPath, removed: false };
++  }
++  delete node[leaf];
++  // Prune now-empty ancestor objects, deepest first.
++  for (let i = chain.length - 1; i > 0; i -= 1) {
++    if (Object.keys(chain[i]).length === 0) {
++      delete chain[i - 1][keyPath[i - 1]];
++    } else {
++      break;
++    }
++  }
++  return { config, configPath: writeRawConfig(projectRoot, config), removed: true };
++}
++
++/**
++ * Directories searched (in precedence order) when resolving a skill name.
++ * Mirrors the skills-sync precedence: `.skills/` shadow wins over canonical
++ * `skills/`, then the installed package's shipped defaults.
++ */
++function skillSearchDirs(projectRoot = process.cwd()) {
++  return [
++    path.join(projectRoot, '.skills'),
++    path.join(projectRoot, 'skills'),
++    path.join(PACKAGE_ROOT, 'skills'),
++  ];
++}
++
++/**
++ * Resolve a skill NAME to a real `SKILL.md` via `.skills/ > skills/`
++ * precedence. Returns null if no such skill exists — the `forge role` verb
++ * uses this for write-time validation so an unresolvable skill errors before
++ * anything is written (never mid-run).
++ *
++ * @param {string} projectRoot
++ * @param {string} name
++ * @returns {{name: string, dir: string, path: string}|null}
++ */
++function resolveSkill(projectRoot, name) {
++  if (typeof name !== 'string' || name === ''
++    || name.includes('/') || name.includes('\\') || name.includes('\0')
++    || name === '.' || name === '..') {
++    return null;
++  }
++  for (const dir of skillSearchDirs(projectRoot)) {
++    const skillMd = path.join(dir, name, 'SKILL.md');
++    if (fs.existsSync(skillMd)) {
++      return { name, dir, path: skillMd };
++    }
++  }
++  return null;
++}
++
++module.exports = {
++  getConfigPath,
++  loadRawConfig,
++  setConfigOverride,
++  removeConfigOverride,
++  resolveSkill,
++  skillSearchDirs,
++};
+diff --git a/lib/core/runtime-graph.js b/lib/core/runtime-graph.js
+index 659f23a9..2678921e 100644
+--- a/lib/core/runtime-graph.js
++++ b/lib/core/runtime-graph.js
+@@ -84,6 +84,33 @@ function PlanningSubSkill({ id, label, inputs, outputs, evidence, gate, enabled
+   return withRuntimeState({ id, label, inputs, outputs, evidence, gate }, { enabled });
+ }
+ 
++function Role({ id, role, skill, ideology, configSource = 'package-defaults' }) {
++  const primitive = { id, role, skill, configSource };
++  if (ideology !== undefined) primitive.ideology = ideology;
++  return primitive;
++}
++
++// Role -> default skill binding. Role names are the canonical stage ids
++// (lib/workflow/stages.js STAGE_IDS); each ships bound to its like-named skill.
++// This is the closed set of KNOWN roles; the bound skill name is open-world
++// (resolved via .skills/ > skills/), never checked against PLAN_SUBSKILL_IDS.
++// Additive to the graph — see docs/work/2026-07-04-kernel-native-skills/
++// extensibility-architecture.md.
++const ROLE_DEFINITIONS = [
++  { role: 'plan', skill: 'plan' },
++  { role: 'dev', skill: 'dev' },
++  { role: 'validate', skill: 'validate' },
++  { role: 'ship', skill: 'ship' },
++  { role: 'review', skill: 'review' },
++  { role: 'verify', skill: 'verify' },
++];
++
++const ROLE_IDS = new Set(ROLE_DEFINITIONS.map(definition => definition.role));
++
++function roleFromDefinition(definition) {
++  return Role({ id: `role.${definition.role}`, role: definition.role, skill: definition.skill });
++}
++
+ const PLAN_SUBSKILL_DEFINITIONS = [
+   {
+     id: 'plan.intent_capture',
+@@ -223,6 +250,7 @@ const RESOLVED_RUNTIME_GRAPH = {
+     },
+     subSkills: PLAN_SUBSKILL_DEFINITIONS.map(planningSubSkillFromDefinition),
+   },
++  roles: ROLE_DEFINITIONS.map(roleFromDefinition),
+   actions: [
+     Action({
+       id: 'action.plan.command',
+@@ -616,6 +644,63 @@ function applyAdapterConfig(graph, config, errors) {
+   }
+ }
+ 
++function readRoleStringField(options, field, role, errors) {
++  if (!Object.hasOwn(options, field)) {
++    return { present: false, value: undefined };
++  }
++  const value = options[field];
++  if (typeof value !== 'string' || value.trim() === '') {
++    errors.push({
++      code: `INVALID_ROLE_${field.toUpperCase()}`,
++      message: `role '${role}' ${field} must be a non-empty string.`,
++    });
++    return { present: true, value: undefined };
++  }
++  return { present: true, value: value.trim() };
++}
++
++// Reader for the `roles` section (sibling to `workflow.gates`). Role names are
++// the KNOWN closed set (ROLE_IDS); the bound `skill` / `ideology` names are
++// OPEN-WORLD — validated only as non-empty strings here, never against
++// PLAN_SUBSKILL_IDS (that closed enum stays scoped to
++// planning.template.partialInvocation). Skill EXISTENCE is enforced at write
++// time by the `forge role` verb, not mid-run.
++function applyRoleConfig(graph, config, errors) {
++  const roles = readConfigSection(config, 'roles', errors, 'roles');
++  for (const [role, options] of Object.entries(roles)) {
++    const entry = graph.roles.find(candidate => candidate.role === role || candidate.id === role);
++    if (!entry) {
++      errors.push({
++        code: 'UNKNOWN_ROLE',
++        message: `Unknown role '${role}' in ${CONFIG_SOURCE}.`,
++      });
++      continue;
++    }
++    if (!options || typeof options !== 'object' || Array.isArray(options)) {
++      errors.push({
++        code: 'INVALID_ROLE_CONFIG',
++        message: `role '${role}' config must be an object.`,
++      });
++      continue;
++    }
++
++    let changed = false;
++    const skill = readRoleStringField(options, 'skill', role, errors);
++    if (skill.present && skill.value !== undefined) {
++      entry.skill = skill.value;
++      changed = true;
++    }
++    const ideology = readRoleStringField(options, 'ideology', role, errors);
++    if (ideology.present && ideology.value !== undefined) {
++      entry.ideology = ideology.value;
++      changed = true;
++    }
++    if (changed) {
++      entry.configSource = CONFIG_SOURCE;
++    }
++  }
++}
++
+ function assertStringList(value, errors, code, message) {
+   if (!Array.isArray(value)) {
+     errors.push({ code, message });
+@@ -765,6 +850,7 @@ function resolveRuntimeGraph({ projectRoot = process.cwd(), throwOnError = true
+     applyRailConfig(graph, loaded.config, errors);
+     applyWorkflowConfig(graph, loaded.config, errors);
+     applyAdapterConfig(graph, loaded.config, errors);
++    applyRoleConfig(graph, loaded.config, errors);
+     applyPlanningConfig(graph, loaded.config, errors);
+     graph.protectedPaths = validateProtectedPaths(loaded.config, errors);
+   }
+@@ -821,6 +907,8 @@ module.exports = {
+   Rail,
+   Adapter,
+   PlanningSubSkill,
++  Role,
++  ROLE_IDS,
+   loadRuntimeGraphConfig,
+   lintRuntimeGraphConfig,
+   resolveRuntimeGraph,
+diff --git a/test/commands/gate.test.js b/test/commands/gate.test.js
+new file mode 100644
+index 00000000..3b931780
+--- /dev/null
++++ b/test/commands/gate.test.js
+@@ -0,0 +1,72 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const YAML = require('yaml');
++
++const gateCommand = require('../../lib/commands/gate');
++const optionsCommand = require('../../lib/commands/options');
++
++const tempRoots = [];
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gate-verb-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++function readConfig(root) {
++  return YAML.parse(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8'));
++}
++
++function gates(options) {
++  return JSON.parse(options.output).items;
++}
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('forge gate verb', () => {
++  test('disable writes workflow.gates.<id>.enabled=false AND forge options gates --json reflects it', async () => {
++    const root = makeProject();
++
++    const result = await gateCommand.handler(['disable', 'gate.plan-exit'], {}, root);
++    expect(result.success).toBe(true);
++
++    // Write side.
++    expect(readConfig(root).workflow.gates['gate.plan-exit'].enabled).toBe(false);
++
++    // Read side through the shipped resolver — zero new read code.
++    const options = await optionsCommand.handler(['gates', '--json'], {}, root);
++    expect(gates(options).find(g => g.id === 'gate.plan-exit').enabled).toBe(false);
++  });
++
++  test('enable flips it back to true', async () => {
++    const root = makeProject();
++    await gateCommand.handler(['disable', 'gate.plan-exit'], {}, root);
++    await gateCommand.handler(['enable', 'gate.plan-exit'], {}, root);
++    const options = await optionsCommand.handler(['gates', '--json'], {}, root);
++    expect(gates(options).find(g => g.id === 'gate.plan-exit').enabled).toBe(true);
++  });
++
++  test('rejects an unknown gate id at write time (nothing written)', async () => {
++    const root = makeProject();
++    const result = await gateCommand.handler(['disable', 'gate.does-not-exist'], {}, root);
++    expect(result.success).toBe(false);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++  });
++
++  test('rejects a missing/invalid action', async () => {
++    const root = makeProject();
++    expect((await gateCommand.handler([], {}, root)).success).toBe(false);
++    expect((await gateCommand.handler(['toggle', 'gate.plan-exit'], {}, root)).success).toBe(false);
++    expect((await gateCommand.handler(['disable'], {}, root)).success).toBe(false);
++  });
++});
+diff --git a/test/commands/options.test.js b/test/commands/options.test.js
+new file mode 100644
+index 00000000..61109dba
+--- /dev/null
++++ b/test/commands/options.test.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const optionsCommand = require('../../lib/commands/options');
++
++const tempRoots = [];
++
++function makeProject(configBody) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-options-roles-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  if (configBody != null) {
++    fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), configBody);
++  }
++  return root;
++}
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('forge options roles', () => {
++  test('--json lists the default roles bound to their like-named skills', async () => {
++    const root = makeProject(null);
++    const result = await optionsCommand.handler(['roles', '--json'], {}, root);
++    const parsed = JSON.parse(result.output);
++    expect(parsed.kind).toBe('roles');
++    const byRole = Object.fromEntries(parsed.items.map(item => [item.role, item]));
++    expect(Object.keys(byRole).sort()).toEqual(
++      ['dev', 'plan', 'review', 'ship', 'validate', 'verify'],
++    );
++    expect(byRole.plan.skill).toBe('plan');
++    expect(byRole.plan.configSource).toBe('package-defaults');
++  });
++
++  test('--json reflects a roles override from .forge/config.yaml', async () => {
++    const root = makeProject('roles:\n  plan:\n    skill: my-plan\n    ideology: spec-first\n');
++    const result = await optionsCommand.handler(['roles', '--json'], {}, root);
++    const role = JSON.parse(result.output).items.find(item => item.role === 'plan');
++    expect(role.skill).toBe('my-plan');
++    expect(role.ideology).toBe('spec-first');
++    expect(role.configSource).toBe('.forge/config.yaml');
++  });
++
++  test('text output summarizes a role as its bound skill', async () => {
++    const root = makeProject(null);
++    const result = await optionsCommand.handler(['roles'], {}, root);
++    expect(result.output).toContain('role.plan (skill=plan)');
++  });
++});
+diff --git a/test/commands/role.test.js b/test/commands/role.test.js
+new file mode 100644
+index 00000000..416cd067
+--- /dev/null
++++ b/test/commands/role.test.js
+@@ -0,0 +1,86 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const YAML = require('yaml');
++
++const roleCommand = require('../../lib/commands/role');
++const optionsCommand = require('../../lib/commands/options');
++
++const tempRoots = [];
++
++function makeProject({ skills = [] } = {}) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-role-verb-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  for (const name of skills) {
++    const dir = path.join(root, '.skills', name);
++    fs.mkdirSync(dir, { recursive: true });
++    fs.writeFileSync(path.join(dir, 'SKILL.md'), `# ${name}\n`);
++  }
++  return root;
++}
++
++function readConfig(root) {
++  return YAML.parse(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8'));
++}
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('forge role verb', () => {
++  test('--use writes roles.<role>.skill AND forge options roles --json reflects it', async () => {
++    const root = makeProject({ skills: ['my-plan'] });
++
++    const result = await roleCommand.handler(['plan', '--use', 'my-plan'], {}, root);
++    expect(result.success).toBe(true);
++
++    expect(readConfig(root).roles.plan.skill).toBe('my-plan');
++
++    const options = await optionsCommand.handler(['roles', '--json'], {}, root);
++    const role = JSON.parse(options.output).items.find(item => item.role === 'plan');
++    expect(role.skill).toBe('my-plan');
++    expect(role.configSource).toBe('.forge/config.yaml');
++  });
++
++  test('--ideology writes roles.<role>.ideology', async () => {
++    const root = makeProject({ skills: ['my-plan'] });
++    await roleCommand.handler(['plan', '--use', 'my-plan', '--ideology', 'spec-first'], {}, root);
++    const config = readConfig(root);
++    expect(config.roles.plan.skill).toBe('my-plan');
++    expect(config.roles.plan.ideology).toBe('spec-first');
++  });
++
++  test('binds a bring-your-own (open-world) skill name that is not a plan sub-skill', async () => {
++    const root = makeProject({ skills: ['totally-custom'] });
++    const result = await roleCommand.handler(['dev', '--use', 'totally-custom'], {}, root);
++    expect(result.success).toBe(true);
++    expect(readConfig(root).roles.dev.skill).toBe('totally-custom');
++  });
++
++  test('rejects an unresolvable skill at write time (nothing written)', async () => {
++    const root = makeProject();
++    const result = await roleCommand.handler(['plan', '--use', 'ghost-skill'], {}, root);
++    expect(result.success).toBe(false);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++  });
++
++  test('rejects an unknown role at write time (nothing written)', async () => {
++    const root = makeProject({ skills: ['my-plan'] });
++    const result = await roleCommand.handler(['not-a-role', '--use', 'my-plan'], {}, root);
++    expect(result.success).toBe(false);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++  });
++
++  test('requires at least one of --use / --ideology', async () => {
++    const root = makeProject();
++    const result = await roleCommand.handler(['plan'], {}, root);
++    expect(result.success).toBe(false);
++  });
++});
+diff --git a/test/config-writer.test.js b/test/config-writer.test.js
+index a74ddea5..d0bd8501 100644
+--- a/test/config-writer.test.js
++++ b/test/config-writer.test.js
+@@ -7,10 +7,12 @@ const { afterEach, describe, expect, test } = require('bun:test');
+ 
+ const YAML = require('yaml');
+ 
+-const gateCommand = require('../lib/commands/gate');
+-const roleCommand = require('../lib/commands/role');
+-const optionsCommand = require('../lib/commands/options');
+-const { setConfigOverride, removeConfigOverride, resolveSkill } = require('../lib/config-writer');
++const {
++  setConfigOverride,
++  removeConfigOverride,
++  resolveSkill,
++  loadRawConfig,
++} = require('../lib/config-writer');
+ 
+ const tempRoots = [];
+ 
+@@ -41,104 +43,55 @@ afterEach(() => {
+   }
+ });
+ 
+-describe('config-writer + forge gate/role verbs', () => {
+-  test('sparse writer creates .forge/config.yaml and sets a nested dotted key', () => {
++describe('config-writer sparse writer', () => {
++  test('creates .forge/config.yaml and sets a nested key via an array key-path', () => {
+     const root = makeProject();
+     setConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled'], false);
+     const config = readConfig(root);
++    // Array key-path keeps the dotted gate id 'gate.plan-exit' as ONE key.
+     expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
+   });
+ 
+-  test('sparse writer preserves existing keys on update', () => {
++  test('preserves existing sibling keys on update', () => {
+     const root = makeProject();
+     setConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled'], false);
++    setConfigOverride(root, ['roles', 'plan', 'skill'], 'my-plan');
+     setConfigOverride(root, ['workflow', 'gates', 'gate.dev-exit', 'enabled'], false);
+     const config = readConfig(root);
+     expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
+     expect(config.workflow.gates['gate.dev-exit'].enabled).toBe(false);
++    expect(config.roles.plan.skill).toBe('my-plan');
+   });
+ 
+   test('removeConfigOverride resets a key and prunes empty ancestors', () => {
+     const root = makeProject();
+     setConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled'], false);
+-    removeConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled']);
+-    const config = readConfig(root);
+-    expect(config.workflow?.gates?.['gate.plan-exit']).toBeUndefined();
++    const result = removeConfigOverride(root, ['workflow', 'gates', 'gate.plan-exit', 'enabled']);
++    expect(result.removed).toBe(true);
++    // The whole now-empty workflow branch is pruned, keeping the surface sparse.
++    expect(loadRawConfig(root)).toEqual({});
+   });
+ 
+-  test('forge gate disable gate.plan-exit writes enabled=false AND forge options gates --json reflects it', async () => {
++  test('removeConfigOverride is a no-op for an absent key', () => {
+     const root = makeProject();
+-
+-    const result = await gateCommand.handler(['disable', 'gate.plan-exit'], {}, root);
+-    expect(result.success).toBe(true);
+-
+-    // Write side: the surface records the override.
+-    const config = readConfig(root);
+-    expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
+-
+-    // Read side: the shipped resolver reflects it through forge options gates --json.
+-    const options = await optionsCommand.handler(['gates', '--json'], {}, root);
+-    const parsed = JSON.parse(options.output);
+-    const gate = parsed.items.find(item => item.id === 'gate.plan-exit');
+-    expect(gate.enabled).toBe(false);
+-  });
+-
+-  test('forge gate enable flips it back to true', async () => {
+-    const root = makeProject();
+-    await gateCommand.handler(['disable', 'gate.plan-exit'], {}, root);
+-    await gateCommand.handler(['enable', 'gate.plan-exit'], {}, root);
+-    const options = await optionsCommand.handler(['gates', '--json'], {}, root);
+-    const gate = JSON.parse(options.output).items.find(item => item.id === 'gate.plan-exit');
+-    expect(gate.enabled).toBe(true);
+-  });
+-
+-  test('forge gate rejects an unknown gate id at write time', async () => {
+-    const root = makeProject();
+-    const result = await gateCommand.handler(['disable', 'gate.does-not-exist'], {}, root);
+-    expect(result.success).toBe(false);
+-    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
+-  });
+-
+-  test('forge role plan --use my-plan writes roles.plan.skill AND forge options roles --json reflects it', async () => {
+-    const root = makeProject({ skills: ['my-plan'] });
+-
+-    const result = await roleCommand.handler(['plan', '--use', 'my-plan'], {}, root);
+-    expect(result.success).toBe(true);
+-
+-    const config = readConfig(root);
+-    expect(config.roles.plan.skill).toBe('my-plan');
+-
+-    const options = await optionsCommand.handler(['roles', '--json'], {}, root);
+-    const parsed = JSON.parse(options.output);
+-    const role = parsed.items.find(item => item.role === 'plan');
+-    expect(role.skill).toBe('my-plan');
++    const result = removeConfigOverride(root, ['roles', 'plan', 'skill']);
++    expect(result.removed).toBe(false);
+   });
+ 
+-  test('forge role --ideology writes roles.<role>.ideology', async () => {
+-    const root = makeProject({ skills: ['my-plan'] });
+-    await roleCommand.handler(['plan', '--use', 'my-plan', '--ideology', 'spec-first'], {}, root);
+-    const config = readConfig(root);
+-    expect(config.roles.plan.skill).toBe('my-plan');
+-    expect(config.roles.plan.ideology).toBe('spec-first');
+-  });
+-
+-  test('forge role rejects an unresolvable skill at write time', async () => {
++  test('rejects a malformed key-path', () => {
+     const root = makeProject();
+-    const result = await roleCommand.handler(['plan', '--use', 'ghost-skill'], {}, root);
+-    expect(result.success).toBe(false);
+-    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++    expect(() => setConfigOverride(root, [], true)).toThrow();
+   });
+ 
+-  test('forge role rejects an unknown role at write time', async () => {
++  test('resolveSkill finds a .skills shadow skill and returns null for a missing one', () => {
+     const root = makeProject({ skills: ['my-plan'] });
+-    const result = await roleCommand.handler(['not-a-role', '--use', 'my-plan'], {}, root);
+-    expect(result.success).toBe(false);
+-    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++    expect(resolveSkill(root, 'my-plan')).not.toBeNull();
++    expect(resolveSkill(root, 'ghost-skill')).toBeNull();
+   });
+ 
+-  test('resolveSkill finds a .skills shadow skill', () => {
++  test('resolveSkill rejects path-traversal names', () => {
+     const root = makeProject({ skills: ['my-plan'] });
+-    expect(resolveSkill(root, 'my-plan')).not.toBeNull();
+-    expect(resolveSkill(root, 'ghost-skill')).toBeNull();
++    expect(resolveSkill(root, '../my-plan')).toBeNull();
++    expect(resolveSkill(root, '')).toBeNull();
+   });
+ });
+-- 
+2.51.0.windows.1
+

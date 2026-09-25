@@ -1,0 +1,76 @@
+From 506ed1c97fb3ed339d5189eec711e83e21cfc8c5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 12:07:20 +0530
+Subject: [PATCH] fix(ci): close three lane-selection coverage holes found in
+ review
+
+- bun.lock moves from KNOWN_TARGETABLE_FILES to PACKAGE_LEVEL_PATHS. Removing
+  its DIRECT_TEST_CANDIDATES entry only fixed the lockfile-only diff via zero
+  resolved targets; a mixed diff still resolved a target and stayed targeted.
+  PACKAGE_LEVEL_PATHS forces the full lane unconditionally.
+- eval/corpus/ maps to test/eval/immutable-corpus.test.js. The corpus hash and
+  manifest checks live there; eval-sets only reads eval/commands/.
+- lefthook.yml also maps to the suites that assert its repository wiring
+  (branch-protection, commitlint, cross-platform-install, sync-d20-audit-script),
+  not just the generated/user-config suites.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/commands/test.js | 9 +++++++++
+ scripts/test.js      | 2 +-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 357fbf35..5e4b4807 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -56,10 +56,16 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'scripts/test.js': ['test/scripts/test-runner.test.js'],
+ 	// `bun.lock` is deliberately absent: a dependency change can break anything,
+ 	// so it stays on the full-suite lane.
++	// lefthook.yml is the repository's hook wiring, so this must also cover the
++	// suites that assert the individual pre-commit/pre-push commands exist.
+ 	'lefthook.yml': [
+ 		'test/lefthook-check.test.js',
+ 		'test/lefthook-wiring.test.js',
+ 		'test/commands/lefthook-user-config.test.js',
++		'test/branch-protection.test.js',
++		'test/commitlint.test.js',
++		'test/cross-platform-install.test.js',
++		'test/sync-d20-audit-script.test.js',
+ 	],
+ 	'eslint.config.js': ['test/lint-script.test.js'],
+ 	'.coderabbit.yaml': ['test/coderabbit-config.test.js'],
+@@ -74,6 +80,9 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ // suite (see hasZeroResolvedTests in scripts/test.js).
+ const PREFIX_TEST_TARGETS = Object.freeze([
+ 	['validation/', ['test/validation/risk-manifest.test.js', 'test/validation/risk-manifest-generator.test.js']],
++	// `eval/corpus/` must come first: the corpus hash and manifest checks live in
++	// immutable-corpus, and eval-sets only reads `eval/commands/`.
++	['eval/corpus/', ['test/eval/immutable-corpus.test.js']],
+ 	['eval/', ['test/eval/eval-sets.test.js']],
+ 	['rules/', ['test/rules-sync.test.js', 'test/skill-dispatch-parity.test.js']],
+ 	['plugin/', ['test/activation/plugin-scaffold.test.js', 'test/plugin-catalog.test.js', 'test/release-readiness.test.js']],
+diff --git a/scripts/test.js b/scripts/test.js
+index 3a3d1027..50796f8c 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -28,6 +28,7 @@ const { createProcessTree, signalExitCode } = require('./process-tree');
+ 
+ const PACKAGE_LEVEL_PATHS = new Set([
+   'package.json',
++  'bun.lock',
+   'bun.lockb',
+   'pnpm-lock.yaml',
+   'yarn.lock',
+@@ -52,7 +53,6 @@ const KNOWN_TARGETABLE_PREFIXES = [
+ 
+ // Individually mapped root files (see DIRECT_TEST_CANDIDATES in lib/commands/test.js).
+ const KNOWN_TARGETABLE_FILES = new Set([
+-  'bun.lock',
+   'lefthook.yml',
+   'eslint.config.js',
+   '.coderabbit.yaml',
+-- 
+2.51.0.windows.1
+

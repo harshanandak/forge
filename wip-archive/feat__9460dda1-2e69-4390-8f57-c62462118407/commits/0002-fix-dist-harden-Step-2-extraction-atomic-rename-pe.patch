@@ -1,0 +1,280 @@
+From 7f35c8b5a409bf862ace674e01d1d48ddec44154 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 19:08:57 +0530
+Subject: [PATCH] =?UTF-8?q?fix(dist):=20harden=20Step-2=20extraction=20?=
+ =?UTF-8?q?=E2=80=94=20atomic=20rename=20+=20per-user=20cache=20dir?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Reliability review fixes (both MAJORs are in the extraction code, same region):
+
+- MAJOR: per-USER cache dir (%LOCALAPPDATA% / $XDG_CACHE_HOME|~/.cache, 0o700)
+  instead of world-writable os.tmpdir() — closes a local pre-plant attack where
+  an attacker seeds forge-assets-<v>/ with a valid sentinel + malicious hooks.
+- MAJOR: atomic + concurrency-safe extraction — write files+sentinel into a
+  private mkdtemp sibling, then renameSync into the final path in one step; on
+  EEXIST adopt the winner and discard ours. No rmSync of a dir another process
+  reads; a half-written temp never gets the final name.
+- Hardening: replace the near-tautological count assertion with a stat-check
+  (each expected relpath exists + non-empty, lists any missing).
+- Hardening: reject manifest keys that are absolute or contain '..' before write.
+- Fix inaccurate bin/forge.js docs comment (TOOLCHAIN/VALIDATION aren't on disk).
+
+Re-proven in a real compiled binary: extracts to %LOCALAPPDATA%\forge\assets-<v>,
+142 assets, nested paths intact, sentinel present, idempotent. npm channel
+unchanged (15 unit+drift, 105 regression green, eslint clean).
+
+Follow-ups filed: bc92ba7a (drift vs generated artifact → step-3 f13b5073),
+7f627647 (dev-version stale reuse), 7a584ad4 (narrow ASSET_ROOTS scripts bloat).
+
+Issue: 9460dda1-2e69-4390-8f57-c62462118407
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                                  |   5 +-
+ .../2026-07-12-single-binary-step2/design.md  |  16 ++
+ lib/package-root.js                           | 140 +++++++++++++-----
+ test/package-root.test.js                     |  14 ++
+ 4 files changed, 137 insertions(+), 38 deletions(-)
+
+diff --git a/bin/forge.js b/bin/forge.js
+index f562380e..0c42c7eb 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4196,8 +4196,9 @@ async function main() {
+         process.exitCode = 1;
+       }
+     } else {
+-      // `forge docs` reads packaged docs; route through the asset root so the
+-      // embedded (TOOLCHAIN/VALIDATION) topics resolve in a compiled binary too.
++      // `forge docs` reads packaged docs; route through the asset root so any
++      // embedded topic resolves in a compiled binary too. (Full docs/ embedding
++      // for arbitrary topics is deferred to step 3 — see the design note.)
+       const result = getTopicContent(topic, getPackageRoot(packageDir));
+       if (result.error) {
+         console.error(`  Error: ${result.error}`);
+diff --git a/docs/work/2026-07-12-single-binary-step2/design.md b/docs/work/2026-07-12-single-binary-step2/design.md
+index 9abeb9b1..adedd0de 100644
+--- a/docs/work/2026-07-12-single-binary-step2/design.md
++++ b/docs/work/2026-07-12-single-binary-step2/design.md
+@@ -35,6 +35,22 @@ manifest-path → blob and NEVER derives paths from embedded names (guidance #2)
+ 
+ ### Extraction detail (proven in a real compiled binary)
+ 
++- **Per-user cache dir, not shared tmp** (reliability MAJOR #2): assets extract to
++  `%LOCALAPPDATA%\forge\assets-<version>` (Windows) / `$XDG_CACHE_HOME|~/.cache/forge/…`
++  (POSIX, `0o700`), NOT `os.tmpdir()`. A world-writable tmp would let a local attacker
++  pre-plant the path with a valid sentinel + malicious `.forge/hooks/*` that setup would
++  install.
++- **Atomic + concurrency-safe** (reliability MAJOR #1): extraction writes all files + the
++  sentinel into a private `mkdtempSync` sibling, then `renameSync`s it into the final
++  version-stamped path in ONE step. A half-written temp never acquires the final name, so
++  a crash mid-extract or a racing second process can never observe/bless a partial dir,
++  and no process `rmSync`es a dir another is reading. If the final path already exists
++  (another process won), we discard our temp and adopt theirs.
++- **Real completeness check** (hardening): after extraction, `assertAllPresent` stats each
++  expected relpath and asserts non-empty (replaces the near-tautological count check),
++  throwing the list of any missing.
++- **Traversal guard** (hardening): `extractEmbeddedAssets` rejects any manifest key that is
++  absolute or contains a `..` segment before writing.
+ - `fs.writeFileSync(out, fs.readFileSync(embeddedPath))` — NOT `copyFileSync`: Bun's
+   embedded `/$bunfs/…` (`B:/~BUN/root/…`) source paths support `readFileSync` but the
+   copyfile syscall ENOENTs on them. Binary buffer copy → no line-ending translation.
+diff --git a/lib/package-root.js b/lib/package-root.js
+index 9ce72b44..5cc4fb56 100644
+--- a/lib/package-root.js
++++ b/lib/package-root.js
+@@ -159,7 +159,13 @@ function extractEmbeddedAssets(destDir, assets, executable) {
+   const execSet = new Set(executable || []);
+   let count = 0;
+   for (const [relPath, embeddedPath] of Object.entries(assets)) {
+-    const outPath = path.join(destDir, ...relSegments(relPath));
++    // Defense-in-depth: the manifest is compile-time-trusted, but never let a
++    // key escape destDir via traversal or an absolute path.
++    const segs = relSegments(relPath);
++    if (path.isAbsolute(relPath) || segs.includes('..') || segs.length === 0) {
++      throw new Error(`Refusing to extract unsafe embedded asset path: ${JSON.stringify(relPath)}`);
++    }
++    const outPath = path.join(destDir, ...segs);
+     fs.mkdirSync(path.dirname(outPath), { recursive: true });
+     // read+write (not copyFileSync): Bun's embedded `/$bunfs/…` source paths
+     // support readFileSync but NOT the copyfile syscall. Binary buffer copy — no
+@@ -177,55 +183,117 @@ function extractEmbeddedAssets(destDir, assets, executable) {
+   return count;
+ }
+ 
+-let _extractedRoot = null;
+-
+ /**
+- * Materialize embedded assets into a version-stamped temp dir, guarded by a
+- * completion sentinel so a crash mid-extraction (or a concurrent process) never
+- * leaves a half-populated dir that a later run trusts. Asserts the extracted
+- * file count equals the manifest entry count.
++ * Per-USER cache root for extracted assets. NOT `os.tmpdir()` — a world-writable
++ * shared tmp lets a local attacker pre-plant `forge-assets-<version>/` with a
++ * valid sentinel + malicious hook scripts that `forge setup` would then install.
++ * Windows: `%LOCALAPPDATA%`; POSIX: `$XDG_CACHE_HOME` or `~/.cache`. The `forge`
++ * dir is created `0o700` on POSIX so only the owner can populate it.
+  */
+-function ensureExtracted() {
+-  if (_extractedRoot) return _extractedRoot;
+-  const version = resolveVersion();
+-  const destDir = path.join(os.tmpdir(), `forge-assets-${version}`);
+-  const sentinel = path.join(destDir, SENTINEL_FILE);
+-
+-  // Reuse a previously-completed extraction for this exact version.
+-  if (fs.existsSync(sentinel)) {
++function userCacheRoot() {
++  let base;
++  if (process.platform === 'win32') {
++    base = process.env.LOCALAPPDATA || process.env.APPDATA || os.tmpdir();
++  } else {
++    base = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
++  }
++  const root = path.join(base, 'forge');
++  fs.mkdirSync(root, { recursive: true });
++  if (process.platform !== 'win32') {
+     try {
+-      if (fs.readFileSync(sentinel, 'utf8').trim() === version) {
+-        _extractedRoot = destDir;
+-        return destDir;
+-      }
++      fs.chmodSync(root, 0o700);
+     } catch {
+-      // Fall through to a fresh extraction.
++      // Best-effort ownership hardening; not fatal.
+     }
+   }
++  return root;
++}
+ 
++/** True iff `dir` holds a completion sentinel matching this version. */
++function isCompleteExtraction(dir, version) {
+   try {
+-    fs.rmSync(destDir, { recursive: true, force: true });
++    const sentinel = path.join(dir, SENTINEL_FILE);
++    return fs.existsSync(sentinel) && fs.readFileSync(sentinel, 'utf8').trim() === version;
+   } catch {
+-    // Tolerable — extraction overwrites files in place.
++    return false;
+   }
+-  fs.mkdirSync(destDir, { recursive: true });
++}
+ 
+-  const manifest = loadEmbeddedManifest();
+-  const expected = Object.keys(manifest.EMBEDDED_ASSETS).length;
+-  const written = extractEmbeddedAssets(
+-    destDir,
+-    manifest.EMBEDDED_ASSETS,
+-    manifest.EXECUTABLE_ASSETS || []
+-  );
+-  if (written === 0 || written !== expected) {
++/** Assert every expected relpath exists on disk under `dir` and is non-empty. */
++function assertAllPresent(dir, assets) {
++  const missing = [];
++  for (const rel of Object.keys(assets)) {
++    const p = path.join(dir, ...relSegments(rel));
++    let ok = false;
++    try {
++      ok = fs.statSync(p).size > 0;
++    } catch {
++      // Missing or unreadable → counts as absent below.
++    }
++    if (!ok) missing.push(rel);
++  }
++  if (missing.length > 0) {
++    const sample = missing.slice(0, 10).join(', ');
+     throw new Error(
+-      `Forge embedded-asset extraction incomplete: wrote ${written} of ${expected} files to ${destDir}. ` +
+-        'The compiled binary appears to be missing embedded assets — rebuild with `bun run build:binary`.'
++      `Forge embedded-asset extraction incomplete: ${missing.length} file(s) missing or empty in ${dir} ` +
++        `(e.g. ${sample}${missing.length > 10 ? ', …' : ''}). Rebuild with \`bun run build:binary\`.`
+     );
+   }
+-  fs.writeFileSync(sentinel, version, 'utf8');
+-  _extractedRoot = destDir;
+-  return destDir;
++}
++
++let _extractedRoot = null;
++
++/**
++ * Materialize embedded assets, atomically and concurrency-safely.
++ *
++ * Extraction writes into a PRIVATE `mkdtempSync` sibling dir (all files + the
++ * completion sentinel), then `renameSync`s it into the final version-stamped
++ * path in ONE atomic step. A half-written temp NEVER acquires the final name, so
++ * a crash mid-extraction or a second process racing us can never observe (or
++ * bless) a partially-populated dir — and no process ever `rmSync`es a dir another
++ * process is reading. If the final path already exists (another process won),
++ * we discard our temp and adopt theirs.
++ */
++function ensureExtracted() {
++  if (_extractedRoot) return _extractedRoot;
++  const version = resolveVersion();
++  const cacheRoot = userCacheRoot();
++  const finalDir = path.join(cacheRoot, `assets-${version}`);
++
++  // Fast path: a completed extraction for this exact version already exists.
++  if (isCompleteExtraction(finalDir, version)) {
++    _extractedRoot = finalDir;
++    return finalDir;
++  }
++
++  const manifest = loadEmbeddedManifest();
++  const tmpDir = fs.mkdtempSync(path.join(cacheRoot, `.assets-${version}-`));
++  try {
++    extractEmbeddedAssets(tmpDir, manifest.EMBEDDED_ASSETS, manifest.EXECUTABLE_ASSETS || []);
++    assertAllPresent(tmpDir, manifest.EMBEDDED_ASSETS);
++    fs.writeFileSync(path.join(tmpDir, SENTINEL_FILE), version, 'utf8');
++    try {
++      fs.renameSync(tmpDir, finalDir);
++    } catch (err) {
++      // Another process already materialized finalDir (rename onto a non-empty
++      // dir fails) — discard ours and adopt theirs if it is complete.
++      fs.rmSync(tmpDir, { recursive: true, force: true });
++      if (isCompleteExtraction(finalDir, version)) {
++        _extractedRoot = finalDir;
++        return finalDir;
++      }
++      throw err;
++    }
++  } catch (err) {
++    try {
++      fs.rmSync(tmpDir, { recursive: true, force: true });
++    } catch {
++      // Best-effort cleanup of the private temp dir.
++    }
++    throw err;
++  }
++  _extractedRoot = finalDir;
++  return finalDir;
+ }
+ 
+ /**
+diff --git a/test/package-root.test.js b/test/package-root.test.js
+index bff560b5..a0612420 100644
+--- a/test/package-root.test.js
++++ b/test/package-root.test.js
+@@ -103,3 +103,17 @@ test('extractEmbeddedAssets() writes every asset preserving relative paths and r
+ 
+   fs.rmSync(workDir, { recursive: true, force: true });
+ });
++
++test('extractEmbeddedAssets() refuses unsafe manifest keys (traversal / absolute)', () => {
++  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-unsafe-'));
++  const src = path.join(workDir, 'a.md');
++  fs.writeFileSync(src, 'x');
++  const destDir = path.join(workDir, 'dest');
++
++  expect(() => extractEmbeddedAssets(destDir, { '../escape.md': src })).toThrow(/unsafe/i);
++  expect(() => extractEmbeddedAssets(destDir, { 'a/../../escape.md': src })).toThrow(/unsafe/i);
++  const abs = process.platform === 'win32' ? 'C:\\evil.md' : '/evil.md';
++  expect(() => extractEmbeddedAssets(destDir, { [abs]: src })).toThrow(/unsafe/i);
++
++  fs.rmSync(workDir, { recursive: true, force: true });
++});
+-- 
+2.51.0.windows.1
+

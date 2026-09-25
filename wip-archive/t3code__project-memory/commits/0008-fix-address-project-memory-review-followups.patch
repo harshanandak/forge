@@ -1,0 +1,159 @@
+From a3dfaf76839464abee7b261fe00940d1d97a8f08 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 27 Apr 2026 01:18:09 +0530
+Subject: [PATCH] fix: address project memory review followups
+
+---
+ lib/project-memory.js       | 23 ++++++++++++---
+ test/project-memory.test.js | 56 +++++++++++++++++++++++++++++++++----
+ 2 files changed, 70 insertions(+), 9 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index b898056b..0451f7be 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -88,8 +88,9 @@ function invalidLockIsOld(lockPath, options = {}) {
+   const staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
+   try {
+     return Date.now() - fs.statSync(lockPath).mtimeMs >= staleLockMs;
+-  } catch (_err) {
+-    return false;
++  } catch (err) {
++    if (err.code === 'ENOENT') return false;
++    throw err;
+   }
+ }
+ 
+@@ -242,6 +243,12 @@ function validateEntry(entry) {
+   validateOptionalArrays(entry);
+ }
+ 
++function validateStoredEntry(entry) {
++  validateEntry(entry);
++  assertRequiredString(entry['source-agent'], 'source-agent');
++  assertStringArray(entry.tags, 'tags');
++}
++
+ function readEntries(projectRoot, options = {}) {
+   const filePath = memoryPath(projectRoot, options);
+   if (!fs.existsSync(filePath)) {
+@@ -252,11 +259,18 @@ function readEntries(projectRoot, options = {}) {
+   if (content === '') return [];
+ 
+   return content.split(/\r?\n/).map((line, index) => {
++    let parsed;
+     try {
+-      return JSON.parse(line);
++      parsed = JSON.parse(line);
+     } catch (err) {
+       throw new Error(`invalid project memory JSONL at line ${index + 1}: ${err.message}`);
+     }
++    try {
++      validateStoredEntry(parsed);
++    } catch (err) {
++      throw new Error(`invalid project memory entry at line ${index + 1}: ${err.message}`);
++    }
++    return parsed;
+   });
+ }
+ 
+@@ -278,8 +292,9 @@ function read(projectRoot, key, options = {}) {
+   if (typeof key !== 'string' || key.trim() === '') {
+     throw new Error('project memory read key is required');
+   }
++  const normalizedKey = key.trim();
+ 
+-  const entry = readEntries(projectRoot, options).find((candidate) => candidate.key === key);
++  const entry = readEntries(projectRoot, options).find((candidate) => candidate.key === normalizedKey);
+   return entry ? toApiEntry(entry) : null;
+ }
+ 
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index c3571c55..947df757 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -86,6 +86,23 @@ describe('project memory', () => {
+     });
+   });
+ 
++  test('normalizes read keys before lookup', () => {
++    const root = tempRoot();
++
++    projectMemory.write(root, {
++      key: ' preference.trimmed-read ',
++      value: 'read callers may pass padded keys',
++      sourceAgent: 'Codex',
++      timestamp: '2026-04-26T00:00:00.000Z',
++      tags: ['preference'],
++    });
++
++    expect(projectMemory.read(root, ' preference.trimmed-read ')).toMatchObject({
++      key: 'preference.trimmed-read',
++      value: 'read callers may pass padded keys',
++    });
++  });
++
+   test('deduplicates all existing records for a key during upsert', () => {
+     const root = tempRoot();
+     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+@@ -334,7 +351,7 @@ projectMemory.write(root, {
+ });
+ `;
+ 
+-    const results = await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve) => {
++    await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve, reject) => {
+       const child = spawn(process.execPath, ['-e', worker, root, String(index)], {
+         stdio: ['ignore', 'pipe', 'pipe'],
+       });
+@@ -343,15 +360,44 @@ projectMemory.write(root, {
+ 
+       child.stdout.on('data', (chunk) => { stdout += chunk; });
+       child.stderr.on('data', (chunk) => { stderr += chunk; });
+-      child.on('close', (status) => resolve({ status, stdout, stderr }));
++      child.on('error', (err) => {
++        reject(new Error(`worker ${index} failed to spawn: ${err.message}`));
++      });
++      child.on('close', (status) => {
++        if (status === 0) {
++          resolve();
++          return;
++        }
++        reject(new Error(`worker ${index} exited with ${status}: ${stderr || stdout}`));
++      });
+     })));
+ 
+-    for (const result of results) {
+-      expect(result.status).toBe(0);
+-    }
+     expect(projectMemory.search(root, 'concurrent')).toHaveLength(8);
+   });
+ 
++  test('rejects schema-invalid stored JSONL entries when reading', () => {
++    const root = tempRoot();
++    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
++    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
++    fs.writeFileSync(memoryFile, [
++      JSON.stringify({
++        key: 'policy.valid',
++        value: 'valid',
++        'source-agent': 'Codex',
++        timestamp: '2026-04-26T00:00:00.000Z',
++        tags: [],
++      }),
++      JSON.stringify({
++        key: 'policy.invalid',
++        value: 'missing disk source-agent',
++        sourceAgent: 'Codex',
++        tags: [],
++      }),
++    ].join('\n') + '\n', 'utf8');
++
++    expect(() => projectMemory.list(root)).toThrow('invalid project memory entry at line 2');
++  });
++
+   test('validates required schema fields before writing', () => {
+     const root = tempRoot();
+ 
+-- 
+2.51.0.windows.1
+

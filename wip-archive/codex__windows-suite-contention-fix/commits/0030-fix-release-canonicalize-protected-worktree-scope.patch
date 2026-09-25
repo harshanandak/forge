@@ -1,0 +1,92 @@
+From 37693f0eac9273562cfe67d3b076f07d96e003e8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 03:08:25 +0530
+Subject: [PATCH] fix(release): canonicalize protected worktree scope
+
+---
+ lib/protected-state-authority.js       | 16 ++++++++++++----
+ test/protected-state-authority.test.js | 12 ++++++++++++
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 07f4ec19..b612625b 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -4,6 +4,7 @@
+ // an append-only Kernel capability scoped to one worktree and consumed once.
+ 
+ const { randomUUID } = require('node:crypto');
++const fs = require('node:fs');
+ const path = require('node:path');
+ const { resolveOwnedKernel, closeIfOwned } = require('./kernel/owned-kernel');
+ const { hashProtectedContent, normalizeRepoPath } = require('./protected-state-surfaces');
+@@ -15,9 +16,16 @@ const PROTECTED_STATE_AUTHORIZATION_VERSION = 1;
+ const PROTECTED_STATE_AUTHORIZATION_ORIGIN = 'cli';
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+ 
+-function resolveWorktreeScope(projectRoot) {
++function resolveWorktreeScope(projectRoot, deps = {}) {
+ 	const resolved = path.resolve(projectRoot);
+-	const canonical = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++	const realpath = deps.realpathSync || fs.realpathSync.native;
++	let canonical;
++	try {
++		canonical = realpath(resolved);
++	} catch {
++		canonical = resolved;
++	}
++	if (process.platform === 'win32') canonical = canonical.toLowerCase();
+ 	return hashProtectedContent(canonical);
+ }
+ 
+@@ -142,7 +150,7 @@ async function issueProtectedStateAuthorization(projectRoot, request = {}, optio
+ 
+ 	const capabilityId = options.capabilityId || randomUUID();
+ 	const createdAt = options.now || new Date().toISOString();
+-	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot);
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
+ 	const entityId = authorizationEntityId(worktreeScope, normalizedPath);
+ 	const event = {
+ 		entity_type: PROTECTED_STATE_ENTITY_TYPE,
+@@ -229,7 +237,7 @@ async function issueNpmPublishWorkflowAuthorization(projectRoot, params = {}, op
+ 
+ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [], options = {}) {
+ 	if (requests.length === 0) return { success: true, decisions: [] };
+-	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot);
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
+ 	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
+ 	try {
+ 		const decisions = [];
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index 018c06af..04c1f863 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -7,6 +7,7 @@ const {
+ 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
+ 	authorizationEntityId,
+ 	evaluateAuthorization,
++	resolveWorktreeScope,
+ } = require('../lib/protected-state-authority');
+ 
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+@@ -53,6 +54,17 @@ function eventRow(eventType, capabilityId, overrides = {}) {
+ }
+ 
+ describe('protected-state Kernel authority', () => {
++	test('canonicalizes filesystem aliases before binding a worktree scope', () => {
++		const aliased = resolveWorktreeScope('/var/folders/repo', {
++			realpathSync: () => '/private/var/folders/repo',
++		});
++		const canonical = resolveWorktreeScope('/private/var/folders/repo', {
++			realpathSync: () => '/private/var/folders/repo',
++		});
++
++		expect(aliased).toBe(canonical);
++	});
++
+ 	test('accepts one exact unconsumed command-issued capability', () => {
+ 		const decision = evaluateAuthorization(target, [
+ 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-1'),
+-- 
+2.51.0.windows.1
+

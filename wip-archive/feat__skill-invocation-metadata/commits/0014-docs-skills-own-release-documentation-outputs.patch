@@ -1,0 +1,39 @@
+From 8e4dbaf62a0725abd5a00e310e333f346b00e904 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 20:36:00 +0530
+Subject: [PATCH] docs(skills): own release documentation outputs
+
+---
+ docs/work/2026-07-29-skill-invocation-metadata/plan.md  | 2 ++
+ docs/work/2026-07-29-skill-invocation-metadata/tasks.md | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/docs/work/2026-07-29-skill-invocation-metadata/plan.md b/docs/work/2026-07-29-skill-invocation-metadata/plan.md
+index f0b0f532..504f9217 100644
+--- a/docs/work/2026-07-29-skill-invocation-metadata/plan.md
++++ b/docs/work/2026-07-29-skill-invocation-metadata/plan.md
+@@ -85,6 +85,8 @@ current router and byte-identical projection architecture.
+ Implementation and approved generated follow-ups may change only these files unless an
+ ambiguity gate stops the task first:
+ 
++- `AGENTS.md`
++- `CHANGELOG.md`
+ - `docs/work/2026-07-29-skill-invocation-metadata/plan.md`
+ - `docs/work/2026-07-29-skill-invocation-metadata/tasks.md`
+ - `docs/work/2026-07-29-skill-invocation-metadata/decisions.md`
+diff --git a/docs/work/2026-07-29-skill-invocation-metadata/tasks.md b/docs/work/2026-07-29-skill-invocation-metadata/tasks.md
+index f07b4748..bf63b222 100644
+--- a/docs/work/2026-07-29-skill-invocation-metadata/tasks.md
++++ b/docs/work/2026-07-29-skill-invocation-metadata/tasks.md
+@@ -5,6 +5,8 @@ approved plan. No implementation starts until the plan is approved.
+ 
+ Workflow-owned artifacts:
+ 
++- `AGENTS.md`
++- `CHANGELOG.md`
+ - `docs/work/2026-07-29-skill-invocation-metadata/plan.md`
+ - `docs/work/2026-07-29-skill-invocation-metadata/tasks.md`
+ - `docs/work/2026-07-29-skill-invocation-metadata/decisions.md`
+-- 
+2.51.0.windows.1
+

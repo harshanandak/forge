@@ -1,0 +1,56 @@
+From 072347d8f793f9c6b3bdb56f07c0806c9cb133ba Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 23:00:16 +0530
+Subject: [PATCH] feat(flow): export monitor durability bridge
+
+---
+ packages/flow/index.js      | 6 ++++++
+ packages/flow/index.test.js | 2 ++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/packages/flow/index.js b/packages/flow/index.js
+index 2fa2c76f..176277db 100644
+--- a/packages/flow/index.js
++++ b/packages/flow/index.js
+@@ -22,6 +22,10 @@ const {
+   createProcessState,
+   reduceProcessLifecycle,
+ } = require("./src/process-lifecycle");
++const {
++  MonitorDurabilityError,
++  createMonitorDurabilityBridge,
++} = require("./src/monitor-durability");
+ 
+ function requiredString(options, name) {
+   const value = options[name];
+@@ -89,12 +93,14 @@ module.exports = {
+   BoundedLoopError,
+   EfficiencySupervisor,
+   FlowExecutionError,
++  MonitorDurabilityError,
+   MonitorRuntimeError,
+   ProcessLifecycleError,
+   SkillRuntime,
+   createBoundedLoop,
+   createBoundedLoopState,
+   createMonitorReceipt,
++  createMonitorDurabilityBridge,
+   createMonitorState,
+   createProcessLifecycle,
+   createProcessState,
+diff --git a/packages/flow/index.test.js b/packages/flow/index.test.js
+index 422fed5b..3568874a 100644
+--- a/packages/flow/index.test.js
++++ b/packages/flow/index.test.js
+@@ -54,6 +54,8 @@ describe("Flow contract boundary", () => {
+       createBoundedLoopState: expect.any(Function),
+       createWorkPacketExecutor: expect.any(Function),
+       MonitorRuntimeError: expect.any(Function),
++      MonitorDurabilityError: expect.any(Function),
++      createMonitorDurabilityBridge: expect.any(Function),
+       createMonitorReceipt: expect.any(Function),
+       createMonitorState: expect.any(Function),
+       createProcessLifecycle: expect.any(Function),
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,24 @@
+From 58c62bda40d5f5f47833d945a0d7ea52a5581cc5 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:45:19 +0530
+Subject: [PATCH] test: isolate merge authority repository seam
+
+---
+ test/commands/merge-authority.test.js | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index fc915130..1a400e41 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -61,6 +61,7 @@ function deps(overrides = {}) {
+     verifyIssueOwnership: async () => ({
+       owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+     }),
++    resolveLocalRepository: async () => 'acme/forge',
+     verifyPrIssueBinding: async () => ({ bound: true }),
+     verifyMergeGate: async () => true,
+     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+-- 
+2.51.0.windows.1
+

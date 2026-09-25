@@ -1,0 +1,298 @@
+From 9919845f2e036519f09c7146f56f99899ebc6d33 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 14:02:13 +0530
+Subject: [PATCH] fix(kernel): harden PR trace linkage
+
+---
+ lib/kernel/broker.js        |  35 ++++++++++-
+ lib/kernel/sqlite-driver.js |  25 +++++---
+ test/kernel/trace.test.js   | 114 +++++++++++++++++++++++++++++++++---
+ 3 files changed, 155 insertions(+), 19 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index aec894a3..ba7a2c79 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -162,6 +162,29 @@ function buildTraceEnvelope(projectRoot, target, rows) {
+ 	};
+ }
+ 
++const FULL_GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
++const SHA256_PATTERN = /^[0-9a-f]{64}$/;
++
++function assertValidPrEvidence(input) {
++	if (!Number.isInteger(input.issue_revision) || input.issue_revision < 0) {
++		throw new Error('recordPrLinkage invalid issue_revision');
++	}
++	if (typeof input.head_sha !== 'string' || !FULL_GIT_SHA_PATTERN.test(input.head_sha)) {
++		throw new Error('recordPrLinkage invalid head_sha');
++	}
++	if (typeof input.work_packet_hash !== 'string' || !SHA256_PATTERN.test(input.work_packet_hash)) {
++		throw new Error('recordPrLinkage invalid work_packet_hash');
++	}
++	if (typeof input.risk_manifest_digest !== 'string' || !SHA256_PATTERN.test(input.risk_manifest_digest)) {
++		throw new Error('recordPrLinkage invalid risk_manifest_digest');
++	}
++	if (!Array.isArray(input.gate_receipts)
++		|| input.gate_receipts.length === 0
++		|| input.gate_receipts.some(receipt => typeof receipt !== 'string' || receipt.trim() === '')) {
++		throw new Error('recordPrLinkage invalid gate_receipts');
++	}
++}
++
+ // The migration ledger records which migration ids have been applied so initialize()
+ // applies each migration AT MOST ONCE — no full re-run, no blanket duplicate-error
+ // swallow. The ledger table is broker-managed bookkeeping (created before the plan is
+@@ -1273,9 +1296,14 @@ function createLocalBroker(options = {}) {
+ 			requireDriverMethod(driver, 'retirePr');
+ 			const config = getConfig();
+ 			const inferred = await driver.resolvePrLinkage(input, context, config);
+-			if (input.issue_revision !== undefined
+-				&& (inferred.issue_revision === null
+-					|| Number(input.issue_revision) !== Number(inferred.issue_revision))) {
++			if (!inferred.issue_id || inferred.issue_revision === null) {
++				throw new Error('recordPrLinkage requires resolved issue linkage');
++			}
++			if (input.issue_id && inferred.inferred_issue_id && input.issue_id !== inferred.inferred_issue_id) {
++				throw new Error('recordPrLinkage explicit issue_id conflicts with inferred worktree issue');
++			}
++			assertValidPrEvidence(input);
++			if (input.issue_revision !== inferred.issue_revision) {
+ 				throw new Error(`recordPrLinkage stale issue revision: expected ${input.issue_revision}, actual ${inferred.issue_revision}`);
+ 			}
+ 			const linked = await driver.upsertPr({
+@@ -1283,6 +1311,7 @@ function createLocalBroker(options = {}) {
+ 				issue_id: input.issue_id ?? inferred.issue_id,
+ 				worktree_id: input.worktree_id ?? inferred.worktree_id,
+ 				registered_at: input.occurred_at,
++				preserve_terminal: true,
+ 			}, context, config);
+ 			const eventType = `pr.${input.phase}`;
+ 			const event = await runGuardedEventImpl({
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 63bef191..f3ec6062 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1230,12 +1230,14 @@ function resolvePrLinkageRow(runtime, db, input = {}) {
+ 			[input.git_common_dir, input.branch],
+ 		)[0] || null;
+ 	}
+-	const issueId = input.issue_id ?? worktree?.issue_id ?? null;
++	const inferredIssueId = worktree?.issue_id ?? null;
++	const issueId = input.issue_id ?? inferredIssueId;
+ 	const issue = issueId
+ 		? safeAll(runtime, db, 'SELECT id, entity_revision FROM kernel_issues WHERE id = ? LIMIT 1', [issueId])[0] || null
+ 		: null;
+ 	return {
+ 		issue_id: issueId,
++		inferred_issue_id: inferredIssueId,
+ 		issue_revision: issue?.entity_revision ?? null,
+ 		worktree_id: input.worktree_id ?? worktree?.id ?? null,
+ 	};
+@@ -2461,6 +2463,8 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		// ON CONFLICT on the unique idx_pr_common_dir_repo_number: a re-upsert updates the
+ 		// mutable columns and coalesces soft links (a later null never clobbers an existing
+ 		// issue_id/worktree_id). registered_at is set on INSERT only; state defaults 'open'.
++		// Existing callers retain reopen behavior. The trace writer opts into
++		// preserve_terminal so a delayed opened replay cannot regress merged/closed state.
+ 		async upsertPr(row, _context = {}, config = {}) {
+ 			const id = row.id || randomUUID();
+ 			const registeredAt = row.registered_at || new Date().toISOString();
+@@ -2479,12 +2483,17 @@ function createDriver(runtime, configuredDatabasePath) {
+ 					-- head-only refresh that omits journalPtr never severs the ledger↔journal
+ 					-- link with NULL. (Codex review, PR #426.)
+ 					journal_ptr = coalesce(excluded.journal_ptr, kernel_pr.journal_ptr),
+-					-- REOPEN semantics: upsertPr is only ever called for PRs GitHub reports as
+-					-- OPEN, so re-registering a previously retired row (a reopened PR) must flip
+-					-- it back to open and clear retired_at — else listOpenPrs (state='open') would
+-					-- keep the reopened PR invisible forever. (Codex review, PR #426.)
+-					state = 'open',
+-					retired_at = NULL,
++					-- Existing reconcile callers keep REOPEN semantics. The trace seam passes
++					-- preserve_terminal so a delayed/replayed opened event cannot regress a
++					-- terminal row or clear its retirement evidence.
++					state = CASE
++						WHEN ? = 1 AND kernel_pr.state IN ('merged', 'closed') THEN kernel_pr.state
++						ELSE 'open'
++					END,
++					retired_at = CASE
++						WHEN ? = 1 AND kernel_pr.state IN ('merged', 'closed') THEN kernel_pr.retired_at
++						ELSE NULL
++					END,
+ 					-- A new commit INVALIDATES the prior verdict: when the head advances to a
+ 					-- different non-null sha, clear verdict/source/at so a verdict computed
+ 					-- against the OLD head is never presented as fresh for the new head (and the
+@@ -2506,6 +2515,8 @@ function createDriver(runtime, configuredDatabasePath) {
+ 					row.journal_ptr ?? null,
+ 					state,
+ 					registeredAt,
++					row.preserve_terminal ? 1 : 0,
++					row.preserve_terminal ? 1 : 0,
+ 				],
+ 			);
+ 			const persisted = allParams(
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index f20695ae..527b3d46 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -8,6 +8,21 @@ const path = require('node:path');
+ const { createLocalBroker } = require('../../lib/kernel/broker');
+ const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+ 
++const FULL_HEAD_SHA = 'a'.repeat(40);
++const WORK_PACKET_HASH = 'b'.repeat(64);
++const RISK_MANIFEST_DIGEST = 'c'.repeat(64);
++
++function validEvidence(overrides = {}) {
++	return {
++		head_sha: FULL_HEAD_SHA,
++		issue_revision: 0,
++		work_packet_hash: WORK_PACKET_HASH,
++		risk_manifest_digest: RISK_MANIFEST_DIGEST,
++		gate_receipts: ['gate-receipt-1'],
++		...overrides,
++	};
++}
++
+ describe('Kernel trace backbone', () => {
+ 	let root;
+ 	let driver;
+@@ -78,11 +93,7 @@ describe('Kernel trace backbone', () => {
+ 			number: 501,
+ 			url: 'https://github.com/owner/forge/pull/501',
+ 			branch,
+-			head_sha: 'a'.repeat(40),
+-			issue_revision: 0,
+-			work_packet_hash: 'work-packet-hash',
+-			risk_manifest_digest: 'risk-manifest-digest',
+-			gate_receipts: ['gate-receipt-1'],
++			...validEvidence(),
+ 			occurred_at: '2026-08-09T09:10:00.000Z',
+ 		};
+ 		const merge = {
+@@ -94,6 +105,7 @@ describe('Kernel trace backbone', () => {
+ 		await broker.recordPrLinkage(ship);
+ 		await broker.recordPrLinkage(merge);
+ 		await broker.recordPrLinkage(merge);
++		await broker.recordPrLinkage(ship);
+ 
+ 		const trace = await broker.readTrace({ issue_id: issueId });
+ 		expect(trace.schema_version).toBe('forge.trace.v1');
+@@ -118,9 +130,9 @@ describe('Kernel trace backbone', () => {
+ 		]);
+ 		expect(trace.pull_requests[0].iterations[0]).toMatchObject({
+ 			issue_revision: 0,
+-			head_sha: 'a'.repeat(40),
+-			work_packet_hash: 'work-packet-hash',
+-			risk_manifest_digest: 'risk-manifest-digest',
++			head_sha: FULL_HEAD_SHA,
++			work_packet_hash: WORK_PACKET_HASH,
++			risk_manifest_digest: RISK_MANIFEST_DIGEST,
+ 			gate_receipts: ['gate-receipt-1'],
+ 		});
+ 		expect(trace.gaps).toEqual([]);
+@@ -135,6 +147,10 @@ describe('Kernel trace backbone', () => {
+ 		const prRows = await driver.queryAll('SELECT * FROM kernel_pr;', config);
+ 		const prEvents = await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config);
+ 		expect(prRows).toHaveLength(1);
++		expect(prRows[0]).toMatchObject({
++			state: 'merged',
++			retired_at: merge.occurred_at,
++		});
+ 		expect(prEvents).toHaveLength(2);
+ 	});
+ 
+@@ -170,9 +186,89 @@ describe('Kernel trace backbone', () => {
+ 			repo: 'owner/forge',
+ 			number: 502,
+ 			issue_id: 'issue-stale',
+-			issue_revision: 1,
++			...validEvidence({ issue_revision: 1 }),
+ 		})).rejects.toThrow('stale issue revision');
+ 		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
+ 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++		expect(await driver.queryAll('SELECT * FROM kernel_outbox;', config)).toEqual([]);
++	});
++
++	test('rejects absent or conflicting inferred issue linkage before writing', async () => {
++		const gitCommonDir = path.join(root, '.git');
++		const base = {
++			phase: 'opened',
++			git_common_dir: gitCommonDir,
++			repo: 'owner/forge',
++			...validEvidence(),
++		};
++		await expect(broker.recordPrLinkage({ ...base, number: 503, branch: 'codex/unlinked' }))
++			.rejects.toThrow('requires resolved issue linkage');
++
++		const now = '2026-08-09T12:00:00.000Z';
++		for (const issueId of ['issue-inferred', 'issue-explicit']) {
++			await driver.exec(
++				`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++				 VALUES ('${issueId}', '${issueId}', '${now}', '${now}');`,
++				config,
++			);
++		}
++		driver.registerWorktree({
++			id: 'worktree-mismatch',
++			git_common_dir: gitCommonDir,
++			path: path.join(root, '.worktrees', 'mismatch'),
++			branch: 'codex/mismatch',
++			issue_id: 'issue-inferred',
++			registered_at: now,
++		}, config);
++		await expect(broker.recordPrLinkage({
++			...base,
++			number: 504,
++			branch: 'codex/mismatch',
++			issue_id: 'issue-explicit',
++		})).rejects.toThrow('conflicts with inferred worktree issue');
++
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++		expect(await driver.queryAll('SELECT * FROM kernel_outbox;', config)).toEqual([]);
++	});
++
++	test('requires valid evidence bindings and leaves zero partial writes', async () => {
++		const now = '2026-08-09T13:00:00.000Z';
++		await driver.exec(
++			`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++			 VALUES ('issue-evidence', 'Evidence issue', '${now}', '${now}');`,
++			config,
++		);
++		const base = {
++			phase: 'opened',
++			git_common_dir: path.join(root, '.git'),
++			repo: 'owner/forge',
++			number: 505,
++			issue_id: 'issue-evidence',
++			...validEvidence(),
++		};
++		const invalidCases = [
++			['issue_revision', undefined],
++			['issue_revision', -1],
++			['issue_revision', '0'],
++			['head_sha', undefined],
++			['head_sha', 'abc123'],
++			['head_sha', 'g'.repeat(40)],
++			['work_packet_hash', undefined],
++			['work_packet_hash', 'short'],
++			['risk_manifest_digest', undefined],
++			['risk_manifest_digest', 'short'],
++			['gate_receipts', undefined],
++			['gate_receipts', []],
++			['gate_receipts', ['']],
++		];
++		for (const [field, value] of invalidCases) {
++			const input = { ...base, [field]: value };
++			await expect(broker.recordPrLinkage(input)).rejects.toThrow(`invalid ${field}`);
++		}
++
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++		expect(await driver.queryAll('SELECT * FROM kernel_outbox;', config)).toEqual([]);
+ 	});
+ });
+-- 
+2.51.0.windows.1
+

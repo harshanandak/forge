@@ -1,0 +1,89 @@
+From 2b6c870bba96a7373066d852fdb46f8ff26440b4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 23:57:07 +0530
+Subject: [PATCH] fix(memory): bound opened linkage reconciliation
+
+---
+ packages/memory/src/pr-lifecycle-authority.js | 27 ++++++++++++++++---
+ .../test/pr-lifecycle-authority.test.js       | 13 +++++++++
+ 2 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index aab6c521..490d946f 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -766,6 +766,23 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
+   });
+ }
+ 
++async function reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, gitCommonDir) {
++  const deadline = Date.now() + Math.max(timeoutMs, 10);
++  let trace;
++  do {
++    const remaining = Math.max(1, deadline - Date.now());
++    trace = await readLifecycleTrace(provider, linkage, Math.min(timeoutMs, remaining), gitCommonDir);
++    traceLinkageRow(trace, linkage);
++    if (durableAcceptance(trace, packet, receipt)) {
++      assertTraceLinkage(trace, linkage, packet, receipt);
++      return trace;
++    }
++    const waitMs = Math.min(5, deadline - Date.now());
++    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
++  } while (Date.now() < deadline);
++  assertTraceLinkage(trace, linkage, packet, receipt);
++}
++
+ function traceLinkageRow(trace, linkage) {
+   if (!trace || typeof trace !== 'object' || Array.isArray(trace)) fail('PR_LIFECYCLE_UNAVAILABLE', 'public PR trace is unavailable');
+   if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
+@@ -876,7 +893,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+     const durable = durableAcceptance(trace, packet, receipt);
+     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
+     else {
+-      await callMethod(provider, 'recordOpenedPrLinkage', [{
++      const persistence = await callMethod(provider, 'recordOpenedPrLinkage', [{
+         phase: 'opened',
+         git_common_dir: target.git_common_dir,
+         repo: linkage.repository_id,
+@@ -889,8 +906,12 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+       }, { actor: packet.provenance.actor_id, sessionId: input.session_id ?? input.sessionId }], 'PR linkage', {
+         sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true,
+       });
+-      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+-      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
++      if (persistence === PROVIDER_DEADLINE_SENTINEL) {
++        await reconcileLifecycleTrace(provider, linkage, packet, receipt, timeoutMs, target.git_common_dir);
++      } else {
++        const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
++        assertTraceLinkage(persistedTrace, linkage, packet, receipt);
++      }
+     }
+     return stableResult('accepted', packet, receipt, linkage);
+   }
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index f8b73810..1bf6b8f0 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -498,6 +498,19 @@ describe('public PR lifecycle authority', () => {
+     expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+   });
+ 
++  test('polls bounded trace reconciliation when a timed-out opened write commits shortly afterward', async () => {
++    const workPacket = packet();
++    const authority = createPrLifecycleAuthority({
++      provider: provider({ recordPrLinkage: async () => {
++        await new Promise(resolve => setTimeout(resolve, 8));
++        return { ok: true };
++      } }),
++      timeoutMs: 5,
++    });
++    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
++      .resolves.toMatchObject({ accepted: true });
++  });
++
+   test('re-probes ownership and exact head at receipt acceptance', async () => {
+     const workPacket = packet();
+     const runReceipt = receipt(workPacket);
+-- 
+2.51.0.windows.1
+

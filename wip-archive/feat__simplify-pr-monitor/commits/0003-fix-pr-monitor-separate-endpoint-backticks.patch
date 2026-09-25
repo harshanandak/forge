@@ -1,0 +1,53 @@
+From ab33294dacc060826a5426da39cd425cce1f7f91 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 22:10:56 +0530
+Subject: [PATCH] fix(pr-monitor): separate endpoint backticks
+
+---
+ lib/pr-monitor/render-summary.js       |  3 ++-
+ test/pr-monitor/render-summary.test.js | 17 +++++++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/lib/pr-monitor/render-summary.js b/lib/pr-monitor/render-summary.js
+index d3500ecf..132b6438 100644
+--- a/lib/pr-monitor/render-summary.js
++++ b/lib/pr-monitor/render-summary.js
+@@ -54,7 +54,8 @@ function mdCode(value) {
+     }
+   }
+   const fence = '`'.repeat(longestRun + 1);
+-  return `${fence}${text}${fence}`;
++  const content = text.startsWith('`') || text.endsWith('`') ? ` ${text} ` : text;
++  return `${fence}${content}${fence}`;
+ }
+ 
+ /** Cap threads listed per author so a noisy PR cannot produce an enormous summary. */
+diff --git a/test/pr-monitor/render-summary.test.js b/test/pr-monitor/render-summary.test.js
+index 55e56f86..fc7bae37 100644
+--- a/test/pr-monitor/render-summary.test.js
++++ b/test/pr-monitor/render-summary.test.js
+@@ -164,4 +164,21 @@ describe('renderSummary', () => {
+     expect(body).not.toContain('`required`Checks\nstatus`');
+     expect(body).not.toContain('`forge shepherd 123`\n456 --pull --json`');
+   });
++
++  test('separates code fences from endpoint backticks, including all-backtick values', () => {
++    const { body } = renderSummary(makeBundle({
++      ci: {
++        checks: [],
++        failing: [
++          { name: '`leading' },
++          { name: 'trailing`' },
++          { name: '`both`' },
++          { name: '```' },
++        ],
++        pending: [],
++      },
++    }), { now: NOW });
++
++    expect(body).toContain('- ❌ **Failing (4):** `` `leading ``, `` trailing` ``, `` `both` ``, ```` ``` ````');
++  });
+ });
+-- 
+2.51.0.windows.1
+

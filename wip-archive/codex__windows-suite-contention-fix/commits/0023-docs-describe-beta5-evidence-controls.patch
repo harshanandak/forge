@@ -1,0 +1,71 @@
+From 70f5c70091aee1b30524182471ed7725ce86f9aa Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 18:18:42 +0530
+Subject: [PATCH] docs: describe beta5 evidence controls
+
+---
+ docs/reference/COMMANDS.md                                    | 4 +++-
+ docs/reference/RELEASE.md                                     | 2 ++
+ .../bd-call-site-kill-list.md                                 | 2 +-
+ docs/work/2026-08-08-beta5-release-evidence/decisions.md      | 1 +
+ 4 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/docs/reference/COMMANDS.md b/docs/reference/COMMANDS.md
+index bc983103..2a784508 100644
+--- a/docs/reference/COMMANDS.md
++++ b/docs/reference/COMMANDS.md
+@@ -60,6 +60,7 @@ forge recap <issue> [--budget N] [--json]
+ forge recall [query] [--limit N] [--all] [--json]
+ forge remember <note> [--tag <label>]... [--json]
+ forge skill for "<situation>" [--json]
++forge skill eval <skill> --full --tier <30|100|300> [--json]
+ ```
+ 
+ - `forge plan` creates the implementation plan, kernel issue, and feature branch/worktree from a researched feature description; it prints the created issue id, branch name, and the suggested next command.
+@@ -69,7 +70,8 @@ forge skill for "<situation>" [--json]
+ - `forge status` is the one-glance orientation command: where you are, what to run next, and your active work; `--full` also shows blocked/stale/recently-completed issues. `-v`/`--verbose` prints the full session-entry briefing instead of the short pulse (git-status-v semantics).
+ - `forge status -v` emits the bounded session-entry orientation envelope agents read at the start of a session; it leads with a bounded (<=20-line) **live-state** block — current stage, claimed issue(s), ready-work count, enabled gates/rails, and one progressive-adoption nudge — collected best-effort (never blocks, honest fallbacks) before the deterministic orientation.
+ - `forge prime` is a **deprecated** alias for `forge status -v`. It still works and its stdout is byte-identical (session-start hooks consume it as context), but it prints a one-line deprecation notice on stderr.
+-- `forge skill for "<situation>"` is the deterministic intent-to-skill router: it reads the canonical skill catalog and prints the best-fit Forge skill(s) plus why, as the reasoning fallback for harnesses without a SessionStart hook that auto-injects the `using-forge` dispatch skill. `--json` emits the machine-readable routing result. The `forge skill` noun is structured so later waves can add `forge skill eval` / `forge skill scores`.
++- `forge skill for "<situation>"` is the deterministic intent-to-skill router: it reads the canonical skill catalog and prints the best-fit Forge skill(s) plus why, as the reasoning fallback for harnesses without a SessionStart hook that auto-injects the `using-forge` dispatch skill. `--json` emits the machine-readable routing result.
++- `forge skill eval <skill> --full --tier <30|100|300>` runs the controlled four-arm behavioral protocol against the current PR head. It requires a live Kernel issue, an open PR at the exact local HEAD, and an isolated supported runtime. Tier 30 is instrumentation-only, tier 100 is the decision gate, and tier 300 is confirmation. Missing attribution, controls, usage, or reconstructable evidence returns `INCOMPLETE`; the command never authorizes merge.
+ - `forge orient` emits bounded project orientation from deterministic source files (broader than `prime`, still token-budgeted via `--budget`).
+ - `forge recap <issue>` is the issue-scoped counterpart to `forge orient`/`forge prime` — it summarizes a single issue from the same deterministic file assembly instead of the whole project. Requires an issue id; running it with no id (or `--help`) prints usage only.
+ - `forge recall` retrieves project-memory notes from the kernel-backed memory store; omit `query` to list recent notes.
+diff --git a/docs/reference/RELEASE.md b/docs/reference/RELEASE.md
+index 90fc53e1..a44b18b8 100644
+--- a/docs/reference/RELEASE.md
++++ b/docs/reference/RELEASE.md
+@@ -23,6 +23,8 @@ bun run check
+ npm pack --dry-run
+ ```
+ 
++The trusted npm workflow is generated through `forge release generate-npm-workflow`; direct workflow edits remain blocked. On a release event, the workflow resolves the tag once, runs the complete supported repository suite on that immutable commit, and allows publication only when the attributable suite receipt, verification checkout, and publish checkout all name the same SHA. Missing or mismatched evidence fails closed.
++
+ For docs-heavy changes, also run a Markdown link check if available. If no docs checker exists and adding one would broaden the PR, create a follow-up issue instead.
+ 
+ ## Packaging Check
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 74173a27..d4f48ba0 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -84,7 +84,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] docs/reference/beads-to-kernel-migration-ux.md (1)
+   - lines: 15 (.beads)
+ - [ ] docs/reference/COMMANDS.md (1)
+-  - lines: 105 (dolt)
++  - lines: 107 (dolt)
+ - [ ] docs/reference/DECISION_DRIFT_GUARDS.md (3)
+   - lines: 9 (dolt), 71 (.beads), 72 (bd)
+ - [ ] docs/reference/dependency-chain.md (19)
+diff --git a/docs/work/2026-08-08-beta5-release-evidence/decisions.md b/docs/work/2026-08-08-beta5-release-evidence/decisions.md
+index 3ae00966..516f350c 100644
+--- a/docs/work/2026-08-08-beta5-release-evidence/decisions.md
++++ b/docs/work/2026-08-08-beta5-release-evidence/decisions.md
+@@ -1,2 +1,3 @@
+ # Decisions
+ 
++No product/specification decision gates fired. Independent review defects were resolved within the approved fail-closed boundary: Kernel capabilities replaced forgeable JSONL authority, behavioral runs were connected as a real isolated four-arm flow, semantic evidence identity became conflict-detecting, and runtime attribution and resource controls became authoritative.
+-- 
+2.51.0.windows.1
+

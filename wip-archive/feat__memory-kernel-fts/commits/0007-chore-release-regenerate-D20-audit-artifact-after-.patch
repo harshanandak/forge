@@ -1,0 +1,556 @@
+From f3bfa81078e2e2b6126622badfc81eed60c0c1a8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 12:22:54 +0530
+Subject: [PATCH] chore(release): regenerate D20 audit artifact after memory
+ store changes
+
+---
+ .../bd-call-site-kill-list.md                 |  2 +-
+ lib/commands/recall.js                        | 40 +++++++---
+ lib/kernel/sqlite-driver.js                   | 44 +++++++----
+ lib/memory/router.js                          | 77 +++++++++++++++----
+ lib/project-memory.js                         | 10 ++-
+ test/commands/recall.test.js                  | 62 ++++++++++++---
+ test/commands/remember.test.js                |  4 +-
+ test/kernel/sqlite-driver-memory.test.js      | 22 ++++++
+ test/memory/router.test.js                    | 37 +++++++++
+ 9 files changed, 241 insertions(+), 57 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 8ca071f2..fc273459 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -146,7 +146,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] docs/reference/test-environment.md (1)
+   - lines: 483 (bd)
+ - [ ] docs/reference/TOOLCHAIN.md (50)
+-  - lines: 40 (dolt), 42 (bd), 46 (bd), 52 (bd, dolt), 59 (bd), 66 (bd), 72 (bd), 73 (bd), 79 (bd), 80 (bd), 85 (.beads), 90 (.beads), 100 (bd, .beads), 104 (.beads), 107 (dolt), 113 (.beads), 114 (.beads), 115 (.beads), 116 (.beads), 120 (.beads), 124 (.beads), 128 (.beads), 129 (.beads), 134 (dolt), 139 (bd), 165 (bd), 166 (bd), 167 (bd), 168 (bd), 169 (bd), 170 (bd), 171 (bd), 173 (bd), 190 (bd), 191 (bd), 192 (bd), 193 (bd), 194 (bd, dolt), 209 (bd), 534 (bd), 539 (bd), 554 (dolt), 585 (bd), 590 (bd), 593 (dolt), 613 (bd), 616 (bd), 617 (bd), 623 (bd), 625 (bd)
++  - lines: 40 (dolt), 42 (bd), 46 (bd), 52 (bd, dolt), 59 (bd), 66 (bd), 72 (bd), 73 (bd), 79 (bd), 80 (bd), 85 (.beads), 90 (.beads), 100 (bd, .beads), 104 (.beads), 107 (dolt), 113 (.beads), 114 (.beads), 115 (.beads), 116 (.beads), 120 (.beads), 124 (.beads), 128 (.beads), 129 (.beads), 134 (dolt), 139 (bd), 167 (bd), 168 (bd), 169 (bd), 170 (bd), 171 (bd), 172 (bd), 173 (bd), 175 (bd), 192 (bd), 193 (bd), 194 (bd), 195 (bd), 196 (bd, dolt), 211 (bd), 536 (bd), 541 (bd), 556 (dolt), 587 (bd), 592 (bd), 595 (dolt), 615 (bd), 618 (bd), 619 (bd), 625 (bd), 627 (bd)
+ - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-interface-layer.md (15)
+   - lines: 7 (bd, dolt), 9 (bd), 15 (bd), 16 (bd), 17 (bd), 18 (bd), 19 (bd), 20 (bd), 21 (bd), 31 (bd), 44 (dolt), 54 (bd), 64 (bd, dolt), 67 (bd), 77 (bd)
+ - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/beads-fidelity.md (1)
+diff --git a/lib/commands/recall.js b/lib/commands/recall.js
+index e9314036..b5fa3e57 100644
+--- a/lib/commands/recall.js
++++ b/lib/commands/recall.js
+@@ -3,12 +3,14 @@
+ const memoryRouter = require('../memory/router');
+ const { stripGlobalFlags } = require('../global-flags');
+ 
+-const usage = 'Usage: forge recall [query] [--limit N] [--json]';
++const usage = 'Usage: forge recall [query] [--limit N] [--all] [--json]';
+ 
+ /**
+  * Separate the optional positional query from `--limit N` and `--json`.
+- * Global flags (e.g. `-p <dir>`) are stripped first so they never corrupt
+- * the search query (kernel issue c1e090ff).
++ * Global flags (e.g. `-p <dir>`, `--all`) are stripped first so they never
++ * corrupt the search query (kernel issue c1e090ff). `--all` is a GLOBAL boolean
++ * flag, so the handler reads it from its `flags` argument (or the raw args on a
++ * direct call) — not from this parsed query.
+  *
+  * @param {string[]} rawArgs - Raw command arguments.
+  * @returns {{ query: string, limit: (number|undefined), json: boolean }}
+@@ -44,18 +46,29 @@ function parseArgs(rawArgs) {
+ 
+ function formatEntry(entry) {
+   const date = entry.timestamp ? entry.timestamp.slice(0, 10) : '';
+-  const tagSuffix = entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
+   const prefix = date ? `${date}  ` : '';
+-  return `- ${prefix}${entry.note}${tagSuffix}`;
++  const tagSuffix = entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
++  // Machine/insights records are LABELED with their source so they are never mistaken for a
++  // plain human note; human `remember` notes render clean.
++  const marker = entry.machine && entry.sourceAgent ? `(${entry.sourceAgent}) ` : '';
++  return `- ${prefix}${marker}${entry.note}${tagSuffix}`;
+ }
+ 
+-async function handler(args, _flags, projectRoot) {
++async function handler(args, flags, projectRoot) {
+   const { query, limit, json } = parseArgs(args);
++  // `--all` is a GLOBAL boolean flag: in production bin/forge.js strips it from
++  // args and sets flags.all; on a direct handler call it may still be in args.
++  const all = Boolean(flags && flags.all) || args.includes('--all');
+ 
+-  const { notes, total, capped } = memoryRouter.recall(projectRoot, { query, limit });
++  const { notes, total, capped, scope } = memoryRouter.recall(projectRoot, { query, limit, all });
+ 
+   if (json) {
+-    return { success: true, output: `${JSON.stringify(notes, null, 2)}\n` };
++    // Object (not a bare array) so programmatic consumers see the total and whether the
++    // result was truncated (raise --limit to page further).
++    return {
++      success: true,
++      output: `${JSON.stringify({ notes, total, capped, scope }, null, 2)}\n`,
++    };
+   }
+ 
+   if (notes.length === 0) {
+@@ -65,14 +78,18 @@ async function handler(args, _flags, projectRoot) {
+     return { success: true, output: reason };
+   }
+ 
++  const noun = scope === 'all' && !query ? 'stored memory record(s)' : 'remembered note(s)';
+   let header;
+   if (query) {
+-    header = `${notes.length} note(s) matching "${query}":`;
++    // BM25 returns at most `limit`; when full, signal it is the TOP-N, not the whole set.
++    header = capped
++      ? `Top ${notes.length} note(s) matching "${query}" (raise --limit for more):`
++      : `${notes.length} note(s) matching "${query}":`;
+   } else if (capped) {
+     // Never a bare full dump: show the newest N and the true total.
+-    header = `Showing ${notes.length} of ${total} remembered note(s) (newest first):`;
++    header = `Showing ${notes.length} of ${total} ${noun} (newest first):`;
+   } else {
+-    header = `${total} remembered note(s):`;
++    header = `${total} ${noun}:`;
+   }
+   const lines = notes.map(formatEntry);
+   return {
+@@ -87,6 +104,7 @@ module.exports = {
+   usage,
+   flags: {
+     '--limit': 'Cap the number of notes returned',
++    '--all': 'Include machine/insights records in the no-query listing (query already searches all)',
+     '--json': 'Emit machine-readable JSON output',
+   },
+   handler,
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 424fe1a2..19b1cbfa 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1722,23 +1722,37 @@ function searchMemoryRows(runtime, db, query) {
+ 	).map(memoryRowToEntry);
+ }
+ 
++// Optional source_agent allow-list → a parameterized `WHERE source_agent IN (...)` clause.
++// Lets the default `recall` view show only human `remember` notes without loading and
++// filtering the whole table in JS. Returns { clause, params }; empty when no filter.
++function memoryAgentFilter(agents) {
++	if (!Array.isArray(agents) || agents.length === 0) {
++		return { clause: '', params: [] };
++	}
++	const placeholders = agents.map(() => '?').join(', ');
++	return { clause: ` WHERE source_agent IN (${placeholders})`, params: [...agents] };
++}
++
+ // The newest `limit` entries by logical (as-of) timestamp — the default read model for
+ // `recall` with no query. rowid breaks ties so same-timestamp rows are still deterministic.
+-function recentMemoryRows(runtime, db, limit) {
++// An optional `agents` allow-list scopes the view (e.g. to human `remember` notes).
++function recentMemoryRows(runtime, db, limit, agents) {
+ 	const capped = Number.isInteger(limit) && limit > 0 ? limit : 20;
++	const { clause, params } = memoryAgentFilter(agents);
+ 	return allParams(
+ 		runtime,
+ 		db,
+-		'SELECT * FROM kernel_memories ORDER BY updated_at DESC, rowid DESC LIMIT ?',
+-		[capped],
++		`SELECT * FROM kernel_memories${clause} ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
++		[...params, capped],
+ 	).map(memoryRowToEntry);
+ }
+ 
+-// Total number of stored memories — paired with recentMemoryRows so `recall` can report
+-// "showing N of TOTAL" instead of silently truncating.
+-function countMemoryRows(runtime, db) {
+-	const row = queryOne(runtime, db, 'SELECT count(*) AS count FROM kernel_memories');
+-	return Number(row.count) || 0;
++// Total number of stored memories (optionally scoped by `agents`) — paired with
++// recentMemoryRows so `recall` can report "showing N of TOTAL" instead of silently truncating.
++function countMemoryRows(runtime, db, agents) {
++	const { clause, params } = memoryAgentFilter(agents);
++	const rows = allParams(runtime, db, `SELECT count(*) AS count FROM kernel_memories${clause}`, params);
++	return Number((rows[0] || {}).count) || 0;
+ }
+ 
+ // Turn a free-form query into an FTS5 MATCH expression: extract alphanumeric barewords,
+@@ -1997,17 +2011,19 @@ function createDriver(runtime, configuredDatabasePath) {
+ 			ensureMemorySchema(database);
+ 			return searchMemoryRowsRanked(runtime, database, query, limit);
+ 		},
+-		// The newest `limit` entries (default recall with no query).
+-		recentMemories(limit, config = {}) {
++		// The newest `limit` entries (default recall with no query). `options.agents` scopes
++		// the read to a source_agent allow-list (e.g. human `remember` notes only).
++		recentMemories(limit, options = {}, config = {}) {
+ 			const database = getDatabase(config);
+ 			ensureMemorySchema(database);
+-			return recentMemoryRows(runtime, database, limit);
++			return recentMemoryRows(runtime, database, limit, options.agents);
+ 		},
+-		// Total stored memories — lets recall report "showing N of TOTAL".
+-		countMemories(config = {}) {
++		// Total stored memories (optionally scoped by `options.agents`) — lets recall report
++		// "showing N of TOTAL".
++		countMemories(options = {}, config = {}) {
+ 			const database = getDatabase(config);
+ 			ensureMemorySchema(database);
+-			return countMemoryRows(runtime, database);
++			return countMemoryRows(runtime, database, options.agents);
+ 		},
+ 		listMemories(config = {}) {
+ 			const database = getDatabase(config);
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index 90f1777d..9fefd2e0 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -41,6 +41,12 @@ const DEFAULT_RECALL_LIMIT = 20;
+ const REMEMBER_SOURCE_AGENT = 'forge remember';
+ /** sourceAgent stamped on notes imported once from the retired JSONL store. */
+ const IMPORT_SOURCE_AGENT = 'forge remember (imported)';
++/**
++ * The source_agents that are human `remember` notes — the scope of the DEFAULT (no-query)
++ * `recall` view, so machine/insights records never pollute or miscount the plain listing.
++ * A query, or `--all`, still reaches every stored memory.
++ */
++const HUMAN_MEMORY_AGENTS = [REMEMBER_SOURCE_AGENT, IMPORT_SOURCE_AGENT];
+ /** The retired flat JSONL store, imported once into kernel_memories, then renamed. */
+ const LEGACY_JSONL_RELATIVE = ['.forge', 'memory', 'notes.jsonl'];
+ 
+@@ -191,20 +197,42 @@ function fireAndForgetGraphitiEmit(emitter, entry) {
+   }
+ }
+ 
++/**
++ * Render a non-string memory value (e.g. an insights skill record) as a compact, READABLE
++ * one-liner rather than a raw JSON blob. Flattens the top level: primitive fields become
++ * `key: value`; nested fields fall back to compact JSON.
++ *
++ * @param {*} value
++ * @returns {string}
++ */
++function renderStructuredValue(value) {
++  if (value === null || value === undefined) return String(value);
++  if (typeof value !== 'object') return String(value);
++  if (Array.isArray(value)) {
++    return value.map(item => (item !== null && typeof item === 'object' ? JSON.stringify(item) : String(item))).join(', ');
++  }
++  return Object.entries(value)
++    .map(([key, val]) => (val !== null && typeof val === 'object' ? `${key}: ${JSON.stringify(val)}` : `${key}: ${val}`))
++    .join(' · ');
++}
++
+ /**
+  * Map a kernel_memories entry to the CLI note shape `remember`/`recall` render. A string
+- * value IS the note text; a non-string value (e.g. an insights skill record) is shown as
+- * JSON so insights-written rows stay recallable.
++ * value IS the note text; a structured value (an insights/typed record) is rendered readably
++ * and flagged `machine` with its `sourceAgent` so the CLI can LABEL it rather than mislabel a
++ * raw JSON blob as a plain note.
+  *
+- * @param {object} entry - a kernel_memories entry ({ key, value, timestamp, tags }).
+- * @returns {{ id: string, note: string, timestamp: string, tags: string[] }}
++ * @param {object} entry - a kernel_memories entry ({ key, value, sourceAgent, timestamp, tags }).
++ * @returns {{ id: string, note: string, sourceAgent: string, machine: boolean, timestamp: string, tags: string[] }}
+  */
+ function toNote(entry) {
+   if (!entry) return null;
+-  const note = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
++  const isString = typeof entry.value === 'string';
+   return {
+     id: entry.key,
+-    note,
++    note: isString ? entry.value : renderStructuredValue(entry.value),
++    sourceAgent: typeof entry.sourceAgent === 'string' ? entry.sourceAgent : '',
++    machine: !isString,
+     timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : '',
+     tags: Array.isArray(entry.tags) ? entry.tags : [],
+   };
+@@ -214,6 +242,18 @@ function legacyJsonlPath(projectRoot) {
+   return path.join(projectRoot, ...LEGACY_JSONL_RELATIVE);
+ }
+ 
++// A STABLE key for a legacy record that lacks an `id`, derived from its content — so a
++// re-run (or a failed rename) upserts the same row instead of double-inserting under a
++// fresh random UUID.
++function legacyContentKey(parsed) {
++  const basis = JSON.stringify({
++    note: parsed.note,
++    timestamp: typeof parsed.timestamp === 'string' ? parsed.timestamp : '',
++    tags: Array.isArray(parsed.tags) ? parsed.tags.filter(tag => typeof tag === 'string') : [],
++  });
++  return `import:${crypto.createHash('sha256').update(basis).digest('hex').slice(0, 32)}`;
++}
++
+ /**
+  * One-time import of the retired flat JSONL store into kernel_memories. Idempotent (keys
+  * are the original note ids, so a re-run upserts) and best-effort (a malformed record or a
+@@ -247,7 +287,9 @@ function migrateJsonlNotesOnce(projectRoot, options = {}) {
+       continue;
+     }
+     const entry = {
+-      key: typeof parsed.id === 'string' && parsed.id ? parsed.id : crypto.randomUUID(),
++      // A record with a stable id keys off it; one without keys off its content hash, so a
++      // re-import can never double-insert the same note.
++      key: typeof parsed.id === 'string' && parsed.id ? parsed.id : legacyContentKey(parsed),
+       value: parsed.note,
+       sourceAgent: IMPORT_SOURCE_AGENT,
+       tags: Array.isArray(parsed.tags) ? parsed.tags.filter(tag => typeof tag === 'string') : [],
+@@ -300,25 +342,34 @@ function append(projectRoot, note, options = {}) {
+  * WITHOUT a query: the newest `limit` entries plus the total count (never a bare full dump).
+  * Imports any retired JSONL store on first use.
+  *
++ * A query searches the WHOLE store (human notes + insights/typed records), so anything the
++ * kernel knows is recallable. The default no-query view is scoped to human `remember` notes
++ * so machine/insights records never pollute or miscount the plain listing; `selection.all`
++ * widens it to every stored memory.
++ *
+  * @param {string} projectRoot
+- * @param {object} [selection] - { query, limit }
++ * @param {object} [selection] - { query, limit, all }
+  * @param {object} [options] - forwarded to the project-memory read paths (e.g. a store).
+- * @returns {{ notes: object[], total: number, capped: boolean, query: string, limit: number }}
++ * @returns {{ notes: object[], total: number, capped: boolean, query: string, limit: number, scope: string }}
+  */
+ function recall(projectRoot, selection = {}, options = {}) {
+   migrateJsonlNotesOnce(projectRoot, options);
+   const requested = selection.limit;
+   const limit = Number.isInteger(requested) && requested > 0 ? requested : DEFAULT_RECALL_LIMIT;
+   const query = String(selection.query || '').trim();
++  const includeAll = Boolean(selection.all);
+ 
+   if (query) {
+     const notes = projectMemory.searchRanked(projectRoot, query, limit, options).map(toNote);
+-    return { notes, total: notes.length, capped: false, query, limit };
++    // BM25 returns at most `limit`; a full result set signals there may be more.
++    return { notes, total: notes.length, capped: notes.length >= limit, query, limit, scope: 'all' };
+   }
+ 
+-  const notes = projectMemory.recent(projectRoot, limit, options).map(toNote);
+-  const total = projectMemory.count(projectRoot, options);
+-  return { notes, total, capped: total > notes.length, query: '', limit };
++  const agents = includeAll ? undefined : HUMAN_MEMORY_AGENTS;
++  const readOptions = { ...options, agents };
++  const notes = projectMemory.recent(projectRoot, limit, readOptions).map(toNote);
++  const total = projectMemory.count(projectRoot, readOptions);
++  return { notes, total, capped: total > notes.length, query: '', limit, scope: includeAll ? 'all' : 'remembered' };
+ }
+ 
+ module.exports = {
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 1ad77986..c9cf2bff 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -121,14 +121,16 @@ function list(projectRoot, options = {}) {
+ }
+ 
+ // The newest `limit` entries (default recall with no query). Delegates to the FTS-backed
+-// driver so recall never loads and re-sorts the whole table.
++// driver so recall never loads and re-sorts the whole table. `options.agents` (a
++// source_agent allow-list) scopes the read, e.g. to human `remember` notes only.
+ function recent(projectRoot, limit, options = {}) {
+-  return resolveStore(projectRoot, options).recentMemories(limit);
++  return resolveStore(projectRoot, options).recentMemories(limit, { agents: options.agents });
+ }
+ 
+-// Total stored memories — paired with `recent` so recall can report "showing N of TOTAL".
++// Total stored memories (optionally scoped by `options.agents`) — paired with `recent` so
++// recall can report "showing N of TOTAL".
+ function count(projectRoot, options = {}) {
+-  return resolveStore(projectRoot, options).countMemories();
++  return resolveStore(projectRoot, options).countMemories({ agents: options.agents });
+ }
+ 
+ // BM25 top-N recall over the FTS5 index (token-AND). Unlike `search` (the legacy LIKE
+diff --git a/test/commands/recall.test.js b/test/commands/recall.test.js
+index fa09cf4e..d44a0444 100644
+--- a/test/commands/recall.test.js
++++ b/test/commands/recall.test.js
+@@ -94,18 +94,21 @@ describe('forge recall command', () => {
+     expect(result.output.toLowerCase()).toContain('no');
+   });
+ 
+-  test('emits JSON output with --json', async () => {
++  test('emits JSON output with --json (object carrying total + capped)', async () => {
+     const projectRoot = makeProjectRoot();
+     await seed(projectRoot, 'alpha note');
+ 
+     const result = await recall.handler(['--json'], {}, projectRoot);
+     expect(result.success).toBe(true);
+     const parsed = JSON.parse(result.output);
+-    expect(Array.isArray(parsed)).toBe(true);
+-    expect(parsed[0].note).toBe('alpha note');
++    // An object (not a bare array) so consumers can detect truncation.
++    expect(Array.isArray(parsed.notes)).toBe(true);
++    expect(parsed.notes[0].note).toBe('alpha note');
++    expect(parsed.total).toBe(1);
++    expect(parsed.capped).toBe(false);
+   });
+ 
+-  test('honors --limit', async () => {
++  test('honors --limit and signals truncation in --json', async () => {
+     const projectRoot = makeProjectRoot();
+     await seed(projectRoot, 'one');
+     await seed(projectRoot, 'two');
+@@ -113,11 +116,36 @@ describe('forge recall command', () => {
+ 
+     const result = await recall.handler(['--json', '--limit', '2'], {}, projectRoot);
+     const parsed = JSON.parse(result.output);
+-    expect(parsed).toHaveLength(2);
++    expect(parsed.notes).toHaveLength(2);
++    // The programmatic consumer can see the result was truncated below the true total.
++    expect(parsed.total).toBe(3);
++    expect(parsed.capped).toBe(true);
+   });
+ 
+-  test('surfaces an insights-written kernel_memories row (insights -> recall connection)', async () => {
++  test('renders the capped human header "Showing N of TOTAL"', async () => {
+     const projectRoot = makeProjectRoot();
++    await seed(projectRoot, 'one');
++    await seed(projectRoot, 'two');
++    await seed(projectRoot, 'three');
++
++    const result = await recall.handler(['--limit', '2'], {}, projectRoot);
++    expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
++  });
++
++  test('finds a note by its tag (tags are indexed for recall)', async () => {
++    const projectRoot = makeProjectRoot();
++    await remember.handler(['rotate the signing key', '--tag', 'security'], {}, projectRoot);
++    await seed(projectRoot, 'unrelated note');
++
++    const result = await recall.handler(['security'], {}, projectRoot);
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('rotate the signing key');
++    expect(result.output).not.toContain('unrelated note');
++  });
++
++  test('surfaces an insights-written kernel_memories row via query and --all, readably', async () => {
++    const projectRoot = makeProjectRoot();
++    await seed(projectRoot, 'plain human note');
+     // Mimic `forge insights`: a skill record written straight to kernel_memories (object
+     // value + insights tags), NOT through `remember`. recall reads the same table.
+     projectMemory.write(projectRoot, {
+@@ -127,15 +155,25 @@ describe('forge recall command', () => {
+       tags: ['insights', 'accepted'],
+     });
+ 
+-    // Discoverable by its tokens via FTS...
++    // Discoverable by its tokens via FTS (query searches the WHOLE store)...
+     const byToken = await recall.handler(['accepted'], {}, projectRoot);
+     expect(byToken.success).toBe(true);
+     expect(byToken.output).toContain('cand-42');
+-
+-    // ...and present in the default (no-query) newest-first listing.
+-    const listing = await recall.handler(['--json'], {}, projectRoot);
+-    const notes = JSON.parse(listing.output);
+-    expect(notes.some(note => note.note.includes('cand-42'))).toBe(true);
++    // ...rendered readably and LABELED with its source, never a raw JSON blob.
++    expect(byToken.output).toContain('(forge insights)');
++    expect(byToken.output).not.toContain('{"candidateId"');
++
++    // The DEFAULT no-query listing shows only human notes — the machine record is excluded
++    // and does NOT inflate the "remembered note(s)" count.
++    const defaultListing = await recall.handler(['--json'], {}, projectRoot);
++    const defaultParsed = JSON.parse(defaultListing.output);
++    expect(defaultParsed.total).toBe(1);
++    expect(defaultParsed.notes.some(note => note.note.includes('cand-42'))).toBe(false);
++
++    // `--all` widens the no-query listing to include machine/insights records.
++    const allListing = await recall.handler(['--all', '--json'], {}, projectRoot);
++    const allParsed = JSON.parse(allListing.output);
++    expect(allParsed.notes.some(note => note.note.includes('cand-42'))).toBe(true);
+   });
+ 
+   test('does not treat the -p global flag as part of the query (kernel c1e090ff)', async () => {
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index 5fca9b8d..edd5409d 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -36,10 +36,10 @@ function rmrfWithRetry(dir) {
+   }
+ }
+ 
+-// The persisted notes, newest-first, as recall renders them (JSON mode → the note array).
++// The persisted notes, newest-first, as recall renders them (JSON mode → { notes, ... }).
+ async function recalledNotes(projectRoot) {
+   const result = await recall.handler(['--json'], {}, projectRoot);
+-  return JSON.parse(result.output);
++  return JSON.parse(result.output).notes;
+ }
+ 
+ afterEach(() => {
+diff --git a/test/kernel/sqlite-driver-memory.test.js b/test/kernel/sqlite-driver-memory.test.js
+index 37d30689..cabe4631 100644
+--- a/test/kernel/sqlite-driver-memory.test.js
++++ b/test/kernel/sqlite-driver-memory.test.js
+@@ -193,6 +193,28 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
+ 		expect(driver.countMemories()).toBe(2);
+ 	});
+ 
++	test('recentMemories and countMemories scope to a source_agent allow-list', () => {
++		const driver = makeDriver();
++		driver.recordMemory({ key: 'h1', value: 'human one', sourceAgent: 'forge remember', tags: [] });
++		driver.recordMemory({ key: 'm1', value: 'machine one', sourceAgent: 'forge insights', tags: [] });
++		driver.recordMemory({ key: 'h2', value: 'human two', sourceAgent: 'forge remember', tags: [] });
++
++		// Unfiltered sees every row.
++		expect(driver.countMemories()).toBe(3);
++		expect(driver.recentMemories(10).length).toBe(3);
++		// Filtered to the human `remember` agent only.
++		expect(driver.countMemories({ agents: ['forge remember'] })).toBe(2);
++		expect(driver.recentMemories(10, { agents: ['forge remember'] }).map(entry => entry.key).sort()).toEqual(['h1', 'h2']);
++	});
++
++	test('searchMemoriesRanked finds a row by its tag (tags_json is indexed)', () => {
++		const driver = makeDriver();
++		driver.recordMemory({ key: 's1', value: 'rotate the signing key', sourceAgent: 'forge remember', tags: ['security'] });
++		driver.recordMemory({ key: 's2', value: 'unrelated note', sourceAgent: 'forge remember', tags: ['chore'] });
++
++		expect(driver.searchMemoriesRanked('security', 10).map(entry => entry.key)).toEqual(['s1']);
++	});
++
+ 	test('backfills the FTS index for rows written before it existed (upgrade path)', async () => {
+ 		const driver = makeDriver();
+ 		// Simulate a pre-FTS DB: create kernel_memories (migration 005) and insert rows
+diff --git a/test/memory/router.test.js b/test/memory/router.test.js
+index cf416f83..49cf8ce1 100644
+--- a/test/memory/router.test.js
++++ b/test/memory/router.test.js
+@@ -266,4 +266,41 @@ describe('memory-router: one-time JSONL import onto the kernel', () => {
+ 
+     expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+   });
++
++  test('tolerates malformed and empty JSONL lines (skips them, imports the good ones)', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    const dir = path.join(projectRoot, '.forge', 'memory');
++    fs.mkdirSync(dir, { recursive: true });
++    fs.writeFileSync(
++      path.join(dir, 'notes.jsonl'),
++      [
++        '',
++        '{ not valid json',
++        JSON.stringify({ id: 'good-1', note: 'a good note', timestamp: '2026-01-01T00:00:00.000Z', tags: [] }),
++        '   ',
++        '{"note": ""}',
++        JSON.stringify({ id: 'good-2', note: 'another good note', timestamp: '2026-01-02T00:00:00.000Z', tags: [] }),
++      ].join('\n'),
++      'utf8',
++    );
++
++    const { notes, total } = router.recall(projectRoot, {}, { store });
++    expect(total).toBe(2);
++    expect(notes.map(note => note.note).sort()).toEqual(['a good note', 'another good note']);
++  });
++
++  test('an id-less legacy record dedupes by content across re-imports (no double-insert)', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    // No `id` field — a re-run must key off content, not a fresh random UUID.
++    const record = { note: 'note without an id', timestamp: '2026-01-01T00:00:00.000Z', tags: ['x'] };
++
++    writeLegacyJsonl(projectRoot, [record]);
++    router.migrateJsonlNotesOnce(projectRoot, { store });
++    writeLegacyJsonl(projectRoot, [record]);
++    router.migrateJsonlNotesOnce(projectRoot, { store });
++
++    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
++  });
+ });
+-- 
+2.51.0.windows.1
+

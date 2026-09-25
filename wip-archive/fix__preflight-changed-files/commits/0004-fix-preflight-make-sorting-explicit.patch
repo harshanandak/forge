@@ -1,0 +1,44 @@
+From d370a65d2116de3ceb4e97a14643225e9478e6a0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 00:37:43 +0530
+Subject: [PATCH] fix(preflight): make sorting explicit
+
+---
+ lib/preflight/gates.js | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/lib/preflight/gates.js b/lib/preflight/gates.js
+index edaa6d6b..236a962f 100644
+--- a/lib/preflight/gates.js
++++ b/lib/preflight/gates.js
+@@ -38,11 +38,17 @@ function statusSummary(result, okMsg, failMsg) {
+     : { ok: false, summary: failMsg };
+ }
+ 
++function compareStringsByCodePoint(left, right) {
++  if (left < right) return -1;
++  if (left > right) return 1;
++  return 0;
++}
++
+ function normalizeChangedFiles(files) {
+   if (!Array.isArray(files)) return Object.freeze([]);
+   return Object.freeze([...new Set(
+     files.map((file) => String(file).replaceAll('\\', '/')).filter((file) => file !== ''),
+-  )].sort());
++  )].sort(compareStringsByCodePoint));
+ }
+ 
+ function fingerprintChangedFiles(files) {
+@@ -59,7 +65,7 @@ function selectAffectedTests(projectRoot, changedFiles, fs = nodeFs) {
+   for (const candidate of selectDocAssertingTests(changedFiles, projectRoot, fs)) {
+     tests.add(candidate);
+   }
+-  return [...tests].sort();
++  return [...tests].sort(compareStringsByCodePoint);
+ }
+ 
+ /**
+-- 
+2.51.0.windows.1
+

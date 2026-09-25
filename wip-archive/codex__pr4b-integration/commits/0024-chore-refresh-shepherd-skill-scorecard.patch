@@ -1,0 +1,39 @@
+From 9c454ec83e5f4103144ce3a24e6b052f1ec7ebe4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 04:55:37 +0530
+Subject: [PATCH] chore: refresh shepherd skill scorecard
+
+---
+ .agents/skills/shepherd/evals/scorecard.json | 2 +-
+ skills/shepherd/evals/scorecard.json         | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.agents/skills/shepherd/evals/scorecard.json b/.agents/skills/shepherd/evals/scorecard.json
+index b50fc3f4..91979e48 100644
+--- a/.agents/skills/shepherd/evals/scorecard.json
++++ b/.agents/skills/shepherd/evals/scorecard.json
+@@ -4,7 +4,7 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 987,
+-      "body_lines": 108,
++      "body_lines": 109,
+       "score": 41
+     },
+     "caps": {
+diff --git a/skills/shepherd/evals/scorecard.json b/skills/shepherd/evals/scorecard.json
+index b50fc3f4..91979e48 100644
+--- a/skills/shepherd/evals/scorecard.json
++++ b/skills/shepherd/evals/scorecard.json
+@@ -4,7 +4,7 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 987,
+-      "body_lines": 108,
++      "body_lines": 109,
+       "score": 41
+     },
+     "caps": {
+-- 
+2.51.0.windows.1
+

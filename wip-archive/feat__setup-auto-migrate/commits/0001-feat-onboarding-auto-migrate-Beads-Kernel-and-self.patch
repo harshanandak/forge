@@ -1,0 +1,527 @@
+From 5563ded6200baee1f191d6b85941091e837c776c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 08:08:45 +0530
+Subject: [PATCH] =?UTF-8?q?feat(onboarding):=20auto-migrate=20Beads?=
+ =?UTF-8?q?=E2=86=92Kernel=20and=20self-install=20hooks=20on=20setup/init?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two onboarding gaps a dogfood test exposed:
+
+Gap 1 — beads→kernel migration was not automatic on install. `forge setup`
+(quick/--yes/interactive) and `forge init` now detect a jsonl-backed `.beads`
+store and auto-import issues/comments/deps into the Kernel, reusing the
+idempotent `forge migrate --from beads` spine. Reads the committed jsonl
+sidecars directly — no external issue-tracker CLI required — and surfaces the
+same honest field-gap report. New helpers: migrate.detectBeadsJsonlSource /
+autoMigrateBeadsIfPresent and setup.autoMigrateBeadsToKernel.
+
+Gap 2 — `forge init` scaffolded `.forge/` but never installed git hooks, so
+stage commands hard-stopped on HOOKS_NOT_ACTIVE with no path forward. init now
+installs hooks after scaffolding (via setup.ensureGitHooksInstalled, reusing
+the same lefthook install setup performs; package.json-gated so bare repos are
+untouched). Both steps are idempotent and degrade to a warning, never abort.
+
+Regenerated the D20 bd call-site kill-list (migrate.js additions shifted
+command-group counts). setup.js stays bd-free.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   1 +
+ .../bd-call-site-kill-list.md                 |   6 +-
+ lib/commands/init.js                          |  20 +++
+ lib/commands/migrate.js                       |  38 +++++
+ lib/commands/setup.js                         |  75 +++++++++
+ test/commands/init-hooks-onboarding.test.js   |  98 ++++++++++++
+ test/commands/setup-auto-migrate.test.js      | 147 ++++++++++++++++++
+ 7 files changed, 382 insertions(+), 3 deletions(-)
+ create mode 100644 test/commands/init-hooks-onboarding.test.js
+ create mode 100644 test/commands/setup-auto-migrate.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index dc9b2c21..1c34ddc3 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Added
+ 
++- **Onboarding now auto-migrates Beads → Kernel and self-installs git hooks.** `forge setup` (quick, `--yes`, and interactive agent paths) and `forge init` now detect an existing jsonl-backed `.beads` store and **auto-import** its issues, comments, and dependencies into the Kernel — reusing the idempotent `forge migrate --from beads` spine, reading the committed jsonl sidecars directly (no external issue-tracker CLI required, so it works even when the legacy SQL backend is offline) and surfacing the same honest field-gap report. A fresh `forge init` also now installs git hooks, so `forge validate`/`plan` are no longer immediately blocked by `HOOKS_NOT_ACTIVE` — closing the init → hooks catch-22. Both steps are idempotent and degrade to a warning rather than aborting onboarding.
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+ 
+ ### Changed
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 6076810a..bf632adb 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -7,7 +7,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ 
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+-| command | 68 | 8 |
++| command | 73 | 8 |
+ | runtime | 256 | 34 |
+ | docs | 394 | 47 |
+ | skills | 1 | 1 |
+@@ -21,8 +21,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 8 (bd), 10 (bd)
+ - [ ] lib/commands/dev.js (1)
+   - lines: 466 (bd)
+-- [ ] lib/commands/migrate.js (14)
+-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 306 (.beads)
++- [ ] lib/commands/migrate.js (19)
++  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 301 (.beads), 305 (bd, dolt), 306 (bd, dolt), 310 (.beads), 322 (bd, .beads), 344 (.beads)
+ - [ ] lib/commands/plan.js (9)
+   - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 738 (bd), 773 (bd)
+ - [ ] lib/commands/status.js (10)
+diff --git a/lib/commands/init.js b/lib/commands/init.js
+index bac1932b..f2178c7f 100644
+--- a/lib/commands/init.js
++++ b/lib/commands/init.js
+@@ -542,6 +542,26 @@ async function handler(args, flags, projectRoot = process.cwd(), deps = {}) {
+     fs.writeFileSync(file.path, file.content, 'utf8');
+   }
+ 
++  // Close the onboarding loop that a bare `forge init` used to leave open:
++  //  1. install git hooks so stage commands are not HOOKS_NOT_ACTIVE-blocked, and
++  //  2. import any existing Beads store into the Kernel.
++  // Both reuse setup's real implementations (overridable via deps for tests) and
++  // degrade to a warning rather than failing init.
++  const installHooks = deps.installHooks
++    || ((root) => require('./setup').ensureGitHooksInstalled(root));
++  const autoMigrateBeads = deps.autoMigrateBeads
++    || ((root) => require('./migrate').autoMigrateBeadsIfPresent(root));
++  try {
++    await installHooks(projectRoot);
++  } catch (err) {
++    console.warn(`Warning: git hook installation skipped: ${err.message}`);
++  }
++  try {
++    await autoMigrateBeads(projectRoot);
++  } catch (err) {
++    console.warn(`Warning: Beads → Kernel migration skipped: ${err.message}`);
++  }
++
+   console.log(`Initialized Forge adoption profile '${profile}' at .forge/`);
+   console.log(`Classification: ${choices.classification}`);
+   console.log(`Harness targets: ${choices.harnessTargets.join(', ')}`);
+diff --git a/lib/commands/migrate.js b/lib/commands/migrate.js
+index a9d7d2f4..2a832bb4 100644
+--- a/lib/commands/migrate.js
++++ b/lib/commands/migrate.js
+@@ -297,9 +297,47 @@ async function runBeadsMigration(options, projectRoot, opts) {
+   }
+ }
+ 
++/**
++ * Detect a jsonl-backed Beads store under `<projectRoot>/.beads`. Returns the
++ * directory path when it holds *.jsonl sidecars, else null.
++ *
++ * Onboarding (forge setup/init) uses this to decide whether to auto-migrate.
++ * It deliberately never falls back to `bd export` (a Dolt-only store with no
++ * jsonl returns null), so setup stays bd-free even when Dolt is down.
++ */
++function detectBeadsJsonlSource(projectRoot, deps = {}) {
++  const fsImpl = deps.fs || fs;
++  const beadsDir = path.join(projectRoot || process.cwd(), '.beads');
++  return fsImpl.existsSync(beadsDir) && directoryHasJsonl(beadsDir, fsImpl)
++    ? beadsDir
++    : null;
++}
++
++/**
++ * Idempotently import an existing jsonl-backed Beads store into the Kernel as
++ * part of onboarding. Reuses the exact `forge migrate --from beads` spine, so
++ * gaps are surfaced honestly and a second run inserts nothing.
++ *
++ * No-op (`{ migrated: false, reason: 'no-beads-jsonl' }`) when there is no jsonl
++ * `.beads/` present. Never requires the `bd` binary.
++ *
++ * @param {string} projectRoot
++ * @param {object} [opts] - Passed through to runBeadsMigration (_broker/_now/_fs seams).
++ * @returns {Promise<{ migrated: boolean, reason?: string, result?: object }>}
++ */
++async function autoMigrateBeadsIfPresent(projectRoot, opts = {}) {
++  if (!detectBeadsJsonlSource(projectRoot, { fs: opts._fs })) {
++    return { migrated: false, reason: 'no-beads-jsonl' };
++  }
++  const result = await runBeadsMigration({ from: 'beads' }, projectRoot, opts);
++  return { migrated: result.success === true, result };
++}
++
+ module.exports = {
+   name: 'migrate',
+   description: 'Migrate a Beads issue store into the Forge Kernel, or preview the v2→v3 migration',
++  detectBeadsJsonlSource,
++  autoMigrateBeadsIfPresent,
+   usage: 'forge migrate --from beads [--dry-run] [--source <dir>] [--json]',
+   flags: {
+     '--from <source>': 'Migration source. Use "beads" to import a Beads issue store into the Kernel.',
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 5d3cfa3d..328e6e04 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2817,6 +2817,73 @@ function configureDefaultExternalServices(skipExternal) {
+   console.log('Configuration saved to .env.local');
+ }
+ 
++// Auto-import an existing Beads store into the Kernel during setup.
++// Idempotent and CLI-free: reuses the `forge migrate --from beads` spine, which
++// reads the committed Beads jsonl sidecars directly (no external issue-tracker
++// binary), so it works even when the legacy SQL backend is offline. Failures
++// degrade to a setup note rather than aborting setup. Returns the migrate
++// outcome for callers/tests.
++async function autoMigrateBeadsToKernel(opts = {}) {
++  const migrateModule = require('./migrate');
++  let outcome;
++  try {
++    outcome = await migrateModule.autoMigrateBeadsIfPresent(projectRoot, opts);
++  } catch (err) {
++    addSetupNote(`Beads → Kernel auto-migration failed: ${err.message}`);
++    return { migrated: false };
++  }
++
++  if (!outcome.migrated) {
++    if (outcome.result && outcome.result.success === false) {
++      addSetupNote(`Beads → Kernel auto-migration skipped: ${outcome.result.error}`);
++    }
++    return outcome;
++  }
++
++  const { imported, gaps } = outcome.result;
++  const inserted = imported.issues.inserted;
++  const skipped = imported.issues.skipped;
++  if (inserted > 0) {
++    let line = `  ✓ Migrated ${inserted} issue(s) from Beads to the Kernel`;
++    if (gaps && gaps.count > 0) {
++      line += ` (${gaps.count} field gap(s): ${gaps.items.map(g => g.field).join(', ')})`;
++    }
++    console.log(line);
++  } else {
++    console.log(`  ✓ Beads store already present in the Kernel (${skipped} issue(s))`);
++  }
++  return outcome;
++}
++
++// Install git hooks for a target project root without a full setup run.
++// Reuses the same lefthook install path setup performs so `forge init` can
++// reach a hook-active state (closing the init → HOOKS_NOT_ACTIVE catch-22).
++// Skips silently when there is no package.json to attach hooks to — keeps
++// `forge init` lightweight for bare/non-node repos and avoids surprise installs.
++// Restores mutated module state afterward.
++async function ensureGitHooksInstalled(targetRoot = projectRoot) {
++  if (!fs.existsSync(path.join(targetRoot, 'package.json'))) {
++    return { installed: false, reason: 'no-package-json' };
++  }
++
++  const previousRoot = projectRoot;
++  const previousInteractive = NON_INTERACTIVE;
++  const previousPkgManager = PKG_MANAGER;
++  projectRoot = targetRoot;
++  NON_INTERACTIVE = true;
++  PKG_MANAGER = detectPackageManager();
++  try {
++    autoInstallLefthook();
++    await handleHuskyMigration();
++    installGitHooks();
++    return { installed: true };
++  } finally {
++    projectRoot = previousRoot;
++    NON_INTERACTIVE = previousInteractive;
++    PKG_MANAGER = previousPkgManager;
++  }
++}
++
+ // Quick setup with defaults
+ 
+ 
+@@ -2852,6 +2919,9 @@ async function quickSetup(selectedAgents, skipExternal) {
+   // Auto-setup project tools (Kernel issue store, Skills)
+   await autoSetupToolsInQuickMode();
+ 
++  // Auto-import an existing Beads store into the Kernel (idempotent, CLI-free)
++  await autoMigrateBeadsToKernel();
++
+   // Setup Claude first if selected, then setup remaining agents
+   if (selectedAgents.includes('claude')) {
+     await setupAgent('claude');
+@@ -3390,6 +3460,9 @@ async function executeSetup(config) {
+   console.log('');
+   installGitHooks();
+ 
++  // Auto-import an existing Beads store into the Kernel (idempotent, CLI-free)
++  await autoMigrateBeadsToKernel();
++
+   // External services (unless skipped)
+   await handleExternalServices(skipExternal, agents);
+ 
+@@ -3816,6 +3889,8 @@ module.exports = {
+   installViaBunx,
+   autoInstallLefthook,
+   autoSetupToolsInQuickMode,
++  autoMigrateBeadsToKernel,
++  ensureGitHooksInstalled,
+   setupClaudeMcpConfig,
+   displayMcpStatus,
+   displayEnvTokenResults,
+diff --git a/test/commands/init-hooks-onboarding.test.js b/test/commands/init-hooks-onboarding.test.js
+new file mode 100644
+index 00000000..2fe188a3
+--- /dev/null
++++ b/test/commands/init-hooks-onboarding.test.js
+@@ -0,0 +1,98 @@
++'use strict';
++
++const { describe, test, expect, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { execFileSync } = require('node:child_process');
++
++const initCommand = require('../../lib/commands/init');
++const setupCommand = require('../../lib/commands/setup');
++const { checkHookInstallation, checkRuntimeHealth } = require('../../lib/runtime-health');
++
++// Gap 2 coverage: a fresh `forge init` must leave the repo in a state where the
++// stage commands can run — i.e. NOT blocked by HOOKS_NOT_ACTIVE. Today init
++// scaffolds .forge/ but never installs git hooks, so `forge validate`/`plan`
++// immediately hard-stop. init must close that onboarding path by installing the
++// hooks (the same lefthook install setup performs).
++const tempRoots = [];
++
++afterEach(() => {
++	for (const root of tempRoots.splice(0)) {
++		fs.rmSync(root, { recursive: true, force: true });
++	}
++});
++
++function makeCleanRepo() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-init-hooks-'));
++	tempRoots.push(root);
++	execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
++	return root;
++}
++
++// Faithful stand-in for `lefthook install`: writes the pre-commit/pre-push hook
++// files lefthook would create so checkHookInstallation classifies them as active.
++// Used to keep the onboarding test deterministic (no network `lefthook` fetch).
++function writeLefthookHooks(projectRoot) {
++	const hooksDir = execFileSync('git', ['rev-parse', '--git-path', 'hooks'], {
++		cwd: projectRoot,
++		encoding: 'utf8',
++	}).trim();
++	const absHooksDir = path.isAbsolute(hooksDir) ? hooksDir : path.join(projectRoot, hooksDir);
++	fs.mkdirSync(absHooksDir, { recursive: true });
++	for (const hook of ['pre-commit', 'pre-push']) {
++		const file = path.join(absHooksDir, hook);
++		fs.writeFileSync(file, `#!/bin/sh\nlefthook run ${hook} "$@"\n`, { mode: 0o755 });
++		fs.chmodSync(file, 0o755);
++	}
++}
++
++function hooksNotActiveDiagnostics(root) {
++	return checkRuntimeHealth(root).diagnostics.filter((d) => d.code === 'HOOKS_NOT_ACTIVE');
++}
++
++describe('forge init closes the hooks onboarding path', () => {
++	test('a bare git repo is HOOKS_NOT_ACTIVE before any init (sanity)', () => {
++		const root = makeCleanRepo();
++		expect(checkHookInstallation(root).active).toBe(false);
++		expect(hooksNotActiveDiagnostics(root).length).toBe(1);
++	});
++
++	test('a fresh init installs hooks so stage commands are not HOOKS_NOT_ACTIVE-blocked', async () => {
++		const root = makeCleanRepo();
++		let installedFor = null;
++		const deps = {
++			installHooks: (projectRoot) => {
++				installedFor = projectRoot;
++				writeLefthookHooks(projectRoot);
++			},
++		};
++
++		const result = await initCommand.handler(['--profile', 'minimal', '--yes'], {}, root, deps);
++
++		expect(result.success).toBe(true);
++		expect(installedFor).toBe(root);
++		expect(checkHookInstallation(root).active).toBe(true);
++		expect(checkHookInstallation(root).state).toBe('active');
++		expect(hooksNotActiveDiagnostics(root)).toEqual([]);
++	});
++
++	test('init auto-migrates an existing Beads store while onboarding', async () => {
++		const root = makeCleanRepo();
++		let migratedFor = null;
++		const deps = {
++			installHooks: () => {},
++			autoMigrateBeads: (projectRoot) => {
++				migratedFor = projectRoot;
++				return { migrated: false, reason: 'stubbed' };
++			},
++		};
++
++		await initCommand.handler(['--profile', 'minimal', '--yes'], {}, root, deps);
++		expect(migratedFor).toBe(root);
++	});
++
++	test('init defaults its hook installer to setup.ensureGitHooksInstalled', () => {
++		expect(typeof setupCommand.ensureGitHooksInstalled).toBe('function');
++	});
++});
+diff --git a/test/commands/setup-auto-migrate.test.js b/test/commands/setup-auto-migrate.test.js
+new file mode 100644
+index 00000000..aec11b80
+--- /dev/null
++++ b/test/commands/setup-auto-migrate.test.js
+@@ -0,0 +1,147 @@
++'use strict';
++
++const { describe, test, expect, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const migrateCommand = require('../../lib/commands/migrate');
++const setupCommand = require('../../lib/commands/setup');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++// Gap 1 coverage: installing Forge onto a repo that already has a Beads store
++// must auto-import the issues/comments/deps into the Kernel — without the user
++// ever running `forge migrate` by hand, and without requiring the `bd` binary
++// (the migrater reads the committed *.jsonl sidecars directly). The auto-migrate
++// spine is idempotent, so it is safe to run on every setup.
++const NOW = '2026-06-30T00:00:00.000Z';
++const fixtureDir = path.join(__dirname, '..', 'fixtures', 'beads-migrate', 'legacy-backup');
++
++const cleanups = [];
++
++afterEach(() => {
++	while (cleanups.length > 0) {
++		const cleanup = cleanups.pop();
++		try {
++			cleanup();
++		} catch (_err) {
++			/* intentional: best-effort temp cleanup */ // NOSONAR S2486
++		}
++	}
++});
++
++function freshBroker() {
++	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-auto-migrate-kernel-'));
++	const dbPath = path.join(tmpDir, 'kernel.sqlite');
++	const config = { databasePath: dbPath };
++	const driver = createBuiltinSQLiteDriver({});
++	const broker = createLocalBroker({
++		projectRoot: tmpDir,
++		execFileSync: () => path.join(tmpDir, '.git'),
++		databasePath: dbPath,
++		driver,
++	});
++	cleanups.push(() => {
++		driver.close();
++		fs.rmSync(tmpDir, { recursive: true, force: true });
++	});
++	return { tmpDir, dbPath, config, driver, broker };
++}
++
++// A project whose .beads/ holds jsonl sidecars (the split-layout the migrater
++// already understands) — copied from the committed legacy-backup fixture.
++function projectWithBeadsJsonl() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-auto-migrate-repo-'));
++	const beadsDir = path.join(root, '.beads');
++	fs.mkdirSync(beadsDir, { recursive: true });
++	for (const entry of fs.readdirSync(fixtureDir)) {
++		if (entry.endsWith('.jsonl')) {
++			fs.copyFileSync(path.join(fixtureDir, entry), path.join(beadsDir, entry));
++		}
++	}
++	cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
++	return root;
++}
++
++function bareProject() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-auto-migrate-bare-'));
++	cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
++	return root;
++}
++
++describe('beads → kernel jsonl detection (bd-free)', () => {
++	test('detects a .beads/ directory that holds *.jsonl sidecars', () => {
++		const root = projectWithBeadsJsonl();
++		expect(migrateCommand.detectBeadsJsonlSource(root)).toBe(path.join(root, '.beads'));
++	});
++
++	test('returns null when there is no .beads/ store', () => {
++		expect(migrateCommand.detectBeadsJsonlSource(bareProject())).toBeNull();
++	});
++
++	test('returns null for a Dolt-only .beads/ (no jsonl) so setup never shells out to bd', () => {
++		const root = bareProject();
++		const beadsDir = path.join(root, '.beads');
++		fs.mkdirSync(beadsDir, { recursive: true });
++		fs.writeFileSync(path.join(beadsDir, 'beads.db'), 'not-jsonl');
++		expect(migrateCommand.detectBeadsJsonlSource(root)).toBeNull();
++	});
++});
++
++describe('autoMigrateBeadsIfPresent', () => {
++	test('imports a jsonl-backed Beads store into the Kernel', async () => {
++		const { broker, driver, config } = freshBroker();
++		await broker.initialize();
++		const root = projectWithBeadsJsonl();
++
++		const outcome = await migrateCommand.autoMigrateBeadsIfPresent(root, { _broker: broker, _now: NOW });
++
++		expect(outcome.migrated).toBe(true);
++		expect(outcome.result.imported.issues.inserted).toBe(2);
++
++		const aa1 = await driver.issueOperation('show', ['forge-aa1'], {}, config);
++		expect(aa1.data.status).toBe('open');
++		const bb2 = await driver.issueOperation('show', ['forge-bb2'], {}, config);
++		expect(bb2.data.dependencies).toContain('forge-aa1');
++	});
++
++	test('is a no-op when the repo has no Beads store', async () => {
++		const outcome = await migrateCommand.autoMigrateBeadsIfPresent(bareProject(), { _now: NOW });
++		expect(outcome.migrated).toBe(false);
++		expect(outcome.reason).toBe('no-beads-jsonl');
++	});
++
++	test('a second run is idempotent (nothing re-imported)', async () => {
++		const { broker } = freshBroker();
++		await broker.initialize();
++		const root = projectWithBeadsJsonl();
++
++		await migrateCommand.autoMigrateBeadsIfPresent(root, { _broker: broker, _now: NOW });
++		const second = await migrateCommand.autoMigrateBeadsIfPresent(root, { _broker: broker, _now: NOW });
++
++		expect(second.migrated).toBe(true);
++		expect(second.result.imported.issues.inserted).toBe(0);
++		expect(second.result.imported.issues.skipped).toBe(2);
++	});
++});
++
++describe('forge setup auto-populates the Kernel from an existing Beads store', () => {
++	test('setup.autoMigrateBeadsToKernel drives the migrate spine into the Kernel', async () => {
++		const { broker, driver, config } = freshBroker();
++		await broker.initialize();
++		const root = projectWithBeadsJsonl();
++
++		const saved = setupCommand._getState();
++		setupCommand._setState({ projectRoot: root });
++		try {
++			const outcome = await setupCommand.autoMigrateBeadsToKernel({ _broker: broker, _now: NOW });
++			expect(outcome.migrated).toBe(true);
++		} finally {
++			setupCommand._setState({ projectRoot: saved.projectRoot });
++		}
++
++		const aa1 = await driver.issueOperation('show', ['forge-aa1'], {}, config);
++		expect(aa1.data.created_by).toBe('Harsha Nanda');
++	});
++});
+-- 
+2.51.0.windows.1
+

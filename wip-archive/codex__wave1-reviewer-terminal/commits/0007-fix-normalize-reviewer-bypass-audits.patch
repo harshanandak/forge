@@ -1,0 +1,26 @@
+From ee508d765b73ce4e8c14143362f343d1ec180019 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 16:23:22 +0530
+Subject: [PATCH] fix: normalize reviewer bypass audits
+
+---
+ lib/pr-monitor/monitor.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index 09785166..d82e3fd1 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -168,7 +168,8 @@ function prepareReviewerSnapshot(previous, next, ctx = {}) {
+   let emergencyBypass;
+   if (input.emergencyBypass !== undefined) {
+     emergencyBypass = cloneValue(input.emergencyBypass);
+-    try { authorizeEmergencyBypass(emergencyBypass); } catch (error) { reviewerLedgerError = reviewerLedgerError || error.message; }
++    try { emergencyBypass = authorizeEmergencyBypass(emergencyBypass); }
++    catch (error) { reviewerLedgerError = reviewerLedgerError || error.message; emergencyBypass = null; }
+   }
+   const out = { ...next };
+   for (const field of ['reviewer', 'reviewerPolicy', 'reviewerRequests', 'reviewerStates', 'reviewEvents', 'finalCorrectionSha', 'finalCorrectionAt', 'reviewerLedger', 'reviewerLedgerError']) delete out[field];
+-- 
+2.51.0.windows.1
+

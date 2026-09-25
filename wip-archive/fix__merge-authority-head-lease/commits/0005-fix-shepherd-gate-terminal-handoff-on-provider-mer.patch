@@ -1,0 +1,123 @@
+From 7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 2 Aug 2026 15:22:42 +0530
+Subject: [PATCH] fix(shepherd): gate terminal handoff on provider merge state
+
+---
+ .../decisions.md                                   |  2 ++
+ .../2026-08-01-merge-authority-head-lease/tasks.md |  2 ++
+ lib/adapters/pr-state-adapter.js                   |  3 ++-
+ lib/pr-shepherd.js                                 |  8 ++++++++
+ test/pr-shepherd.test.js                           | 14 ++++++++++++++
+ test/pr-state-adapter.test.js                      |  4 ++++
+ 6 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+index 962ce3da..6c87db0c 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -46,6 +46,8 @@ The terminal amendment validates every REST and rollup observation before policy
+ 
+ Candidate `331943cce424ed57ef9afcd5dc773a89692fc41b` is rejected after two terminal review counterexamples; its Kernel/CLI lane passed. Review freshness now takes the maximum of every review's creation, update, and submission timestamps rather than preferring submission and discarding a later edit. The shared PR-state adapter now treats an unknown `mergeStateStatus` enum as unreadable evidence, normalizes its projection to `UNKNOWN`, and therefore routes Shepherd to `ESCALATE` rather than `MERGE_READY`. Both exact regressions were RED before implementation and GREEN afterward; the bounded affected manifest remained green.
+ 
++Candidate `66d7b4d18d58ac007ce66ac8c31471111419bbc2` is rejected after the shared-projection lane proved that GitHub's explicit `UNKNOWN` enum and recognized `BLOCKED` state could still reach Shepherd `MERGE_READY`. The adapter now treats explicit `UNKNOWN` as non-readable authority evidence. At Shepherd's terminal handoff seam, only `CLEAN`, `HAS_HOOKS`, or `UNSTABLE` provider merge states may produce `MERGE_READY`; `UNKNOWN`, `BLOCKED`, `DRAFT`, inconsistent `BEHIND`, malformed values, and conflicts remain non-authorizing. The exact counterexamples were RED before the change and GREEN afterward; the bounded affected manifest remained green.
++
+ ## Bounded residuals
+ 
+ GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+index 48064ef1..7d9c4053 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -33,6 +33,8 @@
+ - [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+ - [x] Reconcile terminal exact-SHA review of `331943cce424ed57ef9afcd5dc773a89692fc41b`: Kernel/CLI passed; reject for later review updates missing from settle and unknown merge-state enums remaining readable.
+ - [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
++- [x] Reconcile exact-SHA review of `66d7b4d18d58ac007ce66ac8c31471111419bbc2`: reject after explicit `UNKNOWN` and recognized `BLOCKED` merge states reached Shepherd `MERGE_READY`.
++- [x] Require an authorizing provider merge state at Shepherd's terminal handoff; add RED/GREEN coverage and rerun the bounded affected manifest once.
+ - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+ - [ ] Push/open PR only after PASS.
+ - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 0de830b8..6ec638ad 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -146,7 +146,8 @@ class PrStateAdapter {
+     const mergeStateStatus = typeof data.mergeStateStatus === 'string'
+       ? data.mergeStateStatus.toUpperCase()
+       : '';
+-    const mergeStateReadable = MERGE_STATE_STATUSES.has(mergeStateStatus);
++    const mergeStateReadable = MERGE_STATE_STATUSES.has(mergeStateStatus)
++      && mergeStateStatus !== 'UNKNOWN';
+     const rollupReadable = Array.isArray(data.statusCheckRollup)
+       && data.statusCheckRollup.every(validRollupNode);
+     const providerEvidenceReadable = lifecycleReadable && mergeStateReadable && rollupReadable
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index a0465176..84d43c15 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -32,6 +32,7 @@ const { fenceUntrusted } = require('./untrusted-content');
+ 
+ /** Non-erroring terminal states a pass can settle into. */
+ const TERMINAL_STATES = ['MERGE_READY', 'ESCALATE', 'PENDING', 'MERGED', 'CLOSED', 'NEEDS_REVIEW'];
++const MERGE_READY_PROVIDER_STATES = new Set(['CLEAN', 'HAS_HOOKS', 'UNSTABLE']);
+ 
+ // Review threads are classified BY MECHANISM, not by a bot-name list: a GitHub
+ // review THREAD is opened by a reviewer (a human OR any bot) and stays open until
+@@ -490,6 +491,13 @@ async function runShepherdPass(ctx) {
+ 
+   // --- Terminal: all required green + not behind → merge-ready handoff. ---
+   if (allRequiredGreen) {
++    const providerMergeState = String(startState.mergeStateStatus || '').toUpperCase();
++    if (!MERGE_READY_PROVIDER_STATES.has(providerMergeState)) {
++      return result('ESCALATE', {
++        actions,
++        reason: `Provider merge state ${providerMergeState || 'UNKNOWN'} does not authorize merge readiness.`,
++      });
++    }
+     return result('MERGE_READY', {
+       actions,
+       reason: 'All required checks are green and the branch is up to date. Handing off to the human to merge in the GitHub UI — the shepherd never merges.',
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index b10f9f5f..93b6cc15 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -78,6 +78,20 @@ describe('runShepherdPass — bounded pass state machine', () => {
+     expect(out.state).toBe('ESCALATE');
+   });
+ 
++  test('non-authorizing provider merge states never reach MERGE_READY', async () => {
++    for (const mergeStateStatus of ['UNKNOWN', 'BLOCKED', 'DRAFT', 'BEHIND']) {
++      const { adapter } = makeAdapter({
++        providerEvidenceReadable: true,
++        mergeStateStatus,
++        required: ['unit'],
++        checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }],
++        behind: 0,
++      });
++      const out = await runShepherdPass({ ...BASE_CTX, adapter });
++      expect(out.state).toBe('ESCALATE');
++    }
++  });
++
+   test('malformed non-auth state or protection reads escalate instead of throwing', async () => {
+     for (const spec of [
+       { stateAuthError: new Error('malformed GraphQL envelope') },
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 766d4255..89217c22 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -111,6 +111,10 @@ describe('PrStateAdapter', () => {
+         headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
+         mergeStateStatus: 'BOGUS', statusCheckRollup: [],
+       },
++      {
++        headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
++        mergeStateStatus: 'UNKNOWN', statusCheckRollup: [],
++      },
+     ]) {
+       const { run } = makeRunner([['pr view', JSON.stringify(payload)]]);
+       const state = await new PrStateAdapter({ gh: run, git: run }).readState('123');
+-- 
+2.51.0.windows.1
+

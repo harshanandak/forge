@@ -1,0 +1,26 @@
+From 69f7f8d11167a33b5ff7a55ec1931706c6866607 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 01:52:56 +0530
+Subject: [PATCH] refactor(shepherd): bound remote path parsing
+
+---
+ lib/commands/shepherd.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 0f56482a..cc917307 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -71,7 +71,8 @@ function repositoryFromRemoteUrl(url) {
+   try {
+     const parsed = new URL(value);
+     if (parsed.hostname.toLowerCase() !== 'github.com' || parsed.search || parsed.hash) return null;
+-    const parts = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
++    const pathname = parsed.pathname.endsWith('/') ? parsed.pathname.slice(1, -1) : parsed.pathname.slice(1);
++    const parts = pathname.split('/');
+     if (parts.length !== 2 || parts.some(part => !part)) return null;
+     const repository = parts[1].replace(/\.git$/i, '');
+     return repository ? `${parts[0]}/${repository}`.toLowerCase() : null;
+-- 
+2.51.0.windows.1
+

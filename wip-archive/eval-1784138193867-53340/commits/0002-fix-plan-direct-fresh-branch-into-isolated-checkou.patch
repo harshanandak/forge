@@ -1,0 +1,298 @@
+From 5324c61e66f0da11136e954a9f43439ca351df69 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 22:56:02 +0530
+Subject: [PATCH] fix(plan): direct fresh branch into isolated checkout; keep
+ HEAD unswitched
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Composition follow-up to the git-branch fix (#396 review). Because plan no
+longer switches HEAD, a fresh feat/<slug> branch leaves the shared tree on
+the default branch. Stage commands (/dev, /validate, /ship) resolve the
+CHECKED-OUT branch, which has no branch->issue linkage — so ship dead-ended
+"requires authoritative workflow state" (the #380 B1 blocker, via composition).
+
+- executePlan now flags branchCreated; the handler replaces the bare
+  "Next: /dev" with honest guidance to enter an isolated checkout first
+  (`forge worktree create <slug>` — reuses the existing branch — or solo
+  `git switch feat/<slug>`), then /dev. Reused-branch (link) flow keeps
+  "Next: /dev" since HEAD is already on the feature branch.
+- F3: the branch-already-exists error no longer says `git checkout <branch>`
+  (the exact HEAD switch this PR forbids); points at worktree/switch instead.
+- Reachability test derives the branch from HEAD (detectWorktree, the
+  detectBranchName source) and drives the real enforce-stage reader
+  (resolveActiveIssueId): null from master (dead-end), issue-resolved from a
+  worktree on feat/<slug>. Plus a guidance-output pin.
+
+Refs: aa14966c-6fcb-42e5-bd54-44ea851db703
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/plan.js                        |  23 ++-
+ test/commands/plan-branch-isolation.test.js | 171 +++++++++++++++++---
+ 2 files changed, 169 insertions(+), 25 deletions(-)
+
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index ec98b860..dfd762c6 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -692,7 +692,7 @@ function createFeatureBranch(featureSlug) {
+ 			execFileSync('git', ['rev-parse', '--verify', branchName], { ...getExecOptions(), stdio: 'pipe' });  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
+ 			return {
+ 				success: false,
+-				error: `Branch ${branchName} already exists\n\nSwitch to it with: git checkout ${branchName}`,
++				error: `Branch ${branchName} already exists\n\nWork on it in an isolated checkout: forge worktree create ${featureSlug}\n(or, working solo: git switch ${branchName})`,
+ 			};
+ 		} catch {
+ 			// Branch doesn't exist, continue (expected case)
+@@ -1085,6 +1085,12 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 			beadsIssueId: issue.issueId,
+ 			branchName: branch.branchName,
+ 			linked: Boolean(explicitIssueId),
++			// A FRESH branch was created (HEAD did NOT move — aa14966c). Stage
++			// commands resolve the CHECKED-OUT branch, so the user must enter an
++			// isolated checkout on this branch before /dev, or stage state resolves
++			// against the default branch (no linkage → ship dead-ends). When the
++			// branch was reused, HEAD is already on it and /dev works directly.
++			branchCreated: !branch.reused,
+ 			summary: explicitIssueId
+ 				? `Plan linked to existing issue ${issue.issueId} (${scope.type} scope)`
+ 				: `Plan created for ${featureName} (${scope.type} scope)`,
+@@ -1123,7 +1129,20 @@ module.exports = {
+ 		const lines = [`${header}: ${result.summary || result.branchName || featureName}`];
+ 		if (result.issueId) lines.push(`${issueBackendLabel(result.issueBackend)}: ${result.issueId}`);
+ 		if (result.branchName) lines.push(`Branch: ${result.branchName}`);
+-		if (result.nextCommand) lines.push(`Next: ${result.nextCommand}`);
++		if (result.branchCreated) {
++			// A fresh branch was created but HEAD was NOT switched (aa14966c). Stage
++			// commands (/dev, /validate, /ship) resolve the CHECKED-OUT branch — from
++			// the shared tree that is still the default branch, which has no
++			// branch->issue linkage, so ship would dead-end. Direct the user into an
++			// isolated checkout on the new branch first.
++			const slug = String(result.branchName).replace(/^feat\//, '');
++			lines.push('Next: work on this branch in an isolated checkout (HEAD stays put in the shared tree):');
++			lines.push(`  forge worktree create ${slug}    # concurrent-safe; checks out the existing ${result.branchName}`);
++			lines.push(`  # or, working solo:  git switch ${result.branchName}`);
++			lines.push(`Then run ${result.nextCommand || '/dev'} from that checkout.`);
++		} else if (result.nextCommand) {
++			lines.push(`Next: ${result.nextCommand}`);
++		}
+ 
+ 		return {
+ 			...result,
+diff --git a/test/commands/plan-branch-isolation.test.js b/test/commands/plan-branch-isolation.test.js
+index cf48d84b..1483389d 100644
+--- a/test/commands/plan-branch-isolation.test.js
++++ b/test/commands/plan-branch-isolation.test.js
+@@ -1,23 +1,69 @@
+-// Regression test for kernel issue aa14966c:
+-// A Forge process must NEVER switch the shared checkout's HEAD branch.
+-// `/plan` (executePlan -> createFeatureBranch) previously ran `git checkout -b`,
+-// which flipped the shared working tree onto feat/<slug>, corrupting concurrent
+-// agents. createFeatureBranch must create the branch WITHOUT switching HEAD.
++// Regression tests for kernel issue aa14966c + the composed plan-first flow.
++//
++// 1. HEAD isolation: a Forge process must NEVER switch the shared checkout's
++//    HEAD. `/plan` (executePlan -> createFeatureBranch) previously ran
++//    `git checkout -b`, which flipped the shared working tree onto feat/<slug>,
++//    corrupting concurrent agents. createFeatureBranch must create the branch
++//    WITHOUT switching HEAD.
++//
++// 2. Reachability: because HEAD does NOT move, the branch->issue linkage plan
++//    registers for feat/<slug> is only reachable from a checkout whose HEAD is
++//    ON feat/<slug> (an isolated worktree, or a solo `git switch`). This test
++//    derives the branch from HEAD the way the CLI does (detectWorktree, which
++//    detectBranchName wraps) and drives the REAL enforce-stage reader
++//    (resolveActiveIssueId) — it does NOT inject `branch:` explicitly. From the
++//    shared tree (HEAD on master) resolution is null (the ship dead-end); from a
++//    worktree on feat/<slug> it resolves the issue (ship reachable).
++//
++// 3. Guidance: when plan creates a fresh branch it must tell the user to enter
++//    an isolated checkout before stage commands — never a bare "Next: /dev" that
++//    would run /dev from master.
+ 
+ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+-const { createFeatureBranch } = require('../../lib/commands/plan.js');
++const {
++	createFeatureBranch,
++	registerBranchIssueLinkage,
++	handler,
++} = require('../../lib/commands/plan.js');
++const { resolveActiveIssueId } = require('../../lib/workflow/enforce-stage.js');
++const { detectWorktree } = require('../../lib/detect-worktree.js');
+ 
+ const nodeFs = require('node:fs');
+ const nodeOs = require('node:os');
+ const nodePath = require('node:path');
+ const { execFileSync } = require('node:child_process');
+ 
++const GIT_ENV = {
++	...process.env,
++	GIT_AUTHOR_NAME: 'test',
++	GIT_AUTHOR_EMAIL: 'test@example.com',
++	GIT_COMMITTER_NAME: 'test',
++	GIT_COMMITTER_EMAIL: 'test@example.com',
++};
++
+ function git(cwd, args) {
+-	return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
++	return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe', env: GIT_ENV }).trim();
++}
++
++function initRepo() {
++	const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-headbug-'));
++	git(dir, ['init', '-b', 'master']);
++	git(dir, ['config', 'user.email', 'test@example.com']);
++	git(dir, ['config', 'user.name', 'Test']);
++	nodeFs.writeFileSync(nodePath.join(dir, 'README.md'), '# test\n');
++	git(dir, ['add', '.']);
++	git(dir, ['commit', '-m', 'initial']);
++	return dir;
+ }
+ 
+-function currentBranch(cwd) {
+-	return git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
++// In-memory stand-in for the kernel worktree registry: the same shape plan
++// writes (registerWorktree) and enforce-stage reads (listWorktrees, newest first).
++function makeRegistryDriver() {
++	const rows = [];
++	return {
++		registerWorktree(row) { rows.unshift(row); },
++		listWorktrees() { return rows; },
++	};
+ }
+ 
+ describe('createFeatureBranch — shared-checkout HEAD isolation (aa14966c)', () => {
+@@ -26,15 +72,8 @@ describe('createFeatureBranch — shared-checkout HEAD isolation (aa14966c)', ()
+ 
+ 	beforeEach(() => {
+ 		originalCwd = process.cwd();
+-		repoDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-headbug-'));
+-		git(repoDir, ['init', '-b', 'master']);
+-		git(repoDir, ['config', 'user.email', 'test@example.com']);
+-		git(repoDir, ['config', 'user.name', 'Test']);
+-		nodeFs.writeFileSync(nodePath.join(repoDir, 'README.md'), '# test\n');
+-		git(repoDir, ['add', '.']);
+-		git(repoDir, ['commit', '-m', 'initial']);
+-		// createFeatureBranch resolves cwd via process.cwd()
+-		process.chdir(repoDir);
++		repoDir = initRepo();
++		process.chdir(repoDir); // createFeatureBranch resolves cwd via process.cwd()
+ 	});
+ 
+ 	afterEach(() => {
+@@ -43,8 +82,7 @@ describe('createFeatureBranch — shared-checkout HEAD isolation (aa14966c)', ()
+ 	});
+ 
+ 	test('creates the branch but leaves the shared checkout HEAD on master', () => {
+-		const before = currentBranch(repoDir);
+-		expect(before).toBe('master');
++		expect(git(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('master');
+ 
+ 		const result = createFeatureBranch('head-isolation-demo');
+ 
+@@ -52,10 +90,97 @@ describe('createFeatureBranch — shared-checkout HEAD isolation (aa14966c)', ()
+ 		expect(result.branchName).toBe('feat/head-isolation-demo');
+ 
+ 		// The branch must now exist...
+-		const branches = git(repoDir, ['branch', '--list', 'feat/head-isolation-demo']);
+-		expect(branches).toContain('feat/head-isolation-demo');
++		expect(git(repoDir, ['branch', '--list', 'feat/head-isolation-demo']))
++			.toContain('feat/head-isolation-demo');
+ 
+ 		// ...but the shared working tree must STILL be on master (no HEAD flip).
+-		expect(currentBranch(repoDir)).toBe('master');
++		expect(git(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('master');
++	});
++});
++
++describe('plan-first reachability — branch derived from HEAD (aa14966c composition)', () => {
++	let repoDir;
++	let wtDir;
++	let originalCwd;
++
++	beforeEach(() => {
++		originalCwd = process.cwd();
++		repoDir = initRepo();
++		process.chdir(repoDir);
++	});
++
++	afterEach(() => {
++		process.chdir(originalCwd);
++		if (wtDir) nodeFs.rmSync(wtDir, { recursive: true, force: true });
++		nodeFs.rmSync(repoDir, { recursive: true, force: true });
++		wtDir = undefined;
++	});
++
++	test('linkage is unreachable from master (dead-end) but reachable from a worktree on feat/<slug>', async () => {
++		const driver = makeRegistryDriver();
++		const ISSUE_ID = 'kernel-reach-1';
++
++		// Simulate `/plan`: create the branch (HEAD stays on master) and register
++		// the branch->issue linkage exactly as executePlan does.
++		const branch = createFeatureBranch('head-reach-demo');
++		expect(branch.success).toBe(true);
++		await registerBranchIssueLinkage({ projectRoot: repoDir, driver }, branch.branchName, ISSUE_ID);
++
++		// The CLI derives the branch from HEAD (detectWorktree == detectBranchName's
++		// source). From the shared tree HEAD is master → NO linkage row → null.
++		// This is the exact ship dead-end the honest next-step guidance prevents.
++		const branchFromSharedTree = detectWorktree(repoDir).branch;
++		expect(branchFromSharedTree).toBe('master');
++		expect(await resolveActiveIssueId(driver, branchFromSharedTree)).toBeNull();
++
++		// Follow the honest next step: enter an isolated worktree ON feat/<slug>.
++		wtDir = nodePath.join(nodePath.dirname(repoDir), `${nodePath.basename(repoDir)}-wt`);
++		git(repoDir, ['worktree', 'add', wtDir, branch.branchName]);
++
++		// Now the CLI-derived branch is feat/<slug> and resolution reaches the issue
++		// → /dev, /validate, /ship resolve authoritative state (no null dead-end).
++		const branchFromWorktree = detectWorktree(wtDir).branch;
++		expect(branchFromWorktree).toBe('feat/head-reach-demo');
++		expect(await resolveActiveIssueId(driver, branchFromWorktree)).toBe(ISSUE_ID);
++	});
++});
++
++describe('plan guidance — fresh branch must direct into an isolated checkout', () => {
++	let originalCwd;
++	let repoDir;
++	let prevBackend;
++
++	beforeEach(() => {
++		originalCwd = process.cwd();
++		repoDir = initRepo();
++		nodeFs.mkdirSync(nodePath.join(repoDir, 'docs', 'research'), { recursive: true });
++		nodeFs.writeFileSync(
++			nodePath.join(repoDir, 'docs', 'research', 'head-guidance-demo.md'),
++			'# Head Guidance Demo\n\n**Timeline**: 2 hours\n**Strategic/Tactical**: Tactical\n',
++		);
++		prevBackend = process.env.FORGE_ISSUE_BACKEND;
++		delete process.env.FORGE_ISSUE_BACKEND; // default resolver → kernel
++		process.chdir(repoDir);
++	});
++
++	afterEach(() => {
++		process.chdir(originalCwd);
++		if (prevBackend === undefined) delete process.env.FORGE_ISSUE_BACKEND;
++		else process.env.FORGE_ISSUE_BACKEND = prevBackend;
++		nodeFs.rmSync(repoDir, { recursive: true, force: true });
++	});
++
++	test('output points into a worktree / git switch, not a bare "Next: /dev" from master', async () => {
++		const fakeRun = async () => ({ ok: true, command: 'issue.create', data: { id: 'kernel-guid-1' }, next_commands: [] });
++
++		const result = await handler(['head guidance demo'], {}, repoDir, { runIssueOperation: fakeRun });
++
++		expect(result.success).toBe(true);
++		expect(result.branchCreated).toBe(true);
++		// Honest next step: enter isolation on the created branch before stage cmds.
++		expect(result.output).toContain('forge worktree create head-guidance-demo');
++		expect(result.output).toContain('git switch feat/head-guidance-demo');
++		// It must NOT tell the user to just run /dev from the current (master) tree.
++		expect(result.output).not.toContain('Next: /dev');
+ 	});
+ });
+-- 
+2.51.0.windows.1
+

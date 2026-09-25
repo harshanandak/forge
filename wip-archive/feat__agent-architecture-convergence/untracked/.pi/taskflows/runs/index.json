@@ -1,0 +1,13 @@
+[
+  {
+    "runId": "round1-muse-spark-1-2-co-mtevoo83-9718dd",
+    "flowName": "round1-muse-spark-1-2-contributor-review",
+    "cwd": "C:\\Users\\harsha_befach\\Downloads\\forge\\.worktrees\\agent-architecture-convergence",
+    "status": "failed",
+    "createdAt": 1788038043556,
+    "updatedAt": 1788038043619,
+    "relPath": "round1-muse-spark-1-2-contributor-review/round1-muse-spark-1-2-co-mtevoo83-9718dd.json",
+    "host": "opencode",
+    "packageVersion": "0.2.10"
+  }
+]

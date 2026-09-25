@@ -1,0 +1,157 @@
+From 03921ae162f2dc6a0dd650446c23a793cfa9cd8b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 16:31:44 +0530
+Subject: [PATCH] feat(skills): define invocation metadata contract
+
+---
+ .../decisions.md                              |  3 ++
+ lib/using-forge.js                            | 21 +++++++++----
+ test/skills/context-cost.test.js              | 19 +++++++++++-
+ test/using-forge.test.js                      | 31 +++++++++++++++++++
+ 4 files changed, 67 insertions(+), 7 deletions(-)
+ create mode 100644 docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+
+diff --git a/docs/work/2026-07-29-skill-invocation-metadata/decisions.md b/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+new file mode 100644
+index 00000000..2c30ce92
+--- /dev/null
++++ b/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+@@ -0,0 +1,3 @@
++# Skill Invocation Metadata Decisions
++
++No decision gates have fired.
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index df31746b..ab0d5b84 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -100,10 +100,10 @@ function applyFrontmatterLine(state, line) {
+   if (state.inDescription) {
+     if (/^\s+\S/.test(line)) {
+       state.descParts.push(line.trim());
+-    } else if (line.trim() !== '') {
+-      state.inDescription = false;
++      return;
+     }
+-    return;
++    if (line.trim() === '') return;
++    state.inDescription = false;
+   }
+   // Detect the `name:` key without a regex: SonarCloud flags every /^name:.../ variant for
+   // super-linear backtracking. startsWith + slice is behavior-identical — the remainder is
+@@ -113,6 +113,11 @@ function applyFrontmatterLine(state, line) {
+     if (value) state.name = unquote(value);
+     return;
+   }
++  if (line.startsWith('invocation:')) {
++    const value = line.slice('invocation:'.length).trim();
++    if (value) state.invocation = unquote(value);
++    return;
++  }
+   const descMatch = /^description:\s*(.*)$/.exec(line);
+   if (descMatch) {
+     state.inDescription = true;
+@@ -124,10 +129,14 @@ function applyFrontmatterLine(state, line) {
+ /** Parse the name and (flattened) description from a SKILL.md frontmatter block. */
+ function parseFrontmatter(raw) {
+   const block = frontmatterBlock(raw);
+-  if (block === null) return { name: null, description: '' };
+-  const state = { name: null, descParts: [], inDescription: false };
++  if (block === null) return { name: null, description: '', invocation: 'model' };
++  const state = { name: null, descParts: [], inDescription: false, invocation: 'model' };
+   for (const line of block.split(/\r?\n/)) applyFrontmatterLine(state, line);
+-  return { name: state.name, description: state.descParts.join(' ').replace(/\s+/g, ' ').trim() };
++  return {
++    name: state.name,
++    description: state.descParts.join(' ').replace(/\s+/g, ' ').trim(),
++    invocation: state.invocation,
++  };
+ }
+ 
+ /** Read one skill dir into a `{ name, description }` catalog entry, or null when unreadable. */
+diff --git a/test/skills/context-cost.test.js b/test/skills/context-cost.test.js
+index 86035a08..5bf23fd1 100644
+--- a/test/skills/context-cost.test.js
++++ b/test/skills/context-cost.test.js
+@@ -1,6 +1,7 @@
+ const { describe, test, expect } = require('bun:test');
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { parseFrontmatter } = require('../../lib/using-forge');
+ 
+ // ─── skill context-cost gate (progressive-disclosure budget) ──────────────────
+ //
+@@ -45,7 +46,14 @@ function parseSkill(name) {
+   const m = fm.match(/description:\s*([\s\S]*?)(?:\n[A-Za-z_-]+:|$)/);
+   const description = m ? m[1].replace(/^>\s*/, '').replace(/\s+/g, ' ').trim() : '';
+   const bodyLines = lines.length - (fmEnd + 1);
+-  return { name, description, descLen: description.length, bodyLines };
++  const { invocation } = parseFrontmatter(text);
++  return { name, description, descLen: description.length, bodyLines, invocation };
++}
++
++function assertValidInvocation(skill) {
++  if (!['model', 'user'].includes(skill.invocation)) {
++    throw new Error(`${skill.name}/SKILL.md: invalid invocation ${JSON.stringify(skill.invocation)}`);
++  }
+ }
+ 
+ describe('skill context cost', () => {
+@@ -56,6 +64,15 @@ describe('skill context cost', () => {
+     expect(empty).toEqual([]);
+   });
+ 
++  test('every skill has an effective model or user invocation', () => {
++    for (const skill of skills) assertValidInvocation(skill);
++  });
++
++  test('invalid invocation fails visibly', () => {
++    expect(() => assertValidInvocation({ name: 'invalid', invocation: 'automatic' }))
++      .toThrow('invalid invocation');
++  });
++
+   test('every skill description is within the 1024-char Anthropic cap', () => {
+     const over = skills.filter((s) => s.descLen > DESCRIPTION_CHAR_CAP);
+     if (over.length) {
+diff --git a/test/using-forge.test.js b/test/using-forge.test.js
+index 306ed736..7a24544d 100644
+--- a/test/using-forge.test.js
++++ b/test/using-forge.test.js
+@@ -142,4 +142,35 @@ describe('parseFrontmatter', () => {
+     expect(fm.name).toBe('demo');
+     expect(fm.description).toBe('first line second line');
+   });
++
++  test.each([
++    ['invocation: model', 'model'],
++    ['invocation: user', 'user'],
++    ['', 'model'],
++    ['invocation: automatic', 'automatic'],
++  ])('exposes effective invocation for %j', (line, expected) => {
++    const raw = ['---', 'name: demo', line, 'description: Demo skill', '---', '# body']
++      .filter(Boolean)
++      .join('\n');
++    expect(parseFrontmatter(raw).invocation).toBe(expected);
++  });
++
++  test('keeps user-invoked skills in the catalog without changing routing', () => {
++    const fs = require('node:fs');
++    const os = require('node:os');
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'using-forge-invocation-'));
++    try {
++      const dir = path.join(root, 'skills', 'manual');
++      fs.mkdirSync(dir, { recursive: true });
++      fs.writeFileSync(
++        path.join(dir, 'SKILL.md'),
++        '---\nname: manual\ninvocation: user\ndescription: Manual only\n---\n# Manual\n',
++      );
++      const fixtureCatalog = loadSkillCatalog(root);
++      expect(fixtureCatalog.map((skill) => skill.name)).toEqual(['manual']);
++      expect(routeSkill('open a PR', { catalog }).best).toBe('ship');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
+ });
+-- 
+2.51.0.windows.1
+

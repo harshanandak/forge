@@ -1,0 +1,1336 @@
+From 7eb8b618adf7e2a1d4fed1e4170f2e3301af2519 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 16:33:46 +0530
+Subject: [PATCH] feat(skills): trim 17 over-cap descriptions to <=1024 chars
+ (Phase A #1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Closes the regression from #292: 17/19 skill descriptions exceeded the 1024-char
+Anthropic Agent Skills spec limit. A multi-agent trim pass (trim -> adversarial
+verify) rewrote each to <=996 chars while preserving the pushy "use this when..."
+triggering and the sibling-discrimination NOT-blocks that keep queries routing to
+exactly one skill. Every skill is now under the cap (max 996); per-skill verify
+confirmed discrimination + pushiness preserved for all 17. .codex mirror inSync.
+
+Refs strategy docs/work/2026-07-05-efficiency-extensibility-strategy §P1; kernel
+issue 258725e8 (Phase A #1).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/claim-safety/SKILL.md           | 26 +++++++--------
+ .codex/skills/dev/SKILL.md                    | 25 +++++++--------
+ .codex/skills/hermes-forge/SKILL.md           | 32 +++++++------------
+ .codex/skills/issue-basics/SKILL.md           | 26 +++++++--------
+ .codex/skills/kernel/SKILL.md                 | 28 +++++++---------
+ .codex/skills/parallel-deep-research/SKILL.md | 29 +++++++----------
+ .codex/skills/plan/SKILL.md                   | 23 +++++++------
+ .codex/skills/research/SKILL.md               | 30 +++++++----------
+ .codex/skills/review/SKILL.md                 | 27 +++++++---------
+ .codex/skills/rollback/SKILL.md               | 22 ++++++-------
+ .codex/skills/shepherd/SKILL.md               | 25 +++++++--------
+ .codex/skills/ship/SKILL.md                   | 27 +++++++---------
+ .codex/skills/sonarcloud-analysis/SKILL.md    | 30 +++++++----------
+ .codex/skills/sonarcloud/SKILL.md             | 28 +++++++---------
+ .codex/skills/status/SKILL.md                 | 26 +++++++--------
+ .codex/skills/triage-ready/SKILL.md           | 23 ++++++-------
+ .codex/skills/verify/SKILL.md                 | 22 ++++++-------
+ skills/claim-safety/SKILL.md                  | 26 +++++++--------
+ skills/dev/SKILL.md                           | 25 +++++++--------
+ skills/hermes-forge/SKILL.md                  | 32 +++++++------------
+ skills/issue-basics/SKILL.md                  | 26 +++++++--------
+ skills/kernel/SKILL.md                        | 28 +++++++---------
+ skills/parallel-deep-research/SKILL.md        | 29 +++++++----------
+ skills/plan/SKILL.md                          | 23 +++++++------
+ skills/research/SKILL.md                      | 30 +++++++----------
+ skills/review/SKILL.md                        | 27 +++++++---------
+ skills/rollback/SKILL.md                      | 22 ++++++-------
+ skills/shepherd/SKILL.md                      | 25 +++++++--------
+ skills/ship/SKILL.md                          | 27 +++++++---------
+ skills/sonarcloud-analysis/SKILL.md           | 30 +++++++----------
+ skills/sonarcloud/SKILL.md                    | 28 +++++++---------
+ skills/status/SKILL.md                        | 26 +++++++--------
+ skills/triage-ready/SKILL.md                  | 23 ++++++-------
+ skills/verify/SKILL.md                        | 22 ++++++-------
+ 34 files changed, 382 insertions(+), 516 deletions(-)
+
+diff --git a/.codex/skills/claim-safety/SKILL.md b/.codex/skills/claim-safety/SKILL.md
+index 685ffd36..cbb6a341 100644
+--- a/.codex/skills/claim-safety/SKILL.md
++++ b/.codex/skills/claim-safety/SKILL.md
+@@ -1,20 +1,18 @@
+ ---
+ name: claim-safety
+ description: >
+-  Claim a Forge issue and then PROVE you hold the live lease before you touch it — the
+-  ownership-verification procedure built on `forge issue owns <id>`. Use this whenever
+-  actually winning the claim matters: right after `forge claim`, before you
+-  `dev`/edit/`close`/`release` a claimed issue, when two agents or a subagent fan-out might
+-  contend for the same work, or when you need to re-check ownership before an irreversible
+-  step. Why it exists: a claim returning `ok:true` does NOT prove you won — a same-actor
+-  duplicate replay also returns `ok:true`, and a live lease can be reclaimed once it expires —
+-  so `forge issue owns` (exit 0 iff you hold the single, unexpired active lease) is the only
+-  real proof, and you re-verify before close/release. Trigger on "claim this issue safely",
+-  "did I actually win the lease", "verify/prove ownership", "claim conflict", "two agents
+-  grabbed the same issue", "check I still own it before closing", or before ANY mutation of a
+-  claimed issue. NOT for plain single-issue create/update/close/comment when there is no
+-  ownership question (that is issue-basics), and NOT for read-only selecting or ranking the
+-  next ready issue without claiming (that is triage-ready).
++  Claim a Forge issue and then PROVE you hold the live lease before you touch it, using `forge
++  issue owns <id>` (exit 0 iff you hold the single unexpired lease). Use this whenever winning
++  the claim matters: right after `forge claim`, before you `dev`/edit/`close`/`release` a
++  claimed issue, when two agents or a subagent fan-out contend for the same work, or before
++  any irreversible step. A claim's `ok:true` does NOT prove you won — duplicate replays return
++  it and expired leases get reclaimed; only `owns` proves it, so re-verify before
++  close/release. Trigger on "claim this issue safely", "did I actually win the lease",
++  "verify/prove ownership", "claim conflict", "two agents grabbed the same issue", "check I
++  still own it before closing", or before ANY mutation of a claimed issue. NOT for plain
++  single-issue create/update/close/comment with no ownership question (that is issue-basics),
++  and NOT for read-only selecting or ranking the next ready issue without claiming (that is
++  triage-ready).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/dev/SKILL.md b/.codex/skills/dev/SKILL.md
+index a2674c07..90b00ee6 100644
+--- a/.codex/skills/dev/SKILL.md
++++ b/.codex/skills/dev/SKILL.md
+@@ -1,20 +1,17 @@
+ ---
+ name: dev
+ description: >
+-  Forge DEV stage — the build engine that turns an already-approved /plan task list into
+-  committed, test-backed code. Reads docs/work/<date>-<slug>/tasks.md and design.md, then
+-  drives each task through a subagent loop (implementer → spec-compliance reviewer →
+-  code-quality reviewer) using RED-GREEN-REFACTOR TDD, HARD-GATE evidence checks, a spec-gap
+-  decision score, and per-task progress recorded on the Forge issue via `forge comment`. Use
+-  when a plan and task list already exist and it is time to implement them — triggers: "/dev",
+-  "start the dev stage", "build the tasks", "implement tasks.md test-first", "run the
+-  implementer/reviewer TDD loop", "write the code for the planned tasks one by one", "work
+-  through the task list with subagents". This is the per-task coding stage ONLY. Do NOT use it
+-  for creating the design doc or task list (that is plan), for the post-build
+-  type-check/lint/security/test gate (validate), for pushing the branch or opening the PR
+-  (ship), for addressing PR review feedback (review), or for orchestrating several stages /
+-  taking an issue end-to-end to a merged PR (smith). Reach for dev specifically when the ask
+-  is to author code for tasks that are already planned.
++  Forge DEV stage — implement an already-planned /plan task list into committed, test-backed
++  code. Reads tasks.md + design.md, then drives each task through a subagent TDD loop
++  (implementer → spec-compliance reviewer → code-quality reviewer) with RED-GREEN-REFACTOR,
++  HARD-GATE evidence checks, and a spec-gap decision score. Use when a plan and task list
++  already exist and it is time to implement — triggers: "/dev", "start the dev stage", "build
++  the tasks", "implement tasks.md test-first", "run the implementer/reviewer TDD loop", "write
++  the code for the planned tasks one by one", "work through the task list with subagents".
++  Per-task coding ONLY. Do NOT use for creating the design doc or task list (that is plan),
++  for the post-build type-check/lint/security/test gate (validate), for pushing the branch or
++  opening the PR (ship), for addressing PR review feedback (review), or for orchestrating
++  several stages / taking an issue end-to-end to a merged PR (smith).
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/hermes-forge/SKILL.md b/.codex/skills/hermes-forge/SKILL.md
+index 190651df..53ba1e71 100644
+--- a/.codex/skills/hermes-forge/SKILL.md
++++ b/.codex/skills/hermes-forge/SKILL.md
+@@ -1,26 +1,18 @@
+ ---
+ name: hermes-forge
+ description: >
+-  Consumption contract for how the Hermes harness reads, cites, and writes back Forge project
+-  state — Hermes is a CONSUMER of Forge, never a second source of truth. Load this whenever a
+-  Hermes session runs on a Forge repo: at session start to orient, before acting on a specific
+-  issue, or any time you need CURRENT project state. Always obtain state through `forge
+-  orient` / `forge recap <issue-id>` — the deterministic, token-bounded JSON envelope — and
+-  never reconstruct it by reading raw issue stores, design files, or kernel internals. This
+-  skill governs the envelope discipline: honor the token budget (raise depth with `--budget
+-  N`, don't retry blindly), treat any `truncated` section as incomplete, attribute every
+-  surfaced fact to its source `path`/`authority`, and surface conflicts instead of silently
+-  picking a winner. It also governs writeback: record evidence, decisions, and follow-up work
+-  into the Forge Kernel ONLY through Forge CLI commands (`forge comment` / `forge update` /
+-  `forge create`), and NEVER leak Hermes profile or session memory into Forge state. Trigger
+-  phrases: "orient me / what's the current project state", "where did this fact come from,
+-  cite it", "the orient output came back truncated", "how do I persist this decision back into
+-  Forge", "is it safe to store this in kernel state". This is the Hermes⇄Forge boundary
+-  contract — NOT the general Forge session router that navigates stage skills (kernel), NOT
+-  the human-facing "what stage am I in / where am I" report (status), NOT everyday issue
+-  create/update/close/search CRUD (issue-basics), NOT surfacing or ranking the next ready
+-  issue (triage-ready), and NOT live PR monitoring (shepherd, which runs OUTSIDE Hermes and is
+-  not visible through orient).
++  Hermes⇄Forge boundary: Hermes CONSUMES Forge state, never a second source of truth. Use
++  whenever a Hermes session runs on a Forge repo: at session start, before acting on an issue,
++  or when you need CURRENT state. Read state ONLY via `forge orient` / `forge recap
++  <issue-id>` (bounded JSON envelope), citing each source's `path`/`authority`; never
++  reconstruct it from raw stores or kernel internals. Writeback ONLY via `forge
++  comment`/`update`/`create`; NEVER leak Hermes profile or session memory into Forge state.
++  Triggers: "orient me / current project state", "where did this fact come from, cite it",
++  "orient came back truncated", "persist a decision into Forge", "safe to store in kernel
++  state?". NOT the Forge session router over stage skills (kernel), NOT the human "what stage
++  am I in" report (status), NOT everyday issue create/update/close/search CRUD (issue-basics),
++  NOT ranking the next ready issue (triage-ready), NOT live PR monitoring (shepherd—outside
++  Hermes, unseen by orient).
+ compatibility: >
+   Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
+   path — like every Forge skill pack (e.g. parallel-deep-research,
+diff --git a/.codex/skills/issue-basics/SKILL.md b/.codex/skills/issue-basics/SKILL.md
+index f2940ba5..8bf7ba1b 100644
+--- a/.codex/skills/issue-basics/SKILL.md
++++ b/.codex/skills/issue-basics/SKILL.md
+@@ -1,20 +1,18 @@
+ ---
+ name: issue-basics
+ description: >
+-  Everyday single-issue CRUD over the `forge issue` verbs — create, update, show, list,
+-  search, close, reopen, comment, set priority/labels/assignee, claim or release one issue,
+-  and add/remove dependency edges, plus backlog `stats`. Reach for this on ANY routine one-off
+-  issue operation: "create an issue/bug/task for X", "update or edit issue <id>", "close (or
+-  reopen) this issue", "comment a handoff note on <id>", "list open bugs" or "filter issues by
+-  label/priority/status", "search issues for …", "bump this to P1", "reassign to alice", "mark
+-  <id> blocked by <id>", "add a label". This is also the parity floor when migrating off a
+-  Beads-style tracker (label/reopen/delete map onto their forge equivalents). Scope is
+-  single-operation issue plumbing only. It does NOT choose, rank, or explain the next issue to
+-  work on or why one is blocked (use triage-ready); it does NOT run the
+-  claim-then-prove-lease-ownership safety procedure before mutating shared work (use
+-  claim-safety); it does NOT drive an issue through the plan->dev->validate->ship pipeline or
+-  open a PR (use smith or the individual stage skills); and it does NOT report the current
+-  workflow stage or what is in flight (use status).
++  Everyday single-issue CRUD over the `forge issue` verbs:
++  create/update/show/list/search/close/reopen/comment, set priority/labels/assignee, claim or
++  release one issue, add/remove dependency edges, plus backlog `stats`. Use for ANY routine
++  one-off issue op: "create an issue/bug/task for X", "update/edit issue <id>", "close or
++  reopen this issue", "comment a handoff note on <id>", "list/filter open bugs by
++  status/label/priority", "bump this to P1", "reassign to alice", "mark <id> blocked by <id>".
++  Also the parity floor migrating off a Beads-style tracker (label/reopen/delete map to forge
++  equivalents). Single-operation plumbing only. Does NOT choose, rank, or explain the next
++  issue to work on or why it's blocked (use triage-ready); does NOT run
++  claim-then-prove-lease-ownership safety (use claim-safety); does NOT drive an issue through
++  the plan->dev->validate->ship pipeline or open a PR (use smith or stage skills); does NOT
++  report the current stage or what's in flight (use status).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+index 1d76a2fa..84613eba 100644
+--- a/.codex/skills/kernel/SKILL.md
++++ b/.codex/skills/kernel/SKILL.md
+@@ -1,22 +1,18 @@
+ ---
+ name: kernel
+ description: >
+-  Forge kernel surface — the umbrella index and router for a Forge project. Reach for this
+-  FIRST when you are orienting rather than executing: at the very start of a Forge session,
+-  when you need the map of how the whole system fits together, or when you are unsure WHICH
+-  skill or `forge` verb a task belongs to. It routes to the `smith` end-to-end orchestrator,
+-  the per-stage ladder skills (plan, dev, validate, ship, review, verify), the utility skills
+-  (status, research, rollback, sonarcloud, shepherd), and the kernel-native issue skills
+-  (triage-ready, claim-safety, issue-basics) — and it is the reference for the day-to-day
+-  `forge` CLI issue, board, gate, and orientation verbs. Trigger on "how does the Forge
+-  workflow work", "walk me through the stage ladder", "which forge command or skill do I use
+-  for X", "what are the forge issue verbs", "I'm new to this repo, how is Forge set up", "map
+-  the Forge skills for me", or "should this be a Forge issue or a TodoWrite". This is the
+-  meta/index layer, so hand off the actual doing: ranking or picking the next ready issue →
+-  `triage-ready`; the current stage, "where am I", or active/stale work → `status`;
+-  create/update/close/search a single issue → `issue-basics`; claim-then-prove-ownership
+-  before mutating → `claim-safety`; drive one issue from plan to a merged PR under human gates
+-  → `smith`; token-bounded project state for the Hermes harness → `hermes-forge`.
++  Forge kernel — umbrella index/router for a Forge project. Reach for this FIRST when
++  orienting rather than executing: at session start, when you need the map of how the system
++  fits together, or when unsure WHICH skill or `forge` verb a task belongs to. It indexes
++  `smith` (end-to-end orchestrator), the stage ladder (plan → dev → validate → ship → review →
++  verify), the utility/issue skills, and the day-to-day `forge` CLI verbs. Trigger on "how
++  does the Forge workflow work", "which forge command or skill for X", "I'm new here, how is
++  Forge set up", or "should this be a Forge issue or a TodoWrite". Index layer only — hand off
++  the doing: rank/pick the next ready issue → `triage-ready`; current stage / "where am I" /
++  active or stale work → `status`; create/update/close/search one issue → `issue-basics`;
++  claim-then-prove ownership before mutating → `claim-safety`; drive one issue from plan to a
++  merged PR under gates → `smith`; token-bounded state for the Hermes harness →
++  `hermes-forge`.
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/parallel-deep-research/SKILL.md b/.codex/skills/parallel-deep-research/SKILL.md
+index 67e00830..331d75b9 100644
+--- a/.codex/skills/parallel-deep-research/SKILL.md
++++ b/.codex/skills/parallel-deep-research/SKILL.md
+@@ -1,23 +1,18 @@
+ ---
+ name: parallel-deep-research
+ description: >
+-  Heavyweight EXTERNAL research reports — market, industry, competitive, and strategic —
+-  delegated to Parallel AI's paid pro/ultra processors, which autonomously crawl, read, and
+-  synthesize dozens of sources over 3-25 minutes and return one long structured report with
+-  citations, far beyond what a handful of WebSearch calls can produce. Reach for this whenever
+-  the user wants a comprehensive market analysis, competitive landscape, industry deep-dive,
+-  multi-vendor/technology comparison across many sources, strategic recommendations, market
+-  sizing/growth outlook, or any multi-source synthesis that would take more than 3-4 web
+-  searches to answer well. Typical phrasings: "market analysis of X", "competitive landscape
+-  comparing A/B/C", "industry deep-dive on...", "deep research report on...", "compare these
+-  vendors at our scale", "strategic report with predictions for 2027". Requires
+-  PARALLEL_API_KEY in .env.local; each run costs money and takes minutes, so it is the WRONG
+-  tool for quick facts, a single-page fetch, one-URL scraping, or a small structured-field
+-  extraction — use built-in WebSearch/WebFetch for those. It is also NOT the Forge RESEARCH or
+-  PLAN stage itself: "run the research stage", "do Phase 2 for this feature", or
+-  codebase/OWASP/DRY investigation that gets written into a design doc route to `research` and
+-  `plan` — those stages may INVOKE this skill as their external research engine when a topic
+-  genuinely needs dozens of sources, but a bare "run the stage" request is not this skill.
++  Heavyweight EXTERNAL research reports — market, industry, competitive, strategic — via
++  Parallel AI's paid pro/ultra processors that crawl and synthesize dozens of sources into one
++  long cited report. Use when the user wants a market analysis, competitive landscape,
++  industry deep-dive, multi-vendor/technology comparison, strategic recommendations, or market
++  sizing/growth outlook — any multi-source synthesis needing more than 3-4 web searches.
++  Typical phrasings: "market analysis of X", "competitive landscape comparing A/B/C",
++  "industry deep-dive on...", "deep research report on...", "strategic report with predictions
++  for 2027". WRONG tool for quick facts, a single-page fetch, one-URL scraping, or small
++  structured-field extraction — use built-in WebSearch/WebFetch. Also NOT the Forge RESEARCH
++  or PLAN stage: "run the research stage", "do Phase 2", or codebase/OWASP/DRY investigation
++  into a design doc route to `research` and `plan` (they may INVOKE this skill). Requires
++  PARALLEL_API_KEY.
+ compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
+ metadata:
+   author: harshanandak
+diff --git a/.codex/skills/plan/SKILL.md b/.codex/skills/plan/SKILL.md
+index d11ac85c..6eb606e3 100644
+--- a/.codex/skills/plan/SKILL.md
++++ b/.codex/skills/plan/SKILL.md
+@@ -1,18 +1,17 @@
+ ---
+ name: plan
+ description: >
+-  Forge PLAN stage — the first stop when starting a NEW feature or an unscoped piece of work.
+-  Runs one-question-at-a-time brainstorming to capture design intent, writes and commits a
+-  design doc, runs technical/OWASP/DRY + codebase research, then sets up the branch, worktree,
+-  and a complete TDD task list ready to hand to /dev. Trigger on "let's plan X", "start or
+-  scope a new feature", "brainstorm this before we build", "write a design doc", "break this
+-  into tasks", or "set up a worktree and task list before coding". Reach for this even when
+-  the request sounds like only design or only scoping — plan owns intent → research →
+-  task-list setup as a single stage. NOT for driving a feature all the way to a merged PR
+-  (that is smith), NOT for implementing the tasks once they already exist (dev), NOT for a
+-  standalone deep-research pass into an already-approved design doc (research), NOT for
+-  reporting where current work stands or what is stale (status), and NOT for everyday issue
+-  create/list/close or picking the next ready issue (issue-basics / triage-ready).
++  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Runs
++  one-question-at-a-time brainstorming for design intent, commits a design doc, does
++  technical/OWASP/DRY + codebase research, then sets up the branch, worktree, and a TDD task
++  list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
++  build", "write a design doc", "break this into tasks", or "set up a worktree and task list
++  before coding". Reach for this even when the ask sounds like only design or only scoping —
++  plan owns intent → research → task-list setup as one stage. NOT for driving a feature to a
++  merged PR (that is smith), NOT for implementing tasks that already exist (dev), NOT for a
++  standalone deep-research pass into an approved design doc (research), NOT for reporting
++  where work stands or what is stale (status), and NOT for everyday issue create/list/close or
++  picking the next ready issue (issue-basics / triage-ready).
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/research/SKILL.md b/.codex/skills/research/SKILL.md
+index d0d698a4..d5ba18d8 100644
+--- a/.codex/skills/research/SKILL.md
++++ b/.codex/skills/research/SKILL.md
+@@ -1,25 +1,17 @@
+ ---
+ name: research
+ description: >
+-  Runs the Forge RESEARCH stage — the technical-investigation phase now embedded as /plan
+-  Phase 2. Use it when the user wants JUST the research work for a specific feature (not the
+-  whole plan flow): deep web research on best practices and known gotchas for the chosen
+-  approach, an OWASP Top 10 risk pass documenting which categories apply and how they'll be
+-  mitigated, DRY / blast-radius codebase exploration for existing patterns to reuse, and
+-  identification of at least three TDD test scenarios — all appended under `## Technical
+-  Research` in that feature's `docs/work/YYYY-MM-DD-<slug>/design.md`. Trigger on phrasings
+-  like "run the research phase", "do the technical research for this feature", "run an OWASP
+-  analysis on this", "explore the codebase for reusable patterns before we build", "check
+-  we're not duplicating an existing helper (DRY)", "add the security + best-practices research
+-  to the design doc", or "find TDD scenarios for X". If the design doc doesn't exist yet,
+-  create it first, then research into it. Pick this skill over its siblings: choose `plan`
+-  instead when the user is starting a feature from scratch and wants the FULL stage —
+-  one-question-at-a-time design brainstorm plus branch/worktree/task-list setup — not only the
+-  research; choose `parallel-deep-research` instead when the ask is an external market,
+-  competitive, or industry report via Parallel AI (business analysis, vendor comparison,
+-  funding/landscape), not code-level technical/OWASP/DRY research; choose `dev` or `validate`
+-  instead when the user wants to implement tasks or run security scans/lint/tests against code
+-  rather than research it.
++  Runs the Forge RESEARCH stage (technical investigation, /plan Phase 2). Use when the user
++  wants JUST the research for a feature, not the full plan flow: deep web research on best
++  practices/gotchas, an OWASP Top 10 risk pass, DRY/blast-radius codebase exploration for
++  reusable patterns, and 3+ TDD test scenarios — appended under `## Technical Research` in the
++  feature's design.md. Trigger on "run the research phase", "run an OWASP analysis on this",
++  "explore the codebase for reusable patterns (DRY) before we build", or "find TDD scenarios
++  for X". Pick over siblings: `plan` when starting a feature from scratch and wanting the FULL
++  stage (design brainstorm + branch/worktree/task-list setup), not just research;
++  `parallel-deep-research` for an external market/competitive/industry report via Parallel AI
++  (business/vendor/funding landscape), not code-level technical/OWASP/DRY research; `dev` or
++  `validate` to implement tasks or run security scans/lint/tests rather than research them.
+ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+ 
+diff --git a/.codex/skills/review/SKILL.md b/.codex/skills/review/SKILL.md
+index cdabadb5..08ec22f4 100644
+--- a/.codex/skills/review/SKILL.md
++++ b/.codex/skills/review/SKILL.md
+@@ -1,22 +1,17 @@
+ ---
+ name: review
+ description: >
+-  Forge REVIEW stage — the one skill that drives an already-open pull request to all-green by
+-  resolving EVERY piece of feedback on it: failing GitHub Actions / CI checks, Greptile and
+-  CodeRabbit inline comments and summaries, and the SonarCloud quality gate. It actively fixes
+-  the code, replies to each thread, and marks it resolved until the checks pass, then runs the
+-  pre-merge doc gate (CHANGELOG / README / API / AGENTS docs) and hands the PR off for MANUAL
+-  merge — it never runs `gh pr merge`. Reach for it whenever a PR already has review feedback
+-  or red checks to work through: "address the review comments on PR #123", "the bots flagged
+-  issues / my Greptile score is low", "fix the failing checks and resolve the threads",
+-  "CodeRabbit and SonarCloud left comments — sort them out", "get my PR merge-ready". This is
+-  the MUTATING feedback-resolution stage — distinct from shepherd (only WATCHES an open PR's
+-  checks and settle window, changes nothing), verify (POST-merge CI-on-master health check +
+-  closing issues), ship (pushing the branch and opening the PR in the first place), validate
+-  (PRE-PR local type/lint/test/security on your branch), and the sonarcloud /
+-  sonarcloud-analysis skills (which only QUERY SonarCloud data that this stage consumes). Use
+-  those for a single tool or a passive watch; use this to work a PR's whole feedback set to
+-  done.
++  Forge REVIEW stage — drives an already-open PR to all-green by resolving EVERY piece of
++  feedback: failing GitHub Actions / CI checks, Greptile and CodeRabbit inline comments and
++  summaries, and the SonarCloud quality gate. It fixes the code, replies to each thread and
++  marks it resolved until checks pass, then runs the pre-merge doc gate and hands the PR off
++  for MANUAL merge — never runs `gh pr merge`. Use whenever a PR has review feedback or red
++  checks: "address the review comments on PR #123", "the bots flagged issues / Greptile score
++  is low", "fix the failing checks and resolve the threads", "CodeRabbit and SonarCloud left
++  comments", "get my PR merge-ready". This MUTATING feedback-resolution stage is distinct from
++  shepherd (only WATCHES an open PR, changes nothing), verify (POST-merge CI health check +
++  closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
++  type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/rollback/SKILL.md b/.codex/skills/rollback/SKILL.md
+index 6a320902..a2e8a795 100644
+--- a/.codex/skills/rollback/SKILL.md
++++ b/.codex/skills/rollback/SKILL.md
+@@ -2,18 +2,16 @@
+ name: rollback
+ description: >
+   Safely revert or undo a change that is already committed or shipped, using non-destructive
+-  `git revert` (never `reset --hard`, `push --force`, or `clean`) and auto-preserving USER
+-  sections plus custom commands. Drives the interactive `bunx forge rollback` menu: undo the
+-  last commit, revert a specific commit by hash, revert a merged PR (git revert -m 1), restore
+-  individual files to their prior version, revert a commit range, or dry-run/preview any of
+-  these first. Use when the user says roll back, revert, undo, back out, or restore — e.g.
+-  "undo the last commit", "undo that change, the approach was wrong", "back out PR #123",
+-  "revert the merge commit", "restore src/auth.js to before my last commit", or when a
+-  shipped/merged change broke something and must be pulled back (optionally re-flagging its
+-  linked Beads issue). This is the RECOVERY skill for changes already in git history. Do NOT
+-  use for: replying to or fixing PR review feedback (review), monitoring an open PR's checks
+-  toward merge (shepherd), the post-merge CI health check on master (verify), pushing a branch
+-  or opening a PR (ship), or ordinary issue status/field edits (issue-basics).
++  `git revert` (never `reset --hard`, `push --force`, or `clean`). Drives the interactive
++  `bunx forge rollback` menu: undo the last commit, revert a commit by hash, revert a merged
++  PR (git revert -m 1), restore individual files to a prior version, revert a commit range, or
++  dry-run/preview first. Use when the user says roll back, revert, undo, back out, or restore
++  — e.g. "undo the last commit", "undo that change, the approach was wrong", "back out PR
++  #123", "revert the merge commit", "restore src/auth.js to before my last commit", or when a
++  shipped/merged change broke something and must be pulled back. Do NOT use for: replying to
++  or fixing PR review feedback (review), monitoring an open PR's checks toward merge
++  (shepherd), the post-merge CI health check on master (verify), pushing a branch or opening a
++  PR (ship), or ordinary issue status/field edits (issue-basics).
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/shepherd/SKILL.md b/.codex/skills/shepherd/SKILL.md
+index 1a0d3761..21127b63 100644
+--- a/.codex/skills/shepherd/SKILL.md
++++ b/.codex/skills/shepherd/SKILL.md
+@@ -1,20 +1,17 @@
+ ---
+ name: shepherd
+ description: >
+-  Run ONE bounded, hand-off monitor pass over an already-reviewed OPEN pull request: read the
+-  CI/check rollup and the branch-protection required-check set, take at most one idempotent
+-  action (re-run a flaky required check, or post a status reply to a thread), then declare
+-  merge-readiness — MERGE_READY, still PENDING, or escalate — and exit. There is no in-process
+-  loop; a scheduler re-invokes the pass. Use this when the user says things like "is PR #123
+-  ready to merge yet?", "poll/watch the checks on my PR", "the required CI job is flaky — kick
+-  off a re-run", "keep an eye on this PR until it's green", "babysit the checks after
+-  /review", "shepherd PR 45", or "monitor the PR toward merge (and rebase it if it's behind,
+-  with --auto-rebase)". It NEVER merges (the human merges in the GitHub UI), NEVER edits code,
+-  and NEVER resolves review threads. Do NOT use it to fix or reply-and-resolve PR review
+-  feedback from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR in
+-  the first place — that is `ship`; nor for the post-merge "CI green on master + close issues"
+-  health check — that is `verify`; nor for a general "where am I in the workflow / what's in
+-  flight" report — that is `status`.
++  Monitor an already-reviewed OPEN pull request toward merge: read the CI/check rollup and the
++  branch-protection required-check set, take at most one idempotent action (re-run a flaky
++  required check, or post a status reply to a thread), then declare MERGE_READY, PENDING, or
++  escalate. Use when the user says "is PR #123 ready to merge yet?", "poll/watch the checks on
++  my PR", "the required CI job is flaky — kick off a re-run", "keep an eye on this PR until
++  it's green", "babysit the checks after /review", "shepherd PR 45", or "monitor the PR toward
++  merge (rebase if behind, --auto-rebase)". NEVER merges (the human merges in the GitHub UI),
++  edits code, or resolves review threads. Do NOT use to fix or reply-and-resolve PR feedback
++  from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR — that is
++  `ship`; nor for the post-merge "CI green on master + close issues" check — that is `verify`;
++  nor for a general "where am I / what's in flight" report — that is `status`.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/ship/SKILL.md b/.codex/skills/ship/SKILL.md
+index 6413e730..c209e3fb 100644
+--- a/.codex/skills/ship/SKILL.md
++++ b/.codex/skills/ship/SKILL.md
+@@ -1,21 +1,18 @@
+ ---
+ name: ship
+ description: >
+-  Forge SHIP stage: push the already-validated feature branch and open a pull request
+-  populated from the project's OWN PR template (design-doc link, Forge issue IDs, real
+-  test/commit data), then hand the PR off for MANUAL merge — this skill never merges or
+-  auto-merges. Reach for it the moment /validate has passed and you want a PR on the board.
+-  Triggers on phrasings like "ship it", "ship this branch", "create/open the PR", "open a pull
+-  request", "push and open a PR", "gh pr create", "make/raise a PR from my current branch",
+-  "checks passed, now cut the PR". It runs the branch-freshness and parallel-PR
+-  merge-simulation checks, force-with-lease pushes, records the ship->review handoff, then
+-  stops. This is ONE stage — route elsewhere when the ask is broader or different: the whole
+-  plan->dev->validate->ship->review pipeline or "drive it to done" (smith); running
+-  type-check/lint/tests/security first (validate); addressing PR review comments or resolving
+-  Greptile/SonarCloud/CodeRabbit threads on an existing PR (review); babysitting an
+-  already-open PR's checks toward merge (shepherd); the post-merge CI health check and closing
+-  issues (verify); or reverting an already-shipped change (rollback). If the PR already
+-  exists, this is not the skill.
++  Forge SHIP stage: push the validated feature branch and open a PR populated from the
++  project's OWN PR template (design-doc link, Forge issue IDs, real test/commit data), then
++  hand off for MANUAL merge; never merges or auto-merges. Use once /validate passes and you
++  want a PR on the board. Triggers: "ship it", "ship this branch", "open the PR", "push and
++  open a PR", "gh pr create", "checks passed, now cut the PR". Runs branch-freshness +
++  parallel-PR merge-sim checks, force-with-lease push, records the ship->review handoff, then
++  stops. One stage only; not for: the whole plan->dev->validate->ship->review pipeline or
++  drive-to-done (smith); type-check/lint/tests/security first (validate); addressing PR
++  comments or resolving Greptile/SonarCloud/CodeRabbit threads on an existing PR (review);
++  babysitting an open PR toward merge (shepherd); post-merge CI health check + closing issues
++  (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
++  not the skill.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/sonarcloud-analysis/SKILL.md b/.codex/skills/sonarcloud-analysis/SKILL.md
+index e386aa95..614bc51e 100644
+--- a/.codex/skills/sonarcloud-analysis/SKILL.md
++++ b/.codex/skills/sonarcloud-analysis/SKILL.md
+@@ -1,24 +1,18 @@
+ ---
+ name: sonarcloud-analysis
+ description: >
+-  Deep-dive SonarCloud analysis through the SonarCloud REST API, run in an isolated context so
+-  the raw JSON does not flood the main conversation. Pull open issues (bugs, vulnerabilities,
+-  code smells), coverage and duplication metrics, quality-gate pass/fail status with the exact
+-  failed thresholds, security hotspots, quality profiles, and analysis/measure history for a
+-  whole project, a branch, or a specific pull request, then hand back a ranked, actionable
+-  summary. Reach for this whenever the user names SonarCloud or asks about code-quality
+-  metrics, technical debt, coverage numbers, a red or failing quality gate, or security
+-  vulnerabilities and hotspots from static analysis — for example "what's our technical debt
+-  and which files have the worst maintainability", "why is the SonarCloud gate failing on this
+-  PR", "pull every BLOCKER vulnerability from the last scan with file and line", "show
+-  coverage by module", or "how have our reliability and security ratings trended this month".
+-  Route ELSEWHERE when: the user explicitly types the thin `/sonarcloud <query> <project>`
+-  slash command for a quick single lookup (that is the sibling 'sonarcloud' command surface);
+-  they want to reply to and resolve PR review threads across Greptile, CodeRabbit, or GitHub
+-  Actions (that is 'review'); they want to run the local lint, type-check, test, or security
+-  scanner before shipping (that is 'validate'); they want to actually implement or patch a
+-  flagged issue (that is 'dev'); or they want an external market or competitor report on
+-  SonarSource or DevSecOps vendors (that is 'parallel-deep-research').
++  SonarCloud deep-dive via its REST API: pull open issues (bugs, vulnerabilities, code
++  smells), coverage/duplication metrics, quality-gate pass/fail with failed thresholds,
++  security hotspots, and measure/analysis history for a whole project, branch, or PR, then
++  return a ranked summary. Use whenever the user names SonarCloud or asks about code-quality
++  metrics, technical debt, a red/failing quality gate, or static-analysis
++  vulnerabilities/hotspots — e.g. 'why is the SonarCloud gate failing on this PR' or 'pull
++  every BLOCKER vulnerability with file and line'. NOT for: the thin `/sonarcloud <query>
++  <project>` slash command for a quick lookup (sibling 'sonarcloud'); replying to/resolving PR
++  review threads across Greptile, CodeRabbit, or GitHub Actions ('review'); running local
++  lint/type-check/test/security scans pre-ship ('validate'); implementing or patching a
++  flagged issue ('dev'); or an external market/competitor report on SonarSource or DevSecOps
++  vendors ('parallel-deep-research').
+ category: Code Quality
+ tags: [sonarcloud, code-quality, issues, metrics, security]
+ context: fork
+diff --git a/.codex/skills/sonarcloud/SKILL.md b/.codex/skills/sonarcloud/SKILL.md
+index 9535a210..2ff1794e 100644
+--- a/.codex/skills/sonarcloud/SKILL.md
++++ b/.codex/skills/sonarcloud/SKILL.md
+@@ -1,23 +1,17 @@
+ ---
+ name: sonarcloud
+ description: >
+-  Query SonarCloud code-quality data through the `/sonarcloud` slash command — the fast,
+-  in-context lookup surface for a project, branch, or (above all) a pull request. Handles the
+-  named queries `issues`, `metrics`, `gate` (quality-gate pass/fail with failed conditions),
+-  `health` (full report), `pr <number>`, `hotspots` (security), and `history`, plus
+-  `--branch`, `--severity`, `--type`, and `--new-code` filters. Reach for this the moment the
+-  user types `/sonarcloud ...`, or asks in plain language: "what does SonarCloud say about
+-  this PR", "check the SonarCloud quality gate before I ship", "show SonarCloud
+-  blocker/critical bugs on the develop branch", "any new-code SonarCloud issues on PR 214",
+-  "SonarCloud coverage for my-project". Requires a `SONARCLOUD_TOKEN` (and organization key).
+-  This skill only READS and reports SonarCloud results — it does NOT fix findings or
+-  reply-to/resolve PR review threads (that is the `review` stage), and it is the lightweight
+-  command surface, NOT the isolated deep-analysis session that correlates findings with local
+-  source, walks analysis-history trends, or runs duplication deep-dives across many endpoints
+-  (that is `sonarcloud-analysis` — send heavyweight or correlation work there). Not for local
+-  SAST/security scans of your own code, and not for the Forge issue tracker ("open/ready
+-  issues", `forge issue ...`) — here those bare words always mean SonarCloud, not the tracker
+-  or validate stage.
++  Query SonarCloud code-quality data via the `/sonarcloud` slash command — the fast in-context
++  lookup for a project, branch, or PR. Handles `issues`, `metrics`, `gate` (pass/fail + failed
++  conditions), `health`, `pr <number>`, `hotspots`, `history`, plus `--branch`, `--severity`,
++  `--type`, `--new-code` filters. Use the moment the user types `/sonarcloud ...` or asks in
++  plain language: "what does SonarCloud say about this PR", "check the SonarCloud quality gate
++  before I ship", "SonarCloud blocker/critical bugs on develop", "new-code SonarCloud issues
++  on PR 214". Only READS/reports — does NOT fix findings or reply-to/resolve PR threads (that
++  is `review`); it is the lightweight command surface, NOT the deep-analysis session
++  correlating findings with local source or history trends (that is `sonarcloud-analysis`).
++  Not for local SAST scans of your own code, nor the Forge issue tracker (`forge issue ...`,
++  "open/ready issues") — here those bare words always mean SonarCloud.
+ allowed-tools: Bash, Read, Grep, Glob, WebFetch
+ ---
+ 
+diff --git a/.codex/skills/status/SKILL.md b/.codex/skills/status/SKILL.md
+index d846ef93..28569013 100644
+--- a/.codex/skills/status/SKILL.md
++++ b/.codex/skills/status/SKILL.md
+@@ -1,21 +1,17 @@
+ ---
+ name: status
+ description: >
+-  Report where the project stands right now and what work is in flight -- the Forge status
+-  snapshot. Reach for this at session start or whenever the user says "/status", "where am I",
+-  "what's in progress", "catch me up", "resume work", "what changed recently", or "what should
+-  I pick up next". It runs forge sync, then surfaces the detected workflow stage, the user's
+-  active/claimed issues, all issues ranked by composite score (priority, dependency impact,
+-  type, staleness) with conflict-risk annotations, stale in-progress issues that were already
+-  merged (which it reconciles by closing them), the last ~10 commits, and a forge team
+-  workload/dashboard overview. Use it to ORIENT and decide the next move: it reports state and
+-  points ahead -- it does not plan, run development, or claim an issue to work it (its only
+-  write is closing already-merged stale issues during reconciliation). Not for: routing to a
+-  specific stage skill or documenting the full issue-verb surface (that's kernel); deeply
+-  ranking and EXPLAINING a single next-ready or blocked issue to hand off (triage-ready);
+-  everyday create/update/list/close/comment/search issue operations (issue-basics); the Hermes
+-  harness's token-bounded orient/recap state contract (hermes-forge); or the post-merge CI
+-  health check that closes issues after a merge lands (verify).
++  Report where the project stands and what work is in flight -- the Forge status snapshot.
++  Reach for this at session start or whenever the user says "/status", "where am I", "what's
++  in progress", "catch me up", "resume work", "what changed recently", or "what should I pick
++  up next". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
++  composite score with conflict-risk flags, stale already-merged issues (which it closes), and
++  recent commits. Use it to ORIENT and decide the next move -- it reports state; it does not
++  plan, develop, or claim issues. Not for: routing to a stage skill or documenting the full
++  issue-verb surface (kernel); ranking and EXPLAINING a single next-ready or blocked issue to
++  hand off (triage-ready); everyday create/update/list/close/comment/search issue ops
++  (issue-basics); the Hermes harness's token-bounded orient/recap contract (hermes-forge); or
++  the post-merge CI health check that closes issues after a merge lands (verify).
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/triage-ready/SKILL.md b/.codex/skills/triage-ready/SKILL.md
+index 3377726e..49b7c5d3 100644
+--- a/.codex/skills/triage-ready/SKILL.md
++++ b/.codex/skills/triage-ready/SKILL.md
+@@ -1,21 +1,18 @@
+ ---
+ name: triage-ready
+ description: >
+-  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
+-  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
+-  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
+-  stats`, and justifies the pick from the full record via `forge issue show` — always against
+-  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
+-  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
+-  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
+-  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
+-  my next task", "top of the ready queue", "which issue should I start", "why is this issue
+-  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
+-  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
++  Surfaces, ranks, and EXPLAINS the single best next issue in a Forge project — strictly
++  read-only. Recomputes the live ready queue and explains what is blocked via `forge issue
++  ready`/`blocked`/`stats`/`show`, always against the live kernel, never `forge board`.
++  Recommends ONE issue with a one-line reason, then hands off; never claims, comments, closes,
++  or mutates. Use when the user asks "what should I work on", "what's next", "what's ready",
++  "pick/triage my next task", "top of the ready queue", "which issue should I start", "why is
++  this issue blocked", or "what's blocking the most work". NOT for claiming or taking
++  ownership of the pick (use claim-safety), not for everyday issue
+   create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
+   current workflow stage or "where am I / what's in flight" (use status), not for orienting a
+-  whole session or routing to stage skills (use kernel), and not for driving an issue through
+-  to a merged PR (use smith).
++  whole session or routing to stage skills (use kernel), not for driving an issue to a merged
++  PR (use smith).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/verify/SKILL.md b/.codex/skills/verify/SKILL.md
+index 72945683..dd3d26de 100644
+--- a/.codex/skills/verify/SKILL.md
++++ b/.codex/skills/verify/SKILL.md
+@@ -1,18 +1,16 @@
+ ---
+ name: verify
+ description: >
+-  Runs the Forge verify stage — the post-merge health check performed AFTER a PR has been
+-  merged. Switches to master and pulls, confirms the merge actually landed (`gh pr list
+-  --state merged`), checks CI is green on master after the merge, confirms any deployments are
+-  up, removes the merged worktree and safe-deletes the local branch, and closes the
+-  kernel/Beads issues the PR resolved (`forge close --reason=...`). Use when asked to verify a
+-  merge went cleanly, confirm post-merge CI health on master, check deployments after merging,
+-  clean up a merged branch or worktree, or close the issue now that its PR is merged — and
+-  whenever `/verify` is invoked. This is strictly the POST-merge stage: reach for shepherd
+-  instead to monitor a still-open PR toward merge, review to fix and resolve PR feedback
+-  before merge, ship to push the branch and open the PR, rollback to undo an already-shipped
+-  change, status to merely report the current stage without acting, and issue-basics to close
+-  an issue that is unrelated to a just-merged PR.
++  Runs the Forge verify stage — the post-merge health check performed AFTER a PR is merged:
++  switch to master and pull, confirm the merge landed, check CI is green on master, confirm
++  deployments are up, remove the merged worktree, safe-delete the branch, and close the
++  kernel/Beads issues the PR resolved. Use when asked to verify a merge went cleanly, confirm
++  post-merge CI health on master, check deployments after merging, clean up a merged branch or
++  worktree, or close the issue now that its PR is merged — and whenever `/verify` is invoked.
++  Strictly the POST-merge stage: use shepherd instead to monitor a still-open PR toward merge,
++  review to fix and resolve PR feedback before merge, ship to push the branch and open the PR,
++  rollback to undo an already-shipped change, status to merely report the current stage
++  without acting, and issue-basics to close an issue unrelated to a just-merged PR.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/claim-safety/SKILL.md b/skills/claim-safety/SKILL.md
+index 685ffd36..cbb6a341 100644
+--- a/skills/claim-safety/SKILL.md
++++ b/skills/claim-safety/SKILL.md
+@@ -1,20 +1,18 @@
+ ---
+ name: claim-safety
+ description: >
+-  Claim a Forge issue and then PROVE you hold the live lease before you touch it — the
+-  ownership-verification procedure built on `forge issue owns <id>`. Use this whenever
+-  actually winning the claim matters: right after `forge claim`, before you
+-  `dev`/edit/`close`/`release` a claimed issue, when two agents or a subagent fan-out might
+-  contend for the same work, or when you need to re-check ownership before an irreversible
+-  step. Why it exists: a claim returning `ok:true` does NOT prove you won — a same-actor
+-  duplicate replay also returns `ok:true`, and a live lease can be reclaimed once it expires —
+-  so `forge issue owns` (exit 0 iff you hold the single, unexpired active lease) is the only
+-  real proof, and you re-verify before close/release. Trigger on "claim this issue safely",
+-  "did I actually win the lease", "verify/prove ownership", "claim conflict", "two agents
+-  grabbed the same issue", "check I still own it before closing", or before ANY mutation of a
+-  claimed issue. NOT for plain single-issue create/update/close/comment when there is no
+-  ownership question (that is issue-basics), and NOT for read-only selecting or ranking the
+-  next ready issue without claiming (that is triage-ready).
++  Claim a Forge issue and then PROVE you hold the live lease before you touch it, using `forge
++  issue owns <id>` (exit 0 iff you hold the single unexpired lease). Use this whenever winning
++  the claim matters: right after `forge claim`, before you `dev`/edit/`close`/`release` a
++  claimed issue, when two agents or a subagent fan-out contend for the same work, or before
++  any irreversible step. A claim's `ok:true` does NOT prove you won — duplicate replays return
++  it and expired leases get reclaimed; only `owns` proves it, so re-verify before
++  close/release. Trigger on "claim this issue safely", "did I actually win the lease",
++  "verify/prove ownership", "claim conflict", "two agents grabbed the same issue", "check I
++  still own it before closing", or before ANY mutation of a claimed issue. NOT for plain
++  single-issue create/update/close/comment with no ownership question (that is issue-basics),
++  and NOT for read-only selecting or ranking the next ready issue without claiming (that is
++  triage-ready).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/dev/SKILL.md b/skills/dev/SKILL.md
+index a2674c07..90b00ee6 100644
+--- a/skills/dev/SKILL.md
++++ b/skills/dev/SKILL.md
+@@ -1,20 +1,17 @@
+ ---
+ name: dev
+ description: >
+-  Forge DEV stage — the build engine that turns an already-approved /plan task list into
+-  committed, test-backed code. Reads docs/work/<date>-<slug>/tasks.md and design.md, then
+-  drives each task through a subagent loop (implementer → spec-compliance reviewer →
+-  code-quality reviewer) using RED-GREEN-REFACTOR TDD, HARD-GATE evidence checks, a spec-gap
+-  decision score, and per-task progress recorded on the Forge issue via `forge comment`. Use
+-  when a plan and task list already exist and it is time to implement them — triggers: "/dev",
+-  "start the dev stage", "build the tasks", "implement tasks.md test-first", "run the
+-  implementer/reviewer TDD loop", "write the code for the planned tasks one by one", "work
+-  through the task list with subagents". This is the per-task coding stage ONLY. Do NOT use it
+-  for creating the design doc or task list (that is plan), for the post-build
+-  type-check/lint/security/test gate (validate), for pushing the branch or opening the PR
+-  (ship), for addressing PR review feedback (review), or for orchestrating several stages /
+-  taking an issue end-to-end to a merged PR (smith). Reach for dev specifically when the ask
+-  is to author code for tasks that are already planned.
++  Forge DEV stage — implement an already-planned /plan task list into committed, test-backed
++  code. Reads tasks.md + design.md, then drives each task through a subagent TDD loop
++  (implementer → spec-compliance reviewer → code-quality reviewer) with RED-GREEN-REFACTOR,
++  HARD-GATE evidence checks, and a spec-gap decision score. Use when a plan and task list
++  already exist and it is time to implement — triggers: "/dev", "start the dev stage", "build
++  the tasks", "implement tasks.md test-first", "run the implementer/reviewer TDD loop", "write
++  the code for the planned tasks one by one", "work through the task list with subagents".
++  Per-task coding ONLY. Do NOT use for creating the design doc or task list (that is plan),
++  for the post-build type-check/lint/security/test gate (validate), for pushing the branch or
++  opening the PR (ship), for addressing PR review feedback (review), or for orchestrating
++  several stages / taking an issue end-to-end to a merged PR (smith).
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/hermes-forge/SKILL.md b/skills/hermes-forge/SKILL.md
+index 190651df..53ba1e71 100644
+--- a/skills/hermes-forge/SKILL.md
++++ b/skills/hermes-forge/SKILL.md
+@@ -1,26 +1,18 @@
+ ---
+ name: hermes-forge
+ description: >
+-  Consumption contract for how the Hermes harness reads, cites, and writes back Forge project
+-  state — Hermes is a CONSUMER of Forge, never a second source of truth. Load this whenever a
+-  Hermes session runs on a Forge repo: at session start to orient, before acting on a specific
+-  issue, or any time you need CURRENT project state. Always obtain state through `forge
+-  orient` / `forge recap <issue-id>` — the deterministic, token-bounded JSON envelope — and
+-  never reconstruct it by reading raw issue stores, design files, or kernel internals. This
+-  skill governs the envelope discipline: honor the token budget (raise depth with `--budget
+-  N`, don't retry blindly), treat any `truncated` section as incomplete, attribute every
+-  surfaced fact to its source `path`/`authority`, and surface conflicts instead of silently
+-  picking a winner. It also governs writeback: record evidence, decisions, and follow-up work
+-  into the Forge Kernel ONLY through Forge CLI commands (`forge comment` / `forge update` /
+-  `forge create`), and NEVER leak Hermes profile or session memory into Forge state. Trigger
+-  phrases: "orient me / what's the current project state", "where did this fact come from,
+-  cite it", "the orient output came back truncated", "how do I persist this decision back into
+-  Forge", "is it safe to store this in kernel state". This is the Hermes⇄Forge boundary
+-  contract — NOT the general Forge session router that navigates stage skills (kernel), NOT
+-  the human-facing "what stage am I in / where am I" report (status), NOT everyday issue
+-  create/update/close/search CRUD (issue-basics), NOT surfacing or ranking the next ready
+-  issue (triage-ready), and NOT live PR monitoring (shepherd, which runs OUTSIDE Hermes and is
+-  not visible through orient).
++  Hermes⇄Forge boundary: Hermes CONSUMES Forge state, never a second source of truth. Use
++  whenever a Hermes session runs on a Forge repo: at session start, before acting on an issue,
++  or when you need CURRENT state. Read state ONLY via `forge orient` / `forge recap
++  <issue-id>` (bounded JSON envelope), citing each source's `path`/`authority`; never
++  reconstruct it from raw stores or kernel internals. Writeback ONLY via `forge
++  comment`/`update`/`create`; NEVER leak Hermes profile or session memory into Forge state.
++  Triggers: "orient me / current project state", "where did this fact come from, cite it",
++  "orient came back truncated", "persist a decision into Forge", "safe to store in kernel
++  state?". NOT the Forge session router over stage skills (kernel), NOT the human "what stage
++  am I in" report (status), NOT everyday issue create/update/close/search CRUD (issue-basics),
++  NOT ranking the next ready issue (triage-ready), NOT live PR monitoring (shepherd—outside
++  Hermes, unseen by orient).
+ compatibility: >
+   Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
+   path — like every Forge skill pack (e.g. parallel-deep-research,
+diff --git a/skills/issue-basics/SKILL.md b/skills/issue-basics/SKILL.md
+index f2940ba5..8bf7ba1b 100644
+--- a/skills/issue-basics/SKILL.md
++++ b/skills/issue-basics/SKILL.md
+@@ -1,20 +1,18 @@
+ ---
+ name: issue-basics
+ description: >
+-  Everyday single-issue CRUD over the `forge issue` verbs — create, update, show, list,
+-  search, close, reopen, comment, set priority/labels/assignee, claim or release one issue,
+-  and add/remove dependency edges, plus backlog `stats`. Reach for this on ANY routine one-off
+-  issue operation: "create an issue/bug/task for X", "update or edit issue <id>", "close (or
+-  reopen) this issue", "comment a handoff note on <id>", "list open bugs" or "filter issues by
+-  label/priority/status", "search issues for …", "bump this to P1", "reassign to alice", "mark
+-  <id> blocked by <id>", "add a label". This is also the parity floor when migrating off a
+-  Beads-style tracker (label/reopen/delete map onto their forge equivalents). Scope is
+-  single-operation issue plumbing only. It does NOT choose, rank, or explain the next issue to
+-  work on or why one is blocked (use triage-ready); it does NOT run the
+-  claim-then-prove-lease-ownership safety procedure before mutating shared work (use
+-  claim-safety); it does NOT drive an issue through the plan->dev->validate->ship pipeline or
+-  open a PR (use smith or the individual stage skills); and it does NOT report the current
+-  workflow stage or what is in flight (use status).
++  Everyday single-issue CRUD over the `forge issue` verbs:
++  create/update/show/list/search/close/reopen/comment, set priority/labels/assignee, claim or
++  release one issue, add/remove dependency edges, plus backlog `stats`. Use for ANY routine
++  one-off issue op: "create an issue/bug/task for X", "update/edit issue <id>", "close or
++  reopen this issue", "comment a handoff note on <id>", "list/filter open bugs by
++  status/label/priority", "bump this to P1", "reassign to alice", "mark <id> blocked by <id>".
++  Also the parity floor migrating off a Beads-style tracker (label/reopen/delete map to forge
++  equivalents). Single-operation plumbing only. Does NOT choose, rank, or explain the next
++  issue to work on or why it's blocked (use triage-ready); does NOT run
++  claim-then-prove-lease-ownership safety (use claim-safety); does NOT drive an issue through
++  the plan->dev->validate->ship pipeline or open a PR (use smith or stage skills); does NOT
++  report the current stage or what's in flight (use status).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/kernel/SKILL.md b/skills/kernel/SKILL.md
+index 1d76a2fa..84613eba 100644
+--- a/skills/kernel/SKILL.md
++++ b/skills/kernel/SKILL.md
+@@ -1,22 +1,18 @@
+ ---
+ name: kernel
+ description: >
+-  Forge kernel surface — the umbrella index and router for a Forge project. Reach for this
+-  FIRST when you are orienting rather than executing: at the very start of a Forge session,
+-  when you need the map of how the whole system fits together, or when you are unsure WHICH
+-  skill or `forge` verb a task belongs to. It routes to the `smith` end-to-end orchestrator,
+-  the per-stage ladder skills (plan, dev, validate, ship, review, verify), the utility skills
+-  (status, research, rollback, sonarcloud, shepherd), and the kernel-native issue skills
+-  (triage-ready, claim-safety, issue-basics) — and it is the reference for the day-to-day
+-  `forge` CLI issue, board, gate, and orientation verbs. Trigger on "how does the Forge
+-  workflow work", "walk me through the stage ladder", "which forge command or skill do I use
+-  for X", "what are the forge issue verbs", "I'm new to this repo, how is Forge set up", "map
+-  the Forge skills for me", or "should this be a Forge issue or a TodoWrite". This is the
+-  meta/index layer, so hand off the actual doing: ranking or picking the next ready issue →
+-  `triage-ready`; the current stage, "where am I", or active/stale work → `status`;
+-  create/update/close/search a single issue → `issue-basics`; claim-then-prove-ownership
+-  before mutating → `claim-safety`; drive one issue from plan to a merged PR under human gates
+-  → `smith`; token-bounded project state for the Hermes harness → `hermes-forge`.
++  Forge kernel — umbrella index/router for a Forge project. Reach for this FIRST when
++  orienting rather than executing: at session start, when you need the map of how the system
++  fits together, or when unsure WHICH skill or `forge` verb a task belongs to. It indexes
++  `smith` (end-to-end orchestrator), the stage ladder (plan → dev → validate → ship → review →
++  verify), the utility/issue skills, and the day-to-day `forge` CLI verbs. Trigger on "how
++  does the Forge workflow work", "which forge command or skill for X", "I'm new here, how is
++  Forge set up", or "should this be a Forge issue or a TodoWrite". Index layer only — hand off
++  the doing: rank/pick the next ready issue → `triage-ready`; current stage / "where am I" /
++  active or stale work → `status`; create/update/close/search one issue → `issue-basics`;
++  claim-then-prove ownership before mutating → `claim-safety`; drive one issue from plan to a
++  merged PR under gates → `smith`; token-bounded state for the Hermes harness →
++  `hermes-forge`.
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/parallel-deep-research/SKILL.md b/skills/parallel-deep-research/SKILL.md
+index 67e00830..331d75b9 100644
+--- a/skills/parallel-deep-research/SKILL.md
++++ b/skills/parallel-deep-research/SKILL.md
+@@ -1,23 +1,18 @@
+ ---
+ name: parallel-deep-research
+ description: >
+-  Heavyweight EXTERNAL research reports — market, industry, competitive, and strategic —
+-  delegated to Parallel AI's paid pro/ultra processors, which autonomously crawl, read, and
+-  synthesize dozens of sources over 3-25 minutes and return one long structured report with
+-  citations, far beyond what a handful of WebSearch calls can produce. Reach for this whenever
+-  the user wants a comprehensive market analysis, competitive landscape, industry deep-dive,
+-  multi-vendor/technology comparison across many sources, strategic recommendations, market
+-  sizing/growth outlook, or any multi-source synthesis that would take more than 3-4 web
+-  searches to answer well. Typical phrasings: "market analysis of X", "competitive landscape
+-  comparing A/B/C", "industry deep-dive on...", "deep research report on...", "compare these
+-  vendors at our scale", "strategic report with predictions for 2027". Requires
+-  PARALLEL_API_KEY in .env.local; each run costs money and takes minutes, so it is the WRONG
+-  tool for quick facts, a single-page fetch, one-URL scraping, or a small structured-field
+-  extraction — use built-in WebSearch/WebFetch for those. It is also NOT the Forge RESEARCH or
+-  PLAN stage itself: "run the research stage", "do Phase 2 for this feature", or
+-  codebase/OWASP/DRY investigation that gets written into a design doc route to `research` and
+-  `plan` — those stages may INVOKE this skill as their external research engine when a topic
+-  genuinely needs dozens of sources, but a bare "run the stage" request is not this skill.
++  Heavyweight EXTERNAL research reports — market, industry, competitive, strategic — via
++  Parallel AI's paid pro/ultra processors that crawl and synthesize dozens of sources into one
++  long cited report. Use when the user wants a market analysis, competitive landscape,
++  industry deep-dive, multi-vendor/technology comparison, strategic recommendations, or market
++  sizing/growth outlook — any multi-source synthesis needing more than 3-4 web searches.
++  Typical phrasings: "market analysis of X", "competitive landscape comparing A/B/C",
++  "industry deep-dive on...", "deep research report on...", "strategic report with predictions
++  for 2027". WRONG tool for quick facts, a single-page fetch, one-URL scraping, or small
++  structured-field extraction — use built-in WebSearch/WebFetch. Also NOT the Forge RESEARCH
++  or PLAN stage: "run the research stage", "do Phase 2", or codebase/OWASP/DRY investigation
++  into a design doc route to `research` and `plan` (they may INVOKE this skill). Requires
++  PARALLEL_API_KEY.
+ compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
+ metadata:
+   author: harshanandak
+diff --git a/skills/plan/SKILL.md b/skills/plan/SKILL.md
+index d11ac85c..6eb606e3 100644
+--- a/skills/plan/SKILL.md
++++ b/skills/plan/SKILL.md
+@@ -1,18 +1,17 @@
+ ---
+ name: plan
+ description: >
+-  Forge PLAN stage — the first stop when starting a NEW feature or an unscoped piece of work.
+-  Runs one-question-at-a-time brainstorming to capture design intent, writes and commits a
+-  design doc, runs technical/OWASP/DRY + codebase research, then sets up the branch, worktree,
+-  and a complete TDD task list ready to hand to /dev. Trigger on "let's plan X", "start or
+-  scope a new feature", "brainstorm this before we build", "write a design doc", "break this
+-  into tasks", or "set up a worktree and task list before coding". Reach for this even when
+-  the request sounds like only design or only scoping — plan owns intent → research →
+-  task-list setup as a single stage. NOT for driving a feature all the way to a merged PR
+-  (that is smith), NOT for implementing the tasks once they already exist (dev), NOT for a
+-  standalone deep-research pass into an already-approved design doc (research), NOT for
+-  reporting where current work stands or what is stale (status), and NOT for everyday issue
+-  create/list/close or picking the next ready issue (issue-basics / triage-ready).
++  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Runs
++  one-question-at-a-time brainstorming for design intent, commits a design doc, does
++  technical/OWASP/DRY + codebase research, then sets up the branch, worktree, and a TDD task
++  list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
++  build", "write a design doc", "break this into tasks", or "set up a worktree and task list
++  before coding". Reach for this even when the ask sounds like only design or only scoping —
++  plan owns intent → research → task-list setup as one stage. NOT for driving a feature to a
++  merged PR (that is smith), NOT for implementing tasks that already exist (dev), NOT for a
++  standalone deep-research pass into an approved design doc (research), NOT for reporting
++  where work stands or what is stale (status), and NOT for everyday issue create/list/close or
++  picking the next ready issue (issue-basics / triage-ready).
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/research/SKILL.md b/skills/research/SKILL.md
+index d0d698a4..d5ba18d8 100644
+--- a/skills/research/SKILL.md
++++ b/skills/research/SKILL.md
+@@ -1,25 +1,17 @@
+ ---
+ name: research
+ description: >
+-  Runs the Forge RESEARCH stage — the technical-investigation phase now embedded as /plan
+-  Phase 2. Use it when the user wants JUST the research work for a specific feature (not the
+-  whole plan flow): deep web research on best practices and known gotchas for the chosen
+-  approach, an OWASP Top 10 risk pass documenting which categories apply and how they'll be
+-  mitigated, DRY / blast-radius codebase exploration for existing patterns to reuse, and
+-  identification of at least three TDD test scenarios — all appended under `## Technical
+-  Research` in that feature's `docs/work/YYYY-MM-DD-<slug>/design.md`. Trigger on phrasings
+-  like "run the research phase", "do the technical research for this feature", "run an OWASP
+-  analysis on this", "explore the codebase for reusable patterns before we build", "check
+-  we're not duplicating an existing helper (DRY)", "add the security + best-practices research
+-  to the design doc", or "find TDD scenarios for X". If the design doc doesn't exist yet,
+-  create it first, then research into it. Pick this skill over its siblings: choose `plan`
+-  instead when the user is starting a feature from scratch and wants the FULL stage —
+-  one-question-at-a-time design brainstorm plus branch/worktree/task-list setup — not only the
+-  research; choose `parallel-deep-research` instead when the ask is an external market,
+-  competitive, or industry report via Parallel AI (business analysis, vendor comparison,
+-  funding/landscape), not code-level technical/OWASP/DRY research; choose `dev` or `validate`
+-  instead when the user wants to implement tasks or run security scans/lint/tests against code
+-  rather than research it.
++  Runs the Forge RESEARCH stage (technical investigation, /plan Phase 2). Use when the user
++  wants JUST the research for a feature, not the full plan flow: deep web research on best
++  practices/gotchas, an OWASP Top 10 risk pass, DRY/blast-radius codebase exploration for
++  reusable patterns, and 3+ TDD test scenarios — appended under `## Technical Research` in the
++  feature's design.md. Trigger on "run the research phase", "run an OWASP analysis on this",
++  "explore the codebase for reusable patterns (DRY) before we build", or "find TDD scenarios
++  for X". Pick over siblings: `plan` when starting a feature from scratch and wanting the FULL
++  stage (design brainstorm + branch/worktree/task-list setup), not just research;
++  `parallel-deep-research` for an external market/competitive/industry report via Parallel AI
++  (business/vendor/funding landscape), not code-level technical/OWASP/DRY research; `dev` or
++  `validate` to implement tasks or run security scans/lint/tests rather than research them.
+ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+ 
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index cdabadb5..08ec22f4 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -1,22 +1,17 @@
+ ---
+ name: review
+ description: >
+-  Forge REVIEW stage — the one skill that drives an already-open pull request to all-green by
+-  resolving EVERY piece of feedback on it: failing GitHub Actions / CI checks, Greptile and
+-  CodeRabbit inline comments and summaries, and the SonarCloud quality gate. It actively fixes
+-  the code, replies to each thread, and marks it resolved until the checks pass, then runs the
+-  pre-merge doc gate (CHANGELOG / README / API / AGENTS docs) and hands the PR off for MANUAL
+-  merge — it never runs `gh pr merge`. Reach for it whenever a PR already has review feedback
+-  or red checks to work through: "address the review comments on PR #123", "the bots flagged
+-  issues / my Greptile score is low", "fix the failing checks and resolve the threads",
+-  "CodeRabbit and SonarCloud left comments — sort them out", "get my PR merge-ready". This is
+-  the MUTATING feedback-resolution stage — distinct from shepherd (only WATCHES an open PR's
+-  checks and settle window, changes nothing), verify (POST-merge CI-on-master health check +
+-  closing issues), ship (pushing the branch and opening the PR in the first place), validate
+-  (PRE-PR local type/lint/test/security on your branch), and the sonarcloud /
+-  sonarcloud-analysis skills (which only QUERY SonarCloud data that this stage consumes). Use
+-  those for a single tool or a passive watch; use this to work a PR's whole feedback set to
+-  done.
++  Forge REVIEW stage — drives an already-open PR to all-green by resolving EVERY piece of
++  feedback: failing GitHub Actions / CI checks, Greptile and CodeRabbit inline comments and
++  summaries, and the SonarCloud quality gate. It fixes the code, replies to each thread and
++  marks it resolved until checks pass, then runs the pre-merge doc gate and hands the PR off
++  for MANUAL merge — never runs `gh pr merge`. Use whenever a PR has review feedback or red
++  checks: "address the review comments on PR #123", "the bots flagged issues / Greptile score
++  is low", "fix the failing checks and resolve the threads", "CodeRabbit and SonarCloud left
++  comments", "get my PR merge-ready". This MUTATING feedback-resolution stage is distinct from
++  shepherd (only WATCHES an open PR, changes nothing), verify (POST-merge CI health check +
++  closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
++  type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/rollback/SKILL.md b/skills/rollback/SKILL.md
+index 6a320902..a2e8a795 100644
+--- a/skills/rollback/SKILL.md
++++ b/skills/rollback/SKILL.md
+@@ -2,18 +2,16 @@
+ name: rollback
+ description: >
+   Safely revert or undo a change that is already committed or shipped, using non-destructive
+-  `git revert` (never `reset --hard`, `push --force`, or `clean`) and auto-preserving USER
+-  sections plus custom commands. Drives the interactive `bunx forge rollback` menu: undo the
+-  last commit, revert a specific commit by hash, revert a merged PR (git revert -m 1), restore
+-  individual files to their prior version, revert a commit range, or dry-run/preview any of
+-  these first. Use when the user says roll back, revert, undo, back out, or restore — e.g.
+-  "undo the last commit", "undo that change, the approach was wrong", "back out PR #123",
+-  "revert the merge commit", "restore src/auth.js to before my last commit", or when a
+-  shipped/merged change broke something and must be pulled back (optionally re-flagging its
+-  linked Beads issue). This is the RECOVERY skill for changes already in git history. Do NOT
+-  use for: replying to or fixing PR review feedback (review), monitoring an open PR's checks
+-  toward merge (shepherd), the post-merge CI health check on master (verify), pushing a branch
+-  or opening a PR (ship), or ordinary issue status/field edits (issue-basics).
++  `git revert` (never `reset --hard`, `push --force`, or `clean`). Drives the interactive
++  `bunx forge rollback` menu: undo the last commit, revert a commit by hash, revert a merged
++  PR (git revert -m 1), restore individual files to a prior version, revert a commit range, or
++  dry-run/preview first. Use when the user says roll back, revert, undo, back out, or restore
++  — e.g. "undo the last commit", "undo that change, the approach was wrong", "back out PR
++  #123", "revert the merge commit", "restore src/auth.js to before my last commit", or when a
++  shipped/merged change broke something and must be pulled back. Do NOT use for: replying to
++  or fixing PR review feedback (review), monitoring an open PR's checks toward merge
++  (shepherd), the post-merge CI health check on master (verify), pushing a branch or opening a
++  PR (ship), or ordinary issue status/field edits (issue-basics).
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/shepherd/SKILL.md b/skills/shepherd/SKILL.md
+index 1a0d3761..21127b63 100644
+--- a/skills/shepherd/SKILL.md
++++ b/skills/shepherd/SKILL.md
+@@ -1,20 +1,17 @@
+ ---
+ name: shepherd
+ description: >
+-  Run ONE bounded, hand-off monitor pass over an already-reviewed OPEN pull request: read the
+-  CI/check rollup and the branch-protection required-check set, take at most one idempotent
+-  action (re-run a flaky required check, or post a status reply to a thread), then declare
+-  merge-readiness — MERGE_READY, still PENDING, or escalate — and exit. There is no in-process
+-  loop; a scheduler re-invokes the pass. Use this when the user says things like "is PR #123
+-  ready to merge yet?", "poll/watch the checks on my PR", "the required CI job is flaky — kick
+-  off a re-run", "keep an eye on this PR until it's green", "babysit the checks after
+-  /review", "shepherd PR 45", or "monitor the PR toward merge (and rebase it if it's behind,
+-  with --auto-rebase)". It NEVER merges (the human merges in the GitHub UI), NEVER edits code,
+-  and NEVER resolves review threads. Do NOT use it to fix or reply-and-resolve PR review
+-  feedback from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR in
+-  the first place — that is `ship`; nor for the post-merge "CI green on master + close issues"
+-  health check — that is `verify`; nor for a general "where am I in the workflow / what's in
+-  flight" report — that is `status`.
++  Monitor an already-reviewed OPEN pull request toward merge: read the CI/check rollup and the
++  branch-protection required-check set, take at most one idempotent action (re-run a flaky
++  required check, or post a status reply to a thread), then declare MERGE_READY, PENDING, or
++  escalate. Use when the user says "is PR #123 ready to merge yet?", "poll/watch the checks on
++  my PR", "the required CI job is flaky — kick off a re-run", "keep an eye on this PR until
++  it's green", "babysit the checks after /review", "shepherd PR 45", or "monitor the PR toward
++  merge (rebase if behind, --auto-rebase)". NEVER merges (the human merges in the GitHub UI),
++  edits code, or resolves review threads. Do NOT use to fix or reply-and-resolve PR feedback
++  from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR — that is
++  `ship`; nor for the post-merge "CI green on master + close issues" check — that is `verify`;
++  nor for a general "where am I / what's in flight" report — that is `status`.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index 6413e730..c209e3fb 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -1,21 +1,18 @@
+ ---
+ name: ship
+ description: >
+-  Forge SHIP stage: push the already-validated feature branch and open a pull request
+-  populated from the project's OWN PR template (design-doc link, Forge issue IDs, real
+-  test/commit data), then hand the PR off for MANUAL merge — this skill never merges or
+-  auto-merges. Reach for it the moment /validate has passed and you want a PR on the board.
+-  Triggers on phrasings like "ship it", "ship this branch", "create/open the PR", "open a pull
+-  request", "push and open a PR", "gh pr create", "make/raise a PR from my current branch",
+-  "checks passed, now cut the PR". It runs the branch-freshness and parallel-PR
+-  merge-simulation checks, force-with-lease pushes, records the ship->review handoff, then
+-  stops. This is ONE stage — route elsewhere when the ask is broader or different: the whole
+-  plan->dev->validate->ship->review pipeline or "drive it to done" (smith); running
+-  type-check/lint/tests/security first (validate); addressing PR review comments or resolving
+-  Greptile/SonarCloud/CodeRabbit threads on an existing PR (review); babysitting an
+-  already-open PR's checks toward merge (shepherd); the post-merge CI health check and closing
+-  issues (verify); or reverting an already-shipped change (rollback). If the PR already
+-  exists, this is not the skill.
++  Forge SHIP stage: push the validated feature branch and open a PR populated from the
++  project's OWN PR template (design-doc link, Forge issue IDs, real test/commit data), then
++  hand off for MANUAL merge; never merges or auto-merges. Use once /validate passes and you
++  want a PR on the board. Triggers: "ship it", "ship this branch", "open the PR", "push and
++  open a PR", "gh pr create", "checks passed, now cut the PR". Runs branch-freshness +
++  parallel-PR merge-sim checks, force-with-lease push, records the ship->review handoff, then
++  stops. One stage only; not for: the whole plan->dev->validate->ship->review pipeline or
++  drive-to-done (smith); type-check/lint/tests/security first (validate); addressing PR
++  comments or resolving Greptile/SonarCloud/CodeRabbit threads on an existing PR (review);
++  babysitting an open PR toward merge (shepherd); post-merge CI health check + closing issues
++  (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
++  not the skill.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/sonarcloud-analysis/SKILL.md b/skills/sonarcloud-analysis/SKILL.md
+index e386aa95..614bc51e 100644
+--- a/skills/sonarcloud-analysis/SKILL.md
++++ b/skills/sonarcloud-analysis/SKILL.md
+@@ -1,24 +1,18 @@
+ ---
+ name: sonarcloud-analysis
+ description: >
+-  Deep-dive SonarCloud analysis through the SonarCloud REST API, run in an isolated context so
+-  the raw JSON does not flood the main conversation. Pull open issues (bugs, vulnerabilities,
+-  code smells), coverage and duplication metrics, quality-gate pass/fail status with the exact
+-  failed thresholds, security hotspots, quality profiles, and analysis/measure history for a
+-  whole project, a branch, or a specific pull request, then hand back a ranked, actionable
+-  summary. Reach for this whenever the user names SonarCloud or asks about code-quality
+-  metrics, technical debt, coverage numbers, a red or failing quality gate, or security
+-  vulnerabilities and hotspots from static analysis — for example "what's our technical debt
+-  and which files have the worst maintainability", "why is the SonarCloud gate failing on this
+-  PR", "pull every BLOCKER vulnerability from the last scan with file and line", "show
+-  coverage by module", or "how have our reliability and security ratings trended this month".
+-  Route ELSEWHERE when: the user explicitly types the thin `/sonarcloud <query> <project>`
+-  slash command for a quick single lookup (that is the sibling 'sonarcloud' command surface);
+-  they want to reply to and resolve PR review threads across Greptile, CodeRabbit, or GitHub
+-  Actions (that is 'review'); they want to run the local lint, type-check, test, or security
+-  scanner before shipping (that is 'validate'); they want to actually implement or patch a
+-  flagged issue (that is 'dev'); or they want an external market or competitor report on
+-  SonarSource or DevSecOps vendors (that is 'parallel-deep-research').
++  SonarCloud deep-dive via its REST API: pull open issues (bugs, vulnerabilities, code
++  smells), coverage/duplication metrics, quality-gate pass/fail with failed thresholds,
++  security hotspots, and measure/analysis history for a whole project, branch, or PR, then
++  return a ranked summary. Use whenever the user names SonarCloud or asks about code-quality
++  metrics, technical debt, a red/failing quality gate, or static-analysis
++  vulnerabilities/hotspots — e.g. 'why is the SonarCloud gate failing on this PR' or 'pull
++  every BLOCKER vulnerability with file and line'. NOT for: the thin `/sonarcloud <query>
++  <project>` slash command for a quick lookup (sibling 'sonarcloud'); replying to/resolving PR
++  review threads across Greptile, CodeRabbit, or GitHub Actions ('review'); running local
++  lint/type-check/test/security scans pre-ship ('validate'); implementing or patching a
++  flagged issue ('dev'); or an external market/competitor report on SonarSource or DevSecOps
++  vendors ('parallel-deep-research').
+ category: Code Quality
+ tags: [sonarcloud, code-quality, issues, metrics, security]
+ context: fork
+diff --git a/skills/sonarcloud/SKILL.md b/skills/sonarcloud/SKILL.md
+index 9535a210..2ff1794e 100644
+--- a/skills/sonarcloud/SKILL.md
++++ b/skills/sonarcloud/SKILL.md
+@@ -1,23 +1,17 @@
+ ---
+ name: sonarcloud
+ description: >
+-  Query SonarCloud code-quality data through the `/sonarcloud` slash command — the fast,
+-  in-context lookup surface for a project, branch, or (above all) a pull request. Handles the
+-  named queries `issues`, `metrics`, `gate` (quality-gate pass/fail with failed conditions),
+-  `health` (full report), `pr <number>`, `hotspots` (security), and `history`, plus
+-  `--branch`, `--severity`, `--type`, and `--new-code` filters. Reach for this the moment the
+-  user types `/sonarcloud ...`, or asks in plain language: "what does SonarCloud say about
+-  this PR", "check the SonarCloud quality gate before I ship", "show SonarCloud
+-  blocker/critical bugs on the develop branch", "any new-code SonarCloud issues on PR 214",
+-  "SonarCloud coverage for my-project". Requires a `SONARCLOUD_TOKEN` (and organization key).
+-  This skill only READS and reports SonarCloud results — it does NOT fix findings or
+-  reply-to/resolve PR review threads (that is the `review` stage), and it is the lightweight
+-  command surface, NOT the isolated deep-analysis session that correlates findings with local
+-  source, walks analysis-history trends, or runs duplication deep-dives across many endpoints
+-  (that is `sonarcloud-analysis` — send heavyweight or correlation work there). Not for local
+-  SAST/security scans of your own code, and not for the Forge issue tracker ("open/ready
+-  issues", `forge issue ...`) — here those bare words always mean SonarCloud, not the tracker
+-  or validate stage.
++  Query SonarCloud code-quality data via the `/sonarcloud` slash command — the fast in-context
++  lookup for a project, branch, or PR. Handles `issues`, `metrics`, `gate` (pass/fail + failed
++  conditions), `health`, `pr <number>`, `hotspots`, `history`, plus `--branch`, `--severity`,
++  `--type`, `--new-code` filters. Use the moment the user types `/sonarcloud ...` or asks in
++  plain language: "what does SonarCloud say about this PR", "check the SonarCloud quality gate
++  before I ship", "SonarCloud blocker/critical bugs on develop", "new-code SonarCloud issues
++  on PR 214". Only READS/reports — does NOT fix findings or reply-to/resolve PR threads (that
++  is `review`); it is the lightweight command surface, NOT the deep-analysis session
++  correlating findings with local source or history trends (that is `sonarcloud-analysis`).
++  Not for local SAST scans of your own code, nor the Forge issue tracker (`forge issue ...`,
++  "open/ready issues") — here those bare words always mean SonarCloud.
+ allowed-tools: Bash, Read, Grep, Glob, WebFetch
+ ---
+ 
+diff --git a/skills/status/SKILL.md b/skills/status/SKILL.md
+index d846ef93..28569013 100644
+--- a/skills/status/SKILL.md
++++ b/skills/status/SKILL.md
+@@ -1,21 +1,17 @@
+ ---
+ name: status
+ description: >
+-  Report where the project stands right now and what work is in flight -- the Forge status
+-  snapshot. Reach for this at session start or whenever the user says "/status", "where am I",
+-  "what's in progress", "catch me up", "resume work", "what changed recently", or "what should
+-  I pick up next". It runs forge sync, then surfaces the detected workflow stage, the user's
+-  active/claimed issues, all issues ranked by composite score (priority, dependency impact,
+-  type, staleness) with conflict-risk annotations, stale in-progress issues that were already
+-  merged (which it reconciles by closing them), the last ~10 commits, and a forge team
+-  workload/dashboard overview. Use it to ORIENT and decide the next move: it reports state and
+-  points ahead -- it does not plan, run development, or claim an issue to work it (its only
+-  write is closing already-merged stale issues during reconciliation). Not for: routing to a
+-  specific stage skill or documenting the full issue-verb surface (that's kernel); deeply
+-  ranking and EXPLAINING a single next-ready or blocked issue to hand off (triage-ready);
+-  everyday create/update/list/close/comment/search issue operations (issue-basics); the Hermes
+-  harness's token-bounded orient/recap state contract (hermes-forge); or the post-merge CI
+-  health check that closes issues after a merge lands (verify).
++  Report where the project stands and what work is in flight -- the Forge status snapshot.
++  Reach for this at session start or whenever the user says "/status", "where am I", "what's
++  in progress", "catch me up", "resume work", "what changed recently", or "what should I pick
++  up next". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
++  composite score with conflict-risk flags, stale already-merged issues (which it closes), and
++  recent commits. Use it to ORIENT and decide the next move -- it reports state; it does not
++  plan, develop, or claim issues. Not for: routing to a stage skill or documenting the full
++  issue-verb surface (kernel); ranking and EXPLAINING a single next-ready or blocked issue to
++  hand off (triage-ready); everyday create/update/list/close/comment/search issue ops
++  (issue-basics); the Hermes harness's token-bounded orient/recap contract (hermes-forge); or
++  the post-merge CI health check that closes issues after a merge lands (verify).
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/triage-ready/SKILL.md b/skills/triage-ready/SKILL.md
+index 3377726e..49b7c5d3 100644
+--- a/skills/triage-ready/SKILL.md
++++ b/skills/triage-ready/SKILL.md
+@@ -1,21 +1,18 @@
+ ---
+ name: triage-ready
+ description: >
+-  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
+-  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
+-  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
+-  stats`, and justifies the pick from the full record via `forge issue show` — always against
+-  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
+-  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
+-  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
+-  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
+-  my next task", "top of the ready queue", "which issue should I start", "why is this issue
+-  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
+-  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
++  Surfaces, ranks, and EXPLAINS the single best next issue in a Forge project — strictly
++  read-only. Recomputes the live ready queue and explains what is blocked via `forge issue
++  ready`/`blocked`/`stats`/`show`, always against the live kernel, never `forge board`.
++  Recommends ONE issue with a one-line reason, then hands off; never claims, comments, closes,
++  or mutates. Use when the user asks "what should I work on", "what's next", "what's ready",
++  "pick/triage my next task", "top of the ready queue", "which issue should I start", "why is
++  this issue blocked", or "what's blocking the most work". NOT for claiming or taking
++  ownership of the pick (use claim-safety), not for everyday issue
+   create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
+   current workflow stage or "where am I / what's in flight" (use status), not for orienting a
+-  whole session or routing to stage skills (use kernel), and not for driving an issue through
+-  to a merged PR (use smith).
++  whole session or routing to stage skills (use kernel), not for driving an issue to a merged
++  PR (use smith).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/verify/SKILL.md b/skills/verify/SKILL.md
+index 72945683..dd3d26de 100644
+--- a/skills/verify/SKILL.md
++++ b/skills/verify/SKILL.md
+@@ -1,18 +1,16 @@
+ ---
+ name: verify
+ description: >
+-  Runs the Forge verify stage — the post-merge health check performed AFTER a PR has been
+-  merged. Switches to master and pulls, confirms the merge actually landed (`gh pr list
+-  --state merged`), checks CI is green on master after the merge, confirms any deployments are
+-  up, removes the merged worktree and safe-deletes the local branch, and closes the
+-  kernel/Beads issues the PR resolved (`forge close --reason=...`). Use when asked to verify a
+-  merge went cleanly, confirm post-merge CI health on master, check deployments after merging,
+-  clean up a merged branch or worktree, or close the issue now that its PR is merged — and
+-  whenever `/verify` is invoked. This is strictly the POST-merge stage: reach for shepherd
+-  instead to monitor a still-open PR toward merge, review to fix and resolve PR feedback
+-  before merge, ship to push the branch and open the PR, rollback to undo an already-shipped
+-  change, status to merely report the current stage without acting, and issue-basics to close
+-  an issue that is unrelated to a just-merged PR.
++  Runs the Forge verify stage — the post-merge health check performed AFTER a PR is merged:
++  switch to master and pull, confirm the merge landed, check CI is green on master, confirm
++  deployments are up, remove the merged worktree, safe-delete the branch, and close the
++  kernel/Beads issues the PR resolved. Use when asked to verify a merge went cleanly, confirm
++  post-merge CI health on master, check deployments after merging, clean up a merged branch or
++  worktree, or close the issue now that its PR is merged — and whenever `/verify` is invoked.
++  Strictly the POST-merge stage: use shepherd instead to monitor a still-open PR toward merge,
++  review to fix and resolve PR feedback before merge, ship to push the branch and open the PR,
++  rollback to undo an already-shipped change, status to merely report the current stage
++  without acting, and issue-basics to close an issue unrelated to a just-merged PR.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+-- 
+2.51.0.windows.1
+

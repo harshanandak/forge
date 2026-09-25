@@ -1,0 +1,39 @@
+From 1e9900be9f086713a16236a70e9a563f1bb58f97 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 04:46:28 +0530
+Subject: [PATCH] fix(github): replace duplicate account bindings
+
+---
+ lib/github-context.js       | 2 +-
+ test/github-context.test.js | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+index dff81b51..6e2f0ffc 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -104,7 +104,7 @@ function writeGithubAccount(projectRoot, login, options = {}) {
+     throw safeCommandFailure('INVALID_GITHUB_LOGIN', 'GitHub login must be 1-39 letters, numbers, or internal hyphens.');
+   }
+   try {
+-    runnerFor(options)('git', ['config', '--local', ACCOUNT_KEY, login], {
++    runnerFor(options)('git', ['config', '--local', '--replace-all', ACCOUNT_KEY, login], {
+       cwd: projectRoot,
+       encoding: 'utf8',
+       stdio: ['ignore', 'pipe', 'pipe'],
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index 53c50a31..3dd02b10 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -46,7 +46,7 @@ describe('github context', () => {
+     unsetGithubAccount('/repo', { runner });
+ 
+     expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'], options: { cwd: '/repo' } });
+-    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
++    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', '--replace-all', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
+     expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset-all', 'github.account'], options: { cwd: '/repo' } });
+   });
+ 
+-- 
+2.51.0.windows.1
+

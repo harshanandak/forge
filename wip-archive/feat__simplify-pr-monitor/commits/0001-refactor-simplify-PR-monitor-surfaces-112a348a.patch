@@ -1,0 +1,1480 @@
+From d3f5add523b27d8661251ec9aba7fd902c7970a9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 16:53:48 +0530
+Subject: [PATCH] refactor: simplify PR monitor surfaces (112a348a)
+
+---
+ .github/workflows/pr-monitor.yml            | 109 +++------
+ CHANGELOG.md                                |   5 +
+ docs/reference/shepherd.md                  |  15 +-
+ lib/pr-monitor/render-sticky.js             | 206 ----------------
+ lib/pr-monitor/render-summary.js            | 171 ++++++++++++++
+ lib/pr-monitor/upsert-sticky.js             | 169 --------------
+ test/pr-monitor/render-sticky.test.js       | 168 --------------
+ test/pr-monitor/render-summary.test.js      | 124 ++++++++++
+ test/pr-monitor/upsert-sticky.test.js       | 245 --------------------
+ test/pr-monitor/workflow.test.js            |  82 +++++++
+ test/windows-hide-background-spawns.test.js |   1 -
+ 11 files changed, 433 insertions(+), 862 deletions(-)
+ delete mode 100644 lib/pr-monitor/render-sticky.js
+ create mode 100644 lib/pr-monitor/render-summary.js
+ delete mode 100644 lib/pr-monitor/upsert-sticky.js
+ delete mode 100644 test/pr-monitor/render-sticky.test.js
+ create mode 100644 test/pr-monitor/render-summary.test.js
+ delete mode 100644 test/pr-monitor/upsert-sticky.test.js
+ create mode 100644 test/pr-monitor/workflow.test.js
+
+diff --git a/.github/workflows/pr-monitor.yml b/.github/workflows/pr-monitor.yml
+index 827bef36..2247ee6b 100644
+--- a/.github/workflows/pr-monitor.yml
++++ b/.github/workflows/pr-monitor.yml
+@@ -1,7 +1,7 @@
+ name: PR Monitor
+ 
+ # Surface + label PR monitor. On every PR event it reads the PR's open review +
+-# check state, keeps a SINGLE sticky comment up to date so async review-bot
++# check state, writes one detailed Actions job summary so async review-bot
+ # (CodeRabbit / Greptile / Qodo) or human feedback in a window nobody is watching
+ # never rots, AND lands ONE actionable `pr-verdict:*` label (the cheap agent read).
+ # It LABELS state (check-failed / threads-open / mergeable / …) and, in Tier-2
+@@ -15,9 +15,9 @@ name: PR Monitor
+ # it loop-safe.
+ #
+ # Signal source: Forge's own agnostic gather, `forge shepherd <pr> --bundle
+-# --json` (lib/pr-bundle.js) for the sticky's threads/checks. Unresolved threads
++# --json` (lib/pr-bundle.js) for the summary's threads/checks. Unresolved threads
+ # come from GraphQL reviewThreads{isResolved} across ALL authors — no name-list,
+-# no bot is privileged. The verdict label + sticky headline read the SAME value
++# no bot is privileged. The verdict label + summary headline read the SAME value
+ # `forge shepherd <pr> --pull --json` emits (lib/pr-pull.js computeVerdict) — one
+ # verdict, no second ladder to drift. Kernel issues: 35ee8d78 (auto-trigger),
+ # b5c154cd (verdict label), c01936be (--pull verdict), c2d398e5 (epic).
+@@ -63,10 +63,8 @@ permissions:
+ # a group left a trail of CANCELLED runs. Those render as red/non-SUCCESS checks on
+ # the PR head, alarm humans, and trip merge-gate tooling (Forge's own pr-bundle) that
+ # treats any non-SUCCESS check as a failure (kernel issue 97e6a146). Without a group,
+-# nothing gets cancelled. The only race a group used to guard — two concurrent
+-# first-runs both creating a sticky comment — is instead closed deterministically by
+-# the reconcile-to-one upsert (lib/pr-monitor/upsert-sticky.js), which keeps the
+-# lowest-id sticky and deletes the rest, converging to EXACTLY ONE per PR.
++# nothing gets cancelled; the summary and label are independent projections and do
++# not create or reconcile PR comments.
+ 
+ jobs:
+   monitor:
+@@ -146,7 +144,7 @@ jobs:
+           # Reuse Forge's own agnostic gather so the monitor and the CLI share one
+           # implementation. Read-only: --bundle decides nothing and takes no action.
+           # On success we stamp ciAvailable:true — the shepherd bundle doesn't carry
+-          # that flag, and the renderer treats a missing flag as "unread" (fail-closed),
++          # that flag, and the summary renderer treats a missing flag as "unread" (fail-closed),
+           # so we must assert here that CI WAS read on this path.
+           if node bin/forge.js shepherd "$PR" --bundle --json > raw.json 2> gather.err \
+              && jq '. + {ciAvailable: true}' raw.json > bundle.json 2>/dev/null; then
+@@ -156,7 +154,7 @@ jobs:
+             echo "::warning::Bundle gather failed; posting a degraded surface. See log."
+             cat gather.err || true
+             # Fail-closed degraded bundle: NEITHER threads NOR checks were read, so
+-            # both availability flags are false — the renderer surfaces both as
++            # both availability flags are false — the summary surfaces both as
+             # unreadable rather than a false "zero unresolved / no failing checks".
+             # Build with `jq --arg` (NOT manual escaping): gather.err can contain
+             # backslashes, tabs, control chars, or a truncated multibyte sequence that
+@@ -185,7 +183,7 @@ jobs:
+         run: |
+           set -uo pipefail
+           # The verdict is the SAME code `forge shepherd <pr> --pull --json` emits
+-          # (lib/pr-pull.js computeVerdict) — the label + sticky headline read it
++          # (lib/pr-pull.js computeVerdict) — the label + summary headline read it
+           # here rather than recomputing, so they can never disagree with --pull.
+           # Fail-closed: any gather failure or a missing field yields UNKNOWN.
+           if node bin/forge.js shepherd "$PR" --pull --json > pull.json 2> pull.err; then
+@@ -196,7 +194,7 @@ jobs:
+             VERDICT=UNKNOWN
+           fi
+           [ -z "$VERDICT" ] && VERDICT=UNKNOWN
+-          # Carry the unreadable-signal list forward so the sticky/label step can
++          # Carry the unreadable-signal list forward so the summary/label step can
+           # name WHICH signal was unreadable (default [] when pull.json is absent).
+           UNREADABLE=$(jq -c '.evidence.unreadable // []' pull.json 2>/dev/null || echo '[]')
+           [ -z "$UNREADABLE" ] && UNREADABLE='[]'
+@@ -211,47 +209,41 @@ jobs:
+             echo "::warning::verdict UNKNOWN — unreadable: $UNREADABLE"
+           fi
+ 
+-      - name: Render sticky comment body
++      - name: Publish Actions job summary
+         if: steps.resolve.outputs.should_run == 'true'
+         env:
++          PR: ${{ steps.resolve.outputs.pr }}
+           VERDICT: ${{ steps.pullverdict.outputs.verdict }}
+-          UNREADABLE: ${{ steps.pullverdict.outputs.unreadable }}
+         run: |
+           set -euo pipefail
+-          # Pass the --pull verdict into the renderer so the sticky leads with the
+-          # SAME verdict as the pr-verdict:* label (render-sticky only displays it).
+-          # Also pass the unreadable-signal list so an UNKNOWN verdict on the PR
+-          # always says WHICH signal was unreadable (never a bare `unknown`).
+-          node -e '
+-            const { renderStickyComment } = require("./lib/pr-monitor/render-sticky");
+-            const bundle = JSON.parse(require("fs").readFileSync("bundle.json", "utf8"));
+-            let unreadable = [];
+-            try { unreadable = JSON.parse(process.env.UNREADABLE || "[]"); } catch { unreadable = []; }
+-            const { body } = renderStickyComment(bundle, { verdict: process.env.VERDICT, unreadable });
+-            require("fs").writeFileSync("monitor-body.md", body);
+-          '
+-          # jq -Rs slurps the raw markdown into a JSON string for the comment API.
+-          jq -Rs '{body: .}' monitor-body.md > monitor-payload.json
++          # Render the same --pull verdict and detailed bundle diagnostics into the
++          # runner-provided summary surface. This is append-only per job and never
++          # mutates the PR, so concurrent monitor runs cannot create stale comments.
++          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
++          const fs = require('node:fs');
++          const { renderSummary } = require('./lib/pr-monitor/render-summary');
+ 
+-      - name: Upsert sticky comment (race-safe, exactly one)
+-        if: steps.resolve.outputs.should_run == 'true'
+-        # Best-effort: a transient gh/network failure must NOT fail the job and
+-        # produce the very non-success check this monitor exists to avoid. A real
+-        # (non-already-gone) error still surfaces as a failed step annotation.
+-        continue-on-error: true
+-        env:
+-          GH_TOKEN: ${{ github.token }}
+-          GH_REPO: ${{ github.repository }}
+-          PR: ${{ steps.resolve.outputs.pr }}
+-          STICKY_PAYLOAD_FILE: monitor-payload.json
+-        run: |
+-          set -euo pipefail
+-          # Reconcile the PR's sticky comments to EXACTLY ONE: find prior stickies by
+-          # their hidden marker, update the oldest (lowest-id) in place, and delete any
+-          # duplicates a concurrent run created. Because this workflow has no
+-          # concurrency group (see the top-of-file note), two first-runs could each
+-          # create a sticky; the deterministic lowest-id survivor closes that race.
+-          node lib/pr-monitor/upsert-sticky.js
++          function readJson(file, fallback) {
++            try {
++              const value = JSON.parse(fs.readFileSync(file, 'utf8'));
++              return value && typeof value === 'object' ? value : fallback;
++            } catch {
++              return fallback;
++            }
++          }
++
++          const bundle = readJson('bundle.json', { pr: process.env.PR });
++          const pull = readJson('pull.json', {});
++          const unreadable = pull.evidence && Array.isArray(pull.evidence.unreadable)
++            ? pull.evidence.unreadable
++            : [];
++          const { body } = renderSummary(bundle, {
++            pr: process.env.PR,
++            verdict: process.env.VERDICT || pull.verdict || 'UNKNOWN',
++            unreadable,
++          });
++          process.stdout.write(`${body}\n`);
++          NODE
+ 
+       - name: Compute pr-verdict label
+         if: steps.resolve.outputs.should_run == 'true'
+@@ -298,31 +290,6 @@ jobs:
+             echo "::warning::Could not set label $LABEL (non-fatal)."
+           fi
+ 
+-      - name: Publish informational (neutral) check
+-        if: steps.resolve.outputs.should_run == 'true'
+-        continue-on-error: true
+-        env:
+-          GH_TOKEN: ${{ github.token }}
+-          GH_REPO: ${{ github.repository }}
+-          PR: ${{ steps.resolve.outputs.pr }}
+-        run: |
+-          set -uo pipefail
+-          # A NEUTRAL check run is informational by construction — it can never
+-          # read as a pass/fail merge verdict and never blocks merge. Best-effort.
+-          SHA=$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+-          if [ -z "$SHA" ]; then
+-            echo "No head sha resolved; skipping informational check."
+-            exit 0
+-          fi
+-          gh api -X POST "repos/$GH_REPO/check-runs" \
+-            -f name='forge/pr-monitor' \
+-            -f head_sha="$SHA" \
+-            -f status='completed' \
+-            -f conclusion='neutral' \
+-            -f 'output[title]=PR monitor surfaced review + check state' \
+-            -f 'output[summary]=See the Forge PR Monitor sticky comment + the pr-verdict:* label. Surface-only: labels state, never merges, never resolves threads.' \
+-            > /dev/null && echo "Published neutral check for $SHA" || echo "::warning::Neutral check publish failed (non-fatal)."
+-
+       # ---------------------------------------------------------------------------
+       # TIER-2 auto-actions (issue addf5297). Everything ABOVE surfaces state and
+       # NEVER changes the PR; everything BELOW may take ONE of two SAFE, fail-closed
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3f43da8c..9d39353e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Changed
+ 
++- **Simplified the PR-monitor surface.** The workflow now keeps one canonical
++  `pr-verdict:*` label and writes detailed diagnostics to the Actions job summary
++  (also available via `forge shepherd --pull --json`); it no longer creates a
++  sticky PR comment or the neutral `forge/pr-monitor` check. The label remains a
++  visibility projection and never supplies merge authority. (112a348a)
+ - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
+ - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
+ 
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index 015ee04f..a925c7d2 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -213,6 +213,17 @@ workflow behaves exactly as before (no regression) — it just cannot auto-run C
+ the updated head. Forge only wires the code path and reads the secret; **creating
+ the secret is the maintainer's responsibility** — Forge never fabricates a token.
+ 
++## GitHub Actions PR-monitor summary
++
++The repository PR-monitor workflow writes detailed review-thread and check
++diagnostics to the Actions job summary (`GITHUB_STEP_SUMMARY`) and keeps the
++machine-readable view available through `forge shepherd <pr> --pull --json`.
++It projects that same canonical verdict onto exactly one `pr-verdict:*` label
++for a cheap agent-agnostic read. The label is visibility only: merge authority
++continues to use live protected required checks, the current head, and
++unresolved review threads. The workflow does not create PR comments or a
++neutral `forge/pr-monitor` check.
++
+ ## Per-harness behavior
+ 
+ - **Claude Code / Codex:** automatic session-start attachment wakes the singleton;
+@@ -222,8 +233,8 @@ the secret is the maintainer's responsibility** — Forge never fabricates a tok
+ 
+ ## State
+ 
+-Progress is durable in GitHub PR comments and labels plus `git`. The one local
+-store is the constant monitor's per-PR journal under
++Progress is durable in the Actions job summary, the single verdict label, and
++`git`. The one local store is the constant monitor's per-PR journal under
+ `.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
+ consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
+ `events --since`. The bounded shepherd pass itself keeps no separate local state.
+diff --git a/lib/pr-monitor/render-sticky.js b/lib/pr-monitor/render-sticky.js
+deleted file mode 100644
+index a33ac383..00000000
+--- a/lib/pr-monitor/render-sticky.js
++++ /dev/null
+@@ -1,206 +0,0 @@
+-'use strict';
+-
+-/**
+- * PR-monitor sticky-comment renderer — turn ONE read-only `gatherPrBundle`
+- * result (lib/pr-bundle.js) into the Markdown body of the single sticky PR
+- * comment the pr-monitor GitHub workflow keeps up to date.
+- *
+- * This is the SURFACE half of the monitor: it leads with the one-line actionable
+- * verdict (mirroring the `pr-verdict:*` label the workflow lands), then lists the
+- * unresolved review threads (grouped by author, ANY author) plus the failing and
+- * pending checks so async review-bot / human feedback in a window nobody is
+- * watching cannot rot. The verdict LABELS state (check-failed / threads-open /
+- * mergeable / …); it is NOT a merge action — it never merges, never resolves
+- * threads, never blocks, and is fail-closed (`unknown` on unreadable signals).
+- *
+- * Pure and deterministic: same bundle + same injected clock → same body, which
+- * is what lets the workflow rewrite the sticky comment in place without churn.
+- *
+- * @module pr-monitor/render-sticky
+- */
+-
+-/**
+- * Presentation-only headline for each canonical merge verdict (lib/pr-pull.js).
+- * The verdict VALUE is computed once by pr-pull (`forge shepherd --pull --json`)
+- * and passed in — this map only decides how to DISPLAY it, so there is no second
+- * verdict ladder to drift.
+- */
+-const VERDICT_HEADLINE = {
+-  UNKNOWN: '⚪ **Verdict: `unknown`** — a signal was unreadable; state unconfirmed (fail-closed).',
+-  'BLOCKED-CONFLICT': '🔀 **Verdict: `blocked-conflict`** — branch conflicts with base; rebase/merge and resolve.',
+-  BEHIND: '⬇️ **Verdict: `behind`** — branch is behind base; update/rebase (protection requires up-to-date).',
+-  'BLOCKED-CHECKS': '🔴 **Verdict: `blocked-checks`** — a required check is failing/missing; fix it.',
+-  'BLOCKED-THREADS': '🟠 **Verdict: `blocked-threads`** — unresolved review threads need addressing.',
+-  'REVIEW-PENDING': '🟡 **Verdict: `review-pending`** — awaiting review / settle window; not ready yet.',
+-  'CLEAN-MERGEABLE': '🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.',
+-};
+-
+-/**
+- * Render the one-line verdict headline for a canonical verdict string. Unknown or
+- * missing input falls closed to the `unknown` headline.
+- *
+- * @param {string} verdict
+- * @returns {string}
+- */
+-function verdictHeadline(verdict) {
+-  return VERDICT_HEADLINE[String(verdict || '').toUpperCase()] || VERDICT_HEADLINE.UNKNOWN;
+-}
+-
+-/** Hidden HTML marker: the workflow finds its prior comment by this string and
+- * UPDATES it in place, so the monitor never spams a PR with new comments. */
+-const STICKY_MARKER = '<!-- forge-pr-monitor -->';
+-
+-/** Cap threads listed per author so a noisy PR can't produce an enormous body. */
+-const MAX_THREADS_PER_AUTHOR = 8;
+-
+-/** Group unresolved review-thread comments by author → ordered [author, threads]. */
+-function groupByAuthor(comments) {
+-  const byAuthor = new Map();
+-  for (const c of (Array.isArray(comments) ? comments : [])) {
+-    const author = String(c.author || 'unknown');
+-    if (!byAuthor.has(author)) byAuthor.set(author, []);
+-    byAuthor.get(author).push(c);
+-  }
+-  // Sort authors by descending thread count, then name — stable + deterministic.
+-  return [...byAuthor.entries()].sort((a, b) => (b[1].length - a[1].length) || a[0].localeCompare(b[0]));
+-}
+-
+-/** One-line locator for a thread: `path:line` when known, else the threadId. */
+-function threadLocator(t) {
+-  if (t.path) return t.line != null ? `${t.path}:${t.line}` : t.path;
+-  return t.threadId || '(thread)';
+-}
+-
+-/** Render the unresolved-review-threads section (author-agnostic + fail-closed). */
+-function renderThreads(bundle, lines) {
+-  // Fail-closed: if the thread read was not available for ANY reason — it threw
+-  // (error set) OR the adapter cannot read comments at all (capability absent,
+-  // error null) — NEVER render "zero / clean". Only a genuine available:true read
+-  // may report "no unresolved threads". Guard on `!== true` (not `=== false`) so a
+-  // producer that omits the flag is also treated as unread, never as clean.
+-  if (bundle.unresolvedCommentsAvailable !== true) {
+-    const why = bundle.unresolvedCommentsError || 'thread read unavailable (capability absent)';
+-    lines.push('### Review threads');
+-    lines.push(`⚠️ Review threads were **unreadable** this pass (\`${why}\`) — not treated as zero. Re-run once the read recovers.`);
+-    lines.push('');
+-    return;
+-  }
+-
+-  const comments = Array.isArray(bundle.unresolvedComments) ? bundle.unresolvedComments : [];
+-  if (comments.length === 0) {
+-    lines.push('### Review threads');
+-    lines.push('✅ No unresolved review threads.');
+-    lines.push('');
+-    return;
+-  }
+-
+-  const groups = groupByAuthor(comments);
+-  lines.push(`### Unresolved review threads (${comments.length})`);
+-  lines.push('');
+-  for (const [author, threads] of groups) {
+-    lines.push(`- **${author}** — ${threads.length}`);
+-    for (const t of threads.slice(0, MAX_THREADS_PER_AUTHOR)) {
+-      lines.push(`  - \`${threadLocator(t)}\``);
+-    }
+-    if (threads.length > MAX_THREADS_PER_AUTHOR) {
+-      lines.push(`  - …and ${threads.length - MAX_THREADS_PER_AUTHOR} more`);
+-    }
+-  }
+-  lines.push('');
+-}
+-
+-/** Render the failing / pending check sections (author-agnostic + fail-closed). */
+-function renderChecks(bundle, lines) {
+-  // Fail-closed, mirroring renderThreads: empty ci arrays are AMBIGUOUS — they
+-  // mean either "read, genuinely all-clear" or "never read (gather outage)". Only
+-  // an explicit ciAvailable === true lets us render the summary; anything else
+-  // ("!== true": false or missing) surfaces as unreadable, so the monitor never
+-  // prints a false "no failing checks" for CI it did not actually read.
+-  if (bundle.ciAvailable !== true) {
+-    lines.push('### Checks');
+-    lines.push('⚠️ Checks were **unreadable** this pass — not treated as green. Re-run once the read recovers.');
+-    lines.push('');
+-    return;
+-  }
+-
+-  const ci = bundle.ci || {};
+-  const failing = Array.isArray(ci.failing) ? ci.failing : [];
+-  const pending = Array.isArray(ci.pending) ? ci.pending : [];
+-
+-  lines.push('### Checks');
+-  if (failing.length === 0 && pending.length === 0) {
+-    lines.push('✅ No failing or pending checks.');
+-  } else {
+-    if (failing.length > 0) {
+-      lines.push(`- ❌ **Failing (${failing.length}):** ${failing.map((c) => `\`${c.name || '?'}\``).join(', ')}`);
+-    }
+-    if (pending.length > 0) {
+-      lines.push(`- ⏳ **Pending (${pending.length}):** ${pending.map((c) => `\`${c.name || '?'}\``).join(', ')}`);
+-    }
+-  }
+-  lines.push('');
+-}
+-
+-/**
+- * Render the sticky monitor comment for a PR-state bundle.
+- *
+- * @param {object} bundle - a `gatherPrBundle` result (lib/pr-bundle.js).
+- * @param {object} [opts]
+- * @param {Date}   [opts.now] - injected clock for deterministic output.
+- * @param {string} [opts.verdict] - the canonical `--pull` verdict.
+- * @param {string[]} [opts.unreadable] - unreadable signal names (from the `--pull`
+- *   evidence). Surfaced when the verdict is UNKNOWN so the sticky always says WHICH
+- *   signal could not be read, not just a bare `unknown`.
+- * @returns {{ marker: string, body: string }}
+- */
+-function renderStickyComment(bundle = {}, opts = {}) {
+-  const now = opts.now instanceof Date ? opts.now : new Date();
+-  const lines = [];
+-
+-  // The marker MUST be the very first bytes so the workflow's substring match
+-  // finds the prior comment regardless of any rendering below it.
+-  lines.push(STICKY_MARKER);
+-  lines.push('## 🔭 Forge PR Monitor');
+-  lines.push('');
+-  // Lead with the actionable verdict — the SAME value as the pr-verdict:* label
+-  // and `forge shepherd --pull --json` (passed in via opts.verdict, computed once
+-  // by pr-pull). Surface only: it labels state; this monitor **does not merge**
+-  // and never resolves review threads.
+-  lines.push(verdictHeadline(opts.verdict));
+-  // An `unknown` verdict is useless without the WHY — name the unreadable
+-  // signal(s) so a human/agent knows what to fix (e.g. `requiredChecks` when both
+-  // branch-protection AND the rollup fallback could not be read).
+-  const verdictUpper = String(opts.verdict || '').toUpperCase();
+-  const isUnknown = verdictUpper === 'UNKNOWN' || !VERDICT_HEADLINE[verdictUpper];
+-  const unreadable = Array.isArray(opts.unreadable) ? opts.unreadable.filter(Boolean) : [];
+-  if (isUnknown && unreadable.length > 0) {
+-    lines.push('');
+-    lines.push(`> Unreadable signal(s): ${unreadable.map((s) => `\`${s}\``).join(', ')}.`);
+-  }
+-  lines.push('');
+-  lines.push('_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._');
+-  lines.push('');
+-
+-  renderThreads(bundle, lines);
+-  renderChecks(bundle, lines);
+-
+-  const branch = bundle.branch || {};
+-  if ((branch.behind || 0) > 0) {
+-    lines.push(`> Branch is **${branch.behind}** commit(s) behind base.`);
+-    lines.push('');
+-  }
+-
+-  lines.push('---');
+-  lines.push(`<sub>Updated ${now.toISOString()} · surface-only monitor · labels state, never merges, never resolves threads.</sub>`);
+-
+-  return { marker: STICKY_MARKER, body: lines.join('\n') };
+-}
+-
+-module.exports = {
+-  renderStickyComment,
+-  verdictHeadline,
+-  groupByAuthor,
+-  threadLocator,
+-  STICKY_MARKER,
+-  MAX_THREADS_PER_AUTHOR,
+-};
+diff --git a/lib/pr-monitor/render-summary.js b/lib/pr-monitor/render-summary.js
+new file mode 100644
+index 00000000..f93efb57
+--- /dev/null
++++ b/lib/pr-monitor/render-summary.js
+@@ -0,0 +1,171 @@
++'use strict';
++
++/**
++ * PR-monitor Actions-summary renderer. It turns one read-only
++ * `gatherPrBundle` result (lib/pr-bundle.js) into deterministic Markdown for
++ * the workflow's `GITHUB_STEP_SUMMARY` surface.
++ *
++ * This is presentation only: it displays the canonical verdict supplied by
++ * `forge shepherd <pr> --pull --json`, lists unresolved review threads and CI
++ * state, and never merges or resolves anything. The `pr-verdict:*` label is a
++ * cheap visibility projection of that same verdict, not merge authority.
++ *
++ * @module pr-monitor/render-summary
++ */
++
++/**
++ * Presentation-only headline for each canonical merge verdict (lib/pr-pull.js).
++ * The verdict is computed once by pr-pull and passed in; this map only decides
++ * how it is displayed, so there is no second verdict ladder to drift.
++ */
++const VERDICT_HEADLINE = {
++  UNKNOWN: '⚪ **Verdict: `unknown`** — a signal was unreadable; state unconfirmed (fail-closed).',
++  'BLOCKED-CONFLICT': '🔀 **Verdict: `blocked-conflict`** — branch conflicts with base; rebase/merge and resolve.',
++  BEHIND: '⬇️ **Verdict: `behind`** — branch is behind base; update/rebase (protection requires up-to-date).',
++  'BLOCKED-CHECKS': '🔴 **Verdict: `blocked-checks`** — a required check is failing/missing; fix it.',
++  'BLOCKED-THREADS': '🟠 **Verdict: `blocked-threads`** — unresolved review threads need addressing.',
++  'REVIEW-PENDING': '🟡 **Verdict: `review-pending`** — awaiting review / settle window; not ready yet.',
++  'CLEAN-MERGEABLE': '🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.',
++};
++
++/** Render the one-line headline for a canonical verdict, failing closed. */
++function verdictHeadline(verdict) {
++  return VERDICT_HEADLINE[String(verdict || '').toUpperCase()] || VERDICT_HEADLINE.UNKNOWN;
++}
++
++/** Cap threads listed per author so a noisy PR cannot produce an enormous summary. */
++const MAX_THREADS_PER_AUTHOR = 8;
++
++/** Group unresolved review-thread comments by author in deterministic order. */
++function groupByAuthor(comments) {
++  const byAuthor = new Map();
++  for (const comment of (Array.isArray(comments) ? comments : [])) {
++    const author = String(comment.author || 'unknown');
++    if (!byAuthor.has(author)) byAuthor.set(author, []);
++    byAuthor.get(author).push(comment);
++  }
++  return [...byAuthor.entries()].sort(
++    (a, b) => (b[1].length - a[1].length) || a[0].localeCompare(b[0]),
++  );
++}
++
++/** One-line locator for a thread: `path:line` when known, else its id. */
++function threadLocator(thread) {
++  if (thread.path) return thread.line != null ? `${thread.path}:${thread.line}` : thread.path;
++  return thread.threadId || '(thread)';
++}
++
++/** Render unresolved review threads, preserving fail-closed availability. */
++function renderThreads(bundle, lines) {
++  // Empty arrays are ambiguous when the adapter could not read comments. Only
++  // an explicit available:true read may report zero unresolved threads.
++  if (bundle.unresolvedCommentsAvailable !== true) {
++    const why = bundle.unresolvedCommentsError || 'thread read unavailable (capability absent)';
++    lines.push('### Review threads');
++    lines.push(`⚠️ Review threads were **unreadable** this pass (\`${why}\`) — not treated as zero. Re-run once the read recovers.`);
++    lines.push('');
++    return;
++  }
++
++  const comments = Array.isArray(bundle.unresolvedComments) ? bundle.unresolvedComments : [];
++  if (comments.length === 0) {
++    lines.push('### Review threads');
++    lines.push('✅ No unresolved review threads.');
++    lines.push('');
++    return;
++  }
++
++  const groups = groupByAuthor(comments);
++  lines.push(`### Unresolved review threads (${comments.length})`);
++  lines.push('');
++  for (const [author, threads] of groups) {
++    lines.push(`- **${author}** — ${threads.length}`);
++    for (const thread of threads.slice(0, MAX_THREADS_PER_AUTHOR)) {
++      lines.push(`  - \`${threadLocator(thread)}\``);
++    }
++    if (threads.length > MAX_THREADS_PER_AUTHOR) {
++      lines.push(`  - …and ${threads.length - MAX_THREADS_PER_AUTHOR} more`);
++    }
++  }
++  lines.push('');
++}
++
++/** Render failing and pending checks, preserving fail-closed availability. */
++function renderChecks(bundle, lines) {
++  // Only ciAvailable:true permits a clean-check claim. Missing or false means
++  // the read did not complete, so empty arrays must not look green.
++  if (bundle.ciAvailable !== true) {
++    lines.push('### Checks');
++    lines.push('⚠️ Checks were **unreadable** this pass — not treated as green. Re-run once the read recovers.');
++    lines.push('');
++    return;
++  }
++
++  const ci = bundle.ci || {};
++  const failing = Array.isArray(ci.failing) ? ci.failing : [];
++  const pending = Array.isArray(ci.pending) ? ci.pending : [];
++  lines.push('### Checks');
++  if (failing.length === 0 && pending.length === 0) {
++    lines.push('✅ No failing or pending checks.');
++  } else {
++    if (failing.length > 0) {
++      lines.push(`- ❌ **Failing (${failing.length}):** ${failing.map((check) => `\`${check.name || '?'}\``).join(', ')}`);
++    }
++    if (pending.length > 0) {
++      lines.push(`- ⏳ **Pending (${pending.length}):** ${pending.map((check) => `\`${check.name || '?'}\``).join(', ')}`);
++    }
++  }
++  lines.push('');
++}
++
++/**
++ * Render the PR monitor's Actions job summary.
++ *
++ * @param {object} bundle - a `gatherPrBundle` result (lib/pr-bundle.js)
++ * @param {object} [opts]
++ * @param {Date} [opts.now] - injected clock for deterministic output
++ * @param {string} [opts.verdict] - canonical `--pull` verdict
++ * @param {string[]} [opts.unreadable] - unreadable signal names from `--pull`
++ * @param {string|number} [opts.pr] - PR number for the CLI diagnostics hint
++ * @returns {{ body: string }}
++ */
++function renderSummary(bundle = {}, opts = {}) {
++  const now = opts.now instanceof Date ? opts.now : new Date();
++  const lines = ['## 🔭 Forge PR Monitor', ''];
++  const verdict = String(opts.verdict || '').toUpperCase();
++  const isUnknown = verdict === 'UNKNOWN' || !VERDICT_HEADLINE[verdict];
++  const unreadable = Array.isArray(opts.unreadable) ? opts.unreadable.filter(Boolean) : [];
++
++  lines.push(verdictHeadline(opts.verdict));
++  if (isUnknown && unreadable.length > 0) {
++    lines.push('');
++    lines.push(`> Unreadable signal(s): ${unreadable.map((signal) => `\`${signal}\``).join(', ')}.`);
++  }
++  lines.push('');
++  lines.push('_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._');
++  lines.push('');
++
++  renderThreads(bundle, lines);
++  renderChecks(bundle, lines);
++
++  const branch = bundle.branch || {};
++  if ((branch.behind || 0) > 0) {
++    lines.push(`> Branch is **${branch.behind}** commit(s) behind base.`);
++    lines.push('');
++  }
++
++  const pr = opts.pr || bundle.pr || '<pr>';
++  lines.push('---');
++  lines.push(`Detailed JSON: \`forge shepherd ${pr} --pull --json\``);
++  lines.push(`_Updated ${now.toISOString()} · summary-only monitor · labels state, never merges, never resolves threads._`);
++
++  return { body: lines.join('\n') };
++}
++
++module.exports = {
++  renderSummary,
++  verdictHeadline,
++  groupByAuthor,
++  threadLocator,
++  MAX_THREADS_PER_AUTHOR,
++};
+diff --git a/lib/pr-monitor/upsert-sticky.js b/lib/pr-monitor/upsert-sticky.js
+deleted file mode 100644
+index 3f66be16..00000000
+--- a/lib/pr-monitor/upsert-sticky.js
++++ /dev/null
+@@ -1,169 +0,0 @@
+-'use strict';
+-
+-/**
+- * PR-monitor sticky-comment upsert — race-safe, converges to EXACTLY ONE sticky
+- * comment per PR even under a concurrent burst of workflow runs.
+- *
+- * Why this exists: the pr-monitor workflow deliberately has NO `concurrency:`
+- * group. A per-PR group does not help — GitHub's queue replacement cancels the
+- * previously-PENDING run in a group UNCONDITIONALLY (independent of
+- * cancel-in-progress), and this workflow's triggers (check_suite:completed fires
+- * ~10+ times per push, plus reviews/comments) burst hard, so a group left a trail
+- * of CANCELLED runs that render as red/non-SUCCESS checks and tripped merge-gate
+- * tooling (kernel issue 97e6a146). Dropping the group removes the cancellations,
+- * but then two concurrent first-runs on a PR with no sticky yet would BOTH find
+- * nothing and BOTH create one → duplicate sticky comments. This module closes
+- * that race deterministically instead.
+- *
+- * Reconcile-to-one algorithm:
+- *   1. List marker comments. If none, create one, then RE-LIST (a concurrent run
+- *      may have created its own in the same burst).
+- *   2. Pick the deterministic survivor: the LOWEST comment id (oldest). Every
+- *      concurrent run picks the SAME survivor, so they never fight.
+- *   3. Update the survivor with the latest body; delete every other marker
+- *      comment. Deletes are idempotent (a 404 means a peer already removed it).
+- *
+- * A create that lands AFTER a run's re-list is self-healed by the next event:
+- * every run reconciles to one, and events keep arriving, so the PR converges to a
+- * single sticky comment.
+- *
+- * @module pr-monitor/upsert-sticky
+- */
+-
+-const { execFileSync } = require('node:child_process');
+-
+-/** Ids of comments whose body carries the sticky marker. */
+-function markerCommentIds(comments, marker) {
+-  return (Array.isArray(comments) ? comments : [])
+-    .filter((comment) => typeof comment.body === 'string' && comment.body.includes(marker))
+-    .map((comment) => comment.id);
+-}
+-
+-/** Ascending by numeric id, so the survivor (index 0) is the oldest comment. */
+-function sortIdsAscending(ids) {
+-  return [...ids].sort((left, right) => Number(left) - Number(right));
+-}
+-
+-/**
+- * Drive a client to exactly one sticky comment. `client` abstracts the GitHub
+- * calls so the reconcile logic is unit-testable without the network:
+- *   - list()        → array of { id, body }
+- *   - create()      → create a new sticky comment (body supplied by the client)
+- *   - update(id)    → overwrite comment `id` with the latest body
+- *   - remove(id)    → delete comment `id` (must tolerate an already-deleted 404)
+- *
+- * @returns {Promise<{ survivor: (number|string|null), deleted: Array<number|string> }>}
+- */
+-async function upsertStickyComment({ marker }, client) {
+-  let ids = markerCommentIds(await client.list(), marker);
+-
+-  if (ids.length === 0) {
+-    await client.create();
+-    // Re-list: a concurrent run may have created its own sticky in this burst.
+-    ids = markerCommentIds(await client.list(), marker);
+-  }
+-
+-  if (ids.length === 0) {
+-    // The just-created comment is not visible yet (eventual consistency); its
+-    // body is already correct, and the next event will reconcile if a peer raced.
+-    return { survivor: null, deleted: [] };
+-  }
+-
+-  ids = sortIdsAscending(ids);
+-  const survivor = ids[0];
+-  await client.update(survivor);
+-
+-  const deleted = [];
+-  for (const id of ids.slice(1)) {
+-    await client.remove(id);
+-    deleted.push(id);
+-  }
+-
+-  return { survivor, deleted };
+-}
+-
+-// Single choke point for the `gh` CLI, matching lib/commands/merge.js. `gh` is a
+-// hardcoded literal (never user input) and args are an array (no shell), so the
+-// S4036 PATH-search finding is a false positive in this developer-tool context;
+-// one annotation here covers every call site. `encoding: 'utf8'` also pipes
+-// stderr onto the thrown error, so isAlreadyGone() below can classify failures.
+-function runGh(args) {
+-  return execFileSync('gh', args, { encoding: 'utf8', windowsHide: true }); // NOSONAR S4036 - hardcoded CLI (gh), args array (no shell), developer-tool context. windowsHide: sticky upsert runs in the detached watcher (issue 931e7924).
+-}
+-
+-/**
+- * True only when a `gh api` failure means the target comment is already absent
+- * (HTTP 404 / 410) — the benign "a peer got there first" case. Auth failures,
+- * rate limits (403), and every other error return false so they propagate and
+- * surface a diagnostic instead of silently breaking the exactly-one invariant.
+- */
+-function isAlreadyGone(error) {
+-  const text = `${error && error.stderr ? error.stderr : ''} ${error && error.message ? error.message : ''}`;
+-  return /HTTP 404|HTTP 410|\bNot Found\b|\bGone\b/i.test(text);
+-}
+-
+-/**
+- * GitHub-backed client (shells to `gh api`, like lib/pr-monitor/gather.js). The
+- * reconcile logic above is unit-tested; the error-tolerance in update/remove is
+- * too, via an injectable `run`. create/update both send the same pre-rendered
+- * payload file the render step wrote, so the body is identical.
+- */
+-function ghStickyClient({ repo, pr, payloadFile, run = runGh }) {
+-  return {
+-    async list() {
+-      const out = run(['api', `repos/${repo}/issues/${pr}/comments`, '--paginate']);
+-      return out && out.trim() ? JSON.parse(out) : [];
+-    },
+-    async create() {
+-      run(['api', '-X', 'POST', `repos/${repo}/issues/${pr}/comments`, '--input', payloadFile]);
+-    },
+-    async update(id) {
+-      try {
+-        run(['api', '-X', 'PATCH', `repos/${repo}/issues/comments/${id}`, '--input', payloadFile]);
+-      } catch (error) {
+-        if (!isAlreadyGone(error)) {
+-          throw error;
+-        }
+-        // Our chosen survivor was deleted by a peer whose survivor had a lower id:
+-        // the peer's sticky wins, exactly-one still holds, so we are done.
+-      }
+-    },
+-    async remove(id) {
+-      try {
+-        run(['api', '-X', 'DELETE', `repos/${repo}/issues/comments/${id}`]);
+-      } catch (error) {
+-        if (!isAlreadyGone(error)) {
+-          throw error;
+-        }
+-        // Already gone (a concurrent run deleted it first) — the goal state holds.
+-      }
+-    },
+-  };
+-}
+-
+-async function main() {
+-  const repo = process.env.GH_REPO;
+-  const pr = process.env.PR;
+-  const payloadFile = process.env.STICKY_PAYLOAD_FILE || 'monitor-payload.json';
+-  const { STICKY_MARKER } = require('./render-sticky');
+-
+-  const client = ghStickyClient({ repo, pr, payloadFile });
+-  const { survivor, deleted } = await upsertStickyComment({ marker: STICKY_MARKER }, client);
+-  const survivorLabel = survivor === null ? 'created (not yet visible)' : survivor;
+-  console.log(`Sticky comment reconciled to one: survivor=${survivorLabel}, deleted=${deleted.length}`);
+-}
+-
+-if (require.main === module) {
+-  main().catch((error) => {
+-    console.error(error.message);
+-    process.exit(1);
+-  });
+-}
+-
+-module.exports = {
+-  upsertStickyComment,
+-  markerCommentIds,
+-  sortIdsAscending,
+-  isAlreadyGone,
+-  ghStickyClient,
+-};
+diff --git a/test/pr-monitor/render-sticky.test.js b/test/pr-monitor/render-sticky.test.js
+deleted file mode 100644
+index d89108ff..00000000
+--- a/test/pr-monitor/render-sticky.test.js
++++ /dev/null
+@@ -1,168 +0,0 @@
+-'use strict';
+-
+-const { describe, test, expect } = require('bun:test');
+-
+-const {
+-  renderStickyComment,
+-  STICKY_MARKER,
+-} = require('../../lib/pr-monitor/render-sticky');
+-
+-/**
+- * Build a minimal bundle in the exact shape gatherPrBundle emits
+- * (see lib/pr-bundle.js). Only the fields the sticky renderer reads are
+- * required; overrides let each test isolate one surface.
+- */
+-function makeBundle(overrides = {}) {
+-  return {
+-    pr: '123',
+-    owner: 'acme',
+-    repo: 'forge',
+-    unresolvedComments: [],
+-    unresolvedCommentsAvailable: true,
+-    unresolvedCommentsError: null,
+-    mergeState: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', state: 'OPEN' },
+-    ciAvailable: true,
+-    ci: { checks: [], failing: [], pending: [] },
+-    branch: { ahead: 1, behind: 0 },
+-    conflicts: { supported: true, conflicted: false },
+-    ...overrides,
+-  };
+-}
+-
+-const NOW = new Date('2026-07-15T10:00:00Z');
+-
+-describe('renderStickyComment', () => {
+-  test('body begins with the hidden sticky marker so it can be updated in place', () => {
+-    const { body, marker } = renderStickyComment(makeBundle(), { now: NOW });
+-    expect(marker).toBe(STICKY_MARKER);
+-    expect(body.startsWith(STICKY_MARKER)).toBe(true);
+-  });
+-
+-  test('an UNKNOWN verdict names which signal(s) were unreadable', () => {
+-    // A bare `unknown` verdict is useless on the PR — the sticky must say WHICH
+-    // signal was unreadable so a human/agent knows what to fix (the fallback's
+-    // whole point is that requiredChecks should no longer be permanently unknown).
+-    const { body } = renderStickyComment(makeBundle(), {
+-      now: NOW,
+-      verdict: 'UNKNOWN',
+-      unreadable: ['requiredChecks'],
+-    });
+-    expect(body).toContain('requiredChecks');
+-    expect(body).toMatch(/[Uu]nreadable/);
+-  });
+-
+-  test('groups unresolved threads BY AUTHOR across all authors (agnostic)', () => {
+-    const bundle = makeBundle({
+-      unresolvedComments: [
+-        { author: 'coderabbitai', path: 'a.js', line: 4, body: 'nit', threadId: 'T1', comments: [] },
+-        { author: 'coderabbitai', path: 'b.js', line: 9, body: 'fix', threadId: 'T2', comments: [] },
+-        { author: 'greptile-apps', path: 'c.js', line: 2, body: 'leak', threadId: 'T3', comments: [] },
+-        { author: 'a-human', path: 'd.js', line: null, body: 'change', threadId: 'T4', comments: [] },
+-      ],
+-    });
+-    const { body } = renderStickyComment(bundle, { now: NOW });
+-    // total surfaced
+-    expect(body).toContain('4');
+-    // every author is surfaced, none privileged
+-    expect(body).toContain('coderabbitai');
+-    expect(body).toContain('greptile-apps');
+-    expect(body).toContain('a-human');
+-    // per-author count for the author with two threads
+-    expect(body).toMatch(/coderabbitai[^\n]*2/);
+-  });
+-
+-  test('lists failing and pending checks by name', () => {
+-    const bundle = makeBundle({
+-      ci: {
+-        checks: [],
+-        failing: [{ name: 'unit' }, { name: 'lint' }],
+-        pending: [{ name: 'bench' }],
+-      },
+-    });
+-    const { body } = renderStickyComment(bundle, { now: NOW });
+-    expect(body).toContain('unit');
+-    expect(body).toContain('lint');
+-    expect(body).toContain('bench');
+-  });
+-
+-  test('unreadable review threads are surfaced as degraded, never as zero', () => {
+-    const bundle = makeBundle({
+-      unresolvedComments: [],
+-      unresolvedCommentsAvailable: false,
+-      unresolvedCommentsError: 'GraphQL 502',
+-    });
+-    const { body } = renderStickyComment(bundle, { now: NOW });
+-    expect(body.toLowerCase()).toContain('unreadable');
+-    expect(body).toContain('GraphQL 502');
+-    // must NOT claim a clean/zero state on unreadable data
+-    expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+-  });
+-
+-  test('unread CI (ciAvailable false) renders degraded, never a false "no failing checks"', () => {
+-    // Mirror of the thread bypass on the CHECK side: on a gather outage the
+-    // fallback bundle carries empty ci arrays. Without a guard renderChecks would
+-    // print "No failing or pending checks" for CI that was NEVER read — a literal
+-    // false-green claim in the monitor's own output.
+-    const bundle = makeBundle({ ciAvailable: false, ci: { checks: [], failing: [], pending: [] } });
+-    const { body } = renderStickyComment(bundle, { now: NOW });
+-    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
+-    expect(body.toLowerCase()).toContain('checks were **unreadable**'.toLowerCase());
+-  });
+-
+-  test('CI with a missing availability flag is treated as unread (producer-proof, fail-closed)', () => {
+-    const bundle = makeBundle();
+-    delete bundle.ciAvailable;
+-    const { body } = renderStickyComment(bundle, { now: NOW });
+-    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
+-    expect(body.toLowerCase()).toContain('unreadable');
+-  });
+-
+-  test('unavailable thread read with NO error string (capability absent) still renders degraded, never zero', () => {
+-    // The bypass: gatherUnresolvedComments returns { available:false, error:null }
+-    // when the adapter cannot read comments at all. A guard that also required a
+-    // truthy error would fall through to the empty-list "clean" render — a
+-    // misleading zero on data we genuinely could not read.
+-    const bundle = makeBundle({
+-      unresolvedComments: [],
+-      unresolvedCommentsAvailable: false,
+-      unresolvedCommentsError: null,
+-    });
+-    const { body } = renderStickyComment(bundle, { now: NOW });
+-    expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+-    expect(body.toLowerCase()).toContain('unreadable');
+-  });
+-
+-  test('leads with the actionable verdict headline from the passed-in --pull verdict', () => {
+-    // The verdict VALUE comes from pr-pull (opts.verdict); render-sticky only displays it.
+-    const cleanBody = renderStickyComment(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' }).body;
+-    expect(cleanBody).toContain('Verdict:');
+-    expect(cleanBody).toContain('clean-mergeable');
+-    const failBody = renderStickyComment(
+-      makeBundle({ ci: { checks: [], failing: [{ name: 'unit' }], pending: [] } }),
+-      { now: NOW, verdict: 'BLOCKED-CHECKS' },
+-    ).body;
+-    expect(failBody).toContain('blocked-checks');
+-    expect(failBody).toContain('unit'); // failing check is still named in the Checks section
+-  });
+-
+-  test('a missing verdict falls closed to the unknown headline', () => {
+-    const body = renderStickyComment(makeBundle(), { now: NOW }).body;
+-    expect(body).toContain('unknown');
+-  });
+-
+-  test('surfaces state but never a MERGE action — labels only, never merges/approves', () => {
+-    const { body } = renderStickyComment(makeBundle(), { now: NOW });
+-    expect(body.toLowerCase()).toContain('no unresolved review threads');
+-    // honest guarantee: it labels state but never claims to have merged/approved
+-    expect(body.toLowerCase()).not.toContain('approved');
+-    expect(body).not.toContain('✅ Ready to merge');
+-    expect(body.toLowerCase()).toContain('does not merge');
+-    expect(body.toLowerCase()).toContain('never resolves review threads');
+-  });
+-
+-  test('output is deterministic for a fixed clock', () => {
+-    const a = renderStickyComment(makeBundle(), { now: NOW }).body;
+-    const b = renderStickyComment(makeBundle(), { now: NOW }).body;
+-    expect(a).toBe(b);
+-  });
+-});
+diff --git a/test/pr-monitor/render-summary.test.js b/test/pr-monitor/render-summary.test.js
+new file mode 100644
+index 00000000..f491ce0a
+--- /dev/null
++++ b/test/pr-monitor/render-summary.test.js
+@@ -0,0 +1,124 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const { renderSummary } = require('../../lib/pr-monitor/render-summary');
++
++/**
++ * Build a minimal bundle in the exact shape gatherPrBundle emits
++ * (see lib/pr-bundle.js). Only the fields the summary renderer reads are
++ * required; overrides let each test isolate one surface.
++ */
++function makeBundle(overrides = {}) {
++  return {
++    pr: '123',
++    owner: 'acme',
++    repo: 'forge',
++    unresolvedComments: [],
++    unresolvedCommentsAvailable: true,
++    unresolvedCommentsError: null,
++    mergeState: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', state: 'OPEN' },
++    ciAvailable: true,
++    ci: { checks: [], failing: [], pending: [] },
++    branch: { ahead: 1, behind: 0 },
++    conflicts: { supported: true, conflicted: false },
++    ...overrides,
++  };
++}
++
++const NOW = new Date('2026-07-15T10:00:00Z');
++
++describe('renderSummary', () => {
++  test('renders a deterministic Actions summary without a sticky marker or comment API language', () => {
++    const { body } = renderSummary(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
++    expect(body).toContain('Forge PR Monitor');
++    expect(body).toContain('clean-mergeable');
++    expect(body).toContain('Updated 2026-07-15T10:00:00.000Z');
++    expect(body).not.toContain('<!-- forge-pr-monitor -->');
++    expect(body.toLowerCase()).not.toContain('sticky comment');
++    expect(body.toLowerCase()).toContain('does not merge');
++  });
++
++  test('an UNKNOWN verdict names which signal(s) were unreadable', () => {
++    const { body } = renderSummary(makeBundle(), {
++      now: NOW,
++      verdict: 'UNKNOWN',
++      unreadable: ['requiredChecks'],
++    });
++    expect(body).toContain('requiredChecks');
++    expect(body).toMatch(/[Uu]nreadable/);
++  });
++
++  test('groups unresolved threads BY AUTHOR across all authors (agnostic)', () => {
++    const bundle = makeBundle({
++      unresolvedComments: [
++        { author: 'coderabbitai', path: 'a.js', line: 4, body: 'nit', threadId: 'T1', comments: [] },
++        { author: 'coderabbitai', path: 'b.js', line: 9, body: 'fix', threadId: 'T2', comments: [] },
++        { author: 'greptile-apps', path: 'c.js', line: 2, body: 'leak', threadId: 'T3', comments: [] },
++        { author: 'a-human', path: 'd.js', line: null, body: 'change', threadId: 'T4', comments: [] },
++      ],
++    });
++    const { body } = renderSummary(bundle, { now: NOW });
++    expect(body).toContain('4');
++    expect(body).toContain('coderabbitai');
++    expect(body).toContain('greptile-apps');
++    expect(body).toContain('a-human');
++    expect(body).toMatch(/coderabbitai[^\n]*2/);
++  });
++
++  test('lists failing and pending checks by name', () => {
++    const bundle = makeBundle({
++      ci: {
++        checks: [],
++        failing: [{ name: 'unit' }, { name: 'lint' }],
++        pending: [{ name: 'bench' }],
++      },
++    });
++    const { body } = renderSummary(bundle, { now: NOW });
++    expect(body).toContain('unit');
++    expect(body).toContain('lint');
++    expect(body).toContain('bench');
++  });
++
++  test('unreadable review threads are surfaced as degraded, never as zero', () => {
++    const bundle = makeBundle({
++      unresolvedComments: [],
++      unresolvedCommentsAvailable: false,
++      unresolvedCommentsError: 'GraphQL 502',
++    });
++    const { body } = renderSummary(bundle, { now: NOW });
++    expect(body.toLowerCase()).toContain('unreadable');
++    expect(body).toContain('GraphQL 502');
++    expect(body.toLowerCase()).not.toContain('no unresolved review threads');
++  });
++
++  test('unread CI never renders a false clean check state', () => {
++    const bundle = makeBundle({ ciAvailable: false, ci: { checks: [], failing: [], pending: [] } });
++    const { body } = renderSummary(bundle, { now: NOW });
++    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
++    expect(body.toLowerCase()).toContain('checks were **unreadable**'.toLowerCase());
++  });
++
++  test('missing availability flags remain fail-closed', () => {
++    const bundle = makeBundle();
++    delete bundle.ciAvailable;
++    delete bundle.unresolvedCommentsAvailable;
++    const { body } = renderSummary(bundle, { now: NOW });
++    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
++    expect(body.toLowerCase()).not.toContain('no unresolved review threads');
++    expect(body.toLowerCase()).toContain('unreadable');
++  });
++
++  test('surfaces branch lag and never presents merge authority', () => {
++    const { body } = renderSummary(makeBundle({ branch: { ahead: 0, behind: 2 } }), { now: NOW });
++    expect(body).toContain('2');
++    expect(body.toLowerCase()).toContain('does not merge');
++    expect(body.toLowerCase()).not.toContain('approved');
++  });
++
++  test('output is deterministic for a fixed clock', () => {
++    const a = renderSummary(makeBundle(), { now: NOW }).body;
++    const b = renderSummary(makeBundle(), { now: NOW }).body;
++    expect(a).toBe(b);
++  });
++});
+diff --git a/test/pr-monitor/upsert-sticky.test.js b/test/pr-monitor/upsert-sticky.test.js
+deleted file mode 100644
+index edea8e90..00000000
+--- a/test/pr-monitor/upsert-sticky.test.js
++++ /dev/null
+@@ -1,245 +0,0 @@
+-'use strict';
+-
+-const { describe, expect, test } = require('bun:test');
+-const fs = require('node:fs');
+-const path = require('node:path');
+-const yaml = require('js-yaml');
+-
+-const {
+-  upsertStickyComment,
+-  markerCommentIds,
+-  sortIdsAscending,
+-  isAlreadyGone,
+-  ghStickyClient,
+-} = require('../../lib/pr-monitor/upsert-sticky');
+-
+-const MARKER = '<!-- forge-pr-monitor -->';
+-
+-// An in-memory GitHub comments store. `listQueue`, when provided, lets a test
+-// script successive list() results to simulate a comment appearing between the
+-// first list and the post-create re-list (the concurrent-burst race).
+-function makeClient({ initial = [], listQueue = null, createId = null } = {}) {
+-  const store = new Map(initial.map((comment) => [comment.id, { ...comment }]));
+-  let nextId = (initial.reduce((max, comment) => Math.max(max, Number(comment.id)), 100)) + 1;
+-  const calls = { create: 0, update: [], remove: [] };
+-  let listCall = 0;
+-
+-  return {
+-    store,
+-    calls,
+-    async list() {
+-      listCall += 1;
+-      if (listQueue && listQueue[listCall - 1]) {
+-        // Materialize the scripted snapshot into the store so later deletes/updates hit it.
+-        for (const comment of listQueue[listCall - 1]) {
+-          if (!store.has(comment.id)) {
+-            store.set(comment.id, { ...comment });
+-          }
+-        }
+-        return listQueue[listCall - 1].map((comment) => ({ ...store.get(comment.id) }));
+-      }
+-      return [...store.values()].map((comment) => ({ ...comment }));
+-    },
+-    async create() {
+-      calls.create += 1;
+-      const id = createId !== null ? createId : nextId++;
+-      store.set(id, { id, body: `${MARKER}\nfresh` });
+-    },
+-    async update(id) {
+-      calls.update.push(id);
+-      const existing = store.get(id);
+-      if (existing) {
+-        existing.body = `${MARKER}\nupdated`;
+-      }
+-    },
+-    async remove(id) {
+-      calls.remove.push(id);
+-      store.delete(id);
+-    },
+-  };
+-}
+-
+-function markerCount(client) {
+-  return [...client.store.values()].filter((comment) => comment.body.includes(MARKER)).length;
+-}
+-
+-describe('pr-monitor upsert-sticky reconcile-to-one', () => {
+-  test('creates exactly one sticky when the PR has none', async () => {
+-    const client = makeClient({ initial: [] });
+-
+-    const result = await upsertStickyComment({ marker: MARKER }, client);
+-
+-    expect(client.calls.create).toBe(1);
+-    expect(markerCount(client)).toBe(1);
+-    expect(result.deleted).toEqual([]);
+-  });
+-
+-  test('updates the single existing sticky in place (no create, no delete)', async () => {
+-    const client = makeClient({ initial: [{ id: 100, body: `${MARKER}\nold` }] });
+-
+-    const result = await upsertStickyComment({ marker: MARKER }, client);
+-
+-    expect(client.calls.create).toBe(0);
+-    expect(client.calls.update).toEqual([100]);
+-    expect(client.calls.remove).toEqual([]);
+-    expect(markerCount(client)).toBe(1);
+-    expect(result.survivor).toBe(100);
+-  });
+-
+-  test('a comment that appears between list and create collapses to exactly one', async () => {
+-    // First list: empty → this run creates. Re-list: TWO markers exist (a
+-    // concurrent run created id 205 while this run created id 206). The run must
+-    // keep the deterministic lowest-id survivor and delete the rest.
+-    const client = makeClient({
+-      createId: 206, // this run's own create
+-      listQueue: [
+-        [], // initial list — nothing yet
+-        [
+-          { id: 205, body: `${MARKER}\npeer` }, // peer created concurrently
+-          { id: 206, body: `${MARKER}\nfresh` }, // this run's create, now visible
+-        ], // re-list after create — both present
+-      ],
+-    });
+-
+-    const result = await upsertStickyComment({ marker: MARKER }, client);
+-
+-    expect(client.calls.create).toBe(1);
+-    expect(result.survivor).toBe(205); // lowest id wins deterministically
+-    expect(client.calls.update).toEqual([205]);
+-    expect(client.calls.remove).toEqual([206]);
+-    expect(markerCount(client)).toBe(1);
+-  });
+-
+-  test('collapses multiple pre-existing stickies to one (self-heal)', async () => {
+-    const client = makeClient({
+-      initial: [
+-        { id: 300, body: `${MARKER}\na` },
+-        { id: 301, body: `${MARKER}\nb` },
+-        { id: 302, body: `${MARKER}\nc` },
+-      ],
+-    });
+-
+-    const result = await upsertStickyComment({ marker: MARKER }, client);
+-
+-    expect(client.calls.create).toBe(0);
+-    expect(result.survivor).toBe(300);
+-    expect(client.calls.remove.sort()).toEqual([301, 302]);
+-    expect(markerCount(client)).toBe(1);
+-  });
+-
+-  test('ignores non-marker comments when reconciling', async () => {
+-    const client = makeClient({
+-      initial: [
+-        { id: 400, body: 'a normal human comment' },
+-        { id: 401, body: `${MARKER}\nsticky` },
+-      ],
+-    });
+-
+-    await upsertStickyComment({ marker: MARKER }, client);
+-
+-    expect(client.calls.remove).toEqual([]);
+-    expect(client.store.has(400)).toBe(true);
+-    expect(markerCount(client)).toBe(1);
+-  });
+-
+-  test('markerCommentIds + sortIdsAscending select the oldest marker id', () => {
+-    const ids = markerCommentIds(
+-      [
+-        { id: 9, body: 'nope' },
+-        { id: 12, body: `x ${MARKER} y` },
+-        { id: 7, body: `${MARKER}` },
+-      ],
+-      MARKER,
+-    );
+-    expect(sortIdsAscending(ids)).toEqual([7, 12]);
+-  });
+-});
+-
+-describe('pr-monitor sticky client error tolerance (only already-gone is benign)', () => {
+-  // A gh error mimicking execFileSync's shape: non-zero exit + stderr text.
+-  function ghError(stderr) {
+-    const err = new Error('Command failed: gh api');
+-    err.stderr = stderr;
+-    return err;
+-  }
+-
+-  test('isAlreadyGone classifies 404/410 as benign, real errors as not', () => {
+-    expect(isAlreadyGone(ghError('gh: Not Found (HTTP 404)'))).toBe(true);
+-    expect(isAlreadyGone(ghError('HTTP 410: Gone'))).toBe(true);
+-    // Auth failures, rate limits, and generic errors must NOT be swallowed.
+-    expect(isAlreadyGone(ghError('gh: Bad credentials (HTTP 401)'))).toBe(false);
+-    expect(isAlreadyGone(ghError('HTTP 403: rate limit exceeded'))).toBe(false);
+-    expect(isAlreadyGone(ghError('HTTP 500: server error'))).toBe(false);
+-    expect(isAlreadyGone(new Error('socket hang up'))).toBe(false);
+-  });
+-
+-  test('remove() swallows an already-gone 404 but rethrows a real error', async () => {
+-    const gone = ghStickyClient({
+-      repo: 'o/r',
+-      pr: '1',
+-      run: () => { throw ghError('gh: Not Found (HTTP 404)'); },
+-    });
+-    await expect(gone.remove(9)).resolves.toBeUndefined();
+-
+-    const auth = ghStickyClient({
+-      repo: 'o/r',
+-      pr: '1',
+-      run: () => { throw ghError('gh: Bad credentials (HTTP 401)'); },
+-    });
+-    let caught;
+-    try { await auth.remove(9); } catch (error) { caught = error; }
+-    expect(caught).toBeDefined();
+-    expect(String(caught.stderr)).toContain('401');
+-  });
+-
+-  test('update() tolerates a 404 (peer won the survivor) but rethrows a real error', async () => {
+-    const gone = ghStickyClient({
+-      repo: 'o/r',
+-      pr: '1',
+-      payloadFile: 'p.json',
+-      run: () => { throw ghError('HTTP 404: Not Found'); },
+-    });
+-    await expect(gone.update(9)).resolves.toBeUndefined();
+-
+-    const rate = ghStickyClient({
+-      repo: 'o/r',
+-      pr: '1',
+-      payloadFile: 'p.json',
+-      run: () => { throw ghError('HTTP 403: rate limit exceeded'); },
+-    });
+-    let caught;
+-    try { await rate.update(9); } catch (error) { caught = error; }
+-    expect(caught).toBeDefined();
+-    expect(String(caught.stderr)).toContain('403');
+-  });
+-});
+-
+-describe('pr-monitor workflow has no concurrency group', () => {
+-  test('pr-monitor.yml declares no concurrency block (avoids GitHub run cancellations)', () => {
+-    const yml = fs.readFileSync(
+-      path.resolve(__dirname, '..', '..', '.github', 'workflows', 'pr-monitor.yml'),
+-      'utf8',
+-    );
+-    const doc = yaml.load(yml);
+-    // A `concurrency:` group would leave a trail of CANCELLED runs (red checks);
+-    // the race it used to guard is now handled by upsert reconcile-to-one. Assert
+-    // on the PARSED workflow, not raw text, so the top-of-file comment explaining
+-    // the absence (which mentions the words) doesn't produce a false match.
+-    expect(Object.prototype.hasOwnProperty.call(doc, 'concurrency')).toBe(false);
+-    // The race-safe upsert must actually be wired into a run step.
+-    const steps = doc.jobs.monitor.steps.flatMap((step) => (step.run ? [step.run] : []));
+-    expect(steps.some((run) => run.includes('lib/pr-monitor/upsert-sticky.js'))).toBe(true);
+-  });
+-
+-  test('the sticky-upsert step is best-effort (continue-on-error) so a transient gh failure is not a red check', () => {
+-    const doc = yaml.load(fs.readFileSync(
+-      path.resolve(__dirname, '..', '..', '.github', 'workflows', 'pr-monitor.yml'),
+-      'utf8',
+-    ));
+-    const upsertStep = doc.jobs.monitor.steps.find(
+-      (step) => typeof step.run === 'string' && step.run.includes('lib/pr-monitor/upsert-sticky.js'),
+-    );
+-    expect(upsertStep).toBeDefined();
+-    expect(upsertStep['continue-on-error']).toBe(true);
+-  });
+-});
+diff --git a/test/pr-monitor/workflow.test.js b/test/pr-monitor/workflow.test.js
+new file mode 100644
+index 00000000..11f2f033
+--- /dev/null
++++ b/test/pr-monitor/workflow.test.js
+@@ -0,0 +1,82 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++const yaml = require('js-yaml');
++
++const ROOT = path.resolve(__dirname, '..', '..');
++const WORKFLOW = path.join(ROOT, '.github', 'workflows', 'pr-monitor.yml');
++
++function readWorkflow() {
++  return fs.readFileSync(WORKFLOW, 'utf8');
++}
++
++function loadWorkflow() {
++  return yaml.load(readWorkflow());
++}
++
++function runSteps(doc) {
++  return doc.jobs.monitor.steps.filter((step) => typeof step.run === 'string');
++}
++
++describe('PR monitor workflow surface contract', () => {
++  test('uses one Actions job summary and removes sticky comments and neutral checks', () => {
++    const source = readWorkflow();
++    const doc = loadWorkflow();
++    const steps = runSteps(doc);
++    const summarySteps = steps.filter((step) => step.run.includes('GITHUB_STEP_SUMMARY'));
++
++    expect(summarySteps).toHaveLength(1);
++    expect(summarySteps[0].run).toContain('./lib/pr-monitor/render-summary');
++    expect(summarySteps[0].run).toContain('bundle.json');
++    expect(summarySteps[0].run).toContain('pull.json');
++    expect(summarySteps[0].run).toContain('>> "$GITHUB_STEP_SUMMARY"');
++
++    expect(source).not.toContain('render-sticky');
++    expect(source).not.toContain('upsert-sticky');
++    expect(source).not.toContain('monitor-payload.json');
++    expect(source).not.toContain('forge/pr-monitor');
++    expect(source).not.toMatch(/repos\/\$GH_REPO\/issues\/\$\{?PR\}?\/comments/);
++    expect(source).not.toContain('Publish informational (neutral) check');
++  });
++
++  test('keeps pull verdict gathering, one canonical label projection, and Tier-2 markers', () => {
++    const source = readWorkflow();
++    const doc = loadWorkflow();
++    const steps = runSteps(doc);
++    const labelCompute = steps.filter((step) => step.run.includes('scripts/pr-verdict-label.js'));
++    const labelReconcile = steps.filter((step) => step.run.includes('ALL_LABELS'));
++    const pullGather = steps.filter((step) => step.run.includes('shepherd "$PR" --pull --json'));
++
++    expect(pullGather).toHaveLength(1);
++    expect(labelCompute).toHaveLength(1);
++    expect(labelReconcile).toHaveLength(1);
++    expect(labelReconcile[0].run).toContain('gh pr edit "$PR"');
++    expect(labelReconcile[0].run).toContain('--remove-label');
++    expect(labelReconcile[0].run).toContain('--add-label "$LABEL"');
++    expect(source).toContain('forge/auto-update');
++    expect(source).toContain('forge/auto-rerun');
++  });
++
++  test('documents the label as a surface projection, never merge authority', () => {
++    const source = readWorkflow();
++    const mergeSource = fs.readFileSync(path.join(ROOT, 'lib', 'commands', 'merge.js'), 'utf8');
++    const rulesSource = fs.readFileSync(path.join(ROOT, 'lib', 'merge-rules.js'), 'utf8');
++
++    expect(source.toLowerCase()).toContain('label');
++    expect(source.toLowerCase()).toContain('never merges');
++    expect(mergeSource).not.toContain('pr-verdict');
++    expect(rulesSource).not.toContain('pr-verdict');
++  });
++
++  test('does not leave obsolete sticky helpers behind', () => {
++    expect(fs.existsSync(path.join(ROOT, 'lib', 'pr-monitor', 'render-sticky.js'))).toBe(false);
++    expect(fs.existsSync(path.join(ROOT, 'lib', 'pr-monitor', 'upsert-sticky.js'))).toBe(false);
++  });
++
++  test('retains the no-concurrency safety invariant', () => {
++    const doc = loadWorkflow();
++    expect(Object.prototype.hasOwnProperty.call(doc, 'concurrency')).toBe(false);
++  });
++});
+diff --git a/test/windows-hide-background-spawns.test.js b/test/windows-hide-background-spawns.test.js
+index 38b91f3f..c139a3f9 100644
+--- a/test/windows-hide-background-spawns.test.js
++++ b/test/windows-hide-background-spawns.test.js
+@@ -52,7 +52,6 @@ const BACKGROUND_REACHABLE = [
+   'lib/adapters/pr-state-adapter.js',
+   'lib/pr-monitor/watch-lifecycle.js',
+   'lib/pr-monitor/reconcile-executor.js',
+-  'lib/pr-monitor/upsert-sticky.js',
+   'lib/adapters/greptile-review-adapter.js',
+   'lib/commands/serve.js',
+ ];
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,204 @@
+From 0cbc837fd9e80060a241c02ef7611287b5781749 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 13:58:20 +0530
+Subject: [PATCH] fix(memory): detach recall telemetry writes
+
+---
+ lib/commands/hooks.js             | 21 +++++++---------
+ lib/memory-recall-events.js       | 40 ++++++++++++++++++++++++++++++-
+ test/hooks-memory-recall.test.js  |  3 +++
+ test/memory-recall-events.test.js | 27 +++++++++++++++++++++
+ 4 files changed, 77 insertions(+), 14 deletions(-)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 71f38cc2..bef8ddde 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -36,6 +36,7 @@ const { collectDigest } = require('../pr-monitor/digest');
+ const { loadDispatchText } = require('../using-forge');
+ const projectMemory = require('../project-memory');
+ const { parseHookInput, selectInjection, meaningfulTokens, DEFAULT_TOKEN_BUDGET, DEFAULT_SCORE_FLOOR } = require('../memory-recall');
++const { launchMemoryRecallEvent } = require('../memory-recall-events');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ 
+@@ -510,7 +511,6 @@ async function handleMemoryRecall(rest, projectRoot, opts = {}) {
+   const startedAt = Date.now();
+   const observation = { harness };
+   const record = result => {
+-    if (!opts.recordRecallEvent) return result;
+     const outcome = result.reason === 'timeout'
+       ? 'timeout'
+       : (observation.outcome || (result.output ? 'selected' : 'empty'));
+@@ -520,18 +520,13 @@ async function handleMemoryRecall(rest, projectRoot, opts = {}) {
+       harness,
+       elapsedMs: Date.now() - startedAt,
+     };
+-    const write = () => {
+-      try {
+-        const pending = opts.recordRecallEvent(
+-          projectRoot,
+-          eventObservation
+-        );
+-        if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+-      } catch {
+-        // Operational evidence is best-effort and must never delay or suppress a prompt.
+-      }
+-    };
+-    write();
++    try {
++      const pending = (opts.recordRecallEvent || opts.launchRecallEvent || launchMemoryRecallEvent)(
++        projectRoot,
++        eventObservation,
++      );
++      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
++    } catch { /* Operational evidence is best-effort and must never delay or suppress a prompt. */ }
+     return result;
+   };
+   const capability = userPromptSubmitCapability(harness);
+diff --git a/lib/memory-recall-events.js b/lib/memory-recall-events.js
+index 55453c4a..2abd7945 100644
+--- a/lib/memory-recall-events.js
++++ b/lib/memory-recall-events.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { randomUUID } = require('node:crypto');
++const { spawn } = require('node:child_process');
+ 
+ const { resolveKernelDatabasePath } = require('./kernel/cli-broker-factory');
+ const { createBuiltinSQLiteDriver } = require('./kernel/sqlite-driver');
+@@ -11,6 +12,7 @@ const OUTCOMES = new Set(['selected', 'empty', 'filtered', 'unsupported', 'timeo
+ const MAX_COUNT = 1_000_000;
+ const MAX_SELECTED_IDS = 20;
+ const MAX_MIX_KEYS = 10;
++const EVENT_WRITER = "const { recordMemoryRecallPayload } = require(process.argv[1]); recordMemoryRecallPayload(process.argv[2], JSON.parse(process.argv[3])).catch(() => {});";
+ 
+ function boundedInteger(value) {
+   if (!Number.isFinite(value)) return 0;
+@@ -54,7 +56,26 @@ function buildRecallEventPayload(observation = {}) {
+   };
+ }
+ 
++function normalizeRecallEventPayload(payload = {}) {
++  return buildRecallEventPayload({
++    outcome: payload.outcome,
++    candidateCount: payload.counts?.candidates,
++    eligibleCount: payload.counts?.eligible,
++    selectedIds: payload.selected_ids,
++    sourceMix: payload.source_mix,
++    trustMix: payload.trust_mix,
++    tokenEstimate: payload.token_estimate,
++    elapsedMs: payload.elapsed_ms,
++    harness: payload.harness,
++  });
++}
++
+ async function recordMemoryRecallEvent(projectRoot, observation = {}, options = {}) {
++  return recordMemoryRecallPayload(projectRoot, buildRecallEventPayload(observation), options);
++}
++
++async function recordMemoryRecallPayload(projectRoot, payload, options = {}) {
++  const safePayload = normalizeRecallEventPayload(payload);
+   let store = options.store;
+   let ownsStore = false;
+   try {
+@@ -80,7 +101,7 @@ async function recordMemoryRecallEvent(projectRoot, observation = {}, options =
+       expected_revision: 0,
+       actor: 'forge',
+       origin: 'hook',
+-      payload: buildRecallEventPayload(observation),
++      payload: safePayload,
+       created_at: createdAt,
+     });
+     return { recorded: true, eventId: id };
+@@ -100,8 +121,25 @@ async function recordMemoryRecallEvent(projectRoot, observation = {}, options =
+   }
+ }
+ 
++function launchMemoryRecallEvent(projectRoot, observation = {}, options = {}) {
++  try {
++    const child = (options.spawn || spawn)(
++      process.execPath,
++      ['-e', EVENT_WRITER, __filename, projectRoot, JSON.stringify(buildRecallEventPayload(observation))],
++      { detached: true, stdio: 'ignore', windowsHide: true },
++    );
++    if (child && typeof child.on === 'function') child.on('error', () => {});
++    if (child && typeof child.unref === 'function') child.unref();
++    return { launched: true };
++  } catch {
++    return { launched: false };
++  }
++}
++
+ module.exports = {
+   EVENT_TYPE,
+   buildRecallEventPayload,
++  launchMemoryRecallEvent,
+   recordMemoryRecallEvent,
++  recordMemoryRecallPayload,
+ };
+diff --git a/test/hooks-memory-recall.test.js b/test/hooks-memory-recall.test.js
+index 77ddbe10..1336d7c6 100644
+--- a/test/hooks-memory-recall.test.js
++++ b/test/hooks-memory-recall.test.js
+@@ -158,8 +158,11 @@ describe('forge hooks memory-recall', () => {
+     try {
+       const opts = baseOpts();
+       delete opts.recordRecallEvent;
++      let launches = 0;
++      opts.launchRecallEvent = () => { launches += 1; };
+       await run(opts);
+       expect(delays).toEqual([4500]);
++      expect(launches).toBe(1);
+     } finally {
+       global.setTimeout = originalSetTimeout;
+       global.clearTimeout = originalClearTimeout;
+diff --git a/test/memory-recall-events.test.js b/test/memory-recall-events.test.js
+index 01a98133..96fb626e 100644
+--- a/test/memory-recall-events.test.js
++++ b/test/memory-recall-events.test.js
+@@ -5,6 +5,7 @@ const path = require('node:path');
+ 
+ const {
+   buildRecallEventPayload,
++  launchMemoryRecallEvent,
+   recordMemoryRecallEvent,
+ } = require('../lib/memory-recall-events');
+ const hooks = require('../lib/commands/hooks');
+@@ -22,6 +23,32 @@ afterEach(() => {
+ });
+ 
+ describe('memory.recall.observed events', () => {
++  test('launches the sanitized event writer detached from the prompt process', () => {
++    const calls = [];
++    let errorListener = null;
++    let unrefed = false;
++    const child = {
++      on: (event, listener) => { if (event === 'error') errorListener = listener; },
++      unref: () => { unrefed = true; },
++    };
++
++    const result = launchMemoryRecallEvent('/project', {
++      outcome: 'selected',
++      selectedIds: ['memory-1'],
++      prompt: 'private prompt terms must not leave the hook',
++    }, {
++      spawn: (...args) => { calls.push(args); return child; },
++    });
++
++    expect(result).toEqual({ launched: true });
++    expect(calls).toHaveLength(1);
++    expect(calls[0][2]).toMatchObject({ detached: true, stdio: 'ignore', windowsHide: true });
++    expect(calls[0][0]).toBe(process.execPath);
++    expect(calls[0][1].join(' ')).not.toContain('private prompt terms');
++    expect(unrefed).toBe(true);
++    expect(typeof errorListener).toBe('function');
++  });
++
+   test.each(['selected', 'empty', 'filtered', 'unsupported', 'timeout', 'error'])(
+     'persists the bounded %s outcome through the real non-projecting event seam',
+     async outcome => {
+-- 
+2.51.0.windows.1
+

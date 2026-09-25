@@ -1,0 +1,337 @@
+From cca7ad4596175566b923c5250c782d79e4d7927c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 17:12:48 +0530
+Subject: [PATCH] fix(dist): address CodeRabbit review on #377
+
+- build-binary.yml: release job now needs [build, parity] so a failing
+  parity drift-gate blocks publishing (was needs: build only).
+- build-binary.yml: verify the EXACT 7 canonical asset filenames exist
+  and are non-empty (and reject unexpected extras) instead of only
+  counting; generate + upload a SHA-256 checksums.txt manifest.
+- release-asset.mjs: reject unpublished os/arch tuples (e.g. windows/arm64)
+  via PUBLISHED_OS_ARCH derived from CANONICAL_ASSETS, not independent
+  allowlists. install.sh gains the same guard for JS/shell parity; test
+  adds windows/arm64 rejection coverage.
+- install.sh / install.ps1: verify the downloaded asset's SHA-256 against
+  the release checksums.txt before chmod/Move-Item; mismatch is fatal,
+  missing manifest/tool warns and continues, FORGE_SKIP_CHECKSUM / -SkipChecksum
+  bypasses. INSTALL.md documents manual checksum verification.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/build-binary.yml | 44 +++++++++++++++++-----
+ docs/reference/INSTALL.md          | 17 +++++++++
+ scripts/install.ps1                | 41 +++++++++++++++++++-
+ scripts/install.sh                 | 60 ++++++++++++++++++++++++++++++
+ scripts/lib/release-asset.mjs      | 20 +++++++++-
+ scripts/release-asset.test.js      |  7 ++++
+ 6 files changed, 177 insertions(+), 12 deletions(-)
+
+diff --git a/.github/workflows/build-binary.yml b/.github/workflows/build-binary.yml
+index ac764a09..57740def 100644
+--- a/.github/workflows/build-binary.yml
++++ b/.github/workflows/build-binary.yml
+@@ -187,7 +187,9 @@ jobs:
+   # scripts/install.sh and releaseAssetName() in scripts/lib/release-asset.mjs.
+   release:
+     name: Publish GitHub Release
+-    needs: build
++    # Depend on BOTH build (produces the binaries) and parity (the authoritative
++    # npm-vs-binary drift gate). Publishing must not proceed if either fails.
++    needs: [build, parity]
+     if: startsWith(github.ref, 'refs/tags/v')
+     runs-on: ubuntu-latest
+     permissions:
+@@ -203,23 +205,47 @@ jobs:
+       - name: Flatten and rename assets
+         run: |
+           mkdir -p release
+-          found=0
+           for f in artifacts/forge-bun-*/forge-bun-*; do
+             [ -e "$f" ] || continue
+             base="$(basename "$f")"
+             asset="forge-${base#forge-bun-}"
+             cp "$f" "release/${asset}"
+-            found=$((found + 1))
+             echo "  ${f} -> release/${asset}"
+           done
+-          # A v* tag builds all seven canonical targets, so a short count means a
+-          # matrix leg silently failed — fail the release rather than ship partial.
+-          if [ "$found" -ne 7 ]; then
+-            echo "::error::expected 7 release assets, found ${found}"
+-            exit 1
+-          fi
+           ls -l release
+ 
++      - name: Verify the exact canonical asset set
++        run: |
++          # Assert the EXACT seven published assets exist and are non-empty — a
++          # plain count can hide a missing platform paired with an unexpected
++          # extra. This list is the canonical set from scripts/lib/release-asset.mjs
++          # (releaseAssetName over CANONICAL_ASSETS); keep the two in sync.
++          expected="forge-darwin-arm64 forge-darwin-x64 forge-linux-x64 forge-linux-arm64 forge-linux-x64-musl forge-linux-arm64-musl forge-windows-x64.exe"
++          status=0
++          for name in $expected; do
++            if [ ! -s "release/${name}" ]; then
++              echo "::error::missing or empty required asset: ${name}"
++              status=1
++            fi
++          done
++          # Reject any file in release/ that is not in the expected set.
++          for f in release/*; do
++            base="$(basename "$f")"
++            case " $expected " in
++              *" $base "*) : ;;
++              *) echo "::error::unexpected asset present: ${base}"; status=1 ;;
++            esac
++          done
++          [ "$status" -eq 0 ] || exit 1
++          echo "All 7 canonical assets present and non-empty."
++
++      - name: Generate SHA-256 checksum manifest
++        run: |
++          # Publish a checksums.txt (filename-only entries) so the install scripts
++          # can verify integrity of the asset they download before executing it.
++          ( cd release && sha256sum forge-* > checksums.txt )
++          cat release/checksums.txt
++
+       - name: Upload assets to the GitHub Release
+         env:
+           GH_TOKEN: ${{ github.token }}
+diff --git a/docs/reference/INSTALL.md b/docs/reference/INSTALL.md
+index 9394d488..ba0faa49 100644
+--- a/docs/reference/INSTALL.md
++++ b/docs/reference/INSTALL.md
+@@ -78,22 +78,39 @@ If you prefer not to pipe a script to your shell, download the asset for your
+ platform directly from the [latest release](https://github.com/harshanandak/forge/releases/latest)
+ and run it.
+ 
++Every release also publishes a `checksums.txt` (SHA-256) manifest. **Verify the
++asset before you run it** — the one-line install scripts do this automatically.
++
+ ### macOS / Linux
+ 
+ ```sh
+ # Pick the asset for your platform from the table above (here: linux x64 glibc)
+ curl -fsSL -o forge \
+   https://github.com/harshanandak/forge/releases/latest/download/forge-linux-x64
++
++# Verify integrity against the release manifest before running:
++curl -fsSL -o checksums.txt \
++  https://github.com/harshanandak/forge/releases/latest/download/checksums.txt
++grep ' forge-linux-x64$' checksums.txt | sha256sum -c -   # must print "forge-linux-x64: OK"
++
+ chmod +x forge
+ ./forge --version
+ # Optionally move it onto your PATH:
+ mkdir -p ~/.local/bin && mv forge ~/.local/bin/forge
+ ```
+ 
++On macOS use `shasum -a 256 -c -` in place of `sha256sum -c -`.
++
+ ### Windows (PowerShell)
+ 
+ ```powershell
+ irm https://github.com/harshanandak/forge/releases/latest/download/forge-windows-x64.exe -OutFile forge.exe
++
++# Verify integrity against the release manifest before running:
++irm https://github.com/harshanandak/forge/releases/latest/download/checksums.txt -OutFile checksums.txt
++$expected = ((Get-Content checksums.txt) -match ' \*?forge-windows-x64\.exe$') -replace '\s.*$',''
++if ((Get-FileHash -Algorithm SHA256 forge.exe).Hash -ieq $expected) { "OK" } else { throw "checksum mismatch" }
++
+ .\forge.exe --version
+ ```
+ 
+diff --git a/scripts/install.ps1 b/scripts/install.ps1
+index 562098af..76136c97 100644
+--- a/scripts/install.ps1
++++ b/scripts/install.ps1
+@@ -29,7 +29,8 @@
+ param(
+ 	[string]$Version = 'latest',
+ 	[string]$Dir = (Join-Path $env:LOCALAPPDATA 'Programs\forge'),
+-	[switch]$PrintAsset
++	[switch]$PrintAsset,
++	[switch]$SkipChecksum
+ )
+ 
+ $ErrorActionPreference = 'Stop'
+@@ -82,6 +83,44 @@ try {
+ if (-not (Test-Path $Tmp) -or (Get-Item $Tmp).Length -eq 0) {
+ 	throw "forge-install: downloaded file is empty - asset '$Asset' may not exist in release '$ResolvedVersion'."
+ }
++
++# Integrity verification (SHA-256) BEFORE installing. A mismatch is fatal
++# (corrupted or substituted download). If the manifest cannot be fetched we warn
++# and continue; pass -SkipChecksum or set FORGE_SKIP_CHECKSUM=1 to bypass.
++if ($SkipChecksum -or $env:FORGE_SKIP_CHECKSUM -eq '1') {
++	Write-Host "forge-install: skipping integrity check (requested)."
++} else {
++	$SumsUrl = $Url.Substring(0, $Url.LastIndexOf('/') + 1) + 'checksums.txt'
++	$SumsTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-install-" + [System.Guid]::NewGuid().ToString('N') + ".txt")
++	$expected = $null
++	$manifestFetched = $false
++	try {
++		Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsTmp -UseBasicParsing
++		$manifestFetched = $true
++		foreach ($line in (Get-Content $SumsTmp)) {
++			# Lines are "<hash>  <name>" (text) or "<hash> *<name>" (binary).
++			if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $Asset) {
++				$expected = $Matches[1].ToLower()
++				break
++			}
++		}
++	} catch {
++		Write-Host "forge-install: could not download checksums.txt - skipping integrity check."
++	} finally {
++		if (Test-Path $SumsTmp) { Remove-Item -Force $SumsTmp }
++	}
++	if ($expected) {
++		$actual = (Get-FileHash -Algorithm SHA256 -Path $Tmp).Hash.ToLower()
++		if ($actual -ne $expected) {
++			Remove-Item -Force $Tmp
++			throw "forge-install: checksum mismatch for $Asset`n  expected: $expected`n  actual:   $actual`nThe download may be corrupted or tampered with - aborting."
++		}
++		Write-Host "forge-install: checksum verified (sha256)."
++	} elseif ($manifestFetched) {
++		Write-Host "forge-install: $Asset not listed in checksums.txt - skipping integrity check."
++	}
++}
++
+ Move-Item -Force -Path $Tmp -Destination $Dest
+ 
+ Write-Host ""
+diff --git a/scripts/install.sh b/scripts/install.sh
+index a24abf5d..cd7de772 100644
+--- a/scripts/install.sh
++++ b/scripts/install.sh
+@@ -116,6 +116,12 @@ resolve_asset() {
+ 		x64|arm64) ;;
+ 		*) die "unsupported arch: '$_arch' (need x64 or arm64)" ;;
+ 	esac
++	# Reject os/arch pairs that are not published (parity with releaseAssetName()
++	# in scripts/lib/release-asset.mjs). Windows ships x64 only, so windows/arm64
++	# must not resolve to a phantom forge-windows-arm64.exe.
++	if [ "$_os" = "windows" ] && [ "$_arch" != "x64" ]; then
++		die "unsupported platform: windows/${_arch} is not a published target (windows is x64 only)"
++	fi
+ 	_name="forge-${_os}-${_arch}"
+ 	if [ "$_os" = "linux" ] && [ "$_libc" = "musl" ]; then
+ 		_name="${_name}-musl"
+@@ -187,6 +193,60 @@ TMP_BIN="$TMP/$BIN_NAME"
+ 
+ download_to "$URL" "$TMP_BIN" || die "download failed from $URL — is the release published for your platform?"
+ [ -s "$TMP_BIN" ] || die "downloaded file is empty — the asset '$ASSET' may not exist in release '$RESOLVED_VERSION'."
++
++# --- integrity verification (SHA-256) --------------------------------------
++# Verify the downloaded asset against the release's checksums.txt manifest BEFORE
++# making it executable or installing it. A mismatch is always fatal (corrupted or
++# substituted download). If the manifest cannot be fetched or no SHA-256 tool is
++# available we warn and continue; set FORGE_SKIP_CHECKSUM=1 to bypass entirely.
++verify_checksum() {
++	if [ "${FORGE_SKIP_CHECKSUM:-0}" = "1" ]; then
++		printf 'forge-install: FORGE_SKIP_CHECKSUM=1 set — skipping integrity check.\n' >&2
++		return 0
++	fi
++
++	_sha=""
++	if command -v sha256sum >/dev/null 2>&1; then _sha="sha256sum";
++	elif command -v shasum >/dev/null 2>&1; then _sha="shasum";
++	elif command -v openssl >/dev/null 2>&1; then _sha="openssl";
++	fi
++	if [ -z "$_sha" ]; then
++		printf 'forge-install: no sha256 tool (sha256sum/shasum/openssl) found — skipping integrity check.\n' >&2
++		return 0
++	fi
++
++	# The manifest lives beside the asset in the same release.
++	_sums_url="${URL%/*}/checksums.txt"
++	_manifest="$TMP/checksums.txt"
++	if ! download_to "$_sums_url" "$_manifest" >/dev/null 2>&1 || [ ! -s "$_manifest" ]; then
++		printf 'forge-install: could not download checksums.txt — skipping integrity check.\n' >&2
++		return 0
++	fi
++
++	# sha256sum manifest lines are "<hash>  <name>" (text) or "<hash> *<name>"
++	# (binary); match either form for our asset.
++	_expected="$(awk -v f="$ASSET" '{ n=$2; sub(/^\*/,"",n); if (n==f) { print $1; exit } }' "$_manifest")"
++	if [ -z "$_expected" ]; then
++		printf 'forge-install: %s not listed in checksums.txt — skipping integrity check.\n' "$ASSET" >&2
++		return 0
++	fi
++
++	case "$_sha" in
++		sha256sum) _actual="$(sha256sum "$TMP_BIN" | awk '{print $1}')" ;;
++		shasum) _actual="$(shasum -a 256 "$TMP_BIN" | awk '{print $1}')" ;;
++		openssl) _actual="$(openssl dgst -sha256 "$TMP_BIN" | awk '{print $NF}')" ;;
++	esac
++
++	if [ "$_actual" != "$_expected" ]; then
++		die "checksum mismatch for $ASSET
++  expected: $_expected
++  actual:   $_actual
++The download may be corrupted or tampered with — aborting."
++	fi
++	printf 'forge-install: checksum verified (sha256).\n'
++}
++verify_checksum
++
+ chmod +x "$TMP_BIN"
+ 
+ mkdir -p "$INSTALL_DIR"
+diff --git a/scripts/lib/release-asset.mjs b/scripts/lib/release-asset.mjs
+index 503f87c5..867f35c4 100644
+--- a/scripts/lib/release-asset.mjs
++++ b/scripts/lib/release-asset.mjs
+@@ -41,8 +41,17 @@ export function releaseAssetName({ os, arch, libc } = {}) {
+ 	if (!SUPPORTED_ARCH.includes(arch)) {
+ 		throw new Error(`Unsupported arch: ${arch} (supported: ${SUPPORTED_ARCH.join(', ')})`);
+ 	}
+-	// Only x64 exists for Windows and only arm64/x64 for the rest — but every
+-	// os/arch pair in the matrix below is real, so no further pruning is needed.
++	// Reject os/arch pairs that are not actually published. The independent
++	// allowlists above would otherwise accept e.g. windows/arm64 and invent a
++	// `forge-windows-arm64.exe` asset that no release contains. Validate the
++	// tuple against the canonical matrix (windows is x64-only) so JS, install.sh
++	// and install.ps1 all agree on the same supported set.
++	if (!PUBLISHED_OS_ARCH.has(`${os}/${arch}`)) {
++		throw new Error(
++			`Unsupported platform: ${os}/${arch} is not a published target ` +
++				`(supported: ${[...PUBLISHED_OS_ARCH].join(', ')})`,
++		);
++	}
+ 	let name = `forge-${os}-${arch}`;
+ 	if (os === 'linux' && libc === 'musl') {
+ 		name += '-musl';
+@@ -66,3 +75,10 @@ export const CANONICAL_ASSETS = [
+ 	{ os: 'linux', arch: 'x64', libc: 'musl', asset: 'forge-linux-x64-musl' },
+ 	{ os: 'linux', arch: 'arm64', libc: 'musl', asset: 'forge-linux-arm64-musl' },
+ ];
++
++/**
++ * The set of published `os/arch` tuples, derived from CANONICAL_ASSETS so it can
++ * never drift from the actual release matrix. Used by releaseAssetName() to
++ * reject unsupported combinations (e.g. windows/arm64).
++ */
++export const PUBLISHED_OS_ARCH = new Set(CANONICAL_ASSETS.map((a) => `${a.os}/${a.arch}`));
+diff --git a/scripts/release-asset.test.js b/scripts/release-asset.test.js
+index a6826d19..b4bc08b2 100644
+--- a/scripts/release-asset.test.js
++++ b/scripts/release-asset.test.js
+@@ -63,6 +63,13 @@ describe('releaseAssetName (canonical JS mapping)', () => {
+ 		expect(() => releaseAssetName({ os: 'linux', arch: 'riscv' })).toThrow(/Unsupported arch/);
+ 	});
+ 
++	test('rejects windows/arm64 (a supported-but-unpublished os/arch pair)', () => {
++		// Both allowlists pass individually, but the tuple is not published.
++		expect(() => releaseAssetName({ os: 'windows', arch: 'arm64' })).toThrow(
++			/not a published target/,
++		);
++	});
++
+ 	test('supported sets are as expected', () => {
+ 		expect(SUPPORTED_OS).toEqual(['windows', 'darwin', 'linux']);
+ 		expect(SUPPORTED_ARCH).toEqual(['x64', 'arm64']);
+-- 
+2.51.0.windows.1
+

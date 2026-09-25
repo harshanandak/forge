@@ -1,0 +1,295 @@
+From 7a7825caf188bfc8f21e61e2333f22128a18a3e8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 17:16:02 +0530
+Subject: [PATCH] fix(merge): replay terminal evidence before provider fetch
+
+---
+ lib/commands/merge.js                         | 54 ++++++++++++----
+ ...merge-authority-review-regressions.test.js | 14 +++--
+ test/commands/merge-authority.test.js         | 61 +++++++++++++++++++
+ 3 files changed, 112 insertions(+), 17 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index fa280274..6732e318 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -119,10 +119,10 @@ function normalizeRepository(value) {
+ 
+ function terminalEvidenceFromTrace(row, { issueId, repository, number, expectedHead }) {
+   const normalizedExpectedHead = normalizeFullHeadSha(expectedHead);
+-  if (!normalizedExpectedHead) return { invalid: true };
+-  const merged = (Array.isArray(row?.iterations) ? row.iterations : [])
+-    .filter(iteration => iteration?.type === 'pr.merged');
++  if (!normalizedExpectedHead || !Array.isArray(row?.iterations)) return { invalid: true };
++  const merged = row.iterations.filter(iteration => iteration?.type === 'pr.merged');
+   if (merged.length === 0) return null;
++  if (merged.length !== 1) return { invalid: true };
+   const exact = merged.filter(iteration => iteration.issue_id === issueId
+     && Number.isInteger(iteration.issue_revision) && iteration.issue_revision >= 0
+     && normalizeFullHeadSha(iteration.head_sha) === normalizedExpectedHead
+@@ -253,12 +253,15 @@ async function defaultVerifyIssueOwnership({
+ 
+ function selectPrBindingRow(rows, repository, number) {
+   if (!Array.isArray(rows)) return { error: 'Kernel PR linkage is unreadable.' };
+-  const sameRepositoryRows = rows.filter(row => normalizeRepository(row?.repo) === repository);
+-  if (sameRepositoryRows.some(row => !normalizeKernelPrNumber(row.number))) {
++  const candidateRows = repository
++    ? rows.filter(row => normalizeRepository(row?.repo) === repository)
++    : rows;
++  if (candidateRows.some(row => !normalizeKernelPrNumber(row.number))) {
+     return { error: 'Kernel PR linkage contains a malformed PR number.' };
+   }
+-  const matches = sameRepositoryRows.filter(row => normalizeKernelPrNumber(row.number) === number);
++  const matches = candidateRows.filter(row => normalizeKernelPrNumber(row.number) === number);
+   if (matches.length !== 1) return { error: 'Kernel PR linkage is missing or ambiguous.' };
++  if (!normalizeRepository(matches[0]?.repo)) return { error: 'Kernel PR repository identity is unreadable.' };
+   return { row: matches[0] };
+ }
+ 
+@@ -279,9 +282,9 @@ async function openPrBindingBroker(projectRoot, buildBroker) {
+ 
+ async function readPrBindingRows(built, allowRetired, { issueId, number, repository }) {
+   if (allowRetired) {
+-    const read = await built.broker.readTrace({
+-      issue_id: issueId, pr_number: Number(number), repo: repository,
+-    });
++    const target = { issue_id: issueId, pr_number: Number(number) };
++    if (repository) target.repo = repository;
++    const read = await built.broker.readTrace(target);
+     return read?.pull_requests;
+   }
+   return built.broker.listOpenPrs(built.gitCommonDir);
+@@ -296,8 +299,8 @@ async function defaultVerifyPrIssueBinding({
+   allowRetired = false,
+ }) {
+   const number = normalizePrNumber(String(pr));
+-  const repository = normalizeRepository(prContext?.repository);
+-  if (!number || !repository || !prContext || prContext.number !== Number(number)) {
++  let repository = normalizeRepository(prContext?.repository);
++  if (!number || !prContext || prContext.number !== Number(number) || (!allowRetired && !repository)) {
+     return { bound: false, error: 'PR identity is unreadable or does not match the requested PR number.' };
+   }
+ 
+@@ -314,6 +317,7 @@ async function defaultVerifyPrIssueBinding({
+     const selection = selectPrBindingRow(rows, repository, number);
+     if (!selection.row) return { bound: false, error: selection.error };
+     const { row } = selection;
++    repository = repository || normalizeRepository(row.repo);
+     const bound = (allowRetired || row.state === 'open') && row.issue_id === issueId;
+     const terminalEvidence = allowRetired && bound
+       ? terminalEvidenceFromTrace(row, {
+@@ -683,8 +687,7 @@ function mandatoryContextError(context, expectedHead) {
+ async function recoverMergedTerminal({
+   pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps, replayOnly = false,
+ }) {
+-  const repository = normalizeRepository(prContext?.repository);
+-  if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead || !repository) {
++  if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead) {
+     return { success: false, merged: true, error: 'Merged PR identity does not match the expected head and repository.' };
+   }
+   const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
+@@ -696,10 +699,14 @@ async function recoverMergedTerminal({
+     buildBroker: deps.buildPrBindingBroker,
+     allowRetired: true,
+   });
++  const repository = normalizeRepository(prContext?.repository) || normalizeRepository(binding?.repository);
+   if (binding?.bound !== true) {
+     return { success: false, merged: true, error: 'Merged PR is not authoritatively linked to the supplied Forge issue.' };
+   }
+   if (binding.terminalEvidence) {
++    if (!repository) {
++      return { success: false, merged: true, error: 'Merged PR repository identity is unavailable.' };
++    }
+     return {
+       success: true, merged: true, enabled: true, recovered: true,
+       ...binding.terminalEvidence,
+@@ -713,6 +720,9 @@ async function recoverMergedTerminal({
+       error: 'Merged PR terminal evidence is not yet available for replay.',
+     };
+   }
++  if (!repository) {
++    return { success: false, merged: true, error: 'Merged PR repository identity is unavailable.' };
++  }
+   const decisionAt = currentTimestamp(deps.now || Date.now);
+   const verifyMergeGate = deps.verifyMergeGate || defaultVerifyMergeGate;
+   const gateApproval = await verifyMergeGate({
+@@ -1026,6 +1036,24 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const exactMergeIdentity = !parsed.error && parsed.expectedHead && parsed.issueId;
+   let prContext; let prState = '';
+   if (exactMergeIdentity) {
++    try {
++      const replay = await recoverMergedTerminal({
++        pr,
++        parsed,
++        root,
++        config: {},
++        prContext: { number: Number(pr), headSha: parsed.expectedHead },
++        ownershipActor,
++        ownershipSessionId,
++        deps,
++        replayOnly: true,
++      });
++      if (replay.replayMissing !== true) {
++        return replay.success ? replay : { ...replay, merged: false };
++      }
++    } catch (error) {
++      return { success: false, merged: false, error: `Merged PR terminal evidence replay failed: ${error.message}` };
++    }
+     try {
+       prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
+     } catch (err) {
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 4cfbd2d7..8aa8c90c 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -587,16 +587,19 @@ describe('merge authority — exact reviewer regressions', () => {
+   });
+ 
+   test('merge recovery reads one exact retired PR linkage from the durable trace', async () => {
++    let traceTarget;
+     const result = await mergeCmd.defaultVerifyPrIssueBinding({
+       issueId: ISSUE,
+       pr: '42',
+       projectRoot: process.cwd(),
+-      prContext: context({ state: 'MERGED' }),
++      prContext: context({ state: 'MERGED', repository: undefined }),
+       allowRetired: true,
+       buildBroker: async () => ({
+         gitCommonDir: '/repo/.git',
+         broker: {
+-          readTrace: async () => ({
++          readTrace: async (target) => {
++            traceTarget = target;
++            return ({
+             pull_requests: [{
+               repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+               branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
+@@ -606,14 +609,16 @@ describe('merge authority — exact reviewer regressions', () => {
+                 work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+               }],
+             }],
+-          }),
++            });
++          },
+         },
+         driver: { close() {} },
+       }),
+     });
+ 
+     expect(result).toMatchObject({
+-      bound: true, issueId: ISSUE, branch: 'feature/merge', gitCommonDir: '/repo/.git',
++      bound: true, issueId: ISSUE, repository: 'acme/forge',
++      branch: 'feature/merge', gitCommonDir: '/repo/.git',
+       terminalEvidence: {
+         occurredAt: '2026-08-01T12:00:00.000Z', receiptHash: 'b'.repeat(64),
+       },
+@@ -621,6 +626,7 @@ describe('merge authority — exact reviewer regressions', () => {
+     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+     expect(result.terminalEvidence.decisionId).toMatch(uuid);
+     expect(result.terminalEvidence.receiptId).toMatch(uuid);
++    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42 });
+   });
+ 
+   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index ffe44558..35ab8a83 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -196,6 +196,7 @@ describe('merge command — mandatory release authority', () => {
+       fetchPrContext: async () => context({ state: 'MERGED' }),
+       verifyPrIssueBinding: async () => ({
+         bound: true,
++        repository: 'acme/forge',
+         terminalEvidence: {
+           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+         },
+@@ -212,12 +213,70 @@ describe('merge command — mandatory release authority', () => {
+     expect(records).toBe(0);
+   });
+ 
++  test('replays existing terminal evidence before provider state is available', async () => {
++    let fetches = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => { fetches += 1; throw new Error('GitHub unavailable'); },
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        repository: 'acme/forge',
++        terminalEvidence: {
++          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++        },
++      }),
++    }));
++
++    expect(out).toMatchObject({
++      success: true, merged: true, recovered: true,
++      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++    });
++    expect(fetches).toBe(0);
++  });
++
++  test('does not claim a merge when pre-provider terminal replay authority fails', async () => {
++    let fetches = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => { fetches += 1; return context(); },
++      verifyPrIssueBinding: async () => ({ bound: false }),
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(fetches).toBe(0);
++  });
++
++  test('fails closed on malformed retired terminal history before provider I/O', async () => {
++    const validTerminal = {
++      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
++      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
++    };
++    for (const iterations of [null, [validTerminal, { type: 'pr.merged' }]]) {
++      let fetches = 0;
++      const injected = deps({
++        fetchPrContext: async () => { fetches += 1; return context(); },
++        buildPrBindingBroker: async () => ({
++          gitCommonDir: '/repo/.git',
++          broker: { readTrace: async () => ({ pull_requests: [{
++            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed', iterations,
++          }] }) },
++          driver: { close() {} },
++        }),
++      });
++      delete injected.verifyPrIssueBinding;
++
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
++
++      expect(out).toMatchObject({ success: false, merged: false });
++      expect(fetches).toBe(0);
++    }
++  });
++
+   test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
+     let gateChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => context({ state: 'MERGED' }),
+       verifyPrIssueBinding: async () => ({
+         bound: true,
++        repository: 'acme/forge',
+         terminalEvidence: {
+           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+         },
+@@ -240,6 +299,7 @@ describe('merge command — mandatory release authority', () => {
+       verifyIssueOwnership: async () => { ownershipChecks += 1; return { owned: false }; },
+       verifyPrIssueBinding: async () => ({
+         bound: true,
++        repository: 'acme/forge',
+         terminalEvidence: {
+           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+         },
+@@ -266,6 +326,7 @@ describe('merge command — mandatory release authority', () => {
+       fetchPrContext: async () => context({ state: 'MERGED' }),
+       verifyPrIssueBinding: async () => ({
+         bound: true,
++        repository: 'acme/forge',
+         terminalEvidence: {
+           decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+         },
+-- 
+2.51.0.windows.1
+

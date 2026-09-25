@@ -1,0 +1,238 @@
+From 61c136c93ca3c9df8298868fb3c79428e6bef2b7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:24:36 +0530
+Subject: [PATCH] fix(review): fail closed on bounded evidence
+
+---
+ lib/pr-monitor/render-summary.js       | 31 ++++++++++-----
+ lib/review-adapter.js                  |  3 ++
+ test/pr-monitor/render-summary.test.js | 53 ++++++++++++++++++++++----
+ test/review-adapter.test.js            | 23 +++++++++++
+ 4 files changed, 93 insertions(+), 17 deletions(-)
+
+diff --git a/lib/pr-monitor/render-summary.js b/lib/pr-monitor/render-summary.js
+index 265549b0..5dec0ea7 100644
+--- a/lib/pr-monitor/render-summary.js
++++ b/lib/pr-monitor/render-summary.js
+@@ -95,6 +95,19 @@ function threadLocator(thread) {
+   return normalizeEvidenceText(thread.threadId || '(thread)', { maxChars: MAX_SUMMARY_TEXT_CHARS });
+ }
+ 
++function validThread(thread) {
++  if (!thread || typeof thread !== 'object' || Array.isArray(thread)
++    || typeof thread.author !== 'string' || !thread.author.trim()) return false;
++  const hasPath = typeof thread.path === 'string' && thread.path.trim();
++  const hasId = typeof thread.threadId === 'string' && thread.threadId.trim();
++  return Boolean(hasPath || hasId);
++}
++
++function validCheck(check) {
++  return Boolean(check && typeof check === 'object' && !Array.isArray(check)
++    && typeof check.name === 'string' && check.name.trim());
++}
++
+ /** Render unresolved review threads, preserving fail-closed availability. */
+ function renderThreads(bundle, lines) {
+   // Empty arrays are ambiguous when the adapter could not read comments. Only
+@@ -108,8 +121,7 @@ function renderThreads(bundle, lines) {
+   }
+ 
+   if (!Array.isArray(bundle.unresolvedComments)
+-    || bundle.unresolvedComments.slice(0, MAX_SUMMARY_THREADS)
+-      .some((thread) => !thread || typeof thread !== 'object' || Array.isArray(thread))) {
++    || bundle.unresolvedComments.slice(0, MAX_SUMMARY_THREADS + 1).some((thread) => !validThread(thread))) {
+     lines.push('### Review threads');
+     lines.push('⚠️ Review thread evidence was **malformed** this pass — not treated as zero.');
+     lines.push('');
+@@ -117,6 +129,7 @@ function renderThreads(bundle, lines) {
+   }
+ 
+   const comments = bundle.unresolvedComments;
++  const incomplete = comments.length > MAX_SUMMARY_THREADS;
+   if (comments.length === 0) {
+     lines.push('### Review threads');
+     lines.push('✅ No unresolved review threads.');
+@@ -145,7 +158,7 @@ function renderThreads(bundle, lines) {
+     lines.push(`- …and ${boundedComments.length - representedThreads} thread(s) from additional authors`);
+   }
+   lines.push('');
+-  return 'OPEN';
++  return incomplete ? 'INCOMPLETE' : 'OPEN';
+ }
+ 
+ /** Render failing and pending checks, preserving fail-closed availability. */
+@@ -160,11 +173,10 @@ function renderChecks(bundle, lines) {
+   }
+ 
+   const ci = bundle.ci || {};
+-  if (!Array.isArray(ci.failing) || !Array.isArray(ci.pending)
+-    || ci.failing.slice(0, MAX_SUMMARY_CHECKS)
+-      .some((check) => !check || typeof check !== 'object' || Array.isArray(check))
+-    || ci.pending.slice(0, MAX_SUMMARY_CHECKS)
+-      .some((check) => !check || typeof check !== 'object' || Array.isArray(check))) {
++  const checkArrays = [ci.checks, ci.failing, ci.pending];
++  if (checkArrays.some((checks) => !Array.isArray(checks))
++    || checkArrays.some((checks) => checks.slice(0, MAX_SUMMARY_CHECKS + 1)
++      .some((check) => !validCheck(check)))) {
+     lines.push('### Checks');
+     lines.push('⚠️ Check evidence was **malformed** this pass — not treated as green.');
+     lines.push('');
+@@ -172,6 +184,7 @@ function renderChecks(bundle, lines) {
+   }
+   const failing = ci.failing;
+   const pending = ci.pending;
++  const incomplete = checkArrays.some((checks) => checks.length > MAX_SUMMARY_CHECKS);
+   lines.push('### Checks');
+   if (failing.length === 0 && pending.length === 0) {
+     lines.push('✅ No failing or pending checks.');
+@@ -190,7 +203,7 @@ function renderChecks(bundle, lines) {
+     }
+   }
+   lines.push('');
+-  return true;
++  return !incomplete;
+ }
+ 
+ /**
+diff --git a/lib/review-adapter.js b/lib/review-adapter.js
+index 46a0f844..75759950 100644
+--- a/lib/review-adapter.js
++++ b/lib/review-adapter.js
+@@ -15,12 +15,15 @@ const REVIEW_EVIDENCE_LIMITS = Object.freeze({
+ const SECRET_PATTERNS = [
+   /\bBearer\s+\S+/gi,
+   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
++  /\bgithub_pat_[A-Za-z0-9_]{20,}\b/gi,
+   /\b(?:sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,})\b/g,
++  /\bAKIA[0-9A-Z]{16}\b/gi,
+   /\b(?:api[_ -]?key|authorization|credential|password|private[_ -]?key|secret|token)\s*[:=]\s*\S{8,}/gi,
+ ];
+ const PRIVATE_PATH_PATTERNS = [
+   /[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s]*)?/gi,
+   /\/(?:Users|home)\/[^/\s]+(?:\/[^\s]*)?/g,
++  /\/root\/[^\s"'<>{}\[\]]+/g,
+ ];
+ 
+ function stripControlCharacters(value) {
+diff --git a/test/pr-monitor/render-summary.test.js b/test/pr-monitor/render-summary.test.js
+index d8e2367f..526c0f4c 100644
+--- a/test/pr-monitor/render-summary.test.js
++++ b/test/pr-monitor/render-summary.test.js
+@@ -132,35 +132,72 @@ describe('renderSummary', () => {
+     expect(a).toBe(b);
+   });
+ 
+-  test('bounds and redacts hostile thread and check evidence', () => {
++  test('marks over-limit thread evidence incomplete while keeping its summary bounded', () => {
+     const secret = 'ghp_123456789012345678901234567890';
+-    const unresolvedComments = Array.from({ length: MAX_SUMMARY_THREADS + 20 }, (_, index) => ({
++    const unresolvedComments = Array.from({ length: MAX_SUMMARY_THREADS + 1 }, (_, index) => ({
+       author: `reviewer-${index}-${secret}`,
+       path: `C:\\Users\\alice\\private-${index}.js`,
+       line: index,
+       threadId: `thread-${index}`,
+       comments: [],
+     }));
+-    const failing = Array.from({ length: MAX_SUMMARY_CHECKS + 20 }, (_, index) => ({
+-      name: `check-${index}-${secret}`,
+-    }));
+     const first = renderSummary(makeBundle({
+       unresolvedComments,
+-      ci: { checks: [], failing, pending: [] },
+     }), { now: NOW, verdict: 'BLOCKED-THREADS' });
+     const second = renderSummary(makeBundle({
+       unresolvedComments,
+-      ci: { checks: [], failing, pending: [] },
+     }), { now: NOW, verdict: 'BLOCKED-THREADS' });
+ 
+     expect(first.body.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
+     expect(first.body).not.toContain(secret);
+     expect(first.body).not.toContain('alice');
+     expect(first.body).toContain('more');
+-    expect(first.threadState).toBe('OPEN');
++    expect(first.evidenceStatus).toBe('INCOMPLETE');
++    expect(first.threadState).toBe('INCOMPLETE');
+     expect(first).toEqual(second);
+   });
+ 
++  test('marks every over-limit check array incomplete', () => {
++    for (const surface of ['checks', 'failing', 'pending']) {
++      const ci = { checks: [], failing: [], pending: [] };
++      ci[surface] = Array.from({ length: MAX_SUMMARY_CHECKS + 1 }, (_, index) => ({
++        name: `${surface}-${index}`,
++      }));
++
++      expect(renderSummary(makeBundle({ ci }), { now: NOW })).toMatchObject({
++        evidenceStatus: 'INCOMPLETE',
++        threadState: 'ZERO',
++      });
++    }
++  });
++
++  test('redacts hostile check evidence', () => {
++    const secret = 'ghp_123456789012345678901234567890';
++    const { body, evidenceStatus } = renderSummary(makeBundle({
++      ci: { checks: [], failing: [{ name: `check-${secret}` }], pending: [] },
++    }), { now: NOW });
++
++    expect(body).not.toContain(secret);
++    expect(body).toContain('[REDACTED]');
++    expect(evidenceStatus).toBe('COMPLETE');
++  });
++
++  test('marks malformed thread and check items incomplete instead of rendering them', () => {
++    expect(renderSummary(makeBundle({ unresolvedComments: [{}] }), { now: NOW })).toMatchObject({
++      evidenceStatus: 'INCOMPLETE',
++      threadState: 'INCOMPLETE',
++    });
++
++    for (const surface of ['checks', 'failing', 'pending']) {
++      const ci = { checks: [], failing: [], pending: [] };
++      ci[surface] = [{}];
++      expect(renderSummary(makeBundle({ ci }), { now: NOW })).toMatchObject({
++        evidenceStatus: 'INCOMPLETE',
++        threadState: 'ZERO',
++      });
++    }
++  });
++
+   test('keeps untrusted thread locators and check names inside safe code fences', () => {
+     const { body } = renderSummary(makeBundle({
+       unresolvedComments: [
+diff --git a/test/review-adapter.test.js b/test/review-adapter.test.js
+index f3a29336..a09f0f6a 100644
+--- a/test/review-adapter.test.js
++++ b/test/review-adapter.test.js
+@@ -29,6 +29,29 @@ describe('ReviewAdapter SPI', () => {
+     expect(normalized.length).toBeLessThanOrEqual(REVIEW_EVIDENCE_LIMITS.maxTextChars);
+   });
+ 
++  test('redacts established secret and root-path classes in nested key/value text', () => {
++    const githubPat = `github_pat_${'x'.repeat(30)}`;
++    const awsKey = `AKIA${'A1'.repeat(8)}`;
++    const nested = JSON.stringify({
++      nested: {
++        [githubPat]: awsKey,
++        path: '/root/forge/private.txt',
++      },
++    });
++    const normalized = normalizeEvidenceText(nested);
++
++    expect(normalized).not.toContain(githubPat);
++    expect(normalized).not.toContain(awsKey);
++    expect(normalized).not.toContain('/root/forge/private.txt');
++    expect(normalized).toContain('[REDACTED]');
++    expect(normalized).toContain('[REDACTED_PATH]');
++  });
++
++  test('does not over-redact benign secret-like controls', () => {
++    const benign = 'github_pat_short AKIA123 /rooted/project root cause';
++    expect(normalizeEvidenceText(benign)).toBe(benign);
++  });
++
+   test('base adapter documents the required review lifecycle methods', () => {
+     expect(REQUIRED_REVIEW_ADAPTER_METHODS).toEqual([
+       'fetchThreads',
+-- 
+2.51.0.windows.1
+

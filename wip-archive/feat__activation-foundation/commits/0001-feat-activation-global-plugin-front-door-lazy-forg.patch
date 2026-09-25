@@ -1,0 +1,792 @@
+From a6fb6d8823a6f893807a08fa6908c9fa256b8b85 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 10:42:55 +0530
+Subject: [PATCH] feat(activation): global-plugin front door + lazy .forge home
+ (PR1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Activation foundation (epic 64d6c458): one coherent front-door story
+reconciling C1's global plugin, C4's `activation` bootstrap skill, and the
+epic's auto-init. Portable by construction — works in a BARE repo with no
+.forge/ and no forge-workflow dependency.
+
+- plugin/: minimal Claude Code plugin scaffold (.claude-plugin/plugin.json)
+  matching the real superpowers/beads format; carries ONLY the new
+  `activation` skill (does NOT repackage the 93-project-ref canonical skills)
+  + a read-only SessionStart nudge via the superpowers run-hook.cmd Windows
+  wrapper. Self-marketplace at .claude-plugin/marketplace.json (source ./plugin).
+- skills/activation: orient-first bootstrap — detects project type, STATES
+  findings, offers bare-minimum setup without forcing, declares next step (/plan).
+- lib/activation/ensure-forge-home.js: lazy ensureForgeHome() wired at the
+  executeCommand choke point. First MUTATING verb creates ONLY a gates-disabled
+  .forge/config.yaml (minimal adoption profile); read-only verbs write nothing;
+  existing .forge/ is never clobbered. No hooks/lefthook/protected-paths/.mcp.
+
+Tests: 25 unit+integration (test/activation/) + real-CLI bare-repo smoke.
+Refs 64d6c458.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .claude-plugin/marketplace.json            |  20 ++++
+ .gitattributes                             |   1 +
+ lib/activation/ensure-forge-home.js        | 120 ++++++++++++++++++++
+ lib/commands/_registry.js                  |  14 +++
+ plugin/.claude-plugin/plugin.json          |  19 ++++
+ plugin/hooks/hooks.json                    |  16 +++
+ plugin/hooks/run-hook.cmd                  |  49 ++++++++
+ plugin/hooks/session-start                 |  41 +++++++
+ plugin/skills/activation/SKILL.md          |  62 +++++++++++
+ test/activation/ensure-forge-home.test.js  | 124 +++++++++++++++++++++
+ test/activation/plugin-scaffold.test.js    |  92 +++++++++++++++
+ test/activation/registry-lazy-init.test.js |  87 +++++++++++++++
+ 12 files changed, 645 insertions(+)
+ create mode 100644 .claude-plugin/marketplace.json
+ create mode 100644 lib/activation/ensure-forge-home.js
+ create mode 100644 plugin/.claude-plugin/plugin.json
+ create mode 100644 plugin/hooks/hooks.json
+ create mode 100644 plugin/hooks/run-hook.cmd
+ create mode 100644 plugin/hooks/session-start
+ create mode 100644 plugin/skills/activation/SKILL.md
+ create mode 100644 test/activation/ensure-forge-home.test.js
+ create mode 100644 test/activation/plugin-scaffold.test.js
+ create mode 100644 test/activation/registry-lazy-init.test.js
+
+diff --git a/.claude-plugin/marketplace.json b/.claude-plugin/marketplace.json
+new file mode 100644
+index 00000000..e0651996
+--- /dev/null
++++ b/.claude-plugin/marketplace.json
+@@ -0,0 +1,20 @@
++{
++  "name": "forge",
++  "description": "Forge — self-marketplace. Install the activation front-door plugin to make Forge discoverable in every project.",
++  "owner": {
++    "name": "Harsha Nanda",
++    "url": "https://github.com/harshanandak/forge"
++  },
++  "plugins": [
++    {
++      "name": "forge",
++      "description": "Forge activation front door: SessionStart nudge + the `activation` bootstrap skill. Discovery only — creates nothing until a mutating verb runs.",
++      "version": "0.1.0-beta.1",
++      "source": "./plugin",
++      "author": {
++        "name": "Harsha Nanda",
++        "url": "https://github.com/harshanandak/forge"
++      }
++    }
++  ]
++}
+diff --git a/.gitattributes b/.gitattributes
+index d58be67d..5c4f5e37 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -10,6 +10,7 @@ docs/** text eol=lf
+ scripts/** text eol=lf
+ .forge/hooks/** text eol=lf
+ .claude/scripts/** text eol=lf
++plugin/hooks/** text eol=lf
+ AGENTS.md text eol=lf
+ 
+ # Binary files — do not modify
+diff --git a/lib/activation/ensure-forge-home.js b/lib/activation/ensure-forge-home.js
+new file mode 100644
+index 00000000..13252070
+--- /dev/null
++++ b/lib/activation/ensure-forge-home.js
+@@ -0,0 +1,120 @@
++'use strict';
++
++/**
++ * Lazy `.forge/` home creation (activation foundation).
++ *
++ * Discovery ≠ initialization. The global Forge plugin (SessionStart hook +
++ * `activation` skill) must create NOTHING in a user's repo. The FIRST verb that
++ * performs a real MUTATION (e.g. `forge claim`, `forge create`, `forge
++ * remember`) is what lazily materializes the bare-minimum `.forge/` skeleton.
++ * Read-only verbs (`ready`, `show`, `status`, `recap`, …) never call this, so a
++ * bare repo stays untouched until the user actually changes state.
++ *
++ * "Bare-minimum" here is strictly LESS than `forge init --minimal`: this writes
++ * ONLY `.forge/config.yaml` with every gate disabled (the `minimal` adoption
++ * profile). It installs NO git hooks, NO lefthook.yml, NO protected-paths
++ * manifest, NO `.mcp.json`, and NO scripts tree — those remain the opt-in
++ * payload of `forge setup`, never forced. Progressive growth: heavier slices
++ * initialize themselves on first use.
++ *
++ * @module activation/ensure-forge-home
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const { renderAdoptionConfigYaml } = require('../adoption-profiles');
++
++/**
++ * Core verbs that MUTATE project state and therefore need `.forge/` to exist.
++ *
++ * Deliberately excludes `init`/`setup` — they own `.forge/` creation with their
++ * own (richer) logic, and pre-creating a minimal config would trip their
++ * no-clobber guard. Also excludes every read-only verb, so those write nothing.
++ *
++ * A command module may override membership by exporting `mutating: true|false`;
++ * this Set is the default classification for the foundation. Refining the full
++ * per-command `mutating` flags is follow-up work.
++ */
++const MUTATING_VERBS = new Set([
++  'claim',
++  'close',
++  'create',
++  'comment',
++  'update',
++  'add',
++  'new',
++  'stage',
++  'remember',
++  'role',
++  'gate',
++  'patch',
++]);
++
++/**
++ * Decide whether a verb should lazily ensure the `.forge/` home.
++ *
++ * A command module's explicit `mutating` boolean wins; otherwise fall back to
++ * the default {@link MUTATING_VERBS} classification.
++ *
++ * @param {string} name - Command/verb name being dispatched.
++ * @param {object} [command] - The resolved command module (may declare `mutating`).
++ * @returns {boolean}
++ */
++function isMutatingVerb(name, command) {
++  if (command && typeof command === 'object' && typeof command.mutating === 'boolean') {
++    return command.mutating;
++  }
++  return MUTATING_VERBS.has(name);
++}
++
++/**
++ * Render the bare-minimum, gates-disabled config body.
++ *
++ * Reuses the canonical `minimal` adoption profile so the produced YAML is
++ * schema-valid and identical in spirit to `forge init --minimal` (minus the
++ * hooks/protected-paths side effects). Overridable via `deps.renderConfig` for
++ * tests that don't want to depend on the profile renderer.
++ *
++ * @param {object} [deps]
++ * @returns {string} config.yaml contents
++ */
++function renderMinimalConfig(deps = {}) {
++  const render = deps.renderConfig || (() => renderAdoptionConfigYaml('minimal'));
++  return render();
++}
++
++/**
++ * Idempotently create the bare-minimum `.forge/` skeleton for a mutating verb.
++ *
++ * No-clobber by construction: if `.forge/` already exists (inited repo, or a
++ * partially-created home), this is a NO-OP and never touches the user's files.
++ * The kernel/issue store (`.forge/kernel/…`) is created lazily by the broker on
++ * the mutating verb itself — this function only guarantees the config skeleton.
++ *
++ * @param {string} [projectRoot=process.cwd()] - Repo root to initialize.
++ * @param {object} [deps] - Injectable seams: `fs`, `renderConfig`.
++ * @returns {{ created: boolean, reason?: string, configPath: string }}
++ */
++function ensureForgeHome(projectRoot = process.cwd(), deps = {}) {
++  const fsImpl = deps.fs || fs;
++  const forgeDir = path.join(projectRoot, '.forge');
++  const configPath = path.join(forgeDir, 'config.yaml');
++
++  // Never clobber: an existing .forge/ (even without config.yaml) is the user's.
++  if (fsImpl.existsSync(forgeDir)) {
++    const reason = fsImpl.existsSync(configPath) ? 'config-exists' : 'forge-dir-exists';
++    return { created: false, reason, configPath };
++  }
++
++  fsImpl.mkdirSync(forgeDir, { recursive: true });
++  fsImpl.writeFileSync(configPath, renderMinimalConfig(deps), 'utf8');
++  return { created: true, configPath };
++}
++
++module.exports = {
++  ensureForgeHome,
++  isMutatingVerb,
++  renderMinimalConfig,
++  MUTATING_VERBS,
++};
+diff --git a/lib/commands/_registry.js b/lib/commands/_registry.js
+index b6baaade..467c2858 100644
+--- a/lib/commands/_registry.js
++++ b/lib/commands/_registry.js
+@@ -12,6 +12,7 @@
+ const { existsSync, readdirSync } = require('node:fs');
+ const path = require('node:path');
+ const { normalizeStageId } = require('../workflow/stages');
++const { ensureForgeHome, isMutatingVerb } = require('../activation/ensure-forge-home');
+ 
+ // Static command manifest (bundleable fast path). This is a static require so
+ // `bun build --compile` can bundle the command graph; the file is generated by
+@@ -198,6 +199,19 @@ async function executeCommand(commands, commandName, args, flags, projectRoot, o
+       }
+     }
+ 
++    // Lazy `.forge/` home (activation foundation): the FIRST mutating verb in a
++    // bare repo materializes the gates-disabled skeleton on demand. Read-only
++    // verbs never enter this branch, so they write nothing; an already-inited
++    // repo is a no-op (never clobbered). Failure to create the home must not
++    // crash the command — degrade to a warning. Opt out via `skipEnsureHome`.
++    if (projectRoot && options.skipEnsureHome !== true && isMutatingVerb(commandName, command)) {
++      try {
++        (options.ensureForgeHome || ensureForgeHome)(projectRoot);
++      } catch (err) {
++        console.warn(`[forge] Could not initialize .forge/ home: ${err?.message ?? err}`);
++      }
++    }
++
+     // Forward a resolved per-command opts object as the handler's 4th arg. Issue/
+     // alias handlers read it (shouldUseKernelBroker(opts)); other handlers ignore
+     // it. Backward-compatible: defaults to {} so existing 3-arg handlers are
+diff --git a/plugin/.claude-plugin/plugin.json b/plugin/.claude-plugin/plugin.json
+new file mode 100644
+index 00000000..4fbcadc4
+--- /dev/null
++++ b/plugin/.claude-plugin/plugin.json
+@@ -0,0 +1,19 @@
++{
++  "name": "forge",
++  "description": "Forge activation front door: makes Forge's presence and the `activation` bootstrap skill discoverable in ANY project via one global install, with a read-only SessionStart nudge. Creates nothing until you run a mutating verb.",
++  "version": "0.1.0-beta.1",
++  "author": {
++    "name": "Harsha Nanda",
++    "url": "https://github.com/harshanandak/forge"
++  },
++  "homepage": "https://github.com/harshanandak/forge",
++  "repository": "https://github.com/harshanandak/forge",
++  "license": "MIT",
++  "keywords": [
++    "workflow",
++    "tdd",
++    "issue-tracker",
++    "agent-workflow",
++    "activation"
++  ]
++}
+diff --git a/plugin/hooks/hooks.json b/plugin/hooks/hooks.json
+new file mode 100644
+index 00000000..79d8cee3
+--- /dev/null
++++ b/plugin/hooks/hooks.json
+@@ -0,0 +1,16 @@
++{
++  "hooks": {
++    "SessionStart": [
++      {
++        "matcher": "startup|clear|compact",
++        "hooks": [
++          {
++            "type": "command",
++            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start",
++            "async": false
++          }
++        ]
++      }
++    ]
++  }
++}
+diff --git a/plugin/hooks/run-hook.cmd b/plugin/hooks/run-hook.cmd
+new file mode 100644
+index 00000000..197cd8cc
+--- /dev/null
++++ b/plugin/hooks/run-hook.cmd
+@@ -0,0 +1,49 @@
++: << 'CMDBLOCK'
++@echo off
++REM Cross-platform polyglot wrapper for hook scripts.
++REM On Windows: cmd.exe runs the batch portion, which finds and calls bash.
++REM On Unix: the shell interprets this as a script (: is a no-op in bash).
++REM
++REM Hook scripts use extensionless filenames (e.g. "session-start" not
++REM "session-start.sh") so Claude Code's Windows auto-detection -- which
++REM prepends "bash" to any command containing .sh -- doesn't interfere.
++REM
++REM Adapted verbatim (in spirit) from superpowers' run-hook.cmd, the verified
++REM Windows-safe hook wrapper. See docs windows/polyglot-hooks.
++REM
++REM Usage: run-hook.cmd <script-name> [args...]
++
++if "%~1"=="" (
++    echo run-hook.cmd: missing script name >&2
++    exit /b 1
++)
++
++set "HOOK_DIR=%~dp0"
++
++REM Try Git for Windows bash in standard locations
++if exist "C:\Program Files\Git\bin\bash.exe" (
++    "C:\Program Files\Git\bin\bash.exe" "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
++    exit /b %ERRORLEVEL%
++)
++if exist "C:\Program Files (x86)\Git\bin\bash.exe" (
++    "C:\Program Files (x86)\Git\bin\bash.exe" "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
++    exit /b %ERRORLEVEL%
++)
++
++REM Try bash on PATH (e.g. user-installed Git Bash, MSYS2, Cygwin)
++where bash >nul 2>nul
++if %ERRORLEVEL% equ 0 (
++    bash "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
++    exit /b %ERRORLEVEL%
++)
++
++REM No bash found - exit silently rather than error
++REM (plugin still works, just without SessionStart context injection)
++exit /b 0
++CMDBLOCK
++
++# Unix: run the named script directly
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++SCRIPT_NAME="$1"
++shift
++exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"
+diff --git a/plugin/hooks/session-start b/plugin/hooks/session-start
+new file mode 100644
+index 00000000..111eab22
+--- /dev/null
++++ b/plugin/hooks/session-start
+@@ -0,0 +1,41 @@
++#!/usr/bin/env bash
++# SessionStart hook for the Forge activation plugin.
++#
++# READ-ONLY by contract: this surfaces Forge's presence in ANY project and
++# creates NOTHING. Discovery != initialization — no `.forge/` is written here.
++# The first MUTATING `forge` verb lazily creates the bare-minimum home.
++
++set -euo pipefail
++
++# Orient without writing: is this a git repo, and does a Forge home already exist?
++forge_state="available here — nothing is initialized yet"
++if [ -d ".forge" ]; then
++  forge_state="active in this project (.forge/ present)"
++fi
++
++nudge="Forge is ${forge_state}. To begin, invoke the \`forge:activation\` skill (it orients on the project first, then offers a bare-minimum setup — never forced), or run a \`forge\` verb (e.g. \`forge status\`, \`forge ready\`). Read-only verbs create nothing; the first mutating verb lazily initializes a gates-disabled \`.forge/\` skeleton."
++
++# Escape for JSON embedding (single C-level pass each; matches superpowers).
++escape_for_json() {
++    local s="$1"
++    s="${s//\\/\\\\}"
++    s="${s//\"/\\\"}"
++    s="${s//$'\n'/\\n}"
++    s="${s//$'\r'/\\r}"
++    s="${s//$'\t'/\\t}"
++    printf '%s' "$s"
++}
++
++session_context="$(escape_for_json "$nudge")"
++
++# Emit only the context field the current platform consumes (no dedup upstream).
++# Uses printf (not heredoc) to avoid the bash 5.3+ heredoc hang.
++if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
++  printf '{\n  "additional_context": "%s"\n}\n' "$session_context" | cat
++elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
++  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$session_context" | cat
++else
++  printf '{\n  "additionalContext": "%s"\n}\n' "$session_context" | cat
++fi
++
++exit 0
+diff --git a/plugin/skills/activation/SKILL.md b/plugin/skills/activation/SKILL.md
+new file mode 100644
+index 00000000..14e8646f
+--- /dev/null
++++ b/plugin/skills/activation/SKILL.md
+@@ -0,0 +1,62 @@
++---
++name: activation
++description: >
++  Forge's front door — invoke FIRST when starting work in a project that has Forge
++  available but you are not yet oriented: no `.forge/` yet, a fresh session, or the
++  user says "/activation", "set up Forge", "start Forge", "is Forge active here?".
++  Orients on the actual repo (detects project type, states findings) BEFORE offering
++  anything, then offers the bare-minimum gates-disabled setup WITHOUT forcing it.
++  Do NOT use this to run a specific stage (use /plan, /dev, /status, /ship directly)
++  or once `.forge/` is already initialized and you know the workflow.
++allowed-tools: Bash, Read, Grep, Glob
++---
++
++# Forge activation (front door)
++
++You are orienting a project where Forge is available (installed as a global plugin
++or an npm dev-dep) but not yet engaged. Your job is to **orient first, then offer —
++never force**. This skill creates nothing by itself; a mutating `forge` verb is what
++lazily initializes `.forge/`.
++
++## Orient first (state findings BEFORE offering)
++
++Run read-only checks, then STATE what you found in one short paragraph before you
++offer any setup. Do not opine or prescribe before you have looked.
++
++1. **Is Forge initialized?** `test -d .forge && echo present || echo absent`
++2. **What kind of project is this?**
++   - `package.json` present → JS/TS project (note the package manager: bun/npm/pnpm/yarn lockfile).
++   - Markdown-heavy, no `package.json` → docs / planning repo.
++   - Otherwise → describe what you see (language, build files).
++3. **Is it a git repo?** `git rev-parse --is-inside-work-tree 2>/dev/null`
++
++Then say, in your own words: *"Here's what this project looks like today: …"* —
++project type, whether `.forge/` exists, git status. Only after stating this do you
++offer anything.
++
++## Then offer the bare minimum (never forced)
++
++Present setup as a conversational choice, not a mandate:
++
++- **If `.forge/` is absent:** explain that Forge needs no setup step to be useful —
++  read-only verbs (`forge status`, `forge ready`, `forge show <id>`) work immediately
++  and write nothing. The first *mutating* verb (`forge claim`, `forge create`,
++  `forge remember`) lazily creates a **bare-minimum, gates-disabled** `.forge/`
++  skeleton. Nothing heavier (git hooks, lefthook, protected paths, `.mcp.json`,
++  scripts tree) is installed unless the user later runs `forge setup`.
++- **If `.forge/` is present:** say so and route to the right stage instead — this
++  skill's work is done.
++
++Offer, then stop and let the user choose. Do not run `forge setup` or install hooks
++on their behalf unless they ask.
++
++## Terminal state → next step
++
++This is a front-door primitive, not the full workflow. After orienting and offering:
++
++- **New / unscoped work** ("let's build X") → the one next step is **`/plan`**.
++- **A known task to implement** → **`/dev`**.
++- **"Where am I / what's ready?"** → **`/status`** or `forge ready`.
++- **A bug or failure** → **`systematic-debugging`**, then the matching stage.
++
++Name the single next step explicitly and hand off. Do not implement here.
+diff --git a/test/activation/ensure-forge-home.test.js b/test/activation/ensure-forge-home.test.js
+new file mode 100644
+index 00000000..a66f5bc2
+--- /dev/null
++++ b/test/activation/ensure-forge-home.test.js
+@@ -0,0 +1,124 @@
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const YAML = require('yaml');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const {
++  ensureForgeHome,
++  isMutatingVerb,
++  renderMinimalConfig,
++  MUTATING_VERBS,
++} = require('../../lib/activation/ensure-forge-home');
++
++const tempRoots = [];
++
++function makeBareRepo() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ensure-home-'));
++  tempRoots.push(root);
++  return root;
++}
++
++afterEach(() => {
++  while (tempRoots.length > 0) {
++    const root = tempRoots.pop();
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('ensureForgeHome', () => {
++  test('creates the bare .forge/config.yaml skeleton in a bare repo', () => {
++    const root = makeBareRepo();
++
++    const result = ensureForgeHome(root);
++
++    expect(result.created).toBe(true);
++    const configPath = path.join(root, '.forge', 'config.yaml');
++    expect(fs.existsSync(configPath)).toBe(true);
++    expect(result.configPath).toBe(configPath);
++  });
++
++  test('writes a gates-disabled config (bare minimum, not full setup)', () => {
++    const root = makeBareRepo();
++
++    ensureForgeHome(root);
++
++    const config = YAML.parse(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8'));
++    const gates = config?.workflow?.gates ?? {};
++    const gateStates = Object.values(gates).map(g => g?.enabled);
++    // Every declared gate must be disabled — the CuraPod "clean, gates disabled"
++    // baseline. An empty gate map is also acceptable (nothing enabled).
++    expect(gateStates.every(enabled => enabled === false)).toBe(true);
++  });
++
++  test('creates NO hooks, protected-paths, lefthook, or scripts tree', () => {
++    const root = makeBareRepo();
++
++    ensureForgeHome(root);
++
++    // Only config.yaml — none of the heavy `forge setup` payload.
++    expect(fs.existsSync(path.join(root, '.forge', 'protected-paths.yaml'))).toBe(false);
++    expect(fs.existsSync(path.join(root, '.forge', 'patch.md'))).toBe(false);
++    expect(fs.existsSync(path.join(root, 'lefthook.yml'))).toBe(false);
++    expect(fs.existsSync(path.join(root, '.mcp.json'))).toBe(false);
++    expect(fs.existsSync(path.join(root, 'scripts'))).toBe(false);
++    const forgeEntries = fs.readdirSync(path.join(root, '.forge'));
++    expect(forgeEntries).toEqual(['config.yaml']);
++  });
++
++  test('is idempotent — never clobbers an existing .forge/', () => {
++    const root = makeBareRepo();
++    const configPath = path.join(root, '.forge', 'config.yaml');
++    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++    fs.writeFileSync(configPath, 'user: sacred\n', 'utf8');
++
++    const result = ensureForgeHome(root);
++
++    expect(result.created).toBe(false);
++    expect(result.reason).toBe('config-exists');
++    expect(fs.readFileSync(configPath, 'utf8')).toBe('user: sacred\n');
++  });
++
++  test('no-ops when .forge/ exists even without config.yaml (never clobber)', () => {
++    const root = makeBareRepo();
++    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++
++    const result = ensureForgeHome(root);
++
++    expect(result.created).toBe(false);
++    expect(result.reason).toBe('forge-dir-exists');
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++  });
++});
++
++describe('isMutatingVerb', () => {
++  test('classifies core state-changing verbs as mutating', () => {
++    for (const verb of ['claim', 'close', 'create', 'comment', 'remember']) {
++      expect(isMutatingVerb(verb)).toBe(true);
++    }
++  });
++
++  test('classifies read-only verbs as non-mutating (they must write nothing)', () => {
++    for (const verb of ['ready', 'show', 'status', 'recap', 'list', 'blocked']) {
++      expect(isMutatingVerb(verb)).toBe(false);
++    }
++  });
++
++  test('excludes init/setup — they own .forge/ creation themselves', () => {
++    expect(isMutatingVerb('init')).toBe(false);
++    expect(isMutatingVerb('setup')).toBe(false);
++    expect(MUTATING_VERBS.has('init')).toBe(false);
++    expect(MUTATING_VERBS.has('setup')).toBe(false);
++  });
++
++  test("a command module's explicit mutating flag overrides the default set", () => {
++    expect(isMutatingVerb('ready', { mutating: true })).toBe(true);
++    expect(isMutatingVerb('claim', { mutating: false })).toBe(false);
++  });
++});
++
++describe('renderMinimalConfig', () => {
++  test('honors an injected renderer (no hard dependency on the profile)', () => {
++    expect(renderMinimalConfig({ renderConfig: () => 'stub: true\n' })).toBe('stub: true\n');
++  });
++});
+diff --git a/test/activation/plugin-scaffold.test.js b/test/activation/plugin-scaffold.test.js
+new file mode 100644
+index 00000000..d20480db
+--- /dev/null
++++ b/test/activation/plugin-scaffold.test.js
+@@ -0,0 +1,92 @@
++const fs = require('node:fs');
++const path = require('node:path');
++const { describe, expect, test } = require('bun:test');
++
++const repoRoot = path.resolve(__dirname, '..', '..');
++const pluginRoot = path.join(repoRoot, 'plugin');
++
++function readJson(p) {
++  return JSON.parse(fs.readFileSync(p, 'utf8'));
++}
++
++describe('plugin manifest', () => {
++  const manifest = readJson(path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
++
++  test('lives at <plugin-root>/.claude-plugin/plugin.json (Claude Code format)', () => {
++    expect(fs.existsSync(path.join(pluginRoot, '.claude-plugin', 'plugin.json'))).toBe(true);
++  });
++
++  test('declares the required name/version/description (matches superpowers/beads shape)', () => {
++    expect(manifest.name).toBe('forge');
++    expect(typeof manifest.version).toBe('string');
++    expect(manifest.version.length).toBeGreaterThan(0);
++    expect(typeof manifest.description).toBe('string');
++    expect(manifest.description.length).toBeGreaterThan(0);
++  });
++
++  test('carries exactly one new skill: activation (does NOT repackage canonical skills)', () => {
++    const skillsDir = path.join(pluginRoot, 'skills');
++    const entries = fs.readdirSync(skillsDir).filter(e =>
++      fs.statSync(path.join(skillsDir, e)).isDirectory());
++    expect(entries).toEqual(['activation']);
++  });
++});
++
++describe('activation skill', () => {
++  const skillPath = path.join(pluginRoot, 'skills', 'activation', 'SKILL.md');
++  const body = fs.readFileSync(skillPath, 'utf8');
++
++  test('has YAML frontmatter with name + description (the whole trigger surface)', () => {
++    const fm = body.match(/^---\n([\s\S]*?)\n---/);
++    expect(fm).not.toBeNull();
++    expect(fm[1]).toContain('name: activation');
++    expect(fm[1]).toContain('description:');
++  });
++
++  test('is orient-first and offers without forcing', () => {
++    expect(body).toContain('Orient first');
++    expect(body.toLowerCase()).toContain('never force');
++  });
++
++  test('declares a terminal state + next step', () => {
++    expect(body).toContain('Terminal state');
++    expect(body).toContain('/plan');
++  });
++});
++
++describe('SessionStart hook (read-only, Windows-safe)', () => {
++  const hooks = readJson(path.join(pluginRoot, 'hooks', 'hooks.json'));
++
++  test('wires SessionStart through the quoted run-hook.cmd wrapper', () => {
++    const entry = hooks.hooks.SessionStart[0].hooks[0];
++    expect(entry.type).toBe('command');
++    expect(entry.command).toContain('${CLAUDE_PLUGIN_ROOT}');
++    expect(entry.command).toContain('run-hook.cmd');
++    // Quoted because install paths contain spaces (C:\Users\...\.claude\...).
++    expect(entry.command).toContain('"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd"');
++  });
++
++  test('ships the run-hook.cmd wrapper and the session-start script', () => {
++    expect(fs.existsSync(path.join(pluginRoot, 'hooks', 'run-hook.cmd'))).toBe(true);
++    expect(fs.existsSync(path.join(pluginRoot, 'hooks', 'session-start'))).toBe(true);
++  });
++
++  test('the session-start script creates nothing (no writes/mkdir/init)', () => {
++    const script = fs.readFileSync(path.join(pluginRoot, 'hooks', 'session-start'), 'utf8');
++    expect(script).not.toMatch(/\bmkdir\b/);
++    expect(script).not.toMatch(/>\s*\.forge/);
++    expect(script).not.toMatch(/forge (init|setup)/);
++  });
++});
++
++describe('self-marketplace', () => {
++  const marketplace = readJson(path.join(repoRoot, '.claude-plugin', 'marketplace.json'));
++
++  test('points the forge plugin source at the ./plugin subtree that actually exists', () => {
++    const entry = marketplace.plugins.find(p => p.name === 'forge');
++    expect(entry).toBeDefined();
++    expect(entry.source).toBe('./plugin');
++    const resolved = path.join(repoRoot, entry.source, '.claude-plugin', 'plugin.json');
++    expect(fs.existsSync(resolved)).toBe(true);
++  });
++});
+diff --git a/test/activation/registry-lazy-init.test.js b/test/activation/registry-lazy-init.test.js
+new file mode 100644
+index 00000000..090285dc
+--- /dev/null
++++ b/test/activation/registry-lazy-init.test.js
+@@ -0,0 +1,87 @@
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const { executeCommand } = require('../../lib/commands/_registry');
++
++const tempRoots = [];
++
++function makeBareRepo() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-registry-lazy-'));
++  tempRoots.push(root);
++  return root;
++}
++
++// Build a minimal in-memory command map so the test exercises the dispatch
++// choke point without loading the real (heavy) command modules.
++function makeCommands(entries) {
++  const map = new Map();
++  for (const [name, mod] of Object.entries(entries)) {
++    map.set(name, { name, description: name, handler: async () => ({ success: true }), ...mod });
++  }
++  return map;
++}
++
++afterEach(() => {
++  while (tempRoots.length > 0) {
++    const root = tempRoots.pop();
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('executeCommand lazy .forge/ home', () => {
++  test('a mutating verb creates the bare .forge/ home in a bare repo', async () => {
++    const root = makeBareRepo();
++    const commands = makeCommands({ remember: {} });
++
++    const result = await executeCommand(commands, 'remember', ['note'], {}, root);
++
++    expect(result.success).toBe(true);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
++  });
++
++  test('a read-only verb writes NOTHING in a bare repo', async () => {
++    const root = makeBareRepo();
++    const commands = makeCommands({ status: {} });
++
++    const result = await executeCommand(commands, 'status', [], {}, root);
++
++    expect(result.success).toBe(true);
++    expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
++  });
++
++  test('the handler runs even if home creation throws (degrades, no crash)', async () => {
++    const root = makeBareRepo();
++    let ran = false;
++    const commands = makeCommands({ claim: { handler: async () => { ran = true; return { success: true }; } } });
++
++    const result = await executeCommand(commands, 'claim', ['id'], {}, root, {
++      ensureForgeHome: () => { throw new Error('disk full'); },
++    });
++
++    expect(ran).toBe(true);
++    expect(result.success).toBe(true);
++  });
++
++  test('skipEnsureHome opts out of lazy creation', async () => {
++    const root = makeBareRepo();
++    const commands = makeCommands({ create: {} });
++
++    await executeCommand(commands, 'create', [], {}, root, { skipEnsureHome: true });
++
++    expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
++  });
++
++  test('an existing .forge/ is never clobbered by a mutating verb', async () => {
++    const root = makeBareRepo();
++    const configPath = path.join(root, '.forge', 'config.yaml');
++    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++    fs.writeFileSync(configPath, 'user: sacred\n', 'utf8');
++    const commands = makeCommands({ close: {} });
++
++    await executeCommand(commands, 'close', ['id'], {}, root);
++
++    expect(fs.readFileSync(configPath, 'utf8')).toBe('user: sacred\n');
++  });
++});
+-- 
+2.51.0.windows.1
+

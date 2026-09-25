@@ -1,0 +1,501 @@
+From 7da367821377e6795a7f7b684c50cc9f8fbbdfd1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 18:55:48 +0530
+Subject: [PATCH] feat(merge): record guarded terminal receipt
+
+---
+ lib/commands/merge.js                         | 265 +++++++++++++++++-
+ ...merge-authority-review-regressions.test.js |   3 +
+ test/commands/merge-authority.test.js         | 108 +++++++
+ test/commands/merge.test.js                   |   3 +
+ 4 files changed, 372 insertions(+), 7 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 9a8800fe..0b71fe73 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -46,6 +46,8 @@ const { evaluateMergeRules } = require('../merge-rules');
+ const { runIssueOperation } = require('../forge-issues');
+ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+ const { stripGlobalFlags } = require('../global-flags');
++const { isGateApproved } = require('../gate-events');
++const { computeContentHash, validateContractStructure } = require('../../packages/memory-contracts');
+ 
+ const FULL_HEAD_SHA = /^[0-9a-f]{40}$/i;
+ const FORGE_ISSUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+@@ -64,6 +66,37 @@ const REVIEW_ACTOR_TYPENAMES = new Set([
+ const REVIEW_STATES = new Set([
+   'APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING',
+ ]);
++const MERGE_GATE = 'gate.merge';
++
++function uuidFromSeed(seed) {
++  const hash = computeContentHash({ seed });
++  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
++}
++
++function contractEnvelope(schemaId, objectId, createdAt, actor, payload) {
++  const value = {
++    schema_id: schemaId,
++    schema_version: 1,
++    object_id: objectId,
++    created_at: createdAt,
++    producer: { product_id: 'forge', product_version: '0.1.0', instance_id: actor },
++    capabilities_used: [],
++    provenance: { source_kind: 'guarded-merge', actor_class: 'system', actor_id: actor },
++    payload,
++    extensions: {},
++  };
++  value.content_hash = computeContentHash(value);
++  const validation = validateContractStructure(value);
++  if (!validation.ok) throw new Error(`${schemaId} validation failed`);
++  return value;
++}
++
++function currentTimestamp(now = Date.now) {
++  const value = typeof now === 'function' ? now() : now;
++  const date = new Date(value);
++  if (!Number.isFinite(date.getTime())) throw new Error('Merge decision clock is invalid.');
++  return date.toISOString();
++}
+ 
+ function normalizeFullHeadSha(value) {
+   return typeof value === 'string' && FULL_HEAD_SHA.test(value) ? value.toLowerCase() : null;
+@@ -227,6 +260,9 @@ async function defaultVerifyPrIssueBinding({
+       repository,
+       number: Number(number),
+       issueId: row.issue_id || null,
++      branch: row.branch || null,
++      url: row.url || null,
++      gitCommonDir: row.git_common_dir || built.gitCommonDir,
+       error: bound ? null : 'Kernel PR row is not open or is linked to a different issue.',
+     };
+   } catch (err) {
+@@ -238,6 +274,142 @@ async function defaultVerifyPrIssueBinding({
+   }
+ }
+ 
++async function defaultVerifyMergeGate({ issueId, projectRoot, now }) {
++  return isGateApproved(projectRoot, issueId, MERGE_GATE, { now });
++}
++
++async function defaultPrepareMergeDecision({
++  issueId,
++  pr,
++  expectedHead,
++  repository,
++  binding,
++  actor,
++  sessionId,
++  config,
++  projectRoot,
++  now = Date.now,
++  runIssue = runIssueOperation,
++}) {
++  const timestamp = currentTimestamp(now);
++  const issue = await runIssue('show', [issueId], projectRoot, {
++    env: { FORGE_ACTOR: actor, ...(sessionId ? { FORGE_SESSION_ID: sessionId } : {}) },
++  });
++  const revision = issue?.data?.revision;
++  if (issue?.ok !== true || !Number.isInteger(revision) || revision < 0) {
++    throw new Error('Live issue revision is unavailable for the merge decision.');
++  }
++  if (!binding || typeof binding.branch !== 'string' || !binding.branch
++    || typeof binding.gitCommonDir !== 'string' || !binding.gitCommonDir) {
++    throw new Error('Authoritative PR branch/worktree linkage is unavailable for the merge decision.');
++  }
++  const capabilityDigest = computeContentHash({ capability: 'forge.merge.exact-head.v1' });
++  const workflowConfigRevision = computeContentHash({ merge: config.merge?.auto ?? null });
++  const riskManifestDigest = computeContentHash({ rules: config.merge?.auto?.rules ?? [] });
++  const decisionSeed = `${issueId}:${revision}:${repository}:${pr}:${expectedHead}`;
++  const packet = contractEnvelope(
++    'forge.memory.work-packet.v1',
++    uuidFromSeed(`merge-packet:${decisionSeed}`),
++    timestamp,
++    actor,
++    {
++      issue_id: issueId,
++      expected_issue_revision: revision,
++      packet_id: `merge:${decisionSeed}`,
++      packet_revision: 1,
++      repository_id: repository,
++      target_head: expectedHead,
++      objective: `Guarded exact-head merge of ${repository}#${pr}`,
++      authority: { kind: 'kernel-live-lease', issue_revision: revision },
++      allowed_mutations: ['pr.merged'],
++      prohibited_actions: ['pr.opened', 'review-thread.resolve'],
++      workflow_config_revision: workflowConfigRevision,
++      capability_manifest_digest: capabilityDigest,
++      risk_manifest_digest: riskManifestDigest,
++      receipt_requirements: { gate_ids: [MERGE_GATE] },
++      target: {
++        pr_number: Number(pr),
++        branch: binding.branch,
++        git_common_dir: binding.gitCommonDir,
++        ...(binding.url ? { url: binding.url } : {}),
++      },
++    },
++  );
++  return {
++    decisionId: packet.object_id,
++    packet,
++    occurredAt: timestamp,
++    actor,
++    sessionId: sessionId || null,
++    binding: { ...binding },
++  };
++}
++
++async function defaultRecordMergeDecision({ decision, pr, expectedHead, repository, projectRoot, buildBroker }) {
++  if (!decision?.packet || !decision?.binding) throw new Error('Merge decision evidence is unavailable.');
++  const receipt = contractEnvelope(
++    'forge.memory.run-receipt.v1',
++    uuidFromSeed(`merge-receipt:${decision.packet.content_hash}`),
++    decision.occurredAt,
++    decision.actor,
++    {
++      packet_hash: decision.packet.content_hash,
++      run_id: `merge:${repository}:${pr}:${expectedHead}`,
++      attempt_id: `merge:${expectedHead}`,
++      exact_head: expectedHead,
++      packet_revision: decision.packet.payload.packet_revision,
++      manifest_digest: decision.packet.payload.capability_manifest_digest,
++      workflow_config_revision: decision.packet.payload.workflow_config_revision,
++      status: 'PASS',
++      executor: { product_id: 'forge', mode: 'guarded-exact-head' },
++      started_at: decision.occurredAt,
++      ended_at: decision.occurredAt,
++      evidence_refs: [{ kind: 'pr', repository, pr_number: Number(pr), head_sha: expectedHead }],
++      validation: { status: 'PASS', decision_id: decision.decisionId },
++      cleanup: { status: 'NOT_REQUIRED' },
++      mutations_attempted: ['pr.merged'],
++      mutations_authorized: ['pr.merged'],
++    },
++  );
++
++  let built;
++  const ownsDriver = !buildBroker;
++  try {
++    if (buildBroker) built = await buildBroker({ projectRoot });
++    else {
++      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++      const deps = await buildMigratedKernelIssueDeps({
++        projectRoot,
++        gitCommonDir: decision.binding.gitCommonDir,
++      });
++      built = { broker: deps.kernelBroker, driver: deps.kernelDriver };
++    }
++    if (!built?.broker) throw new Error('Kernel lifecycle provider is unavailable.');
++    const { createMemoryAuthorityProvider } = require('../../packages/memory');
++    const provider = createMemoryAuthorityProvider({ broker: built.broker });
++    await provider.recordPrLinkage({
++      phase: 'merged',
++      git_common_dir: decision.binding.gitCommonDir,
++      repo: repository,
++      number: Number(pr),
++      branch: decision.binding.branch,
++      ...(decision.binding.url ? { url: decision.binding.url } : {}),
++      occurred_at: decision.occurredAt,
++      work_packet: decision.packet,
++      run_receipt: receipt,
++    }, {
++      actor: decision.actor,
++      sessionId: decision.sessionId,
++      requireExactLifecycleOwnership: true,
++    });
++    return { receiptId: receipt.object_id, receiptHash: receipt.content_hash };
++  } finally {
++    if (ownsDriver && built?.driver && typeof built.driver.close === 'function') {
++      try { await built.driver.close(); } catch { /* terminal evidence outcome remains authoritative */ }
++    }
++  }
++}
++
+ function strictCheckSuccess(check) {
+   if (!check || typeof check !== 'object') return false;
+   const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
+@@ -832,8 +1004,48 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: 'Kernel ownership changed or expired before merge; refusing to merge.' };
+   }
+ 
++  const decisionAt = currentTimestamp(deps.now || Date.now);
++  const verifyMergeGate = deps.verifyMergeGate || defaultVerifyMergeGate;
++  let gateApproval;
++  try {
++    gateApproval = await verifyMergeGate({
++      issueId: parsed.issueId,
++      projectRoot: root,
++      actor: ownershipActor,
++      now: decisionAt,
++    });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to verify ${MERGE_GATE}: ${err.message}` };
++  }
++  if (gateApproval !== true && gateApproval?.approved !== true) {
++    return { success: false, merged: false, error: `${MERGE_GATE} is not approved for this issue.` };
++  }
++
++  const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
++  let decision;
+   try {
+-    const mergeResult = await mergePr({
++    decision = await prepareMergeDecision({
++      issueId: parsed.issueId,
++      pr,
++      expectedHead: parsed.expectedHead,
++      repository: leasedRepository,
++      binding: freshBinding,
++      actor: ownershipActor,
++      sessionId: ownershipEnv.FORGE_SESSION_ID || null,
++      config,
++      projectRoot: root,
++      now: decisionAt,
++    });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to prepare merge decision: ${err.message}` };
++  }
++  if (!decision || typeof decision.decisionId !== 'string' || !decision.decisionId) {
++    return { success: false, merged: false, error: 'Merge decision evidence is unavailable.' };
++  }
++
++  let mergeResult;
++  try {
++    mergeResult = await mergePr({
+       pr,
+       expectedHead: parsed.expectedHead,
+       repository: leasedRepository,
+@@ -841,18 +1053,54 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       projectRoot: root,
+       gh,
+     });
+-    process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
++  } catch (err) {
++    return { success: false, merged: false, decisionId: decision.decisionId, error: `Merge failed: ${err.message}` };
++  }
++
++  const recordMergeDecision = deps.recordMergeDecision || defaultRecordMergeDecision;
++  let terminal;
++  try {
++    terminal = await recordMergeDecision({
++      decision,
++      mergeResult,
++      pr,
++      expectedHead: parsed.expectedHead,
++      repository: leasedRepository,
++      projectRoot: root,
++      buildBroker: deps.buildMergeBroker,
++    });
++  } catch (err) {
+     return {
+-      success: true,
++      success: false,
+       merged: true,
+       enabled: true,
+       allowed: true,
+-      reason: 'all merge rules passed',
+-      ...(mergeResult && typeof mergeResult === 'object' ? mergeResult : {}),
++      decisionId: decision.decisionId,
++      error: `Merge succeeded but terminal linkage failed: ${err.message}`,
++    };
++  }
++  if (!terminal || typeof terminal.receiptId !== 'string' || !terminal.receiptId) {
++    return {
++      success: false,
++      merged: true,
++      enabled: true,
++      allowed: true,
++      decisionId: decision.decisionId,
++      error: 'Merge succeeded but terminal receipt evidence is unavailable.',
+     };
+-  } catch (err) {
+-    return { success: false, merged: false, error: `Merge failed: ${err.message}` };
+   }
++
++  process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
++  return {
++    success: true,
++    merged: true,
++    enabled: true,
++    allowed: true,
++    reason: 'all merge rules passed',
++    decisionId: decision.decisionId,
++    ...terminal,
++    ...(mergeResult && typeof mergeResult === 'object' ? mergeResult : {}),
++  };
+ }
+ 
+ module.exports = {
+@@ -863,6 +1111,9 @@ module.exports = {
+   // Exported seams for testing / reuse.
+   defaultFetchPrContext,
+   defaultMergePr,
++  defaultPrepareMergeDecision,
++  defaultRecordMergeDecision,
++  defaultVerifyMergeGate,
+   defaultVerifyPrIssueBinding,
+   defaultVerifyIssueOwnership,
+   evaluateProtectedRequiredChecks,
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 4f9be026..864c47ac 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -41,6 +41,9 @@ function deps(overrides = {}) {
+     loadConfig: () => ENABLED,
+     verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+     verifyPrIssueBinding: async () => ({ bound: true }),
++    verifyMergeGate: async () => true,
++    prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
++    recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+     env: { FORGE_ACTOR: 'release-actor' },
+     fetchPrContext: async () => context(),
+     mergePr: async () => ({ merged: true }),
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index d25d5a80..5a5ea342 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -3,6 +3,7 @@
+ const { describe, test, expect } = require('bun:test');
+ 
+ const mergeCmd = require('../../lib/commands/merge');
++const { MEMORY_AUTHORITY_METHODS } = require('../../packages/memory');
+ 
+ const HEAD = 'a'.repeat(40);
+ const OTHER_HEAD = 'b'.repeat(40);
+@@ -56,6 +57,9 @@ function deps(overrides = {}) {
+     loadConfig: () => ENABLED,
+     verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+     verifyPrIssueBinding: async () => ({ bound: true }),
++    verifyMergeGate: async () => true,
++    prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
++    recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+     env: { FORGE_ACTOR: 'release-actor' },
+     fetchPrContext: async () => context(),
+     mergePr: async () => ({ merged: true }),
+@@ -64,6 +68,110 @@ function deps(overrides = {}) {
+ }
+ 
+ describe('merge command — mandatory release authority', () => {
++  test('records one terminal decision only after exact-head merge succeeds', async () => {
++    const order = [];
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyMergeGate: async () => { order.push('gate'); return true; },
++      prepareMergeDecision: async () => { order.push('decision'); return { decisionId: 'decision-42' }; },
++      mergePr: async () => { order.push('merge'); return { merged: true }; },
++      recordMergeDecision: async ({ decision }) => {
++        order.push('receipt');
++        expect(decision.decisionId).toBe('decision-42');
++        return { receiptId: 'receipt-42' };
++      },
++    }));
++
++    expect(order).toEqual(['gate', 'decision', 'merge', 'receipt']);
++    expect(out).toMatchObject({ success: true, merged: true, decisionId: 'decision-42', receiptId: 'receipt-42' });
++  });
++
++  test('never writes terminal linkage when the external merge fails', async () => {
++    let receipts = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      mergePr: async () => { throw new Error('provider rejected'); },
++      recordMergeDecision: async () => { receipts += 1; },
++    }));
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(receipts).toBe(0);
++  });
++
++  test('requires the human merge gate before preparing evidence or mutating GitHub', async () => {
++    let decisions = 0;
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyMergeGate: async () => false,
++      prepareMergeDecision: async () => { decisions += 1; },
++      mergePr: async () => { merges += 1; },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(out.error).toContain('gate.merge');
++    expect(decisions).toBe(0);
++    expect(merges).toBe(0);
++  });
++
++  test('reports an already-completed merge when terminal linkage cannot be recorded', async () => {
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      recordMergeDecision: async () => { throw new Error('receipt store unavailable'); },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: true, decisionId: 'decision-1' });
++    expect(out.error).toContain('terminal linkage failed');
++  });
++
++  test('default evidence binds the live issue revision and terminal merged linkage', async () => {
++    const decision = await mergeCmd.defaultPrepareMergeDecision({
++      issueId: ISSUE,
++      pr: 42,
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      binding: { branch: 'feature/merge', gitCommonDir: 'C:/repo/.git' },
++      actor: 'release-actor',
++      sessionId: 'release-session',
++      config: ENABLED,
++      projectRoot: process.cwd(),
++      now: '2026-08-01T12:00:00.000Z',
++      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
++    });
++    expect(decision.packet.payload).toMatchObject({
++      issue_id: ISSUE,
++      expected_issue_revision: 7,
++      target_head: HEAD,
++      allowed_mutations: ['pr.merged'],
++      receipt_requirements: { gate_ids: ['gate.merge'] },
++    });
++
++    const calls = [];
++    const broker = Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async () => ({})]));
++    broker.recordPrLinkage = async (...callArgs) => { calls.push(callArgs); return { success: true }; };
++    broker.recordOpenedPrLinkage = async () => ({ success: true });
++    broker.readTrace = async () => [];
++    const terminal = await mergeCmd.defaultRecordMergeDecision({
++      decision,
++      pr: 42,
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      projectRoot: process.cwd(),
++      buildBroker: async () => ({ broker }),
++    });
++
++    expect(terminal.receiptId).toBeString();
++    expect(calls).toHaveLength(1);
++    expect(calls[0][0]).toMatchObject({
++      phase: 'merged',
++      repo: 'acme/forge',
++      number: 42,
++      branch: 'feature/merge',
++      work_packet: decision.packet,
++      run_receipt: { payload: { exact_head: HEAD, mutations_authorized: ['pr.merged'] } },
++    });
++    expect(calls[0][1]).toEqual({
++      actor: 'release-actor',
++      sessionId: 'release-session',
++      requireExactLifecycleOwnership: true,
++    });
++  });
++
+   test('requires one full expected head and issue before ownership or provider I/O', async () => {
+     for (const argv of [
+       ['42', '--auto', '--issue', ISSUE],
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index a79973dc..9447e49f 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -45,6 +45,9 @@ const AUTHORITY_DEPS = {
+   env: { FORGE_ACTOR: 'release-actor' },
+   verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+   verifyPrIssueBinding: async () => ({ bound: true }),
++  verifyMergeGate: async () => true,
++  prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
++  recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+ };
+ 
+ /** Create an isolated temp project; when `configObj` is given, write it to `.forge/config.yaml`. */
+-- 
+2.51.0.windows.1
+

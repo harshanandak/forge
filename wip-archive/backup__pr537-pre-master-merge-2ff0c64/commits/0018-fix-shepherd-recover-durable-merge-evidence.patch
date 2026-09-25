@@ -1,0 +1,450 @@
+From 62a70ff97cebe95edb08660baa4ee664d15a07ca Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 01:15:44 +0530
+Subject: [PATCH] fix(shepherd): recover durable merge evidence
+
+---
+ lib/commands/merge.js                         | 100 +++++++++++++++++-
+ lib/commands/shepherd.js                      |   5 +-
+ lib/kernel/sqlite-driver.js                   |  29 +++--
+ ...merge-authority-review-regressions.test.js |  47 ++++++++
+ test/commands/merge-authority.test.js         |  59 ++++++++++-
+ test/commands/shepherd.test.js                |  35 +++++-
+ test/kernel/trace.test.js                     |   4 +
+ 7 files changed, 252 insertions(+), 27 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index cf230758..e8334f59 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -140,6 +140,53 @@ function terminalEvidenceFromTrace(row, { issueId, repository, number, expectedH
+   };
+ }
+ 
++function validMergeAuthorityIteration(iteration, { issueId, repository, number, expectedHead }) {
++  const packet = iteration?.work_packet;
++  const validation = packet && typeof packet === 'object' ? validateContractStructure(packet) : { ok: false };
++  return [
++    iteration?.issue_id === issueId,
++    Number.isInteger(iteration?.issue_revision),
++    iteration?.issue_revision >= 0,
++    normalizeFullHeadSha(iteration?.head_sha) === expectedHead,
++    typeof iteration?.at === 'string' && Number.isFinite(Date.parse(iteration.at)),
++    typeof iteration?.actor === 'string' && iteration.actor.length > 0,
++    validation.ok,
++    packet?.schema_id === 'forge.memory.work-packet.v1',
++    packet ? computeContentHash(packet) === packet.content_hash : false,
++    packet?.content_hash === iteration?.work_packet_hash,
++    packet?.payload?.issue_id === issueId,
++    packet?.payload?.expected_issue_revision === iteration?.issue_revision,
++    normalizeRepository(packet?.payload?.repository_id) === repository,
++    normalizeFullHeadSha(packet?.payload?.target_head) === expectedHead,
++    packet?.payload?.target?.pr_number === number,
++    packet?.payload?.allowed_mutations?.includes('pr.merged'),
++  ].every(Boolean);
++}
++
++function canRecoverMergeAuthority(binding, authority, actor, sessionId) {
++  return [
++    authority?.actor === actor,
++    typeof sessionId === 'string' && sessionId.length > 0,
++    authority?.packet?.object_id,
++    authority?.packet?.content_hash,
++    typeof binding?.branch === 'string' && binding.branch.length > 0,
++    typeof binding?.gitCommonDir === 'string' && binding.gitCommonDir.length > 0,
++  ].every(Boolean);
++}
++
++function mergeAuthorityFromTrace(row, identity) {
++  const expectedHead = normalizeFullHeadSha(identity.expectedHead);
++  if (!expectedHead) return { invalid: true };
++  const authority = (Array.isArray(row?.iterations) ? row.iterations : [])
++    .filter(iteration => iteration?.type === 'pr.merge-authorized');
++  if (authority.length === 0) return null;
++  const exact = authority.filter(iteration => validMergeAuthorityIteration(iteration, {
++    ...identity, expectedHead,
++  }));
++  if (exact.length !== 1) return { invalid: true };
++  return { actor: exact[0].actor, occurredAt: exact[0].at, packet: exact[0].work_packet };
++}
++
+ function parseMergeArgs(argv) {
+   const values = { auto: false, pr: null, expectedHead: null, issueId: null, error: null };
+   const seen = new Set();
+@@ -322,17 +369,26 @@ async function defaultVerifyPrIssueBinding({
+     if (!selection.row) return { bound: false, error: selection.error };
+     const { row } = selection;
+     const bound = (allowRetired || row.state === 'open') && row.issue_id === issueId;
++    const traceIdentity = {
++      issueId,
++      repository,
++      number: Number(number),
++      expectedHead: normalizeFullHeadSha(prContext?.headSha),
++    };
+     const terminalEvidence = allowRetired && bound
+       ? terminalEvidenceFromTrace(row, {
+-        issueId,
+-        repository,
+-        number: Number(number),
+-        expectedHead: normalizeFullHeadSha(prContext?.headSha),
++        ...traceIdentity,
+       })
+       : null;
+     if (terminalEvidence?.invalid) {
+       return { bound: false, error: 'Kernel merged PR evidence is incomplete or ambiguous.' };
+     }
++    const mergeAuthority = allowRetired && bound && !terminalEvidence
++      ? mergeAuthorityFromTrace(row, traceIdentity)
++      : null;
++    if (mergeAuthority?.invalid) {
++      return { bound: false, error: 'Kernel merge authority evidence is incomplete or ambiguous.' };
++    }
+     return {
+       bound,
+       repository,
+@@ -343,6 +399,7 @@ async function defaultVerifyPrIssueBinding({
+       gitCommonDir: row.git_common_dir || built.gitCommonDir,
+       error: prBindingError(bound, allowRetired),
+       ...(terminalEvidence ? { terminalEvidence } : {}),
++      ...(mergeAuthority ? { mergeAuthority } : {}),
+     };
+   } catch (err) {
+     return { bound: false, error: `Kernel PR linkage verification failed: ${err.message}` };
+@@ -737,7 +794,7 @@ function mandatoryContextError(context, expectedHead) {
+   return protectedGate.allowed ? null : protectedGate.reason;
+ }
+ 
+-async function recoverMergedTerminal({ pr, parsed, root, prContext, deps }) {
++async function recoverMergedTerminal({ pr, parsed, root, prContext, ownershipActor, ownershipSessionId, deps }) {
+   const repository = normalizeRepository(prContext?.repository);
+   if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead || !repository) {
+     return { success: false, merged: true, error: 'Merged PR identity does not match the expected head and repository.' };
+@@ -760,6 +817,39 @@ async function recoverMergedTerminal({ pr, parsed, root, prContext, deps }) {
+       ...binding.terminalEvidence,
+     };
+   }
++  const authority = binding.mergeAuthority;
++  if (canRecoverMergeAuthority(binding, authority, ownershipActor, ownershipSessionId)) {
++    const decision = {
++      decisionId: authority.packet.object_id,
++      packet: authority.packet,
++      occurredAt: authority.occurredAt,
++      actor: ownershipActor,
++      sessionId: ownershipSessionId,
++      binding: {
++        branch: binding.branch,
++        gitCommonDir: binding.gitCommonDir,
++        ...(binding.url ? { url: binding.url } : {}),
++      },
++    };
++    const recordMergeDecision = deps.recordMergeDecision || defaultRecordMergeDecision;
++    const terminal = await recordMergeDecision({
++      decision,
++      mergeResult: { merged: true, recovered: true },
++      completedAt: currentTimestamp(deps.now || Date.now),
++      pr,
++      expectedHead: parsed.expectedHead,
++      repository,
++      projectRoot: root,
++      buildBroker: deps.buildMergeBroker,
++    });
++    if (terminal && typeof terminal.receiptId === 'string' && terminal.receiptId) {
++      return {
++        success: true, merged: true, enabled: true, recovered: true,
++        decisionId: decision.decisionId,
++        ...terminal,
++      };
++    }
++  }
+   return {
+     success: false,
+     merged: true,
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index c9b3f1da..dbe91055 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -73,8 +73,9 @@ function findRepositoryRemote(git, repository, { push = false } = {}) {
+   const remotes = git('git', ['remote']).split(/\s+/).filter(Boolean);
+   return remotes.find((remote) => {
+     try {
+-      const args = ['remote', 'get-url', ...(push ? ['--push'] : []), remote];
+-      return repositoryFromRemoteUrl(git('git', args)) === repository;
++      const args = ['remote', 'get-url', ...(push ? ['--push', '--all'] : []), remote];
++      const urls = git('git', args).split(/\r?\n/).map(url => url.trim()).filter(Boolean);
++      return urls.length > 0 && urls.every(url => repositoryFromRemoteUrl(url) === repository);
+     } catch {
+       return false;
+     }
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 2ec1910d..694a8e5c 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1386,6 +1386,7 @@ function parseTraceEvent(row) {
+ 		id: row.id,
+ 		type: row.event_type,
+ 		at: row.created_at,
++		actor: row.actor ?? null,
+ 		issue_id: payload.issue_id ?? null,
+ 		worktree_id: payload.worktree_id ?? null,
+ 		issue_revision: payload.issue_revision ?? null,
+@@ -1397,22 +1398,30 @@ function parseTraceEvent(row) {
+ 		attempt_id: payload.attempt_id ?? null,
+ 		risk_manifest_digest: payload.risk_manifest_digest ?? null,
+ 		gate_receipts: payload.gate_receipts ?? null,
++		work_packet: payload.work_packet ?? null,
+ 		url: payload.url ?? null,
+ 	};
+ }
+ 
+ function isCompleteTraceIteration(event) {
+ 	if (!event.type?.startsWith('pr.')) return true;
+-	return typeof event.issue_id === 'string' && event.issue_id.length > 0
+-		&& typeof event.worktree_id === 'string' && event.worktree_id.length > 0
+-		&& Number.isInteger(event.issue_revision) && event.issue_revision >= 0
+-		&& /^[0-9a-f]{40}$/.test(event.head_sha)
+-		&& /^[0-9a-f]{64}$/.test(event.work_packet_hash)
+-		&& typeof event.work_packet_identity === 'string' && event.work_packet_identity.length > 0
+-		&& /^[0-9a-f]{64}$/.test(event.run_receipt_hash)
+-		&& /^[0-9a-f]{64}$/.test(event.risk_manifest_digest)
+-		&& Array.isArray(event.gate_receipts) && event.gate_receipts.length > 0
+-		&& event.gate_receipts.every(receipt => typeof receipt === 'string' && receipt.length > 0);
++	const common = [
++		typeof event.issue_id === 'string' && event.issue_id.length > 0,
++		typeof event.worktree_id === 'string' && event.worktree_id.length > 0,
++		Number.isInteger(event.issue_revision) && event.issue_revision >= 0,
++		/^[0-9a-f]{40}$/.test(event.head_sha),
++		/^[0-9a-f]{64}$/.test(event.work_packet_hash),
++		typeof event.work_packet_identity === 'string' && event.work_packet_identity.length > 0,
++		/^[0-9a-f]{64}$/.test(event.risk_manifest_digest),
++		Array.isArray(event.gate_receipts) && event.gate_receipts.length > 0,
++		event.gate_receipts?.every(receipt => typeof receipt === 'string' && receipt.length > 0),
++	].every(Boolean);
++	if (!common) return false;
++	if (event.type === 'pr.merge-authorized') {
++		return typeof event.actor === 'string' && event.actor.length > 0
++			&& event.work_packet && typeof event.work_packet === 'object';
++	}
++	return /^[0-9a-f]{64}$/.test(event.run_receipt_hash);
+ }
+ 
+ function loadPrTraceRow(runtime, db, row, gaps) {
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 412c0eeb..c4e68164 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -650,6 +650,53 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(result.terminalEvidence.receiptId).toMatch(uuid);
+   });
+ 
++  test('merge recovery exposes one exact persisted authority packet from the durable trace', async () => {
++    const decision = await mergeCmd.defaultPrepareMergeDecision({
++      issueId: ISSUE,
++      pr: 42,
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      binding: { branch: 'feature/merge', gitCommonDir: '/repo/.git' },
++      actor: 'release-actor',
++      sessionId: 'release-session',
++      config: ENABLED,
++      projectRoot: process.cwd(),
++      now: '2026-08-01T12:00:00.000Z',
++      runIssue: async () => ({ ok: true, data: { revision: 7 } }),
++    });
++    const result = await mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context({ state: 'MERGED' }),
++      allowRetired: true,
++      buildBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: {
++          readTrace: async () => ({
++            pull_requests: [{
++              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              branch: 'feature/merge', git_common_dir: '/repo/.git',
++              iterations: [{
++                id: 'authority-event', type: 'pr.merge-authorized', at: '2026-08-01T12:00:00.000Z',
++                actor: 'release-actor', issue_id: ISSUE, issue_revision: 7, head_sha: HEAD,
++                work_packet_hash: decision.packet.content_hash, work_packet: decision.packet,
++              }],
++            }],
++          }),
++        },
++        driver: { close() {} },
++      }),
++    });
++
++    expect(result).toMatchObject({
++      bound: true,
++      mergeAuthority: {
++        actor: 'release-actor', occurredAt: '2026-08-01T12:00:00.000Z', packet: decision.packet,
++      },
++    });
++  });
++
+   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
+     const result = await mergeCmd.defaultVerifyPrIssueBinding({
+       issueId: ISSUE,
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index cb7601ef..7558361e 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -223,18 +223,67 @@ describe('merge command — mandatory release authority', () => {
+     expect(recorded.completedAt).toBe('2026-08-01T12:00:05.000Z');
+   });
+ 
+-  test('keeps missing terminal linkage incomplete when GitHub already reports the exact PR merged', async () => {
++  test('repairs missing terminal linkage from persisted exact-head authority', async () => {
+     let merges = 0;
+-    let records = 0;
++    let recorded;
++    const packet = {
++      object_id: 'decision-existing',
++      created_at: '2026-08-01T12:00:00.000Z',
++      content_hash: 'f'.repeat(64),
++      payload: {},
++    };
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => context({ state: 'MERGED' }),
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        branch: 'feature/merge',
++        gitCommonDir: 'C:/repo/.git',
++        mergeAuthority: {
++          actor: 'release-actor',
++          occurredAt: '2026-08-01T12:00:00.000Z',
++          packet,
++        },
++      }),
+       mergePr: async () => { merges += 1; },
+-      recordMergeDecision: async () => { records += 1; return { receiptId: 'receipt-recovered' }; },
++      recordMergeDecision: async (input) => {
++        recorded = input;
++        return { receiptId: 'receipt-recovered', receiptHash: 'e'.repeat(64) };
++      },
+     }));
+ 
+-    expect(out).toMatchObject({ success: false, merged: true, replayMissing: true });
+-    expect(out.error).toMatch(/pre-merge authority/i);
++    expect(out).toMatchObject({
++      success: true, merged: true, recovered: true,
++      decisionId: 'decision-existing', receiptId: 'receipt-recovered', receiptHash: 'e'.repeat(64),
++    });
+     expect(merges).toBe(0);
++    expect(recorded).toMatchObject({
++      decision: {
++        decisionId: 'decision-existing', actor: 'release-actor', sessionId: 'release-session', packet,
++        binding: { branch: 'feature/merge', gitCommonDir: 'C:/repo/.git' },
++      },
++      mergeResult: { merged: true, recovered: true },
++      pr: '42',
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++    });
++  });
++
++  test('does not repair terminal linkage from authority persisted by another actor', async () => {
++    let records = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        mergeAuthority: {
++          actor: 'another-actor',
++          occurredAt: '2026-08-01T12:00:00.000Z',
++          packet: { object_id: 'decision-foreign', content_hash: 'f'.repeat(64) },
++        },
++      }),
++      recordMergeDecision: async () => { records += 1; },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: true, replayMissing: true });
+     expect(records).toBe(0);
+   });
+ 
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 07b1398d..d1072033 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -91,7 +91,7 @@ describe('shepherd command handler', () => {
+     };
+     const git = (_cmd, args) => {
+       if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
+-      const remote = args[2] === '--push' ? args[3] : args[2];
++      const remote = args.at(-1);
+       if (args[0] === 'remote' && args[1] === 'get-url' && remote === 'fork') {
+         return 'git@github.com:contributor/widget.git\n';
+       }
+@@ -124,8 +124,8 @@ describe('shepherd command handler', () => {
+       : JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+     const git = (_cmd, args) => {
+       if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
+-      const push = args[2] === '--push';
+-      const remote = push ? args[3] : args[2];
++      const push = args.includes('--push');
++      const remote = args.at(-1);
+       if (remote === 'upstream') return 'https://github.com/acme/widget.git\n';
+       if (remote === 'fork') return push
+         ? 'git@github.com:attacker/other.git\n'
+@@ -147,8 +147,8 @@ describe('shepherd command handler', () => {
+       : JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+     const git = (_cmd, args) => {
+       if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
+-      const push = args[2] === '--push';
+-      const remote = push ? args[3] : args[2];
++      const push = args.includes('--push');
++      const remote = args.at(-1);
+       if (remote === 'upstream') return 'https://github.com/acme/widget.git\n';
+       if (remote === 'fork') return push
+         ? 'git@github.com:contributor/widget.git\n'
+@@ -160,6 +160,31 @@ describe('shepherd command handler', () => {
+     expect(ctx.pushRemote).toBe('fork');
+   });
+ 
++  test('defaultBuildContext rejects a remote when any configured push URL targets another repository', async () => {
++    const gh = (_cmd, args) => args.includes('pr')
++      ? JSON.stringify({
++        baseRefName: 'master', headRefName: 'feature/safe-rebase', headRefOid: 'a'.repeat(40),
++        headRepository: { name: 'widget' }, headRepositoryOwner: { login: 'contributor' },
++        url: 'https://github.com/acme/widget/pull/42',
++      })
++      : JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++    const git = (_cmd, args) => {
++      if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
++      const push = args.includes('--push');
++      const remote = args.at(-1);
++      if (remote === 'upstream') return 'https://github.com/acme/widget.git\n';
++      if (remote === 'fork' && push && args.includes('--all')) {
++        return 'git@github.com:contributor/widget.git\ngit@github.com:attacker/other.git\n';
++      }
++      if (remote === 'fork' && push) return 'git@github.com:contributor/widget.git\n';
++      if (remote === 'fork') return 'git@github.com:contributor/widget.git\n';
++      return '';
++    };
++
++    const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
++    expect(ctx.pushRemote).toBeNull();
++  });
++
+   test('defaultBuildContext permits fork PR observation without a contributor remote', async () => {
+     const gh = (_cmd, args) => {
+       if (args.includes('pr') && args.includes('view')) {
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 77cf0267..7566df97 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -241,6 +241,10 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+ 		expect(trace.pull_requests[0].iterations.map(event => event.type))
+ 			.toEqual(['pr.opened', 'pr.merge-authorized', 'pr.merged']);
++		expect(trace.pull_requests[0].iterations[1]).toMatchObject({
++			actor: 'agent-1',
++			work_packet: packet,
++		});
+ 	});
+ 
+ 	test('rejects a terminal merge receipt without persisted exact-head authority', async () => {
+-- 
+2.51.0.windows.1
+

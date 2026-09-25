@@ -1,0 +1,437 @@
+From d5fffba1cb755fa9c8a24886b7a95cb9db444d71 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 11:36:25 +0530
+Subject: [PATCH] fix(setup): add skills-only adoption mode
+
+---
+ bin/forge.js                                  |  7 ++
+ docs/guides/SETUP.md                          |  6 ++
+ .../bd-call-site-kill-list.md                 |  4 +-
+ lib/commands/setup.js                         | 94 +++++++++++++------
+ test/setup-skills-only.test.js                | 84 +++++++++++++++++
+ 5 files changed, 162 insertions(+), 33 deletions(-)
+ create mode 100644 test/setup-skills-only.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index c2bc693d..d9f93de4 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -2337,6 +2337,7 @@ function parseFlags() {
+     verbose: false,   // Show file-by-file detail in setup summary
+     dryRun: false,    // Preview planned actions without writing files
+     symlink: false,   // Create CLAUDE.md as symlink to AGENTS.md (--symlink)
++    skillsOnly: false, // Install skills without Git or harness hook enforcement
+   };
+ 
+   // Issue passthrough commands delegate all flags to bd.
+@@ -2402,6 +2403,9 @@ function parseFlags() {
+     } else if (arg === '--symlink') {
+       flags.symlink = true;
+       i++;
++    } else if (arg === '--skills-only' || arg === '--no-hooks') {
++      flags.skillsOnly = true;
++      i++;
+     } else if (arg === '--interview') {
+       flags.interview = true;
+       i++;
+@@ -2559,6 +2563,8 @@ function showHelp() {
+   console.log('  --type <type>        Set workflow profile type manually');
+   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
+   console.log('  --dry-run            Preview planned actions without writing any files');
++  console.log('  --skills-only        Install skills without Git, Forge-native, or harness hooks');
++  console.log('                       Alias: --no-hooks');
+   console.log('  --interview          Force context interview (gather project information)');
+   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
+   console.log('  --yes, -y            Non-interactive setup with sensible defaults');
+@@ -2584,6 +2590,7 @@ function showHelp() {
+   console.log('  npx forge setup --yes                    # Non-interactive, defaults to claude');
+   console.log('  npx forge setup --yes --agents cursor   # Non-interactive, specific agent');
+   console.log('  npx forge setup --all --skip-external    # All agents, no services');
++  console.log('  npx forge setup --agents claude --skills-only # Skills without hook enforcement');
+   console.log('  npx forge setup --merge=smart            # Use intelligent merge for existing files');
+   console.log('  npx forge setup --type=critical          # Set workflow profile manually');
+   console.log('  npx forge setup --interview              # Force context interview');
+diff --git a/docs/guides/SETUP.md b/docs/guides/SETUP.md
+index 0ed0140b..98df9377 100644
+--- a/docs/guides/SETUP.md
++++ b/docs/guides/SETUP.md
+@@ -59,10 +59,16 @@ bunx forge setup --agents claude cursor
+ bunx forge setup --all --quick
+ bunx forge setup --path ./my-project --agents codex --dry-run
+ bunx forge setup --merge smart --agents claude,cursor
++bunx forge setup --agents claude --skills-only
+ ```
+ 
+ Use `--agents`, not `--agent`.
+ 
++Use `--skills-only` (or its `--no-hooks` alias) when you want the Forge skill
++suite without installing Git hooks, Forge-native hook scripts, or Claude/Cursor
++native hook enforcement. The default `forge setup` behavior is unchanged, and
++the option is safe to re-run.
++
+ ## Agent Notes
+ 
+ Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 31ac2020..fb341925 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## command
+ 
+ - [ ] bin/forge.js (2)
+-  - lines: 2342 (bd), 3771 (bd)
++  - lines: 2343 (bd), 3778 (bd)
+ - [ ] lib/commands/migrate.js (17)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (6)
+@@ -72,7 +72,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## docs
+ 
+ - [ ] docs/guides/SETUP.md (3)
+-  - lines: 10 (bd), 82 (bd, .beads), 110 (dolt)
++  - lines: 10 (bd), 88 (bd, .beads), 116 (dolt)
+ - [ ] docs/guides/SUPPORT.md (26)
+   - lines: 18 (bd), 19 (bd, dolt), 23 (bd), 53 (dolt), 58 (dolt), 60 (.beads), 66 (bd), 67 (bd, dolt), 68 (bd, dolt), 69 (bd, dolt), 72 (.beads, dolt), 76 (.beads), 78 (bd), 79 (.beads), 80 (.beads), 81 (bd, dolt), 85 (dolt), 87 (.beads), 93 (bd), 94 (bd, dolt), 124 (dolt), 136 (.beads), 149 (.beads), 157 (.beads), 163 (.beads), 170 (.beads)
+ - [ ] docs/PROJECT_DESIGN.md (20)
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 37f781ee..b7e37175 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2067,7 +2067,7 @@ function createAgentLinkFile(agent, symlinkOnly = false) {
+ 
+ 
+ // Setup specific agent
+-async function setupAgent(agentKey, skipFiles = {}) {
++async function setupAgent(agentKey, skipFiles = {}, options = {}) {
+   const agent = AGENTS[agentKey];
+   if (!agent) return;
+ 
+@@ -2107,11 +2107,13 @@ async function setupAgent(agentKey, skipFiles = {}) {
+   // Projects Forge's TDD-gate + protected-path enforcement onto each harness's
+   // native hook surface. Codex hooks are GLOBAL-config scope and intentionally
+   // not written at project setup (see lib/hook-renderer.js).
+-  if (agentKey === 'claude') {
+-    setupClaudeHooksConfig();
+-  }
+-  if (agent.customSetup === 'cursor') {
+-    setupCursorHooksConfig();
++  if (!options.skillsOnly) {
++    if (agentKey === 'claude') {
++      setupClaudeHooksConfig();
++    }
++    if (agent.customSetup === 'cursor') {
++      setupCursorHooksConfig();
++    }
+   }
+ 
+   // Create link file (SYMLINK_ONLY = --symlink flag disables copy fallback)
+@@ -3472,7 +3474,8 @@ async function ensureGitHooksInstalled(targetRoot = projectRoot) {
+ 
+ 
+ // Quick setup with defaults
+-async function quickSetup(selectedAgents, skipExternal) {
++async function quickSetup(selectedAgents, skipExternal, options = {}) {
++  const skillsOnly = options.skillsOnly === true;
+   showBanner('Quick Setup');
+   console.log('');
+   console.log('Quick mode: Using defaults...');
+@@ -3499,26 +3502,34 @@ async function quickSetup(selectedAgents, skipExternal) {
+ 
+   ensureWorkflowShellPolicy(selectedAgents);
+ 
+-  // Auto-install lefthook if missing
+-  autoInstallLefthook();
++  // Auto-install lefthook if missing unless the caller explicitly requested skills only.
++  if (!skillsOnly) {
++    autoInstallLefthook();
++  }
+ 
+   // Auto-setup project tools (Kernel issue store, Skills)
+   await autoSetupToolsInQuickMode();
+ 
+   // Setup Claude first if selected, then setup remaining agents
+   if (selectedAgents.includes('claude')) {
+-    await setupAgent('claude');
++    await setupAgent('claude', {}, { skillsOnly });
+   }
+-  await setupSelectedAgents(selectedAgents);
++  await setupSelectedAgents(selectedAgents, undefined, { skillsOnly });
+   ensureWorkflowRuntimeAssets(selectedAgents);
+ 
+   // Detect Husky and migrate before installing Lefthook hooks
+-  await handleHuskyMigration();
++  if (!skillsOnly) {
++    await handleHuskyMigration();
++  }
+ 
+   // Install git hooks for TDD enforcement. LOUD: this is the `forge setup` handler,
+   // so an inert-hooks result must fail non-zero (B3), not end green.
+   console.log('');
+-  installGitHooks({ loud: true });
++  if (skillsOnly) {
++    console.log('Skipping git and harness hooks (--skills-only).');
++  } else {
++    installGitHooks({ loud: true });
++  }
+ 
+   // Configure external services with defaults (unless skipped)
+   configureDefaultExternalServices(skipExternal);
+@@ -3690,13 +3701,13 @@ async function promptForOverwriteDecisions(question, projectStatus, flags = {})
+ 
+ 
+ // Helper: Setup all selected agents - extracted to reduce cognitive complexity
+-async function setupSelectedAgents(selectedAgents, skipFiles) {
++async function setupSelectedAgents(selectedAgents, skipFiles, options = {}) {
+   const totalAgents = selectedAgents.length;
+   for (const [index, agentKey] of selectedAgents.entries()) {
+     const agent = AGENTS[agentKey];
+     console.log(`\n[${index + 1}/${totalAgents}] Setting up ${agent.name}...`);
+     if (agentKey !== 'claude') { // Claude already done above
+-      await setupAgent(agentKey, skipFiles);
++      await setupAgent(agentKey, skipFiles, options);
+     }
+   }
+ 
+@@ -3812,11 +3823,11 @@ async function interactiveSetupWithFlags(flags) {
+ 
+   // Setup Claude first if selected (delegated to helper), then remaining agents
+   if (selectedAgents.includes('claude')) {
+-    await setupAgent('claude', skipFiles);
++    await setupAgent('claude', skipFiles, flags);
+   }
+ 
+   // Setup each selected agent with progress indication (delegated to helper)
+-  await setupSelectedAgents(selectedAgents, skipFiles);
++  await setupSelectedAgents(selectedAgents, skipFiles, flags);
+   ensureWorkflowRuntimeAssets(selectedAgents);
+ 
+   // Handle external services step (delegated to helper)
+@@ -3830,7 +3841,7 @@ async function interactiveSetupWithFlags(flags) {
+ 
+   // One-step onboarding: this path never writes .forge/config.yaml itself, so
+   // run `forge init` when the config is still absent (ac0b38c7).
+-  await finalizeWorkflowConfig();
++  await finalizeWorkflowConfig({ hooksAlreadyInstalled: flags.skillsOnly === true });
+ }
+ 
+ // Main
+@@ -3903,7 +3914,7 @@ function determineSelectedAgents(flags) {
+ // Shared setup executor — used by handleSetupCommand
+ 
+ // Dry-run setup — enumerate planned actions without writing files
+-function dryRunSetup(agents) { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
++function dryRunSetup(agents, options = {}) { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
+   const collector = new ActionCollector();
+ 
+   // Helper: add create or skip based on whether file exists
+@@ -3973,10 +3984,12 @@ function dryRunSetup(agents) { // NOSONAR — Extracted as-is from bin/forge.js;
+     }
+   }
+ 
+-  // Git hooks
+-  addFileAction('lefthook.yml', 'Git hook configuration');
+-  addFileAction('.forge/hooks/check-tdd.js', 'TDD enforcement hook');
+-  addFileAction('.forge/hooks/forge-native-hook.js', 'Native-hook enforcement adapter (Claude/Cursor)');
++  // Git and harness hooks are opt-out for skills-only setup.
++  if (options.skillsOnly !== true) {
++    addFileAction('lefthook.yml', 'Git hook configuration');
++    addFileAction('.forge/hooks/check-tdd.js', 'TDD enforcement hook');
++    addFileAction('.forge/hooks/forge-native-hook.js', 'Native-hook enforcement adapter (Claude/Cursor)');
++  }
+ 
+   // Print dry-run summary
+   console.log('');
+@@ -3991,7 +4004,13 @@ function dryRunSetup(agents) { // NOSONAR — Extracted as-is from bin/forge.js;
+ 
+ 
+ async function executeSetup(config) {
+-  const { agents, skipExternal, keepExisting = false, commandRunner } = config;
++  const {
++    agents,
++    skipExternal,
++    keepExisting = false,
++    commandRunner,
++    skillsOnly = false,
++  } = config;
+ 
+   showBanner('Installing for specified agents...');
+   console.log('');
+@@ -4024,20 +4043,28 @@ async function executeSetup(config) {
+ 
+   // Setup Claude first if selected, then remaining agents
+   if (agents.includes('claude')) {
+-    await setupAgent('claude', skipFiles);
++    await setupAgent('claude', skipFiles, { skillsOnly });
+   }
+-  await setupSelectedAgents(agents, skipFiles);
++  await setupSelectedAgents(agents, skipFiles, { skillsOnly });
+   ensureWorkflowRuntimeAssets(agents);
+   ensureWorkflowShellPolicy(agents);
+-  repairDeclaredLefthookDependency(agents);
++  if (!skillsOnly) {
++    repairDeclaredLefthookDependency(agents);
++  }
+ 
+   // Detect Husky and migrate before installing Lefthook hooks
+-  await handleHuskyMigration();
++  if (!skillsOnly) {
++    await handleHuskyMigration();
++  }
+ 
+   // Install git hooks for TDD enforcement. LOUD: this is the `forge setup` handler,
+   // so an inert-hooks result must fail non-zero (B3), not end green.
+   console.log('');
+-  installGitHooks({ loud: true });
++  if (skillsOnly) {
++    console.log('Skipping git and harness hooks (--skills-only).');
++  } else {
++    installGitHooks({ loud: true });
++  }
+ 
+   // External services (unless skipped)
+   await handleExternalServices(skipExternal, agents);
+@@ -4089,6 +4116,7 @@ async function handleSetupCommand(selectedAgents, flags) {
+       skipExternal: flags.skipExternal,
+       keepExisting: flags.keep,
+       commandRunner: flags.commandRunner,
++      skillsOnly: flags.skillsOnly,
+     });
+   } finally {
+     projectRoot = savedRoot;
+@@ -4233,6 +4261,7 @@ const SETUP_FLAG_DEFAULTS = Object.freeze({
+   sync: false,
+   symlink: false,
+   nonInteractive: false,
++  skillsOnly: false,
+ });
+ 
+ const SIMPLE_SETUP_FLAG_UPDATES = Object.freeze({
+@@ -4251,6 +4280,8 @@ const SIMPLE_SETUP_FLAG_UPDATES = Object.freeze({
+   '--symlink': { symlink: true },
+   '--yes': { yes: true, nonInteractive: true },
+   '-y': { yes: true, nonInteractive: true },
++  '--skills-only': { skillsOnly: true },
++  '--no-hooks': { skillsOnly: true },
+ });
+ 
+ function parseAgentFlag(argv, currentIndex, isFlagToken) {
+@@ -4329,6 +4360,7 @@ function mergeSetupFlags(flags, argv) {
+     skipExternal: Boolean(flags.skipExternal || setupFlags.skipExternal),
+     symlink: Boolean(flags.symlink || setupFlags.symlink),
+     nonInteractive: Boolean(flags.nonInteractive || setupFlags.nonInteractive),
++    skillsOnly: Boolean(flags.skillsOnly || setupFlags.skillsOnly),
+   };
+ }
+ 
+@@ -4414,7 +4446,7 @@ module.exports = {
+ 
+     if (flags.dryRun) {
+       if (selectedAgents.length === 0) selectedAgents = ['claude'];
+-      dryRunSetup(selectedAgents);
++      dryRunSetup(selectedAgents, { skillsOnly: flags.skillsOnly });
+       return { success: true };
+     }
+ 
+@@ -4423,7 +4455,7 @@ module.exports = {
+       if (selectedAgents.length === 0 || (flags.yes && !flags.agents)) {
+         selectedAgents = Object.keys(AGENTS);
+       }
+-      await quickSetup(selectedAgents, flags.skipExternal);
++      await quickSetup(selectedAgents, flags.skipExternal, { skillsOnly: flags.skillsOnly });
+       return { success: true };
+     }
+ 
+diff --git a/test/setup-skills-only.test.js b/test/setup-skills-only.test.js
+new file mode 100644
+index 00000000..6829270a
+--- /dev/null
++++ b/test/setup-skills-only.test.js
+@@ -0,0 +1,84 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { spawnSync } = require('node:child_process');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const FORGE_BIN = path.join(__dirname, '..', 'bin', 'forge.js');
++const tempDirs = [];
++const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
++
++function makeTempRepo() {
++  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-only-'));
++  tempDirs.push(repo);
++  spawnSync('git', ['init'], { cwd: repo, encoding: 'utf8' });
++  spawnSync('git', ['config', 'user.email', 'forge@test.invalid'], { cwd: repo });
++  spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repo });
++  return repo;
++}
++
++function runSetup(repo, ...args) {
++  return spawnSync(
++    process.execPath,
++    [FORGE_BIN, 'setup', '--agents', 'claude', '--skip-external', ...args, '--path', repo],
++    {
++      cwd: repo,
++      encoding: 'utf8',
++      timeout: 120000,
++      env: { ...process.env, INIT_CWD: repo },
++    },
++  );
++}
++
++afterEach(() => {
++  while (tempDirs.length > 0) {
++    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
++  }
++});
++
++describe('forge setup --skills-only', () => {
++  test('installs skills while leaving Git, Forge-native, and Claude hooks absent', () => {
++    if (!gitAvailable) return;
++    const repo = makeTempRepo();
++    const result = runSetup(repo, '--skills-only');
++    const output = `${result.stdout || ''}${result.stderr || ''}`;
++    const settingsPath = path.join(repo, '.claude', 'settings.json');
++
++    expect(result.status).toBe(0);
++    expect(output).not.toContain('Installing git hooks');
++    expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'plan', 'SKILL.md'))).toBe(true);
++    expect(fs.existsSync(path.join(repo, 'lefthook.yml'))).toBe(false);
++    expect(fs.existsSync(path.join(repo, '.forge', 'hooks', 'check-tdd.js'))).toBe(false);
++    expect(fs.existsSync(path.join(repo, '.forge', 'hooks', 'forge-native-hook.js'))).toBe(false);
++    expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(false);
++    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).hooks).toBeUndefined();
++  }, 120000);
++
++  test('keeps default setup hook installation unchanged and reruns safely', () => {
++    if (!gitAvailable) return;
++    const repo = makeTempRepo();
++    const first = runSetup(repo);
++    const second = runSetup(repo);
++    const output = `${first.stdout || ''}${first.stderr || ''}${second.stdout || ''}${second.stderr || ''}`;
++
++    expect(first.status).toBe(0);
++    expect(second.status).toBe(0);
++    expect(output).toContain('Native git hooks installed');
++    expect(fs.existsSync(path.join(repo, '.forge', 'hooks', 'check-tdd.js'))).toBe(true);
++    expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(true);
++    expect(fs.readFileSync(path.join(repo, '.claude', 'settings.json'), 'utf8')).toContain('hooks');
++  }, 120000);
++
++  test('accepts --no-hooks as an alias for --skills-only', () => {
++    if (!gitAvailable) return;
++    const repo = makeTempRepo();
++    const result = runSetup(repo, '--no-hooks');
++
++    expect(result.status).toBe(0);
++    expect(fs.existsSync(path.join(repo, '.claude', 'skills', 'plan', 'SKILL.md'))).toBe(true);
++    expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(false);
++    expect(fs.existsSync(path.join(repo, '.forge', 'hooks'))).toBe(false);
++  }, 120000);
++});
+-- 
+2.51.0.windows.1
+

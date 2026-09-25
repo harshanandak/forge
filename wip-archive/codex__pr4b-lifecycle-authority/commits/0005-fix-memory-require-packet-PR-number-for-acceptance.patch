@@ -1,0 +1,25 @@
+From 82f042219f2952b963561ec6b1dda74eb33a07b7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 17:33:01 +0530
+Subject: [PATCH] fix(memory): require packet PR number for acceptance
+
+---
+ packages/memory/src/pr-lifecycle-authority.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index bde27d79..b46f1fab 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -458,7 +458,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {} } = {}) {
+     }
+     const linkage = deriveLinkage(packet, receipt, live.gates);
+     const target = packet.payload.target;
+-    if (!target || !Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0
++    if (!target || !Number.isInteger(target.pr_number) || target.pr_number <= 0
+       || typeof target.branch !== 'string' || typeof target.git_common_dir !== 'string' || typeof target.url !== 'string') {
+       fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'receipt acceptance requires authoritative PR linkage fields');
+     }
+-- 
+2.51.0.windows.1
+

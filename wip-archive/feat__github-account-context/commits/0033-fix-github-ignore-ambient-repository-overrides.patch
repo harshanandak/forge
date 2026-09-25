@@ -1,0 +1,63 @@
+From c168a96102b6af0e2b5ffb209594fad69915b1e9 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 05:09:07 +0530
+Subject: [PATCH] fix(github): ignore ambient repository overrides
+
+---
+ lib/github-context.js       | 2 +-
+ test/github-context.test.js | 9 ++++++---
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+index 6e2f0ffc..fb1b38ae 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -5,7 +5,7 @@ const { execFileSync } = require('node:child_process');
+ const ACCOUNT_KEY = 'github.account';
+ const HOST = 'github.com';
+ const LOGIN_RE = /^(?=.{1,39}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+-const GITHUB_ENV_NAMES = new Set(['gh_token', 'github_token', 'gh_host']);
++const GITHUB_ENV_NAMES = new Set(['gh_token', 'github_token', 'gh_host', 'gh_repo']);
+ const GITHUB_SECRET_ENV_NAMES = new Set(['gh_token', 'github_token']);
+ 
+ class GithubContextError extends Error {
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index 3dd02b10..985c3f16 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -69,7 +69,7 @@ describe('github context', () => {
+     const calls = [];
+     const context = createGithubContext('/repo', {
+       runner: fakeRunner(calls, { account: 'Work-Login', liveLogin: 'work-login', token: 'token-canary' }),
+-      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_HOST: 'evil.example', gh_token: 'also-wrong' },
++      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_HOST: 'evil.example', GH_REPO: 'wrong/repository', gh_token: 'also-wrong' },
+     });
+ 
+     expect(context.status).toEqual({ state: 'ready', account: 'Work-Login', login: 'work-login' });
+@@ -81,6 +81,7 @@ describe('github context', () => {
+     expect(calls[1].options.env).not.toHaveProperty('GH_TOKEN');
+     expect(calls[1].options.env).not.toHaveProperty('GITHUB_TOKEN');
+     expect(calls[1].options.env).not.toHaveProperty('GH_HOST');
++    expect(calls[1].options.env).not.toHaveProperty('GH_REPO');
+     expect(calls[1].options.env).not.toHaveProperty('gh_token');
+     expect(calls[2]).toMatchObject({
+       args: ['api', '--hostname', 'github.com', 'user', '--jq', '.login'],
+@@ -130,11 +131,13 @@ describe('github context', () => {
+     const calls = [];
+     const context = prepareGithubContext('/repo', {
+       runner: fakeRunner(calls, { account: 'octo', liveLogin: 'octo', token: 'token-canary' }),
+-      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
++      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient', GH_REPO: 'wrong/repository' },
+     });
+-    context.runChild('trusted-agent', ['--flag'], { env: { CUSTOM: 'value' } });
++    context.runChild('trusted-agent', ['--flag'], { env: { CUSTOM: 'value', gh_repo: 'other/repository' } });
+ 
+     expect(calls.at(-1).options.env).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
++    expect(calls.at(-1).options.env).not.toHaveProperty('GH_REPO');
++    expect(calls.at(-1).options.env).not.toHaveProperty('gh_repo');
+     expect(context).not.toHaveProperty('buildChildEnv');
+     expect(context).not.toHaveProperty('token');
+     expect(JSON.stringify(context)).not.toContain('token-canary');
+-- 
+2.51.0.windows.1
+

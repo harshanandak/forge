@@ -1,0 +1,584 @@
+From 78de56181ffcb56c285727430aa4a85c32168d60 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 02:12:46 +0530
+Subject: [PATCH] fix: bind owner mutation preconditions
+
+---
+ lib/kernel/sqlite-driver.js                 |  26 +++-
+ lib/pr-monitor/watch-owner.js               |  93 ++++++++----
+ test/kernel/watch-owner-transaction.test.js |  34 ++++-
+ test/pr-monitor/watch-owner.test.js         | 150 +++++++++++++++++++-
+ 4 files changed, 265 insertions(+), 38 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index a94ca6cc..67512553 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2959,7 +2959,7 @@ const WATCH_GATE_SNAPSHOT_FIELDS = Object.freeze([
+ const WATCH_OWNER_MUTATION_FIELDS = Object.freeze([
+ 	'repo', 'pr', 'controllerPid', 'watcherPid', 'expectedControllerPid', 'generation',
+ 	'terminalReceiptId', 'expectedReceiptId', 'now', 'snapshotHash', 'legacyEvidenceHash',
+-	'blockReason', 'action', 'expectedSnapshot',
++	'blockReason', 'action', 'expectedSnapshot', 'expectedGate',
+ ]);
+ const WATCH_GATE_STATES = new Set(['quarantined', 'conflict', 'complete']);
+ const WATCH_GATE_CONFLICT_CODES = new Set([
+@@ -3218,11 +3218,17 @@ function prepareWatchOwnerMutationInput(operation, input) {
+ 	const prepared = captureWatchOwnerMutationInput(input);
+ 	if (!prepared) return null;
+ 	if (!validWatchOwnerMutationInput(operation, prepared)) return null;
+-	if (!Object.prototype.hasOwnProperty.call(prepared, 'expectedSnapshot')) {
+-		return Object.freeze(prepared);
++	if (Object.prototype.hasOwnProperty.call(prepared, 'expectedSnapshot')) {
++		const expectedSnapshot = copyWatchOwnerSnapshot(prepared.expectedSnapshot);
++		if (expectedSnapshot === undefined) return null;
++		prepared.expectedSnapshot = expectedSnapshot;
+ 	}
+-	const expectedSnapshot = copyWatchOwnerSnapshot(prepared.expectedSnapshot);
+-	return expectedSnapshot === undefined ? null : Object.freeze({ ...prepared, expectedSnapshot });
++	if (Object.prototype.hasOwnProperty.call(prepared, 'expectedGate')) {
++		const expectedGate = copyWatchGateSnapshot(prepared.expectedGate);
++		if (expectedGate === undefined) return null;
++		prepared.expectedGate = expectedGate;
++	}
++	return Object.freeze(prepared);
+ }
+ 
+ function applyWatchOwnerOperation(runtime, databasePath, options, operation, rawInput) {
+@@ -3235,6 +3241,16 @@ function applyWatchOwnerOperation(runtime, databasePath, options, operation, raw
+ 			&& !sameWatchOwnerSnapshot(current, input.expectedSnapshot)) {
+ 			return watchOwnerResult(false, false, 'stale_evidence', current);
+ 		}
++		if (Object.prototype.hasOwnProperty.call(input, 'expectedGate')) {
++			const currentGate = allParams(runtime, database,
++				`SELECT * FROM ${WATCH_GATE_TABLE} WHERE singleton = 1`)[0] || null;
++			if (currentGate && !validWatchGateRow(currentGate)) {
++				return watchOwnerResult(false, false, 'corrupt', current);
++			}
++			if (!sameWatchGateSnapshot(currentGate, input.expectedGate)) {
++				return watchOwnerResult(false, false, 'stale_evidence', current);
++			}
++		}
+ 		if (watchOwnerUpdatedAtRegresses(operation, current, input)) {
+ 			return watchOwnerResult(false, false, 'stale_evidence', current);
+ 		}
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index f64e01ae..82304b2e 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -23,6 +23,13 @@ const CONFLICT_CODES = new Set([
+ 	'legacy_owner_conflict',
+ ]);
+ const GATE_STATES = new Set(['quarantined', 'conflict', 'complete']);
++const MONOTONIC_OWNER_METHODS = new Set([
++	'watchOwnerReserveReopened', 'watchOwnerBindRunning', 'watchOwnerHeartbeat',
++	'watchOwnerRequestStop', 'watchOwnerRecordTerminal', 'watchOwnerCompleteTerminal',
++	'watchOwnerRecoverDeadStarting', 'watchOwnerRecoverDeadWatcher',
++	'watchOwnerMarkLegacyBlocked', 'watchOwnerRecheckLegacyBlocked',
++	'watchOwnerImportLegacyStarting', 'watchOwnerImportLegacyComplete',
++]);
+ 
+ const MUTATION_INPUT_FIELDS = [
+ 	'generation', 'controllerPid', 'pid', 'recoveryControllerPid',
+@@ -328,7 +335,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 				.some(timestamp => timestamp > input.now))) return false;
+ 	switch (method) {
+ 	case 'watchOwnerReserveStarting':
+-		return validOwnerSuccess(result, record, 'acquired', {
++		return input.expectedSnapshot === null && validOwnerSuccess(result, record, 'acquired', {
+ 			controllerPid: input.controllerPid, legacyEvidenceHash: null,
+ 		}, 'starting')
+ 			&& stampedOwnerTimestamp(result, input, record, 'startedAt')
+@@ -432,7 +439,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			&& stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+ 	case 'watchOwnerMarkLegacyBlocked':
+-		if (input.expectedSnapshot && result.reason !== 'idempotent') return false;
++		if (!quarantinedGateMatches(input) || (input.expectedSnapshot && result.reason !== 'idempotent')) return false;
+ 		return validOwnerSuccess(result, record, 'blocked', {
+ 			watcherPid: input.watcherPid, terminalReceiptId: input.terminalReceiptId ?? null,
+ 			blockReason: input.blockReason, legacyEvidenceHash: input.legacyEvidenceHash,
+@@ -453,13 +460,13 @@ function validOwnerOperationResult(method, input, result, record) {
+ 		}, 'complete') && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+ 	case 'watchOwnerImportLegacyStarting':
+-		return validOwnerSuccess(result, record, 'imported', {
++		return quarantinedGateMatches(input) && validOwnerSuccess(result, record, 'imported', {
+ 			controllerPid: input.controllerPid, legacyEvidenceHash: input.legacyEvidenceHash,
+ 		}, 'starting', true) && importedOwnerGeneration(result, input, record)
+ 			&& stampedOwnerTimestamp(result, input, record, 'startedAt')
+ 			&& stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	case 'watchOwnerImportLegacyComplete':
+-		return validOwnerSuccess(result, record, 'imported', {
++		return quarantinedGateMatches(input) && validOwnerSuccess(result, record, 'imported', {
+ 			watcherPid: null, terminalReceiptId: input.terminalReceiptId,
+ 			legacyEvidenceHash: input.legacyEvidenceHash,
+ 		}, 'complete', true) && importedOwnerGeneration(result, input, record)
+@@ -470,6 +477,12 @@ function validOwnerOperationResult(method, input, result, record) {
+ 	}
+ }
+ 
++function quarantinedGateMatches(input) {
++	return input.expectedGate?.state === 'quarantined'
++		&& input.expectedGate.snapshot_hash === input.snapshotHash
++		&& input.expectedGate.conflict_code == null;
++}
++
+ function bindAuthorityOptions(opts = {}, methods = []) {
+ 	try {
+ 		if (BOUND_OPTIONS.has(opts)) return opts;
+@@ -514,6 +527,7 @@ function captureMutationInput(input = {}) {
+ function invoke(method, identity, input, opts) {
+ 	const operation = opts?.authorityMethods?.[method];
+ 	if (typeof operation !== 'function') return invalid('authority_unavailable');
++	if (ownerMutationRegresses(method, { ...identity, ...input })) return invalid('stale_evidence');
+ 	try {
+ 		const result = operation({ ...identity, ...input }, opts.databaseConfig || {});
+ 		if (result && typeof result.then === 'function') {
+@@ -540,6 +554,15 @@ function invoke(method, identity, input, opts) {
+ 	}
+ }
+ 
++function ownerMutationRegresses(method, input) {
++	const prior = input.expectedSnapshot;
++	if (!prior || !MONOTONIC_OWNER_METHODS.has(method)
++		|| (method === 'watchOwnerRecheckLegacyBlocked' && input.action === 'release')) return false;
++	return [prior.updated_at, prior.heartbeat_at]
++		.filter(Boolean)
++		.some(timestamp => Date.parse(input.now) < Date.parse(timestamp));
++}
++
+ function captureAuthoritySnapshot(ctx, opts) {
+ 	const identity = normalizeIdentity(ctx);
+ 	if (!identity) return { ok: false, reason: 'invalid_input' };
+@@ -709,13 +732,17 @@ async function enumerateOwners(_ctx, opts = {}) {
+ }
+ 
+ async function reserveStarting(ctx, input, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerReserveStarting']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerRead', 'watchOwnerReserveStarting']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalid();
+ 	input = capturedInput;
+ 	const value = mutationInput(ctx, input, boundOpts, { generation: false });
+ 	if (!value || !positivePid(input?.controllerPid)) return invalid('invalid_reservation');
+-	return invoke('watchOwnerReserveStarting', value, { controllerPid: Number(input.controllerPid) }, boundOpts);
++	const captured = captureAuthoritySnapshot(ctx, boundOpts);
++	if (!captured.ok) return invalid(captured.reason);
++	return invoke('watchOwnerReserveStarting', value, {
++		controllerPid: Number(input.controllerPid), expectedSnapshot: captured.snapshot,
++	}, boundOpts);
+ }
+ 
+ async function reserveReopened(ctx, input, opts = {}) {
+@@ -955,7 +982,9 @@ async function recoverDeadWatcher(ctx, input, opts = {}) {
+ }
+ 
+ async function markLegacyBlocked(ctx, input, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerRead', 'watchOwnerMarkLegacyBlocked']);
++	const boundOpts = bindAuthorityOptions(opts, [
++		'watchOwnerRead', 'watchGateRead', 'watchOwnerMarkLegacyBlocked',
++	]);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalid();
+ 	input = capturedInput;
+@@ -974,6 +1003,8 @@ async function markLegacyBlocked(ctx, input, opts = {}) {
+ 	if ((blockReason === 'legacy_live_pid') !== positivePid(watcherPid)) return invalid('invalid_legacy_evidence');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
++	const gate = captureQuarantinedGate(snapshotHash, boundOpts);
++	if (!gate.ok) return invalid(gate.reason);
+ 	if (terminalReceiptId != null && !boundedString(terminalReceiptId, MAX_RECEIPT_BYTES)) return invalid('invalid_legacy_evidence');
+ 	const exactBlockedReplay = captured.snapshot?.phase === 'blocked'
+ 		&& captured.snapshot.block_reason === blockReason
+@@ -984,7 +1015,7 @@ async function markLegacyBlocked(ctx, input, opts = {}) {
+ 	return invoke('watchOwnerMarkLegacyBlocked', value, {
+ 		watcherPid, blockReason, terminalReceiptId: terminalReceiptId || null,
+ 		legacyEvidenceHash, snapshotHash,
+-		expectedSnapshot: captured.snapshot,
++		expectedSnapshot: captured.snapshot, expectedGate: gate.snapshot,
+ 	}, boundOpts);
+ }
+ 
+@@ -1012,21 +1043,21 @@ async function recheckLegacyBlocked(ctx, input, opts = {}) {
+ 	if (action === 'release' && prior.block_reason !== 'legacy_live_pid') {
+ 		return invalid('invalid_transition');
+ 	}
+-	const storedLivePid = prior.block_reason === 'legacy_live_pid' ? prior.watcher_pid : null;
+-	if (storedLivePid != null && (!positivePid(pid) || pid !== storedLivePid)) {
+-		return invalid('pid_mismatch');
+-	}
+-	if (pid != null && await pidState(Number(pid), boundOpts) !== false) return invalid('pid_live');
++	const watcherPid = pid == null ? null : pid;
++	if (prior.watcher_pid !== watcherPid) return invalid('pid_mismatch');
++	if (watcherPid != null && await pidState(watcherPid, boundOpts) !== false) return invalid('pid_live');
+ 	if (action === 'complete' && !await receiptVerified(value, terminalReceiptId, boundOpts)) return invalid('receipt_unverified');
+ 	return invoke('watchOwnerRecheckLegacyBlocked', value, {
+ 		action, legacyEvidenceHash,
+ 		terminalReceiptId: action === 'complete' ? terminalReceiptId : null,
+-		watcherPid: pid == null ? null : Number(pid), expectedSnapshot: captured.snapshot,
++		watcherPid, expectedSnapshot: captured.snapshot,
+ 	}, boundOpts);
+ }
+ 
+ async function importLegacyComplete(ctx, input, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerRead', 'watchOwnerImportLegacyComplete']);
++	const boundOpts = bindAuthorityOptions(opts, [
++		'watchOwnerRead', 'watchGateRead', 'watchOwnerImportLegacyComplete',
++	]);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalid();
+ 	input = capturedInput;
+@@ -1038,9 +1069,11 @@ async function importLegacyComplete(ctx, input, opts = {}) {
+ 	if (!value || !validHash(snapshotHash) || !validHash(legacyEvidenceHash)) {
+ 		return invalid('invalid_legacy_evidence');
+ 	}
++	if (legacyPid != null && !positivePid(legacyPid)) return invalid('invalid_legacy_evidence');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
+-	if (legacyPid != null && !positivePid(legacyPid)) return invalid('invalid_legacy_evidence');
++	const gate = captureQuarantinedGate(snapshotHash, boundOpts);
++	if (!gate.ok) return invalid(gate.reason);
+ 	const exactCompleteReplay = captured.snapshot?.phase === 'complete'
+ 		&& captured.snapshot.legacy_evidence_hash === legacyEvidenceHash
+ 		&& captured.snapshot.terminal_receipt_id === terminalReceiptId;
+@@ -1050,7 +1083,7 @@ async function importLegacyComplete(ctx, input, opts = {}) {
+ 	}
+ 	return invoke('watchOwnerImportLegacyComplete', value, {
+ 		snapshotHash, legacyEvidenceHash,
+-		terminalReceiptId, expectedSnapshot: captured.snapshot,
++		terminalReceiptId, expectedSnapshot: captured.snapshot, expectedGate: gate.snapshot,
+ 	}, boundOpts);
+ }
+ 
+@@ -1073,12 +1106,8 @@ async function importLegacyStarting(ctx, input, opts = {}) {
+ 	}
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
+-	const gate = await readMigrationGate({}, boundOpts);
+-	if (!gate.ok) return invalid(gate.reason === 'corrupt' ? 'corrupt' : gate.reason === 'authority_unavailable'
+-		? 'authority_unavailable' : 'gate_mismatch');
+-	if (gate.gate.state !== 'quarantined' || gate.gate.snapshot_hash !== snapshotHash) {
+-		return invalid('gate_mismatch');
+-	}
++	const gate = captureQuarantinedGate(snapshotHash, boundOpts);
++	if (!gate.ok) return invalid(gate.reason);
+ 	const exactStartingReplay = captured.snapshot?.phase === 'starting'
+ 		&& captured.snapshot.controller_pid === controllerPid
+ 		&& captured.snapshot.legacy_evidence_hash === legacyEvidenceHash;
+@@ -1088,7 +1117,7 @@ async function importLegacyStarting(ctx, input, opts = {}) {
+ 	}
+ 	return invoke('watchOwnerImportLegacyStarting', value, {
+ 		snapshotHash, legacyEvidenceHash,
+-		controllerPid, expectedSnapshot: captured.snapshot,
++		controllerPid, expectedSnapshot: captured.snapshot, expectedGate: gate.snapshot,
+ 	}, boundOpts);
+ }
+ 
+@@ -1130,6 +1159,9 @@ const GATE_ENVELOPE_CONTRACTS = Object.freeze({
+ function invokeGate(method, input, opts) {
+ 	const operation = opts?.authorityMethods?.[method];
+ 	if (typeof operation !== 'function') return { ok: false, changed: false, reason: 'authority_unavailable', gate: null };
++	if (input.expectedGate && Date.parse(input.now) < Date.parse(input.expectedGate.updated_at)) {
++		return invalidGate('stale_evidence');
++	}
+ 	try {
+ 		const expectedGate = input.expectedGate == null
+ 			? input.expectedGate
+@@ -1181,6 +1213,19 @@ function captureMigrationGate(opts) {
+ 		: { ok: false, reason: captured.reason };
+ }
+ 
++function captureQuarantinedGate(snapshotHash, opts) {
++	const captured = captureMigrationGate(opts);
++	if (!captured.ok) {
++		return { ok: false, reason: ['corrupt', 'authority_unavailable'].includes(captured.reason)
++			? captured.reason : 'gate_mismatch' };
++	}
++	return captured.snapshot?.state === 'quarantined'
++		&& captured.snapshot.snapshot_hash === snapshotHash
++		&& captured.snapshot.conflict_code == null
++		? captured
++		: { ok: false, reason: 'gate_mismatch' };
++}
++
+ async function readMigrationGate(input = {}, opts = {}) {
+ 	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead']);
+ 	const capturedInput = captureMutationInput(input);
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index d1979d10..bba141e2 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -162,7 +162,7 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		const results = await Promise.all(runtimes.map((runtime, index) => runContender(runtime, databasePath, 1_000 + index)));
+ 		expect(results.filter(result => result.ok && result.changed)).toHaveLength(1);
+ 		expect(results.filter(result => !result.changed && !(
+-			result.ok === false && ['busy', 'authority_unavailable'].includes(result.reason)
++			result.ok === false && ['busy', 'stale_evidence', 'authority_unavailable'].includes(result.reason)
+ 		))).toEqual([]);
+ 		const rows = await driver.queryAll('SELECT repo, pr, generation FROM kernel_pr_watch_owners');
+ 		expect(rows).toHaveLength(1);
+@@ -437,7 +437,10 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(owner.transition).toBeUndefined();
+ 		expect(await owner.reserveStarting({ repo: 'acme/forge', pr: 80 }, {
+ 			controllerPid: 4_000, startedAt: NOW,
+-		}, { driver: { watchOwnerReserveStarting: async () => ({ ok: true }) } }))
++		}, { driver: {
++			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'absent', row: null }),
++			watchOwnerReserveStarting: async () => ({ ok: true }),
++		} }))
+ 			.toEqual({ ok: false, changed: false, reason: 'invalid_operation', record: null });
+ 	});
+ 
+@@ -706,6 +709,33 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		} });
+ 	});
+ 
++	test('atomically fences initial acquisition to an absent owner snapshot', () => {
++		const current = driver.watchOwnerReserveStarting({
++			repo: 'acme/forge', pr: 115, controllerPid: 7_115, now: NOW,
++		});
++		const raced = driver.watchOwnerReserveStarting({
++			repo: 'acme/forge', pr: 115, controllerPid: 8_115, now: LATER,
++			expectedSnapshot: null,
++		});
++		expect(raced).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 115 })).toMatchObject({ row: current.row });
++	});
++
++	test('atomically fences a legacy owner import to the captured migration gate', () => {
++		driver.watchGatePublishQuarantine({ now: NOW });
++		const bound = driver.watchGateBindSnapshot({ snapshotHash: HASH, now: NOW });
++		driver.watchGateCompleteMigration({ snapshotHash: HASH, now: LATER });
++		const result = driver.watchOwnerImportLegacyComplete({
++			repo: 'acme/forge', pr: 118, now: LATER,
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
++			terminalReceiptId: 'receipt-118', expectedSnapshot: null,
++			expectedGate: bound.gate,
++		});
++		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 118 }))
++			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
++	});
++
+ 	test('uses one prepared identity for evidence checks and deletion', async () => {
+ 		const starting = driver.watchOwnerReserveStarting({
+ 			repo: 'acme/forge', pr: 116, controllerPid: 7_116, now: NOW,
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 7159ac4c..e01933c4 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -281,9 +281,9 @@ describe('watch owner SQLite authority', () => {
+ 		['recheckLegacyBlocked', {
+ 			input: {
+ 				generation: 'generation-77', action: 'complete', legacyEvidenceHash: OTHER_HASH,
+-				pid: 101, terminalReceiptId: 'receipt-77', updatedAt: NOW,
++				terminalReceiptId: 'receipt-77', updatedAt: NOW,
+ 			},
+-			awaitKind: 'pid-and-receipt', pidResult: false,
++			awaitKind: 'receipt',
+ 			blocked: true,
+ 		}],
+ 		['importLegacyComplete', {
+@@ -1202,7 +1202,7 @@ describe('watch owner SQLite authority', () => {
+ 				await owner.completeMigrationGate({ snapshotHash: HASH, updatedAt: LATER }, { driver });
+ 				return true;
+ 			},
+-		})).toMatchObject({ ok: false, changed: false, reason: 'gate_mismatch' });
++		})).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
+ 		expect(await owner.readOwner(gateRaceCtx, { driver })).toMatchObject({ ok: true, reason: 'absent' });
+ 		await driver.exec(`UPDATE kernel_pr_watch_migration_gate
+ 			SET state = 'conflict', conflict_code = 'legacy_owner_conflict'`);
+@@ -1622,6 +1622,9 @@ describe('watch owner SQLite authority', () => {
+ 		expect(checkedPids).toEqual([]);
+ 		expect(await attempt(999)).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
+ 		expect(checkedPids).toEqual([]);
++		expect(await attempt('562')).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
++		expect(await attempt(true)).toMatchObject({ ok: false, changed: false, reason: 'pid_mismatch' });
++		expect(checkedPids).toEqual([]);
+ 		expect(await attempt(562)).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
+ 		expect(checkedPids).toEqual([562]);
+ 		expect(await driver.queryAll('SELECT pr FROM kernel_pr_watch_owners WHERE pr = 62')).toEqual([{ pr: 62 }]);
+@@ -2413,6 +2416,100 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(unhandled).toBe(0);
+ 	});
+ 
++	test('binds initial acquisition to the captured absent owner', async () => {
++		const ctx = { repo: 'acme/forge', pr: 958 };
++		const prior = await seedLifecycle(ctx, 'starting');
++		let submitted;
++		const result = await owner.reserveStarting(ctx, {
++			controllerPid: RECOVERY_PID, startedAt: LATER,
++		}, authorityOpts({
++			...driver,
++			watchOwnerReserveStarting: input => {
++				submitted = input;
++				return {
++					ok: true, changed: true, reason: 'acquired',
++					row: {
++						...toSnakeRow(prior.record), generation: 'forged-generation',
++						controller_pid: RECOVERY_PID, started_at: LATER, updated_at: LATER,
++					},
++				};
++			},
++		}));
++		expect(submitted.expectedSnapshot).toEqual(toSnakeRow(prior.record));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
++	test('rejects an acquisition race after reading an absent owner', async () => {
++		const ctx = { repo: 'acme/forge', pr: 960 };
++		let raced = false;
++		const result = await owner.reserveStarting(ctx, {
++			controllerPid: CONTROLLER_PID, startedAt: NOW,
++		}, authorityOpts({
++			...driver,
++			watchOwnerReserveStarting: input => {
++				if (!raced) {
++					raced = true;
++					driver.watchOwnerReserveStarting({
++						repo: ctx.repo, pr: ctx.pr, controllerPid: RECOVERY_PID, now: NOW,
++					});
++				}
++				return driver.watchOwnerReserveStarting(input);
++			},
++		}));
++		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(await owner.readOwner(ctx, { driver }))
++			.toMatchObject({ ok: true, record: { controllerPid: RECOVERY_PID } });
++	});
++
++	test.each([
++		['markLegacyBlocked', 'watchOwnerMarkLegacyBlocked', (ctx, opts) => owner.markLegacyBlocked(ctx, {
++			blockReason: 'legacy_lossy', snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, startedAt: NOW,
++		}, opts)],
++		['importLegacyStarting', 'watchOwnerImportLegacyStarting', (ctx, opts) => owner.importLegacyStarting(ctx, {
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, legacyPid: LEGACY_PID,
++			controllerPid: CONTROLLER_PID, providerEvidence: { state: 'OPEN' }, startedAt: NOW,
++		}, opts)],
++		['importLegacyComplete', 'watchOwnerImportLegacyComplete', (ctx, opts) => owner.importLegacyComplete(ctx, {
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
++			terminalReceiptId: RECEIPT_ID, startedAt: NOW,
++		}, opts)],
++	])('%s submits the exact quarantined gate to the owner mutation', async (_name, method, act) => {
++		const ctx = { repo: 'acme/forge', pr: 961 };
++		const gate = Object.freeze({
++			singleton: 1, state: 'quarantined', snapshot_hash: HASH,
++			conflict_code: null, updated_at: NOW,
++		});
++		let submitted;
++		const injected = {
++			...driver,
++			watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate }),
++			[method]: input => {
++				submitted = input;
++				return { ok: false, changed: false, reason: 'probe', row: null };
++			},
++		};
++		await act(ctx, authorityOpts(injected));
++		expect(submitted.expectedGate).toEqual(gate);
++		expect(Object.isFrozen(submitted.expectedGate)).toBe(true);
++	});
++
++	test('rejects a completed migration-gate race before importing a legacy terminal row', async () => {
++		const ctx = { repo: 'acme/forge', pr: 962 };
++		await seedGate(ctx);
++		const result = await owner.importLegacyComplete(ctx, {
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
++			terminalReceiptId: RECEIPT_ID, startedAt: LATER,
++		}, {
++			driver,
++			verifyTerminalReceipt: async () => {
++				await owner.completeMigrationGate({ snapshotHash: HASH, updatedAt: NEXT }, { driver });
++				return true;
++			},
++		});
++		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(await owner.readOwner(ctx, { driver })).toMatchObject({ ok: true, reason: 'absent' });
++	});
++
+ 	test('consumes rejected async enumeration promises without crashing the host', async () => {
+ 		let unhandled = 0;
+ 		const onUnhandled = () => { unhandled += 1; };
+@@ -2553,6 +2650,23 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result.ok).toBe(false);
+ 	});
+ 
++	test('rejects a gate timestamp regression before calling the mutation adapter', async () => {
++		await owner.publishMigrationQuarantine({ updatedAt: NOW }, authorityOpts());
++		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: LATER }, authorityOpts());
++		let mutationAttempts = 0;
++		const result = await owner.publishMigrationConflict({
++			snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', updatedAt: NOW,
++		}, authorityOpts({
++			...driver,
++			watchGatePublishConflict: () => {
++				mutationAttempts += 1;
++				return { ok: false, changed: false, reason: 'probe', gate: null };
++			},
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'stale_evidence', gate: null });
++		expect(mutationAttempts).toBe(0);
++	});
++
+ 	test('never exposes converted records from failed enumeration envelopes', async () => {
+ 		const validRow = {
+ 			repo: 'acme/forge', pr: 964, version: 1, generation: 'generation-964', phase: 'starting',
+@@ -3140,16 +3254,19 @@ describe('watch owner successful-result postcondition validation', () => {
+ 	test('rejects idempotent owner results submitted before retained owner timestamps', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 991 };
+ 		const stopped = await seedLifecycle(ctx, 'stop_requested');
++		let mutationAttempts = 0;
+ 		const result = await owner.requestStop(ctx, {
+ 			generation: stopped.generation, pid: WATCHER_PID, updatedAt: NOW,
+ 		}, authorityOpts({
+ 			...driver,
+-			watchOwnerRequestStop: () => ({
+-				ok: true, changed: false, reason: 'idempotent', row: toSnakeRow(stopped.record),
+-			}),
++			watchOwnerRequestStop: () => {
++				mutationAttempts += 1;
++				return { ok: true, changed: false, reason: 'idempotent', row: toSnakeRow(stopped.record) };
++			},
+ 		}));
+ 
+-		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++		expect(result).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
++		expect(mutationAttempts).toBe(0);
+ 	});
+ 
+ 	test('binds nonterminal release to a captured stopped owner', async () => {
+@@ -3250,6 +3367,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 
+ 	test('rejects changed blocked imports over an existing owner', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 988 };
++		await seedGate(ctx);
+ 		await seedLifecycle(ctx, 'running');
+ 		const result = await owner.markLegacyBlocked(ctx, {
+ 			blockReason: 'legacy_lossy', snapshotHash: HASH,
+@@ -3296,4 +3414,22 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'invalid_transition', record: null });
+ 		expect(mutationAttempts).toBe(0);
+ 	});
++
++	test('rejects a PID supplied for a non-live blocked owner before mutation', async () => {
++		const ctx = { repo: 'acme/forge', pr: 993 };
++		const blocked = await seedBlocked(ctx, false);
++		let mutationAttempts = 0;
++		const result = await owner.recheckLegacyBlocked(ctx, {
++			generation: blocked.generation, action: 'complete', legacyEvidenceHash: OTHER_HASH,
++			pid: LEGACY_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
++		}, authorityOpts({
++			...driver,
++			watchOwnerRecheckLegacyBlocked: () => {
++				mutationAttempts += 1;
++				return { ok: true, changed: true, reason: 'complete', row: toSnakeRow(blocked.record) };
++			},
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'pid_mismatch', record: null });
++		expect(mutationAttempts).toBe(0);
++	});
+ });
+-- 
+2.51.0.windows.1
+

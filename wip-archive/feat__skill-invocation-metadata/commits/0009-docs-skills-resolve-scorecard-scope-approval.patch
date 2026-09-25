@@ -1,0 +1,29 @@
+From a054167547f5002d2b7e2d0db42b935e9737109c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 19:16:39 +0530
+Subject: [PATCH] docs(skills): resolve scorecard scope approval
+
+---
+ docs/work/2026-07-29-skill-invocation-metadata/decisions.md | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-07-29-skill-invocation-metadata/decisions.md b/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+index a1fbae65..1597ea98 100644
+--- a/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
++++ b/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+@@ -15,7 +15,11 @@
+   Total: 2/14
+ - Mandatory override: affects a task already implemented and committed.
+ - Route: BLOCKED.
+-- Status: PENDING-DEVELOPER-INPUT.
++- Choice made: Accept the generated canonical and `.agents` scorecards because they are
++  deterministic consequences of the approved skill descriptions.
++- Status: RESOLVED.
++- Approval: On 2026-07-30, the user replied `continue` to the surfaced
++  `PENDING-DEVELOPER-INPUT` checkpoint.
+ - Recommendation: Approve retaining the deterministic scorecards produced by the existing
+   `forge skill eval --static` generator and committed mirror generator. They contain no
+   hand-edited data and do not change scorer behavior.
+-- 
+2.51.0.windows.1
+

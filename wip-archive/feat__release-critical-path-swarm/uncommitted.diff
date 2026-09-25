@@ -1,0 +1,62 @@
+diff --git a/.agents/skills/review/SKILL.md b/.agents/skills/review/SKILL.md
+index 90cb52e4..55e750a5 100644
+--- a/.agents/skills/review/SKILL.md
++++ b/.agents/skills/review/SKILL.md
+@@ -56,6 +56,16 @@ At packet creation, enumerate every required same-head check/reviewer and each o
+ 
+ Persist per-round evidence: head SHA, first/last reviewer activity, accepted/rejected findings, amendment count, validation artifact paths, and why another round was necessary. More than two post-review amendments is a planning/fixture defect signal and must be recorded for retrospective improvement.
+ 
++### Step 1B: Quarantine scope expansion
++
++Before implementing a review or shipping finding, classify its causal relationship to the active diff:
++
++- **Caused by this diff or required by its acceptance criteria:** fix it in the active PR and repeat exact-head review.
++- **Pre-existing, adjacent, or owned by another subsystem:** retain the counterexample, create/link a separate Forge issue and PR, and keep the active branch unchanged. Discovery location does not determine implementation ownership.
++- **Out-of-scope but blocks safe shipping:** create an isolated stable-base prerequisite hotfix. Independently review, merge, verify, and activate it; then rebase and re-review the original PR. Do not absorb candidate gate code into the blocked product lane or let it authorize itself.
++
++The active PR records only the dependency/blocker link and evidence. Expand its scope only when the user explicitly authorizes a one-off convergence; that exception does not redefine the default workflow.
++
+ ### Step 2: Address GitHub Actions Failures
+ 
+ If any GitHub Actions workflows fail:
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index 90cb52e4..55e750a5 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -56,6 +56,16 @@ At packet creation, enumerate every required same-head check/reviewer and each o
+ 
+ Persist per-round evidence: head SHA, first/last reviewer activity, accepted/rejected findings, amendment count, validation artifact paths, and why another round was necessary. More than two post-review amendments is a planning/fixture defect signal and must be recorded for retrospective improvement.
+ 
++### Step 1B: Quarantine scope expansion
++
++Before implementing a review or shipping finding, classify its causal relationship to the active diff:
++
++- **Caused by this diff or required by its acceptance criteria:** fix it in the active PR and repeat exact-head review.
++- **Pre-existing, adjacent, or owned by another subsystem:** retain the counterexample, create/link a separate Forge issue and PR, and keep the active branch unchanged. Discovery location does not determine implementation ownership.
++- **Out-of-scope but blocks safe shipping:** create an isolated stable-base prerequisite hotfix. Independently review, merge, verify, and activate it; then rebase and re-review the original PR. Do not absorb candidate gate code into the blocked product lane or let it authorize itself.
++
++The active PR records only the dependency/blocker link and evidence. Expand its scope only when the user explicitly authorizes a one-off convergence; that exception does not redefine the default workflow.
++
+ ### Step 2: Address GitHub Actions Failures
+ 
+ If any GitHub Actions workflows fail:
+diff --git a/test/skills/release-critical-path-contract.test.js b/test/skills/release-critical-path-contract.test.js
+index f09df8de..af1f3e73 100644
+--- a/test/skills/release-critical-path-contract.test.js
++++ b/test/skills/release-critical-path-contract.test.js
+@@ -44,6 +44,15 @@ describe('release critical-path skill contract', () => {
+     expect(review).toContain('cannot hold the barrier forever or count as approval');
+   });
+ 
++  test('review quarantines unrelated discoveries instead of expanding the active PR', () => {
++    const review = skill('review');
++
++    expect(review).toContain('Quarantine scope expansion');
++    expect(review).toContain('Discovery location does not determine implementation ownership');
++    expect(review).toContain('create an isolated stable-base prerequisite hotfix');
++    expect(review).toContain('records only the dependency/blocker link and evidence');
++  });
++
+   test('Shepherd remains non-merging and hands off with ownership plus actor scope', () => {
+     const shepherd = skill('shepherd');
+ 

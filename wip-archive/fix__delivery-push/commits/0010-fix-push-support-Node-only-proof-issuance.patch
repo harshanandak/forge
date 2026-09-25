@@ -1,0 +1,290 @@
+From 3b465c8dbc15889a5cfbc3fad3b17a0db1b81a77 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 05:37:44 +0530
+Subject: [PATCH] fix(push): support Node-only proof issuance
+
+---
+ .../2026-09-18-delivery-push/decisions.md     | 14 ++++
+ lib/validation-receipt.js                     | 39 +++++++---
+ test/check-forge-token.test.js                | 76 +++++++++++++++++++
+ test/validation-receipt.test.js               | 74 ++++++++++++++++++
+ 4 files changed, 191 insertions(+), 12 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-push/decisions.md b/docs/work/2026-09-18-delivery-push/decisions.md
+index ce537ddc..2ec4b97f 100644
+--- a/docs/work/2026-09-18-delivery-push/decisions.md
++++ b/docs/work/2026-09-18-delivery-push/decisions.md
+@@ -119,3 +119,17 @@
+ 
+ **RED**: With the old path, a missing marker completed the push and an `envFor` exception installed the signal handler before failing (0 passed, 2 failed). A truthy non-string marker was then shown to pass the first guard incorrectly (2 passed, 1 failed). The external full-mode auto-trigger fixture also failed its success assertion because its synthetic tree did not publish a marker.
+ **GREEN**: Missing, non-string, and throwing marker cases all abort before handler installation, spawn, proof writing, or Git push (3 passed, 18 expectations). The corrected auto-trigger fixture passed its named full-mode case. The eight-file affected set passed 191 tests with 1,082 expectations and 0 failures in 19.59 seconds, including the real detached-descendant timeout, cancellation, proof, receipt, runner-selection, backing-issue, GitHub-route, and singleton-trigger coverage.
++
++## Decision 10
++
++**Date**: 2026-09-20
++**Task**: Preserve push-proof reuse for Node-only consumers
++**Gap**: Push proof capture reused strict validation test-runtime discovery, so an npm, pnpm, or Yarn consumer without a default Bun executable could pass its selected tests but fail to mint authorization. The unchanged Node hook then reran those gates.
++**Score**: 0 / 14
++**Route**: PROCEED within the existing signed-proof issue
++**Choice made**: Keep validation receipts strict. For push proofs only, represent `ENOENT` from the unconfigured default `bun --version` probe as the fixed `missing:default-bun` identity. Configured `BUN_EXE`, Node, locator, permission, and nonzero failures remain fail-closed. Bun becoming available or unavailable changes the signed state and invalidates the proof. The consumer command-selection mismatch around configured `BUN_EXE` remains separate issue `af2eb94b-f941-44c2-90f5-13175b8e1ac8`.
++**Status**: RESOLVED IN SOURCE; CANONICAL RECHECK PENDING
++
++**RED**: The push snapshot was null when default Bun was absent, and a real isolated Node issuer exited 24 before writing its proof.
++**GREEN**: The full and quick missing-Bun states verify unchanged, while missing-to-available and available-to-missing states reject. Configured Bun, Node, locator, permission, and nonzero failures remain strict; receipt capture remains strict. The real Node-only issuer removed every PATH entry containing a platform-executable Bun name, self-proved Bun `ENOENT` plus working Node and Git, then the unchanged Node checker accepted and consumed its proof. The focused three-file run passed 83 tests with 236 expectations and 0 failures in 24.47 seconds. Standard ESLint, the isolated Sonar-parity ESLint configuration, and independent source/security review passed.
++**Compiled boundary**: An independent disposable compiled issuer removed configured/default Bun access in its child environment, proved Bun `ENOENT` plus working Node and Git, captured `missing:default-bun`, and wrote the proof under its live owner PID. The unchanged Node checker accepted and consumed it. The minimal compile exited 0 in 584 ms and the proof run exited 0 in 2.397 seconds; no repository files were edited.
+diff --git a/lib/validation-receipt.js b/lib/validation-receipt.js
+index d413e2a5..f2d8d8d5 100644
+--- a/lib/validation-receipt.js
++++ b/lib/validation-receipt.js
+@@ -45,13 +45,19 @@ function runtimeIdentity(deps = {}) {
+ 		|| [process.platform, process.arch, process.versions.node, process.versions.bun || 'node'].join(':');
+ }
+ 
+-function commandIdentity(command, projectRoot, env, run) {
+-	const version = run(command, ['--version'], {
+-		cwd: projectRoot,
+-		encoding: 'utf8',
+-		env,
+-		stdio: ['ignore', 'pipe', 'pipe'],
+-	}).trim();
++function commandIdentity(command, projectRoot, env, run, options = {}) {
++	let version;
++	try {
++		version = run(command, ['--version'], {
++			cwd: projectRoot,
++			encoding: 'utf8',
++			env,
++			stdio: ['ignore', 'pipe', 'pipe'],
++		}).trim();
++	} catch (error) {
++		if (options.missingIdentity && error?.code === 'ENOENT') return options.missingIdentity;
++		throw error;
++	}
+ 	const located = path.isAbsolute(command)
+ 		? fs.realpathSync.native(command)
+ 		: run(process.platform === 'win32' ? 'where.exe' : 'which', [command], {
+@@ -62,13 +68,19 @@ function commandIdentity(command, projectRoot, env, run) {
+ 	return `${process.platform === 'win32' ? located.toLowerCase() : located}:${version}`;
+ }
+ 
+-function testRuntimeIdentity(projectRoot, deps = {}) {
++function testRuntimeIdentity(projectRoot, deps = {}, options = {}) {
+ 	if (deps.testRuntimeIdentity) return deps.testRuntimeIdentity;
+ 	const env = deps.env || process.env;
+ 	const run = deps.runtimeExecFileSync || execFileSync;
+-	return [env.BUN_EXE || 'bun', 'node']
+-		.map(command => commandIdentity(command, projectRoot, env, run))
+-		.join('|');
++	const bunCommand = env.BUN_EXE || 'bun';
++	return [
++		commandIdentity(bunCommand, projectRoot, env, run, {
++			missingIdentity: options.allowMissingDefaultBun && !env.BUN_EXE
++				? 'missing:default-bun'
++				: null,
++		}),
++		commandIdentity('node', projectRoot, env, run),
++	].join('|');
+ }
+ 
+ function captureState(projectRoot, deps = {}) {
+@@ -96,7 +108,10 @@ function sameState(left, right) {
+ function capturePushState(projectRoot, deps = {}) {
+ 	if (deps.capturePushState) return deps.capturePushState(projectRoot);
+ 	const root = resolveGitRoot(projectRoot, deps);
+-	const state = captureState(root, deps);
++	const state = captureState(root, {
++		...deps,
++		testRuntimeIdentity: testRuntimeIdentity(root, deps, { allowMissingDefaultBun: true }),
++	});
+ 	delete state.runtime;
+ 	return {
+ 		...state,
+diff --git a/test/check-forge-token.test.js b/test/check-forge-token.test.js
+index ae041188..e56ab637 100644
+--- a/test/check-forge-token.test.js
++++ b/test/check-forge-token.test.js
+@@ -119,6 +119,82 @@ describe('check-forge-token', () => {
+       .toEqual({ status: 0, errorCode: null });
+   });
+ 
++  test('accepts a real Node-only proof in the Node hook checker', () => {
++    initializeRepo(root);
++    const homeDir = path.join(root, '.git', 'forge-test-home');
++    fs.mkdirSync(homeDir);
++    const fixture = path.join(root, '.git', 'node-only-proof-fixture.js');
++    fs.writeFileSync(fixture, `
++'use strict';
++const { spawnSync } = require('node:child_process');
++const [projectRoot, homeDir, checkerPath, receiptPath] = process.argv.slice(2);
++const missingBun = spawnSync('bun', ['--version'], { stdio: 'ignore' });
++if (missingBun.error?.code !== 'ENOENT') process.exit(21);
++for (const command of ['node', 'git']) {
++  const available = spawnSync(command, ['--version'], { stdio: 'ignore' });
++  if (available.error || available.status !== 0) process.exit(command === 'node' ? 22 : 23);
++}
++const forgeToken = require(checkerPath);
++const { _pushProof } = require(receiptPath);
++const options = { homeDir, env: process.env };
++const snapshot = _pushProof.begin(projectRoot, options);
++if (!snapshot) process.exit(24);
++const token = forgeToken.write(projectRoot, {
++  ...options,
++  snapshot,
++  mode: 'full',
++  gates: ['branch-protection', 'lint', 'tests'],
++  receiptIdentity: 'fresh-tests',
++});
++const checked = spawnSync(process.execPath, [checkerPath], {
++  cwd: projectRoot,
++  env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, ${JSON.stringify(NONCE_ENV)}: token.nonce },
++  stdio: 'ignore',
++});
++forgeToken.consume(projectRoot, { homeDir, nonce: token.nonce });
++process.exit(checked.error ? 25 : checked.status);
++`);
++    const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || globalThis.Bun?.which?.('node') || 'node';
++    const bunExecutableNames = process.platform === 'win32'
++      ? ['bun', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
++        .split(';')
++        .filter(Boolean)
++        .map(suffix => `bun${suffix.toLowerCase()}`)]
++      : ['bun'];
++    const childEnv = { ...process.env };
++    for (const key of Object.keys(childEnv)) {
++      if (key.toUpperCase() === 'PATH' || key.toUpperCase() === 'BUN_EXE') delete childEnv[key];
++    }
++    const providesBun = entry => bunExecutableNames.some((name) => {
++      try {
++        fs.accessSync(path.join(entry, name), process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
++        return true;
++      } catch {
++        return false;
++      }
++    });
++    childEnv.PATH = (process.env.PATH || '')
++      .split(path.delimiter)
++      .filter(entry => entry && !providesBun(entry))
++      .join(path.delimiter);
++    const result = spawnSync(nodeExecutable, [
++      fixture,
++      root,
++      homeDir,
++      path.resolve(__dirname, '../scripts/check-forge-token.js'),
++      path.resolve(__dirname, '../lib/validation-receipt.js'),
++    ], {
++      cwd: root,
++      encoding: 'utf8',
++      env: childEnv,
++      timeout: 10_000,
++      windowsHide: true,
++    });
++
++    expect({ status: result.status, errorCode: result.error?.code || null })
++      .toEqual({ status: 0, errorCode: null });
++  });
++
+   test('accepts quick only with its exact gate set and explicit quick child lane', () => {
+     const { token, options } = issue(root, 'quick');
+     expect(forgeToken.isValid(root, {
+diff --git a/test/validation-receipt.test.js b/test/validation-receipt.test.js
+index ac2c1e33..69307740 100644
+--- a/test/validation-receipt.test.js
++++ b/test/validation-receipt.test.js
+@@ -12,6 +12,7 @@ const {
+ 	verifyValidationReceipt,
+ 	_pushProof,
+ } = require('../lib/validation-receipt');
++const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../scripts/test');
+ 
+ function createRepo() {
+ 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge receipt path with spaces-'));
+@@ -40,6 +41,39 @@ function fullPass() {
+ 	};
+ }
+ 
++function probeRuntimes({ bun = 'available', node = 'available', locator = 'available' } = {}) {
++	return (command, args) => {
++		if (args[0] === '--version') {
++			const availability = command === 'node' ? node : bun;
++			if (availability !== 'available') {
++				const error = new Error(`${command} probe failed`);
++				error.code = availability;
++				throw error;
++			}
++			return command === 'node' ? '22.1.0\n' : '1.4.2\n';
++		}
++		if (locator !== 'available') {
++			const error = new Error('locator failed');
++			error.code = locator;
++			throw error;
++		}
++		const located = process.platform === 'win32' ? `C:\\tools\\${args[0]}.exe` : `/tools/${args[0]}`;
++		return `${located}\n`;
++	};
++}
++
++function pushClaims(mode) {
++	return {
++		nonce: mode === 'quick'
++			? '10000000-0000-4000-8000-000000000000'
++			: '00000000-0000-4000-8000-000000000000',
++		mode,
++		gates: mode === 'quick' ? ['branch-protection', 'lint'] : ['branch-protection', 'lint', 'tests'],
++		owner: { pid: 42, identity: 'process-start-a' },
++		receiptIdentity: mode === 'full' ? 'fresh-tests' : null,
++	};
++}
++
+ describe('validation receipt', () => {
+ 	test('binds receipts to both Bun and Node test runtimes', () => {
+ 		const repo = createRepo();
+@@ -164,6 +198,46 @@ describe('validation receipt', () => {
+ 		}
+ 	});
+ 
++	test('push proof represents only a missing default Bun runtime and binds availability changes', () => {
++		const { root, homeDir } = createRepo();
++		const base = { homeDir, runtimeIdentity: 'forge-runtime', env: {} };
++		const missingBun = { ...base, runtimeExecFileSync: probeRuntimes({ bun: 'ENOENT' }) };
++		const available = { ...base, runtimeExecFileSync: probeRuntimes() };
++		try {
++			expect(beginValidation(root, missingBun), 'validation receipts remain strict').toBeNull();
++
++			const missingSnapshot = _pushProof.begin(root, missingBun);
++			expect(missingSnapshot?.testRuntime).toContain('missing:default-bun');
++			for (const mode of ['full', 'quick']) {
++				const proof = _pushProof.create(root, missingSnapshot, pushClaims(mode), missingBun);
++				const env = mode === 'quick' ? { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE } : {};
++				expect(_pushProof.verify(root, proof, { nonce: proof.payload.nonce, env }, missingBun))
++					.toMatchObject({ valid: true });
++				expect(_pushProof.verify(root, proof, { nonce: proof.payload.nonce, env }, available))
++					.toMatchObject({ valid: false, reason: 'state' });
++			}
++
++			const availableSnapshot = _pushProof.begin(root, available);
++			const availableProof = _pushProof.create(root, availableSnapshot, pushClaims('full'), available);
++			expect(_pushProof.verify(root, availableProof, {
++				nonce: availableProof.payload.nonce,
++				env: {},
++			}, missingBun)).toMatchObject({ valid: false, reason: 'state' });
++
++			for (const strictFailure of [
++				{ ...base, env: { BUN_EXE: path.join(root, 'configured-missing-bun') }, runtimeExecFileSync: probeRuntimes({ bun: 'ENOENT' }) },
++				{ ...base, runtimeExecFileSync: probeRuntimes({ node: 'ENOENT' }) },
++				{ ...base, runtimeExecFileSync: probeRuntimes({ locator: 'ENOENT' }) },
++				{ ...base, runtimeExecFileSync: probeRuntimes({ bun: 'EACCES' }) },
++				{ ...base, runtimeExecFileSync: probeRuntimes({ bun: 'CHILD_PROCESS_FAILED' }) },
++			]) {
++				expect(_pushProof.begin(root, strictFailure)).toBeNull();
++			}
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
+ 	test('push proof refuses to bless mutations made after the pre-gate snapshot', () => {
+ 		const { root, homeDir } = createRepo();
+ 		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
+-- 
+2.51.0.windows.1
+

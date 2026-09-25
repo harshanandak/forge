@@ -1,0 +1,157 @@
+From 34b58e7de54a91c8a7785ec03af6fe05cfe4c28a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 21:11:58 +0530
+Subject: [PATCH] fix: require submitted timestamp on owner transitions
+
+---
+ lib/pr-monitor/watch-owner.js       | 21 +++++++++++++++-----
+ test/pr-monitor/watch-owner.test.js | 30 +++++++++++++++++++++++------
+ 2 files changed, 40 insertions(+), 11 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 49b218cd..d83b6bda 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -264,6 +264,14 @@ function importedOwnerGeneration(result, input, record) {
+ 		: !Object.is(record.generation, priorGeneration);
+ }
+ 
++// A transitioned row must carry the submitted timestamp — an unchanged row
++// returned as changed would fake durable-progress advancement. Idempotent
++// replays legitimately keep their original timestamps.
++function stampedOwnerTimestamp(result, input, record, field) {
++	if (result.reason === 'idempotent') return true;
++	return record != null && Object.is(record[field], input.now);
++}
++
+ function validOwnerOperationResult(method, input, result, record) {
+ 	if (method === 'watchOwnerRead') {
+ 		return result.changed === false && (result.reason === 'read') === (record != null);
+@@ -284,25 +292,28 @@ function validOwnerOperationResult(method, input, result, record) {
+ 	case 'watchOwnerBindRunning':
+ 		return validOwnerSuccess(result, record, 'bound', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+-		}, 'running', true);
++		}, 'running', true)
++			&& stampedOwnerTimestamp(result, input, record, 'updatedAt')
++			&& stampedOwnerTimestamp(result, input, record, 'heartbeatAt');
+ 	case 'watchOwnerHeartbeat':
+ 		return validOwnerSuccess(result, record, 'heartbeat', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
++			updatedAt: input.now, heartbeatAt: input.now,
+ 		}, ['running', 'stop_requested']);
+ 	case 'watchOwnerRequestStop':
+ 		return validOwnerSuccess(result, record, 'stop_requested', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+-		}, 'stop_requested', true);
++		}, 'stop_requested', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	case 'watchOwnerRecordTerminal':
+ 		return validOwnerSuccess(result, record, 'terminal_pending', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 			terminalReceiptId: input.terminalReceiptId,
+-		}, 'terminal_pending', true);
++		}, 'terminal_pending', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	case 'watchOwnerCompleteTerminal':
+ 		return validOwnerSuccess(result, record, 'complete', {
+ 			generation: input.generation, watcherPid: null,
+ 			terminalReceiptId: input.terminalReceiptId,
+-		}, 'complete', true);
++		}, 'complete', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	case 'watchOwnerAbortStarting': {
+ 		if (!input.expectedSnapshot) return false;
+ 		return result.reason === 'aborted' && result.changed === true && record === null;
+@@ -339,7 +350,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			generation: input.generation, watcherPid: null,
+ 			terminalReceiptId: input.terminalReceiptId, blockReason: null,
+ 			legacyEvidenceHash: input.legacyEvidenceHash,
+-		}, 'complete');
++		}, 'complete') && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+ 	case 'watchOwnerImportLegacyStarting':
+ 		return validOwnerSuccess(result, record, 'imported', {
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index d3fd9d46..56603ef2 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -1820,7 +1820,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 					generation: prior.generation, controllerPid: CONTROLLER_PID, pid: WATCHER_PID, updatedAt: LATER,
+ 				}, opts);
+ 			},
+-			expect: { changed: true, reason: 'bound' }, replay: true,
++			expect: { changed: true, reason: 'bound' }, replay: true, stampsNow: true,
+ 			assertSuccess(result, prior) {
+ 				expect(result.record.phase).toBe('running');
+ 				expect(result.record.controllerPid).toBeNull();
+@@ -1840,7 +1840,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 					generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
+ 				}, opts);
+ 			},
+-			expect: { changed: true, reason: 'heartbeat' }, forbidIdempotent: true,
++			expect: { changed: true, reason: 'heartbeat' }, forbidIdempotent: true, stampsNow: true,
+ 			assertSuccess(result, prior) {
+ 				expect(result.record.phase).toBe('running');
+ 				expect(result.record.watcherPid).toBe(WATCHER_PID);
+@@ -1859,7 +1859,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 					generation: prior.generation, pid: WATCHER_PID, updatedAt: NEXT,
+ 				}, opts);
+ 			},
+-			expect: { changed: true, reason: 'stop_requested' }, replay: true,
++			expect: { changed: true, reason: 'stop_requested' }, replay: true, stampsNow: true,
+ 			assertSuccess(result, prior) {
+ 				expect(result.record.phase).toBe('stop_requested');
+ 				expect(result.record.watcherPid).toBe(WATCHER_PID);
+@@ -1878,7 +1878,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 					generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+ 				}, opts);
+ 			},
+-			expect: { changed: true, reason: 'terminal_pending' }, replay: true,
++			expect: { changed: true, reason: 'terminal_pending' }, replay: true, stampsNow: true,
+ 			assertSuccess(result, prior) {
+ 				expect(result.record.phase).toBe('terminal_pending');
+ 				expect(result.record.terminalReceiptId).toBe(RECEIPT_ID);
+@@ -1898,7 +1898,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 					generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
+ 				}, opts);
+ 			},
+-			expect: { changed: true, reason: 'complete' }, replay: true,
++			expect: { changed: true, reason: 'complete' }, replay: true, stampsNow: true,
+ 			assertSuccess(result, prior) {
+ 				expect(result.record.phase).toBe('complete');
+ 				expect(result.record.watcherPid).toBeNull();
+@@ -2046,7 +2046,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 					terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
+ 				}, authorityOptsFor(opts, []));
+ 			},
+-			expect: { changed: true, reason: 'complete' }, forbidIdempotent: true,
++			expect: { changed: true, reason: 'complete' }, forbidIdempotent: true, stampsNow: true,
+ 			assertSuccess(result) {
+ 				expect(result.record.phase).toBe('complete');
+ 				expect(result.record.blockReason).toBeNull();
+@@ -2135,6 +2135,24 @@ describe('watch owner successful-result postcondition validation', () => {
+ 				expect(forged).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 			}
+ 
++			if (spec.stampsNow) {
++				const staleCtx = { repo: 'acme/forge', pr: 954 };
++				const stalePrior = await spec.seed(staleCtx);
++				const rewindingDriver = {
++					...driver,
++					[spec.driverMethod]: (input, config) => {
++						const result = driver[spec.driverMethod](input, config);
++						if (!result.ok || !result.row) return result;
++						const rewound = { ...result.row, updated_at: NOW };
++						if (rewound.heartbeat_at != null) rewound.heartbeat_at = NOW;
++						return { ...result, row: rewound };
++					},
++				};
++				void stalePrior;
++				const stale = await spec.act(staleCtx, stalePrior, authorityOpts(rewindingDriver));
++				expect(stale).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++			}
++
+ 			const tamperCtx = { repo: 'acme/forge', pr: 952 };
+ 			const tamperPrior = await spec.seed(tamperCtx);
+ 			const tamperingDriver = {
+-- 
+2.51.0.windows.1
+

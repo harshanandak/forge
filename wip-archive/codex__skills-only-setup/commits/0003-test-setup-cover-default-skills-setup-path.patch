@@ -1,0 +1,60 @@
+From 998ac1d1e3052f4711355614c343c935f628dbf8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 16:39:27 +0530
+Subject: [PATCH] test(setup): cover default skills setup path
+
+---
+ test/setup-skills-only.test.js | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/test/setup-skills-only.test.js b/test/setup-skills-only.test.js
+index 3a084882..d57d3c53 100644
+--- a/test/setup-skills-only.test.js
++++ b/test/setup-skills-only.test.js
+@@ -11,7 +11,7 @@ const tempDirs = [];
+ const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
+ const gitRequiredTest = gitAvailable
+   ? test
+-  : (name, _callback, timeout) => test.skip(`${name} (requires a Git executable)`, () => {}, timeout);
++  : (name, callback, timeout) => test.skip(`${name} (requires a Git executable)`, callback, timeout);
+ 
+ function makeTempRepo() {
+   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-only-'));
+@@ -35,6 +35,19 @@ function runSetup(repo, ...args) {
+   );
+ }
+ 
++function runDefaultSetup(repo, ...args) {
++  return spawnSync(
++    process.execPath,
++    [FORGE_BIN, 'setup', '--yes', '--skip-external', ...args, '--path', repo],
++    {
++      cwd: repo,
++      encoding: 'utf8',
++      timeout: 120000,
++      env: { ...process.env, INIT_CWD: repo },
++    },
++  );
++}
++
+ afterEach(() => {
+   while (tempDirs.length > 0) {
+     fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+@@ -60,8 +73,12 @@ describe('forge setup --skills-only', () => {
+ 
+   gitRequiredTest('keeps default setup hook installation unchanged and reruns safely', () => {
+     const repo = makeTempRepo();
+-    const first = runSetup(repo);
+-    const second = runSetup(repo);
++    spawnSync('git', ['commit', '--allow-empty', '-m', 'Initial commit'], {
++      cwd: repo,
++      encoding: 'utf8',
++    });
++    const first = runDefaultSetup(repo);
++    const second = runDefaultSetup(repo);
+     const output = `${first.stdout || ''}${first.stderr || ''}${second.stdout || ''}${second.stderr || ''}`;
+ 
+     expect(first.status).toBe(0);
+-- 
+2.51.0.windows.1
+

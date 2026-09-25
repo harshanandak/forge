@@ -1,0 +1,31 @@
+From 0bae09d862cf3eca9effd35250f5327cfea89fe4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 03:00:05 +0530
+Subject: [PATCH] fix(gates): wire the D20 auto-heal into the pre-commit hook
+
+---
+ lefthook.yml | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/lefthook.yml b/lefthook.yml
+index fddec161..1c81c591 100644
+--- a/lefthook.yml
++++ b/lefthook.yml
+@@ -21,6 +21,14 @@ pre-commit:
+       stage_fixed: false
+       tags: skills
+       glob: "skills/**"
++    # Keep the D20 bd call-site kill-list current with the census it audits.
++    # Self-gating: the script exits early unless a staged path actually counts toward
++    # the census, because those scan roots are resolved at run time (plugin manifests +
++    # .forge/sync-manifest.json) and a static glob here would drift from the gate.
++    sync-d20-audit:
++      run: node scripts/sync-d20-audit.js
++      stage_fixed: false
++      tags: release
+     protected-state:
+       run: node scripts/protected-state-check.js
+       stage_fixed: false
+-- 
+2.51.0.windows.1
+

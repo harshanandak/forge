@@ -1,0 +1,187 @@
+From 0b1cc90520dfe5465d72a75bde9c6c851d39903c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 12:27:55 +0530
+Subject: [PATCH] fix(pr-monitor): SonarCloud reliability + smells (sort
+ comparator, optional chains, matchers)
+
+---
+ lib/commands/shepherd.js        |  13 +++++++------
+ lib/pr-monitor/differ.js        |   4 ++--
+ lib/pr-monitor/events.js        | Bin 3588 -> 3705 bytes
+ lib/pr-monitor/gather.js        |   2 +-
+ lib/pr-monitor/journal.js       |   4 ++--
+ lib/pr-monitor/monitor.js       |   2 +-
+ test/pr-monitor/events.test.js  |   2 +-
+ test/pr-monitor/gather.test.js  |   4 ++--
+ test/pr-monitor/journal.test.js |   4 ++--
+ 9 files changed, 18 insertions(+), 17 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 64b135e4..939b5fc1 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -134,14 +134,16 @@ function makeCheckFailureEnricher(pullCtx) {
+     let failures;
+     try {
+       const pull = await gatherPull(pullCtx);
+-      failures = Array.isArray(pull && pull.failures) ? pull.failures : [];
+-    } catch (_err) {
+-      return; // best-effort: never let enrichment abort the pass
++      failures = Array.isArray(pull?.failures) ? pull.failures : [];
++    } catch (err) {
++      // best-effort: never let enrichment abort the pass, but surface the reason
++      console.error(`[shepherd] check-failure enrichment skipped: ${err.message}`);
++      return;
+     }
+     const byName = new Map(failures.map((f) => [f.name, f]));
+     for (const r of records) {
+       if (r.type !== T.CHECK_FAILED) continue;
+-      const f = byName.get(r.data && r.data.name);
++      const f = byName.get(r.data?.name);
+       if (!f) continue;
+       if (f.excerpt) r.data.excerpt = f.excerpt;
+       if (f.jobUrl) r.data.jobUrl = f.jobUrl;
+@@ -170,8 +172,7 @@ function parseSince(args) {
+ async function handleEvents(args, projectRoot, deps = {}) {
+   const rawArgs = args || [];
+   const sinceIdx = rawArgs.indexOf('--since');
+-  const positional = rawArgs.filter((a, idx) => !String(a).startsWith('--') && a !== 'events' && idx !== sinceIdx + 1);
+-  const pr = positional[0];
++  const pr = rawArgs.find((a, idx) => !String(a).startsWith('--') && a !== 'events' && idx !== sinceIdx + 1);
+   if (!pr) {
+     return { success: false, error: 'Usage: forge shepherd events <pr> --since <seq> [--json]' };
+   }
+diff --git a/lib/pr-monitor/differ.js b/lib/pr-monitor/differ.js
+index 7ce76a6b..11bf0c54 100644
+--- a/lib/pr-monitor/differ.js
++++ b/lib/pr-monitor/differ.js
+@@ -19,7 +19,7 @@ const { EVENT_TYPES: T, makeEvent } = require('./events');
+ function indexBy(list, field) {
+   const map = new Map();
+   for (const item of (Array.isArray(list) ? list : [])) {
+-    if (item && item[field] != null) map.set(String(item[field]), item);
++    if (item?.[field] != null) map.set(String(item[field]), item);
+   }
+   return map;
+ }
+@@ -42,7 +42,7 @@ function diffChecks(prev, next, out) {
+   const prevByName = indexBy(prev.checks, 'name');
+   for (const c of (next.checks || [])) {
+     const before = prevByName.get(String(c.name));
+-    const wasFailed = before && before.class === 'failed';
++    const wasFailed = before?.class === 'failed';
+     if (c.class === 'failed' && !wasFailed) {
+       out.push(makeEvent(T.CHECK_FAILED, `${c.name}:${next.headSha}`, { name: c.name }));
+     } else if (c.class === 'green' && wasFailed) {
+diff --git a/lib/pr-monitor/events.js b/lib/pr-monitor/events.js
+index 9b0c58277b9bac03fdd12bc0381f5933e089402a..0ef220d92ddda08cb6a6ad98b8f80ca6f73d12de 100644
+GIT binary patch
+delta 162
+zcmZpX`6;u(pIc2MQAZ(3Q^D3wK_gMYMj=VTUP0GT!Ac=f!4Av;u?;jQ`*Vxwb18s<
+zUT$K6hDJ76Pc>9bK_NLmued}ZHLs+oGAuEtG*!WNas!v7NOX3rrZrqqQEEwPQQqVN
+WZb?~$%Gv~&f?7?e%FQddW0(M(WhmwV
+
+delta 83
+zcmew<(;~CMpW8~)no9u)ic(8Ti}Dl_s#U79Q!9)0auW+QG_o}nZ0!^hRI0s#{r&Wc
+kONuh{(lgU4f#S7RD%F!4xg^-5vtu=D6Eru=^29I!09C9S3IG5A
+
+diff --git a/lib/pr-monitor/gather.js b/lib/pr-monitor/gather.js
+index 9e4470bc..f86365fa 100644
+--- a/lib/pr-monitor/gather.js
++++ b/lib/pr-monitor/gather.js
+@@ -72,7 +72,7 @@ function normalizeDegraded(degraded) {
+  * emits a false conflict.appeared/cleared on missing data.
+  */
+ function conflictBool(conflicts) {
+-  if (conflicts && conflicts.supported === true) return Boolean(conflicts.conflicted);
++  if (conflicts?.supported === true) return Boolean(conflicts.conflicted);
+   return null;
+ }
+ 
+diff --git a/lib/pr-monitor/journal.js b/lib/pr-monitor/journal.js
+index d85146ed..780e399a 100644
+--- a/lib/pr-monitor/journal.js
++++ b/lib/pr-monitor/journal.js
+@@ -112,7 +112,7 @@ function seenIdentities(dir, sinceSeq = 0) {
+ 
+ /** Append finalized records as NDJSON lines (atomic per-line append). */
+ function appendEvents(dir, records) {
+-  if (!records || !records.length) return;
++  if (!records?.length) return;
+   const payload = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
+   fs.appendFileSync(journalPath(dir), payload);
+ }
+@@ -240,7 +240,7 @@ function removePid(dir) {
+ /** Is `pid` a live process? `process.kill(pid, 0)` probes without signaling. */
+ function pidAlive(pid) {
+   if (!pid) return false;
+-  try { process.kill(pid, 0); return true; } catch (err) { return err && err.code === 'EPERM'; }
++  try { process.kill(pid, 0); return true; } catch (err) { return err?.code === 'EPERM'; }
+ }
+ 
+ /**
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index c8b33a37..2a22886c 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -63,7 +63,7 @@ async function runMonitorPassLocked(ctx) {
+ 
+   if (!filtered.length) {
+     // Backpressure: only rewrite the snapshot when the fingerprint actually moved.
+-    const changed = !prevRecord || prevRecord.fingerprint !== fp;
++    const changed = prevRecord?.fingerprint !== fp;
+     // Even with no new events, advance the cursor to the current tail so the
+     // dedup window stays anchored at the snapshot (prevents unbounded scans).
+     if (changed) {
+diff --git a/test/pr-monitor/events.test.js b/test/pr-monitor/events.test.js
+index 20d3c9d9..7bf9de28 100644
+--- a/test/pr-monitor/events.test.js
++++ b/test/pr-monitor/events.test.js
+@@ -26,7 +26,7 @@ describe('events — schema + envelope', () => {
+   test('finalizeEvent tolerates a missing verdict (fail-closed nulls)', () => {
+     const rec = finalizeEvent(makeEvent('pr.merged', 'MERGED'), { seq: 1, ts: 'T', repo: 'r', pr: '1', headSha: null, verdict: null });
+     expect(rec.verdict).toEqual({ state: null, reason: null });
+-    expect(rec.headSha).toBe(null);
++    expect(rec.headSha).toBeNull();
+   });
+ 
+   test('every event type is present', () => {
+diff --git a/test/pr-monitor/gather.test.js b/test/pr-monitor/gather.test.js
+index f78a5902..0e45029c 100644
+--- a/test/pr-monitor/gather.test.js
++++ b/test/pr-monitor/gather.test.js
+@@ -15,8 +15,8 @@ describe('gather — normalizeSnapshot mapping', () => {
+   test('conflictBool is tri-state (null when prediction unsupported)', () => {
+     expect(conflictBool({ supported: true, conflicted: true })).toBe(true);
+     expect(conflictBool({ supported: true, conflicted: false })).toBe(false);
+-    expect(conflictBool({ supported: false, reason: 'git too old' })).toBe(null);
+-    expect(conflictBool(null)).toBe(null);
++    expect(conflictBool({ supported: false, reason: 'git too old' })).toBeNull();
++    expect(conflictBool(null)).toBeNull();
+   });
+ 
+   test('maps a raw gatherPrSnapshot result into the diff subject', () => {
+diff --git a/test/pr-monitor/journal.test.js b/test/pr-monitor/journal.test.js
+index 02ff58e6..3bfa7741 100644
+--- a/test/pr-monitor/journal.test.js
++++ b/test/pr-monitor/journal.test.js
+@@ -44,14 +44,14 @@ describe('journal', () => {
+   });
+ 
+   test('readSnapshot returns null when absent', () => {
+-    expect(journal.readSnapshot(dir)).toBe(null);
++    expect(journal.readSnapshot(dir)).toBeNull();
+   });
+ 
+   test('watcherRunning is false for a stale/own pid, so poll can fall back inline', () => {
+     journal.writePid(dir, process.pid);
+     expect(journal.watcherRunning(dir)).toBe(false); // our own pid is not a foreign watcher
+     journal.removePid(dir);
+-    expect(journal.readPid(dir)).toBe(null);
++    expect(journal.readPid(dir)).toBeNull();
+   });
+ 
+   test('writeSnapshot/readSnapshot carry an appliedSeq cursor (0 for legacy)', () => {
+-- 
+2.51.0.windows.1
+

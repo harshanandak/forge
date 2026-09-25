@@ -1,0 +1,98 @@
+From c5d783f50cd4fa26d86f4b37331bef6f03ff086f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 18:08:50 +0530
+Subject: [PATCH] feat(memory): recent/count/searchRanked on the project-memory
+ facade
+
+Facade read paths backing token-efficient recall: recent (newest-first),
+count (total), searchRanked (FTS BM25 token-AND). Each delegates to the
+kernel driver's read helpers.
+
+Issue: 9c8060f8-f4ec-47f4-b923-5e247c5bcdfd
+---
+ lib/project-memory.js       | 21 +++++++++++++++++++++
+ test/project-memory.test.js | 36 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 57 insertions(+)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 74182270..9a42dd8b 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -120,9 +120,30 @@ function list(projectRoot, options = {}) {
+   return resolveStore(projectRoot, options).listMemories();
+ }
+ 
++// The newest `limit` entries (default recall with no query). Delegates to the FTS-backed
++// driver so recall never loads and re-sorts the whole table.
++function recent(projectRoot, limit, options = {}) {
++  return resolveStore(projectRoot, options).recentMemories(limit);
++}
++
++// Total stored memories — paired with `recent` so recall can report "showing N of TOTAL".
++function count(projectRoot, options = {}) {
++  return resolveStore(projectRoot, options).countMemories();
++}
++
++// BM25 top-N recall over the FTS5 index (token-AND). Unlike `search` (the legacy LIKE
++// helper) this does not short-circuit an empty query — the driver falls back to recent so
++// recall stays capped either way.
++function searchRanked(projectRoot, query, limit, options = {}) {
++  return resolveStore(projectRoot, options).searchMemoriesRanked(query, limit);
++}
++
+ module.exports = {
+   read,
+   write,
+   search,
+   list,
++  recent,
++  count,
++  searchRanked,
+ };
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index 47508314..c90204f8 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -168,3 +168,39 @@ describe('project memory kernel adapter', () => {
+     expect(store.records).toHaveLength(0);
+   });
+ });
++
++describe('project memory kernel adapter — token-efficient reads (recall backing)', () => {
++  function readStore() {
++    const entries = [
++      { key: 'm1', value: 'auth bug login', sourceAgent: 'Codex', tags: [], timestamp: '2026-03-01T00:00:00.000Z' },
++      { key: 'm2', value: 'export command', sourceAgent: 'Codex', tags: [], timestamp: '2026-02-01T00:00:00.000Z' },
++    ];
++    return {
++      recentCalls: [],
++      searchCalls: [],
++      recentMemories(limit) { this.recentCalls.push(limit); return entries.slice(0, limit); },
++      countMemories() { return entries.length; },
++      searchMemoriesRanked(query, limit) {
++        this.searchCalls.push([query, limit]);
++        return entries.filter(entry => entry.value.includes(query)).slice(0, limit);
++      },
++    };
++  }
++
++  test('recent delegates the limit to the store and returns newest-first entries', () => {
++    const store = readStore();
++    expect(projectMemory.recent(process.cwd(), 1, { store }).map(entry => entry.key)).toEqual(['m1']);
++    expect(store.recentCalls).toEqual([1]);
++  });
++
++  test('count returns the store total', () => {
++    const store = readStore();
++    expect(projectMemory.count(process.cwd(), { store })).toBe(2);
++  });
++
++  test('searchRanked passes the query and limit through to the FTS store', () => {
++    const store = readStore();
++    expect(projectMemory.searchRanked(process.cwd(), 'auth', 5, { store }).map(entry => entry.key)).toEqual(['m1']);
++    expect(store.searchCalls).toEqual([['auth', 5]]);
++  });
++});
+-- 
+2.51.0.windows.1
+

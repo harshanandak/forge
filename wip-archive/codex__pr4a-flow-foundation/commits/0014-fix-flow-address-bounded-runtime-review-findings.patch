@@ -1,0 +1,394 @@
+From e73d8bd991d2c8c48ca646a5fbcb677a0f37e898 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 08:38:11 +0530
+Subject: [PATCH] fix(flow): address bounded runtime review findings
+
+---
+ packages/flow/src/efficiency-supervisor.js    |  6 +--
+ packages/flow/src/executor.js                 | 23 +++++++---
+ packages/flow/src/monitor-runtime.js          | 19 ++++++--
+ packages/flow/src/skill-runtime.js            | 37 ++++++++++++---
+ .../flow/test/efficiency-supervisor.test.js   |  7 +++
+ packages/flow/test/executor.test.js           | 29 ++++++++++++
+ packages/flow/test/monitor-runtime.test.js    | 39 ++++++++++++++++
+ packages/flow/test/skill-runtime.test.js      | 46 +++++++++++++++++++
+ 8 files changed, 184 insertions(+), 22 deletions(-)
+
+diff --git a/packages/flow/src/efficiency-supervisor.js b/packages/flow/src/efficiency-supervisor.js
+index 733055de..7b53ed49 100644
+--- a/packages/flow/src/efficiency-supervisor.js
++++ b/packages/flow/src/efficiency-supervisor.js
+@@ -23,12 +23,12 @@ class EfficiencySupervisor {
+   }
+ 
+   observe(sample = {}) {
+-    if (sample === null || typeof sample !== "object" || Array.isArray(sample)) {
+-      return this._failClosed("INVALID_USAGE");
+-    }
+     if (this.terminal) {
+       return this._result([]);
+     }
++    if (sample === null || typeof sample !== "object" || Array.isArray(sample)) {
++      return this._failClosed("INVALID_USAGE");
++    }
+ 
+     const { totalTokens } = sample;
+     if (!Number.isSafeInteger(totalTokens) || totalTokens < 0) {
+diff --git a/packages/flow/src/executor.js b/packages/flow/src/executor.js
+index 16164d21..c1fdaec3 100644
+--- a/packages/flow/src/executor.js
++++ b/packages/flow/src/executor.js
+@@ -9,6 +9,7 @@ const {
+ } = require("@forge/memory-contracts");
+ 
+ const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
++const MAX_ACCEPTED_PACKETS = 128;
+ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+ const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+ 
+@@ -86,8 +87,8 @@ function isOptionalNonNegativeInteger(value) {
+   return value === undefined || (Number.isInteger(value) && value >= 0);
+ }
+ 
+-function normalizeProviderResult(result, failure) {
+-  if (failure) return incompleteProviderResult("PROVIDER_FAILURE");
++function normalizeProviderResult(result, providerFailed) {
++  if (providerFailed) return incompleteProviderResult("PROVIDER_FAILURE");
+   try {
+     const cloned = structuredClone(result);
+     canonicalize(cloned, { maxBytes: 16_384, maxDepth: 8, maxNodes: 128 });
+@@ -213,9 +214,14 @@ function buildReceipt(workPacket, executionContext, result) {
+   return receipt;
+ }
+ 
+-function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
++function createWorkPacketExecutor({ run, onReceipt = () => {}, maxAcceptedPackets = MAX_ACCEPTED_PACKETS } = {}) {
+   if (typeof run !== "function") throw new TypeError("run must be a function");
+   if (typeof onReceipt !== "function") throw new TypeError("onReceipt must be a function");
++  if (!Number.isSafeInteger(maxAcceptedPackets)
++    || maxAcceptedPackets < 1
++    || maxAcceptedPackets > MAX_ACCEPTED_PACKETS) {
++    throw new TypeError(`maxAcceptedPackets must be an integer from 1 to ${MAX_ACCEPTED_PACKETS}`);
++  }
+   const acceptedPackets = new Map();
+ 
+   return Object.freeze({
+@@ -230,18 +236,21 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
+         }
+         return structuredClone(accepted.receipt);
+       }
++      if (acceptedPackets.size >= maxAcceptedPackets) {
++        throw new FlowExecutionError("CAPACITY_EXCEEDED", "WorkPacket idempotency capacity exceeded");
++      }
+ 
+       let providerResult;
+-      let providerFailure;
++      let providerFailed = false;
+       try {
+         providerResult = run(structuredClone(workPacket));
+         if (providerResult && typeof providerResult.then === "function") {
+           throw new TypeError("run must be synchronous");
+         }
+-      } catch (error) {
+-        providerFailure = error;
++      } catch {
++        providerFailed = true;
+       }
+-      let result = normalizeProviderResult(providerResult, providerFailure);
++      let result = normalizeProviderResult(providerResult, providerFailed);
+       authorizeAndClassify(result, workPacket.payload.allowed_mutations);
+       let receipt;
+       try {
+diff --git a/packages/flow/src/monitor-runtime.js b/packages/flow/src/monitor-runtime.js
+index fd812404..3ec24868 100644
+--- a/packages/flow/src/monitor-runtime.js
++++ b/packages/flow/src/monitor-runtime.js
+@@ -81,6 +81,7 @@ function createMonitorState(spec) {
+     lastSequence: -1,
+     acknowledgementCursor: -1,
+     seenEvents: Object.create(null),
++    seenEventOrder: [],
+     evidenceHashes: [],
+     pending: [],
+     deferred: [],
+@@ -223,10 +224,11 @@ function reduceObservation(spec, state, event) {
+     configurable: true,
+     writable: true,
+   });
++  next.seenEventOrder.push(payload.event_id);
+   next.evidenceHashes.push(event.content_hash);
+   const maxHistory = spec.maxHistory ?? MAX_HISTORY;
+-  while (Object.keys(next.seenEvents).length > maxHistory) {
+-    delete next.seenEvents[Object.keys(next.seenEvents)[0]];
++  while (next.seenEventOrder.length > maxHistory) {
++    delete next.seenEvents[next.seenEventOrder.shift()];
+   }
+   if (next.evidenceHashes.length > maxHistory) {
+     next.evidenceHashes.splice(0, next.evidenceHashes.length - maxHistory);
+@@ -259,9 +261,16 @@ function reduceObservation(spec, state, event) {
+   if (payload.actionability === "advisory") return result(next);
+   if (next.pending.length >= spec.maxPending) {
+     const deferred = { sequence: payload.sequence, eventId: payload.event_id };
+-    if (next.deferred.length < spec.maxPending) next.deferred.push(deferred);
+-    else next.deferred[next.deferred.length - 1] = deferred;
+-    return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
++    if (next.deferred.length < spec.maxPending) {
++      next.deferred.push(deferred);
++      return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
++    }
++    const dropped = next.deferred[next.deferred.length - 1];
++    next.deferred[next.deferred.length - 1] = deferred;
++    return result(next, [
++      { type: "BACKPRESSURE", decision: "DROP", sequence: dropped.sequence, eventId: dropped.eventId },
++      { type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence },
++    ]);
+   }
+   next.pending.push({ sequence: payload.sequence, eventId: payload.event_id });
+   return result(next, [{
+diff --git a/packages/flow/src/skill-runtime.js b/packages/flow/src/skill-runtime.js
+index 2bb5b8e2..598602fd 100644
+--- a/packages/flow/src/skill-runtime.js
++++ b/packages/flow/src/skill-runtime.js
+@@ -62,7 +62,7 @@ class SkillRuntime {
+     const optionsValid = isPlainObject(options);
+     if (!optionsValid) options = {};
+     this.metadata = options.metadata;
+-    this.handlers = options.handlers || {};
++    this.handlers = Object.assign(Object.create(null), options.handlers || {});
+     this.capabilities = new Set(options.capabilities || []);
+     this.limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
+     this.active = false;
+@@ -111,7 +111,7 @@ class SkillRuntime {
+           );
+         }
+       }
+-      if (typeof this.handlers[node.id] !== "function") {
++      if (!Object.hasOwn(this.handlers, node.id) || typeof this.handlers[node.id] !== "function") {
+         return this._failure("MISSING_HANDLER", { nodeId: node.id }, skipped);
+       }
+     }
+@@ -148,21 +148,44 @@ class SkillRuntime {
+     try {
+       for (const node of resolution.ordered) {
+         const dependencyEvidence = (node.dependsOn || []).map((nodeId) => evidenceByNode.get(nodeId));
+-        let result;
++        let handlerArguments;
+         try {
+-          result = await this.handlers[node.id]({
++          handlerArguments = {
+             nodeId: node.id,
+             inputs: boundedClone(selectKeys(inputs, node.inputKeys || []), this.limits),
+             context: boundedClone(selectKeys(context, node.contextKeys || []), this.limits),
+             dependencyEvidence: boundedClone(dependencyEvidence, this.limits),
+-          });
+-          result = boundedClone(result, this.limits);
++          };
+         } catch {
+           return this._boundedResult(
+             "INCOMPLETE",
+             invoked,
+             skipped,
+-            { code: result === undefined ? "HANDLER_FAILED" : "INVALID_EVIDENCE", nodeId: node.id },
++            { code: "INVALID_ARGUMENTS", nodeId: node.id },
++          );
++        }
++
++        let handlerResult;
++        try {
++          handlerResult = await this.handlers[node.id](handlerArguments);
++        } catch {
++          return this._boundedResult(
++            "INCOMPLETE",
++            invoked,
++            skipped,
++            { code: "HANDLER_FAILED", nodeId: node.id },
++          );
++        }
++
++        let result;
++        try {
++          result = boundedClone(handlerResult, this.limits);
++        } catch {
++          return this._boundedResult(
++            "INCOMPLETE",
++            invoked,
++            skipped,
++            { code: "INVALID_EVIDENCE", nodeId: node.id },
+           );
+         }
+ 
+diff --git a/packages/flow/test/efficiency-supervisor.test.js b/packages/flow/test/efficiency-supervisor.test.js
+index 0871cbe1..d5127c15 100644
+--- a/packages/flow/test/efficiency-supervisor.test.js
++++ b/packages/flow/test/efficiency-supervisor.test.js
+@@ -54,6 +54,13 @@ describe("EfficiencySupervisor", () => {
+     expect(supervisor.observe({ totalTokens: 391 }).actions).toEqual([]);
+   });
+ 
++  test("preserves a terminal COMPLETE result when later input is malformed", () => {
++    const supervisor = new EfficiencySupervisor({ tokenBudget: 1_000 });
++    const terminal = supervisor.observe({ totalTokens: 390, outcomeComplete: true });
++
++    expect(supervisor.observe(null)).toEqual({ ...terminal, actions: [] });
++  });
++
+   test.each([
+     [true, false, "COMPLETE", "COMPLETE"],
+     [false, true, "HANDOFF", "INCOMPLETE"],
+diff --git a/packages/flow/test/executor.test.js b/packages/flow/test/executor.test.js
+index 889edb88..8df80ece 100644
+--- a/packages/flow/test/executor.test.js
++++ b/packages/flow/test/executor.test.js
+@@ -113,6 +113,35 @@ describe("WorkPacket executor", () => {
+     expect(emissions).toBe(1);
+   });
+ 
++  test("fails closed at bounded idempotency capacity without evicting accepted packets", () => {
++    let runs = 0;
++    const executor = createWorkPacketExecutor({
++      maxAcceptedPackets: 1,
++      run: () => { runs += 1; return successfulResult(); },
++    });
++    const firstPacket = packet();
++    const firstReceipt = executor.execute(firstPacket, context());
++    const secondPacket = packet();
++    secondPacket.object_id = "00000000-0000-4000-8000-000000000002";
++    secondPacket.payload.packet_id = "packet-2";
++    secondPacket.content_hash = computeContentHash(secondPacket);
++
++    expect(() => executor.execute(secondPacket, context())).toThrow("capacity");
++    expect(executor.execute(firstPacket, context())).toEqual(firstReceipt);
++    expect(runs).toBe(1);
++  });
++
++  test("classifies a falsy provider throw as PROVIDER_FAILURE", () => {
++    const executor = createWorkPacketExecutor({ run: () => { throw undefined; } });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload).toMatchObject({
++      status: "INCOMPLETE",
++      validation: { code: "PROVIDER_FAILURE" },
++    });
++  });
++
+   test("isolates deterministic execution from a failing receipt observer", () => {
+     let runs = 0;
+     let emissions = 0;
+diff --git a/packages/flow/test/monitor-runtime.test.js b/packages/flow/test/monitor-runtime.test.js
+index b448b4ae..79820c33 100644
+--- a/packages/flow/test/monitor-runtime.test.js
++++ b/packages/flow/test/monitor-runtime.test.js
+@@ -316,6 +316,45 @@ describe("MonitorSpec deterministic reducer", () => {
+     expect(state.evidenceHashes).toHaveLength(2);
+   });
+ 
++  test("evicts numeric event ids in insertion order", () => {
++    const monitorSpec = spec({ maxHistory: 2, terminalPredicate: () => false });
++    let state = createMonitorState(monitorSpec);
++    for (const [sequence, eventId] of [[0, "10"], [1, "2"], [2, "1"]]) {
++      state = reduceMonitor(monitorSpec, state, {
++        kind: "observation",
++        event: observation(sequence, `STATE-${sequence}`, {
++          actionability: "advisory",
++          event_id: eventId,
++        }),
++      }).state;
++    }
++
++    expect(state.seenEventOrder).toEqual(["2", "1"]);
++    expect(Object.hasOwn(state.seenEvents, "10")).toBe(false);
++    expect(Object.hasOwn(state.seenEvents, "2")).toBe(true);
++    expect(Object.hasOwn(state.seenEvents, "1")).toBe(true);
++  });
++
++  test("reports the deferred transition replaced under full backpressure", () => {
++    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
++    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation", event: observation(0, "ONE"),
++    });
++    const second = reduceMonitor(monitorSpec, first.state, {
++      kind: "observation", event: observation(1, "TWO"),
++    });
++
++    const third = reduceMonitor(monitorSpec, second.state, {
++      kind: "observation", event: observation(2, "THREE"),
++    });
++
++    expect(third.state.deferred).toEqual([{ sequence: 2, eventId: "event-2" }]);
++    expect(third.effects).toEqual([
++      { type: "BACKPRESSURE", decision: "DROP", sequence: 1, eventId: "event-1" },
++      { type: "BACKPRESSURE", decision: "DEFER", sequence: 2 },
++    ]);
++  });
++
+   test("isolates prior state and events from mutating MonitorSpec callbacks", () => {
+     const monitorSpec = spec({
+       filter: (payload, event) => {
+diff --git a/packages/flow/test/skill-runtime.test.js b/packages/flow/test/skill-runtime.test.js
+index e4dcf126..623298a3 100644
+--- a/packages/flow/test/skill-runtime.test.js
++++ b/packages/flow/test/skill-runtime.test.js
+@@ -142,6 +142,19 @@ describe("SkillRuntime", () => {
+     expect(calls).toEqual([]);
+   });
+ 
++  test("requires handlers to be own properties", async () => {
++    const runtime = new SkillRuntime({
++      metadata: metadata([{ id: "constructor" }]),
++      handlers: {},
++    });
++
++    expect(await runtime.invoke({ nodes: ["constructor"] })).toMatchObject({
++      status: "INCOMPLETE",
++      invoked: [],
++      error: { code: "MISSING_HANDLER", nodeId: "constructor" },
++    });
++  });
++
+   test("fails safely for an unknown requested node", async () => {
+     const runtime = new SkillRuntime({ metadata: metadata([{ id: "intent" }]), handlers: {} });
+ 
+@@ -248,6 +261,39 @@ describe("SkillRuntime", () => {
+     });
+   });
+ 
++  test("distinguishes argument, handler, and result failures", async () => {
++    const argumentNode = { id: "argument" };
++    const argumentCalls = [];
++    const argumentRuntime = new SkillRuntime({
++      metadata: metadata([argumentNode]),
++      handlers: { argument: passingHandler("argument", argumentCalls) },
++    });
++    Object.defineProperty(argumentNode, "inputKeys", {
++      get() { throw new Error("hostile metadata"); },
++    });
++
++    expect(await argumentRuntime.invoke({ nodes: ["argument"] })).toMatchObject({
++      error: { code: "INVALID_ARGUMENTS", nodeId: "argument" },
++    });
++    expect(argumentCalls).toEqual([]);
++
++    const thrownRuntime = new SkillRuntime({
++      metadata: metadata([{ id: "thrown" }]),
++      handlers: { thrown: async () => { throw new Error("handler failed"); } },
++    });
++    expect(await thrownRuntime.invoke({ nodes: ["thrown"] })).toMatchObject({
++      error: { code: "HANDLER_FAILED", nodeId: "thrown" },
++    });
++
++    const undefinedRuntime = new SkillRuntime({
++      metadata: metadata([{ id: "undefined" }]),
++      handlers: { undefined: async () => undefined },
++    });
++    expect(await undefinedRuntime.invoke({ nodes: ["undefined"] })).toMatchObject({
++      error: { code: "INVALID_EVIDENCE", nodeId: "undefined" },
++    });
++  });
++
+   test("fails closed when reading a hostile handler result", async () => {
+     const runtime = new SkillRuntime({
+       metadata: metadata([{ id: "intent" }]),
+-- 
+2.51.0.windows.1
+

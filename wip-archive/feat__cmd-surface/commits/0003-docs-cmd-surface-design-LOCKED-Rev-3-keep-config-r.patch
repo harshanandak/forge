@@ -1,0 +1,155 @@
+From 6131665438522296a240827432e1a5238a428015 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 12:17:21 +0530
+Subject: [PATCH] =?UTF-8?q?docs:=20cmd-surface=20design=20LOCKED=20(Rev=20?=
+ =?UTF-8?q?3)=20=E2=80=94=20keep=20config,=20release=20becomes=20a=20noun?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Owner locked: config kept (options/role/explain), release promoted to gh-release
+-style noun (check + release-mgmt; claim-release moves to issue release), ext
+dropped confirmed, deprecation hints default-off. Final = 10 nouns.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../design.md                                 | 70 +++++++++++--------
+ 1 file changed, 41 insertions(+), 29 deletions(-)
+
+diff --git a/docs/work/2026-07-16-command-surface-unification/design.md b/docs/work/2026-07-16-command-surface-unification/design.md
+index 41556121..9e3c4654 100644
+--- a/docs/work/2026-07-16-command-surface-unification/design.md
++++ b/docs/work/2026-07-16-command-surface-unification/design.md
+@@ -1,7 +1,7 @@
+ # Command Surface Unification — Design
+ 
+ **Date:** 2026-07-16
+-**Status:** Proposal — **Revision 2** (design only, no renames)
++**Status:** **LOCKED** — Revision 3 (design only, no renames). Owner locked all decisions.
+ **Owner ask:** Extend the `forge memory` unification pattern across the CLI —
+ cluster related ops under a small set of intuitive BASE nouns with clear
+ SUBCOMMANDS (like `gh pr create`, `git remote add`, `docker container ls`) so the
+@@ -14,6 +14,13 @@ conventionally STANDALONE across git / npm / cargo / gh / docker / brew stay
+ top-level — forcing them under a noun fights muscle memory. Applying this strictly
+ **dropped `env` and `ext`** and **narrowed `config`** vs Revision 1.
+ 
++**Locked decisions (Rev 3):** (1) `config` is KEPT as a final noun (options/role/explain).
++(2) `release` becomes a NOUN matching `gh release` — `release check` (readiness) +
++future release-management subcommands; the old "release a claimed issue" meaning
++moves to `issue release`. (3) `ext` dropped, confirmed. (4) Deprecation hints
++default-OFF behind `FORGE_DEPRECATION_WARNINGS`. **Final = 10 nouns:** issue,
++memory, pr, gate, worktree, adapter, patch, team, config, release.
++
+ ---
+ 
+ ## 1. Current surface audit
+@@ -67,7 +74,7 @@ routable registry, so back-compat is free.
+ 
+ ---
+ 
+-## 3. Proposed taxonomy (Rev 2) — 8 base nouns over a curated bare-verb layer
++## 3. Proposed taxonomy (Rev 3, LOCKED) — 10 base nouns over a curated bare-verb layer
+ 
+ Two tiers, like git/docker:
+ - **Tier A — top-level verbs** (always work, never gain keystrokes): workflow
+@@ -88,7 +95,8 @@ Two tiers, like git/docker:
+ | `adapter` *(exists)* | test, list, enable, disable | pluggable-component surface — stays its OWN noun (NOT nested under a would-be `ext`, which would force 3-level `ext adapter test`) |
+ | `patch` *(exists)* | record, status | already its own small noun surface |
+ | `team` *(exists)* | coordination, **board** | multi-agent coordination |
+-| `config` *(new, LEAN — provisional)* | **options**, **role**, **explain** | `git config` / `npm config` — read/inspect/bind `.forge/config.yaml`. **May be dropped if too thin** (see §7 Q1) |
++| `config` *(new, LOCKED)* | **options**, **role**, **explain** | `git config` / `npm config` — read/inspect/bind `.forge/config.yaml` |
++| `release` *(exists → promoted to full noun)* | **check** (readiness), + future release-management subs | `gh release` — the claim-release meaning of bare `release <id>` moves to `issue release` |
+ 
+ ### Stays TOP-LEVEL by convention (Tier A)
+ 
+@@ -112,7 +120,8 @@ Two tiers, like git/docker:
+ | ready/show/claim/close | `issue <sub>` | yes (existing) | hot |
+ | create/update/comment/list/blocked/stale/orphans/lint/claims/issues | `issue <sub>` | hidden | existing back-compat |
+ | stage/recap/export/sync | `issue <sub>` | sync+export visible; stage/recap hidden | fold into issue |
+-| release | `issue release` (claim) | yes | see §7 Q4 on `release check` |
++| release *(claim)* | `issue release` | yes (`release <id>` back-compat) | **claim-release meaning moves to issue** |
++| release check | `release check` (noun) | canonical | **`release` is now the readiness/release-mgmt noun (`gh release`)** |
+ | remember/recall | `memory save`/`memory recall` | **yes (visible)** | reference pattern |
+ | insights | `memory insights` | visible | |
+ | preflight/shepherd/merge | `pr <sub>` | preflight visible; others hidden | |
+@@ -129,7 +138,7 @@ Two tiers, like git/docker:
+ | **adapter** | **`adapter` (own noun)** | — | **not nested under `ext`** |
+ | **patch** | **`patch` (own noun)** | — | **not nested under `ext`** |
+ 
+-**Result:** `forge --help` shows **~8 base nouns + a curated bare-verb block**,
++**Result:** `forge --help` shows **10 base nouns + a curated bare-verb block**,
+ instead of ~40 undifferentiated verbs — learnable, and every one of 57 verbs
+ still works.
+ 
+@@ -178,7 +187,7 @@ Nothing breaks — scripts, docs, AGENTS.md, CI, `.claude/commands/*` keep worki
+ 
+ ---
+ 
+-## 6. Phased plan (Rev 2 — env & ext phases removed; config narrowed)
++## 6. Phased plan (Rev 3, LOCKED — env & ext removed; config kept; release promoted)
+ 
+ - **Phase 0 — Alias infrastructure (enabler).** `_aliases.js` map + noun-grouped
+   help renderer + "Shortcuts" footer + optional stderr deprecation hint. No
+@@ -187,10 +196,14 @@ Nothing breaks — scripts, docs, AGENTS.md, CI, `.claude/commands/*` keep worki
+   owner's named reference pattern; proves the template.
+ - **Phase 2 — `pr`** (ship canonical + preflight/shepherd/merge) **+ `gate doc`**.
+   Touches hot verb `ship` (keeps visible alias) — do after the pattern is proven.
+-- **Phase 3 — `config`** (options/role/explain) *[conditional — skip if owner drops
+-  the noun in §7 Q1; then those 3 stay top-level and this phase disappears]*.
+-- **Phase 4 — `issue` completion + help regroup.** Fold comment/stage/recap/export/
+-  sync; ship the final noun-grouped `forge --help`; land the manifest drift assertion.
++- **Phase 3 — `config`** (options/role/explain). LOCKED noun — no longer conditional.
++- **Phase 4 — `issue` completion + `release` noun + help regroup.** Fold comment/
++  stage/recap/export/sync into `issue`; move the claim-release meaning to
++  `issue release` and reduce the `release` noun to `check` + future release-mgmt subs
++  (keep bare `release <id>` as a back-compat alias → `issue release`); ship the final
++  noun-grouped `forge --help`; land the manifest drift assertion. *(The `release`
++  disambiguation is coupled to the issue folds, so it lives here rather than a
++  separate phase.)*
+ - **Phase 5 — Docs/AGENTS.md sweep.** Teach noun forms + shortcuts; verify
+   slash-command stages unaffected.
+ 
+@@ -201,22 +214,21 @@ needed for those verbs; they simply stay top-level.
+ 
+ ---
+ 
+-## 7. Open questions for the owner
+-
+-1. **Is `config` worth keeping?** With init/setup/hooks/recommend ruled top-level,
+-   `config` holds only options/role/explain (genuine `.forge/config.yaml` read/inspect/
+-   bind — maps to `git config`/`npm config`). Keep the 3-member `config` noun for
+-   discovery, or leave options/role/explain top-level and drop `config` entirely?
+-   *(I lean KEEP — `config` is the noun a user instinctively tries; but it's thin.)*
+-2. **`explain` placement.** `explain` inspects a runtime primitive (sibling of
+-   `options`). Under `config` with `options`, or top-level as an info verb like
+-   `orient`/`recommend`? *(Lean: with `config`, to keep the two inspectors together.)*
+-3. **Confirm `ext` is dropped.** This overrides the earlier "good noun" hint: per the
+-   principle, `new`/`add`/`audit` are conventionally bare (cargo new / cargo add /
+-   npm audit) and `adapter`/`patch` are already their own nouns — so `ext` has no
+-   unique members. Agree to drop, or keep an `ext` umbrella despite the convention?
+-4. **`release` overload.** `release <id>` (release a claim) vs `release check`
+-   (readiness). Split to `issue release` + `pr release-check`, or keep `release check`?
+-   *(Lean: split.)*
+-5. **Deprecation hints** behind `FORGE_DEPRECATION_WARNINGS=1` (default off, stderr,
+-   never removed) — OK, or keep aliases fully silent forever?
++## 7. Resolved decisions (all locked by owner)
++
++1. **`config` KEPT** as a final noun (options/role/explain) — `git config`/`npm config`
++   convention; the noun a user instinctively tries. init/setup/hooks/recommend stay
++   top-level.
++2. **`explain` lives under `config`** with `options` (the two inspectors stay together).
++3. **`ext` DROPPED** (confirmed) — `new`/`add`/`audit` stay top-level (cargo new /
++   cargo add / npm audit); `adapter`/`patch` are their own nouns.
++4. **`release` promoted to a full noun** (`gh release` model): `release check` +
++   future release-management subs. The claim-release meaning of bare `release <id>`
++   moves to `issue release`; bare `release <id>` stays as a back-compat alias.
++5. **Deprecation hints default-OFF** behind `FORGE_DEPRECATION_WARNINGS=1` (stderr,
++   never removed).
++
++**One implementation note for the build (P4):** `release check` (subcommand keyword)
++vs a bare `release <uuid>` (positional issue id → `issue release`) must be
++disambiguated in the `release` dispatcher — known subcommand keywords route to the
++noun surface; a positional id routes to the back-compat claim-release alias.
+-- 
+2.51.0.windows.1
+

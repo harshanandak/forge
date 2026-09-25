@@ -1,0 +1,1793 @@
+From 57a61c25f56cd246faf26d37e1e083906628e890 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 10:58:03 +0530
+Subject: [PATCH] =?UTF-8?q?feat(shepherd):=20PR=20monitor=20Tier-1=20PR-A?=
+ =?UTF-8?q?=20=E2=80=94=20gather=20completeness=20+=20journal=20+=20differ?=
+ =?UTF-8?q?=20+=20events=20verb?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Constant agent-agnostic PR monitor, built on the #366 verdict core. PR-A of the
+split (PR-B adds the watch streaming loop + ship lifecycle hook).
+
+Gather completeness (audit A5/A6) — fills the gaps left after #366:
+- adapter.fetchBase({baseRef,cwd}): git-fetch the base ref, wired into
+  gatherPrSnapshot BEFORE readDivergence/detectConflicts so they compare against
+  the CURRENT origin/<base>, not a stale local ref (false behind=0 / no-conflict).
+- isFailed now covers STALE (a stale required CheckRun no longer pends forever).
+- readIssueComments surfaces a stable comment id (fullDatabaseId) for event dedup.
+(readReviews, reviewDecision, isDraft, author-agnostic paginated issue comments,
+isOutdated threads, ERROR/STARTUP_FAILURE were already added by #366.)
+
+One gather + one verdict core:
+- Extract gatherPrSnapshot(ctx) from gatherPullSignal — the shared read+verdict
+  the monitor diffs, so verdict and events can never disagree. gatherPullSignal
+  keeps only its bounded --pull projection (behaviour unchanged).
+
+Monitor (lib/pr-monitor/):
+- events.js: schema {v,seq,ts,repo,pr,headSha,type,key,data,verdict}, content-keyed
+  identity, deterministic fingerprint.
+- differ.js: pure diffSnapshots(prev,next) — every event type on its transition.
+- journal.js: per-PR append-only NDJSON + atomic snapshot fingerprint under
+  .forge/pr-monitor/<repo>-<pr>/; seq/seen-identity dedup; pid helpers.
+- gather.js: normalize gatherPrSnapshot into the diff subject.
+- monitor.js: runMonitorPass (gather->diff->dedup->append->persist; crash-safe,
+  no dupes across restarts) + pollEvents (inline pass when no watcher).
+- forge shepherd events <pr> --since <seq> [--json]: agent-agnostic pull surface,
+  stdout NDJSON, nothing under .claude/*.
+
+Kernel: c2d398e5 (epic), 9af1ee0a (audit).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-13-pr-monitor/design.md |  74 ++++++++
+ lib/adapters/pr-state-adapter.js          |  27 ++-
+ lib/commands/shepherd.js                  |  68 +++++++-
+ lib/pr-monitor/differ.js                  | 195 ++++++++++++++++++++++
+ lib/pr-monitor/events.js                  | Bin 0 -> 3588 bytes
+ lib/pr-monitor/gather.js                  | 124 ++++++++++++++
+ lib/pr-monitor/journal.js                 | 175 +++++++++++++++++++
+ lib/pr-monitor/monitor.js                 | 117 +++++++++++++
+ lib/pr-pull.js                            | 122 +++++++++-----
+ lib/pr-shepherd.js                        |   5 +-
+ test/commands/shepherd.test.js            |  59 ++++++-
+ test/pr-monitor-snapshot.test.js          |  57 +++++++
+ test/pr-monitor/differ.test.js            | 126 ++++++++++++++
+ test/pr-monitor/events.test.js            |  52 ++++++
+ test/pr-monitor/gather.test.js            |  54 ++++++
+ test/pr-monitor/journal.test.js           |  56 +++++++
+ test/pr-monitor/monitor.test.js           |  91 ++++++++++
+ test/pr-state-adapter.test.js             |  32 +++-
+ 18 files changed, 1384 insertions(+), 50 deletions(-)
+ create mode 100644 docs/work/2026-07-13-pr-monitor/design.md
+ create mode 100644 lib/pr-monitor/differ.js
+ create mode 100644 lib/pr-monitor/events.js
+ create mode 100644 lib/pr-monitor/gather.js
+ create mode 100644 lib/pr-monitor/journal.js
+ create mode 100644 lib/pr-monitor/monitor.js
+ create mode 100644 test/pr-monitor-snapshot.test.js
+ create mode 100644 test/pr-monitor/differ.test.js
+ create mode 100644 test/pr-monitor/events.test.js
+ create mode 100644 test/pr-monitor/gather.test.js
+ create mode 100644 test/pr-monitor/journal.test.js
+ create mode 100644 test/pr-monitor/monitor.test.js
+
+diff --git a/docs/work/2026-07-13-pr-monitor/design.md b/docs/work/2026-07-13-pr-monitor/design.md
+new file mode 100644
+index 00000000..9cb81b80
+--- /dev/null
++++ b/docs/work/2026-07-13-pr-monitor/design.md
+@@ -0,0 +1,74 @@
++# Constant agent-agnostic PR monitor — `forge shepherd watch/events`
++
++Kernel epic: `c2d398e5-26cf-4963-b47a-70b4102636bb`
++Audit: `9af1ee0a-a090-48ca-9d89-5c06a0a67fc9`
++Builds on: PR #366 (shared verdict core — `gatherPullSignal`/`computeVerdict` in `lib/pr-pull.js`).
++
++## Goal
++
++The shepherd must run **constantly** (~every 60s), pull **all** PR updates, and **push only the new events** back to the working agent — agent-agnostic, clean with every agent (Claude/Codex/Cursor/Hermes), with **no dependency on `.claude/*`**. The only channel every harness natively has is a CLI process writing NDJSON to stdout, so that is the delivery surface.
++
++## Frame (non-negotiable)
++
++The monitor is a **diff-over-time of ONE gather + ONE verdict core** — never a 6th independently-computed view of PR truth. Both the verdict and the events derive from the **same snapshot** read in a single pass, so they can never disagree. The verdict comes from #366's `computeVerdict` (fail-closed); the events are the transitions between consecutive snapshots.
++
++## Gather completeness (audit A5/A6)
++
++#366 already added to `lib/adapters/pr-state-adapter.js` (verified, NOT rebuilt):
++`readReviews` (latest review per author + `commitOid` for review-at-head), `reviewDecision` + `isDraft` (in `readState`), author-agnostic **paginated** `readIssueComments` (mechanism-detected `__typename`; this replaces the greptile-only `.claude/scripts/review-resolve.sh` for direct comments), `readComments` threads carrying `isResolved`/`isOutdated`, and `isFailed` already covering `ERROR`/`STARTUP_FAILURE`.
++
++Gaps this work **fills**:
++- **`git fetch` before divergence/conflicts (A6).** `readDivergence`/`detectConflicts` compare against `origin/<base>`; without a fetch a stale local ref yields a false `behind=0` / false "no conflict". Added `adapter.fetchBase({baseRef, cwd})` and wired it into `gatherPullSignal` (via `callIfPresent`, degraded-surfaced) **before** divergence/conflict reads — fixing it for every consumer (shepherd, `--pull`, monitor), not just the monitor.
++- **`STALE` check conclusion (A5).** `isFailed` omitted `STALE`, so a stale required CheckRun pended forever. Added `STALE` to the failed set.
++
++## One gather + one verdict core
++
++`gatherPullSignal` is refactored so its read-and-verdict middle is an exported `gatherPrSnapshot(ctx)` returning `{ raw, verdict, evidence, degraded, unreadable }`. `gatherPullSignal` calls it and then does only its bounded **projection** (failure log excerpts, review-thread fix-list, summary, `buildPullPayload`) — output unchanged, guarded by `test/shepherd-merge-safety.test.js`. The monitor gather calls the **same** `gatherPrSnapshot`, so verdict + events share one read.
++
++`raw` = `{ headSha, prState (OPEN/MERGED/CLOSED), draft, mergeable, mergeStateStatus, behind, conflicts, reviewDecision, checks[], threads[], reviews[], issueComments[] }`.
++
++## Event model
++
++Types: `head.pushed`, `review.submitted{verdict}`, `thread.opened|reply|resolved`, `comment.posted`, `check.failed{excerpt}|check.recovered`, `checks.green`, `conflict.appeared|cleared`, `branch.behind`, `verdict.changed{from,to,reason}`, `pr.merged|closed`, `monitor.degraded{surface,error}`.
++
++Schema: `{ v:1, seq, ts, repo, pr, headSha, type, key, data, verdict:{state,reason} }`.
++- `seq` — monotonic per PR (last journal seq + 1).
++- `key` — **content identity** (head sha, `threadId`, `check name+sha`, comment id, review `author+commitOid`, surface). Content-keyed identity is what makes the differ deterministic: a re-run after a crash produces the same `(type,key)` and is deduped against the journal, so **no duplicates across restarts**.
++
++## Cursor / persistence
++
++Per-PR dir `.forge/pr-monitor/<repo>-<pr>/`:
++- `events.ndjson` — append-only journal (cursor authority; works without the kernel).
++- `snapshot.json` — atomic (write-temp-then-rename) last snapshot + fingerprint. Fingerprint = stable hash of the diff-relevant snapshot projection; **emit only on fingerprint change** (backpressure).
++- `watch.pid` — watcher pid file (idempotent start).
++
++Ordering guarantee: append events **then** persist snapshot. If a crash lands between them, the next pass re-diffs the old snapshot, recomputes the same `(type,key)` events, and the journal `(type,key)` filter drops the already-appended ones — exactly-once by content identity.
++
++## Command surface (agent-agnostic; all `forge` verbs, nothing under `.claude/*`)
++
++- **`forge shepherd events <pr> --since <seq> [--json]`** (PR-A) — one bounded gather, diff vs last snapshot, append new events to the journal, print journal events **since `<seq>`** as NDJSON (one per line). Inline pass when no watcher is running. This is the pull surface.
++- **`forge shepherd watch <pr>`** (PR-B) — long-running; every ~60s (jittered), bounded gather (~30s deadline), diff, append, **stream** each new event as one NDJSON line to stdout. Emits only on fingerprint change; 2-pass confirm for flappy checks; self-stops on `pr.merged`/`pr.closed` after emitting the terminal event.
++
++Harness adapters are thin and out of scope here: Claude Code runs `watch` via background Bash/Monitor or a hook calling `events --since`; Codex via bg exec/hooks; Cursor polls `events --since` per turn; Hermes via CLI.
++
++## Lifecycle (PR-B)
++
++`forge ship` success starts the watcher **detached** (idempotent via `watch.pid`) after the `createPR` path in `lib/commands/ship.js` — a non-blocking start-monitor call. Stop-on-merge is handled by the watch loop.
++
++## Module layout
++
++- `lib/pr-monitor/events.js` — event constants, schema builder, fingerprint, key helpers.
++- `lib/pr-monitor/differ.js` — **pure** `diffSnapshots(prev, next)` → candidate events (no I/O).
++- `lib/pr-monitor/journal.js` — dir resolution, atomic snapshot read/write, NDJSON append, read-since-seq, seen-key set, pid file.
++- `lib/pr-monitor/gather.js` — `gatherMonitorSnapshot(ctx)` → normalized diff subject via `gatherPrSnapshot`.
++- `lib/pr-monitor/monitor.js` — `runMonitorPass` (gather → diff → enrich newly-failed excerpts → seq/ts → append → persist → return), `pollEvents` (events verb), `watchLoop` (PR-B).
++- `lib/commands/shepherd.js` — route `events` (PR-A) and `watch` (PR-B) subcommands.
++
++## Split
++
++- **PR-A**: gather-completeness (`fetchBase` + `STALE`) + `gatherPrSnapshot` extract + journal + pure differ + `events --since` poll verb + tests.
++- **PR-B**: `watch` streaming loop + start-on-ship + stop-on-merge + tests.
++
++## Testing / quality
++
++TDD. Differ tests: no dupes across restarts (content-keyed identity), each event type on its correct transition, degraded surfaced not swallowed. Journal tests: atomic snapshot, append, read-since cursor. Verb tests: `--since` cursor, inline pass. Gate: affected tests + `eslint --max-warnings 0` + local sonarjs cognitive-complexity@15 (every function < 15; decompose proactively).
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 762357c5..a22065d9 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -189,6 +189,27 @@ class PrStateAdapter {
+     this._gh('gh', ['run', 'rerun', String(runId), '--failed']);
+   }
+ 
++  /**
++   * Fetch the base ref from its remote so a subsequent `readDivergence`/
++   * `detectConflicts` compares HEAD against the CURRENT `origin/<base>`, not a
++   * stale local remote-tracking ref (audit A6: a stale ref reports a false
++   * `behind=0` / false "no conflict"). `baseRef` is `<remote>/<branch>` (e.g.
++   * `origin/master`); the remote and branch are split back out for `git fetch`.
++   * Read-only against the working tree — it only updates remote-tracking refs.
++   *
++   * @param {{ baseRef: string, cwd?: string }} ctx
++   * @returns {Promise<void>}
++   */
++  async fetchBase({ baseRef, cwd }) {
++    const ref = String(baseRef || '');
++    const slash = ref.indexOf('/');
++    // No `<remote>/<branch>` shape → nothing safe to fetch; leave refs as-is.
++    if (slash <= 0) return;
++    const remote = ref.slice(0, slash);
++    const branch = ref.slice(slash + 1);
++    this._git('git', ['fetch', remote, branch], cwd ? { cwd } : undefined);
++  }
++
+   /**
+    * Post a status reply to a review thread via the existing shell helper.
+    * Reply ONLY — never resolve (resolution is the semantic `/review` agent's job).
+@@ -351,11 +372,15 @@ class PrStateAdapter {
+     // `author{__typename login}` surfaces the GraphQL actor TYPE ('Bot' vs 'User')
+     // so a non-human direct comment can be detected GENERICALLY — by mechanism,
+     // not by a hardcoded bot-name list — which fails closed for unknown bots.
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{author{__typename login} body createdAt}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body createdAt}}}}}';
+     return this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.comments,
+       (c) => ({
++        // `id` is the stable REST comment id — the PR monitor keys `comment.posted`
++        // on it so a re-read never re-emits an already-seen comment. Falls back to
++        // author+createdAt when GitHub omits it.
++        id: c.fullDatabaseId ? String(c.fullDatabaseId) : `${c.author?.login || ''}:${c.createdAt || ''}`,
+         author: c.author?.login || '',
+         authorTypename: c.author?.__typename || '',
+         body: c.body || '',
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 807b67ec..fd0c1166 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -33,9 +33,14 @@ const { gatherPrBundle } = require('../pr-bundle');
+ const { gatherPullSignal, renderPullSummary } = require('../pr-pull');
+ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+ const { validatePrStateAdapter } = require('../pr-state-validator');
++const { gatherMonitorSnapshot } = require('../pr-monitor/gather');
++const { pollEvents } = require('../pr-monitor/monitor');
++const monitorJournal = require('../pr-monitor/journal');
+ 
+ const DEFAULT_RERUN_BUDGET = 3;
+ 
++const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', timeout: 30000 });
++
+ /**
+  * Resolve owner/repo and base branch for the shepherd pass.
+  *
+@@ -104,6 +109,59 @@ function formatAction(action) {
+   }
+ }
+ 
++/** Parse `--since <seq>` from the raw arg list (default 0). */
++function parseSince(args) {
++  const i = (args || []).indexOf('--since');
++  if (i >= 0 && args[i + 1] != null) return Number.parseInt(args[i + 1], 10) || 0;
++  return 0;
++}
++
++/**
++ * `forge shepherd events <pr> --since <seq> [--json]` — the agent-agnostic PULL
++ * surface. Runs one bounded gather+diff (inline, unless a watcher owns the PR),
++ * appends new events to the per-PR journal, and prints every journaled event
++ * with `seq > since` as NDJSON, one per line, to stdout. Nothing under .claude.
++ *
++ * @param {string[]} args
++ * @param {string} projectRoot
++ * @param {object} [deps]
++ * @returns {Promise<object>}
++ */
++async function handleEvents(args, projectRoot, deps = {}) {
++  const rawArgs = args || [];
++  const sinceIdx = rawArgs.indexOf('--since');
++  const positional = rawArgs.filter((a, idx) => !String(a).startsWith('--') && a !== 'events' && idx !== sinceIdx + 1);
++  const pr = positional[0];
++  if (!pr) {
++    return { success: false, error: 'Usage: forge shepherd events <pr> --since <seq> [--json]' };
++  }
++  const since = parseSince(rawArgs);
++
++  let dir = deps.dir;
++  let gather = deps.gather;
++  if (!gather || !dir) {
++    const gh = deps.gh || defaultGhRunner;
++    const git = deps.git || gh;
++    const buildContext = deps.buildContext || defaultBuildContext;
++    const ctx = await buildContext({ pr, gh, git, projectRoot });
++    const adapter = deps.adapter || new PrStateAdapter({ gh, git });
++    const validation = validatePrStateAdapter(adapter);
++    if (!validation.valid) {
++      return { success: false, error: `Invalid pr-state adapter: ${validation.errors.join('; ')}` };
++    }
++    dir = dir || monitorJournal.journalDir({ root: projectRoot || process.cwd(), repo: ctx.repo, pr: ctx.pr });
++    gather = gather || (() => gatherMonitorSnapshot({ ...ctx, adapter, self: deps.self }));
++  }
++
++  const poll = deps.pollEvents || pollEvents;
++  const result = await poll({ dir, gather, since, now: deps.now, watcherRunning: deps.watcherRunning });
++  // `output` is the agent-agnostic pull surface: NDJSON, one event per line. The
++  // registry CLI dispatch prints `result.output` (same contract as --pull/--bundle),
++  // so this handler does NOT write to stdout itself (that would double-print).
++  const output = result.events.map((e) => JSON.stringify(e)).join('\n');
++  return { success: true, events: result.events, since: result.since, output };
++}
++
+ /**
+  * Command handler.
+  *
+@@ -116,6 +174,12 @@ function formatAction(action) {
+ async function handler(args, _flags, projectRoot, deps = {}) {
+   const positional = (args || []).filter((a) => !String(a).startsWith('--'));
+   const flags = new Set((args || []).filter((a) => String(a).startsWith('--')));
++
++  // Subcommand routing: `events` is the monitor pull surface (its own arg shape).
++  if (positional[0] === 'events') {
++    return handleEvents(args, projectRoot, deps);
++  }
++
+   const pr = positional[0];
+ 
+   if (!pr) {
+@@ -203,8 +267,10 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+ module.exports = {
+   name: 'shepherd',
+   description: 'Run one bounded monitor pass over a PR (rerun flaky checks, escalate, hand off — never merges)',
+-  usage: 'Usage: forge shepherd <pr> [--auto-rebase] [--bundle --json] [--pull --json]',
++  usage: 'Usage: forge shepherd <pr> [--auto-rebase] [--bundle --json] [--pull --json] | forge shepherd events <pr> --since <seq> [--json]',
+   handler,
++  handleEvents,
++  parseSince,
+   defaultBuildContext,
+   isWorkingTreeClean,
+ };
+diff --git a/lib/pr-monitor/differ.js b/lib/pr-monitor/differ.js
+new file mode 100644
+index 00000000..7ce76a6b
+--- /dev/null
++++ b/lib/pr-monitor/differ.js
+@@ -0,0 +1,195 @@
++'use strict';
++
++/**
++ * PR-monitor differ — the PURE heart of the monitor. `diffSnapshots(prev, next)`
++ * returns the ordered candidate events for the transition between two normalized
++ * snapshots (see lib/pr-monitor/gather.js for the shape). No I/O, no clock, no
++ * randomness — same inputs always yield the same events, which is what makes the
++ * monitor deterministic and duplicate-free across restarts.
++ *
++ * Each event carries a CONTENT key (head sha, threadId, check name+sha, comment
++ * id, review author+commit, surface) so the journal can dedup by identity.
++ *
++ * @module pr-monitor/differ
++ */
++
++const { EVENT_TYPES: T, makeEvent } = require('./events');
++
++/** Index an array of objects by a key field into a Map. */
++function indexBy(list, field) {
++  const map = new Map();
++  for (const item of (Array.isArray(list) ? list : [])) {
++    if (item && item[field] != null) map.set(String(item[field]), item);
++  }
++  return map;
++}
++
++/** True when every check is green (none failed, none pending). */
++function allGreen(checks) {
++  const list = Array.isArray(checks) ? checks : [];
++  return list.length > 0 && list.every((c) => c.class === 'green');
++}
++
++/** head.pushed — the PR's head sha advanced. */
++function diffHead(prev, next, out) {
++  if (next.headSha && prev.headSha !== next.headSha) {
++    out.push(makeEvent(T.HEAD_PUSHED, next.headSha, { from: prev.headSha || null, to: next.headSha }));
++  }
++}
++
++/** check.failed / check.recovered / checks.green — keyed by name+sha. */
++function diffChecks(prev, next, out) {
++  const prevByName = indexBy(prev.checks, 'name');
++  for (const c of (next.checks || [])) {
++    const before = prevByName.get(String(c.name));
++    const wasFailed = before && before.class === 'failed';
++    if (c.class === 'failed' && !wasFailed) {
++      out.push(makeEvent(T.CHECK_FAILED, `${c.name}:${next.headSha}`, { name: c.name }));
++    } else if (c.class === 'green' && wasFailed) {
++      out.push(makeEvent(T.CHECK_RECOVERED, `${c.name}:${next.headSha}`, { name: c.name }));
++    }
++  }
++  if (allGreen(next.checks) && !allGreen(prev.checks)) {
++    out.push(makeEvent(T.CHECKS_GREEN, next.headSha, {}));
++  }
++}
++
++/** thread.opened / thread.reply / thread.resolved — keyed by threadId. */
++function diffThreads(prev, next, out) {
++  const prevById = indexBy(prev.threads, 'threadId');
++  for (const t of (next.threads || [])) {
++    const before = prevById.get(String(t.threadId));
++    if (!before) {
++      if (t.actionable) out.push(makeEvent(T.THREAD_OPENED, t.threadId, { path: t.path || null }));
++      continue;
++    }
++    if ((t.commentCount || 0) > (before.commentCount || 0)) {
++      out.push(makeEvent(T.THREAD_REPLY, `${t.threadId}:${t.commentCount}`, { threadId: t.threadId }));
++    }
++    if (t.isResolved && !before.isResolved) {
++      out.push(makeEvent(T.THREAD_RESOLVED, t.threadId, {}));
++    }
++  }
++}
++
++/** comment.posted — a new direct PR issue comment, keyed by comment id. */
++function diffComments(prev, next, out) {
++  const prevIds = indexBy(prev.comments, 'id');
++  for (const c of (next.comments || [])) {
++    if (!prevIds.has(String(c.id))) {
++      out.push(makeEvent(T.COMMENT_POSTED, c.id, { author: c.author || '' }));
++    }
++  }
++}
++
++/** review.submitted — a new/updated review per author (state or commit changed). */
++function diffReviews(prev, next, out) {
++  const prevByAuthor = indexBy(prev.reviews, 'author');
++  for (const r of (next.reviews || [])) {
++    const before = prevByAuthor.get(String(r.author));
++    const changed = !before
++      || before.submittedAt !== r.submittedAt
++      || before.commitOid !== r.commitOid;
++    if (changed) {
++      out.push(makeEvent(T.REVIEW_SUBMITTED, `${r.author}:${r.commitOid || r.submittedAt}`, {
++        author: r.author, verdict: r.state, commitOid: r.commitOid || null,
++      }));
++    }
++  }
++}
++
++/** conflict.appeared / conflict.cleared — keyed by head sha. */
++function diffConflict(prev, next, out) {
++  if (next.conflicts === true && prev.conflicts !== true) {
++    out.push(makeEvent(T.CONFLICT_APPEARED, next.headSha, {}));
++  } else if (next.conflicts === false && prev.conflicts === true) {
++    out.push(makeEvent(T.CONFLICT_CLEARED, next.headSha, {}));
++  }
++}
++
++/** branch.behind — the branch fell behind its base. */
++function diffBehind(prev, next, out) {
++  if ((next.behind || 0) > 0 && (prev.behind || 0) === 0) {
++    out.push(makeEvent(T.BRANCH_BEHIND, `${next.headSha}:${next.behind}`, { behind: next.behind }));
++  }
++}
++
++/** verdict.changed — the fail-closed merge verdict flipped. */
++function diffVerdict(prev, next, out) {
++  const from = prev.verdict ? prev.verdict.state : null;
++  const to = next.verdict ? next.verdict.state : null;
++  if (from !== to) {
++    out.push(makeEvent(T.VERDICT_CHANGED, `${from}->${to}:${next.headSha}`, {
++      from, to, reason: next.verdict ? next.verdict.reason || null : null,
++    }));
++  }
++}
++
++/** pr.merged / pr.closed — terminal transitions from an OPEN PR. */
++function diffPrState(prev, next, out) {
++  if (prev.prState === 'OPEN' && next.prState === 'MERGED') {
++    out.push(makeEvent(T.PR_MERGED, 'MERGED', {}));
++  } else if (prev.prState === 'OPEN' && next.prState === 'CLOSED') {
++    out.push(makeEvent(T.PR_CLOSED, 'CLOSED', {}));
++  }
++}
++
++/** monitor.degraded — a read surface newly became unreadable (fail-closed). */
++function diffDegraded(prev, next, out) {
++  const prevSurfaces = new Set((prev.degraded || []).map((d) => d.surface));
++  for (const d of (next.degraded || [])) {
++    if (!prevSurfaces.has(d.surface)) {
++      out.push(makeEvent(T.MONITOR_DEGRADED, d.surface, { surface: d.surface, error: d.error || '' }));
++    }
++  }
++}
++
++/**
++ * Baseline events for the FIRST pass (no prior snapshot): a single verdict
++ * baseline plus any already-terminal/degraded state — bounded, never a replay of
++ * every historical thread/check.
++ */
++function diffBaseline(next, out) {
++  out.push(makeEvent(T.VERDICT_CHANGED, `baseline:${next.headSha}`, {
++    from: null, to: next.verdict ? next.verdict.state : null,
++    reason: next.verdict ? next.verdict.reason || null : null,
++  }));
++  if (next.prState === 'MERGED') out.push(makeEvent(T.PR_MERGED, 'MERGED', {}));
++  if (next.prState === 'CLOSED') out.push(makeEvent(T.PR_CLOSED, 'CLOSED', {}));
++  for (const d of (next.degraded || [])) {
++    out.push(makeEvent(T.MONITOR_DEGRADED, d.surface, { surface: d.surface, error: d.error || '' }));
++  }
++}
++
++/**
++ * Diff two normalized snapshots into ordered candidate events. `prev === null`
++ * → first-pass baseline.
++ *
++ * @param {object|null} prev
++ * @param {object} next
++ * @returns {Array<{ type: string, key: string, data: object }>}
++ */
++function diffSnapshots(prev, next) {
++  const out = [];
++  if (!prev) {
++    diffBaseline(next, out);
++    return out;
++  }
++  diffHead(prev, next, out);
++  diffChecks(prev, next, out);
++  diffThreads(prev, next, out);
++  diffComments(prev, next, out);
++  diffReviews(prev, next, out);
++  diffConflict(prev, next, out);
++  diffBehind(prev, next, out);
++  diffVerdict(prev, next, out);
++  diffPrState(prev, next, out);
++  diffDegraded(prev, next, out);
++  return out;
++}
++
++module.exports = {
++  diffSnapshots,
++  allGreen,
++  indexBy,
++};
+diff --git a/lib/pr-monitor/events.js b/lib/pr-monitor/events.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b0c58277b9bac03fdd12bc0381f5933e089402a
+GIT binary patch
+literal 3588
+zcmb7H>uw^)63%a)qJFHxu)$*`QqB)7C(Gi=n#2YKWTR-cf@Y>My&h&J-7`2Wi*z31
+zJmGngeAPV{@aCdevOL{gU0s*2zACp1Bgy1ig?am`)w+E7vPCaxGQHTQiON$=awn6V
+zwrM0|`u~6bNBKUJrb{N=$gQANq2fsDE`@25L-68J?qx(O!nexzT@pz|f>lN`mwKxb
+zWpWkLS|txsXIepbx|5pnjigAe*B4sGawo8D5|Nornp39J4>HVEn)pz}y820JmNK+F
+z&<^Iv-@25;E-kaPiz{8)ND<980^6{-OE9cUk;t)u_agX9$0aMIB`z-ss^D^(!|jkV
+zSTvbl(Gs`pk)XkNG!I7e+BNd{0W$W5jmGyd>ascnCVZqsY~@$>Fif{w4xx(Jx}B0w
+zB#L~K>aX}j<uJa`YZ1y0nUn-%E_9KQSR-C8bfFez!(oVuP#PO51NF4@tZT5bv$TPR
+z50Q+D3>gp)LM0}*!XMH?C!$Q>MzWC{YN)ptPV>U)N|18o9i|zW19h<qMJ`E%IyDCN
+znOx}HRLOV+Y!tDCeHCUdEoKbfxooun444t>eU_(mjoZH!N=vVu08u@+-R=N+PHr~1
+z4etAkx50Ea9FHLXb$t}PMfex<Unju~`{Na3!e47CKT7Y=BDxLwH;c*7v)kaNM{Q1y
+zpA}{!qc+k))8Oqe_+>Hs`Sty9KDQz+8NMl2a5XRG=C@PUGoAz^E0o*R`e`PUbBSp%
+zx%(9ll>)$Bytglv8m7T)eE0TL2LhMIyHd+we1FgWOvW>3O$ie}OHE}9Vlnt>@k4)j
+zXVq9>`D>x#N{2n427@u;bt0l=$Tf8;HCw!y2EhpSS}n$ZK;RN<FM$2S-Ec5p^e2;`
+zU+PJdHL{-jBFm(xHC2*>yUzr}xRHB3?T-exi`T*JaKyP-X_15*e<e36aoK>qH~i$_
+zwm*7fEiY@*4>tnL;G`zg#eFb!=b84mQlFd*?#45F6DMJun)1&5cr=`kr;D55&9r}G
+z1xhCKBl(~O>H}UM8F3}o^(h4E6{ta$tP%>X6$&j);=N^$OO)6pbH^1E&1G&bWwMho
+zKtTu&31id);6Wni+Txg@jB<q%UF~TJt`o8PC<A8FrB6S}40WlJJ=c51d#E^+)!tB6
+zXjzw5CbZbnf%!RkI9glyg;&q^VczL>YHQ<2@7Uz`_C(7Z9AM~huu6KC@{<Qki_L=N
+zd*rUu@raw3t#y%D?xn4GbS^m7X$Te7csO>5YtTJI?vYaY%o^`8OF07WSsJEKpKy(i
+zSFK~6ilC0_Nlwrrm=-G%V{q%}d4&FrTaE71pdC21JxYr0iu+k^ny_$BX;ztTzRMm{
+zZG1|KIIjCk6-m2`a1uaso{Tb4=W#xRi&tZ_i>Urxm#drFc_xq)qFs;9iIo|VtUCLF
+z#%cfB=4rp!$ue=7?zq$1+46%kXdQMs&}Dl~Xnot7><Kb|dVr<V=g?L===0j4!kw2M
+z^{Retl@Wc<fyhy<^?`4fwK+hcFlo{pyLEL=z_tD9HHuu`s(ZYmBO6hplLl_SY1)6f
+zM$0V;!?RtNE8=;R?D%IjWE<nK9F9D@I!o8`#lddc=pDbPR#1Fgo)*eLBs`~}r~f!Z
+zn|xCF2407SHVVAN#G=tes!GOnp4dP(Pbn9E5rPav9PcmCj77|ttcERg{P>A!$Vja$
+zYn2}3E$CfiAQT+^6&n7@4EMYoUmj^E;=+y^uWIfoY3v;C$iH*N!A-6Ap1tbgqSoZ~
+zwHA9{8T+?9bf-1pEZ@C2*jxTqWLz`PRCfFisY<+dx7|6uM<kJ1{IYU;i@yBQ(js!|
+z*4Nk9)OOX`uAXuO3dgb;KX_GI<a5kD^cBWd$%D(oivx>TtGve!U4KVNG3N}JWlm>z
+zA3Mk1i^JzeJH_uF-*=A7QwJCd&VlloXZji!iX@WA5|Hq{tyDrya9UtxL%KJAJ(#cS
+z_SB5!%`{G20yT1cnm?uIP_nS(24|<$6S&y%lR)bqrA}Q98S+*le9SN;VH`$n^Zd!`
+zY!gnCQ?y~k<{_c;9CcOSYfNMX|A4;}v%KcwSyj3z)epfBxxB?J?zJ)5fAj5s+8w{h
+zKwI)pAa|;)<45WNW3z{`^mm?i5q&o``||e;xM4_f|NNY#Po`cbq`C?70;V^E1#g_u
+S3vYZ5s`6g-&lg6atJWVCt)RUC
+
+literal 0
+HcmV?d00001
+
+diff --git a/lib/pr-monitor/gather.js b/lib/pr-monitor/gather.js
+new file mode 100644
+index 00000000..07d0ca01
+--- /dev/null
++++ b/lib/pr-monitor/gather.js
+@@ -0,0 +1,124 @@
++'use strict';
++
++/**
++ * PR-monitor gather — turn ONE `gatherPrSnapshot` read (the SAME shared read the
++ * `--pull` verdict uses) into the normalized snapshot the differ compares. Because
++ * the verdict and the monitor events both derive from this one read, they can
++ * never disagree (the frame in docs/work/2026-07-13-pr-monitor/design.md).
++ *
++ * The normalized snapshot is the diff subject:
++ *   { repo, pr, headSha, prState, draft, verdict:{state,reason},
++ *     checks:[{name,class}], threads:[{threadId,isResolved,isOutdated,commentCount,actionable,path}],
++ *     reviews:[{author,state,commitOid,submittedAt}], comments:[{id,author}],
++ *     behind, conflicts:(true|false|null), degraded:[{surface,error}] }
++ *
++ * @module pr-monitor/gather
++ */
++
++const { gatherPrSnapshot } = require('../pr-pull');
++const { isFailed, isGreen } = require('../pr-shepherd');
++
++/** green | failed | pending — reuses the SAME predicates as the verdict core. */
++function classifyCheck(check) {
++  if (isFailed(check)) return 'failed';
++  if (isGreen(check)) return 'green';
++  return 'pending';
++}
++
++function normalizeChecks(checks) {
++  return (Array.isArray(checks) ? checks : []).map((c) => ({
++    name: c.name || '',
++    class: classifyCheck(c),
++  }));
++}
++
++function normalizeThreads(threads) {
++  return (Array.isArray(threads) ? threads : []).map((t) => ({
++    threadId: t.threadId || '',
++    isResolved: Boolean(t.isResolved),
++    isOutdated: Boolean(t.isOutdated),
++    commentCount: Array.isArray(t.comments) ? t.comments.length : 0,
++    actionable: !t.isResolved && !t.isOutdated,
++    path: t.path || null,
++  }));
++}
++
++function normalizeReviews(reviews) {
++  return (Array.isArray(reviews) ? reviews : []).map((r) => ({
++    author: r.author || '',
++    state: r.state || '',
++    commitOid: r.commitOid || null,
++    submittedAt: r.submittedAt || null,
++  }));
++}
++
++function normalizeComments(comments) {
++  return (Array.isArray(comments) ? comments : []).map((c) => ({
++    id: c.id || `${c.author || ''}:${c.createdAt || ''}`,
++    author: c.author || '',
++  }));
++}
++
++function normalizeDegraded(degraded) {
++  return (Array.isArray(degraded) ? degraded : []).map((d) => ({
++    surface: d.source || d.surface || 'unknown',
++    error: d.error || '',
++  }));
++}
++
++/**
++ * Conflict prediction → tri-state boolean: `true`/`false` when supported,
++ * `null` when unknown (unsupported git, unreadable ref) so the differ never
++ * emits a false conflict.appeared/cleared on missing data.
++ */
++function conflictBool(conflicts) {
++  if (conflicts && conflicts.supported === true) return Boolean(conflicts.conflicted);
++  return null;
++}
++
++/**
++ * Normalize a raw `gatherPrSnapshot` result into the monitor diff subject.
++ *
++ * @param {object} snap - gatherPrSnapshot result.
++ * @param {{ repo: string, pr: string|number }} ctx
++ * @returns {object}
++ */
++function normalizeSnapshot(snap, ctx) {
++  const state = snap.state || {};
++  return {
++    repo: ctx.repo,
++    pr: String(ctx.pr),
++    headSha: state.headSha || '',
++    prState: String(state.state || 'OPEN').toUpperCase(),
++    draft: Boolean(snap.draft),
++    verdict: { state: snap.verdict || 'UNKNOWN', reason: null },
++    checks: normalizeChecks(state.checks),
++    threads: normalizeThreads(snap.threads),
++    reviews: normalizeReviews(snap.reviews),
++    comments: normalizeComments(snap.issueComments),
++    behind: snap.behind || 0,
++    conflicts: conflictBool(snap.conflicts),
++    degraded: normalizeDegraded(snap.degraded),
++  };
++}
++
++/**
++ * Gather + normalize the monitor snapshot for a PR. `ctx.gatherSnapshot` is
++ * injectable for tests; production uses the shared `gatherPrSnapshot`.
++ *
++ * @param {object} ctx - the same ctx shape gatherPrSnapshot takes (pr, owner,
++ *   repo, base, baseRef, cwd, self, adapter, now, settleWindowMs).
++ * @returns {Promise<object>} normalized snapshot.
++ */
++async function gatherMonitorSnapshot(ctx) {
++  const gather = ctx.gatherSnapshot || gatherPrSnapshot;
++  const snap = await gather(ctx);
++  return normalizeSnapshot(snap, ctx);
++}
++
++module.exports = {
++  gatherMonitorSnapshot,
++  normalizeSnapshot,
++  classifyCheck,
++  conflictBool,
++};
+diff --git a/lib/pr-monitor/journal.js b/lib/pr-monitor/journal.js
+new file mode 100644
+index 00000000..ace6a4a2
+--- /dev/null
++++ b/lib/pr-monitor/journal.js
+@@ -0,0 +1,175 @@
++'use strict';
++
++/**
++ * PR-monitor journal — per-PR append-only NDJSON event log plus an atomic
++ * snapshot fingerprint, under `.forge/pr-monitor/<repo>-<pr>/`. The journal is
++ * the CURSOR AUTHORITY: it survives crashes and is shared across processes and
++ * worktrees, and works with no kernel configured. A consumer keeps its own `seq`
++ * cursor and reads new events with `readEventsSince`.
++ *
++ * Ordering contract (exactly-once): a monitor pass APPENDS events, THEN writes
++ * the snapshot. If a crash lands between, the next pass re-diffs the old snapshot
++ * and recomputes the same `(type,key)` events — `seenIdentities` filters the ones
++ * already appended, so no duplicate is ever journaled.
++ *
++ * @module pr-monitor/journal
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { eventIdentity } = require('./events');
++
++/** Sanitize a repo slug for a filesystem directory name. */
++function sanitize(part) {
++  return String(part || '').replace(/[^A-Za-z0-9._-]+/g, '-');
++}
++
++/**
++ * Resolve (and create) the per-PR journal directory.
++ *
++ * @param {{ root: string, repo: string, pr: string|number }} ctx
++ * @returns {string} absolute directory path
++ */
++function journalDir({ root, repo, pr }) {
++  const dir = path.join(root, '.forge', 'pr-monitor', `${sanitize(repo)}-${sanitize(pr)}`);
++  fs.mkdirSync(dir, { recursive: true });
++  return dir;
++}
++
++function journalPath(dir) { return path.join(dir, 'events.ndjson'); }
++function snapshotPath(dir) { return path.join(dir, 'snapshot.json'); }
++function pidPath(dir) { return path.join(dir, 'watch.pid'); }
++
++/**
++ * Read all journal records (NDJSON), skipping any unparseable line so one
++ * corrupt tail line never blinds the cursor.
++ *
++ * @param {string} dir
++ * @returns {object[]}
++ */
++function readAllEvents(dir) {
++  const file = journalPath(dir);
++  if (!fs.existsSync(file)) return [];
++  const out = [];
++  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
++    const trimmed = line.trim();
++    if (!trimmed) continue;
++    try { out.push(JSON.parse(trimmed)); } catch { /* skip corrupt line */ }
++  }
++  return out;
++}
++
++/** Records with `seq > sinceSeq`, in journal order. */
++function readEventsSince(dir, sinceSeq) {
++  const since = Number(sinceSeq) || 0;
++  return readAllEvents(dir).filter((e) => Number(e.seq) > since);
++}
++
++/** Highest `seq` recorded so far (0 when empty). */
++function lastSeq(dir) {
++  let max = 0;
++  for (const e of readAllEvents(dir)) {
++    const s = Number(e.seq) || 0;
++    if (s > max) max = s;
++  }
++  return max;
++}
++
++/** Set of `(type,key)` identities already journaled — the dedup guard. */
++function seenIdentities(dir) {
++  const set = new Set();
++  for (const e of readAllEvents(dir)) set.add(eventIdentity(e));
++  return set;
++}
++
++/** Append finalized records as NDJSON lines (atomic per-line append). */
++function appendEvents(dir, records) {
++  if (!records || !records.length) return;
++  const payload = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
++  fs.appendFileSync(journalPath(dir), payload);
++}
++
++/**
++ * Read the persisted snapshot + fingerprint, or null when absent/unreadable.
++ *
++ * @param {string} dir
++ * @returns {{ snapshot: object, fingerprint: string }|null}
++ */
++function readSnapshot(dir) {
++  const file = snapshotPath(dir);
++  if (!fs.existsSync(file)) return null;
++  try {
++    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
++    return { snapshot: data.snapshot || null, fingerprint: data.fingerprint || null };
++  } catch { return null; }
++}
++
++/**
++ * Atomically persist the snapshot + fingerprint (write temp, then rename). The
++ * rename is atomic on the same filesystem, so a reader never sees a half-write.
++ *
++ * @param {string} dir
++ * @param {{ snapshot: object, fingerprint: string }} payload
++ */
++function writeSnapshot(dir, { snapshot, fingerprint }) {
++  const tmp = path.join(dir, `.snapshot.${process.pid}.${Date.now()}.tmp`);
++  fs.writeFileSync(tmp, JSON.stringify({ snapshot, fingerprint }));
++  fs.renameSync(tmp, snapshotPath(dir));
++}
++
++/** Write the watcher pid file. */
++function writePid(dir, pid) {
++  fs.writeFileSync(pidPath(dir), String(pid == null ? process.pid : pid));
++}
++
++/** Read the watcher pid (number) or null. */
++function readPid(dir) {
++  const file = pidPath(dir);
++  if (!fs.existsSync(file)) return null;
++  const n = Number.parseInt(fs.readFileSync(file, 'utf8').trim(), 10);
++  return Number.isFinite(n) ? n : null;
++}
++
++/** Remove the watcher pid file (best-effort). */
++function removePid(dir) {
++  try { fs.unlinkSync(pidPath(dir)); } catch { /* already gone */ }
++}
++
++/** Is `pid` a live process? `process.kill(pid, 0)` probes without signaling. */
++function pidAlive(pid) {
++  if (!pid) return false;
++  try { process.kill(pid, 0); return true; } catch (err) { return err && err.code === 'EPERM'; }
++}
++
++/**
++ * A watcher is "running" when the pid file names a live process that is NOT us.
++ * Stale pid files (dead process) return false so a poll falls back to an inline
++ * pass.
++ *
++ * @param {string} dir
++ * @returns {boolean}
++ */
++function watcherRunning(dir) {
++  const pid = readPid(dir);
++  return pidAlive(pid) && pid !== process.pid;
++}
++
++module.exports = {
++  sanitize,
++  journalDir,
++  journalPath,
++  snapshotPath,
++  pidPath,
++  readAllEvents,
++  readEventsSince,
++  lastSeq,
++  seenIdentities,
++  appendEvents,
++  readSnapshot,
++  writeSnapshot,
++  writePid,
++  readPid,
++  removePid,
++  pidAlive,
++  watcherRunning,
++};
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+new file mode 100644
+index 00000000..59884f75
+--- /dev/null
++++ b/lib/pr-monitor/monitor.js
+@@ -0,0 +1,117 @@
++'use strict';
++
++/**
++ * PR-monitor orchestration — one bounded pass (gather → diff → dedup → append →
++ * persist) and the `events --since` poll surface. The watch streaming loop and
++ * the ship lifecycle hook land in a follow-up (Tier-1 PR-B).
++ *
++ * @module pr-monitor/monitor
++ */
++
++const { finalizeEvent, eventIdentity, fingerprint } = require('./events');
++const { diffSnapshots } = require('./differ');
++const journal = require('./journal');
++
++/** ISO-8601 timestamp; injectable via ctx.now for deterministic tests. */
++function defaultNow() { return new Date().toISOString(); }
++
++/**
++ * Filter candidate events down to those whose `(type,key)` identity has NOT
++ * already been journaled — the crash-safety dedup guard.
++ */
++function dedupeAgainstJournal(candidates, seen) {
++  return candidates.filter((c) => !seen.has(eventIdentity(c)));
++}
++
++/**
++ * Envelope filtered candidates into journal records with monotonic seq + ts.
++ */
++function finalizeRecords(candidates, { baseSeq, ts, snapshot }) {
++  return candidates.map((c, i) => finalizeEvent(c, {
++    seq: baseSeq + i + 1,
++    ts,
++    repo: snapshot.repo,
++    pr: snapshot.pr,
++    headSha: snapshot.headSha,
++    verdict: snapshot.verdict,
++  }));
++}
++
++/**
++ * Run ONE bounded monitor pass: gather the current snapshot, diff it against the
++ * persisted one, dedup by content identity, APPEND new events, THEN persist the
++ * snapshot (this order is what makes a crash between the two idempotent).
++ *
++ * @param {object} ctx
++ * @param {string} ctx.dir - journal directory (from journal.journalDir).
++ * @param {() => Promise<object>} ctx.gather - returns a normalized snapshot.
++ * @param {() => string} [ctx.now] - timestamp source (test injection).
++ * @param {(records: object[]) => Promise<void>|void} [ctx.enrich] - optional hook
++ *   to enrich records (e.g. attach log excerpts to check.failed) before append.
++ * @returns {Promise<{ events: object[], changed: boolean, fingerprint: string }>}
++ */
++async function runMonitorPass(ctx) {
++  const { dir, gather, now = defaultNow, enrich } = ctx;
++  const next = await gather();
++  const prevRecord = journal.readSnapshot(dir);
++  const prev = prevRecord ? prevRecord.snapshot : null;
++  const fp = fingerprint(next);
++
++  const candidates = diffSnapshots(prev, next);
++  const filtered = dedupeAgainstJournal(candidates, journal.seenIdentities(dir));
++
++  if (!filtered.length) {
++    // Backpressure: only rewrite the snapshot when the fingerprint actually moved.
++    const changed = !prevRecord || prevRecord.fingerprint !== fp;
++    if (changed) journal.writeSnapshot(dir, { snapshot: next, fingerprint: fp });
++    return { events: [], changed, fingerprint: fp };
++  }
++
++  const records = finalizeRecords(filtered, {
++    baseSeq: journal.lastSeq(dir),
++    ts: now(),
++    snapshot: next,
++  });
++  if (typeof enrich === 'function') await enrich(records);
++
++  journal.appendEvents(dir, records);
++  journal.writeSnapshot(dir, { snapshot: next, fingerprint: fp });
++  return { events: records, changed: true, fingerprint: fp };
++}
++
++/**
++ * `forge shepherd events <pr> --since <seq>` core: run one inline pass when no
++ * watcher owns this PR, then return every journaled event with `seq > since`.
++ * This is the agent-agnostic PULL surface — stdout NDJSON, nothing under .claude.
++ *
++ * @param {object} ctx
++ * @param {string} ctx.dir
++ * @param {() => Promise<object>} ctx.gather
++ * @param {number} [ctx.since]
++ * @param {() => string} [ctx.now]
++ * @param {(dir: string) => boolean} [ctx.watcherRunning]
++ * @param {(records: object[]) => Promise<void>|void} [ctx.enrich]
++ * @returns {Promise<{ events: object[], since: number, ranPass: boolean }>}
++ */
++async function pollEvents(ctx) {
++  const { dir, gather, since = 0 } = ctx;
++  const isRunning = (ctx.watcherRunning || journal.watcherRunning)(dir);
++  let ranPass = false;
++  if (!isRunning) {
++    await runMonitorPass({ dir, gather, now: ctx.now, enrich: ctx.enrich });
++    ranPass = true;
++  }
++  return {
++    events: journal.readEventsSince(dir, since),
++    since: Number(since) || 0,
++    ranPass,
++  };
++}
++
++module.exports = {
++  runMonitorPass,
++  pollEvents,
++  dedupeAgainstJournal,
++  finalizeRecords,
++  defaultNow,
++};
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index 35424321..523053e7 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -1032,38 +1032,22 @@ function gatherFailureExcerpts(runGh, checks, requiredSet, { maxFailures, maxExc
+  * @param {number} [ctx.maxExcerptLines]
+  * @returns {Promise<object>} the bounded pull payload
+  */
+-async function gatherPullSignal(ctx) {
++async function gatherPrSnapshot(ctx) {
+   const {
+-    pr, owner, repo, base, cwd, self, adapter, runGh,
+-    runPass = runShepherdPass,
+-    maxFailures = DEFAULT_MAX_FAILURES,
++    pr, owner, repo, base, cwd, self, adapter,
+     maxThreads = DEFAULT_MAX_THREADS,
+-    maxExcerptLines = DEFAULT_MAX_EXCERPT_LINES,
+   } = ctx;
+ 
+   if (!adapter || typeof adapter.readState !== 'function') {
+-    throw new Error('gatherPullSignal requires a pr-state adapter with readState');
+-  }
+-  if (typeof runGh !== 'function') {
+-    throw new Error('gatherPullSignal requires an injected `runGh` runner');
++    throw new Error('gatherPrSnapshot requires a pr-state adapter with readState');
+   }
+ 
+-  // `degraded` records WHICH read failed and WHY (surfaced in the payload);
+-  // `unreadable` marks verdict-relevant reads so computeVerdict fails closed to
+-  // UNKNOWN (it never defaults clean on a bad read). Every optional read below
+-  // goes through safeRead, so there are no empty catch blocks in this function.
++  // `degraded` records WHICH read failed and WHY (surfaced downstream); `unreadable`
++  // marks verdict-relevant reads so computeVerdict fails closed to UNKNOWN (never
++  // defaults clean on a bad read). Every optional read goes through safeRead.
+   const degraded = [];
+   const unreadable = [];
+ 
+-  // Decision state — reuses the existing state machine in READ-ONLY mode
+-  // (`dryRun`). `--pull` is a read verb: it computes the state but takes NO
+-  // action. If a read inside the pass throws, degrade its legacy `state` but keep
+-  // gathering — the explicit reads below re-attempt each input.
+-  const pass = await safeRead('pass', () => runPass({ ...ctx, adapter, dryRun: true }), {
+-    degraded,
+-    fallback: { state: 'UNKNOWN', reason: 'Decision pass could not complete — a read failed; see verdict evidence.' },
+-  });
+-
+   // readState is the one REQUIRED read — if it throws, the whole gather fails.
+   const state = await adapter.readState(pr);
+   const requiredSet = await safeRead(
+@@ -1072,15 +1056,21 @@ async function gatherPullSignal(ctx) {
+     { degraded, fallback: null },
+   );
+ 
+-  const failures = gatherFailureExcerpts(runGh, state.checks, requiredSet, { maxFailures, maxExcerptLines, degraded });
+-
+-  // Review-thread fix-list (author-agnostic; never resolves anything).
++  // Review threads (author-agnostic; never resolves anything).
+   const threads = await safeRead(
+     'threads',
+     () => callIfPresent(adapter, 'readComments', { owner, repo, pr, cwd }, []),
+     { degraded, unreadable, fallback: [] },
+   );
+-  const reviewThreads = buildReviewThreads(threads, self, { maxThreads });
++
++  // Fetch the base ref FIRST so divergence/conflicts compare against the CURRENT
++  // origin/<base>, not a stale local ref (audit A6: a stale ref yields a false
++  // behind=0 / false "no conflict"). Degraded-surfaced, never fatal, optional cap.
++  await safeRead(
++    'fetchBase',
++    () => callIfPresent(adapter, 'fetchBase', { baseRef: ctx.baseRef, cwd }, null),
++    { degraded, fallback: null },
++  );
+ 
+   // Branch divergence (behind base → needs an update/rebase).
+   const div = await safeRead(
+@@ -1111,25 +1101,12 @@ async function gatherPullSignal(ctx) {
+   const requiredChecks = classifyRequiredChecks(state.checks, requiredSet);
+   const pendingChecks = pendingCheckNames(state.checks, maxThreads);
+ 
+-  // Hoisted once and reused by computeBlockers, computeVerdict, and the payload.
++  // Hoisted once and reused by computeVerdict and downstream consumers.
+   const draft = state.isDraft || state.draft || false;
+   const reviewDecision = state.reviewDecision || null;
+ 
+-  const blockers = computeBlockers({
+-    mergeable: state.mergeable,
+-    mergeStateStatus: state.mergeStateStatus,
+-    draft,
+-    reviewDecision,
+-    requiredClass: requiredChecks,
+-    botStatusBlockers,
+-    unresolvedThreadCount: reviewThreads.length,
+-    behind,
+-    conflicts,
+-    failuresCount: failures.length,
+-  });
+-
+-  // --- Verdict inputs the blocker list does not gather: review-at-head (#365),
+-  // head-push time (settle-window anchor), and the torn-read guard. ---
++  // --- Verdict inputs: review-at-head (#365), head-push time (settle-window
++  // anchor), and the torn-read guard. ---
+   const reviews = await safeRead(
+     'reviews',
+     () => callIfPresent(adapter, 'readReviews', { owner, repo, pr }, []),
+@@ -1147,7 +1124,7 @@ async function gatherPullSignal(ctx) {
+ 
+   // Actionable NON-HUMAN direct comments (mechanism-detected, suppression-list
+   // filtered) and an AUTHOR-AGNOSTIC unresolved-thread count — both independent
+-  // of master's display fix-list so the verdict never drops an unknown-bot signal.
++  // of the display fix-list so the verdict never drops an unknown-bot signal.
+   const botDirectComments = (Array.isArray(issueComments) ? issueComments : [])
+     .filter((c) => isActionableBotComment(c, self));
+   const unresolvedThreadCount = countUnresolvedThreads(threads);
+@@ -1174,6 +1151,64 @@ async function gatherPullSignal(ctx) {
+     unreadable,
+   });
+ 
++  return {
++    state, requiredSet, threads, behind, conflicts, issueComments,
++    botStatusBlockers, requiredChecks, pendingChecks, draft, reviewDecision,
++    reviews, headPushTimeMs, headPushKnown, headOidEnd,
++    botDirectComments, unresolvedThreadCount, verdict, evidence,
++    degraded, unreadable,
++  };
++}
++
++async function gatherPullSignal(ctx) {
++  const {
++    pr, self, adapter, runGh,
++    runPass = runShepherdPass,
++    maxFailures = DEFAULT_MAX_FAILURES,
++    maxThreads = DEFAULT_MAX_THREADS,
++    maxExcerptLines = DEFAULT_MAX_EXCERPT_LINES,
++  } = ctx;
++
++  if (!adapter || typeof adapter.readState !== 'function') {
++    throw new Error('gatherPullSignal requires a pr-state adapter with readState');
++  }
++  if (typeof runGh !== 'function') {
++    throw new Error('gatherPullSignal requires an injected `runGh` runner');
++  }
++
++  // ONE gather + ONE verdict core: reads + verdict come from gatherPrSnapshot,
++  // shared verbatim with the PR monitor so the verdict and monitor events can
++  // never disagree. This function then does only the bounded --pull PROJECTION
++  // (failure log excerpts, review-thread fix-list, summary, payload).
++  const snap = await gatherPrSnapshot(ctx);
++  const {
++    state, requiredSet, threads, behind, conflicts, botStatusBlockers,
++    requiredChecks, pendingChecks, draft, reviewDecision, verdict, evidence, degraded,
++  } = snap;
++
++  // Legacy decision pass (READ-ONLY dryRun) for back-compat `state`. Shares the
++  // snapshot's `degraded` so a pass-read failure is still surfaced in the payload.
++  const pass = await safeRead('pass', () => runPass({ ...ctx, adapter, dryRun: true }), {
++    degraded,
++    fallback: { state: 'UNKNOWN', reason: 'Decision pass could not complete — a read failed; see verdict evidence.' },
++  });
++
++  const failures = gatherFailureExcerpts(runGh, state.checks, requiredSet, { maxFailures, maxExcerptLines, degraded });
++  const reviewThreads = buildReviewThreads(threads, self, { maxThreads });
++
++  const blockers = computeBlockers({
++    mergeable: state.mergeable,
++    mergeStateStatus: state.mergeStateStatus,
++    draft,
++    reviewDecision,
++    requiredClass: requiredChecks,
++    botStatusBlockers,
++    unresolvedThreadCount: reviewThreads.length,
++    behind,
++    conflicts,
++    failuresCount: failures.length,
++  });
++
+   const summary = summarize({
+     state: pass.state,
+     failureCount: failures.length,
+@@ -1208,6 +1243,7 @@ async function gatherPullSignal(ctx) {
+ 
+ module.exports = {
+   gatherPullSignal,
++  gatherPrSnapshot,
+   cleanLogLine,
+   extractFailureExcerpt,
+   jobIdFromUrl,
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index 339d709e..55196104 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -86,7 +86,10 @@ function isGreen(check) {
+ function isFailed(check) {
+   const c = String(check.conclusion || '').toUpperCase();
+   return c === 'FAILURE' || c === 'ERROR' || c === 'TIMED_OUT'
+-    || c === 'CANCELLED' || c === 'ACTION_REQUIRED' || c === 'STARTUP_FAILURE';
++    || c === 'CANCELLED' || c === 'ACTION_REQUIRED' || c === 'STARTUP_FAILURE'
++    // STALE (a required CheckRun whose run went stale vs HEAD) is a not-green
++    // terminal conclusion — without it a stale required check pends forever.
++    || c === 'STALE';
+ }
+ 
+ /**
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index fc370336..885180d7 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -1,6 +1,6 @@
+ 'use strict';
+ 
+-const { describe, test, expect } = require('bun:test');
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+ 
+ const shepherdCmd = require('../../lib/commands/shepherd');
+ const { validateCommand } = require('../../lib/commands/_registry');
+@@ -101,3 +101,60 @@ describe('shepherd command handler', () => {
+     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
+   });
+ });
++
++describe('forge shepherd events — the agent-agnostic monitor pull surface', () => {
++  const fs = require('node:fs');
++  const os = require('node:os');
++  const path = require('node:path');
++  const journal = require('../../lib/pr-monitor/journal');
++  const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
++
++  const now = () => '2026-07-13T00:00:00.000Z';
++  function snap() {
++    return {
++      repo: 'r', pr: '1', headSha: 'sha1', prState: 'OPEN', draft: false,
++      verdict: { state: 'CLEAN-MERGEABLE', reason: null },
++      checks: [], threads: [], reviews: [], comments: [], behind: 0, conflicts: false, degraded: [],
++    };
++  }
++
++  let root; let dir;
++  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-verb-')); dir = journal.journalDir({ root, repo: 'r', pr: '1' }); });
++  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
++
++  test('parseSince reads --since <seq>', () => {
++    expect(shepherdCmd.parseSince(['events', '1', '--since', '7'])).toBe(7);
++    expect(shepherdCmd.parseSince(['events', '1'])).toBe(0);
++  });
++
++  test('runs an inline pass and returns NDJSON events since the cursor', async () => {
++    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
++      dir, gather: async () => snap(), now, watcherRunning: () => false,
++    });
++    expect(res.success).toBe(true);
++    expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
++    const parsed = res.output.split('\n').filter(Boolean).map((l) => JSON.parse(l));
++    expect(parsed).toHaveLength(1);
++    expect(parsed[0].seq).toBe(1);
++  });
++
++  test('a later poll with the advanced cursor returns nothing new', async () => {
++    await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
++    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, { dir, gather: async () => snap(), now, watcherRunning: () => false });
++    expect(res.events).toEqual([]);
++  });
++
++  test('errors without a PR argument', async () => {
++    const res = await shepherdCmd.handleEvents(['events'], root, { dir, gather: async () => snap() });
++    expect(res.success).toBe(false);
++    expect(res.error).toMatch(/Usage/);
++  });
++
++  test('main handler routes the events subcommand', async () => {
++    const res = await shepherdCmd.handler(['events', '1', '--since', '0'], {}, root, {
++      dir, gather: async () => snap(), now, watcherRunning: () => false,
++    });
++    expect(res.success).toBe(true);
++    expect(res.events).toBeDefined();
++  });
++});
+diff --git a/test/pr-monitor-snapshot.test.js b/test/pr-monitor-snapshot.test.js
+new file mode 100644
+index 00000000..7b5d0b0f
+--- /dev/null
++++ b/test/pr-monitor-snapshot.test.js
+@@ -0,0 +1,57 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { gatherPrSnapshot } = require('../lib/pr-pull');
++const { isFailed } = require('../lib/pr-shepherd');
++
++/** A fake pr-state adapter that records the ORDER of its method calls. */
++function recordingAdapter(order) {
++  const rec = (name, ret) => (..._a) => { order.push(name); return ret; };
++  return {
++    id: 'fake', kind: 'pr-state', name: 'fake',
++    readState: rec('readState', { headSha: 'h1', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewDecision: null, isDraft: false, checks: [] }),
++    readRequiredChecks: rec('readRequiredChecks', []),
++    readComments: rec('readComments', []),
++    fetchBase: rec('fetchBase', undefined),
++    readDivergence: rec('readDivergence', { behind: 0, ahead: 1 }),
++    detectConflicts: rec('detectConflicts', { supported: true, conflicted: false, files: [] }),
++    readIssueComments: rec('readIssueComments', []),
++    readReviews: rec('readReviews', []),
++    readHeadCommitTime: rec('readHeadCommitTime', 1000),
++  };
++}
++
++describe('gatherPrSnapshot — the shared monitor gather', () => {
++  test('fetches the base ref BEFORE reading divergence/conflicts (A6)', async () => {
++    const order = [];
++    await gatherPrSnapshot({
++      pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter: recordingAdapter(order), self: 'forge-bot', now: 2000, settleWindowMs: 0,
++    });
++    const fetchIdx = order.indexOf('fetchBase');
++    const divIdx = order.indexOf('readDivergence');
++    const conflictIdx = order.indexOf('detectConflicts');
++    expect(fetchIdx).toBeGreaterThanOrEqual(0);
++    expect(fetchIdx).toBeLessThan(divIdx);
++    expect(fetchIdx).toBeLessThan(conflictIdx);
++  });
++
++  test('returns the verdict + raw reads the monitor diffs', async () => {
++    const snap = await gatherPrSnapshot({
++      pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter: recordingAdapter([]), self: 'forge-bot', now: 2000, settleWindowMs: 0,
++    });
++    expect(typeof snap.verdict).toBe('string');
++    expect(snap.state.headSha).toBe('h1');
++    expect(Array.isArray(snap.threads)).toBe(true);
++    expect(Array.isArray(snap.reviews)).toBe(true);
++    expect(Array.isArray(snap.issueComments)).toBe(true);
++  });
++});
++
++describe('isFailed — STALE conclusion (A5)', () => {
++  test('a STALE required check is treated as failed, not pending forever', () => {
++    expect(isFailed({ conclusion: 'STALE' })).toBe(true);
++    expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
++  });
++});
+diff --git a/test/pr-monitor/differ.test.js b/test/pr-monitor/differ.test.js
+new file mode 100644
+index 00000000..96e0de4b
+--- /dev/null
++++ b/test/pr-monitor/differ.test.js
+@@ -0,0 +1,126 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const { diffSnapshots } = require('../../lib/pr-monitor/differ');
++const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
++
++/** A green baseline snapshot; override any field per test. */
++function snap(over = {}) {
++  return {
++    repo: 'r', pr: '1', headSha: 'sha1', prState: 'OPEN', draft: false,
++    verdict: { state: 'CLEAN-MERGEABLE', reason: null },
++    checks: [], threads: [], reviews: [], comments: [], behind: 0, conflicts: false, degraded: [],
++    ...over,
++  };
++}
++
++const types = (events) => events.map((e) => e.type);
++const find = (events, type) => events.find((e) => e.type === type);
++
++describe('diffSnapshots — baseline (first pass)', () => {
++  test('emits a single verdict baseline keyed on head sha', () => {
++    const events = diffSnapshots(null, snap());
++    expect(types(events)).toEqual([T.VERDICT_CHANGED]);
++    expect(events[0].key).toBe('baseline:sha1');
++    expect(events[0].data).toEqual({ from: null, to: 'CLEAN-MERGEABLE', reason: null });
++  });
++
++  test('baseline includes terminal + degraded state but never replays history', () => {
++    const events = diffSnapshots(null, snap({
++      prState: 'MERGED',
++      degraded: [{ surface: 'threads', error: 'HTTP 403' }],
++      threads: [{ threadId: 't1', isResolved: false, isOutdated: false, commentCount: 1, actionable: true }],
++    }));
++    expect(types(events)).toContain(T.PR_MERGED);
++    expect(types(events)).toContain(T.MONITOR_DEGRADED);
++    expect(types(events)).not.toContain(T.THREAD_OPENED);
++  });
++});
++
++describe('diffSnapshots — per-type transitions', () => {
++  test('head.pushed on a head-sha advance, keyed on the new sha', () => {
++    const e = find(diffSnapshots(snap(), snap({ headSha: 'sha2' })), T.HEAD_PUSHED);
++    expect(e).toBeDefined();
++    expect(e.key).toBe('sha2');
++  });
++
++  test('check.failed / check.recovered / checks.green', () => {
++    const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
++    const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
++    expect(find(diffSnapshots(green, failed), T.CHECK_FAILED).key).toBe('ci:sha1');
++    const events = diffSnapshots(failed, green);
++    expect(find(events, T.CHECK_RECOVERED).key).toBe('ci:sha1');
++    expect(find(events, T.CHECKS_GREEN)).toBeDefined();
++  });
++
++  test('thread.opened only for an actionable new thread', () => {
++    const opened = find(diffSnapshots(snap(), snap({
++      threads: [{ threadId: 't1', isResolved: false, isOutdated: false, commentCount: 1, actionable: true }],
++    })), T.THREAD_OPENED);
++    expect(opened.key).toBe('t1');
++    const none = diffSnapshots(snap(), snap({
++      threads: [{ threadId: 't2', isResolved: true, isOutdated: false, commentCount: 1, actionable: false }],
++    }));
++    expect(types(none)).not.toContain(T.THREAD_OPENED);
++  });
++
++  test('thread.reply on a comment-count increase; thread.resolved on resolution', () => {
++    const prev = snap({ threads: [{ threadId: 't1', isResolved: false, isOutdated: false, commentCount: 1, actionable: true }] });
++    const next = snap({ threads: [{ threadId: 't1', isResolved: true, isOutdated: false, commentCount: 2, actionable: false }] });
++    const events = diffSnapshots(prev, next);
++    expect(find(events, T.THREAD_REPLY).key).toBe('t1:2');
++    expect(find(events, T.THREAD_RESOLVED).key).toBe('t1');
++  });
++
++  test('comment.posted keyed on the stable comment id', () => {
++    expect(find(diffSnapshots(snap(), snap({ comments: [{ id: '999', author: 'sonarqubecloud' }] })), T.COMMENT_POSTED).key).toBe('999');
++  });
++
++  test('review.submitted when a review is new or its commit changed', () => {
++    const prev = snap({ reviews: [{ author: 'coderabbitai', state: 'COMMENTED', commitOid: 'old', submittedAt: 't0' }] });
++    const next = snap({ reviews: [{ author: 'coderabbitai', state: 'CHANGES_REQUESTED', commitOid: 'new', submittedAt: 't1' }] });
++    const e = find(diffSnapshots(prev, next), T.REVIEW_SUBMITTED);
++    expect(e.key).toBe('coderabbitai:new');
++    expect(e.data.verdict).toBe('CHANGES_REQUESTED');
++  });
++
++  test('conflict.appeared / conflict.cleared; null conflict never emits', () => {
++    expect(find(diffSnapshots(snap({ conflicts: false }), snap({ conflicts: true })), T.CONFLICT_APPEARED)).toBeDefined();
++    expect(find(diffSnapshots(snap({ conflicts: true }), snap({ conflicts: false })), T.CONFLICT_CLEARED)).toBeDefined();
++    expect(types(diffSnapshots(snap({ conflicts: false }), snap({ conflicts: null })))).not.toContain(T.CONFLICT_APPEARED);
++  });
++
++  test('branch.behind only on the 0 → >0 transition', () => {
++    expect(find(diffSnapshots(snap({ behind: 0 }), snap({ behind: 3 })), T.BRANCH_BEHIND).data.behind).toBe(3);
++    expect(types(diffSnapshots(snap({ behind: 2 }), snap({ behind: 5 })))).not.toContain(T.BRANCH_BEHIND);
++  });
++
++  test('verdict.changed carries from/to/reason', () => {
++    const prev = snap({ verdict: { state: 'REVIEW-PENDING', reason: null } });
++    const next = snap({ verdict: { state: 'CLEAN-MERGEABLE', reason: 'settled' } });
++    expect(find(diffSnapshots(prev, next), T.VERDICT_CHANGED).data).toEqual({ from: 'REVIEW-PENDING', to: 'CLEAN-MERGEABLE', reason: 'settled' });
++  });
++
++  test('pr.merged / pr.closed only from OPEN', () => {
++    expect(find(diffSnapshots(snap(), snap({ prState: 'MERGED' })), T.PR_MERGED)).toBeDefined();
++    expect(find(diffSnapshots(snap(), snap({ prState: 'CLOSED' })), T.PR_CLOSED)).toBeDefined();
++  });
++
++  test('monitor.degraded surfaced (not swallowed) for a newly-unreadable surface', () => {
++    const e = find(diffSnapshots(snap(), snap({ degraded: [{ surface: 'reviews', error: 'HTTP 403' }] })), T.MONITOR_DEGRADED);
++    expect(e.key).toBe('reviews');
++    expect(e.data.error).toBe('HTTP 403');
++  });
++});
++
++describe('diffSnapshots — determinism', () => {
++  test('identical snapshots produce no events', () => {
++    expect(diffSnapshots(snap(), snap())).toEqual([]);
++  });
++
++  test('the same transition always yields the same content key (crash-safe identity)', () => {
++    const mk = () => diffSnapshots(snap({ checks: [{ name: 'ci', class: 'green' }] }), snap({ checks: [{ name: 'ci', class: 'failed' }] }));
++    expect(mk().map((e) => `${e.type} ${e.key}`)).toEqual(mk().map((e) => `${e.type} ${e.key}`));
++  });
++});
+diff --git a/test/pr-monitor/events.test.js b/test/pr-monitor/events.test.js
+new file mode 100644
+index 00000000..20d3c9d9
+--- /dev/null
++++ b/test/pr-monitor/events.test.js
+@@ -0,0 +1,52 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const {
++  SCHEMA_VERSION, EVENT_TYPES, makeEvent, finalizeEvent, eventIdentity,
++  canonicalStringify, fingerprint,
++} = require('../../lib/pr-monitor/events');
++
++describe('events — schema + envelope', () => {
++  test('makeEvent stringifies the key and defaults data', () => {
++    expect(makeEvent('head.pushed', 123)).toEqual({ type: 'head.pushed', key: '123', data: {} });
++  });
++
++  test('finalizeEvent builds the full v1 record', () => {
++    const rec = finalizeEvent(makeEvent('check.failed', 'ci:sha1', { name: 'ci' }), {
++      seq: 4, ts: 'T', repo: 'r', pr: 7, headSha: 'sha1', verdict: { state: 'BLOCKED', reason: 'x' },
++    });
++    expect(rec).toEqual({
++      v: SCHEMA_VERSION, seq: 4, ts: 'T', repo: 'r', pr: '7', headSha: 'sha1',
++      type: 'check.failed', key: 'ci:sha1', data: { name: 'ci' },
++      verdict: { state: 'BLOCKED', reason: 'x' },
++    });
++  });
++
++  test('finalizeEvent tolerates a missing verdict (fail-closed nulls)', () => {
++    const rec = finalizeEvent(makeEvent('pr.merged', 'MERGED'), { seq: 1, ts: 'T', repo: 'r', pr: '1', headSha: null, verdict: null });
++    expect(rec.verdict).toEqual({ state: null, reason: null });
++    expect(rec.headSha).toBe(null);
++  });
++
++  test('every event type is present', () => {
++    expect(EVENT_TYPES.VERDICT_CHANGED).toBe('verdict.changed');
++    expect(EVENT_TYPES.MONITOR_DEGRADED).toBe('monitor.degraded');
++  });
++});
++
++describe('events — identity + fingerprint', () => {
++  test('eventIdentity is a collision-safe (type,key) pair', () => {
++    expect(eventIdentity({ type: 'a.b', key: 'k' })).not.toBe(eventIdentity({ type: 'a', key: 'b.k' }));
++  });
++
++  test('canonicalStringify sorts keys so equal objects serialize identically', () => {
++    expect(canonicalStringify({ b: 1, a: 2 })).toBe(canonicalStringify({ a: 2, b: 1 }));
++  });
++
++  test('fingerprint is stable for equal input and changes on any change', () => {
++    const a = fingerprint({ x: 1, y: [1, 2] });
++    expect(fingerprint({ y: [1, 2], x: 1 })).toBe(a);
++    expect(fingerprint({ x: 1, y: [1, 3] })).not.toBe(a);
++  });
++});
+diff --git a/test/pr-monitor/gather.test.js b/test/pr-monitor/gather.test.js
+new file mode 100644
+index 00000000..f78a5902
+--- /dev/null
++++ b/test/pr-monitor/gather.test.js
+@@ -0,0 +1,54 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const { gatherMonitorSnapshot, normalizeSnapshot, classifyCheck, conflictBool } = require('../../lib/pr-monitor/gather');
++
++describe('gather — normalizeSnapshot mapping', () => {
++  test('classifyCheck reuses the verdict-core predicates', () => {
++    expect(classifyCheck({ conclusion: 'FAILURE' })).toBe('failed');
++    expect(classifyCheck({ conclusion: 'STALE' })).toBe('failed'); // A5 gap filled
++    expect(classifyCheck({ conclusion: 'SUCCESS' })).toBe('green');
++    expect(classifyCheck({ conclusion: '', status: 'IN_PROGRESS' })).toBe('pending');
++  });
++
++  test('conflictBool is tri-state (null when prediction unsupported)', () => {
++    expect(conflictBool({ supported: true, conflicted: true })).toBe(true);
++    expect(conflictBool({ supported: true, conflicted: false })).toBe(false);
++    expect(conflictBool({ supported: false, reason: 'git too old' })).toBe(null);
++    expect(conflictBool(null)).toBe(null);
++  });
++
++  test('maps a raw gatherPrSnapshot result into the diff subject', () => {
++    const raw = {
++      state: { headSha: 'h1', state: 'OPEN', checks: [{ name: 'ci', conclusion: 'FAILURE' }] },
++      draft: true,
++      verdict: 'BLOCKED-THREADS',
++      threads: [{ threadId: 't1', isResolved: false, isOutdated: false, comments: [{}, {}] }],
++      reviews: [{ author: 'coderabbitai', state: 'CHANGES_REQUESTED', commitOid: 'h1', submittedAt: 't' }],
++      issueComments: [{ id: '9', author: 'sonarqubecloud', createdAt: 'x' }],
++      behind: 2,
++      conflicts: { supported: true, conflicted: false },
++      degraded: [{ source: 'reviews', error: 'HTTP 403' }],
++    };
++    const s = normalizeSnapshot(raw, { repo: 'r', pr: '1' });
++    expect(s.headSha).toBe('h1');
++    expect(s.draft).toBe(true);
++    expect(s.verdict.state).toBe('BLOCKED-THREADS');
++    expect(s.checks).toEqual([{ name: 'ci', class: 'failed' }]);
++    expect(s.threads[0]).toMatchObject({ threadId: 't1', commentCount: 2, actionable: true });
++    expect(s.comments).toEqual([{ id: '9', author: 'sonarqubecloud' }]);
++    expect(s.behind).toBe(2);
++    expect(s.conflicts).toBe(false);
++    expect(s.degraded).toEqual([{ surface: 'reviews', error: 'HTTP 403' }]);
++  });
++
++  test('gatherMonitorSnapshot uses the injected snapshot source', async () => {
++    const s = await gatherMonitorSnapshot({
++      repo: 'r', pr: '5',
++      gatherSnapshot: async () => ({ state: { headSha: 'z', state: 'MERGED', checks: [] }, verdict: 'CLEAN-MERGEABLE' }),
++    });
++    expect(s.prState).toBe('MERGED');
++    expect(s.headSha).toBe('z');
++  });
++});
+diff --git a/test/pr-monitor/journal.test.js b/test/pr-monitor/journal.test.js
+new file mode 100644
+index 00000000..2c1e4655
+--- /dev/null
++++ b/test/pr-monitor/journal.test.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const journal = require('../../lib/pr-monitor/journal');
++const { eventIdentity } = require('../../lib/pr-monitor/events');
++
++let root; let dir;
++beforeEach(() => {
++  root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-j-'));
++  dir = journal.journalDir({ root, repo: 'acme/forge', pr: '1' });
++});
++afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
++
++describe('journal', () => {
++  test('journalDir sanitizes the repo slug and creates the dir', () => {
++    expect(fs.existsSync(dir)).toBe(true);
++    expect(dir).toContain('acme-forge-1');
++  });
++
++  test('append + readEventsSince cursor + lastSeq + seenIdentities', () => {
++    journal.appendEvents(dir, [
++      { v: 1, seq: 1, type: 'a.b', key: 'k1' },
++      { v: 1, seq: 2, type: 'c.d', key: 'k2' },
++    ]);
++    expect(journal.lastSeq(dir)).toBe(2);
++    expect(journal.readEventsSince(dir, 1).map((e) => e.seq)).toEqual([2]);
++    expect(journal.seenIdentities(dir).has(eventIdentity({ type: 'a.b', key: 'k1' }))).toBe(true);
++  });
++
++  test('a corrupt journal line is skipped, not fatal', () => {
++    fs.appendFileSync(journal.journalPath(dir), '{"seq":1,"type":"a","key":"k"}\nnot-json\n');
++    expect(journal.readAllEvents(dir)).toHaveLength(1);
++  });
++
++  test('writeSnapshot/readSnapshot round-trips atomically', () => {
++    journal.writeSnapshot(dir, { snapshot: { headSha: 'sha1' }, fingerprint: 'fp1' });
++    const read = journal.readSnapshot(dir);
++    expect(read.fingerprint).toBe('fp1');
++    expect(read.snapshot.headSha).toBe('sha1');
++  });
++
++  test('readSnapshot returns null when absent', () => {
++    expect(journal.readSnapshot(dir)).toBe(null);
++  });
++
++  test('watcherRunning is false for a stale/own pid, so poll can fall back inline', () => {
++    journal.writePid(dir, process.pid);
++    expect(journal.watcherRunning(dir)).toBe(false); // our own pid is not a foreign watcher
++    journal.removePid(dir);
++    expect(journal.readPid(dir)).toBe(null);
++  });
++});
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+new file mode 100644
+index 00000000..0a5b1ccb
+--- /dev/null
++++ b/test/pr-monitor/monitor.test.js
+@@ -0,0 +1,91 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const journal = require('../../lib/pr-monitor/journal');
++const { runMonitorPass, pollEvents } = require('../../lib/pr-monitor/monitor');
++const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
++
++function snap(over = {}) {
++  return {
++    repo: 'acme-forge', pr: '1', headSha: 'sha1', prState: 'OPEN', draft: false,
++    verdict: { state: 'CLEAN-MERGEABLE', reason: null },
++    checks: [], threads: [], reviews: [], comments: [], behind: 0, conflicts: false, degraded: [],
++    ...over,
++  };
++}
++
++let root; let dir;
++const now = () => '2026-07-13T00:00:00.000Z';
++beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-m-')); dir = journal.journalDir({ root, repo: 'acme-forge', pr: '1' }); });
++afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
++
++describe('runMonitorPass', () => {
++  test('first pass appends the baseline event and persists the snapshot', async () => {
++    const res = await runMonitorPass({ dir, gather: async () => snap(), now });
++    expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
++    expect(res.events[0].seq).toBe(1);
++    expect(journal.readSnapshot(dir).snapshot.headSha).toBe('sha1');
++  });
++
++  test('a no-change second pass emits nothing (dedup + fingerprint backpressure)', async () => {
++    await runMonitorPass({ dir, gather: async () => snap(), now });
++    const res = await runMonitorPass({ dir, gather: async () => snap(), now });
++    expect(res.events).toEqual([]);
++    expect(res.changed).toBe(false);
++    expect(journal.lastSeq(dir)).toBe(1);
++  });
++
++  test('a real transition appends a new event with the next seq', async () => {
++    await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'green' }] }), now });
++    const res = await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'failed' }] }), now });
++    expect(res.events.map((e) => e.type)).toContain(T.CHECK_FAILED);
++    expect(res.events[0].seq).toBe(2);
++  });
++
++  test('NO DUPLICATES across a crash: snapshot lost after append → re-run emits 0', async () => {
++    await runMonitorPass({ dir, gather: async () => snap(), now });
++    expect(journal.lastSeq(dir)).toBe(1);
++    // Crash BETWEEN append and snapshot-persist: drop the snapshot, keep the
++    // journal. The next pass re-diffs from null, recomputes the SAME (type,key),
++    // and the journal dedup guard drops it — no duplicate is ever written.
++    fs.rmSync(journal.snapshotPath(dir));
++    const res = await runMonitorPass({ dir, gather: async () => snap(), now });
++    expect(res.events).toEqual([]);
++    expect(journal.readAllEvents(dir)).toHaveLength(1);
++  });
++
++  test('an enrich hook can decorate records before they are appended', async () => {
++    // Establish the baseline first, then transition a check to failed so the
++    // pass actually produces a check.failed record for the enricher to touch.
++    await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'green' }] }), now });
++    const res = await runMonitorPass({
++      dir,
++      gather: async () => snap({ checks: [{ name: 'ci', class: 'failed' }] }),
++      now,
++      enrich: (records) => { for (const r of records) if (r.type === T.CHECK_FAILED) r.data.excerpt = 'boom'; },
++    });
++    const failed = journal.readAllEvents(dir).find((e) => e.type === T.CHECK_FAILED);
++    expect(failed.data.excerpt).toBe('boom');
++    expect(res.changed).toBe(true);
++  });
++});
++
++describe('pollEvents (events --since)', () => {
++  test('returns only events with seq > since and does not re-run under a watcher', async () => {
++    await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'green' }] }), now });
++    await runMonitorPass({ dir, gather: async () => snap({ checks: [{ name: 'ci', class: 'failed' }] }), now });
++    const res = await pollEvents({ dir, gather: async () => { throw new Error('must not run'); }, since: 1, watcherRunning: () => true });
++    expect(res.events.every((e) => e.seq > 1)).toBe(true);
++    expect(res.ranPass).toBe(false);
++  });
++
++  test('runs an inline pass when no watcher owns the PR', async () => {
++    const res = await pollEvents({ dir, gather: async () => snap(), since: 0, now, watcherRunning: () => false });
++    expect(res.ranPass).toBe(true);
++    expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
++  });
++});
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index be07dcac..c844682e 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -353,12 +353,14 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(vercel.detailsUrl).toBe('https://vercel.com/x'); // targetUrl → detailsUrl
+   });
+ 
+-  test('readIssueComments returns author/authorTypename/body/createdAt from paginated GraphQL', async () => {
++  test('readIssueComments returns id/author/authorTypename/body/createdAt from paginated GraphQL', async () => {
+     const page = JSON.stringify({
+       data: { repository: { pullRequest: { comments: {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+-          { author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
++          // With fullDatabaseId → the stable REST id is used as the monitor key.
++          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
++          // Without fullDatabaseId → falls back to `${author}:${createdAt}`.
+           { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
+         ],
+       } } } },
+@@ -368,7 +370,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
+     expect(comments).toHaveLength(2);
+     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
+-    expect(comments[0]).toEqual({ author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
++    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
++    expect(comments[1].id).toBe('a-human:2026-07-12T11:00:00Z');
+     expect(comments[1].authorTypename).toBe('User');
+     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+   });
+@@ -445,3 +448,26 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(await new PrStateAdapter({ gh: empty.run, git: empty.run }).readHeadCommitTime({ pr: '7' })).toBeNull();
+   });
+ });
++
++describe('PrStateAdapter — fetchBase (audit A6: stale-ref guard)', () => {
++  test('splits <remote>/<branch> and fetches the base before divergence is read', async () => {
++    const { run, calls } = makeRunner([]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    await adapter.fetchBase({ baseRef: 'origin/master' });
++    expect(calls.some((c) => [c.cmd, ...c.args].join(' ') === 'git fetch origin master')).toBe(true);
++  });
++
++  test('threads cwd through to the git runner', async () => {
++    const seen = [];
++    const git = (cmd, args, opts) => { seen.push({ cmd, args, opts }); return ''; };
++    const adapter = new PrStateAdapter({ gh: () => '', git });
++    await adapter.fetchBase({ baseRef: 'upstream/main', cwd: '/wt' });
++    expect(seen[0]).toEqual({ cmd: 'git', args: ['fetch', 'upstream', 'main'], opts: { cwd: '/wt' } });
++  });
++
++  test('no-ops on a bare ref with no remote (nothing safe to fetch)', async () => {
++    const { run, calls } = makeRunner([]);
++    await new PrStateAdapter({ gh: run, git: run }).fetchBase({ baseRef: 'master' });
++    expect(calls).toHaveLength(0);
++  });
++});
+-- 
+2.51.0.windows.1
+

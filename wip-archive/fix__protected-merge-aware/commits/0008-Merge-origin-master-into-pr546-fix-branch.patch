@@ -1,0 +1,466 @@
+From a19140d646dd3e5947bd4b5fb96b28f504a01ce0 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 16:11:11 +0530
+Subject: [PATCH] Merge origin/master into pr546 fix branch
+
+---
+ .gitignore                                    |  4 +
+ CHANGELOG.md                                  |  1 +
+ lib/commands/test.js                          | 12 +++
+ lib/merge-rules.js                            | 95 +++++++++++++++---
+ ...merge-authority-review-regressions.test.js |  6 +-
+ test/commands/merge.test.js                   | 30 +++---
+ test/merge-rules.test.js                      | 97 +++++++++++++++----
+ test/scripts/test-runner.test.js              |  7 ++
+ 8 files changed, 201 insertions(+), 51 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 5ec9d5af..257d503a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -99,6 +99,10 @@ docs/planning/
+ # written by the per-turn recall hook). Machine- and session-specific — never source.
+ .forge/memory-recall/
+ 
++# Managed by `forge` config commands, not by hand — the protected-state gate
++# blocks direct commits, so a tracked copy can only ever be stale.
++.forge/config.yaml
++
+ # Protected-state audit log (capped append-only record of blocked protected-path
+ # edits, written by the pre-commit check). Machine-local — never source.
+ .forge/protected-state-audit.jsonl
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0c034fc5..2b6ec96c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ ### Fixed
+ 
+ - **The protected-state pre-commit check is now merge-aware.** While a merge is in progress (per-worktree `MERGE_HEAD`), a staged protected path is exempt only when its full staged index entry (mode, object type and object id) is identical to that path's entry on `HEAD`, or on a `MERGE_HEAD` contained in the repository's canonical upstream ref (the base remote — `upstream` preferred over `origin`, the same resolution `/ship` uses to pick a PR base, then that remote's default branch) — content already published on the official base rather than on a contributor's fork. The base-remote resolver now lives in `lib/base-remote.js` and is shared with `/ship`, so a change merged from a fork's default branch but never published upstream stays blocked — content already published on the line this repo integrates into, carried in by the merge rather than edited. A local-only branch, an untrusted contributor remote, or a hand-created `refs/remotes/*` ref earns no exemption, an unresolvable `HEAD` grants no exemption context at all, `bun.lock` still requires its regeneration proof, paths differing from every trusted revision stay blocked, the non-merge path is unchanged, and any failed git query fails closed. (issue `f6d43eb1-249d-4d81-b679-32502ffa28c2`)
++- **Bare conditional merge no longer blocks on intentionally skipped optional checks.** `checks_green` now partitions the authoritative protected context/application set from optional check runs: protected and explicit `only` checks remain strict `SUCCESS`, while terminal optional `NEUTRAL` and `SKIPPED` results no longer block. Missing, malformed, unsafe, and nonterminal evidence still fails closed. (#549, issue `fa805e7e-e718-438f-a776-bd860c80e99a`)
+ - **The full-suite worker budget now weights subprocess workers by real process cost.** A subprocess-lane worker owns two Windows processes (its own bun runtime plus the `bun.exe` grandchild its tests spawn), so granting three of them on a 4-vCPU runner oversubscribed the box and produced wall-clock-only failures. Grants are now made against the budget by cost (subprocess/exclusive = 2 units on `win32`, 1 elsewhere; unit = 1), the strongest lane always keeps one worker so the schedule can never stall at zero, and the plan log prints the *granted* concurrency plus the cost and budget instead of the nominal lane concurrency. Non-Windows scheduling is unchanged. (issue `9b8dfa31-4a76-4ef2-b7e9-331d248e3850`)
+ - **`forge push` no longer kills a passing full test suite.** The pre-push test run is budgeted from the shared full-suite budget in `scripts/test.js` instead of a hardcoded 120s cap, and that shared budget is raised from 10 to 25 minutes — the previous default sat *below* the measured healthy runtime (602.43s for 8038 tests on Windows), so it SIGKILLed good runs. The ceiling now carries >2x headroom because it exists to catch an indefinite hang, not to bound normal runtime; `FORGE_TEST_TIMEOUT_MS` still overrides. A run terminated by a timeout, signal, or spawn error now reports what happened instead of failing with no summary. (issue `e26dbb91-0443-4e53-946e-a9941ec30ca3`)
+ - **The targeted PR lane's full-suite fallback now uses the lane-aware runner.** When the execution planner returns `mode=full`, the follow-up job runs `scripts/test-full-suite.js` instead of a raw `bun test test/`, so subprocess-heavy files get resource-lane separation and the worker budget the full matrix already had — closing the Windows-only spawn failures that hit only this lane.
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 873b2a4e..060ea1a4 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -47,6 +47,18 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/doc-assertions.test.js',
+ 		'test/scripts/doc-asserting-tests.test.js',
+ 	],
++	// The suites that assert the repo .gitignore's actual content. The path is
++	// already known to the classifier, so without candidates here it resolves
++	// zero tests and a one-line ignore addition pays the full-suite lane.
++	'.gitignore': [
++		'test/check-forge-token.test.js',
++		'test/cleanup/dropped-agent-config.test.js',
++		'test/coverage-config.test.js',
++		'test/eval/eval-history.test.js',
++		'test/freshness-token.test.js',
++		'test/mutation-config.test.js',
++		'test/test-dashboard.test.js',
++	],
+ 	'lib/lefthook-check.js': ['test/lefthook-check.test.js', 'test/runtime-health.test.js'],
+ 	'lib/runtime-health.js': ['test/runtime-health.test.js'],
+ 	// skill-eval hosts the accuracy-lint detectors (auditCommandDocumentation /
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index bf5fb8b8..4b1f74b8 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -21,7 +21,8 @@
+  *
+  * PR context shape (all fields optional; absence is treated fail-closed by the
+  * rules that need them):
+- *   - checks:             Array<{ name, conclusion }>  CI check rollup
++ *   - checks:             Array<{ name, appId, status, conclusion } | { name, appId:null, state }>
++ *   - requiredChecks:     Array<{ context, appId }>     protected required set
+  *   - requiredChecksKnown: boolean                     is the required set readable?
+  *   - unresolvedThreads:  number | Array               open review threads
+  *   - behindBase:         number | boolean             commits behind base
+@@ -48,13 +49,12 @@
+  * documented follow-up and intentionally NOT implemented here.
+  *
+  * Follow-ups (documented, NOT built here): an opt-in `auto_update` executor
+- * (update-branch when behind → wait for CI → re-check → merge); required-checks
+- * SCOPING for `checks_green` (read the branch-protection required set instead of
+- * requiring every rollup check green); a configurable merge `method`
++ * (update-branch when behind → wait for CI → re-check → merge); a configurable merge `method`
+  * (squash | merge | rebase); and post-merge branch deletion.
+  */
+ 
+ const SUCCESS_CONCLUSIONS = new Set(['SUCCESS']);
++const SAFE_OPTIONAL_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+ const MS_PER_MIN = 60_000;
+ const {
+   normalizePrNumber,
+@@ -135,16 +135,49 @@ function checkName(check) {
+   return String((check && check.name) || '');
+ }
+ 
++function isCheckObservationWellFormed(check) {
++  if (!check || typeof check !== 'object' || typeof check.name !== 'string' || !check.name.trim()
++    || !Object.prototype.hasOwnProperty.call(check, 'appId')) return false;
++  const hasState = Object.prototype.hasOwnProperty.call(check, 'state');
++  const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
++  const hasConclusion = Object.prototype.hasOwnProperty.call(check, 'conclusion');
++  if (hasState) {
++    return !hasStatus && !hasConclusion && check.appId === null
++      && typeof check.state === 'string' && Boolean(check.state.trim());
++  }
++  return hasStatus && hasConclusion && Number.isInteger(check.appId) && check.appId > 0
++    && typeof check.status === 'string' && Boolean(check.status.trim())
++    && (check.conclusion === null || typeof check.conclusion === 'string');
++}
++
++function normalizeRequiredCheck(check) {
++  if (!check || typeof check !== 'object' || typeof check.context !== 'string' || !check.context.trim()
++    || !Object.prototype.hasOwnProperty.call(check, 'appId')
++    || (check.appId !== null && (!Number.isInteger(check.appId) || check.appId <= 0))) return null;
++  return { context: check.context, appId: check.appId };
++}
++
++function matchesRequiredCheck(check, required) {
++  return checkName(check) === required.context
++    && (required.appId === null || check.appId === required.appId);
++}
++
++function isSafeOptionalCheck(check) {
++  if (Object.prototype.hasOwnProperty.call(check, 'state')) return isCheckGreen(check);
++  return String(check.status).toUpperCase() === 'COMPLETED'
++    && SAFE_OPTIONAL_CONCLUSIONS.has(String(check.conclusion || '').toUpperCase());
++}
++
+ /**
+- * `checks_green` — every CI check must be green per `isCheckGreen`. Optionally scoped:
+- *   - bare string / no arg → ALL checks must be green (strict default).
+- *   - { ignore: ["A","B"] } → the named checks are EXEMPT; every OTHER check
+- *     must be green. `ignore: []` is identical to the bare form.
++ * `checks_green` — protected checks must be strict SUCCESS; optional check runs
++ * may also be terminal NEUTRAL or SKIPPED. Optionally scoped:
++ *   - bare string / no arg → protected checks strict, optional checks safely terminal.
++ *   - { ignore: ["A","B"] } → the named optional checks are EXEMPT;
++ *     `ignore: []` is identical to the bare form.
+  *   - { only: ["A"] }       → ONLY the named checks must be green (present AND
+- *     green per `isCheckGreen`); all others are ignored.
++ *     green per `isCheckGreen`); all optional others are ignored.
+  * `ignore` + `only` together is malformed → fail-closed. Exact name match.
+- * (`required_only` — scope to the branch-protection required set — is a
+- * documented follow-up, not built here.)
++ * The protected required set is always enforced before optional scoping.
+  */
+ function checksGreen(ctx, arg) {
+   let ignore = [];
+@@ -176,14 +209,42 @@ function checksGreen(ctx, arg) {
+   if (!Array.isArray(ctx.checks)) {
+     return fail('check results are missing from the PR context (fail-closed).');
+   }
++  if (!Array.isArray(ctx.requiredChecks)) {
++    return fail('required-check set is missing or malformed (fail-closed).');
++  }
++  if (ctx.checks.some((check) => !isCheckObservationWellFormed(check))) {
++    return fail('check results contain malformed observations (fail-closed).');
++  }
++
++  const required = ctx.requiredChecks.map(normalizeRequiredCheck);
++  if (required.some((check) => !check)) {
++    return fail('required-check set contains malformed entries (fail-closed).');
++  }
++  const requiredApps = new Map();
++  for (const check of required) {
++    if (!requiredApps.has(check.context)) requiredApps.set(check.context, new Set());
++    requiredApps.get(check.context).add(check.appId === null ? '*' : String(check.appId));
++  }
++  if ([...requiredApps.values()].some((apps) => apps.size > 1)) {
++    return fail('required-check set contains conflicting application identities (fail-closed).');
++  }
++
++  const requiredProblems = required.map((requiredCheck) => {
++    const matches = ctx.checks.filter((check) => matchesRequiredCheck(check, requiredCheck));
++    if (matches.length === 0) return `${requiredCheck.context} (missing)`;
++    if (matches.some((check) => !isCheckGreen(check))) return `${requiredCheck.context} (not successful)`;
++    return null;
++  }).filter(Boolean);
++  if (requiredProblems.length > 0) {
++    return fail(`protected required check(s) not green: ${requiredProblems.join(', ')}.`);
++  }
+ 
+   if (only) {
+     // Only the named checks matter — each must be PRESENT and green.
+-    const byName = new Map(ctx.checks.map((c) => [checkName(c), c]));
+     const problems = only.map((name) => {
+-      const check = byName.get(name);
+-      if (!check) return `${name} (missing)`;
+-      if (!isCheckGreen(check)) return `${name} (${check.conclusion || 'not green'})`;
++      const matches = ctx.checks.filter((check) => checkName(check) === name);
++      if (matches.length === 0) return `${name} (missing)`;
++      if (matches.some((check) => !isCheckGreen(check))) return `${name} (not green)`;
+       return null;
+     }).filter(Boolean);
+     if (problems.length > 0) return fail(`required check(s) not green: ${problems.join(', ')}.`);
+@@ -192,7 +253,9 @@ function checksGreen(ctx, arg) {
+ 
+   // Default / ignore: every check EXCEPT the exempt ones must be green.
+   const exempt = new Set(ignore);
+-  const notGreen = ctx.checks.filter((c) => !exempt.has(checkName(c)) && !isCheckGreen(c));
++  const notGreen = ctx.checks.filter((check) => !exempt.has(checkName(check))
++    && !required.some((requiredCheck) => matchesRequiredCheck(check, requiredCheck))
++    && !isSafeOptionalCheck(check));
+   if (notGreen.length > 0) {
+     const names = notGreen.map((c) => (c && c.name) || '?').join(', ');
+     return fail(`${notGreen.length} check(s) not green: ${names}.`);
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index f5ac9a59..ba3ccfa4 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -387,7 +387,7 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(merges).toBe(0);
+   });
+ 
+-  test('optional NEUTRAL and SKIPPED checks block the mutation seam', async () => {
++  test('optional NEUTRAL and SKIPPED checks do not block the mutation seam', async () => {
+     for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
+       let merges = 0;
+       const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -397,8 +397,8 @@ describe('merge authority — exact reviewer regressions', () => {
+         ] }),
+         mergePr: async () => { merges += 1; return { merged: true }; },
+       }));
+-      expect(out.merged).toBe(false);
+-      expect(merges).toBe(0);
++      expect(out.merged).toBe(true);
++      expect(merges).toBe(1);
+     }
+   });
+ 
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 5ee24feb..96ab3aaf 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -185,25 +185,29 @@ describe('merge command — opt-in conditional auto-merge', () => {
+     expect(mergeCalled).toBe(true);
+   });
+ 
+-  test('bare checks_green still refuses optional NEUTRAL and SKIPPED checks', async () => {
++  test('bare checks_green merges required SUCCESS plus optional SKIPPED after both TOCTOU reads', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
+     let mergeCalled = false;
++    let fetchCalls = 0;
+     const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+       ...AUTHORITY_DEPS,
+-      fetchPrContext: async () => authorizedContext({
+-        checks: [
+-          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+-          { name: 'forge/pr-monitor', appId: 456, status: 'COMPLETED', conclusion: 'NEUTRAL' },
+-          { name: 'docs-only', appId: 457, status: 'COMPLETED', conclusion: 'SKIPPED' },
+-        ],
+-      }),
+-      mergePr: async () => { mergeCalled = true; },
++      fetchPrContext: async () => {
++        fetchCalls += 1;
++        return authorizedContext({
++          checks: [
++            { name: 'db-contract', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++            { name: 'db-contract-runtime', appId: 456, status: 'COMPLETED', conclusion: 'SKIPPED' },
++          ],
++          requiredChecks: [{ context: 'db-contract', appId: 123 }],
++        });
++      },
++      mergePr: async () => { mergeCalled = true; return { merged: true }; },
+     });
+ 
+-    expect(out.merged).toBe(false);
+-    expect(out.allowed).toBe(false);
+-    expect(out.unmet[0].rule).toBe('checks_green');
+-    expect(mergeCalled).toBe(false);
++    expect(fetchCalls).toBe(2);
++    expect(out.merged).toBe(true);
++    expect(out.allowed).toBe(true);
++    expect(mergeCalled).toBe(true);
+   });
+ 
+   test('ignored FAILURE remains a mandatory preflight refusal', async () => {
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index ce3d60b9..f6958ea7 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -14,9 +14,10 @@ const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
+ function greenContext(overrides = {}) {
+   return {
+     checks: [
+-      { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+-      { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { name: 'lint', appId: 456, status: 'COMPLETED', conclusion: 'SUCCESS' },
+     ],
++    requiredChecks: [{ context: 'ci', appId: 123 }],
+     requiredChecksKnown: true,
+     unresolvedThreads: 0,
+     behindBase: 0,
+@@ -110,27 +111,72 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+   });
+ 
+   test('checks_green fails when any check is not green', () => {
+-    const ctx = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
++    const ctx = greenContext({ checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' }] });
+     expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
+   });
+ 
+-  test('checks_green requires COMPLETED plus SUCCESS and rejects success-like conclusions', () => {
++  test('bare checks_green allows terminal NEUTRAL and SKIPPED optional check runs', () => {
++    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
++      const ctx = greenContext({ checks: [
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++        { name: 'optional', appId: 999, status: 'COMPLETED', conclusion },
++      ] });
++      expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(true);
++    }
++  });
++
++  test('protected required checks remain strict SUCCESS with context and app identity matching', () => {
++    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
++      const ctx = greenContext({ checks: [
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion },
++        { name: 'ci', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
++      ] });
++      expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
++    }
++  });
++
++  test('checks_green fails closed when required-check policy is unavailable, malformed, or conflicting', () => {
++    for (const requiredChecks of [
++      undefined,
++      [{ context: 'ci' }],
++      [{ context: 'ci', appId: 123 }, { context: 'ci', appId: 999 }],
++    ]) {
++      expect(evaluateMergeRules(greenContext({ requiredChecks }), ['checks_green']).allowed).toBe(false);
++    }
++  });
++
++  test('bare checks_green rejects unsafe, nonterminal, and malformed optional observations', () => {
+     for (const check of [
+-      { name: 'ci', conclusion: 'SUCCESS' },
+-      { name: 'ci', status: 'IN_PROGRESS', conclusion: 'SUCCESS' },
+-      { name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' },
+-      { name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' },
+-      { name: 'ci', status: 'COMPLETED', conclusion: 'PASS' },
++      ...['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED'].map((conclusion) => (
++        { name: 'optional', appId: 999, status: 'COMPLETED', conclusion }
++      )),
++      { name: 'optional', appId: 999, status: 'IN_PROGRESS', conclusion: null },
++      { name: 'optional', appId: 999, conclusion: 'SUCCESS' },
++      { name: 'optional', status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { name: '', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
+     ]) {
+-      expect(evaluateMergeRules(greenContext({ checks: [check] }), ['checks_green']).allowed).toBe(false);
++      const ctx = greenContext({ checks: [
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++        check,
++      ] });
++      expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
+     }
+   });
+ 
++  test('bare checks_green keeps legacy status contexts strict SUCCESS-only', () => {
++    const checks = (state) => [
++      { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { name: 'legacy', appId: null, state },
++    ];
++    expect(evaluateMergeRules(greenContext({ checks: checks('SUCCESS') }), ['checks_green']).allowed).toBe(true);
++    expect(evaluateMergeRules(greenContext({ checks: checks('PENDING') }), ['checks_green']).allowed).toBe(false);
++  });
++
+   test('checks_green { ignore } exempts a named failing check but still blocks on OTHER failures', () => {
+     const oneBadIgnored = greenContext({
+       checks: [
+-        { name: 'coverage', conclusion: 'FAILURE' },
+-        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
++        { name: 'coverage', appId: 789, status: 'COMPLETED', conclusion: 'FAILURE' },
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
+       ],
+     });
+     // coverage is exempt; every other check (ci) is green → allowed.
+@@ -138,25 +184,30 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+ 
+     const anotherAlsoBad = greenContext({
+       checks: [
+-        { name: 'coverage', conclusion: 'FAILURE' },
+-        { name: 'ci', conclusion: 'FAILURE' },
++        { name: 'coverage', appId: 789, status: 'COMPLETED', conclusion: 'FAILURE' },
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' },
+       ],
+     });
+     // coverage exempt, but ci (not exempt) still fails → unmet.
+     expect(evaluateMergeRules(anotherAlsoBad, [{ checks_green: { ignore: ['coverage'] } }]).allowed).toBe(false);
+   });
+ 
+-  test('checks_green { ignore: [] } behaves like bare checks_green (strict)', () => {
++  test('checks_green { ignore: [] } behaves like bare checks_green', () => {
+     expect(evaluateMergeRules(greenContext(), [{ checks_green: { ignore: [] } }]).allowed).toBe(true);
+-    const bad = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
++    const safeOptional = greenContext({ checks: [
++      { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { name: 'optional', appId: 999, status: 'COMPLETED', conclusion: 'SKIPPED' },
++    ] });
++    expect(evaluateMergeRules(safeOptional, [{ checks_green: { ignore: [] } }]).allowed).toBe(true);
++    const bad = greenContext({ checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' }] });
+     expect(evaluateMergeRules(bad, [{ checks_green: { ignore: [] } }]).allowed).toBe(false);
+   });
+ 
+-  test('checks_green { only } requires ONLY the listed checks to be SUCCESS', () => {
++  test('checks_green { only } requires ONLY the listed checks to be strict SUCCESS', () => {
+     const ctx = greenContext({
+       checks: [
+-        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+-        { name: 'coverage', conclusion: 'FAILURE' },
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++        { name: 'coverage', appId: 789, status: 'COMPLETED', conclusion: 'FAILURE' },
+       ],
+     });
+     // only ci matters; coverage failure is ignored → allowed.
+@@ -165,6 +216,14 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['coverage'] } }]).allowed).toBe(false);
+     // a named check that is missing → unmet (must be present AND green).
+     expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['nonexistent'] } }]).allowed).toBe(false);
++
++    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
++      const optional = greenContext({ checks: [
++        { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++        { name: 'optional', appId: 999, status: 'COMPLETED', conclusion },
++      ] });
++      expect(evaluateMergeRules(optional, [{ checks_green: { only: ['optional'] } }]).allowed).toBe(false);
++    }
+   });
+ 
+   test('checks_green with BOTH ignore and only is malformed → fail-closed', () => {
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 18a83b02..7fa91028 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -192,16 +192,23 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.runFullSuite).toBe(false);
+     expect(plan.hasUnmappedFiles).toBe(false);
+     expect(plan.testTargets).toEqual([
++      'test/check-forge-token.test.js',
++      'test/cleanup/dropped-agent-config.test.js',
+       'test/cleanup/dropped-agent-docs.test.js',
++      'test/coverage-config.test.js',
+       'test/doc-assertions.test.js',
+       'test/docs-consistency.test.js',
+       'test/embedded-assets-drift.test.js',
++      'test/eval/eval-history.test.js',
+       'test/forge-commands.test.js',
++      'test/freshness-token.test.js',
+       'test/lefthook-check.test.js',
++      'test/mutation-config.test.js',
+       'test/runtime-health.test.js',
+       'test/scripts/preflight.test.js',
+       'test/scripts/test-runner.test.js',
+       'test/setup-workflow-removal.test.js',
++      'test/test-dashboard.test.js',
+       ...riskTargets,
+     ]);
+   });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,143 @@
+From af361925d0f9ff7f9897928a09488993cbb7320f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 7 Jul 2026 14:46:03 +0530
+Subject: [PATCH] fix(hooks): Cursor protected-path now denies shell WRITES on
+ beforeShellExecution
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CodeRabbit finding: beforeShellExecution carries only command (no file_path),
+so extractPath() returned null and the protected-path intent never denied on
+Cursor's one deny-capable event. Add commandTouchesProtectedPath(): require a
+write-intent construct (rm/mv/sed/tee/redirection/...) then token-scan for a
+protected path — reads stay allowed, mirroring Claude's Write|Edit matcher.
+decide() falls back to command inspection when no path is present. Matrix
+knownIssue updated (shell writes deny; editor edits remain observational).
++4 test groups (63/63 pass).
+---
+ .forge/hooks/forge-native-hook.js | 38 +++++++++++++++++++++++++++++++
+ lib/harness-capability-matrix.js  |  2 +-
+ test/forge-native-hook.test.js    | 30 ++++++++++++++++++++++++
+ 3 files changed, 69 insertions(+), 1 deletion(-)
+
+diff --git a/.forge/hooks/forge-native-hook.js b/.forge/hooks/forge-native-hook.js
+index ae55e696..6a6e7a67 100644
+--- a/.forge/hooks/forge-native-hook.js
++++ b/.forge/hooks/forge-native-hook.js
+@@ -91,6 +91,31 @@ function isProtectedPath(p) {
+   return PROTECTED_PATTERNS.some(re => re.test(n));
+ }
+ 
++// Write-intent shell constructs: mutating commands and output redirection. Reads
++// (cat/ls/grep) of protected paths stay allowed — the protected-path intent guards
++// WRITES, mirroring the Claude wiring (PreToolUse matcher Write|Edit, not Read).
++const WRITE_INTENT_RE = /(^|[\s;|&(])(rm|mv|cp|tee|truncate|chmod|chown|ln|sed|perl|dd|install|rsync|unlink|shred)\b|>>?/;
++
++/**
++ * True when a SHELL COMMAND shows WRITE intent toward a Forge-protected path.
++ * Needed because Cursor's only deny-capable surface is `beforeShellExecution`,
++ * whose payload carries `command` (no file_path) — without this check the
++ * protected-path intent could never actually block anything on Cursor.
++ * Conservative two-step: (1) the command must contain a mutating construct
++ * (rm/mv/sed/tee/redirection/...), then (2) token-scan (split on whitespace +
++ * shell operators, strip quotes) for a protected path. Never throws.
++ */
++function commandTouchesProtectedPath(command) {
++  if (typeof command !== 'string' || !command) return false;
++  if (!WRITE_INTENT_RE.test(command)) return false;
++  const tokens = command.split(/[\s;|&<>()]+/);
++  for (const raw of tokens) {
++    const token = raw.replace(/^["']+|["']+$/g, '');
++    if (token && !token.startsWith('-') && isProtectedPath(token)) return true;
++  }
++  return false;
++}
++
+ /** True when a shell command invokes `git commit`. */
+ function isGitCommit(command) {
+   return typeof command === 'string' && /\bgit\b[^\n&|;]*\bcommit\b/.test(command);
+@@ -121,6 +146,18 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck }) {
+         reason: `Forge-protected path '${normalize(target)}' — edit it through the owning Forge CLI/skill, not a raw write.`,
+       };
+     }
++    // No file path in the payload (e.g. Cursor beforeShellExecution carries only
++    // `command`): inspect the shell command for write intent on a protected path,
++    // so the deny-capable shell surface actually protects instead of no-oping.
++    if (!target) {
++      const command = extractCommand(input);
++      if (commandTouchesProtectedPath(command)) {
++        return {
++          decision: 'deny',
++          reason: 'Shell command writes to a Forge-protected path — use the owning Forge CLI/skill instead.',
++        };
++      }
++    }
+     return { decision: 'allow' };
+   }
+ 
+@@ -199,6 +236,7 @@ module.exports = {
+   extractPath,
+   extractCommand,
+   isProtectedPath,
++  commandTouchesProtectedPath,
+   isGitCommit,
+   decide,
+   formatOutput,
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index bc19eb2b..3bf3636d 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -135,7 +135,7 @@ const CAPABILITY_ROWS = [
+   ]),
+   row('hooks', 'hooks', 'lifecycle enforcement', [
+     ['claude', target('native', '.claude/settings.json', { role: 'native PreToolUse hooks projecting Forge TDD-gate + protected-path enforcement (lib/hook-renderer.js), invoking the installed .forge/hooks/forge-native-hook.js adapter', evidence: ['S14'] })],
+-    ['cursor', target('native', '.cursor/hooks.json', { role: 'native Cursor 1.7+ hooks projecting Forge enforcement via the installed forge-native-hook.js adapter', knownIssue: 'Cursor 1.7+ has NO pre-edit deny event, so protected-path write-blocking + the TDD gate run on beforeShellExecution and afterFileEdit is an observational audit; the git-hook path remains the authoritative pre-commit gate.', evidence: ['S15'] })],
++    ['cursor', target('native', '.cursor/hooks.json', { role: 'native Cursor 1.7+ hooks projecting Forge enforcement via the installed forge-native-hook.js adapter', knownIssue: 'Cursor 1.7+ has NO pre-edit deny event: SHELL writes to protected paths ARE denied on beforeShellExecution (the adapter inspects the command for write intent on a protected path), but editor-tool edits are only audited observationally via afterFileEdit; the git-hook path remains the authoritative pre-commit gate.', evidence: ['S15'] })],
+     ['codex', target('not-delivered', null, { role: 'Codex reads the GLOBAL ~/.codex/config.toml (per #311 / agents-config.js), so project setup cannot write it', knownIssue: 'Codex supports native hooks (S7) but they live in the global ~/.codex/config.toml; the Codex [hooks] TOML renderer exists and is tested (renderCodexHooksToml) but is intentionally not wired at project setup. Tracked for a global-config follow-up (epic 90f2f631).', evidence: ['S7'] })],
+     ['hermes', target('not-delivered', null, { role: 'Hermes reads shell hooks from the GLOBAL ~/.hermes/config.yaml, so project setup cannot write it', knownIssue: 'Hermes DOES have a native hook surface: shell hooks in the `hooks:` block of ~/.hermes/config.yaml, where a pre_tool_call hook can DENY a tool call (it even accepts Claude\'s {decision:block} shape). But that config is global (home dir), so `forge setup` cannot write it during project-local setup (same constraint as Codex). The Hermes `hooks:` YAML renderer exists and is tested (renderHermesHooksYaml) but is intentionally not wired at project setup; tracked for a global-config follow-up (epic 90f2f631). The git-hook + forge-CLI-gate tier remains the authoritative enforcement path for Hermes today.', evidence: ['S16'] })],
+   ]),
+diff --git a/test/forge-native-hook.test.js b/test/forge-native-hook.test.js
+index 6b6a6c68..7252c0e4 100644
+--- a/test/forge-native-hook.test.js
++++ b/test/forge-native-hook.test.js
+@@ -26,6 +26,36 @@ describe('extractPath', () => {
+   test('reads Hermes write_file/patch tool_input.path', () => {
+     expect(adapter.extractPath({ tool_input: { path: 'AGENTS.md' } })).toBe('AGENTS.md');
+   });
++});
++
++describe('commandTouchesProtectedPath (Cursor beforeShellExecution deny path)', () => {
++  test('denies WRITE-intent shell commands touching protected paths', () => {
++    expect(adapter.commandTouchesProtectedPath('rm -rf .forge')).toBe(true);
++    expect(adapter.commandTouchesProtectedPath('echo hacked > AGENTS.md')).toBe(true);
++    expect(adapter.commandTouchesProtectedPath('sed -i s/a/b/ lefthook.yml')).toBe(true);
++    expect(adapter.commandTouchesProtectedPath('mv .env.local /tmp/steal')).toBe(true);
++    expect(adapter.commandTouchesProtectedPath('cat secrets | tee .forge/config.yaml')).toBe(true);
++  });
++
++  test('allows READS of protected paths (protected-path guards writes, like Claude Write|Edit)', () => {
++    expect(adapter.commandTouchesProtectedPath('cat .forge/config.yaml')).toBe(false);
++    expect(adapter.commandTouchesProtectedPath('ls .forge')).toBe(false);
++    expect(adapter.commandTouchesProtectedPath('grep foo AGENTS.md')).toBe(false);
++  });
++
++  test('allows write commands on unprotected paths + non-write commands', () => {
++    expect(adapter.commandTouchesProtectedPath('rm -rf dist')).toBe(false);
++    expect(adapter.commandTouchesProtectedPath('git status')).toBe(false);
++    expect(adapter.commandTouchesProtectedPath('')).toBe(false);
++    expect(adapter.commandTouchesProtectedPath(null)).toBe(false);
++  });
++
++  test('decide() denies a protected-path intent via the shell command when no file path present', () => {
++    const denied = adapter.decide({ intent: 'protected-path', input: { command: 'rm -rf .forge' } });
++    expect(denied.decision).toBe('deny');
++    const readOk = adapter.decide({ intent: 'protected-path', input: { command: 'cat .forge/config.yaml' } });
++    expect(readOk.decision).toBe('allow');
++  });
+   test('returns null when no path present (e.g. a shell event)', () => {
+     expect(adapter.extractPath({ command: 'ls -la' })).toBe(null);
+   });
+-- 
+2.51.0.windows.1
+

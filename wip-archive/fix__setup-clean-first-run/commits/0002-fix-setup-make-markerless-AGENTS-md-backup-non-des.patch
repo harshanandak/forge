@@ -1,0 +1,79 @@
+From a7d916193c692e35419a4becb0f7b8aa3917e16d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 06:16:37 +0530
+Subject: [PATCH] fix(setup): make markerless AGENTS.md backup non-destructive
+
+A repeated markerless overwrite (e.g. re-running `--quick` after markers
+were stripped) previously clobbered the existing AGENTS.md.bak, losing the
+earlier snapshot. backupMarkerlessAgentsMd now keeps the original
+AGENTS.md.bak stable and writes later snapshots to numbered fallbacks
+(AGENTS.md.bak.1, .2, ...), so no prior backup is ever lost.
+
+Addresses CodeRabbit review thread on PR #300.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/commands/setup.js        | 15 +++++++++++++--
+ test/setup-hardening.test.js | 21 +++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index f05d0d10..af05014f 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -331,9 +331,20 @@ function backupMarkerlessAgentsMd() {
+   if (hasUserMarkers || hasForgeMarkers) {
+     return false;
+   }
+-  const backupPath = path.join(projectRoot, 'AGENTS.md.bak');
++  // Never clobber an earlier snapshot: keep the original AGENTS.md.bak stable
++  // and fall back to numbered AGENTS.md.bak.1, .2, ... so a repeated markerless
++  // overwrite (e.g. re-running --quick after markers were stripped) preserves
++  // every prior backup instead of losing it (CodeRabbit review on PR #300).
++  let backupPath = path.join(projectRoot, 'AGENTS.md.bak');
++  if (fs.existsSync(backupPath)) {
++    let suffix = 1;
++    while (fs.existsSync(path.join(projectRoot, `AGENTS.md.bak.${suffix}`))) {
++      suffix += 1;
++    }
++    backupPath = path.join(projectRoot, `AGENTS.md.bak.${suffix}`);
++  }
+   fs.writeFileSync(backupPath, existingContent, 'utf8');
+-  console.log('  ⚠ Existing AGENTS.md has no Forge markers - backed up to AGENTS.md.bak before overwrite');
++  console.log(`  ⚠ Existing AGENTS.md has no Forge markers - backed up to ${path.basename(backupPath)} before overwrite`);
+   return true;
+ }
+ 
+diff --git a/test/setup-hardening.test.js b/test/setup-hardening.test.js
+index b1805430..c3963b21 100644
+--- a/test/setup-hardening.test.js
++++ b/test/setup-hardening.test.js
+@@ -156,4 +156,25 @@ describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
+     expect(result).toBe(false);
+     expect(fs.existsSync(path.join(root, 'AGENTS.md.bak'))).toBe(false);
+   });
++
++  test('a repeated markerless overwrite preserves the original .bak (numbered fallback)', () => {
++    const root = makeTempDir();
++    const original = '# Original hand-written AGENTS\n';
++    const second = '# Second (still markerless) AGENTS\n';
++
++    // First overwrite: snapshots the original to AGENTS.md.bak.
++    fs.writeFileSync(path.join(root, 'AGENTS.md'), original, 'utf8');
++    const first = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
++    expect(first.result).toBe(true);
++
++    // A later run against a still-markerless AGENTS.md must NOT clobber the
++    // original backup — it lands in AGENTS.md.bak.1 instead.
++    fs.writeFileSync(path.join(root, 'AGENTS.md'), second, 'utf8');
++    const again = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
++    expect(again.result).toBe(true);
++
++    expect(fs.readFileSync(path.join(root, 'AGENTS.md.bak'), 'utf8')).toBe(original);
++    expect(fs.readFileSync(path.join(root, 'AGENTS.md.bak.1'), 'utf8')).toBe(second);
++    expect(again.output).toContain('AGENTS.md.bak.1');
++  });
+ });
+-- 
+2.51.0.windows.1
+

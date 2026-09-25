@@ -1,0 +1,25 @@
+From 587ff5a83df4d7b422444bb7843134b3cf526164 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 1 Aug 2026 01:08:38 +0530
+Subject: [PATCH] test: assert CRLF forge marker uniqueness
+
+---
+ test/smart-merge.test.js | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/test/smart-merge.test.js b/test/smart-merge.test.js
+index 2e6a9176..a7ef972b 100644
+--- a/test/smart-merge.test.js
++++ b/test/smart-merge.test.js
+@@ -166,6 +166,8 @@ describe('smartMergeAgentsMd', () => {
+       const result = smartMergeAgentsMd(existing, newContent);
+ 
+       expect(result.match(/## Improving This Workflow/g)).toHaveLength(1);
++      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
++      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
+       expect(result).not.toMatch(/<!-- USER:START -->[\s\S]*<!-- USER:END -->/);
+     });
+   });
+-- 
+2.51.0.windows.1
+

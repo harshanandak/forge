@@ -1,0 +1,72 @@
+[
+  {
+    "title": "Resolve global and repository skill collisions through one artifact registry",
+    "type": "bug",
+    "priority": 0,
+    "body": "Live discovery found 25 overlapping Forge skill names between the global Codex root and the repository root, and all 25 SKILL.md hashes differ. The tracked canonical-to-repository mirror is clean, so the missing boundary is installed-source provenance, precedence, and repair. This issue owns a canonical source registry and link-only projections; it does not redefine invocation semantics owned by 205a8106.",
+    "acceptance": "Every installed skill records canonical id, version, source, hash, and projection target; global/repository precedence is deterministic and explained; same-name/different-hash collisions fail visibly; broken Agent Companion junctions and stale Pi/OpenCode copies are repaired without deleting dirty sources; installs are atomic link/junction projections; nested worktree and duplicate-root tests pass."
+  },
+  {
+    "title": "Define durable ForgeRun authority evidence and terminal-policy contracts",
+    "type": "feature",
+    "priority": 0,
+    "body": "Cross-session evidence shows that narrative handoffs, plan Markdown, Kernel issues, worktrees, PRs, and child messages drift independently. Define the minimal durable run substrate before adding cross-harness orchestration: ForgeRun DAG, WorkPacket, AuthorityBundle, EvidenceReceipt, DecisionEvent, and TerminalPolicy. Kernel remains the sole authority.",
+    "acceptance": "Versioned contracts have stable ids, dependency edges, exact next predicate, one-writer ownership, issue/worktree/base/head/lease binding, typed evidence subject and freshness, decisions, retry lineage, and hard stops; crash/restart replay resumes from the first unsatisfied predicate; stale head/base/review/runtime evidence invalidates only affected nodes; prose alone cannot mark completion."
+  },
+  {
+    "title": "Open the harness-adapter registry and certify OpenCode Pi and DeepSeek Harness",
+    "type": "feature",
+    "priority": 0,
+    "body": "Forge currently hardcodes Claude, Codex, Cursor, and Hermes in capability probes and render targets. Generalize existing PR5 capability negotiation (5f4da13f) and the Smith execution adapter (3b863d8b) into an open, versioned adapter registry. Supersede stale OpenCode-only and fixed-target translator designs rather than adding more switches.",
+    "acceptance": "No central harness-name switch is needed to register an adapter; capability manifests independently report identity, workspace/shell, sessions, streaming, message, interrupt, cancel, process-tree termination, resume, permissions, isolation, output/redaction, auth, privacy, and live control; OpenCode, Pi, and DSH fixtures and safe live probes exist; unknown/stale/malformed capabilities fail unavailable; unsupported cells are asserted, not skipped."
+  },
+  {
+    "title": "Bridge Forge WorkPackets to Agent Companion jobs and receipts",
+    "type": "feature",
+    "priority": 1,
+    "body": "Reuse Agent Companion's idempotent requests, durable jobs, leases, controls, traces, and receipts behind Forge authority. Forge owns the plan, claim, worktree, terminal policy, and scheduler; Agent Companion owns downstream job execution; adapters own harness translation. DSH Cordis workers become providers behind this bridge, not another scheduler.",
+    "acceptance": "A versioned mapping covers WorkPacket to request and RunReceipt to Forge events/evidence; request ids and context digests deduplicate spend; job/session ids survive restart; status, event cursors, idempotent controls, cancellation, and terminal receipts round-trip; issue/worktree/head binding is preserved; partial/blocked/failed/complete outcomes are distinct; no workflow authority is duplicated in Agent Companion."
+  },
+  {
+    "title": "Compile Agent Config into non-bypassable routing privacy and reachability policy",
+    "type": "feature",
+    "priority": 0,
+    "body": "Agent Config and Agent Companion currently maintain separate routing authorities. The request schema cannot carry enforceable provider-retention/ZDR policy, candidate exhaustion can fall back to an unapproved route, and the DSH plugin can expose Claude contrary to reachability policy. Compile one versioned operator policy with an explain surface.",
+    "acceptance": "A signed or hashed OperatorPolicySnapshot carries reachability, privacy/retention, weights, budgets, model aliases, and expiry; every RouteDecision records policy digest, selected adapter, rejected candidates with reason codes, capability proof, and privacy proof; hard constraints run after explicit-route selection and fail closed; no candidate means unsupported, never original-target fallback; Claude reachability and governed OpenRouter policy are enforced at dispatch."
+  },
+  {
+    "title": "Normalize adapter permission retry resume and cancellation semantics",
+    "type": "bug",
+    "priority": 0,
+    "body": "Agent Companion's nominal policy.write maps to different powers in OpenCode, Pi, and DSH. Resume is documented as one read-only retry but implemented for unlimited terminal jobs, and DSH cannot safely accept read-only work. Replace nominal booleans with negotiated capabilities and explicit retry grants.",
+    "acceptance": "Read, write, shell, network, issue, git, PR, merge, and external effects are separate grants; each adapter proves how it enforces or rejects them; DSH read-only is unavailable until a safe sandbox or permission capability exists; resume requires a RetryGrant, idempotency, lineage, and at-most-once policy; completed/cancelled/write runs do not auto-resume; cancellation confirms descendant termination before authority release; cross-adapter conformance tests pass."
+  },
+  {
+    "title": "Add reversible plugin lifecycle and transactional profile reconciliation",
+    "type": "feature",
+    "priority": 1,
+    "body": "Adopt the useful Cordis/DeepSeek Harness lifecycle mechanisms without replacing Forge Kernel or making Cordis a mandatory dependency. Define typed capability providers, owned disposers, reactive requirements, desired profiles/overlays, bounded draining, and rollback-safe provider replacement.",
+    "acceptance": "Plugins move through discovered/resolved/loading/active/draining/inactive/failed with durable events; every in-process effect has an owned reverse-order disposer; provider withdrawal drains dependents before disposal; version ranges and namespaces are checked; failed activation restores the prior provider/config snapshot; dependency cycles diagnose cleanly; external effects require commit or compensation policy; an optional Cordis-backed provider passes the same ABI tests without becoming default."
+  },
+  {
+    "title": "Reconcile Kernel state into plan and design projections",
+    "type": "bug",
+    "priority": 1,
+    "body": "Current product-restructure tasks, decisions, PROJECT_DESIGN, release version, harness inventory, skill path, and hook references have drifted behind live Kernel/package/runtime state. Extend existing design-sync and Beads-scrub work with ongoing, authority-preserving projection reconciliation rather than fixing one stale line at a time.",
+    "acceptance": "A read/check/sync surface detects stale task stage, resolved-but-pending decisions, package version mismatch, completed/open issue mismatch, superseded authority statements, harness inventory drift, canonical skill-path drift, and delivered hook capability; Kernel and package/runtime sources remain authoritative; generated status blocks refresh mechanically while historical rationale remains immutable; CI catches renewed drift."
+  },
+  {
+    "title": "Add cross-harness zero-token certification and behavioral conformance",
+    "type": "test",
+    "priority": 1,
+    "body": "Current metadata parity does not launch sessions or prove invocation, precedence, handoff, context, cancellation, or uninstall behavior. Build a bounded certification harness after the activation, registry, adapter, and Companion contracts exist.",
+    "acceptance": "Certification emits version-bound receipts for Codex, Claude, OpenCode, Pi, and DSH; zero-token probes cover executable identity, config/plugin discovery, skill precedence, permission mapping, session/control/cancel/resume, output bounds, and uninstall/rollback; opt-in live tests cover implicit/manual invocation and handoff context; unavailable or timed-out cells are INCOMPLETE/unsupported, never passed; results bind exact source and adapter hashes."
+  },
+  {
+    "title": "Fix Agent Companion Windows progress-flood persistence backpressure",
+    "type": "bug",
+    "priority": 1,
+    "body": "The current Agent Companion suite reproducibly lets a progress-event flood delay a 50 ms timeout beyond the 10-second test ceiling on Windows. A managed OpenCode spawn-error preservation test is also load-sensitive. These failures undermine the durable job bridge and must be fixed in the Agent Companion source, with the Forge issue tracking cross-project integration evidence.",
+    "acceptance": "The progress-flood test fails before and passes after the root-cause fix on Windows; timeout and cancellation latency remain bounded under event load; persistence has explicit backpressure/batching bounds without losing terminal events; the OpenCode spawn-error test is deterministic under full-suite load; Agent Companion full suite and repeated focused stress runs pass; no timeout inflation hides the defect."
+  }
+]

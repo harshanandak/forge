@@ -1,0 +1,862 @@
+From cc06146c0e818a9a755fbe34127b917a4bcda403 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:43:07 +0530
+Subject: [PATCH] fix(memory): harden contract evidence validation
+
+---
+ .../contract-baseline.v1.json                 | 125 ++++++++++++++----
+ .../fixtures/v1/canonical-hash.json           |   2 +-
+ .../fixtures/v1/contract-inputs.v1.json       |  71 ++++++++++
+ .../fixtures/v1/identity-conflict.json        |   2 +-
+ .../v1/malformed-envelope-inputs.v1.json      |  16 +++
+ .../v1/malformed-missing-required.json        |   2 +-
+ .../fixtures/v1/privacy-redaction.json        |   2 +-
+ .../fixtures/v1/retry-identical.json          |   2 +-
+ .../fixtures/v1/stale-authority-reject.json   |   2 +-
+ .../v1/unknown-advisory-roundtrip.json        |   2 +-
+ .../v1/unknown-consequential-reject.json      |   2 +-
+ .../fixtures/v1/valid-full.json               |   2 +-
+ .../fixtures/v1/valid-minimal.json            |   2 +-
+ .../fixtures/v1/wrong-capability-digest.json  |   2 +-
+ packages/memory-contracts/package.json        |   3 +-
+ .../v1/capability-manifest.schema.json        |   2 +-
+ .../schemas/v1/claim-request.schema.json      |   2 +-
+ .../schemas/v1/context-packet.schema.json     |   2 +-
+ .../schemas/v1/delivery-receipt.schema.json   |   2 +-
+ .../schemas/v1/feedback-report.schema.json    |   2 +-
+ .../schemas/v1/lease-receipt.schema.json      |   2 +-
+ .../schemas/v1/monitor-event.schema.json      |   2 +-
+ .../schemas/v1/monitor-receipt.schema.json    |   2 +-
+ .../schemas/v1/run-receipt.schema.json        |   2 +-
+ .../schemas/v1/structured-error.schema.json   |   2 +-
+ .../schemas/v1/work-packet.schema.json        |   2 +-
+ packages/memory-contracts/src/definitions.js  |  81 +++++++++++-
+ packages/memory-contracts/src/schema.js       |  26 +++-
+ packages/memory-contracts/src/validate.js     |  85 +++++++++++-
+ .../memory-contracts/test/contracts.test.js   |   9 +-
+ .../memory-contracts/test/spec-review.test.js | 120 +++++++++++++++++
+ 31 files changed, 523 insertions(+), 57 deletions(-)
+ create mode 100644 packages/memory-contracts/fixtures/v1/contract-inputs.v1.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/malformed-envelope-inputs.v1.json
+ create mode 100644 packages/memory-contracts/test/spec-review.test.js
+
+diff --git a/packages/memory-contracts/contract-baseline.v1.json b/packages/memory-contracts/contract-baseline.v1.json
+index a3a60763..19c428c6 100644
+--- a/packages/memory-contracts/contract-baseline.v1.json
++++ b/packages/memory-contracts/contract-baseline.v1.json
+@@ -1,29 +1,106 @@
+ {
+   "baseline_version": 1,
+-  "generator_version": "memory-contracts-schema-gen/1",
++  "generator_version": "memory-contracts-schema-gen/2",
+   "artifacts": [
+-    { "path": "compatibility-matrix.v1.json", "sha256": "40235512903a54acd8420c97dc803d23988d0521c690dd6eb52be52034cd9b89" },
+-    { "path": "fixtures/v1/canonical-hash.json", "sha256": "bea6e4567c07edfa7bcb2dd256a735b9519604b94358d25f707e98676f1ab6e8" },
+-    { "path": "fixtures/v1/identity-conflict.json", "sha256": "cb824e8dc5120d89437dd5854b402204cfd8b5e1d20cead8aafc1554ff4f354e" },
+-    { "path": "fixtures/v1/malformed-missing-required.json", "sha256": "f4bb351ff69e8a01dbc8b9f1d5284929808287b3fd76a4bb43cee1709bd674e5" },
+-    { "path": "fixtures/v1/privacy-redaction.json", "sha256": "ef1b23e5704fa9c2f954ef13892e5f9382e29e35dc741ebea38d8c2616b32b23" },
+-    { "path": "fixtures/v1/retry-identical.json", "sha256": "d8b8a7f3829db4ec14c2ecab619a784ad7c5abb1023d98998a2437b331c99341" },
+-    { "path": "fixtures/v1/stale-authority-reject.json", "sha256": "352c81d3ebc9b0a75101780fc34f93d57ffb6a143edbccbb6c05e2be5e4b4e6c" },
+-    { "path": "fixtures/v1/unknown-advisory-roundtrip.json", "sha256": "8e221261138fbb39c2995e9382174d82ea809c70c482be6107e878c07e8c1658" },
+-    { "path": "fixtures/v1/unknown-consequential-reject.json", "sha256": "9b690f48f6da63c3ee9464e18ed4c147939cacbe24024f9d0cf543f06c648e14" },
+-    { "path": "fixtures/v1/valid-full.json", "sha256": "ea2268039b0c22469c989432e2eebdbde85c9d27c01e3c735ae8f8d4757c14f8" },
+-    { "path": "fixtures/v1/valid-minimal.json", "sha256": "69c9d245704db95c57ac277132576d5fe70c5f05e386ae507a589c0d74c6bbdc" },
+-    { "path": "fixtures/v1/wrong-capability-digest.json", "sha256": "4516f659a0c3ecdef4362c99fc023823c750ce5c7a943181b25d8deb7d41a3d6" },
+-    { "path": "schemas/v1/capability-manifest.schema.json", "sha256": "9d519af7c827675a9dafa47ea85e2877992ba5e2692a275bb71c1baad62035a7" },
+-    { "path": "schemas/v1/claim-request.schema.json", "sha256": "a72d628cc47fbc4049c07c90e5aae0ae6cc14a5523c839640e295d096c053477" },
+-    { "path": "schemas/v1/context-packet.schema.json", "sha256": "893490056933855622e63899e9f2f4a4e62175902f1abf8cdbebf3a468cafe18" },
+-    { "path": "schemas/v1/delivery-receipt.schema.json", "sha256": "98bb20237101356bbf41813831b324ec519fadfd5ff7eae2315cb66455b7b405" },
+-    { "path": "schemas/v1/feedback-report.schema.json", "sha256": "c8fd0f2b75e72f060daafc51fb5697479fcb2ec3d42750397e892e9c3c396db8" },
+-    { "path": "schemas/v1/lease-receipt.schema.json", "sha256": "fef4be06a0bd3d64cb5d25dd935ff150d6abe47e0ed3247466877419d26cee50" },
+-    { "path": "schemas/v1/monitor-event.schema.json", "sha256": "bf4e8e9dbf07c0b8bfe7b1547813ff96d5d1de1a62615e98935c14b9a9a26501" },
+-    { "path": "schemas/v1/monitor-receipt.schema.json", "sha256": "93998a98467cb6dda5d333b7571da0df54cd5df423f0f21d9077fc0766dfb5bd" },
+-    { "path": "schemas/v1/run-receipt.schema.json", "sha256": "00a977b8b38040c169bea267a92e2d7d35db72b4db1f03e3a2be6d9f1741c3b2" },
+-    { "path": "schemas/v1/structured-error.schema.json", "sha256": "a931a74ec0a3f526522f3c755df8393f3ec20a07eaba24ef5f7eff1274197b31" },
+-    { "path": "schemas/v1/work-packet.schema.json", "sha256": "de738ef3d1cb65c7bbc33e3b90e34f69d08ecdb2f635ade05849b24656b66260" }
++    {
++      "path": "compatibility-matrix.v1.json",
++      "sha256": "40235512903a54acd8420c97dc803d23988d0521c690dd6eb52be52034cd9b89"
++    },
++    {
++      "path": "fixtures/v1/canonical-hash.json",
++      "sha256": "469c5b83ebe5e02601cd41b83f35f013f8fb4b118b8e213dc1790bb61301dc3c"
++    },
++    {
++      "path": "fixtures/v1/contract-inputs.v1.json",
++      "sha256": "40f28821f77ea153259a43e0ca8a5d6611f3e5e0ec4e4e47114d4cddeadac3fc"
++    },
++    {
++      "path": "fixtures/v1/identity-conflict.json",
++      "sha256": "c703733d89f8adb079fb0e0ffe01ad35238d9a5f3ae725af54bca8b518fd6039"
++    },
++    {
++      "path": "fixtures/v1/malformed-envelope-inputs.v1.json",
++      "sha256": "17354a1178523332645f27d506eeabaa39eb6ea6bfa448807f7d0b8d4a1226f2"
++    },
++    {
++      "path": "fixtures/v1/malformed-missing-required.json",
++      "sha256": "e4031505309e8b172d274ef7c4ef617e71217742ff2b7285f37859db0eea42b9"
++    },
++    {
++      "path": "fixtures/v1/privacy-redaction.json",
++      "sha256": "be4bae1d68db334875b3d198525dcd46f3efb46dbeea62de03399a915b716e20"
++    },
++    {
++      "path": "fixtures/v1/retry-identical.json",
++      "sha256": "41c944e15725d45a19bd97015c4bf7fb6ca1a4740426225426bc38799046bd8a"
++    },
++    {
++      "path": "fixtures/v1/stale-authority-reject.json",
++      "sha256": "700173546cff08486df201316472921d8304ea892c29770b5f199e63c92601b3"
++    },
++    {
++      "path": "fixtures/v1/unknown-advisory-roundtrip.json",
++      "sha256": "674e1dd9585d86ed7c8851a3d7e2b0ce81427a3dbc59c149409ee87375f9e879"
++    },
++    {
++      "path": "fixtures/v1/unknown-consequential-reject.json",
++      "sha256": "4228ce85d8f92d6eea61802fd34a410eab778314c70c8315cd1d9c9ba8ef2813"
++    },
++    {
++      "path": "fixtures/v1/valid-full.json",
++      "sha256": "38edd65bce8d3589faad31c15041ee37e19a2327b13fa0f73a66600406da74b1"
++    },
++    {
++      "path": "fixtures/v1/valid-minimal.json",
++      "sha256": "1479962779ee723aa0411ec01e2ad12c86363509c0caa32bbed6385d3a0f40f5"
++    },
++    {
++      "path": "fixtures/v1/wrong-capability-digest.json",
++      "sha256": "8599acc3eebfba3883ec05e496cfc66e08e79877c8193c24db75540b4549062a"
++    },
++    {
++      "path": "schemas/v1/capability-manifest.schema.json",
++      "sha256": "8f5a268c00804395a28debcffd2b493355fe4b1392ae7b15f0fab68f49f1df35"
++    },
++    {
++      "path": "schemas/v1/claim-request.schema.json",
++      "sha256": "c583dff72478ea1c0af8b131a91fefdf10241342ae9a81b8088fbf08251a2578"
++    },
++    {
++      "path": "schemas/v1/context-packet.schema.json",
++      "sha256": "b521d0c6e1dffc94615e010edca1ecdfc44aeaec598c1133fff12baa8831d1a5"
++    },
++    {
++      "path": "schemas/v1/delivery-receipt.schema.json",
++      "sha256": "7292a6d9c1c9fad0e5cfe6974ea3c669f7a873593a7f2831595d77e8f120b693"
++    },
++    {
++      "path": "schemas/v1/feedback-report.schema.json",
++      "sha256": "edffc7657318b80236e6bb1c502e22a3c866900b51756b6419d352dffe112044"
++    },
++    {
++      "path": "schemas/v1/lease-receipt.schema.json",
++      "sha256": "af9646df8483c252ca46c0b8d546f9a5410ca8ac65f417cafe84da5df19765e8"
++    },
++    {
++      "path": "schemas/v1/monitor-event.schema.json",
++      "sha256": "8c881e8052205e49a0d66acf0d6000b550b709ad0a2f5c54711b2bb1dbb7b501"
++    },
++    {
++      "path": "schemas/v1/monitor-receipt.schema.json",
++      "sha256": "13b0d760076a0524451e56315833c35e2821354e99824b90cbfbad4c8bc2ff2e"
++    },
++    {
++      "path": "schemas/v1/run-receipt.schema.json",
++      "sha256": "2deae8830aa239f9fd6390c11f15a1a00698e595f7308d68681fb5a25d5fa232"
++    },
++    {
++      "path": "schemas/v1/structured-error.schema.json",
++      "sha256": "4c86225d0a1f9ebe273cffef54d0499e1bd4d287e1c757d8019c6123080d5528"
++    },
++    {
++      "path": "schemas/v1/work-packet.schema.json",
++      "sha256": "b38f52b640fe4bc2799f2b00ab207742b6dd54198ebf5048c9d3d67740f9c6a2"
++    }
+   ]
+ }
+diff --git a/packages/memory-contracts/fixtures/v1/canonical-hash.json b/packages/memory-contracts/fixtures/v1/canonical-hash.json
+index a6029804..09cfbc08 100644
+--- a/packages/memory-contracts/fixtures/v1/canonical-hash.json
++++ b/packages/memory-contracts/fixtures/v1/canonical-hash.json
+@@ -1 +1 @@
+-{"fixture_id":"canonical-hash","schema_id":"forge.memory.work-packet.v1","operation":"canonical-hash","expected":{"stable_under_key_reordering":true,"content_hash_excluded":true}}
++{"fixture_id":"canonical-hash","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"canonical-hash","expected":{"stable_under_key_reordering":true,"content_hash_excluded":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/contract-inputs.v1.json b/packages/memory-contracts/fixtures/v1/contract-inputs.v1.json
+new file mode 100644
+index 00000000..7842d387
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/contract-inputs.v1.json
+@@ -0,0 +1,71 @@
++{
++  "corpus_version": 1,
++  "inputs": [
++    {
++      "schema_id": "forge.memory.work-packet.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000001", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "fixture", "actor_class": "system", "actor_id": "fixture" }, "content_hash": "b5b6527735acceed41f41cb4b7ae778ad8e3d3fd517832c4936e8c632881c10c",
++      "payload": { "issue_id": "issue-1", "expected_issue_revision": 1, "packet_id": "packet-1", "packet_revision": 1, "repository_id": "github.com/example/forge", "target_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "objective": "fixture objective", "authority": { "kind": "kernel", "issue_revision": 1 }, "allowed_mutations": ["files"], "workflow_config_revision": "config-1", "capability_manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.context-packet.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000002", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "fixture", "actor_class": "system", "actor_id": "fixture" }, "content_hash": "278663383d458667b71eb25f6bed8c5828445e070b5af2369a46bc2953b34999",
++      "payload": { "work_packet_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "context_selection_revision": 1, "privacy_scope_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "retention_class": "local_sensitive", "disclosure_class": "remote_redacted", "redaction_policy_revision": "redaction-1", "summaries": [{ "kind": "issue", "text": "redacted fixture" }] }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.claim-request.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000003", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "fixture", "actor_class": "agent", "actor_id": "agent-1" }, "content_hash": "aa1972081945dbfff1b9a800ce139968f6bc8581f19d5f243906181565a665aa",
++      "payload": { "issue_id": "issue-1", "expected_issue_revision": 1, "actor_id": "agent-1", "request_id": "request-1", "requested_scope": { "mutations": ["files"] }, "idempotency_key": "claim-1" }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.lease-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000004", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "kernel", "actor_class": "authority", "actor_id": "kernel" }, "content_hash": "f3fdc336f2da33d69ed4e1e360e455d9903123add962464062d29f373cabe3d0",
++      "payload": { "claim_request_id": "request-1", "lease_id": "lease-1", "lease_epoch": 1, "issue_revision": 1, "actor_id": "agent-1", "scope": { "mutations": ["files"] }, "expires_at": "2026-08-09T13:00:00.000Z", "durable": true, "authority_signature": "fixture-signature" }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.capability-manifest.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000005", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "probe", "actor_class": "system", "actor_id": "probe" }, "content_hash": "296ff678e04103e339231fef672db2220f5bd23981fefdc96dcfcd6f338f355e",
++      "payload": { "provider_id": "codex", "manifest_revision": 1, "config_revision": "config-1", "executable_identity": { "path_hash": "fixture" }, "provider_version": "1.0.0", "probe_revision": "probe-1", "result_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "capabilities": [{ "capability_id": "flow.execute", "available": true }], "evaluator_status": "approved", "probed_at": "2026-08-09T12:00:00.000Z", "expires_at": "2026-08-09T13:00:00.000Z" }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.run-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000006", "created_at": "2026-08-09T12:30:00.000Z",
++      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "run-1" }, "capabilities_used": [],
++      "provenance": { "source_kind": "execution", "actor_class": "agent", "actor_id": "agent-1" }, "content_hash": "4f919795d2c62ad6520b54fc526c215621ef046a59326f673aa6e41a1f6fc751",
++      "payload": { "packet_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "run_id": "run-1", "attempt_id": "attempt-1", "exact_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "packet_revision": 1, "manifest_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "workflow_config_revision": "config-1", "status": "PASS", "executor": { "product": "forge-flow" }, "started_at": "2026-08-09T12:00:00.000Z", "ended_at": "2026-08-09T12:30:00.000Z", "evidence_refs": [], "validation": { "status": "PASS" }, "cleanup": { "status": "PASS" } }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.feedback-report.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000007", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "feedback", "actor_class": "anonymous-user", "actor_id": "report-1" }, "content_hash": "3adb5b3f1b726b7b67032bf607ab89e54aee3f9eeefa6d4cdbd29340bee555c1",
++      "payload": { "report_id": "report-1", "product_version": "0.1.0-beta.6", "contract_version": 1, "stable_error_code": "FORGE_FIXTURE", "affected_capability": "flow.execute", "redacted_reproduction_steps": ["run fixture"], "expected_classification": "PASS", "actual_classification": "FAIL", "occurrence_count": 1, "content_fingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "consent_event_id": "consent-1", "redaction_policy_revision": "redaction-1" }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.structured-error.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000008", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-memory", "product_version": "0.1.0-beta.6", "instance_id": "fixture" }, "capabilities_used": [],
++      "provenance": { "source_kind": "execution", "actor_class": "system", "actor_id": "forge" }, "content_hash": "50d181d71714a308539f5612fee7dfa854a4abe9591981842303de24db64982d",
++      "payload": { "parent_object_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "error_occurrence_id": "error-1", "code": "FORGE_FIXTURE", "terminal_classification": "FAIL", "safe_details": { "summary": "fixture failure" } }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.monitor-event.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000009", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "monitor-1" }, "capabilities_used": [],
++      "provenance": { "source_kind": "monitor", "actor_class": "system", "actor_id": "monitor" }, "content_hash": "01b1e7086a5ba2ddf521ad8e8901db925d9f9e8fe2db75c43ca5eea941d68559",
++      "payload": { "monitor_id": "monitor-1", "event_id": "event-1", "sequence": 0, "subject_revision": "head-1", "type": "check.completed", "actionability": "advisory", "observed_at": "2026-08-09T12:00:00.000Z", "bounded_payload": { "status": "PASS" } }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.delivery-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000010", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "delivery-1" }, "capabilities_used": [],
++      "provenance": { "source_kind": "delivery", "actor_class": "system", "actor_id": "adapter" }, "content_hash": "0bfe86d8a48be6ac271c92c1e767ec53ce0f7bfc2e228a47832522eefa44b40a",
++      "payload": { "event_id": "event-1", "target": "agent-1", "transport_tier": "T1", "attempt": 1, "delivered_at": "2026-08-09T12:00:00.000Z", "acknowledged": true, "outcome": "acknowledged" }, "extensions": {}
++    },
++    {
++      "schema_id": "forge.memory.monitor-receipt.v1", "schema_version": 1, "object_id": "00000000-0000-4000-8000-000000000011", "created_at": "2026-08-09T12:00:00.000Z",
++      "producer": { "product_id": "forge-flow", "product_version": "0.1.0-beta.6", "instance_id": "monitor-1" }, "capabilities_used": [],
++      "provenance": { "source_kind": "monitor", "actor_class": "system", "actor_id": "monitor" }, "content_hash": "01da8754bae5d5a17501a7e20bfc93959e274227add6a31e451424b2c1ac7251",
++      "payload": { "monitor_id": "monitor-1", "owner_run_id": "run-1", "terminal_state": "PASS", "terminal_reason": "predicate satisfied", "last_sequence": 0, "evidence_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "cancellation_acknowledged": true, "process_cleanup": { "status": "PASS" }, "lease_cleanup": { "status": "PASS" } }, "extensions": {}
++    }
++  ]
++}
+diff --git a/packages/memory-contracts/fixtures/v1/identity-conflict.json b/packages/memory-contracts/fixtures/v1/identity-conflict.json
+index 0e5cb2eb..9da89414 100644
+--- a/packages/memory-contracts/fixtures/v1/identity-conflict.json
++++ b/packages/memory-contracts/fixtures/v1/identity-conflict.json
+@@ -1 +1 @@
+-{"fixture_id":"identity-conflict","schema_id":"forge.memory.work-packet.v1","operation":"classify-semantic-attempt","mutation":"payload.objective","expected":{"status":"identity-conflict"}}
++{"fixture_id":"identity-conflict","accepted_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"candidate_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"candidate_mutation":{"operation":"replace","path":"payload.objective","value":"conflicting objective","rehash":true},"operation":"classify-semantic-attempt","expected":{"status":"identity-conflict"}}
+diff --git a/packages/memory-contracts/fixtures/v1/malformed-envelope-inputs.v1.json b/packages/memory-contracts/fixtures/v1/malformed-envelope-inputs.v1.json
+new file mode 100644
+index 00000000..eaf7866b
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/malformed-envelope-inputs.v1.json
+@@ -0,0 +1,16 @@
++{
++  "corpus_version": 1,
++  "base_input": { "ref": "contract-inputs.v1.json", "schema_id": "forge.memory.work-packet.v1" },
++  "cases": [
++    { "missing_field": "schema_id", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "schema_version", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "object_id", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "created_at", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "producer", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "capabilities_used", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "provenance", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "content_hash", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "payload", "operation": "remove", "expected_code": "MISSING_REQUIRED" },
++    { "missing_field": "extensions", "operation": "remove", "expected_code": "MISSING_REQUIRED" }
++  ]
++}
+diff --git a/packages/memory-contracts/fixtures/v1/malformed-missing-required.json b/packages/memory-contracts/fixtures/v1/malformed-missing-required.json
+index ebb57f2d..74d6ec04 100644
+--- a/packages/memory-contracts/fixtures/v1/malformed-missing-required.json
++++ b/packages/memory-contracts/fixtures/v1/malformed-missing-required.json
+@@ -1 +1 @@
+-{"fixture_id":"malformed-missing-required","schema_id":"forge.memory.work-packet.v1","operation":"delete-each-required-field","expected":{"code":"MISSING_REQUIRED"}}
++{"fixture_id":"malformed-missing-required","input_ref":{"file":"malformed-envelope-inputs.v1.json"},"operation":"materialize-cases","expected":{"case_count":10,"code":"MISSING_REQUIRED"}}
+diff --git a/packages/memory-contracts/fixtures/v1/privacy-redaction.json b/packages/memory-contracts/fixtures/v1/privacy-redaction.json
+index bde605d0..619a61b6 100644
+--- a/packages/memory-contracts/fixtures/v1/privacy-redaction.json
++++ b/packages/memory-contracts/fixtures/v1/privacy-redaction.json
+@@ -1 +1 @@
+-{"fixture_id":"privacy-redaction","schema_id":"forge.memory.context-packet.v1","operation":"validate-expected","mismatch":"privacy_scope_hash","expected":{"code":"STALE_PRIVACY_SCOPE","raw_content_embedded":false}}
++{"fixture_id":"privacy-redaction","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.context-packet.v1"},"live_expected":{"workPacketHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","privacyScopeHash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","redactionPolicyRevision":"redaction-1","allowedDisclosureClasses":["remote_redacted"]},"operation":"validate-expected","expected":{"code":"STALE_PRIVACY_SCOPE","raw_content_embedded":false}}
+diff --git a/packages/memory-contracts/fixtures/v1/retry-identical.json b/packages/memory-contracts/fixtures/v1/retry-identical.json
+index aa1e124f..22d2e2a6 100644
+--- a/packages/memory-contracts/fixtures/v1/retry-identical.json
++++ b/packages/memory-contracts/fixtures/v1/retry-identical.json
+@@ -1 +1 @@
+-{"fixture_id":"retry-identical","schema_id":"forge.memory.work-packet.v1","operation":"classify-semantic-attempt","mutation":"none","expected":{"status":"retry-identical"}}
++{"fixture_id":"retry-identical","accepted_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"candidate_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"classify-semantic-attempt","expected":{"status":"retry-identical"}}
+diff --git a/packages/memory-contracts/fixtures/v1/stale-authority-reject.json b/packages/memory-contracts/fixtures/v1/stale-authority-reject.json
+index eee49749..981e5257 100644
+--- a/packages/memory-contracts/fixtures/v1/stale-authority-reject.json
++++ b/packages/memory-contracts/fixtures/v1/stale-authority-reject.json
+@@ -1 +1 @@
+-{"fixture_id":"stale-authority-reject","schema_id":"forge.memory.work-packet.v1","operation":"validate-expected","mismatch":"expected_issue_revision","expected":{"code":"STALE_ISSUE_REVISION"}}
++{"fixture_id":"stale-authority-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"live_expected":{"issueRevision":2,"workflowConfigRevision":"config-1","capabilityManifestDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","exactHead":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"operation":"validate-expected","expected":{"code":"STALE_ISSUE_REVISION"}}
+diff --git a/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json b/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json
+index 14cb2ff4..08f5014a 100644
+--- a/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json
++++ b/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json
+@@ -1 +1 @@
+-{"fixture_id":"unknown-advisory-roundtrip","schema_id":"forge.memory.work-packet.v1","operation":"roundtrip-extension","extension":{"id":"vendor.example/advisory","impact":"advisory"},"expected":{"preserved":true}}
++{"fixture_id":"unknown-advisory-roundtrip","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"mutation":{"operation":"add","path":"extensions.vendor.example/advisory","value":{"impact":"advisory","schema_version":1,"value":{"note":"preserve"}},"rehash":true},"operation":"roundtrip-extension","expected":{"preserved":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json b/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json
+index 675c22fd..2265ac04 100644
+--- a/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json
++++ b/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json
+@@ -1 +1 @@
+-{"fixture_id":"unknown-consequential-reject","schema_id":"forge.memory.work-packet.v1","operation":"validate-extension","extension":{"id":"vendor.example/authority","impact":"consequential"},"expected":{"code":"UNKNOWN_CONSEQUENTIAL_EXTENSION"}}
++{"fixture_id":"unknown-consequential-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"mutation":{"operation":"add","path":"extensions.vendor.example/authority","value":{"impact":"consequential","schema_version":1,"value":{"permit":true}},"rehash":true},"operation":"validate-extension","expected":{"code":"UNKNOWN_CONSEQUENTIAL_EXTENSION"}}
+diff --git a/packages/memory-contracts/fixtures/v1/valid-full.json b/packages/memory-contracts/fixtures/v1/valid-full.json
+index d36d75ea..3c72443b 100644
+--- a/packages/memory-contracts/fixtures/v1/valid-full.json
++++ b/packages/memory-contracts/fixtures/v1/valid-full.json
+@@ -1 +1 @@
+-{"fixture_id":"valid-full","schema_id":"forge.memory.work-packet.v1","operation":"validate","expected":{"ok":true},"variant":"all-optional-fields"}
++{"fixture_id":"valid-full","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"mutations":[{"operation":"add","path":"payload.acceptance_criteria","value":["all gates pass"]},{"operation":"add","path":"payload.prohibited_actions","value":["merge"]}],"operation":"rehash-and-validate","expected":{"ok":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/valid-minimal.json b/packages/memory-contracts/fixtures/v1/valid-minimal.json
+index a2956f9e..7f151d0d 100644
+--- a/packages/memory-contracts/fixtures/v1/valid-minimal.json
++++ b/packages/memory-contracts/fixtures/v1/valid-minimal.json
+@@ -1 +1 @@
+-{"fixture_id":"valid-minimal","schema_id":"forge.memory.work-packet.v1","operation":"validate","expected":{"ok":true},"variant":"minimal"}
++{"fixture_id":"valid-minimal","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"validate","expected":{"ok":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json b/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json
+index 0c2d3652..c4233f6d 100644
+--- a/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json
++++ b/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json
+@@ -1 +1 @@
+-{"fixture_id":"wrong-capability-digest","schema_id":"forge.memory.work-packet.v1","operation":"validate-expected","mismatch":"capability_manifest_digest","expected":{"code":"WRONG_CAPABILITY_DIGEST"}}
++{"fixture_id":"wrong-capability-digest","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"live_expected":{"issueRevision":1,"workflowConfigRevision":"config-1","capabilityManifestDigest":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","exactHead":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"operation":"validate-expected","expected":{"code":"WRONG_CAPABILITY_DIGEST"}}
+diff --git a/packages/memory-contracts/package.json b/packages/memory-contracts/package.json
+index b701a723..743c1c85 100644
+--- a/packages/memory-contracts/package.json
++++ b/packages/memory-contracts/package.json
+@@ -9,7 +9,8 @@
+     "src/",
+     "schemas/",
+     "fixtures/",
+-    "contract-baseline.v1.json"
++    "contract-baseline.v1.json",
++    "compatibility-matrix.v1.json"
+   ],
+   "scripts": {
+     "test": "bun test test",
+diff --git a/packages/memory-contracts/schemas/v1/capability-manifest.schema.json b/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+index ee56cdd2..c73186e2 100644
+--- a/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
++++ b/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.capability-manifest.v1","title":"CapabilityManifest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.capability-manifest.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["provider_id","manifest_revision","config_revision","executable_identity","provider_version","probe_revision","result_hash","capabilities","evaluator_status","probed_at","expires_at"],"properties":{"provider_id":{},"manifest_revision":{},"config_revision":{},"executable_identity":{},"provider_version":{},"probe_revision":{},"result_hash":{},"capabilities":{},"evaluator_status":{},"probed_at":{},"expires_at":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.capability-manifest.v1","title":"CapabilityManifest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.capability-manifest.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["provider_id","manifest_revision","config_revision","executable_identity","provider_version","probe_revision","result_hash","capabilities","evaluator_status","probed_at","expires_at"],"properties":{"provider_id":{"type":"string","minLength":1},"manifest_revision":{"type":"integer","minimum":1},"config_revision":{"type":"string","minLength":1},"executable_identity":{"type":"object"},"provider_version":{"type":"string","minLength":1},"probe_revision":{"type":"string","minLength":1},"result_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"capabilities":{"type":"array","items":{"type":"object","required":["capability_id","available"],"properties":{"capability_id":{"type":"string","minLength":1},"available":{"type":"boolean"}}}},"evaluator_status":{"type":"string","enum":["approved","unavailable","quarantined"]},"probed_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/claim-request.schema.json b/packages/memory-contracts/schemas/v1/claim-request.schema.json
+index b3bfc265..240381bf 100644
+--- a/packages/memory-contracts/schemas/v1/claim-request.schema.json
++++ b/packages/memory-contracts/schemas/v1/claim-request.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.claim-request.v1","title":"ClaimRequest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.claim-request.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","actor_id","request_id","requested_scope","idempotency_key"],"properties":{"issue_id":{},"expected_issue_revision":{},"actor_id":{},"request_id":{},"requested_scope":{},"idempotency_key":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.claim-request.v1","title":"ClaimRequest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.claim-request.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","actor_id","request_id","requested_scope","idempotency_key"],"properties":{"issue_id":{"type":"string","minLength":1},"expected_issue_revision":{"type":"integer","minimum":0},"actor_id":{"type":"string","minLength":1},"request_id":{"type":"string","minLength":1},"requested_scope":{"type":"object"},"idempotency_key":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/context-packet.schema.json b/packages/memory-contracts/schemas/v1/context-packet.schema.json
+index 981433c7..7b4e4399 100644
+--- a/packages/memory-contracts/schemas/v1/context-packet.schema.json
++++ b/packages/memory-contracts/schemas/v1/context-packet.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.context-packet.v1","title":"ContextPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.context-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["work_packet_hash","context_selection_revision","privacy_scope_hash","retention_class","disclosure_class"],"properties":{"work_packet_hash":{},"context_selection_revision":{},"privacy_scope_hash":{},"retention_class":{},"disclosure_class":{},"references":{},"summaries":{},"redaction_policy_revision":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.context-packet.v1","title":"ContextPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.context-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["work_packet_hash","context_selection_revision","privacy_scope_hash","retention_class","disclosure_class"],"properties":{"work_packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"context_selection_revision":{"type":"integer","minimum":1},"privacy_scope_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"retention_class":{"type":"string","enum":["public_metadata","local_sensitive","remote_redacted","restricted"]},"disclosure_class":{"type":"string","enum":["public_metadata","local_sensitive","remote_redacted","restricted"]},"references":{"type":"array","items":{"type":"object"}},"summaries":{"type":"array","items":{"type":"object"}},"redaction_policy_revision":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json b/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+index 5e5a3b5d..64abae57 100644
+--- a/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.delivery-receipt.v1","title":"DeliveryReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.delivery-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["event_id","target","transport_tier","attempt","delivered_at","acknowledged","outcome"],"properties":{"event_id":{},"target":{},"transport_tier":{},"attempt":{},"delivered_at":{},"acknowledged":{},"outcome":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.delivery-receipt.v1","title":"DeliveryReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.delivery-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["event_id","target","transport_tier","attempt","delivered_at","acknowledged","outcome"],"properties":{"event_id":{"type":"string","minLength":1},"target":{"type":"string","minLength":1},"transport_tier":{"type":"string","enum":["T0","T1","T2","T3","T4"]},"attempt":{"type":"integer","minimum":1},"delivered_at":{"type":"string","format":"date-time"},"acknowledged":{"type":"boolean"},"outcome":{"type":"string","enum":["delivered","pending","failed","acknowledged"]}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/feedback-report.schema.json b/packages/memory-contracts/schemas/v1/feedback-report.schema.json
+index a85c4dc9..af162eab 100644
+--- a/packages/memory-contracts/schemas/v1/feedback-report.schema.json
++++ b/packages/memory-contracts/schemas/v1/feedback-report.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.feedback-report.v1","title":"FeedbackReport","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.feedback-report.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["report_id","product_version","contract_version","stable_error_code","affected_capability","redacted_reproduction_steps","expected_classification","actual_classification","occurrence_count","content_fingerprint","consent_event_id","redaction_policy_revision"],"properties":{"report_id":{},"product_version":{},"contract_version":{},"stable_error_code":{},"affected_capability":{},"redacted_reproduction_steps":{},"expected_classification":{},"actual_classification":{},"occurrence_count":{},"content_fingerprint":{},"consent_event_id":{},"redaction_policy_revision":{},"proposed_fix":{},"return_channel":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.feedback-report.v1","title":"FeedbackReport","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.feedback-report.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["report_id","product_version","contract_version","stable_error_code","affected_capability","redacted_reproduction_steps","expected_classification","actual_classification","occurrence_count","content_fingerprint","consent_event_id","redaction_policy_revision"],"properties":{"report_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"contract_version":{"type":"integer","minimum":1},"stable_error_code":{"type":"string","minLength":1},"affected_capability":{"type":"string","minLength":1},"redacted_reproduction_steps":{"type":"array","items":{"type":"string"}},"expected_classification":{"type":"string","minLength":1},"actual_classification":{"type":"string","minLength":1},"occurrence_count":{"type":"integer","minimum":1},"content_fingerprint":{"type":"string","pattern":"^[0-9a-f]{64}$"},"consent_event_id":{"type":"string","minLength":1},"redaction_policy_revision":{"type":"string","minLength":1},"proposed_fix":{"type":"string","minLength":1},"return_channel":{"type":"object"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/lease-receipt.schema.json b/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+index 1266d063..49c1dc57 100644
+--- a/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.lease-receipt.v1","title":"LeaseReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.lease-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["claim_request_id","lease_id","lease_epoch","issue_revision","actor_id","scope","expires_at","durable","authority_signature"],"properties":{"claim_request_id":{},"lease_id":{},"lease_epoch":{},"issue_revision":{},"actor_id":{},"scope":{},"expires_at":{},"durable":{},"authority_signature":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.lease-receipt.v1","title":"LeaseReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.lease-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["claim_request_id","lease_id","lease_epoch","issue_revision","actor_id","scope","expires_at","durable","authority_signature"],"properties":{"claim_request_id":{"type":"string","minLength":1},"lease_id":{"type":"string","minLength":1},"lease_epoch":{"type":"integer","minimum":1},"issue_revision":{"type":"integer","minimum":0},"actor_id":{"type":"string","minLength":1},"scope":{"type":"object"},"expires_at":{"type":"string","format":"date-time"},"durable":{"type":"boolean"},"authority_signature":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/monitor-event.schema.json b/packages/memory-contracts/schemas/v1/monitor-event.schema.json
+index 37447cff..4a938f3c 100644
+--- a/packages/memory-contracts/schemas/v1/monitor-event.schema.json
++++ b/packages/memory-contracts/schemas/v1/monitor-event.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-event.v1","title":"MonitorEvent","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-event.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","event_id","sequence","subject_revision","type","actionability","observed_at"],"properties":{"monitor_id":{},"event_id":{},"sequence":{},"subject_revision":{},"type":{},"actionability":{},"observed_at":{},"bounded_payload":{},"artifact_digest":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-event.v1","title":"MonitorEvent","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-event.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","event_id","sequence","subject_revision","type","actionability","observed_at"],"properties":{"monitor_id":{"type":"string","minLength":1},"event_id":{"type":"string","minLength":1},"sequence":{"type":"integer","minimum":0},"subject_revision":{"type":"string","minLength":1},"type":{"type":"string","minLength":1},"actionability":{"type":"string","enum":["advisory","action_required","terminal"]},"observed_at":{"type":"string","format":"date-time"},"bounded_payload":{"type":"object"},"artifact_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json b/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+index fe318cd9..c72b7134 100644
+--- a/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-receipt.v1","title":"MonitorReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","owner_run_id","terminal_state","terminal_reason","last_sequence","evidence_digest","cancellation_acknowledged","process_cleanup","lease_cleanup"],"properties":{"monitor_id":{},"owner_run_id":{},"terminal_state":{},"terminal_reason":{},"last_sequence":{},"evidence_digest":{},"cancellation_acknowledged":{},"process_cleanup":{},"lease_cleanup":{},"undelivered_cursor":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-receipt.v1","title":"MonitorReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","owner_run_id","terminal_state","terminal_reason","last_sequence","evidence_digest","cancellation_acknowledged","process_cleanup","lease_cleanup"],"properties":{"monitor_id":{"type":"string","minLength":1},"owner_run_id":{"type":"string","minLength":1},"terminal_state":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","CANCELLED"]},"terminal_reason":{"type":"string","minLength":1},"last_sequence":{"type":"integer","minimum":0},"evidence_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"cancellation_acknowledged":{"type":"boolean"},"process_cleanup":{"type":"object"},"lease_cleanup":{"type":"object"},"undelivered_cursor":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/run-receipt.schema.json b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+index 13c8e8dd..c57e1c8e 100644
+--- a/packages/memory-contracts/schemas/v1/run-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{},"run_id":{},"attempt_id":{},"exact_head":{},"packet_revision":{},"manifest_digest":{},"workflow_config_revision":{},"status":{},"executor":{},"started_at":{},"ended_at":{},"evidence_refs":{},"validation":{},"cleanup":{},"lease_epoch":{},"tokens":{},"retries":{},"corrections":{},"mutations_attempted":{},"mutations_authorized":{},"structured_error":{},"active_time_ms":{},"passive_time_ms":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object"},"cleanup":{"type":"object"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/structured-error.schema.json b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+index 078d4273..c9da96c6 100644
+--- a/packages/memory-contracts/schemas/v1/structured-error.schema.json
++++ b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{},"error_occurrence_id":{},"code":{},"terminal_classification":{},"safe_details":{},"retryable":{},"evidence_refs":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"error_occurrence_id":{"type":"string","minLength":1},"code":{"type":"string","minLength":1},"terminal_classification":{"type":"string","enum":["FAIL","INCOMPLETE"]},"safe_details":{"type":"object"},"retryable":{"type":"boolean"},"evidence_refs":{"type":"array","items":{"type":"object"}}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/work-packet.schema.json b/packages/memory-contracts/schemas/v1/work-packet.schema.json
+index 3a73ce1f..1d247dd6 100644
+--- a/packages/memory-contracts/schemas/v1/work-packet.schema.json
++++ b/packages/memory-contracts/schemas/v1/work-packet.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.work-packet.v1","title":"WorkPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.work-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","packet_id","packet_revision","repository_id","target_head","objective","authority","allowed_mutations","workflow_config_revision","capability_manifest_digest"],"properties":{"issue_id":{},"expected_issue_revision":{},"packet_id":{},"packet_revision":{},"repository_id":{},"target_head":{},"objective":{},"authority":{},"allowed_mutations":{},"workflow_config_revision":{},"capability_manifest_digest":{},"acceptance_criteria":{},"prohibited_actions":{},"dependencies":{},"constraints":{},"risk":{},"platform":{},"context_references":{},"expected_outputs":{},"target":{},"receipt_requirements":{},"idempotency_key":{},"token_budget":{},"budget_metric":{},"risk_manifest_digest":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.work-packet.v1","title":"WorkPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.work-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","packet_id","packet_revision","repository_id","target_head","objective","authority","allowed_mutations","workflow_config_revision","capability_manifest_digest"],"properties":{"issue_id":{"type":"string","minLength":1},"expected_issue_revision":{"type":"integer","minimum":0},"packet_id":{"type":"string","minLength":1},"packet_revision":{"type":"integer","minimum":1},"repository_id":{"type":"string","minLength":1},"target_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"objective":{"type":"string","minLength":1},"authority":{"type":"object","required":["kind","issue_revision"],"properties":{"kind":{"type":"string","minLength":1},"issue_revision":{"type":"integer","minimum":0}}},"allowed_mutations":{"type":"array","items":{"type":"string"}},"workflow_config_revision":{"type":"string","minLength":1},"capability_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"prohibited_actions":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"array","items":{"type":"string"}},"constraints":{"type":"object"},"risk":{"type":"object"},"platform":{"type":"object"},"context_references":{"type":"array","items":{"type":"object"}},"expected_outputs":{"type":"array","items":{"type":"string"}},"target":{"type":"object"},"receipt_requirements":{"type":"object"},"idempotency_key":{"type":"string","minLength":1},"token_budget":{"type":"integer","minimum":1},"budget_metric":{"type":"string","enum":["provider_reported_total_tokens"]},"risk_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/src/definitions.js b/packages/memory-contracts/src/definitions.js
+index c0bbf89d..5a49cbc5 100644
+--- a/packages/memory-contracts/src/definitions.js
++++ b/packages/memory-contracts/src/definitions.js
+@@ -69,4 +69,83 @@ const CONTRACTS = Object.freeze({
+   },
+ });
+ 
+-module.exports = { CONTRACTS };
++const STRING = Object.freeze({ type: "string", minLength: 1 });
++const INTEGER = Object.freeze({ type: "integer", minimum: 0 });
++const POSITIVE_INTEGER = Object.freeze({ type: "integer", minimum: 1 });
++const BOOLEAN = Object.freeze({ type: "boolean" });
++const OBJECT = Object.freeze({ type: "object" });
++const STRING_ARRAY = Object.freeze({ type: "array", items: { type: "string" } });
++const OBJECT_ARRAY = Object.freeze({ type: "array", items: { type: "object" } });
++const HASH = Object.freeze({ type: "string", pattern: "^[0-9a-f]{64}$" });
++const HEAD = Object.freeze({ type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" });
++const TIMESTAMP = Object.freeze({ type: "string", format: "date-time" });
++
++const PAYLOAD_FIELDS = Object.freeze({
++  "forge.memory.work-packet.v1": {
++    issue_id: STRING, expected_issue_revision: INTEGER, packet_id: STRING, packet_revision: POSITIVE_INTEGER,
++    repository_id: STRING, target_head: HEAD, objective: STRING,
++    authority: { type: "object", required: ["kind", "issue_revision"], properties: { kind: STRING, issue_revision: INTEGER } },
++    allowed_mutations: STRING_ARRAY, workflow_config_revision: STRING, capability_manifest_digest: HASH,
++    acceptance_criteria: STRING_ARRAY, prohibited_actions: STRING_ARRAY, dependencies: STRING_ARRAY,
++    constraints: OBJECT, risk: OBJECT, platform: OBJECT, context_references: OBJECT_ARRAY,
++    expected_outputs: STRING_ARRAY, target: OBJECT, receipt_requirements: OBJECT, idempotency_key: STRING,
++    token_budget: POSITIVE_INTEGER, budget_metric: { type: "string", enum: ["provider_reported_total_tokens"] }, risk_manifest_digest: HASH,
++  },
++  "forge.memory.context-packet.v1": {
++    work_packet_hash: HASH, context_selection_revision: POSITIVE_INTEGER, privacy_scope_hash: HASH,
++    retention_class: { type: "string", enum: ["public_metadata", "local_sensitive", "remote_redacted", "restricted"] },
++    disclosure_class: { type: "string", enum: ["public_metadata", "local_sensitive", "remote_redacted", "restricted"] },
++    references: OBJECT_ARRAY, summaries: OBJECT_ARRAY, redaction_policy_revision: STRING,
++  },
++  "forge.memory.claim-request.v1": {
++    issue_id: STRING, expected_issue_revision: INTEGER, actor_id: STRING, request_id: STRING,
++    requested_scope: OBJECT, idempotency_key: STRING,
++  },
++  "forge.memory.lease-receipt.v1": {
++    claim_request_id: STRING, lease_id: STRING, lease_epoch: POSITIVE_INTEGER, issue_revision: INTEGER,
++    actor_id: STRING, scope: OBJECT, expires_at: TIMESTAMP, durable: BOOLEAN, authority_signature: STRING,
++  },
++  "forge.memory.capability-manifest.v1": {
++    provider_id: STRING, manifest_revision: POSITIVE_INTEGER, config_revision: STRING,
++    executable_identity: OBJECT, provider_version: STRING, probe_revision: STRING, result_hash: HASH,
++    capabilities: { type: "array", items: { type: "object", required: ["capability_id", "available"], properties: { capability_id: STRING, available: BOOLEAN } } },
++    evaluator_status: { type: "string", enum: ["approved", "unavailable", "quarantined"] }, probed_at: TIMESTAMP, expires_at: TIMESTAMP,
++  },
++  "forge.memory.run-receipt.v1": {
++    packet_hash: HASH, run_id: STRING, attempt_id: STRING, exact_head: HEAD, packet_revision: POSITIVE_INTEGER,
++    manifest_digest: HASH, workflow_config_revision: STRING, status: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE"] },
++    executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: OBJECT, cleanup: OBJECT,
++    lease_epoch: POSITIVE_INTEGER, tokens: OBJECT, retries: INTEGER, corrections: INTEGER,
++    mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: OBJECT,
++    active_time_ms: INTEGER, passive_time_ms: INTEGER,
++  },
++  "forge.memory.feedback-report.v1": {
++    report_id: STRING, product_version: STRING, contract_version: POSITIVE_INTEGER, stable_error_code: STRING,
++    affected_capability: STRING, redacted_reproduction_steps: STRING_ARRAY, expected_classification: STRING,
++    actual_classification: STRING, occurrence_count: POSITIVE_INTEGER, content_fingerprint: HASH,
++    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: STRING, return_channel: OBJECT,
++  },
++  "forge.memory.structured-error.v1": {
++    parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
++    terminal_classification: { type: "string", enum: ["FAIL", "INCOMPLETE"] }, safe_details: OBJECT,
++    retryable: BOOLEAN, evidence_refs: OBJECT_ARRAY,
++  },
++  "forge.memory.monitor-event.v1": {
++    monitor_id: STRING, event_id: STRING, sequence: INTEGER, subject_revision: STRING, type: STRING,
++    actionability: { type: "string", enum: ["advisory", "action_required", "terminal"] }, observed_at: TIMESTAMP,
++    bounded_payload: OBJECT, artifact_digest: HASH,
++  },
++  "forge.memory.delivery-receipt.v1": {
++    event_id: STRING, target: STRING, transport_tier: { type: "string", enum: ["T0", "T1", "T2", "T3", "T4"] },
++    attempt: POSITIVE_INTEGER, delivered_at: TIMESTAMP, acknowledged: BOOLEAN,
++    outcome: { type: "string", enum: ["delivered", "pending", "failed", "acknowledged"] },
++  },
++  "forge.memory.monitor-receipt.v1": {
++    monitor_id: STRING, owner_run_id: STRING,
++    terminal_state: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "CANCELLED"] }, terminal_reason: STRING,
++    last_sequence: INTEGER, evidence_digest: HASH, cancellation_acknowledged: BOOLEAN,
++    process_cleanup: OBJECT, lease_cleanup: OBJECT, undelivered_cursor: INTEGER,
++  },
++});
++
++module.exports = { CONTRACTS, PAYLOAD_FIELDS };
+diff --git a/packages/memory-contracts/src/schema.js b/packages/memory-contracts/src/schema.js
+index 65699e15..a086e303 100644
+--- a/packages/memory-contracts/src/schema.js
++++ b/packages/memory-contracts/src/schema.js
+@@ -1,12 +1,12 @@
+ "use strict";
+ 
+-const { CONTRACTS } = require("./definitions.js");
++const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
+ 
+ function generateJsonSchema(schemaId) {
+   const definition = CONTRACTS[schemaId];
+   if (!definition) throw new TypeError(`Unsupported schema_id: ${schemaId}`);
+   const payloadProperties = {};
+-  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = {};
++  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = PAYLOAD_FIELDS[schemaId][field];
+   return {
+     $schema: "https://json-schema.org/draft/2020-12/schema",
+     $id: schemaId,
+@@ -18,9 +18,25 @@ function generateJsonSchema(schemaId) {
+       schema_version: { const: 1 },
+       object_id: { type: "string", format: "uuid" },
+       created_at: { type: "string", format: "date-time" },
+-      producer: { type: "object" },
+-      capabilities_used: { type: "array" },
+-      provenance: { type: "object" },
++      producer: {
++        type: "object",
++        required: ["product_id", "product_version", "instance_id"],
++        properties: { product_id: { type: "string", minLength: 1 }, product_version: { type: "string", minLength: 1 }, instance_id: { type: "string", minLength: 1 } },
++      },
++      capabilities_used: {
++        type: "array",
++        items: {
++          type: "object",
++          required: ["capability_id", "manifest_digest"],
++          properties: { capability_id: { type: "string", minLength: 1 }, manifest_digest: { type: "string", pattern: "^[0-9a-f]{64}$" } },
++          additionalProperties: false,
++        },
++      },
++      provenance: {
++        type: "object",
++        required: ["source_kind", "actor_class", "actor_id"],
++        properties: { source_kind: { type: "string", minLength: 1 }, actor_class: { type: "string", minLength: 1 }, actor_id: { type: "string", minLength: 1 } },
++      },
+       content_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+       payload: { type: "object", required: definition.required, properties: payloadProperties, additionalProperties: false },
+       extensions: { type: "object" },
+diff --git a/packages/memory-contracts/src/validate.js b/packages/memory-contracts/src/validate.js
+index c98dbd71..119224ef 100644
+--- a/packages/memory-contracts/src/validate.js
++++ b/packages/memory-contracts/src/validate.js
+@@ -1,7 +1,7 @@
+ "use strict";
+ 
+ const { computeContentHash } = require("./canonical.js");
+-const { CONTRACTS } = require("./definitions.js");
++const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
+ 
+ const ENVELOPE_FIELDS = Object.freeze([
+   "schema_id", "schema_version", "object_id", "created_at", "producer",
+@@ -10,6 +10,19 @@ const ENVELOPE_FIELDS = Object.freeze([
+ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+ const SHA256 = /^[0-9a-f]{64}$/;
+ const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
++const LIVE_EVIDENCE_FIELDS = Object.freeze({
++  "forge.memory.work-packet.v1": ["issueRevision", "workflowConfigRevision", "capabilityManifestDigest", "exactHead"],
++  "forge.memory.context-packet.v1": ["workPacketHash", "privacyScopeHash", "redactionPolicyRevision", "allowedDisclosureClasses"],
++  "forge.memory.claim-request.v1": ["issueRevision", "actorId"],
++  "forge.memory.lease-receipt.v1": ["issueRevision", "actorId", "leaseEpoch", "observedAt"],
++  "forge.memory.capability-manifest.v1": ["providerId", "configRevision", "observedAt"],
++  "forge.memory.run-receipt.v1": ["packetHash", "workflowConfigRevision", "capabilityManifestDigest", "exactHead"],
++  "forge.memory.feedback-report.v1": ["consentEventId", "redactionPolicyRevision"],
++  "forge.memory.structured-error.v1": ["parentObjectHash"],
++  "forge.memory.monitor-event.v1": ["monitorId", "subjectRevision"],
++  "forge.memory.delivery-receipt.v1": ["eventId", "target"],
++  "forge.memory.monitor-receipt.v1": ["monitorId", "ownerRunId"],
++});
+ 
+ function error(errors, path, code) {
+   errors.push({ path, code });
+@@ -34,7 +47,9 @@ function validateEnvelope(value, options = {}) {
+   if (!Array.isArray(value.capabilities_used)) error(errors, "$.capabilities_used", "INVALID_TYPE");
+   else {
+     const keys = value.capabilities_used.map((item) => `${item?.capability_id ?? ""}:${item?.manifest_digest ?? ""}`);
+-    if (keys.some((key) => !key.includes(":" ) || key.startsWith(":"))) error(errors, "$.capabilities_used", "INVALID_CAPABILITY_BINDING");
++    if (value.capabilities_used.some((item) => !item || typeof item !== "object" || Array.isArray(item) || typeof item.capability_id !== "string" || item.capability_id.length === 0 || !SHA256.test(item.manifest_digest))) {
++      error(errors, "$.capabilities_used", "INVALID_CAPABILITY_BINDING");
++    }
+     if (keys.join("\0") !== [...keys].sort().join("\0")) error(errors, "$.capabilities_used", "NOT_SORTED");
+   }
+   if (!value.provenance || typeof value.provenance !== "object" || Array.isArray(value.provenance)) error(errors, "$.provenance", "INVALID_TYPE");
+@@ -69,8 +84,45 @@ function compare(errors, actual, expected, path, code) {
+   if (expected !== undefined && actual !== expected) error(errors, path, code);
+ }
+ 
++function isType(value, type) {
++  if (type === "integer") return Number.isInteger(value);
++  if (type === "array") return Array.isArray(value);
++  if (type === "object") return Boolean(value) && typeof value === "object" && !Array.isArray(value);
++  return typeof value === type;
++}
++
++function validateShape(value, shape, path, errors) {
++  if (!isType(value, shape.type)) {
++    error(errors, path, "INVALID_TYPE");
++    return;
++  }
++  if (shape.enum && !shape.enum.includes(value)) error(errors, path, "INVALID_ENUM");
++  if (shape.minLength !== undefined && value.length < shape.minLength) error(errors, path, "INVALID_LENGTH");
++  if (shape.minimum !== undefined && value < shape.minimum) error(errors, path, "OUT_OF_RANGE");
++  if (shape.pattern && !new RegExp(shape.pattern).test(value)) error(errors, path, "INVALID_FORMAT");
++  if (shape.format === "date-time" && (!RFC3339_UTC.test(value) || Number.isNaN(Date.parse(value)))) error(errors, path, "INVALID_TIMESTAMP");
++  if (shape.type === "array" && shape.items) value.forEach((item, index) => validateShape(item, shape.items, `${path}[${index}]`, errors));
++  if (shape.type === "object") {
++    for (const field of shape.required ?? []) {
++      if (!Object.hasOwn(value, field)) error(errors, `${path}.${field}`, "MISSING_REQUIRED");
++    }
++    for (const [field, fieldShape] of Object.entries(shape.properties ?? {})) {
++      if (Object.hasOwn(value, field)) validateShape(value[field], fieldShape, `${path}.${field}`, errors);
++    }
++    if (shape.additionalProperties === false) {
++      const allowed = new Set(Object.keys(shape.properties ?? {}));
++      for (const field of Object.keys(value)) if (!allowed.has(field)) error(errors, `${path}.${field}`, "UNKNOWN_FIELD");
++    }
++  }
++}
++
+ function validateConsequentialEvidence(value, expected, errors) {
+-  if (!expected || !value?.payload) return;
++  if (!value?.payload) return;
++  const requiredEvidence = LIVE_EVIDENCE_FIELDS[value.schema_id] ?? [];
++  for (const field of requiredEvidence) {
++    if (!expected || !Object.hasOwn(expected, field)) error(errors, `$.live_expected.${field}`, "MISSING_LIVE_EVIDENCE");
++  }
++  if (!expected) return;
+   const payload = value.payload;
+   if (value.schema_id === "forge.memory.work-packet.v1") {
+     compare(errors, payload.expected_issue_revision, expected.issueRevision, "$.payload.expected_issue_revision", "STALE_ISSUE_REVISION");
+@@ -90,6 +142,32 @@ function validateConsequentialEvidence(value, expected, errors) {
+     compare(errors, payload.manifest_digest, expected.capabilityManifestDigest, "$.payload.manifest_digest", "WRONG_CAPABILITY_DIGEST");
+     compare(errors, payload.exact_head, expected.exactHead, "$.payload.exact_head", "STALE_EXACT_HEAD");
+     compare(errors, payload.lease_epoch, expected.leaseEpoch, "$.payload.lease_epoch", "STALE_LEASE_EPOCH");
++  } else if (value.schema_id === "forge.memory.claim-request.v1") {
++    compare(errors, payload.expected_issue_revision, expected.issueRevision, "$.payload.expected_issue_revision", "STALE_ISSUE_REVISION");
++    compare(errors, payload.actor_id, expected.actorId, "$.payload.actor_id", "STALE_ACTOR");
++  } else if (value.schema_id === "forge.memory.lease-receipt.v1") {
++    compare(errors, payload.issue_revision, expected.issueRevision, "$.payload.issue_revision", "STALE_ISSUE_REVISION");
++    compare(errors, payload.actor_id, expected.actorId, "$.payload.actor_id", "STALE_ACTOR");
++    compare(errors, payload.lease_epoch, expected.leaseEpoch, "$.payload.lease_epoch", "STALE_LEASE_EPOCH");
++    if (Date.parse(payload.expires_at) <= Date.parse(expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_LEASE");
++  } else if (value.schema_id === "forge.memory.capability-manifest.v1") {
++    compare(errors, payload.provider_id, expected.providerId, "$.payload.provider_id", "STALE_PROVIDER");
++    compare(errors, payload.config_revision, expected.configRevision, "$.payload.config_revision", "STALE_CAPABILITY_CONFIG");
++    if (Date.parse(payload.expires_at) <= Date.parse(expected.observedAt)) error(errors, "$.payload.expires_at", "STALE_CAPABILITY_MANIFEST");
++  } else if (value.schema_id === "forge.memory.feedback-report.v1") {
++    compare(errors, payload.consent_event_id, expected.consentEventId, "$.payload.consent_event_id", "STALE_CONSENT");
++    compare(errors, payload.redaction_policy_revision, expected.redactionPolicyRevision, "$.payload.redaction_policy_revision", "STALE_REDACTION_POLICY");
++  } else if (value.schema_id === "forge.memory.structured-error.v1") {
++    compare(errors, payload.parent_object_hash, expected.parentObjectHash, "$.payload.parent_object_hash", "STALE_PARENT_OBJECT");
++  } else if (value.schema_id === "forge.memory.monitor-event.v1") {
++    compare(errors, payload.monitor_id, expected.monitorId, "$.payload.monitor_id", "STALE_MONITOR");
++    compare(errors, payload.subject_revision, expected.subjectRevision, "$.payload.subject_revision", "STALE_SUBJECT");
++  } else if (value.schema_id === "forge.memory.delivery-receipt.v1") {
++    compare(errors, payload.event_id, expected.eventId, "$.payload.event_id", "STALE_EVENT");
++    compare(errors, payload.target, expected.target, "$.payload.target", "STALE_DELIVERY_TARGET");
++  } else if (value.schema_id === "forge.memory.monitor-receipt.v1") {
++    compare(errors, payload.monitor_id, expected.monitorId, "$.payload.monitor_id", "STALE_MONITOR");
++    compare(errors, payload.owner_run_id, expected.ownerRunId, "$.payload.owner_run_id", "STALE_OWNER_RUN");
+   }
+ }
+ 
+@@ -104,6 +182,7 @@ function validateContract(value, options = {}) {
+     const allowed = new Set([...definition.required, ...definition.optional]);
+     for (const field of Object.keys(value.payload)) {
+       if (!allowed.has(field)) error(errors, `$.payload.${field}`, "UNKNOWN_PAYLOAD_FIELD");
++      else validateShape(value.payload[field], PAYLOAD_FIELDS[value.schema_id][field], `$.payload.${field}`, errors);
+     }
+   }
+   validateExtensions(value?.extensions, errors);
+diff --git a/packages/memory-contracts/test/contracts.test.js b/packages/memory-contracts/test/contracts.test.js
+index f2487a41..3fcaaa85 100644
+--- a/packages/memory-contracts/test/contracts.test.js
++++ b/packages/memory-contracts/test/contracts.test.js
+@@ -188,7 +188,14 @@ describe("extension compatibility", () => {
+       },
+     });
+     packet.content_hash = computeContentHash(packet);
+-    const parsed = parseContract(canonicalize(packet));
++    const parsed = parseContract(canonicalize(packet), {
++      expected: {
++        issueRevision: packet.payload.expected_issue_revision,
++        workflowConfigRevision: packet.payload.workflow_config_revision,
++        capabilityManifestDigest: packet.payload.capability_manifest_digest,
++        exactHead: packet.payload.target_head,
++      },
++    });
+     expect(parsed.extensions).toEqual(packet.extensions);
+     expect(parsed.content_hash).toBe(packet.content_hash);
+   });
+diff --git a/packages/memory-contracts/test/spec-review.test.js b/packages/memory-contracts/test/spec-review.test.js
+new file mode 100644
+index 00000000..443f43de
+--- /dev/null
++++ b/packages/memory-contracts/test/spec-review.test.js
+@@ -0,0 +1,120 @@
++"use strict";
++
++const { describe, expect, test } = require("bun:test");
++const { readFileSync } = require("node:fs");
++const { join } = require("node:path");
++const {
++  CONTRACTS,
++  computeContentHash,
++  generateJsonSchema,
++  validateContract,
++  validateEnvelope,
++} = require("../index.js");
++
++function validWorkPacket() {
++  const value = {
++    schema_id: "forge.memory.work-packet.v1",
++    schema_version: 1,
++    object_id: "4c9d9e6a-4f14-47e7-aac8-9ec7731aa523",
++    created_at: "2026-08-09T12:00:00.000Z",
++    producer: { product_id: "forge-memory", product_version: "0.1.0-beta.6", instance_id: "run-1" },
++    capabilities_used: [{ capability_id: "flow.execute", manifest_digest: "c".repeat(64) }],
++    provenance: { source_kind: "kernel", actor_class: "agent", actor_id: "agent-1" },
++    payload: {
++      issue_id: "5037a7da-d49b-4015-a3fa-aac34425078e",
++      expected_issue_revision: 7,
++      packet_id: "packet-1",
++      packet_revision: 1,
++      repository_id: "github.com/harshanandak/forge",
++      target_head: "a".repeat(40),
++      objective: "test contracts",
++      authority: { kind: "kernel", issue_revision: 7 },
++      allowed_mutations: ["files"],
++      workflow_config_revision: "config-1",
++      capability_manifest_digest: "c".repeat(64),
++    },
++    extensions: {},
++  };
++  value.content_hash = computeContentHash(value);
++  return value;
++}
++
++describe("fail-closed live evidence", () => {
++  test("does not accept a consequential WorkPacket without live expectations", () => {
++    const result = validateContract(validWorkPacket());
++    expect(result.ok).toBe(false);
++    expect(result.errors.map((item) => item.code)).toContain("MISSING_LIVE_EVIDENCE");
++  });
++});
++
++describe("concrete runtime and schema shapes", () => {
++  test("rejects non-integer issue revisions and incomplete capability bindings", () => {
++    const packet = validWorkPacket();
++    packet.payload.expected_issue_revision = "7";
++    packet.capabilities_used = [{ capability_id: "flow.execute" }];
++    packet.content_hash = computeContentHash(packet);
++    const result = validateContract(packet, {
++      expected: {
++        issueRevision: 7,
++        workflowConfigRevision: "config-1",
++        capabilityManifestDigest: "c".repeat(64),
++        exactHead: "a".repeat(40),
++      },
++    });
++    expect(result.errors.map((item) => item.code)).toEqual(
++      expect.arrayContaining(["INVALID_TYPE", "INVALID_CAPABILITY_BINDING"]),
++    );
++  });
++
++  test("gives every required payload field a concrete generated shape", () => {
++    for (const [schemaId, definition] of Object.entries(CONTRACTS)) {
++      const properties = generateJsonSchema(schemaId).properties.payload.properties;
++      for (const field of definition.required) expect(properties[field].type).toBeDefined();
++    }
++    const capabilityItems = generateJsonSchema("forge.memory.work-packet.v1").properties.capabilities_used.items;
++    expect(capabilityItems.required).toEqual(["capability_id", "manifest_digest"]);
++  });
++
++  test("runtime-rejects invalid values for every required contract field", () => {
++    const corpus = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", "contract-inputs.v1.json"), "utf8"));
++    for (const input of corpus.inputs) {
++      for (const field of CONTRACTS[input.schema_id].required) {
++        const malformed = structuredClone(input);
++        malformed.payload[field] = null;
++        malformed.content_hash = computeContentHash(malformed);
++        const result = validateContract(malformed, { expected: {} });
++        expect(result.errors).toContainEqual({ path: `$.payload.${field}`, code: "INVALID_TYPE" });
++      }
++    }
++  });
++});
++
++describe("portable executable fixture corpus", () => {
++  const fixtureRoot = join(__dirname, "..", "fixtures", "v1");
++
++  test("contains hash-valid inputs for all eleven contracts", () => {
++    const corpus = JSON.parse(readFileSync(join(fixtureRoot, "contract-inputs.v1.json"), "utf8"));
++    expect(corpus.inputs).toHaveLength(11);
++    expect(new Set(corpus.inputs.map((input) => input.schema_id))).toEqual(new Set(Object.keys(CONTRACTS)));
++    for (const input of corpus.inputs) expect(validateEnvelope(input).ok).toBe(true);
++  });
++
++  test("contains an executable missing-field input per envelope field", () => {
++    const corpus = JSON.parse(readFileSync(join(fixtureRoot, "malformed-envelope-inputs.v1.json"), "utf8"));
++    const valid = JSON.parse(readFileSync(join(fixtureRoot, corpus.base_input.ref), "utf8"))
++      .inputs.find((input) => input.schema_id === corpus.base_input.schema_id);
++    expect(corpus.cases).toHaveLength(10);
++    for (const item of corpus.cases) {
++      const input = structuredClone(valid);
++      delete input[item.missing_field];
++      const result = validateEnvelope(input, { verifyHash: false });
++      expect(result.ok).toBe(false);
++      expect(result.errors.some((error) => error.path === `$.${item.missing_field}`)).toBe(true);
++    }
++  });
++
++  test("ships the compatibility matrix to packed consumers", () => {
++    const manifest = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8"));
++    expect(manifest.files).toContain("compatibility-matrix.v1.json");
++  });
++});
+-- 
+2.51.0.windows.1
+

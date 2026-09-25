@@ -1,0 +1,48 @@
+From 8b04e36006a5b578be00d13b7bad07cdfbdbf634 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 23 Aug 2026 17:30:07 +0530
+Subject: [PATCH] fix: consume enumeration rejections and pin heartbeat
+ provenance
+
+---
+ lib/pr-monitor/watch-owner.js | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index d6d9f3da..6c6821d7 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -323,12 +323,16 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			&& Object.is(record.startedAt, prior.started_at);
+ 	}
+ 	case 'watchOwnerHeartbeat': {
+-		const priorPhase = input.expectedSnapshot?.phase;
+-		if (priorPhase !== 'running' && priorPhase !== 'stop_requested') return false;
++		const prior = input.expectedSnapshot;
++		if (!prior || (prior.phase !== 'running' && prior.phase !== 'stop_requested')) return false;
++		// Imported provenance and the original started_at survive the beat.
++		if (prior.legacy_evidence_hash === undefined || prior.started_at === undefined) return false;
+ 		return validOwnerSuccess(result, record, 'heartbeat', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 			updatedAt: input.now, heartbeatAt: input.now,
+-		}, [priorPhase]);
++			legacyEvidenceHash: prior.legacy_evidence_hash,
++			startedAt: prior.started_at,
++		}, [prior.phase]);
+ 	}
+ 	case 'watchOwnerRequestStop':
+ 		return validOwnerSuccess(result, record, 'stop_requested', {
+@@ -581,6 +585,10 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 	}
+ 	try {
+ 		const result = operation(boundOpts.databaseConfig || {});
++		if (result && typeof result.then === 'function') {
++			Promise.resolve(result).then(() => {}, () => {});
++			return { ok: false, changed: false, reason: 'invalid_operation', records: [] };
++		}
+ 		if (!result || typeof result !== 'object' || Array.isArray(result)) {
+ 			return { ok: false, changed: false, reason: 'corrupt', records: [] };
+ 		}
+-- 
+2.51.0.windows.1
+

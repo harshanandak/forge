@@ -1,0 +1,45 @@
+From d6f211a16ac32c2a0c97054d74ab897bafb23c7c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 17:09:13 +0530
+Subject: [PATCH] docs(claim-safety): show --target on the release check
+ example
+
+CodeRabbit #288: the pre-close release-readiness example now shows
+`forge release check --target <release-ref> --json` (with a note that --target
+is optional and defaults to the project target). Canonical + regenerated mirror.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/claim-safety/SKILL.md | 2 +-
+ skills/claim-safety/SKILL.md        | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.codex/skills/claim-safety/SKILL.md b/.codex/skills/claim-safety/SKILL.md
+index a06f8182..a74f567b 100644
+--- a/.codex/skills/claim-safety/SKILL.md
++++ b/.codex/skills/claim-safety/SKILL.md
+@@ -56,7 +56,7 @@ never mutates kernel state. (`data.claimed_by` is lease-derived; there is no
+ 4. **Work** the issue (`dev`/edit/etc.).
+ 5. **RE-verify before `close`/`release`** — a live lease can be reclaimed on
+    expiry while you worked. Run `forge issue owns <id>` again:
+-   - **OWNED** → `forge release check --json` (release-readiness), then
++   - **OWNED** → `forge release check --target <release-ref> --json` (release-readiness; omit `--target` to use the project default), then
+      `forge close <id> --reason "…"` or `forge release <id>`.
+    - **NOT OWNED** → the lease was reclaimed (likely expired). Do NOT close/
+      release someone else's lease; reselect and, if the work is still needed,
+diff --git a/skills/claim-safety/SKILL.md b/skills/claim-safety/SKILL.md
+index a06f8182..a74f567b 100644
+--- a/skills/claim-safety/SKILL.md
++++ b/skills/claim-safety/SKILL.md
+@@ -56,7 +56,7 @@ never mutates kernel state. (`data.claimed_by` is lease-derived; there is no
+ 4. **Work** the issue (`dev`/edit/etc.).
+ 5. **RE-verify before `close`/`release`** — a live lease can be reclaimed on
+    expiry while you worked. Run `forge issue owns <id>` again:
+-   - **OWNED** → `forge release check --json` (release-readiness), then
++   - **OWNED** → `forge release check --target <release-ref> --json` (release-readiness; omit `--target` to use the project default), then
+      `forge close <id> --reason "…"` or `forge release <id>`.
+    - **NOT OWNED** → the lease was reclaimed (likely expired). Do NOT close/
+      release someone else's lease; reselect and, if the work is still needed,
+-- 
+2.51.0.windows.1
+

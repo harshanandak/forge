@@ -1,0 +1,88 @@
+From 1d204244eed50bb72eb237ca429f7baf31ecdd9a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 18 Jul 2026 14:22:44 +0530
+Subject: [PATCH] test(skills): update rule/skill enumeration tests for
+ using-forge (W1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two enumeration tests broke because W1 added a 6th canonical Cursor rule
+(rules/using-forge.md) and a new skill dir (skills/using-forge/) — the hooks
+doing their job. Update the stale expected sets:
+
+- cursor-config-generation: "all 5 rule files" -> 6; assert using-forge.mdc is
+  rendered (the always-on skill-dispatch pointer rule).
+- skills-structure: add using-forge to the exact expectedSkillDirs set.
+
+Verified the correct new expectations (rendered files / skill dirs). Other
+rule/skill references in setup/reset/e2e tests are subset existence checks, not
+exact counts, so they were unaffected.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/cursor-config-generation.test.js |  6 ++++--
+ test/skills-structure.test.js         | 12 +++++++-----
+ 2 files changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/test/cursor-config-generation.test.js b/test/cursor-config-generation.test.js
+index 02a2a627..e9c015ad 100644
+--- a/test/cursor-config-generation.test.js
++++ b/test/cursor-config-generation.test.js
+@@ -122,19 +122,21 @@ describe('Cursor config generation', () => {
+     expect(fs.existsSync(rulesDir)).toBeTruthy();
+   });
+ 
+-  test('should create all 5 rule files', async () => {
++  test('should create all 6 rule files', async () => {
+     await generateCursorConfig(tempDir);
+ 
+     const rulesDir = path.join(tempDir, '.cursor', 'rules');
+     const files = await fs.promises.readdir(rulesDir);
+ 
+-    expect(files).toHaveLength(5);
++    expect(files).toHaveLength(6);
+     expect(files.includes('forge-workflow.mdc')).toBeTruthy();
+     expect(files.includes('tdd-enforcement.mdc')).toBeTruthy();
+     expect(files.includes('security-scanning.mdc')).toBeTruthy();
+     expect(files.includes('documentation.mdc')).toBeTruthy();
+     // Always-on kernel-tracking rule: "nothing discussed goes missing — file it".
+     expect(files.includes('kernel-tracking.mdc')).toBeTruthy();
++    // Always-on using-forge rule: skill-dispatch auto-trigger pointer (W1).
++    expect(files.includes('using-forge.mdc')).toBeTruthy();
+   });
+ 
+   test('should create .cursor/rules/kernel-tracking.mdc (always-on, file-it-to-kernel)', async () => {
+diff --git a/test/skills-structure.test.js b/test/skills-structure.test.js
+index cf17b2e5..ee42455c 100644
+--- a/test/skills-structure.test.js
++++ b/test/skills-structure.test.js
+@@ -111,11 +111,12 @@ describe('skills/ directory structure', () => {
+     // Canonical skill set after the skills-only migration: the 11 workflow stage
+     // skills + the `kernel` umbrella (ported from the removed .claude/commands/
+     // surface) plus the three packaged skills, the kernel-native skills
+-    // (triage-ready, issue-basics) registered through the umbrella, and the
+-    // `smith` orchestrator super-skill that composes the stage skills. These are
+-    // the single source of truth; agent harness dirs are generated from them by
+-    // `skills sync` / setup. Pre-merge is a doc-update gate embedded in
+-    // ship/review, not a skill.
++    // (triage-ready, issue-basics) registered through the umbrella, the
++    // `smith` orchestrator super-skill that composes the stage skills, and the
++    // `using-forge` dispatch skill (W1 — the session bootstrap that routes to the
++    // right skill). These are the single source of truth; agent harness dirs are
++    // generated from them by `skills sync` / setup. Pre-merge is a doc-update gate
++    // embedded in ship/review, not a skill.
+     const expectedSkillDirs = [
+       'dev',
+       'plan',
+@@ -137,6 +138,7 @@ describe('skills/ directory structure', () => {
+       'issue-basics',
+       'smith',
+       'memory',
++      'using-forge',
+     ];
+ 
+     test('skills/ contains exactly the expected skill directories', () => {
+-- 
+2.51.0.windows.1
+

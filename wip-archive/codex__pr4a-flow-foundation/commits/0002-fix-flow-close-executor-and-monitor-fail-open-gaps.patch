@@ -1,0 +1,335 @@
+From 020783be9fcadce20a83b484d36906590a7c2393 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 06:55:01 +0530
+Subject: [PATCH] fix(flow): close executor and monitor fail-open gaps
+
+---
+ packages/flow/src/executor.js              | 114 +++++++++++++--------
+ packages/flow/src/monitor-runtime.js       |  29 +++++-
+ packages/flow/test/executor.test.js        |  54 ++++++++++
+ packages/flow/test/monitor-runtime.test.js |  19 ++++
+ 4 files changed, 167 insertions(+), 49 deletions(-)
+
+diff --git a/packages/flow/src/executor.js b/packages/flow/src/executor.js
+index fc793e16..838af78d 100644
+--- a/packages/flow/src/executor.js
++++ b/packages/flow/src/executor.js
+@@ -37,54 +37,60 @@ function assertPacket(workPacket, expected) {
+   }
+ }
+ 
+-function normalizeProviderResult(result, failure) {
+-  if (failure) {
+-    return {
+-      status: "INCOMPLETE",
+-      executor: { product_id: "forge-flow", mode: "injected-provider" },
+-      evidenceRefs: [],
+-      validation: { status: "INCOMPLETE", code: "PROVIDER_FAILURE" },
+-      cleanup: { status: "UNKNOWN" },
+-      mutationsAttempted: [],
+-      mutationsAuthorized: [],
+-    };
+-  }
+-  if (!result || typeof result !== "object" || Array.isArray(result)) {
+-    return {
+-      status: "INCOMPLETE",
+-      executor: { product_id: "forge-flow", mode: "injected-provider" },
+-      evidenceRefs: [],
+-      validation: { status: "INCOMPLETE", code: "INVALID_PROVIDER_RESULT" },
+-      cleanup: { status: "UNKNOWN" },
+-      mutationsAttempted: [],
+-      mutationsAuthorized: [],
+-    };
+-  }
++function incompleteProviderResult(code) {
+   return {
+-    status: TERMINAL_STATUSES.has(result.status) ? result.status : "INCOMPLETE",
+-    executor: result.executor && typeof result.executor === "object" && !Array.isArray(result.executor)
+-      ? structuredClone(result.executor)
+-      : { product_id: "forge-flow", mode: "injected-provider" },
+-    evidenceRefs: Array.isArray(result.evidenceRefs) ? structuredClone(result.evidenceRefs) : [],
+-    validation: result.validation && typeof result.validation === "object" && !Array.isArray(result.validation)
+-      ? structuredClone(result.validation)
+-      : { status: "INCOMPLETE", code: "MISSING_VALIDATION" },
+-    cleanup: result.cleanup && typeof result.cleanup === "object" && !Array.isArray(result.cleanup)
+-      ? structuredClone(result.cleanup)
+-      : { status: "UNKNOWN" },
+-    mutationsAttempted: Array.isArray(result.mutationsAttempted) ? [...result.mutationsAttempted] : [],
+-    mutationsAuthorized: Array.isArray(result.mutationsAuthorized) ? [...result.mutationsAuthorized] : [],
+-    tokens: result.tokens,
+-    retries: result.retries,
+-    corrections: result.corrections,
+-    activeTimeMs: result.activeTimeMs,
+-    passiveTimeMs: result.passiveTimeMs,
++    status: "INCOMPLETE",
++    executor: { product_id: "forge-flow", mode: "injected-provider" },
++    evidenceRefs: [],
++    validation: { status: "INCOMPLETE", code },
++    cleanup: { status: "UNKNOWN" },
++    mutationsAttempted: [],
++    mutationsAuthorized: [],
+   };
+ }
+ 
++function isRecord(value) {
++  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
++}
++
++function isStringArray(value) {
++  return Array.isArray(value) && value.every((item) => typeof item === "string");
++}
++
++function isOptionalNonNegativeInteger(value) {
++  return value === undefined || (Number.isInteger(value) && value >= 0);
++}
++
++function normalizeProviderResult(result, failure) {
++  if (failure) return incompleteProviderResult("PROVIDER_FAILURE");
++  try {
++    const cloned = structuredClone(result);
++    const valid = isRecord(cloned)
++      && TERMINAL_STATUSES.has(cloned.status)
++      && isRecord(cloned.executor)
++      && Array.isArray(cloned.evidenceRefs)
++      && cloned.evidenceRefs.every(isRecord)
++      && isRecord(cloned.validation)
++      && isRecord(cloned.cleanup)
++      && isStringArray(cloned.mutationsAttempted)
++      && isStringArray(cloned.mutationsAuthorized)
++      && (cloned.tokens === undefined || isRecord(cloned.tokens))
++      && isOptionalNonNegativeInteger(cloned.retries)
++      && isOptionalNonNegativeInteger(cloned.corrections)
++      && isOptionalNonNegativeInteger(cloned.activeTimeMs)
++      && isOptionalNonNegativeInteger(cloned.passiveTimeMs);
++    if (!valid) return incompleteProviderResult("INVALID_PROVIDER_RESULT");
++    return cloned;
++  } catch {
++    return incompleteProviderResult("INVALID_PROVIDER_RESULT");
++  }
++}
++
+ function authorizeAndClassify(result, allowedMutations) {
+   const allowed = new Set(allowedMutations);
+-  const unauthorized = result.mutationsAttempted.filter((mutation) => !allowed.has(mutation));
++  const attempted = new Set(result.mutationsAttempted);
++  const authorized = new Set(result.mutationsAuthorized);
++  const unauthorized = [...attempted, ...authorized].filter((mutation) => !allowed.has(mutation));
+   if (unauthorized.length > 0) {
+     result.status = "FAIL";
+     result.validation = {
+@@ -95,7 +101,18 @@ function authorizeAndClassify(result, allowedMutations) {
+     result.mutationsAuthorized = result.mutationsAuthorized.filter((mutation) => allowed.has(mutation));
+     return;
+   }
+-  if (result.status === "PASS" && (result.evidenceRefs.length === 0 || result.validation.status !== "PASS")) {
++  const inconsistent = [...attempted].some((mutation) => !authorized.has(mutation))
++    || [...authorized].some((mutation) => !attempted.has(mutation));
++  if (inconsistent) {
++    result.status = "FAIL";
++    result.validation = { status: "REJECTED", code: "INCONSISTENT_AUTHORIZATION" };
++    return;
++  }
++  const incompletePass = result.status === "PASS"
++    && (result.evidenceRefs.length === 0 || result.validation.status !== "PASS");
++  const incompleteFail = result.status === "FAIL"
++    && (result.evidenceRefs.length === 0 || result.validation.status !== "FAIL");
++  if (incompletePass || incompleteFail) {
+     result.status = "INCOMPLETE";
+     result.validation = { status: "INCOMPLETE", code: "INCOMPLETE_EVIDENCE" };
+   }
+@@ -197,9 +214,16 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
+       } catch (error) {
+         providerFailure = error;
+       }
+-      const result = normalizeProviderResult(providerResult, providerFailure);
++      let result = normalizeProviderResult(providerResult, providerFailure);
+       authorizeAndClassify(result, workPacket.payload.allowed_mutations);
+-      const receipt = buildReceipt(workPacket, executionContext, result);
++      let receipt;
++      try {
++        receipt = buildReceipt(workPacket, executionContext, result);
++      } catch (error) {
++        if (!(error instanceof FlowExecutionError) || error.code !== "OUTPUT_INVALID") throw error;
++        result = incompleteProviderResult("INVALID_PROVIDER_RESULT");
++        receipt = buildReceipt(workPacket, executionContext, result);
++      }
+       acceptedPackets.set(identity, { packetHash: workPacket.content_hash, receipt: structuredClone(receipt) });
+       onReceipt(structuredClone(receipt));
+       return receipt;
+diff --git a/packages/flow/src/monitor-runtime.js b/packages/flow/src/monitor-runtime.js
+index 669ce7cb..6cae0b65 100644
+--- a/packages/flow/src/monitor-runtime.js
++++ b/packages/flow/src/monitor-runtime.js
+@@ -54,6 +54,7 @@ function createMonitorState(spec) {
+     seenEvents: {},
+     evidenceHashes: [],
+     pending: [],
++    deferred: [],
+     retryCounts: {},
+     cancellationRequested: false,
+     cancellationAcknowledged: false,
+@@ -70,13 +71,16 @@ function result(state, effects = [], modelTurns = 0) {
+ }
+ 
+ function terminating(state, terminalState, terminalReason, extra = {}) {
++  const undelivered = [...state.pending, ...state.deferred];
+   return result({
+     ...state,
+     ...extra,
+     lifecycle: "TERMINATING",
+     terminalState,
+     terminalReason,
+-    undeliveredCursor: state.pending.length === 0 ? undefined : state.acknowledgementCursor + 1,
++    undeliveredCursor: undelivered.length === 0
++      ? undefined
++      : Math.min(...undelivered.map((item) => item.sequence)),
+   }, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
+ }
+ 
+@@ -128,6 +132,9 @@ function reduceObservation(spec, state, event) {
+   }
+   if (payload.actionability === "advisory") return result(next);
+   if (next.pending.length >= spec.maxPending) {
++    const deferred = { sequence: payload.sequence, eventId: payload.event_id };
++    if (next.deferred.length < spec.maxPending) next.deferred.push(deferred);
++    else next.deferred[next.deferred.length - 1] = deferred;
+     return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
+   }
+   next.pending.push({ sequence: payload.sequence, eventId: payload.event_id });
+@@ -139,15 +146,29 @@ function reduceObservation(spec, state, event) {
+   }], 1);
+ }
+ 
+-function reduceAcknowledgement(state, event) {
++function reduceAcknowledgement(spec, state, event) {
+   if (!Number.isInteger(event.sequence) || event.sequence < state.acknowledgementCursor || event.sequence > state.lastSequence) {
+     throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
+   }
+   if (event.sequence === state.acknowledgementCursor) return result(state);
++  if (!state.pending.some((item) => item.sequence === event.sequence)) {
++    throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
++  }
+   const next = structuredClone(state);
+   next.acknowledgementCursor = event.sequence;
+   next.pending = next.pending.filter((item) => item.sequence > event.sequence);
+-  return result(next);
++  const effects = [];
++  while (next.pending.length < spec.maxPending && next.deferred.length > 0) {
++    const delivery = next.deferred.shift();
++    next.pending.push(delivery);
++    effects.push({
++      type: "DELIVER",
++      eventId: delivery.eventId,
++      sequence: delivery.sequence,
++      targets: [...spec.deliveryTargets],
++    });
++  }
++  return result(next, effects, effects.length);
+ }
+ 
+ function reduceDeliveryFailure(spec, state, event) {
+@@ -170,7 +191,7 @@ function reduceDeliveryFailure(spec, state, event) {
+ function reduceActive(spec, state, event) {
+   switch (event.kind) {
+     case "observation": return reduceObservation(spec, state, event.event);
+-    case "acknowledge": return reduceAcknowledgement(state, event);
++    case "acknowledge": return reduceAcknowledgement(spec, state, event);
+     case "delivery-failed": return reduceDeliveryFailure(spec, state, event);
+     case "cancel-requested":
+       return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
+diff --git a/packages/flow/test/executor.test.js b/packages/flow/test/executor.test.js
+index 1cfd3093..4dbbabe3 100644
+--- a/packages/flow/test/executor.test.js
++++ b/packages/flow/test/executor.test.js
+@@ -163,4 +163,58 @@ describe("WorkPacket executor", () => {
+     expect(receipt.payload.validation).toMatchObject({ code: "INCOMPLETE_EVIDENCE" });
+     expect(validateContractStructure(receipt).ok).toBe(true);
+   });
++
++  test("downgrades FAIL without terminal evidence to INCOMPLETE", () => {
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult({ status: "FAIL", evidenceRefs: [], validation: { status: "FAIL" } }),
++    });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload.status).toBe("INCOMPLETE");
++    expect(receipt.payload.validation).toMatchObject({ code: "INCOMPLETE_EVIDENCE" });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++  });
++
++  test.each([
++    ["authorized mutation outside packet scope", {
++      mutationsAttempted: [],
++      mutationsAuthorized: ["git.push"],
++    }, "UNAUTHORIZED_MUTATION"],
++    ["attempt not claimed as authorized", {
++      mutationsAttempted: ["packages/flow"],
++      mutationsAuthorized: [],
++    }, "INCONSISTENT_AUTHORIZATION"],
++    ["authorization claim without an attempt", {
++      mutationsAttempted: [],
++      mutationsAuthorized: ["packages/flow"],
++    }, "INCONSISTENT_AUTHORIZATION"],
++  ])("fails closed for %s", (_label, override, code) => {
++    const executor = createWorkPacketExecutor({ run: () => successfulResult(override) });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload.status).toBe("FAIL");
++    expect(receipt.payload.validation).toMatchObject({ code });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++  });
++
++  test.each([
++    ["non-cloneable nested output", { executor: { callback() {} } }],
++    ["malformed nested evidence", { evidenceRefs: [null] }],
++    ["malformed mutation claim", { mutationsAttempted: [42] }],
++  ])("normalizes %s into exactly one validated INCOMPLETE receipt", (_label, malformed) => {
++    const emitted = [];
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult(malformed),
++      onReceipt: (receipt) => emitted.push(receipt),
++    });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload.status).toBe("INCOMPLETE");
++    expect(receipt.payload.validation).toMatchObject({ code: "INVALID_PROVIDER_RESULT" });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++    expect(emitted).toEqual([receipt]);
++  });
+ });
+diff --git a/packages/flow/test/monitor-runtime.test.js b/packages/flow/test/monitor-runtime.test.js
+index 90b525a6..aa75dc8e 100644
+--- a/packages/flow/test/monitor-runtime.test.js
++++ b/packages/flow/test/monitor-runtime.test.js
+@@ -136,6 +136,25 @@ describe("MonitorSpec deterministic reducer", () => {
+     expect(retry.effects).toEqual([expect.objectContaining({ type: "RETRY_DELIVERY", delayMs: 100 })]);
+   });
+ 
++  test("queues a backpressured transition, fences its acknowledgement, and drains it after capacity opens", () => {
++    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
++    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation", event: observation(0, "PENDING"),
++    });
++    const pressured = reduceMonitor(monitorSpec, first.state, {
++      kind: "observation", event: observation(1, "RUNNING"),
++    });
++
++    expect(pressured.state.deferred).toEqual([{ sequence: 1, eventId: "event-1" }]);
++    expect(() => reduceMonitor(monitorSpec, pressured.state, { kind: "acknowledge", sequence: 1 })).toThrow("acknowledgement cursor");
++
++    const drained = reduceMonitor(monitorSpec, pressured.state, { kind: "acknowledge", sequence: 0 });
++    expect(drained.state.pending).toEqual([{ sequence: 1, eventId: "event-1" }]);
++    expect(drained.state.deferred).toEqual([]);
++    expect(drained.effects).toEqual([expect.objectContaining({ type: "DELIVER", eventId: "event-1" })]);
++    expect(drained.modelTurns).toBe(1);
++  });
++
+   test("waits for cancellation acknowledgement, performs cleanup, and emits a valid terminal receipt", () => {
+     const monitorSpec = spec({ terminalPredicate: () => false });
+     const requested = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), { kind: "cancel-requested" });
+-- 
+2.51.0.windows.1
+

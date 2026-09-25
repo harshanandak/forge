@@ -1,0 +1,166 @@
+From c9018e9adf3b91b35f382301cb140019f31c6390 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 14:25:11 +0530
+Subject: [PATCH] fix: reject hardlinked hook configs
+
+---
+ lib/hook-renderer.js          | 14 ++++++++++++++
+ lib/upgrade-safety.js         |  3 ++-
+ test/commands/upgrade.test.js | 24 ++++++++++++++++++++++++
+ test/hook-renderer.test.js    | 34 +++++++++++++++++++++++++++++-----
+ 4 files changed, 69 insertions(+), 6 deletions(-)
+
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index a1b37400..1493a931 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -579,6 +579,19 @@ function assertSafeHookConfigPath(targetRoot, filePath) {
+     assertNoAncestorSymlinkEscape(targetRoot, filePath) ||
+     assertNoSymlinkEscape(targetRoot, filePath);
+   if (escape) throw new Error(`Refusing to render hook config: ${escape.reason}`);
++  if (hasMultipleHardLinks(filePath)) {
++    throw new Error('Refusing to render hardlinked hook config');
++  }
++}
++
++function hasMultipleHardLinks(filePath) {
++  try {
++    const stat = fs.lstatSync(filePath);
++    return stat.isFile() && stat.nlink > 1;
++  } catch (error) {
++    if (error.code === 'ENOENT') return false;
++    throw error;
++  }
+ }
+ 
+ /**
+@@ -653,6 +666,7 @@ module.exports = {
+   renderHermesHooksYaml,
+   mergeClaudeSettings,
+   hasForgeClaudeHooks,
++  hasMultipleHardLinks,
+   mergeCursorHooks,
+   renderHookConfig,
+ };
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index fc83a33a..5d744377 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -11,6 +11,7 @@ const { detectBeadsJsonlSource } = require('./beads-detect');
+ const {
+   FORGE_HOOK_CONTRACT,
+   hasForgeClaudeHooks,
++  hasMultipleHardLinks,
+   HookConfigParseError,
+   renderHookConfig,
+ } = require('./hook-renderer');
+@@ -68,7 +69,7 @@ function buildSelfHealCandidates(projectRoot) {
+     const unsafePath =
+       assertNoAncestorSymlinkEscape(projectRoot, claudeSettings) ||
+       assertNoSymlinkEscape(projectRoot, claudeSettings);
+-    if (unsafePath) return candidates;
++    if (unsafePath || hasMultipleHardLinks(claudeSettings)) return candidates;
+     const existing = fs.existsSync(claudeSettings) ? fs.readFileSync(claudeSettings, 'utf8') : '';
+     try {
+       if (!hasForgeClaudeHooks(existing, FORGE_HOOK_CONTRACT)) {
+diff --git a/test/commands/upgrade.test.js b/test/commands/upgrade.test.js
+index dae1a5d1..971553dd 100644
+--- a/test/commands/upgrade.test.js
++++ b/test/commands/upgrade.test.js
+@@ -207,6 +207,30 @@ describe('forge upgrade command', () => {
+     expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
+   });
+ 
++  test('self-heal does not inspect or rewrite hardlinked Claude settings', async () => {
++    const root = makeRepo();
++    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-upgrade-outside-'));
++    tempRoots.push(outside);
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    const outsideSettings = path.join(outside, 'settings.json');
++    const original = '{"model":"outside"}\n';
++    fs.writeFileSync(outsideSettings, original);
++    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++    try {
++      fs.linkSync(outsideSettings, settingsPath);
++    } catch (error) {
++      if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
++      throw error;
++    }
++
++    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
++
++    expect(fs.statSync(settingsPath).nlink).toBeGreaterThan(1);
++    expect(result.success).toBe(true);
++    expect(result.output).not.toContain('Merge missing Forge-owned Claude lifecycle hooks');
++    expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
++  });
++
+   test('honors parsed kebab-case dry-run flags', async () => {
+     const root = makeRepo();
+ 
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index b70a3327..df73fb74 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -344,7 +344,7 @@ describe('renderHookConfig — malformed project config safety', () => {
+     }
+   });
+ 
+-  test('does not reuse a hardlinked backup candidate with matching contents', () => {
++  test('refuses hardlinked malformed settings before creating a backup', () => {
+     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+     const settingsPath = path.join(root, '.claude', 'settings.json');
+     try {
+@@ -357,14 +357,13 @@ describe('renderHookConfig — malformed project config safety', () => {
+         throw error;
+       }
+ 
+-      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
+-
+-      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
++      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/hardlink/i);
+       expect(fs.statSync(`${settingsPath}.bak`)).toMatchObject({
+         dev: fs.statSync(settingsPath).dev,
+         ino: fs.statSync(settingsPath).ino,
+       });
+-      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
++      expect(fs.existsSync(`${settingsPath}.bak.1`)).toBe(false);
++      expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ malformed json\n');
+     } finally {
+       fs.rmSync(root, { recursive: true, force: true });
+     }
+@@ -397,6 +396,31 @@ describe('renderHookConfig — malformed project config safety', () => {
+       fs.rmSync(outside, { recursive: true, force: true });
+     }
+   });
++
++  test('refuses a hardlinked settings file', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
++    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-outside-'));
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    const outsideSettings = path.join(outside, 'settings.json');
++    const original = '{"model":"outside"}\n';
++    try {
++      fs.writeFileSync(outsideSettings, original);
++      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++      try {
++        fs.linkSync(outsideSettings, settingsPath);
++      } catch (error) {
++        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
++        throw error;
++      }
++
++      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/hardlink/i);
++      expect(fs.statSync(settingsPath).nlink).toBeGreaterThan(1);
++      expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++      fs.rmSync(outside, { recursive: true, force: true });
++    }
++  });
+ });
+ 
+ describe('mergeClaudeSettings (read -> merge -> write, preserve user config)', () => {
+-- 
+2.51.0.windows.1
+

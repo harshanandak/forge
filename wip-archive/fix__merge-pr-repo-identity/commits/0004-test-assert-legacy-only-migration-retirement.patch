@@ -1,0 +1,25 @@
+From 9a9eb060abd9d5407e0785b6b087cb4445e2c3ae Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 13:53:31 +0530
+Subject: [PATCH] test: assert legacy-only migration retirement
+
+---
+ test/pr-monitor/reconcile-executor.test.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index a70ee469..aa7f1759 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -774,7 +774,7 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
+ 			worktree_id: 'WT-7',
+ 			journal_ptr: 'JOURNAL-7',
+ 		}));
+-		expect(retires).toContainEqual(expect.objectContaining({ repo: 'forge', number: 7 }));
++		expect(retires).toEqual([{ git_common_dir: '/g', repo: 'forge', number: 7 }]);
+ 	});
+ 
+ 	test('convergeOnce does not retire the legacy row when canonical upsert fails', async () => {
+-- 
+2.51.0.windows.1
+

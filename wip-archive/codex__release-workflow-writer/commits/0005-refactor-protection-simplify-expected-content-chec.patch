@@ -1,0 +1,52 @@
+From 5b53fbbb8b78d6aacc559fc789183942812fcbb4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 10:55:35 +0530
+Subject: [PATCH] refactor(protection): simplify expected content check
+
+---
+ lib/protected-state-surfaces.js | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/lib/protected-state-surfaces.js b/lib/protected-state-surfaces.js
+index 68dd1d30..4ed7811d 100644
+--- a/lib/protected-state-surfaces.js
++++ b/lib/protected-state-surfaces.js
+@@ -373,6 +373,11 @@ function expectedTargetMatches(state, expectedContent) {
+ 	return state.content.equals(expected);
+ }
+ 
++function expectedTargetChanged(state, options) {
++	return Object.prototype.hasOwnProperty.call(options, 'expectedContent')
++		&& !expectedTargetMatches(state, options.expectedContent);
++}
++
+ function cleanupOwnedTemp(tempPath, identity) {
+ 	try {
+ 		const current = fs.lstatSync(tempPath);
+@@ -426,10 +431,7 @@ function writeProtectedFile(projectRoot, filePath, content, options = {}) {
+ 	if (!initialParent.ok) return blockedAtomicDecision(decision, initialParent.reason);
+ 	const initialTarget = captureTargetState(resolved.target);
+ 	if (!initialTarget.ok) return blockedAtomicDecision(decision, initialTarget.reason);
+-	if (
+-		Object.prototype.hasOwnProperty.call(options, 'expectedContent') &&
+-		!expectedTargetMatches(initialTarget, options.expectedContent)
+-	) {
++	if (expectedTargetChanged(initialTarget, options)) {
+ 		return blockedAtomicDecision(decision, 'Protected workflow has a concurrent content change; refusing to overwrite it.');
+ 	}
+ 
+@@ -461,10 +463,7 @@ function writeProtectedFile(projectRoot, filePath, content, options = {}) {
+ 		if (!sameParentBoundary(initialParent, finalParent) || !sameTargetState(initialTarget, finalTarget)) {
+ 			return blockedAtomicDecision(decision, 'Protected write boundary changed before atomic replacement.');
+ 		}
+-		if (
+-			Object.prototype.hasOwnProperty.call(options, 'expectedContent') &&
+-			!expectedTargetMatches(finalTarget, options.expectedContent)
+-		) {
++		if (expectedTargetChanged(finalTarget, options)) {
+ 			return blockedAtomicDecision(decision, 'Protected workflow has a concurrent content change; refusing to overwrite it.');
+ 		}
+ 		const tempState = fs.lstatSync(tempPath);
+-- 
+2.51.0.windows.1
+

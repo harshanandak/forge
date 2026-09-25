@@ -1,0 +1,316 @@
+From 6e99fcf5dd3c542142a500cd990ead98cab9cbc5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 00:56:45 +0530
+Subject: [PATCH] fix(kernel): close trace authority gaps
+
+---
+ lib/kernel/broker.js        |  14 ++++-
+ lib/kernel/sqlite-driver.js |  34 +++++++++-
+ test/kernel/trace.test.js   | 121 +++++++++++++++++++++++++++++++-----
+ 3 files changed, 148 insertions(+), 21 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 1f9362ad..d9c758ad 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -251,6 +251,13 @@ function derivePrEvidence(input) {
+ 	if (receiptPayload.status !== 'PASS' || receiptPayload.validation?.status !== 'PASS') {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage requires a PASS RunReceipt');
+ 	}
++	const requiredMutation = `pr.${input.phase}`;
++	if (!Array.isArray(receiptPayload.mutations_attempted)
++		|| !receiptPayload.mutations_attempted.includes(requiredMutation)
++		|| !Array.isArray(receiptPayload.mutations_authorized)
++		|| !receiptPayload.mutations_authorized.includes(requiredMutation)) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage RunReceipt must attempt and authorize ${requiredMutation}`);
++	}
+ 	const bindingsMatch = receiptPayload.packet_hash === packet.content_hash
+ 		&& receiptPayload.exact_head === packetPayload.target_head
+ 		&& receiptPayload.packet_revision === packetPayload.packet_revision
+@@ -1500,7 +1507,7 @@ function createLocalBroker(options = {}) {
+ 			if (!input || !['opened', 'merged'].includes(input.phase)) {
+ 				throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage phase must be opened or merged');
+ 			}
+-			for (const field of ['git_common_dir', 'repo', 'number']) {
++			for (const field of ['git_common_dir', 'repo', 'number', 'branch']) {
+ 				if (input[field] === undefined || input[field] === null || input[field] === '') {
+ 					throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage requires ${field}`);
+ 				}
+@@ -1514,6 +1521,9 @@ function createLocalBroker(options = {}) {
+ 			if (!inferred.issue_id || inferred.issue_revision === null) {
+ 				throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage requires resolved issue linkage');
+ 			}
++			if (!inferred.worktree_id || !inferred.worktree_matches) {
++				throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage requires a matching active worktree binding');
++			}
+ 			if (inferred.inferred_issue_id && evidence.issue_id !== inferred.inferred_issue_id) {
+ 				throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage WorkPacket issue conflicts with inferred worktree issue');
+ 			}
+@@ -1539,7 +1549,7 @@ function createLocalBroker(options = {}) {
+ 				&& candidate.repo === input.repo
+ 				&& Number(candidate.number) === Number(input.number)
+ 			)) || null;
+-			const worktreeId = input.worktree_id ?? inferred.worktree_id ?? priorPr?.worktree_id ?? null;
++			const worktreeId = inferred.worktree_id;
+ 			const eventType = `pr.${input.phase}`;
+ 			const payload = {
+ 				issue_id: evidence.issue_id,
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index d5bb979a..884fb38a 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1322,7 +1322,12 @@ const TRACE_MAX_ITERATIONS = 128;
+ function resolvePrLinkageRow(runtime, db, input = {}) {
+ 	let worktree = null;
+ 	if (input.worktree_id) {
+-		worktree = safeAll(runtime, db, 'SELECT * FROM kernel_worktrees WHERE id = ? LIMIT 1', [input.worktree_id])[0] || null;
++		worktree = safeAll(
++			runtime,
++			db,
++			"SELECT * FROM kernel_worktrees WHERE id = ? AND state = 'active' LIMIT 1",
++			[input.worktree_id],
++		)[0] || null;
+ 	} else if (input.branch && input.git_common_dir) {
+ 		worktree = safeAll(
+ 			runtime,
+@@ -1342,7 +1347,11 @@ function resolvePrLinkageRow(runtime, db, input = {}) {
+ 		issue_id: issueId,
+ 		inferred_issue_id: inferredIssueId,
+ 		issue_revision: issue?.entity_revision ?? null,
+-		worktree_id: input.worktree_id ?? worktree?.id ?? null,
++		worktree_id: worktree?.id ?? null,
++		worktree_matches: Boolean(worktree
++			&& worktree.git_common_dir === input.git_common_dir
++			&& worktree.branch === input.branch
++			&& worktree.issue_id === issueId),
+ 	};
+ }
+ 
+@@ -1357,6 +1366,8 @@ function parseTraceEvent(row) {
+ 		id: row.id,
+ 		type: row.event_type,
+ 		at: row.created_at,
++		issue_id: payload.issue_id ?? null,
++		worktree_id: payload.worktree_id ?? null,
+ 		issue_revision: payload.issue_revision ?? null,
+ 		head_sha: payload.head_sha ?? null,
+ 		work_packet_hash: payload.work_packet_hash ?? null,
+@@ -1367,6 +1378,19 @@ function parseTraceEvent(row) {
+ 	};
+ }
+ 
++function isCompleteTraceIteration(event) {
++	if (!event.type?.startsWith('pr.')) return true;
++	return typeof event.issue_id === 'string' && event.issue_id.length > 0
++		&& typeof event.worktree_id === 'string' && event.worktree_id.length > 0
++		&& Number.isInteger(event.issue_revision) && event.issue_revision >= 0
++		&& /^[0-9a-f]{40}$/.test(event.head_sha)
++		&& /^[0-9a-f]{64}$/.test(event.work_packet_hash)
++		&& /^[0-9a-f]{64}$/.test(event.run_receipt_hash)
++		&& /^[0-9a-f]{64}$/.test(event.risk_manifest_digest)
++		&& Array.isArray(event.gate_receipts) && event.gate_receipts.length > 0
++		&& event.gate_receipts.every(receipt => typeof receipt === 'string' && receipt.length > 0);
++}
++
+ function loadTraceRows(runtime, db, target = {}) {
+ 	const gaps = [];
+ 	let selectedPr = null;
+@@ -1441,6 +1465,12 @@ function loadTraceRows(runtime, db, target = {}) {
+ 				gaps.push(`iterations:${row.id}:overflow`);
+ 			}
+ 			const parsedIterations = iterations.map(parseTraceEvent);
++			const prIterations = parsedIterations.filter(event => event.type?.startsWith('pr.'));
++			if (prIterations.length === 0) {
++				gaps.push(`iterations:${row.id}:missing`);
++			} else if (prIterations.some(event => !isCompleteTraceIteration(event))) {
++				gaps.push(`iterations:${row.id}:incomplete`);
++			}
+ 			return {
+ 				...row,
+ 				url: parsedIterations.find(event => event.url)?.url ?? null,
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index f8ea5303..772564b9 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -53,7 +53,7 @@ function workPacket(overrides = {}) {
+ 	});
+ }
+ 
+-function runReceipt(packet, overrides = {}) {
++function runReceipt(packet, overrides = {}, phase = 'opened') {
+ 	return rehash({
+ 		schema_id: 'forge.memory.run-receipt.v1',
+ 		schema_version: 1,
+@@ -78,8 +78,8 @@ function runReceipt(packet, overrides = {}) {
+ 			evidence_refs: [{ kind: 'validation', id: 'validation-1' }],
+ 			validation: { status: 'PASS' },
+ 			cleanup: { status: 'PASS' },
+-			mutations_attempted: ['pr.opened'],
+-			mutations_authorized: ['pr.opened'],
++			mutations_attempted: [`pr.${phase}`],
++			mutations_authorized: [`pr.${phase}`],
+ 			...overrides,
+ 		},
+ 		extensions: {},
+@@ -145,7 +145,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		}
+ 	});
+ 
+-	function linkage(phase = 'opened', packet = workPacket(), receipt = runReceipt(packet), overrides = {}) {
++	function linkage(phase = 'opened', packet = workPacket(), receipt = runReceipt(packet, {}, phase), overrides = {}) {
+ 		return {
+ 			phase,
+ 			git_common_dir: gitCommonDir,
+@@ -162,12 +162,13 @@ describe('Kernel receipt-bound PR trace', () => {
+ 
+ 	test('derives every authority binding, replays exactly, and returns the joined trace', async () => {
+ 		const packet = workPacket();
+-		const receipt = runReceipt(packet);
+-		await broker.recordPrLinkage(linkage('opened', packet, receipt));
+-		await broker.recordPrLinkage(linkage('opened', packet, receipt));
+-		await broker.recordPrLinkage(linkage('merged', packet, receipt));
+-		await broker.recordPrLinkage(linkage('merged', packet, receipt));
+-		await broker.recordPrLinkage(linkage('opened', packet, receipt));
++		const openedReceipt = runReceipt(packet);
++		const mergedReceipt = runReceipt(packet, {}, 'merged');
++		await broker.recordPrLinkage(linkage('opened', packet, openedReceipt));
++		await broker.recordPrLinkage(linkage('opened', packet, openedReceipt));
++		await broker.recordPrLinkage(linkage('merged', packet, mergedReceipt));
++		await broker.recordPrLinkage(linkage('merged', packet, mergedReceipt));
++		await broker.recordPrLinkage(linkage('opened', packet, openedReceipt));
+ 
+ 		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+ 		expect(trace).toMatchObject({
+@@ -188,7 +189,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			issue_revision: 0,
+ 			head_sha: HEAD_SHA,
+ 			work_packet_hash: packet.content_hash,
+-			run_receipt_hash: receipt.content_hash,
++			run_receipt_hash: openedReceipt.content_hash,
+ 			risk_manifest_digest: RISK_DIGEST,
+ 			gate_receipts: [GATE_RECEIPT],
+ 		});
+@@ -217,23 +218,78 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+ 	});
+ 
++	test('requires the RunReceipt to attempt and authorize the exact linkage phase', async () => {
++		const packet = workPacket();
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet, {
++			mutations_attempted: ['pr.merged'],
++			mutations_authorized: ['pr.merged'],
++		})))).rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet, {
++			mutations_attempted: [],
++		})))).rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet, {
++			mutations_authorized: [],
++		})))).rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++	});
++
++	test('rejects missing, inactive, or mismatched explicit worktree bindings before persistence', async () => {
++		const packet = workPacket();
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet), {
++			worktree_id: 'worktree-missing',
++		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++
++		driver.registerWorktree({
++			id: 'worktree-mismatch',
++			git_common_dir: path.join(root, '.git-other'),
++			path: path.join(root, '.worktrees', 'other'),
++			branch: 'codex/other',
++			issue_id: 'issue-trace',
++			registered_at: '2026-08-11T00:01:00.000Z',
++		}, config);
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet), {
++			worktree_id: 'worktree-mismatch',
++		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++
++		await driver.exec(
++			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
++			config,
++		);
++		driver.registerWorktree({
++			id: 'worktree-other-issue',
++			git_common_dir: gitCommonDir,
++			path: path.join(root, '.worktrees', 'other-issue'),
++			branch,
++			issue_id: 'issue-other',
++			registered_at: '2026-08-11T00:02:00.000Z',
++		}, config);
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet))))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet), {
++			worktree_id: 'worktree-trace',
++		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++	});
++
+ 	test('preserves terminal linkage on exact replay and rejects changed evidence or head', async () => {
+ 		const packet = workPacket();
+-		const receipt = runReceipt(packet);
+-		await broker.recordPrLinkage(linkage('opened', packet, receipt));
+-		await broker.recordPrLinkage(linkage('merged', packet, receipt));
++		const openedReceipt = runReceipt(packet);
++		const mergedReceipt = runReceipt(packet, {}, 'merged');
++		await broker.recordPrLinkage(linkage('opened', packet, openedReceipt));
++		await broker.recordPrLinkage(linkage('merged', packet, mergedReceipt));
+ 		await broker.updatePrVerdict({ git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514 }, {
+ 			verdict: 'CLEAN-MERGEABLE', verdict_source: 'local', verdict_at: '2026-08-11T00:08:00.000Z', head_sha: HEAD_SHA,
+ 		});
+ 		const before = (await driver.queryAll('SELECT * FROM kernel_pr;', config))[0];
+-		await broker.recordPrLinkage(linkage('merged', packet, receipt));
++		await broker.recordPrLinkage(linkage('merged', packet, mergedReceipt));
+ 		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
+ 
+ 		const changedPacket = workPacket({ risk_manifest_digest: 'e'.repeat(64) });
+-		await expect(broker.recordPrLinkage(linkage('merged', changedPacket, runReceipt(changedPacket))))
++		await expect(broker.recordPrLinkage(linkage('merged', changedPacket, runReceipt(changedPacket, {}, 'merged'))))
+ 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+ 		const changedHeadPacket = workPacket({ target_head: 'f'.repeat(40) });
+-		await expect(broker.recordPrLinkage(linkage('merged', changedHeadPacket, runReceipt(changedHeadPacket))))
++		await expect(broker.recordPrLinkage(linkage('merged', changedHeadPacket, runReceipt(changedHeadPacket, {}, 'merged'))))
+ 			.rejects.toMatchObject({ code: 'FORGE_TRACE_TERMINAL_CONFLICT' });
+ 		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
+ 	});
+@@ -253,4 +309,35 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			gaps: ['worktree', 'work_folder', 'plan', 'tasks', 'decisions', 'pull_requests'],
+ 		});
+ 	});
++
++	test('reports interrupted PR upserts and incomplete iterations as explicit trace gaps', async () => {
++		const partial = await driver.upsertPr({
++			id: 'pr-partial',
++			git_common_dir: gitCommonDir,
++			repo: 'owner/forge',
++			number: 515,
++			issue_id: 'issue-trace',
++			worktree_id: 'worktree-trace',
++			branch,
++			head_sha: HEAD_SHA,
++			registered_at: '2026-08-11T00:06:00.000Z',
++		}, {}, config);
++		let trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace.gaps).toContain(`iterations:${partial.id}:missing`);
++
++		await driver.insertKernelEvent({
++			entity_type: 'pr',
++			entity_id: partial.id,
++			event_type: 'pr.opened',
++			idempotency_key: `pr.opened:${partial.id}:${HEAD_SHA}`,
++			expected_revision: 0,
++			actor: 'test',
++			origin: 'test',
++			payload: { issue_id: 'issue-trace', head_sha: HEAD_SHA },
++			created_at: '2026-08-11T00:06:01.000Z',
++		}, {}, config);
++		trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace.gaps).not.toContain(`iterations:${partial.id}:missing`);
++		expect(trace.gaps).toContain(`iterations:${partial.id}:incomplete`);
++	});
+ });
+-- 
+2.51.0.windows.1
+

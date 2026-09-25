@@ -1,0 +1,91 @@
+From be9f3959930864f01aff3291f7f7ecca41e89885 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 12:59:01 +0530
+Subject: [PATCH] fix(memory): enforce lifecycle packet constraints
+
+---
+ packages/memory/src/pr-lifecycle-authority.js |  8 ++++--
+ .../test/pr-lifecycle-authority.test.js       | 25 +++++++++++++++++++
+ 2 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index a8427a8d..8597d47e 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -425,6 +425,7 @@ function assertReceiptEvidence(packet, receipt) {
+   const attempted = receipt.payload.mutations_attempted ?? [];
+   const authorized = receipt.payload.mutations_authorized ?? [];
+   const allowed = packet.payload.allowed_mutations ?? [];
++  const prohibited = packet.payload.prohibited_actions ?? [];
+   const sameMutations = attempted.length === authorized.length
+     && attempted.every((mutation, index) => mutation === authorized[index]);
+   const satisfied = ['opened', 'merged'].filter((candidate) => {
+@@ -434,7 +435,7 @@ function assertReceiptEvidence(packet, receipt) {
+       && authorized.includes(candidateMutation);
+   });
+   const phase = satisfied.includes('merged') ? 'merged' : satisfied[0];
+-  if (!phase || !sameMutations || attempted.some((entry) => !allowed.includes(entry))) {
++  if (!phase || !sameMutations || attempted.some((entry) => !allowed.includes(entry) || prohibited.includes(entry))) {
+     fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'RunReceipt mutation evidence is incomplete or incompatible');
+   }
+   if (receipt.payload.lease_epoch !== undefined) fail('PR_LIFECYCLE_AUTHORITY_UNSUPPORTED', 'lease_epoch is deferred for 0.1');
+@@ -448,6 +449,8 @@ function assertPacketLiveBindings(packet, live) {
+   if (!Array.isArray(requiredGateIds) || requiredGateIds.length === 0 || requiredGateIds.some((id) => typeof id !== 'string' || id.length === 0) || new Set(requiredGateIds).size !== requiredGateIds.length) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements are incomplete');
+   if (requiredGateIds.length !== live.gates.ids.length || requiredGateIds.some((id) => !live.gates.ids.includes(id))) fail('PR_LIFECYCLE_GATE_INVALID', 'WorkPacket gate requirements do not match live gates');
+   if (!HASH_PATTERN.test(packet.payload.risk_manifest_digest || '') || packet.payload.risk_manifest_digest !== live.risk.digest) fail('PR_LIFECYCLE_RISK_INVALID', 'WorkPacket risk digest does not match live risk');
++  const prohibited = packet.payload.prohibited_actions ?? [];
++  if (!Array.isArray(prohibited) || packet.payload.allowed_mutations.some(mutation => prohibited.includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket allowed and prohibited mutations conflict');
+   if (!packet.payload.allowed_mutations.some((mutation) => ['pr.opened', 'pr.merged'].includes(mutation))) fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'WorkPacket does not authorize a PR lifecycle mutation');
+ }
+ 
+@@ -710,9 +713,10 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
+   async function requestNextWork(rawInput = {}) {
+     const input = snapshot(rawInput, 'next work input');
+     const method = typeof provider.listReadyWork === 'function' ? 'listReadyWork' : undefined;
+-    const ready = method
++    const response = method
+       ? await callMethod(provider, method, [input], 'ready', { timeoutMs })
+       : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true });
++    const ready = Array.isArray(response) ? response : response?.issues;
+     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
+     return ready;
+   }
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 25f65555..d7d2e439 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -677,6 +677,31 @@ describe('public PR lifecycle authority', () => {
+     await expect(authority.requestNextWork({ issue_id: ISSUE_ID })).resolves.toEqual([{ id: 'z' }, { id: 'a' }]);
+   });
+ 
++  test('unwraps the Kernel ready envelope without reranking', async () => {
++    const base = provider();
++    delete base.listReadyWork;
++    base.runIssueOperation = async () => ({ ok: true, data: { issues: [{ id: 'z' }, { id: 'a' }], count: 2 } });
++    const authority = createPrLifecycleAuthority({ provider: base });
++    await expect(authority.requestNextWork()).resolves.toEqual([{ id: 'z' }, { id: 'a' }]);
++  });
++
++  test('rejects contradictory packet prohibitions before lifecycle side effects', async () => {
++    let writes = 0;
++    let merges = 0;
++    const workPacket = packet({ payload: { prohibited_actions: ['pr.merged'] } });
++    const runReceipt = receipt(workPacket);
++    const authority = createPrLifecycleAuthority({ provider: provider({
++      recordPrLinkage: async () => { writes += 1; return { ok: true }; },
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }) });
++    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
++      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
++    await expect(authority.mergeWorkPacket({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
++      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_MUTATION_UNAUTHORIZED' });
++    expect(writes).toBe(0);
++    expect(merges).toBe(0);
++  });
++
+   test('rejects ambiguous duplicate PR trace rows before merge side effects', async () => {
+     let merges = 0;
+     let durable;
+-- 
+2.51.0.windows.1
+

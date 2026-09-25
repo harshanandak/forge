@@ -1,0 +1,282 @@
+From 5807a556d0f2ac5651674219bb1283949fd65ed9 Mon Sep 17 00:00:00 2001
+From: Harsha Befach <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 00:06:30 +0530
+Subject: [PATCH] fix(shepherd): fence legacy migration evidence
+
+---
+ lib/pr-monitor/reconcile-executor.js          | 111 ++++++++++++++----
+ .../reconcile-migration-gate.test.js          |  86 ++++++++++++++
+ 2 files changed, 172 insertions(+), 25 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 9bee5773..3ef36d9b 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -587,6 +587,58 @@ async function defaultReadProviderState(entry, opts = {}) {
+ 	}
+ }
+ 
++async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
++	const ctx = identity(entry);
++	const pid = Number(entry.pid);
++	const hasPid = Number.isSafeInteger(pid) && pid > 0;
++	const pidState = hasPid ? await options.isPidAlive(pid) : false;
++	const providerState = String(
++		await (opts.readProviderState || defaultReadProviderState)(entry, { ...opts, projectRoot }) || '',
++	).toLowerCase();
++	const providerTerminal = ['closed', 'merged', 'terminal'].includes(providerState);
++	let providerVerified = false;
++	if (hasPid && providerState === 'open' && typeof options.verifyProviderEvidence === 'function') {
++		try {
++			providerVerified = await options.verifyProviderEvidence(
++				{ state: providerState }, { ...ctx, states: ['open'] },
++			) === true;
++		} catch { providerVerified = false; }
++	}
++	let receiptVerified = false;
++	if (entry.terminalReceiptId && providerTerminal && typeof options.verifyTerminalReceipt === 'function') {
++		try { receiptVerified = await options.verifyTerminalReceipt(entry.terminalReceiptId, ctx) === true; }
++		catch { receiptVerified = false; }
++	}
++	return {
++		entry,
++		entryHash: hashLegacySnapshot(entry),
++		ctx,
++		pid,
++		hasPid,
++		pidState,
++		providerState,
++		providerTerminal,
++		providerVerified,
++		receiptVerified,
++	};
++}
++
++function cachedLegacyEvidenceOptions(options, evidence) {
++	const sameIdentity = value => value?.repo === evidence.ctx.repo && value?.pr === evidence.ctx.pr;
++	return {
++		...options,
++		isPidAlive: async pid => (pid === evidence.pid ? evidence.pidState : null),
++		verifyProviderEvidence: async (providerEvidence, expected) => evidence.providerVerified
++			&& sameIdentity(expected)
++			&& String(providerEvidence?.state || '').toLowerCase() === evidence.providerState
++			&& Array.isArray(expected?.states)
++			&& expected.states.includes(evidence.providerState),
++		verifyTerminalReceipt: async (receipt, ownerIdentity) => evidence.receiptVerified
++			&& sameIdentity(ownerIdentity)
++			&& receipt === evidence.entry.terminalReceiptId,
++	};
++}
++
+ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	const authority = opts.authority || watchOwner;
+ 	const options = ownerOptions(opts);
+@@ -621,12 +673,34 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	}
+ 	let snapshot;
+ 	let snapshotHash;
++	let verifiedEntries;
+ 	for (let attempt = 0; attempt < MAX_MIGRATION_ATTEMPTS; attempt += 1) {
+ 		const first = await readSnapshot();
+ 		const firstHash = hashLegacySnapshot(first);
++		if (!first || first.corrupt) {
++			snapshot = first;
++			snapshotHash = firstHash;
++			break;
++		}
++		const consolidated = consolidateLegacyEntries(first.entries);
++		if (first.unmappable || consolidated.unmappable) {
++			await authority.publishMigrationConflict({
++				snapshotHash: firstHash, conflictCode: 'legacy_identity_unmappable', updatedAt: now,
++			}, options);
++			return { ok: false, state: 'conflict', reason: 'legacy_identity_unmappable' };
++		}
++		const evidence = [];
++		for (const entry of consolidated.entries) {
++			evidence.push(await collectLegacyEntryEvidence(entry, options, opts, projectRoot));
++		}
+ 		const second = await readSnapshot();
+ 		const secondHash = hashLegacySnapshot(second);
+-		if (firstHash === secondHash) { snapshot = second; snapshotHash = secondHash; break; }
++		if (firstHash === secondHash) {
++			snapshot = second;
++			snapshotHash = secondHash;
++			verifiedEntries = evidence;
++			break;
++		}
+ 		if (attempt === MAX_MIGRATION_ATTEMPTS - 1) {
+ 			await authority.publishMigrationConflict({
+ 				snapshotHash: secondHash, conflictCode: 'legacy_snapshot_changed', updatedAt: now,
+@@ -642,54 +716,41 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	}
+ 	const bound = await authority.bindMigrationSnapshot({ snapshotHash, updatedAt: now }, options);
+ 	if (!bound?.ok) return { ok: false, state: 'conflict', reason: bound?.reason || 'snapshot_mismatch' };
+-	const consolidated = consolidateLegacyEntries(snapshot.entries);
+-	if (snapshot.unmappable || consolidated.unmappable) {
+-		await authority.publishMigrationConflict({
+-			snapshotHash, conflictCode: 'legacy_identity_unmappable', updatedAt: now,
+-		}, options);
+-		return { ok: false, state: 'conflict', reason: 'legacy_identity_unmappable' };
+-	}
+ 
+-	const entries = consolidated.entries;
+ 	const expectedRows = [];
+-	for (const entry of entries) {
+-		const entryHash = hashLegacySnapshot(entry);
+-		const ctx = identity(entry);
+-		const pid = Number(entry.pid);
+-		const hasPid = Number.isSafeInteger(pid) && pid > 0;
+-		const live = hasPid ? await options.isPidAlive(pid) === true : false;
+-		const providerState = String(
+-			await (opts.readProviderState || defaultReadProviderState)(entry, { ...opts, projectRoot }) || '',
+-		).toLowerCase();
+-		const providerTerminal = ['closed', 'merged', 'terminal'].includes(providerState);
++	for (const evidence of verifiedEntries || []) {
++		const {
++			entry, entryHash, ctx, pid, hasPid, pidState, providerState, providerTerminal,
++		} = evidence;
++		const operationOptions = cachedLegacyEvidenceOptions(options, evidence);
+ 		let result;
+ 		if (entry.lifecycleConflict) {
+ 			result = await authority.markLegacyBlocked(ctx, {
+ 				blockReason: 'legacy_conflict', snapshotHash, legacyEvidenceHash: entryHash,
+ 				startedAt: entry.startedAt || now,
+-			}, options);
+-		} else if (live) {
++			}, operationOptions);
++		} else if (pidState === true) {
+ 			result = await authority.markLegacyBlocked(ctx, {
+ 				blockReason: 'legacy_live_pid', pid, snapshotHash, legacyEvidenceHash: entryHash,
+ 				startedAt: entry.startedAt || now,
+-			}, options);
++			}, operationOptions);
+ 		} else if (entry.terminalReceiptId && providerTerminal) {
+ 			result = await authority.importLegacyComplete(ctx, {
+ 				snapshotHash, legacyEvidenceHash: entryHash, legacyPid: hasPid ? pid : null,
+ 				terminalReceiptId: entry.terminalReceiptId, startedAt: entry.startedAt || now,
+-			}, options);
++			}, operationOptions);
+ 		} else if (hasPid && providerState === 'open'
+ 			&& typeof authority.importLegacyStarting === 'function') {
+ 			result = await authority.importLegacyStarting(ctx, {
+ 				snapshotHash, legacyEvidenceHash: entryHash, legacyPid: pid,
+ 				controllerPid: opts.controllerPid || process.pid,
+ 				providerEvidence: { state: 'open' }, startedAt: entry.startedAt || now,
+-			}, options);
++			}, operationOptions);
+ 		} else {
+ 			result = await authority.markLegacyBlocked(ctx, {
+ 				blockReason: providerState ? 'legacy_receipt_unverified' : 'legacy_lossy',
+ 				snapshotHash, legacyEvidenceHash: entryHash, startedAt: entry.startedAt || now,
+-			}, options);
++			}, operationOptions);
+ 		}
+ 		if (!result?.ok || !result.record) {
+ 			await authority.publishMigrationConflict({
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index cfdafbc1..adeca58c 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -348,6 +348,49 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(api.calls.indexOf('enumerate')).toBeGreaterThan(api.calls.indexOf('starting:zeta/repo#2'));
+ 	});
+ 
++	for (const evidenceKind of ['PID', 'provider', 'receipt']) {
++		test(`never binds or imports when ${evidenceKind} evidence mutates the legacy snapshot`, async () => {
++			const api = authorityHarness();
++			const legacy = snapshot([entry('acme/repo', 7, evidenceKind === 'receipt'
++				? { terminalReceiptId: 'receipt-7', providerState: 'closed' }
++				: {})]);
++			let revision = 0;
++			const mutate = () => { legacy.sources[0].content = `revision-${revision += 1}`; };
++			const extra = {
++				readLegacySnapshot: async () => structuredClone(legacy),
++				isAlive: () => {
++					if (evidenceKind === 'PID') mutate();
++					return false;
++				},
++				readProviderState: async identity => {
++					if (evidenceKind === 'provider') mutate();
++					return identity.providerState;
++				},
++				verifyTerminalReceipt: async () => {
++					if (evidenceKind === 'receipt') mutate();
++					return true;
++				},
++			};
++			if (evidenceKind === 'receipt') {
++				const importComplete = api.importLegacyComplete;
++				api.importLegacyComplete = async (ctx, input, operationOptions) => {
++					await operationOptions.verifyTerminalReceipt(input.terminalReceiptId, ctx);
++					return importComplete(ctx, input, operationOptions);
++				};
++			}
++
++			const result = await migrateLegacyAuthority('/repo', {
++				authority: api,
++				now: () => NOW,
++				...extra,
++			});
++			expect(result).toMatchObject({ ok: false, state: 'conflict', reason: 'legacy_snapshot_changed' });
++			expect(api.boundSnapshotHashes, evidenceKind).toEqual([]);
++			expect(api.rows.size, evidenceKind).toBe(0);
++			expect(api.calls.some(value => /^(starting|complete|blocked):/.test(value)), evidenceKind).toBe(false);
++		});
++	}
++
+ 	test('coalesces duplicate legacy sources into one transaction per canonical PR', async () => {
+ 		const api = authorityHarness();
+ 		const duplicate = entry('acme/repo', 7);
+@@ -400,6 +443,49 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(api.calls).toContain('conflict:legacy_snapshot_changed');
+ 	});
+ 
++	for (const corruptSource of ['shepherd.lock', 'snapshot.json']) {
++		test(`fails closed on a malformed real ${corruptSource} without owner lifecycle or cleanup`, async () => {
++			const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-corrupt-legacy-source-'));
++			const gitCommonDir = path.join(root, '.git');
++			if (corruptSource === 'shepherd.lock') {
++				const forgeDir = path.join(gitCommonDir, 'forge');
++				fs.mkdirSync(forgeDir, { recursive: true });
++				fs.writeFileSync(path.join(forgeDir, corruptSource), '{');
++			} else {
++				const monitorDir = path.join(root, '.forge', 'pr-monitor', 'acme-repo-7');
++				fs.mkdirSync(monitorDir, { recursive: true });
++				fs.writeFileSync(path.join(monitorDir, corruptSource), '{');
++			}
++			const api = authorityHarness();
++			let converged = 0;
++			let cleaned = 0;
++			try {
++				const result = await runDaemon(root, {
++					gitCommonDir,
++					repo: 'acme/repo',
++					authority: api,
++					broker: {},
++					driver: {},
++					once: true,
++					acquire: () => ({ ok: true, token: 'lease-token' }),
++					startHeartbeat: () => null,
++					stopHeartbeat: () => {},
++					release: () => {},
++					exit: () => {},
++					convergeOnce: async () => { converged += 1; },
++					cleanupLegacyEvidence: async () => { cleaned += 1; },
++				});
++				expect(result).toMatchObject({ ok: false, reason: 'legacy_owner_conflict' });
++				expect({ converged, cleaned }).toEqual({ converged: 0, cleaned: 0 });
++				expect(api.rows.size).toBe(0);
++				expect(api.calls).toContain('conflict:legacy_owner_conflict');
++				expect(api.calls.some(value => /^(starting|complete|blocked):/.test(value))).toBe(false);
++			} finally {
++				fs.rmSync(root, { recursive: true, force: true });
++			}
++		});
++	}
++
+ 	test('resumes idempotently after a crash between per-PR inserts', async () => {
+ 		const options = { crashImportAt: 2 };
+ 		const api = authorityHarness(options);
+-- 
+2.51.0.windows.1
+

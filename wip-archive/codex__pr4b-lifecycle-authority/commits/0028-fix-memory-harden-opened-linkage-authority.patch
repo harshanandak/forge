@@ -1,0 +1,384 @@
+From bbcd72eed74be5d060e7bc6233cc212351e95031 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 16:34:49 +0530
+Subject: [PATCH] fix(memory): harden opened linkage authority
+
+---
+ lib/kernel/broker.js                          | 149 +++++++++++-------
+ packages/memory/src/pr-lifecycle-authority.js |  36 ++++-
+ .../test/pr-lifecycle-authority.test.js       |  50 +++++-
+ test/kernel/trace.test.js                     |  20 +++
+ 4 files changed, 193 insertions(+), 62 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 0a80bdc7..0686f553 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -452,7 +452,10 @@ function assertCompatiblePrEvidence(existingEvent, payload) {
+ 	throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'INCOMPLETE: conflicting evidence for idempotency key');
+ }
+ 
+-const PR_LINKAGE_DRIVER_METHODS = ['resolvePrLinkage', 'upsertPr', 'retirePr', 'readTrace', 'loadKernelEventByIdempotencyKey'];
++const PR_LINKAGE_DRIVER_METHODS = [
++	'exec', 'resolvePrLinkage', 'upsertPr', 'retirePr', 'readTrace',
++	'listKernelEvents', 'loadKernelEventByIdempotencyKey', 'insertKernelEvent', 'enqueueKernelProjection',
++];
+ 
+ function preparePrLinkageInput(input, driver) {
+ 	const linkageInput = snapshotPrLinkageInput(input);
+@@ -527,6 +530,47 @@ function assertTerminalPrEvent(terminalPr, existingEvent) {
+ 	}
+ }
+ 
++function assertAtomicPrEvidence(trace, input, evidence) {
++	if (input.phase !== 'opened') return;
++	if ((trace.gaps || []).some(gap => gap === 'pull_requests:overflow'
++		|| /^iterations:.*:(?:missing|incomplete|overflow)$/.test(gap))) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage cannot prove complete semantic identity evidence');
++	}
++	for (const request of trace.pull_requests || []) {
++		for (const iteration of request.iterations || []) {
++			if (iteration.type !== 'pr.opened') continue;
++			if (iteration.work_packet_identity !== evidence.work_packet_identity) continue;
++			const sameTarget = request.git_common_dir === input.git_common_dir
++				&& request.repo === input.repo && Number(request.number) === Number(input.number);
++			const sameContent = iteration.work_packet_hash === evidence.work_packet_hash
++				&& iteration.run_receipt_hash === evidence.run_receipt_hash;
++			if (!sameTarget || !sameContent) {
++				throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage semantic identity conflicts with durable PR evidence');
++			}
++		}
++	}
++}
++
++function isDatabaseLocked(error) {
++	return /database is locked|SQLITE_BUSY/i.test(String(error?.message || error));
++}
++
++async function beginImmediate(driver, config) {
++	await driver.exec('PRAGMA busy_timeout=0;', config);
++	for (let attempt = 0; attempt < 500; attempt += 1) {
++		try {
++			await driver.exec('BEGIN IMMEDIATE;', config);
++			return;
++		} catch (error) {
++			if (!isDatabaseLocked(error) || attempt === 499) {
++				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++				throw error;
++			}
++			await new Promise(resolve => setTimeout(resolve, 10));
++		}
++	}
++}
++
+ // The migration ledger records which migration ids have been applied so initialize()
+ // applies each migration AT MOST ONCE — no full re-run, no blanket duplicate-error
+ // swallow. The ledger table is broker-managed bookkeeping (created before the plan is
+@@ -1688,63 +1732,56 @@ function createLocalBroker(options = {}) {
+ 			const linkageInput = preparePrLinkageInput(input, driver);
+ 			const evidence = derivePrEvidence(linkageInput);
+ 			const config = getConfig();
+-			const inferred = await driver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
+-			assertResolvedPrLinkage(inferred, evidence);
+-			const issueEvents = await driver.listKernelEvents('issue', evidence.issue_id, context, config);
+-			const gateReceipts = resolveGateReceipts(
+-				issueEvents,
+-				evidence.gate_ids,
+-				linkageInput.occurred_at,
+-			);
+-			const priorRows = await driver.readTrace({
+-				pr_number: linkageInput.number,
+-				repo: linkageInput.repo,
+-				git_common_dir: linkageInput.git_common_dir,
+-			}, context, config);
+-			const priorPr = findPriorPr(priorRows.pull_requests, linkageInput);
+-			const worktreeId = inferred.worktree_id;
+-			const eventType = `pr.${linkageInput.phase}`;
+-			const payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
+-
+-			const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
+-			assertTerminalPrCompatibility(terminalPr, linkageInput, evidence, worktreeId);
+-
+-			const existingEventKey = priorPr ? `${eventType}:${priorPr.id}:${evidence.head_sha}` : null;
+-			const existingEvent = existingEventKey
+-				? await driver.loadKernelEventByIdempotencyKey(existingEventKey, context, config)
+-				: null;
+-			assertCompatiblePrEvidence(existingEvent, payload);
+-			assertTerminalPrEvent(terminalPr, existingEvent);
+-
+-			const linked = terminalPr
+-				? { ok: true, ...terminalPr }
+-				: await driver.upsertPr({
+-					...linkageInput,
+-					head_sha: evidence.head_sha,
+-					issue_id: evidence.issue_id,
+-					worktree_id: worktreeId,
+-					registered_at: linkageInput.occurred_at,
++			await beginImmediate(driver, config);
++			try {
++				const inferred = await driver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
++				assertResolvedPrLinkage(inferred, evidence);
++				const issueEvents = await driver.listKernelEvents('issue', evidence.issue_id, context, config);
++				const gateReceipts = resolveGateReceipts(issueEvents, evidence.gate_ids, linkageInput.occurred_at);
++				const issueRows = await driver.readTrace({ issue_id: evidence.issue_id }, context, config);
++				assertAtomicPrEvidence(issueRows, linkageInput, evidence);
++				const priorPr = findPriorPr(issueRows.pull_requests, linkageInput);
++				const worktreeId = inferred.worktree_id;
++				const eventType = `pr.${linkageInput.phase}`;
++				const payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
++				const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
++				assertTerminalPrCompatibility(terminalPr, linkageInput, evidence, worktreeId);
++				const linked = terminalPr ? { ok: true, ...terminalPr } : await driver.upsertPr({
++					...linkageInput, head_sha: evidence.head_sha, issue_id: evidence.issue_id,
++					worktree_id: worktreeId, registered_at: linkageInput.occurred_at,
+ 				}, context, config);
+-			const event = await runGuardedEventImpl({
+-				entity_type: 'pr',
+-				entity_id: linked.id,
+-				event_type: eventType,
+-				idempotency_key: `${eventType}:${linked.id}:${evidence.head_sha}`,
+-				expected_revision: 0,
+-				actor: context.actor || 'forge',
+-				origin: context.origin || 'cli',
+-				created_at: linkageInput.occurred_at,
+-				payload,
+-			}, context);
+-			assertCompatiblePrEvidence(event.originalEvent, payload);
+-			if (linkageInput.phase === 'merged' && !terminalPr) {
+-				await driver.retirePr({
+-					git_common_dir: linked.git_common_dir,
+-					repo: linked.repo,
+-					number: linked.number,
+-				}, { state: 'merged', retired_at: linkageInput.occurred_at }, context, config);
++				const idempotencyKey = `${eventType}:${linked.id}:${evidence.head_sha}`;
++				const existingEvent = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
++				assertCompatiblePrEvidence(existingEvent, payload);
++				assertTerminalPrEvent(terminalPr, existingEvent);
++				let iteration;
++				if (existingEvent) {
++					iteration = { decision: 'duplicate', originalEvent: existingEvent, projection: false };
++				} else {
++					const event = await driver.insertKernelEvent({
++						entity_type: 'pr', entity_id: linked.id, event_type: eventType,
++						idempotency_key: idempotencyKey, expected_revision: 0,
++						actor: context.actor || 'forge', origin: context.origin || 'cli',
++						created_at: linkageInput.occurred_at, payload,
++					}, context, config);
++					const outboxEntry = await driver.enqueueKernelProjection(
++						buildProjectionOutboxEntry(event, context.projectionTarget || 'beads', linkageInput.occurred_at),
++						context, config,
++					);
++					iteration = { decision: 'accept', event, outboxEntry, projection: true };
++				}
++				if (linkageInput.phase === 'merged' && !terminalPr) {
++					await driver.retirePr({ git_common_dir: linked.git_common_dir, repo: linked.repo, number: linked.number },
++						{ state: 'merged', retired_at: linkageInput.occurred_at }, context, config);
++				}
++				await driver.exec('COMMIT;', config);
++				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++				return { link: linked, iteration };
++			} catch (error) {
++				await driver.exec('ROLLBACK;', config);
++				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++				throw error;
+ 			}
+-			return { link: linked, iteration: event };
+ 		},
+ 
+ 		async readTrace(target, context = {}) {
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index ec072147..3549c87b 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -221,6 +221,7 @@ async function callMethod(target, method, args, label, options = {}) {
+     const projected = typeof options.project === 'function' ? options.project(result) : result;
+     const bounded = snapshot(projected, `${label} provider response`, {
+       privacy: options.sanitize ? 'sanitize' : undefined,
++      allowGitCommonDir: options.allowGitCommonDir,
+     });
+     if (options.unwrap && bounded?.ok === true && bounded.data !== undefined) return bounded.data;
+     if (options.unwrap && bounded?.ok === false) fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider rejected operation`);
+@@ -283,13 +284,26 @@ function assertLiveIssue(issue, expectedIssueId) {
+   const id = issue?.id ?? issue?.issue_id;
+   if (id !== expectedIssueId) fail('PR_LIFECYCLE_READINESS_STALE', 'live issue identity does not match packet');
+   const revision = providerIssueRevision(issue);
+-  const ready = issue.ready === true || issue.is_ready === true || issue.readiness_state === 'ready';
+-  if (!ready || issue.blocked === true || issue.blockers > 0) {
++  if (issue.blocked === true || issue.blockers > 0) {
+     fail('PR_LIFECYCLE_READINESS_STALE', 'issue is not live-ready');
+   }
+   return revision;
+ }
+ 
++async function readReadyIssue(provider, issueId, actorId, sessionId, timeoutMs) {
++  const input = { issue_id: issueId, actor_id: actorId, session_id: sessionId };
++  const response = typeof provider.listReadyWork === 'function'
++    ? await callMethod(provider, 'listReadyWork', [input], 'ready', { timeoutMs, project: projectReadyResponse })
++    : await callMethod(provider, 'runIssueOperation', ['ready', [], { actor: actorId, sessionId }], 'ready', {
++      timeoutMs, unwrap: true, project: projectReadyResponse,
++    });
++  const ready = Array.isArray(response) ? response : response?.issues;
++  if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
++  const matches = ready.filter(issue => (issue?.id ?? issue?.issue_id) === issueId);
++  if (matches.length !== 1) fail('PR_LIFECYCLE_READINESS_STALE', 'issue is absent or ambiguous in the authoritative ready queue');
++  return matches[0];
++}
++
+ // 0.1 limitation: LeaseReceipt/lease_epoch is deferred. Same actor/session release and
+ // reacquire is ABA-indistinguishable, so every operation re-probes ownership and receipts
+ // never confer continuing authority.
+@@ -507,9 +521,17 @@ function assertPacketLiveBindings(packet, live) {
+ 
+ function deriveLinkage(packet, receipt, gates) {
+   const target = packet.payload.target ?? {};
++  const prEvidence = receipt.payload.evidence_refs.filter(entry => Number.isInteger(entry?.pr_number));
++  if (Number.isInteger(target.pr_number) && prEvidence.some(entry => entry.pr_number !== target.pr_number)) {
++    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR number conflicts with packet target');
++  }
+   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
+-  if (prNumber === undefined) prNumber = receipt.payload.evidence_refs.find((entry) => Number.isInteger(entry?.pr_number))?.pr_number;
+-  const evidenceUrl = receipt.payload.evidence_refs.find((entry) => Number(entry?.pr_number) === prNumber && typeof entry?.url === 'string')?.url;
++  if (prNumber === undefined) prNumber = prEvidence[0]?.pr_number;
++  const matchingEvidence = prEvidence.filter(entry => entry.pr_number === prNumber && typeof entry?.url === 'string');
++  if (typeof target.url === 'string' && matchingEvidence.some(entry => entry.url !== target.url)) {
++    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR URL conflicts with packet target');
++  }
++  const evidenceUrl = matchingEvidence[0]?.url;
+   return {
+     issue_id: packet.payload.issue_id,
+     repository_id: packet.payload.repository_id,
+@@ -707,6 +729,7 @@ async function readLifecycleTrace(provider, linkage, timeoutMs, gitCommonDir) {
+   const target = traceTarget(linkage, gitCommonDir);
+   return callMethod(provider, 'readTrace', [target], 'trace', {
+     timeoutMs,
++    allowGitCommonDir: true,
+     project: value => projectTrace(value, target),
+   });
+ }
+@@ -756,6 +779,11 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+     const requestedSession = requiredString(input.session_id ?? input.sessionId, 'session_id');
+     const issue = await callProbe(provider, liveProbes, ['readIssue'], [issueId], 'issue', 'show', timeoutMs, { project: projectIssueResponse });
+     const issueRevision = assertLiveIssue(issue, issueId);
++    const readyIssue = await readReadyIssue(provider, issueId, requestedActor, requestedSession, timeoutMs);
++    const readyRevision = readyIssue.revision ?? readyIssue.issue_revision;
++    if (readyRevision !== undefined && readyRevision !== issueRevision) {
++      fail('PR_LIFECYCLE_REVISION_STALE', 'authoritative ready queue revision does not match live issue');
++    }
+     const ownershipArgs = { issue_id: issueId, ...(requestedActor ? { actor_id: requestedActor } : {}), ...(requestedSession ? { session_id: requestedSession } : {}) };
+     const ownership = assertOwnership(
+       await callOwnershipProbe(provider, liveProbes, ownershipArgs, timeoutMs),
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index bdfecde4..5a2406a2 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -135,7 +135,7 @@ function provider(overrides = {}) {
+     readCapability: async () => ({ digest: DIGEST, approved: true, available: true, probed: true, expires_at: '2099-01-01T00:00:00.000Z', config_revision: CONFIG_REVISION }),
+     readRisk: async () => ({ approved: true, digest: 'c'.repeat(64) }),
+     readGates: async () => ({ complete: true, approved: true, ids: ['gate-1'] }),
+-    listReadyWork: async () => ([{ id: 'first', rank: 1 }, { id: 'second', rank: 2 }]),
++    listReadyWork: async () => ([{ id: ISSUE_ID, revision: 7, rank: 1 }, { id: 'second', rank: 2 }]),
+     ...overrides,
+   };
+   base.recordPrLinkage = async (value) => {
+@@ -369,13 +369,25 @@ describe('public PR lifecycle authority', () => {
+ 
+   test('requires explicit authoritative readiness instead of inferring from open status', async () => {
+     const authority = createPrLifecycleAuthority({ provider: provider({
+-      readIssue: async () => ({ id: ISSUE_ID, revision: 7, status: 'open', blocked: false }),
++      readIssue: async () => ({ id: ISSUE_ID, revision: 7, status: 'open', ready: true }),
++      listReadyWork: async () => [],
+     }) });
+     await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID,
+       actor_id: 'agent-1', session_id: 'session-1' }))
+       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_READINESS_STALE' });
+   });
+ 
++  test('binds the authoritative ready read to the exact claimant actor and session', async () => {
++    let readyInput;
++    const authority = createPrLifecycleAuthority({ provider: provider({
++      readIssue: async () => ({ id: ISSUE_ID, revision: 7, status: 'open' }),
++      listReadyWork: async input => { readyInput = input; return [{ id: ISSUE_ID, revision: 7 }]; },
++    }) });
++    await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID,
++      actor_id: 'agent-1', session_id: 'session-1' })).resolves.toHaveProperty('packet');
++    expect(readyInput).toEqual({ issue_id: ISSUE_ID, actor_id: 'agent-1', session_id: 'session-1' });
++  });
++
+   test('fails closed when ownership is stale at issuance', async () => {
+     const authority = createPrLifecycleAuthority({ provider: provider({ readOwnership: async () => ({ owned: false }) }) });
+     await expect(authority.issueWorkPacket({ issue_id: ISSUE_ID, repository_id: REPOSITORY_ID, actor_id: 'agent-1', session_id: 'session-1' }))
+@@ -672,6 +684,40 @@ describe('public PR lifecycle authority', () => {
+     expect(recorded).toMatchObject({ phase: 'opened', number: 515, url: 'https://example.test/pull/515' });
+   });
+ 
++  test('rejects receipt PR evidence that conflicts with the exact packet target before writing', async () => {
++    let writes = 0;
++    const workPacket = packet();
++    for (const evidence of [
++      { kind: 'pr', pr_number: 515, url: 'https://example.test/pull/515' },
++      { kind: 'pr', pr_number: 514, url: 'https://example.test/pull/other' },
++    ]) {
++      const runReceipt = receipt(workPacket, { payload: { evidence_refs: [evidence] } });
++      const authority = createPrLifecycleAuthority({ provider: provider({
++        recordPrLinkage: async () => { writes += 1; return { ok: true }; },
++      }) });
++      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
++        .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
++    }
++    expect(writes).toBe(0);
++  });
++
++  test('preserves only a validated git common directory in projected trace rows', async () => {
++    const gitCommonDir = 'C:\\repo\\.git';
++    const workPacket = packet({ payload: { target: { ...packet().payload.target, git_common_dir: gitCommonDir } } });
++    const runReceipt = receipt(workPacket);
++    let durable = false;
++    const authority = createPrLifecycleAuthority({ provider: provider({
++      recordPrLinkage: async () => { durable = true; return { ok: true }; },
++      readTrace: async () => ({ pull_requests: [{
++        number: 514, repo: REPOSITORY_ID, git_common_dir: gitCommonDir, head_sha: HEAD, issue_id: ISSUE_ID,
++        iterations: durable ? [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
++          work_packet_identity: packetIdentity(workPacket), run_receipt_hash: runReceipt.content_hash }] : [],
++      }] }),
++    }) });
++    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
++      .resolves.toMatchObject({ accepted: true });
++  });
++
+   test('scopes durable evidence and trace targets to the accepted PR', async () => {
+     let traceTargetSeen;
+     const workPacket = packet();
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index e908e4af..c5af0b34 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -196,6 +196,26 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
+ 	});
+ 
++	test('atomically rejects divergent opened evidence across independent brokers', async () => {
++		const secondDriver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
++		const secondBroker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver: secondDriver });
++		await secondBroker.initialize();
++		try {
++			const firstPacket = workPacket();
++			const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099' });
++			const first = linkage('opened', firstPacket, runReceipt(firstPacket));
++			const second = linkage('opened', secondPacket, runReceipt(secondPacket), { number: 515, url: 'https://github.com/owner/forge/pull/515' });
++			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second)]);
++			expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
++			const rejected = results.find(result => result.status === 'rejected');
++			expect(rejected.reason).toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++			const rows = await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE event_type = 'pr.opened';", config);
++			expect(rows).toEqual([{ n: 1 }]);
++		} finally {
++			secondDriver.close();
++		}
++	});
++
+ 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
+ 		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
+ 		const receipt = runReceipt(packet);
+-- 
+2.51.0.windows.1
+

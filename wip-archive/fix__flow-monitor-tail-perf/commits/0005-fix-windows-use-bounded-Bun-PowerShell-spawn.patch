@@ -1,0 +1,123 @@
+From 6a7d52c4653eca38e7f6a5b23e2fd19b4b37468c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:12:19 +0530
+Subject: [PATCH] fix(windows): use bounded Bun PowerShell spawn
+
+---
+ lib/kernel/sqlite-driver.js             | 33 ++++++++++++++++++-----
+ test/kernel/legacy-claim-repair.test.js | 35 ++++++++++++++++++++-----
+ 2 files changed, 55 insertions(+), 13 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index f81df374..28afe6f2 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4549,18 +4549,37 @@ function resolveWindowsPowerShellPath(environment = process.env) {
+ function secureWindowsPathsAcl(filePaths, options = {}) {
+ 	const execute = options.execFile || execFileSync;
+ 	const environment = options.environment || process.env;
++	const powerShellPath = resolveWindowsPowerShellPath(environment);
++	const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PRIVATE_ACL_SCRIPT];
++	const childEnvironment = {
++		FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
++		SystemRoot: environment.SystemRoot,
++	};
++	if (process.versions.bun) {
++		const spawn = options.bunSpawnSync || globalThis.Bun.spawnSync;
++		const result = spawn([powerShellPath, ...args], {
++			cwd: path.win32.dirname(powerShellPath),
++			env: childEnvironment,
++			stderr: 'pipe',
++			stdout: 'pipe',
++			timeout: 15_000,
++		});
++		if (!result?.success) {
++			const reason = result?.exitedDueToTimeout ? 'timed out' : 'failed';
++			throw new Error(`Windows ACL hardening subprocess ${reason}`);
++		}
++		return;
++	}
+ 	execute(
+-		resolveWindowsPowerShellPath(environment),
+-		['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PRIVATE_ACL_SCRIPT],
++		powerShellPath,
++		args,
+ 		{
++			cwd: path.win32.dirname(powerShellPath),
+ 			encoding: 'utf8',
+-			env: {
+-				FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
+-				SystemRoot: environment.SystemRoot,
+-			},
++			env: childEnvironment,
+ 			stdio: 'pipe',
+ 			timeout: 15_000,
+-			windowsHide: !process.versions.bun,
++			windowsHide: true,
+ 		},
+ 	);
+ }
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 8434582e..8c4ee8b4 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -202,20 +202,24 @@ describe('legacy claim repair preflight', () => {
+ 		})).toThrow('owner-only permissions');
+ 	});
+ 
+-	test('runs Windows ACL hardening without Bun hidden-window overhead', () => {
++	test('runs Windows ACL hardening through the bounded native Bun process API', () => {
+ 		let invocation;
+ 		secureWindowsPathsAcl(['backup.sqlite'], {
+ 			environment: { SystemRoot: 'C:\\Windows' },
+-			execFile(command, args, options) { invocation = { command, args, options }; },
++			bunSpawnSync(command, options) {
++				invocation = { command, options };
++				return { success: true };
++			},
+ 		});
+-		expect(invocation.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+-		expect(invocation.args).toEqual([
++		expect(invocation.command).toEqual([
++			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+ 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
+ 		]);
+ 		expect(invocation.options).toMatchObject({
+-			stdio: 'pipe',
++			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
++			stderr: 'pipe',
++			stdout: 'pipe',
+ 			timeout: 15_000,
+-			windowsHide: false,
+ 			env: {
+ 				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
+ 				SystemRoot: 'C:\\Windows',
+@@ -223,6 +227,25 @@ describe('legacy claim repair preflight', () => {
+ 		});
+ 	});
+ 
++	test('fails closed when the native Bun ACL subprocess times out', () => {
++		expect(() => secureWindowsPathsAcl(['backup.sqlite'], {
++			environment: { SystemRoot: 'C:\\Windows' },
++			bunSpawnSync() { return { success: false, exitedDueToTimeout: true }; },
++		})).toThrow('subprocess timed out');
++	});
++
++	(process.platform === 'win32' ? test : test.skip)('terminates a timed-out native Bun PowerShell child', () => {
++		const result = globalThis.Bun.spawnSync([
++			resolveWindowsPowerShellPath(process.env),
++			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30',
++		], { stderr: 'pipe', stdout: 'pipe', timeout: 200 });
++		let childAlive = true;
++		try { process.kill(result.pid, 0); } catch { childAlive = false; }
++		if (childAlive) process.kill(result.pid, 'SIGKILL');
++		expect(result.exitedDueToTimeout).toBe(true);
++		expect(childAlive).toBe(false);
++	});
++
+ 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
+ 		let cleanupOptions;
+ 		expect(() => cleanupRestoreProofDirectory('restore-proof', {
+-- 
+2.51.0.windows.1
+

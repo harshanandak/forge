@@ -1,0 +1,88 @@
+From a111bbb93326987d87a7a43702087797ef94217d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 14:29:14 +0530
+Subject: [PATCH] fix: verify advertised upstream head
+
+---
+ scripts/protected-state-check.js      | 13 +++++++------
+ test/protected-state-surfaces.test.js | 28 +++++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 6 deletions(-)
+
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 56037046..ae53ce36 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -307,14 +307,14 @@ function canonicalUpstream() {
+ }
+ 
+ // A local remote-tracking ref is only cached evidence. Confirm that the remote
+-// still advertises the frozen commit without mutating refs; unavailable or
+-// malformed remote evidence fails closed.
++// still advertises both the selected default branch and its frozen commit
++// without mutating refs; unavailable or malformed remote evidence fails closed.
+ function isCurrentCanonicalCommit(canonical, expectedCommit) {
+ 	if (!canonical || !expectedCommit) return false;
+ 	const expectedRef = `refs/heads/${canonical.branch}`;
+ 	let output;
+ 	try {
+-		output = execFileSync('git', ['ls-remote', '--exit-code', '--refs', canonical.remote, expectedRef], {
++		output = execFileSync('git', ['ls-remote', '--symref', '--exit-code', canonical.remote, 'HEAD'], {
+ 			encoding: 'utf8',
+ 			stdio: ['ignore', 'pipe', 'pipe'],
+ 			env: { ...GIT_PROBE_ENV, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' },
+@@ -324,9 +324,10 @@ function isCurrentCanonicalCommit(canonical, expectedCommit) {
+ 		return false;
+ 	}
+ 	const lines = output.split(LINE_SPLIT).filter(Boolean);
+-	if (lines.length !== 1) return false;
+-	const match = /^([0-9a-f]{40}|[0-9a-f]{64})\t([^\0\r\n]+)$/.exec(lines[0]);
+-	return Boolean(match && match[1] === expectedCommit && match[2] === expectedRef);
++	if (lines.length !== 2) return false;
++	const symref = lines.map(line => /^ref: ([^\0\r\n\t]+)\tHEAD$/.exec(line)).find(Boolean);
++	const head = lines.map(line => /^([0-9a-f]{40}|[0-9a-f]{64})\tHEAD$/.exec(line)).find(Boolean);
++	return Boolean(symref && head && symref[1] === expectedRef && head[1] === expectedCommit);
+ }
+ 
+ // True when `commit` is contained in the canonical upstream line — not merely
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 4fe80ccf..f54be4d6 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -717,6 +717,34 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		}
+ 	}, 60_000);
+ 
++	test('blocks a merge when local and advertised remote HEAD disagree', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
++			runGit(work, ['checkout', '--quiet', '-B', 'wrong-default', 'master']);
++			writeRepoFile(work, WORKFLOW, 'name: wrong-default\njobs: {}\n');
++			runGit(work, ['add', WORKFLOW]);
++			runGit(work, ['commit', '--quiet', '-m', 'change workflow']);
++			runGit(work, ['push', '--quiet', 'origin', 'wrong-default:main']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			runGit(work, ['remote', 'set-head', 'origin', 'main']);
++			expect(runGitCapture(work, ['symbolic-ref', 'refs/remotes/origin/HEAD'])).toBe('refs/remotes/origin/main');
++			expect(runGitCapture(work, ['ls-remote', '--symref', 'origin', 'HEAD'])).toContain('ref: refs/heads/master\tHEAD');
++
++			runGit(work, ['checkout', '--quiet', 'feature']);
++			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++			runGit(work, ['add', 'lib/safe.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'wrong-default']);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
+ 	test('blocks a trusted merge-side exemption when the upstream is unreachable', () => {
+ 		const root = createTempDir();
+ 		try {
+-- 
+2.51.0.windows.1
+

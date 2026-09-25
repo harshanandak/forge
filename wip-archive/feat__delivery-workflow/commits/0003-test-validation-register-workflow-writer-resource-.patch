@@ -1,0 +1,24 @@
+From da9b406a64ffe7b335f2aa99a929d8d513abe1e8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 17:52:23 +0530
+Subject: [PATCH] test(validation): register workflow writer resource lane
+
+---
+ test/scripts/test-full-suite.test.js | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 1d9a7c12..dd0ea1ff 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -548,6 +548,7 @@ describe('scripts/test-full-suite.js', () => {
+       'test/scripts/process-tree.test.js',
+       'test/sync-agent-skills-authority.test.js',
+       'test/test-dashboard.test.js',
++      'test/test-workflow.test.js',
+     ];
+     const exclusiveLane = lanes.find((lane) => lane.name === 'exclusive');
+     expect(exclusiveLane.shards.flatMap((shard) => shard.files)).toEqual(exclusiveFiles);
+-- 
+2.51.0.windows.1
+

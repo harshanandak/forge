@@ -1,0 +1,31 @@
+From 4ebb97728a6cc5d6bce5a04efd97334e27c732ea Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 18:44:46 +0530
+Subject: [PATCH] docs: normalize beta5 plan endings
+
+---
+ docs/work/2026-08-08-beta5-release-evidence/plan.md  | 1 -
+ docs/work/2026-08-08-beta5-release-evidence/tasks.md | 1 -
+ 2 files changed, 2 deletions(-)
+
+diff --git a/docs/work/2026-08-08-beta5-release-evidence/plan.md b/docs/work/2026-08-08-beta5-release-evidence/plan.md
+index f08c96fe..b13470cc 100644
+--- a/docs/work/2026-08-08-beta5-release-evidence/plan.md
++++ b/docs/work/2026-08-08-beta5-release-evidence/plan.md
+@@ -33,4 +33,3 @@ Choose the smallest reversible option that preserves fail-closed behavior and cu
+ - Deterministic workflow generation and YAML parsing.
+ - Current-base rebase, lint/type/security checks, and the supported full repository suite on the final SHA.
+ - PR checks, review threads, and quiet feedback window before merge consideration.
+-
+diff --git a/docs/work/2026-08-08-beta5-release-evidence/tasks.md b/docs/work/2026-08-08-beta5-release-evidence/tasks.md
+index f491458d..ba8cfa59 100644
+--- a/docs/work/2026-08-08-beta5-release-evidence/tasks.md
++++ b/docs/work/2026-08-08-beta5-release-evidence/tasks.md
+@@ -21,4 +21,3 @@ Owned files: scorecard module and its tests. Do not touch release, CLI, or runne
+ ## Task 4 - Integration, documentation, and final evidence
+ 
+ Integrate the three commits, run cross-seam tests, update the unreleased changelog, and confirm the generated workflow matches its canonical source. Run the full validation and release-readiness commands on the final SHA. Record issue handoff and open one PR. Do not tag or publish beta.5.
+-
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,114 @@
+From 6e0bb1011b9df8c3b3405267c10dbc3fa79ebb93 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 18:24:40 +0530
+Subject: [PATCH] fix(kernel): validate atomic receipt identity
+
+---
+ lib/kernel/broker.js        | 14 ++++++++++++--
+ lib/kernel/sqlite-driver.js |  7 ++++---
+ test/kernel/trace.test.js   | 20 +++++++++++++++++++-
+ 3 files changed, 35 insertions(+), 6 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 32c6c9ff..5ef81c48 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -326,6 +326,16 @@ function derivePrEvidence(input) {
+ 	if (receiptPayload.status !== 'PASS' || receiptPayload.validation?.status !== 'PASS') {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage requires a PASS RunReceipt');
+ 	}
++	for (const field of ['run_id', 'attempt_id']) {
++		const value = receiptPayload[field];
++		const hasControl = typeof value === 'string' && [...value].some(character => {
++			const code = character.charCodeAt(0);
++			return code <= 31 || code === 127;
++		});
++		if (typeof value !== 'string' || value.length === 0 || value.length > 512 || hasControl) {
++			throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage RunReceipt ${field} is invalid`);
++		}
++	}
+ 	const requiredMutation = `pr.${input.phase}`;
+ 	if (!Array.isArray(receiptPayload.mutations_attempted)
+ 		|| !receiptPayload.mutations_attempted.includes(requiredMutation)
+@@ -1797,15 +1807,15 @@ function createLocalBroker(options = {}) {
+ 				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrLinkage requires an isolated transaction connection');
+ 			}
+ 			let transactionDriver;
++			const config = getConfig();
+ 			try {
+-				transactionDriver = driver.forkConnection();
++				transactionDriver = driver.forkConnection(config);
+ 			} catch {
+ 				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrLinkage could not create an isolated transaction connection');
+ 			}
+ 			if (!transactionDriver || transactionDriver === driver || typeof transactionDriver.close !== 'function') {
+ 				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrLinkage received an invalid isolated transaction connection');
+ 			}
+-			const config = getConfig();
+ 			try {
+ 				return await withPrLinkageTurn(transactionDriver, async () => {
+ 				const linkageInput = preparePrLinkageInput(input, transactionDriver);
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index a2eb1d02..e948e67f 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3195,14 +3195,15 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			experimental: runtime.experimental,
+ 		},
+ 		databasePath: configuredDatabasePath,
+-		forkConnection() {
+-			if (configuredDatabasePath === ':memory:') {
++		forkConnection(config = {}) {
++			const databasePath = resolveDatabasePath(config);
++			if (databasePath === ':memory:') {
+ 				const fork = Object.create(driver);
+ 				Object.defineProperty(fork, 'close', { value() {} });
+ 				Object.defineProperty(fork, 'transactionQueueKey', { value: driver });
+ 				return fork;
+ 			}
+-			return createDriver(runtime, configuredDatabasePath, driverOptions);
++			return createDriver(runtime, databasePath, driverOptions);
+ 		},
+ 		async exec(statement, config) {
+ 			execSql(runtime, getDatabase(config), statement);
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index f8fbd28a..54a855f3 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -200,7 +200,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 
+ 	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
+ 		const memoryConfig = { databasePath: ':memory:' };
+-		const memoryDriver = createBuiltinSQLiteDriver(memoryConfig);
++		const memoryDriver = createBuiltinSQLiteDriver({});
+ 		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
+ 		await memoryBroker.initialize();
+ 		try {
+@@ -340,6 +340,24 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		driver.forkConnection = originalFork;
+ 	});
+ 
++	test('rejects missing, malformed, or oversized run identities before linkage writes', async () => {
++		for (const [field, value] of [
++			['run_id', undefined], ['run_id', ''], ['run_id', 'x'.repeat(513)], ['run_id', 'run\u0000id'],
++			['attempt_id', undefined], ['attempt_id', ''], ['attempt_id', 'x'.repeat(513)], ['attempt_id', 'attempt\nid'],
++		]) {
++			const packet = workPacket();
++			const candidate = runReceipt(packet);
++			if (value === undefined) delete candidate.payload[field];
++			else candidate.payload[field] = value;
++			const invalidReceipt = rehash(candidate);
++			await expect(broker.recordPrLinkage(linkage('opened', packet, invalidReceipt)))
++				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		}
++		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config))
++			.toEqual([{ n: 0 }]);
++		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM kernel_pr;', config)).toEqual([{ n: 0 }]);
++	});
++
+ 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+ 		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+ 			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+-- 
+2.51.0.windows.1
+

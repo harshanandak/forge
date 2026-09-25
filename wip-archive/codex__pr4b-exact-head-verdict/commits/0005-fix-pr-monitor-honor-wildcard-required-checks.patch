@@ -1,0 +1,171 @@
+From 1ae8be406b8b22ef81d670ccd45aad44a995c86e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 04:19:13 +0530
+Subject: [PATCH] fix(pr-monitor): honor wildcard required checks
+
+---
+ lib/pr-monitor/verdict.js       | 18 ++++++++++----
+ test/merge-rules.test.js        | 44 +++++++++++++++++++++------------
+ test/pr-monitor/verdict.test.js | 33 +++++++++++++++++++++++++
+ 3 files changed, 74 insertions(+), 21 deletions(-)
+
+diff --git a/lib/pr-monitor/verdict.js b/lib/pr-monitor/verdict.js
+index 01cc12bc..eaabc629 100644
+--- a/lib/pr-monitor/verdict.js
++++ b/lib/pr-monitor/verdict.js
+@@ -262,17 +262,22 @@ function evaluateCheckObservations(observations, expectedHead, groups) {
+     grouped.get(key).push(normalized);
+   }
+   const byKey = new Map();
++  const byName = new Map();
+   const conflicts = new Set();
++  const conflictNames = new Set();
+   for (const key of [...grouped.keys()].sort(compareCanonicalStrings)) {
+     const entries = grouped.get(key);
+     if (entries.length !== 1) {
+       conflicts.add(key);
++      conflictNames.add(entries[0].name);
+       addReason(groups, 'incomplete', 'check_observation_conflict', entries[0].name);
+     } else {
+       byKey.set(key, entries[0]);
++      if (!byName.has(entries[0].name)) byName.set(entries[0].name, []);
++      byName.get(entries[0].name).push(entries[0]);
+     }
+   }
+-  return { byKey, conflicts };
++  return { byKey, byName, conflicts, conflictNames };
+ }
+ 
+ function evaluateChecks(input, expectedHead, groups) {
+@@ -288,11 +293,14 @@ function evaluateChecks(input, expectedHead, groups) {
+ 
+   for (const requirement of required) {
+     const key = checkKey(requirement);
+-    if (observations.conflicts.has(key)) continue;
+-    const observation = observations.byKey.get(key);
+-    if (!observation) {
++    if (observations.conflicts.has(key)
++      || (requirement.appId === null && observations.conflictNames.has(requirement.name))) continue;
++    const matches = requirement.appId === null
++      ? observations.byName.get(requirement.name) || []
++      : [observations.byKey.get(key)].filter(Boolean);
++    if (matches.length === 0) {
+       addReason(groups, 'blocked', 'required_check_missing', requirement.name);
+-    } else if (observation.status !== 'COMPLETED' || observation.conclusion !== 'SUCCESS') {
++    } else if (!matches.some((entry) => entry.status === 'COMPLETED' && entry.conclusion === 'SUCCESS')) {
+       addReason(groups, 'blocked', 'required_check_not_successful', requirement.name);
+     }
+   }
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index 735ee3da..ce3d60b9 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -254,33 +254,45 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     });
+     expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+ 
+-    for (const verdict of [
+-      { state: 'BLOCKED', headSha: head, baseSha: 'a'.repeat(40), reasons: [{ code: 'checks' }] },
+-      { state: 'MERGE_READY', headSha: '2'.repeat(40), baseSha: 'a'.repeat(40), reasons: [] },
+-      { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [{ code: 'contradiction' }] },
+-      null,
++    for (const [verdict, expectedReason] of [
++      [{ ...ctx.verdict, state: 'BLOCKED', reasons: [{ code: 'checks' }] }, /BLOCKED/],
++      [{ ...ctx.verdict, headSha: '2'.repeat(40) }, /caller head lease/],
++      [{ ...ctx.verdict, reasons: [{ code: 'contradiction' }] }, /contradictory reasons/],
++      [null, /missing or malformed/],
+     ]) {
+-      expect(evaluateMergeRules({ ...ctx, verdict }, ['verdict_clean']).allowed).toBe(false);
++      const { allowed, unmet } = evaluateMergeRules({ ...ctx, verdict }, ['verdict_clean']);
++      expect(allowed).toBe(false);
++      expect(unmet[0].reason).toMatch(expectedReason);
+     }
+   });
+ 
+   test('verdict_clean fails closed when the caller head lease is absent or malformed', () => {
+     const head = '1'.repeat(40);
++    const base = 'a'.repeat(40);
+     const verdict = {
+       state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
+-      headSha: head, baseSha: 'a'.repeat(40), reasons: [],
++      headSha: head, baseSha: base, reasons: [],
+     };
+-    expect(evaluateMergeRules(greenContext({ verdict, headSha: head }), ['verdict_clean']).allowed).toBe(false);
+-    expect(evaluateMergeRules(greenContext({ verdict, expectedHeadSha: head }), ['verdict_clean']).allowed).toBe(false);
+-    expect(evaluateMergeRules(greenContext({ verdict, headSha: 'short', expectedHeadSha: 'short' }), ['verdict_clean']).allowed).toBe(false);
+-    expect(evaluateMergeRules({
+-      ...greenContext(),
++    const ctx = greenContext({
+       headSha: head,
+       expectedHeadSha: head,
+-      baseSha: 'a'.repeat(40),
+-      expectedBaseSha: 'a'.repeat(40),
+-      verdict: { ...verdict, baseSha: 'short' },
+-    }, ['verdict_clean']).allowed).toBe(false);
++      baseSha: base,
++      expectedBaseSha: base,
++      repository: 'owner/repo',
++      expectedRepository: 'owner/repo',
++      prNumber: 42,
++      expectedPrNumber: 42,
++      verdict,
++    });
++    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
++    for (const mutation of [
++      { expectedHeadSha: undefined },
++      { headSha: undefined },
++      { headSha: 'short' },
++      { verdict: { ...ctx.verdict, baseSha: 'short' } },
++    ]) {
++      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
++    }
+   });
+ 
+   test('verdict_clean requires the observed, expected, and verdict base SHAs to match exactly', () => {
+diff --git a/test/pr-monitor/verdict.test.js b/test/pr-monitor/verdict.test.js
+index 1149ba7d..c764995e 100644
+--- a/test/pr-monitor/verdict.test.js
++++ b/test/pr-monitor/verdict.test.js
+@@ -130,6 +130,39 @@ describe('evaluateCurrentHeadVerdict', () => {
+     }
+   });
+ 
++  test('matches wildcard requirements by name while preserving app-specific identity and conflicts', () => {
++    const checks = completeEvidence().checks;
++    expectState(completeEvidence({ checks: {
++      ...checks,
++      required: [{ name: 'lint', appId: null }],
++      observations: [
++        { name: 'lint', appId: 42, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
++      ],
++    } }), VERDICT_STATES.MERGE_READY);
++
++    expectState(completeEvidence({ checks: {
++      ...checks,
++      required: [{ name: 'lint', appId: 42 }],
++      observations: [
++        { name: 'lint', appId: 43, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
++      ],
++    } }), VERDICT_STATES.BLOCKED, 'required_check_missing');
++
++    expectState(completeEvidence({ checks: {
++      ...checks,
++      required: [{ name: 'lint', appId: null }],
++      observations: [
++        { name: 'lint', appId: 42, status: 'COMPLETED', conclusion: 'SUCCESS', headSha: HEAD },
++        { name: 'lint', appId: 42, status: 'COMPLETED', conclusion: 'FAILURE', headSha: HEAD },
++      ],
++    } }), VERDICT_STATES.INCOMPLETE, 'check_observation_conflict');
++
++    for (const required of [[{ name: 'lint' }], [{ name: 'lint', appId: 0 }]]) {
++      expectState(completeEvidence({ checks: { ...checks, required } }),
++        VERDICT_STATES.INCOMPLETE, 'required_policy_malformed');
++    }
++  });
++
+   test('ignores neutral and skipped optional checks', () => {
+     const checks = completeEvidence().checks;
+     const result = evaluateCurrentHeadVerdict(completeEvidence({ checks: {
+-- 
+2.51.0.windows.1
+

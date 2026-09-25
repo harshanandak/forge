@@ -1,0 +1,135 @@
+From c47c8262b38eb84ae07e357a228a9baac6816c64 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:15:08 +0530
+Subject: [PATCH] fix(shepherd): preserve terminal authority
+
+---
+ lib/commands/merge.js                      | 12 +-----------
+ lib/pr-monitor/reconcile-executor.js       |  4 ++++
+ test/commands/merge-authority.test.js      | 18 +++++++-----------
+ test/pr-monitor/reconcile-executor.test.js | 11 +++++++++++
+ 4 files changed, 23 insertions(+), 22 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 4998d4ca..c03c65b6 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -489,7 +489,7 @@ async function defaultRecordMergeDecision({
+       number: Number(pr),
+       branch: decision.binding.branch,
+       ...(decision.binding.url ? { url: decision.binding.url } : {}),
+-      occurred_at: decision.occurredAt,
++      occurred_at: completionTimestamp,
+       work_packet: decision.packet,
+       run_receipt: receipt,
+     }, {
+@@ -977,16 +977,6 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
+     }
+     prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
+-    if (prState === 'MERGED') {
+-      try {
+-        const replay = await recoverMergedTerminal({
+-          pr, parsed, root, config: {}, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
+-        });
+-        if (replay.replayMissing !== true) return replay;
+-      } catch (error) {
+-        return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
+-      }
+-    }
+   }
+ 
+   const loadConfig = deps.loadConfig || loadRawConfig;
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 0cbf38d2..57b102c7 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -484,6 +484,10 @@ const ACTION_HANDLERS = {
+ 				continue;
+ 			}
+ 			if (isAlive(entry.pid)) {
++				if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
++					verifiedKill(entry, s.ctx, 'SIGKILL');
++					continue;
++				}
+ 				const cancelledAt = entry.lifecycle.state.cancelRequestedAt;
+ 				if (entry.lifecycle.state.phase === 'CANCEL_REQUESTED'
+ 					&& Number.isSafeInteger(cancelledAt) && at - cancelledAt >= lifecycleOptions(entry).graceMs) {
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 6b527df9..e89b6130 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -263,7 +263,7 @@ describe('merge command — mandatory release authority', () => {
+     expect(gateChecks).toBe(0);
+   });
+ 
+-  test('replays existing terminal evidence after auto-merge configuration is disabled', async () => {
++  test('keeps merged evidence replay disabled when auto-merge is not opted in', async () => {
+     let ownershipChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       loadConfig: () => ({ merge: { auto: { enabled: false } } }),
+@@ -277,14 +277,11 @@ describe('merge command — mandatory release authority', () => {
+       }),
+     }));
+ 
+-    expect(out).toMatchObject({
+-      success: true, merged: true, recovered: true,
+-      decisionId: 'decision-existing', receiptId: 'receipt-existing',
+-    });
++    expect(out).toMatchObject({ success: true, merged: false, enabled: false });
+     expect(ownershipChecks).toBe(0);
+   });
+ 
+-  test('replays existing terminal evidence after the live ownership claim expires', async () => {
++  test('requires live ownership before replaying existing terminal evidence', async () => {
+     let ownershipChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       verifyIssueOwnership: async () => {
+@@ -303,11 +300,9 @@ describe('merge command — mandatory release authority', () => {
+       }),
+     }));
+ 
+-    expect(out).toMatchObject({
+-      success: true, merged: true, recovered: true,
+-      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+-    });
+-    expect(ownershipChecks).toBe(0);
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(out.error).toMatch(/active kernel ownership/i);
++    expect(ownershipChecks).toBe(1);
+   });
+ 
+   test('requires live ownership before repairing missing terminal evidence', async () => {
+@@ -396,6 +391,7 @@ describe('merge command — mandatory release authority', () => {
+       repo: 'acme/forge',
+       number: 42,
+       branch: 'feature/merge',
++      occurred_at: '2026-08-01T12:00:05.000Z',
+       work_packet: decision.packet,
+       run_receipt: {
+         created_at: '2026-08-01T12:00:05.000Z',
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index eb552241..8752322f 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -236,6 +236,17 @@ describe('execute — watcher lifecycle', () => {
+ 		expect(signals).toEqual([undefined, 'SIGKILL']);
+ 		expect(forced[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
+ 
++		const retried = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001,
++				watchers: forced, isAlive: () => true,
++				readClaim: () => '1970-01-01T00:00:01.000Z', kill: (_pid, signal) => signals.push(signal),
++			},
++		);
++		expect(signals).toEqual([undefined, 'SIGKILL', 'SIGKILL']);
++		expect(retried[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
++
+ 		const reaped = await executor.execute(
+ 			[{ type: 'stopWatcher', pr: { number: 5 } }],
+ 			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001, watchers: forced, isAlive: () => false },
+-- 
+2.51.0.windows.1
+

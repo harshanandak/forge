@@ -1,0 +1,129 @@
+From a729301c640a0eaa2485f1ade22533f19c749be2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 05:32:16 +0530
+Subject: [PATCH] fix: protect terminal convergence evidence
+
+---
+ lib/commands/merge.js                 |  5 +++--
+ lib/commands/shepherd.js              | 11 ++++++++++-
+ test/commands/merge-authority.test.js |  8 ++++++--
+ test/commands/shepherd.test.js        | 18 ++++++++++++++++++
+ 4 files changed, 37 insertions(+), 5 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 6b163aa2..618c630a 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -453,7 +453,7 @@ async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedH
+       evidence_refs: [{ kind: 'pr', repository, pr_number: Number(pr), head_sha: expectedHead }],
+       validation: { status: 'PASS', decision_id: decision.decisionId },
+       cleanup: { status: 'NOT_REQUIRED' },
+-      mutations_attempted: ['pr.merged'],
++      mutations_attempted: recovered ? [] : ['pr.merged'],
+       mutations_authorized: ['pr.merged'],
+     },
+   );
+@@ -1311,8 +1311,9 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
++  const providerFields = typeof mergeResult?.method === 'string' ? { method: mergeResult.method } : {};
+   return {
+-    ...(mergeResult && typeof mergeResult === 'object' ? mergeResult : {}),
++    ...providerFields,
+     success: true,
+     merged: true,
+     enabled: true,
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 12755b12..96065240 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -161,6 +161,14 @@ function formatAction(action) {
+  * @param {object} pullCtx - ctx forwarded to `gatherPull` (owner/repo/base/adapter/runGh/self).
+  * @returns {(records: object[]) => Promise<void>}
+  */
++const UNSAFE_MONITOR_EXCERPT = /(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk_(?:live|test)_[a-z0-9]{16,}|sk-[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}|(?:^|[\\/])(?:users|home|root)[\\/]\S+)/i;
++
++function safeMonitorExcerpt(value) {
++  return typeof value === 'string' && value.length <= 16_384 && !UNSAFE_MONITOR_EXCERPT.test(value)
++    ? value
++    : null;
++}
++
+ function makeCheckFailureEnricher(pullCtx) {
+   const gatherPull = pullCtx.gatherPull || gatherPullSignal;
+   return async (records) => {
+@@ -179,7 +187,8 @@ function makeCheckFailureEnricher(pullCtx) {
+       if (r.type !== T.CHECK_FAILED) continue;
+       const f = byName.get(r.data?.name);
+       if (!f) continue;
+-      if (f.excerpt) r.data.excerpt = f.excerpt;
++      const excerpt = safeMonitorExcerpt(f.excerpt);
++      if (excerpt) r.data.excerpt = excerpt;
+       if (f.jobUrl) r.data.jobUrl = f.jobUrl;
+     }
+   };
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 8103b653..31df4007 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -116,6 +116,7 @@ describe('merge command — mandatory release authority', () => {
+       mergePr: async () => ({
+         merged: true, success: false, enabled: false, allowed: false,
+         reason: 'provider override', decisionId: 'provider-decision', receiptId: 'provider-receipt',
++        method: 'squash', error: 'provider detail', state: 'FAILED', unmet: [{ rule: 'checks_green' }],
+       }),
+       prepareMergeDecision: async () => ({ decisionId: 'authority-decision' }),
+       recordMergeDecision: async () => ({ receiptId: 'authority-receipt', receiptHash: 'f'.repeat(64) }),
+@@ -123,8 +124,11 @@ describe('merge command — mandatory release authority', () => {
+ 
+     expect(out).toMatchObject({
+       success: true, merged: true, enabled: true, allowed: true,
+-      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt',
++      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt', method: 'squash',
+     });
++    expect(out).not.toHaveProperty('error');
++    expect(out).not.toHaveProperty('state');
++    expect(out).not.toHaveProperty('unmet');
+   });
+ 
+   test('never writes terminal linkage when the external merge fails', async () => {
+@@ -382,7 +386,7 @@ describe('merge command — mandatory release authority', () => {
+     });
+     expect(calls[0][0].run_receipt.payload).toMatchObject({
+       executor: { mode: 'guarded-exact-head-recovery' },
+-      mutations_attempted: ['pr.merged'],
++      mutations_attempted: [],
+     });
+   });
+ 
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 99fae85e..75990fc4 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -456,4 +456,22 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(cf.data.excerpt).toBe('AssertionError: boom');
+     expect(cf.data.jobUrl).toBe('https://ci/job/1');
+   });
++
++  test('unsafe CI excerpts are omitted before durable monitor persistence', async () => {
++    const records = [{ type: T.CHECK_FAILED, data: { name: 'ci' } }];
++    const enrich = shepherdCmd.makeCheckFailureEnricher({
++      gatherPull: async () => ({
++        failures: [{
++          name: 'ci',
++          excerpt: 'failure at /home/runner/work/private-repo/build.js\ntoken=super-secret-value',
++          jobUrl: 'https://github.com/acme/forge/actions/runs/1/job/2',
++        }],
++      }),
++    });
++
++    await enrich(records);
++
++    expect(records[0].data.excerpt).toBeUndefined();
++    expect(records[0].data.jobUrl).toBe('https://github.com/acme/forge/actions/runs/1/job/2');
++  });
+ });
+-- 
+2.51.0.windows.1
+

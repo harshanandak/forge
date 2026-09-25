@@ -1,0 +1,601 @@
+From dedaf368b4eea8e9a149cc6856d8304c221af905 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 12:54:25 +0530
+Subject: [PATCH] feat(skills): add triage-ready and issue-basics kernel-native
+ skills
+
+Add two canonical Forge skills, registered through the kernel umbrella index
+and mirrored into the generated agent skill dirs by skills-sync:
+
+- triage-ready: read-only "what should I work on" that ranks and explains the
+  derived ready queue via `forge issue ready`/`blocked`/`stats` (never `board`),
+  then hands the pick off without mutating the store.
+- issue-basics: the everyday CRUD floor over the `forge issue` verbs
+  (create/update/claim/release/comment/close/show/list/search/stats) with real
+  flags, plus the label/reopen/delete migration disposition.
+
+Both expose an explicit `## Fork points` section so users can re-carve filters,
+ranking, staleness windows, and create conventions.
+
+Regenerate the committed .codex/skills mirror, extend the skills-structure
+directory-set test, and add a CHANGELOG entry.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/issue-basics/SKILL.md | 102 +++++++++++++++++++++++++
+ .codex/skills/kernel/SKILL.md       |  16 +++-
+ .codex/skills/triage-ready/SKILL.md | 112 ++++++++++++++++++++++++++++
+ CHANGELOG.md                        |   1 +
+ skills/issue-basics/SKILL.md        | 102 +++++++++++++++++++++++++
+ skills/kernel/SKILL.md              |  16 +++-
+ skills/triage-ready/SKILL.md        | 112 ++++++++++++++++++++++++++++
+ test/skills-structure.test.js       |  10 ++-
+ 8 files changed, 464 insertions(+), 7 deletions(-)
+ create mode 100644 .codex/skills/issue-basics/SKILL.md
+ create mode 100644 .codex/skills/triage-ready/SKILL.md
+ create mode 100644 skills/issue-basics/SKILL.md
+ create mode 100644 skills/triage-ready/SKILL.md
+
+diff --git a/.codex/skills/issue-basics/SKILL.md b/.codex/skills/issue-basics/SKILL.md
+new file mode 100644
+index 00000000..2f6efae1
+--- /dev/null
++++ b/.codex/skills/issue-basics/SKILL.md
+@@ -0,0 +1,102 @@
++---
++name: issue-basics
++description: >
++  The everyday issue CRUD floor for a Forge project — create, update, claim,
++  release, comment, close, show, list, search, and stats over the kernel via the
++  `forge issue` verbs. This is the parity floor a team needs on day one after
++  migrating off a Beads-style tracker, mapped one-to-one onto real `forge` verbs
++  with their actual flags. Use for routine issue work. Trigger on "create an
++  issue", "update an issue", "claim/close an issue", "comment on an issue", "list
++  issues", "search issues", "reopen", or "add a label".
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Issue basics — the CRUD floor
++
++Everyday issue operations over the Forge kernel. Every command here is a real
++`forge issue` verb (confirm with `forge issue --help`). The kernel is the single
++source of truth — never hand-edit the issue store.
++
++Every `--json` reply is the same envelope: `{ ok, schema_version, command, data,
++next_commands }` on success, or `{ ok:false, error:{ message, exit_code } }` on
++failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
++
++## The core loop
++
++| Need | Command |
++|------|---------|
++| Create an issue | `forge issue create --title "…" --type <task\|feature\|bug\|epic>` |
++| Inspect one issue | `forge issue show <id> [--json]` |
++| List / filter issues | `forge issue list [--status … --type … --priority … --label …] [--json]` |
++| Full-text search | `forge issue search "…" [--json]` |
++| Backlog counts | `forge issue stats [--json]` |
++| Claim work (DB-enforced lease) | `forge issue claim <id>` |
++| Release a claim | `forge issue release <id>` |
++| Update fields | `forge issue update <id> [flags]` |
++| Add a handoff note | `forge issue comment <id> "…"` |
++| Close (one or many) | `forge issue close <id...> --reason "…"` |
++| Dependencies | `forge issue dep add\|remove <id> <blocks-id>` |
++
++## Create — the flags that matter
++
++```bash
++forge issue create --title "Add rate limiting" --type feature \
++  --priority P1 --label "api,security" --assignee alice \
++  --acceptance "429 returned after N req/min; covered by a test"
++```
++
++| Flag | Meaning | Default |
++|------|---------|---------|
++| `--title "…"` | Human title (a bare leading positional also works) | minted id |
++| `--type <…>` | `task` · `feature` · `bug` · `epic` · `decision` | `task` |
++| `--priority <…>` | `P0`..`P4` (or bare `0`..`4`); `P0` is highest | unset |
++| `--label "a,b"` | Comma-separated set — one flag, split on `,` (repeats do NOT accumulate) | none |
++| `--body "…"` | Long description (`--description` is an accepted alias) | empty |
++| `--assignee <who>` | Persistent assignee | unset |
++| `--acceptance "…"` | Acceptance criteria (`--design`, `--notes` also persist) | unset |
++| `--parent <id>` | Parent/epic id | none |
++
++`--status` defaults to `open`. Status vocabulary: `open` · `in_progress` ·
++`review` · `done` · `cancelled`. Epics and decisions are non-claimable (they never
++enter the ready queue).
++
++## Update — same field flags, plus close
++
++`forge issue update <id>` takes `--status`, `--title`, `--body`/`--description`,
++`--priority`, `--label` (reparents the whole set), `--parent`, `--assignee`,
++`--acceptance`, `--design`, `--notes`. `forge issue close <id> --reason "…"`
++records the reason on the close event and accepts multiple ids in one call.
++
++## Migrating from a Beads-style tracker — verb disposition
++
++Nothing you relied on silently disappears; a few verbs map onto a `forge` flag or
++are intentionally unsupported:
++
++| Old verb | Forge equivalent |
++|----------|------------------|
++| `label` (add/remove) | **No subcommand** — pass the full set via `--label "a,b"` on `create`/`update` (last-value-wins). |
++| `reopen` | `forge issue update <id> --status open`. |
++| `delete` | **Unsupported by design** — the kernel is append-only/event-sourced. Use `forge issue close <id> --reason "…"` instead. |
++
++## Reliability
++
++- **Check `ok` before trusting output.** On `ok:false`, read `error.message` and
++  fix the input rather than retrying blindly.
++- **Claim before you mutate shared work.** `forge issue claim <id>` takes a
++  DB-enforced lease; hand off to the `claim-safety` procedure before acting on a
++  claimed issue you intend to change. `forge issue release <id>` if you abandon it.
++- **Record decisions as comments, not memory.** `forge issue comment <id> "…"`
++  survives the session; scratch notes do not.
++
++## Fork points
++
++Editable conventions — set these once for your team and this skill enforces them.
++It is a canonical source you fork, not a fixed policy.
++
++| Knob | Default | How to change |
++|------|---------|---------------|
++| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--type feature` for user-facing work, `--type bug` for regressions. |
++| **Default priority** | unset | Adopt a house scale (e.g. new work opens at `P2`, incidents at `P0`) and always pass `--priority`. |
++| **Fields required on create** | `--title` only | Require `--acceptance` (and `--label`/`--assignee`) on every create so issues are actionable from birth. |
++| **Id / reference convention** | kernel-minted ids | Standardize how you cite issues in commits/PRs (e.g. `Closes <id>`) and whether you pass an explicit `--id`. |
++| **Label taxonomy** | free-form | Pin an allowed label set your team agrees on and pass it consistently via `--label "a,b"`. |
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+index 2f9eeca5..87defc70 100644
+--- a/.codex/skills/kernel/SKILL.md
++++ b/.codex/skills/kernel/SKILL.md
+@@ -4,8 +4,9 @@ description: >
+   Forge kernel surface — the umbrella index for working in a Forge project. Use
+   at the start of any session and whenever you need to orient: it routes to the
+   per-stage workflow skills (plan, dev, validate, ship, review, verify,
+-  plus status, research, rollback, sonarcloud, shepherd) and documents the
+-  day-to-day issue, board, and orientation verbs of the `forge` CLI. Trigger on
++  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
++  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
++  and orientation verbs of the `forge` CLI. Trigger on
+   "what's the workflow", "what should I work on", "forge issues", "claim an
+   issue", "project status", "orient", or when deciding between Forge issues and
+   an ad-hoc TodoWrite list.
+@@ -48,6 +49,17 @@ Utility skills outside the linear ladder: `research` (deep web research),
+ status → plan → dev → validate → ship → review → verify
+ ```
+ 
++## Kernel-native skills
++
++Read-and-repair skills that work directly against the kernel's issue store. They
++complement the ladder: reach for them to decide *what* to do and to run the
++everyday issue operations, then route into a stage skill to execute.
++
++| Skill | Purpose |
++|-------|---------|
++| `triage-ready` | Read-only "what should I work on" — ranks and *explains* the ready queue via `forge issue ready` / `blocked` / `stats` (never `board`), then hands off the pick. |
++| `issue-basics` | The everyday CRUD floor — create/update/claim/release/comment/close/show/list/search/stats over the `forge issue` verbs, plus the label/reopen/delete disposition for teams migrating in. |
++
+ ## Day-to-day verbs (the `forge` CLI)
+ 
+ The kernel verbs are the operations you reach for inside any stage — find work,
+diff --git a/.codex/skills/triage-ready/SKILL.md b/.codex/skills/triage-ready/SKILL.md
+new file mode 100644
+index 00000000..7127aa8d
+--- /dev/null
++++ b/.codex/skills/triage-ready/SKILL.md
+@@ -0,0 +1,112 @@
++---
++name: triage-ready
++description: >
++  Surfaces and EXPLAINS the right next work in a Forge project — read-only. Ranks
++  the ready queue with `forge issue ready`, shows what is blocked and why with
++  `forge issue blocked`, and summarizes the backlog with `forge issue stats`. Never
++  uses `board` (which reads a legacy snapshot store, not the live kernel). Use when
++  deciding what to pick up next, or to justify why an item is workable. Trigger on
++  "what should I work on", "what's ready", "triage", "next task", "ready queue",
++  "why is this blocked", or "pick my next issue".
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Triage: what should I work on next
++
++A read-only orientation skill. It answers "what is the single best thing to work
++on right now, and *why*?" and hands the pick off to `claim-safety` / `dev` — it
++never mutates the store itself.
++
++Readiness in the Forge kernel is a **derived read model**: an issue is ready only
++when every dependency is satisfied, it is unclaimed (no live lease), it is a
++claimable type (epics and decisions never enter the queue), and no defer window
++holds it back. Because it is derived, **always recompute it** — never trust a
++cached "status == ready". Recompute means: run the query fresh each time.
++
++## Do NOT use `board`
++
++`forge board` reads a legacy snapshot store, not the live kernel, so its readiness
++can be stale or wrong. This skill uses `forge issue ready`, `forge issue blocked`,
++and `forge issue stats` exclusively.
++
++## Procedure
++
++### 1. Take the pulse
++
++```bash
++forge issue stats --json
++```
++
++Returns `data.counts` (open/in_progress/done/cancelled), `ready_count`,
++`blocked_count`, and `active_claims`. A high `blocked_count` relative to
++`ready_count` is your signal that dependency repair (not new work) is the real
++bottleneck — hand off to `dependency-planning` / `backlog-hygiene`.
++
++### 2. Rank the ready queue
++
++```bash
++forge issue ready --json
++```
++
++`data.issues[]` comes back ordered by `rank` (priority ascending, then id), each
++carrying `id`, `title`, `type`, `priority` (`P0`..`P4`), `rank`, `blocked`,
++`claimed_by`, `parent_id`, `labels[]`, and `dependencies[]`. The top item is your
++default pick. Surface the top few (see Fork points for how many), not the whole
++list.
++
++### 3. Explain WHY the top item is ready
++
++Do not just name it — justify it. Pull its full record:
++
++```bash
++forge issue show <id> --json
++```
++
++State the reason in one sentence, drawn from the record:
++
++- **Priority / rank** — `P0` at `rank` 0 outranks everything below it.
++- **Dependencies satisfied** — every id in `dependencies[]` is closed/done, so
++  nothing gates it (`blocked: false`).
++- **Unclaimed** — `claimed_by` is `null`, so no other agent holds the lease.
++- **Claimable type** — it is a `task`/`feature`/`bug`, not an `epic`/`decision`.
++
++### 4. Explain why the runners-up are NOT ready
++
++```bash
++forge issue blocked --json
++```
++
++For a blocked item, name the specific unmet dependency (from its `dependencies[]`
++cross-referenced against `forge issue show`) — e.g. "blocked by `forge-x` which is
++still `open`". This turns triage into an actionable map: the fastest way to unlock
++the most work is usually to finish the shared blocker.
++
++### 5. Hand off
++
++Recommend ONE issue with its one-line justification, then stop. The caller claims
++it (via `claim-safety`) and executes (via `dev`). Triage does not claim, comment,
++or close — it is strictly read-only.
++
++## Reliability
++
++- **Recompute, never cache.** Readiness is derived; re-run `forge issue ready`
++  every session rather than remembering a prior "ready" verdict.
++- **Respect non-claimable types.** Epics and decisions are `claimable:false` and
++  will not appear in `ready`; do not hand them off as work.
++- **Check the envelope.** Every `--json` reply carries `ok`; on `ok:false` read
++  `error.message` and retry the query rather than guessing at state.
++- **Read-only.** This skill runs only `stats`/`ready`/`blocked`/`show`. If a fix is
++  needed, hand off — never mutate here.
++
++## Fork points
++
++Editable knobs — change these to carve your own triage policy. This skill is a
++canonical source you fork, not a fixed ladder.
++
++| Knob | Default | How to change |
++|------|---------|---------------|
++| **Readiness query / filters** | `forge issue ready` (whole queue) | Narrow to a slice, e.g. `forge issue list --status open --priority P0 --json` or post-filter `ready` output by `labels[]`/`type` to focus one workstream. |
++| **How many items to surface** | Top 3 by `rank` | Raise for a broad standup view, lower to 1 for a strict "next task only" hand-off. |
++| **Stale threshold** | `forge issue stale --days 14` | Change `--days` to flag idle in-progress work sooner/later; surface stale claims as a caveat before recommending fresh work. |
++| **Priority ordering** | Kernel `rank` (priority, then id) | Re-rank the `ready` list by your own weights — epic proximity (`parent_id`), label, or age — before picking. |
++| **Blocked-explain depth** | One hop (direct unmet deps) | Trace transitively via repeated `forge issue show` when you need the full blocking chain; hand to `graph-forensics` for deep `explain`. |
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 03654642..18d1db7d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Added
+ 
++- Two kernel-native canonical skills, registered through the `kernel` umbrella index and mirrored into the generated agent skill dirs by `skills-sync`. `triage-ready` is a read-only "what should I work on" skill that ranks and *explains* the derived ready queue via `forge issue ready` / `blocked` / `stats` (never `board`, which reads a legacy snapshot store), justifies why the top pick is workable and why the runners-up are blocked, and hands the pick off without mutating the store. `issue-basics` is the everyday CRUD floor over the `forge issue` verbs (create/update/claim/release/comment/close/show/list/search/stats) with the real flags, plus the migration disposition for `label` (→ `--label "a,b"`), `reopen` (→ `update --status open`), and `delete` (unsupported by the append-only kernel — use `close`). Both carry an explicit `## Fork points` section so users can re-carve filters, ranking, staleness windows, and create conventions.
+ - Toggle-driven workflow config: a sparse writer for the schema-validated `.forge/config.yaml` surface (`lib/config-writer.js`) plus two thin verbs over it. `forge gate <enable|disable> <gate-id>` writes `workflow.gates.<gate-id>.enabled` and `forge role <role> --use <skill> [--ideology <name>]` writes `roles.<role>.skill` / `roles.<role>.ideology`, so users re-carve the assembly with config writes instead of editing Forge code. The reader gains an additive, backward-compatible `roles` section (siblings to `workflow.gates`) with open-world skill validation — the closed `PLAN_SUBSKILL` enum stays scoped to `planning.template.partialInvocation` and never blocks a `roles.<role>.skill` value — and `forge options roles --json` now reflects the resolved bindings. Both verbs validate at write time: an unknown gate id, unknown role, or unresolvable skill (no `SKILL.md` under `.skills/ > skills/`) errors before anything is written, never mid-run.
+ - **Onboarding now auto-migrates Beads → Kernel and self-installs git hooks.** `forge setup` (quick, `--yes`, and interactive agent paths) and `forge init` now detect an existing jsonl-backed `.beads` store and **auto-import** its issues, comments, and dependencies into the Kernel — reusing the idempotent `forge migrate --from beads` spine, reading the committed jsonl sidecars directly (no external issue-tracker CLI required, so it works even when the legacy SQL backend is offline) and surfacing the same honest field-gap report. A fresh `forge init` also now installs git hooks, so `forge validate`/`plan` are no longer immediately blocked by `HOOKS_NOT_ACTIVE` — closing the init → hooks catch-22. Both steps are idempotent and degrade to a warning rather than aborting onboarding.
+ - `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fields with no dedicated Kernel column are folded into the issue `metadata` blob instead of being dropped: beads `owner` → `assignee` (falling back after an explicit assignee, else `metadata.beads_owner`), plus `metadata.beads_external_ref` (linked GitHub issue/run) and `metadata.beads_started_at`; `design`/`assignee` land on their Kernel columns. The loader also tolerates a split `.beads` layout (events under `.beads/backup/`, interactions at `.beads/interactions.jsonl`) so neither sidecar is silently half-read. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. The **only remaining reported gap is `dependencies.created_by`** (the Kernel dependency row has no creator column); beads-internal/derived fields such as `content_hash` are intentionally not carried (not user data).
+diff --git a/skills/issue-basics/SKILL.md b/skills/issue-basics/SKILL.md
+new file mode 100644
+index 00000000..2f6efae1
+--- /dev/null
++++ b/skills/issue-basics/SKILL.md
+@@ -0,0 +1,102 @@
++---
++name: issue-basics
++description: >
++  The everyday issue CRUD floor for a Forge project — create, update, claim,
++  release, comment, close, show, list, search, and stats over the kernel via the
++  `forge issue` verbs. This is the parity floor a team needs on day one after
++  migrating off a Beads-style tracker, mapped one-to-one onto real `forge` verbs
++  with their actual flags. Use for routine issue work. Trigger on "create an
++  issue", "update an issue", "claim/close an issue", "comment on an issue", "list
++  issues", "search issues", "reopen", or "add a label".
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Issue basics — the CRUD floor
++
++Everyday issue operations over the Forge kernel. Every command here is a real
++`forge issue` verb (confirm with `forge issue --help`). The kernel is the single
++source of truth — never hand-edit the issue store.
++
++Every `--json` reply is the same envelope: `{ ok, schema_version, command, data,
++next_commands }` on success, or `{ ok:false, error:{ message, exit_code } }` on
++failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
++
++## The core loop
++
++| Need | Command |
++|------|---------|
++| Create an issue | `forge issue create --title "…" --type <task\|feature\|bug\|epic>` |
++| Inspect one issue | `forge issue show <id> [--json]` |
++| List / filter issues | `forge issue list [--status … --type … --priority … --label …] [--json]` |
++| Full-text search | `forge issue search "…" [--json]` |
++| Backlog counts | `forge issue stats [--json]` |
++| Claim work (DB-enforced lease) | `forge issue claim <id>` |
++| Release a claim | `forge issue release <id>` |
++| Update fields | `forge issue update <id> [flags]` |
++| Add a handoff note | `forge issue comment <id> "…"` |
++| Close (one or many) | `forge issue close <id...> --reason "…"` |
++| Dependencies | `forge issue dep add\|remove <id> <blocks-id>` |
++
++## Create — the flags that matter
++
++```bash
++forge issue create --title "Add rate limiting" --type feature \
++  --priority P1 --label "api,security" --assignee alice \
++  --acceptance "429 returned after N req/min; covered by a test"
++```
++
++| Flag | Meaning | Default |
++|------|---------|---------|
++| `--title "…"` | Human title (a bare leading positional also works) | minted id |
++| `--type <…>` | `task` · `feature` · `bug` · `epic` · `decision` | `task` |
++| `--priority <…>` | `P0`..`P4` (or bare `0`..`4`); `P0` is highest | unset |
++| `--label "a,b"` | Comma-separated set — one flag, split on `,` (repeats do NOT accumulate) | none |
++| `--body "…"` | Long description (`--description` is an accepted alias) | empty |
++| `--assignee <who>` | Persistent assignee | unset |
++| `--acceptance "…"` | Acceptance criteria (`--design`, `--notes` also persist) | unset |
++| `--parent <id>` | Parent/epic id | none |
++
++`--status` defaults to `open`. Status vocabulary: `open` · `in_progress` ·
++`review` · `done` · `cancelled`. Epics and decisions are non-claimable (they never
++enter the ready queue).
++
++## Update — same field flags, plus close
++
++`forge issue update <id>` takes `--status`, `--title`, `--body`/`--description`,
++`--priority`, `--label` (reparents the whole set), `--parent`, `--assignee`,
++`--acceptance`, `--design`, `--notes`. `forge issue close <id> --reason "…"`
++records the reason on the close event and accepts multiple ids in one call.
++
++## Migrating from a Beads-style tracker — verb disposition
++
++Nothing you relied on silently disappears; a few verbs map onto a `forge` flag or
++are intentionally unsupported:
++
++| Old verb | Forge equivalent |
++|----------|------------------|
++| `label` (add/remove) | **No subcommand** — pass the full set via `--label "a,b"` on `create`/`update` (last-value-wins). |
++| `reopen` | `forge issue update <id> --status open`. |
++| `delete` | **Unsupported by design** — the kernel is append-only/event-sourced. Use `forge issue close <id> --reason "…"` instead. |
++
++## Reliability
++
++- **Check `ok` before trusting output.** On `ok:false`, read `error.message` and
++  fix the input rather than retrying blindly.
++- **Claim before you mutate shared work.** `forge issue claim <id>` takes a
++  DB-enforced lease; hand off to the `claim-safety` procedure before acting on a
++  claimed issue you intend to change. `forge issue release <id>` if you abandon it.
++- **Record decisions as comments, not memory.** `forge issue comment <id> "…"`
++  survives the session; scratch notes do not.
++
++## Fork points
++
++Editable conventions — set these once for your team and this skill enforces them.
++It is a canonical source you fork, not a fixed policy.
++
++| Knob | Default | How to change |
++|------|---------|---------------|
++| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--type feature` for user-facing work, `--type bug` for regressions. |
++| **Default priority** | unset | Adopt a house scale (e.g. new work opens at `P2`, incidents at `P0`) and always pass `--priority`. |
++| **Fields required on create** | `--title` only | Require `--acceptance` (and `--label`/`--assignee`) on every create so issues are actionable from birth. |
++| **Id / reference convention** | kernel-minted ids | Standardize how you cite issues in commits/PRs (e.g. `Closes <id>`) and whether you pass an explicit `--id`. |
++| **Label taxonomy** | free-form | Pin an allowed label set your team agrees on and pass it consistently via `--label "a,b"`. |
+diff --git a/skills/kernel/SKILL.md b/skills/kernel/SKILL.md
+index 2f9eeca5..87defc70 100644
+--- a/skills/kernel/SKILL.md
++++ b/skills/kernel/SKILL.md
+@@ -4,8 +4,9 @@ description: >
+   Forge kernel surface — the umbrella index for working in a Forge project. Use
+   at the start of any session and whenever you need to orient: it routes to the
+   per-stage workflow skills (plan, dev, validate, ship, review, verify,
+-  plus status, research, rollback, sonarcloud, shepherd) and documents the
+-  day-to-day issue, board, and orientation verbs of the `forge` CLI. Trigger on
++  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
++  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
++  and orientation verbs of the `forge` CLI. Trigger on
+   "what's the workflow", "what should I work on", "forge issues", "claim an
+   issue", "project status", "orient", or when deciding between Forge issues and
+   an ad-hoc TodoWrite list.
+@@ -48,6 +49,17 @@ Utility skills outside the linear ladder: `research` (deep web research),
+ status → plan → dev → validate → ship → review → verify
+ ```
+ 
++## Kernel-native skills
++
++Read-and-repair skills that work directly against the kernel's issue store. They
++complement the ladder: reach for them to decide *what* to do and to run the
++everyday issue operations, then route into a stage skill to execute.
++
++| Skill | Purpose |
++|-------|---------|
++| `triage-ready` | Read-only "what should I work on" — ranks and *explains* the ready queue via `forge issue ready` / `blocked` / `stats` (never `board`), then hands off the pick. |
++| `issue-basics` | The everyday CRUD floor — create/update/claim/release/comment/close/show/list/search/stats over the `forge issue` verbs, plus the label/reopen/delete disposition for teams migrating in. |
++
+ ## Day-to-day verbs (the `forge` CLI)
+ 
+ The kernel verbs are the operations you reach for inside any stage — find work,
+diff --git a/skills/triage-ready/SKILL.md b/skills/triage-ready/SKILL.md
+new file mode 100644
+index 00000000..7127aa8d
+--- /dev/null
++++ b/skills/triage-ready/SKILL.md
+@@ -0,0 +1,112 @@
++---
++name: triage-ready
++description: >
++  Surfaces and EXPLAINS the right next work in a Forge project — read-only. Ranks
++  the ready queue with `forge issue ready`, shows what is blocked and why with
++  `forge issue blocked`, and summarizes the backlog with `forge issue stats`. Never
++  uses `board` (which reads a legacy snapshot store, not the live kernel). Use when
++  deciding what to pick up next, or to justify why an item is workable. Trigger on
++  "what should I work on", "what's ready", "triage", "next task", "ready queue",
++  "why is this blocked", or "pick my next issue".
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Triage: what should I work on next
++
++A read-only orientation skill. It answers "what is the single best thing to work
++on right now, and *why*?" and hands the pick off to `claim-safety` / `dev` — it
++never mutates the store itself.
++
++Readiness in the Forge kernel is a **derived read model**: an issue is ready only
++when every dependency is satisfied, it is unclaimed (no live lease), it is a
++claimable type (epics and decisions never enter the queue), and no defer window
++holds it back. Because it is derived, **always recompute it** — never trust a
++cached "status == ready". Recompute means: run the query fresh each time.
++
++## Do NOT use `board`
++
++`forge board` reads a legacy snapshot store, not the live kernel, so its readiness
++can be stale or wrong. This skill uses `forge issue ready`, `forge issue blocked`,
++and `forge issue stats` exclusively.
++
++## Procedure
++
++### 1. Take the pulse
++
++```bash
++forge issue stats --json
++```
++
++Returns `data.counts` (open/in_progress/done/cancelled), `ready_count`,
++`blocked_count`, and `active_claims`. A high `blocked_count` relative to
++`ready_count` is your signal that dependency repair (not new work) is the real
++bottleneck — hand off to `dependency-planning` / `backlog-hygiene`.
++
++### 2. Rank the ready queue
++
++```bash
++forge issue ready --json
++```
++
++`data.issues[]` comes back ordered by `rank` (priority ascending, then id), each
++carrying `id`, `title`, `type`, `priority` (`P0`..`P4`), `rank`, `blocked`,
++`claimed_by`, `parent_id`, `labels[]`, and `dependencies[]`. The top item is your
++default pick. Surface the top few (see Fork points for how many), not the whole
++list.
++
++### 3. Explain WHY the top item is ready
++
++Do not just name it — justify it. Pull its full record:
++
++```bash
++forge issue show <id> --json
++```
++
++State the reason in one sentence, drawn from the record:
++
++- **Priority / rank** — `P0` at `rank` 0 outranks everything below it.
++- **Dependencies satisfied** — every id in `dependencies[]` is closed/done, so
++  nothing gates it (`blocked: false`).
++- **Unclaimed** — `claimed_by` is `null`, so no other agent holds the lease.
++- **Claimable type** — it is a `task`/`feature`/`bug`, not an `epic`/`decision`.
++
++### 4. Explain why the runners-up are NOT ready
++
++```bash
++forge issue blocked --json
++```
++
++For a blocked item, name the specific unmet dependency (from its `dependencies[]`
++cross-referenced against `forge issue show`) — e.g. "blocked by `forge-x` which is
++still `open`". This turns triage into an actionable map: the fastest way to unlock
++the most work is usually to finish the shared blocker.
++
++### 5. Hand off
++
++Recommend ONE issue with its one-line justification, then stop. The caller claims
++it (via `claim-safety`) and executes (via `dev`). Triage does not claim, comment,
++or close — it is strictly read-only.
++
++## Reliability
++
++- **Recompute, never cache.** Readiness is derived; re-run `forge issue ready`
++  every session rather than remembering a prior "ready" verdict.
++- **Respect non-claimable types.** Epics and decisions are `claimable:false` and
++  will not appear in `ready`; do not hand them off as work.
++- **Check the envelope.** Every `--json` reply carries `ok`; on `ok:false` read
++  `error.message` and retry the query rather than guessing at state.
++- **Read-only.** This skill runs only `stats`/`ready`/`blocked`/`show`. If a fix is
++  needed, hand off — never mutate here.
++
++## Fork points
++
++Editable knobs — change these to carve your own triage policy. This skill is a
++canonical source you fork, not a fixed ladder.
++
++| Knob | Default | How to change |
++|------|---------|---------------|
++| **Readiness query / filters** | `forge issue ready` (whole queue) | Narrow to a slice, e.g. `forge issue list --status open --priority P0 --json` or post-filter `ready` output by `labels[]`/`type` to focus one workstream. |
++| **How many items to surface** | Top 3 by `rank` | Raise for a broad standup view, lower to 1 for a strict "next task only" hand-off. |
++| **Stale threshold** | `forge issue stale --days 14` | Change `--days` to flag idle in-progress work sooner/later; surface stale claims as a caveat before recommending fresh work. |
++| **Priority ordering** | Kernel `rank` (priority, then id) | Re-rank the `ready` list by your own weights — epic proximity (`parent_id`), label, or age — before picking. |
++| **Blocked-explain depth** | One hop (direct unmet deps) | Trace transitively via repeated `forge issue show` when you need the full blocking chain; hand to `graph-forensics` for deep `explain`. |
+diff --git a/test/skills-structure.test.js b/test/skills-structure.test.js
+index 756798a7..4b50b8fb 100644
+--- a/test/skills-structure.test.js
++++ b/test/skills-structure.test.js
+@@ -110,9 +110,11 @@ describe('skills/ directory structure', () => {
+   describe('skills/ contains only expected directories', () => {
+     // Canonical skill set after the skills-only migration: the 11 workflow stage
+     // skills + the `kernel` umbrella (ported from the removed .claude/commands/
+-    // surface) plus the three packaged skills. These are the single source of
+-    // truth; agent harness dirs are generated from them by `skills sync` / setup.
+-    // Pre-merge is a doc-update gate embedded in ship/review, not a skill.
++    // surface) plus the three packaged skills, and the kernel-native skills
++    // (triage-ready, issue-basics) registered through the umbrella. These are the
++    // single source of truth; agent harness dirs are generated from them by
++    // `skills sync` / setup. Pre-merge is a doc-update gate embedded in
++    // ship/review, not a skill.
+     const expectedSkillDirs = [
+       'dev',
+       'plan',
+@@ -129,6 +131,8 @@ describe('skills/ directory structure', () => {
+       'hermes-forge',
+       'parallel-deep-research',
+       'sonarcloud-analysis',
++      'triage-ready',
++      'issue-basics',
+     ];
+ 
+     test('skills/ contains exactly the expected skill directories', () => {
+-- 
+2.51.0.windows.1
+

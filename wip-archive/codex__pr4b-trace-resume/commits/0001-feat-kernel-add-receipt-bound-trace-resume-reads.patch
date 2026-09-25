@@ -1,0 +1,1260 @@
+From 56e6e7cb3610f4201e69a13b91114668d22446ed Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 00:44:38 +0530
+Subject: [PATCH] feat(kernel): add receipt-bound trace resume reads
+
+---
+ lib/kernel/broker.js              | 354 +++++++++++++++++++++++++++++-
+ lib/kernel/sqlite-driver.js       | 280 +++++++++++++++++++++--
+ packages/memory/index.js          |  97 +++++++-
+ test/kernel/trace.test.js         | 256 +++++++++++++++++++++
+ test/memory/monitor-store.test.js |  53 ++++-
+ 5 files changed, 1015 insertions(+), 25 deletions(-)
+ create mode 100644 test/kernel/trace.test.js
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 7195320e..1f9362ad 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -3,8 +3,9 @@
+ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+-const { randomUUID } = require('node:crypto');
+-const { buildConflict, evaluateKernelEvent, normalizePayload } = require('./evaluators');
++const { createHash, randomUUID } = require('node:crypto');
++const { types: { isProxy } } = require('node:util');
++const { buildConflict, evaluateKernelEvent, normalizePayload, stableStringify } = require('./evaluators');
+ const { CONFLICT_SIGNAL, classifyConflictSignal } = require('./conflict-signal');
+ const { buildKernelMigrationPlan } = require('./migrations');
+ const { buildClaimConflict, isValidExpiresAt, planClaimAcquisition } = require('./lease-enforcer');
+@@ -128,6 +129,237 @@ function requireDriverMethod(driver, methodName) {
+ 	}
+ }
+ 
++const TRACE_FULL_HEAD = /^[0-9a-f]{40}$/;
++const TRACE_SHA256 = /^[0-9a-f]{64}$/;
++const TRACE_MAX_RECEIPT_BYTES = 1_048_576;
++const TRACE_MAX_RECEIPT_DEPTH = 64;
++const TRACE_MAX_RECEIPT_NODES = 100_000;
++const TRACE_MAX_ARTIFACT_BYTES = 65_536;
++const TRACE_MAX_GATES = 32;
++
++function traceError(code, message) {
++	const error = new Error(message);
++	error.code = code;
++	error.status = 'INCOMPLETE';
++	return error;
++}
++
++function assertBoundedReceiptValue(value, state = { ancestors: new WeakSet(), nodes: 0 }, depth = 0) {
++	state.nodes += 1;
++	if (state.nodes > TRACE_MAX_RECEIPT_NODES || depth > TRACE_MAX_RECEIPT_DEPTH) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt exceeds canonical bounds');
++	}
++	if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
++	if (typeof value === 'number' && Number.isFinite(value)) return;
++	if (!value || typeof value !== 'object' || isProxy(value) || state.ancestors.has(value)) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt must be bounded plain JSON');
++	}
++	let descriptors;
++	let prototype;
++	try {
++		descriptors = Object.getOwnPropertyDescriptors(value);
++		prototype = Object.getPrototypeOf(value);
++	} catch {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt must be bounded plain JSON');
++	}
++	const keys = Reflect.ownKeys(descriptors);
++	if (keys.some(key => typeof key !== 'string')) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt must not contain symbol keys');
++	}
++	state.ancestors.add(value);
++	try {
++		if (Array.isArray(value)) {
++			if (prototype !== Array.prototype || keys.length !== value.length + 1) {
++				throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt arrays must be dense');
++			}
++			for (let index = 0; index < value.length; index += 1) {
++				const descriptor = descriptors[String(index)];
++				if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) {
++					throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt must not contain accessors');
++				}
++				assertBoundedReceiptValue(descriptor.value, state, depth + 1);
++			}
++			return;
++		}
++		if (prototype !== Object.prototype) {
++			throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt objects must be plain');
++		}
++		for (const key of keys) {
++			const descriptor = descriptors[key];
++			if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
++				throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt must not contain accessors');
++			}
++			assertBoundedReceiptValue(descriptor.value, state, depth + 1);
++		}
++	} finally {
++		state.ancestors.delete(value);
++	}
++}
++
++function receiptContentHash(receipt) {
++	const withoutHash = {};
++	for (const [key, value] of Object.entries(receipt)) {
++		if (key !== 'content_hash') withoutHash[key] = value;
++	}
++	const canonicalReceiptStringify = (value) => {
++		if (value === null || typeof value !== 'object') return JSON.stringify(value);
++		if (Array.isArray(value)) return `[${value.map(canonicalReceiptStringify).join(',')}]`;
++		return `{${Object.keys(value).sort()
++			.map(key => `${JSON.stringify(key)}:${canonicalReceiptStringify(value[key])}`)
++			.join(',')}}`;
++	};
++	const canonical = canonicalReceiptStringify(withoutHash);
++	if (Buffer.byteLength(canonical, 'utf8') > TRACE_MAX_RECEIPT_BYTES) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage receipt exceeds byte bound');
++	}
++	return createHash('sha256').update(canonical, 'utf8').digest('hex');
++}
++
++function assertReceiptEnvelope(receipt, schemaId) {
++	assertBoundedReceiptValue(receipt);
++	if (!receipt || receipt.schema_id !== schemaId || receipt.schema_version !== 1
++		|| !TRACE_SHA256.test(receipt.content_hash)
++		|| receiptContentHash(receipt) !== receipt.content_hash
++		|| !receipt.payload || typeof receipt.payload !== 'object' || Array.isArray(receipt.payload)) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage requires a valid ${schemaId} receipt`);
++	}
++	return receipt;
++}
++
++function derivePrEvidence(input) {
++	const packet = assertReceiptEnvelope(input?.work_packet, 'forge.memory.work-packet.v1');
++	const receipt = assertReceiptEnvelope(input?.run_receipt, 'forge.memory.run-receipt.v1');
++	const packetPayload = packet.payload;
++	const receiptPayload = receipt.payload;
++	if (typeof packetPayload.issue_id !== 'string' || !packetPayload.issue_id
++		|| !Number.isInteger(packetPayload.expected_issue_revision) || packetPayload.expected_issue_revision < 0
++		|| packetPayload.authority?.issue_revision !== packetPayload.expected_issue_revision
++		|| !TRACE_FULL_HEAD.test(packetPayload.target_head)
++		|| !TRACE_SHA256.test(packetPayload.risk_manifest_digest)) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage WorkPacket authority binding is incomplete');
++	}
++	const gateIds = packetPayload.receipt_requirements?.gate_ids;
++	if (!Array.isArray(gateIds) || gateIds.length === 0 || gateIds.length > TRACE_MAX_GATES
++		|| new Set(gateIds).size !== gateIds.length
++		|| gateIds.some(gateId => typeof gateId !== 'string' || gateId.length === 0 || gateId.length > 128)) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage WorkPacket gate requirements are incomplete');
++	}
++	if (!Array.isArray(packetPayload.allowed_mutations)
++		|| !packetPayload.allowed_mutations.includes(`pr.${input.phase}`)) {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage WorkPacket does not authorize pr.${input.phase}`);
++	}
++	if (receiptPayload.status !== 'PASS' || receiptPayload.validation?.status !== 'PASS') {
++		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage requires a PASS RunReceipt');
++	}
++	const bindingsMatch = receiptPayload.packet_hash === packet.content_hash
++		&& receiptPayload.exact_head === packetPayload.target_head
++		&& receiptPayload.packet_revision === packetPayload.packet_revision
++		&& receiptPayload.manifest_digest === packetPayload.capability_manifest_digest
++		&& receiptPayload.workflow_config_revision === packetPayload.workflow_config_revision;
++	if (!bindingsMatch) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage WorkPacket and RunReceipt bindings conflict');
++	}
++	if (input.issue_id && input.issue_id !== packetPayload.issue_id) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage explicit issue_id conflicts with WorkPacket authority');
++	}
++	return {
++		issue_id: packetPayload.issue_id,
++		issue_revision: packetPayload.expected_issue_revision,
++		head_sha: packetPayload.target_head,
++		work_packet_hash: packet.content_hash,
++		run_receipt_hash: receipt.content_hash,
++		risk_manifest_digest: packetPayload.risk_manifest_digest,
++		gate_ids: gateIds,
++	};
++}
++
++function parseTracePayload(row) {
++	try {
++		return JSON.parse(row?.payload_json || '{}');
++	} catch {
++		return {};
++	}
++}
++
++function resolveGateReceipts(events, gateIds, occurredAt) {
++	const gateEvents = new Map();
++	for (const event of events) {
++		if (!['gate.approved', 'gate.rejected'].includes(event.event_type)) continue;
++		const payload = parseTracePayload(event);
++		if (gateIds.includes(payload.gate)) gateEvents.set(payload.gate, { event, payload });
++	}
++	return gateIds.map(gateId => {
++		const latest = gateEvents.get(gateId);
++		const expiry = latest?.payload?.expires_at;
++		const active = latest?.event?.event_type === 'gate.approved'
++			&& (!expiry || (Number.isFinite(Date.parse(expiry)) && Date.parse(occurredAt) < Date.parse(expiry)));
++		if (!active || typeof latest.event.idempotency_key !== 'string' || !latest.event.idempotency_key) {
++			throw traceError('FORGE_TRACE_GATE_UNAVAILABLE', `recordPrLinkage gate ${gateId} lacks an active approval receipt`);
++		}
++		return latest.event.idempotency_key;
++	});
++}
++
++function readTraceArtifact(projectRoot, workFolder, filename) {
++	if (!workFolder) return { artifact: null, gap: filename.replace('.md', '') };
++	const root = fs.realpathSync(path.resolve(projectRoot));
++	const candidateFolder = path.resolve(root, workFolder);
++	if (!fs.existsSync(candidateFolder)) return { artifact: null, gap: filename.replace('.md', '') };
++	const folder = fs.realpathSync(candidateFolder);
++	const relativeFolder = path.relative(root, folder);
++	if (relativeFolder.startsWith('..') || path.isAbsolute(relativeFolder)) {
++		return { artifact: null, gap: `${filename.replace('.md', '')}:outside_project` };
++	}
++	const file = path.join(folder, filename);
++	if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return { artifact: null, gap: filename.replace('.md', '') };
++	const resolvedFile = fs.realpathSync(file);
++	const relativeFile = path.relative(root, resolvedFile);
++	if (relativeFile.startsWith('..') || path.isAbsolute(relativeFile)) {
++		return { artifact: null, gap: `${filename.replace('.md', '')}:outside_project` };
++	}
++	if (fs.statSync(resolvedFile).size > TRACE_MAX_ARTIFACT_BYTES) {
++		return { artifact: null, gap: `${filename.replace('.md', '')}:oversized` };
++	}
++	return {
++		artifact: {
++			path: path.posix.join(String(workFolder).replaceAll('\\', '/'), filename),
++			content: fs.readFileSync(resolvedFile, 'utf8'),
++		},
++		gap: null,
++	};
++}
++
++function buildTraceEnvelope(projectRoot, target, rows) {
++	const artifactReads = Object.fromEntries(['plan', 'tasks', 'decisions'].map(name => (
++		[name, readTraceArtifact(projectRoot, rows.work_folder, `${name}.md`)]
++	)));
++	const artifacts = Object.fromEntries(Object.entries(artifactReads).map(([name, value]) => [name, value.artifact]));
++	const gaps = [];
++	if (!rows.issue) gaps.push('issue');
++	if (!rows.worktree) gaps.push('worktree');
++	if (!rows.work_folder) gaps.push('work_folder');
++	for (const name of ['plan', 'tasks', 'decisions']) if (artifactReads[name].gap) gaps.push(artifactReads[name].gap);
++	if (rows.pull_requests.length === 0) gaps.push('pull_requests');
++	for (const gap of rows.gaps || []) if (!gaps.includes(gap)) gaps.push(gap);
++	return {
++		schema_version: 'forge.trace.v1',
++		target: target.issue_id
++			? { kind: 'issue', id: target.issue_id }
++			: { kind: 'pr', number: Number(target.pr_number), repo: target.repo ?? null },
++		issue: rows.issue,
++		worktree: rows.worktree,
++		work_folder: rows.work_folder,
++		artifacts,
++		pull_requests: rows.pull_requests,
++		gaps,
++	};
++}
++
++function assertCompatiblePrEvidence(existingEvent, payload) {
++	if (!existingEvent || stableStringify(normalizePayload(existingEvent)) === stableStringify(payload)) return;
++	throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'INCOMPLETE: conflicting evidence for idempotency key');
++}
++
+ // The migration ledger records which migration ids have been applied so initialize()
+ // applies each migration AT MOST ONCE — no full re-run, no blanket duplicate-error
+ // swallow. The ledger table is broker-managed bookkeeping (created before the plan is
+@@ -1264,6 +1496,124 @@ function createLocalBroker(options = {}) {
+ 			return driver.upsertPr(row, context, getConfig());
+ 		},
+ 
++		async recordPrLinkage(input, context = {}) {
++			if (!input || !['opened', 'merged'].includes(input.phase)) {
++				throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage phase must be opened or merged');
++			}
++			for (const field of ['git_common_dir', 'repo', 'number']) {
++				if (input[field] === undefined || input[field] === null || input[field] === '') {
++					throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage requires ${field}`);
++				}
++			}
++			for (const method of ['resolvePrLinkage', 'upsertPr', 'retirePr', 'readTrace', 'loadKernelEventByIdempotencyKey']) {
++				requireDriverMethod(driver, method);
++			}
++			const evidence = derivePrEvidence(input);
++			const config = getConfig();
++			const inferred = await driver.resolvePrLinkage({ ...input, issue_id: evidence.issue_id }, context, config);
++			if (!inferred.issue_id || inferred.issue_revision === null) {
++				throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage requires resolved issue linkage');
++			}
++			if (inferred.inferred_issue_id && evidence.issue_id !== inferred.inferred_issue_id) {
++				throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage WorkPacket issue conflicts with inferred worktree issue');
++			}
++			if (evidence.issue_revision !== inferred.issue_revision) {
++				throw traceError(
++					'FORGE_TRACE_STALE_AUTHORITY',
++					`recordPrLinkage stale issue revision: expected ${evidence.issue_revision}, actual ${inferred.issue_revision}`,
++				);
++			}
++			const issueEvents = await driver.listKernelEvents('issue', evidence.issue_id, context, config);
++			const gateReceipts = resolveGateReceipts(
++				issueEvents,
++				evidence.gate_ids,
++				input.occurred_at || new Date().toISOString(),
++			);
++			const priorRows = await driver.readTrace({
++				pr_number: input.number,
++				repo: input.repo,
++				git_common_dir: input.git_common_dir,
++			}, context, config);
++			const priorPr = priorRows.pull_requests.find(candidate => (
++				candidate.git_common_dir === input.git_common_dir
++				&& candidate.repo === input.repo
++				&& Number(candidate.number) === Number(input.number)
++			)) || null;
++			const worktreeId = input.worktree_id ?? inferred.worktree_id ?? priorPr?.worktree_id ?? null;
++			const eventType = `pr.${input.phase}`;
++			const payload = {
++				issue_id: evidence.issue_id,
++				issue_revision: evidence.issue_revision,
++				worktree_id: worktreeId,
++				repo: input.repo,
++				number: input.number,
++				url: input.url ?? null,
++				head_sha: evidence.head_sha,
++				work_packet_hash: evidence.work_packet_hash,
++				run_receipt_hash: evidence.run_receipt_hash,
++				risk_manifest_digest: evidence.risk_manifest_digest,
++				gate_receipts: gateReceipts,
++			};
++
++			const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
++			if (terminalPr) {
++				const conflicts = evidence.head_sha !== priorPr.head_sha
++					|| (input.branch != null && input.branch !== priorPr.branch)
++					|| evidence.issue_id !== priorPr.issue_id
++					|| (worktreeId != null && worktreeId !== priorPr.worktree_id)
++					|| (input.journal_ptr != null && input.journal_ptr !== priorPr.journal_ptr);
++				if (conflicts) throw traceError('FORGE_TRACE_TERMINAL_CONFLICT', 'recordPrLinkage terminal PR linkage conflict');
++			}
++
++			const existingEventKey = priorPr ? `${eventType}:${priorPr.id}:${evidence.head_sha}` : null;
++			const existingEvent = existingEventKey
++				? await driver.loadKernelEventByIdempotencyKey(existingEventKey, context, config)
++				: null;
++			assertCompatiblePrEvidence(existingEvent, payload);
++			if (terminalPr && !existingEvent) {
++				throw traceError('FORGE_TRACE_TERMINAL_CONFLICT', 'recordPrLinkage terminal PR linkage conflict');
++			}
++
++			const linked = terminalPr
++				? { ok: true, ...terminalPr }
++				: await driver.upsertPr({
++					...input,
++					head_sha: evidence.head_sha,
++					issue_id: evidence.issue_id,
++					worktree_id: worktreeId,
++					registered_at: input.occurred_at,
++				}, context, config);
++			const event = await runGuardedEventImpl({
++				entity_type: 'pr',
++				entity_id: linked.id,
++				event_type: eventType,
++				idempotency_key: `${eventType}:${linked.id}:${evidence.head_sha}`,
++				expected_revision: 0,
++				actor: context.actor || 'forge',
++				origin: context.origin || 'cli',
++				created_at: input.occurred_at || new Date().toISOString(),
++				payload,
++			}, context);
++			assertCompatiblePrEvidence(event.originalEvent, payload);
++			if (input.phase === 'merged' && !terminalPr) {
++				await driver.retirePr({
++					git_common_dir: linked.git_common_dir,
++					repo: linked.repo,
++					number: linked.number,
++				}, { state: 'merged', retired_at: input.occurred_at }, context, config);
++			}
++			return { link: linked, iteration: event };
++		},
++
++		async readTrace(target, context = {}) {
++			if (!target || (!target.issue_id && target.pr_number === undefined)) {
++				throw new Error('readTrace requires issue_id or pr_number');
++			}
++			requireDriverMethod(driver, 'readTrace');
++			const config = getConfig();
++			return buildTraceEnvelope(config.projectRoot, target, await driver.readTrace(target, context, config));
++		},
++
+ 		async updatePrVerdict(key, patch = {}, context = {}) {
+ 			requireDriverMethod(driver, 'updatePrVerdict');
+ 			return driver.updatePrVerdict(key, patch, context, getConfig());
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index c517746f..d5bb979a 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1316,6 +1316,140 @@ function listWorktreeRows(runtime, db, filter = {}) {
+ 	return safeAll(runtime, db, 'SELECT * FROM kernel_worktrees ORDER BY registered_at DESC');
+ }
+ 
++const TRACE_MAX_PULL_REQUESTS = 128;
++const TRACE_MAX_ITERATIONS = 128;
++
++function resolvePrLinkageRow(runtime, db, input = {}) {
++	let worktree = null;
++	if (input.worktree_id) {
++		worktree = safeAll(runtime, db, 'SELECT * FROM kernel_worktrees WHERE id = ? LIMIT 1', [input.worktree_id])[0] || null;
++	} else if (input.branch && input.git_common_dir) {
++		worktree = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_worktrees
++			 WHERE git_common_dir = ? AND branch = ? AND state = 'active'
++			 ORDER BY registered_at DESC LIMIT 1`,
++			[input.git_common_dir, input.branch],
++		)[0] || null;
++	}
++	const inferredIssueId = worktree?.issue_id ?? null;
++	const issueId = input.issue_id ?? inferredIssueId;
++	const issue = issueId
++		? safeAll(runtime, db, 'SELECT id, entity_revision FROM kernel_issues WHERE id = ? LIMIT 1', [issueId])[0] || null
++		: null;
++	return {
++		issue_id: issueId,
++		inferred_issue_id: inferredIssueId,
++		issue_revision: issue?.entity_revision ?? null,
++		worktree_id: input.worktree_id ?? worktree?.id ?? null,
++	};
++}
++
++function parseTraceEvent(row) {
++	let payload;
++	try {
++		payload = JSON.parse(row.payload_json || '{}');
++	} catch {
++		payload = {};
++	}
++	return {
++		id: row.id,
++		type: row.event_type,
++		at: row.created_at,
++		issue_revision: payload.issue_revision ?? null,
++		head_sha: payload.head_sha ?? null,
++		work_packet_hash: payload.work_packet_hash ?? null,
++		run_receipt_hash: payload.run_receipt_hash ?? null,
++		risk_manifest_digest: payload.risk_manifest_digest ?? null,
++		gate_receipts: payload.gate_receipts ?? null,
++		url: payload.url ?? null,
++	};
++}
++
++function loadTraceRows(runtime, db, target = {}) {
++	const gaps = [];
++	let selectedPr = null;
++	if (target.pr_number !== undefined && target.pr_number !== null) {
++		const clauses = ['number = ?'];
++		const params = [Number(target.pr_number)];
++		if (target.repo) {
++			clauses.push('repo = ?');
++			params.push(target.repo);
++		}
++		if (target.git_common_dir) {
++			clauses.push('git_common_dir = ?');
++			params.push(target.git_common_dir);
++		}
++		const matches = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_pr WHERE ${clauses.join(' AND ')} ORDER BY registered_at DESC LIMIT 2`,
++			params,
++		);
++		if (matches.length > 1) throw new Error('Kernel trace PR target is ambiguous; supply repo and git_common_dir');
++		selectedPr = matches[0] || null;
++	}
++
++	const issueId = target.issue_id ?? selectedPr?.issue_id ?? null;
++	const issue = issueId
++		? safeAll(runtime, db, 'SELECT * FROM kernel_issues WHERE id = ? LIMIT 1', [issueId])[0] || null
++		: null;
++	let pullRequests = issue
++		? safeAll(
++			runtime,
++			db,
++			' SELECT * FROM kernel_pr WHERE issue_id = ? ORDER BY registered_at ASC, number ASC LIMIT ?',
++			[issue.id, TRACE_MAX_PULL_REQUESTS + 1],
++		)
++		: [];
++	if (pullRequests.length > TRACE_MAX_PULL_REQUESTS) {
++		pullRequests = pullRequests.slice(0, TRACE_MAX_PULL_REQUESTS);
++		gaps.push('pull_requests:overflow');
++	}
++	if (selectedPr && !pullRequests.some(row => row.id === selectedPr.id)) pullRequests = [selectedPr];
++
++	let worktree = null;
++	const preferredWorktreeId = selectedPr?.worktree_id || pullRequests.find(row => row.worktree_id)?.worktree_id;
++	if (preferredWorktreeId) {
++		worktree = safeAll(runtime, db, 'SELECT * FROM kernel_worktrees WHERE id = ? LIMIT 1', [preferredWorktreeId])[0] || null;
++	}
++	if (!worktree && issue) {
++		worktree = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_worktrees WHERE issue_id = ?
++			 ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, registered_at DESC LIMIT 1`,
++			[issue.id],
++		)[0] || null;
++	}
++
++	return {
++		issue,
++		worktree,
++		work_folder: worktree?.work_folder ?? null,
++		gaps,
++		pull_requests: pullRequests.map(row => {
++			let iterations = safeAll(
++				runtime,
++				db,
++				"SELECT * FROM kernel_events WHERE entity_type = 'pr' AND entity_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
++				[row.id, TRACE_MAX_ITERATIONS + 1],
++			);
++			if (iterations.length > TRACE_MAX_ITERATIONS) {
++				iterations = iterations.slice(0, TRACE_MAX_ITERATIONS);
++				gaps.push(`iterations:${row.id}:overflow`);
++			}
++			const parsedIterations = iterations.map(parseTraceEvent);
++			return {
++				...row,
++				url: parsedIterations.find(event => event.url)?.url ?? null,
++				iterations: parsedIterations,
++			};
++		}),
++	};
++}
++
+ // --- Stage-run registry (f61601ab). kernel_stage_runs records the REAL workflow
+ // phase per issue so the dashboard/`show` read the phase instead of guessing it
+ // from status+claim (a claimed-open issue with a merged PR would otherwise still
+@@ -2435,6 +2569,14 @@ const MONITOR_MAX_ENVELOPE_DEPTH = 8;
+ const MONITOR_MAX_ENVELOPE_ITEMS = 128;
+ const MONITOR_MAX_ENVELOPE_PROPERTIES = 64;
+ const MONITOR_MAX_ENVELOPE_NODES = 1_024;
++const MONITOR_DEFAULT_READ_LIMIT = 128;
++const MONITOR_MAX_READ_LIMIT = 4_096;
++
++function monitorStoreError(code, message, cause) {
++	const error = new Error(message, cause ? { cause } : undefined);
++	error.code = code;
++	return error;
++}
+ 
+ function containsMonitorSecret(value) {
+ 	return MONITOR_SECRET_PATTERNS.some(pattern => pattern.test(value));
+@@ -2609,7 +2751,7 @@ function compareMonitorTargets(left, right) {
+ 
+ function assertMonitorWriterEnabled(runtime, db, config = {}) {
+ 	if (config.monitorDurabilityEnabled === false) {
+-		throw new Error('Monitor durability writers are disabled; retained evidence remains readable');
++		throw monitorStoreError('MONITOR_UNAVAILABLE', 'Monitor durability writers are disabled; retained evidence remains readable');
+ 	}
+ 	let row;
+ 	try {
+@@ -2617,12 +2759,12 @@ function assertMonitorWriterEnabled(runtime, db, config = {}) {
+ 			'SELECT enabled FROM memory_monitor_writer_state WHERE singleton = 1')[0];
+ 	} catch (error) {
+ 		if (/no such table/i.test(String(error?.message || ''))) {
+-			throw new Error('Monitor durability schema is not initialized; run Kernel migrations');
++			throw monitorStoreError('MONITOR_UNAVAILABLE', 'Monitor durability schema is not initialized; run Kernel migrations', error);
+ 		}
+ 		throw error;
+ 	}
+ 	if (Number(row?.enabled) !== 1) {
+-		throw new Error('Monitor durability writers are disabled; retained evidence remains readable');
++		throw monitorStoreError('MONITOR_UNAVAILABLE', 'Monitor durability writers are disabled; retained evidence remains readable');
+ 	}
+ }
+ 
+@@ -2647,7 +2789,7 @@ function runMonitorTransaction(runtime, db, config, operation) {
+ 	} catch (error) {
+ 		if (active) rollbackTransaction(runtime, db);
+ 		if (/database is locked|SQLITE_BUSY/i.test(String(error?.message || ''))) {
+-			throw new Error(`Monitor durability write remained busy after ${timeout}ms`);
++			throw monitorStoreError('MONITOR_UNAVAILABLE', `Monitor durability write remained busy after ${timeout}ms`, error);
+ 		}
+ 		throw error;
+ 	} finally {
+@@ -2678,20 +2820,20 @@ function appendMonitorEventRow(runtime, db, envelope, targets, config) {
+ 			'SELECT event_id, monitor_id, sequence, content_hash FROM memory_monitor_events WHERE monitor_id = ? AND sequence = ?', [row.monitor_id, row.sequence])[0];
+ 		const existing = existingById || existingBySequence;
+ 		if (existing) {
+-			if (existing.content_hash !== row.content_hash) throw new Error('monitor event conflict: immutable identity has different content_hash');
++			if (existing.content_hash !== row.content_hash) throw monitorStoreError('MONITOR_EVENT_CONFLICT', 'monitor event conflict: immutable identity has different content_hash');
+ 			const storedTargets = allParams(runtime, db,
+ 				'SELECT target FROM memory_monitor_outbox WHERE event_id = ? ORDER BY target ASC', [existing.event_id])
+ 				.map(entry => entry.target);
+ 			const replayTargets = [...targets].sort(compareMonitorTargets);
+ 			if (storedTargets.length !== replayTargets.length
+ 				|| storedTargets.some((target, index) => target !== replayTargets[index])) {
+-				throw new Error('monitor event target set conflict: identical event replay changed delivery targets');
++				throw monitorStoreError('MONITOR_TARGET_SET_CONFLICT', 'monitor event target set conflict: identical event replay changed delivery targets');
+ 			}
+ 			return { idempotent: true, event_id: existing.event_id, monitor_id: existing.monitor_id, sequence: existing.sequence };
+ 		}
+ 		const terminalReceipt = allParams(runtime, db,
+ 			'SELECT monitor_id FROM memory_monitor_receipts WHERE monitor_id = ?', [row.monitor_id])[0];
+-		if (terminalReceipt) throw new Error('monitor already has a terminal receipt');
++		if (terminalReceipt) throw monitorStoreError('MONITOR_TERMINAL', 'monitor already has a terminal receipt');
+ 
+ 		runParams(runtime, db,
+ 			`INSERT INTO memory_monitor_events
+@@ -2727,21 +2869,21 @@ function recordMonitorDeliveryReceiptRow(runtime, db, envelope, config) {
+ 			`SELECT content_hash FROM memory_monitor_delivery_receipts
+ 			 WHERE event_id = ? AND target = ? AND attempt = ?`, [row.event_id, row.target, row.attempt])[0];
+ 		if (existing) {
+-			if (existing.content_hash !== row.content_hash) throw new Error('monitor delivery receipt conflict: attempt has different content_hash');
++			if (existing.content_hash !== row.content_hash) throw monitorStoreError('MONITOR_DELIVERY_CONFLICT', 'monitor delivery receipt conflict: attempt has different content_hash');
+ 			return { idempotent: true, event_id: row.event_id, target: row.target, attempt: row.attempt };
+ 		}
+ 		const event = allParams(runtime, db,
+ 			'SELECT monitor_id, sequence FROM memory_monitor_events WHERE event_id = ?', [row.event_id])[0];
+-		if (!event) throw new Error('monitor delivery receipt references an unknown event');
++		if (!event) throw monitorStoreError('MONITOR_DELIVERY_CONFLICT', 'monitor delivery receipt references an unknown event');
+ 		const outbox = allParams(runtime, db,
+ 			'SELECT id FROM memory_monitor_outbox WHERE event_id = ? AND target = ?', [row.event_id, row.target])[0];
+-		if (!outbox) throw new Error('monitor delivery receipt references an unplanned target');
++		if (!outbox) throw monitorStoreError('MONITOR_DELIVERY_CONFLICT', 'monitor delivery receipt references an unplanned target');
+ 		if (row.acknowledged) {
+ 			const cursor = allParams(runtime, db,
+ 				'SELECT sequence FROM memory_monitor_cursors WHERE monitor_id = ? AND target = ?',
+ 				[event.monitor_id, row.target])[0];
+ 			if (cursor && event.sequence < Number(cursor.sequence)) {
+-				throw new Error('stale monitor delivery cursor: acknowledged sequence is behind the durable cursor');
++				throw monitorStoreError('MONITOR_STALE_CURSOR', 'stale monitor delivery cursor: acknowledged sequence is behind the durable cursor');
+ 			}
+ 		}
+ 
+@@ -2785,7 +2927,7 @@ function recordMonitorTerminalReceiptRow(runtime, db, envelope, config) {
+ 		const existing = allParams(runtime, db,
+ 			'SELECT content_hash FROM memory_monitor_receipts WHERE monitor_id = ?', [row.monitor_id])[0];
+ 		if (existing) {
+-			if (existing.content_hash !== row.content_hash) throw new Error('monitor receipt conflict: terminal evidence has different content_hash');
++			if (existing.content_hash !== row.content_hash) throw monitorStoreError('MONITOR_RECEIPT_CONFLICT', 'monitor receipt conflict: terminal evidence has different content_hash');
+ 			return { idempotent: true, monitor_id: row.monitor_id };
+ 		}
+ 		const eventState = allParams(runtime, db,
+@@ -2793,7 +2935,7 @@ function recordMonitorTerminalReceiptRow(runtime, db, envelope, config) {
+ 			[row.monitor_id])[0];
+ 		const expectedLastSequence = Number(eventState.event_count) === 0 ? 0 : Number(eventState.max_sequence);
+ 		if (row.last_sequence !== expectedLastSequence) {
+-			throw new Error('stale monitor terminal sequence: last_sequence does not match durable events');
++			throw monitorStoreError('MONITOR_STALE_TERMINAL', 'stale monitor terminal sequence: last_sequence does not match durable events');
+ 		}
+ 		runParams(runtime, db,
+ 			`INSERT INTO memory_monitor_receipts
+@@ -2804,6 +2946,82 @@ function recordMonitorTerminalReceiptRow(runtime, db, envelope, config) {
+ 	});
+ }
+ 
++function monitorReadLimit(options = {}, fallback = MONITOR_DEFAULT_READ_LIMIT) {
++	const requested = options.limit ?? fallback;
++	if (!Number.isSafeInteger(requested) || requested < 1 || requested > MONITOR_MAX_READ_LIMIT) {
++		throw new TypeError(`monitor read limit must be an integer from 1 to ${MONITOR_MAX_READ_LIMIT}`);
++	}
++	return requested;
++}
++
++function getMonitorEventRow(runtime, db, eventId) {
++	return allParams(
++		runtime,
++		db,
++		`SELECT event_id, monitor_id, sequence, content_hash, envelope_json, artifact_digest, created_at
++		 FROM memory_monitor_events WHERE event_id = ? LIMIT 1`,
++		[eventId],
++	)[0] || null;
++}
++
++function readMonitorEventTailRows(runtime, db, monitorId, options = {}) {
++	const limit = monitorReadLimit(options);
++	const selected = allParams(
++		runtime,
++		db,
++		`SELECT event_id, monitor_id, sequence, content_hash, envelope_json, artifact_digest, created_at
++		 FROM memory_monitor_events WHERE monitor_id = ?
++		 ORDER BY sequence DESC, event_id DESC LIMIT ?`,
++		[monitorId, limit + 1],
++	);
++	const overflow = selected.length > limit;
++	const events = selected.slice(0, limit).reverse();
++	return {
++		events,
++		overflow,
++		truncated_before_sequence: overflow && events.length > 0 ? Number(events[0].sequence) : null,
++	};
++}
++
++function readMonitorDeliveryStateRows(runtime, db, monitorId, options = {}) {
++	const limit = monitorReadLimit(options);
++	const cursorRows = allParams(
++		runtime,
++		db,
++		`SELECT monitor_id, target, sequence, updated_at FROM memory_monitor_cursors
++		 WHERE monitor_id = ? ORDER BY target ASC LIMIT ?`,
++		[monitorId, limit + 1],
++	);
++	const outboxRows = allParams(
++		runtime,
++		db,
++		`SELECT o.id AS outbox_id, o.event_id, e.monitor_id, e.sequence, o.target,
++			o.status, o.attempts, o.next_attempt_at, o.created_at
++		 FROM memory_monitor_outbox o
++		 JOIN memory_monitor_events e ON e.event_id = o.event_id
++		 WHERE e.monitor_id = ?
++		 ORDER BY e.sequence ASC, o.target ASC, o.id ASC LIMIT ?`,
++		[monitorId, limit + 1],
++	);
++	const terminalReceipt = allParams(
++		runtime,
++		db,
++		`SELECT monitor_id, content_hash, envelope_json, owner_run_id, terminal_state,
++			last_sequence, evidence_digest, undelivered_cursor, created_at
++		 FROM memory_monitor_receipts WHERE monitor_id = ? LIMIT 1`,
++		[monitorId],
++	)[0] || null;
++	return {
++		cursors: cursorRows.slice(0, limit),
++		outbox: outboxRows.slice(0, limit),
++		terminal_receipt: terminalReceipt,
++		overflow: {
++			cursors: cursorRows.length > limit,
++			outbox: outboxRows.length > limit,
++		},
++	};
++}
++
+ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 	let db;
+ 	let openedDatabasePath;
+@@ -3001,7 +3219,19 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 					registeredAt,
+ 				],
+ 			);
+-			return { ok: true, id };
++			const persisted = allParams(
++				runtime,
++				getDatabase(config),
++				'SELECT * FROM kernel_pr WHERE git_common_dir = ? AND repo = ? AND number = ? LIMIT 1',
++				[row.git_common_dir, row.repo, row.number],
++			)[0];
++			return { ok: true, ...persisted };
++		},
++		async resolvePrLinkage(input, _context = {}, config = {}) {
++			return resolvePrLinkageRow(runtime, getDatabase(config), input);
++		},
++		async readTrace(target, _context = {}, config = {}) {
++			return loadTraceRows(runtime, getDatabase(config), target);
+ 		},
+ 		// The ONE verdict authority WRITE (design §1.2 rule 2) — FRESHEST-HEAD-SHA
+ 		// PRECEDENCE enforced in the WHERE so a verdict computed against a SUPERSEDED head is
+@@ -3270,11 +3500,27 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			const safeEnvelope = assertMonitorEnvelope(envelope, 'forge.memory.monitor-receipt.v1');
+ 			return recordMonitorTerminalReceiptRow(runtime, database, safeEnvelope, config);
+ 		},
++		async getMonitorEvent(eventId, config = {}) {
++			if (typeof eventId !== 'string' || !eventId || eventId.length > 255) {
++				throw new TypeError('eventId must be a bounded non-empty string');
++			}
++			return getMonitorEventRow(runtime, getDatabase(config), eventId);
++		},
++		async readMonitorEventTail(monitorId, options = {}, config = {}) {
++			return readMonitorEventTailRows(runtime, getDatabase(config), monitorId, options);
++		},
++		async readMonitorDeliveryState(monitorId, options = {}, config = {}) {
++			return readMonitorDeliveryStateRows(runtime, getDatabase(config), monitorId, options);
++		},
+ 		async listMonitorEvents(monitorId, config = {}) {
+ 			const database = getDatabase(config);
+-			return allParams(runtime, database,
+-				'SELECT event_id, monitor_id, sequence, content_hash, envelope_json, artifact_digest, created_at FROM memory_monitor_events WHERE monitor_id = ? ORDER BY sequence ASC',
+-				[monitorId]);
++			const result = readMonitorEventTailRows(runtime, database, monitorId, {
++				limit: config.monitorReadLimit ?? MONITOR_MAX_READ_LIMIT,
++			});
++			if (result.overflow) {
++				throw monitorStoreError('MONITOR_READ_OVERFLOW', 'Monitor event history exceeds the bounded public read');
++			}
++			return result.events;
+ 		},
+ 		async backup(destinationPath, config = {}) {
+ 			const databasePath = resolveDatabasePath(config);
+diff --git a/packages/memory/index.js b/packages/memory/index.js
+index 37436cef..92fc5f09 100644
+--- a/packages/memory/index.js
++++ b/packages/memory/index.js
+@@ -16,6 +16,70 @@ const MAX_TARGET_LENGTH = 128;
+ const PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
+ const MAX_PRIVATE_SCAN_LENGTH = 16_384;
+ 
++class MonitorStoreError extends Error {
++  constructor(code, message, options = {}) {
++    super(message, options.cause ? { cause: options.cause } : undefined);
++    this.name = 'MonitorStoreError';
++    this.code = code;
++  }
++}
++
++class MonitorStaleError extends MonitorStoreError {
++  constructor(code, message, options) {
++    super(code, message, options);
++    this.name = 'MonitorStaleError';
++  }
++}
++
++class MonitorConflictError extends MonitorStoreError {
++  constructor(code, message, options) {
++    super(code, message, options);
++    this.name = 'MonitorConflictError';
++  }
++}
++
++class MonitorTerminalError extends MonitorStoreError {
++  constructor(code, message, options) {
++    super(code, message, options);
++    this.name = 'MonitorTerminalError';
++  }
++}
++
++class MonitorUnavailableError extends MonitorStoreError {
++  constructor(code, message, options) {
++    super(code, message, options);
++    this.name = 'MonitorUnavailableError';
++  }
++}
++
++const MONITOR_CONFLICT_CODES = new Set([
++  'MONITOR_EVENT_CONFLICT',
++  'MONITOR_TARGET_SET_CONFLICT',
++  'MONITOR_DELIVERY_CONFLICT',
++  'MONITOR_RECEIPT_CONFLICT',
++]);
++
++function publicMonitorError(error) {
++  if (error instanceof MonitorStoreError) return error;
++  const code = typeof error?.code === 'string' ? error.code : 'MONITOR_UNAVAILABLE';
++  const message = typeof error?.message === 'string' && error.message
++    ? error.message
++    : 'Monitor durability provider unavailable';
++  const options = { cause: error };
++  if (code.startsWith('MONITOR_STALE_')) return new MonitorStaleError(code, message, options);
++  if (MONITOR_CONFLICT_CODES.has(code)) return new MonitorConflictError(code, message, options);
++  if (code === 'MONITOR_TERMINAL') return new MonitorTerminalError(code, message, options);
++  return new MonitorUnavailableError(code, message, options);
++}
++
++async function callMonitorDriver(operation) {
++  try {
++    return await operation();
++  } catch (error) {
++    throw publicMonitorError(error);
++  }
++}
++
+ function hasNonWhitespacePathSegment(segment) {
+   return Boolean(segment && segment.trim());
+ }
+@@ -88,6 +152,13 @@ function normalizeTargets(targets) {
+   return [...new Set(targets.map(assertTarget))];
+ }
+ 
++function assertMonitorId(monitorId) {
++  if (typeof monitorId !== 'string' || monitorId.length === 0 || monitorId.length > 128) {
++    throw new TypeError('monitorId must be a bounded non-empty string');
++  }
++  return monitorId;
++}
++
+ function createMonitorStore(driver) {
+   if (!driver || typeof driver.appendMonitorEvent !== 'function') {
+     throw new Error('Monitor store requires a monitor-capable SQLite driver');
+@@ -95,20 +166,31 @@ function createMonitorStore(driver) {
+   return {
+     async appendEvent(envelope, targets, config = {}) {
+       assertEnvelope(envelope, 'forge.memory.monitor-event.v1');
+-      return driver.appendMonitorEvent(envelope, normalizeTargets(targets), config);
++      return callMonitorDriver(() => driver.appendMonitorEvent(envelope, normalizeTargets(targets), config));
+     },
+     async recordDeliveryReceipt(envelope, config = {}) {
+       assertEnvelope(envelope, 'forge.memory.delivery-receipt.v1');
+       assertTarget(envelope.payload.target);
+-      return driver.recordMonitorDeliveryReceipt(envelope, config);
++      return callMonitorDriver(() => driver.recordMonitorDeliveryReceipt(envelope, config));
+     },
+     async recordTerminalReceipt(envelope, config = {}) {
+       assertEnvelope(envelope, 'forge.memory.monitor-receipt.v1');
+-      return driver.recordMonitorTerminalReceipt(envelope, config);
++      return callMonitorDriver(() => driver.recordMonitorTerminalReceipt(envelope, config));
++    },
++    getEvent(eventId, config = {}) {
++      if (typeof eventId !== 'string' || !eventId || eventId.length > 255) {
++        throw new TypeError('eventId must be a bounded non-empty string');
++      }
++      return callMonitorDriver(() => driver.getMonitorEvent(eventId, config));
++    },
++    readEventTail(monitorId, options = {}, config = {}) {
++      return callMonitorDriver(() => driver.readMonitorEventTail(assertMonitorId(monitorId), options, config));
++    },
++    readDeliveryState(monitorId, options = {}, config = {}) {
++      return callMonitorDriver(() => driver.readMonitorDeliveryState(assertMonitorId(monitorId), options, config));
+     },
+     listEvents(monitorId, config = {}) {
+-      if (typeof monitorId !== 'string' || !monitorId) throw new Error('monitorId is required');
+-      return driver.listMonitorEvents(monitorId, config);
++      return callMonitorDriver(() => driver.listMonitorEvents(assertMonitorId(monitorId), config));
+     },
+   };
+ }
+@@ -118,5 +200,10 @@ module.exports = {
+   ...require('./src/backend-registry'),
+   ...require('./src/feedback-intake'),
+   ...require('./src/usage-evidence'),
++  MonitorConflictError,
++  MonitorStaleError,
++  MonitorStoreError,
++  MonitorTerminalError,
++  MonitorUnavailableError,
+   createMonitorStore,
+ };
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+new file mode 100644
+index 00000000..f8ea5303
+--- /dev/null
++++ b/test/kernel/trace.test.js
+@@ -0,0 +1,256 @@
++'use strict';
++
++const { afterEach, beforeEach, describe, expect, mock, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const contracts = require('../../packages/memory-contracts');
++mock.module('@forge/memory-contracts', () => contracts);
++const { computeContentHash } = contracts;
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++const HEAD_SHA = 'a'.repeat(40);
++const RISK_DIGEST = 'b'.repeat(64);
++const MANIFEST_DIGEST = 'c'.repeat(64);
++const GATE_ID = 'gate.merge';
++const GATE_RECEIPT = 'gate.approved:issue-trace:gate.merge:maintainer';
++
++function rehash(envelope) {
++	const copy = structuredClone(envelope);
++	copy.content_hash = computeContentHash(copy);
++	return copy;
++}
++
++function workPacket(overrides = {}) {
++	return rehash({
++		schema_id: 'forge.memory.work-packet.v1',
++		schema_version: 1,
++		object_id: '10000000-0000-4000-8000-000000000001',
++		created_at: '2026-08-11T00:00:00.000Z',
++		producer: { product_id: 'forge-memory', product_version: '0.1.0', instance_id: 'memory-1' },
++		capabilities_used: [],
++		provenance: { source_kind: 'kernel', actor_class: 'system', actor_id: 'memory-1' },
++		content_hash: '0'.repeat(64),
++		payload: {
++			issue_id: 'issue-trace',
++			expected_issue_revision: 0,
++			packet_id: 'packet-trace',
++			packet_revision: 1,
++			repository_id: 'owner/forge',
++			target_head: HEAD_SHA,
++			objective: 'record receipt-bound PR trace',
++			authority: { kind: 'kernel', issue_revision: 0 },
++			allowed_mutations: ['pr.opened', 'pr.merged'],
++			workflow_config_revision: 'workflow-1',
++			capability_manifest_digest: MANIFEST_DIGEST,
++			risk_manifest_digest: RISK_DIGEST,
++			receipt_requirements: { gate_ids: [GATE_ID] },
++			...overrides,
++		},
++		extensions: {},
++	});
++}
++
++function runReceipt(packet, overrides = {}) {
++	return rehash({
++		schema_id: 'forge.memory.run-receipt.v1',
++		schema_version: 1,
++		object_id: '10000000-0000-4000-8000-000000000002',
++		created_at: '2026-08-11T00:05:00.000Z',
++		producer: { product_id: 'forge-flow', product_version: '0.1.0', instance_id: 'flow-1' },
++		capabilities_used: [],
++		provenance: { source_kind: 'flow-boundary', actor_class: 'system', actor_id: 'flow-1' },
++		content_hash: '0'.repeat(64),
++		payload: {
++			packet_hash: packet.content_hash,
++			run_id: 'run-trace',
++			attempt_id: 'attempt-trace',
++			exact_head: packet.payload.target_head,
++			packet_revision: packet.payload.packet_revision,
++			manifest_digest: packet.payload.capability_manifest_digest,
++			workflow_config_revision: packet.payload.workflow_config_revision,
++			status: 'PASS',
++			executor: { product_id: 'forge-flow', mode: 'test' },
++			started_at: '2026-08-11T00:01:00.000Z',
++			ended_at: '2026-08-11T00:05:00.000Z',
++			evidence_refs: [{ kind: 'validation', id: 'validation-1' }],
++			validation: { status: 'PASS' },
++			cleanup: { status: 'PASS' },
++			mutations_attempted: ['pr.opened'],
++			mutations_authorized: ['pr.opened'],
++			...overrides,
++		},
++		extensions: {},
++	});
++}
++
++describe('Kernel receipt-bound PR trace', () => {
++	let root;
++	let driver;
++	let broker;
++	let config;
++	let gitCommonDir;
++	let branch;
++	let workFolder;
++
++	beforeEach(async () => {
++		root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-trace-'));
++		gitCommonDir = path.join(root, '.git');
++		branch = 'codex/trace';
++		workFolder = 'docs/work/2026-08-11-trace';
++		fs.mkdirSync(gitCommonDir, { recursive: true });
++		config = { databasePath: path.join(root, 'kernel.sqlite') };
++		driver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
++		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver });
++		await broker.initialize();
++		await driver.exec(
++			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
++			config,
++		);
++		driver.registerWorktree({
++			id: 'worktree-trace',
++			git_common_dir: gitCommonDir,
++			path: path.join(root, '.worktrees', 'trace'),
++			branch,
++			issue_id: 'issue-trace',
++			work_folder: workFolder,
++			registered_at: '2026-08-11T00:00:00.000Z',
++		}, config);
++		for (const [filename, content] of [['plan.md', '# Plan\n'], ['tasks.md', '# Tasks\n'], ['decisions.md', '# Decisions\n']]) {
++			const filenamePath = path.join(root, workFolder, filename);
++			fs.mkdirSync(path.dirname(filenamePath), { recursive: true });
++			fs.writeFileSync(filenamePath, content, 'utf8');
++		}
++		await driver.insertKernelEvent({
++			entity_type: 'issue',
++			entity_id: 'issue-trace',
++			event_type: 'gate.approved',
++			idempotency_key: GATE_RECEIPT,
++			expected_revision: 0,
++			actor: 'maintainer',
++			origin: 'test',
++			payload: { gate: GATE_ID, expires_at: null, generation: 0 },
++			created_at: '2026-08-11T00:04:00.000Z',
++		}, {}, config);
++	});
++
++	afterEach(() => {
++		driver?.close();
++		try {
++			fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
++		} catch {
++			// Bun can release a Windows SQLite handle just after close; cleanup is best effort.
++		}
++	});
++
++	function linkage(phase = 'opened', packet = workPacket(), receipt = runReceipt(packet), overrides = {}) {
++		return {
++			phase,
++			git_common_dir: gitCommonDir,
++			repo: 'owner/forge',
++			number: 514,
++			url: 'https://github.com/owner/forge/pull/514',
++			branch,
++			work_packet: packet,
++			run_receipt: receipt,
++			occurred_at: phase === 'opened' ? '2026-08-11T00:06:00.000Z' : '2026-08-11T00:07:00.000Z',
++			...overrides,
++		};
++	}
++
++	test('derives every authority binding, replays exactly, and returns the joined trace', async () => {
++		const packet = workPacket();
++		const receipt = runReceipt(packet);
++		await broker.recordPrLinkage(linkage('opened', packet, receipt));
++		await broker.recordPrLinkage(linkage('opened', packet, receipt));
++		await broker.recordPrLinkage(linkage('merged', packet, receipt));
++		await broker.recordPrLinkage(linkage('merged', packet, receipt));
++		await broker.recordPrLinkage(linkage('opened', packet, receipt));
++
++		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace).toMatchObject({
++			schema_version: 'forge.trace.v1',
++			target: { kind: 'issue', id: 'issue-trace' },
++			work_folder: workFolder,
++			gaps: [],
++		});
++		expect(trace.artifacts).toEqual({
++			plan: { path: `${workFolder}/plan.md`, content: '# Plan\n' },
++			tasks: { path: `${workFolder}/tasks.md`, content: '# Tasks\n' },
++			decisions: { path: `${workFolder}/decisions.md`, content: '# Decisions\n' },
++		});
++		expect(trace.pull_requests).toHaveLength(1);
++		expect(trace.pull_requests[0]).toMatchObject({ state: 'merged', head_sha: HEAD_SHA, issue_id: 'issue-trace', worktree_id: 'worktree-trace' });
++		expect(trace.pull_requests[0].iterations.map(event => event.type)).toEqual(['pr.opened', 'pr.merged']);
++		expect(trace.pull_requests[0].iterations[0]).toMatchObject({
++			issue_revision: 0,
++			head_sha: HEAD_SHA,
++			work_packet_hash: packet.content_hash,
++			run_receipt_hash: receipt.content_hash,
++			risk_manifest_digest: RISK_DIGEST,
++			gate_receipts: [GATE_RECEIPT],
++		});
++		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
++	});
++
++	test('fails closed on stale, non-PASS, mismatched, or inactive receipt authority before writes', async () => {
++		const stale = workPacket({ expected_issue_revision: 1, authority: { kind: 'kernel', issue_revision: 1 } });
++		await expect(broker.recordPrLinkage(linkage('opened', stale, runReceipt(stale)))).rejects.toMatchObject({ code: 'FORGE_TRACE_STALE_AUTHORITY' });
++
++		const packet = workPacket();
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet, { status: 'INCOMPLETE', validation: { status: 'INCOMPLETE' } }))))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet, { exact_head: 'd'.repeat(40) }))))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++
++		await driver.insertKernelEvent({
++			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
++			idempotency_key: 'gate.rejected:issue-trace:gate.merge:maintainer', expected_revision: 0,
++			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
++			created_at: '2026-08-11T00:05:00.000Z',
++		}, {}, config);
++		await expect(broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet))))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_GATE_UNAVAILABLE' });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++	});
++
++	test('preserves terminal linkage on exact replay and rejects changed evidence or head', async () => {
++		const packet = workPacket();
++		const receipt = runReceipt(packet);
++		await broker.recordPrLinkage(linkage('opened', packet, receipt));
++		await broker.recordPrLinkage(linkage('merged', packet, receipt));
++		await broker.updatePrVerdict({ git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514 }, {
++			verdict: 'CLEAN-MERGEABLE', verdict_source: 'local', verdict_at: '2026-08-11T00:08:00.000Z', head_sha: HEAD_SHA,
++		});
++		const before = (await driver.queryAll('SELECT * FROM kernel_pr;', config))[0];
++		await broker.recordPrLinkage(linkage('merged', packet, receipt));
++		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
++
++		const changedPacket = workPacket({ risk_manifest_digest: 'e'.repeat(64) });
++		await expect(broker.recordPrLinkage(linkage('merged', changedPacket, runReceipt(changedPacket))))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		const changedHeadPacket = workPacket({ target_head: 'f'.repeat(40) });
++		await expect(broker.recordPrLinkage(linkage('merged', changedHeadPacket, runReceipt(changedHeadPacket))))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_TERMINAL_CONFLICT' });
++		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
++	});
++
++	test('reports explicit gaps for partial historical authority', async () => {
++		await driver.exec(
++			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-gaps', 'Gaps', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
++			config,
++		);
++		const trace = await broker.readTrace({ issue_id: 'issue-gaps' });
++		expect(trace).toMatchObject({
++			issue: { id: 'issue-gaps' },
++			worktree: null,
++			work_folder: null,
++			artifacts: { plan: null, tasks: null, decisions: null },
++			pull_requests: [],
++			gaps: ['worktree', 'work_folder', 'plan', 'tasks', 'decisions', 'pull_requests'],
++		});
++	});
++});
+diff --git a/test/memory/monitor-store.test.js b/test/memory/monitor-store.test.js
+index 8e431ab0..9b3b371c 100644
+--- a/test/memory/monitor-store.test.js
++++ b/test/memory/monitor-store.test.js
+@@ -10,7 +10,13 @@ mock.module('@forge/memory-contracts', () => contracts);
+ const { computeContentHash } = contracts;
+ const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+ const { buildMonitorDurabilityMigration } = require('../../lib/kernel/migrations');
+-const { createMonitorStore } = require('../../packages/memory');
++const {
++	MonitorConflictError,
++	MonitorStaleError,
++	MonitorTerminalError,
++	MonitorUnavailableError,
++	createMonitorStore,
++} = require('../../packages/memory');
+ 
+ const HASH = 'a'.repeat(64);
+ const createdPaths = [];
+@@ -440,4 +446,49 @@ await (async () => {
+ 		}
+ 		expect(await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events')).toEqual([{ n: 0 }]);
+ 	});
++
++	test('reads one event, a bounded latest tail, and stable delivery state with explicit overflow', async () => {
++		const { store } = await makeStore();
++		for (let sequence = 0; sequence < 3; sequence += 1) {
++			await store.appendEvent(monitorEvent(sequence, {
++				event_id: `event-${sequence}`,
++				observed_at: `2026-08-10T00:00:0${sequence}.000Z`,
++			}), ['archive', 'terminal']);
++		}
++		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', target: 'terminal', attempt: 2 }));
++
++		const event = await store.getEvent('event-1');
++		expect(event).toMatchObject({ event_id: 'event-1', monitor_id: 'monitor-1', sequence: 1 });
++		expect(JSON.parse(event.envelope_json).payload.event_id).toBe('event-1');
++
++		expect(await store.readEventTail('monitor-1', { limit: 2 })).toMatchObject({
++			events: [{ sequence: 1 }, { sequence: 2 }],
++			overflow: true,
++			truncated_before_sequence: 1,
++		});
++		const delivery = await store.readDeliveryState('monitor-1', { limit: 2 });
++		expect(delivery.cursors).toEqual([{ monitor_id: 'monitor-1', target: 'terminal', sequence: 2, updated_at: '2026-08-10T00:01:00.000Z' }]);
++		expect(delivery.outbox.map(row => [row.sequence, row.target])).toEqual([[0, 'archive'], [0, 'terminal']]);
++		expect(delivery.terminal_receipt).toBeNull();
++		expect(delivery.overflow).toEqual({ cursors: false, outbox: true });
++	});
++
++	test('exposes typed and coded public stale, conflict, terminal, and unavailable failures', async () => {
++		const { driver, store } = await makeStore();
++		await store.appendEvent(monitorEvent(0), ['terminal']);
++		await expect(store.appendEvent(monitorEvent(0, { type: 'changed' }), ['terminal']))
++			.rejects.toMatchObject({ name: 'MonitorConflictError', code: 'MONITOR_EVENT_CONFLICT' });
++		await store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']);
++		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', attempt: 2 }));
++		await expect(store.recordDeliveryReceipt(deliveryReceipt()))
++			.rejects.toBeInstanceOf(MonitorStaleError);
++		await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 }));
++		await expect(store.appendEvent(monitorEvent(2, { event_id: 'event-3' }), ['terminal']))
++			.rejects.toBeInstanceOf(MonitorTerminalError);
++
++		await driver.exec('UPDATE memory_monitor_writer_state SET enabled = 0 WHERE singleton = 1;');
++		await expect(store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })))
++			.rejects.toBeInstanceOf(MonitorUnavailableError);
++		expect(MonitorConflictError).toBeInstanceOf(Function);
++	});
+ });
+-- 
+2.51.0.windows.1
+

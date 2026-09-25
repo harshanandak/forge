@@ -1,0 +1,48 @@
+From d402fe5d91fad3814e421afc09cf2ed7b980ac80 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 11:45:35 +0530
+Subject: [PATCH] fix(ci): regenerate npm-publish workflow source to match the
+ checked-in file
+
+This PR hand-added timeout-minutes to .github/workflows/npm-publish.yml but
+not to lib/npm-publish-workflow.js, which deterministically generates it.
+That broke the "checked-in workflow is exactly the deterministic generator
+output" assertion, failing Unit Shard 0, Code Coverage and all six Full
+Matrix legs, which in turn failed CI Gate.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/npm-publish-workflow.js | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/lib/npm-publish-workflow.js b/lib/npm-publish-workflow.js
+index de80b5c6..34ead65b 100644
+--- a/lib/npm-publish-workflow.js
++++ b/lib/npm-publish-workflow.js
+@@ -130,6 +130,7 @@ jobs:
+   resolve-release:
+     name: Resolve immutable release SHA
+     runs-on: ubuntu-latest
++    timeout-minutes: 10
+     permissions:
+       contents: read
+     outputs:
+@@ -157,6 +158,7 @@ jobs:
+   build:
+     needs: resolve-release
+     runs-on: ubuntu-latest
++    timeout-minutes: 25
+     permissions:
+       contents: read
+     outputs:
+@@ -193,6 +195,7 @@ jobs:
+   publish-npm:
+     needs: [resolve-release, build]
+     runs-on: ubuntu-latest
++    timeout-minutes: 20
+     permissions:
+       contents: read
+       id-token: write
+-- 
+2.51.0.windows.1
+

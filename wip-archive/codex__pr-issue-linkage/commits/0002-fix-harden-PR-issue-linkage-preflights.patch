@@ -1,0 +1,688 @@
+From a3b50b7e1dcc7f7dfa30774f3e250842781c8618 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 23:26:59 +0530
+Subject: [PATCH] fix: harden PR issue linkage preflights
+
+---
+ lib/commands/ship.js                       |  98 ++++++---
+ lib/kernel/sqlite-driver.js                |  16 +-
+ lib/pr-monitor/reconcile-executor.js       |  46 ++--
+ test/commands/ship.test.js                 | 232 +++++++++++++++++++--
+ test/kernel/sqlite-driver.test.js          |  31 +++
+ test/pr-monitor/reconcile-executor.test.js |  56 +++++
+ 6 files changed, 425 insertions(+), 54 deletions(-)
+
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 70155e9c..60de788a 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -458,7 +458,9 @@ function validatePRTitle(title) {
+ }
+ 
+ async function createPR(options) { // NOSONAR S3776
+-	const { title, body, dryRun = false, exec = execFileSync, cwd = process.cwd() } = options;
++	const {
++		title, body, dryRun = false, exec = execFileSync, cwd = process.cwd(), beforeCreate = null,
++	} = options;
+ 	const titleValidation = validatePRTitle(title);
+ 	if (!titleValidation.valid) return { success: false, error: titleValidation.error };
+ 	try {
+@@ -496,6 +498,14 @@ async function createPR(options) { // NOSONAR S3776
+ 	if (dryRun) {
+ 		return { success: true, message: '[DRY RUN] Would create PR with title: ' + title, prUrl: 'https://github.com/owner/repo/pull/1' };
+ 	}
++	if (typeof beforeCreate === 'function') {
++		try {
++			const readyToCreate = await beforeCreate();
++			if (!readyToCreate?.success) return readyToCreate || { success: false, error: 'PR creation preflight failed.' };
++		} catch (error) {
++			return { success: false, error: `PR creation preflight failed: ${error.message}` };
++		}
++	}
+ 	try {
+ 		const result = exec('gh', ['pr', 'create', '--title', title, '--body', body], getGitExecOptions(cwd));  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
+ 		const urlMatch = /https:\/\/github\.com\/[^\s]+/.exec(result);
+@@ -521,19 +531,18 @@ function samePath(left, right) {
+ 	return normalized(left) === normalized(right);
+ }
+ 
+-async function registerShipIssueLinkage({ projectRoot, issueId, exec = execFileSync, buildDeps } = {}) {
++async function validateShipIssueLinkage({
++	projectRoot, issueId, exec = execFileSync, driver, branch: suppliedBranch, gitCommonDir: suppliedGitCommonDir,
++} = {}) {
+ 	if (!FORGE_ISSUE_ID.test(issueId || '')) {
+ 		return { success: false, error: '--issue requires a full Forge issue id.' };
+ 	}
+ 	try {
+-		const branch = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], getGitExecOptions(projectRoot)).trim();
++		const branch = suppliedBranch
++			|| exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], getGitExecOptions(projectRoot)).trim();
+ 		if (!branch || branch === 'HEAD') return { success: false, error: 'Cannot link a detached HEAD to an issue.' };
+-		const gitCommonDir = resolveGitCommonDir(projectRoot, { execFileSync: exec });
+-		const factory = buildDeps || (async (options) => {
+-			const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+-			return buildMigratedKernelIssueDeps(options);
+-		});
+-		const { kernelDriver: driver } = await factory({ projectRoot, gitCommonDir });
++		const gitCommonDir = suppliedGitCommonDir || resolveGitCommonDir(projectRoot, { execFileSync: exec });
++		if (!driver) return { success: false, error: 'Cannot validate PR issue linkage without a Kernel driver.' };
+ 		const issueMatches = await driver.findIssueIdsByPrefix(issueId, 6, {}, {});
+ 		if (!Array.isArray(issueMatches) || !issueMatches.some((row) => (row?.id ?? row) === issueId)) {
+ 			return { success: false, error: `Forge issue ${issueId} does not exist.` };
+@@ -548,22 +557,55 @@ async function registerShipIssueLinkage({ projectRoot, issueId, exec = execFileS
+ 		if (existing?.issue_id && existing.issue_id !== issueId) {
+ 			return { success: false, error: `Branch ${branch} is already linked to issue ${existing.issue_id}.` };
+ 		}
+-		if (!existing?.issue_id) {
+-			driver.registerWorktree({
+-				id: existing?.id,
+-				git_common_dir: gitCommonDir,
+-				path: projectRoot,
+-				branch,
+-				actor: process.env.FORGE_ACTOR || null,
+-				issue_id: issueId,
+-				work_folder: existing?.work_folder ?? null,
++		const registration = !existing?.issue_id ? {
++			id: existing?.id,
++			git_common_dir: gitCommonDir,
++			path: projectRoot,
++			branch,
++			actor: process.env.FORGE_ACTOR || null,
++			issue_id: issueId,
++			work_folder: existing?.work_folder ?? null,
++			state: 'active',
++		} : null;
++		return { success: true, issueId, registration };
++	} catch (error) {
++		return { success: false, error: `Failed to validate PR issue linkage: ${error.message}` };
++	}
++}
++
++async function registerShipIssueLinkage({ projectRoot, issueId, exec = execFileSync, buildDeps } = {}) {
++	let deps = null;
++	let phase = 'validate';
++	if (!FORGE_ISSUE_ID.test(issueId || '')) {
++		return { success: false, error: '--issue requires a full Forge issue id.' };
++	}
++	try {
++		const branch = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], getGitExecOptions(projectRoot)).trim();
++		if (!branch || branch === 'HEAD') return { success: false, error: 'Cannot link a detached HEAD to an issue.' };
++		const gitCommonDir = resolveGitCommonDir(projectRoot, { execFileSync: exec });
++		const factory = buildDeps || (async (options) => {
++			const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++			return buildMigratedKernelIssueDeps(options);
++		});
++		deps = await factory({ projectRoot, gitCommonDir });
++		const validation = await validateShipIssueLinkage({
++			projectRoot, issueId, exec, driver: deps.kernelDriver, branch, gitCommonDir,
++		});
++		if (!validation.success) return validation;
++		phase = 'register';
++		if (validation.registration) {
++			deps.kernelDriver.registerWorktree({
++				...validation.registration,
+ 				registered_at: new Date().toISOString(),
+-				state: 'active',
+ 			});
+ 		}
+ 		return { success: true, issueId };
+ 	} catch (error) {
+-		return { success: false, error: `Failed to register PR issue linkage: ${error.message}` };
++		return { success: false, error: `Failed to ${phase} PR issue linkage: ${error.message}` };
++	} finally {
++		if (typeof deps?.kernelDriver?.close === 'function') {
++			try { await deps.kernelDriver.close(); } catch { /* best-effort owned resource cleanup */ }
++		}
+ 	}
+ }
+ 
+@@ -594,6 +636,8 @@ async function executeShip(options) {
+ 		createPr = createPR,
+ 		issueId = null,
+ 		registerIssueLink = registerShipIssueLinkage,
++		buildIssueDeps = null,
++		linkageExec = execFileSync,
+ 	} = options || {};
+ 
+ 	// Validate feature slug
+@@ -644,14 +688,11 @@ async function executeShip(options) {
+ 			testScenarios,
+ 			coverage,
+ 		});
+-		const result = await createPr({ title, body: prBody, dryRun });
++		const beforeCreate = issueId && !dryRun
++			? () => registerIssueLink({ projectRoot, issueId, exec: linkageExec, buildDeps: buildIssueDeps })
++			: null;
++		const result = await createPr({ title, body: prBody, dryRun, beforeCreate });
+ 		if (!result.success) return result;
+-		if (issueId && !dryRun) {
+-			const linked = await registerIssueLink({ projectRoot, issueId, prNumber: result.prNumber, prUrl: result.prUrl });
+-			if (!linked?.success) {
+-				return { ...linked, prUrl: result.prUrl, prNumber: result.prNumber };
+-			}
+-		}
+ 		maybeTriggerShepherdAfterShip({ dryRun, projectRoot, fireAndForget: trigger });
+ 		return {
+ 			success: true,
+@@ -683,6 +724,8 @@ module.exports = {
+ 			createPr: deps.createPr,
+ 			issueId,
+ 			registerIssueLink: deps.registerIssueLink,
++			buildIssueDeps: deps.buildIssueDeps,
++			linkageExec: deps.linkageExec,
+ 		});
+ 		if (!result.success) {
+ 			return result;
+@@ -705,6 +748,7 @@ module.exports = {
+ 	validatePRTitle,
+ 	createPR,
+ 	executeShip,
++	validateShipIssueLinkage,
+ 	registerShipIssueLinkage,
+ 	getBranchReadiness,
+ 	resolveBaseRemote,
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 2c392190..950cd8d0 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1305,15 +1305,25 @@ function upsertWorktreeRow(runtime, db, input) {
+ }
+ 
+ function listWorktreeRows(runtime, db, filter = {}) {
++	const limit = filter?.limit;
++	if (limit != null && (!Number.isSafeInteger(limit) || limit < 0)) {
++		throw new Error('listWorktrees limit must be a non-negative safe integer');
++	}
++	const limitClause = limit == null ? '' : ' LIMIT ?';
+ 	if (filter && filter.state) {
+ 		return safeAll(
+ 			runtime,
+ 			db,
+-			'SELECT * FROM kernel_worktrees WHERE state = ? ORDER BY registered_at DESC',
+-			[filter.state],
++			`SELECT * FROM kernel_worktrees WHERE state = ? ORDER BY registered_at DESC${limitClause}`,
++			limit == null ? [filter.state] : [filter.state, limit],
+ 		);
+ 	}
+-	return safeAll(runtime, db, 'SELECT * FROM kernel_worktrees ORDER BY registered_at DESC');
++	return safeAll(
++		runtime,
++		db,
++		`SELECT * FROM kernel_worktrees ORDER BY registered_at DESC${limitClause}`,
++		limit == null ? [] : [limit],
++	);
+ }
+ 
+ // --- Stage-run registry (f61601ab). kernel_stage_runs records the REAL workflow
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 5fd1cd64..370df636 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -44,6 +44,7 @@ const brokerMod = require('../kernel/broker');
+ const { STALE_MS } = shepherdLease;
+ const CANONICAL_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+ const GH_COMMAND_TIMEOUT_MS = 30_000;
++const MAX_ACTIVE_WORKTREES = 10_000;
+ const LINKAGE_FIELDS = ['issue_id', 'worktree_id', 'journal_ptr'];
+ 
+ function normalizeRepository(value) {
+@@ -66,13 +67,15 @@ function resolveCanonicalRepository(runGh) {
+ 	}
+ }
+ 
++function normalizeGitCommonDir(value) {
++	if (typeof value !== 'string' || !value) return null;
++	const resolved = path.resolve(value);
++	return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++}
++
+ function sameGitCommonDir(left, right) {
+-	if (typeof left !== 'string' || typeof right !== 'string' || !left || !right) return false;
+-	const normalize = (value) => {
+-		const resolved = path.resolve(value);
+-		return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+-	};
+-	return normalize(left) === normalize(right);
++	const normalizedLeft = normalizeGitCommonDir(left);
++	return normalizedLeft != null && normalizedLeft === normalizeGitCommonDir(right);
+ }
+ 
+ /**
+@@ -216,7 +219,7 @@ async function gatherDesired(gitCommonDir, opts = {}) {
+ 	}
+ 	try {
+ 		if (broker && typeof broker.listWorktrees === 'function') {
+-			worktreeRows = await broker.listWorktrees({ state: 'active' });
++			worktreeRows = await broker.listWorktrees({ state: 'active', limit: MAX_ACTIVE_WORKTREES + 1 });
+ 		}
+ 	} catch {
+ 		/* older/unavailable registry → preserve the existing PR-row linkage behavior */
+@@ -227,6 +230,9 @@ async function gatherDesired(gitCommonDir, opts = {}) {
+ 	// basename/number match preserves links across force-pushes; cross-repository,
+ 	// ambiguous, and other malformed rows never bind.
+ 	const canonicalRepo = normalizeRepository(repo);
++	if (Array.isArray(worktreeRows) && worktreeRows.length > MAX_ACTIVE_WORKTREES) {
++		return { openPrs: [], gitCommonDir, listingOk: false, repositoryOk: false };
++	}
+ 	const legacyRepo = canonicalRepo ? canonicalRepo.slice(canonicalRepo.lastIndexOf('/') + 1) : null;
+ 	const validPrNumber = (value) => (Number.isSafeInteger(value) && value > 0)
+ 		|| (typeof value === 'string' && /^[1-9][0-9]*$/.test(value));
+@@ -287,12 +293,28 @@ async function gatherDesired(gitCommonDir, opts = {}) {
+ 		const exact = exactRows.get(String(p.number)) || [];
+ 		return exact.length === 1 ? exact[0] : null;
+ 	};
+-	const worktreesForBranch = (branch) => (Array.isArray(worktreeRows) ? worktreeRows : [])
+-		.filter((row) => row && row.state === 'active' && row.branch === branch);
++	const worktreeRepo = canonicalRepo || repo;
++	const desiredCommonDir = normalizeGitCommonDir(gitCommonDir);
++	const worktreeIndex = new Map();
++	const worktreeBranchCounts = new Map();
++	const worktreeKey = (branch, commonDir = desiredCommonDir) => `${worktreeRepo}\0${commonDir || ''}\0${branch}`;
++	for (const row of Array.isArray(worktreeRows) ? worktreeRows : []) {
++		if (!row || row.state !== 'active') continue;
++		const branch = row.branch;
++		if (typeof branch !== 'string' || branch === '') continue;
++		worktreeBranchCounts.set(branch, (worktreeBranchCounts.get(branch) || 0) + 1);
++		const key = worktreeKey(branch, normalizeGitCommonDir(row.git_common_dir));
++		const candidates = worktreeIndex.get(key) || [];
++		candidates.push(row);
++		worktreeIndex.set(key, candidates);
++	}
++	const worktreesForBranch = (branch) => worktreeIndex.get(worktreeKey(branch)) || [];
+ 	for (const pr of ghPrs) {
+-		const candidates = worktreesForBranch(pr && pr.headRefName);
+-		if (candidates.length === 0) continue;
+-		if (candidates.length !== 1 || !sameGitCommonDir(candidates[0].git_common_dir, gitCommonDir)) {
++		const branch = pr && pr.headRefName;
++		const branchCount = worktreeBranchCounts.get(branch) || 0;
++		if (branchCount === 0) continue;
++		const candidates = worktreesForBranch(branch);
++		if (branchCount !== 1 || candidates.length !== 1 || !sameGitCommonDir(candidates[0].git_common_dir, gitCommonDir)) {
+ 			return { openPrs: [], gitCommonDir, listingOk: false, repositoryOk: false };
+ 		}
+ 		const candidate = candidates[0];
+diff --git a/test/commands/ship.test.js b/test/commands/ship.test.js
+index a822d8dc..c64b6805 100644
+--- a/test/commands/ship.test.js
++++ b/test/commands/ship.test.js
+@@ -1,4 +1,8 @@
+ const { describe, test, expect, setDefaultTimeout } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { execFileSync } = require('node:child_process');
+ const shipCommand = require('../../lib/commands/ship.js');
+ const {
+ 	extractKeyDecisions,
+@@ -7,6 +11,7 @@ const {
+ 	generatePRBody,
+ 	createPR,
+ 	executeShip,
++	validateShipIssueLinkage,
+ 	registerShipIssueLinkage,
+ 	getBranchReadiness,
+ 	resolveBaseRemote,
+@@ -523,38 +528,241 @@ No test scenarios section.`;
+ 	});
+ 
+ 	describe('Full ship workflow', () => {
+-		test('explicit issue registration rejects an existing cross-repository branch binding', async () => {
++		test('ordinary PR preflights fail before the default Kernel factory initializes', async () => {
++			const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ship-preflight-'));
++			const issueId = 'ef770652-8af5-4520-95b1-617208225953';
++			try {
++				execFileSync('git', ['init'], { cwd: projectRoot, stdio: 'ignore' });
++				execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: projectRoot });
++				execFileSync('git', ['config', 'user.email', 'forge@example.com'], { cwd: projectRoot });
++				fs.writeFileSync(path.join(projectRoot, 'seed.txt'), 'seed\n');
++				execFileSync('git', ['add', 'seed.txt'], { cwd: projectRoot });
++				execFileSync('git', ['commit', '-m', 'test: seed'], { cwd: projectRoot, stdio: 'ignore' });
++				execFileSync('git', ['switch', '-c', 'feat/linked'], { cwd: projectRoot, stdio: 'ignore' });
++				const databasePath = path.join(projectRoot, '.git', 'forge', 'kernel.sqlite');
++				const result = await executeShip({
++					featureSlug: 'test-feature',
++					title: 'feat: linked ship',
++					projectRoot,
++					issueId,
++					createPr: (input) => createPR({
++						...input,
++						cwd: projectRoot,
++						exec: () => {
++							const error = new Error('spawn gh ENOENT');
++							error.code = 'ENOENT';
++							throw error;
++						},
++					}),
++				});
++				expect(result.error).toContain('GitHub CLI (gh) not found');
++				expect(fs.existsSync(databasePath)).toBe(false);
++			} finally {
++				fs.rmSync(projectRoot, { recursive: true, force: true });
++			}
++		});
++
++		const ordinaryPreflightFailures = [
++			{
++				name: 'missing GitHub CLI',
++				exec: () => {
++					const error = new Error('spawn gh ENOENT');
++					error.code = 'ENOENT';
++					throw error;
++				},
++			},
++			{
++				name: 'branch with no diff',
++				exec: (command, args) => {
++					if (command === 'gh' && args[0] === '--version') return 'gh version 2.81.0\n';
++					if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') return '.git\n';
++					if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
++						throw new Error('no upstream');
++					}
++					if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/owner/repo.git\n';
++					if (command === 'git' && args[0] === 'symbolic-ref') return 'refs/remotes/origin/main\n';
++					if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--verify') return 'refs/remotes/origin/main\n';
++					if (command === 'git' && args[0] === 'fetch') return '';
++					if (command === 'git' && args[0] === 'rev-list') return '0\t1\n';
++					if (command === 'git' && args[0] === 'diff') return '';
++					throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
++				},
++			},
++		];
++
++		for (const scenario of ordinaryPreflightFailures) {
++			test(`${scenario.name} leaves linkage and PR state unchanged`, async () => {
++				let linkageWrites = 0;
++				let prWrites = 0;
++				const result = await executeShip({
++					featureSlug: 'test-feature',
++					title: 'feat: linked ship',
++					projectRoot: '/repo',
++					issueId: 'ef770652-8af5-4520-95b1-617208225953',
++					registerIssueLink: async () => { linkageWrites += 1; return { success: true }; },
++					createPr: (input) => createPR({
++						...input,
++						cwd: '/repo',
++						exec: (command, args, options) => {
++							if (command === 'gh' && args[0] === 'pr') prWrites += 1;
++							return scenario.exec(command, args, options);
++						},
++					}),
++				});
++				expect(result.success).toBe(false);
++				expect(linkageWrites).toBe(0);
++				expect(prWrites).toBe(0);
++			});
++		}
++
++		const rejectedLinkages = [
++			{
++				name: 'nonexistent issue',
++				findIssues: [],
++				worktrees: [],
++			},
++			{
++				name: 'ambiguous branch linkage',
++				findIssues: [{ id: 'ef770652-8af5-4520-95b1-617208225953' }],
++				worktrees: [
++					{ id: 'WT-1', branch: 'feat/linked', path: '/repo', git_common_dir: '/repo/.git', state: 'active' },
++					{ id: 'WT-2', branch: 'feat/linked', path: '/repo', git_common_dir: '/repo/.git', state: 'active' },
++				],
++			},
++			{
++				name: 'cross-repository branch linkage',
++				findIssues: [{ id: 'ef770652-8af5-4520-95b1-617208225953' }],
++				worktrees: [{
++					id: 'WT-7', branch: 'feat/linked', path: '/other',
++					git_common_dir: '/other/.git', state: 'active',
++				}],
++			},
++			{
++				name: 'exact issue mismatch',
++				findIssues: [{ id: 'ef770652-8af5-4520-95b1-617208225953' }],
++				worktrees: [{
++					id: 'WT-7', branch: 'feat/linked', path: '/repo', git_common_dir: '/repo/.git',
++					issue_id: '16b00eba-64e1-4657-bb5d-366e7b4dc69d', state: 'active',
++				}],
++			},
++		];
++
++		for (const scenario of rejectedLinkages) {
++			test(`rejects ${scenario.name} before creating a PR`, async () => {
++				const issueId = 'ef770652-8af5-4520-95b1-617208225953';
++				const order = [];
++				let prWrites = 0;
++				const result = await executeShip({
++					featureSlug: 'test-feature',
++					title: 'feat: linked ship',
++					projectRoot: '/repo',
++					issueId,
++					registerIssueLink: async (input) => {
++						const linkage = await registerShipIssueLinkage({
++							...input,
++							exec: (_command, args) => args.includes('--abbrev-ref') ? 'feat/linked\n' : '/repo/.git\n',
++							buildDeps: async () => ({ kernelDriver: {
++								findIssueIdsByPrefix: async () => scenario.findIssues,
++								listWorktrees: () => scenario.worktrees,
++								registerWorktree: () => {},
++								close: () => {},
++							} }),
++						});
++						if (!linkage.success) order.push('LINKAGE_REJECT');
++						return linkage;
++					},
++					createPr: async (input) => {
++						const linked = await input.beforeCreate();
++						if (linked && !linked.success) return linked;
++						order.push('CREATE_PR_WRITE');
++						prWrites += 1;
++						return { success: true, prUrl: 'https://github.com/owner/forge/pull/7', prNumber: 7 };
++					},
++				});
++				expect(result.success).toBe(false);
++				expect(order).toEqual(['LINKAGE_REJECT']);
++				expect(prWrites).toBe(0);
++			});
++		}
++
++		test('explicit issue validation rejects an existing cross-repository branch binding without writing', async () => {
+ 			const issueId = 'ef770652-8af5-4520-95b1-617208225953';
+ 			let writes = 0;
+-			const result = await registerShipIssueLinkage({
++			const driver = {
++				findIssueIdsByPrefix: async () => [{ id: issueId }],
++				listWorktrees: () => [{
++					id: 'WT-7', branch: 'feat/linked', path: '/other',
++					git_common_dir: '/other/.git', issue_id: issueId, state: 'active',
++				}],
++				registerWorktree: () => { writes += 1; },
++			};
++			const result = await validateShipIssueLinkage({
+ 				projectRoot: '/repo', issueId,
+ 				exec: (_command, args) => args.includes('--abbrev-ref') ? 'feat/linked\n' : '/repo/.git\n',
+-				buildDeps: async () => ({ kernelDriver: {
+-					findIssueIdsByPrefix: async () => [{ id: issueId }],
+-					listWorktrees: () => [{
+-						id: 'WT-7', branch: 'feat/linked', path: '/other',
+-						git_common_dir: '/other/.git', issue_id: issueId, state: 'active',
+-					}],
+-					registerWorktree: () => { writes += 1; },
+-				} }),
++				driver,
+ 			});
+ 			expect(result.success).toBe(false);
+ 			expect(writes).toBe(0);
+ 		});
+ 
++		test('validated issue linkage remains read-only until registration is committed', async () => {
++			const issueId = 'ef770652-8af5-4520-95b1-617208225953';
++			let writes = 0;
++			const driver = {
++				findIssueIdsByPrefix: async () => [{ id: issueId }],
++				listWorktrees: () => [],
++				registerWorktree: () => { writes += 1; },
++			};
++			const validation = await validateShipIssueLinkage({
++				projectRoot: '/repo', issueId,
++				exec: (_command, args) => args.includes('--abbrev-ref') ? 'feat/linked\n' : '/repo/.git\n',
++				driver,
++			});
++			expect(validation.success).toBe(true);
++			expect(writes).toBe(0);
++			expect(validation.registration).toMatchObject({ issue_id: issueId, branch: 'feat/linked' });
++		});
++
++		for (const issueExists of [false, true]) {
++			test(`default linkage lifecycle closes its owned driver after ${issueExists ? 'registration' : 'rejection'}`, async () => {
++				const issueId = 'ef770652-8af5-4520-95b1-617208225953';
++				let closes = 0;
++				let registrations = 0;
++				const result = await registerShipIssueLinkage({
++					projectRoot: '/repo',
++					issueId,
++					exec: (_command, args) => args.includes('--abbrev-ref') ? 'feat/linked\n' : '/repo/.git\n',
++					buildDeps: async () => ({ kernelDriver: {
++						findIssueIdsByPrefix: async () => issueExists ? [{ id: issueId }] : [],
++						listWorktrees: () => [],
++						registerWorktree: () => { registrations += 1; },
++						close: () => { closes += 1; },
++					} }),
++				});
++				expect(result.success).toBe(issueExists);
++				expect(registrations).toBe(issueExists ? 1 : 0);
++				expect(closes).toBe(1);
++			});
++		}
++
+ 		test('explicit --issue is registered before the shepherd wake', async () => {
+ 			const order = [];
+ 			const issueId = 'ef770652-8af5-4520-95b1-617208225953';
+ 			const result = await shipCommand.handler(
+ 				['test-feature', 'feat: linked ship', '--issue', issueId],
+ 				{}, '/repo', {
+-					createPr: async () => ({ success: true, prUrl: 'https://github.com/owner/forge/pull/7', prNumber: 7 }),
++					createPr: async (input) => {
++						const linked = await input.beforeCreate();
++						if (!linked.success) return linked;
++						order.push(['create']);
++						return { success: true, prUrl: 'https://github.com/owner/forge/pull/7', prNumber: 7 };
++					},
+ 					registerIssueLink: async (input) => { order.push(['link', input.issueId]); return { success: true }; },
+ 					fireAndForget: () => { order.push(['wake']); },
+ 				},
+ 			);
+ 			expect(result.success).toBe(true);
+-			expect(order).toEqual([['link', issueId], ['wake']]);
++			expect(order).toEqual([['link', issueId], ['create'], ['wake']]);
+ 		});
+ 
+ 		test.skip('should execute complete ship workflow', async () => {
+diff --git a/test/kernel/sqlite-driver.test.js b/test/kernel/sqlite-driver.test.js
+index 4ae90bd8..3ecb401c 100644
+--- a/test/kernel/sqlite-driver.test.js
++++ b/test/kernel/sqlite-driver.test.js
+@@ -230,4 +230,35 @@ describe('Kernel SQLite runtime driver selection', () => {
+ 			db.close();
+ 		}
+ 	});
++
++	test('listWorktrees enforces the requested row limit in the real SQLite query', async () => {
++		const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++		const { createLocalBroker } = require('../../lib/kernel/broker');
++		const databasePath = path.join(makeTempDir(), 'kernel.sqlite');
++		const config = { databasePath };
++		const driver = createBuiltinSQLiteDriver({ databasePath });
++		const broker = createLocalBroker({ projectRoot: makeTempDir(), databasePath, driver });
++
++		try {
++			await broker.initialize();
++			await driver.exec(`
++				WITH digits(value) AS (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)),
++				rows(number) AS (
++					SELECT a.value + 10*b.value + 100*c.value + 1000*d.value + 10000*e.value
++					FROM digits a CROSS JOIN digits b CROSS JOIN digits c CROSS JOIN digits d CROSS JOIN digits e
++				)
++				INSERT INTO kernel_worktrees
++					(id, git_common_dir, path, branch, actor, issue_id, work_folder, registered_at, state)
++				SELECT
++					printf('WT-%05d', number), '/g', printf('/repo/%05d', number), printf('feat/%05d', number),
++					null, null, null, printf('2026-08-10T00:00:%05dZ', number), 'active'
++				FROM rows WHERE number < 10002;
++			`, config);
++
++			const rows = driver.listWorktrees({ state: 'active', limit: 10001 }, config);
++			expect(rows).toHaveLength(10001);
++		} finally {
++			driver.close();
++		}
++	});
+ });
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 5b0eb281..6fa00baa 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -746,6 +746,62 @@ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () =>
+ 		}
+ 	});
+ 
++	test('gatherDesired builds one bounded worktree index instead of rescanning per PR', async () => {
++		let listCalls = 0;
++		let branchReads = 0;
++		let requestedLimit = null;
++		const worktrees = Array.from({ length: 200 }, (_, index) => {
++			const row = {
++				id: `WT-${index}`, git_common_dir: '/g', issue_id: `ISSUE-${index}`, state: 'active',
++			};
++			Object.defineProperty(row, 'branch', {
++				enumerable: true,
++				get: () => { branchReads += 1; return `feat/${index}`; },
++			});
++			return row;
++		});
++		const openPrs = Array.from({ length: 200 }, (_, index) => ({
++			number: index + 1, headRefName: `feat/${index}`, headRefOid: `sha-${index}`,
++		}));
++		const desired = await executor.gatherDesired('/g', {
++			repo: 'owner/forge',
++			runGh: () => JSON.stringify(openPrs),
++			broker: {
++				listOpenPrs: async () => [],
++				listWorktrees: async (query) => {
++					listCalls += 1;
++					requestedLimit = query.limit;
++					return worktrees;
++				},
++			},
++		});
++		expect(desired.openPrs).toHaveLength(200);
++		expect(listCalls).toBe(1);
++		expect(Number.isSafeInteger(requestedLimit)).toBe(true);
++		expect(requestedLimit).toBeGreaterThan(worktrees.length);
++		expect(branchReads).toBe(worktrees.length);
++	});
++
++	test('gatherDesired fails closed when active worktrees exceed the bounded read', async () => {
++		let requestedLimit = null;
++		const desired = await executor.gatherDesired('/g', {
++			repo: 'owner/forge',
++			runGh: () => JSON.stringify([{ number: 7, headRefName: 'feat/linked', headRefOid: 'sha7' }]),
++			broker: {
++				listOpenPrs: async () => [],
++				listWorktrees: async (query) => {
++					requestedLimit = query.limit;
++					return Array.from({ length: (query.limit || 10_000) + 1 }, (_, index) => ({
++						id: `WT-${index}`, git_common_dir: '/g', branch: `other/${index}`, state: 'active',
++					}));
++				},
++			},
++		});
++		expect(Number.isSafeInteger(requestedLimit)).toBe(true);
++		expect(desired.listingOk).toBe(false);
++		expect(desired.openPrs).toEqual([]);
++	});
++
+ 	test('gatherDesired reports listingOk:false when the gh call throws', async () => {
+ 		const desired = await executor.gatherDesired('/g', {
+ 			repo: 'forge', broker: null,
+-- 
+2.51.0.windows.1
+

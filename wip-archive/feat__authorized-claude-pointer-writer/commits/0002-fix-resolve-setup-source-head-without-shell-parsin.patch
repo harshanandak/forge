@@ -1,0 +1,104 @@
+From e436f39bac7c87f53d6b5a8f1c97b1cc7d065d00 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 17 Aug 2026 13:48:57 +0530
+Subject: [PATCH] fix: resolve setup source head without shell parsing
+
+---
+ lib/commands/setup.js                  | 22 +++++++++++++++++--
+ test/setup-claude-pointer-head.test.js | 30 ++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 2 deletions(-)
+ create mode 100644 test/setup-claude-pointer-head.test.js
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index bc65fff6..7ab85f32 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -13,7 +13,7 @@ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ const readline = require('node:readline');
+-const { execSync } = require('node:child_process');
++const { execFileSync, execSync } = require('node:child_process');
+ 
+ // Compute packageDir relative to this file (lib/commands/setup.js -> project root).
+ // packageDir stays a runtime value for asset copying; requires use static
+@@ -167,6 +167,23 @@ function safeExec(cmd, opts = {}) {
+   }
+ }
+ 
++/**
++ * Resolve the current source revision without passing Git arguments through a shell.
++ * @param {string} cwd - Repository working directory
++ * @param {Function} commandRunner - execFileSync-compatible runner for tests
++ * @returns {string} Full source HEAD, or empty when Git cannot resolve it
++ */
++function resolveCurrentSourceHead(cwd = projectRoot, commandRunner = execFileSync) {
++  try {
++    return commandRunner('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
++      cwd,
++      stdio: 'pipe',
++    }).toString().trim();
++  } catch (_e) { // NOSONAR — fail closed when the source revision is unavailable
++    return '';
++  }
++}
++
+ /**
+  * Detect package manager
+  */
+@@ -2074,7 +2091,7 @@ async function createAgentLinkFile(agent, symlinkOnly = false) {
+   }
+   if (agent.linkFile !== 'CLAUDE.md' || result !== 'existing-import') return;
+ 
+-  const sourceHead = safeExec('git rev-parse --verify HEAD^{commit}', { cwd: projectRoot });
++  const sourceHead = resolveCurrentSourceHead();
+   const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'));
+   const actor = process.env.FORGE_PROTECTED_STATE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'forge';
+   const authorization = await issueGeneratedHarnessClaudeAuthorization(projectRoot, {
+@@ -4560,6 +4577,7 @@ module.exports = {
+   repairRuntimeReadiness,
+   _showBanner: showBanner,
+   backupAndRemoveLegacyCursorRules,
++  resolveCurrentSourceHead,
+ 
+   // State accessors for testing
+   _getState: () => ({ projectRoot, FORCE_MODE, VERBOSE_MODE, NON_INTERACTIVE, SYMLINK_ONLY, PKG_MANAGER }),
+diff --git a/test/setup-claude-pointer-head.test.js b/test/setup-claude-pointer-head.test.js
+new file mode 100644
+index 00000000..dac105c2
+--- /dev/null
++++ b/test/setup-claude-pointer-head.test.js
+@@ -0,0 +1,30 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const setupCommand = require('../lib/commands/setup');
++
++describe('CLAUDE.md pointer authorization source head', () => {
++	test('passes HEAD^{commit} as argv without shell parsing', () => {
++		let call;
++		const sourceHead = setupCommand.resolveCurrentSourceHead('C:\\repo', (file, args, options) => {
++			call = { file, args, options };
++			return Buffer.from('deadbeef\n');
++		});
++
++		expect(sourceHead).toBe('deadbeef');
++		expect(call).toEqual({
++			file: 'git',
++			args: ['rev-parse', '--verify', 'HEAD^{commit}'],
++			options: { cwd: 'C:\\repo', stdio: 'pipe' },
++		});
++		expect(call.options.shell).toBeUndefined();
++	});
++
++	test('fails closed when source head resolution fails', () => {
++		const sourceHead = setupCommand.resolveCurrentSourceHead('C:\\repo', () => {
++			throw new Error('git failed');
++		});
++
++		expect(sourceHead).toBe('');
++	});
++});
+-- 
+2.51.0.windows.1
+

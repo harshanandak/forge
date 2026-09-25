@@ -1,0 +1,104 @@
+From 69484157b8b00d425d8b73f959fcf9a42d531f09 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 16:10:58 +0530
+Subject: [PATCH] fix: preserve imported provenance across bind results
+
+---
+ lib/pr-monitor/watch-owner.js       | 26 +++++++++++++++++++++++---
+ test/pr-monitor/watch-owner.test.js | 27 +++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 3 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 8e4cbf19..d6d9f3da 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -309,12 +309,19 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			&& stampedOwnerTimestamp(result, input, record, 'startedAt')
+ 			&& stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+-	case 'watchOwnerBindRunning':
++	case 'watchOwnerBindRunning': {
++		// Imported provenance and the original started_at survive the bind.
++		const prior = input.expectedSnapshot;
++		if (!prior || prior.legacy_evidence_hash === undefined
++			|| prior.started_at === undefined) return false;
+ 		return validOwnerSuccess(result, record, 'bound', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 		}, 'running', true)
+ 			&& stampedOwnerTimestamp(result, input, record, 'updatedAt')
+-			&& stampedOwnerTimestamp(result, input, record, 'heartbeatAt');
++			&& stampedOwnerTimestamp(result, input, record, 'heartbeatAt')
++			&& Object.is(record.legacyEvidenceHash, prior.legacy_evidence_hash)
++			&& Object.is(record.startedAt, prior.started_at);
++	}
+ 	case 'watchOwnerHeartbeat': {
+ 		const priorPhase = input.expectedSnapshot?.phase;
+ 		if (priorPhase !== 'running' && priorPhase !== 'stop_requested') return false;
+@@ -665,14 +672,27 @@ async function reserveReopened(ctx, input, opts = {}) {
+ }
+ 
+ async function bindRunning(ctx, input, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerBindRunning']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerRead', 'watchOwnerBindRunning']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalid();
+ 	input = capturedInput;
+ 	const value = mutationInput(ctx, input, boundOpts);
+ 	if (!value || !positivePid(input?.controllerPid) || !positivePid(input?.pid)) return invalid('invalid_pid');
++	// Imported provenance (legacy evidence hash, started_at) must survive the
++	// bind, so capture the starting row first and bind the result to it.
++	const captured = captureAuthoritySnapshot(ctx, boundOpts);
++	if (!captured.ok) return invalid(captured.reason);
++	if (!captured.snapshot || !['starting', 'running'].includes(captured.snapshot.phase)) {
++		return invalid('phase_mismatch');
++	}
++	if (captured.snapshot.generation !== value.generation) return invalid('generation_mismatch');
++	if (captured.snapshot.phase === 'starting'
++		&& captured.snapshot.controller_pid !== Number(input.controllerPid)) {
++		return invalid('controller_pid_mismatch');
++	}
+ 	return invoke('watchOwnerBindRunning', value, {
+ 		controllerPid: Number(input.controllerPid), watcherPid: Number(input.pid),
++		expectedSnapshot: captured.snapshot,
+ 	}, boundOpts);
+ }
+ 
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 3f1f568a..1ad86817 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2776,4 +2776,31 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		}));
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
+ 	});
++
++	test('binds a running result to the captured provenance of the starting row', async () => {
++		const ctx = { repo: 'acme/forge', pr: 980 };
++		await seedGate(ctx);
++		const imported = await owner.importLegacyStarting(ctx, {
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
++			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
++			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
++		}, authorityOpts());
++		expect(imported.ok).toBe(true);
++		const cleared = await owner.bindRunning(ctx, {
++			generation: imported.record.generation, controllerPid: CONTROLLER_PID,
++			pid: WATCHER_PID, updatedAt: NEXT,
++		}, authorityOpts({
++			...driver,
++			watchOwnerBindRunning: input => ({
++				ok: true, changed: true, reason: 'bound',
++				row: {
++					repo: ctx.repo, pr: 980, version: 1, generation: input.generation, phase: 'running',
++					controller_pid: null, watcher_pid: WATCHER_PID, started_at: NOW,
++					updated_at: NEXT, heartbeat_at: NEXT, terminal_receipt_id: null,
++					block_reason: null, legacy_evidence_hash: null,
++				},
++			}),
++		}));
++		expect(cleared).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
+ });
+-- 
+2.51.0.windows.1
+

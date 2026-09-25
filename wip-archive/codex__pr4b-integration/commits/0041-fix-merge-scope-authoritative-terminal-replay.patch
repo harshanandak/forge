@@ -1,0 +1,269 @@
+From 7d64fd41ee5e6372d276fe226a227337994277e5 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:18:39 +0530
+Subject: [PATCH] fix(merge): scope authoritative terminal replay
+
+---
+ lib/commands/merge.js                         | 87 +++++++++++++------
+ ...merge-authority-review-regressions.test.js | 15 +++-
+ test/commands/merge-authority.test.js         | 36 +++++++-
+ 3 files changed, 107 insertions(+), 31 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 6732e318..a7e51783 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -251,11 +251,14 @@ async function defaultVerifyIssueOwnership({
+   };
+ }
+ 
+-function selectPrBindingRow(rows, repository, number) {
++function selectPrBindingRow(rows, repository, number, gitCommonDir = null) {
+   if (!Array.isArray(rows)) return { error: 'Kernel PR linkage is unreadable.' };
+-  const candidateRows = repository
++  const repositoryRows = repository
+     ? rows.filter(row => normalizeRepository(row?.repo) === repository)
+     : rows;
++  const candidateRows = gitCommonDir
++    ? repositoryRows.filter(row => row?.git_common_dir === gitCommonDir)
++    : repositoryRows;
+   if (candidateRows.some(row => !normalizeKernelPrNumber(row.number))) {
+     return { error: 'Kernel PR linkage contains a malformed PR number.' };
+   }
+@@ -282,12 +285,27 @@ async function openPrBindingBroker(projectRoot, buildBroker) {
+ 
+ async function readPrBindingRows(built, allowRetired, { issueId, number, repository }) {
+   if (allowRetired) {
+-    const target = { issue_id: issueId, pr_number: Number(number) };
++    const target = {
++      issue_id: issueId,
++      pr_number: Number(number),
++      git_common_dir: built.gitCommonDir,
++    };
+     if (repository) target.repo = repository;
+     const read = await built.broker.readTrace(target);
+-    return read?.pull_requests;
++    return { rows: read?.pull_requests, gaps: read?.gaps };
+   }
+-  return built.broker.listOpenPrs(built.gitCommonDir);
++  return { rows: await built.broker.listOpenPrs(built.gitCommonDir), gaps: [] };
++}
++
++function terminalTraceIsIncomplete(gaps, row) {
++  if (!Array.isArray(gaps)) return true;
++  const rowId = typeof row?.id === 'string' && row.id ? row.id : null;
++  return gaps.some((gap) => {
++    if (rowId && gap === `pull_requests:${rowId}:unlinked_issue`) return true;
++    if (!/^iterations:.*:(?:missing|incomplete|overflow)$/.test(gap)) return false;
++    return !rowId || ['missing', 'incomplete', 'overflow']
++      .some(suffix => gap === `iterations:${rowId}:${suffix}`);
++  });
+ }
+ 
+ async function defaultVerifyPrIssueBinding({
+@@ -313,12 +331,21 @@ async function defaultVerifyPrIssueBinding({
+       || typeof built.gitCommonDir !== 'string' || !built.gitCommonDir) {
+       return { bound: false, error: 'Kernel PR linkage reader is unavailable.' };
+     }
+-    const rows = await readPrBindingRows(built, allowRetired, { issueId, number, repository });
+-    const selection = selectPrBindingRow(rows, repository, number);
++    const linkage = await readPrBindingRows(built, allowRetired, { issueId, number, repository });
++    const { rows } = linkage;
++    const selection = selectPrBindingRow(
++      rows,
++      repository,
++      number,
++      allowRetired ? built.gitCommonDir : null,
++    );
+     if (!selection.row) return { bound: false, error: selection.error };
+     const { row } = selection;
+     repository = repository || normalizeRepository(row.repo);
+     const bound = (allowRetired || row.state === 'open') && row.issue_id === issueId;
++    if (allowRetired && bound && terminalTraceIsIncomplete(linkage.gaps, row)) {
++      return { bound: false, error: 'Kernel merged PR evidence is incomplete or ambiguous.' };
++    }
+     const terminalEvidence = allowRetired && bound
+       ? terminalEvidenceFromTrace(row, {
+         issueId,
+@@ -1035,6 +1062,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const gh = deps.gh || defaultGh;
+   const exactMergeIdentity = !parsed.error && parsed.expectedHead && parsed.issueId;
+   let prContext; let prState = '';
++  let preProviderReplayFailure = null;
+   if (exactMergeIdentity) {
+     try {
+       const replay = await recoverMergedTerminal({
+@@ -1049,26 +1077,15 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+         replayOnly: true,
+       });
+       if (replay.replayMissing !== true) {
+-        return replay.success ? replay : { ...replay, merged: false };
++        if (replay.success) return replay;
++        preProviderReplayFailure = { ...replay, merged: false };
+       }
+     } catch (error) {
+-      return { success: false, merged: false, error: `Merged PR terminal evidence replay failed: ${error.message}` };
+-    }
+-    try {
+-      prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
+-    } catch (err) {
+-      return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
+-    }
+-    prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
+-    if (prState === 'MERGED') {
+-      try {
+-        const replay = await recoverMergedTerminal({
+-          pr, parsed, root, config: {}, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
+-        });
+-        if (replay.replayMissing !== true) return replay;
+-      } catch (error) {
+-        return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
+-      }
++      preProviderReplayFailure = {
++        success: false,
++        merged: false,
++        error: `Merged PR terminal evidence replay failed: ${error.message}`,
++      };
+     }
+   }
+ 
+@@ -1094,6 +1111,26 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: false, reason };
+   }
++  if (preProviderReplayFailure) return preProviderReplayFailure;
++
++  if (exactMergeIdentity) {
++    try {
++      prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
++    } catch (err) {
++      return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
++    }
++    prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
++    if (prState === 'MERGED') {
++      try {
++        const replay = await recoverMergedTerminal({
++          pr, parsed, root, config: {}, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
++        });
++        if (replay.replayMissing !== true) return replay;
++      } catch (error) {
++        return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
++      }
++    }
++  }
+ 
+   // Opted in but no rules → refuse (fail-closed): an empty ruleset is vacuously
+   // "allowed", which would merge unconditionally. Treat that as misconfiguration.
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 8aa8c90c..f6687aeb 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -600,14 +600,18 @@ describe('merge authority — exact reviewer regressions', () => {
+           readTrace: async (target) => {
+             traceTarget = target;
+             return ({
++            gaps: [],
+             pull_requests: [{
+-              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              id: 'pr-current', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+               branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
+               iterations: [{
+                 id: 'merged-event', type: 'pr.merged', at: '2026-08-01T12:00:00.000Z',
+                 issue_id: ISSUE, issue_revision: 7, head_sha: HEAD,
+                 work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
+               }],
++            }, {
++              id: 'pr-foreign', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              branch: 'other/merge', git_common_dir: '/other/.git', iterations: [],
+             }],
+             });
+           },
+@@ -626,7 +630,7 @@ describe('merge authority — exact reviewer regressions', () => {
+     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+     expect(result.terminalEvidence.decisionId).toMatch(uuid);
+     expect(result.terminalEvidence.receiptId).toMatch(uuid);
+-    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42 });
++    expect(traceTarget).toEqual({ issue_id: ISSUE, pr_number: 42, git_common_dir: '/repo/.git' });
+   });
+ 
+   test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
+@@ -638,8 +642,9 @@ describe('merge authority — exact reviewer regressions', () => {
+       allowRetired: true,
+       buildBroker: async () => ({
+         gitCommonDir: '/repo/.git',
+-        broker: { readTrace: async () => ({ pull_requests: [{
+-          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed', iterations: [],
++        broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
++          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed',
++          git_common_dir: '/repo/.git', iterations: [],
+         }] }) },
+         driver: { close() {} },
+       }),
+@@ -661,8 +666,10 @@ describe('merge authority — exact reviewer regressions', () => {
+         gitCommonDir: '/repo/.git',
+         broker: {
+           readTrace: async () => ({
++            gaps: [],
+             pull_requests: [{
+               repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              git_common_dir: '/repo/.git',
+               iterations: [{
+                 type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
+                 issue_revision: 7, head_sha: null,
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 35ab8a83..aa5abad1 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -255,8 +255,9 @@ describe('merge command — mandatory release authority', () => {
+         fetchPrContext: async () => { fetches += 1; return context(); },
+         buildPrBindingBroker: async () => ({
+           gitCommonDir: '/repo/.git',
+-          broker: { readTrace: async () => ({ pull_requests: [{
+-            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed', iterations,
++          broker: { readTrace: async () => ({ gaps: [], pull_requests: [{
++            repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++            git_common_dir: '/repo/.git', iterations,
+           }] }) },
+           driver: { close() {} },
+         }),
+@@ -270,6 +271,37 @@ describe('merge command — mandatory release authority', () => {
+     }
+   });
+ 
++  test('fails closed on incomplete retired trace gaps before provider I/O', async () => {
++    for (const suffix of ['incomplete', 'overflow']) {
++      let fetches = 0;
++      const injected = deps({
++        fetchPrContext: async () => { fetches += 1; return context(); },
++        buildPrBindingBroker: async () => ({
++          gitCommonDir: '/repo/.git',
++          broker: { readTrace: async () => ({
++            gaps: [`iterations:pr-1:${suffix}`],
++            pull_requests: [{
++              id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              git_common_dir: '/repo/.git',
++              iterations: [{
++                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
++                issue_revision: 7, head_sha: HEAD,
++                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
++              }],
++            }],
++          }) },
++          driver: { close() {} },
++        }),
++      });
++      delete injected.verifyPrIssueBinding;
++
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
++
++      expect(out).toMatchObject({ success: false, merged: false });
++      expect(fetches).toBe(0);
++    }
++  });
++
+   test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
+     let gateChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,224 @@
+From add60effd5fcc12d76828dea977428ec2bc39465 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 14:14:17 +0530
+Subject: [PATCH] docs(onboarding): surface recall +
+ merge/insights/upgrade/gate/role in AGENTS.md and prime
+
+`forge setup` generates a project's AGENTS.md by copying/smart-merging Forge's
+own root AGENTS.md, so that file is the canonical onboarding surface new users
+and agents read. It told agents to `forge remember` but never `forge recall`
+(a write-only memory loop), and never surfaced `forge merge`, `forge insights`,
+`forge upgrade`, `forge gate`, or `forge role` (0 mentions).
+
+- AGENTS.md: close the remember/recall loop and add a concise, accurate
+  quick-reference line for each previously-invisible command (wording taken
+  from each command's real --help).
+- lib/orientation.js: add a bounded, preserve:true "Key Commands" section to
+  `forge prime` (session entry) so these capabilities are discoverable without
+  bloating the token budget; `forge orient` is unchanged.
+- test: regression test drives the real `forge setup` CLI against a fresh git
+  repo and asserts the generated AGENTS.md surfaces recall + the new commands,
+  guarding the gap from returning.
+
+Advances kernel issue 1be54343 (prime.js: embed one-glance orientation block).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ AGENTS.md                                 | 14 ++++-
+ lib/orientation.js                        | 45 ++++++++++++++-
+ test/agents-md-onboarding-surface.test.js | 70 +++++++++++++++++++++++
+ 3 files changed, 126 insertions(+), 3 deletions(-)
+ create mode 100644 test/agents-md-onboarding-surface.test.js
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 1d7df2c9..00e9004f 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -299,11 +299,23 @@ forge claim <id>      # Claim work
+ forge close <id>      # Complete work
+ ```
+ 
++**More commands worth knowing** (run `forge <command> --help` for full usage):
++
++```bash
++forge remember <note>          # Persist a project-memory note to a file-backed store
++forge recall [query]           # Retrieve project-memory notes back (the read half of remember)
++forge insights                 # Detect recurring evidence patterns, suggest conservative follow-ups
++forge upgrade                  # Preview and self-heal safe Forge upgrade readiness
++forge gate <verb> <gate-id>    # Toggle a workflow gate, or record/query human-gate approval events
++forge role <role> --use <skill> # Bind a role to a skill/ideology in .forge/config.yaml
++forge merge --auto <pr>        # Opt-in conditional auto-merge — merges only when configured rules pass (OFF by default)
++```
++
+ ### Rules
+ 
+ - Use `forge` as the routine command surface for issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. New issue-authority work routes through the Forge Kernel design. Use `forge issue` subcommands (e.g. `forge issue dep`, `forge issue comment`) for operations beyond the shortcuts above. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to the issue store.
+ - Run `forge prime` for detailed command reference and session close protocol
+-- Use `forge remember` for persistent knowledge — do NOT use MEMORY.md files
++- Use `forge remember` for persistent knowledge and `forge recall` to retrieve it back — do NOT use MEMORY.md files
+ 
+ ## Project Learnings
+ 
+diff --git a/lib/orientation.js b/lib/orientation.js
+index 968217bd..bbe00658 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -476,6 +476,7 @@ function applyBudget(sections, budgetTokens) {
+         'headline_decisions',
+         'active_work_decisions',
+         'active_claims',
++        'key_commands',
+       ],
+     },
+   };
+@@ -501,7 +502,7 @@ function cleanupSections(sections) {
+   });
+ }
+ 
+-function buildOrientation(projectRoot, options = {}) {
++function buildOrientationSections(projectRoot, options = {}) {
+   const project = buildProjectIdentity(projectRoot);
+   const sections = [
+     buildSection({
+@@ -525,6 +526,10 @@ function buildOrientation(projectRoot, options = {}) {
+     ...buildWorkSections(projectRoot, options),
+     ...buildQueueSections(),
+   ];
++  return { project, sections };
++}
++
++function assembleOrientationResult(project, sections, options) {
+   const budgeted = applyBudget(sections, options.budgetTokens ?? options.budget);
+ 
+   return {
+@@ -545,6 +550,37 @@ function buildOrientation(projectRoot, options = {}) {
+   };
+ }
+ 
++function buildOrientation(projectRoot, options = {}) {
++  const { project, sections } = buildOrientationSections(projectRoot, options);
++  return assembleOrientationResult(project, sections, options);
++}
++
++// Short, fixed reference of capabilities that are easy to miss at session entry:
++// closing the remember/recall memory loop, and commands with 0 mentions elsewhere
++// in the generated onboarding surface (merge, insights, upgrade, gate, role).
++// Kept intentionally tiny (a handful of one-liners) and `preserve: true` with a
++// low priority number so it survives prime's token budget even on data-heavy
++// projects — this is a fixed reference, not a manual, so it must not grow.
++const PRIME_KEY_COMMANDS_CONTENT = [
++  'forge remember <note> / forge recall [query] — write a memory note, then read it back',
++  'forge insights — detect recurring evidence patterns, suggest workflow follow-ups',
++  'forge upgrade [--dry-run] — preview/self-heal safe Forge upgrade readiness',
++  'forge gate <verb> <gate-id> — toggle a workflow gate, or approve/reject a human gate',
++  'forge role <role> --use <skill> — bind a role to a skill/ideology',
++  'forge merge --auto <pr> — opt-in conditional auto-merge (off by default)',
++].map(line => `- ${line}`).join('\n');
++
++function buildPrimeKeyCommandsSection() {
++  return buildSection({
++    id: 'key_commands',
++    title: 'Key Commands',
++    content: PRIME_KEY_COMMANDS_CONTENT,
++    sources: [source('AGENTS.md', 'static_reference', 'cli_help_summary', 'key_commands')],
++    priority: 2,
++    preserve: true,
++  });
++}
++
+ function findIssue(projectRoot, issueId) {
+   const issues = readJsonl(projectRoot, '.beads/issues.jsonl')
+     .filter(row => row && !row._parseError && row._type === 'issue');
+@@ -619,7 +655,12 @@ function buildIssueRecap(projectRoot, issueId, options = {}) {
+ }
+ 
+ function buildPrime(projectRoot, options = {}) {
+-  const orientation = buildOrientation(projectRoot, options);
++  const { project, sections } = buildOrientationSections(projectRoot, options);
++  const orientation = assembleOrientationResult(
++    project,
++    [...sections, buildPrimeKeyCommandsSection()],
++    options
++  );
+   return {
+     schema_version: 1,
+     kind: 'prime',
+diff --git a/test/agents-md-onboarding-surface.test.js b/test/agents-md-onboarding-surface.test.js
+new file mode 100644
+index 00000000..befdf001
+--- /dev/null
++++ b/test/agents-md-onboarding-surface.test.js
+@@ -0,0 +1,70 @@
++'use strict';
++
++// Regression test for the onboarding-discoverability gap (kernel issue: onboarding
++// surface, 0.1.0 clean release): `forge setup` generates a project's AGENTS.md by
++// copying Forge's own root AGENTS.md (see lib/commands/setup.js — copyFile /
++// smartMergeAgentsMd of `<packageDir>/AGENTS.md`), NOT the unused generic generator
++// in lib/agents-config.js. That means the root AGENTS.md IS the source new users and
++// agents read. It previously told agents to `forge remember` for persistent
++// knowledge but never mentioned `forge recall` to read it back, and never surfaced
++// `forge merge`, `forge insights`, `forge upgrade`, `forge gate`, or `forge role`.
++//
++// This test drives the REAL `forge setup` CLI (not the dead agents-config.js
++// generator that test/agents-md-generation.test.js exercises) against a fresh git
++// repo, so it fails if the source AGENTS.md regresses OR if setup's copy/merge
++// mechanism stops sourcing from the root AGENTS.md.
++
++const { describe, test, expect } = require('bun:test');
++const { spawnSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const REPO_ROOT = path.resolve(__dirname, '..');
++const FORGE_BIN = path.join(REPO_ROOT, 'bin', 'forge.js');
++
++function rmrf(dir) {
++  for (let attempt = 0; attempt < 5; attempt += 1) {
++    try { fs.rmSync(dir, { recursive: true, force: true }); return; }
++    catch (error) {
++      if (attempt === 4 || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error.code)) return;
++      const until = Date.now() + 100; while (Date.now() < until) { /* brief spin */ }
++    }
++  }
++}
++
++describe('onboarding surface: setup-generated AGENTS.md', () => {
++  test('surfaces forge recall next to forge remember, and the previously-invisible commands', () => {
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-onboarding-surface-'));
++    try {
++      spawnSync('git', ['init', '-q'], { cwd: repo });
++      spawnSync('git', ['-c', 'user.email=a@a.com', '-c', 'user.name=a', 'commit', '-q', '-m', 'init', '--allow-empty'], { cwd: repo });
++
++      const result = spawnSync(process.execPath, [FORGE_BIN, 'setup', '--yes', '--agent=claude'], {
++        cwd: repo,
++        encoding: 'utf8',
++        stdio: ['ignore', 'pipe', 'pipe'],
++        timeout: 60000,
++      });
++
++      expect(result.status).toBe(0);
++
++      const agentsMdPath = path.join(repo, 'AGENTS.md');
++      expect(fs.existsSync(agentsMdPath)).toBe(true);
++      const content = fs.readFileSync(agentsMdPath, 'utf8');
++
++      // Memory loop: recall must be documented alongside remember, not just remember.
++      expect(content).toContain('forge remember');
++      expect(content).toContain('forge recall');
++
++      // Previously-invisible commands (0 mentions before this fix).
++      expect(content).toContain('forge merge');
++      expect(content).toContain('forge insights');
++      expect(content).toContain('forge upgrade');
++      expect(content).toContain('forge gate');
++      expect(content).toContain('forge role');
++    } finally {
++      rmrf(repo);
++    }
++  }, 60000);
++});
+-- 
+2.51.0.windows.1
+

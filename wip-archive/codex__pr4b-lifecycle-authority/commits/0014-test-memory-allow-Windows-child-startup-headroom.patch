@@ -1,0 +1,28 @@
+From 6e0d3ae05d8befd7cebc138309aff1c03d479909 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 12:15:39 +0530
+Subject: [PATCH] test(memory): allow Windows child startup headroom
+
+---
+ packages/memory/test/pr-lifecycle-authority.test.js | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 2c98e480..6a142681 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -253,7 +253,10 @@ describe('public PR lifecycle authority', () => {
+         .then(() => process.exitCode = 2)
+         .catch(error => process.stdout.write(error.code));
+     `;
+-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 1000 });
++    // GitHub-hosted Windows runners can spend more than a second starting Node and
++    // loading the package; the provider deadline under test is still only 25ms.
++    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 5000 });
++    expect(result.error).toBeUndefined();
+     expect(result.status).toBe(0);
+     expect(result.stdout).toBe('PR_LIFECYCLE_UNAVAILABLE');
+   });
+-- 
+2.51.0.windows.1
+

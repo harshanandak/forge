@@ -1,0 +1,29 @@
+From 71484536a89d7ccfb3c24666a72510b866fa1879 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 17:44:05 +0530
+Subject: [PATCH] fix(registry): log unexpected static-manifest load errors,
+ stay silent only for missing file
+
+---
+ lib/commands/_registry.js | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/_registry.js b/lib/commands/_registry.js
+index 1dd94089..b6baaade 100644
+--- a/lib/commands/_registry.js
++++ b/lib/commands/_registry.js
+@@ -21,7 +21,10 @@ const { normalizeStageId } = require('../workflow/stages');
+ let STATIC_MANIFEST = null;
+ try {
+   STATIC_MANIFEST = require('./_manifest');
+-} catch (_err) {
++} catch (err) {
++  if (err.code !== 'MODULE_NOT_FOUND') {
++    console.warn(`[registry] Failed to load static manifest: ${err.message}`);
++  }
+   STATIC_MANIFEST = null;
+ }
+ 
+-- 
+2.51.0.windows.1
+

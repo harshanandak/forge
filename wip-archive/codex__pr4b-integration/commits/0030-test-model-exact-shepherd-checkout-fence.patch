@@ -1,0 +1,26 @@
+From 3418f02b9fd4e902f25d915df594b34fb136ee05 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 08:47:51 +0530
+Subject: [PATCH] test: model exact shepherd checkout fence
+
+---
+ test/shepherd-acceptance.test.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/test/shepherd-acceptance.test.js b/test/shepherd-acceptance.test.js
+index 272ebecf..857a90e2 100644
+--- a/test/shepherd-acceptance.test.js
++++ b/test/shepherd-acceptance.test.js
+@@ -238,7 +238,8 @@ describe('shepherd acceptance §5', () => {
+     const s = scriptedAdapter([{ required: ['unit'], checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' }], behind: 0 }]);
+     const out = await shepherdCmd.handler(['123'], {}, ROOT, {
+       adapter: s.adapter,
+-      buildContext: async () => BASE_CTX,
++      buildContext: async () => ({ ...BASE_CTX, headSha: 'a'.repeat(40), localHead: 'a'.repeat(40) }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
+       runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+       collectConvergenceEvidence: async () => ({
+         deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+-- 
+2.51.0.windows.1
+

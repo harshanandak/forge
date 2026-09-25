@@ -1,0 +1,71 @@
+From b2c425790d6dbf7a9f3243a2b2d619e3e81899b2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 16:06:50 +0530
+Subject: [PATCH] fix(protected-state): reject cross-actor stale replay
+
+---
+ lib/protected-state-surfaces.js       |  8 +++++---
+ test/protected-state-surfaces.test.js | 25 +++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/lib/protected-state-surfaces.js b/lib/protected-state-surfaces.js
+index 79da3f92..884f442b 100644
+--- a/lib/protected-state-surfaces.js
++++ b/lib/protected-state-surfaces.js
+@@ -48,12 +48,14 @@ function verifyProtectedStateAuthorization(request, records = []) {
+ 	const expected = createProtectedStateAuthorization(request);
+ 	const latest = [...records].reverse().find(record =>
+ 		record?.decision === 'allowed' &&
+-		record.actor === expected.actor &&
+ 		record.requiredSurface === expected.requiredSurface &&
+-		record.declaredSurface === expected.declaredSurface &&
+ 		normalizeRepoPath(record.path) === expected.path,
+ 	);
+-	const matched = latest?.contentHash === expected.contentHash ? latest : null;
++	const matched = latest?.actor === expected.actor &&
++		latest.declaredSurface === expected.declaredSurface &&
++		latest.contentHash === expected.contentHash
++		? latest
++		: null;
+ 
+ 	if (!matched) {
+ 		return {
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index fde11c21..540314d4 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -138,6 +138,31 @@ describe('protected state surfaces', () => {
+ 		expect(reverted.reason).toContain('latest');
+ 	});
+ 
++	test('denies cross-actor replay after another actor supersedes the protected path', () => {
++		const target = {
++			surface: 'workflows',
++			path: '.github/workflows/npm-publish.yml',
++		};
++		const actorA = createProtectedStateAuthorization({
++			...target,
++			actor: 'forge-release-a',
++			content: 'version: A\n',
++		});
++		const actorB = createProtectedStateAuthorization({
++			...target,
++			actor: 'forge-release-b',
++			content: 'version: B\n',
++		});
++
++		const replay = verifyProtectedStateAuthorization({
++			...target,
++			actor: 'forge-release-a',
++			content: 'version: A\n',
++		}, [actorA, actorB]);
++		expect(replay.allowed).toBe(false);
++		expect(replay.reason).toContain('latest');
++	});
++
+ 	test('writes protected files only through the declared Forge API surface', () => {
+ 		const root = createTempDir();
+ 		try {
+-- 
+2.51.0.windows.1
+

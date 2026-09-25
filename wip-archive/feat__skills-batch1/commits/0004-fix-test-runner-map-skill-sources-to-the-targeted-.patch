@@ -1,0 +1,145 @@
+From 88a5f6709030ca2394212ba8a5fcd28044177f15 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 14:40:59 +0530
+Subject: [PATCH] fix(test-runner): map skill sources to the targeted lane
+
+skills/** and the committed .agents/skills/** mirror were not in the
+targetable-path allowlist, so any skills-only change tripped hasUnmappedFiles
+and ran the full ~1500-test suite (which flaky-hangs, issue 8aef79e8). Every
+skills PR (coverage batches, description rewrites) hit this.
+
+- lib/commands/test.js: SKILL_TEST_TARGETS maps skills/** and .agents/skills/**
+  to the skill suite (structure/coverage/eval/dispatch/chain-integrity/sync-drift)
+- scripts/test.js: skills/ and .agents/skills/ are now targetable paths
+- this branch reclassifies full -> targeted (12 fast test files vs 1500)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/test.js             | 21 +++++++++++++++++++++
+ scripts/test.js                  |  7 ++++++-
+ test/commands/test.test.js       | 28 ++++++++++++++++++++++++++++
+ test/scripts/test-runner.test.js | 15 +++++++++++++++
+ 4 files changed, 70 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 30c6bba8..5ffea77b 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -40,6 +40,23 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'scripts/test.js': ['test/scripts/test-runner.test.js'],
+ });
+ 
++// Skill sources (canonical `skills/**` and the committed `.agents/skills/**` mirror)
++// map to the fast skill suite. This is what keeps a skills-only PR on the targeted
++// lane instead of the full ~1500-test suite. `skills-sync-drift` guards the mirror.
++const SKILL_TEST_TARGETS = Object.freeze([
++	'test/skills-structure.test.js',
++	'test/skill-coverage.test.js',
++	'test/skill-eval.test.js',
++	'test/skill-dispatch-parity.test.js',
++	'test/using-forge.test.js',
++	'test/structural/skills-sync-drift.test.js',
++	'test/skills/chain-integrity.test.js',
++	'test/skills/skills-sync.test.js',
++	'test/skills/stage-skills.test.js',
++	'test/skills/using-forge-skill.test.js',
++	'test/skills/context-cost.test.js',
++]);
++
+ /**
+  * Detect the package manager by checking which lockfile exists.
+  *
+@@ -183,6 +200,10 @@ function getTestCandidatesForChangedFile(file) {
+ 		return [file];
+ 	}
+ 
++	if (file.startsWith('skills/') || file.startsWith('.agents/skills/')) {
++		return [...SKILL_TEST_TARGETS];
++	}
++
+ 	if (file === 'README.md'
+ 		|| file === 'QUICKSTART.md'
+ 		|| file === 'CHANGELOG.md'
+diff --git a/scripts/test.js b/scripts/test.js
+index d265eb6b..ae458b0e 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -166,7 +166,12 @@ function isKnownTargetablePath(file) {
+     || file.startsWith('docs/guides/')
+     || file.startsWith('docs/plans/')
+     || file.startsWith('docs/reference/')
+-    || file.startsWith('docs/work/')) {
++    || file.startsWith('docs/work/')
++    // Skill sources + their committed mirror map to the skill suite (see
++    // SKILL_TEST_TARGETS in lib/commands/test.js); a skills-only PR stays on the
++    // targeted lane instead of the full suite.
++    || file.startsWith('skills/')
++    || file.startsWith('.agents/skills/')) {
+     return true;
+   }
+ 
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index afd5878d..0d5bc444 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -595,3 +595,31 @@ describe('forge test --affected — resilient to git failure (bfaa6e2a semantics
+ 		expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
+ 	});
+ });
++
++// Skill sources (skills/** and their committed .agents/skills/** mirror) must map
++// to the skill test suite. Without this they were "unmapped" → the pre-push hook
++// fell back to the full ~1500-test suite for every skills-only PR.
++describe('skill source → test mapping', () => {
++	test('maps skills/ edits to the skill test suite', () => {
++		const candidates = testCommand.getTestCandidatesForChangedFile('skills/gates/SKILL.md');
++		expect(candidates).toContain('test/skill-coverage.test.js');
++		expect(candidates).toContain('test/skill-eval.test.js');
++		expect(candidates).toContain('test/skills-structure.test.js');
++		expect(candidates).toContain('test/using-forge.test.js');
++		expect(candidates).toContain('test/skills/chain-integrity.test.js');
++		expect(candidates).toContain('test/structural/skills-sync-drift.test.js');
++	});
++
++	test('maps coverage.json / scorecard edits to the skill test suite', () => {
++		expect(testCommand.getTestCandidatesForChangedFile('skills/coverage.json'))
++			.toContain('test/skill-coverage.test.js');
++		expect(testCommand.getTestCandidatesForChangedFile('skills/worktree/evals/scorecard.json'))
++			.toContain('test/skill-eval.test.js');
++	});
++
++	test('maps the committed .agents/skills/ mirror to the same suite (drift guard included)', () => {
++		const candidates = testCommand.getTestCandidatesForChangedFile('.agents/skills/gates/SKILL.md');
++		expect(candidates).toContain('test/skill-coverage.test.js');
++		expect(candidates).toContain('test/structural/skills-sync-drift.test.js');
++	});
++});
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 0ac8ae10..6c69fbdf 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -117,6 +117,21 @@ describe('scripts/test pre-push runner', () => {
+     ]);
+   });
+ 
++  test('classifyPushTests maps skills-only changes to the skill suite without forcing a full suite', () => {
++    const plan = classifyPushTests(repoRoot, makeExecFileSync({
++      changedFiles: 'skills/gates/SKILL.md\nskills/coverage.json\n.agents/skills/gates/SKILL.md\n',
++    }));
++
++    // Skill sources are mapped, not "unmapped" — so a skills-only PR runs the fast
++    // targeted skill suite instead of the full ~1500-test suite (which flaky-hangs).
++    expect(plan.runFullSuite).toBe(false);
++    expect(plan.hasUnmappedFiles).toBe(false);
++    expect(plan.mode).toBe('targeted');
++    expect(plan.testTargets).toContain('test/skill-coverage.test.js');
++    expect(plan.testTargets).toContain('test/skills-structure.test.js');
++    expect(plan.testTargets).toContain('test/structural/skills-sync-drift.test.js');
++  });
++
+   test('buildTestExecutionPlan marks workflow-oriented targets explicitly', () => {
+     const plan = buildTestExecutionPlan(repoRoot, makeExecFileSync({
+       changedFiles: '.github/agentic-workflows/behavioral-test.md\n',
+-- 
+2.51.0.windows.1
+

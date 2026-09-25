@@ -1,0 +1,1103 @@
+From d5317bdc0ae0e2daecb3da180e2e18482ec8b9e6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 18:17:16 +0530
+Subject: [PATCH] feat(memory): route remember/recall through kernel_memories +
+ FTS5
+
+Retires the flat JSONL memory-store: remember writes and recall reads now
+go through kernel_memories (project-memory facade). recall uses FTS BM25
+token-AND for queries and caps a no-query read to newest-N + a total count
+(never a bare full dump). A legacy .forge/memory/notes.jsonl is imported
+once on first use, then renamed. Adds project-memory.closeAll lifecycle
+helper. Since insights already writes kernel_memories, its rows are now
+recallable.
+
+Issue: 9c8060f8-f4ec-47f4-b923-5e247c5bcdfd
+---
+ lib/commands/recall.js         |  26 ++---
+ lib/memory-store.js            | 146 ----------------------------
+ lib/memory/router.js           | 173 +++++++++++++++++++++++++++------
+ lib/project-memory.js          |  15 +++
+ test/commands/recall.test.js   |  49 +++++++---
+ test/commands/remember.test.js |  53 +++++++---
+ test/memory-store.test.js      | 140 --------------------------
+ test/memory/router.test.js     | 154 ++++++++++++++++++++++-------
+ test/project-memory.test.js    |   5 +
+ 9 files changed, 371 insertions(+), 390 deletions(-)
+ delete mode 100644 lib/memory-store.js
+ delete mode 100644 test/memory-store.test.js
+
+diff --git a/lib/commands/recall.js b/lib/commands/recall.js
+index 285a9180..4403bde4 100644
+--- a/lib/commands/recall.js
++++ b/lib/commands/recall.js
+@@ -52,29 +52,29 @@ function formatEntry(entry) {
+ async function handler(args, _flags, projectRoot) {
+   const { query, limit, json } = parseArgs(args);
+ 
+-  let entries = query
+-    ? memoryRouter.search(projectRoot, query)
+-    : memoryRouter.list(projectRoot);
+-
+-  if (limit !== undefined) {
+-    entries = entries.slice(0, limit);
+-  }
++  const { notes, total, capped } = memoryRouter.recall(projectRoot, { query, limit });
+ 
+   if (json) {
+-    return { success: true, output: `${JSON.stringify(entries, null, 2)}\n` };
++    return { success: true, output: `${JSON.stringify(notes, null, 2)}\n` };
+   }
+ 
+-  if (entries.length === 0) {
++  if (notes.length === 0) {
+     const reason = query
+       ? `No notes match "${query}".`
+       : 'No notes remembered yet. Use "forge remember <note>" to add one.';
+     return { success: true, output: reason };
+   }
+ 
+-  const header = query
+-    ? `${entries.length} note(s) matching "${query}":`
+-    : `${entries.length} remembered note(s):`;
+-  const lines = entries.map(formatEntry);
++  let header;
++  if (query) {
++    header = `${notes.length} note(s) matching "${query}":`;
++  } else if (capped) {
++    // Never a bare full dump: show the newest N and the true total.
++    header = `Showing ${notes.length} of ${total} remembered note(s) (newest first):`;
++  } else {
++    header = `${total} remembered note(s):`;
++  }
++  const lines = notes.map(formatEntry);
+   return {
+     success: true,
+     output: [header, ...lines].join('\n'),
+diff --git a/lib/memory-store.js b/lib/memory-store.js
+deleted file mode 100644
+index 4858e580..00000000
+--- a/lib/memory-store.js
++++ /dev/null
+@@ -1,146 +0,0 @@
+-'use strict';
+-
+-/**
+- * File-backed project memory store.
+- *
+- * Notes are persisted as newline-delimited JSON under
+- * `.forge/memory/notes.jsonl`, which lives inside the repository so memory
+- * travels with the project through normal git history. The store has no
+- * external service or database dependency: every operation is a plain
+- * filesystem read or append.
+- *
+- * @module memory-store
+- */
+-
+-const crypto = require('node:crypto');
+-const fs = require('node:fs');
+-const path = require('node:path');
+-
+-const MEMORY_DIR = path.join('.forge', 'memory');
+-const STORE_FILENAME = 'notes.jsonl';
+-
+-/**
+- * Resolve the default newline-delimited store path for a project.
+- *
+- * @param {string} projectRoot - Absolute path to the project root.
+- * @returns {string} Absolute path to the notes store file.
+- */
+-function defaultStorePath(projectRoot) {
+-  return path.join(projectRoot, MEMORY_DIR, STORE_FILENAME);
+-}
+-
+-function resolveStorePath(projectRoot, options = {}) {
+-  return options.filePath || defaultStorePath(projectRoot);
+-}
+-
+-function normalizeTags(tags) {
+-  if (!Array.isArray(tags)) {
+-    return [];
+-  }
+-  return tags
+-    .filter(tag => typeof tag === 'string')
+-    .map(tag => tag.trim())
+-    .filter(Boolean);
+-}
+-
+-/**
+- * Append a note to the store and return the persisted entry.
+- *
+- * @param {string} projectRoot - Absolute path to the project root.
+- * @param {string} note - Free-form note text. Leading/trailing space is trimmed.
+- * @param {Object} [options]
+- * @param {string[]} [options.tags] - Optional search/grouping labels.
+- * @param {string} [options.timestamp] - ISO timestamp; generated when omitted.
+- * @param {string} [options.filePath] - Override the storage location (tests).
+- * @returns {{ id: string, note: string, timestamp: string, tags: string[] }}
+- */
+-function append(projectRoot, note, options = {}) {
+-  if (typeof note !== 'string' || note.trim() === '') {
+-    throw new TypeError('memory note must be a non-empty string');
+-  }
+-
+-  const entry = {
+-    id: crypto.randomUUID(),
+-    note: note.trim(),
+-    timestamp: options.timestamp || new Date().toISOString(),
+-    tags: normalizeTags(options.tags),
+-  };
+-
+-  const storePath = resolveStorePath(projectRoot, options);
+-  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+-  fs.appendFileSync(storePath, `${JSON.stringify(entry)}\n`, 'utf8');
+-
+-  return entry;
+-}
+-
+-function readEntries(storePath) {
+-  if (!fs.existsSync(storePath)) {
+-    return [];
+-  }
+-
+-  const raw = fs.readFileSync(storePath, 'utf8');
+-  const entries = [];
+-  for (const line of raw.split(/\r?\n/)) {
+-    const trimmed = line.trim();
+-    if (!trimmed) {
+-      continue;
+-    }
+-    try {
+-      const parsed = JSON.parse(trimmed);
+-      if (parsed && typeof parsed === 'object' && typeof parsed.note === 'string') {
+-        entries.push({
+-          id: typeof parsed.id === 'string' ? parsed.id : '',
+-          note: parsed.note,
+-          timestamp: typeof parsed.timestamp === 'string' ? parsed.timestamp : '',
+-          tags: normalizeTags(parsed.tags),
+-        });
+-      }
+-    } catch (_error) {
+-      // Skip unparseable lines so one bad record cannot break recall.
+-    }
+-  }
+-
+-  return entries;
+-}
+-
+-/**
+- * List all stored notes, newest first.
+- *
+- * @param {string} projectRoot - Absolute path to the project root.
+- * @param {Object} [options]
+- * @param {string} [options.filePath] - Override the storage location (tests).
+- * @returns {Array<{ id: string, note: string, timestamp: string, tags: string[] }>}
+- */
+-function list(projectRoot, options = {}) {
+-  return readEntries(resolveStorePath(projectRoot, options)).reverse();
+-}
+-
+-/**
+- * Search stored notes by case-insensitive substring across note text and tags.
+- * An empty query returns every entry (newest first).
+- *
+- * @param {string} projectRoot - Absolute path to the project root.
+- * @param {string} query - Search term.
+- * @param {Object} [options]
+- * @param {string} [options.filePath] - Override the storage location (tests).
+- * @returns {Array<{ id: string, note: string, timestamp: string, tags: string[] }>}
+- */
+-function search(projectRoot, query, options = {}) {
+-  const entries = list(projectRoot, options);
+-  if (typeof query !== 'string' || query.trim() === '') {
+-    return entries;
+-  }
+-
+-  const needle = query.trim().toLowerCase();
+-  return entries.filter(entry => {
+-    const haystack = `${entry.note} ${entry.tags.join(' ')}`.toLowerCase();
+-    return haystack.includes(needle);
+-  });
+-}
+-
+-module.exports = {
+-  defaultStorePath,
+-  append,
+-  list,
+-  search,
+-};
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index f68137d6..90f1777d 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -4,32 +4,46 @@
+  * @module memory/router
+  *
+  * Single dispatch seam for `forge remember` / `forge recall`. The DEFAULT is
+- * `local` (the flat JSONL store in `lib/memory-store.js`) — zero external
+- * services, offline, instant. The router exists so the opt-in `graphiti`
+- * knowledge-graph tier can slot in behind the same CLI verbs WITHOUT changing
+- * the clean default path.
++ * `local`, which now means the kernel `kernel_memories` table indexed by FTS5
++ * (via `lib/project-memory.js`) — the same knowledge layer decisions and issues
++ * share. The router exists so the opt-in `graphiti` knowledge-graph tier can slot
++ * in behind the same CLI verbs WITHOUT changing the clean default path.
+  *
+- * Public config surface is deliberately `local | graphiti` only. The kernel
+- * read model (`lib/project-memory.js`) stays an internal implementation detail
+- * and is NOT a supported `memory.backend` value.
++ * Public config surface is deliberately `local | graphiti` only. `graphiti` is
++ * EXPERIMENTAL — its config/doctor scaffolding ships but the runtime emitter is a
++ * fast-follow, so today it always writes the local kernel floor and the emit is a
++ * best-effort no-op unless a caller injects an emitter.
+  *
+- * Design: docs/work/2026-07-06-graphiti-memory/research.md (§2.1 "three tiers,
+- * Graphiti is the top opt-in tier; the local store is always the floor").
++ * Design: docs/work/2026-07-09-decision-store/design.md §B.1 (memory consolidation
++ * onto the kernel + FTS5). The retired flat JSONL store (`lib/memory-store.js`) is
++ * imported once into kernel_memories on first use, then never written again.
+  *
+- * Hard rule: `remember`/`recall` must NEVER hang or fail. Under `graphiti`,
+- * writes are FIRE-AND-FORGET with a HARD FALLBACK to the local JSONL store on
+- * any error/timeout — a down sidecar can never strand a note. The local append
++ * Hard rule: `remember`/`recall` must NEVER hang or fail. Under `graphiti`, the
++ * emit is FIRE-AND-FORGET with a HARD FALLBACK to the local kernel store on any
++ * error/timeout — a down sidecar can never strand a note. The local kernel write
+  * is the floor and always happens. Strict validation (`assertMemoryConfigValid`)
+  * is a separate, explicit gate for tooling (e.g. `forge doctor`).
+  */
+ 
+-const memoryStore = require('../memory-store');
++const crypto = require('node:crypto');
++const fs = require('node:fs');
++const path = require('node:path');
++const projectMemory = require('../project-memory');
+ 
+ /** Supported PUBLIC backends, default first. */
+ const MEMORY_BACKENDS = ['local', 'graphiti'];
+ const DEFAULT_MEMORY_BACKEND = 'local';
+ const ENV_VAR = 'FORGE_MEMORY_BACKEND';
+ 
++/** Default recall cap — newest-N, so `recall` with no query never dumps the whole store. */
++const DEFAULT_RECALL_LIMIT = 20;
++/** sourceAgent stamped on CLI `remember` notes (distinct from insights-written rows). */
++const REMEMBER_SOURCE_AGENT = 'forge remember';
++/** sourceAgent stamped on notes imported once from the retired JSONL store. */
++const IMPORT_SOURCE_AGENT = 'forge remember (imported)';
++/** The retired flat JSONL store, imported once into kernel_memories, then renamed. */
++const LEGACY_JSONL_RELATIVE = ['.forge', 'memory', 'notes.jsonl'];
++
+ /**
+  * Safely read the `memory` block from `<projectRoot>/.forge/config.yaml`.
+  * Never throws — a missing or malformed file resolves to `{}` so the default
+@@ -178,19 +192,103 @@ function fireAndForgetGraphitiEmit(emitter, entry) {
+ }
+ 
+ /**
+- * Append a note. `local` is byte-identical to `memory-store.append`. `graphiti`
+- * ALSO writes the local floor (the note is always durably captured) and then
+- * fires a best-effort, non-blocking emit toward the graph backend.
++ * Map a kernel_memories entry to the CLI note shape `remember`/`recall` render. A string
++ * value IS the note text; a non-string value (e.g. an insights skill record) is shown as
++ * JSON so insights-written rows stay recallable.
++ *
++ * @param {object} entry - a kernel_memories entry ({ key, value, timestamp, tags }).
++ * @returns {{ id: string, note: string, timestamp: string, tags: string[] }}
++ */
++function toNote(entry) {
++  if (!entry) return null;
++  const note = typeof entry.value === 'string' ? entry.value : JSON.stringify(entry.value);
++  return {
++    id: entry.key,
++    note,
++    timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : '',
++    tags: Array.isArray(entry.tags) ? entry.tags : [],
++  };
++}
++
++function legacyJsonlPath(projectRoot) {
++  return path.join(projectRoot, ...LEGACY_JSONL_RELATIVE);
++}
++
++/**
++ * One-time import of the retired flat JSONL store into kernel_memories. Idempotent (keys
++ * are the original note ids, so a re-run upserts) and best-effort (a malformed record or a
++ * write error can never break `remember`/`recall`). After a pass the file is renamed so the
++ * import runs at most once and JSONL is never read or written again.
++ *
++ * @param {string} projectRoot
++ * @param {object} [options] - forwarded to `projectMemory.write` (e.g. an injected store).
++ */
++function migrateJsonlNotesOnce(projectRoot, options = {}) {
++  if (!projectRoot) return;
++  const storePath = legacyJsonlPath(projectRoot);
++  let raw;
++  try {
++    if (!fs.existsSync(storePath)) return;
++    raw = fs.readFileSync(storePath, 'utf8');
++  } catch {
++    return;
++  }
++
++  for (const line of raw.split(/\r?\n/)) {
++    const trimmed = line.trim();
++    if (!trimmed) continue;
++    let parsed;
++    try {
++      parsed = JSON.parse(trimmed);
++    } catch {
++      continue; // Skip an unparseable legacy line — one bad record can't block the import.
++    }
++    if (!parsed || typeof parsed !== 'object' || typeof parsed.note !== 'string' || parsed.note.trim() === '') {
++      continue;
++    }
++    const entry = {
++      key: typeof parsed.id === 'string' && parsed.id ? parsed.id : crypto.randomUUID(),
++      value: parsed.note,
++      sourceAgent: IMPORT_SOURCE_AGENT,
++      tags: Array.isArray(parsed.tags) ? parsed.tags.filter(tag => typeof tag === 'string') : [],
++    };
++    if (typeof parsed.timestamp === 'string' && parsed.timestamp && !Number.isNaN(Date.parse(parsed.timestamp))) {
++      entry.timestamp = parsed.timestamp;
++    }
++    try {
++      projectMemory.write(projectRoot, entry, options);
++    } catch {
++      // Skip an unwritable legacy record; never break remember/recall on import.
++    }
++  }
++
++  try {
++    fs.renameSync(storePath, `${storePath}.migrated`);
++  } catch {
++    // Best-effort: the import is idempotent by key, so a failed rename re-imports safely.
++  }
++}
++
++/**
++ * Append a note through kernel_memories — the local floor for EVERY backend, always written
++ * first so a note is durably captured. `graphiti` additionally fires a best-effort,
++ * non-blocking emit toward the graph backend. Imports any retired JSONL store on first use.
+  *
+  * @param {string} projectRoot
+  * @param {string} note
+- * @param {object} [options] - { tags, filePath, deps, env, config, graphitiEmitter }
++ * @param {object} [options] - { tags, deps, env, config, graphitiEmitter, store }
+  * @returns {{ id: string, note: string, timestamp: string, tags: string[] }}
+  */
+ function append(projectRoot, note, options = {}) {
++  migrateJsonlNotesOnce(projectRoot, options);
+   const backend = resolveMemoryBackend({ ...options, projectRoot });
+-  // The local JSONL store is the floor for EVERY backend — always write it first.
+-  const entry = memoryStore.append(projectRoot, note, options);
++  const written = projectMemory.write(projectRoot, {
++    key: crypto.randomUUID(),
++    value: note,
++    sourceAgent: REMEMBER_SOURCE_AGENT,
++    tags: Array.isArray(options.tags) ? options.tags : [],
++  }, options);
++  const entry = toNote(written);
+   if (backend === 'graphiti') {
+     fireAndForgetGraphitiEmit(options.graphitiEmitter, entry);
+   }
+@@ -198,28 +296,41 @@ function append(projectRoot, note, options = {}) {
+ }
+ 
+ /**
+- * List notes newest-first. Reads the local floor for every backend (the CLI
+- * read surface; agents read the graph directly over MCP when enabled).
++ * Read notes back through the FTS-backed kernel layer. WITH a query: BM25 token-AND top-N.
++ * WITHOUT a query: the newest `limit` entries plus the total count (never a bare full dump).
++ * Imports any retired JSONL store on first use.
++ *
++ * @param {string} projectRoot
++ * @param {object} [selection] - { query, limit }
++ * @param {object} [options] - forwarded to the project-memory read paths (e.g. a store).
++ * @returns {{ notes: object[], total: number, capped: boolean, query: string, limit: number }}
+  */
+-function list(projectRoot, options = {}) {
+-  return memoryStore.list(projectRoot, options);
+-}
++function recall(projectRoot, selection = {}, options = {}) {
++  migrateJsonlNotesOnce(projectRoot, options);
++  const requested = selection.limit;
++  const limit = Number.isInteger(requested) && requested > 0 ? requested : DEFAULT_RECALL_LIMIT;
++  const query = String(selection.query || '').trim();
+ 
+-/**
+- * Search notes. Reads the local floor for every backend.
+- */
+-function search(projectRoot, query, options = {}) {
+-  return memoryStore.search(projectRoot, query, options);
++  if (query) {
++    const notes = projectMemory.searchRanked(projectRoot, query, limit, options).map(toNote);
++    return { notes, total: notes.length, capped: false, query, limit };
++  }
++
++  const notes = projectMemory.recent(projectRoot, limit, options).map(toNote);
++  const total = projectMemory.count(projectRoot, options);
++  return { notes, total, capped: total > notes.length, query: '', limit };
+ }
+ 
+ module.exports = {
+   MEMORY_BACKENDS,
+   DEFAULT_MEMORY_BACKEND,
++  DEFAULT_RECALL_LIMIT,
+   ENV_VAR,
+   readMemoryConfig,
+   resolveMemoryBackend,
+   assertMemoryConfigValid,
++  migrateJsonlNotesOnce,
++  toNote,
+   append,
+-  list,
+-  search,
++  recall,
+ };
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 9a42dd8b..1ad77986 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -138,6 +138,20 @@ function searchRanked(projectRoot, query, limit, options = {}) {
+   return resolveStore(projectRoot, options).searchMemoriesRanked(query, limit);
+ }
+ 
++// Close and forget every cached default store. The CLI process is short-lived (the OS
++// closes the handle on exit), so this is mainly a lifecycle helper for long-lived hosts and
++// tests — it releases the SQLite/WAL handle before a temp dir is removed.
++function closeAll() {
++  for (const store of storeCache.values()) {
++    try {
++      if (store && typeof store.close === 'function') store.close();
++    } catch {
++      // best-effort close
++    }
++  }
++  storeCache.clear();
++}
++
+ module.exports = {
+   read,
+   write,
+@@ -146,4 +160,5 @@ module.exports = {
+   recent,
+   count,
+   searchRanked,
++  closeAll,
+ };
+diff --git a/test/commands/recall.test.js b/test/commands/recall.test.js
+index a1957167..ce99cacf 100644
+--- a/test/commands/recall.test.js
++++ b/test/commands/recall.test.js
+@@ -1,24 +1,47 @@
+ 'use strict';
+ 
+ const { afterEach, describe, test, expect } = require('bun:test');
++const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ 
+ const recall = require('../../lib/commands/recall');
+-const memoryStore = require('../../lib/memory-store');
++const remember = require('../../lib/commands/remember');
++const projectMemory = require('../../lib/project-memory');
+ 
+ const tempDirs = [];
+ 
++// recall reads the kernel store, whose default path resolves from the git common dir — so
++// each temp project is a throwaway git repo. Notes are seeded through the real remember path.
+ function makeProjectRoot() {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-recall-cmd-'));
++  execFileSync('git', ['init', '-q'], { cwd: dir });
+   tempDirs.push(dir);
+   return dir;
+ }
+ 
++function rmrfWithRetry(dir) {
++  for (let attempt = 0; attempt < 5; attempt += 1) {
++    try {
++      fs.rmSync(dir, { recursive: true, force: true });
++      return;
++    } catch (error) {
++      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
++      const until = Date.now() + 100;
++      while (Date.now() < until) { /* brief spin before retry */ }
++    }
++  }
++}
++
++async function seed(projectRoot, note) {
++  await remember.handler([note], {}, projectRoot);
++}
++
+ afterEach(() => {
++  projectMemory.closeAll();
+   while (tempDirs.length > 0) {
+-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
++    rmrfWithRetry(tempDirs.pop());
+   }
+ });
+ 
+@@ -34,8 +57,8 @@ describe('forge recall command', () => {
+ 
+   test('lists all stored notes when no query is given', async () => {
+     const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'first note');
+-    memoryStore.append(projectRoot, 'second note');
++    await seed(projectRoot, 'first note');
++    await seed(projectRoot, 'second note');
+ 
+     const result = await recall.handler([], {}, projectRoot);
+     expect(result.success).toBe(true);
+@@ -43,10 +66,10 @@ describe('forge recall command', () => {
+     expect(result.output).toContain('second note');
+   });
+ 
+-  test('filters notes by query', async () => {
++  test('filters notes by query (FTS token-AND)', async () => {
+     const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'Use Bun for tests');
+-    memoryStore.append(projectRoot, 'Lint with eslint');
++    await seed(projectRoot, 'Use Bun for tests');
++    await seed(projectRoot, 'Lint with eslint');
+ 
+     const result = await recall.handler(['bun'], {}, projectRoot);
+     expect(result.success).toBe(true);
+@@ -63,7 +86,7 @@ describe('forge recall command', () => {
+ 
+   test('reports when a query matches nothing', async () => {
+     const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'something');
++    await seed(projectRoot, 'something');
+     const result = await recall.handler(['nonexistent'], {}, projectRoot);
+     expect(result.success).toBe(true);
+     expect(result.output.toLowerCase()).toContain('no');
+@@ -71,7 +94,7 @@ describe('forge recall command', () => {
+ 
+   test('emits JSON output with --json', async () => {
+     const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'alpha note');
++    await seed(projectRoot, 'alpha note');
+ 
+     const result = await recall.handler(['--json'], {}, projectRoot);
+     expect(result.success).toBe(true);
+@@ -82,9 +105,9 @@ describe('forge recall command', () => {
+ 
+   test('honors --limit', async () => {
+     const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'one');
+-    memoryStore.append(projectRoot, 'two');
+-    memoryStore.append(projectRoot, 'three');
++    await seed(projectRoot, 'one');
++    await seed(projectRoot, 'two');
++    await seed(projectRoot, 'three');
+ 
+     const result = await recall.handler(['--json', '--limit', '2'], {}, projectRoot);
+     const parsed = JSON.parse(result.output);
+@@ -93,7 +116,7 @@ describe('forge recall command', () => {
+ 
+   test('does not treat the -p global flag as part of the query (kernel c1e090ff)', async () => {
+     const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'ship the fix');
++    await seed(projectRoot, 'ship the fix');
+ 
+     const result = await recall.handler(
+       ['ship the fix', '-p', 'C:\\some\\project'],
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index 4cfd43a4..77195c1c 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -1,24 +1,51 @@
+ 'use strict';
+ 
+ const { afterEach, describe, test, expect } = require('bun:test');
++const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ 
+ const remember = require('../../lib/commands/remember');
+-const memoryStore = require('../../lib/memory-store');
++const recall = require('../../lib/commands/recall');
++const projectMemory = require('../../lib/project-memory');
+ 
+ const tempDirs = [];
+ 
++// remember/recall now persist to the kernel store, whose default path resolves from the git
++// common dir — so each temp project is a throwaway git repo. Notes land in .git/forge.
+ function makeProjectRoot() {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-remember-cmd-'));
++  execFileSync('git', ['init', '-q'], { cwd: dir });
+   tempDirs.push(dir);
+   return dir;
+ }
+ 
++// Windows can hold a transient WAL lock on the just-written kernel DB; close cached stores
++// first, then retry the rm.
++function rmrfWithRetry(dir) {
++  for (let attempt = 0; attempt < 5; attempt += 1) {
++    try {
++      fs.rmSync(dir, { recursive: true, force: true });
++      return;
++    } catch (error) {
++      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
++      const until = Date.now() + 100;
++      while (Date.now() < until) { /* brief spin before retry */ }
++    }
++  }
++}
++
++// The persisted notes, newest-first, as recall renders them (JSON mode → the note array).
++async function recalledNotes(projectRoot) {
++  const result = await recall.handler(['--json'], {}, projectRoot);
++  return JSON.parse(result.output);
++}
++
+ afterEach(() => {
++  projectMemory.closeAll();
+   while (tempDirs.length > 0) {
+-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
++    rmrfWithRetry(tempDirs.pop());
+   }
+ });
+ 
+@@ -39,26 +66,26 @@ describe('forge remember command', () => {
+     expect(result.success).toBe(true);
+     expect(result.output).toContain('Run /plan before /dev');
+ 
+-    const entries = memoryStore.list(projectRoot);
+-    expect(entries).toHaveLength(1);
+-    expect(entries[0].note).toBe('Run /plan before /dev');
++    const notes = await recalledNotes(projectRoot);
++    expect(notes).toHaveLength(1);
++    expect(notes[0].note).toBe('Run /plan before /dev');
+   });
+ 
+   test('joins multiple argument words into a single note', async () => {
+     const projectRoot = makeProjectRoot();
+     await remember.handler(['Prefer', 'Bun', 'over', 'npm'], {}, projectRoot);
+ 
+-    const entries = memoryStore.list(projectRoot);
+-    expect(entries[0].note).toBe('Prefer Bun over npm');
++    const notes = await recalledNotes(projectRoot);
++    expect(notes[0].note).toBe('Prefer Bun over npm');
+   });
+ 
+   test('captures --tag values as tags', async () => {
+     const projectRoot = makeProjectRoot();
+     await remember.handler(['note body', '--tag', 'policy', '--tag', 'workflow'], {}, projectRoot);
+ 
+-    const entries = memoryStore.list(projectRoot);
+-    expect(entries[0].note).toBe('note body');
+-    expect(entries[0].tags).toEqual(['policy', 'workflow']);
++    const notes = await recalledNotes(projectRoot);
++    expect(notes[0].note).toBe('note body');
++    expect(notes[0].tags).toEqual(['policy', 'workflow']);
+   });
+ 
+   test('fails clearly when no note is provided', async () => {
+@@ -67,7 +94,7 @@ describe('forge remember command', () => {
+ 
+     expect(result.success).toBe(false);
+     expect(result.error).toContain('note');
+-    expect(memoryStore.list(projectRoot)).toEqual([]);
++    expect(await recalledNotes(projectRoot)).toEqual([]);
+   });
+ 
+   test('emits JSON output with --json', async () => {
+@@ -88,7 +115,7 @@ describe('forge remember command', () => {
+     );
+ 
+     expect(result.success).toBe(true);
+-    const [entry] = memoryStore.list(projectRoot);
++    const [entry] = await recalledNotes(projectRoot);
+     expect(entry.note).toBe('ship the fix');
+   });
+ 
+@@ -101,7 +128,7 @@ describe('forge remember command', () => {
+     );
+ 
+     expect(result.success).toBe(true);
+-    const [entry] = memoryStore.list(projectRoot);
++    const [entry] = await recalledNotes(projectRoot);
+     expect(entry.note).toBe('multi word note');
+   });
+ });
+diff --git a/test/memory-store.test.js b/test/memory-store.test.js
+deleted file mode 100644
+index ee500760..00000000
+--- a/test/memory-store.test.js
++++ /dev/null
+@@ -1,140 +0,0 @@
+-'use strict';
+-
+-const { afterEach, describe, test, expect } = require('bun:test');
+-const fs = require('node:fs');
+-const os = require('node:os');
+-const path = require('node:path');
+-
+-const memoryStore = require('../lib/memory-store');
+-
+-const tempDirs = [];
+-
+-function makeProjectRoot() {
+-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-store-'));
+-  tempDirs.push(dir);
+-  return dir;
+-}
+-
+-afterEach(() => {
+-  while (tempDirs.length > 0) {
+-    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+-  }
+-});
+-
+-describe('memory-store', () => {
+-  test('defaultStorePath points at a file-based location under .forge/memory', () => {
+-    const projectRoot = makeProjectRoot();
+-    const storePath = memoryStore.defaultStorePath(projectRoot);
+-    expect(storePath).toBe(path.join(projectRoot, '.forge', 'memory', 'notes.jsonl'));
+-  });
+-
+-  test('append writes a note and returns the stored entry', () => {
+-    const projectRoot = makeProjectRoot();
+-    const entry = memoryStore.append(projectRoot, 'Run /plan before /dev');
+-
+-    expect(entry.note).toBe('Run /plan before /dev');
+-    expect(typeof entry.id).toBe('string');
+-    expect(entry.id.length).toBeGreaterThan(0);
+-    expect(typeof entry.timestamp).toBe('string');
+-    expect(Array.isArray(entry.tags)).toBe(true);
+-
+-    const storePath = memoryStore.defaultStorePath(projectRoot);
+-    expect(fs.existsSync(storePath)).toBe(true);
+-    const lines = fs.readFileSync(storePath, 'utf8').trim().split('\n');
+-    expect(lines).toHaveLength(1);
+-    expect(JSON.parse(lines[0]).note).toBe('Run /plan before /dev');
+-  });
+-
+-  test('append creates the memory directory when it does not exist', () => {
+-    const projectRoot = makeProjectRoot();
+-    expect(fs.existsSync(path.join(projectRoot, '.forge', 'memory'))).toBe(false);
+-    memoryStore.append(projectRoot, 'first note');
+-    expect(fs.existsSync(path.join(projectRoot, '.forge', 'memory'))).toBe(true);
+-  });
+-
+-  test('append preserves tags and trims the note', () => {
+-    const projectRoot = makeProjectRoot();
+-    const entry = memoryStore.append(projectRoot, '  tagged note  ', { tags: ['policy', 'workflow'] });
+-    expect(entry.note).toBe('tagged note');
+-    expect(entry.tags).toEqual(['policy', 'workflow']);
+-  });
+-
+-  test('append rejects empty notes', () => {
+-    const projectRoot = makeProjectRoot();
+-    expect(() => memoryStore.append(projectRoot, '   ')).toThrow();
+-    expect(() => memoryStore.append(projectRoot, '')).toThrow();
+-  });
+-
+-  test('list returns entries newest first', () => {
+-    const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'first');
+-    memoryStore.append(projectRoot, 'second');
+-    memoryStore.append(projectRoot, 'third');
+-
+-    const entries = memoryStore.list(projectRoot);
+-    expect(entries.map(entry => entry.note)).toEqual(['third', 'second', 'first']);
+-  });
+-
+-  test('list returns an empty array when nothing is stored', () => {
+-    const projectRoot = makeProjectRoot();
+-    expect(memoryStore.list(projectRoot)).toEqual([]);
+-  });
+-
+-  test('list tolerates malformed lines without throwing', () => {
+-    const projectRoot = makeProjectRoot();
+-    const storePath = memoryStore.defaultStorePath(projectRoot);
+-    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+-    fs.writeFileSync(
+-      storePath,
+-      `${JSON.stringify({ id: 'a', note: 'valid', timestamp: '2026-01-01T00:00:00.000Z', tags: [] })}\nnot-json\n`,
+-      'utf8',
+-    );
+-    const entries = memoryStore.list(projectRoot);
+-    expect(entries).toHaveLength(1);
+-    expect(entries[0].note).toBe('valid');
+-  });
+-
+-  test('search matches note text case-insensitively', () => {
+-    const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'Use Bun for tests');
+-    memoryStore.append(projectRoot, 'Lint with eslint');
+-
+-    const results = memoryStore.search(projectRoot, 'BUN');
+-    expect(results).toHaveLength(1);
+-    expect(results[0].note).toBe('Use Bun for tests');
+-  });
+-
+-  test('search matches tags', () => {
+-    const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'note with tag', { tags: ['security'] });
+-    memoryStore.append(projectRoot, 'note without', { tags: [] });
+-
+-    const results = memoryStore.search(projectRoot, 'security');
+-    expect(results).toHaveLength(1);
+-    expect(results[0].note).toBe('note with tag');
+-  });
+-
+-  test('search with empty query returns all entries', () => {
+-    const projectRoot = makeProjectRoot();
+-    memoryStore.append(projectRoot, 'alpha');
+-    memoryStore.append(projectRoot, 'beta');
+-    expect(memoryStore.search(projectRoot, '')).toHaveLength(2);
+-  });
+-
+-  test('options.filePath overrides the storage location', () => {
+-    const projectRoot = makeProjectRoot();
+-    const custom = path.join(projectRoot, 'custom', 'memory.jsonl');
+-    memoryStore.append(projectRoot, 'custom location note', { filePath: custom });
+-
+-    expect(fs.existsSync(custom)).toBe(true);
+-    expect(memoryStore.list(projectRoot, { filePath: custom })).toHaveLength(1);
+-    expect(fs.existsSync(memoryStore.defaultStorePath(projectRoot))).toBe(false);
+-  });
+-
+-  test('entries carry unique ids', () => {
+-    const projectRoot = makeProjectRoot();
+-    const first = memoryStore.append(projectRoot, 'one');
+-    const second = memoryStore.append(projectRoot, 'two');
+-    expect(first.id).not.toBe(second.id);
+-  });
+-});
+diff --git a/test/memory/router.test.js b/test/memory/router.test.js
+index 822f8b55..cf416f83 100644
+--- a/test/memory/router.test.js
++++ b/test/memory/router.test.js
+@@ -6,9 +6,10 @@ const os = require('node:os');
+ const path = require('node:path');
+ 
+ const router = require('../../lib/memory/router');
+-const memoryStore = require('../../lib/memory-store');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+ 
+ const tempDirs = [];
++const drivers = [];
+ 
+ function makeProjectRoot() {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-router-'));
+@@ -16,13 +17,38 @@ function makeProjectRoot() {
+   return dir;
+ }
+ 
++// A real kernel driver over an explicit DB path inside the temp project — hermetic (no git
++// rev-parse) and closed before the temp dir is removed so Windows releases the WAL lock.
++function makeStore(projectRoot) {
++  const driver = createBuiltinSQLiteDriver({ databasePath: path.join(projectRoot, 'kernel.sqlite') });
++  drivers.push(driver);
++  return driver;
++}
++
+ function writeConfig(projectRoot, yaml) {
+   const dir = path.join(projectRoot, '.forge');
+   fs.mkdirSync(dir, { recursive: true });
+   fs.writeFileSync(path.join(dir, 'config.yaml'), yaml, 'utf8');
+ }
+ 
++function writeLegacyJsonl(projectRoot, entries) {
++  const dir = path.join(projectRoot, '.forge', 'memory');
++  fs.mkdirSync(dir, { recursive: true });
++  fs.writeFileSync(
++    path.join(dir, 'notes.jsonl'),
++    `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`,
++    'utf8',
++  );
++}
++
+ afterEach(() => {
++  while (drivers.length > 0) {
++    try {
++      drivers.pop().close();
++    } catch {
++      // best-effort close
++    }
++  }
+   while (tempDirs.length > 0) {
+     fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+   }
+@@ -119,65 +145,125 @@ describe('memory-router: config validation', () => {
+   });
+ });
+ 
+-describe('memory-router: local dispatch is byte-identical to memory-store', () => {
+-  test('append routes to the local JSONL store by default', () => {
++describe('memory-router: kernel-backed dispatch (local default)', () => {
++  test('append persists to kernel_memories and round-trips through recall', () => {
+     const projectRoot = makeProjectRoot();
+-    const entry = router.append(projectRoot, 'Run /plan before /dev', { tags: ['workflow'] });
++    const store = makeStore(projectRoot);
++
++    const entry = router.append(projectRoot, 'Run /plan before /dev', { tags: ['workflow'], store });
+     expect(entry.note).toBe('Run /plan before /dev');
+     expect(entry.tags).toEqual(['workflow']);
++    expect(typeof entry.id).toBe('string');
+ 
+-    // Written to the exact same location the local store uses.
+-    const storePath = memoryStore.defaultStorePath(projectRoot);
+-    expect(fs.existsSync(storePath)).toBe(true);
+-    expect(memoryStore.list(projectRoot)).toHaveLength(1);
++    const { notes } = router.recall(projectRoot, {}, { store });
++    expect(notes.map(note => note.note)).toContain('Run /plan before /dev');
++    expect(notes.find(note => note.note === 'Run /plan before /dev').tags).toEqual(['workflow']);
+   });
+ 
+-  test('list and search route to the local store by default', () => {
++  test('recall with a query does token-AND BM25 matching (order-independent)', () => {
+     const projectRoot = makeProjectRoot();
+-    router.append(projectRoot, 'alpha note', { tags: ['x'] });
+-    router.append(projectRoot, 'beta note', { tags: ['y'] });
++    const store = makeStore(projectRoot);
++    router.append(projectRoot, 'auth bug in the login flow', { store });
++    router.append(projectRoot, 'export command bug', { store });
++    router.append(projectRoot, 'auth token refresh', { store });
+ 
+-    expect(router.list(projectRoot).map(e => e.note)).toEqual(['beta note', 'alpha note']);
+-    expect(router.search(projectRoot, 'alpha')).toHaveLength(1);
++    const { notes } = router.recall(projectRoot, { query: 'bug auth' }, { store });
++    expect(notes.map(note => note.note)).toEqual(['auth bug in the login flow']);
+   });
+ 
+-  test('graphiti backend still writes the local floor for CLI writes (never breaks remember)', () => {
++  test('recall with no query caps to newest-N and reports the true total (no bare dump)', () => {
+     const projectRoot = makeProjectRoot();
+-    writeConfig(
+-      projectRoot,
+-      'memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: /opt/graphiti/mcp_server\n',
+-    );
+-    const entry = router.append(projectRoot, 'graph note');
++    const store = makeStore(projectRoot);
++    router.append(projectRoot, 'note one', { store });
++    router.append(projectRoot, 'note two', { store });
++    router.append(projectRoot, 'note three', { store });
++
++    const result = router.recall(projectRoot, { limit: 2 }, { store });
++    expect(result.notes).toHaveLength(2);
++    expect(result.total).toBe(3);
++    expect(result.capped).toBe(true);
++  });
++
++  test('recall returns no notes when a query matches nothing', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    router.append(projectRoot, 'something', { store });
++    expect(router.recall(projectRoot, { query: 'nonexistent' }, { store }).notes).toEqual([]);
++  });
++});
++
++describe('memory-router: graphiti backend (experimental — local kernel is always the floor)', () => {
++  const GRAPHITI_CONFIG = 'memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: /opt/graphiti/mcp_server\n';
++
++  test('graphiti writes the local kernel floor for CLI writes (never breaks remember)', () => {
++    const projectRoot = makeProjectRoot();
++    writeConfig(projectRoot, GRAPHITI_CONFIG);
++    const store = makeStore(projectRoot);
++
++    const entry = router.append(projectRoot, 'graph note', { store });
+     expect(entry.note).toBe('graph note');
+-    // The local JSONL store remains the guaranteed floor.
+-    expect(memoryStore.list(projectRoot)).toHaveLength(1);
++    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+   });
+ 
+   test('graphiti append fires the emitter best-effort (fire-and-forget)', () => {
+     const projectRoot = makeProjectRoot();
+-    writeConfig(
+-      projectRoot,
+-      'memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: /opt/graphiti/mcp_server\n',
+-    );
++    writeConfig(projectRoot, GRAPHITI_CONFIG);
++    const store = makeStore(projectRoot);
++
+     let received = null;
+     router.append(projectRoot, 'graph note', {
++      store,
+       graphitiEmitter: { emit: e => { received = e; } },
+     });
+     expect(received).not.toBeNull();
+     expect(received.note).toBe('graph note');
+   });
+ 
+-  test('a throwing/rejecting emitter never breaks remember (hard fallback to local)', () => {
++  test('a throwing/rejecting emitter never breaks remember (hard fallback to the kernel floor)', () => {
+     const projectRoot = makeProjectRoot();
+-    writeConfig(
+-      projectRoot,
+-      'memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: /opt/graphiti/mcp_server\n',
+-    );
++    writeConfig(projectRoot, GRAPHITI_CONFIG);
++    const store = makeStore(projectRoot);
++
+     const throwing = { emit: () => { throw new Error('sidecar down'); } };
+     const rejecting = { emit: () => Promise.reject(new Error('timeout')) };
+-    // Neither must throw; both must still persist to the local floor.
+-    expect(() => router.append(projectRoot, 'note a', { graphitiEmitter: throwing })).not.toThrow();
+-    expect(() => router.append(projectRoot, 'note b', { graphitiEmitter: rejecting })).not.toThrow();
+-    expect(memoryStore.list(projectRoot)).toHaveLength(2);
++    expect(() => router.append(projectRoot, 'note a', { store, graphitiEmitter: throwing })).not.toThrow();
++    expect(() => router.append(projectRoot, 'note b', { store, graphitiEmitter: rejecting })).not.toThrow();
++    expect(router.recall(projectRoot, {}, { store }).total).toBe(2);
++  });
++});
++
++describe('memory-router: one-time JSONL import onto the kernel', () => {
++  test('imports a legacy notes.jsonl on first use and renames it so it never re-imports', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    writeLegacyJsonl(projectRoot, [
++      { id: 'legacy-1', note: 'legacy alpha note', timestamp: '2026-01-01T00:00:00.000Z', tags: ['old'] },
++      { id: 'legacy-2', note: 'legacy beta note', timestamp: '2026-01-02T00:00:00.000Z', tags: [] },
++    ]);
++
++    const { notes, total } = router.recall(projectRoot, {}, { store });
++    expect(total).toBe(2);
++    expect(notes.map(note => note.note).sort()).toEqual(['legacy alpha note', 'legacy beta note']);
++
++    // The JSONL file is renamed so it is never read or written again.
++    expect(fs.existsSync(path.join(projectRoot, '.forge', 'memory', 'notes.jsonl'))).toBe(false);
++    expect(fs.existsSync(path.join(projectRoot, '.forge', 'memory', 'notes.jsonl.migrated'))).toBe(true);
++  });
++
++  test('the import is idempotent — a second pass does not duplicate rows', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    writeLegacyJsonl(projectRoot, [
++      { id: 'legacy-1', note: 'only note', timestamp: '2026-01-01T00:00:00.000Z', tags: [] },
++    ]);
++
++    router.migrateJsonlNotesOnce(projectRoot, { store });
++    // Re-writing the same file (same ids) and re-importing upserts, never duplicates.
++    writeLegacyJsonl(projectRoot, [
++      { id: 'legacy-1', note: 'only note', timestamp: '2026-01-01T00:00:00.000Z', tags: [] },
++    ]);
++    router.migrateJsonlNotesOnce(projectRoot, { store });
++
++    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+   });
+ });
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index c90204f8..4941295c 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -203,4 +203,9 @@ describe('project memory kernel adapter — token-efficient reads (recall backin
+     expect(projectMemory.searchRanked(process.cwd(), 'auth', 5, { store }).map(entry => entry.key)).toEqual(['m1']);
+     expect(store.searchCalls).toEqual([['auth', 5]]);
+   });
++
++  test('closeAll is a no-op-safe lifecycle helper on an empty cache', () => {
++    expect(typeof projectMemory.closeAll).toBe('function');
++    expect(() => projectMemory.closeAll()).not.toThrow();
++  });
+ });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,827 @@
+From cb0261062f5556edfcf6b3e5bf944b4278e858db Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 3 Jul 2026 23:36:06 +0530
+Subject: [PATCH] feat(migrate): land beads activity events + interactions in
+ kernel_events
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+forge migrate --from beads now transfers the full legacy activity log — every
+events.jsonl lifecycle event (2378 in the real corpus) and interactions.jsonl
+agent interaction/memory record (34) — into the kernel_events table
+(namespaced beads.event.* / beads.interaction.*, origin=beads_import),
+preserving each record's kind, actor, timestamp and payload. The write is
+idempotent (deterministic id + ON CONFLICT DO NOTHING) so re-migration mints no
+duplicates, and needs NO schema change (kernel_events already fits).
+
+Issue-level field gaps are resolved onto existing columns: beads owner →
+assignee (falling back after an explicit assignee, else retained under
+metadata.beads_owner), and design/assignee now land on their kernel columns
+instead of being dropped. The spurious empty-"{}" dependencies.metadata gap is
+dropped. Gaps fall 7 → 1: only dependencies.created_by remains, kept as a
+documented gap (no kernel_dependencies creator column).
+
+Dry-run/import summaries now surface an events count. Regenerated the D20 bd
+call-site kill-list artifact (line-number shifts only; counts unchanged).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   2 +
+ .../bd-call-site-kill-list.md                 |   4 +-
+ lib/adapters/beads-kernel-compat.js           | 169 +++++++++++++++---
+ lib/commands/migrate.js                       |   6 +-
+ lib/kernel/broker.js                          |   3 +-
+ lib/kernel/sqlite-driver.js                   |  59 +++++-
+ test/adapters/beads-kernel-compat.test.js     |  82 ++++++---
+ test/commands/migrate.test.js                 |   5 +
+ .../legacy-backup/interactions.jsonl          |   2 +
+ .../migrate-events-interactions.test.js       | 131 ++++++++++++++
+ 10 files changed, 405 insertions(+), 58 deletions(-)
+ create mode 100644 test/fixtures/beads-migrate/legacy-backup/interactions.jsonl
+ create mode 100644 test/kernel/migrate-events-interactions.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index d515d0d3..07a9b610 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,8 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Added
+ 
++- `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fidelity gaps are also resolved onto existing columns: beads `owner` → `assignee` (falling back after an explicit assignee, otherwise retained under `metadata.beads_owner`), and `design`/`assignee` now land on their Kernel columns instead of being dropped. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. (The dependency `created_by` provenance remains a single documented gap — the Kernel dependency row has no creator column.)
++
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+ 
+ ### Changed
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index ef61c766..1eb0734e 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -22,7 +22,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/dev.js (1)
+   - lines: 466 (bd)
+ - [ ] lib/commands/migrate.js (14)
+-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 306 (.beads)
++  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 310 (.beads)
+ - [ ] lib/commands/plan.js (9)
+   - lines: 237 (bd), 273 (bd), 275 (bd), 289 (bd), 310 (bd), 321 (bd), 324 (bd), 718 (bd), 753 (bd)
+ - [ ] lib/commands/status.js (10)
+@@ -39,7 +39,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/adapters/beads-issue-adapter.js (1)
+   - lines: 78 (bd)
+ - [ ] lib/adapters/beads-kernel-compat.js (1)
+-  - lines: 686 (.beads)
++  - lines: 809 (.beads)
+ - [ ] lib/audit-evidence.js (3)
+   - lines: 148 (bd), 214 (bd), 240 (bd)
+ - [ ] lib/beads-bootstrap.js (6)
+diff --git a/lib/adapters/beads-kernel-compat.js b/lib/adapters/beads-kernel-compat.js
+index 2d9646e8..abbe9e55 100644
+--- a/lib/adapters/beads-kernel-compat.js
++++ b/lib/adapters/beads-kernel-compat.js
+@@ -5,12 +5,12 @@ const path = require('node:path');
+ 
+ const BEADS_EXPORT_FILES = ['issues.jsonl', 'comments.jsonl', 'dependencies.jsonl'];
+ const FORGE_PROJECTION_METADATA_KEY = 'forge_projection';
+-// labels/acceptance_criteria moved OUT of the unsupported set: the D18 issues table
+-// (lib/kernel/schema.js) now has dedicated TEXT columns, so they are serialized, not dropped.
+-const UNSUPPORTED_ISSUE_FIELDS = Object.freeze([
+-  ['assignee', 'no Kernel assignee column in schema v1'],
+-  ['design', 'no Kernel design column in schema v1'],
+-]);
++// Issue fields with no dedicated Kernel column, dropped only after being surfaced as a gap.
++// labels/acceptance_criteria (D18 TEXT columns), created_by/metadata (migration 006),
++// assignee/design (migration 004), and owner (carried onto assignee/created_by/metadata) all
++// moved OUT of this set: they are mapped, not dropped. The list stays as the extension point
++// for any future beads field the Kernel cannot yet represent.
++const UNSUPPORTED_ISSUE_FIELDS = Object.freeze([]);
+ const PRESERVED_FIELDS = Object.freeze([
+   'issues.id',
+   'issues.title',
+@@ -23,6 +23,11 @@ const PRESERVED_FIELDS = Object.freeze([
+   'issues.acceptance_criteria',
+   'issues.created_at',
+   'issues.updated_at',
++  'issues.design',
++  'issues.assignee',
++  'issues.owner',
++  'issues.created_by',
++  'issues.metadata',
+   'dependencies.parent-child',
+   'dependencies.blocks',
+   'comments.body',
+@@ -30,6 +35,10 @@ const PRESERVED_FIELDS = Object.freeze([
+   'comments.created_at',
+   'events.close_reason',
+   'events.closed_at',
++  // Legacy activity log: events.jsonl lifecycle events and interactions.jsonl agent
++  // interaction/memory records both land in kernel_events (origin=beads_import).
++  'events.activity',
++  'interactions.activity',
+ ]);
+ 
+ // D18 taxonomy collapse (see docs/reference/KERNEL_TAXONOMY_VALIDATION.md). Legacy Beads
+@@ -377,6 +386,42 @@ function serializeBeadsMetadata(value) {
+   return Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
+ }
+ 
++// Serialize the Kernel `metadata` column for an imported issue, ALSO preserving the beads
++// `owner` when it is not already captured on created_by/assignee (otherwise it would be
++// silently dropped). owner primarily maps to the Kernel assignee; for an issue that carries a
++// DISTINCT explicit assignee AND author, the owner is retained here as metadata.beads_owner so
++// no field is lost. A raw (non-object) metadata blob that must coexist with beads_owner is
++// nested under metadata.beads_metadata rather than discarded.
++function serializeIssueMetadata(issue, resolved = {}) {
++  const base = serializeBeadsMetadata(issue.metadata);
++  let metadata = {};
++  let rawPreserved = null;
++  if (base !== null) {
++    try {
++      const parsed = JSON.parse(base);
++      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
++        metadata = parsed;
++      } else {
++        rawPreserved = base;
++      }
++    } catch (_error) { // NOSONAR S2486 — non-JSON metadata is preserved via beads_metadata below
++      rawPreserved = base;
++    }
++  }
++
++  const owner = typeof issue.owner === 'string' ? issue.owner.trim() : issue.owner;
++  const ownerCaptured = owner && (owner === resolved.createdBy || owner === resolved.assignee);
++  if (owner && !ownerCaptured) {
++    metadata.beads_owner = issue.owner;
++  }
++
++  if (rawPreserved !== null) {
++    if (Object.keys(metadata).length === 0) return rawPreserved;
++    metadata.beads_metadata = rawPreserved;
++  }
++  return Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
++}
++
+ function hasFiniteRevisionValue(value) {
+   if (typeof value === 'number') return Number.isFinite(value);
+   if (typeof value !== 'string') return false;
+@@ -440,13 +485,17 @@ function buildForgeProjectionMetadata(issue = {}, closeMetadata = {}) {
+   return metadata;
+ }
+ 
+-function buildFidelityReport({ kernel, gaps }) {
++function buildFidelityReport({ kernel, gaps, eventCount = 0, interactionCount = 0 }) {
+   return {
+     summary: {
+       issues: kernel.issues.length,
+       dependencies: kernel.dependencies.length,
+       comments: kernel.comments.length,
+       closeEvents: kernel.events.filter(event => event.event_type === 'beads.issue.closed').length,
++      // Legacy activity records that now land in kernel_events instead of being dropped.
++      events: eventCount,
++      interactions: interactionCount,
++      activityEvents: kernel.activityEvents ? kernel.activityEvents.length : 0,
+       unsupportedFields: gaps.length,
+     },
+     preservedFields: [...PRESERVED_FIELDS],
+@@ -459,15 +508,20 @@ function mapBeadsIssueToKernel(issue, importedAt, gaps, seenGaps) {
+   const { type, aliasLabel } = normalizeKernelType(issue.issue_type || issue.type);
+   const beadsLabels = Array.isArray(issue.labels) ? issue.labels : [];
+   const labels = aliasLabel ? [...beadsLabels, aliasLabel] : beadsLabels;
+-  if (issue.owner) {
+-    addGap(gaps, seenGaps, 'issues.owner', 'no Kernel issue owner column in schema v1');
+-  }
+   for (const [field, reason] of UNSUPPORTED_ISSUE_FIELDS) {
+     if (hasBeadsFieldValue(issue[field])) {
+       addGap(gaps, seenGaps, `issues.${field}`, reason);
+     }
+   }
+ 
++  // Full-fidelity import onto dedicated Kernel columns: the beads author lands on created_by
++  // (falling back to owner when no author is recorded); the responsible owner lands on the
++  // assignee column (falling back after an explicit beads assignee); design/notes-adjacent
++  // authored content lands on the design column. Any owner NOT captured by created_by/assignee
++  // is preserved in the metadata blob (serializeIssueMetadata) so nothing is dropped.
++  const createdBy = issue.created_by || issue.owner || null;
++  const assignee = issue.assignee || issue.owner || null;
++
+   return {
+     id: issue.id,
+     title: issue.title || issue.id,
+@@ -478,10 +532,10 @@ function mapBeadsIssueToKernel(issue, importedAt, gaps, seenGaps) {
+     priority_rank: priority.rank,
+     labels: serializeLabels(labels),
+     acceptance_criteria: serializeAcceptanceCriteria(issue.acceptance_criteria),
+-    // Full-fidelity import: the Beads author (or owner, when no explicit author is recorded) and
+-    // the verbatim metadata blob land on the dedicated Kernel issue columns added in migration 006.
+-    created_by: issue.created_by || issue.owner || null,
+-    metadata: serializeBeadsMetadata(issue.metadata),
++    design: hasBeadsFieldValue(issue.design) ? issue.design : null,
++    assignee,
++    created_by: createdBy,
++    metadata: serializeIssueMetadata(issue, { createdBy, assignee }),
+     created_at: issue.created_at || importedAt,
+     updated_at: issue.updated_at || issue.created_at || importedAt,
+     entity_revision: 0,
+@@ -489,9 +543,13 @@ function mapBeadsIssueToKernel(issue, importedAt, gaps, seenGaps) {
+ }
+ 
+ function mapBeadsDependencyToKernel(dependency, importedAt, gaps, seenGaps) {
+-  if (dependency.metadata) {
++  // An empty "{}" metadata blob carries no data, so it is not a loss — only surface a gap when
++  // the dependency actually holds metadata (the Kernel dependency row has no metadata column).
++  if (hasBeadsFieldValue(dependency.metadata)) {
+     addGap(gaps, seenGaps, 'dependencies.metadata', 'no Kernel dependency metadata column in schema v1');
+   }
++  // The dependency creator has no dedicated Kernel column; retained as a documented gap rather
++  // than silently dropped (resolving it would require an additive kernel_dependencies column).
+   if (dependency.created_by) {
+     addGap(gaps, seenGaps, 'dependencies.created_by', 'no Kernel dependency creator column in schema v1');
+   }
+@@ -569,22 +627,81 @@ function buildCloseEvent(issue, importedAt) {
+   };
+ }
+ 
++// Map a legacy Beads activity event (events.jsonl: created/closed/status_changed/updated/
++// label_added/claimed/…) onto a Kernel event row destined for kernel_events. The beads kind is
++// namespaced as `beads.event.<kind>` and preserved verbatim in the payload alongside the
++// old/new value and any inline comment, so no field is lost. id/idempotency_key derive from the
++// original beads event id, making the write idempotent on re-migration.
++function mapBeadsActivityEventToKernel(event = {}, importedAt) {
++  const kind = String(event.event_type || event.kind || 'event');
++  const createdAt = event.created_at || importedAt;
++  const source = event.id != null && event.id !== ''
++    ? String(event.id)
++    : `${event.issue_id ?? ''}:${kind}:${createdAt}`;
++  return {
++    id: `beads-event-${encodedIdPart(source)}`,
++    entity_type: 'issue',
++    entity_id: event.issue_id != null ? String(event.issue_id) : '',
++    event_type: `beads.event.${kind}`,
++    idempotency_key: `beads-event:${source}`,
++    expected_revision: 0,
++    actor: event.actor || 'beads',
++    origin: 'beads_import',
++    payload_json: JSON.stringify({
++      kind,
++      old_value: event.old_value ?? null,
++      new_value: event.new_value ?? null,
++      comment: event.comment ?? null,
++    }),
++    created_at: createdAt,
++  };
++}
++
++// Map a legacy Beads interaction/memory record (interactions.jsonl: agent field_change/note/…
++// audit entries) onto a Kernel event row destined for kernel_events. The interaction kind is
++// namespaced as `beads.interaction.<kind>`; the structured `extra` payload is spread into the
++// event payload (preserved verbatim) alongside the kind. id/idempotency_key derive from the
++// original beads interaction id, making the write idempotent on re-migration.
++function mapBeadsInteractionToKernel(interaction = {}, importedAt) {
++  const kind = String(interaction.kind || interaction.event_type || 'interaction');
++  const createdAt = interaction.created_at || importedAt;
++  const source = interaction.id != null && interaction.id !== ''
++    ? String(interaction.id)
++    : `${interaction.issue_id ?? ''}:${kind}:${createdAt}`;
++  const extra = interaction.extra && typeof interaction.extra === 'object' && !Array.isArray(interaction.extra)
++    ? interaction.extra
++    : { extra: interaction.extra ?? null };
++  return {
++    id: `beads-interaction-${encodedIdPart(source)}`,
++    entity_type: 'issue',
++    entity_id: interaction.issue_id != null ? String(interaction.issue_id) : '',
++    event_type: `beads.interaction.${kind}`,
++    idempotency_key: `beads-interaction:${source}`,
++    expected_revision: 0,
++    actor: interaction.actor || 'beads',
++    origin: 'beads_import',
++    payload_json: JSON.stringify({ kind, ...extra }),
++    created_at: createdAt,
++  };
++}
++
+ function importBeadsSnapshot(snapshot = {}, options = {}) {
+   const importedAt = options.importedAt || new Date().toISOString();
+   const gaps = [];
+   const seenGaps = new Set();
+-  if (Array.isArray(snapshot.events) && snapshot.events.length > 0) {
+-    addGap(gaps, seenGaps, 'events.jsonl', 'legacy Beads event sidecar is not represented in Kernel schema v1');
+-  }
+-  if (Array.isArray(snapshot.interactions) && snapshot.interactions.length > 0) {
+-    addGap(gaps, seenGaps, 'interactions.jsonl', 'legacy Beads interaction sidecar is not represented in Kernel schema v1');
+-  }
+   const rawIssues = Array.isArray(snapshot.issues) ? snapshot.issues : [];
+   const sourceIssues = applyLabelSidecar(rawIssues, snapshot);
+   const normalizedSnapshot = {
+     ...snapshot,
+     issues: sourceIssues,
+   };
++  // The legacy activity log (lifecycle events + agent interactions) is no longer dropped: both
++  // sidecars are mapped into a single kernel_events-bound bundle, preserving id/kind/actor/
++  // timestamp/payload. events first, then interactions, so the write order is deterministic.
++  const activityEvents = [
++    ...(Array.isArray(snapshot.events) ? snapshot.events : []).map(event => mapBeadsActivityEventToKernel(event, importedAt)),
++    ...(Array.isArray(snapshot.interactions) ? snapshot.interactions : []).map(interaction => mapBeadsInteractionToKernel(interaction, importedAt)),
++  ];
+   const kernel = {
+     issues: sourceIssues.map(issue => mapBeadsIssueToKernel(issue, importedAt, gaps, seenGaps)),
+     dependencies: collectDependencies(normalizedSnapshot)
+@@ -592,13 +709,19 @@ function importBeadsSnapshot(snapshot = {}, options = {}) {
+     comments: collectComments(normalizedSnapshot).map(comment => mapBeadsCommentToKernel(comment, importedAt)),
+     priorityEvents: sourceIssues.map(issue => buildPriorityEvent(issue, importedAt)),
+     events: sourceIssues.map(issue => buildCloseEvent(issue, importedAt)).filter(Boolean),
++    activityEvents,
+   };
+ 
+   return {
+     source: 'beads',
+     authority: 'forge-kernel',
+     kernel,
+-    report: buildFidelityReport({ kernel, gaps }),
++    report: buildFidelityReport({
++      kernel,
++      gaps,
++      eventCount: Array.isArray(snapshot.events) ? snapshot.events.length : 0,
++      interactionCount: Array.isArray(snapshot.interactions) ? snapshot.interactions.length : 0,
++    }),
+     rollback: {
+       available: true,
+       mode: 'import-only',
+@@ -886,6 +1009,8 @@ module.exports = {
+   BeadsKernelCompatibilityAdapter,
+   exportKernelToBeads,
+   importBeadsSnapshot,
++  mapBeadsActivityEventToKernel,
++  mapBeadsInteractionToKernel,
+   loadBeadsSnapshotFromDirectory,
+   parseJsonl,
+   rollbackBeadsExport,
+diff --git a/lib/commands/migrate.js b/lib/commands/migrate.js
+index a9d7d2f4..736b061f 100644
+--- a/lib/commands/migrate.js
++++ b/lib/commands/migrate.js
+@@ -173,19 +173,21 @@ function renderHuman(payload) {
+     return [
+       `Dry run — would import beads → kernel from ${payload.source}:`,
+       `  issues: ${payload.planned.issues}, comments: ${payload.planned.comments}, ` +
+-        `dependencies: ${payload.planned.dependencies}`,
++        `dependencies: ${payload.planned.dependencies}, events: ${payload.planned.events ?? 0}`,
+       `  gaps: ${gaps.count}${gapBrief}`,
+       '  (nothing written to the kernel)',
+     ].join('\n');
+   }
+ 
+   const imported = payload.imported;
++  const importedEvents = imported.events || { inserted: 0, skipped: 0 };
+   return [
+     `Migrated beads → kernel from ${payload.source}:`,
+     `  issues: ${imported.issues.inserted} imported, ${imported.issues.skipped} skipped`,
+     `  comments: ${imported.comments.inserted} imported, ${imported.comments.skipped || 0} skipped`,
+     `  dependencies: ${imported.dependencies.inserted} imported, ` +
+       `${imported.dependencies.skipped} skipped`,
++    `  events: ${importedEvents.inserted} imported, ${importedEvents.skipped || 0} skipped`,
+     `  gaps: ${gaps.count}${gapBrief}`,
+   ].join('\n');
+ }
+@@ -250,6 +252,7 @@ async function runBeadsMigration(options, projectRoot, opts) {
+     issues: kernel.issues.length,
+     comments: kernel.comments.length,
+     dependencies: kernel.dependencies.length,
++    events: Array.isArray(kernel.activityEvents) ? kernel.activityEvents.length : 0,
+   };
+ 
+   if (options.dryRun) {
+@@ -284,6 +287,7 @@ async function runBeadsMigration(options, projectRoot, opts) {
+         issues: summary.issues,
+         comments: summary.comments,
+         dependencies: summary.dependencies,
++        events: summary.events,
+       },
+       gaps,
+     });
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 2e0a8f18..52888f6a 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -1049,7 +1049,8 @@ function createLocalBroker(options = {}) {
+ 		// schema/migrations exist. The canonical input is the `.kernel` records object; the
+ 		// full importBeadsSnapshot result is accepted as a convenience and unwrapped.
+ 		// Idempotent (re-import skips existing ids) and transactional. Returns
+-		// { issues, comments, dependencies } each { inserted, skipped }.
++		// { issues, comments, dependencies, events } each { inserted, skipped } — where events
++		// are the legacy beads activity/interaction records landed in kernel_events.
+ 		async importIssues(records = {}, options = {}) {
+ 			requireDriverMethod(driver, 'importIssues');
+ 			const config = getConfig();
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index b318d39c..370599f1 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1266,6 +1266,13 @@ const IMPORT_ISSUE_COLUMNS = Object.freeze([
+ 
+ const IMPORT_COMMENT_COLUMNS = Object.freeze(['id', 'issue_id', 'body', 'actor', 'visibility', 'created_at']);
+ const IMPORT_DEPENDENCY_COLUMNS = Object.freeze(['id', 'issue_id', 'blocks_issue_id', 'dependency_type', 'created_at']);
++// The kernel_events column set the importer writes for legacy beads activity events +
++// interactions (records.activityEvents). Every NOT NULL column is seeded with a default in
++// buildImportEventRow so a sparse record still inserts a valid row.
++const IMPORT_EVENT_COLUMNS = Object.freeze([
++	'id', 'entity_type', 'entity_id', 'event_type', 'idempotency_key',
++	'expected_revision', 'actor', 'origin', 'payload_json', 'created_at',
++]);
+ 
+ // The mapper carries an issue's terminal close metadata on a SEPARATE
+ // `beads.issue.closed` event (kernel.events), not on the issue record — mirror the
+@@ -1327,21 +1334,43 @@ function buildImportIssueRow(record, closeMeta, now) {
+ 	};
+ }
+ 
+-// Insert a kernel records bundle ({ issues, comments, dependencies, events }) into the
+-// authority tables inside ONE transaction. Order is issues → comments → dependencies so
+-// every child FK resolves; children whose endpoint id is absent (a dangling edge) are
+-// filtered out rather than aborting the whole batch on the live FK. Returns per-table
+-// {inserted, skipped} counts (skipped = an id that already existed or a filtered child).
++// Build the full insert row for one imported activity event (records.activityEvents: legacy
++// beads events.jsonl + interactions.jsonl mapped to kernel_events). NOT NULL columns default so
++// a sparse record stays valid; the mapper already supplies a deterministic id/idempotency_key so
++// the insert is idempotent under ON CONFLICT(id).
++function buildImportEventRow(record, now) {
++	return {
++		id: record.id,
++		entity_type: record.entity_type ?? 'issue',
++		entity_id: record.entity_id ?? '',
++		event_type: record.event_type ?? 'beads.event',
++		idempotency_key: record.idempotency_key ?? record.id,
++		expected_revision: Number(record.expected_revision ?? 0),
++		actor: record.actor ?? 'beads',
++		origin: record.origin ?? 'beads_import',
++		payload_json: record.payload_json ?? JSON.stringify(record.payload ?? {}),
++		created_at: record.created_at ?? now,
++	};
++}
++
++// Insert a kernel records bundle ({ issues, comments, dependencies, events, activityEvents })
++// into the authority tables inside ONE transaction. Order is issues → comments → dependencies →
++// activity events so every child FK resolves; children whose endpoint id is absent (a dangling
++// edge) are filtered out rather than aborting the whole batch on the live FK. activityEvents
++// (kernel_events has no entity FK) always insert. Returns per-table {inserted, skipped} counts
++// (skipped = an id that already existed or a filtered child).
+ function importIssueRecords(runtime, db, records = {}, options = {}) {
+ 	const now = options.now || new Date().toISOString();
+ 	const issues = Array.isArray(records.issues) ? records.issues : [];
+ 	const comments = Array.isArray(records.comments) ? records.comments : [];
+ 	const dependencies = Array.isArray(records.dependencies) ? records.dependencies : [];
++	const activityEvents = Array.isArray(records.activityEvents) ? records.activityEvents : [];
+ 	const closeByIssue = buildImportCloseMetadata(records.events);
+ 	const summary = {
+ 		issues: { inserted: 0, skipped: 0 },
+ 		comments: { inserted: 0, skipped: 0 },
+ 		dependencies: { inserted: 0, skipped: 0 },
++		events: { inserted: 0, skipped: 0 },
+ 	};
+ 	const wasInserted = result => Number(result?.changes || 0) > 0;
+ 
+@@ -1393,6 +1422,17 @@ function importIssueRecords(runtime, db, records = {}, options = {}) {
+ 			summary.dependencies[wasInserted(result) ? 'inserted' : 'skipped'] += 1;
+ 		}
+ 
++		// Legacy activity log → kernel_events. No entity FK, so every record inserts; the
++		// deterministic id (ON CONFLICT DO NOTHING) makes re-migration idempotent.
++		const eventSql = `INSERT INTO kernel_events (${IMPORT_EVENT_COLUMNS.join(', ')})`
++			+ ` VALUES (${IMPORT_EVENT_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(id) DO NOTHING`;
++		for (const event of activityEvents) {
++			if (!event || event.id == null) { summary.events.skipped += 1; continue; }
++			const row = buildImportEventRow(event, now);
++			const result = runParams(runtime, db, eventSql, IMPORT_EVENT_COLUMNS.map(column => row[column]));
++			summary.events[wasInserted(result) ? 'inserted' : 'skipped'] += 1;
++		}
++
+ 		execSql(runtime, db, 'COMMIT;');
+ 	} catch (error) {
+ 		try {
+@@ -1670,10 +1710,11 @@ function createDriver(runtime, configuredDatabasePath) {
+ 			return applyAcceptedMutation(runtime, getDatabase(config), event, context);
+ 		},
+ 		// Faithful-import write path: insert a kernel records bundle ({ issues, comments,
+-		// dependencies, events }) DIRECTLY into the authority tables, preserving each
+-		// issue's original created_at/updated_at + terminal status (bypassing the
+-		// now-stamping create/CAS path). Idempotent + transactional. `context` is part of
+-		// the driver contract but unused by this direct write (prefixed `_`).
++		// dependencies, events, activityEvents }) DIRECTLY into the authority tables,
++		// preserving each issue's original created_at/updated_at + terminal status (bypassing
++		// the now-stamping create/CAS path) and landing the legacy beads activity log in
++		// kernel_events. Idempotent + transactional. `context` is part of the driver contract
++		// but unused by this direct write (prefixed `_`).
+ 		async importIssues(records = {}, options = {}, _context = {}, config = {}) {
+ 			return importIssueRecords(runtime, getDatabase(config), records, options);
+ 		},
+diff --git a/test/adapters/beads-kernel-compat.test.js b/test/adapters/beads-kernel-compat.test.js
+index 4eee102e..773654f0 100644
+--- a/test/adapters/beads-kernel-compat.test.js
++++ b/test/adapters/beads-kernel-compat.test.js
+@@ -138,7 +138,13 @@ describe('Beads Kernel compatibility adapter', () => {
+ 			dependencies: 2,
+ 			comments: 2,
+ 			closeEvents: 1,
+-			unsupportedFields: 3,
++			// This fixture carries no events.jsonl/interactions.jsonl sidecars.
++			events: 0,
++			interactions: 0,
++			activityEvents: 0,
++			// Only the dependency creator remains unmapped (no kernel_dependencies.created_by
++			// column); owner/assignee/design and the empty "{}" dependency metadata are resolved.
++			unsupportedFields: 1,
+ 		});
+ 		expect(result.report.preservedFields).toEqual(expect.arrayContaining([
+ 			'issues.id',
+@@ -150,10 +156,9 @@ describe('Beads Kernel compatibility adapter', () => {
+ 			'comments.body',
+ 			'events.close_reason',
+ 		]));
++		// The dependency creator is the only remaining unmapped field (no dedicated column).
+ 		expect(result.report.gaps).toEqual(expect.arrayContaining([
+-			expect.objectContaining({ field: 'issues.owner', reason: 'no Kernel issue owner column in schema v1' }),
+ 			expect.objectContaining({ field: 'dependencies.created_by', reason: 'no Kernel dependency creator column in schema v1' }),
+-			expect.objectContaining({ field: 'dependencies.metadata', reason: 'no Kernel dependency metadata column in schema v1' }),
+ 		]));
+ 		const gapFields = result.report.gaps.map(gap => gap.field);
+ 		expect(gapFields).not.toContain('issues.labels');
+@@ -161,6 +166,9 @@ describe('Beads Kernel compatibility adapter', () => {
+ 		// created_by and issue metadata are now carried onto the Kernel record, not dropped.
+ 		expect(gapFields).not.toContain('issues.created_by');
+ 		expect(gapFields).not.toContain('issues.metadata');
++		// owner (→ assignee/metadata) and the empty "{}" dependency metadata are no longer gaps.
++		expect(gapFields).not.toContain('issues.owner');
++		expect(gapFields).not.toContain('dependencies.metadata');
+ 		expect(result.rollback).toMatchObject({
+ 			available: true,
+ 			mode: 'import-only',
+@@ -435,31 +443,58 @@ describe('Beads Kernel compatibility adapter', () => {
+ 		});
+ 	});
+ 
+-	test('reports unsupported legacy Beads event sidecars', () => {
++	test('lands legacy Beads activity events in the Kernel activity log without gaps', () => {
+ 		const snapshot = loadBeadsSnapshotFromDirectory(LEGACY_BACKUP_DIR);
+ 		const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
+ 
+ 		expect(snapshot.events).toHaveLength(3);
+-		expect(result.report.gaps).toEqual(expect.arrayContaining([
+-			expect.objectContaining({
+-				field: 'events.jsonl',
+-				reason: 'legacy Beads event sidecar is not represented in Kernel schema v1',
+-			}),
+-		]));
++		// The event sidecar is no longer a data-loss gap — every event maps into activityEvents.
++		expect(result.report.gaps.map(gap => gap.field)).not.toContain('events.jsonl');
++		const created = result.kernel.activityEvents.find(
++			event => event.event_type === 'beads.event.created' && event.entity_id === 'forge-aa1',
++		);
++		expect(created).toMatchObject({
++			entity_type: 'issue',
++			entity_id: 'forge-aa1',
++			actor: 'Harsha Nanda',
++			origin: 'beads_import',
++			expected_revision: 0,
++		});
++		expect(JSON.parse(created.payload_json)).toMatchObject({ kind: 'created' });
++		// The dependency_added event's new_value survives verbatim in the payload.
++		const depAdded = result.kernel.activityEvents.find(event => event.event_type === 'beads.event.dependency_added');
++		expect(JSON.parse(depAdded.payload_json)).toMatchObject({ kind: 'dependency_added', new_value: 'forge-aa1' });
+ 	});
+ 
+-	test('reports unsupported legacy Beads interaction sidecars', () => {
++	test('lands legacy Beads interaction records in the Kernel activity log without gaps', () => {
+ 		const result = importBeadsSnapshot({
+ 			issues: [],
+-			interactions: [{ id: 'interaction-1', event_type: 'field_changed' }],
++			interactions: [{
++				id: 'interaction-1',
++				kind: 'field_change',
++				actor: 'Harsha Nanda',
++				issue_id: 'forge-xyz',
++				extra: { field: 'status', new_value: 'closed' },
++			}],
+ 		}, { importedAt: IMPORTED_AT });
+ 
+-		expect(result.report.gaps).toEqual(expect.arrayContaining([
+-			expect.objectContaining({
+-				field: 'interactions.jsonl',
+-				reason: 'legacy Beads interaction sidecar is not represented in Kernel schema v1',
+-			}),
+-		]));
++		expect(result.report.gaps.map(gap => gap.field)).not.toContain('interactions.jsonl');
++		expect(result.kernel.activityEvents).toHaveLength(1);
++		const [interaction] = result.kernel.activityEvents;
++		expect(interaction.id).toMatch(/^beads-interaction-/);
++		expect(interaction).toMatchObject({
++			entity_type: 'issue',
++			entity_id: 'forge-xyz',
++			event_type: 'beads.interaction.field_change',
++			idempotency_key: 'beads-interaction:interaction-1',
++			actor: 'Harsha Nanda',
++			origin: 'beads_import',
++		});
++		expect(JSON.parse(interaction.payload_json)).toMatchObject({
++			kind: 'field_change',
++			field: 'status',
++			new_value: 'closed',
++		});
+ 	});
+ 
+ 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
+@@ -498,15 +533,16 @@ describe('Beads Kernel compatibility adapter', () => {
+ 		// The beads author is carried; "{}" metadata holds no user data, so the column stays null.
+ 		expect(importedIssue.created_by).toBe('Harsha Nanda');
+ 		expect(importedIssue.metadata).toBeNull();
+-		expect(result.report.gaps).toEqual(expect.arrayContaining([
+-			expect.objectContaining({ field: 'issues.assignee' }),
+-			expect.objectContaining({ field: 'issues.design' }),
+-		]));
++		// assignee and design now land on their dedicated Kernel columns (migration 004), not gaps.
++		expect(importedIssue.assignee).toBe('harsha@example.com');
++		expect(importedIssue.design).toBe('Use the legacy Beads migration design.');
+ 		const aa1GapFields = result.report.gaps.map(gap => gap.field);
+ 		expect(aa1GapFields).not.toContain('issues.labels');
+ 		expect(aa1GapFields).not.toContain('issues.acceptance_criteria');
+-		// created_by is now carried onto the Kernel record, no longer a fidelity gap.
++		// created_by/assignee/design are now carried onto the Kernel record, no longer gaps.
+ 		expect(aa1GapFields).not.toContain('issues.created_by');
++		expect(aa1GapFields).not.toContain('issues.assignee');
++		expect(aa1GapFields).not.toContain('issues.design');
+ 	});
+ 
+ 	test('imports dependency rows with non-lossy generated ids', () => {
+diff --git a/test/commands/migrate.test.js b/test/commands/migrate.test.js
+index 72159232..4a15d0b2 100644
+--- a/test/commands/migrate.test.js
++++ b/test/commands/migrate.test.js
+@@ -108,9 +108,12 @@ describe('forge migrate --from beads — dry run', () => {
+ 			issues: expectedKernel.issues.length,
+ 			comments: expectedKernel.comments.length,
+ 			dependencies: expectedKernel.dependencies.length,
++			events: expectedKernel.activityEvents.length,
+ 		});
+ 		expect(result.planned.issues).toBe(2);
+ 		expect(result.planned.dependencies).toBe(1);
++		// The legacy-backup fixture ships 3 events.jsonl + 2 interactions.jsonl records.
++		expect(result.planned.events).toBe(5);
+ 		// Gaps surfaced (count + brief).
+ 		expect(result.gaps.count).toBeGreaterThan(0);
+ 		expect(result.output).toContain('nothing written');
+@@ -138,6 +141,8 @@ describe('forge migrate --from beads — real import', () => {
+ 		expect(result.imported.issues.inserted).toBe(2);
+ 		expect(result.imported.comments.inserted).toBe(expectedKernel.comments.length);
+ 		expect(result.imported.dependencies.inserted).toBe(1);
++		// The legacy activity log (events.jsonl + interactions.jsonl) lands in kernel_events.
++		expect(result.imported.events.inserted).toBe(expectedKernel.activityEvents.length);
+ 
+ 		const aa1 = await driver.issueOperation('show', ['forge-aa1'], {}, config);
+ 		expect(aa1.data.status).toBe('open');
+diff --git a/test/fixtures/beads-migrate/legacy-backup/interactions.jsonl b/test/fixtures/beads-migrate/legacy-backup/interactions.jsonl
+new file mode 100644
+index 00000000..736cc9de
+--- /dev/null
++++ b/test/fixtures/beads-migrate/legacy-backup/interactions.jsonl
+@@ -0,0 +1,2 @@
++{"id":"int-aa1-status","kind":"field_change","created_at":"2026-04-01T09:30:00Z","actor":"Harsha Nanda","issue_id":"forge-aa1","extra":{"field":"status","old_value":"open","new_value":"open","reason":"Reviewed during planning"}}
++{"id":"int-bb2-note","kind":"note","created_at":"2026-04-01T10:45:00Z","actor":"Worker B","issue_id":"forge-bb2","extra":{"note":"Escalated for review"}}
+diff --git a/test/kernel/migrate-events-interactions.test.js b/test/kernel/migrate-events-interactions.test.js
+new file mode 100644
+index 00000000..fc9c9973
+--- /dev/null
++++ b/test/kernel/migrate-events-interactions.test.js
+@@ -0,0 +1,131 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const {
++	importBeadsSnapshot,
++	loadBeadsSnapshotFromDirectory,
++} = require('../../lib/adapters/beads-kernel-compat');
++
++// Full-fidelity migration of the legacy Beads activity log: events.jsonl (issue lifecycle
++// events) and interactions.jsonl (agent interaction/memory audit records) both LAND in the
++// kernel_events table via the faithful-import write path, preserving kind/actor/payload and
++// staying idempotent on re-migration. Distinct from the close-event sidecar, which is only
++// consumed to denormalize closed_at/close_reason onto the issue row.
++describe('Kernel SQLite driver — beads activity events + interactions import', () => {
++	let tmpDir;
++	let driver;
++	let broker;
++	let config;
++	const now = '2026-06-30T00:00:00.000Z';
++	const fixtureDir = path.join(__dirname, '..', 'fixtures', 'beads-migrate', 'legacy-backup');
++
++	beforeEach(async () => {
++		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-events-'));
++		const dbPath = path.join(tmpDir, 'kernel.sqlite');
++		config = { databasePath: dbPath };
++		driver = createBuiltinSQLiteDriver({});
++		broker = createLocalBroker({
++			projectRoot: tmpDir,
++			execFileSync: () => path.join(tmpDir, '.git'),
++			databasePath: dbPath,
++			driver,
++		});
++		await broker.initialize();
++	});
++
++	afterEach(() => {
++		if (driver) driver.close();
++		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
++	});
++
++	// The activity-event + interaction sidecars are no longer reported as data-loss gaps; the
++	// mapper folds both into a single kernel.activityEvents bundle destined for kernel_events.
++	test('maps every event + interaction into activityEvents with no data-loss gap', () => {
++		const snapshot = loadBeadsSnapshotFromDirectory(fixtureDir);
++		expect(snapshot.events).toHaveLength(3);
++		expect(snapshot.interactions).toHaveLength(2);
++
++		const { kernel, report } = importBeadsSnapshot(snapshot, { importedAt: now });
++
++		const gapFields = report.gaps.map(gap => gap.field);
++		expect(gapFields).not.toContain('events.jsonl');
++		expect(gapFields).not.toContain('interactions.jsonl');
++		// 3 events + 2 interactions land as kernel activity events.
++		expect(kernel.activityEvents).toHaveLength(5);
++		expect(report.summary.events).toBe(3);
++		expect(report.summary.interactions).toBe(2);
++	});
++
++	// Write path: all 5 activity records land in kernel_events, tagged origin=beads_import,
++	// each preserving its beads kind, actor and payload (old/new value, comment, or extra).
++	test('lands every activity event + interaction in kernel_events with fidelity', async () => {
++		const snapshot = loadBeadsSnapshotFromDirectory(fixtureDir);
++		const { kernel } = importBeadsSnapshot(snapshot, { importedAt: now });
++
++		const summary = await broker.importIssues(kernel, { now });
++		expect(summary.events.inserted).toBe(5);
++
++		const rows = await driver.queryAll(
++			"SELECT id, entity_id, event_type, actor, origin, payload_json, created_at FROM kernel_events WHERE origin = 'beads_import'",
++			config,
++		);
++		expect(rows).toHaveLength(5);
++
++		const created = rows.find(row => row.event_type === 'beads.event.created' && row.entity_id === 'forge-aa1');
++		expect(created).toBeTruthy();
++		expect(created.actor).toBe('Harsha Nanda');
++		expect(created.created_at).toBe('2026-04-01T09:00:00Z');
++		expect(JSON.parse(created.payload_json)).toMatchObject({ kind: 'created' });
++
++		// A lifecycle event's old/new value survives verbatim in the payload.
++		const depAdded = rows.find(row => row.event_type === 'beads.event.dependency_added');
++		expect(depAdded.entity_id).toBe('forge-bb2');
++		expect(JSON.parse(depAdded.payload_json)).toMatchObject({ kind: 'dependency_added', new_value: 'forge-aa1' });
++
++		// An interaction record keeps its issue reference, actor and structured extra payload.
++		const interaction = rows.find(row => row.event_type === 'beads.interaction.field_change');
++		expect(interaction.entity_id).toBe('forge-aa1');
++		expect(interaction.actor).toBe('Harsha Nanda');
++		expect(JSON.parse(interaction.payload_json)).toMatchObject({
++			kind: 'field_change',
++			field: 'status',
++			reason: 'Reviewed during planning',
++		});
++	});
++
++	// Idempotency: a second migration of the same snapshot mints no duplicate events.
++	test('re-importing does not duplicate activity events', async () => {
++		const { kernel } = importBeadsSnapshot(loadBeadsSnapshotFromDirectory(fixtureDir), { importedAt: now });
++
++		await broker.importIssues(kernel, { now });
++		const second = await broker.importIssues(kernel, { now });
++
++		expect(second.events.inserted).toBe(0);
++		expect(second.events.skipped).toBe(5);
++
++		const rows = await driver.queryAll("SELECT id FROM kernel_events WHERE origin = 'beads_import'", config);
++		expect(rows).toHaveLength(5);
++	});
++
++	// Back-compat: a source with no events/interactions still migrates cleanly.
++	test('a snapshot without events/interactions imports cleanly', async () => {
++		const { kernel } = importBeadsSnapshot({
++			issues: [{ id: 'no-ev', title: 'No activity', status: 'open', created_at: now, updated_at: now }],
++		}, { importedAt: now });
++
++		expect(kernel.activityEvents).toEqual([]);
++
++		const summary = await broker.importIssues(kernel, { now });
++		expect(summary.issues.inserted).toBe(1);
++		expect(summary.events.inserted).toBe(0);
++
++		const rows = await driver.queryAll("SELECT id FROM kernel_events WHERE origin = 'beads_import'", config);
++		expect(rows).toHaveLength(0);
++	});
++});
+-- 
+2.51.0.windows.1
+

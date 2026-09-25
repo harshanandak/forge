@@ -1,0 +1,25 @@
+From e7eba5c60b21a4aaea85a5a5e77fabd2234dede5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 07:34:51 +0530
+Subject: [PATCH] test(flow): run complete package suite
+
+---
+ packages/flow/package.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/packages/flow/package.json b/packages/flow/package.json
+index 82c2061d..b21dc883 100644
+--- a/packages/flow/package.json
++++ b/packages/flow/package.json
+@@ -9,7 +9,7 @@
+     "src/"
+   ],
+   "scripts": {
+-    "test": "bun test index.test.js",
++    "test": "bun test",
+     "lint": "eslint . --max-warnings 0"
+   },
+   "dependencies": {
+-- 
+2.51.0.windows.1
+

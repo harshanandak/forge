@@ -1,0 +1,387 @@
+From b0319aecf65dc477e530fe7206d7a6e172d8053f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 22:31:43 +0530
+Subject: [PATCH] test(memory): assemble recall release holdouts
+
+---
+ lib/kernel/sqlite-driver.js               |   1 -
+ lib/memory-recall.js                      |   3 +-
+ test/e2e/memory-recall-holdout.test.js    | 266 ++++++++++++++++++++++
+ test/fixtures/memory-recall-holdouts.json |  26 +++
+ test/kernel/sqlite-driver-memory.test.js  |   2 +-
+ test/memory-recall.test.js                |   2 +-
+ 6 files changed, 295 insertions(+), 5 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index a0fa0907..5bd17e3e 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2120,7 +2120,6 @@ function confirmedMemorySql(alias) {
+ 			SELECT 1 FROM json_each(${alias}.tags_json)
+ 			WHERE lower(json_each.value) LIKE 'trust:%'
+ 				OR lower(json_each.value) = 'forge:auto-capture'
+-				OR lower(json_each.value) LIKE 'type:%'
+ 		)))`;
+ }
+ 
+diff --git a/lib/memory-recall.js b/lib/memory-recall.js
+index b402f414..1098b729 100644
+--- a/lib/memory-recall.js
++++ b/lib/memory-recall.js
+@@ -70,8 +70,7 @@ function memoryTrustStatus(entry) {
+   const normalizedTags = tags.map(tag => String(tag).toLowerCase());
+   if (normalizedTags.includes('trust:confirmed')) return 'confirmed';
+   if (normalizedTags.some(tag => tag.startsWith('trust:')
+-    || tag === 'forge:auto-capture'
+-    || tag.startsWith('type:'))) return 'suggested';
++    || tag === 'forge:auto-capture')) return 'suggested';
+   if (entry?.sourceAgent === 'forge remember (imported)') return 'suggested';
+   if (entry?.value && typeof entry.value === 'object') return 'suggested';
+   if (entry?.sourceAgent === 'forge remember' && typeof entry.value === 'string') return 'confirmed';
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 41624163..3cf31ae1 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -14,6 +14,59 @@ const fixture = require('../fixtures/memory-recall-holdouts.json');
+ const roots = [];
+ const drivers = [];
+ 
++function createRecallContext(prefix = 'forge-memory-holdout-') {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
++  roots.push(root);
++  const commonDir = path.join(root, '.git');
++  fs.mkdirSync(commonDir);
++  const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
++  const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
++  drivers.push(store);
++  return { root, commonDir, projectId, store };
++}
++
++function writeMemory(context, entry) {
++  projectMemory.write(context.root, {
++    sourceAgent: 'forge remember',
++    tags: [],
++    scope: context.projectId,
++    ...entry,
++  }, { store: context.store });
++}
++
++async function runAssembledRecall(context, options = {}) {
++  const harness = options.harness || 'claude';
++  return hooks.handler(['memory-recall', '--harness', harness], {}, options.root || context.root, {
++    railEnabled: () => options.railEnabled ?? true,
++    readInput: () => JSON.stringify({
++      session_id: options.sessionId || 'holdout',
++      prompt: options.prompt || fixture.projectLocal.prompt,
++    }),
++    search: (_root, query, limit, searchOptions) => projectMemory.searchRankedScored(
++      options.root || context.root,
++      query,
++      limit,
++      {
++        ...searchOptions,
++        ...(options.now ? { now: options.now } : {}),
++        store: context.store,
++        gitCommonDir: context.commonDir,
++        realpath: value => value,
++        platform: 'win32',
++      },
++    ),
++    loadSeen: () => options.seenKeys || [],
++    saveSeen: options.saveSeen || (() => {}),
++    appendShadow: options.appendShadow || (() => {}),
++    recordRecallEvent: () => {},
++    ...(options.tokenBudget ? { tokenBudget: options.tokenBudget } : {}),
++  });
++}
++
++function additionalContext(result) {
++  return JSON.parse(result.output).hookSpecificOutput.additionalContext;
++}
++
+ afterEach(() => {
+   while (drivers.length) drivers.pop().close();
+   while (roots.length) fs.rmSync(roots.pop(), { recursive: true, force: true });
+@@ -212,4 +265,217 @@ describe('project-local memory recall holdout', () => {
+     expect(result.output).toBe('');
+     expect(elapsedMs).toBeLessThan(5_000);
+   });
++
++  test('26 stronger seen rows are excluded before rank and an unseen local row survives', async () => {
++    const context = createRecallContext('forge-memory-seen-');
++    const seenKeys = [];
++    for (let index = 0; index < fixture.seen.count; index += 1) {
++      const key = `seen-cache-${index}`;
++      seenKeys.push(key);
++      writeMemory(context, {
++        key,
++        value: `cache eviction policy ${'cache '.repeat(20)}`,
++      });
++    }
++    writeMemory(context, {
++      key: fixture.seen.eligibleId,
++      value: fixture.seen.eligibleContent,
++    });
++
++    const output = additionalContext(await runAssembledRecall(context, {
++      prompt: fixture.seen.prompt,
++      seenKeys,
++    }));
++    expect(output).toContain(fixture.seen.eligibleContent);
++    for (const key of seenKeys) expect(output).not.toContain(key);
++  });
++
++  test('foreign and suggested superseders cannot erase eligible confirmed memories', async () => {
++    const context = createRecallContext('forge-memory-supersession-');
++    writeMemory(context, {
++      key: 'foreign-protected',
++      value: fixture.supersession.foreignProtected,
++    });
++    writeMemory(context, {
++      key: 'foreign-superseder',
++      value: 'Foreign release rollback guard.',
++      scope: fixture.foreign.scope,
++      supersedes: ['foreign-protected'],
++    });
++    writeMemory(context, {
++      key: 'confirmed-protected',
++      value: fixture.supersession.confirmedProtected,
++    });
++    writeMemory(context, {
++      key: 'suggested-superseder',
++      value: 'Suggested release rollback replacement.',
++      sourceAgent: 'forge insights',
++      tags: ['trust:suggested'],
++      supersedes: ['confirmed-protected'],
++      timestamp: '2026-07-30T00:00:00.000Z',
++    });
++
++    const output = additionalContext(await runAssembledRecall(context, {
++      prompt: fixture.supersession.prompt,
++      now: '2026-07-30T12:00:00.000Z',
++    }));
++    expect(output).toContain(fixture.supersession.foreignProtected);
++    expect(output).toContain(fixture.supersession.confirmedProtected);
++    expect(output).not.toContain('Foreign release rollback guard.');
++  });
++
++  test('duplicate recall is excluded and an oversized first hit does not starve a fitting hit', async () => {
++    const context = createRecallContext('forge-memory-packing-');
++    writeMemory(context, {
++      key: 'oversized-retry',
++      value: `database retry policy ${'retry '.repeat(1_000)}`,
++    });
++    writeMemory(context, {
++      key: 'fitting-retry',
++      value: fixture.oversized.fitting,
++    });
++    const seen = [];
++    const first = await runAssembledRecall(context, {
++      prompt: fixture.oversized.prompt,
++      tokenBudget: 100,
++      saveSeen: (_root, _session, keys) => seen.push(...keys),
++    });
++    const firstContext = additionalContext(first);
++    expect(firstContext).toContain(fixture.oversized.fitting);
++    expect(firstContext).not.toContain('retry retry retry');
++    expect(Math.ceil(firstContext.length / 4)).toBeLessThanOrEqual(100);
++
++    const second = await runAssembledRecall(context, {
++      prompt: fixture.oversized.prompt,
++      tokenBudget: 100,
++      seenKeys: seen,
++    });
++    expect(second.output).toBe('');
++  });
++
++  test('common-dir identity is deterministic and trust/type precedence survives the assembled path', async () => {
++    const context = createRecallContext('forge-memory-identity-');
++    const siblingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-sibling-'));
++    roots.push(siblingRoot);
++    expect(projectMemory.resolveProjectId(context.root, {
++      gitCommonDir: context.commonDir,
++      realpath: value => value,
++      platform: 'win32',
++    })).toBe(projectMemory.resolveProjectId(siblingRoot, {
++      gitCommonDir: context.commonDir,
++      realpath: value => value,
++      platform: 'win32',
++    }));
++
++    const entries = [
++      {
++        key: 'human-typed',
++        value: fixture.precedence.humanTyped,
++        tags: ['type:decision'],
++      },
++      {
++        key: 'tagged-type',
++        value: { category: 'gotcha', data: 'worker lease policy tagged' },
++        sourceAgent: 'forge insights',
++        tags: ['type:decision'],
++      },
++      {
++        key: 'category-type',
++        value: { category: 'gotcha', data: 'worker lease policy category' },
++        sourceAgent: 'forge insights',
++      },
++      {
++        key: 'machine-type',
++        value: { data: 'worker lease policy machine' },
++        sourceAgent: 'forge insights',
++      },
++      {
++        key: 'explicit-confirmed',
++        value: { data: fixture.precedence.explicitConfirmed },
++        sourceAgent: 'forge insights',
++        tags: ['trust:confirmed'],
++      },
++    ];
++    for (const entry of entries) writeMemory(context, entry);
++    const hits = projectMemory.searchRankedScored(
++      siblingRoot,
++      fixture.precedence.prompt,
++      25,
++      {
++        store: context.store,
++        gitCommonDir: context.commonDir,
++        realpath: value => value,
++        platform: 'win32',
++        now: '2026-07-30T12:00:00.000Z',
++      },
++    );
++    const byId = Object.fromEntries(hits.map(hit => [hit.memory_id, hit]));
++    expect(byId['human-typed'].trust_status).toBe('confirmed');
++    expect(byId['tagged-type'].type).toBe('decision');
++    expect(byId['tagged-type'].trust_status).toBe('suggested');
++    expect(byId['category-type'].type).toBe('gotcha');
++    expect(byId['machine-type'].type).toBe('machine-record');
++    expect(byId['explicit-confirmed'].trust_status).toBe('confirmed');
++
++    const output = additionalContext(await runAssembledRecall(context, {
++      root: siblingRoot,
++      prompt: fixture.precedence.prompt,
++      now: '2026-07-30T12:00:00.000Z',
++    }));
++    expect(output).toContain(fixture.precedence.humanTyped);
++    expect(output).toContain(fixture.precedence.explicitConfirmed);
++    expect(output).toContain('Confirmed memory');
++    expect(output).toContain('Suggested memory');
++  });
++
++  test('assembled 1,000-row recall keeps 100-sample p95 within 250ms', () => {
++    const context = createRecallContext('forge-memory-performance-');
++    for (let index = 0; index < fixture.performance.count; index += 1) {
++      writeMemory(context, {
++        key: `performance-${index}`,
++        value: `routing cache policy record ${index}`,
++        timestamp: '2026-07-30T00:00:00.000Z',
++      });
++    }
++    const search = () => projectMemory.searchRankedScored(
++      context.root,
++      fixture.performance.prompt,
++      25,
++      {
++        store: context.store,
++        gitCommonDir: context.commonDir,
++        realpath: value => value,
++        platform: 'win32',
++        now: '2026-07-30T12:00:00.000Z',
++      },
++    );
++    for (let index = 0; index < 10; index += 1) search();
++    const samples = [];
++    for (let index = 0; index < fixture.performance.samples; index += 1) {
++      const startedAt = performance.now();
++      expect(search()).toHaveLength(25);
++      samples.push(performance.now() - startedAt);
++    }
++    samples.sort((left, right) => left - right);
++    const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
++    expect(p95).toBeLessThanOrEqual(fixture.performance.p95LimitMs);
++  }, 20_000);
++
++  test('harness matrix renders Claude JSON and fails open cleanly elsewhere', async () => {
++    const context = createRecallContext('forge-memory-harness-');
++    writeMemory(context, {
++      key: fixture.projectLocal.memoryId,
++      value: fixture.projectLocal.content,
++    });
++    const claude = await runAssembledRecall(context, { harness: 'claude' });
++    expect(claude.success).toBe(true);
++    expect(additionalContext(claude)).toContain(fixture.projectLocal.content);
++
++    for (const harness of ['codex', 'cursor', 'hermes']) {
++      const result = await runAssembledRecall(context, { harness });
++      expect(result.success).toBe(true);
++      expect(result.output).toBe('');
++      expect(typeof result.reason).toBe('string');
++    }
++  });
+ });
+diff --git a/test/fixtures/memory-recall-holdouts.json b/test/fixtures/memory-recall-holdouts.json
+index cf6a4aa3..d739f62a 100644
+--- a/test/fixtures/memory-recall-holdouts.json
++++ b/test/fixtures/memory-recall-holdouts.json
+@@ -20,5 +20,31 @@
+     "prompt": "secret deployment token",
+     "body": "Never persist this secret deployment token body.",
+     "sessionId": "C:/Users/private/session"
++  },
++  "seen": {
++    "prompt": "cache eviction policy",
++    "count": 26,
++    "eligibleId": "unseen-cache-policy",
++    "eligibleContent": "Use the unseen project-local cache eviction policy."
++  },
++  "supersession": {
++    "prompt": "release rollback guard",
++    "foreignProtected": "Local release rollback guard survives a foreign superseder.",
++    "confirmedProtected": "Confirmed release rollback guard survives a suggested superseder."
++  },
++  "oversized": {
++    "prompt": "database retry policy",
++    "fitting": "Use the bounded database retry policy."
++  },
++  "precedence": {
++    "prompt": "worker lease policy",
++    "humanTyped": "Human-authored typed worker lease policy.",
++    "explicitConfirmed": "Explicitly confirmed worker lease machine policy."
++  },
++  "performance": {
++    "prompt": "routing cache policy",
++    "count": 1000,
++    "samples": 100,
++    "p95LimitMs": 250
+   }
+ }
+diff --git a/test/kernel/sqlite-driver-memory.test.js b/test/kernel/sqlite-driver-memory.test.js
+index 368ec7eb..c2c88040 100644
+--- a/test/kernel/sqlite-driver-memory.test.js
++++ b/test/kernel/sqlite-driver-memory.test.js
+@@ -308,7 +308,7 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
+ 			{ key: 'unknown-trust', value: 'auth token ambiguous', tags: ['trust:unknown'] },
+ 			{ key: 'auto-capture', value: 'auth token captured', tags: ['forge:auto-capture'] },
+ 			{ key: 'typed-machine', value: { category: 'decision', data: 'auth token typed' }, tags: [] },
+-			{ key: 'human', value: 'auth token human', tags: [] },
++			{ key: 'human', value: 'auth token human', tags: ['type:decision'] },
+ 		]) {
+ 			driver.recordMemory({ ...entry, sourceAgent: 'forge remember', scope: projectId });
+ 		}
+diff --git a/test/memory-recall.test.js b/test/memory-recall.test.js
+index 87fa2a3a..0c90ab05 100644
+--- a/test/memory-recall.test.js
++++ b/test/memory-recall.test.js
+@@ -167,7 +167,7 @@ describe('memory-recall: trust precedence', () => {
+     expect(memoryTrustStatus({
+       sourceAgent: 'forge remember',
+       value: 'human note',
+-      tags: [],
++      tags: ['type:decision'],
+     })).toBe('confirmed');
+     expect(memoryTrustStatus({
+       sourceAgent: 'forge insights',
+-- 
+2.51.0.windows.1
+

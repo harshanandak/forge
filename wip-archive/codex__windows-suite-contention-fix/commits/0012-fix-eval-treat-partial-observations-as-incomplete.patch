@@ -1,0 +1,56 @@
+From 6ac8dbddbaf6464c36da4244dc9bc67bfabe9caa Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 16:00:17 +0530
+Subject: [PATCH] fix(eval): treat partial observations as incomplete
+
+---
+ scripts/lib/behavioral-eval-runner.js    |  2 +-
+ test/eval/behavioral-eval-runner.test.js | 19 +++++++++++++++++++
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/lib/behavioral-eval-runner.js b/scripts/lib/behavioral-eval-runner.js
+index 75fbca98..0e740959 100644
+--- a/scripts/lib/behavioral-eval-runner.js
++++ b/scripts/lib/behavioral-eval-runner.js
+@@ -11,7 +11,7 @@ const ATTRIBUTION_FIELDS = Object.freeze([
+ const ATTRIBUTION_HASH_FIELDS = Object.freeze(['prompt', 'skill', 'tool']);
+ const STRUCTURAL_FAILURE_PREFIXES = Object.freeze([
+   'evidence.', 'binding.', 'case_id.', 'packet.', 'split.', 'trial.', 'metrics.',
+-  'manifest.',
++  'manifest.', 'observation.',
+ ]);
+ 
+ function hasExactFields(value, fields) {
+diff --git a/test/eval/behavioral-eval-runner.test.js b/test/eval/behavioral-eval-runner.test.js
+index 71a56c64..467d9357 100644
+--- a/test/eval/behavioral-eval-runner.test.js
++++ b/test/eval/behavioral-eval-runner.test.js
+@@ -126,6 +126,25 @@ describe('controlled behavioral evaluation runner', () => {
+     }
+   });
+ 
++  test('classifies partial nested observation evidence as INCOMPLETE, not FAIL', async () => {
++    let calls = 0;
++    const run = options({
++      executor: async (input) => {
++        calls += 1;
++        return calls === 1
++          ? executorResult(input, { evidence: { observation: {} } })
++          : executorResult(input);
++      },
++    });
++
++    const result = await runBehavioralEvaluation(run.input);
++    expect(result.status).toBe('INCOMPLETE');
++    expect(result.incompleteRuns).toBe(1);
++    expect(result.failedRuns).toBe(0);
++    expect(result.findings[0].failures).toContain('observation.observer.type');
++    expect(run.appended).toHaveLength(result.expectedRuns - 1);
++  });
++
+   test('returns FAIL only for complete evidence that fails the corpus oracle', async () => {
+     let calls = 0;
+     const run = options({
+-- 
+2.51.0.windows.1
+

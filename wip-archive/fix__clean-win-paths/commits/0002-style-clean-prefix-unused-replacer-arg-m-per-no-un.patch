@@ -1,0 +1,26 @@
+From f0c01443c38ab6b822f2b6b5e405cb709ba13286 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 7 Jul 2026 17:02:47 +0530
+Subject: [PATCH] style(clean): prefix unused replacer arg _m per
+ no-unused-vars guideline
+
+---
+ lib/commands/clean.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/commands/clean.js b/lib/commands/clean.js
+index c496b03c..14f805bc 100644
+--- a/lib/commands/clean.js
++++ b/lib/commands/clean.js
+@@ -64,7 +64,7 @@ function getDefaultBranch(runFile) {
+  * @returns {string} Canonical forward-slash key
+  */
+ function normalizeWorktreeKey(p) {
+-  return String(p).replace(/\\/g, '/').replace(/^([a-z]):/, (m, d) => `${d.toUpperCase()}:`);
++  return String(p).replace(/\\/g, '/').replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
+ }
+ 
+ /**
+-- 
+2.51.0.windows.1
+

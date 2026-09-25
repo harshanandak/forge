@@ -1,0 +1,93 @@
+From 595db2f838c4976e87d431108947c7d46d767f37 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 17:31:24 +0530
+Subject: [PATCH] fix(agents): restore packaged using-forge dispatch pointer
+
+---
+ AGENTS.md                                           |  4 ++++
+ .../2026-07-31-s0-packaged-dispatch/decisions.md    |  3 +++
+ docs/work/2026-07-31-s0-packaged-dispatch/plan.md   | 13 +++++++++++++
+ docs/work/2026-07-31-s0-packaged-dispatch/tasks.md  |  7 +++++++
+ test/agents-md-onboarding-surface.test.js           |  7 +++++++
+ 5 files changed, 34 insertions(+)
+ create mode 100644 docs/work/2026-07-31-s0-packaged-dispatch/decisions.md
+ create mode 100644 docs/work/2026-07-31-s0-packaged-dispatch/plan.md
+ create mode 100644 docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 0cc2f9c3..b581824c 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -4,6 +4,10 @@
+ 
+ This project ships a **default TDD-first workflow template** with 6 workflow stages plus a composable **research** skill (a phase of `/plan` and usable standalone). In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it. Pre-merge is an embedded gate in `/ship` and `/review` (not a numbered stage); `/status` and `/shepherd` are utilities (not stages).
+ 
++## Skill Dispatch (auto-trigger)
++
++Before ANY response — including clarifying questions or exploring the codebase — if there is even a 1% chance a Forge skill applies, invoke it, then announce `Using [skill] to [purpose]`. Invoke the `using-forge` dispatch skill (auto-discovered from your agent's own skills — Forge setup installs it into each harness's skills dir; it carries the 1%-rule and routing table), or run `forge skill for "<situation>"` for the deterministic best-fit skill. This is agent-agnostic — never branch on harness identity.
++
+ | Stage | Command     | Purpose                                                   | Required For |
+ |-------|-------------|-----------------------------------------------------------|--------------|
+ | 1     | `/plan`     | Design intent → research → branch + worktree + task list | Critical, Standard, Refactor |
+diff --git a/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md b/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md
+new file mode 100644
+index 00000000..cbcf2b14
+--- /dev/null
++++ b/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md
+@@ -0,0 +1,3 @@
++# Decisions
++
++No spec gaps identified before implementation. The issue explicitly requires a canonical/packaged AGENTS pointer to `using-forge`, preservation of user content and harness behavior, and no duplicated dynamic output. Forbidden shared files will remain untouched.
+diff --git a/docs/work/2026-07-31-s0-packaged-dispatch/plan.md b/docs/work/2026-07-31-s0-packaged-dispatch/plan.md
+new file mode 100644
+index 00000000..79648d37
+--- /dev/null
++++ b/docs/work/2026-07-31-s0-packaged-dispatch/plan.md
+@@ -0,0 +1,13 @@
++# Packaged AGENTS dispatch pointer
++
++## Goal
++Ensure the canonical/packaged `AGENTS.md` surface copied by `forge setup` reliably points Codex/model agents to the `using-forge` dispatch skill/rules, without duplicating dynamic script output.
++
++## Scope
++Inspect and minimally update the owned surfaces: `AGENTS.md`, `lib/agents-config.js`, `lib/rules-sync.js`, and focused generation/onboarding/parity tests. Preserve existing user content, generated parity, and other harness behavior. Do not touch forbidden shared files.
++
++## Acceptance
++- A regression test reproduces the packaged/setup output missing or losing the dispatch pointer and is RED before implementation.
++- Generated/copied AGENTS output contains a concise pointer to `using-forge` and does not inline the dynamic dispatch policy.
++- Existing content preservation and other harness behavior remain intact.
++- Focused generation, onboarding, and rules-parity tests pass.
+diff --git a/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md b/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+new file mode 100644
+index 00000000..3799b5bb
+--- /dev/null
++++ b/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+@@ -0,0 +1,7 @@
++# Tasks
++
++## Task 1 — Add packaged dispatch regression and minimal fix
++- Inspect canonical AGENTS generation/setup and related rules-sync paths.
++- RED: add/update focused test proving packaged/setup AGENTS output lacks or loses the `using-forge` dispatch pointer; run it and capture the expected failure.
++- GREEN: make the smallest implementation/doc-source change in owned files; preserve user content, generated parity, and other harnesses.
++- Run focused generation/onboarding/rules-parity tests and commit the implementation.
+diff --git a/test/agents-md-onboarding-surface.test.js b/test/agents-md-onboarding-surface.test.js
+index befdf001..21472614 100644
+--- a/test/agents-md-onboarding-surface.test.js
++++ b/test/agents-md-onboarding-surface.test.js
+@@ -63,6 +63,13 @@ describe('onboarding surface: setup-generated AGENTS.md', () => {
+       expect(content).toContain('forge upgrade');
+       expect(content).toContain('forge gate');
+       expect(content).toContain('forge role');
++
++      // Packaged/setup AGENTS.md must bootstrap model agents into the shared
++      // using-forge dispatch skill without copying its dynamic policy body.
++      expect(content).toContain('Skill Dispatch');
++      expect(content).toContain('using-forge');
++      expect(content).toContain('forge skill for');
++      expect(content).not.toContain('<EXTREMELY-IMPORTANT>');
+     } finally {
+       rmrf(repo);
+     }
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,107 @@
+From ea56828c24e2ec4a61e42299979406a59efc4f09 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 21:58:14 +0530
+Subject: [PATCH] fix(github): preserve generic child execution
+
+---
+ lib/github-context.js       | 24 +++++++++++++++++++-----
+ test/github-context.test.js | 30 +++++++++++++++++++++++++++---
+ 2 files changed, 46 insertions(+), 8 deletions(-)
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+index 233e4002..8fe62ef4 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -199,16 +199,31 @@ function createPublicContext(status, token, baseEnv, options) {
+     .filter(([key]) => GITHUB_ENV_NAMES.has(key.toLowerCase()))
+     .map(([, value]) => value)]
+     .filter((value) => typeof value === 'string' && value);
++  const environmentForChild = (additions = {}) => status.state === 'unbound'
++    ? passthroughEnvironment(baseEnv, additions)
++    : selectedEnvironment(baseEnv, token, additions);
++  const childRunner = options.childRunner || options._childRunner || runnerFor(options);
+   const runChild = (command, args, runOptions = {}) => {
+     if (typeof command !== 'string' || !Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
+       throw safeCommandFailure('INVALID_GH_ARGUMENTS', 'GitHub CLI arguments must be an array of strings.');
+     }
+     try {
+-      const output = runnerFor(options)(command, args, {
++      return childRunner(command, args, {
+         ...runOptions,
+-        env: status.state === 'unbound'
+-          ? passthroughEnvironment(baseEnv, runOptions.env)
+-          : selectedEnvironment(baseEnv, token, runOptions.env),
++        env: environmentForChild(runOptions.env),
++      });
++    } catch (_error) {
++      throw safeCommandFailure('GITHUB_COMMAND_FAILED', 'The GitHub CLI command failed without exposing its output.');
++    }
++  };
++  const runGh = (args, runOptions = {}) => {
++    if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
++      throw safeCommandFailure('INVALID_GH_ARGUMENTS', 'GitHub CLI arguments must be an array of strings.');
++    }
++    try {
++      const output = runnerFor(options)('gh', args, {
++        ...runOptions,
++        env: environmentForChild(runOptions.env),
+         encoding: 'utf8',
+         stdio: ['ignore', 'pipe', 'pipe'],
+         windowsHide: true,
+@@ -218,7 +233,6 @@ function createPublicContext(status, token, baseEnv, options) {
+       throw safeCommandFailure('GITHUB_COMMAND_FAILED', 'The GitHub CLI command failed without exposing its output.');
+     }
+   };
+-  const runGh = (args, runOptions = {}) => runChild('gh', args, runOptions);
+   Object.defineProperties(context, {
+     runChild: { value: runChild, enumerable: false },
+     runGh: { value: runGh, enumerable: false },
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index eec9652b..c41cebc6 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -102,14 +102,38 @@ describe('github context', () => {
+     expect(() => JSON.stringify(context)).not.toThrow();
+   });
+ 
++  test('generic child execution uses the injected child runner, preserves stdio, and returns its result', () => {
++    const calls = [];
++    const childResult = { sentinel: true };
++    const childRunner = (command, args, options) => {
++      calls.push({ command, args, options });
++      return childResult;
++    };
++    const context = createGithubContext('/repo', {
++      runner: fakeRunner([], { account: 'octo', liveLogin: 'octo', token: 'token-canary' }),
++      childRunner,
++      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
++    });
++
++    const result = context.runChild('codex', ['--interactive'], { stdio: 'inherit', env: { CUSTOM: 'value' } });
++
++    expect(result).toBe(childResult);
++    expect(calls[0]).toMatchObject({ command: 'codex', args: ['--interactive'], options: { stdio: 'inherit' } });
++    expect(calls[0].options.env).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
++  });
++
+   test('unbound child execution preserves the injected base environment without account overrides', () => {
+     const calls = [];
+     const baseEnv = { PATH: 'kept', GH_TOKEN: 'ambient-token', GITHUB_TOKEN: 'ambient-token-2', GH_HOST: 'ambient.example' };
+-    const context = createGithubContext('/repo', { runner: fakeRunner(calls), baseEnv });
++    const childResult = { sentinel: true };
++    const context = createGithubContext('/repo', {
++      runner: fakeRunner(calls),
++      childRunner: (_command, _args, options) => { calls.push({ options }); return childResult; },
++      baseEnv,
++    });
+ 
+-    context.runGh(['api', 'user']);
++    expect(context.runChild('codex', ['--interactive'], { stdio: 'inherit' })).toBe(childResult);
+     expect(calls[1].options.env).toEqual(baseEnv);
+-    expect(calls[1].args).toEqual(['api', 'user']);
+     expect(JSON.stringify(context)).not.toContain('ambient-token');
+   });
+ 
+-- 
+2.51.0.windows.1
+

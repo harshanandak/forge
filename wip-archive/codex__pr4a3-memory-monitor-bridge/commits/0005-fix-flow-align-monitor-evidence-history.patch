@@ -1,0 +1,214 @@
+From cdec320a3a0bb05b99d191395a27df2739b8d46f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 00:14:03 +0530
+Subject: [PATCH] fix(flow): align monitor evidence history
+
+---
+ packages/flow/src/monitor-durability.js       | 33 +++++--
+ packages/flow/test/monitor-durability.test.js | 85 ++++++++++++++++++-
+ 2 files changed, 107 insertions(+), 11 deletions(-)
+
+diff --git a/packages/flow/src/monitor-durability.js b/packages/flow/src/monitor-durability.js
+index f99c4848..53187577 100644
+--- a/packages/flow/src/monitor-durability.js
++++ b/packages/flow/src/monitor-durability.js
+@@ -8,6 +8,7 @@ const {
+ } = require("@forge/memory-contracts");
+ 
+ const MAX_EVENTS_PER_RECEIPT = 4096;
++const MAX_EVIDENCE_HISTORY = 128;
+ const MAX_INPUT_BYTES = 1_048_576;
+ const MAX_MONITOR_ID_LENGTH = 128;
+ const SHA256 = /^[0-9a-f]{64}$/;
+@@ -57,6 +58,17 @@ function snapshotCanonical(value, label) {
+   }
+ }
+ 
++function immutableSnapshot(value, label) {
++  const snapshot = snapshotCanonical(value, label);
++  const freeze = (current) => {
++    if (!current || typeof current !== "object" || Object.isFrozen(current)) return current;
++    Object.freeze(current);
++    for (const child of Object.values(current)) freeze(child);
++    return current;
++  };
++  return freeze(snapshot);
++}
++
+ function assertMonitorId(value) {
+   const snapshot = snapshotCanonical(value, "monitorId");
+   if (typeof snapshot !== "string" || snapshot.length === 0 || snapshot.length > MAX_MONITOR_ID_LENGTH) {
+@@ -161,9 +173,9 @@ function assertRows(value, monitorId) {
+     }
+     return row;
+   });
+-  for (let index = 0; index < rows.length; index += 1) {
+-    if (rows[index].sequence !== index) {
+-      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history has a sequence gap");
++  for (let index = 1; index < rows.length; index += 1) {
++    if (rows[index].sequence <= rows[index - 1].sequence) {
++      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is not monotonic");
+     }
+   }
+   return rows;
+@@ -172,7 +184,8 @@ function assertRows(value, monitorId) {
+ function assertTerminalEvidence(receipt, rows) {
+   const terminalState = receipt.payload.terminal_state;
+   if (terminalState !== "PASS" && terminalState !== "FAIL") return;
+-  const digest = computeContentHash({ evidence_hashes: rows.map((row) => row.content_hash) });
++  const evidenceRows = rows.slice(-MAX_EVIDENCE_HISTORY);
++  const digest = computeContentHash({ evidence_hashes: evidenceRows.map((row) => row.content_hash) });
+   if (rows.length === 0) {
+     if (terminalState === "FAIL" && receipt.payload.last_sequence === 0 && receipt.payload.evidence_digest === digest) {
+       return;
+@@ -201,16 +214,18 @@ function createMonitorDurabilityBridge(options) {
+ 
+   return Object.freeze({
+     async persistEvent(event, config = {}) {
+-      const safeEvent = assertEnvelope(event, "forge.memory.monitor-event.v1");
+-      const safeConfig = snapshotCanonical(config, "monitor persistence config");
+-      const persistence = await providerCall(() => appendEvent(safeEvent, targets, safeConfig));
++      const validatedEvent = assertEnvelope(event, "forge.memory.monitor-event.v1");
++      const persistenceEvent = immutableSnapshot(validatedEvent, "monitor persistence event");
++      const deliveryEvent = immutableSnapshot(validatedEvent, "monitor delivery event");
++      const safeConfig = immutableSnapshot(config, "monitor persistence config");
++      const persistence = await providerCall(() => appendEvent(persistenceEvent, targets, safeConfig));
+       try {
+-        const delivery = await deliver(safeEvent, targets);
++        const delivery = await deliver(deliveryEvent, targets);
+         return Object.freeze({ persistence, delivery });
+       } catch {
+         fail("DELIVERY_FAILED", "Monitor delivery failed after durable persistence", {
+           persisted: true,
+-          eventId: safeEvent.payload.event_id,
++          eventId: persistenceEvent.payload.event_id,
+         });
+       }
+     },
+diff --git a/packages/flow/test/monitor-durability.test.js b/packages/flow/test/monitor-durability.test.js
+index 841150de..7c6c4650 100644
+--- a/packages/flow/test/monitor-durability.test.js
++++ b/packages/flow/test/monitor-durability.test.js
+@@ -76,7 +76,7 @@ function deliveryReceipt(event, overrides = {}) {
+ }
+ 
+ function terminalReceipt(events, overrides = {}) {
+-  const hashes = events.map((event) => event.content_hash);
++  const hashes = events.slice(-128).map((event) => event.content_hash);
+   return envelope(
+     'forge.memory.monitor-receipt.v1',
+     overrides.objectId ?? "30000000-0000-4000-8000-000000000001",
+@@ -105,6 +105,7 @@ function createDurableDriver() {
+     terminals: new Map(),
+     staleTerminal: false,
+     terminalWrites: 0,
++    listLimit: undefined,
+     log: [],
+   };
+ 
+@@ -173,7 +174,7 @@ function createDurableDriver() {
+     },
+     listMonitorEvents(monitorId) {
+       requireAvailable();
+-      return [...state.events.values()]
++      const rows = [...state.events.values()]
+         .map(({ event }) => event)
+         .filter((event) => event.payload.monitor_id === monitorId)
+         .sort((left, right) => left.payload.sequence - right.payload.sequence)
+@@ -186,6 +187,7 @@ function createDurableDriver() {
+           artifact_digest: event.payload.artifact_digest,
+           created_at: event.created_at,
+         }));
++      return state.listLimit === undefined ? rows : rows.slice(0, state.listLimit);
+     },
+   };
+ }
+@@ -415,6 +417,85 @@ describe('monitor durability bridge', () => {
+     expect(driver.state.terminalWrites).toBe(0);
+   });
+ 
++  test('accepts monotonic terminal evidence whose first sequence is one', async () => {
++    const driver = createDurableDriver();
++    const event = monitorEvent({ sequence: 1 });
++    await bridge(driver).persistEvent(event);
++
++    const result = await bridge(driver).recordTerminalReceipt(terminalReceipt([event]));
++
++    expect(result.persistence.idempotent).toBe(false);
++    expect(driver.state.terminals.size).toBe(1);
++  });
++
++  test('hashes only the bounded runtime evidence tail when history exceeds 128 events', async () => {
++    const driver = createDurableDriver();
++    const events = Array.from({ length: 129 }, (_, index) => monitorEvent({
++      sequence: index + 1,
++      observedAt: new Date(Date.UTC(2026, 7, 10, 0, 0, index)).toISOString(),
++    }));
++    const monitorBridge = bridge(driver);
++    for (const event of events) await monitorBridge.persistEvent(event);
++
++    const result = await monitorBridge.recordTerminalReceipt(terminalReceipt(events));
++
++    expect(result.persistence.idempotent).toBe(false);
++    expect(driver.state.terminals.size).toBe(1);
++  });
++
++  test('rejects a durable history truncated before the terminal sequence', async () => {
++    const driver = createDurableDriver();
++    const events = Array.from({ length: 129 }, (_, index) => monitorEvent({
++      sequence: index + 1,
++      observedAt: new Date(Date.UTC(2026, 7, 10, 0, 0, index)).toISOString(),
++    }));
++    const monitorBridge = bridge(driver);
++    for (const event of events) await monitorBridge.persistEvent(event);
++    driver.state.listLimit = 128;
++
++    await expect(monitorBridge.recordTerminalReceipt(terminalReceipt(events))).rejects.toMatchObject({
++      code: 'INCOMPLETE_TERMINAL_EVIDENCE',
++    });
++    expect(driver.state.terminals.size).toBe(0);
++    expect(driver.state.terminalWrites).toBe(0);
++  });
++
++  test('isolates immutable persistence and delivery snapshots from provider retention mutation', async () => {
++    const driver = createDurableDriver();
++    const originalAppend = driver.appendMonitorEvent;
++    let retained;
++    driver.appendMonitorEvent = (event, ...args) => {
++      retained = event;
++      const result = originalAppend.call(driver, event, ...args);
++      try {
++        event.payload.bounded_payload.state = 'retention-tampered';
++      } catch {
++        // The bridge owns an immutable provider snapshot.
++      }
++      return result;
++    };
++    let delivered;
++    const deliver = mock(async (event) => {
++      delivered = event;
++      try {
++        event.payload.bounded_payload.state = 'delivery-tampered';
++      } catch {
++        // The bridge owns an immutable delivery snapshot.
++      }
++    });
++
++    await bridge(driver, deliver).persistEvent(monitorEvent());
++
++    expect(retained).not.toBe(delivered);
++    expect(retained.payload.bounded_payload).not.toBe(delivered.payload.bounded_payload);
++    expect(Object.isFrozen(retained)).toBe(true);
++    expect(Object.isFrozen(retained.payload.bounded_payload)).toBe(true);
++    expect(Object.isFrozen(delivered)).toBe(true);
++    expect(Object.isFrozen(delivered.payload.bounded_payload)).toBe(true);
++    expect(retained.payload.bounded_payload.state).toBe('value-0');
++    expect(delivered.payload.bounded_payload.state).toBe('value-0');
++  });
++
+   test('rejects hostile accessor input without invoking it or reaching the provider', async () => {
+     const driver = createDurableDriver();
+     const valid = monitorEvent();
+-- 
+2.51.0.windows.1
+

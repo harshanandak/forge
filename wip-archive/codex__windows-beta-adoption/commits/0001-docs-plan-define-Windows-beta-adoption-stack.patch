@@ -1,0 +1,459 @@
+From eb0734580632832ccea864caa09dfbed6a81e2dd Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 05:32:25 +0530
+Subject: [PATCH] docs(plan): define Windows beta adoption stack
+
+---
+ .../decisions.md                              |  80 ++++++++++
+ .../design.md                                 | 103 +++++++++++++
+ .../2026-08-11-windows-beta-adoption/plan.md  | 138 ++++++++++++++++++
+ .../2026-08-11-windows-beta-adoption/tasks.md |  95 ++++++++++++
+ 4 files changed, 416 insertions(+)
+ create mode 100644 docs/work/2026-08-11-windows-beta-adoption/decisions.md
+ create mode 100644 docs/work/2026-08-11-windows-beta-adoption/design.md
+ create mode 100644 docs/work/2026-08-11-windows-beta-adoption/plan.md
+ create mode 100644 docs/work/2026-08-11-windows-beta-adoption/tasks.md
+
+diff --git a/docs/work/2026-08-11-windows-beta-adoption/decisions.md b/docs/work/2026-08-11-windows-beta-adoption/decisions.md
+new file mode 100644
+index 00000000..84ef6115
+--- /dev/null
++++ b/docs/work/2026-08-11-windows-beta-adoption/decisions.md
+@@ -0,0 +1,80 @@
++# Decisions: Windows beta adoption
++
++Issue: `1f76ff32-e688-40c2-bb01-6e1392aca45d`
++
++## Accepted from current project architecture
++
++### D1 — Lefthook is an adapter, not the policy authority
++
++Status: inherited/accepted.
++
++Agent-native hooks provide interactive UX, Forge CLI checks own policy,
++Lefthook and native Git hooks are repository adapters, and CI is the durable
++merge gate. This plan does not centralize more behavior in Lefthook.
++
++### D2 — preserve existing Windows timeout ownership
++
++Status: accepted for this plan.
++
++The process-tree and full-suite fixes already on master remain unchanged. The
++remaining deterministic Node 24 pre-push timeout stays in claimed issue
++`54b54219-7cbc-4262-9461-a77112a7c49b`. No timeout budget is raised here.
++
++### D3 — fix the consumer boundary, not Forge's working copy
++
++Status: proposed, recommended.
++
++Forge's repository attributes are already correct. The defect is that setup
++copies assets into a repository governed by a different `.gitattributes` file.
++W1 therefore wires the consumer contract instead of adding redundant rules to
++the source checkout.
++
++## Pending human decisions
++
++### H1 — may setup merge `.gitattributes`?
++
++Recommended: yes, through one delimited, idempotent Forge block while preserving
++all user content. Do not stage or auto-renormalize.
++
++Alternative: docs-only. Trade-off: no mutation, but a Windows user can still
++commit/check out Forge shell scripts with CRLF.
++
++Status: pending.
++
++### H2 — broad shell rule or Forge-owned paths only?
++
++Recommended: `*.sh text eol=lf`, matching the issue and the portable shell
++runtime requirement.
++
++Alternative: `.forge/**` and `.claude/scripts/**` only. Trade-off: smaller policy
++surface, but generated/top-level shell files can remain unprotected.
++
++Status: pending.
++
++### H3 — align the optional peer dependency?
++
++Recommended: change `lefthook` optional peer from `^1.0.0` to `^2.1.4`, matching
++the validated development line and current official Node package.
++
++Alternative: remove the optional peer and rely only on setup auto-install.
++Trade-off: less peer friction, but the package stops declaring interoperability.
++
++Status: pending.
++
++### H4 — Windows CI evidence level
++
++Recommended: add the smoke proof to one existing Windows matrix lane.
++
++Alternative: local-only fixture. Trade-off: faster CI, but it does not prove
++Windows Git checkout behavior on the release path.
++
++Status: pending.
++
++## Rejected approaches
++
++- Adding another redundant LF rule only to Forge's source `.gitattributes`.
++- Copying Forge's full repository-specific `.gitattributes` into user projects.
++- Running `git add --renormalize .` automatically during setup.
++- Overwriting foreign hooks or user attribute files.
++- Bundling every platform executable inside the Forge tarball.
++- Raising Bun/global suite timeouts to mask a child-process defect.
+diff --git a/docs/work/2026-08-11-windows-beta-adoption/design.md b/docs/work/2026-08-11-windows-beta-adoption/design.md
+new file mode 100644
+index 00000000..89aba9b7
+--- /dev/null
++++ b/docs/work/2026-08-11-windows-beta-adoption/design.md
+@@ -0,0 +1,103 @@
++# Windows beta adoption design
++
++Issue: `1f76ff32-e688-40c2-bb01-6e1392aca45d`
++
++Status: draft, awaiting the human gates below. This artifact plans work only.
++
++## Outcome
++
++A Windows user can install Forge into an existing repository and finish setup with:
++
++- every shell script Forge installs committed and checked out as LF;
++- Git-hook enforcement active through Lefthook or the existing native fallback;
++- no overwritten user attributes or Git hooks;
++- bounded, actionable failures rather than silent hook disablement or longer global timeouts.
++
++The MVP is a reliable default setup, not a new Windows-specific workflow.
++
++## Current truth at the pinned base
++
++Base `964e3daf94f20391062e3cf642c34b4bd193cda4` already has a repository-level
++`* text=auto eol=lf`, explicit LF rules for shipped asset trees, Lefthook
++`2.1.4` as a development dependency, package-manager-aware auto-install, and a
++native Git-hook fallback. The focused baseline is green: 26 tests passed across
++`test/gitattributes.test.js`, `test/lefthook-check.test.js`, and
++`test/setup-native-fallback-wiring.test.js`.
++
++The remaining user-boundary defect is that setup never creates or merges a
++`.gitattributes` contract in the consumer repository. Forge's own attributes do
++not govern files after they are copied into another Git worktree. The published
++package also omits `.gitattributes`, which is acceptable only if setup writes the
++consumer contract itself.
++
++The package metadata has a second, smaller inconsistency: the optional peer range
++is `^1.0.0` while the validated development line is `^2.1.4`.
++
++## User journey
++
++1. The user installs `forge-workflow@beta` and runs the normal `forge setup` path.
++2. Before Forge-owned shell assets are committed, setup idempotently appends or
++   refreshes a delimited Forge block in the repository's `.gitattributes`:
++   `*.sh text eol=lf`.
++3. Existing non-Forge attribute lines remain byte-for-byte intact. Setup does not
++   stage files or renormalize the repository automatically.
++4. If existing tracked shell scripts may already contain CRLF, the summary gives
++   the explicit, reviewable `git add --renormalize -- '*.sh'` remediation.
++5. Lefthook uses the repository's package manager. If it cannot be installed,
++   Forge retains the native-hook fallback and reports whether enforcement is live.
++
++## Architecture boundary
++
++`forge setup` remains the orchestrator. A small dedicated attributes-wiring
++module owns parsing and idempotent merge behavior; it does not shell out and does
++not stage files. The existing Lefthook checker/wiring modules remain the sole
++hook-availability and fallback authorities.
++
++```text
++setup request
++  -> attributes writer -> preserve user lines + append Forge LF block
++  -> asset scaffold     -> copy Forge-owned scripts
++  -> Lefthook install   -> package-manager-specific attempt
++  -> hook verifier      -> Lefthook active | native fallback active | loud failure
++```
++
++## Acceptance contract
++
++1. A fresh Git fixture with `core.autocrlf=true` runs the live setup path and
++   `git check-attr text eol -- sample.sh` returns `text: set`, `eol: lf`.
++2. A pre-existing `.gitattributes` is preserved, the Forge block appears once,
++   and a repeated setup is a no-op.
++3. Setup never runs `git add`, never renormalizes unrelated files, and never
++   overwrites an existing user rule outside the managed block.
++4. `--skills-only` remains side-effect-minimized: it does not add the attributes
++   block when no Forge shell/hook asset is installed.
++5. Lefthook's optional peer range matches the supported `2.1.x` line and install
++   remediation continues to use Bun/npm/pnpm/Yarn-specific commands.
++6. Windows setup proves either Lefthook is active or the native fallback is
++   active; inert enforcement remains a non-zero, actionable result.
++7. No test or runner timeout is globally raised. The unrelated Windows Node 24
++   pre-push timeout remains owned by issue
++   `54b54219-7cbc-4262-9461-a77112a7c49b`.
++8. Focused tests, strict lint, packaging dry-run, and the existing Windows CI lane
++   pass without touching files owned by open PRs #514, #522, or #523.
++
++## Non-goals
++
++- Rewriting the process-tree implementation or subprocess fixture helper.
++- Fixing issue `54b54219-7cbc-4262-9461-a77112a7c49b` in this branch.
++- Auto-staging or bulk-renormalizing a user's repository.
++- Replacing native fallback hooks or making Lefthook the policy authority.
++- Adding a second setup implementation or a Windows-only command surface.
++
++## Human approval gates
++
++1. **Consumer mutation:** approve the recommended idempotent managed block in an
++   existing `.gitattributes`. Alternative: documentation-only guidance, which is
++   lower risk but leaves first-run failure possible.
++2. **Line-ending scope:** approve broad `*.sh text eol=lf` (recommended and
++   matches the issue) versus only Forge-owned directories (narrower but misses
++   top-level/generated shell scripts).
++3. **Package contract:** approve aligning the optional peer to `^2.1.4`; this is
++   a package-metadata compatibility decision even though Lefthook is optional.
++4. **CI cost:** approve one existing-matrix Windows smoke case (recommended), not
++   a new standalone workflow or expanded matrix.
+diff --git a/docs/work/2026-08-11-windows-beta-adoption/plan.md b/docs/work/2026-08-11-windows-beta-adoption/plan.md
+new file mode 100644
+index 00000000..0960c26b
+--- /dev/null
++++ b/docs/work/2026-08-11-windows-beta-adoption/plan.md
+@@ -0,0 +1,138 @@
++# Plan: Windows beta adoption
++
++Issue: `1f76ff32-e688-40c2-bb01-6e1392aca45d`
++
++Classification: Standard planning requested for a beta-adoption bug. Delivery is
++split into two small stacked PRs after human approval.
++
++## Research summary
++
++### Repository evidence
++
++| Surface | Evidence at pinned base | Conclusion |
++|---|---|---|
++| Forge checkout EOL | `.gitattributes` has global LF plus explicit shipped-tree rules; `git check-attr` reports LF for shell/plugin paths | Already solved inside Forge's repository |
++| Regression coverage | `test/gitattributes.test.js` checks only source strings and binary declarations | Does not prove consumer setup semantics |
++| Consumer setup | No `.gitattributes` read/write exists in `lib/commands/setup.js` | Remaining root defect |
++| Package contents | `npm pack --dry-run --ignore-scripts` contains `install.sh` and `lefthook.yml`, but not `.gitattributes` | Package install alone cannot apply the consumer rule |
++| Lefthook install | `autoInstallLefthook` is package-manager-aware; missing binary repair and native fallback are tested | Runtime path already exists |
++| Lefthook metadata | optional peer `^1.0.0`, dev dependency `^2.1.4` | Version contract is inconsistent |
++| Windows child cleanup | `scripts/process-tree.js` and runner/fixture tests landed in PRs #479, #495, #513, and #521 | Do not duplicate in this issue |
++| Remaining Node 24 timeout | Kernel issue `54b54219-7cbc-4262-9461-a77112a7c49b`, claimed by `sol-release-timeout` | Separate owner and file set |
++
++Focused baseline command:
++
++```text
++bun test test/gitattributes.test.js test/lefthook-check.test.js test/setup-native-fallback-wiring.test.js
++26 pass, 0 fail, 8.92s
++```
++
++### Primary references
++
++- Git attributes: `text` normalizes the index, `eol=lf` controls checkout, and
++  existing content is renormalized with an explicit `git add --renormalize`:
++  https://git-scm.com/docs/gitattributes
++- Lefthook's supported Node-package install and package choices:
++  https://lefthook.dev/installation/node/
++- Lefthook install behavior and automatic NPM-package hook installation:
++  https://lefthook.dev/usage/commands/install/
++- Bun test timeouts are per-test and child processes require bounded ownership:
++  https://bun.sh/docs/test/writing-tests
++- Bun subprocesses support explicit timeout/kill behavior:
++  https://bun.sh/docs/runtime/child-process
++
++## Recommended implementation
++
++Do not add another global rule to Forge's own `.gitattributes`; it already works.
++Propagate the LF contract across the actual product boundary by safely merging a
++small managed block into the consumer repository during normal setup. Keep
++renormalization user-reviewed. Align the optional Lefthook peer range and prove
++the existing install/fallback behavior instead of inventing a second installer.
++
++## Stacked PR decomposition
++
++### Stack W1 — consumer LF contract
++
++Purpose: close the actual setup boundary defect.
++
++Owned files:
++
++- `lib/gitattributes-wiring.js` (new, pure managed-block merge)
++- `lib/commands/setup.js` (one orchestration call)
++- `test/gitattributes-wiring.test.js` (new unit contract)
++- `test/setup-gitattributes.test.js` (new live setup integration contract)
++
++No other stack edits these files. Start from the approved planning commit, rebase
++on exact current master immediately before development, and keep this PR free of
++package metadata and general timeout work.
++
++Exit evidence:
++
++- RED: live setup fixture lacks a consumer `.gitattributes` LF result.
++- GREEN: `core.autocrlf=true` fixture reports `eol: lf`; preservation,
++  idempotence, and `--skills-only` cases pass.
++- strict lint and diff check pass; no auto-staging occurs.
++
++### Stack W2 — Lefthook adoption contract and user guidance
++
++Base: exact merged W1 head. It may be developed only after W1's public contract
++is stable.
++
++Owned files:
++
++- `package.json` (align optional peer range only)
++- `bun.lock` only if the package manager deterministically changes it
++- `test/cross-platform-install.test.js`
++- `test/lefthook-check.test.js`
++- `docs/guides/SETUP.md`
++- `docs/reference/TOOLCHAIN.md`
++
++Exit evidence:
++
++- RED: package contract test exposes the `^1.0.0` / `^2.1.4` mismatch.
++- GREEN: all four package-manager command paths, Windows binary forms, and
++  native fallback remain covered.
++- Packaging dry-run proves intended shipped files; docs explain the hook verdict
++  and optional reviewed renormalization command.
++- Reuse the existing Windows CI matrix; do not create another workflow.
++
++### Parallel but explicitly separate
++
++Issue `54b54219-7cbc-4262-9461-a77112a7c49b` owns the deterministic Windows
++Node 24 pre-push timeout. Its likely surfaces (`scripts/test.js`,
++`scripts/test-full-suite.js`, `scripts/process-tree.js`, and
++`test/scripts/test-runner.test.js`) are forbidden in W1/W2. This lets its owner
++proceed in parallel without merge conflict or duplicated diagnosis.
++
++Open PR file checks also show no overlap with #514 (Flow package), #522 (release
++writer/reference), or #523 (Kernel claim projection).
++
++## Validation strategy
++
++1. Unit-test managed-block insertion, replacement, newline preservation,
++   malformed/missing file behavior, and idempotence.
++2. Run the live setup handler in a temporary Git repository with
++   `core.autocrlf=true`; use `git check-attr`, not string inspection, as the
++   behavioral oracle.
++3. Verify setup leaves the index and unrelated working-tree files unchanged.
++4. Exercise Lefthook checker/install command selection without network access;
++   use fixture binaries for `lefthook`, `.cmd`, `.exe`, and `.bunx`.
++5. Run focused tests and strict lint locally, then the existing Windows CI lane.
++6. If Windows CI times out outside the owned files, hand the receipt to issue
++   `54b54219-7cbc-4262-9461-a77112a7c49b`; do not raise timeouts in this stack.
++
++## Risks and mitigations
++
++| Risk | Mitigation |
++|---|---|
++| Existing user attribute rules are overwritten | Delimited append/replace only; preservation tests |
++| Setup unexpectedly stages a mature repo | Pure filesystem merge; explicit no-index-change test |
++| Later user rule overrides Forge LF | Append managed block at EOF and document ownership |
++| Broad `*.sh` changes an intentional CRLF policy | Human scope gate; recommend broad rule because POSIX shell requires LF reliability |
++| Setup downloads tools unexpectedly | Preserve current behavior and `--skills-only`; network-independent tests |
++| Windows flake gets hidden by budget increases | No global timeout changes; separate issue owns diagnosis |
++
++## Approval checkpoint
++
++Development must not start until the four gates in `design.md` are answered.
++After approval, record the decisions in `decisions.md`, then run W1 before W2.
+diff --git a/docs/work/2026-08-11-windows-beta-adoption/tasks.md b/docs/work/2026-08-11-windows-beta-adoption/tasks.md
+new file mode 100644
+index 00000000..d282239b
+--- /dev/null
++++ b/docs/work/2026-08-11-windows-beta-adoption/tasks.md
+@@ -0,0 +1,95 @@
++# Tasks: Windows beta adoption
++
++Issue: `1f76ff32-e688-40c2-bb01-6e1392aca45d`
++
++This is an approved-plan input only after the human gates are resolved. Every
++implementation task uses RED -> GREEN -> REFACTOR and produces a local commit.
++
++## Gate 0 — human decisions
++
++- [ ] Approve setup-managed consumer `.gitattributes` mutation.
++- [ ] Approve `*.sh text eol=lf` rather than Forge-directory-only patterns.
++- [ ] Approve optional Lefthook peer alignment to `^2.1.4`.
++- [ ] Approve reuse of one existing Windows matrix case for the smoke proof.
++
++No development task starts while any item above is unanswered.
++
++## W1 Task 1 — pure attributes writer
++
++Owner: one bounded implementer. Files:
++`lib/gitattributes-wiring.js`, `test/gitattributes-wiring.test.js`.
++
++1. RED: specify missing-file creation, existing-content preservation, one
++   managed block, CRLF/LF input handling, and repeated-run idempotence.
++2. GREEN: implement the smallest synchronous pure merge API. It may read/write
++   only the target `.gitattributes`; no Git or package-manager subprocesses.
++3. REFACTOR: centralize markers/content and keep errors actionable.
++4. Verify focused tests and strict lint; commit.
++
++Acceptance: user lines are byte-preserved outside the managed block, the Forge
++block is last and unique, and a second run produces no diff.
++
++## W1 Task 2 — live setup integration
++
++Owner: one bounded implementer after Task 1. Files:
++`lib/commands/setup.js`, `test/setup-gitattributes.test.js`.
++
++1. RED: run the live setup handler in a temporary repository configured with
++   `core.autocrlf=true`; prove `.gitattributes` is absent and `sample.sh` lacks
++   the required consumer LF contract.
++2. GREEN: invoke the shared writer only on setup paths that install Forge
++   shell/hook assets. Preserve `--skills-only` side-effect behavior.
++3. REFACTOR: keep setup orchestration thin and add no second policy source.
++4. Verify `git check-attr text eol`, clean index behavior, rerun idempotence,
++   focused setup/hook tests, and strict lint; commit.
++
++Acceptance: the live behavior satisfies design criteria 1-4 and no test uses a
++global timeout increase.
++
++## W1 Task 3 — spec and quality review
++
++1. Spec review every acceptance item against the exact W1 diff.
++2. Quality review path traversal, partial write, encoding, newline, and mature
++   repository preservation risks.
++3. Fix valid findings TDD-first; rerun focused tests/lint/diff.
++4. Validate and ship W1 only after both reviews pass.
++
++## W2 Task 1 — package contract alignment
++
++Owner: one bounded implementer after W1 merges. Files: `package.json`, optional
++`bun.lock`, `test/cross-platform-install.test.js`.
++
++1. RED: assert the optional peer range and validated development range share
++   the approved Lefthook major line.
++2. GREEN: align only the optional peer contract; regenerate the lock only when
++   the package manager requires it.
++3. REFACTOR: remove no dependency and introduce no install script.
++4. Run packaging dry-run with lifecycle scripts intentionally disabled for
++   inspection, focused tests, strict lint, and diff; commit.
++
++Acceptance: consumers receive one honest optional compatibility contract, with
++no bundled platform binary claimed inside the tarball.
++
++## W2 Task 2 — adoption proof and docs
++
++Owner: one bounded implementer after W2 Task 1. Files:
++`test/lefthook-check.test.js`, `docs/guides/SETUP.md`,
++`docs/reference/TOOLCHAIN.md`.
++
++1. RED: add only missing behavioral cases for Windows binary detection and
++   package-manager remediation; do not duplicate already-green cases.
++2. GREEN: make the minimum production correction only if a new test exposes a
++   real gap; otherwise keep this task tests/docs-only.
++3. Document the setup verdict, native fallback, managed LF rule, and optional
++   reviewed renormalization command.
++4. Run the W1+W2 focused suite and one existing Windows matrix smoke case.
++5. Spec/quality review, validate, then ship W2.
++
++Acceptance: documentation matches the live command and no network-dependent test
++or separate Windows workflow is added.
++
++## Forbidden overlap
++
++Do not edit process-tree/full-suite/pre-push runner files. Failures there are
++receipts for issue `54b54219-7cbc-4262-9461-a77112a7c49b`, not scope expansion.
++Do not edit any current file in open PRs #514, #522, or #523.
+-- 
+2.51.0.windows.1
+

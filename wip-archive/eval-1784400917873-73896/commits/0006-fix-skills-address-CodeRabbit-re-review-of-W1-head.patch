@@ -1,0 +1,175 @@
+From 7f7791315b02ddd58455b32d8457c5d83414486c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 18 Jul 2026 17:14:47 +0530
+Subject: [PATCH] fix(skills): address CodeRabbit re-review of W1 head (4
+ threads)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CodeRabbit/Codex re-reviewed 4e21b53c and opened 4 new threads — all valid
+consequences of the prior fixes:
+
+- orientation.js (P2 + data-integrity): the read-only gate wrongly suppressed
+  live state for BEADS-backend projects (they have no kernel.sqlite by design).
+  Now backend-aware via shouldSkipLiveSnapshot: require an existing Kernel DB ONLY
+  on the kernel path; Beads reads .beads via bd (non-creating) and is not gated.
+- agents-config.js (P2): the generated AGENTS.md dispatch pointer named a
+  repo-relative skills/using-forge/SKILL.md, which does not exist in a set-up
+  consumer project (only the generated mirrors do). Now references the skill BY
+  NAME (auto-discovered from the agent's own skills dir) + `forge skill for`.
+- skill.js (SonarCloud S1788): removed the non-final default param — dropped the
+  unused trailing `_projectRoot` so `flags = {}` is the last declared param.
+
+Tests: backend-aware gate unit test (kernel-no-DB skipped, beads not); parity test
+asserts the pointer names the skill by name, not a repo path.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/agents-config.js                      |  2 +-
+ lib/commands/skill.js                     |  5 +++-
+ lib/orientation.js                        | 32 ++++++++++++++++++++---
+ test/orientation-prime-live-state.test.js | 15 +++++++++++
+ test/skill-dispatch-parity.test.js        |  5 +++-
+ 5 files changed, 52 insertions(+), 7 deletions(-)
+
+diff --git a/lib/agents-config.js b/lib/agents-config.js
+index d87ea368..0a2dba2e 100644
+--- a/lib/agents-config.js
++++ b/lib/agents-config.js
+@@ -95,7 +95,7 @@ Forge currently supports Claude Code, Codex, and Cursor. Hermes support is plann
+ 
+ ## Skill Dispatch (auto-trigger)
+ 
+-Before ANY response — including clarifying questions or exploring the codebase — if there is even a 1% chance a Forge skill applies, invoke it, then announce \`Using [skill] to [purpose]\`. Consult the \`using-forge\` dispatch skill (\`skills/using-forge/SKILL.md\`) for the 1%-rule and routing table, or run \`forge skill for "<situation>"\` for the deterministic best-fit skill. This is agent-agnostic — never branch on harness identity.
++Before ANY response — including clarifying questions or exploring the codebase — if there is even a 1% chance a Forge skill applies, invoke it, then announce \`Using [skill] to [purpose]\`. Invoke the \`using-forge\` dispatch skill (auto-discovered from your agent's own skills — Forge setup installs it into each harness's skills dir; it carries the 1%-rule and routing table), or run \`forge skill for "<situation>"\` for the deterministic best-fit skill. This is agent-agnostic — never branch on harness identity.
+ 
+ ## Quick Start
+ 
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+index 762e6ef2..052ddc97 100644
+--- a/lib/commands/skill.js
++++ b/lib/commands/skill.js
+@@ -71,7 +71,10 @@ module.exports = {
+   flags: {
+     '--json': 'Emit the machine-readable routing result',
+   },
+-  handler: (args, flags = {}, _projectRoot) => {
++  // flags is the LAST declared param so its `= {}` default is trailing (SonarCloud S1788). The
++  // registry still passes (args, flags, projectRoot, opts) — the extra args are simply ignored,
++  // and the router reads the canonical catalog from the package root, not projectRoot.
++  handler: (args, flags = {}) => {
+     const verb = args[0];
+     if (verb === 'for') {
+       return handleFor(args.slice(1), flags);
+diff --git a/lib/orientation.js b/lib/orientation.js
+index 001e3fa1..c956a8e2 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -886,11 +886,34 @@ function hasExistingKernelDb(projectRoot) {
+   }
+ }
+ 
++/**
++ * True when the ACTIVE issue backend would lazily create a store on read. Only the KERNEL path
++ * does that (it creates/migrates `.git/forge/kernel.sqlite`), so gate on an existing Kernel DB
++ * ONLY when the resolved backend is kernel. A Beads-backed project reads `.beads` via `bd`
++ * (non-creating) and has no kernel DB, so it must NOT be suppressed here — else `forge prime`
++ * would show "Claimed: none / Ready: none" for Beads projects that DO have live data. Never throws.
++ * @param {string} projectRoot
++ * @param {object} env
++ * @returns {boolean} true iff the read must be skipped to stay read-only.
++ */
++function shouldSkipLiveSnapshot(projectRoot, env) {
++  let backend;
++  try {
++    const { resolveIssueBackend } = require('./issue-backend');
++    backend = resolveIssueBackend({ env: env || process.env, projectRoot, warn: () => {} });
++  } catch {
++    backend = 'kernel'; // conservative default: treat as the create-on-read kernel path
++  }
++  if (backend === 'beads') return false; // bd reads existing .beads without creating it
++  return !hasExistingKernelDb(projectRoot); // kernel path: require an already-existing DB
++}
++
+ /**
+  * Acquire the status snapshot for live-state WITHOUT ever creating state. An injected
+- * `_readSnapshot` (tests) bypasses the guards; otherwise the read is gated on a real git repo AND
+- * an already-existing Kernel DB, so a fresh/un-initialized repo returns null (honest fallback)
+- * and nothing is written. Never throws.
++ * `_readSnapshot` (tests) bypasses the guards; otherwise the read is gated on a real git repo and
++ * a backend-aware store check (see shouldSkipLiveSnapshot), so a fresh/un-initialized KERNEL repo
++ * returns null (honest fallback) and nothing is written, while a Beads project still reads live.
++ * Never throws.
+  * @returns {Promise<object|null>}
+  */
+ async function acquireLiveSnapshot(projectRoot, env, options) {
+@@ -898,7 +921,7 @@ async function acquireLiveSnapshot(projectRoot, env, options) {
+     try { return await options._readSnapshot(); } catch { return null; }
+   }
+   if (!fs.existsSync(path.join(projectRoot, '.git'))) return null;
+-  if (!hasExistingKernelDb(projectRoot)) return null; // read-only: never create the store
++  if (shouldSkipLiveSnapshot(projectRoot, env)) return null; // read-only: never create the store
+   try {
+     const { readStatusSnapshot } = require('./status/snapshot');
+     return await readStatusSnapshot(projectRoot, { env });
+@@ -1049,6 +1072,7 @@ module.exports = {
+   buildPrime,
+   buildPrimeLiveStateSection,
+   collectPrimeLiveState,
++  shouldSkipLiveSnapshot,
+   discoverWorkFolder,
+   formatPrimeLiveState,
+   estimateTokens,
+diff --git a/test/orientation-prime-live-state.test.js b/test/orientation-prime-live-state.test.js
+index e40a25f5..760c4cba 100644
+--- a/test/orientation-prime-live-state.test.js
++++ b/test/orientation-prime-live-state.test.js
+@@ -10,6 +10,7 @@ const {
+   formatPrimeLiveState,
+   buildAdoptionNudge,
+   collectPrimeLiveState,
++  shouldSkipLiveSnapshot,
+   formatOrientationText,
+ } = require('../lib/orientation');
+ 
+@@ -156,6 +157,20 @@ describe('collectPrimeLiveState', () => {
+     expect(state.readyCount).toBe(0);
+   });
+ 
++  test('backend-aware gate: kernel-backend repo with no DB is skipped; beads-backend repo is NOT', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-prime-backend-'));
++    fs.mkdirSync(path.join(root, '.git'));
++    try {
++      // Kernel backend (default) with no kernel.sqlite → skip (read-only, avoids DB creation).
++      expect(shouldSkipLiveSnapshot(root, {})).toBe(true);
++      // Beads backend has no kernel DB by design and reads .beads via bd (non-creating) — it must
++      // NOT be suppressed by the kernel-DB gate, or prime would show empty for Beads projects.
++      expect(shouldSkipLiveSnapshot(root, { FORGE_ISSUE_BACKEND: 'beads' })).toBe(false);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
+   test('read-only: does NOT create a Kernel DB in a repo that has none (session-entry contract)', async () => {
+     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-prime-nodb-'));
+     fs.mkdirSync(path.join(root, '.git'));
+diff --git a/test/skill-dispatch-parity.test.js b/test/skill-dispatch-parity.test.js
+index df9200bd..c4c94baa 100644
+--- a/test/skill-dispatch-parity.test.js
++++ b/test/skill-dispatch-parity.test.js
+@@ -52,7 +52,10 @@ describe('skill-dispatch parity across delivery surfaces (mechanism, not identit
+ 
+   test('the AGENTS.md generator names the dispatch skill by path (Codex/Claude/Hermes carrier)', () => {
+     const md = generateAgentsMdContent({ name: 'x', testCommand: 'bun test', buildCommand: 'bun run build' });
+-    expect(md).toContain('skills/using-forge/SKILL.md');
++    // Names the dispatch skill BY NAME + the CLI — NOT a repo-relative skills/ path, which does
++    // not exist in a set-up consumer project (only the generated mirrors do).
++    expect(md).toContain('using-forge');
++    expect(md).not.toContain('skills/using-forge/SKILL.md');
+     expect(md).toContain('Skill Dispatch');
+   });
+ });
+-- 
+2.51.0.windows.1
+

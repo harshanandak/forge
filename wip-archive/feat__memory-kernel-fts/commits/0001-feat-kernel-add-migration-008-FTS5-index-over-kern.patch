@@ -1,0 +1,169 @@
+From 3e3de084e6456678b1efd40cba9efe12a225d29f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 18:04:15 +0530
+Subject: [PATCH] feat(kernel): add migration 008 FTS5 index over
+ kernel_memories
+
+External-content FTS5 virtual table (content='kernel_memories') kept in
+sync by insert/delete/update triggers, plus a one-time 'rebuild' backfill
+for rows written before the index existed. Foundation for token-efficient
+BM25 memory recall (decision-store design Section B/B.1).
+
+Issue: 9c8060f8-f4ec-47f4-b923-5e247c5bcdfd
+---
+ lib/kernel/migrations.js                    | 41 +++++++++++++++++++++
+ test/kernel/broker-migration-ledger.test.js |  6 ++-
+ test/kernel/migrations.test.js              | 37 +++++++++++++++++--
+ 3 files changed, 79 insertions(+), 5 deletions(-)
+
+diff --git a/lib/kernel/migrations.js b/lib/kernel/migrations.js
+index 0ead47d4..849cf547 100644
+--- a/lib/kernel/migrations.js
++++ b/lib/kernel/migrations.js
+@@ -240,6 +240,44 @@ function buildWorktreeLinkageColumnsMigration() {
+ 	};
+ }
+ 
++// 008: an FTS5 full-text index over kernel_memories, the shared token-efficient
++// retrieval layer (Section B of the decision-store design). It is an EXTERNAL-CONTENT
++// FTS5 table (content='kernel_memories', content_rowid='rowid'), so the index stores no
++// second copy of the row — it reads the memory text back from kernel_memories by rowid.
++// Three triggers keep the index synchronized with every INSERT/DELETE/UPDATE (the
++// upsert-by-key path fires INSERT on first write and UPDATE on a key collision), and a
++// one-time 'rebuild' backfills any rows written before the index existed (e.g. rows the
++// insights engine wrote through recordMemory). The FTS virtual table lives OUTSIDE
++// schema.js (it is not a kernel authority/read-model table), so it is created only here.
++// CREATE … IF NOT EXISTS + CREATE TRIGGER IF NOT EXISTS keep a re-run idempotent, and the
++// same DDL is reused by the driver's lazy ensureMemorySchema so a synchronous memory write
++// stays indexed without a prior broker.initialize().
++function memoryFtsDdl() {
++	return {
++		create: "CREATE VIRTUAL TABLE IF NOT EXISTS kernel_memories_fts USING fts5(\n  key,\n  value_json,\n  tags_json,\n  content='kernel_memories',\n  content_rowid='rowid'\n);",
++		triggers: [
++			'CREATE TRIGGER IF NOT EXISTS kernel_memories_ai AFTER INSERT ON kernel_memories BEGIN\n  INSERT INTO kernel_memories_fts(rowid, key, value_json, tags_json)\n  VALUES (new.rowid, new.key, new.value_json, new.tags_json);\nEND;',
++			"CREATE TRIGGER IF NOT EXISTS kernel_memories_ad AFTER DELETE ON kernel_memories BEGIN\n  INSERT INTO kernel_memories_fts(kernel_memories_fts, rowid, key, value_json, tags_json)\n  VALUES ('delete', old.rowid, old.key, old.value_json, old.tags_json);\nEND;",
++			"CREATE TRIGGER IF NOT EXISTS kernel_memories_au AFTER UPDATE ON kernel_memories BEGIN\n  INSERT INTO kernel_memories_fts(kernel_memories_fts, rowid, key, value_json, tags_json)\n  VALUES ('delete', old.rowid, old.key, old.value_json, old.tags_json);\n  INSERT INTO kernel_memories_fts(rowid, key, value_json, tags_json)\n  VALUES (new.rowid, new.key, new.value_json, new.tags_json);\nEND;",
++		],
++		rebuild: "INSERT INTO kernel_memories_fts(kernel_memories_fts) VALUES('rebuild');",
++	};
++}
++
++function buildMemoryFtsMigration() {
++	const ddl = memoryFtsDdl();
++	return {
++		id: '008_kernel_memories_fts',
++		apply: [ddl.create, ...ddl.triggers, ddl.rebuild],
++		rollback: [
++			'DROP TRIGGER IF EXISTS kernel_memories_au;',
++			'DROP TRIGGER IF EXISTS kernel_memories_ad;',
++			'DROP TRIGGER IF EXISTS kernel_memories_ai;',
++			'DROP TABLE IF EXISTS kernel_memories_fts;',
++		],
++	};
++}
++
+ function validateKernelMigrations(migrations) {
+ 	const ids = new Set();
+ 	for (const migration of migrations) {
+@@ -269,6 +307,7 @@ function buildKernelMigrationPlan(migrations = [
+ 	buildMemoryProjectionMigration(),
+ 	buildIssueFidelityColumnsMigration(),
+ 	buildWorktreeLinkageColumnsMigration(),
++	buildMemoryFtsMigration(),
+ ]) {
+ 	validateKernelMigrations(migrations);
+ 
+@@ -285,8 +324,10 @@ module.exports = {
+ 	buildIssueContentFieldsMigration,
+ 	buildIssueFidelityColumnsMigration,
+ 	buildKernelMigrationPlan,
++	buildMemoryFtsMigration,
+ 	buildMemoryProjectionMigration,
+ 	buildSchemaMigration,
+ 	buildWorktreeLinkageColumnsMigration,
++	memoryFtsDdl,
+ 	validateKernelMigrations,
+ };
+diff --git a/test/kernel/broker-migration-ledger.test.js b/test/kernel/broker-migration-ledger.test.js
+index 2e609d0d..4d3e8bb7 100644
+--- a/test/kernel/broker-migration-ledger.test.js
++++ b/test/kernel/broker-migration-ledger.test.js
+@@ -121,13 +121,15 @@ describe('Kernel broker — migration ledger', () => {
+ 			expect(beforeCols).not.toContain(column);
+ 		}
+ 
+-		// The full plan adds migrations 006 (kernel_issues fidelity columns) and 007
+-		// (kernel_worktrees linkage columns), which ALTER their columns in without error.
++		// The full plan adds migrations 006 (kernel_issues fidelity columns), 007
++		// (kernel_worktrees linkage columns) and 008 (kernel_memories FTS index), which
++		// apply without error on the prior-schema DB.
+ 		const result = await makeBroker(buildKernelMigrationPlan()).initialize();
+ 		expect(result.success).toBe(true);
+ 		expect(result.migrationsNewlyApplied).toEqual([
+ 			'006_kernel_issue_fidelity_columns',
+ 			'007_kernel_worktrees_linkage_columns',
++			'008_kernel_memories_fts',
+ 		]);
+ 
+ 		const after = await driver.queryAll('PRAGMA table_info(kernel_issues);', config);
+diff --git a/test/kernel/migrations.test.js b/test/kernel/migrations.test.js
+index c3912f49..883fb58f 100644
+--- a/test/kernel/migrations.test.js
++++ b/test/kernel/migrations.test.js
+@@ -21,9 +21,9 @@ describe('kernel migration plans', () => {
+ 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_events (\n  id TEXT NOT NULL PRIMARY KEY,\n  entity_type TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  actor TEXT NOT NULL,\n  origin TEXT NOT NULL,\n  payload_json TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);');
+ 		expect(plan.apply).toContain('ALTER TABLE kernel_events ADD COLUMN expected_revision INTEGER NOT NULL DEFAULT 0;');
+ 		expect(plan.apply).toContain('CREATE TABLE IF NOT EXISTS kernel_outbox (\n  id TEXT NOT NULL PRIMARY KEY,\n  event_id TEXT NOT NULL REFERENCES kernel_events(id),\n  target TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT \'pending\',\n  attempts INTEGER NOT NULL DEFAULT 0,\n  next_attempt_at TEXT,\n  created_at TEXT NOT NULL\n);');
+-		// Rollback runs migrations in reverse, so 007 (the latest migration) rolls back
+-		// first: its last-added linkage column (work_folder) drops before everything else.
+-		expect(plan.rollback[0]).toBe('ALTER TABLE kernel_worktrees DROP COLUMN work_folder;');
++		// Rollback runs migrations in reverse, so 008 (the latest migration) rolls back
++		// first: its last-created FTS trigger drops before everything else.
++		expect(plan.rollback[0]).toBe('DROP TRIGGER IF EXISTS kernel_memories_au;');
+ 		expect(plan.rollback).toContain('DROP INDEX IF EXISTS idx_kernel_memories_source_agent;');
+ 		expect(plan.rollback).toContain('DROP TABLE IF EXISTS kernel_memories;');
+ 		expect(plan.rollback).toContain('ALTER TABLE kernel_issues DROP COLUMN assignee;');
+@@ -40,9 +40,40 @@ describe('kernel migration plans', () => {
+ 			'005_kernel_memories',
+ 			'006_kernel_issue_fidelity_columns',
+ 			'007_kernel_worktrees_linkage_columns',
++			'008_kernel_memories_fts',
+ 		]);
+ 	});
+ 
++	test('migration 008 builds an FTS5 index over kernel_memories kept in sync by triggers', () => {
++		const { buildMemoryFtsMigration } = require('../../lib/kernel/migrations');
++		const migration = buildMemoryFtsMigration();
++
++		expect(migration.id).toBe('008_kernel_memories_fts');
++		// An external-content FTS5 virtual table over the memory text columns, so the
++		// index never stores a second copy of the row — it reads kernel_memories by rowid.
++		expect(migration.apply[0]).toContain('CREATE VIRTUAL TABLE IF NOT EXISTS kernel_memories_fts USING fts5');
++		expect(migration.apply[0]).toContain("content='kernel_memories'");
++		expect(migration.apply[0]).toContain("content_rowid='rowid'");
++		// Insert/delete/update triggers keep the FTS index synchronized with the table.
++		const applied = migration.apply.join('\n');
++		expect(applied).toContain('CREATE TRIGGER IF NOT EXISTS kernel_memories_ai AFTER INSERT ON kernel_memories');
++		expect(applied).toContain('CREATE TRIGGER IF NOT EXISTS kernel_memories_ad AFTER DELETE ON kernel_memories');
++		expect(applied).toContain('CREATE TRIGGER IF NOT EXISTS kernel_memories_au AFTER UPDATE ON kernel_memories');
++		// A one-time backfill (rebuild) indexes any rows written before the FTS existed.
++		expect(applied).toContain("INSERT INTO kernel_memories_fts(kernel_memories_fts) VALUES('rebuild');");
++		// Rollback drops the triggers (reverse order) and the virtual table.
++		expect(migration.rollback).toEqual([
++			'DROP TRIGGER IF EXISTS kernel_memories_au;',
++			'DROP TRIGGER IF EXISTS kernel_memories_ad;',
++			'DROP TRIGGER IF EXISTS kernel_memories_ai;',
++			'DROP TABLE IF EXISTS kernel_memories_fts;',
++		]);
++
++		// Registered in the default plan so the broker's initialize() creates the index.
++		const plan = buildKernelMigrationPlan();
++		expect(plan.apply).toContain("INSERT INTO kernel_memories_fts(kernel_memories_fts) VALUES('rebuild');");
++	});
++
+ 	test('migration 005 creates the kernel_memories read-model table and drops it on rollback', () => {
+ 		const { buildMemoryProjectionMigration } = require('../../lib/kernel/migrations');
+ 		const migration = buildMemoryProjectionMigration();
+-- 
+2.51.0.windows.1
+

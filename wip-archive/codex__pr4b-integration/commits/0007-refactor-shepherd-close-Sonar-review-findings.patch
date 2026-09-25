@@ -1,0 +1,112 @@
+From 1e1149b67167c07342c8952850db0dd812957c6f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 01:10:52 +0530
+Subject: [PATCH] refactor(shepherd): close Sonar review findings
+
+---
+ lib/pr-monitor/flow-monitor.js     | 40 ++++++++++++++++++++++++++----
+ lib/pr-monitor/review-preflight.js |  7 ++++--
+ 2 files changed, 40 insertions(+), 7 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index d9b01c85..a83abe08 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -252,7 +252,13 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+   return { state, receiptIds };
+ }
+ 
+-async function persistRecords(ctx, bridge, spec, initialState, records, snapshot, subjectRevision, timestamp) {
++async function persistRecords(ctx, bridge, spec, {
++  initialState,
++  records,
++  snapshot,
++  subjectRevision,
++  timestamp,
++}) {
+   let state = initialState;
+   const receiptIds = [];
+   for (const record of records) {
+@@ -267,7 +273,13 @@ async function persistRecords(ctx, bridge, spec, initialState, records, snapshot
+   return { state, receiptIds };
+ }
+ 
+-async function finalizePass(ctx, bridge, spec, state, snapshot, receiptIds, createdAt, records) {
++async function finalizePass(ctx, bridge, spec, {
++  state,
++  snapshot,
++  receiptIds,
++  createdAt,
++  records,
++}) {
+   const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt);
+   if (terminalReceiptId) receiptIds.push(terminalReceiptId);
+   return {
+@@ -306,7 +318,13 @@ async function runFlowMonitorPass(ctx) {
+   const previous = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
+   const candidates = diffSnapshots(previous, next);
+   if (candidates.length === 0) {
+-    return finalizePass(ctx, bridge, spec, state, next, receiptIds, now(), []);
++    return finalizePass(ctx, bridge, spec, {
++      state,
++      snapshot: next,
++      receiptIds,
++      createdAt: now(),
++      records: [],
++    });
+   }
+   const timestamp = now();
+   const records = finalizeRecords(candidates, {
+@@ -315,9 +333,21 @@ async function runFlowMonitorPass(ctx) {
+     snapshot: next,
+   });
+   if (typeof ctx.enrich === 'function') await ctx.enrich(records);
+-  const persisted = await persistRecords(ctx, bridge, spec, state, records, next, subjectRevision, timestamp);
++  const persisted = await persistRecords(ctx, bridge, spec, {
++    initialState: state,
++    records,
++    snapshot: next,
++    subjectRevision,
++    timestamp,
++  });
+   receiptIds.push(...persisted.receiptIds);
+-  return finalizePass(ctx, bridge, spec, persisted.state, next, receiptIds, timestamp, records);
++  return finalizePass(ctx, bridge, spec, {
++    state: persisted.state,
++    snapshot: next,
++    receiptIds,
++    createdAt: timestamp,
++    records,
++  });
+ }
+ 
+ module.exports = { FlowMonitorError, runFlowMonitorPass };
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 6bd990d2..674690d1 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -74,7 +74,7 @@ function providerResult(status, ok, summary, findings = []) {
+ 
+ function deterministicFindings(results) {
+   return (Array.isArray(results) ? results : [])
+-    .filter(result => result && result.ok === false && !result.skipped)
++    .filter(result => result?.ok === false && !result.skipped)
+     .slice(0, MAX_FINDINGS)
+     .map(result => ({
+       provider: String(result.name || 'deterministic-gate').slice(0, 80),
+@@ -150,8 +150,11 @@ async function runLocalReviewPreflight(context, deps = {}) {
+   }
+ 
+   const blocking = !deterministicOk || coderabbit.status === 'FAIL';
++  let status = 'PASS';
++  if (blocking) status = 'FAIL';
++  else if (coderabbit.status === 'UNAVAILABLE') status = 'INCOMPLETE';
+   return {
+-    status: blocking ? 'FAIL' : (coderabbit.status === 'UNAVAILABLE' ? 'INCOMPLETE' : 'PASS'),
++    status,
+     blocking,
+     providers: {
+       coderabbit,
+-- 
+2.51.0.windows.1
+

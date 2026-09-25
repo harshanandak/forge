@@ -1,0 +1,226 @@
+From 993328cfbfccf9a3a44fda19fdb06c259121aad7 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 14:48:51 +0530
+Subject: [PATCH] fix: bind evidence mutations to the captured owner
+
+---
+ lib/pr-monitor/watch-owner.js       |  39 +++++++++--
+ test/pr-monitor/watch-owner.test.js | 100 +++++++++++++++++++++++++---
+ 2 files changed, 121 insertions(+), 18 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 811cfcd6..949dfeaf 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -643,6 +643,12 @@ async function reserveReopened(ctx, input, opts = {}) {
+ 		|| !boundedString(expectedReceiptId, MAX_RECEIPT_BYTES)) return invalid('invalid_reservation');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
++	const prior = captured.snapshot;
++	if (!prior || prior.phase !== 'complete'
++		|| prior.generation !== value.generation
++		|| prior.terminal_receipt_id !== input.expectedReceiptId) {
++		return invalid('stale_evidence');
++	}
+ 	if (!await evidenceVerified(value, providerEvidence, ['open'], boundOpts)) return invalid('provider_evidence_invalid');
+ 	return invoke('watchOwnerReserveReopened', value, {
+ 		controllerPid: Number(controllerPid), expectedReceiptId,
+@@ -704,10 +710,16 @@ async function recordTerminal(ctx, input, opts = {}) {
+ 	if (!value || !positivePid(watcherPid)) return invalid('invalid_pid');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
+-	const exactTerminalReplay = captured.snapshot?.phase === 'terminal_pending'
+-		&& captured.snapshot.generation === value.generation
+-		&& captured.snapshot.watcher_pid === Number(watcherPid)
+-		&& captured.snapshot.terminal_receipt_id === terminalReceiptId;
++	const prior = captured.snapshot;
++	const exactTerminalReplay = prior?.phase === 'terminal_pending'
++		&& prior.generation === value.generation
++		&& prior.watcher_pid === Number(watcherPid)
++		&& prior.terminal_receipt_id === terminalReceiptId;
++	const boundToSubmission = prior != null
++		&& ['running', 'stop_requested'].includes(prior.phase)
++		&& prior.generation === value.generation
++		&& prior.watcher_pid === Number(watcherPid);
++	if (!exactTerminalReplay && !boundToSubmission) return invalid('stale_evidence');
+ 	if (!exactTerminalReplay && !await receiptVerified(value, terminalReceiptId, boundOpts)) return invalid('receipt_unverified');
+ 	return invoke('watchOwnerRecordTerminal', value, {
+ 		watcherPid: Number(watcherPid), terminalReceiptId,
+@@ -726,9 +738,16 @@ async function completeTerminal(ctx, input, opts = {}) {
+ 	if (!value || !positivePid(watcherPid) || !boundedString(terminalReceiptId, MAX_RECEIPT_BYTES)) return invalid();
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
+-	const exactCompletedReplay = captured.snapshot?.phase === 'complete'
+-		&& captured.snapshot.generation === value.generation
+-		&& captured.snapshot.terminal_receipt_id === terminalReceiptId;
++	const prior = captured.snapshot;
++	const exactCompletedReplay = prior?.phase === 'complete'
++		&& prior.generation === value.generation
++		&& prior.terminal_receipt_id === terminalReceiptId;
++	const boundToSubmission = prior != null
++		&& prior.phase === 'terminal_pending'
++		&& prior.generation === value.generation
++		&& prior.watcher_pid === Number(watcherPid)
++		&& prior.terminal_receipt_id === terminalReceiptId;
++	if (!exactCompletedReplay && !boundToSubmission) return invalid('stale_evidence');
+ 	if (!exactCompletedReplay && await pidState(Number(watcherPid), boundOpts) !== false) return invalid('pid_live');
+ 	return invoke('watchOwnerCompleteTerminal', value, {
+ 		watcherPid: Number(watcherPid), terminalReceiptId,
+@@ -746,6 +765,12 @@ async function abortStarting(ctx, input, opts = {}) {
+ 	if (!value || !positivePid(controllerPid)) return invalid('invalid_pid');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
++	const prior = captured.snapshot;
++	if (!prior || prior.phase !== 'starting'
++		|| prior.generation !== value.generation
++		|| prior.controller_pid !== Number(controllerPid)) {
++		return invalid('stale_evidence');
++	}
+ 	if (await pidState(Number(controllerPid), boundOpts) !== true) return invalid('controller_dead');
+ 	return invoke('watchOwnerAbortStarting', value, {
+ 		controllerPid: Number(controllerPid), expectedSnapshot: captured.snapshot,
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index a042848d..74b6ec4a 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -310,15 +310,39 @@ describe('watch owner SQLite authority', () => {
+ 			importLegacyStarting: 'imported',
+ 			importLegacyComplete: 'imported',
+ 		};
+-		const makeDriver = (_label, blocked = false, starting = false) => {
++		const makeDriver = (_label, shape = 'running') => {
+ 			const calls = [];
++			const shapes = {
++				running: {
++					phase: 'running', controller_pid: null, watcher_pid: 101,
++					heartbeat_at: NOW, block_reason: null, legacy_evidence_hash: null,
++					terminal_receipt_id: null,
++				},
++				blocked: {
++					phase: 'blocked', controller_pid: null, watcher_pid: null,
++					heartbeat_at: null, block_reason: 'legacy_lossy', legacy_evidence_hash: OTHER_HASH,
++					terminal_receipt_id: null,
++				},
++				starting: {
++					phase: 'starting', controller_pid: 101, watcher_pid: null,
++					heartbeat_at: null, block_reason: null, legacy_evidence_hash: null,
++					terminal_receipt_id: null,
++				},
++				terminal_pending: {
++					phase: 'terminal_pending', controller_pid: null, watcher_pid: 101,
++					heartbeat_at: NOW, block_reason: null, legacy_evidence_hash: null,
++					terminal_receipt_id: 'receipt-77',
++				},
++				complete: {
++					phase: 'complete', controller_pid: null, watcher_pid: null,
++					heartbeat_at: null, block_reason: null, legacy_evidence_hash: null,
++					terminal_receipt_id: 'receipt-77',
++				},
++			};
+ 			const row = {
+ 				repo: 'acme/forge', pr: 77, version: 1, generation: 'generation-77',
+-				phase: starting ? 'starting' : (blocked ? 'blocked' : 'running'),
+-				controller_pid: starting ? 101 : null,
+-				watcher_pid: starting || blocked ? null : 101, started_at: NOW, updated_at: NOW,
+-				heartbeat_at: starting || blocked ? null : NOW, terminal_receipt_id: null,
+-				block_reason: blocked ? 'legacy_lossy' : null, legacy_evidence_hash: blocked ? OTHER_HASH : null,
++				started_at: NOW, updated_at: NOW,
++				...shapes[shape],
+ 			};
+ 			const driver = {
+ 				calls,
+@@ -351,8 +375,14 @@ describe('watch owner SQLite authority', () => {
+ 			return driver;
+ 		};
+ 
+-		const driverA = makeDriver('A', scenario.blocked, method === 'recoverDeadStarting');
+-		const driverB = makeDriver('B', scenario.blocked);
++		const priorShapes = {
++			recoverDeadStarting: 'starting',
++			abortStarting: 'starting',
++			completeTerminal: 'terminal_pending',
++			reserveReopened: 'complete',
++		};
++		const driverA = makeDriver('A', priorShapes[method] || (scenario.blocked ? 'blocked' : 'running'));
++		const driverB = makeDriver('B', priorShapes[method] || (scenario.blocked ? 'blocked' : 'running'));
+ 		const opts = {
+ 			driver: driverA,
+ 			databaseConfig: { databasePath: 'authority-A.sqlite' },
+@@ -588,8 +618,10 @@ describe('watch owner SQLite authority', () => {
+ 
+ 		expect(recorded).toMatchObject({ ok: true, changed: true, reason: 'terminal_pending' });
+ 		expect(replay).toEqual({ ok: true, changed: false, reason: 'idempotent', record: recorded.record });
+-		expect(mismatched).toMatchObject({ ok: false, changed: false, reason: 'receipt_unverified' });
+-		expect(receiptChecks).toBe(2);
++		// A terminal_pending prior with a different receipt is now bound as
++		// stale before receipt verification runs.
++		expect(mismatched).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(receiptChecks).toBe(1);
+ 	});
+ 
+ 	test('supports exact abort, release, and dead-process recovery without a generic clear', async () => {
+@@ -697,7 +729,7 @@ describe('watch owner SQLite authority', () => {
+ 				}, base),
+ 			},
+ 			{
+-				name: 'receipt', ctx: receiptCtx, reason: 'receipt_mismatch',
++				name: 'receipt', ctx: receiptCtx, reason: 'stale_evidence',
+ 				attempt: () => owner.reserveReopened(receiptCtx, {
+ 					generation: receiptStart.record.generation, controllerPid: 309,
+ 					expectedReceiptId: 'stale-receipt', providerEvidence: { state: 'OPEN' }, startedAt: NEXT,
+@@ -2546,6 +2578,52 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+ 	});
+ 
++	test('binds evidence-bound mutations to the captured owner before verification', async () => {
++		const base = { repo: 'acme/forge' };
++		const runningCtx = { ...base, pr: 975 };
++		const startedPrior = await seedLifecycle(runningCtx, 'starting');
++		const reopenFromStarting = await owner.reserveReopened({ ...base, pr: 975 }, {
++			generation: startedPrior.generation, controllerPid: RECOVERY_PID,
++			expectedReceiptId: RECEIPT_ID, providerEvidence: { state: 'OPEN' }, startedAt: LATER,
++		}, authorityOpts());
++		expect(reopenFromStarting).toMatchObject({ ok: false });
++
++		const terminalCtx = { ...base, pr: 976 };
++		const startingPrior = await seedLifecycle(terminalCtx, 'starting');
++		const terminalFromStarting = await owner.recordTerminal(terminalCtx, {
++			generation: startingPrior.generation, pid: WATCHER_PID,
++			terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
++		}, authorityOpts({
++			...driver,
++			verifyTerminalReceipt: async () => true,
++			watchOwnerRecordTerminal: () => ({ ok: true, changed: true, reason: 'terminal_pending' }),
++		}));
++		expect(terminalFromStarting).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
++
++		const completeCtx = { ...base, pr: 977 };
++		const runningPrior = await seedLifecycle(completeCtx, 'running');
++		const completeFromRunning = await owner.completeTerminal(completeCtx, {
++			generation: runningPrior.generation, pid: WATCHER_PID,
++			terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
++		}, authorityOpts({
++			...driver,
++			isPidAlive: async () => false,
++			watchOwnerCompleteTerminal: () => ({ ok: true, changed: true, reason: 'complete' }),
++		}));
++		expect(completeFromRunning).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
++
++		const abortCtx = { ...base, pr: 978 };
++		const abortRunningPrior = await seedLifecycle(abortCtx, 'running');
++		const abortFromRunning = await owner.abortStarting(abortCtx, {
++			generation: abortRunningPrior.generation, controllerPid: CONTROLLER_PID, updatedAt: LATER,
++		}, authorityOpts({
++			...driver,
++			isPidAlive: async () => true,
++			watchOwnerAbortStarting: () => ({ ok: true, changed: true, reason: 'aborted' }),
++		}));
++		expect(abortFromRunning).toEqual({ ok: false, changed: false, reason: 'stale_evidence', record: null });
++	});
++
+ 	test('binds dead-watcher recovery to the captured generation and watcher', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 971 };
+ 		const prior = await seedLifecycle(ctx, 'running');
+-- 
+2.51.0.windows.1
+

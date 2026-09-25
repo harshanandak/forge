@@ -1,0 +1,153 @@
+From 9ba7bfd20b2b49eb41ab8d3a4ebbf03b89895166 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 17:46:27 +0530
+Subject: [PATCH] fix(cli): short-circuit exact version queries
+
+---
+ CHANGELOG.md                                  |  2 ++
+ bin/forge.js                                  |  7 +++++-
+ .../bd-call-site-kill-list.md                 |  2 +-
+ .../decisions.md                              | 17 +++++++++++++
+ .../2026-09-19-root-package-timing/tasks.md   | 14 +++++++++++
+ .../standalone-package-smoke.test.js          | 25 +++++++++++++++++++
+ 6 files changed, 65 insertions(+), 2 deletions(-)
+ create mode 100644 docs/work/2026-09-19-root-package-timing/decisions.md
+ create mode 100644 docs/work/2026-09-19-root-package-timing/tasks.md
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0b63407d..f86fd077 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **Exact version queries avoid loading the command graph.** Direct `forge --version` and `forge -V` print the packaged version before loading command modules, reducing cold startup during standalone installation checks. Imported helpers and mixed command arguments keep their existing behavior. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
++- **The workflow projection hook test avoids a duplicate Git scan.** It retains the real commit-hook rejection and verifies the exact projection mismatch and zero authority consumption through existing fixture readers, without changing test deadlines or production authorization. (issue `e70683d6-f8df-471b-b859-a6dacb69825c`)
+ - **The test workflow template marker no longer resembles a credential assignment.** Internal renderer code now describes `__BUN_VERSION__` as a placeholder, so the shipped-library secret scan accepts the deterministic workflow writer without weakening its detection rules or changing generated workflow bytes. (issue `0acc4a68-ab0a-4008-83bf-6e954d075007`)
+ 
+ ## [0.1.0-beta.7] - 2026-09-11
+diff --git a/bin/forge.js b/bin/forge.js
+index aed1fcde..4210a65f 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -46,6 +46,11 @@ const { execSync } = require('node:child_process');
+ const packageDir = path.dirname(__dirname);
+ const packageJson = require('../package.json');
+ const VERSION = packageJson.version;
++const args = process.argv.slice(2);
++
++if (require.main === module && args.length === 1 && ['--version', '-V'].includes(args[0])) {
++  console.log(`Forge v${VERSION}`);
++} else {
+ 
+ // Load PluginManager for discoverable agent architecture
+ const PluginManager = require('../lib/plugin-manager');
+@@ -104,7 +109,6 @@ const { detectHusky, migrateHusky } = require('../lib/husky-migration');
+ 
+ // Get the project root (let allows reassignment after --path flag handling)
+ let projectRoot = process.env.INIT_CWD || process.cwd();
+-const args = process.argv.slice(2);
+ 
+ // Incremental setup state (set during main() from parsed flags)
+ let FORCE_MODE = false;
+@@ -4530,3 +4534,4 @@ module.exports = {
+   validateDirectoryPathInput,
+   validateUserInput,
+ };
++}
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index bc976317..495a804b 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## command
+ 
+ - [ ] bin/forge.js (2)
+-  - lines: 2350 (bd), 3799 (bd)
++  - lines: 2354 (bd), 3803 (bd)
+ - [ ] lib/commands/migrate.js (17)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (6)
+diff --git a/docs/work/2026-09-19-root-package-timing/decisions.md b/docs/work/2026-09-19-root-package-timing/decisions.md
+new file mode 100644
+index 00000000..1442a2f4
+--- /dev/null
++++ b/docs/work/2026-09-19-root-package-timing/decisions.md
+@@ -0,0 +1,17 @@
++# Decisions
++
++## Decision 1
++
++**Date**: 2026-09-19
++**Task**: Exact version fast path
++**Gap**: The initial test-only scope could diagnose but not remove eager production startup work.
++**Score**: 2/14
++**Route**: PROCEED
++**Choice made**: Root extended ownership to the minimal `bin/forge.js` fast path. Exact standalone version aliases may bypass `../lib/*`; every other invocation keeps the existing path.
++**Status**: RESOLVED
++
++## Validation evidence
++
++- Exact alias regression: RED 0/1, then GREEN 1/1.
++- Existing packed root CLI journey: 1/1 in 50,762.81 ms under its unchanged 60-second deadline.
++- Compiled Bun timing was not measured and is not claimed.
+diff --git a/docs/work/2026-09-19-root-package-timing/tasks.md b/docs/work/2026-09-19-root-package-timing/tasks.md
+new file mode 100644
+index 00000000..5d1e1f43
+--- /dev/null
++++ b/docs/work/2026-09-19-root-package-timing/tasks.md
+@@ -0,0 +1,14 @@
++# Root standalone package install timing
++
++- [x] Trace the packed root install journey and every shared helper/caller from `origin/master`.
++- [x] Add one focused regression proving exact `--version` and `-V` avoid the command graph.
++- [x] Add the coordinated minimal `bin/forge.js` exact-version fast path without changing mixed-argument behavior or module import semantics.
++- [x] Apply the smallest shared root-cause fix while preserving the public CLI journey, cleanup, and child-failure reporting.
++- [x] Run only the focused RED/GREEN package checks after the execution slot is granted.
++
++## Evidence
++
++- RED: preload guard caught `../lib/plugin-manager`; 0 passed, 1 failed in 184.13 ms.
++- GREEN: both exact version aliases passed without a `../lib/*` load; 1 passed, 0 failed in 320.66 ms.
++- Packed root journey: unchanged install/version/setup case passed at the existing 60-second deadline in 50,762.81 ms.
++- Independent spec review: PASS. Root quality review: PASS.
+diff --git a/test/integration/standalone-package-smoke.test.js b/test/integration/standalone-package-smoke.test.js
+index 7df6367e..c36ca1c6 100644
+--- a/test/integration/standalone-package-smoke.test.js
++++ b/test/integration/standalone-package-smoke.test.js
+@@ -172,6 +172,31 @@ describe("standalone product packages", () => {
+     expect(fs.existsSync(sentinel)).toBeFalse();
+   });
+ 
++  test("exact version aliases exit before loading the command graph", () => {
++    const platformNode = resolvePlatformNode();
++    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge version-"));
++    created.push(temporary);
++    const guard = path.join(temporary, "reject-lib-load.cjs");
++    fs.writeFileSync(guard, `
++const Module = require("node:module");
++const load = Module._load;
++Module._load = function (request, parent, isMain) {
++  if (String(request).startsWith("../lib/")) throw new Error("version loaded " + request);
++  return load.call(this, request, parent, isMain);
++};
++`);
++    const expected = `Forge v${JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version}\n`;
++
++    for (const alias of ["--version", "-V"]) {
++      const result = spawnSync(platformNode.executable, ["--require", guard, path.join(ROOT, "bin", "forge.js"), alias], {
++        cwd: ROOT,
++        encoding: "utf8",
++      });
++      expect(result.status, result.stderr).toBe(0);
++      expect(result.stdout).toBe(expected);
++    }
++  });
++
+   test("packs and installs the root CLI with its runtime workspaces", () => {
+     const platformNode = resolvePlatformNode();
+     const npmInvocation = resolveNpmInvocation(platformNode);
+-- 
+2.51.0.windows.1
+

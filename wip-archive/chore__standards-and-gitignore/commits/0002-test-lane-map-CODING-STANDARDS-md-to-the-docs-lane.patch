@@ -1,0 +1,42 @@
+From e65ede538b74a3e5025d04afc92ecaf1bd9fe644 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 14:31:10 +0530
+Subject: [PATCH] test(lane): map CODING_STANDARDS.md to the docs lane
+
+A new root doc was unmapped, so changing it forced the 10-minute full-suite
+lane - the same gap #533 closed for .coderabbit.yaml. Docs changes belong in
+the docs lane.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/commands/test.js | 1 +
+ scripts/test.js      | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 5e4b4807..b6b35cfd 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -264,6 +264,7 @@ function getTestCandidatesForChangedFile(file) {
+ 		|| file === 'QUICKSTART.md'
+ 		|| file === 'CHANGELOG.md'
+ 		|| file === 'AGENTS.md'
++		|| file === 'CODING_STANDARDS.md'
+ 		|| file === 'DEVELOPMENT.md'
+ 		|| file === 'docs/INDEX.md'
+ 		|| file === 'docs/PROJECT_DESIGN.md'
+diff --git a/scripts/test.js b/scripts/test.js
+index 50796f8c..c14b4a8c 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -56,6 +56,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
+   'lefthook.yml',
+   'eslint.config.js',
+   '.coderabbit.yaml',
++  'CODING_STANDARDS.md',
+   '.claude-plugin/marketplace.json',
+ ]);
+ 
+-- 
+2.51.0.windows.1
+

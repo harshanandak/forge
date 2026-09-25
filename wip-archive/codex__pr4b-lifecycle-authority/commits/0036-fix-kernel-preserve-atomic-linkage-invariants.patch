@@ -1,0 +1,183 @@
+From 57af89efd1b6994875b049b555cf3e9f89f239dc Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 17:39:49 +0530
+Subject: [PATCH] fix(kernel): preserve atomic linkage invariants
+
+---
+ lib/kernel/broker.js        | 18 ++++++++----
+ lib/kernel/sqlite-driver.js |  9 +++++-
+ test/kernel/trace.test.js   | 56 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 76 insertions(+), 7 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 0036c28e..f4332773 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -35,16 +35,17 @@ const LOCAL_BROKER_PRAGMAS = Object.freeze([
+ const PR_LINKAGE_TURNS = new WeakMap();
+ 
+ async function withPrLinkageTurn(driver, operation) {
+-	const prior = PR_LINKAGE_TURNS.get(driver) || Promise.resolve();
++	const queueKey = driver.transactionQueueKey || driver;
++	const prior = PR_LINKAGE_TURNS.get(queueKey) || Promise.resolve();
+ 	let release;
+ 	const current = new Promise(resolve => { release = resolve; });
+-	PR_LINKAGE_TURNS.set(driver, current);
++	PR_LINKAGE_TURNS.set(queueKey, current);
+ 	await prior;
+ 	try {
+ 		return await operation();
+ 	} finally {
+ 		release();
+-		if (PR_LINKAGE_TURNS.get(driver) === current) PR_LINKAGE_TURNS.delete(driver);
++		if (PR_LINKAGE_TURNS.get(queueKey) === current) PR_LINKAGE_TURNS.delete(queueKey);
+ 	}
+ }
+ 
+@@ -1786,8 +1787,10 @@ function createLocalBroker(options = {}) {
+ 			const evidence = derivePrEvidence(linkageInput);
+ 			const config = getConfig();
+ 			return withPrLinkageTurn(transactionDriver, async () => {
+-			await beginImmediate(transactionDriver, config);
++			let transactionOpen = false;
+ 			try {
++				await beginImmediate(transactionDriver, config);
++				transactionOpen = true;
+ 				if (context.requireExactLifecycleOwnership === true) {
+ 					await assertExactLifecycleOwnership(transactionDriver, evidence, context, config);
+ 				}
+@@ -1823,7 +1826,7 @@ function createLocalBroker(options = {}) {
+ 						created_at: linkageInput.occurred_at, payload,
+ 					}, context, config);
+ 					const outboxEntry = await transactionDriver.enqueueKernelProjection(
+-						buildProjectionOutboxEntry(event, context.projectionTarget || 'beads', linkageInput.occurred_at),
++						buildProjectionOutboxEntry(event, context.projectionTarget || 'jsonl', linkageInput.occurred_at),
+ 						context, config,
+ 					);
+ 					iteration = { decision: 'accept', event, outboxEntry, projection: true };
+@@ -1833,10 +1836,13 @@ function createLocalBroker(options = {}) {
+ 						{ state: 'merged', retired_at: linkageInput.occurred_at }, context, config);
+ 				}
+ 				await transactionDriver.exec('COMMIT;', config);
++				transactionOpen = false;
+ 				await restoreBusyTimeout(transactionDriver, config);
+ 				return { link: linked, iteration };
+ 			} catch (error) {
+-				try { await transactionDriver.exec('ROLLBACK;', config); } catch { /* preserve original error */ }
++				if (transactionOpen) {
++					try { await transactionDriver.exec('ROLLBACK;', config); } catch { /* preserve original error */ }
++				}
+ 				await restoreBusyTimeout(transactionDriver, config);
+ 				throw error;
+ 			} finally {
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index f6905a8a..1318f334 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3185,7 +3185,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		return db;
+ 	}
+ 
+-	return {
++	const driver = {
+ 		runtime: {
+ 			id: runtime.id,
+ 			databaseClassName: runtime.databaseClassName,
+@@ -3194,6 +3194,12 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		},
+ 		databasePath: configuredDatabasePath,
+ 		forkConnection() {
++			if (configuredDatabasePath === ':memory:') {
++				const fork = Object.create(driver);
++				Object.defineProperty(fork, 'close', { value() {} });
++				Object.defineProperty(fork, 'transactionQueueKey', { value: driver });
++				return fork;
++			}
+ 			return createDriver(runtime, configuredDatabasePath, driverOptions);
+ 		},
+ 		async exec(statement, config) {
+@@ -3608,6 +3614,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			usageEvidenceSchemaEnsured = false;
+ 		},
+ 	};
++	return driver;
+ }
+ 
+ function assertCapability(runtime, capability, detail) {
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index e1ee8362..7d87d736 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -194,6 +194,43 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			gate_receipts: [GATE_RECEIPT],
+ 		});
+ 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
++		expect(await driver.queryAll("SELECT DISTINCT target FROM kernel_outbox WHERE target = 'jsonl';", config))
++			.toEqual([{ target: 'jsonl' }]);
++	});
++
++	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
++		const memoryConfig = { databasePath: ':memory:' };
++		const memoryDriver = createBuiltinSQLiteDriver(memoryConfig);
++		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
++		await memoryBroker.initialize();
++		try {
++			await memoryDriver.exec(
++				"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
++				memoryConfig,
++			);
++			memoryDriver.registerWorktree({
++				id: 'worktree-trace', git_common_dir: gitCommonDir, path: path.join(root, '.worktrees', 'trace'),
++				branch, issue_id: 'issue-trace', work_folder: workFolder, registered_at: '2026-08-11T00:00:00.000Z',
++			}, memoryConfig);
++			await memoryDriver.insertKernelEvent({
++				entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
++				idempotency_key: GATE_RECEIPT, expected_revision: 0, actor: 'maintainer', origin: 'test',
++				payload: { gate: GATE_ID, expires_at: null, generation: 0 }, created_at: '2026-08-11T00:04:00.000Z',
++			}, {}, memoryConfig);
++			await memoryDriver.insertKernelClaim({
++				id: 'claim-memory', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
++				state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z',
++			}, {}, memoryConfig);
++
++			const memoryResult = memoryBroker.recordOpenedPrLinkage(linkage(), {
++				actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z',
++			});
++			await expect(memoryResult).resolves.toHaveProperty('iteration.decision', 'accept');
++			expect(await memoryDriver.queryAll("SELECT issue_id, number FROM kernel_pr;", memoryConfig))
++				.toEqual([{ issue_id: 'issue-trace', number: 514 }]);
++		} finally {
++			memoryDriver.close();
++		}
+ 	});
+ 
+ 	test('atomically rejects divergent opened evidence across independent brokers', async () => {
+@@ -256,6 +293,25 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		driver.forkConnection = originalFork;
+ 	});
+ 
++	test('closes the isolated linkage connection when transaction acquisition fails', async () => {
++		const originalFork = driver.forkConnection;
++		let closes = 0;
++		driver.forkConnection = () => {
++			const fork = originalFork.call(driver);
++			const exec = fork.exec;
++			const close = fork.close;
++			fork.exec = async (statement, ...args) => {
++				if (statement === 'BEGIN IMMEDIATE;') throw new Error('begin failed');
++				return exec.call(fork, statement, ...args);
++			};
++			fork.close = () => { closes += 1; close.call(fork); };
++			return fork;
++		};
++		await expect(broker.recordPrLinkage(linkage())).rejects.toThrow('begin failed');
++		expect(closes).toBe(1);
++		driver.forkConnection = originalFork;
++	});
++
+ 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+ 		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+ 			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+-- 
+2.51.0.windows.1
+

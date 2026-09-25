@@ -1,0 +1,118 @@
+From ef4ac8d6458507788cdaa0a79ae3db0eb89a1786 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 13:23:44 +0530
+Subject: [PATCH] fix(control): scrub stale runtime-denial claims + reject junk
+ status args (CodeRabbit #385)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Addresses 3 CodeRabbit threads, 2 of which reinforce the B6 truthing:
+
+- control.js module docstring: drop "surfaces Forge can actually DENY at run
+  time" — reframed as the gate/rail CONFIG registry (declared intent, not
+  enforcement) with the honest "no runtime consumer denies on these flags" note.
+- control-plane.js isControllable(): docstring now separates CLI-configurable
+  from runtime-enforced (the two are distinct; configurable != enforced).
+- control status: reject unexpected extra args (e.g. `control status enabled`)
+  instead of silently ignoring them; only the optional --json flag is allowed.
+
+Issues: 7dc59af2, 724356ea
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/control.js       | 26 +++++++++++++++++++-------
+ lib/control-plane.js          |  9 ++++++++-
+ test/commands/control.test.js | 15 +++++++++++++++
+ 3 files changed, 42 insertions(+), 8 deletions(-)
+
+diff --git a/lib/commands/control.js b/lib/commands/control.js
+index 64150519..65caa8b2 100644
+--- a/lib/commands/control.js
++++ b/lib/commands/control.js
+@@ -4,13 +4,15 @@
+  * `forge control <gate-id|rail-id> <mandatory|optional|permission>`
+  * `forge control status [--json]`
+  *
+- * Tri-state control for the surfaces Forge can actually DENY at run time —
+- * gates and rails. It is a thin, honesty-enforcing front-end over the SAME
+- * resolver-consumed field `forge gate` writes (`workflow.gates.<id>.enabled`):
+- * there is deliberately NO parallel `controls:` key, because a key the resolver
+- * never reads would be fake enforcement — the exact mis-sell the guarantee
+- * matrix exists to prevent. The tri-state is the vocabulary; `enabled` is the
+- * truth (state is derived at read time).
++ * Tri-state control for the gate/rail CONFIG registry (`gate.*` / `rail.*`) —
++ * this sets *declared* intent, NOT runtime enforcement. Setting a state writes
++ * the SAME resolver-consumed field `forge gate` writes
++ * (`workflow.gates.<id>.enabled`); there is deliberately NO parallel `controls:`
++ * key, because a key the resolver never reads would be doubly-fake. The tri-state
++ * is the vocabulary; `enabled` is the stored truth (state is derived at read
++ * time). IMPORTANT: as of 2026-07-15 no runtime consumer denies on these flags —
++ * real enforcement lives independently (lefthook TDD hook, fail-closed
++ * validate/preflight, enforce-stage order+completion). See the guarantee matrix.
+  *
+  * For MCP servers / rules / skills it REFUSES with a clear "presence-only, not
+  * enforceable" message pointing at docs/reference/control-plane-guarantees.md,
+@@ -115,6 +117,16 @@ async function handler(args, flags = {}, projectRoot = process.cwd()) {
+   const [first, second] = args;
+ 
+   if (first === 'status') {
++    // Reject junk after `status` (only the optional --json flag is allowed) so a
++    // typo like `forge control status enabled` errors instead of silently
++    // ignoring the extra token.
++    const extra = args.slice(1).filter(arg => arg !== '--json');
++    if (extra.length > 0) {
++      return {
++        success: false,
++        error: `Unexpected argument(s) for status: ${extra.join(', ')}.\n${usage()}`,
++      };
++    }
+     return statusCommand(projectRoot, flags.json === true || args.includes('--json'));
+   }
+ 
+diff --git a/lib/control-plane.js b/lib/control-plane.js
+index 5818dd98..3d57aab2 100644
+--- a/lib/control-plane.js
++++ b/lib/control-plane.js
+@@ -47,7 +47,14 @@ function classifySurface(id) {
+   return 'unknown';
+ }
+ 
+-/** True only for surfaces Forge can deny at run time (gates + rails). */
++/**
++ * True only for surfaces `forge control` can CONFIGURE (gates + rails).
++ *
++ * NOTE: "controllable" means CLI-configurable, NOT runtime-enforced — the two are
++ * deliberately separate. Configuring one of these writes a declared flag; whether
++ * anything actually denies on it is a distinct question answered by
++ * `enforcementLocus` (today: nothing does). See docs/reference/control-plane-guarantees.md.
++ */
+ function isControllable(id) {
+   return CONTROLLABLE_SURFACES.has(classifySurface(id));
+ }
+diff --git a/test/commands/control.test.js b/test/commands/control.test.js
+index ca83f98c..1525b576 100644
+--- a/test/commands/control.test.js
++++ b/test/commands/control.test.js
+@@ -175,4 +175,19 @@ describe('forge control status — all-surface read with enforcement-locus badge
+     expect(result.success).toBe(true);
+     expect(result.output).toMatch(/control-plane-guarantees\.md/);
+   });
++
++  test('status rejects unexpected extra arguments (typo guard)', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['status', 'enabled'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/unexpected argument/i);
++    expect(result.error).toMatch(/enabled/);
++  });
++
++  test('status still accepts the --json flag in any position', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['status', '--json'], {}, root);
++    expect(result.success).toBe(true);
++    expect(() => JSON.parse(result.output)).not.toThrow();
++  });
+ });
+-- 
+2.51.0.windows.1
+

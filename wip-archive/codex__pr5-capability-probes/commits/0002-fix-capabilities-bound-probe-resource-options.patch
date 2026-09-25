@@ -1,0 +1,134 @@
+From e90c0ef7a56552a6cd2d1764535e1f5dee93d8cc Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:51:58 +0530
+Subject: [PATCH] fix(capabilities): bound probe resource options
+
+---
+ lib/capabilities/probes.js       | 14 +++++---
+ test/capabilities/probes.test.js | 60 +++++++++++++++++++++++++++++++-
+ 2 files changed, 68 insertions(+), 6 deletions(-)
+
+diff --git a/lib/capabilities/probes.js b/lib/capabilities/probes.js
+index 2e633364..6cb0c67f 100644
+--- a/lib/capabilities/probes.js
++++ b/lib/capabilities/probes.js
+@@ -5,6 +5,8 @@ const { createProbeResult } = require('./model');
+ const PROBE_REVISION = 'forge.harness-capability-probe.v1';
+ const DEFAULT_TIMEOUT_MS = 1500;
+ const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024;
++const MAX_TIMEOUT_MS = 30 * 1000;
++const MAX_OUTPUT_BYTES = 64 * 1024;
+ const EXECUTABLE_IDENTITY_PATTERN = /^[0-9a-f]{64}$/;
+ const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:live-|test-)?[A-Za-z0-9]{16,}|(?:api[_ -]?key|authorization|credential|password|private[_ -]?key|secret|token)\s*[:=]\s*\S{8,})/i;
+ const PRIVATE_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
+@@ -81,9 +83,9 @@ function getHarnessProbeSpec(harness) {
+   return spec;
+ }
+ 
+-function assertPositiveInteger(value, name) {
+-  if (!Number.isInteger(value) || value < 1) {
+-    throw new TypeError(`${name} must be a positive integer`);
++function assertBoundedPositiveInteger(value, name, maximum) {
++  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
++    throw new TypeError(`${name} must be an integer between 1 and ${maximum}`);
+   }
+ }
+ 
+@@ -195,8 +197,8 @@ async function probeHarness(options) {
+   if (typeof execute !== 'function') throw new TypeError('execute must be a function');
+   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+-  assertPositiveInteger(timeoutMs, 'timeoutMs');
+-  assertPositiveInteger(maxOutputBytes, 'maxOutputBytes');
++  assertBoundedPositiveInteger(timeoutMs, 'timeoutMs', MAX_TIMEOUT_MS);
++  assertBoundedPositiveInteger(maxOutputBytes, 'maxOutputBytes', MAX_OUTPUT_BYTES);
+   const observedAt = options.observedAt ?? new Date().toISOString();
+ 
+   const versionResponse = await executeBounded(execute, requestFor({
+@@ -309,6 +311,8 @@ module.exports = {
+   CAPABILITY_IDS,
+   DEFAULT_MAX_OUTPUT_BYTES,
+   DEFAULT_TIMEOUT_MS,
++  MAX_OUTPUT_BYTES,
++  MAX_TIMEOUT_MS,
+   HARNESS_IDS,
+   HARNESS_PROBE_SPECS,
+   PROBE_REVISION,
+diff --git a/test/capabilities/probes.test.js b/test/capabilities/probes.test.js
+index 6f51f293..7864e40b 100644
+--- a/test/capabilities/probes.test.js
++++ b/test/capabilities/probes.test.js
+@@ -3,7 +3,14 @@
+ const test = require('node:test');
+ const assert = require('node:assert/strict');
+ 
+-const { CAPABILITY_IDS, probeHarness } = require('../../lib/capabilities/probes');
++const {
++  CAPABILITY_IDS,
++  DEFAULT_MAX_OUTPUT_BYTES,
++  DEFAULT_TIMEOUT_MS,
++  MAX_OUTPUT_BYTES,
++  MAX_TIMEOUT_MS,
++  probeHarness,
++} = require('../../lib/capabilities/probes');
+ const { successfulExecutor } = require('../capability/fixtures');
+ 
+ test('version-bound harness probe returns one executable receipt per capability', async () => {
+@@ -17,3 +24,54 @@ test('version-bound harness probe returns one executable receipt per capability'
+   assert.equal(result.executable.version, '0.147.0');
+   assert.deepEqual(result.capabilities.map((capability) => capability.id), [...CAPABILITY_IDS].sort());
+ });
++
++test('probe defaults and exact maximum boundaries remain bounded', async () => {
++  const defaultRequests = [];
++  await probeHarness({
++    harness: 'codex',
++    execute: async (request) => {
++      defaultRequests.push(request);
++      return successfulExecutor()(request);
++    },
++  });
++  assert.ok(DEFAULT_TIMEOUT_MS > 0 && DEFAULT_TIMEOUT_MS <= MAX_TIMEOUT_MS);
++  assert.ok(DEFAULT_MAX_OUTPUT_BYTES > 0 && DEFAULT_MAX_OUTPUT_BYTES <= MAX_OUTPUT_BYTES);
++  assert.ok(defaultRequests.every((request) => request.timeoutMs === DEFAULT_TIMEOUT_MS));
++  assert.ok(defaultRequests.every((request) => request.maxOutputBytes === DEFAULT_MAX_OUTPUT_BYTES));
++
++  const boundaryRequests = [];
++  await probeHarness({
++    harness: 'codex',
++    timeoutMs: MAX_TIMEOUT_MS,
++    maxOutputBytes: MAX_OUTPUT_BYTES,
++    execute: async (request) => {
++      boundaryRequests.push(request);
++      return successfulExecutor()(request);
++    },
++  });
++  assert.ok(boundaryRequests.every((request) => request.timeoutMs === MAX_TIMEOUT_MS));
++  assert.ok(boundaryRequests.every((request) => request.maxOutputBytes === MAX_OUTPUT_BYTES));
++});
++
++test('invalid and hostile bounds are rejected before executor invocation', async () => {
++  for (const [field, values] of [
++    ['timeoutMs', [0, -1, 1.5, MAX_TIMEOUT_MS + 1, 2147483647]],
++    ['maxOutputBytes', [0, -1, 1.5, MAX_OUTPUT_BYTES + 1, 2147483647]],
++  ]) {
++    for (const value of values) {
++      let called = false;
++      await assert.rejects(
++        probeHarness({
++          harness: 'codex',
++          [field]: value,
++          execute: async () => {
++            called = true;
++            return successfulExecutor()({ harness: 'codex', kind: 'version' });
++          },
++        }),
++        new RegExp(`${field} must be an integer between 1 and`),
++      );
++      assert.equal(called, false);
++    }
++  }
++});
+-- 
+2.51.0.windows.1
+

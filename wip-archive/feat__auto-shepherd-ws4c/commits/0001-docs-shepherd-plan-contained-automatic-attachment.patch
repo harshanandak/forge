@@ -1,0 +1,128 @@
+From 1071db9ddf638cef1b8d77dba613b2cf7114c798 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 12:25:08 +0530
+Subject: [PATCH] docs(shepherd): plan contained automatic attachment
+
+---
+ docs/work/2026-07-29-auto-shepherd/plan.md  | 64 +++++++++++++++++++++
+ docs/work/2026-07-29-auto-shepherd/tasks.md | 37 ++++++++++++
+ 2 files changed, 101 insertions(+)
+ create mode 100644 docs/work/2026-07-29-auto-shepherd/plan.md
+ create mode 100644 docs/work/2026-07-29-auto-shepherd/tasks.md
+
+diff --git a/docs/work/2026-07-29-auto-shepherd/plan.md b/docs/work/2026-07-29-auto-shepherd/plan.md
+new file mode 100644
+index 00000000..ff6ae1d2
+--- /dev/null
++++ b/docs/work/2026-07-29-auto-shepherd/plan.md
+@@ -0,0 +1,64 @@
++# Automatic Shepherd Attachment
++
++Issue: `49f438f0-6308-4c12-bae7-62258b7eb517`
++
++## Purpose
++
++Make the existing singleton Shepherd reconciler automatically own every open or
++draft pull request during an active Forge session without relying on an agent to
++remember a polling command. Preserve the existing disable controls and prevent
++test runs or disposable worktrees from leaking detached processes.
++
++## Current flow
++
++- `lib/pr-monitor/reconcile-executor.js` already owns repository-wide discovery,
++  singleton lease arbitration, watcher restart/reaping, Kernel PR state, verdicts,
++  events, and self-retirement.
++- Its `fireAndForget()` trigger is implemented and tested but intentionally has no
++  production caller.
++- `forge push` and `forge ship` currently start separate detached per-PR watchers.
++- `bin/forge.js` explicitly rejects an every-command dispatch-finally trigger.
++- `forge hooks session-start` is the existing automatic session entry seam.
++
++## Design
++
++Use one ownership mechanism: the existing singleton reconcile daemon.
++
++1. Invoke `fireAndForget()` only from:
++   - the successful `forge hooks session-start` path;
++   - successful `forge push`;
++   - successful non-dry-run `forge ship`.
++2. Replace the push/ship per-PR detached watcher launch with the singleton trigger.
++   The daemon discovers all open and draft PRs, including PRs created outside Forge.
++3. Keep ordinary commands free of launch side effects; do not add dispatch-finally
++   wiring.
++4. Make `fireAndForget()` inert before lock or process work in dry-run,
++   uninitialized-repository, CI/test, `FORGE_SHEPHERD_DISABLE`, and disabled
++   `rail.auto_shepherd` contexts.
++5. Prefer a supplied harness background-shell capability. For the detached
++   fallback, launch from the repository's stable common root rather than a
++   disposable feature-worktree cwd; retain singleton lease arbitration,
++   `windowsHide`, `unref`, verified child cleanup, and self-retirement.
++
++## Boundaries
++
++- Shepherd still never merges and never resolves review threads.
++- Conditional auto-merge policy and branch updating remain separate issues.
++- No new scheduler, heartbeat, watcher implementation, or per-command hook.
++- No gate, quiet-period, current-head, checks, or review-thread rule is weakened.
++
++## Acceptance criteria
++
++- An open or draft PR fixture is registered and monitored after session start
++  without an explicit Shepherd command.
++- Successful push and ship trigger the singleton reconciler, not an additional
++  per-PR detached watcher.
++- Ordinary commands do not launch Shepherd.
++- CI/test, dry-run, uninitialized, environment-disabled, and rail-disabled paths
++  create no lease, Kernel state, or child process.
++- Concurrent triggers yield at most one daemon; killed watchers are restarted,
++  verified orphans are reaped, current-head verdict/events are preserved, and the
++  daemon self-retires when no PR remains.
++- The detached fallback does not hold a disposable worktree as its cwd.
++- Focused Shepherd tests, lint, and the repository validation suite pass.
++
+diff --git a/docs/work/2026-07-29-auto-shepherd/tasks.md b/docs/work/2026-07-29-auto-shepherd/tasks.md
+new file mode 100644
+index 00000000..35711d60
+--- /dev/null
++++ b/docs/work/2026-07-29-auto-shepherd/tasks.md
+@@ -0,0 +1,37 @@
++# Automatic Shepherd Attachment Tasks
++
++## Task 1 — Lock the firing and containment contract
++
++- [ ] RED: add focused tests proving session-start, successful push, and successful
++  ship invoke the singleton trigger while ordinary commands do not.
++- [ ] RED: add negative tests for CI/test, dry-run, uninitialized,
++  `FORGE_SHEPHERD_DISABLE`, and disabled `rail.auto_shepherd` contexts.
++- [ ] RED: prove the detached fallback uses the stable common repository root
++  instead of the disposable worktree cwd.
++
++## Task 2 — Wire the existing singleton trigger
++
++- [ ] GREEN: call the existing `fireAndForget()` from the three approved seams.
++- [ ] GREEN: replace push/ship per-PR auto-watch startup with the repository-wide
++  singleton trigger.
++- [ ] GREEN: add the CI/test containment guard and stable fallback cwd with no new
++  scheduler or daemon implementation.
++- [ ] REFACTOR: keep trigger selection in one small shared path and retain
++  dependency injection for deterministic tests.
++
++## Task 3 — Prove lifecycle behavior
++
++- [ ] Run the focused trigger, reconcile-executor, lease, watcher-lifecycle,
++  push, ship, and session-start tests.
++- [ ] Verify open and draft PR adoption, duplicate-start no-op, restart/reconcile,
++  current-head verdict/event delivery, orphan reaping, and self-retirement.
++- [ ] Verify no detached child survives the containment fixture.
++
++## Task 4 — Update the public contract
++
++- [ ] Update `docs/reference/shepherd.md`, canonical `skills/shepherd/SKILL.md`,
++  and generated skill mirrors through the repository sync command.
++- [ ] Remove the W-S4c “planned follow-up” wording only after the behavior is
++  proven.
++- [ ] Run lint and the repository validation suite.
++
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,249 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index eceb5e20..e3c23730 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **Memory recall holdout fixtures avoid repeated SQLite durability flushes.** Multi-row setup now uses one transaction per fixture, preserving every ranking, privacy, and 15-second timeout assertion while reducing Windows fixture overhead after exclusive-lane isolation. (issue `5e085fe5-21ff-4d2b-9615-44098d79f492`)
+ - **Legacy claim repair now compares exact Windows file identities and timestamps.** BigInt filesystem metadata prevents rounded device/inode collisions from treating distinct files as aliases, while nanosecond timestamps keep recovery-state drift checks fail closed. (#556, issue `7e164066-4d41-4d14-90ef-1b7ee14e2b73`)
+ - **Dep-guard apply-decision tests no longer contend with shared Windows subprocess shards.** The process-heavy suite now uses the existing exclusive resource lane, with exact scheduler coverage and no timeout increase or exemption. (issue `762ae565-0059-4827-9c3d-b4249f2b3364`)
+ - **Bun workflow proof tests no longer contend with shared full-suite shards.** The process-heavy commit-boundary proof now uses the existing exclusive resource lane, with exact scheduler coverage and no timeout increase or exemption. (#552, issue `2daab8c0-34d6-4378-8cf4-dce6fdbfb86b`)
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 48240dfa..1e75d619 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -1,7 +1,7 @@
+ // forge-test-resource: exclusive
+ 'use strict';
+ 
+-const { afterEach, describe, expect, test } = require('bun:test');
++const { afterEach, describe, expect, spyOn, test } = require('bun:test');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+@@ -35,6 +35,21 @@ function writeMemory(context, entry) {
+   }, { store: context.store });
+ }
+ 
++async function writeMemoryBatch(context, entries) {
++  await context.store.exec('BEGIN;');
++  try {
++    for (const entry of entries) writeMemory(context, entry);
++    await context.store.exec('COMMIT;');
++  } catch (error) {
++    try {
++      await context.store.exec('ROLLBACK;');
++    } catch {
++      // A rollback failure must not mask the original fixture error.
++    }
++    throw error;
++  }
++}
++
+ async function runAssembledRecall(context, options = {}) {
+   const harness = options.harness || 'claude';
+   return hooks.handler(['memory-recall', '--harness', harness], {}, options.root || context.root, {
+@@ -82,22 +97,21 @@ describe('project-local memory recall holdout', () => {
+     const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
+     const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
+     drivers.push(store);
++    const execSpy = spyOn(store, 'exec');
+ 
+-    for (let index = 0; index < fixture.foreign.count; index += 1) {
+-      projectMemory.write(root, {
++    await writeMemoryBatch({ root, commonDir, projectId, store }, [
++      ...Array.from({ length: fixture.foreign.count }, (_, index) => ({
+         key: `foreign-${index}`,
+         value: `FOREIGN-RECALL-LEAK-MARKER auth token ${'auth '.repeat(20)}`,
+-        sourceAgent: 'forge remember',
+         scope: fixture.foreign.scope,
+-        tags: [],
+-      }, { store });
+-    }
+-    projectMemory.write(root, {
+-      key: fixture.projectLocal.memoryId,
+-      value: fixture.projectLocal.content,
+-      sourceAgent: 'forge remember',
+-      tags: [],
+-    }, { store });
++      })),
++      {
++        key: fixture.projectLocal.memoryId,
++        value: fixture.projectLocal.content,
++      },
++    ]);
++    expect(execSpy).toHaveBeenCalledWith('BEGIN;');
++    expect(execSpy).toHaveBeenCalledWith('COMMIT;');
+ 
+     const result = await hooks.handler(
+       ['memory-recall', '--harness', 'claude'],
+@@ -149,12 +163,12 @@ describe('project-local memory recall holdout', () => {
+       ['old', fixture.authorityDenial.superseded, 'forge remember', [], null, '2026-07-30T00:00:00.000Z'],
+       ['replacement', fixture.authorityDenial.replacement, 'forge remember', [], ['old'], '2026-07-30T00:00:00.000Z'],
+     ];
+-    for (const [key, value, sourceAgent, tags, supersedes, timestamp] of records) {
+-      projectMemory.write(root, {
++    await writeMemoryBatch({ root, commonDir, projectId, store }, records.map(
++      ([key, value, sourceAgent, tags, supersedes, timestamp]) => ({
+         key, value, sourceAgent, tags, timestamp, scope: projectId,
+         ...(supersedes ? { supersedes } : {}),
+-      }, { store });
+-    }
++      }),
++    ));
+     const result = await hooks.handler(['memory-recall', '--harness', 'claude'], {}, root, {
+       railEnabled: () => true,
+       readInput: () => JSON.stringify({
+@@ -269,29 +283,20 @@ describe('project-local memory recall holdout', () => {
+   test('26 stronger seen rows are excluded before rank and an unseen local row survives', async () => {
+     const context = createRecallContext('forge-memory-seen-');
+     const seenKeys = [];
+-    await context.store.exec('BEGIN;');
+-    try {
+-      for (let index = 0; index < fixture.seen.count; index += 1) {
++    await writeMemoryBatch(context, [
++      ...Array.from({ length: fixture.seen.count }, (_, index) => {
+         const key = `seen-cache-${index}`;
+         seenKeys.push(key);
+-        writeMemory(context, {
++        return {
+           key,
+           value: `cache eviction policy ${'cache '.repeat(20)}`,
+-        });
+-      }
+-      writeMemory(context, {
++        };
++      }),
++      {
+         key: fixture.seen.eligibleId,
+         value: fixture.seen.eligibleContent,
+-      });
+-    } catch (error) {
+-      try {
+-        await context.store.exec('ROLLBACK;');
+-      } catch {
+-        // A rollback failure must not mask the original fixture error.
+-      }
+-      throw error;
+-    }
+-    await context.store.exec('COMMIT;');
++      },
++    ]);
+ 
+     const output = additionalContext(await runAssembledRecall(context, {
+       prompt: fixture.seen.prompt,
+@@ -303,28 +308,30 @@ describe('project-local memory recall holdout', () => {
+ 
+   test('foreign and suggested superseders cannot erase eligible confirmed memories', async () => {
+     const context = createRecallContext('forge-memory-supersession-');
+-    writeMemory(context, {
+-      key: 'foreign-protected',
+-      value: fixture.supersession.foreignProtected,
+-    });
+-    writeMemory(context, {
+-      key: 'foreign-superseder',
+-      value: 'Foreign release rollback guard.',
+-      scope: fixture.foreign.scope,
+-      supersedes: ['foreign-protected'],
+-    });
+-    writeMemory(context, {
+-      key: 'confirmed-protected',
+-      value: fixture.supersession.confirmedProtected,
+-    });
+-    writeMemory(context, {
+-      key: 'suggested-superseder',
+-      value: 'Suggested release rollback replacement.',
+-      sourceAgent: 'forge insights',
+-      tags: ['trust:suggested'],
+-      supersedes: ['confirmed-protected'],
+-      timestamp: '2026-07-30T00:00:00.000Z',
+-    });
++    await writeMemoryBatch(context, [
++      {
++        key: 'foreign-protected',
++        value: fixture.supersession.foreignProtected,
++      },
++      {
++        key: 'foreign-superseder',
++        value: 'Foreign release rollback guard.',
++        scope: fixture.foreign.scope,
++        supersedes: ['foreign-protected'],
++      },
++      {
++        key: 'confirmed-protected',
++        value: fixture.supersession.confirmedProtected,
++      },
++      {
++        key: 'suggested-superseder',
++        value: 'Suggested release rollback replacement.',
++        sourceAgent: 'forge insights',
++        tags: ['trust:suggested'],
++        supersedes: ['confirmed-protected'],
++        timestamp: '2026-07-30T00:00:00.000Z',
++      },
++    ]);
+ 
+     const output = additionalContext(await runAssembledRecall(context, {
+       prompt: fixture.supersession.prompt,
+@@ -337,14 +344,16 @@ describe('project-local memory recall holdout', () => {
+ 
+   test('duplicate recall is excluded and an oversized first hit does not starve a fitting hit', async () => {
+     const context = createRecallContext('forge-memory-packing-');
+-    writeMemory(context, {
+-      key: 'oversized-retry',
+-      value: `database retry policy ${'retry '.repeat(1_000)}`,
+-    });
+-    writeMemory(context, {
+-      key: 'fitting-retry',
+-      value: fixture.oversized.fitting,
+-    });
++    await writeMemoryBatch(context, [
++      {
++        key: 'oversized-retry',
++        value: `database retry policy ${'retry '.repeat(1_000)}`,
++      },
++      {
++        key: 'fitting-retry',
++        value: fixture.oversized.fitting,
++      },
++    ]);
+     const seen = [];
+     const first = await runAssembledRecall(context, {
+       prompt: fixture.oversized.prompt,
+@@ -407,7 +416,7 @@ describe('project-local memory recall holdout', () => {
+         tags: ['trust:confirmed'],
+       },
+     ];
+-    for (const entry of entries) writeMemory(context, entry);
++    await writeMemoryBatch(context, entries);
+     const hits = projectMemory.searchRankedScored(
+       siblingRoot,
+       fixture.precedence.prompt,
+@@ -441,20 +450,14 @@ describe('project-local memory recall holdout', () => {
+ 
+   test('assembled 1,000-row recall keeps 100-sample p95 within 250ms', async () => {
+     const context = createRecallContext('forge-memory-performance-');
+-    await context.store.exec('BEGIN;');
+-    try {
+-      for (let index = 0; index < fixture.performance.count; index += 1) {
+-        writeMemory(context, {
++    await writeMemoryBatch(context, Array.from(
++      { length: fixture.performance.count },
++      (_, index) => ({
+           key: `performance-${index}`,
+           value: `routing cache policy record ${index}`,
+           timestamp: '2026-07-30T00:00:00.000Z',
+-        });
+-      }
+-    } catch (error) {
+-      await context.store.exec('ROLLBACK;');
+-      throw error;
+-    }
+-    await context.store.exec('COMMIT;');
++      }),
++    ));
+     const search = () => projectMemory.searchRankedScored(
+       context.root,
+       fixture.performance.prompt,

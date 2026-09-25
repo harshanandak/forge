@@ -1,0 +1,297 @@
+From cb8d4cb3ae72e9a0d701ba0764e9af557470d372 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 23:40:22 +0530
+Subject: [PATCH] fix: address symlink review races
+
+---
+ lib/symlink-utils.js      |  75 ++++++++++++++---------
+ test/symlink-flag.test.js | 126 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 172 insertions(+), 29 deletions(-)
+
+diff --git a/lib/symlink-utils.js b/lib/symlink-utils.js
+index 78f7d2f2..12fecdad 100644
+--- a/lib/symlink-utils.js
++++ b/lib/symlink-utils.js
+@@ -20,7 +20,7 @@ const HEADER_COMMENT =
+ 
+ const SYMLINK_FALLBACK_ERRORS = new Set(['EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM']);
+ 
+-function inspectExistingDestination(linkPath) {
++function inspectExistingDestination(target, linkPath) {
+   let stat;
+   try {
+     stat = fs.lstatSync(linkPath);
+@@ -29,6 +29,18 @@ function inspectExistingDestination(linkPath) {
+     throw err;
+   }
+ 
++  if (stat.isSymbolicLink()) {
++    let linkedTarget;
++    try {
++      linkedTarget = fs.readlinkSync(linkPath);
++    } catch (err) {
++      if (err.code === 'ENOENT') return null;
++      throw err;
++    }
++    if (path.resolve(path.dirname(linkPath), linkedTarget) === path.resolve(target)) {
++      return 'linked';
++    }
++  }
+   if (stat.isDirectory()) {
+     console.warn(`  Warning: Skipped ${linkPath} because it is a directory. Remove it manually and re-run setup.`);
+     return '';
+@@ -61,7 +73,7 @@ function createSymlinkOrCopy(target, linkPath, options = {}) {
+     }
+ 
+     // Existing agent files belong to the user. lstat also sees dangling links.
+-    const existing = inspectExistingDestination(linkPath);
++    const existing = inspectExistingDestination(target, linkPath);
+     if (existing !== null) return existing;
+ 
+     // Ensure parent directory exists
+@@ -70,36 +82,43 @@ function createSymlinkOrCopy(target, linkPath, options = {}) {
+       fs.mkdirSync(linkDir, { recursive: true });
+     }
+ 
+-    // Attempt symlink (relative path for portability)
+-    try {
+-      const relPath = path.relative(linkDir, target);
+-      fs.symlinkSync(relPath, linkPath);
+-      return 'linked';
+-    } catch (symlinkErr) {
+-      if (symlinkErr.code === 'EEXIST') {
+-        return inspectExistingDestination(linkPath) || '';
+-      }
+-      if (!SYMLINK_FALLBACK_ERRORS.has(symlinkErr.code)) {
+-        throw symlinkErr;
+-      }
+-      if (options.symlinkOnly) {
+-        console.warn(`  ⚠ Symlink failed for ${linkPath} (--symlink requires symlink support)`);
+-        return '';
+-      }
+-      const content = fs.readFileSync(target, 'utf-8');
++    for (let attempt = 0; attempt < 2; attempt += 1) {
++      // Attempt symlink (relative path for portability)
+       try {
+-        fs.writeFileSync(linkPath, HEADER_COMMENT + '\n' + content, {
+-          encoding: 'utf8',
+-          flag: 'wx',
+-        });
+-        return 'copied';
+-      } catch (copyErr) {
+-        if (copyErr.code === 'EEXIST') {
+-          return inspectExistingDestination(linkPath) || '';
++        const relPath = path.relative(linkDir, target);
++        fs.symlinkSync(relPath, linkPath);
++        return 'linked';
++      } catch (symlinkErr) {
++        if (symlinkErr.code === 'EEXIST') {
++          const racedExisting = inspectExistingDestination(target, linkPath);
++          if (racedExisting !== null) return racedExisting;
++          continue;
++        }
++        if (!SYMLINK_FALLBACK_ERRORS.has(symlinkErr.code)) {
++          throw symlinkErr;
++        }
++        if (options.symlinkOnly) {
++          console.warn(`  ⚠ Symlink failed for ${linkPath} (--symlink requires symlink support)`);
++          return '';
++        }
++        const content = fs.readFileSync(target, 'utf-8');
++        try {
++          fs.writeFileSync(linkPath, HEADER_COMMENT + '\n' + content, {
++            encoding: 'utf8',
++            flag: 'wx',
++          });
++          return 'copied';
++        } catch (copyErr) {
++          if (copyErr.code === 'EEXIST') {
++            const racedExisting = inspectExistingDestination(target, linkPath);
++            if (racedExisting !== null) return racedExisting;
++            continue;
++          }
++          throw copyErr;
+         }
+-        throw copyErr;
+       }
+     }
++    return '';
+   } catch (err) {
+     console.error(`  ✗ Failed to link/copy ${target} -> ${linkPath}: ${err.message}`);
+     return '';
+diff --git a/test/symlink-flag.test.js b/test/symlink-flag.test.js
+index d27e4921..ebe48de8 100644
+--- a/test/symlink-flag.test.js
++++ b/test/symlink-flag.test.js
+@@ -162,6 +162,41 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     }
+   });
+ 
++  test('treats an existing symlink to the target as already linked', () => {
++    const tmpDir = makeTmpDir();
++    const originalLstatSync = fs.lstatSync;
++    const originalReadlinkSync = fs.readlinkSync;
++    const originalWarn = console.warn;
++    const warnings = [];
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.lstatSync = file => file === linkPath
++        ? {
++            isDirectory: () => false,
++            isFile: () => false,
++            isSymbolicLink: () => true,
++          }
++        : originalLstatSync(file);
++      fs.readlinkSync = file => file === linkPath
++        ? path.relative(path.dirname(linkPath), targetPath)
++        : originalReadlinkSync(file);
++      console.warn = message => warnings.push(message);
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('linked');
++      expect(warnings).toEqual([]);
++    } finally {
++      fs.lstatSync = originalLstatSync;
++      fs.readlinkSync = originalReadlinkSync;
++      console.warn = originalWarn;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
+   test('does not overwrite an existing non-import file', () => {
+     const tmpDir = makeTmpDir();
+     try {
+@@ -207,6 +242,42 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     }
+   });
+ 
++  test('retries symlink creation when an EEXIST destination disappears', () => {
++    const tmpDir = makeTmpDir();
++    const originalLstatSync = fs.lstatSync;
++    const originalSymlinkSync = fs.symlinkSync;
++    let symlinkAttempts = 0;
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.lstatSync = file => {
++        if (file !== linkPath) return originalLstatSync(file);
++        const err = new Error('No such file');
++        err.code = 'ENOENT';
++        throw err;
++      };
++      fs.symlinkSync = function () {
++        symlinkAttempts += 1;
++        if (symlinkAttempts === 1) {
++          const err = new Error('File exists');
++          err.code = 'EEXIST';
++          throw err;
++        }
++      };
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('linked');
++      expect(symlinkAttempts).toBe(2);
++    } finally {
++      fs.lstatSync = originalLstatSync;
++      fs.symlinkSync = originalSymlinkSync;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
+   test('preserves a file created during copy fallback', () => {
+     const tmpDir = makeTmpDir();
+     const originalSymlinkSync = fs.symlinkSync;
+@@ -240,6 +311,52 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     }
+   });
+ 
++  test('retries copy fallback when an EEXIST destination disappears', () => {
++    const tmpDir = makeTmpDir();
++    const originalLstatSync = fs.lstatSync;
++    const originalSymlinkSync = fs.symlinkSync;
++    const originalWriteFileSync = fs.writeFileSync;
++    let copyAttempts = 0;
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      originalWriteFileSync(targetPath, '# Forge Workflow\n');
++      fs.lstatSync = file => {
++        if (file !== linkPath) return originalLstatSync(file);
++        const err = new Error('No such file');
++        err.code = 'ENOENT';
++        throw err;
++      };
++      fs.symlinkSync = function () {
++        const err = new Error('Operation not permitted');
++        err.code = 'EPERM';
++        throw err;
++      };
++      fs.writeFileSync = function (file, content, options) {
++        if (file === linkPath) {
++          copyAttempts += 1;
++          if (copyAttempts === 1) {
++            const err = new Error('File exists');
++            err.code = 'EEXIST';
++            throw err;
++          }
++        }
++        return originalWriteFileSync(file, content, options);
++      };
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('copied');
++      expect(copyAttempts).toBe(2);
++    } finally {
++      fs.lstatSync = originalLstatSync;
++      fs.symlinkSync = originalSymlinkSync;
++      fs.writeFileSync = originalWriteFileSync;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
+   test('does not copy when symlink creation fails unexpectedly', () => {
+     const tmpDir = makeTmpDir();
+     const originalSymlinkSync = fs.symlinkSync;
+@@ -268,6 +385,7 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     const tmpDir = makeTmpDir();
+     const originalExistsSync = fs.existsSync;
+     const originalLstatSync = fs.lstatSync;
++    const originalReadlinkSync = fs.readlinkSync;
+     const originalSymlinkSync = fs.symlinkSync;
+     let symlinkAttempts = 0;
+     try {
+@@ -276,8 +394,13 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+       fs.writeFileSync(targetPath, '# Forge Workflow\n');
+       fs.existsSync = file => file === linkPath ? false : originalExistsSync(file);
+       fs.lstatSync = file => file === linkPath
+-        ? { isDirectory: () => false, isFile: () => false }
++        ? {
++            isDirectory: () => false,
++            isFile: () => false,
++            isSymbolicLink: () => true,
++          }
+         : originalLstatSync(file);
++      fs.readlinkSync = file => file === linkPath ? 'missing-target' : originalReadlinkSync(file);
+       fs.symlinkSync = function () {
+         symlinkAttempts += 1;
+         const err = new Error('File exists');
+@@ -294,6 +417,7 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     } finally {
+       fs.existsSync = originalExistsSync;
+       fs.lstatSync = originalLstatSync;
++      fs.readlinkSync = originalReadlinkSync;
+       fs.symlinkSync = originalSymlinkSync;
+       cleanTmpDir(tmpDir);
+     }
+-- 
+2.51.0.windows.1
+

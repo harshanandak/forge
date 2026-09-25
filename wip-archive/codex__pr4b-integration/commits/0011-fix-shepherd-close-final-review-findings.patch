@@ -1,0 +1,336 @@
+From 9dd94db18b1f83647c261823d0a07b2db38f79f6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 01:42:25 +0530
+Subject: [PATCH] fix(shepherd): close final review findings
+
+---
+ lib/commands/shepherd.js                   |  1 +
+ lib/pr-monitor/flow-monitor.js             | 16 ++++--
+ lib/pr-monitor/monitor.js                  |  9 ++--
+ lib/pr-monitor/reconcile-executor.js       |  9 ++--
+ lib/pr-monitor/review-preflight.js         |  6 +--
+ test/pr-monitor/flow-monitor.test.js       | 59 +++++++++++++++-------
+ test/pr-monitor/monitor.test.js            | 13 +++++
+ test/pr-monitor/reconcile-executor.test.js | 11 ++++
+ test/pr-monitor/review-preflight.test.js   | 22 ++++++++
+ 9 files changed, 112 insertions(+), 34 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 366a354b..73e66d46 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -601,6 +601,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     localPreflight = await runPreflight({
+       projectRoot: projectRoot || process.cwd(),
+       base: ctx.base,
++      baseRef: ctx.baseRef,
+       pr: String(pr),
+       expectedHead: ctx.headSha,
+       localHead: ctx.localHead,
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 9e4f27a5..90adf2a5 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -272,7 +272,7 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: cursor }).state;
+   }
+   for (const event of durableEvents.filter(item => item.payload.sequence > cursor)) {
+-    await ctx.deliverLegacy(event.payload.bounded_payload.record);
++    await ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id);
+     const receipt = deliveryReceipt(ctx, event, now());
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+@@ -332,12 +332,22 @@ async function runFlowMonitorPass(ctx) {
+ 
+   const deliveryState = await readDeliveryAuthority(ctx);
+   const replay = terminalReplay(deliveryState, ctx.monitorId);
+-  if (replay) return replay;
++  if (replay) {
++    let current;
++    try { current = boundSnapshotValue(await ctx.gather()); } catch { return replay; }
++    const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
++    if (lifecycle !== 'OPEN') return replay;
++    return runFlowMonitorPass({
++      ...ctx,
++      monitorId: `${ctx.monitorId}:after:${replay.terminalReceiptId}`,
++      gather: async () => current,
++    });
++  }
+ 
+   const bridge = createMonitorDurabilityBridge({
+     store: bridgeStore(ctx.store),
+     deliveryTargets: [DELIVERY_TARGET],
+-    deliver: async (event) => ctx.deliverLegacy(event.payload.bounded_payload.record),
++    deliver: async (event) => ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id),
+   });
+   const replayed = await redeliverOutstanding(ctx, bridge, spec, state, durableEvents, deliveryState, now);
+   state = replayed.state;
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index cb5fca56..e77d5673 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -39,11 +39,12 @@ function finalizeRecords(candidates, { baseSeq, ts, snapshot }) {
+   }));
+ }
+ 
+-function appendCompatibilityEvent(dir, record) {
++function appendCompatibilityEvent(dir, record, memoryEventId) {
++  if (memoryEventId && journal.readAllEvents(dir).some(event => event.memoryEventId === memoryEventId)) return;
+   const snapshotRecord = journal.readSnapshot(dir);
+   const appliedSeq = snapshotRecord?.appliedSeq || 0;
+   if (journal.seenIdentities(dir, appliedSeq).has(eventIdentity(record))) return;
+-  journal.appendEvents(dir, [{ ...record, seq: journal.lastSeq(dir) + 1 }]);
++  journal.appendEvents(dir, [{ ...record, seq: journal.lastSeq(dir) + 1, ...(memoryEventId ? { memoryEventId } : {}) }]);
+ }
+ 
+ /**
+@@ -117,8 +118,8 @@ async function runMonitorPass(ctx) {
+   if (ctx.store) {
+     const { runFlowMonitorPass } = require('./flow-monitor');
+     let latestSnapshot;
+-    const deliverLegacy = ctx.deliverLegacy || (async (record) => {
+-      appendCompatibilityEvent(ctx.dir, record);
++    const deliverLegacy = ctx.deliverLegacy || (async (record, memoryEventId) => {
++      appendCompatibilityEvent(ctx.dir, record, memoryEventId);
+       if (latestSnapshot) {
+         journal.writeSnapshot(ctx.dir, {
+           snapshot: latestSnapshot,
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 5883d257..440c2173 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -535,11 +535,8 @@ const ACTION_HANDLERS = {
+  * `updateWatchers`. `ctx.watchers` seeds the current set (from observed state).
+  */
+ async function execute(actions, ctx = {}) {
+-	if (!Array.isArray(actions) || actions.length > MAX_ACTIONS_PER_PASS) {
+-		const error = new Error(`Reconcile action set must contain at most ${MAX_ACTIONS_PER_PASS} actions`);
+-		error.code = 'ACTION_BOUND_EXCEEDED';
+-		throw error;
+-	}
++	if (!Array.isArray(actions)) throw new TypeError('Reconcile actions must be an array');
++	const boundedActions = actions.slice(0, MAX_ACTIONS_PER_PASS);
+ 	const now = ctx.now || (() => Date.now());
+ 	const watchers = Array.isArray(ctx.watchers)
+ 		? ctx.watchers.map(normalizeWatcher).map(entry => replayLifecycle(entry, now()))
+@@ -561,7 +558,7 @@ async function execute(actions, ctx = {}) {
+ 		ctx, // verifiedKill reads isAlive/readClaim/kill/projectRoot off the original ctx
+ 	};
+ 
+-	for (const action of (Array.isArray(actions) ? actions : [])) {
++	for (const action of boundedActions) {
+ 		const handler = ACTION_HANDLERS[action && action.type];
+ 		if (handler && (await handler(action, s)) === false) break;
+ 	}
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 40782efd..50b19781 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -64,10 +64,10 @@ async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync)
+   }
+ }
+ 
+-async function defaultRunDeterministic({ projectRoot, base }, exec = execFileSync) {
+-  const baseRef = String(base || '').startsWith('origin/')
++async function defaultRunDeterministic({ projectRoot, base, baseRef: resolvedBaseRef }, exec = execFileSync) {
++  const baseRef = resolvedBaseRef || (String(base || '').startsWith('origin/')
+     ? String(base)
+-    : `origin/${String(base || '')}`;
++    : `origin/${String(base || '')}`);
+   return preflightCommand.handler([], {}, projectRoot, {
+     log: () => {},
+     resolveChangeSet: ({ runAll }) => preflightCommand.resolveChangeSet(exec, { runAll, baseRef }),
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 9ee4c603..bd175b90 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -23,16 +23,20 @@ function snapshot(overrides = {}) {
+ function durableStore() {
+   const events = [];
+   const cursors = new Map();
+-  let terminalReceipt = null;
++  const terminalReceipts = new Map();
+   let outboxOverflow = false;
+   return {
+     events,
+-    setCursor(target, sequence) { cursors.set(target, sequence); },
++    setCursor(target, sequence, monitorId = 'pr:owner/forge:42') {
++      if (!cursors.has(monitorId)) cursors.set(monitorId, new Map());
++      cursors.get(monitorId).set(target, sequence);
++    },
+     setOutboxOverflow(value) { outboxOverflow = value; },
+-    get terminalReceipt() { return terminalReceipt; },
++    get terminalReceipt() { return terminalReceipts.values().next().value || null; },
+     async appendEvent(event, targets) {
+-      const existing = events.find((item) => item.payload.event_id === event.payload.event_id
+-        || item.payload.sequence === event.payload.sequence);
++      const existing = events.find((item) => item.payload.monitor_id === event.payload.monitor_id
++        && (item.payload.event_id === event.payload.event_id
++          || item.payload.sequence === event.payload.sequence));
+       if (existing) {
+         if (existing.content_hash !== event.content_hash) {
+           const error = new Error('identity conflict');
+@@ -48,8 +52,9 @@ function durableStore() {
+       const event = events.find(item => item.payload.event_id === eventId);
+       return event ? { envelope_json: JSON.stringify(event) } : null;
+     },
+-    async readEventTail(_monitorId, { limit }) {
+-      const selected = events.slice(-limit);
++    async readEventTail(monitorId, { limit }) {
++      const matching = events.filter(event => event.payload.monitor_id === monitorId);
++      const selected = matching.slice(-limit);
+       return {
+         events: selected.map(event => ({
+           event_id: event.payload.event_id,
+@@ -58,33 +63,36 @@ function durableStore() {
+           content_hash: event.content_hash,
+           envelope_json: JSON.stringify(event),
+         })),
+-        overflow: events.length > limit,
+-        truncated_before_sequence: events.length > limit ? selected[0].payload.sequence : null,
++        overflow: matching.length > limit,
++        truncated_before_sequence: matching.length > limit ? selected[0].payload.sequence : null,
+       };
+     },
+     async readDeliveryState(monitorId) {
+       return {
+-        cursors: [...cursors.entries()].map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
++        cursors: [...(cursors.get(monitorId) || new Map()).entries()]
++          .map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
+         outbox: [],
+-        terminal_receipt: terminalReceipt && {
++        terminal_receipt: terminalReceipts.get(monitorId) ? {
+           monitor_id: monitorId,
+-          content_hash: terminalReceipt.content_hash,
+-          envelope_json: JSON.stringify(terminalReceipt),
+-        },
++          content_hash: terminalReceipts.get(monitorId).content_hash,
++          envelope_json: JSON.stringify(terminalReceipts.get(monitorId)),
++        } : null,
+         overflow: { cursors: false, outbox: outboxOverflow },
+       };
+     },
+     async recordDeliveryReceipt(receipt) {
+       const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
+-      cursors.set(receipt.payload.target, event.payload.sequence);
++      if (!cursors.has(event.payload.monitor_id)) cursors.set(event.payload.monitor_id, new Map());
++      cursors.get(event.payload.monitor_id).set(receipt.payload.target, event.payload.sequence);
+       return { idempotent: false };
+     },
+     async recordTerminalReceipt(receipt) {
+-      if (terminalReceipt && terminalReceipt.content_hash !== receipt.content_hash) {
++      const prior = terminalReceipts.get(receipt.payload.monitor_id);
++      if (prior && prior.content_hash !== receipt.content_hash) {
+         throw new Error('monitor receipt conflict');
+       }
+-      terminalReceipt = structuredClone(receipt);
+-      return { idempotent: Boolean(terminalReceipt) };
++      terminalReceipts.set(receipt.payload.monitor_id, structuredClone(receipt));
++      return { idempotent: Boolean(prior) };
+     },
+   };
+ }
+@@ -258,6 +266,21 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
+   });
+ 
++  test('starts a new lifecycle when a terminal closed PR is reopened', async () => {
++    const store = durableStore();
++    let next = snapshot({ state: 'CLOSED' });
++    const ctx = context(store, async () => next, async () => {});
++    const closed = await runFlowMonitorPass(ctx);
++    next = snapshot({ state: 'OPEN' });
++
++    const reopened = await runFlowMonitorPass(ctx);
++
++    expect(closed.terminalReceiptId).toBeString();
++    expect(reopened.terminalReceiptId).toBeUndefined();
++    expect(reopened.changed).toBe(true);
++    expect(store.events.some(event => event.payload.monitor_id.includes(':after:'))).toBe(true);
++  });
++
+   test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {
+     const store = durableStore();
+     await runFlowMonitorPass(context(store, async () => snapshot({ state: 'MERGED' }), async () => {}));
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+index 5da25cd3..373c0169 100644
+--- a/test/pr-monitor/monitor.test.js
++++ b/test/pr-monitor/monitor.test.js
+@@ -116,6 +116,19 @@ describe('runMonitorPass', () => {
+     expect(checkEvents).toEqual([T.CHECK_FAILED, T.CHECK_RECOVERED, T.CHECK_FAILED]);
+   });
+ 
++  test('Memory compatibility redelivery is idempotent after a receipt-write crash', async () => {
++    const store = memoryStore();
++    const recordReceipt = store.recordDeliveryReceipt;
++    store.recordDeliveryReceipt = async () => { throw new Error('receipt crash'); };
++    const ctx = memoryContext(store, async () => snap());
++    await expect(runMonitorPass(ctx)).rejects.toThrow('Monitor durability provider unavailable');
++    expect(journal.readAllEvents(dir)).toHaveLength(1);
++
++    store.recordDeliveryReceipt = recordReceipt;
++    await runMonitorPass(ctx);
++    expect(journal.readAllEvents(dir)).toHaveLength(1);
++  });
++
+   test('first pass appends the baseline event and persists the snapshot', async () => {
+     const res = await runMonitorPass({ dir, gather: async () => snap(), now });
+     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index b8913f22..114d6008 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -37,6 +37,17 @@ test('claim markers share one path across worktrees with the same common dir', (
+ });
+ 
+ describe('execute — watcher lifecycle', () => {
++	test('processes oversized action sets in bounded resumable batches', async () => {
++		let writes = 0;
++		const actions = Array.from({ length: 130 }, (_, index) => ({
++			type: 'upsertPrRow', row: { number: index + 1 },
++		}));
++		await executor.execute(actions, {
++			broker: { upsertPr: async () => { writes += 1; return true; } },
++			watchers: [],
++		});
++		expect(writes).toBe(128);
++	});
+ 	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
+ 		const first = await executor.execute(
+ 			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index 01234232..616c366f 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -36,6 +36,28 @@ describe('bounded local review preflight', () => {
+     expect(changeSet).toMatchObject({ baseRef: 'origin/release/2.0', changedFiles: ['lib/release.js'] });
+   });
+ 
++  test('deterministic preflight preserves a non-origin resolved base ref', async () => {
++    const originalHandler = preflightCommand.handler;
++    let changeSet;
++    preflightCommand.handler = async (_args, _flags, _root, deps) => {
++      changeSet = deps.resolveChangeSet({ runAll: false });
++      return { success: true, results: [] };
++    };
++    const exec = (_command, args) => {
++      const joined = args.join(' ');
++      if (joined === 'rev-parse --verify --quiet upstream/master') return 'base\n';
++      if (joined === 'merge-base HEAD upstream/master') return 'merge-base\n';
++      if (joined === 'diff --name-only merge-base...HEAD') return 'lib/change.js\n';
++      throw new Error(`unexpected git: ${joined}`);
++    };
++    try {
++      await defaultRunDeterministic({ projectRoot: '/repo', base: 'master', baseRef: 'upstream/master' }, exec);
++    } finally {
++      preflightCommand.handler = originalHandler;
++    }
++    expect(changeSet.baseRef).toBe('upstream/master');
++  });
++
+   test('does not review an unrelated local checkout as if it were the PR head', async () => {
+     let calls = 0;
+     const result = await runLocalReviewPreflight({
+-- 
+2.51.0.windows.1
+

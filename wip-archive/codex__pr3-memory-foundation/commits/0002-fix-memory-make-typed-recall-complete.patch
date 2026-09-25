@@ -1,0 +1,229 @@
+From 08432cd8a0d12fb3283746727dcf27e30a7ce40f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:03:52 +0530
+Subject: [PATCH] fix(memory): make typed recall complete
+
+---
+ lib/commands/recall.js      | 21 ++++-----------------
+ lib/kernel/sqlite-driver.js | 18 ++++++++++--------
+ lib/memory/router.js        |  9 +++++----
+ lib/project-memory.js       | 14 +++++++++++---
+ test/memory/router.test.js  | 31 +++++++++++++++++++++++++++++++
+ 5 files changed, 61 insertions(+), 32 deletions(-)
+
+diff --git a/lib/commands/recall.js b/lib/commands/recall.js
+index c6e190ad..05aa4833 100644
+--- a/lib/commands/recall.js
++++ b/lib/commands/recall.js
+@@ -15,10 +15,8 @@ const RECALL_CONTENT_BUDGET = 1100;
+ // `--type`): `--type` is a reserved GLOBAL flag hard-validated to workflow classifications.
+ const TYPE_TAG_PREFIX = 'type:';
+ 
+-// When a `--kind` filter is active the tag filter runs in the command layer (the store is
+-// not reimplemented), so scan a generous window of recent notes before filtering rather than
++// Kind filtering is pushed into the Kernel read so limits and capped metadata stay truthful.
+ // the small default page — otherwise the type match could fall outside the default limit.
+-const TYPE_FILTER_SCAN = 1000;
+ 
+ /**
+  * Separate the optional positional query from `--kind <type>`, `--limit N`, and `--json`.
+@@ -115,21 +113,10 @@ async function handler(args, flags, projectRoot) {
+   // A `--type` filter scans a generous recent window, then keeps only matching notes — the
+   // read stays entirely in the existing store (no schema change). `--limit` is re-applied
+   // AFTER filtering so it caps the typed result set, not the pre-filter scan.
+-  const recallLimit = type ? Math.max(limit ?? 0, TYPE_FILTER_SCAN) : limit;
+-  const result = memoryRouter.recall(projectRoot, { query, limit: recallLimit, all });
+-  let notes = result.notes.map(withType);
+-  let { total, capped } = result;
++  const result = memoryRouter.recall(projectRoot, { query, limit, all, kind: type });
++  const notes = result.notes.map(withType);
++  const { total, capped } = result;
+   const { scope } = result;
+-  if (type) {
+-    notes = notes.filter(entry => entry.type === type);
+-    total = notes.length;
+-    if (limit && notes.length > limit) {
+-      notes = notes.slice(0, limit);
+-      capped = true;
+-    } else {
+-      capped = false;
+-    }
+-  }
+ 
+   if (json) {
+     // Object (not a bare array) so programmatic consumers see the total and whether the
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index c8ac1b8c..943115fc 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2172,16 +2172,16 @@ function searchMemoryRows(runtime, db, query) {
+ 
+ // Optional source-agent and kind filters become one parameterized WHERE clause. This keeps
+ // typed recall complete even when its oldest match lies outside a broad recent-note window.
+-function memoryReadFilter(options = {}) {
++function memoryReadFilter(options = {}, table = 'kernel_memories') {
+ 	const predicates = [];
+ 	const params = [];
+ 	if (Array.isArray(options.agents) && options.agents.length > 0) {
+-		predicates.push(`source_agent IN (${options.agents.map(() => '?').join(', ')})`);
++		predicates.push(`${table}.source_agent IN (${options.agents.map(() => '?').join(', ')})`);
+ 		params.push(...options.agents);
+ 	}
+ 	if (typeof options.kind === 'string' && options.kind.trim()) {
+ 		predicates.push(`EXISTS (
+-			SELECT 1 FROM json_each(kernel_memories.tags_json)
++			SELECT 1 FROM json_each(${table}.tags_json)
+ 			WHERE lower(json_each.value) = ?
+ 		)`);
+ 		params.push(`type:${options.kind.trim().toLowerCase()}`);
+@@ -2238,21 +2238,23 @@ function buildMemoryFtsMatchOr(query) {
+ // BM25 top-N recall over the kernel_memories_fts index (migration 008). Joins the FTS
+ // rowid back to the memory row and orders by bm25 (lower = better match). An empty/tokenless
+ // query falls back to recent entries so `recall` never returns a bare full dump.
+-function searchMemoryRowsRanked(runtime, db, query, limit) {
++function searchMemoryRowsRanked(runtime, db, query, limit, options = {}) {
+ 	const capped = Number.isInteger(limit) && limit > 0 ? limit : 20;
+ 	const match = buildMemoryFtsMatch(query);
+ 	if (!match) {
+-		return recentMemoryRows(runtime, db, capped);
++		return recentMemoryRows(runtime, db, capped, options);
+ 	}
++	const { clause, params } = memoryReadFilter({ kind: options.kind }, 'm');
++	const kindPredicate = clause ? clause.replace(/^ WHERE /, ' AND ') : '';
+ 	return allParams(
+ 		runtime,
+ 		db,
+ 		`SELECT m.* FROM kernel_memories m
+ 			JOIN kernel_memories_fts ON kernel_memories_fts.rowid = m.rowid
+-			WHERE kernel_memories_fts MATCH ?
++			WHERE kernel_memories_fts MATCH ?${kindPredicate}
+ 			ORDER BY bm25(kernel_memories_fts)
+ 			LIMIT ?`,
+-		[match, capped],
++		[match, ...params, capped],
+ 	).map(memoryRowToEntry);
+ }
+ 
+@@ -2746,7 +2748,7 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		searchMemoriesRanked(query, limit, config = {}) {
+ 			const database = getDatabase(config);
+ 			ensureMemorySchema(database);
+-			return searchMemoryRowsRanked(runtime, database, query, limit);
++			return searchMemoryRowsRanked(runtime, database, query, limit, config);
+ 		},
+ 		// Relevance-only BM25 recall that also returns the raw bm25 `score` per entry, so a
+ 		// caller can apply a relevance floor. A no-match/empty query returns [] (no recency
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index 38c02021..dfc409e4 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -426,7 +426,7 @@ function append(projectRoot, note, options = {}) {
+  * widens it to every stored memory.
+  *
+  * @param {string} projectRoot
+- * @param {object} [selection] - { query, limit, all }
++ * @param {object} [selection] - { query, limit, all, kind }
+  * @param {object} [options] - forwarded to the project-memory read paths (e.g. a store).
+  * @returns {{ notes: object[], total: number, capped: boolean, query: string, limit: number, scope: string }}
+  */
+@@ -436,15 +436,16 @@ function recall(projectRoot, selection = {}, options = {}) {
+   const limit = Number.isInteger(requested) && requested > 0 ? requested : DEFAULT_RECALL_LIMIT;
+   const query = String(selection.query || '').trim();
+   const includeAll = Boolean(selection.all);
++  const kind = typeof selection.kind === 'string' ? selection.kind.trim() : '';
++  const agents = includeAll ? undefined : HUMAN_MEMORY_AGENTS;
++  const readOptions = { ...options, agents, kind };
+ 
+   if (query) {
+-    const notes = projectMemory.searchRanked(projectRoot, query, limit, options).map(toNote);
++    const notes = projectMemory.searchRanked(projectRoot, query, limit, readOptions).map(toNote);
+     // BM25 returns at most `limit`; a full result set signals there may be more.
+     return { notes, total: notes.length, capped: notes.length >= limit, query, limit, scope: 'all' };
+   }
+ 
+-  const agents = includeAll ? undefined : HUMAN_MEMORY_AGENTS;
+-  const readOptions = { ...options, agents };
+   const notes = projectMemory.recent(projectRoot, limit, readOptions).map(toNote);
+   const total = projectMemory.count(projectRoot, readOptions);
+   return { notes, total, capped: total > notes.length, query: '', limit, scope: includeAll ? 'all' : 'remembered' };
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 8ee2e3fd..626f8098 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -146,20 +146,28 @@ function list(projectRoot, options = {}) {
+ // driver so recall never loads and re-sorts the whole table. `options.agents` (a
+ // source_agent allow-list) scopes the read, e.g. to human `remember` notes only.
+ function recent(projectRoot, limit, options = {}) {
+-  return resolveStore(projectRoot, options).recentMemories(limit, { agents: options.agents });
++  return resolveStore(projectRoot, options).recentMemories(limit, {
++    agents: options.agents,
++    kind: options.kind,
++  });
+ }
+ 
+ // Total stored memories (optionally scoped by `options.agents`) — paired with `recent` so
+ // recall can report "showing N of TOTAL".
+ function count(projectRoot, options = {}) {
+-  return resolveStore(projectRoot, options).countMemories({ agents: options.agents });
++  return resolveStore(projectRoot, options).countMemories({
++    agents: options.agents,
++    kind: options.kind,
++  });
+ }
+ 
+ // BM25 top-N recall over the FTS5 index (token-AND). Unlike `search` (the legacy LIKE
+ // helper) this does not short-circuit an empty query — the driver falls back to recent so
+ // recall stays capped either way.
+ function searchRanked(projectRoot, query, limit, options = {}) {
+-  return resolveStore(projectRoot, options).searchMemoriesRanked(query, limit);
++  return resolveStore(projectRoot, options).searchMemoriesRanked(query, limit, {
++    kind: options.kind,
++  });
+ }
+ 
+ // Relevance-only BM25 recall that returns the raw bm25 `score` per entry, so a caller can
+diff --git a/test/memory/router.test.js b/test/memory/router.test.js
+index d6926245..14e56855 100644
+--- a/test/memory/router.test.js
++++ b/test/memory/router.test.js
+@@ -212,6 +212,37 @@ describe('memory-router: kernel-backed dispatch (local default)', () => {
+     expect(result.capped).toBe(true);
+   });
+ 
++  test('applies a kind filter in storage before recall limits', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    projectMemory.write(projectRoot, {
++      key: 'old-decision',
++      value: 'Use the kernel as authority.',
++      sourceAgent: 'forge remember',
++      tags: ['type:decision'],
++      timestamp: '2026-01-01T00:00:00.000Z',
++    }, { store });
++    projectMemory.write(projectRoot, {
++      key: 'new-gotcha',
++      value: 'Use the kernel as authority.',
++      sourceAgent: 'forge remember',
++      tags: ['type:gotcha'],
++      timestamp: '2026-07-30T00:00:00.000Z',
++    }, { store });
++
++    expect(router.recall(projectRoot, { kind: 'decision', limit: 1 }, { store }))
++      .toMatchObject({
++        notes: [{ id: 'old-decision' }],
++        total: 1,
++        capped: false,
++      });
++    expect(router.recall(projectRoot, {
++      query: 'kernel authority',
++      kind: 'decision',
++      limit: 1,
++    }, { store }).notes.map(note => note.id)).toEqual(['old-decision']);
++  });
++
+   test('recall returns no notes when a query matches nothing', () => {
+     const projectRoot = makeProjectRoot();
+     const store = makeStore(projectRoot);
+-- 
+2.51.0.windows.1
+

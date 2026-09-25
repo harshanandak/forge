@@ -1,0 +1,698 @@
+From 918123f238c4944e5126f5ecc749de484f2ce0c8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 16:20:48 +0530
+Subject: [PATCH] fix(shepherd): treat proven PID reuse as dead across watcher,
+ controller, and legacy recovery
+
+Liveness was still "a process with this number exists" everywhere except the
+legacy import branch. When a watcher or controller died and its PID was inherited
+by an unrelated process, recovery deferred to the stranger forever and the PR
+stayed unwatched: recoverDeadWatcher/recoverDeadStarting re-probed the bare PID
+and rejected with pid_live, and a legacy entry with a proven-reused PID fell
+through to a permanent blocked/legacy_lossy row that is never rechecked.
+
+Introduce lib/pr-monitor/process-identity.js with processIdentityAlive(), which
+classifies a PID against a marker its owner itself wrote: alive, dead, reused, or
+unknown. Apply it at the controller probe (marker: the row's updatedAt), the
+watcher probe (marker: the watcher-written heartbeatAt), and legacy import
+(marker: the legacy startedAt). Reuse proof travels with the owner row into
+recoverDeadWatcher/recoverDeadStarting as pidReuseProven; the authority
+transaction re-derives the proof itself and still rejects pid_live when the flag,
+the marker, or the start-time probe is missing. An open PR whose legacy PID is
+proven reused now imports as a recoverable starting row adopted by the migrating
+controller instead of blocked/legacy_lossy.
+
+An unknown process start time (every non-Linux platform today) keeps the previous
+bare-PID behaviour exactly.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/process-identity.js            |  92 ++++++++++++++
+ lib/pr-monitor/reconcile-executor.js          | 118 +++++++++---------
+ lib/pr-monitor/watch-owner.js                 |  38 +++++-
+ test/pr-monitor/process-identity.test.js      |  54 ++++++++
+ ...reconcile-executor-owner-authority.test.js |  82 ++++++++++++
+ .../reconcile-migration-gate.test.js          |   9 +-
+ test/pr-monitor/watch-owner.test.js           |  61 +++++++++
+ 7 files changed, 390 insertions(+), 64 deletions(-)
+ create mode 100644 lib/pr-monitor/process-identity.js
+ create mode 100644 test/pr-monitor/process-identity.test.js
+
+diff --git a/lib/pr-monitor/process-identity.js b/lib/pr-monitor/process-identity.js
+new file mode 100644
+index 00000000..f0917c8f
+--- /dev/null
++++ b/lib/pr-monitor/process-identity.js
+@@ -0,0 +1,92 @@
++'use strict';
++
++/**
++ * Shared process-identity probe for shepherd ownership.
++ *
++ * A bare "this PID exists" answer cannot tell a live owner apart from an
++ * unrelated process that inherited the number after the owner died. Every place
++ * that decides whether an owner row's controller or watcher is still running
++ * must therefore compare the observed process start time against a marker the
++ * owner itself wrote: a process that booted materially after that marker cannot
++ * be the process that wrote it, so the PID was reused.
++ *
++ * @module pr-monitor/process-identity
++ */
++
++const fs = require('node:fs');
++
++// Owners stamp their marker while running, so an observed process start later
++// than the marker by more than this slack proves the PID was reused.
++const PID_START_SKEW_MS = 60_000;
++const LINUX_USER_HZ = 100;
++
++/**
++ * Epoch-ms start time of `pid`, or null when this platform cannot answer. Null is
++ * "unknown", never "reused" — callers must not weaken liveness on an unknown.
++ * Linux reads /proc without spawning; other platforms have no dependency-free probe
++ * here, so they return null and can inject `pidStartedAt` instead.
++ *
++ * @param {number} pid
++ * @returns {number|null}
++ */
++function defaultPidStartedAt(pid) {
++	if (!Number.isSafeInteger(pid) || pid <= 0) return null;
++	if (process.platform !== 'linux') return null;
++	try {
++		const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
++		// Fields after the (possibly space-bearing) comm field; starttime is overall
++		// field 22, i.e. index 19 counting from `state`.
++		const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
++		const ticks = Number(fields[19]);
++		const uptimeSeconds = Number(String(fs.readFileSync('/proc/uptime', 'utf8')).trim().split(/\s+/)[0]);
++		if (!Number.isFinite(ticks) || !Number.isFinite(uptimeSeconds)) return null;
++		return Math.round(Date.now() - uptimeSeconds * 1000 + (ticks / LINUX_USER_HZ) * 1000);
++	} catch {
++		return null;
++	}
++}
++
++/**
++ * Classify a PID against the identity marker its owner wrote.
++ *
++ * - `dead`: the PID is gone.
++ * - `reused`: the PID exists but its process booted after the marker, so it is a
++ *   different process and the owner is gone.
++ * - `alive`: the PID exists and nothing disproves its identity.
++ * - `unknown`: liveness itself could not be established (non-boolean probe answer
++ *   or an unusable PID). Callers decide how to fail; this is never "reused".
++ *
++ * A missing marker or an unavailable start-time probe (today: every non-Linux
++ * platform) yields `alive`, keeping behaviour exactly as it was before identity
++ * verification existed. `isPidAlive` rejections propagate to the caller, matching
++ * the previous bare probes.
++ *
++ * @param {{pid: number, startedAt: string|number|null, isPidAlive: Function,
++ *   pidStartedAt?: Function}} input
++ * @returns {Promise<'alive'|'dead'|'reused'|'unknown'>}
++ */
++async function processIdentityAlive({ pid, startedAt, isPidAlive, pidStartedAt } = {}) {
++	const numericPid = Number(pid);
++	if (!Number.isSafeInteger(numericPid) || numericPid <= 0) return 'unknown';
++	if (typeof isPidAlive !== 'function') return 'unknown';
++	const alive = await isPidAlive(numericPid);
++	if (alive === false) return 'dead';
++	if (alive !== true) return 'unknown';
++	const marker = Date.parse(startedAt);
++	if (!Number.isFinite(marker)) return 'alive';
++	let observed;
++	try {
++		observed = await (pidStartedAt || defaultPidStartedAt)(numericPid);
++	} catch {
++		return 'alive';
++	}
++	const observedMs = Number(observed);
++	if (!Number.isFinite(observedMs)) return 'alive';
++	return observedMs > marker + PID_START_SKEW_MS ? 'reused' : 'alive';
++}
++
++module.exports = {
++	PID_START_SKEW_MS,
++	defaultPidStartedAt,
++	processIdentityAlive,
++};
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index af7e2b29..b9688339 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -19,6 +19,7 @@ const { reconcile: defaultReconcile } = require('./reconcile');
+ const { tick: defaultTick } = require('./reconcile-tick');
+ const { startPrWatcherDetached, forgeBin } = require('./watch-lifecycle');
+ const { privacySafeIdentity } = require('./flow-monitor');
++const { processIdentityAlive, defaultPidStartedAt } = require('./process-identity');
+ const brokerMod = require('../kernel/broker');
+ const { secureExecFileSync } = require('../shell-utils');
+ 
+@@ -30,10 +31,6 @@ const MAX_LEGACY_SNAPSHOT_BYTES = 4 * 1024 * 1024;
+ const MAX_MIGRATION_ATTEMPTS = 3;
+ const MAX_MONITOR_ID_LENGTH = 128;
+ const OWNER_HEARTBEAT_STALE_MS = 4 * 60_000;
+-// A watcher stamps `startedAt` just after its process starts, so an observed process
+-// start time later than the marker by more than this slack means the PID was reused.
+-const PID_START_SKEW_MS = 60_000;
+-const LINUX_USER_HZ = 100;
+ 
+ function normalizeRepository(value) {
+ 	if (typeof value !== 'string') return null;
+@@ -146,6 +143,7 @@ function ownerOptions(ctx) {
+ 		...(ctx.driver ? { driver: ctx.driver } : {}),
+ 		...(ctx.databaseConfig ? { databaseConfig: ctx.databaseConfig } : {}),
+ 		isPidAlive: ctx.ownerOptions?.isPidAlive || ctx.isAlive || shepherdLease.pidAlive,
++		pidStartedAt: ctx.ownerOptions?.pidStartedAt || ctx.pidStartedAt || defaultPidStartedAt,
+ 		verifyProviderEvidence: ctx.ownerOptions?.verifyProviderEvidence
+ 			|| (async (evidence, expected) => expected.states.includes(String(evidence?.state || '').toLowerCase())),
+ 		verifyTerminalReceipt: ctx.ownerOptions?.verifyTerminalReceipt
+@@ -174,14 +172,32 @@ async function gatherObserved(gitCommonDir, _lock, opts = {}) {
+ 		};
+ 	}
+ 	const isAlive = options.isPidAlive;
++	const pidStartedAt = options.pidStartedAt;
+ 	const observedAt = Number((opts.now || (() => Date.now()))());
+ 	const heartbeatStaleMs = opts.ownerHeartbeatStaleMs ?? OWNER_HEARTBEAT_STALE_MS;
+ 	const ownerRows = [];
+ 	for (const record of listed.records) {
+ 		const next = { ...record };
+-		if (record.controllerPid != null) next.controllerAlive = await isAlive(record.controllerPid) === true;
++		if (record.controllerPid != null) {
++			// The controller itself wrote this row at `updatedAt`, so it was running then.
++			// A process holding the same number that booted afterwards is a different
++			// process: the controller is gone and the PID was reused. Recovery must not
++			// defer to it, and the proof travels with the row so the authority
++			// transaction can accept recovery instead of rejecting on a bare live PID.
++			const controllerState = await processIdentityAlive({
++				pid: record.controllerPid, startedAt: record.updatedAt, isPidAlive: isAlive, pidStartedAt,
++			});
++			next.controllerAlive = controllerState === 'alive';
++			if (controllerState === 'reused') next.controllerPidReuseProven = true;
++		}
+ 		if (record.watcherPid != null) {
+-			const pidAlive = await isAlive(record.watcherPid) === true;
++			// The watcher stamps `heartbeatAt` itself, making it the tightest honest
++			// marker for watcher identity.
++			const watcherState = await processIdentityAlive({
++				pid: record.watcherPid, startedAt: record.heartbeatAt, isPidAlive: isAlive, pidStartedAt,
++			});
++			if (watcherState === 'reused') next.watcherPidReuseProven = true;
++			const pidAlive = watcherState === 'alive';
+ 			const heartbeatRequired = record.phase === 'running'
+ 				|| record.phase === 'stop_requested'
+ 				|| record.phase === 'terminal_pending';
+@@ -249,6 +265,7 @@ const ACTION_HANDLERS = {
+ 			generation: action.owner.generation,
+ 			controllerPid: action.owner.controllerPid,
+ 			recoveryControllerPid: s.controllerPid,
++			pidReuseProven: action.owner.controllerPidReuseProven === true,
+ 		}, s.options);
+ 		return bindSpawned(result, action.pr || { repo: action.owner.repo, number: action.owner.pr }, s);
+ 	},
+@@ -269,6 +286,7 @@ const ACTION_HANDLERS = {
+ 		const result = await s.authority.recoverDeadWatcher(identity(action.owner), {
+ 			...operationInput(action.owner),
+ 			recoveryControllerPid: s.controllerPid,
++			pidReuseProven: action.owner.watcherPidReuseProven === true,
+ 			providerEvidence: { state: action.providerState },
+ 		}, s.options);
+ 		return bindSpawned(result, action.pr || { repo: action.owner.repo, number: action.owner.pr }, s);
+@@ -684,65 +702,36 @@ async function defaultReadProviderState(entry, opts = {}) {
+ 	}
+ }
+ 
+-/**
+- * Epoch-ms start time of `pid`, or null when this platform cannot answer. Null is
+- * "unknown", never "reused" — callers must not weaken liveness on an unknown.
+- * Linux reads /proc without spawning; other platforms have no dependency-free probe
+- * here, so they return null and can inject `pidStartedAt` instead.
+- */
+-function defaultPidStartedAt(pid) {
+-	if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+-	if (process.platform !== 'linux') return null;
+-	try {
+-		const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+-		// Fields after the (possibly space-bearing) comm field; starttime is overall
+-		// field 22, i.e. index 19 counting from `state`.
+-		const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+-		const ticks = Number(fields[19]);
+-		const uptimeSeconds = Number(String(fs.readFileSync('/proc/uptime', 'utf8')).trim().split(/\s+/)[0]);
+-		if (!Number.isFinite(ticks) || !Number.isFinite(uptimeSeconds)) return null;
+-		return Math.round(Date.now() - uptimeSeconds * 1000 + (ticks / LINUX_USER_HZ) * 1000);
+-	} catch {
+-		return null;
+-	}
+-}
+-
+-async function legacyPidWasReused(entry, pid, options, opts) {
+-	const marker = Date.parse(entry.startedAt);
+-	if (!Number.isFinite(marker)) return false;
+-	let observed;
+-	try {
+-		observed = await (options.pidStartedAt || opts.pidStartedAt || defaultPidStartedAt)(pid);
+-	} catch { return false; }
+-	const startedAtMs = Number(observed);
+-	if (!Number.isFinite(startedAtMs)) return false;
+-	return startedAtMs > marker + PID_START_SKEW_MS;
+-}
+-
+ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 	const ctx = identity(entry);
+ 	const pid = Number(entry.pid);
+ 	let hasPid = Number.isSafeInteger(pid) && pid > 0;
+ 	let pidState = false;
+-	if (hasPid) {
+-		try {
+-			const observed = await options.isPidAlive(pid);
+-			pidState = typeof observed === 'boolean' ? observed : null;
+-		} catch { pidState = null; }
+-	}
++	let pidReused = false;
+ 	// A bare `isPidAlive` hit is not proof the LEGACY watcher is alive: an unrelated
+ 	// long-lived process may have inherited the number. Importing that as
+ 	// blocked/legacy_live_pid is unrecoverable, because every later recheck sees the
+ 	// same live PID and the PR stays unwatched forever. Compare the process start time
+ 	// against the legacy start marker; a process that booted materially AFTER the
+-	// marker cannot be the watcher that wrote it, so its PID evidence is discarded and
+-	// the entry migrates as lossy legacy evidence. An unknown start time changes
+-	// nothing (fail closed on the live PID).
+-	const pidReused = hasPid && pidState === true
+-		&& await legacyPidWasReused(entry, pid, options, opts);
+-	if (pidReused) {
+-		hasPid = false;
+-		pidState = false;
++	// marker cannot be the watcher that wrote it, so its PID evidence is discarded.
++	// An unknown start time changes nothing (fail closed on the live PID).
++	if (hasPid) {
++		let identityState;
++		try {
++			identityState = await processIdentityAlive({
++				pid,
++				startedAt: entry.startedAt,
++				isPidAlive: options.isPidAlive,
++				pidStartedAt: options.pidStartedAt || opts.pidStartedAt,
++			});
++		} catch { identityState = 'unknown'; }
++		if (identityState === 'alive') pidState = true;
++		else if (identityState === 'unknown') pidState = null;
++		else pidState = false;
++		if (identityState === 'reused') {
++			hasPid = false;
++			pidReused = true;
++		}
+ 	}
+ 	let conflictingPidUnsafe = false;
+ 	if (entry.lifecycleConflict) {
+@@ -764,7 +753,7 @@ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 	} catch { providerReadable = false; }
+ 	const providerTerminal = ['closed', 'merged', 'terminal'].includes(providerState);
+ 	let providerVerified = false;
+-	if (hasPid && providerState === 'open' && typeof options.verifyProviderEvidence === 'function') {
++	if ((hasPid || pidReused) && providerState === 'open' && typeof options.verifyProviderEvidence === 'function') {
+ 		try {
+ 			providerVerified = await options.verifyProviderEvidence(
+ 				{ state: providerState }, { ...ctx, states: ['open'] },
+@@ -860,6 +849,11 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 		return { ok: false, state: 'quarantined', reason: quarantined?.reason || 'authority_unavailable' };
+ 	}
+ 	const migrationStartedAt = quarantined.gate?.updated_at || now;
++	// This process is the migrating controller; it owns rows whose legacy controller
++	// PID proved reused and therefore cannot be trusted.
++	const migrationControllerPid = Number.isSafeInteger(Number(opts.controllerPid)) && Number(opts.controllerPid) > 0
++		? Number(opts.controllerPid)
++		: process.pid;
+ 	let snapshot;
+ 	let snapshotHash;
+ 	let verifiedEntries;
+@@ -925,7 +919,7 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	for (const evidence of verifiedEntries || []) {
+ 		const {
+ 			entry, entryHash, ctx, pid, hasPid, pidState, providerState, providerReadable,
+-			providerTerminal, providerVerified, receiptVerified,
++			providerTerminal, providerVerified, receiptVerified, pidReused,
+ 		} = evidence;
+ 		if (!holdsLease()) return { ok: false, state: 'quarantined', reason: 'lease_lost' };
+ 		const operationOptions = cachedLegacyEvidenceOptions(options, evidence);
+@@ -961,11 +955,17 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 				blockReason: 'legacy_unreadable', snapshotHash, legacyEvidenceHash: entryHash,
+ 				startedAt: entry.startedAt || migrationStartedAt,
+ 			}, operationOptions);
+-		} else if (hasPid && providerState === 'open' && providerVerified
++		} else if ((hasPid || pidReused) && providerState === 'open' && providerVerified
+ 			&& typeof authority.importLegacyStarting === 'function') {
++			// A proven-reused PID is proof the legacy watcher is DEAD, so an open PR must
++			// import as a recoverable starting row rather than falling through to the
++			// permanent blocked/legacy_lossy branch below (only legacy_live_pid blocks are
++			// ever rechecked, and any blocked row suppresses inline passes). The reused
++			// number must not become the controller — that would defer recovery to an
++			// unrelated live process — so this migrating controller adopts the row.
+ 			result = await authority.importLegacyStarting(ctx, {
+ 				snapshotHash, legacyEvidenceHash: entryHash, legacyPid: pid,
+-				controllerPid: pid,
++				controllerPid: pidReused ? migrationControllerPid : pid,
+ 				providerEvidence: { state: 'open' }, startedAt: entry.startedAt || migrationStartedAt,
+ 			}, operationOptions);
+ 		} else if (providerState === 'open') {
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index c16e17e5..e2a3a8e4 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const journal = require('./journal');
++const { processIdentityAlive } = require('./process-identity');
+ 
+ const VERSION = 1;
+ const MAX_REPO_BYTES = 256;
+@@ -35,7 +36,7 @@ const MUTATION_INPUT_FIELDS = [
+ 	'generation', 'controllerPid', 'pid', 'recoveryControllerPid',
+ 	'expectedReceiptId', 'providerEvidence', 'terminalReceiptId',
+ 	'blockReason', 'legacyEvidenceHash', 'snapshotHash', 'legacyPid',
+-	'action', 'updatedAt', 'startedAt', 'conflictCode',
++	'action', 'updatedAt', 'startedAt', 'conflictCode', 'pidReuseProven',
+ 	'expectedSnapshotHash', 'expectedConflictCode', 'replacementSnapshotHash',
+ ];
+ const CAPTURED_INPUT = Symbol('capturedMutationInput');
+@@ -642,6 +643,33 @@ async function pidState(pid, opts) {
+ 	}
+ }
+ 
++/**
++ * Recovery normally demands a dead PID. A caller that observed PID reuse may
++ * instead present `pidReuseProven`, but the flag alone is never enough: this
++ * authority re-derives the proof from the row's own marker (the timestamp the
++ * owner process itself wrote) and an observed process start time. No flag, no
++ * marker, or no start-time probe means no proof, and a live PID still blocks
++ * recovery — fail closed.
++ *
++ * @param {number} pid
++ * @param {string} marker owner-written timestamp the process must predate
++ * @param {object} input captured mutation input
++ * @param {object} opts bound authority options
++ * @returns {Promise<boolean>} true when recovery may proceed
++ */
++async function pidDeadOrProvenReused(pid, marker, input, opts) {
++	const state = await pidState(pid, opts);
++	if (state === false) return true;
++	if (input?.pidReuseProven !== true) return false;
++	try {
++		return await processIdentityAlive({
++			pid, startedAt: marker, isPidAlive: async () => state, pidStartedAt: opts.pidStartedAt,
++		}) === 'reused';
++	} catch {
++		return false;
++	}
++}
++
+ function mutationInput(identity, input, opts, { generation = true, now = true } = {}) {
+ 	if (!identity) return null;
+ 	const value = { ...identity };
+@@ -965,7 +993,9 @@ async function recoverDeadStarting(ctx, input, opts = {}) {
+ 		|| captured.snapshot.controller_pid !== Number(controllerPid)) {
+ 		return invalid('generation_mismatch');
+ 	}
+-	if (await pidState(Number(controllerPid), boundOpts) !== false) return invalid('pid_live');
++	if (!await pidDeadOrProvenReused(
++		Number(controllerPid), captured.snapshot.updated_at, input, boundOpts,
++	)) return invalid('pid_live');
+ 	return invoke('watchOwnerRecoverDeadStarting', value, {
+ 		expectedControllerPid: Number(controllerPid), controllerPid: Number(recoveryControllerPid),
+ 		expectedSnapshot: captured.snapshot,
+@@ -990,7 +1020,9 @@ async function recoverDeadWatcher(ctx, input, opts = {}) {
+ 		|| captured.snapshot.watcher_pid !== Number(watcherPid)) {
+ 		return invalid('generation_mismatch');
+ 	}
+-	if (await pidState(Number(watcherPid), boundOpts) !== false) return invalid('pid_live');
++	if (!await pidDeadOrProvenReused(
++		Number(watcherPid), captured.snapshot.heartbeat_at, input, boundOpts,
++	)) return invalid('pid_live');
+ 	if (!await evidenceVerified(value, providerEvidence, ['open', 'terminal'], boundOpts)) return invalid('provider_evidence_invalid');
+ 	return invoke('watchOwnerRecoverDeadWatcher', value, {
+ 		watcherPid: Number(watcherPid), controllerPid: Number(recoveryControllerPid),
+diff --git a/test/pr-monitor/process-identity.test.js b/test/pr-monitor/process-identity.test.js
+new file mode 100644
+index 00000000..d2e0db47
+--- /dev/null
++++ b/test/pr-monitor/process-identity.test.js
+@@ -0,0 +1,54 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { processIdentityAlive, PID_START_SKEW_MS } = require('../../lib/pr-monitor/process-identity');
++
++const MARKER = '2026-08-19T00:00:00.000Z';
++
++function probe(overrides = {}) {
++	return processIdentityAlive({
++		pid: 44,
++		startedAt: MARKER,
++		isPidAlive: async () => true,
++		pidStartedAt: async () => Date.parse(MARKER) - 1000,
++		...overrides,
++	});
++}
++
++describe('process identity', () => {
++	test('reports a gone PID as dead without consulting the start time', async () => {
++		let probed = false;
++		expect(await probe({
++			isPidAlive: async () => false,
++			pidStartedAt: async () => { probed = true; return 0; },
++		})).toBe('dead');
++		expect(probed).toBe(false);
++	});
++
++	test('proves reuse only when the process booted materially after the marker', async () => {
++		const marker = Date.parse(MARKER);
++		expect(await probe({ pidStartedAt: async () => marker + PID_START_SKEW_MS + 1 })).toBe('reused');
++		// Inside the slack the process may still be the owner that wrote the marker.
++		expect(await probe({ pidStartedAt: async () => marker + PID_START_SKEW_MS })).toBe('alive');
++		expect(await probe({ pidStartedAt: async () => marker - 60_000 })).toBe('alive');
++	});
++
++	test('keeps a live PID alive when identity cannot be established', async () => {
++		// Every non-Linux platform answers null today; behaviour must not change there.
++		expect(await probe({ pidStartedAt: async () => null })).toBe('alive');
++		expect(await probe({ pidStartedAt: async () => { throw new Error('unavailable'); } })).toBe('alive');
++		expect(await probe({ startedAt: null })).toBe('alive');
++		expect(await probe({ startedAt: 'not-a-timestamp' })).toBe('alive');
++	});
++
++	test('reports unknown when liveness itself is unavailable, never reused', async () => {
++		expect(await probe({ isPidAlive: async () => null })).toBe('unknown');
++		expect(await probe({ pid: 0 })).toBe('unknown');
++		expect(await probe({ pid: 'forty-four' })).toBe('unknown');
++		expect(await probe({ isPidAlive: undefined })).toBe('unknown');
++	});
++
++	test('propagates a rejecting liveness probe to the caller, as the bare probes did', async () => {
++		await expect(probe({ isPidAlive: async () => { throw new Error('probe failed'); } })).rejects.toThrow('probe failed');
++	});
++});
+diff --git a/test/pr-monitor/reconcile-executor-owner-authority.test.js b/test/pr-monitor/reconcile-executor-owner-authority.test.js
+index 6b80c17a..f22a21fc 100644
+--- a/test/pr-monitor/reconcile-executor-owner-authority.test.js
++++ b/test/pr-monitor/reconcile-executor-owner-authority.test.js
+@@ -6,6 +6,7 @@ const {
+ 	gatherObserved,
+ 	convergeOnce,
+ } = require('../../lib/pr-monitor/reconcile-executor');
++const { decideLifecycle } = require('../../lib/pr-monitor/reconcile');
+ 
+ const NOW = '2026-08-19T00:00:00.000Z';
+ const PR = { repo: 'acme/project', number: 7, branch: 'topic', headSha: 'abc' };
+@@ -82,6 +83,87 @@ describe('reconcile executor owner-row authority', () => {
+ 		expect(result.migrationGate).toMatchObject({ state: 'complete' });
+ 	});
+ 
++	test('treats a reused watcher PID as dead and carries the reuse proof into recovery', async () => {
++		const gather = pidStartedAt => gatherObserved('/repo/.git', null, {
++			broker: { listOpenPrs: async () => [] },
++			authority: {
++				enumerateOwners: async () => ({ ok: true, records: [RECORD] }),
++				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
++			},
++			isAlive: () => true,
++			pidStartedAt,
++			now: () => Date.parse(NOW),
++		});
++
++		// PID 44 exists, but the process holding it booted an hour after the watcher
++		// wrote this row's heartbeat, so it cannot be that watcher.
++		const reused = await gather(async () => Date.parse('2026-08-19T01:00:00.000Z'));
++		expect(reused.ownerRows[0]).toMatchObject({ watcherAlive: false, watcherPidReuseProven: true });
++
++		// An unknown process start time (every non-Linux platform today) keeps the
++		// previous bare-PID behaviour exactly.
++		const unknown = await gather(async () => null);
++		expect(unknown.ownerRows[0]).toMatchObject({ watcherAlive: true });
++		expect(unknown.ownerRows[0].watcherPidReuseProven).toBeUndefined();
++
++		const inputs = [];
++		await execute([{ type: 'recoverWatcher', owner: reused.ownerRows[0], pr: PR, providerState: 'open' }], {
++			authority: {
++				recoverDeadWatcher: async (_ctx, input) => {
++					inputs.push(input);
++					return { ok: true, changed: true, record: { ...RECORD, phase: 'starting', controllerPid: 12 } };
++				},
++				bindRunning: async () => ({ ok: true, changed: true, record: RECORD }),
++			},
++			controllerPid: 12,
++			spawnWatcher: () => ({ started: true, pid: 55 }),
++		});
++		expect(inputs[0]).toMatchObject({ pid: 44, recoveryControllerPid: 12, pidReuseProven: true });
++	});
++
++	test('recovers a starting row whose controller PID was reused instead of deferring to it', async () => {
++		const starting = {
++			...RECORD, phase: 'starting', controllerPid: 33, watcherPid: null, heartbeatAt: null,
++		};
++		const observed = await gatherObserved('/repo/.git', null, {
++			broker: { listOpenPrs: async () => [] },
++			authority: {
++				enumerateOwners: async () => ({ ok: true, records: [starting] }),
++				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
++			},
++			isAlive: () => true,
++			// PID 33 exists, but its process booted after the controller wrote this row.
++			pidStartedAt: async () => Date.parse('2026-08-19T01:00:00.000Z'),
++			now: () => Date.parse(NOW),
++		});
++		const row = observed.ownerRows[0];
++		expect(row).toMatchObject({ controllerAlive: false, controllerPidReuseProven: true });
++
++		// A foreign reused controller PID must not leave the PR unwatched: reconciliation
++		// recovers the abandoned start rather than deferring to the live stranger.
++		const decided = decideLifecycle({
++			openPrs: [PR], controllerPid: 12, listingOk: true, repositoryOk: true, gitCommonDir: '/repo/.git',
++		}, {
++			ownerRows: [row], ownerRowsOk: true, prRows: [],
++			migrationGate: { state: 'complete', snapshot_hash: 'a'.repeat(64) },
++		});
++		expect(decided.actions).toContainEqual({ type: 'recoverStarting', owner: row, pr: PR });
++
++		const inputs = [];
++		await execute(decided.actions.filter(action => action.type === 'recoverStarting'), {
++			authority: {
++				recoverDeadStarting: async (_ctx, input) => {
++					inputs.push(input);
++					return { ok: true, changed: true, record: { ...starting, controllerPid: 12 } };
++				},
++				bindRunning: async () => ({ ok: true, changed: true, record: RECORD }),
++			},
++			controllerPid: 12,
++			spawnWatcher: () => ({ started: true, pid: 55 }),
++		});
++		expect(inputs[0]).toMatchObject({ controllerPid: 33, recoveryControllerPid: 12, pidReuseProven: true });
++	});
++
+ 	test('converges without reading or publishing lease watcher arrays', async () => {
+ 		let published = false;
+ 		const result = await convergeOnce('/repo', {
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index 12efddac..850ab164 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -1127,7 +1127,7 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(earlier.rows.size).toBe(0);
+ 	});
+ 
+-	test('treats a legacy PID whose process started after the legacy marker as reused, not live', async () => {
++	test('recovers an open PR whose legacy PID is proven reused instead of blocking it', async () => {
+ 		const api = authorityHarness();
+ 		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
+ 		const result = await run(api, legacy, {
+@@ -1136,10 +1136,15 @@ describe('one-release watcher authority migration gate', () => {
+ 			// legacy watcher recorded startedAt — the original watcher is long gone and
+ 			// this is an unrelated process that inherited the number.
+ 			pidStartedAt: async () => Date.parse('2026-08-19T02:00:00.000Z'),
++			controllerPid: 9001,
+ 		});
+ 		expect(result).toMatchObject({ ok: true, state: 'complete' });
+ 		expect(api.calls).not.toContain('blocked:acme/repo#7:legacy_live_pid');
+-		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_lossy' });
++		// Proven reuse means the legacy watcher is DEAD, so the open PR must import as a
++		// recoverable starting row. blocked/legacy_lossy would be permanent — only
++		// legacy_live_pid blocks are ever rechecked — and would suppress inline passes.
++		expect(api.calls).not.toContain('blocked:acme/repo#7:legacy_lossy');
++		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'starting', controllerPid: 9001 });
+ 	});
+ 
+ 	test('still imports a genuinely live legacy PID as blocked/legacy_live_pid', async () => {
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 95bc3f6c..b2f6d3d4 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -676,6 +676,67 @@ describe('watch owner SQLite authority', () => {
+ 		expect(owner.importLegacy).toBeUndefined();
+ 	});
+ 
++	test('recovers a dead watcher whose PID was reused, and fails closed without that proof', async () => {
++		const ctx = { repo: 'acme/forge', pr: 57 };
++		const base = { driver, now: LATER };
++		const start = await owner.reserveStarting(ctx, { controllerPid: 108, startedAt: NOW }, base);
++		await owner.bindRunning(ctx, {
++			generation: start.record.generation, controllerPid: 108, pid: 208, updatedAt: LATER,
++		}, base);
++		await owner.heartbeat(ctx, {
++			generation: start.record.generation, pid: 208, updatedAt: LATER,
++		}, base);
++		const input = {
++			generation: start.record.generation, pid: 208, recoveryControllerPid: 109,
++			providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
++		};
++		// PID 208 exists, but its process booted an hour after the watcher wrote this
++		// row's heartbeat, so it is an unrelated process that inherited the number.
++		const live = {
++			...base,
++			isPidAlive: () => true,
++			verifyProviderEvidence: async () => true,
++			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
++		};
++
++		// Without the evidence input a live PID still blocks recovery.
++		expect(await owner.recoverDeadWatcher(ctx, input, live))
++			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++		// And the claim alone is never enough: an unknown process start time keeps the
++		// live PID authoritative.
++		expect(await owner.recoverDeadWatcher(ctx, { ...input, pidReuseProven: true }, {
++			...live, pidStartedAt: async () => null,
++		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++
++		const recovered = await owner.recoverDeadWatcher(ctx, { ...input, pidReuseProven: true }, live);
++		expect(recovered).toMatchObject({ ok: true, record: { phase: 'starting', controllerPid: 109 } });
++	});
++
++	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
++		const ctx = { repo: 'acme/forge', pr: 58 };
++		const base = { driver, now: LATER };
++		const start = await owner.reserveStarting(ctx, { controllerPid: 110, startedAt: NOW }, base);
++		const input = {
++			generation: start.record.generation, controllerPid: 110,
++			recoveryControllerPid: 111, updatedAt: LATER,
++		};
++		// PID 110 exists, but its process booted after this controller wrote the row.
++		const live = {
++			...base,
++			isPidAlive: () => true,
++			pidStartedAt: async () => Date.parse('2026-08-19T09:00:00.000Z'),
++		};
++
++		expect(await owner.recoverDeadStarting(ctx, input, live))
++			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++		expect(await owner.recoverDeadStarting(ctx, { ...input, pidReuseProven: true }, {
++			...live, pidStartedAt: async () => null,
++		})).toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++
++		const recovered = await owner.recoverDeadStarting(ctx, { ...input, pidReuseProven: true }, live);
++		expect(recovered).toMatchObject({ ok: true, record: { phase: 'starting', controllerPid: 111 } });
++	});
++
+ 	test('rejects dead-watcher recovery when a heartbeat changes the evidence snapshot', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 56 };
+ 		const base = { driver, now: LATER };
+-- 
+2.51.0.windows.1
+

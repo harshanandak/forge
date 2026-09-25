@@ -1,0 +1,26 @@
+From f74759d99d12c46d0d6a1f377d8997e264b2b245 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 20:51:19 +0530
+Subject: [PATCH] test(process): declare macOS-only case
+
+---
+ test/scripts/process-tree.test.js | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index 3570a616..a0c34882 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -251,8 +251,7 @@ describe('scripts/process-tree.js', () => {
+     expect(chmodCalls.some(([, mode]) => mode === 0o700)).toBe(true);
+   });
+ 
+-  test('accepts a macOS runner temp chain with trusted system ancestors', () => {
+-    if (process.platform === 'win32') return;
++  test.skipIf(process.platform === 'win32')('accepts a macOS runner temp chain with trusted system ancestors', () => {
+     const uid = 501;
+     const manifestDir = '/var/folders/zz/runner/T/forge-process-tree';
+     const manifestPath = path.join(manifestDir, 'run.json');
+-- 
+2.51.0.windows.1
+

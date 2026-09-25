@@ -1,0 +1,217 @@
+From 8923ccb76d9596b7ebc70a1254e1ee2a5e1e2ae6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 10:58:44 +0530
+Subject: [PATCH] fix(hooks): malformed-YAML fails toward enforcement +
+ validate protectedPaths (refs eda6d866)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CodeRabbit #399 security threads:
+- T1: split the yaml MODULE-unavailable case (keep conservative raw-text scan)
+  from YAML.parse errors (fail TOWARD enforcement). A malformed .forge/config.yaml
+  can no longer disable a gate via the fuzzy raw scan — even one embedding a
+  `tdd_intent: enabled: false` fragment now keeps TDD ON + protectedPaths on the
+  built-in set. Applied in both forge-native-hook.js (loadConfigObject) and
+  check-tdd.js (isTddEnabled).
+- T2: validate config protectedPaths with the runtime graph's rules (non-empty
+  string, reject overly-broad '*','**','**/*','.','./','/') before it overrides
+  built-in protection. Any invalid entry rejects the whole list -> fall back to
+  built-in enforcement, never authoritative (fail-toward-enforcement).
+
+Tests: malformed-with-disabled-block regression (both hooks) + invalid/overly-broad
+protectedPaths -> built-in fallback; valid specific list still honored.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .forge/hooks/check-tdd.js         | 16 +++++++++--
+ .forge/hooks/forge-native-hook.js | 47 +++++++++++++++++++++++++++++--
+ test/check-tdd-config.test.js     | 13 +++++----
+ test/forge-native-hook.test.js    | 34 ++++++++++++++++------
+ 4 files changed, 90 insertions(+), 20 deletions(-)
+
+diff --git a/.forge/hooks/check-tdd.js b/.forge/hooks/check-tdd.js
+index ba7d5566..3815904d 100644
+--- a/.forge/hooks/check-tdd.js
++++ b/.forge/hooks/check-tdd.js
+@@ -35,14 +35,24 @@ function isTddEnabled(projectRoot) {
+     isExplicitlyDisabled(config?.workflow?.gates?.["rail.tdd_intent"]) ||
+     isExplicitlyDisabled(config?.rails?.tdd_intent);
+ 
++  let YAML;
++  try {
++    YAML = require("yaml");
++  } catch {
++    // The yaml MODULE is genuinely unavailable → conservative raw-text scan for the
++    // disabled block. Parser presence and parse success are split so a MALFORMED file
++    // never reaches this fuzzy scan.
++    return !(rawKeyDisabled(raw, "rail.tdd_intent") || rawKeyDisabled(raw, "tdd_intent"));
++  }
+   try {
+-    const YAML = require("yaml");
+     const parsed = YAML.parse(raw);
+     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true;
+     return !railDisabled(parsed);
+   } catch {
+-    // yaml lib unavailable → conservative raw-text scan for the disabled block.
+-    return !(rawKeyDisabled(raw, "rail.tdd_intent") || rawKeyDisabled(raw, "tdd_intent"));
++    // MALFORMED YAML (module present, parse threw) → FAIL TOWARD ENFORCEMENT (return
++    // true). Never fall to the raw-text scan: a broken file with a `rail.tdd_intent:
++    // enabled: false` fragment must not switch the gate off (issue eda6d866).
++    return true;
+   }
+ }
+ 
+diff --git a/.forge/hooks/forge-native-hook.js b/.forge/hooks/forge-native-hook.js
+index db2e13ce..6889d2d9 100644
+--- a/.forge/hooks/forge-native-hook.js
++++ b/.forge/hooks/forge-native-hook.js
+@@ -71,12 +71,24 @@ function loadConfigObject(projectRoot) {
+     return null; // no config file → caller defaults to enforcement ON
+   }
+   if (!raw || !raw.trim()) return {};
++  let YAML;
++  try {
++    YAML = require('yaml');
++  } catch {
++    // The yaml MODULE is genuinely unavailable → degrade to a conservative raw-text
++    // scan (the only case that keeps { __raw }). Parser presence and parse success are
++    // deliberately separated so a MALFORMED file never reaches the fuzzy scan below.
++    return { __raw: raw };
++  }
+   try {
+-    const YAML = require('yaml');
+     const parsed = YAML.parse(raw);
+     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+   } catch {
+-    return { __raw: raw };
++    // MALFORMED YAML (module present, parse threw) → FAIL TOWARD ENFORCEMENT. Return {}
++    // so resolveEnforcement defaults to TDD ON + built-in protected paths. We must NOT
++    // fall through to the raw-text scan: a broken file containing a `rail.tdd_intent:
++    // enabled: false` fragment could otherwise switch enforcement OFF (issue eda6d866).
++    return {};
+   }
+ }
+ 
+@@ -85,6 +97,33 @@ function isExplicitlyDisabled(node) {
+   return Boolean(node) && typeof node === 'object' && node.enabled === false;
+ }
+ 
++// Overly-broad patterns the runtime graph rejects (lib/core/runtime-graph.js
++// validateProtectedPaths). Kept in sync here because this hook is self-contained
++// and cannot import from lib/.
++const OVERLY_BROAD_PROTECTED_PATTERNS = ['*', '**', '**/*', '.', './', '/'];
++
++/**
++ * Validate a config-supplied protectedPaths list with the SAME rules the runtime
++ * graph enforces: every entry must be a non-empty string and not an overly-broad
++ * pattern. A list with ANY invalid entry is rejected WHOLESALE (returns null →
++ * caller falls back to the built-in protected set), so an invalid or overly-broad
++ * config can never become authoritative and WEAKEN protection — it fails toward
++ * enforcement, matching the rest of this hook's fail-safe stance (issue eda6d866).
++ * @returns {string[]|null} validated list (may be empty = deliberately inert), or
++ *   null when the list is absent/invalid.
++ */
++function validateConfiguredProtectedPaths(list) {
++  if (!Array.isArray(list)) return null;
++  const validated = [];
++  for (const entry of list) {
++    if (typeof entry !== 'string' || entry.trim() === '') return null;
++    const pattern = entry.trim();
++    if (OVERLY_BROAD_PROTECTED_PATTERNS.includes(pattern)) return null;
++    validated.push(pattern);
++  }
++  return validated;
++}
++
+ /** Scan raw YAML for a `<key>:` block whose immediate child is `enabled: false`. */
+ function rawKeyDisabled(raw, key) {
+   const lines = String(raw).split(/\r?\n/);
+@@ -125,7 +164,9 @@ function resolveEnforcement(projectRoot) {
+     const rails = config.rails;
+     tddDisabled = isExplicitlyDisabled(gates && gates['rail.tdd_intent'])
+       || isExplicitlyDisabled(rails && rails.tdd_intent);
+-    if (Array.isArray(config.protectedPaths)) protectedPaths = config.protectedPaths.slice();
++    // Validate before overriding built-in protection: a bad/overly-broad list must
++    // fall back to the built-in set (null), never become authoritative (T2).
++    protectedPaths = validateConfiguredProtectedPaths(config.protectedPaths);
+   }
+   return { tddEnabled: !tddDisabled, protectedPaths };
+ }
+diff --git a/test/check-tdd-config.test.js b/test/check-tdd-config.test.js
+index 9ca167e5..6cdf8b6f 100644
+--- a/test/check-tdd-config.test.js
++++ b/test/check-tdd-config.test.js
+@@ -55,12 +55,13 @@ describe('isTddEnabled (config-honest pre-commit gate)', () => {
+     expect(isTddEnabled(root)).toBe(true);
+   });
+ 
+-  test('unparseable config => FAILS TOWARD enforcement (true) via raw-scan fallback', () => {
+-    // An unterminated flow sequence makes YAML.parse throw, so isTddEnabled falls to
+-    // the conservative raw-text scan. The corrupt text has no `rail.tdd_intent`/
+-    // `tdd_intent` block with `enabled: false`, so the gate a user did not disable is
+-    // never silently dropped — corrupt config keeps TDD ON (issue eda6d866).
+-    writeConfig("protectedPaths: ['.forge/config.yaml'\n");
++  test('MALFORMED config => enforce (true) EVEN when it embeds a disabled tdd_intent block', () => {
++    // Security regression (T1): a broken file (unterminated flow sequence) that also
++    // contains a `tdd_intent ... enabled: false` fragment must NOT switch the gate off
++    // via the fuzzy raw-text scan. Parser presence is split from parse success, so a
++    // YAML.parse error fails TOWARD enforcement — corrupt config keeps TDD ON. The
++    // raw-text scan now runs ONLY when the yaml module is genuinely absent (issue eda6d866).
++    writeConfig("rails:\n  tdd_intent:\n    enabled: false\nprotectedPaths: ['oops\n");
+     expect(isTddEnabled(root)).toBe(true);
+   });
+ });
+diff --git a/test/forge-native-hook.test.js b/test/forge-native-hook.test.js
+index e7628991..6fb0063e 100644
+--- a/test/forge-native-hook.test.js
++++ b/test/forge-native-hook.test.js
+@@ -194,19 +194,37 @@ describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
+     expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
+   });
+ 
+-  test('unparseable config FAILS TOWARD enforcement (__raw fallback: TDD ON, protectedPaths built-in)', () => {
+-    // An unterminated flow sequence makes YAML.parse throw, so loadConfigObject
+-    // returns { __raw }. It contains neither a `rail.tdd_intent ... enabled: false`
+-    // block nor a literal `protectedPaths: []`, so the raw-scan must NOT silently
+-    // drop either gate: corrupt config keeps TDD ON and protected-path on the
+-    // built-in set (protectedPaths === null), never inert (issue eda6d866).
+-    const corrupt = makeProject("protectedPaths: ['.forge/config.yaml'\n");
++  test('MALFORMED config fails toward enforcement EVEN when it embeds a disabled rail block', () => {
++    // Security regression (T1): a broken file (unterminated flow sequence) that ALSO
++    // contains a `tdd_intent ... enabled: false` fragment must NOT switch enforcement
++    // off via the fuzzy raw-text scan. Parse presence is split from parse success, so a
++    // YAML.parse error fails TOWARD enforcement: TDD stays ON and protectedPaths falls
++    // back to the built-in set (protectedPaths === null) (issue eda6d866).
++    const corrupt = makeProject("rails:\n  tdd_intent:\n    enabled: false\nprotectedPaths: ['oops\n");
+     const e = adapter.resolveEnforcement(corrupt);
+     expect(e.tddEnabled).toBe(true);
+-    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, not silently disabled
++    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, never silently dropped
+     expect(adapter.isEnforcementActive('tdd', corrupt)).toBe(true);
+     expect(adapter.isEnforcementActive('protected-path', corrupt)).toBe(true);
+   });
++
++  test('invalid/overly-broad protectedPaths fall back to built-in enforcement (never authoritative)', () => {
++    // Security regression (T2): a parseable config whose protectedPaths contains an
++    // overly-broad or non-string entry is rejected WHOLESALE (the runtime graph rejects
++    // the same entries), so it falls back to the built-in set instead of weakening
++    // protection. An invalid list must never become authoritative (issue eda6d866).
++    const broad = makeProject('protectedPaths:\n  - "**"\n');
++    expect(adapter.resolveEnforcement(broad).protectedPaths).toBe(null);
++    expect(adapter.isEnforcementActive('protected-path', broad)).toBe(true);
++
++    const nonString = makeProject('protectedPaths:\n  - 42\n');
++    expect(adapter.resolveEnforcement(nonString).protectedPaths).toBe(null);
++    expect(adapter.isEnforcementActive('protected-path', nonString)).toBe(true);
++
++    // A well-formed, specific list is still honored verbatim.
++    const valid = makeProject('protectedPaths:\n  - .github/workflows/**\n');
++    expect(adapter.resolveEnforcement(valid).protectedPaths).toEqual(['.github/workflows/**']);
++  });
+ });
+ 
+ describe('config-driven protected paths (config is the source of truth)', () => {
+-- 
+2.51.0.windows.1
+

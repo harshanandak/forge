@@ -1,0 +1,447 @@
+From 8d6d6f37fb87b1533d664ebe9079c9d31c36b94d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 01:40:17 +0530
+Subject: [PATCH] perf(flow): batch monitor tail replay
+
+---
+ lib/pr-monitor/flow-monitor.js             |  10 +-
+ packages/flow/index.js                     |   2 +
+ packages/flow/index.test.js                |   1 +
+ packages/flow/src/monitor-runtime.js       | 112 ++++++++++++------
+ packages/flow/test/monitor-runtime.test.js | 127 ++++++++++++++++++++-
+ 5 files changed, 210 insertions(+), 42 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 087d2c43..bc912d6d 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -9,6 +9,7 @@ const {
+   createMonitorReceipt,
+   createMonitorState,
+   reduceMonitor,
++  reduceMonitorBatch,
+ } = require('../../packages/flow');
+ const { diffSnapshots } = require('./differ');
+ const { EVENT_TYPES: T, makeEvent } = require('./events');
+@@ -1146,10 +1147,11 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const durableEvents = await readAuthority(ctx);
+   const subjectRevision = ctx.subjectRevision || ctx.subjectId;
+   const spec = monitorSpec(ctx, subjectRevision);
+-  let state = createMonitorState(spec);
+-  for (const event of durableEvents) {
+-    state = reduceMonitor(spec, state, { kind: 'observation', event }).state;
+-  }
++  let state = reduceMonitorBatch(
++    spec,
++    createMonitorState(spec),
++    durableEvents.map(event => ({ kind: 'observation', event })),
++  ).state;
+ 
+   const deliveryState = await readDeliveryAuthority(ctx);
+   const replay = terminalReplay(deliveryState, ctx.monitorId);
+diff --git a/packages/flow/index.js b/packages/flow/index.js
+index 176277db..728f2044 100644
+--- a/packages/flow/index.js
++++ b/packages/flow/index.js
+@@ -7,6 +7,7 @@ const {
+   createMonitorReceipt,
+   createMonitorState,
+   reduceMonitor,
++  reduceMonitorBatch,
+ } = require("./src/monitor-runtime");
+ const { EfficiencySupervisor } = require("./src/efficiency-supervisor");
+ const { SkillRuntime } = require("./src/skill-runtime");
+@@ -108,5 +109,6 @@ module.exports = {
+   createWorkPacketExecutor,
+   reduceBoundedLoop,
+   reduceMonitor,
++  reduceMonitorBatch,
+   reduceProcessLifecycle,
+ };
+diff --git a/packages/flow/index.test.js b/packages/flow/index.test.js
+index 3568874a..bbe84361 100644
+--- a/packages/flow/index.test.js
++++ b/packages/flow/index.test.js
+@@ -61,6 +61,7 @@ describe("Flow contract boundary", () => {
+       createProcessLifecycle: expect.any(Function),
+       createProcessState: expect.any(Function),
+       reduceMonitor: expect.any(Function),
++      reduceMonitorBatch: expect.any(Function),
+       reduceBoundedLoop: expect.any(Function),
+       reduceProcessLifecycle: expect.any(Function),
+       EfficiencySupervisor: expect.any(Function),
+diff --git a/packages/flow/src/monitor-runtime.js b/packages/flow/src/monitor-runtime.js
+index 3ec24868..c490d6f3 100644
+--- a/packages/flow/src/monitor-runtime.js
++++ b/packages/flow/src/monitor-runtime.js
+@@ -100,10 +100,10 @@ function result(state, effects = [], modelTurns = 0) {
+   return { state, effects, modelTurns };
+ }
+ 
+-function terminating(state, terminalState, terminalReason, extra = {}) {
++function terminating(state, terminalState, terminalReason, extra = {}, mutate = false) {
+   const undelivered = [...state.pending, ...state.deferred];
+-  return result({
+-    ...state,
++  const next = mutate ? state : { ...state };
++  Object.assign(next, {
+     ...extra,
+     lifecycle: "TERMINATING",
+     terminalState,
+@@ -111,7 +111,8 @@ function terminating(state, terminalState, terminalReason, extra = {}) {
+     undeliveredCursor: undelivered.length === 0
+       ? undefined
+       : Math.min(...undelivered.map((item) => item.sequence)),
+-  }, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
++  });
++  return result(next, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
+ }
+ 
+ function validateObservation(spec, event) {
+@@ -200,7 +201,7 @@ function cloneIdentityMap(source) {
+   return clone;
+ }
+ 
+-function reduceObservation(spec, state, event) {
++function reduceObservation(spec, state, event, mutate = false) {
+   validateObservation(spec, event);
+   const payload = event.payload;
+   const seen = Object.hasOwn(state.seenEvents, payload.event_id)
+@@ -216,8 +217,8 @@ function reduceObservation(spec, state, event) {
+     throw new MonitorRuntimeError("OUT_OF_ORDER", "MonitorEvent sequence is not monotonic");
+   }
+ 
+-  const next = structuredClone(state);
+-  next.seenEvents = cloneIdentityMap(state.seenEvents);
++  const next = mutate ? state : structuredClone(state);
++  if (!mutate) next.seenEvents = cloneIdentityMap(state.seenEvents);
+   Object.defineProperty(next.seenEvents, payload.event_id, {
+     value: { sequence: payload.sequence, contentHash: event.content_hash },
+     enumerable: true,
+@@ -256,7 +257,7 @@ function reduceObservation(spec, state, event) {
+   );
+   if (terminal) {
+     const terminalState = nextValue === "FAIL" ? "FAIL" : "PASS";
+-    return terminating(next, terminalState, "terminal predicate satisfied");
++    return terminating(next, terminalState, "terminal predicate satisfied", {}, mutate);
+   }
+   if (payload.actionability === "advisory") return result(next);
+   if (next.pending.length >= spec.maxPending) {
+@@ -281,7 +282,7 @@ function reduceObservation(spec, state, event) {
+   }], 1);
+ }
+ 
+-function reduceAcknowledgement(spec, state, event) {
++function reduceAcknowledgement(spec, state, event, mutate = false) {
+   if (!Number.isInteger(event.sequence) || event.sequence < state.acknowledgementCursor || event.sequence > state.lastSequence) {
+     throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
+   }
+@@ -289,7 +290,7 @@ function reduceAcknowledgement(spec, state, event) {
+   if (!state.pending.some((item) => item.sequence === event.sequence)) {
+     throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
+   }
+-  const next = structuredClone(state);
++  const next = mutate ? state : structuredClone(state);
+   next.acknowledgementCursor = event.sequence;
+   next.pending = next.pending.filter((item) => item.sequence > event.sequence);
+   for (const sequence of Object.keys(next.retryCounts)) {
+@@ -309,16 +310,16 @@ function reduceAcknowledgement(spec, state, event) {
+   return result(next, effects, effects.length);
+ }
+ 
+-function reduceDeliveryFailure(spec, state, event) {
++function reduceDeliveryFailure(spec, state, event, mutate = false) {
+   if (!Number.isInteger(event.sequence) || !state.pending.some((item) => item.sequence === event.sequence)) {
+     throw new MonitorRuntimeError("INVALID_RETRY", "Retry does not reference pending delivery");
+   }
+-  const next = structuredClone(state);
++  const next = mutate ? state : structuredClone(state);
+   const attempts = (next.retryCounts[event.sequence] ?? 0) + 1;
+   next.retryCounts[event.sequence] = attempts;
+-  if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted");
++  if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted", {}, mutate);
+   const delayMs = spec.retryBaseMs * (2 ** (attempts - 1));
+-  if (!Number.isSafeInteger(delayMs)) return terminating(next, "INCOMPLETE", "delivery retry delay overflow");
++  if (!Number.isSafeInteger(delayMs)) return terminating(next, "INCOMPLETE", "delivery retry delay overflow", {}, mutate);
+   return result(next, [{
+     type: "RETRY_DELIVERY",
+     sequence: event.sequence,
+@@ -328,47 +329,55 @@ function reduceDeliveryFailure(spec, state, event) {
+   }]);
+ }
+ 
+-function reduceActive(spec, state, event) {
++function reduceActive(spec, state, event, mutate = false) {
+   switch (event.kind) {
+-    case "observation": return reduceObservation(spec, state, event.event);
+-    case "acknowledge": return reduceAcknowledgement(spec, state, event);
+-    case "delivery-failed": return reduceDeliveryFailure(spec, state, event);
+-    case "cancel-requested":
+-      return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
++    case "observation": return reduceObservation(spec, state, event.event, mutate);
++    case "acknowledge": return reduceAcknowledgement(spec, state, event, mutate);
++    case "delivery-failed": return reduceDeliveryFailure(spec, state, event, mutate);
++    case "cancel-requested": {
++      const next = mutate ? state : { ...state };
++      next.cancellationRequested = true;
++      return result(next, [{ type: "CANCEL_SOURCE" }]);
++    }
+     case "cancel-acknowledged":
+       if (!state.cancellationRequested) {
+         throw new MonitorRuntimeError("UNREQUESTED_CANCELLATION_ACK", "Invalid cancellation acknowledgement");
+       }
+-      return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true });
++      return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true }, mutate);
+     case "deadline":
+       return Date.parse(nonEmptyString(event.observedAt, "observedAt")) < Date.parse(spec.deadline)
+         ? result(state)
+-        : terminating(state, "INCOMPLETE", "deadline exceeded");
++        : terminating(state, "INCOMPLETE", "deadline exceeded", {}, mutate);
+     case "session-ended":
+-      return spec.lifetime === "session" ? terminating(state, "CANCELLED", "session lifetime ended") : result(state);
++      return spec.lifetime === "session"
++        ? terminating(state, "CANCELLED", "session lifetime ended", {}, mutate)
++        : result(state);
+     case "run-terminal": {
+       if (spec.lifetime !== "run") return result(state);
+       if (!TERMINAL_STATES.has(event.terminalState)) {
+         throw new MonitorRuntimeError("INVALID_TERMINAL_STATE", "Invalid terminal state");
+       }
+-      return terminating(state, event.terminalState, "owner run terminal");
++      return terminating(state, event.terminalState, "owner run terminal", {}, mutate);
+     }
+     case "subject-terminal": {
+       if (!TERMINAL_STATES.has(event.terminalState)) {
+         throw new MonitorRuntimeError("INVALID_TERMINAL_STATE", "Invalid terminal state");
+       }
+-      return terminating(state, event.terminalState, "subject terminal");
++      return terminating(state, event.terminalState, "subject terminal", {}, mutate);
+     }
+-    case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost");
++    case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost", {}, mutate);
+     default: throw new MonitorRuntimeError("UNKNOWN_EVENT", `Unsupported monitor event: ${event.kind}`);
+   }
+ }
+ 
+-function reduceMonitor(spec, state, event) {
+-  validateSpec(spec);
++function validateMonitorState(spec, state) {
+   if (!state || state.monitorId !== spec.monitorId || state.ownerRunId !== spec.ownerRunId) {
+     throw new MonitorRuntimeError("STATE_MISMATCH", "Monitor state does not match MonitorSpec");
+   }
++}
++
++function reduceMonitorValidated(spec, state, event, mutate = false) {
++  validateMonitorState(spec, state);
+   if (!event || typeof event !== "object" || Array.isArray(event)) throw new MonitorRuntimeError("INVALID_EVENT", "Monitor event is invalid");
+   if (state.lifecycle === "TERMINAL") throw new MonitorRuntimeError("POST_TERMINAL_EVENT", "Monitor rejects post-terminal events");
+   if (state.lifecycle === "TERMINATING") {
+@@ -376,14 +385,37 @@ function reduceMonitor(spec, state, event) {
+     if (!event.processCleanup || typeof event.processCleanup !== "object" || !event.leaseCleanup || typeof event.leaseCleanup !== "object") {
+       throw new MonitorRuntimeError("INVALID_CLEANUP", "Cleanup proof is required");
+     }
+-    return result({
+-      ...state,
+-      lifecycle: "TERMINAL",
+-      processCleanup: structuredClone(event.processCleanup),
+-      leaseCleanup: structuredClone(event.leaseCleanup),
+-    }, [{ type: "ISSUE_MONITOR_RECEIPT" }]);
+-  }
+-  return reduceActive(spec, state, event);
++    const next = mutate ? state : { ...state };
++    next.lifecycle = "TERMINAL";
++    next.processCleanup = structuredClone(event.processCleanup);
++    next.leaseCleanup = structuredClone(event.leaseCleanup);
++    return result(next, [{ type: "ISSUE_MONITOR_RECEIPT" }]);
++  }
++  return reduceActive(spec, state, event, mutate);
++}
++
++function reduceMonitor(spec, state, event) {
++  validateSpec(spec);
++  return reduceMonitorValidated(spec, state, event);
++}
++
++function reduceMonitorBatch(spec, state, events) {
++  validateSpec(spec);
++  validateMonitorState(spec, state);
++  if (!Array.isArray(events) || events.length > MAX_HISTORY) {
++    throw new TypeError(`events must be an array with at most ${MAX_HISTORY} items`);
++  }
++
++  const next = structuredClone(state);
++  next.seenEvents = cloneIdentityMap(state.seenEvents);
++  const effects = [];
++  let modelTurns = 0;
++  for (const event of events) {
++    const transition = reduceMonitorValidated(spec, next, event, true);
++    effects.push(...transition.effects);
++    modelTurns += transition.modelTurns;
++  }
++  return result(next, effects, modelTurns);
+ }
+ 
+ function createMonitorReceipt(spec, state, options = {}) {
+@@ -419,4 +451,10 @@ function createMonitorReceipt(spec, state, options = {}) {
+   return receipt;
+ }
+ 
+-module.exports = { MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor };
++module.exports = {
++  MonitorRuntimeError,
++  createMonitorReceipt,
++  createMonitorState,
++  reduceMonitor,
++  reduceMonitorBatch,
++};
+diff --git a/packages/flow/test/monitor-runtime.test.js b/packages/flow/test/monitor-runtime.test.js
+index 79820c33..4e41dbaf 100644
+--- a/packages/flow/test/monitor-runtime.test.js
++++ b/packages/flow/test/monitor-runtime.test.js
+@@ -10,9 +10,16 @@ let MonitorRuntimeError;
+ let createMonitorReceipt;
+ let createMonitorState;
+ let reduceMonitor;
++let reduceMonitorBatch;
+ 
+ beforeAll(() => {
+-  ({ MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor } = require("../src/monitor-runtime.js"));
++  ({
++    MonitorRuntimeError,
++    createMonitorReceipt,
++    createMonitorState,
++    reduceMonitor,
++    reduceMonitorBatch,
++  } = require("../src/monitor-runtime.js"));
+ });
+ 
+ function spec(overrides = {}) {
+@@ -61,7 +68,125 @@ function observation(sequence, status, overrides = {}) {
+   return value;
+ }
+ 
++function reduceSequentially(monitorSpec, initialState, events) {
++  let state = initialState;
++  const effects = [];
++  let modelTurns = 0;
++  for (const event of events) {
++    const transition = reduceMonitor(monitorSpec, state, event);
++    state = transition.state;
++    effects.push(...transition.effects);
++    modelTurns += transition.modelTurns;
++  }
++  return { state, effects, modelTurns };
++}
++
++function capturedError(callback) {
++  try {
++    callback();
++  } catch (error) {
++    return error;
++  }
++  throw new Error("expected callback to throw");
++}
++
+ describe("MonitorSpec deterministic reducer", () => {
++  test("batch replay matches sequential advisory reductions without mutating inputs", () => {
++    const monitorSpec = spec({
++      terminalPredicate: () => false,
++      reducer: (previous = [], payload) => {
++        previous.push(payload.status);
++        return previous;
++      },
++    });
++    const initialState = createMonitorState(monitorSpec);
++    const events = [
++      { kind: "observation", event: observation(0, "PENDING", { actionability: "advisory" }) },
++      { kind: "observation", event: observation(1, "RUNNING", { actionability: "advisory" }) },
++      { kind: "observation", event: observation(2, "GREEN", { actionability: "advisory" }) },
++    ];
++    const stateSnapshot = structuredClone(initialState);
++    const eventSnapshot = structuredClone(events);
++
++    expect(reduceMonitorBatch(monitorSpec, initialState, events))
++      .toEqual(reduceSequentially(monitorSpec, initialState, events));
++    expect(initialState).toEqual(stateSnapshot);
++    expect(events).toEqual(eventSnapshot);
++  });
++
++  test("batch replay matches sequential pending, backpressure, retry, and acknowledgement reductions", () => {
++    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
++    const initialState = createMonitorState(monitorSpec);
++    const events = [
++      { kind: "observation", event: observation(0, "PENDING") },
++      { kind: "observation", event: observation(1, "RUNNING") },
++      { kind: "delivery-failed", sequence: 0, observedAt: "2026-08-09T12:01:01.000Z" },
++      { kind: "acknowledge", sequence: 0 },
++      { kind: "acknowledge", sequence: 1 },
++    ];
++
++    expect(reduceMonitorBatch(monitorSpec, initialState, events))
++      .toEqual(reduceSequentially(monitorSpec, initialState, events));
++  });
++
++  test("batch replay matches sequential terminal cleanup reductions", () => {
++    const monitorSpec = spec();
++    const initialState = createMonitorState(monitorSpec);
++    const events = [
++      { kind: "observation", event: observation(0, "PASS", { actionability: "advisory" }) },
++      {
++        kind: "cleanup-complete",
++        processCleanup: { status: "PASS" },
++        leaseCleanup: { status: "PASS" },
++      },
++    ];
++
++    expect(reduceMonitorBatch(monitorSpec, initialState, events))
++      .toEqual(reduceSequentially(monitorSpec, initialState, events));
++  });
++
++  test("batch replay rebuilds independently from each strict 128-event suffix", () => {
++    const monitorSpec = spec({ maxHistory: 128, terminalPredicate: () => false });
++    const observations = Array.from({ length: 129 }, (_, sequence) => ({
++      kind: "observation",
++      event: observation(sequence, `STATE-${sequence}`, { actionability: "advisory" }),
++    }));
++    const firstTail = observations.slice(0, 128);
++    const shiftedTail = observations.slice(1);
++
++    const first = reduceMonitorBatch(monitorSpec, createMonitorState(monitorSpec), firstTail);
++    const shifted = reduceMonitorBatch(monitorSpec, createMonitorState(monitorSpec), shiftedTail);
++
++    expect(first).toEqual(reduceSequentially(monitorSpec, createMonitorState(monitorSpec), firstTail));
++    expect(shifted).toEqual(reduceSequentially(monitorSpec, createMonitorState(monitorSpec), shiftedTail));
++    expect(Object.keys(first.state.seenEvents)).toHaveLength(128);
++    expect(Object.hasOwn(first.state.seenEvents, "event-0")).toBe(true);
++    expect(Object.keys(shifted.state.seenEvents)).toHaveLength(128);
++    expect(Object.hasOwn(shifted.state.seenEvents, "event-0")).toBe(false);
++    expect(Object.hasOwn(shifted.state.seenEvents, "event-128")).toBe(true);
++  });
++
++  test.each([
++    ["tampered observation", spec({ terminalPredicate: () => false }), () => {
++      const event = observation(0, "PENDING");
++      event.payload.bounded_payload.status = "TAMPERED";
++      return { kind: "observation", event };
++    }],
++    ["invalid spec", spec({ maxPending: 0 }), () => ({
++      kind: "observation", event: observation(0, "PENDING"),
++    })],
++  ])("batch replay preserves sequential failure parity for %s", (_label, monitorSpec, eventFactory) => {
++    const validSpec = spec({ terminalPredicate: () => false });
++    const initialState = createMonitorState(validSpec);
++    const event = eventFactory();
++    const sequentialError = capturedError(() => reduceMonitor(monitorSpec, initialState, event));
++    const batchError = capturedError(() => reduceMonitorBatch(monitorSpec, initialState, [event]));
++
++    expect(batchError.constructor).toBe(sequentialError.constructor);
++    expect(batchError).toMatchObject({ message: sequentialError.message });
++    if (sequentialError.code !== undefined) expect(batchError.code).toBe(sequentialError.code);
++  });
++
+   test("emits a delivery only for an actionable state transition", () => {
+     const monitorSpec = spec({ terminalPredicate: () => false });
+     const result = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,85 @@
+From 2685001430cf4fe10cee7c2ce149ae7ed60a6de2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 22:41:33 +0530
+Subject: [PATCH] docs(memory): correct capture dedupe wording + pin
+ precompact-repeat test
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Review nit on #397: the "PreCompact ALWAYS records" comments overstated —
+PreCompact goes through the same byte-identical dedupe as Stop, so a
+repeated identical PreCompact IS skipped. It differs from Stop only in that
+it records a boundary even with nothing in progress. Reword both comments to
+match, and pin the behavior with a test: two byte-identical PreCompact
+captures produce exactly one write.
+
+Kernel issue: 3867b9c2-17f8-4e34-9636-7870faeb5e59
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/hooks.js      |  7 +++++--
+ test/hooks-capture.test.js | 15 ++++++++++++++-
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 8b3e9eea..3c1109bc 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -178,7 +178,9 @@ async function handleInboxPickup(rest, projectRoot, opts = {}) {
+  *
+  * Flooding guard: a plain Stop with nothing in progress is skipped (Stop fires every turn), and
+  * a byte-identical repeat of the newest auto-capture note is skipped — so only meaningful,
+- * changed session state is written. PreCompact ALWAYS records a boundary (context is being lost).
++ * changed session state is written. PreCompact records a boundary even when nothing is in
++ * progress (unlike Stop), but it still goes through the same dedupe — a byte-identical
++ * PreCompact repeat is skipped too.
+  *
+  * @param {string[]} rest - args after the `capture` action.
+  * @param {string} projectRoot
+@@ -196,7 +198,8 @@ async function handleCapture(rest, projectRoot, opts = {}) {
+     const issues = Array.isArray(claimed) ? claimed : [];
+ 
+     // Stop fires every turn; a plain Stop with nothing in progress is not worth a note.
+-    // PreCompact is rare and precedes real context loss, so it always records a boundary.
++    // PreCompact is rare and precedes real context loss, so it records a boundary even with
++    // nothing in progress — but it is NOT exempt from the byte-identical dedupe below.
+     if (trigger !== 'precompact' && issues.length === 0) return { success: true, output: '' };
+ 
+     const body = buildCaptureNote(trigger, issues);
+diff --git a/test/hooks-capture.test.js b/test/hooks-capture.test.js
+index 73c01d55..085332ca 100644
+--- a/test/hooks-capture.test.js
++++ b/test/hooks-capture.test.js
+@@ -74,7 +74,7 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
+     expect(store.writes).toHaveLength(2);
+   });
+ 
+-  test('precompact ALWAYS captures a boundary marker, even with no in-progress issues', async () => {
++  test('precompact captures a boundary marker even with no in-progress issues (unlike Stop)', async () => {
+     const store = recordingStore();
+     const res = await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], {
+       append: store.append,
+@@ -86,6 +86,19 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
+     expect(store.writes[0].note).toContain('precompact');
+   });
+ 
++  test('precompact is NOT exempt from dedupe: a byte-identical repeat does not write again', async () => {
++    const store = recordingStore();
++    const opts = {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: (_root, kind) => (kind === 'ready' ? [] : CLAIMED),
++    };
++    await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], opts);
++    await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], opts);
++    // Same trigger + same in-progress set → identical body → the second PreCompact is deduped.
++    expect(store.writes).toHaveLength(1);
++  });
++
+   test('a plain Stop with nothing in progress is a no-op (avoids per-turn flooding)', async () => {
+     const store = recordingStore();
+     const res = await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
+-- 
+2.51.0.windows.1
+

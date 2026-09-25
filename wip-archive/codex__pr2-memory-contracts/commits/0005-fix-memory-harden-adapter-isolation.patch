@@ -1,0 +1,393 @@
+From c3413449cd3e8f7df4e95ac1219238d7a5f2c079 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:40:22 +0530
+Subject: [PATCH] fix(memory): harden adapter isolation
+
+---
+ lib/commands/doctor.js                        |  34 +++++-
+ lib/memory/router.js                          |  11 +-
+ packages/memory/src/backend-registry.js       |  44 +++++++-
+ packages/memory/test/backend-registry.test.js | 100 +++++++++++++++++-
+ test/commands/doctor-memory.test.js           |  28 +++++
+ test/memory/router.test.js                    |  27 +++++
+ 6 files changed, 232 insertions(+), 12 deletions(-)
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index 53ca6aa4..23bb2883 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -38,10 +38,32 @@ function buildMemoryCheck(projectRoot, env) {
+ 			};
+ 		}
+ 		const serverPath = graphiti.mcpServerPath;
+-		const serverPathExists = fs.existsSync(serverPath);
+-		const reach = serverPathExists
+-			? `mcp_server present at ${serverPath}`
+-			: `mcp_server path not found locally (${serverPath}); run it before agents can use graph memory`;
++		const path = require('node:path');
++		const resolvedServerPath = path.isAbsolute(serverPath)
++			? serverPath
++			: path.resolve(projectRoot, serverPath);
++		const serverPathExists = fs.existsSync(resolvedServerPath);
++		let serverPathIsDirectory = false;
++		if (serverPathExists) {
++			try {
++				serverPathIsDirectory = fs.statSync(resolvedServerPath).isDirectory();
++			} catch {
++				serverPathIsDirectory = false;
++			}
++		}
++		const entrypointPath = path.join(resolvedServerPath, 'main.py');
++		const entrypointExists = serverPathIsDirectory && fs.existsSync(entrypointPath);
++		const serverReady = serverPathExists && serverPathIsDirectory && entrypointExists;
++		let reach;
++		if (!serverPathExists) {
++			reach = `mcp_server path not found locally (${serverPath}); run it before agents can use graph memory`;
++		} else if (!serverPathIsDirectory) {
++			reach = `mcp_server path is not a directory (${serverPath})`;
++		} else if (!entrypointExists) {
++			reach = `mcp_server entrypoint not found (${path.join(serverPath, 'main.py')})`;
++		} else {
++			reach = `mcp_server present at ${serverPath}`;
++		}
+ 		return {
+ 			// Reflect reality in the line symbol: a graphiti backend whose MCP server
+ 			// isn't present yet renders as `!` (warn), not a misleading `✓`. This does
+@@ -49,9 +71,11 @@ function buildMemoryCheck(projectRoot, env) {
+ 			// filesystem-class check (see buildDoctorReport), so an uninstalled opt-in
+ 			// memory server warns without failing `forge doctor`.
+ 			id: 'memory-backend',
+-			ok: serverPathExists,
++			ok: serverReady,
+ 			backend,
+ 			serverPathExists,
++			serverPathIsDirectory,
++			entrypointExists,
+ 			detail: `memory backend: graphiti — served to agents via the graphiti-memory MCP server; ${reach}`,
+ 		};
+ 	} catch (err) {
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index 821cb7cf..3494176d 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -145,6 +145,9 @@ function registerMemoryBackend(name, adapter) {
+   if (!/^[a-z][a-z0-9-]{0,63}$/.test(normalized) || MEMORY_BACKENDS.includes(normalized)) {
+     throw new TypeError('custom memory backend must have a unique lowercase name');
+   }
++  if (registeredMemoryBackends.has(normalized)) {
++    throw new Error(`custom memory backend "${normalized}" is already registered`);
++  }
+   assertBackend(adapter, normalized);
+   registeredMemoryBackends.set(normalized, adapter);
+ }
+@@ -217,10 +220,16 @@ function assertMemoryConfigValid({ deps = {}, env = process.env, projectRoot, co
+ 
+ function graphitiAdapter(emitter, entryProvider) {
+   const unavailable = () => [];
++  const freeze = (value, seen = new WeakSet()) => {
++    if (!value || typeof value !== 'object' || seen.has(value)) return value;
++    seen.add(value);
++    for (const child of Object.values(value)) freeze(child, seen);
++    return Object.freeze(value);
++  };
+   return {
+     add() {
+       if (!emitter || typeof emitter.emit !== 'function') return null;
+-      const maybePromise = emitter.emit(entryProvider());
++      const maybePromise = emitter.emit(freeze(structuredClone(entryProvider())));
+       if (maybePromise && typeof maybePromise.then === 'function') {
+         maybePromise.then(() => {}, () => {});
+       }
+diff --git a/packages/memory/src/backend-registry.js b/packages/memory/src/backend-registry.js
+index 073079a4..ad38dcea 100644
+--- a/packages/memory/src/backend-registry.js
++++ b/packages/memory/src/backend-registry.js
+@@ -3,6 +3,7 @@
+ const BACKEND_METHODS = Object.freeze(['add', 'recall', 'search', 'capture', 'digest']);
+ const RECEIPT_SCHEMA_ID = 'forge.memory.operation-receipt.v1';
+ const RECEIPT_SCHEMA_VERSION = 1;
++const asyncUnsupportedErrors = new WeakSet();
+ 
+ function assertBackendName(name) {
+   if (typeof name !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
+@@ -24,11 +25,37 @@ function assertBackend(adapter, name = 'memory') {
+ function errorRecord(backend, error) {
+   return {
+     backend,
+-    code: 'MEMORY_BACKEND_FAILED',
+-    message: error instanceof Error ? error.message : String(error),
++    code: asyncUnsupportedErrors.has(error)
++      ? 'MEMORY_BACKEND_ASYNC_UNSUPPORTED'
++      : 'MEMORY_BACKEND_FAILED',
+   };
+ }
+ 
++function isThenable(value) {
++  return value && (typeof value === 'object' || typeof value === 'function')
++    && typeof value.then === 'function';
++}
++
++function requireSynchronous(value, backend) {
++  if (!isThenable(value)) return value;
++  value.then(() => {}, () => {});
++  const error = new TypeError(`${backend} memory backend methods must be synchronous`);
++  asyncUnsupportedErrors.add(error);
++  throw error;
++}
++
++function deepFreeze(value, seen = new WeakSet()) {
++  if (!value || typeof value !== 'object' || seen.has(value)) return value;
++  seen.add(value);
++  for (const child of Object.values(value)) deepFreeze(child, seen);
++  return Object.freeze(value);
++}
++
++function detached(value, { freeze = false } = {}) {
++  const copy = structuredClone(value);
++  return freeze ? deepFreeze(copy) : copy;
++}
++
+ function identity(value) {
+   if (value && typeof value === 'object') {
+     if (typeof value.id === 'string') return `id:${value.id}`;
+@@ -57,6 +84,7 @@ function createMemoryBackendRegistry({ local, selected = 'local' } = {}) {
+   function register(name, adapter) {
+     assertBackendName(name);
+     if (name === 'local') throw new Error('the local memory floor cannot be replaced');
++    if (adapters.has(name)) throw new Error(`memory backend "${name}" is already registered`);
+     assertBackend(adapter, name);
+     adapters.set(name, adapter);
+     return api;
+@@ -77,15 +105,21 @@ function createMemoryBackendRegistry({ local, selected = 'local' } = {}) {
+   }
+ 
+   function execute(operation, args) {
+-    const localValue = adapters.get('local')[operation](...args);
++    const localValue = requireSynchronous(adapters.get('local')[operation](...args), 'local');
+     const backends = [{ backend: 'local', status: 'ok' }];
+     const errors = [];
+     let value = localValue;
+ 
+     if (selectedBackend !== 'local') {
+       try {
+-        const enrichedValue = adapters.get(selectedBackend)[operation](...args);
+-        value = enrichLocalValue(localValue, enrichedValue, operation);
++        const localSnapshot = detached(localValue);
++        const enrichedArgs = detached(args, { freeze: true });
++        value = localSnapshot;
++        const enrichedValue = requireSynchronous(
++          adapters.get(selectedBackend)[operation](...enrichedArgs),
++          selectedBackend,
++        );
++        value = enrichLocalValue(localSnapshot, enrichedValue, operation);
+         backends.push({ backend: selectedBackend, status: 'ok' });
+       } catch (error) {
+         backends.push({ backend: selectedBackend, status: 'failed' });
+diff --git a/packages/memory/test/backend-registry.test.js b/packages/memory/test/backend-registry.test.js
+index 713582d6..3a16a962 100644
+--- a/packages/memory/test/backend-registry.test.js
++++ b/packages/memory/test/backend-registry.test.js
+@@ -43,10 +43,108 @@ describe('@forge/memory backend registry', () => {
+     expect(result.value).toEqual({ id: 'local', value: 'durable' });
+     expect(result.receipt.status).toBe('degraded');
+     expect(result.receipt.errors).toEqual([{
+-      backend: 'graphiti', code: 'MEMORY_BACKEND_FAILED', message: 'sidecar down',
++      backend: 'graphiti', code: 'MEMORY_BACKEND_FAILED',
+     }]);
+   });
+ 
++  test('fails closed on async adapters without leaking an unhandled rejection', async () => {
++    const unhandled = [];
++    const onUnhandled = error => unhandled.push(error);
++    process.on('unhandledRejection', onUnhandled);
++    try {
++      const registry = createMemoryBackendRegistry({ local: backend() });
++      registry.register('async-sidecar', backend({
++        recall: async () => { throw new Error('remote secret'); },
++      }));
++      registry.select('async-sidecar');
++
++      const result = registry.recall();
++      await new Promise(resolve => setTimeout(resolve, 0));
++
++      expect(result.value).toEqual([{ id: 'local-1', value: 'local' }]);
++      expect(result.receipt.status).toBe('degraded');
++      expect(result.receipt.errors).toEqual([{
++        backend: 'async-sidecar', code: 'MEMORY_BACKEND_ASYNC_UNSUPPORTED',
++      }]);
++      expect(unhandled).toEqual([]);
++    } finally {
++      process.off('unhandledRejection', onUnhandled);
++    }
++  });
++
++  test('fails closed when the mandatory local floor returns a promise', async () => {
++    const unhandled = [];
++    const onUnhandled = error => unhandled.push(error);
++    process.on('unhandledRejection', onUnhandled);
++    try {
++      const registry = createMemoryBackendRegistry({
++        local: backend({ add: async () => { throw new Error('local async failure'); } }),
++      });
++      expect(() => registry.add('note')).toThrow(/synchronous/i);
++      await new Promise(resolve => setTimeout(resolve, 0));
++      expect(unhandled).toEqual([]);
++    } finally {
++      process.off('unhandledRejection', onUnhandled);
++    }
++  });
++
++  test('isolates and freezes enricher input so it cannot mutate the local floor', () => {
++    const input = { note: 'original', nested: { tags: ['safe'] } };
++    const registry = createMemoryBackendRegistry({
++      local: backend({ add: value => value }),
++    });
++    let enricherInput;
++    registry.register('mutator', backend({
++      add: value => {
++        enricherInput = value;
++        expect(() => { value.note = 'mutated'; }).toThrow();
++        expect(() => { value.nested.tags.push('mutated'); }).toThrow();
++        return null;
++      },
++    }));
++    registry.select('mutator');
++
++    const result = registry.add(input);
++    expect(result.value).toEqual({ note: 'original', nested: { tags: ['safe'] } });
++    expect(result.value).not.toBe(input);
++    expect(enricherInput).not.toBe(input);
++    expect(input).toEqual({ note: 'original', nested: { tags: ['safe'] } });
++  });
++
++  test('never includes backend exception text in a receipt', () => {
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    registry.register('remote', backend({
++      add: () => { throw new Error('token=sk_live_secret C:/Users/alice/private'); },
++    }));
++    registry.select('remote');
++
++    const serialized = JSON.stringify(registry.add('note').receipt);
++    expect(serialized).not.toContain('sk_live_secret');
++    expect(serialized).not.toContain('C:/Users');
++    expect(serialized.length).toBeLessThan(1024);
++  });
++
++  test('does not inspect properties on an untrusted thrown value', () => {
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    const hostileError = Object.defineProperty({}, 'code', {
++      get() { throw new Error('getter must not run'); },
++    });
++    registry.register('remote', backend({ add: () => { throw hostileError; } }));
++    registry.select('remote');
++
++    expect(registry.add('note').receipt.errors).toEqual([{
++      backend: 'remote', code: 'MEMORY_BACKEND_FAILED',
++    }]);
++  });
++
++  test('rejects duplicate custom backend registration until explicitly unregistered', () => {
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    registry.register('custom', backend());
++    expect(() => registry.register('custom', backend())).toThrow(/already registered/i);
++    registry.unregister('custom');
++    expect(() => registry.register('custom', backend())).not.toThrow();
++  });
++
+   test('never removes local recall results when enrichment fails', () => {
+     const registry = createMemoryBackendRegistry({ local: backend() });
+     registry.register('graphiti', backend({ recall: () => { throw new Error('offline'); } }));
+diff --git a/test/commands/doctor-memory.test.js b/test/commands/doctor-memory.test.js
+index b20d7892..6c437a89 100644
+--- a/test/commands/doctor-memory.test.js
++++ b/test/commands/doctor-memory.test.js
+@@ -90,6 +90,7 @@ describe('forge doctor: memory backend check', () => {
+     // Point at a real, existing directory so the presence check passes.
+     const serverDir = path.join(projectRoot, 'mcp_server');
+     fs.mkdirSync(serverDir, { recursive: true });
++    fs.writeFileSync(path.join(serverDir, 'main.py'), '# graphiti MCP entrypoint\n', 'utf8');
+     const yamlPath = serverDir.replace(/\\/g, '/'); // forward-slash for clean YAML on Windows
+     writeConfig(
+       projectRoot,
+@@ -103,6 +104,33 @@ describe('forge doctor: memory backend check', () => {
+     expect(check.detail).toContain(yamlPath);
+   });
+ 
++  test('graphiti path must be a directory containing the configured server entrypoint', () => {
++    const projectRoot = makeProjectRoot();
++    const regularFile = path.join(projectRoot, 'not-a-server');
++    fs.writeFileSync(regularFile, 'not a directory', 'utf8');
++    const yamlPath = regularFile.replace(/\\/g, '/');
++    writeConfig(
++      projectRoot,
++      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${yamlPath}\n`,
++    );
++
++    let check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
++    expect(check.ok).toBe(false);
++    expect(check.serverPathExists).toBe(true);
++    expect(check.serverPathIsDirectory).toBe(false);
++
++    const emptyDir = path.join(projectRoot, 'empty-mcp-server');
++    fs.mkdirSync(emptyDir);
++    writeConfig(
++      projectRoot,
++      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${emptyDir.replace(/\\/g, '/')}\n`,
++    );
++    check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
++    expect(check.ok).toBe(false);
++    expect(check.serverPathIsDirectory).toBe(true);
++    expect(check.entrypointExists).toBe(false);
++  });
++
+   test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {
+     const projectRoot = makeProjectRoot();
+     // mcpServerPath is set (config is valid) but the directory does not exist on disk.
+diff --git a/test/memory/router.test.js b/test/memory/router.test.js
+index 4442028a..675a6dd8 100644
+--- a/test/memory/router.test.js
++++ b/test/memory/router.test.js
+@@ -134,6 +134,13 @@ describe('memory-router: backend resolution', () => {
+     })).toBe('custom');
+     router.unregisterMemoryBackend('custom');
+   });
++
++  test('custom backend registration rejects an accidental override', () => {
++    const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
++    router.registerMemoryBackend('unique-custom', adapter);
++    expect(() => router.registerMemoryBackend('unique-custom', adapter)).toThrow(/already registered/i);
++    router.unregisterMemoryBackend('unique-custom');
++  });
+ });
+ 
+ describe('memory-router: config validation', () => {
+@@ -261,6 +268,26 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
+     expect(result.receipt.status).toBe('degraded');
+     expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
+   });
++
++  test('graphiti receives a detached frozen note and cannot mutate the local result', () => {
++    const projectRoot = makeProjectRoot();
++    writeConfig(projectRoot, GRAPHITI_CONFIG);
++    const store = makeStore(projectRoot);
++
++    const result = router.appendWithReceipt(projectRoot, 'immutable local note', {
++      store,
++      graphitiEmitter: {
++        emit: entry => {
++          expect(() => { entry.note = 'mutated'; }).toThrow();
++          expect(() => { entry.tags.push('mutated'); }).toThrow();
++        },
++      },
++    });
++
++    expect(result.value.note).toBe('immutable local note');
++    expect(result.value.tags).toEqual([]);
++    expect(router.recall(projectRoot, {}, { store }).notes[0].note).toBe('immutable local note');
++  });
+ });
+ 
+ describe('memory-router: one-time JSONL import onto the kernel', () => {
+-- 
+2.51.0.windows.1
+

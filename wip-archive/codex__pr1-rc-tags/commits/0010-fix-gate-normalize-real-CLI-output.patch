@@ -1,0 +1,314 @@
+From 99003c8272a87431aeaad7b414625ae695156692 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 15:20:24 +0530
+Subject: [PATCH] fix(gate): normalize real CLI output
+
+---
+ lib/commands/gate.js                  |  76 +++++++++++++++----
+ lib/global-flags.js                   |   1 +
+ test/commands/gate-events-cli.test.js | 102 ++++++++++++++++++++++++++
+ test/global-flags.test.js             |  10 +++
+ 4 files changed, 174 insertions(+), 15 deletions(-)
+ create mode 100644 test/commands/gate-events-cli.test.js
+
+diff --git a/lib/commands/gate.js b/lib/commands/gate.js
+index 39b84acc..4de87dc5 100644
+--- a/lib/commands/gate.js
++++ b/lib/commands/gate.js
+@@ -21,6 +21,7 @@
+  */
+ 
+ const path = require('node:path');
++const { stripGlobalFlags } = require('../global-flags');
+ const { setConfigOverride } = require('../config-writer');
+ const { getDefaultRuntimeGraph, getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ const {
+@@ -39,6 +40,7 @@ const docGate = require('./doc-gate');
+ const TOGGLE_ACTIONS = new Set(['enable', 'disable']);
+ const EVENT_ACTIONS = new Set(['approve', 'reject', 'status', 'check']);
+ const MAX_GATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
++const GATE_JSON_SCHEMA = 'forge.gate.v1';
+ 
+ function usage() {
+   return [
+@@ -112,6 +114,34 @@ function parseDecisionInput(action, rawArgs, flags) {
+   return { ok: true, issueId, gateId, ttl, reason };
+ }
+ 
++function gateJsonResult(action, result, context = {}) {
++  const event = result.event ?? null;
++  const envelope = {
++    schema_version: GATE_JSON_SCHEMA,
++    command: `gate.${action}`,
++    ok: result.success === true,
++    issue_id: event?.issue_id ?? result.issueId ?? context.issueId ?? null,
++    gate_id: event?.gate ?? context.gateId ?? null,
++  };
++  if (action === 'approve' || action === 'reject') {
++    envelope.duplicate = result.duplicate === true;
++    envelope.decision = event?.decision ?? (action === 'approve' ? 'approved' : 'rejected');
++    envelope.event = event;
++  }
++  if (action === 'status') {
++    envelope.issue = envelope.issue_id;
++    envelope.events = result.events ?? [];
++  }
++  if (action === 'check') {
++    envelope.approved = result.approved === true;
++    envelope.satisfied = result.success === true;
++    envelope.disabled = result.disabled === true;
++    envelope.event = event;
++  }
++  if (result.error) envelope.error = result.error;
++  return { ...result, output: JSON.stringify(envelope, null, 2) };
++}
++
+ // The known-toggle set is gates PLUS unlocked toggleable rails (e.g.
+ // rail.kernel_tracking): both are governed through the same `forge gate
+ // enable|disable` surface and the resolver's rail-aware workflow.gates loop.
+@@ -203,25 +233,21 @@ async function handleDecision(action, issueId, gateId, flags, rawArgs, projectRo
+   };
+ }
+ 
+-async function handleStatus(issueId, flags, projectRoot, opts) {
++async function handleStatus(issueId, _flags, projectRoot, opts) {
+   if (!issueId) {
+     return { success: false, error: `Missing issue id.\n${usage()}` };
+   }
+   const events = await listGateEvents(projectRoot, issueId, { deps: kernelDeps(opts) });
+ 
+-  if (flags.json) {
+-    return { success: true, output: JSON.stringify({ issue: issueId, events }, null, 2) };
+-  }
+-
+   if (events.length === 0) {
+-    return { success: true, output: `No gate events for ${issueId}.` };
++    return { success: true, issueId, events, output: `No gate events for ${issueId}.` };
+   }
+   const lines = events.map(event => {
+     const label = event.event_type === 'gate.approved' ? 'APPROVED' : 'REJECTED';
+     const reason = event.reason ? ` — ${event.reason}` : '';
+     return `${label} ${event.gate} for ${event.issue_id} (${event.control_id}) by ${event.actor} at ${event.issued_at}; expires ${event.expires_at || 'never'}${reason}`;
+   });
+-  return { success: true, output: `Gate events for ${issueId}:\n${lines.join('\n')}` };
++  return { success: true, issueId, events, output: `Gate events for ${issueId}:\n${lines.join('\n')}` };
+ }
+ 
+ async function handleCheck(issueId, gateId, projectRoot, opts) {
+@@ -236,7 +262,13 @@ async function handleCheck(issueId, gateId, projectRoot, opts) {
+   const resolved = getResolvedRuntimeGraph({ projectRoot });
+   const resolvedGate = [...resolved.gates, ...resolved.rails].find(gate => gate.id === gateId);
+   if (resolvedGate && resolvedGate.enabled === false) {
+-    return { success: true, output: `gate ${gateId} is disabled — satisfied for ${issueId}` };
++    return {
++      success: true,
++      issueId,
++      approved: false,
++      disabled: true,
++      output: `gate ${gateId} is disabled — satisfied for ${issueId}`,
++    };
+   }
+ 
+   const events = await listGateEvents(projectRoot, issueId, { deps: kernelDeps(opts) });
+@@ -246,17 +278,26 @@ async function handleCheck(issueId, gateId, projectRoot, opts) {
+     return {
+       success: true,
+       event,
++      approved: true,
+       output: `gate ${gateId} approved for ${issueId} (control ${event.control_id}; actor ${event.actor}; decision ${event.decision}; issued ${event.issued_at}; expires ${event.expires_at || 'never'})`,
+     };
+   }
+   const evidence = event
+     ? ` (control ${event.control_id}; actor ${event.actor}; decision ${event.decision}; issued ${event.issued_at}; expires ${event.expires_at || 'never'})`
+     : '';
+-  return { success: false, event, error: `gate ${gateId} not approved for ${issueId}${evidence}` };
++  return {
++    success: false,
++    event,
++    issueId,
++    approved: false,
++    error: `gate ${gateId} not approved for ${issueId}${evidence}`,
++  };
+ }
+ 
+ async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {}) {
+-  const [action, ...rest] = args;
++  const normalizedArgs = stripGlobalFlags(args);
++  const [action, ...rest] = normalizedArgs;
++  const wantsJson = flags.json === true || flags['--json'] === true || normalizedArgs.includes('--json');
+ 
+   // `gate doc [<doc-gate sub> ...]` → the standalone doc-gate handler, with the
+   // consumed `doc` token dropped so its own arg shape (detect/check/init/okf …)
+@@ -269,13 +310,17 @@ async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {})
+     return handleToggle(action, rest[0], projectRoot);
+   }
+   if (EVENT_ACTIONS.has(action)) {
++    let result;
+     if (action === 'status') {
+-      return handleStatus(rest[0], flags, projectRoot, opts);
+-    }
+-    if (action === 'check') {
+-      return handleCheck(rest[0], rest[1], projectRoot, opts);
++      result = await handleStatus(rest[0], flags, projectRoot, opts);
++    } else if (action === 'check') {
++      result = await handleCheck(rest[0], rest[1], projectRoot, opts);
++    } else {
++      result = await handleDecision(action, rest[0], rest[1], flags, rest, projectRoot, opts);
+     }
+-    return handleDecision(action, rest[0], rest[1], flags, rest, projectRoot, opts);
++    return wantsJson
++      ? gateJsonResult(action, result, { issueId: rest[0], gateId: rest[1] })
++      : result;
+   }
+ 
+   return {
+@@ -291,4 +336,5 @@ module.exports = {
+   handler,
+   parseGateTtl,
+   parseDecisionInput,
++  gateJsonResult,
+ };
+diff --git a/lib/global-flags.js b/lib/global-flags.js
+index 164af47b..313301fe 100644
+--- a/lib/global-flags.js
++++ b/lib/global-flags.js
+@@ -37,6 +37,7 @@ const GLOBAL_BOOLEAN_FLAGS = new Set([
+   '--verbose',
+   '--dry-run',
+   '--symlink',
++  '--skills-only', '--no-hooks',
+   '--sync',
+   '--interview',
+ ]);
+diff --git a/test/commands/gate-events-cli.test.js b/test/commands/gate-events-cli.test.js
+new file mode 100644
+index 00000000..6f8445e1
+--- /dev/null
++++ b/test/commands/gate-events-cli.test.js
+@@ -0,0 +1,102 @@
++'use strict';
++
++const { spawnSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, beforeEach, describe, expect, test } = require('bun:test');
++
++const FORGE_BIN = path.join(__dirname, '..', '..', 'bin', 'forge.js');
++const ISSUE_ID = 'gate-cli-issue';
++const tempRoots = [];
++
++function run(cwd, args) {
++  return spawnSync(process.execPath, [FORGE_BIN, ...args], {
++    cwd,
++    encoding: 'utf8',
++    timeout: 30_000,
++    env: { ...process.env, FORGE_ACTOR: 'cli-tester' },
++  });
++}
++
++function parseJson(stdout) {
++  expect(() => JSON.parse(stdout)).not.toThrow();
++  return JSON.parse(stdout);
++}
++
++beforeEach(() => {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-gate-cli-'));
++  tempRoots.push(root);
++  expect(spawnSync('git', ['init', '-q'], { cwd: root }).status).toBe(0);
++  fs.writeFileSync(path.join(root, 'AGENTS.md'), '# test\n');
++  const created = run(root, [
++    'create', '--id', ISSUE_ID, '--title', 'Gate CLI issue', '--type', 'task',
++  ]);
++  expect(created.status).toBe(0);
++});
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('real forge gate CLI JSON and global flags', () => {
++  test('approve, status, and check emit standalone structured JSON with global --path forms', () => {
++    const root = tempRoots[0];
++    const approve = run(__dirname, [
++      'gate', '--path', root, 'approve', ISSUE_ID, 'gate.merge', '--ttl', '5m', '--json',
++    ]);
++    expect(approve.status).toBe(0);
++    const approved = parseJson(approve.stdout);
++    expect(approved).toMatchObject({
++      schema_version: 'forge.gate.v1',
++      command: 'gate.approve',
++      ok: true,
++      issue_id: ISSUE_ID,
++      gate_id: 'gate.merge',
++      duplicate: false,
++    });
++    expect(approved.event.control_id).toBe(`gate:${ISSUE_ID}:gate.merge`);
++
++    const status = run(__dirname, [
++      'gate', 'status', ISSUE_ID, '--json', `--path=${root}`,
++    ]);
++    expect(status.status).toBe(0);
++    expect(parseJson(status.stdout)).toMatchObject({
++      schema_version: 'forge.gate.v1',
++      command: 'gate.status',
++      ok: true,
++      issue_id: ISSUE_ID,
++    });
++
++    const check = run(__dirname, [
++      'gate', 'check', ISSUE_ID, 'gate.merge', '--json', '--path', root,
++    ]);
++    expect(check.status).toBe(0);
++    expect(parseJson(check.stdout)).toMatchObject({
++      schema_version: 'forge.gate.v1',
++      command: 'gate.check',
++      ok: true,
++      issue_id: ISSUE_ID,
++      gate_id: 'gate.merge',
++      approved: true,
++    });
++  });
++
++  test('denied check keeps exit 1 and emits a structured JSON result on stdout', () => {
++    const root = tempRoots[0];
++    const denied = run(__dirname, [
++      'gate', '--path', root, 'check', ISSUE_ID, 'gate.intent', '--json',
++    ]);
++    expect(denied.status).toBe(1);
++    expect(parseJson(denied.stdout)).toMatchObject({
++      schema_version: 'forge.gate.v1',
++      command: 'gate.check',
++      ok: false,
++      issue_id: ISSUE_ID,
++      gate_id: 'gate.intent',
++      approved: false,
++    });
++  });
++});
+diff --git a/test/global-flags.test.js b/test/global-flags.test.js
+index 8f7b20f2..8b83bc12 100644
+--- a/test/global-flags.test.js
++++ b/test/global-flags.test.js
+@@ -41,6 +41,16 @@ describe('stripGlobalFlags', () => {
+   test('leaves plain words that resemble flag names untouched', () => {
+     expect(stripGlobalFlags(['force', 'sync', 'path'])).toEqual(['force', 'sync', 'path']);
+   });
++
++  test('strips all supported global booleans plus space and equals value forms', () => {
++    expect(stripGlobalFlags([
++      '--quick', '-q', '--skip-external', '--skip-services', '--all', '--help', '-h',
++      '--version', '-V', '--yes', '-y', '--non-interactive', '--force', '--verbose',
++      '--dry-run', '--symlink', '--skills-only', '--no-hooks', '--interview',
++      '--path', '/tmp/project', '--agents=codex', '--merge', 'smart', '--type=standard',
++      '--budget', '1000', 'approve', 'issue-1', 'gate.merge', '--json',
++    ])).toEqual(['approve', 'issue-1', 'gate.merge', '--json']);
++  });
+ });
+ 
+ describe('firstPositionalIndex', () => {
+-- 
+2.51.0.windows.1
+

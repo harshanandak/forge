@@ -1,0 +1,47 @@
+From 1979f968ca6eddbb0a3bf4f848afd782bd5b63c0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 16:27:01 +0530
+Subject: [PATCH] fix: reject unreadable merge evidence projections
+
+---
+ lib/reviewer-ledger.js | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/lib/reviewer-ledger.js b/lib/reviewer-ledger.js
+index f14a94fd..fc9bd18c 100644
+--- a/lib/reviewer-ledger.js
++++ b/lib/reviewer-ledger.js
+@@ -623,10 +623,15 @@ function buildMergeEvidenceSnapshot(context, { issueId } = {}) {
+   const leaseEvidence = Object.prototype.hasOwnProperty.call(source, 'lease')
+     ? source.lease
+     : Object.prototype.hasOwnProperty.call(source, 'ownership') ? source.ownership : issueId ?? null;
++  const projectionUnreadable = (...fields) => fields.some((field) =>
++    Object.prototype.hasOwnProperty.call(source, field)
++      && (source[field] === null || source[field] === undefined));
++  const leaseUnreadable = projectionUnreadable('lease', 'ownership');
+   const dependencyEvidence = Object.prototype.hasOwnProperty.call(source, 'dependencies')
+     ? source.dependencies
+     : Object.prototype.hasOwnProperty.call(source, 'dependencyState') ? source.dependencyState
+       : Object.prototype.hasOwnProperty.call(source, 'issueBinding') ? source.issueBinding : issueId ?? null;
++  const dependencyUnreadable = projectionUnreadable('dependencies', 'dependencyState', 'issueBinding');
+   const emergencyBypassFingerprint = source.emergencyBypass === undefined
+     ? null : evidenceFingerprint(source.emergencyBypass);
+   return {
+@@ -641,12 +646,12 @@ function buildMergeEvidenceSnapshot(context, { issueId } = {}) {
+       requiredChecksKnown: source.requiredChecksKnown,
+       providerObservations: source.providerObservations,
+     }),
+-    leaseFingerprint: selectEvidenceFingerprint(source, 'leaseFingerprint', leaseEvidence, { failClosed: true }),
++    leaseFingerprint: leaseUnreadable ? null : selectEvidenceFingerprint(source, 'leaseFingerprint', leaseEvidence, { failClosed: true }),
+     conflictFingerprint: selectEvidenceFingerprint(source, 'conflictFingerprint', {
+       conflicting: source.conflicting,
+       mergeStateStatus: source.mergeStateStatus,
+     }),
+-    dependencyFingerprint: selectEvidenceFingerprint(source, 'dependencyFingerprint', dependencyEvidence, { failClosed: true }),
++    dependencyFingerprint: dependencyUnreadable ? null : selectEvidenceFingerprint(source, 'dependencyFingerprint', dependencyEvidence, { failClosed: true }),
+     reviewerLedger,
+     emergencyBypassFingerprint,
+   };
+-- 
+2.51.0.windows.1
+

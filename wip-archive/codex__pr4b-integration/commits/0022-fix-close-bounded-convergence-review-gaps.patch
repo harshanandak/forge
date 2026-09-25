@@ -1,0 +1,850 @@
+From 6a540ece5183a5733340e1858ddab86691dd0763 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 04:32:56 +0530
+Subject: [PATCH] fix: close bounded convergence review gaps
+
+---
+ .agents/skills/shepherd/SKILL.md              |   1 +
+ docs/reference/shepherd.md                    |   1 +
+ lib/commands/merge.js                         | 149 +++++++++++-------
+ lib/commands/shepherd.js                      |  27 ++--
+ lib/pr-monitor/flow-monitor.js                |  36 ++++-
+ lib/pr-monitor/review-preflight.js            |  42 ++++-
+ lib/pr-monitor/watch.js                       |   6 +-
+ skills/shepherd/SKILL.md                      |   1 +
+ ...merge-authority-review-regressions.test.js |  29 ++++
+ test/commands/merge-authority.test.js         |  65 +++++++-
+ test/commands/shepherd.test.js                |  18 +++
+ test/docs-shepherd.test.js                    |   7 +
+ test/pr-monitor/flow-monitor.test.js          |  44 ++++++
+ test/pr-monitor/review-preflight.test.js      |  25 +++
+ test/pr-monitor/watch.test.js                 |  11 ++
+ 15 files changed, 384 insertions(+), 78 deletions(-)
+
+diff --git a/.agents/skills/shepherd/SKILL.md b/.agents/skills/shepherd/SKILL.md
+index 0909853e..7e96f063 100644
+--- a/.agents/skills/shepherd/SKILL.md
++++ b/.agents/skills/shepherd/SKILL.md
+@@ -72,6 +72,7 @@ it were authoritative.
+ | --- | --- |
+ | `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
+ | `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
++| `INCOMPLETE` | Exact-head local review or durable convergence evidence is unavailable — fail closed and retry after evidence is restored. |
+ | `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
+ | `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Recovery is an **escalation, not an autonomous Tier-A rerun**: it needs a maintainer-provided `FORGE_PR_TOKEN` (contents + pull-requests + checks) to re-author the push so CI re-triggers. |
+ | `ESCALATE` | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index c192fa4e..d1ca926f 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -175,6 +175,7 @@ same verb (or `forge shepherd events`) on its own cadence.
+ | `MERGE_READY` | Required checks are green and the branch is up to date. The shepherd hands off — **a human merges in the GitHub UI.** |
+ | `ESCALATE`    | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |
+ | `PENDING`     | A Tier-A action was taken, or checks are still pending. Exit and await the next scheduled pass. |
++| `INCOMPLETE`  | Exact-head local review or durable convergence evidence is unavailable. Fail closed and retry after evidence is restored. |
+ | `HARD_STOP`   | A permanent auth/scope failure that retrying cannot fix. Escalate to a human to widen token scope. |
+ 
+ ## Action ladder
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index a268aaf4..48639666 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -118,18 +118,20 @@ function normalizeRepository(value) {
+ }
+ 
+ function terminalEvidenceFromTrace(row, { issueId, repository, number, expectedHead }) {
++  const normalizedExpectedHead = normalizeFullHeadSha(expectedHead);
++  if (!normalizedExpectedHead) return { invalid: true };
+   const merged = (Array.isArray(row?.iterations) ? row.iterations : [])
+     .filter(iteration => iteration?.type === 'pr.merged');
+   if (merged.length === 0) return null;
+   const exact = merged.filter(iteration => iteration.issue_id === issueId
+     && Number.isInteger(iteration.issue_revision) && iteration.issue_revision >= 0
+-    && normalizeFullHeadSha(iteration.head_sha) === expectedHead
++    && normalizeFullHeadSha(iteration.head_sha) === normalizedExpectedHead
+     && typeof iteration.at === 'string' && Number.isFinite(Date.parse(iteration.at))
+     && /^[0-9a-f]{64}$/.test(iteration.work_packet_hash)
+     && /^[0-9a-f]{64}$/.test(iteration.run_receipt_hash));
+   if (exact.length !== 1) return { invalid: true };
+   const iteration = exact[0];
+-  const decisionSeed = `${issueId}:${iteration.issue_revision}:${repository}:${number}:${expectedHead}`;
++  const decisionSeed = `${issueId}:${iteration.issue_revision}:${repository}:${number}:${normalizedExpectedHead}`;
+   return {
+     decisionId: uuidFromSeed(`merge-packet:${decisionSeed}`),
+     receiptId: uuidFromSeed(`merge-receipt:${iteration.work_packet_hash}`),
+@@ -222,14 +224,14 @@ async function defaultVerifyIssueOwnership({
+   if (!actor) return { owned: false, actor: null, error: 'FORGE_ACTOR or FORGE_SESSION_ID is required.' };
+   const frozenEnv = { ...env, FORGE_ACTOR: actor };
+   const result = await runIssue('owns', [issueId], projectRoot, { env: frozenEnv });
+-  const data = result && result.data;
+-  let owned = result && result.ok === true && data && data.owned === true
++  const data = result?.data;
++  const ownershipMatches = result?.ok === true && data?.owned === true
+     && data.expired === false && data.actor === actor && data.claimed_by === actor;
+   const expectedSessionId = typeof env.FORGE_SESSION_ID === 'string' && env.FORGE_SESSION_ID.trim()
+     ? env.FORGE_SESSION_ID.trim()
+     : null;
+   let sessionId = null;
+-  if (owned && expectedSessionId) {
++  if (ownershipMatches && expectedSessionId) {
+     const claimsResult = await runIssue('claims', [], projectRoot, { env: frozenEnv });
+     const claims = claimsResult?.ok === true && Array.isArray(claimsResult.data?.claims)
+       ? claimsResult.data.claims
+@@ -237,18 +239,54 @@ async function defaultVerifyIssueOwnership({
+     const exactClaims = claims.filter(claim => claim?.issue_id === issueId
+       && claim?.actor === actor && claim?.session_id === expectedSessionId);
+     sessionId = exactClaims.length === 1 ? exactClaims[0].session_id : null;
+-    owned = sessionId === expectedSessionId;
+   }
++  const owned = ownershipMatches && (!expectedSessionId || sessionId === expectedSessionId);
+   return {
+     owned: Boolean(owned),
+     actor,
+-    claimedBy: data && data.claimed_by,
++    claimedBy: data?.claimed_by,
+     sessionId,
+-    expired: data && typeof data.expired === 'boolean' ? data.expired : null,
+-    error: result && result.error,
++    expired: typeof data?.expired === 'boolean' ? data.expired : null,
++    error: result?.error,
+   };
+ }
+ 
++function selectPrBindingRow(rows, repository, number) {
++  if (!Array.isArray(rows)) return { error: 'Kernel PR linkage is unreadable.' };
++  const sameRepositoryRows = rows.filter(row => normalizeRepository(row?.repo) === repository);
++  if (sameRepositoryRows.some(row => !normalizeKernelPrNumber(row.number))) {
++    return { error: 'Kernel PR linkage contains a malformed PR number.' };
++  }
++  const matches = sameRepositoryRows.filter(row => normalizeKernelPrNumber(row.number) === number);
++  if (matches.length !== 1) return { error: 'Kernel PR linkage is missing or ambiguous.' };
++  return { row: matches[0] };
++}
++
++async function openPrBindingBroker(projectRoot, buildBroker) {
++  if (buildBroker) {
++    const built = await buildBroker({ projectRoot });
++    return { built, ownsDriver: false };
++  }
++  const { resolveGitCommonDir } = require('../kernel/broker');
++  const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++  const gitCommonDir = resolveGitCommonDir(projectRoot);
++  const deps = await buildMigratedKernelIssueDeps({ projectRoot, gitCommonDir });
++  return {
++    built: { gitCommonDir, broker: deps.kernelBroker, driver: deps.kernelDriver },
++    ownsDriver: true,
++  };
++}
++
++async function readPrBindingRows(built, allowRetired, { issueId, number, repository }) {
++  if (allowRetired) {
++    const read = await built.broker.readTrace({
++      issue_id: issueId, pr_number: Number(number), repo: repository,
++    });
++    return read?.pull_requests;
++  }
++  return built.broker.listOpenPrs(built.gitCommonDir);
++}
++
+ async function defaultVerifyPrIssueBinding({
+   issueId,
+   pr,
+@@ -258,43 +296,24 @@ async function defaultVerifyPrIssueBinding({
+   allowRetired = false,
+ }) {
+   const number = normalizePrNumber(String(pr));
+-  const repository = normalizeRepository(prContext && prContext.repository);
++  const repository = normalizeRepository(prContext?.repository);
+   if (!number || !repository || !prContext || prContext.number !== Number(number)) {
+     return { bound: false, error: 'PR identity is unreadable or does not match the requested PR number.' };
+   }
+ 
+   let built;
+-  const ownsDriver = !buildBroker;
++  let ownsDriver = false;
+   try {
+-    if (buildBroker) {
+-      built = await buildBroker({ projectRoot });
+-    } else {
+-      const { resolveGitCommonDir } = require('../kernel/broker');
+-      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+-      const gitCommonDir = resolveGitCommonDir(projectRoot);
+-      const deps = await buildMigratedKernelIssueDeps({ projectRoot, gitCommonDir });
+-      built = { gitCommonDir, broker: deps.kernelBroker, driver: deps.kernelDriver };
+-    }
++    ({ built, ownsDriver } = await openPrBindingBroker(projectRoot, buildBroker));
+     const linkageReader = allowRetired ? built?.broker?.readTrace : built?.broker?.listOpenPrs;
+-    if (!built || !built.broker || typeof linkageReader !== 'function'
++    if (!built?.broker || typeof linkageReader !== 'function'
+       || typeof built.gitCommonDir !== 'string' || !built.gitCommonDir) {
+       return { bound: false, error: 'Kernel PR linkage reader is unavailable.' };
+     }
+-    const read = allowRetired
+-      ? await built.broker.readTrace({ issue_id: issueId, pr_number: Number(number), repo: repository })
+-      : await built.broker.listOpenPrs(built.gitCommonDir);
+-    const rows = allowRetired ? read?.pull_requests : read;
+-    if (!Array.isArray(rows)) return { bound: false, error: 'Kernel PR linkage is unreadable.' };
+-    const sameRepositoryRows = rows.filter((row) => row && normalizeRepository(row.repo) === repository);
+-    if (sameRepositoryRows.some((row) => !normalizeKernelPrNumber(row.number))) {
+-      return { bound: false, error: 'Kernel PR linkage contains a malformed PR number.' };
+-    }
+-    const matches = sameRepositoryRows.filter((row) => row
+-      && normalizeKernelPrNumber(row.number) === number);
+-    if (matches.length !== 1) {
+-      return { bound: false, error: 'Kernel PR linkage is missing or ambiguous.' };
+-    }
+-    const row = matches[0];
++    const rows = await readPrBindingRows(built, allowRetired, { issueId, number, repository });
++    const selection = selectPrBindingRow(rows, repository, number);
++    if (!selection.row) return { bound: false, error: selection.error };
++    const { row } = selection;
+     const bound = (allowRetired || row.state === 'open') && row.issue_id === issueId;
+     const terminalEvidence = allowRetired && bound
+       ? terminalEvidenceFromTrace(row, {
+@@ -321,7 +340,7 @@ async function defaultVerifyPrIssueBinding({
+   } catch (err) {
+     return { bound: false, error: `Kernel PR linkage verification failed: ${err.message}` };
+   } finally {
+-    if (ownsDriver && built && built.driver && typeof built.driver.close === 'function') {
++    if (ownsDriver && typeof built?.driver?.close === 'function') {
+       try { await built.driver.close(); } catch { /* cleanup must not mask the linkage verdict */ }
+     }
+   }
+@@ -653,7 +672,7 @@ function mandatoryContextError(context, expectedHead) {
+ }
+ 
+ async function recoverMergedTerminal({
+-  pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps,
++  pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps, replayOnly = false,
+ }) {
+   const repository = normalizeRepository(prContext?.repository);
+   if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead || !repository) {
+@@ -677,6 +696,14 @@ async function recoverMergedTerminal({
+       ...binding.terminalEvidence,
+     };
+   }
++  if (replayOnly) {
++    return {
++      success: false,
++      merged: true,
++      replayMissing: true,
++      error: 'Merged PR terminal evidence is not yet available for replay.',
++    };
++  }
+   const decisionAt = currentTimestamp(deps.now || Date.now);
+   const verifyMergeGate = deps.verifyMergeGate || defaultVerifyMergeGate;
+   const gateApproval = await verifyMergeGate({
+@@ -1012,22 +1039,6 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     actor: ownershipActor,
+     env: { ...ownershipEnv },
+   };
+-  let ownership;
+-  try {
+-    ownership = await verifyIssueOwnership(ownershipInput);
+-  } catch (err) {
+-    return { success: false, merged: false, error: `Failed to verify issue ownership: ${err.message}` };
+-  }
+-  if (!ownership || ownership.owned !== true || ownership.expired !== false
+-    || typeof ownership.actor !== 'string' || ownership.actor !== ownershipActor
+-    || typeof ownership.claimedBy !== 'string' || ownership.claimedBy !== ownershipActor
+-    || ownership.sessionId !== ownershipSessionId) {
+-    return {
+-      success: false,
+-      merged: false,
+-      error: `Active Kernel ownership claim with the exact session is required for issue ${parsed.issueId}; refusing to merge.`,
+-    };
+-  }
+ 
+   const fetchPrContext = deps.fetchPrContext || defaultFetchPrContext;
+   const mergePr = deps.mergePr || defaultMergePr;
+@@ -1045,6 +1056,34 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   // command must be an idempotent NO-OP — never an error and never a second merge
+   // attempt. (An absent/unknown state falls through to the fail-closed rules.)
+   const prState = prContext && prContext.state ? String(prContext.state).toUpperCase() : '';
++  if (prState === 'MERGED') {
++    try {
++      const replay = await recoverMergedTerminal({
++        pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
++      });
++      if (replay.replayMissing !== true) return replay;
++    } catch (error) {
++      return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
++    }
++  }
++
++  let ownership;
++  try {
++    ownership = await verifyIssueOwnership(ownershipInput);
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to verify issue ownership: ${err.message}` };
++  }
++  if (!ownership || ownership.owned !== true || ownership.expired !== false
++    || typeof ownership.actor !== 'string' || ownership.actor !== ownershipActor
++    || typeof ownership.claimedBy !== 'string' || ownership.claimedBy !== ownershipActor
++    || ownership.sessionId !== ownershipSessionId) {
++    return {
++      success: false,
++      merged: false,
++      error: `Active Kernel ownership claim with the exact session is required for issue ${parsed.issueId}; refusing to merge.`,
++    };
++  }
++
+   if (prState === 'MERGED') {
+     if (!ownershipSessionId) {
+       return { success: false, merged: true, error: 'An exact FORGE_SESSION_ID session identity is required to recover terminal merge evidence.' };
+@@ -1268,6 +1307,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+ 
+   process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
+   return {
++    ...(mergeResult && typeof mergeResult === 'object' ? mergeResult : {}),
+     success: true,
+     merged: true,
+     enabled: true,
+@@ -1275,7 +1315,6 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     reason: 'all merge rules passed',
+     decisionId: decision.decisionId,
+     ...terminal,
+-    ...(mergeResult && typeof mergeResult === 'object' ? mergeResult : {}),
+   };
+ }
+ 
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index c284c51d..7512583c 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -248,21 +248,26 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+       runGh: (ghArgs) => gh('gh', ghArgs),
+       gatherPull: deps.gatherPull,
+     });
+-    const shouldBuildAuthority = deps.forceAuthority || deps.store || deps.buildKernelDeps || deps.createMonitorStore || !deps.adapter;
+-    if (!deps.store && shouldBuildAuthority) {
++    if (!deps.store) {
+       const buildKernelDeps = deps.buildKernelDeps
+         || require('../kernel/cli-broker-factory').buildMigratedKernelIssueDeps;
+       const createMonitorStore = deps.createMonitorStore
+         || require('../../packages/memory').createMonitorStore;
+-      const kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
+-      authority = {
+-        store: createMonitorStore(kernel.kernelDriver),
+-        monitorId: rootMonitorId(ctx.owner, ctx.repo, ctx.pr),
+-        ownerRunId: `shepherd:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+-        packetId: `shepherd-packet:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+-        subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
+-        close: async () => kernel.kernelBroker?.close?.(),
+-      };
++      let kernel;
++      try {
++        kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
++        authority = {
++          store: createMonitorStore(kernel.kernelDriver),
++          monitorId: rootMonitorId(ctx.owner, ctx.repo, ctx.pr),
++          ownerRunId: `shepherd:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
++          packetId: `shepherd-packet:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
++          subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
++          close: async () => kernel.kernelBroker?.close?.(),
++        };
++      } catch {
++        try { await kernel?.kernelBroker?.close?.(); } catch { /* fallback must remain available */ }
++        authority = {};
++      }
+     }
+   } else if (!enrich && deps.gatherPull) {
+     // Injected gather (tests / programmatic callers) still gets the default
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index f4b680b7..7822dc72 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -18,6 +18,7 @@ const MAX_HISTORY = 128;
+ const DELIVERY_TARGET = 'legacy-journal';
+ const SNAPSHOT_TEXT_LIMIT = 64;
+ const SNAPSHOT_OBJECT_KEY_LIMIT = 24;
++const JOB_URL_LIMIT = 2048;
+ const SNAPSHOT_FORMAT = 'digest-v1';
+ const SNAPSHOT_EVIDENCE_KEYS = new Set(['checks', 'threads', 'reviews', 'comments', 'degraded']);
+ 
+@@ -53,12 +54,24 @@ function boundIdentity(value) {
+   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
+ }
+ 
++function validBoundedJobUrl(value) {
++  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT) return null;
++  try {
++    const url = new URL(value);
++    return url.protocol === 'https:' || url.protocol === 'http:' ? value : null;
++  } catch {
++    return null;
++  }
++}
++
+ function boundMonitorRecord(record) {
+   const bounded = boundSnapshotScalar(record);
+   bounded.key = boundIdentity(record.key);
+   for (const field of ['name', 'threadId', 'author', 'commitOid', 'surface']) {
+     if (typeof record.data?.[field] === 'string') bounded.data[field] = boundIdentity(record.data[field]);
+   }
++  const jobUrl = validBoundedJobUrl(record.data?.jobUrl);
++  if (jobUrl) bounded.data.jobUrl = jobUrl;
+   return bounded;
+ }
+ 
+@@ -96,7 +109,19 @@ function compactSnapshot(value) {
+ 
+ function comparableSnapshot(compact, source = null) {
+   if (compact?._snapshotFormat !== SNAPSHOT_FORMAT) return compact;
+-  const evidence = JSON.parse(zlib.gunzipSync(Buffer.from(compact._snapshotEvidence, 'base64url')));
++  let evidence;
++  try {
++    evidence = JSON.parse(zlib.gunzipSync(Buffer.from(compact._snapshotEvidence, 'base64url')));
++  } catch {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor snapshot evidence is malformed');
++  }
++  const tupleLengths = { checks: 2, threads: 4, reviews: 3, comments: 1, degraded: 1 };
++  const valid = evidence && typeof evidence === 'object' && !Array.isArray(evidence)
++    && Object.entries(tupleLengths).every(([key, length]) => Array.isArray(evidence[key])
++      && evidence[key].every(item => Array.isArray(item) && item.length === length));
++  if (!valid) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor snapshot evidence is incomplete');
++  }
+   return {
+     ...compact,
+     checks: evidence.checks.map((item, index) => ({
+@@ -425,8 +450,11 @@ async function runFlowMonitorPass(ctx) {
+   const deliveryState = await readDeliveryAuthority(ctx);
+   const replay = terminalReplay(deliveryState, ctx.monitorId);
+   if (replay) {
+-    let current;
+-    try { current = compactSnapshot(await ctx.gather()); } catch { return replay; }
++    let gathered; let current;
++    try {
++      gathered = await ctx.gather();
++      current = compactSnapshot(gathered);
++    } catch { return replay; }
+     const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
+     const monitorId = reopenedMonitorId(ctx.monitorId, replay.terminalReceiptId);
+     const reopenedHistory = await readAuthority({ ...ctx, monitorId });
+@@ -434,7 +462,7 @@ async function runFlowMonitorPass(ctx) {
+     return runFlowMonitorPass({
+       ...ctx,
+       monitorId,
+-      gather: async () => current,
++      gather: async () => gathered,
+     });
+   }
+ 
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index d2487e17..a91cdd6d 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -32,6 +32,22 @@ async function defaultProbeCodeRabbit({ projectRoot }, exec = execFileSync) {
+   }
+ }
+ 
++function parseCodeRabbitEvents(output) {
++  const rawLines = String(output || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
++  const events = [];
++  let malformed = rawLines.length === 0;
++  for (const line of rawLines) {
++    try {
++      const event = JSON.parse(line);
++      if (!event || typeof event !== 'object' || Array.isArray(event)) malformed = true;
++      else events.push(event);
++    } catch {
++      malformed = true;
++    }
++  }
++  return { events, malformed };
++}
++
+ async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync) {
+   try {
+     const output = exec('coderabbit', ['review', '--agent', '--base', base], {
+@@ -42,13 +58,29 @@ async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync)
+       stdio: ['ignore', 'pipe', 'pipe'],
+       windowsHide: true,
+     });
+-    const lines = boundedLines(output);
+-    const clean = lines.length === 0
+-      || lines.some(line => /no (?:actionable )?(?:issues|findings)(?: found)?/i.test(line));
++    const { events, malformed } = parseCodeRabbitEvents(output);
++    const terminal = events.at(-1);
++    const terminalValid = terminal?.type === 'complete'
++      && ['review_completed', 'review_skipped'].includes(terminal.status)
++      && Number.isSafeInteger(terminal.findings) && terminal.findings >= 0;
++    const findingEvents = events.filter(event => event.type === 'finding');
++    const errorEvents = events.filter(event => event.type === 'error');
++    const clean = !malformed && terminalValid && terminal.findings === 0
++      && findingEvents.length === 0 && errorEvents.length === 0;
++    const findings = findingEvents.slice(0, MAX_FINDINGS).map(event => String(
++      event.codegenInstructions || event.message || 'CodeRabbit finding',
++    ).slice(0, MAX_FINDING_CHARS));
++    if (!clean && findings.length === 0) {
++      let detail = `CodeRabbit reported ${terminal.findings || errorEvents.length} finding(s)`;
++      if (malformed || !terminalValid) {
++        detail = 'CodeRabbit agent output was malformed or incomplete';
++      }
++      findings.push(detail);
++    }
+     return {
+       ok: clean,
+-      summary: clean ? 'local review completed with no findings' : `${lines.length} local review finding(s)`,
+-      findings: clean ? [] : lines,
++      summary: clean ? 'local review completed with no findings' : `${findings.length} local review finding(s)`,
++      findings: clean ? [] : findings,
+     };
+   } catch (error) {
+     const output = `${error?.stdout || ''}\n${error?.stderr || ''}`;
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index 0b0ae210..313138b2 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -157,7 +157,11 @@ async function runWatchPass(state, ctx, emit) {
+     ...ctx, dir: ctx.dir, gather: ctx.gather, now: ctx.now, enrich: ctx.enrich, lockOpts: ctx.lockOpts,
+   });
+   const events = ctx.dir ? journal.readEventsSince(ctx.dir, journalCursor) : rawEvents;
+-  if (terminalReceiptId && events.length === 0) return { terminal: true };
++  if (terminalReceiptId && events.length === 0) {
++    for (const failure of state.pending.values()) emit(failure);
++    state.pending = new Map();
++    return { terminal: true };
++  }
+   const { failures, terminal, others } = partition(events);
+   const contra = contradictions(events);
+   const heldNames = new Set(state.pending.keys());
+diff --git a/skills/shepherd/SKILL.md b/skills/shepherd/SKILL.md
+index 0909853e..7e96f063 100644
+--- a/skills/shepherd/SKILL.md
++++ b/skills/shepherd/SKILL.md
+@@ -72,6 +72,7 @@ it were authoritative.
+ | --- | --- |
+ | `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
+ | `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
++| `INCOMPLETE` | Exact-head local review or durable convergence evidence is unavailable — fail closed and retry after evidence is restored. |
+ | `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
+ | `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Recovery is an **escalation, not an autonomous Tier-A rerun**: it needs a maintainer-provided `FORGE_PR_TOKEN` (contents + pull-requests + checks) to re-author the push so CI re-triggers. |
+ | `ESCALATE` | A Tier-C condition (conflict, unreadable required set, persistent failure, oscillation, budget exhaustion). Context is posted to the PR. |
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 5e314880..916ae363 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -622,6 +622,35 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
+   });
+ 
++  test('merge recovery rejects a malformed expected head before matching terminal trace evidence', async () => {
++    const result = await mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context({ state: 'MERGED', headSha: null }),
++      allowRetired: true,
++      buildBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: {
++          readTrace: async () => ({
++            pull_requests: [{
++              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              iterations: [{
++                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
++                issue_revision: 7, head_sha: null,
++                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
++              }],
++            }],
++          }),
++        },
++        driver: { close() {} },
++      }),
++    });
++
++    expect(result.bound).toBe(false);
++    expect(result.error).toMatch(/incomplete|head/i);
++  });
++
+   test('leases normalized repository identity across both reads and final mutation', async () => {
+     let reads = 0;
+     let merges = 0;
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index e48404bc..636b27b7 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -111,6 +111,22 @@ describe('merge command — mandatory release authority', () => {
+     expect(out).toMatchObject({ success: true, merged: true, decisionId: 'decision-42', receiptId: 'receipt-42' });
+   });
+ 
++  test('provider merge metadata cannot overwrite authoritative terminal evidence', async () => {
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      mergePr: async () => ({
++        merged: true, success: false, enabled: false, allowed: false,
++        reason: 'provider override', decisionId: 'provider-decision', receiptId: 'provider-receipt',
++      }),
++      prepareMergeDecision: async () => ({ decisionId: 'authority-decision' }),
++      recordMergeDecision: async () => ({ receiptId: 'authority-receipt', receiptHash: 'f'.repeat(64) }),
++    }));
++
++    expect(out).toMatchObject({
++      success: true, merged: true, enabled: true, allowed: true,
++      reason: 'all merge rules passed', decisionId: 'authority-decision', receiptId: 'authority-receipt',
++    });
++  });
++
+   test('never writes terminal linkage when the external merge fails', async () => {
+     let receipts = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -212,6 +228,51 @@ describe('merge command — mandatory release authority', () => {
+     expect(gateChecks).toBe(0);
+   });
+ 
++  test('replays existing terminal evidence after the live ownership claim expires', async () => {
++    let ownershipChecks = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyIssueOwnership: async () => {
++        ownershipChecks += 1;
++        return {
++          owned: false, actor: 'release-actor', claimedBy: 'release-actor',
++          sessionId: 'release-session', expired: true,
++        };
++      },
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      verifyPrIssueBinding: async () => ({
++        bound: true,
++        terminalEvidence: {
++          decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++        },
++      }),
++    }));
++
++    expect(out).toMatchObject({
++      success: true, merged: true, recovered: true,
++      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
++    });
++    expect(ownershipChecks).toBe(0);
++  });
++
++  test('requires live ownership before repairing missing terminal evidence', async () => {
++    let decisions = 0;
++    let records = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyIssueOwnership: async () => ({
++        owned: false, actor: 'release-actor', claimedBy: 'release-actor',
++        sessionId: 'release-session', expired: true,
++      }),
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      prepareMergeDecision: async () => { decisions += 1; },
++      recordMergeDecision: async () => { records += 1; },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(out.error).toMatch(/ownership|claim/i);
++    expect(decisions).toBe(0);
++    expect(records).toBe(0);
++  });
++
+   test('reconciles a merged PR without requiring a receipt for a disabled merge gate', async () => {
+     let receiptRequirements;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -336,7 +397,7 @@ describe('merge command — mandatory release authority', () => {
+     }
+   });
+ 
+-  test('requires an active Kernel claim owned by the resolved lane actor', async () => {
++  test('requires an active Kernel claim after the read-only terminal replay check', async () => {
+     let fetchCalls = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       verifyIssueOwnership: async () => ({
+@@ -349,7 +410,7 @@ describe('merge command — mandatory release authority', () => {
+     expect(out.success).toBe(false);
+     expect(out.merged).toBe(false);
+     expect(out.error).toMatch(/ownership|claim/i);
+-    expect(fetchCalls).toBe(0);
++    expect(fetchCalls).toBe(1);
+   });
+ 
+   test('requires the live claim to carry the exact merge session before mutation', async () => {
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index d001fa02..24c5c343 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -259,6 +259,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+         pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+       }),
+       resolveGitCommonDir: () => gitCommonDir,
++      buildKernelDeps: async () => { throw new Error('journal fallback'); },
+     });
+     expect(built.dir).toBe(journal.journalDir({
+       root: mainRoot, gitCommonDir, repo: 'r', pr: '1',
+@@ -289,6 +290,23 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(closed).toBe(true);
+   });
+ 
++  test('falls back to the per-root journal when Memory authority initialization fails', async () => {
++    let attempted = 0;
++    const built = await shepherdCmd.buildMonitorContext('7', root, {
++      buildContext: async () => ({
++        pr: '7', owner: 'acme', repo: 'forge', base: 'master', baseRef: 'origin/master',
++      }),
++      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
++      resolveGitCommonDir: () => path.join(root, '.git'),
++      buildKernelDeps: async () => { attempted += 1; throw new Error('kernel unavailable'); },
++    });
++
++    expect(attempted).toBe(1);
++    expect(built.error).toBeUndefined();
++    expect(built.store).toBeUndefined();
++    expect(built.dir).toBeString();
++  });
++
+   test('hashes an oversized root monitor identity within the public Memory bound', async () => {
+     const owner = 'o'.repeat(70);
+     const repo = 'r'.repeat(70);
+diff --git a/test/docs-shepherd.test.js b/test/docs-shepherd.test.js
+index 28c3ccec..794566cf 100644
+--- a/test/docs-shepherd.test.js
++++ b/test/docs-shepherd.test.js
+@@ -37,4 +37,11 @@ describe('shepherd documentation', () => {
+     expect(/never resolves/i.test(doc)).toBe(true);
+     expect(/gh pr merge/.test(doc)).toBe(false);
+   });
++
++  test('documents INCOMPLETE consistently in the reference and canonical skill verdict tables', () => {
++    for (const file of ['docs/reference/shepherd.md', 'skills/shepherd/SKILL.md']) {
++      const text = read(file);
++      expect(/\| `INCOMPLETE`\s+\|/.test(text)).toBe(true);
++    }
++  });
+ });
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index bb812fa3..b2a7c057 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -211,6 +211,25 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+   });
+ 
++  test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {
++    const store = durableStore();
++    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
++    const jobUrl = `https://github.com/owner/forge/actions/runs/${'1234567890'.repeat(10)}/job/987654321`;
++    ctx.enrich = async records => {
++      records.find(record => record.type === 'check.failed').data.jobUrl = jobUrl;
++    };
++
++    await runFlowMonitorPass(ctx);
++
++    const failure = delivered.find(record => record.type === 'check.failed');
++    expect(failure.data.jobUrl).toBe(jobUrl);
++    expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBe(jobUrl);
++  });
++
+   test('preserves long repository identity in bounded durable and compatibility records', async () => {
+     const store = durableStore();
+     const repo = `owner/${'repository'.repeat(10)}`;
+@@ -357,6 +376,16 @@ describe('Flow-backed PR monitor authority', () => {
+     }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+   });
+ 
++  test('rejects malformed compact snapshot evidence as incomplete history', async () => {
++    const store = durableStore();
++    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
++    store.events[0].payload.bounded_payload.snapshot._snapshotEvidence = 'not-gzip-evidence';
++    store.events[0].content_hash = computeContentHash(store.events[0]);
++
++    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
++      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++  });
++
+   test('records one terminal receipt after merged evidence and replays its id', async () => {
+     const store = durableStore();
+     const merged = snapshot({ state: 'MERGED' });
+@@ -390,6 +419,21 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
+   });
+ 
++  test('preserves raw display fields while routing observations through a reopened lifecycle', async () => {
++    const store = durableStore();
++    let next = snapshot({ state: 'CLOSED', checks: [] });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ state: 'OPEN', checks: [{ name: 'ci-display', class: 'green' }] });
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ state: 'OPEN', checks: [{ name: 'ci-display', class: 'failed' }] });
++
++    await runFlowMonitorPass(ctx);
++
++    expect(delivered.find(record => record.type === 'check.failed')?.data.name).toBe('ci-display');
++  });
++
+   test('continues a reopened lifecycle through a later merged terminal receipt with a bounded id', async () => {
+     const store = durableStore();
+     let next = snapshot({ state: 'CLOSED' });
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index 31640b69..b617912e 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
+ 
+ const preflightCommand = require('../../lib/commands/preflight');
+ const {
++  defaultRunCodeRabbit,
+   defaultRunDeterministic,
+   runLocalReviewPreflight,
+ } = require('../../lib/pr-monitor/review-preflight');
+@@ -13,6 +14,30 @@ const EXACT_HEAD_CONTEXT = {
+ };
+ 
+ describe('bounded local review preflight', () => {
++  test('accepts only a structured terminal CodeRabbit result with zero findings', async () => {
++    const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => [
++      JSON.stringify({ type: 'status', phase: 'reviewing' }),
++      JSON.stringify({ type: 'complete', status: 'review_completed', findings: 0 }),
++    ].join('\n'));
++    expect(result).toMatchObject({ ok: true, findings: [] });
++  });
++
++  test('does not mistake finding text that says no issues for a clean review', async () => {
++    const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => [
++      JSON.stringify({ type: 'finding', severity: 'minor', codegenInstructions: 'No issues found in the fallback text' }),
++      JSON.stringify({ type: 'complete', status: 'review_completed', findings: 1 }),
++    ].join('\n'));
++    expect(result.ok).toBe(false);
++    expect(result.findings).toHaveLength(1);
++  });
++
++  test('fails closed for malformed or unterminated CodeRabbit agent output', async () => {
++    for (const output of ['', 'No issues found', JSON.stringify({ type: 'status', phase: 'reviewing' })]) {
++      const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => output);
++      expect(result.ok).toBe(false);
++    }
++  });
++
+   test('deterministic preflight resolves changes against the PR target branch', async () => {
+     const originalHandler = preflightCommand.handler;
+     let changeSet;
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index 92df477b..bb7692b7 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -44,6 +44,17 @@ describe('watchLoop', () => {
+     }, () => {});
+     expect(result).toEqual({ terminal: true });
+   });
++  test('flushes a held failure before stopping on an empty terminal replay', async () => {
++    const failure = { type: T.CHECK_FAILED, key: 'ci:head', data: { name: 'ci' } };
++    const state = { pending: new Map([['ci', failure]]) };
++    const emitted = [];
++    const result = await runWatchPass(state, {
++      runMonitorPass: async () => ({ events: [], terminalReceiptId: 'receipt-terminal' }),
++    }, event => emitted.push(event));
++    expect(result).toEqual({ terminal: true });
++    expect(emitted).toEqual([failure]);
++    expect(state.pending.size).toBe(0);
++  });
+   test('streams a confirmed check.failed as an emitted event on change', async () => {
+     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
+     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,349 @@
+From 449b9d974a4f00edc78b49fcf8650264838a83a4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 02:48:51 +0530
+Subject: [PATCH] fix: close merge and monitor review gaps
+
+---
+ lib/commands/merge.js                         |  14 +++--
+ lib/pr-monitor/events.js                      | Bin 5697 -> 5742 bytes
+ lib/pr-monitor/flow-monitor.js                |  27 ++++++++--
+ lib/pr-monitor/reconcile-executor.js          |   5 +-
+ ...merge-authority-review-regressions.test.js |  26 +++++++++
+ test/commands/merge-authority.test.js         |   2 +-
+ test/pr-monitor/flow-monitor.test.js          |  30 +++++++++++
+ test/pr-monitor/reconcile-executor.test.js    |  51 ++++++++++++++++++
+ 8 files changed, 144 insertions(+), 11 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 998a21dc..f65bcb16 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -234,6 +234,7 @@ async function defaultVerifyPrIssueBinding({
+   projectRoot,
+   prContext,
+   buildBroker,
++  allowRetired = false,
+ }) {
+   const number = normalizePrNumber(String(pr));
+   const repository = normalizeRepository(prContext && prContext.repository);
+@@ -253,11 +254,15 @@ async function defaultVerifyPrIssueBinding({
+       const deps = await buildMigratedKernelIssueDeps({ projectRoot, gitCommonDir });
+       built = { gitCommonDir, broker: deps.kernelBroker, driver: deps.kernelDriver };
+     }
+-    if (!built || !built.broker || typeof built.broker.listOpenPrs !== 'function'
++    const linkageReader = allowRetired ? built?.broker?.readTrace : built?.broker?.listOpenPrs;
++    if (!built || !built.broker || typeof linkageReader !== 'function'
+       || typeof built.gitCommonDir !== 'string' || !built.gitCommonDir) {
+       return { bound: false, error: 'Kernel PR linkage reader is unavailable.' };
+     }
+-    const rows = await built.broker.listOpenPrs(built.gitCommonDir);
++    const read = allowRetired
++      ? await built.broker.readTrace({ issue_id: issueId, pr_number: Number(number), repo: repository })
++      : await built.broker.listOpenPrs(built.gitCommonDir);
++    const rows = allowRetired ? read?.pull_requests : read;
+     if (!Array.isArray(rows)) return { bound: false, error: 'Kernel PR linkage is unreadable.' };
+     const sameRepositoryRows = rows.filter((row) => row && normalizeRepository(row.repo) === repository);
+     if (sameRepositoryRows.some((row) => !normalizeKernelPrNumber(row.number))) {
+@@ -269,7 +274,7 @@ async function defaultVerifyPrIssueBinding({
+       return { bound: false, error: 'Kernel PR linkage is missing or ambiguous.' };
+     }
+     const row = matches[0];
+-    const bound = row.state === 'open' && row.issue_id === issueId;
++    const bound = (allowRetired || row.state === 'open') && row.issue_id === issueId;
+     return {
+       bound,
+       repository,
+@@ -390,7 +395,7 @@ async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedH
+       evidence_refs: [{ kind: 'pr', repository, pr_number: Number(pr), head_sha: expectedHead }],
+       validation: { status: 'PASS', decision_id: decision.decisionId },
+       cleanup: { status: 'NOT_REQUIRED' },
+-      mutations_attempted: recovered ? [] : ['pr.merged'],
++      mutations_attempted: ['pr.merged'],
+       mutations_authorized: ['pr.merged'],
+     },
+   );
+@@ -628,6 +633,7 @@ async function recoverMergedTerminal({
+     projectRoot: root,
+     prContext,
+     buildBroker: deps.buildPrBindingBroker,
++    allowRetired: true,
+   });
+   if (binding?.bound !== true) {
+     return { success: false, merged: true, error: 'Merged PR is not authoritatively linked to the supplied Forge issue.' };
+diff --git a/lib/pr-monitor/events.js b/lib/pr-monitor/events.js
+index 9f9415de47c8f4c81174e3ebf5f27c54682dbc67..60cbdcb7bd680aa7a58c8747a1ac40ce60be2856 100644
+GIT binary patch
+delta 55
+zcmX@8^G;{OY*sA=g<wC&fM5^*ka%YgS7+}4e^0*<D+Tr3{JhMP{35;NjMU`pg8a<9
+LlFc(%R|)_C4}BA1
+
+delta 12
+UcmaE-b5Li)Y}U;uSeFR^04Ng$jsO4v
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index b70f2793..ccead4cb 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -11,6 +11,7 @@ const {
+   reduceMonitor,
+ } = require('../../packages/flow');
+ const { diffSnapshots } = require('./differ');
++const { EVENT_TYPES: T, makeEvent } = require('./events');
+ const { finalizeRecords } = require('./monitor');
+ 
+ const MAX_HISTORY = 128;
+@@ -73,6 +74,7 @@ function compactSnapshot(value) {
+   };
+   return {
+     ...compact,
++    ...(typeof source.repo === 'string' ? { repo: source.repo } : {}),
+     _snapshotFormat: SNAPSHOT_FORMAT,
+     _snapshotEvidence: zlib.gzipSync(JSON.stringify(evidence), { level: 9 }).toString('base64url'),
+   };
+@@ -204,6 +206,10 @@ function monitorSpec(ctx, subjectRevision) {
+ 
+ function monitorEvent(ctx, record, snapshot, subjectRevision) {
+   const seed = `${ctx.monitorId}:${record.seq}:${record.type}:${record.key}`;
++  const boundedRecord = {
++    ...boundSnapshotScalar(record),
++    ...(typeof record.repo === 'string' ? { repo: record.repo } : {}),
++  };
+   return envelope(
+     'forge.memory.monitor-event.v1',
+     uuidFrom(`event-object:${seed}`),
+@@ -215,9 +221,9 @@ function monitorEvent(ctx, record, snapshot, subjectRevision) {
+       sequence: record.seq,
+       subject_revision: subjectRevision,
+       type: record.type,
+-      actionability: 'action_required',
++      actionability: record.type === T.SNAPSHOT_CHECKPOINT ? 'advisory' : 'action_required',
+       observed_at: record.ts,
+-      bounded_payload: { record: boundSnapshotScalar(record), snapshot },
++      bounded_payload: { record: boundedRecord, snapshot },
+     },
+   );
+ }
+@@ -338,7 +344,9 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+   if (cursor > 0 && durableEvents.some(event => event.payload.sequence === cursor)) {
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: cursor }).state;
+   }
+-  for (const event of durableEvents.filter(item => item.payload.sequence > cursor)) {
++  for (const event of durableEvents.filter(item => (
++    item.payload.sequence > cursor && item.payload.actionability !== 'advisory'
++  ))) {
+     await ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id);
+     const receipt = deliveryReceipt(ctx, event, now());
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+@@ -361,6 +369,10 @@ async function persistRecords(ctx, bridge, spec, {
+     const event = monitorEvent(ctx, record, snapshot, subjectRevision);
+     const transition = reduceMonitor(spec, state, { kind: 'observation', event });
+     await bridge.persistEvent(event);
++    if (event.payload.actionability === 'advisory') {
++      state = transition.state;
++      continue;
++    }
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+@@ -424,8 +436,15 @@ async function runFlowMonitorPass(ctx) {
+ 
+   const gathered = await ctx.gather();
+   const next = compactSnapshot(gathered);
+-  const previous = comparableSnapshot(durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null);
++  const previousSnapshot = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
++  const previous = comparableSnapshot(previousSnapshot);
+   const candidates = diffSnapshots(previous, comparableSnapshot(next, gathered));
++  if (candidates.length === 0) {
++    const snapshotChanged = computeContentHash(previousSnapshot) !== computeContentHash(next);
++    if (snapshotChanged) {
++      candidates.push(makeEvent(T.SNAPSHOT_CHECKPOINT, computeContentHash(next), {}));
++    }
++  }
+   if (candidates.length === 0) {
+     return finalizePass(ctx, bridge, spec, {
+       state,
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 42a3d3c1..8ad87a0b 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -454,13 +454,14 @@ const ACTION_HANDLERS = {
+ 		if (pid == null) return;
+ 		const entry = replayLifecycle({ pr: action.pr.number, repo, pid, startedAt }, startedAtMs);
+ 		s.watchers.push(entry);
++		s.writeClaim(entry);
+ 		if (s.persistLifecycleCheckpoint(s.watchers) === false) {
++			verifiedKill(entry, s.ctx, 'SIGKILL');
+ 			const error = new Error('Watcher lifecycle checkpoint persistence failed');
+ 			error.code = 'PROVIDER_UNAVAILABLE';
+ 			throw error;
+ 		}
+ 		s.onLifecycleCheckpoint(structuredClone(entry.lifecycle));
+-		s.writeClaim(entry);
+ 	},
+ 	stopWatcher(action, s) {
+ 		for (const entry of s.watchers.filter((w) => w.pr === action.pr.number)) {
+@@ -484,7 +485,7 @@ const ACTION_HANDLERS = {
+ 				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-acknowledged', at), s);
+ 			} else if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
+ 				checkpointLifecycle(entry, lifecycleEvent(entry, 'forced-kill-acknowledged', at, { signal: 'SIGKILL' }), s);
+-			} else continue;
++			} else if (entry.lifecycle.state.phase !== 'TERMINATION_ACKNOWLEDGED') continue;
+ 			checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
+ 			s.removeClaim(entry); // clear the start-time marker so a reused PID can't match it later
+ 		}
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 52d31a79..b9a30a02 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -586,6 +586,32 @@ describe('merge authority — exact reviewer regressions', () => {
+     ])).bound).toBe(false);
+   });
+ 
++  test('merge recovery reads one exact retired PR linkage from the durable trace', async () => {
++    const result = await mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context({ state: 'MERGED' }),
++      allowRetired: true,
++      buildBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: {
++          readTrace: async () => ({
++            pull_requests: [{
++              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              branch: 'feature/merge', git_common_dir: '/repo/.git', url: 'https://example/pr/42',
++            }],
++          }),
++        },
++        driver: { close() {} },
++      }),
++    });
++
++    expect(result).toMatchObject({
++      bound: true, issueId: ISSUE, branch: 'feature/merge', gitCommonDir: '/repo/.git',
++    });
++  });
++
+   test('leases normalized repository identity across both reads and final mutation', async () => {
+     let reads = 0;
+     let merges = 0;
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 432a7089..f9d672f3 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -249,7 +249,7 @@ describe('merge command — mandatory release authority', () => {
+     });
+     expect(calls[0][0].run_receipt.payload).toMatchObject({
+       executor: { mode: 'guarded-exact-head-recovery' },
+-      mutations_attempted: [],
++      mutations_attempted: ['pr.merged'],
+     });
+   });
+ 
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 0d34030d..cb6db817 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -211,6 +211,36 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+   });
+ 
++  test('preserves long repository identity in bounded durable and compatibility records', async () => {
++    const store = durableStore();
++    const repo = `owner/${'repository'.repeat(10)}`;
++    const delivered = [];
++    await runFlowMonitorPass(context(
++      store,
++      async () => snapshot({ repo }),
++      async record => delivered.push(record),
++    ));
++
++    expect(store.events.at(-1).payload.bounded_payload.snapshot.repo).toBe(repo);
++    expect(store.events.at(-1).payload.bounded_payload.record.repo).toBe(repo);
++    expect(delivered.at(-1).repo).toBe(repo);
++  });
++
++  test('checkpoints non-event snapshot changes so recurring failures are observed', async () => {
++    const store = durableStore();
++    let next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: [{ name: 'ci', class: 'pending' }] });
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
++    await runFlowMonitorPass(ctx);
++
++    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(1);
++    expect(store.events.some(event => event.payload.type === 'monitor.checkpoint')).toBe(true);
++  });
++
+   test('retains transition identity beyond the first three snapshot entries', async () => {
+     const store = durableStore();
+     let next = snapshot({
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 7c74873d..3fa4d036 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -109,6 +109,57 @@ describe('execute — watcher lifecycle', () => {
+ 		});
+ 	});
+ 
++	test('resumes a persisted termination acknowledgement by reaping the dead watcher', async () => {
++		const checkpoints = [];
++		const cancelling = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
++				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
++				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => {},
++				removeClaim: () => {},
++				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
++			},
++		);
++		await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
++				watchers: cancelling, isAlive: () => false, removeClaim: () => {},
++				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
++			},
++		);
++		const acknowledged = checkpoints.find(checkpoint => checkpoint.state.phase === 'TERMINATION_ACKNOWLEDGED');
++		expect(acknowledged).toBeDefined();
++		const resumed = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2002,
++				watchers: [{
++					pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z', lifecycle: acknowledged,
++				}],
++				isAlive: () => false, removeClaim: () => {},
++			},
++		);
++		expect(resumed).toEqual([]);
++	});
++
++	test('terminates a newly spawned watcher when its authority checkpoint fails', async () => {
++		let writes = 0;
++		const killed = [];
++		await expect(executor.execute(
++			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
++				spawnWatcher: () => ({ pid: 1234 }),
++				persistLifecycleCheckpoint: () => { writes += 1; return writes === 1; },
++				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
++				isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
++			},
++		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++		expect(killed).toEqual([[1234, 'SIGKILL']]);
++	});
++
+ 	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
+ 		const signals = [];
+ 		const cancelling = await executor.execute(
+-- 
+2.51.0.windows.1
+

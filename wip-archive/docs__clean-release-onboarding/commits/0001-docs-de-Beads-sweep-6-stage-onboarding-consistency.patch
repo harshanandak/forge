@@ -1,0 +1,609 @@
+From 1ae0925697336707d239d2b26016072402a8f091 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 01:13:05 +0530
+Subject: [PATCH] docs: de-Beads sweep + 6-stage onboarding consistency for
+ 0.1.0
+
+Aligns onboarding/reference docs to the canonical 6 workflow stages
+(/plan /dev /validate /ship /review /verify) with pre-merge as an
+embedded gate, and reframes docs kernel-first with Beads as an opt-out
+backend.
+
+- Phantom /premerge + stage count (kernel cb70c04a): fix the taught flow
+  in QUICKSTART, MIGRATION, MANUAL_REVIEW_GUIDE, TEMPLATES, TOOLCHAIN
+  (ref + consumer copy); AGENTS.md "7 named stage skills" -> "6 workflow
+  stages + composable research skill" reconciled with its 6-row table.
+- ENHANCED_ONBOARDING demotion (cb70c04a): moved from Tutorials to
+  Historical in docs/INDEX.md + superseded-by-QUICKSTART banner (not
+  rewritten).
+- Docs de-Beads sweep (kernel 5021a1f8): SETUP.md + TOOLCHAIN.md now
+  present the kernel backend as the zero-install default and Beads as
+  opt-out/migration; corrected the false claim that project memory
+  requires bd (lib/project-memory.js is kernel-backed via kernel_memories
+  / sqlite-driver, zero bd calls); AGENTS.md "Beads issue" -> "issue".
+- Root CLAUDE.md reduced to a thin @AGENTS.md pointer; still-relevant
+  build/shell/MCP/git-hook content moved into AGENTS.md (stale Beads
+  lines dropped in the move).
+- Regenerated D20 bd call-site kill-list artifact so `release check
+  --target 0.1.0` stays 0 blockers.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .claude/rules/workflow.md                     |   2 +-
+ AGENTS.md                                     |  67 +++++++++-
+ CLAUDE.md                                     | 125 ++----------------
+ QUICKSTART.md                                 |   4 +-
+ docs/INDEX.md                                 |   2 +-
+ docs/forge/TOOLCHAIN.md                       |   7 +-
+ docs/guides/ENHANCED_ONBOARDING.md            |   2 +
+ docs/guides/MANUAL_REVIEW_GUIDE.md            |   4 +-
+ docs/guides/MIGRATION.md                      |   4 +-
+ docs/guides/SETUP.md                          |  14 +-
+ docs/reference/TEMPLATES.md                   |   2 +-
+ docs/reference/TOOLCHAIN.md                   |  33 ++---
+ docs/reference/shepherd.md                    |   2 +-
+ .../bd-call-site-kill-list.md                 |   8 +-
+ 14 files changed, 121 insertions(+), 155 deletions(-)
+
+diff --git a/.claude/rules/workflow.md b/.claude/rules/workflow.md
+index c2259fc1..f3c735b1 100644
+--- a/.claude/rules/workflow.md
++++ b/.claude/rules/workflow.md
+@@ -12,7 +12,7 @@ TDD-first development workflow for any project: plan → dev → validate → sh
+ | 3 | `/validate` | Type check, lint, code review, security, tests — all fresh output |
+ | 4 | `/ship` | Push and create PR with design doc reference |
+ | 5 | `/review` | Handle ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
+-| 6 | `/verify` | Post-merge health check (CI on main, close Beads) |
++| 6 | `/verify` | Post-merge health check (CI on main, close issues) |
+ 
+ > **Pre-merge gate (not a numbered stage)**: finish docs on the feature branch, confirm CI is green, and hand off the PR — embedded in the `/ship` and `/review` stages, not a standalone command.
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+index 6fa37feb..54108d73 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,7 +2,7 @@
+ 
+ ## Default TDD-First Workflow Template
+ 
+-This project ships a **default TDD-first workflow template** with 7 named stage skills. In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it.
++This project ships a **default TDD-first workflow template** with 6 workflow stages plus a composable **research** skill (a phase of `/plan` and usable standalone). In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it. Pre-merge is an embedded gate in `/ship` and `/review` (not a numbered stage); `/status` and `/shepherd` are utilities (not stages).
+ 
+ | Stage | Command     | Purpose                                                   | Required For |
+ |-------|-------------|-----------------------------------------------------------|--------------|
+@@ -69,7 +69,7 @@ When the user requests work, **you MUST automatically classify** the change type
+ 
+ "Skipping tests creates technical debt. I'll:
+  ✓ Allow this commit
+- ✓ Create follow-up Beads issue for tests
++ ✓ Create follow-up issue for tests
+  ✓ Document in commit message as [tech-debt]
+ 
+  Proceed?"
+@@ -142,7 +142,9 @@ Task 2: Validation logic
+ }
+ ```
+ 
+-## Git Hooks (Automatic Enforcement)
++## Git Hooks & Push Workflow (Automatic Enforcement)
++
++This project uses the **Professional Git Workflow** with Lefthook for automated quality gates.
+ 
+ **Pre-commit hook enforces TDD:**
+ - Blocks commits if source code modified without test files
+@@ -150,9 +152,60 @@ Task 2: Validation logic
+ - No AI decision required - automatic validation
+ 
+ **Pre-push hook validates tests:**
++- Branch protection: blocks direct push to `main`/`master`
++- ESLint: blocks on errors and warnings (strict mode, `--max-warnings 0`)
+ - All tests must pass before push
+ - Can skip for hotfixes with documentation
+ 
++**Pull Request workflow:**
++- PR template auto-fills with a standardized format; the self-review checklist catches most bugs before review
++- Reference the issue id in the PR body (e.g. the Forge Kernel issue id); **all review comments must be resolved** before merge
++- Squash-only merging for a clean, linear history
++
++**⚠️ AI agents must NEVER use `LEFTHOOK=0`, `--no-verify`, or any hook bypass.** If a hook fails, fix the underlying issue. Only humans may bypass hooks in emergencies, documented in the PR description.
++
++**Preferred push workflow (AI agents and humans):**
++
++```bash
++forge push                    # Branch protection + lint + tests, then push
++forge push --quick            # Review-cycle: lint-only push (CI runs full suite)
++forge worktree create <slug>  # Create a worktree
++forge test                    # Run tests with correct timeouts
++forge sync                    # Sync issue data
++forge clean                   # Remove merged worktrees
++```
++
++## Build, Shell, and MCP
++
++**Package manager**: Bun (preferred for performance).
++
++```bash
++bun install      # Install dependencies
++bun run dev      # Start development
++bun run build    # Production build
++bun test         # Run tests
++```
++
++**GitHub CLI**: `gh auth login` for the PR workflow.
++
++### Shell Model
++
++| Platform | Shell used by Forge commands and scripts |
++| --- | --- |
++| Windows | Git Bash for helper-backed Forge stage flows |
++| macOS/Linux | Default login shell |
++
++On Windows, Forge runtime health enforces Git Bash for helper-backed stage flows. Native PowerShell is still used by some bootstrap paths, and WSL may be useful for adjacent development tasks. See [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md#shell-model).
++
++### MCP Servers (Optional)
++
++If your agent supports MCP, these enhance research:
++
++- **Context7** - up-to-date library documentation and API reference
++- **grep.app** - search 1M+ GitHub repos for real-world code examples
++
++See [.mcp.json.example](.mcp.json.example) for configuration (Claude Code: copy it to `.mcp.json`) and [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) for detailed setup.
++
+ ## Documentation Index (Context Pointers)
+ 
+ **Detailed stage skill instructions** are located in:
+@@ -252,6 +305,14 @@ forge close <id>      # Complete work
+ - Run `forge prime` for detailed command reference and session close protocol
+ - Use `forge remember` for persistent knowledge — do NOT use MEMORY.md files
+ 
++## Project Learnings
++
++- **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
++- **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
++- **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
++- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
++- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. Never hand-edit generated agent skill copies — edit the canonical `skills/` source.
++
+ ## Session Completion
+ 
+ **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 10083a74..943baf11 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,120 +1,13 @@
+ # Project Instructions
+ 
+-Forge is a TDD-first workflow harness for AI coding agents. The current default template has 7 named stage skills plus utility commands, and v3 treats those stages as configurable building blocks rather than a mandatory ladder for every task.
++Forge uses **[AGENTS.md](AGENTS.md)** as the single source of truth for all agent
++instructions: the workflow template, change classification, detailed stage
++instructions, git hooks and push workflow, build/shell/MCP toolchain, issue
++tracking, project learnings, and session completion. This file intentionally
++holds no content of its own — it only loads AGENTS.md.
+ 
+-**Package manager**: Bun (preferred for performance)
++@AGENTS.md
+ 
+-**Build commands**:
+-
+-```bash
+-bun install      # Install dependencies
+-bun run dev      # Start development
+-bun run build    # Production build
+-bun test         # Run tests
+-```
+-
+----
+-
+-## Workflow
+-
+-> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of every session to load the current Forge workflow template, change classification, and detailed stage instructions. AGENTS.md is the single source of truth for the active workflow contract.
+-
+----
+-
+-## MCP Servers (Enhanced Capabilities)
+-
+-This project uses MCP (Model Context Protocol) servers for enhanced capabilities. If your AI agent supports MCP, set up these servers:
+-
+-**Available MCP servers:**
+-
+-- **Context7**: Up-to-date library documentation and API reference
+-- **grep.app**: Search 1M+ GitHub repos for real-world code examples
+-
+-**Setup for your agent:**
+-
+-See [.mcp.json.example](.mcp.json.example) for configuration. Setup varies by agent:
+-
+-- **Claude Code**: Copy `.mcp.json.example` to `.mcp.json` in project root
+-- **Cursor**: Check Cursor Settings > MCP for setup
+-- **Your agent**: If MCP-capable, configure using the example file
+-
+-See [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) for detailed MCP setup instructions.
+-
+----
+-
+-## Toolchain
+-
+-- **Beads** (recommended): Auto-installed during `bunx forge setup` - Git-backed issue tracking
+-- **GitHub CLI**: `gh auth login` - PR workflow
+-
+-Setup prompts for Beads during interactive installation. Manual install: see [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md).
+-
+-### Shell Model
+-
+-Forge commands and repo scripts assume the following shell model:
+-
+-| Platform | Shell used by Forge commands and scripts |
+-| --- | --- |
+-| Windows | Git Bash for helper-backed Forge stage flows |
+-| macOS/Linux | Default login shell |
+-
+-On Windows, Forge runtime health enforces Git Bash for helper-backed stage flows. Native PowerShell is still used by some bootstrap paths, and WSL may be useful for adjacent development tasks. See [docs/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md#shell-model) for details.
+-
+----
+-
+-## Git Workflow
+-
+-This project uses the **Professional Git Workflow** with Lefthook for automated quality gates:
+-
+-**Pre-commit hooks** (automatic):
+-- TDD enforcement: Source files must have corresponding tests
+-- Interactive prompts: Option to unstage, continue, or abort
+-
+-**Pre-push hooks** (automatic):
+-- Branch protection: Blocks direct push to main/master
+-- ESLint check: Blocks on errors and warnings (strict mode, `--max-warnings 0`)
+-- Test suite: All tests must pass
+-
+-**Pull Request workflow**:
+-- PR template auto-fills with standardized format
+-- Self-review checklist catches 80% of bugs before review
+-- Beads integration: Reference issues with `Closes beads-xxx`
+-- **All review comments must be resolved** before merge
+-- Squash-only merging: Clean, linear git history
+-
+-**Emergency bypass** (human-only, NEVER for AI agents):
+-```bash
+-LEFTHOOK=0 git push              # Skip all pre-push hooks
+-git commit --no-verify           # Skip pre-commit hooks
+-```
+-
+-**⚠️ AI agents must NEVER use `LEFTHOOK=0`, `--no-verify`, or any hook bypass.** If a hook fails, fix the underlying issue. Only humans may bypass hooks in emergencies, documented in the PR description.
+-
+-**Preferred push workflow** (for AI agents and humans):
+-```bash
+-forge push              # Runs branch protection + lint + tests, then pushes
+-forge push --quick      # Review-cycle: lint-only push (CI runs full suite)
+-forge worktree create <slug>  # Creates a worktree
+-forge test              # Runs tests with correct timeouts
+-forge sync              # Syncs issue data
+-forge clean             # Removes merged worktrees
+-```
+-
+-See [.github/pull_request_template.md](.github/pull_request_template.md) for PR guidelines.
+-
+----
+-
+-<!-- USER:START - Add project-specific learnings here as you work -->
+-
+-💡 **Keep this section focused** - Add patterns you discover while working.
+-
+-As you work, when you give the same instruction twice, add it here:
+-
+-- **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
+-- **Stage names**: The validation stage is `/validate` (not `/check`) — renamed in PR #50.
+-- **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
+-- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
+-- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. Never hand-edit generated agent skill copies — edit the canonical `skills/` source.
+-- **Review follow-up completion**: After fixing review feedback, always push the changes and resolve the related GitHub review threads via the GraphQL API before considering the work complete.
+-
+-<!-- USER:END -->
++> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of
++> every session to load the current Forge workflow contract. AGENTS.md is
++> authoritative; do not duplicate its content here.
+diff --git a/QUICKSTART.md b/QUICKSTART.md
+index 6a87816f..bbc6352b 100644
+--- a/QUICKSTART.md
++++ b/QUICKSTART.md
+@@ -111,10 +111,10 @@ npm pack --dry-run
+ The agent workflow stages are documented in `AGENTS.md` and the installed agent skill files:
+ 
+ ```text
+-/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
++/plan -> /dev -> /validate -> /ship -> /review -> /verify
+ ```
+ 
+-These are agent workflow stages. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
++These are the 6 agent workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages. A composable `research` skill runs as a phase of `/plan` or standalone. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
+ 
+ The workflow template is core to Forge. It is also designed to become more configurable as runtime graph, stage-skill, adapter, and extension surfaces ship. See [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) and [Skills and command projections](docs/reference/SKILLS.md).
+ 
+diff --git a/docs/INDEX.md b/docs/INDEX.md
+index bb11ac7a..3fc0986a 100644
+--- a/docs/INDEX.md
++++ b/docs/INDEX.md
+@@ -15,7 +15,6 @@ This is the canonical map for Forge documentation. DeepWiki and other generated
+ ## Tutorials
+ 
+ - [Quickstart](../QUICKSTART.md) - fastest path to a working local Forge install.
+-- [Enhanced onboarding](guides/ENHANCED_ONBOARDING.md) - broader setup and onboarding flow.
+ 
+ ## How-To Guides
+ 
+@@ -74,6 +73,7 @@ The [docs/work archive](work/README.md) contains planning artifacts, decisions,
+ Historical references that should not be treated as current release instructions:
+ 
+ - [Roadmap](reference/ROADMAP.md) - historical roadmap snapshot.
++- [Enhanced onboarding](guides/ENHANCED_ONBOARDING.md) - superseded by [Quickstart](../QUICKSTART.md); still references the old `/premerge` stage and undocumented flags. Historical reference only.
+ - [Superpowers analysis](reference/superpowers-analysis.md) - historical analysis.
+ - [Superpowers integration options](reference/superpowers-integration-options.md) - historical options.
+ - `docs/work/2026-04-28-skeleton-pivot/*v3*` files - `v3` is an internal/historical codename, not a public package version.
+diff --git a/docs/forge/TOOLCHAIN.md b/docs/forge/TOOLCHAIN.md
+index 175e351d..5559e5b2 100644
+--- a/docs/forge/TOOLCHAIN.md
++++ b/docs/forge/TOOLCHAIN.md
+@@ -10,7 +10,7 @@ Forge is a local runtime control plane that coordinates several tool surfaces:
+ Forge runtime control plane
+   - workflow templates and stage skills
+   - local project state and protected surfaces
+-  - Beads-backed issue wrappers and sync
++  - kernel-backed issue wrappers and sync (Beads is an opt-out backend)
+   - validation, packaging, and release evidence
+   - review adapters and external service hooks
+   - harness projections for agent-specific commands, prompts, workflows, and skills
+@@ -521,7 +521,7 @@ volumes:
+ ### GitHub CLI - PR Workflow
+ 
+ **Installation**: [cli.github.com](https://cli.github.com)
+-**Used in**: `/ship`, `/review`, `/premerge` stages
++**Used in**: `/ship` and `/review` stages
+ 
+ ```bash
+ # Install
+@@ -583,9 +583,10 @@ This table maps tools to the default workflow template. It is not the complete F
+ | `/validate` | Type check, lint, tests, SonarCloud |
+ | `/ship` | `forge close`, `gh pr create` |
+ | `/review` | `gh pr view`, Greptile, SonarCloud |
+-| `/premerge` | `forge sync`, doc updates, hand off PR |
+ | `/verify` | Documentation cross-check |
+ 
++Pre-merge is not a stage. Its work (`forge sync`, doc updates, hand off PR) runs inside the `/ship` and `/review` stages as an embedded documentation-and-handoff gate.
++
+ ---
+ 
+ ## Quick Reference Card
+diff --git a/docs/guides/ENHANCED_ONBOARDING.md b/docs/guides/ENHANCED_ONBOARDING.md
+index 7dfd96ae..533999ae 100644
+--- a/docs/guides/ENHANCED_ONBOARDING.md
++++ b/docs/guides/ENHANCED_ONBOARDING.md
+@@ -1,5 +1,7 @@
+ # Enhanced Onboarding Guide
+ 
++> **Historical — superseded by [Quickstart](../../QUICKSTART.md).** This guide predates the current onboarding flow and still references the old `/premerge` stage and some undocumented flags. Kept for historical reference only; do not follow it for a fresh install.
++
+ Intelligent onboarding that adapts to your project and preserves existing content.
+ 
+ ---
+diff --git a/docs/guides/MANUAL_REVIEW_GUIDE.md b/docs/guides/MANUAL_REVIEW_GUIDE.md
+index 37f9a714..9ba95760 100644
+--- a/docs/guides/MANUAL_REVIEW_GUIDE.md
++++ b/docs/guides/MANUAL_REVIEW_GUIDE.md
+@@ -9,9 +9,11 @@ Manual review remains required even when AI review tools are configured.
+ Default stage context:
+ 
+ ```text
+-/plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
++/plan -> /dev -> /validate -> /ship -> /review -> /verify
+ ```
+ 
++These are the 6 workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in `/ship` and `/review`.
++
+ ## Review Inputs
+ 
+ Check all available inputs:
+diff --git a/docs/guides/MIGRATION.md b/docs/guides/MIGRATION.md
+index a312b328..72324dd2 100644
+--- a/docs/guides/MIGRATION.md
++++ b/docs/guides/MIGRATION.md
+@@ -11,10 +11,10 @@ Forge is now documented as a local runtime control plane for AI-assisted enginee
+ Old docs often describe Forge as a fixed seven-, eight-, or nine-stage workflow. Replace that with:
+ 
+ ```text
+-Default template: /plan -> /dev -> /validate -> /ship -> /review -> /premerge -> /verify
++Default template: /plan -> /dev -> /validate -> /ship -> /review -> /verify
+ ```
+ 
+-Then add the boundary:
++These are the 6 workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in `/ship` and `/review`. A composable `research` skill runs as a phase of `/plan` or standalone. Then add the boundary:
+ 
+ ```text
+ These are agent workflow stages. Not every stage is a standalone forge CLI command.
+diff --git a/docs/guides/SETUP.md b/docs/guides/SETUP.md
+index 4b65e3f8..a2dee457 100644
+--- a/docs/guides/SETUP.md
++++ b/docs/guides/SETUP.md
+@@ -7,7 +7,7 @@ This guide covers supported Forge adoption paths. Use [Quickstart](../../QUICKST
+ - Git
+ - Node.js and Bun
+ - GitHub CLI if using PR or sync workflows
+-- Optional: Beads (`bd`) for durable issue state
++- Optional: Beads (`bd`) as an opt-out issue backend (issue commands use the built-in kernel backend by default)
+ 
+ ## Install
+ 
+@@ -70,11 +70,15 @@ Forge currently supports Claude Code, Codex, and Cursor. Hermes support is plann
+ 
+ Exact generated files depend on selected agents and existing repository files. Use `--dry-run` before applying setup to a mature repo.
+ 
+-## Beads
++## Issue Backend
+ 
+-Beads is optional but recommended for durable issue state. Prefer the current Beads installer documented by Beads itself and this repo's toolchain docs. On Windows, avoid stale global install examples if they hit EPERM or shim issues; use the PowerShell installer path described in [Toolchain](../reference/TOOLCHAIN.md).
++Forge issue commands (`forge ready`, `forge show`, `forge claim`, `forge create`, `forge close`) use the built-in **kernel** backend by default. No install or initialization is required — a fresh clone can track issues immediately.
+ 
+-Basic health checks:
++## Beads (Opt-Out Backend)
++
++Beads (`bd`) is an optional opt-out backend for teams that prefer Dolt-backed sync internals. Select it (precedence, highest first) with `--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`; only then is `bd` required. Prefer the current Beads installer documented by Beads itself and this repo's toolchain docs. On Windows, avoid stale global install examples if they hit EPERM or shim issues; use the PowerShell installer path described in [Toolchain](../reference/TOOLCHAIN.md).
++
++When Beads is selected, health checks:
+ 
+ ```bash
+ bd doctor
+@@ -82,7 +86,7 @@ bd dolt status
+ forge sync
+ ```
+ 
+-If a feature worktree reports `database "forge" not found on Dolt server`, diagnose in the root checkout before changing issue state.
++If a feature worktree reports `database "forge" not found on Dolt server`, diagnose in the root checkout before changing issue state. This applies only to the Beads backend.
+ 
+ ## Deprecated GitHub Sync Cleanup
+ 
+diff --git a/docs/reference/TEMPLATES.md b/docs/reference/TEMPLATES.md
+index 0dc97445..6be56cf6 100644
+--- a/docs/reference/TEMPLATES.md
++++ b/docs/reference/TEMPLATES.md
+@@ -44,7 +44,7 @@ forge init --full
+ 
+ `forge setup --minimal` remains a separate shortcut for repositories that want setup behavior rather than only the day-one `.forge/` skeleton.
+ 
+-Stage commands such as `/review`, `/premerge`, and `/verify` are agent workflow stages. Do not present them as standalone `forge review`, `forge premerge`, or `forge verify` CLI commands unless those commands exist in the current CLI registry.
++Stage commands such as `/review` and `/verify` are agent workflow stages. Do not present them as standalone `forge review` or `forge verify` CLI commands unless those commands exist in the current CLI registry. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in `/ship` and `/review`.
+ 
+ ## Planning Template
+ 
+diff --git a/docs/reference/TOOLCHAIN.md b/docs/reference/TOOLCHAIN.md
+index 1f52e881..d053cffe 100644
+--- a/docs/reference/TOOLCHAIN.md
++++ b/docs/reference/TOOLCHAIN.md
+@@ -10,7 +10,7 @@ Forge is a local runtime control plane that coordinates several tool surfaces:
+ Forge runtime control plane
+   - workflow templates and stage skills
+   - local project state and protected surfaces
+-  - Beads-backed issue wrappers and sync
++  - kernel-backed issue wrappers and sync (Beads is an opt-out backend)
+   - validation, packaging, and release evidence
+   - review adapters and external service hooks
+   - harness projections for agent-specific commands, prompts, workflows, and skills
+@@ -37,15 +37,17 @@ Windows gotchas:
+ 
+ ---
+ 
+-## Beads - Dolt-Backed Issue Tracking
++## Beads - Opt-Out Dolt-Backed Issue Backend
+ 
+ **Package**: `@beads/bd`  
+ **Repository**: [github.com/steveyegge/beads](https://github.com/steveyegge/beads)  
+ **Purpose**: Distributed issue tracking designed for AI coding agents
+ 
+-### Current Forge Target
++> Forge issue wrappers use the built-in **kernel** backend by default — no `bd` install or `bd init` is required, and a fresh clone can track issues immediately. Beads is an **opt-out** backend selected (precedence, highest first) with `--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`. The rest of this section applies only when Beads is selected.
+ 
+-- Forge now targets the stable Beads `v1.0.0` release for repo setup and CI.
++### When Beads Is Selected
++
++- Forge targets the stable Beads `v1.0.0` release for Beads-backed setup and CI.
+ - Routine team sync still goes through `forge sync`.
+ - Use `bd` directly for Beads features Forge does not wrap yet, such as `bd init`, `bd comments`, `bd dep`, `bd blocked`, `bd backup`, and `bd dolt *`.
+ 
+@@ -134,21 +136,21 @@ bash scripts/beads-migrate-to-dolt.sh --help
+ 
+ ### Project Memory
+ 
+-Forge project memory uses Beads as the durable store. Compatibility helpers in `lib/project-memory.js` route writes to `bd remember --key <key>`, reads to `bd recall <key> --json`, and search/list operations to `bd memories --json`.
++Forge project memory is a **kernel-backed** read model. `lib/project-memory.js` persists memories in the per-repo Forge Kernel store (the `kernel_memories` table, via the built-in SQLite driver) — it does **not** call `bd`. No Beads install is required for `forge remember` / `forge recall`.
+ 
+-Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions, but they do not create a new datastore. The supported categories are:
++Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions on top of the same kernel store; they do not create a new datastore. The supported categories are:
+ 
+ | Category | Key prefix | Durable backend |
+ | --- | --- | --- |
+-| decisions | `decisions:` | Beads memory index for canonical docs/work decisions |
+-| episodes | `episodes:` | Beads-backed memory/audit context |
+-| skills | `skills:` | Beads memory index for skill references |
++| decisions | `decisions:` | Kernel memory index for canonical docs/work decisions |
++| episodes | `episodes:` | Kernel-backed memory/audit context |
++| skills | `skills:` | Kernel memory index for skill references |
+ | state | `state:` | Forge-owned state references |
+-| issues | `issues:` | Beads issue references |
+-| audit | `audit:` | Beads-backed audit references |
+-| preferences | `preferences:` | Beads memory preferences |
++| issues | `issues:` | Issue references (`beadsRefs` may cross-link Beads issues when that backend is selected) |
++| audit | `audit:` | Kernel-backed audit references |
++| preferences | `preferences:` | Kernel memory preferences |
+ 
+-Every typed write must include provenance fields: `actor`, `reason`, and `source`. If `bd` is missing or returns malformed JSON, Forge surfaces the Beads command failure instead of falling back to local JSONL files.
++Every typed write must include provenance fields: `actor`, `reason`, and `source`.
+ 
+ ### Post-Upgrade Smoke Verification
+ 
+@@ -506,7 +508,7 @@ volumes:
+ ### GitHub CLI - PR Workflow
+ 
+ **Installation**: [cli.github.com](https://cli.github.com)
+-**Used in**: `/ship`, `/review`, `/premerge` stages
++**Used in**: `/ship` and `/review` stages
+ 
+ ```bash
+ # Install
+@@ -569,9 +571,10 @@ This table maps tools to the default workflow template. It is not the complete F
+ | `/validate` | Type check, lint, tests, SonarCloud |
+ | `/ship` | `forge close`, `gh pr create` |
+ | `/review` | `gh pr view`, Greptile, SonarCloud |
+-| `/premerge` | `forge sync`, doc updates, hand off PR |
+ | `/verify` | Documentation cross-check |
+ 
++Pre-merge is not a stage. Its work (`forge sync`, doc updates, hand off PR) runs inside the `/ship` and `/review` stages as an embedded documentation-and-handoff gate.
++
+ ---
+ 
+ ## Quick Reference Card
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index 69488d03..38f33164 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -3,7 +3,7 @@
+ The shepherd is a **monitor-driven utility command** that automates the manual
+ polling / rerun / escalation loop a human otherwise runs by hand after
+ `/review`. It is **not** a workflow stage and does not replace `/review` or
+-`/premerge`.
++the pre-merge gate (the embedded documentation-and-handoff gate in `/ship` and `/review`).
+ 
+ ```bash
+ forge shepherd <pr-number>
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index d7ae0b1f..c3fdbc1a 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -9,7 +9,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ | --- | ---: | ---: |
+ | command | 76 | 8 |
+ | runtime | 260 | 34 |
+-| docs | 394 | 47 |
++| docs | 395 | 47 |
+ | skills | 1 | 1 |
+ | hooks | 0 | 0 |
+ 
+@@ -107,8 +107,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ 
+ - [ ] docs/guides/BEADS_GITHUB_SYNC.md (3)
+   - lines: 7 (.beads), 10 (dolt), 32 (.beads)
+-- [ ] docs/guides/SETUP.md (5)
+-  - lines: 10 (bd), 80 (bd), 81 (bd, dolt), 85 (dolt), 109 (dolt)
++- [ ] docs/guides/SETUP.md (6)
++  - lines: 10 (bd), 79 (bd, dolt), 84 (bd), 85 (bd, dolt), 89 (dolt), 113 (dolt)
+ - [ ] docs/guides/SUPPORT.md (26)
+   - lines: 18 (bd), 19 (bd, dolt), 23 (bd), 53 (dolt), 58 (dolt), 60 (.beads), 66 (bd), 67 (bd, dolt), 68 (bd, dolt), 69 (bd, dolt), 72 (.beads, dolt), 76 (.beads), 78 (bd), 79 (.beads), 80 (.beads), 81 (bd, dolt), 85 (dolt), 87 (.beads), 93 (bd), 94 (bd, dolt), 119 (dolt), 131 (.beads), 144 (.beads), 152 (.beads), 158 (.beads), 165 (.beads)
+ - [ ] docs/PROJECT_DESIGN.md (20)
+@@ -146,7 +146,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] docs/reference/test-environment.md (1)
+   - lines: 483 (bd)
+ - [ ] docs/reference/TOOLCHAIN.md (50)
+-  - lines: 40 (dolt), 42 (bd), 50 (bd, dolt), 57 (bd), 64 (bd), 70 (bd), 71 (bd), 77 (bd), 78 (bd), 83 (.beads), 88 (.beads), 98 (bd, .beads), 102 (.beads), 105 (dolt), 111 (.beads), 112 (.beads), 113 (.beads), 114 (.beads), 118 (.beads), 122 (.beads), 126 (.beads), 127 (.beads), 132 (dolt), 137 (bd), 151 (bd), 163 (bd), 164 (bd), 165 (bd), 166 (bd), 167 (bd), 168 (bd), 169 (bd), 171 (bd), 188 (bd), 189 (bd), 190 (bd), 191 (bd), 192 (bd, dolt), 207 (bd), 532 (bd), 537 (bd), 552 (dolt), 582 (bd), 587 (bd), 590 (dolt), 610 (bd), 613 (bd), 614 (bd), 620 (bd), 622 (bd)
++  - lines: 40 (dolt), 42 (bd), 46 (bd), 52 (bd, dolt), 59 (bd), 66 (bd), 72 (bd), 73 (bd), 79 (bd), 80 (bd), 85 (.beads), 90 (.beads), 100 (bd, .beads), 104 (.beads), 107 (dolt), 113 (.beads), 114 (.beads), 115 (.beads), 116 (.beads), 120 (.beads), 124 (.beads), 128 (.beads), 129 (.beads), 134 (dolt), 139 (bd), 165 (bd), 166 (bd), 167 (bd), 168 (bd), 169 (bd), 170 (bd), 171 (bd), 173 (bd), 190 (bd), 191 (bd), 192 (bd), 193 (bd), 194 (bd, dolt), 209 (bd), 534 (bd), 539 (bd), 554 (dolt), 585 (bd), 590 (bd), 593 (dolt), 613 (bd), 616 (bd), 617 (bd), 623 (bd), 625 (bd)
+ - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-interface-layer.md (15)
+   - lines: 7 (bd, dolt), 9 (bd), 15 (bd), 16 (bd), 17 (bd), 18 (bd), 19 (bd), 20 (bd), 21 (bd), 31 (bd), 44 (dolt), 54 (bd), 64 (bd, dolt), 67 (bd), 77 (bd)
+ - [ ] docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/beads-fidelity.md (1)
+-- 
+2.51.0.windows.1
+

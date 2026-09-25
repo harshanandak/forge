@@ -1,0 +1,525 @@
+From 03536dcf83cbdb753419389ebb2f0dbf92f2e7a5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 14:28:20 +0530
+Subject: [PATCH] feat(test): persist full-suite terminal receipts
+
+---
+ scripts/test-full-suite.js           | 235 ++++++++++++++++++++++++++-
+ test/scripts/test-full-suite.test.js | 178 ++++++++++++++++++++
+ 2 files changed, 409 insertions(+), 4 deletions(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index e725cf0c..5802286a 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -4,7 +4,8 @@
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+-const { spawn: defaultSpawn } = require('node:child_process');
++const { randomUUID } = require('node:crypto');
++const { execFileSync, spawn: defaultSpawn } = require('node:child_process');
+ 
+ const {
+   createDurationMap,
+@@ -15,9 +16,174 @@ const {
+ } = require('./test-ci-shard');
+ const { createProcessTree, signalExitCode } = require('./process-tree');
+ const { stripGitHookEnv } = require('./test');
++const { parseAttributes } = require('./test-profile');
+ 
+ const rootDir = path.join(__dirname, '..');
+ const reportDir = path.join(rootDir, 'test-results');
++const RECEIPT_SCHEMA_VERSION = 1;
++const RECEIPT_KIND = 'full-suite.terminal';
++const FULL_HEAD_SHA = /^[0-9a-f]{40}$/;
++
++function numberAttribute(attributes, key) {
++  const value = Number.parseInt(attributes[key], 10);
++  return Number.isSafeInteger(value) && value >= 0 ? value : null;
++}
++
++function sumAttributes(attributes, key) {
++  const values = attributes.map((item) => numberAttribute(item, key));
++  return values.every((value) => value !== null)
++    ? values.reduce((total, value) => total + value, 0)
++    : null;
++}
++
++function aggregateJUnitReports(reportPaths) {
++  if (!Array.isArray(reportPaths) || reportPaths.length === 0) {
++    return { complete: false, reason: 'no-reports' };
++  }
++
++  const totals = { tests: 0, assertions: 0, skipped: 0, failures: 0 };
++  for (const reportPath of reportPaths) {
++    let content;
++    try {
++      content = fs.readFileSync(reportPath, 'utf8');
++    } catch {
++      return { complete: false, reason: 'missing-report' };
++    }
++
++    const normalized = content.trim();
++    const rootMatch = normalized.match(/<testsuites\b([^>]*)>/);
++    const suiteMatches = [...normalized.matchAll(/<testsuite\b([^>]*)>/g)];
++    if (!rootMatch || (!normalized.endsWith('</testsuites>') && !normalized.endsWith('/>'))) {
++      return { complete: false, reason: 'truncated-report' };
++    }
++
++    const rootAttributes = parseAttributes(rootMatch[1]);
++    const suiteAttributes = suiteMatches.map((match) => parseAttributes(match[1]));
++    const testcaseCount = (normalized.match(/<testcase\b/g) || []).length;
++    const testcaseAssertions = [...normalized.matchAll(/<testcase\b([^>]*)>/g)]
++      .map((match) => numberAttribute(parseAttributes(match[1]), 'assertions'));
++    const rootOrSuites = (key) => {
++      const rootValue = numberAttribute(rootAttributes, key);
++      if (rootValue !== null) return rootValue;
++      return sumAttributes(suiteAttributes, key);
++    };
++    const values = {
++      tests: rootOrSuites('tests') ?? testcaseCount,
++      assertions: rootOrSuites('assertions')
++        ?? (testcaseAssertions.length > 0 && testcaseAssertions.every((value) => value !== null)
++          ? testcaseAssertions.reduce((total, value) => total + value, 0)
++          : null),
++      skipped: rootOrSuites('skipped')
++        ?? (normalized.match(/<skipped\b/g) || []).length,
++      failures: rootOrSuites('failures')
++        ?? ((normalized.match(/<(?:failure|error)\b/g) || []).length),
++    };
++    if (Object.values(values).some((value) => value === null)) {
++      return { complete: false, reason: 'non-reconstructable-report' };
++    }
++    if (values.tests === 0) {
++      return { complete: false, reason: 'zero-tests' };
++    }
++    for (const key of Object.keys(totals)) totals[key] += values[key];
++  }
++
++  return { complete: true, ...totals };
++}
++
++function buildTerminalReceipt({
++  runId,
++  headSha,
++  startedAt,
++  completedAt = null,
++  parentExitStatus = null,
++  completionState = 'running',
++  shardSpecs = [],
++  shardResults = [],
++}) {
++  const resultByIndex = new Map(shardResults.map((result) => [result.index, result]));
++  const shards = shardSpecs.map((spec) => {
++    const result = resultByIndex.get(spec.index);
++    const report = result?.report;
++    return {
++      index: spec.index,
++      source: spec.source || null,
++      files: [...spec.files],
++      exitStatus: Number.isSafeInteger(result?.exitStatus) ? result.exitStatus : null,
++      reportPath: result?.reportPath || null,
++      coverage: report?.complete === true ? 'complete' : 'incomplete',
++    };
++  });
++  const completeReports = shardResults.length === shardSpecs.length
++    && shardResults.every((result) => result.report?.complete === true);
++  const totals = completeReports
++    ? shardResults.reduce((sum, result) => {
++      for (const key of ['tests', 'assertions', 'skipped', 'failures']) sum[key] += result.report[key];
++      return sum;
++    }, { tests: 0, assertions: 0, skipped: 0, failures: 0 })
++    : { tests: null, assertions: null, skipped: null, failures: null };
++  const reconstructable = FULL_HEAD_SHA.test(headSha || '')
++    && Number.isSafeInteger(parentExitStatus)
++    && shardSpecs.length > 0
++    && shards.every((shard) => shard.coverage === 'complete' && Number.isSafeInteger(shard.exitStatus))
++    && completeReports
++    && totals.tests > 0;
++  const result = reconstructable
++    ? (parentExitStatus === 0 && totals.failures === 0 ? 'PASS' : 'FAIL')
++    : 'INCOMPLETE';
++  return {
++    schemaVersion: RECEIPT_SCHEMA_VERSION,
++    kind: RECEIPT_KIND,
++    runId: runId || null,
++    headSha: FULL_HEAD_SHA.test(headSha || '') ? headSha : null,
++    startedAt: startedAt || null,
++    completedAt,
++    parentExitStatus: Number.isSafeInteger(parentExitStatus) ? parentExitStatus : null,
++    completionState,
++    result,
++    totals,
++    shards,
++  };
++}
++
++function writeTerminalReceipt(receipt, receiptPath) {
++  if (!receiptPath || typeof receiptPath !== 'string') throw new Error('receipt path is required');
++  fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
++  const tempPath = `${receiptPath}.tmp`;
++  fs.writeFileSync(tempPath, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
++  try {
++    fs.renameSync(tempPath, receiptPath);
++  } catch (error) {
++    if (!['EEXIST', 'EPERM', 'ENOTEMPTY'].includes(error?.code)) throw error;
++    fs.rmSync(receiptPath, { force: true });
++    fs.renameSync(tempPath, receiptPath);
++  }
++  return receiptPath;
++}
++
++function readTerminalReceipt(receiptPath) {
++  try {
++    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
++    return receipt && receipt.schemaVersion === RECEIPT_SCHEMA_VERSION
++      && receipt.kind === RECEIPT_KIND ? receipt : null;
++  } catch {
++    return null;
++  }
++}
++
++function resolveHeadSha(options = {}) {
++  if (Object.hasOwn(options, 'headSha')) return options.headSha;
++  try {
++    return execFileSync('git', ['rev-parse', 'HEAD'], {
++      cwd: rootDir,
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'ignore'],
++      windowsHide: true,
++    }).trim();
++  } catch {
++    return null;
++  }
++}
++
+ 
+ function parseArgs(argv) {
+   const args = {
+@@ -150,6 +316,7 @@ function spawnShard(shard, options = {}) {
+   const processTree = options.processTree || createProcessTree({ env, platform });
+   fs.mkdirSync(reportDir, { recursive: true });
+   const junitPath = path.join(reportDir, `${labelPrefix}-shard-${shard.index}.xml`);
++  fs.rmSync(junitPath, { force: true });
+ 
+   return new Promise((resolve, reject) => {
+     const reservation = processTree.reserveChild({
+@@ -200,8 +367,14 @@ function spawnShard(shard, options = {}) {
+     }
+ 
+     child.on('close', (code) => {
++      const exitStatus = code ?? 1;
+       processTree.unregisterChild(reservation);
+-      resolve(code ?? 1);
++      try {
++        options.onClose?.({ exitStatus, reportPath: junitPath, shard });
++        resolve(exitStatus);
++      } catch (error) {
++        reject(error);
++      }
+     });
+   });
+ }
+@@ -212,8 +385,37 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+   const processTree = deps.processTree || createProcessTree({ env, platform });
+   let signal = null;
+   let completed = false;
++  const runId = deps.runId || randomUUID();
++  const startedAt = deps.startedAt || new Date().toISOString();
++  const now = typeof deps.now === 'function' ? deps.now : () => new Date().toISOString();
++  const receiptPath = deps.receiptPath
++    || path.join(reportDir, 'full-suite-receipts', `${args.labelPrefix || 'local-full'}-${runId}.json`);
++  const headSha = resolveHeadSha(deps);
++  let shardSpecs = [];
++  const shardResults = [];
++  let completionState = 'running';
++  let finalExitStatus = null;
++  const persistReceipt = (parentExitStatus = finalExitStatus, completedAt = null) => {
++    const receipt = buildTerminalReceipt({
++      runId,
++      headSha,
++      startedAt,
++      completedAt,
++      parentExitStatus,
++      completionState,
++      shardSpecs,
++      shardResults,
++    });
++    try {
++      writeTerminalReceipt(receipt, receiptPath);
++    } catch {
++    }
++  };
+   const removeSignalHandlers = processTree.installSignalHandlers((received) => {
+     signal = received;
++    finalExitStatus = signalExitCode(received);
++    completionState = 'terminated';
++    persistReceipt(finalExitStatus, now());
+   });
+ 
+   try {
+@@ -223,10 +425,14 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+       : getDefaultShardCount(deps.cpuCount);
+     const profile = deps.profile || readNewestProfile(reportDir);
+     const durationMap = deps.durationMap || createDurationMap(profile);
+-    const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
++    shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
++    persistReceipt();
+ 
+     if (shardSpecs.length === 0) {
+       console.log('No unit test files discovered for local full-suite run');
++      completionState = 'completed';
++      finalExitStatus = 0;
++      persistReceipt(finalExitStatus, now());
+       return 0;
+     }
+ 
+@@ -241,10 +447,26 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+       spawn: deps.spawn,
+       platform,
+       processTree,
++      onClose: ({ exitStatus, reportPath, shard }) => {
++        const report = aggregateJUnitReports([reportPath]);
++        const next = { index: shard.index, exitStatus, reportPath, report };
++        const existing = shardResults.findIndex((result) => result.index === shard.index);
++        if (existing >= 0) shardResults[existing] = next;
++        else shardResults.push(next);
++        persistReceipt();
++      },
+     })));
+ 
+     completed = true;
+-    return signal ? signalExitCode(signal) : (results.some((code) => code !== 0) ? 1 : 0);
++    finalExitStatus = signal ? signalExitCode(signal) : (results.some((code) => code !== 0) ? 1 : 0);
++    completionState = signal ? 'terminated' : 'completed';
++    persistReceipt(finalExitStatus, now());
++    return finalExitStatus;
++  } catch (error) {
++    finalExitStatus = signal ? signalExitCode(signal) : 1;
++    completionState = signal ? 'terminated' : 'failed';
++    persistReceipt(finalExitStatus, now());
++    throw error;
+   } finally {
+     removeSignalHandlers();
+     processTree.cleanup(signal || !completed ? 'SIGKILL' : 'SIGTERM');
+@@ -267,14 +489,19 @@ if (require.main === module) {
+ }
+ 
+ module.exports = {
++  aggregateJUnitReports,
+   assertExactShardAssignment,
+   buildShardTestArgs,
++  buildTerminalReceipt,
+   buildShardSpecs,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
+   main,
+   parseArgs,
++  readTerminalReceipt,
+   runFullSuiteInParallel,
+   spawnShard,
+   walkAllTests,
++  resolveHeadSha,
++  writeTerminalReceipt,
+ };
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 856cff45..2b737d87 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -9,10 +9,13 @@ const { describe, expect, test } = require('bun:test');
+ 
+ const {
+   assertExactShardAssignment,
++  aggregateJUnitReports,
++  buildTerminalReceipt,
+   buildShardTestArgs,
+   buildShardSpecs,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
++  readTerminalReceipt,
+   parseArgs,
+   runFullSuiteInParallel,
+   spawnShard,
+@@ -304,3 +307,178 @@ describe('scripts/test-full-suite.js', () => {
+     expect(status).toBe(1);
+   });
+ });
++
++describe('full-suite terminal receipts', () => {
++  test('builds a reconstructable PASS receipt from exact head, shard coverage, and JUnit totals', () => {
++    const receipt = buildTerminalReceipt({
++      runId: 'run-pass',
++      headSha: 'a'.repeat(40),
++      startedAt: '2026-08-07T08:00:00.000Z',
++      completedAt: '2026-08-07T08:01:00.000Z',
++      parentExitStatus: 0,
++      completionState: 'completed',
++      shardSpecs: [{
++        index: 0,
++        source: 'modulo',
++        files: ['test/a.test.js'],
++      }],
++      shardResults: [{
++        index: 0,
++        exitStatus: 0,
++        reportPath: 'test-results/local-full-shard-0.xml',
++        report: {
++          complete: true,
++          tests: 3,
++          assertions: 5,
++          skipped: 1,
++          failures: 0,
++        },
++      }],
++    });
++
++    expect(receipt).toMatchObject({
++      schemaVersion: 1,
++      kind: 'full-suite.terminal',
++      runId: 'run-pass',
++      headSha: 'a'.repeat(40),
++      parentExitStatus: 0,
++      completionState: 'completed',
++      result: 'PASS',
++      totals: { tests: 3, assertions: 5, skipped: 1, failures: 0 },
++    });
++    expect(receipt.shards).toEqual([{
++      index: 0,
++      source: 'modulo',
++      files: ['test/a.test.js'],
++      exitStatus: 0,
++      reportPath: 'test-results/local-full-shard-0.xml',
++      coverage: 'complete',
++    }]);
++  });
++
++  test('aggregates Bun JUnit reports and fails closed when a report is missing or truncated', () => {
++    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-receipt-'));
++    try {
++      const completePath = path.join(fixtureRoot, 'complete.xml');
++      fs.writeFileSync(completePath, `<testsuites tests="3" assertions="5" skipped="1" failures="0">
++  <testsuite tests="3" assertions="5" skipped="1" failures="0">
++    <testcase assertions="2" />
++    <testcase assertions="3" />
++  </testsuite>
++</testsuites>`, 'utf8');
++      expect(aggregateJUnitReports([completePath])).toEqual({
++        complete: true,
++        tests: 3,
++        assertions: 5,
++        skipped: 1,
++        failures: 0,
++      });
++      expect(aggregateJUnitReports([
++        completePath,
++        path.join(fixtureRoot, 'missing.xml'),
++      ])).toMatchObject({ complete: false, reason: 'missing-report' });
++
++      const truncatedPath = path.join(fixtureRoot, 'truncated.xml');
++      fs.writeFileSync(truncatedPath, '<testsuites tests="3" assertions="5"', 'utf8');
++      expect(aggregateJUnitReports([truncatedPath])).toMatchObject({
++        complete: false,
++        reason: 'truncated-report',
++      });
++    } finally {
++      fs.rmSync(fixtureRoot, { recursive: true, force: true });
++    }
++  });
++  test('successful runner writes a terminal PASS receipt from shard JUnit output', async () => {
++    const receiptRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-full-suite-pass-'));
++    const receiptPath = path.join(receiptRoot, 'receipt.json');
++    const processTree = {
++      reserveChild: () => ({ id: 'pass' }),
++      registerChild: () => true,
++      unregisterChild: () => {},
++      installSignalHandlers: () => () => {},
++      cleanup: () => {},
++    };
++    const spawn = (_command, args) => {
++      const child = new EventEmitter();
++      child.pid = 9500;
++      const reportPath = args[args.indexOf('--reporter-outfile') + 1];
++      fs.writeFileSync(reportPath, `<testsuites tests="2" assertions="3" skipped="0" failures="0">
++  <testsuite tests="2" assertions="3" skipped="0" failures="0">
++    <testcase assertions="1" />
++    <testcase assertions="2" />
++  </testsuite>
++</testsuites>`, 'utf8');
++      process.nextTick(() => child.emit('close', 0));
++      return child;
++    };
++
++    try {
++      const status = await runFullSuiteInParallel({ shards: 1 }, {
++        allTests: ['test/a.test.js'],
++        durationMap: new Map([['test/a.test.js', 1]]),
++        headSha: 'c'.repeat(40),
++        processTree,
++        receiptPath,
++        spawn,
++      });
++
++      expect(status).toBe(0);
++      expect(readTerminalReceipt(receiptPath)).toMatchObject({
++        headSha: 'c'.repeat(40),
++        parentExitStatus: 0,
++        completionState: 'completed',
++        result: 'PASS',
++        totals: { tests: 2, assertions: 3, skipped: 0, failures: 0 },
++      });
++    } finally {
++      fs.rmSync(receiptRoot, { recursive: true, force: true });
++    }
++  });
++
++
++  test('persists terminal receipts atomically and observes termination as INCOMPLETE', async () => {
++    const receiptPath = path.join(os.tmpdir(), `forge-full-suite-${Date.now()}-receipt.json`);
++    let onSignal;
++    const processTree = {
++      reserveChild: () => ({ id: 'termination' }),
++      registerChild: () => true,
++      unregisterChild: () => {},
++      installSignalHandlers: (callback) => {
++        onSignal = callback;
++        return () => {};
++      },
++      cleanup: () => {},
++    };
++    const spawn = () => {
++      const child = new EventEmitter();
++      child.pid = 9400;
++      process.nextTick(() => {
++        onSignal('SIGTERM');
++        child.emit('close', null);
++      });
++      return child;
++    };
++
++    try {
++      const status = await runFullSuiteInParallel({ shards: 1 }, {
++        allTests: ['test/a.test.js'],
++        durationMap: new Map([['test/a.test.js', 1]]),
++        headSha: 'b'.repeat(40),
++        processTree,
++        receiptPath,
++        spawn,
++      });
++
++      expect(status).toBe(143);
++      expect(readTerminalReceipt(receiptPath)).toMatchObject({
++        headSha: 'b'.repeat(40),
++        parentExitStatus: 143,
++        completionState: 'terminated',
++        result: 'INCOMPLETE',
++      });
++    } finally {
++      fs.rmSync(receiptPath, { force: true });
++      fs.rmSync(`${receiptPath}.tmp`, { force: true });
++    }
++  });
++});
+-- 
+2.51.0.windows.1
+

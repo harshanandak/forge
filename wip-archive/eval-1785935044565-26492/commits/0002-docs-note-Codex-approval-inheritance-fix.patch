@@ -1,0 +1,24 @@
+From 50c7813beef661c484bbf30825ca36c1e8afb38f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 16:55:53 +0530
+Subject: [PATCH] docs: note Codex approval inheritance fix
+
+---
+ CHANGELOG.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9d39353e..4c90912e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -29,6 +29,7 @@ The **adoption-unblocking wave** — the changes beta testers hit on their very
+ 
+ ### Fixed
+ 
++- **Codex worktrees respect user-owned approval and sandbox policy.** Removed the tracked project policy that overrode explicit user/launch configuration and caused autonomous tasks to pause for approvals; a repository invariant prevents those project-level keys from returning. (#483, e377256c-c15b-49fc-ac0e-eb5d1f44344d)
+ - **`forge ship` / `forge review` no longer hard-fail on a fresh or in-flight branch (B1).** They previously threw `Stage ship requires authoritative workflow state` whenever no `/plan → /dev → /validate → /ship` history had been walked — blocking the three most common adoption paths: a fresh setup, an in-flight branch, and a manual commit. The stage gate now degrades to a loud stderr warning and seeds stage history in the kernel, so ship works incrementally and future gating gets real data. The rework/contradiction guard (e.g. `validate` started-but-not-done) stays **fail-closed**, and `FORGE_STAGE_GATE=strict` restores the legacy hard block. (#413)
+ - **`forge setup` / `forge init --profile minimal` report hook enforcement honestly.** A deliberately-disabled TDD gate no longer prints `✓ Git hook enforcement active` or exits `1` with a `TDD ENFORCEMENT IS NOT ACTIVE` banner — the human-facing verdict and exit code now honor the resolved config (the hook scripts already honored it at run time; this closes the reporting/exit half). A disabled gate reports as intentionally inert with the re-enable command; a corrupt config still fails toward enforcement. (#414, #399)
+ - **`forge worktree create` bases new branches on the default branch, not the current checkout (B2).** A worktree created while on a WIP branch previously forked from the current HEAD and silently inherited unrelated commits. New worktrees now fork from the repository default branch (`origin/<default>` when the remote ref exists, else the local default); a new `--base <ref>` flag overrides it (invalid refs error and create nothing), and `create` prints the base it used so the fork point is never silent. (#415)
+-- 
+2.51.0.windows.1
+

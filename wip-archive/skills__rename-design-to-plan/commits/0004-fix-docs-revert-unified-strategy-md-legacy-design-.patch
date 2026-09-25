@@ -1,0 +1,35 @@
+From 6d08f15176557b1ab2ff7c77f46a6d2fe53b4c2f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 19:02:44 +0530
+Subject: [PATCH] fix(docs): revert unified-strategy.md legacy design.md naming
+ (CodeRabbit #297)
+
+---
+ docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md b/docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md
+index 88350fde..9eb5de35 100644
+--- a/docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md
++++ b/docs/work/2026-04-06-v2-unified-strategy/unified-strategy.md
+@@ -1410,7 +1410,7 @@ Ship-agent reads detection output and writes the updates:
+ ```
+ docs/
+   plans/
+-    YYYY-MM-DD-<slug>-plan.md       # Design intent + decisions
++    YYYY-MM-DD-<slug>-design.md       # Design intent + decisions
+     YYYY-MM-DD-<slug>-tasks.md        # Task list with waves
+     YYYY-MM-DD-<slug>-decisions.md    # Decision log
+     YYYY-MM-DD-<slug>-results.md      # Evaluation scores (NEW)
+@@ -1448,7 +1448,7 @@ status: draft | approved | implemented | superseded
+ #### Guardrails per stage
+ 
+ **plan-agent guardrails**:
+-- Design doc exists at `docs/plans/<slug>-plan.md` with required sections
++- Design doc exists at `docs/plans/<slug>-design.md` with required sections
+ - Research doc exists at `docs/research/<slug>-research.md` (if research needed)
+ - `.forge/handoff/plan.json` has `waves` field with valid structure
+ - Each task has `files[]` and `depends_on[]`
+-- 
+2.51.0.windows.1
+

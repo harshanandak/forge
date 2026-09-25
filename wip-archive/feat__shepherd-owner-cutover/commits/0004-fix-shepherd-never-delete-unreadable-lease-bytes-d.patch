@@ -1,0 +1,121 @@
+From fe9871a0f03384d548e8a6df4c1b4e8b78bbd4d7 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 09:59:50 +0530
+Subject: [PATCH] fix(shepherd): never delete unreadable lease bytes during
+ acquisition
+
+acquire() only preserved an unparseable lease when the caller opted in with
+preserveLegacy. runDaemon acquires WITHOUT it and runs migrateLegacyAuthority
+afterwards, so the stale-takeover rmSync destroyed the only evidence of legacy
+watchers before migration could ever read it.
+
+Preservation is now unconditional at the shared acquisition boundary, so daemon
+and one-shot callers both fail closed: the bytes are left exactly as found and
+acquire returns legacyMigrationPending with reason 'legacy-lease-unreadable'.
+runDaemon surfaces that reason (and a daemon diagnostic) instead of reporting
+the misleading 'foreign-lease'. Recovery stays with migration, never with
+acquisition.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/reconcile-executor.js   | 12 +++++++++++-
+ lib/pr-monitor/shepherd-lease.js       | 19 ++++++++++++++-----
+ test/pr-monitor/shepherd-lease.test.js | 22 ++++++++++++++++++++++
+ 3 files changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index cff427d7..82ccb748 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -923,7 +923,17 @@ async function runDaemon(projectRoot, opts = {}) {
+ 	const ownsLease = opts.ownsLease || (opts.acquire ? (() => true) : shepherdLease.owns);
+ 	const exit = typeof opts.exit === 'function' ? opts.exit : (opts.exit === false ? () => {} : code => process.exit(code));
+ 	const held = acquire(projectRoot, { gitCommonDir });
+-	if (!held.ok) { exit(0); return { ok: false, reason: 'foreign-lease' }; }
++	if (!held.ok) {
++		// Distinguish "someone else legitimately owns the lease" from "the lease
++		// file is unreadable and its bytes were deliberately left in place" — the
++		// latter needs an operator, not a retry, and migration has NOT run yet.
++		const reason = held.legacyMigrationPending === true
++			? (held.reason || 'legacy-lease-unreadable')
++			: 'foreign-lease';
++		if (reason !== 'foreign-lease') recordDaemonDiagnostic(opts, gitCommonDir, reason);
++		exit(0);
++		return { ok: false, reason };
++	}
+ 	const token = held.token;
+ 	const heartbeat = startHeartbeat(projectRoot, { gitCommonDir, token });
+ 	const ownsBroker = !opts.broker;
+diff --git a/lib/pr-monitor/shepherd-lease.js b/lib/pr-monitor/shepherd-lease.js
+index de0496e1..c938e57a 100644
+--- a/lib/pr-monitor/shepherd-lease.js
++++ b/lib/pr-monitor/shepherd-lease.js
+@@ -129,6 +129,9 @@ function tryExclusiveCreate(file, payload) {
+  *   -> { ok:true, file, token, reclaimed }   stale lock (dead/wedged owner) reclaimed
+  *   -> { ok:false, held }                    a LIVE, FRESH foreign owner holds it
+  *   -> { ok:false, held }                    we lost the atomic takeover race
++ *   -> { ok:false, held:null, legacyMigrationPending:true, reason:'legacy-lease-unreadable' }
++ *                                            the lock exists but cannot be parsed —
++ *                                            never reclaimed, never deleted here
+  *
+  * `pid`/`isAlive`/`now`/`token` are injectable for testing. `onBeforeTakeover` is
+  * a test seam invoked AFTER the stale lock is removed and BEFORE our exclusive
+@@ -160,11 +163,17 @@ function acquire(projectRoot, {
+     return { ok: false, held };
+   }
+ 
+-  // Migration mode must not discard an unreadable legacy lease: its contents
+-  // may be the only evidence preventing a duplicate watcher. Leave it in
+-  // place and quarantine migration until a separate recovery path handles it.
+-  if (preserveLegacy && fs.existsSync(file) && !held) {
+-    return { ok: false, held: null, legacyMigrationPending: true };
++  // NO caller may discard an unreadable lease: its bytes may be the only
++  // evidence of legacy watchers, and the daemon acquires HERE but migrates
++  // LATER — so an opt-in guard would still delete that evidence before
++  // migration could read it. This is unconditional at the shared acquisition
++  // boundary: fail closed, leave the bytes exactly as found, and surface a
++  // reason a caller can act on. Recovery belongs to migration, never to
++  // acquisition.
++  if (fs.existsSync(file) && !held) {
++    return {
++      ok: false, held: null, legacyMigrationPending: true, reason: 'legacy-lease-unreadable',
++    };
+   }
+ 
+   if (preserveLegacy && Array.isArray(held?.watchers)) {
+diff --git a/test/pr-monitor/shepherd-lease.test.js b/test/pr-monitor/shepherd-lease.test.js
+index 9cdfa44a..9daf3487 100644
+--- a/test/pr-monitor/shepherd-lease.test.js
++++ b/test/pr-monitor/shepherd-lease.test.js
+@@ -81,6 +81,28 @@ describe('shepherd-lease', () => {
+     expect(fs.readFileSync(file, 'utf8')).toBe(malformed);
+   });
+ 
++  // Regression: the daemon acquires WITHOUT preserveLegacy and only migrates
++  // afterwards, so an opt-in guard let acquisition delete unreadable legacy
++  // lease bytes before migration could ever read them. Preservation must live at
++  // the shared acquisition boundary so daemon and one-shot callers both get it.
++  test('unreadable legacy lease bytes are never deleted by acquisition, even without preserveLegacy', () => {
++    const file = lease.lockFilePath(null, { gitCommonDir });
++    const malformed = '{"pid":100,"watchers":[7]';
++    fs.mkdirSync(path.dirname(file), { recursive: true });
++    fs.writeFileSync(file, malformed);
++
++    const res = lease.acquire(null, opts({ pid: 200, isAlive: () => false, now: () => 1000 }));
++
++    expect(res).toMatchObject({
++      ok: false,
++      held: null,
++      legacyMigrationPending: true,
++      reason: 'legacy-lease-unreadable',
++    });
++    expect(fs.existsSync(file)).toBe(true);
++    expect(fs.readFileSync(file, 'utf8')).toBe(malformed);
++  });
++
+   test('(3) wedged holder (heartbeat older than STALE_MS) is reclaimed', () => {
+     lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 0 }));
+     const res = lease.acquire(null, opts({ pid: 200, isAlive: alive, now: () => lease.STALE_MS + 1 }));
+-- 
+2.51.0.windows.1
+

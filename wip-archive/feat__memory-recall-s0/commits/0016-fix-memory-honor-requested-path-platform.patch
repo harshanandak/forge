@@ -1,0 +1,60 @@
+From e6e5522309cd4b05dec4f387e3357db31bc74baa Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 11:16:52 +0530
+Subject: [PATCH] fix(memory): honor requested path platform
+
+---
+ lib/project-memory.js       |  6 ++++--
+ test/project-memory.test.js | 16 ++++++++++++++++
+ 2 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 686e782e..99e7acbd 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -35,11 +35,13 @@ function resolveStore(projectRoot, options = {}) {
+ }
+ 
+ function resolveProjectId(projectRoot, options = {}) {
++  const platform = options.platform || process.platform;
++  const pathImpl = platform === 'win32' ? path.win32 : path.posix;
+   const commonDir = options.gitCommonDir || resolveGitCommonDir(projectRoot, options);
+-  const absolute = path.resolve(projectRoot, commonDir);
++  const absolute = pathImpl.resolve(projectRoot, commonDir);
+   const realpath = options.realpath || fs.realpathSync.native;
+   const canonical = realpath(absolute).replaceAll('\\', '/');
+-  return (options.platform || process.platform) === 'win32'
++  return platform === 'win32'
+     ? canonical.toLowerCase()
+     : canonical;
+ }
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index 628665fe..a62e7140 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -40,6 +40,22 @@ function fakeStore(seed = {}) {
+ }
+ 
+ describe('project memory kernel adapter', () => {
++  test('resolves project ids with the requested platform path semantics', () => {
++    const realpath = value => value;
++
++    expect(projectMemory.resolveProjectId('C:\\Repo\\worktree-a', {
++      gitCommonDir: 'C:\\Repo\\.git',
++      realpath,
++      platform: 'win32',
++    })).toBe('c:/repo/.git');
++
++    expect(projectMemory.resolveProjectId('/repo/worktree-a', {
++      gitCommonDir: '/repo/.git',
++      realpath,
++      platform: 'linux',
++    })).toBe('/repo/.git');
++  });
++
+   test('normalizes ranked hits and derives one project id for sibling worktrees', () => {
+     const store = fakeStore();
+     store.__rankedScored = [{
+-- 
+2.51.0.windows.1
+

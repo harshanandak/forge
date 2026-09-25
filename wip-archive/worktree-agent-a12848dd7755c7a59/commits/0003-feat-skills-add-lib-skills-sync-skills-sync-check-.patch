@@ -1,0 +1,609 @@
+From 710f537ffac3dcc9742d12efa2e5f6b30149d047 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 26 Jun 2026 20:54:39 +0530
+Subject: [PATCH] feat(skills): add lib/skills-sync + skills sync --check drift
+ gate
+
+Registry-independent, AGENTS.md-safe skills population + drift detection.
+Additive: old sync-commands surface untouched. PR-A0 step (a).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/skills-sync.js                   | 275 +++++++++++++++++++++++++++
+ packages/skills/bin/skills.js        |   1 +
+ packages/skills/src/commands/sync.js |  96 ++++++++++
+ test/skills/skills-sync.test.js      | 174 +++++++++++++++++
+ 4 files changed, 546 insertions(+)
+ create mode 100644 lib/skills-sync.js
+ create mode 100644 test/skills/skills-sync.test.js
+
+diff --git a/lib/skills-sync.js b/lib/skills-sync.js
+new file mode 100644
+index 00000000..2e1bbf5e
+--- /dev/null
++++ b/lib/skills-sync.js
+@@ -0,0 +1,275 @@
++/**
++ * @module skills-sync
++ *
++ * Skills-only surface population + drift detection for Forge.
++ *
++ * Canonical source of truth is the committed root `skills/` directory — each
++ * `skills/<name>/SKILL.md` (plus any sibling files) is an auto-surfacing skill.
++ * Agent harness skill directories (`.claude/skills/`, `.codex/skills/`,
++ * `.cursor/skills/`, `.hermes/skills/`) are GENERATED from that canonical source.
++ *
++ * This module is the Forge-internal port of the `@forge/skills` CLI sync step.
++ * Forge cannot depend on `@forge/skills` at runtime (the `packages/` workspace is
++ * excluded from the published npm package), so the minimal population + check
++ * logic lives here. It mirrors the CLI's whole-directory copy semantics so that
++ * `skills sync --check` and this module agree on what "in sync" means.
++ *
++ * Design constraints (locked in kernel-skill-surface-design.md §6):
++ *  - Registry-independent: never requires `.skills/.registry.json` (the registry
++ *    is gitignored and absent on a fresh checkout).
++ *  - AGENTS.md-safe: never writes AGENTS.md (it is the protected workflow contract).
++ *  - Committed-mirror scoped: `checkSkillsSync` only validates agent skill dirs
++ *    that already exist on disk. `.claude/skills` / `.cursor/skills` are gitignored
++ *    and populated at setup time, so their absence is not drift; `.codex/skills`
++ *    is committed and is the mirror the gate enforces.
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++/** Canonical skills live under this directory at the repo/package root. */
++const CANONICAL_SKILLS_DIR = 'skills';
++
++/**
++ * Standard agent harness skill directories, relative to a project root.
++ * Order is stable for deterministic reporting.
++ */
++const AGENT_SKILL_DIRS = [
++  '.claude/skills',
++  '.codex/skills',
++  '.cursor/skills',
++  '.hermes/skills',
++];
++
++/** Skill name must be a safe single path segment (no traversal). */
++function isValidSkillName(name) {
++  return (
++    typeof name === 'string' &&
++    name.length > 0 &&
++    name !== '.' &&
++    name !== '..' &&
++    !name.includes('/') &&
++    !name.includes('\\') &&
++    !name.includes('\0')
++  );
++}
++
++/**
++ * List canonical skills under `<sourceRoot>/skills`.
++ *
++ * A skill is any direct subdirectory that contains a `SKILL.md` file.
++ *
++ * @param {string} sourceRoot - Directory containing the canonical `skills/` dir.
++ * @param {object} [options]
++ * @param {Set<string>|string[]} [options.only] - Restrict to these skill names.
++ * @returns {{name: string, sourcePath: string}[]} Sorted list of skills.
++ */
++function listCanonicalSkills(sourceRoot, options = {}) {
++  const skillsDir = path.join(sourceRoot, CANONICAL_SKILLS_DIR);
++  if (!fs.existsSync(skillsDir)) {
++    return [];
++  }
++
++  const only = options.only ? new Set(options.only) : null;
++  const skills = [];
++
++  for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
++    if (!entry.isDirectory()) continue;
++    if (!isValidSkillName(entry.name)) continue;
++    if (only && !only.has(entry.name)) continue;
++
++    const sourcePath = path.join(skillsDir, entry.name);
++    if (!fs.existsSync(path.join(sourcePath, 'SKILL.md'))) continue;
++
++    skills.push({ name: entry.name, sourcePath });
++  }
++
++  skills.sort((a, b) => a.name.localeCompare(b.name));
++  return skills;
++}
++
++/**
++ * List all files under a directory as paths relative to that directory,
++ * using forward slashes for stable cross-platform comparison.
++ *
++ * @param {string} dir - Directory to walk.
++ * @returns {string[]} Sorted relative file paths.
++ */
++function listFilesRecursive(dir) {
++  const out = [];
++
++  function walk(current, prefix) {
++    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
++      const abs = path.join(current, entry.name);
++      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
++      if (entry.isDirectory()) {
++        walk(abs, rel);
++      } else if (entry.isFile()) {
++        out.push(rel);
++      }
++    }
++  }
++
++  if (fs.existsSync(dir)) {
++    walk(dir, '');
++  }
++  out.sort();
++  return out;
++}
++
++/** Normalize line endings so Windows CRLF working-tree state is not false drift. */
++function normalizeContent(buffer) {
++  return buffer.toString('utf8').replace(/\r\n/g, '\n');
++}
++
++/**
++ * Copy a single skill directory (recursively) from source to target,
++ * overwriting existing files. Byte-for-byte copy (matches CLI cpSync).
++ *
++ * @param {string} sourcePath - Source skill directory.
++ * @param {string} targetPath - Target skill directory.
++ */
++function copySkillDir(sourcePath, targetPath) {
++  fs.mkdirSync(targetPath, { recursive: true });
++  for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
++    const src = path.join(sourcePath, entry.name);
++    const dest = path.join(targetPath, entry.name);
++    if (entry.isDirectory()) {
++      copySkillDir(src, dest);
++    } else if (entry.isFile()) {
++      fs.copyFileSync(src, dest);
++    }
++  }
++}
++
++/**
++ * Populate an agent harness skills directory from the canonical source.
++ *
++ * Writes `<targetSkillsDir>/<name>/...` for every canonical skill. Existing
++ * skills are overwritten; pre-existing unrelated skill dirs are left untouched
++ * unless `clean` is set.
++ *
++ * @param {object} params
++ * @param {string} params.sourceRoot - Root containing the canonical `skills/` dir.
++ * @param {string} params.targetSkillsDir - Absolute path to the agent skills dir.
++ * @param {Set<string>|string[]} [params.only] - Restrict to these skill names.
++ * @param {boolean} [params.clean=false] - Remove canonical-managed stale dirs first.
++ * @returns {{written: string[]}} Names of skills written.
++ */
++function populateAgentSkills({ sourceRoot, targetSkillsDir, only, clean = false }) {
++  const skills = listCanonicalSkills(sourceRoot, { only });
++  fs.mkdirSync(targetSkillsDir, { recursive: true });
++
++  if (clean) {
++    const canonicalNames = new Set(skills.map((s) => s.name));
++    for (const entry of fs.readdirSync(targetSkillsDir, { withFileTypes: true })) {
++      if (entry.isDirectory() && !canonicalNames.has(entry.name)) {
++        fs.rmSync(path.join(targetSkillsDir, entry.name), { recursive: true, force: true });
++      }
++    }
++  }
++
++  const written = [];
++  for (const skill of skills) {
++    copySkillDir(skill.sourcePath, path.join(targetSkillsDir, skill.name));
++    written.push(skill.name);
++  }
++  return { written };
++}
++
++/**
++ * Compare a canonical skill directory against a target copy.
++ *
++ * @param {string} sourcePath - Canonical skill dir.
++ * @param {string} targetPath - Target (generated) skill dir.
++ * @returns {{file: string, status: 'missing'|'changed'|'extra'}[]} Drift entries.
++ */
++function diffSkillDir(sourcePath, targetPath) {
++  const drift = [];
++  const sourceFiles = new Set(listFilesRecursive(sourcePath));
++  const targetFiles = new Set(listFilesRecursive(targetPath));
++
++  for (const rel of sourceFiles) {
++    if (!targetFiles.has(rel)) {
++      drift.push({ file: rel, status: 'missing' });
++      continue;
++    }
++    const a = normalizeContent(fs.readFileSync(path.join(sourcePath, rel)));
++    const b = normalizeContent(fs.readFileSync(path.join(targetPath, rel)));
++    if (a !== b) {
++      drift.push({ file: rel, status: 'changed' });
++    }
++  }
++
++  for (const rel of targetFiles) {
++    if (!sourceFiles.has(rel)) {
++      drift.push({ file: rel, status: 'extra' });
++    }
++  }
++
++  return drift;
++}
++
++/**
++ * Check that committed agent skill mirrors match the canonical source.
++ *
++ * Only agent skill dirs that already EXIST under `repoRoot` are validated —
++ * gitignored, setup-populated dirs (`.claude/skills`, `.cursor/skills`) are
++ * absent on a clean checkout and are correctly skipped; `.codex/skills` is the
++ * committed mirror the gate enforces.
++ *
++ * @param {object} params
++ * @param {string} params.repoRoot - Repo root (contains `skills/` + agent dirs).
++ * @param {Set<string>|string[]} [params.only] - Restrict canonical set.
++ * @param {string[]} [params.agentSkillDirs] - Override the agent dirs to scan.
++ * @returns {{inSync: boolean, checkedAgents: string[], drift: object[]}}
++ */
++function checkSkillsSync({ repoRoot, only, agentSkillDirs = AGENT_SKILL_DIRS }) {
++  const skills = listCanonicalSkills(repoRoot, { only });
++  const canonicalByName = new Map(skills.map((s) => [s.name, s]));
++  const drift = [];
++  const checkedAgents = [];
++
++  for (const rel of agentSkillDirs) {
++    const agentDir = path.join(repoRoot, rel);
++    if (!fs.existsSync(agentDir)) continue; // populated at setup time; absence ≠ drift
++    checkedAgents.push(rel);
++
++    const targetNames = fs
++      .readdirSync(agentDir, { withFileTypes: true })
++      .filter((e) => e.isDirectory())
++      .map((e) => e.name);
++
++    // Skills present canonically but missing/changed in the mirror.
++    for (const skill of skills) {
++      const targetPath = path.join(agentDir, skill.name);
++      if (!fs.existsSync(targetPath)) {
++        drift.push({ agent: rel, skill: skill.name, file: 'SKILL.md', status: 'missing' });
++        continue;
++      }
++      for (const entry of diffSkillDir(skill.sourcePath, targetPath)) {
++        drift.push({ agent: rel, skill: skill.name, ...entry });
++      }
++    }
++
++    // Skill dirs in the mirror with no canonical source = stale.
++    for (const name of targetNames) {
++      if (!canonicalByName.has(name)) {
++        drift.push({ agent: rel, skill: name, file: '*', status: 'stale' });
++      }
++    }
++  }
++
++  return { inSync: drift.length === 0, checkedAgents, drift };
++}
++
++module.exports = {
++  CANONICAL_SKILLS_DIR,
++  AGENT_SKILL_DIRS,
++  isValidSkillName,
++  listCanonicalSkills,
++  listFilesRecursive,
++  populateAgentSkills,
++  diffSkillDir,
++  checkSkillsSync,
++};
+diff --git a/packages/skills/bin/skills.js b/packages/skills/bin/skills.js
+index de527e6a..6e395098 100644
+--- a/packages/skills/bin/skills.js
++++ b/packages/skills/bin/skills.js
+@@ -65,6 +65,7 @@ program
+   .command('sync')
+   .description('Synchronize skills to agent directories')
+   .option('--preserve-agents', 'Skip AGENTS.md update')
++  .option('--check', 'Report drift between canonical skills and agent mirrors; exit non-zero on drift (no writes)')
+   .action(syncCommand);
+ 
+ // skills remove <name>
+diff --git a/packages/skills/src/commands/sync.js b/packages/skills/src/commands/sync.js
+index 2fcbc651..0fc3ad16 100644
+--- a/packages/skills/src/commands/sync.js
++++ b/packages/skills/src/commands/sync.js
+@@ -13,6 +13,14 @@ import { ensureRegistryExists, readRegistry, getSkillPaths } from '../lib/common
+  * Sync skills to agent directories
+  */
+ export async function syncCommand(options) {
++  // Drift gate. Registry-independent (canonical is root skills/, read without
++  // the gitignored .skills/.registry.json) and AGENTS.md-safe (never writes).
++  // Only validates agent skill dirs that already exist — gitignored,
++  // setup-populated dirs are absent on a clean checkout and are not drift.
++  if (options && options.check) {
++    return runSyncCheck();
++  }
++
+   try {
+     // Ensure registry exists and load it (with graceful error handling)
+     ensureRegistryExists();
+@@ -140,6 +148,94 @@ function syncSkillsToAgents(skills, enabledAgents) {
+   }
+ }
+ 
++/**
++ * `skills sync --check` — report drift between canonical skills and the
++ * generated agent mirrors, without writing anything. Sets a non-zero exit code
++ * when drift is found so it can gate CI / pre-push.
++ */
++function runSyncCheck() {
++  const { skillsDir } = getSkillPaths('');
++  const skills = getValidSkills(skillsDir);
++  const enabledAgents = detectAgents();
++  const drift = [];
++
++  for (const agent of enabledAgents) {
++    const agentSkillsPath = join(process.cwd(), agent.path);
++    if (!existsSync(agentSkillsPath)) continue; // populated at setup; absence ≠ drift
++
++    const canonicalNames = new Set(skills.map((s) => s.name));
++    const targetNames = readdirSync(agentSkillsPath, { withFileTypes: true })
++      .filter((e) => e.isDirectory())
++      .map((e) => e.name);
++
++    for (const skill of skills) {
++      const targetPath = join(agentSkillsPath, skill.name);
++      if (!existsSync(targetPath)) {
++        drift.push({ agent: agent.name, skill: skill.name, file: 'SKILL.md', status: 'missing' });
++        continue;
++      }
++      for (const entry of diffSkillDirContents(skill.sourcePath, targetPath)) {
++        drift.push({ agent: agent.name, skill: skill.name, ...entry });
++      }
++    }
++
++    for (const name of targetNames) {
++      if (!canonicalNames.has(name)) {
++        drift.push({ agent: agent.name, skill: name, file: '*', status: 'stale' });
++      }
++    }
++  }
++
++  if (drift.length === 0) {
++    console.log(chalk.green('✓'), 'Skills in sync — no drift');
++    return;
++  }
++
++  console.error(chalk.red(`✗ Skills drift detected (${drift.length})`));
++  for (const d of drift) {
++    console.error(chalk.yellow(`  [${d.agent}] ${d.skill}/${d.file} — ${d.status}`));
++  }
++  console.error(chalk.gray('Run "skills sync" (or "forge setup") to regenerate agent skill dirs.'));
++  process.exitCode = 1;
++}
++
++/** List files under a dir as forward-slash relative paths (recursive). */
++function listFilesRecursiveForCheck(dir) {
++  const out = [];
++  const walk = (current, prefix) => {
++    for (const entry of readdirSync(current, { withFileTypes: true })) {
++      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
++      if (entry.isDirectory()) {
++        walk(join(current, entry.name), rel);
++      } else if (entry.isFile()) {
++        out.push(rel);
++      }
++    }
++  };
++  if (existsSync(dir)) walk(dir, '');
++  return out.sort();
++}
++
++/** Compare two skill dirs; line-ending-normalized so Windows CRLF is not drift. */
++function diffSkillDirContents(sourcePath, targetPath) {
++  const drift = [];
++  const sourceFiles = new Set(listFilesRecursiveForCheck(sourcePath));
++  const targetFiles = new Set(listFilesRecursiveForCheck(targetPath));
++  const norm = (p) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
++
++  for (const rel of sourceFiles) {
++    if (!targetFiles.has(rel)) {
++      drift.push({ file: rel, status: 'missing' });
++    } else if (norm(join(sourcePath, rel)) !== norm(join(targetPath, rel))) {
++      drift.push({ file: rel, status: 'changed' });
++    }
++  }
++  for (const rel of targetFiles) {
++    if (!sourceFiles.has(rel)) drift.push({ file: rel, status: 'extra' });
++  }
++  return drift;
++}
++
+ /**
+  * Update AGENTS.md with skills information
+  *
+diff --git a/test/skills/skills-sync.test.js b/test/skills/skills-sync.test.js
+new file mode 100644
+index 00000000..a7e966c8
+--- /dev/null
++++ b/test/skills/skills-sync.test.js
+@@ -0,0 +1,174 @@
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  listCanonicalSkills,
++  populateAgentSkills,
++  diffSkillDir,
++  checkSkillsSync,
++  AGENT_SKILL_DIRS,
++} = require('../../lib/skills-sync');
++
++let tmp;
++
++function write(rel, content) {
++  const abs = path.join(tmp, rel);
++  fs.mkdirSync(path.dirname(abs), { recursive: true });
++  fs.writeFileSync(abs, content, 'utf8');
++}
++
++beforeEach(() => {
++  tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skills-sync-'));
++});
++
++afterEach(() => {
++  fs.rmSync(tmp, { recursive: true, force: true });
++});
++
++describe('skills-sync: listCanonicalSkills', () => {
++  test('returns dirs with SKILL.md, sorted, ignoring non-skill dirs', () => {
++    write('skills/bar/SKILL.md', 'bar');
++    write('skills/foo/SKILL.md', 'foo');
++    write('skills/nope/README.md', 'no skill md here');
++    fs.mkdirSync(path.join(tmp, 'skills/empty'), { recursive: true });
++
++    const skills = listCanonicalSkills(tmp);
++    expect(skills.map((s) => s.name)).toEqual(['bar', 'foo']);
++  });
++
++  test('honors the `only` filter', () => {
++    write('skills/foo/SKILL.md', 'foo');
++    write('skills/bar/SKILL.md', 'bar');
++    const skills = listCanonicalSkills(tmp, { only: ['foo'] });
++    expect(skills.map((s) => s.name)).toEqual(['foo']);
++  });
++
++  test('returns [] when skills/ is absent', () => {
++    expect(listCanonicalSkills(tmp)).toEqual([]);
++  });
++});
++
++describe('skills-sync: populateAgentSkills', () => {
++  test('copies every canonical skill (recursively) into the target dir', () => {
++    write('skills/plan/SKILL.md', 'plan body');
++    write('skills/research/SKILL.md', 'research body');
++    write('skills/research/evals/evals.json', '{"a":1}');
++
++    const target = path.join(tmp, '.codex/skills');
++    const { written } = populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
++
++    expect(written.sort()).toEqual(['plan', 'research']);
++    expect(fs.readFileSync(path.join(target, 'plan/SKILL.md'), 'utf8')).toBe('plan body');
++    expect(fs.readFileSync(path.join(target, 'research/evals/evals.json'), 'utf8')).toBe('{"a":1}');
++  });
++
++  test('clean removes stale managed dirs but leaves canonical ones', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    const target = path.join(tmp, '.codex/skills');
++    fs.mkdirSync(path.join(target, 'gone'), { recursive: true });
++    fs.writeFileSync(path.join(target, 'gone/SKILL.md'), 'stale', 'utf8');
++
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target, clean: true });
++
++    expect(fs.existsSync(path.join(target, 'gone'))).toBe(false);
++    expect(fs.existsSync(path.join(target, 'plan/SKILL.md'))).toBe(true);
++  });
++
++  test('honors `only`', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    write('skills/dev/SKILL.md', 'dev');
++    const target = path.join(tmp, '.codex/skills');
++    const { written } = populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target, only: ['plan'] });
++    expect(written).toEqual(['plan']);
++    expect(fs.existsSync(path.join(target, 'dev'))).toBe(false);
++  });
++});
++
++describe('skills-sync: diffSkillDir', () => {
++  test('CRLF vs LF is not reported as drift', () => {
++    write('skills/plan/SKILL.md', 'line1\nline2\n');
++    const target = path.join(tmp, '.codex/skills/plan');
++    fs.mkdirSync(target, { recursive: true });
++    fs.writeFileSync(path.join(target, 'SKILL.md'), 'line1\r\nline2\r\n', 'utf8');
++
++    const drift = diffSkillDir(path.join(tmp, 'skills/plan'), target);
++    expect(drift).toEqual([]);
++  });
++
++  test('detects changed, missing, and extra files', () => {
++    write('skills/plan/SKILL.md', 'canonical');
++    write('skills/plan/ref.md', 'ref');
++    const target = path.join(tmp, '.codex/skills/plan');
++    fs.mkdirSync(target, { recursive: true });
++    fs.writeFileSync(path.join(target, 'SKILL.md'), 'STALE', 'utf8');
++    fs.writeFileSync(path.join(target, 'unexpected.md'), 'x', 'utf8');
++
++    const drift = diffSkillDir(path.join(tmp, 'skills/plan'), target);
++    const byStatus = Object.fromEntries(drift.map((d) => [d.file, d.status]));
++    expect(byStatus['SKILL.md']).toBe('changed');
++    expect(byStatus['ref.md']).toBe('missing');
++    expect(byStatus['unexpected.md']).toBe('extra');
++  });
++});
++
++describe('skills-sync: checkSkillsSync', () => {
++  test('a freshly populated mirror is in sync', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    write('skills/dev/SKILL.md', 'dev');
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: path.join(tmp, '.codex/skills') });
++
++    const result = checkSkillsSync({ repoRoot: tmp });
++    expect(result.inSync).toBe(true);
++    expect(result.checkedAgents).toContain('.codex/skills');
++    expect(result.drift).toEqual([]);
++  });
++
++  test('absent agent skill dirs are skipped (not drift)', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    // No .codex/skills, .claude/skills, etc. created at all.
++    const result = checkSkillsSync({ repoRoot: tmp });
++    expect(result.inSync).toBe(true);
++    expect(result.checkedAgents).toEqual([]);
++  });
++
++  test('flags a changed mirror file', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    const target = path.join(tmp, '.codex/skills');
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
++    fs.writeFileSync(path.join(target, 'plan/SKILL.md'), 'tampered', 'utf8');
++
++    const result = checkSkillsSync({ repoRoot: tmp });
++    expect(result.inSync).toBe(false);
++    expect(result.drift.some((d) => d.skill === 'plan' && d.status === 'changed')).toBe(true);
++  });
++
++  test('flags a stale mirror dir with no canonical source', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    const target = path.join(tmp, '.codex/skills');
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
++    fs.mkdirSync(path.join(target, 'ghost'), { recursive: true });
++    fs.writeFileSync(path.join(target, 'ghost/SKILL.md'), 'ghost', 'utf8');
++
++    const result = checkSkillsSync({ repoRoot: tmp });
++    expect(result.drift.some((d) => d.skill === 'ghost' && d.status === 'stale')).toBe(true);
++  });
++
++  test('flags a missing canonical skill in an existing mirror', () => {
++    write('skills/plan/SKILL.md', 'plan');
++    write('skills/dev/SKILL.md', 'dev');
++    const target = path.join(tmp, '.codex/skills');
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target, only: ['plan'] });
++
++    const result = checkSkillsSync({ repoRoot: tmp });
++    expect(result.drift.some((d) => d.skill === 'dev' && d.status === 'missing')).toBe(true);
++  });
++
++  test('exposes the standard agent skill dirs', () => {
++    expect(AGENT_SKILL_DIRS).toContain('.codex/skills');
++    expect(AGENT_SKILL_DIRS).toContain('.claude/skills');
++    expect(AGENT_SKILL_DIRS).toContain('.cursor/skills');
++    expect(AGENT_SKILL_DIRS).toContain('.hermes/skills');
++  });
++});
+-- 
+2.51.0.windows.1
+

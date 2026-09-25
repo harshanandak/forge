@@ -1,0 +1,666 @@
+From 606a50534c7a3d1a4c050438c216f6d5e496d9ae Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 19:27:11 +0530
+Subject: [PATCH] feat(agents): canonical role manifest + symmetric
+ .claude/.cursor subagent renderers (802aa4d8)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Close the "agents" (subagent role mapping) parity gap that #311 honestly
+downgraded to not-delivered/unsupported for every harness.
+
+- Canonical role manifest: agents/<role>.md is the single source of truth for
+  Forge's real /dev roles (implementer, spec_reviewer, quality_reviewer — the
+  runtime audit roles in lib/commands/dev.js), each with name+description
+  frontmatter and a markdown system-prompt body.
+- lib/agents-renderer.js emits SYMMETRIC subagent files from that one manifest:
+  .claude/agents/<role>.md and .cursor/agents/<role>.md share identical
+  name+description frontmatter (the intersection both Claude Code and Cursor
+  recognize, per vendor docs), and Codex gets skill-backed
+  .codex/skills/<role>/SKILL.md. Built on the `yaml` production dependency
+  (never gray-matter). Wired into `forge setup`.
+- Matrix: claude+cursor agents rows flipped not-delivered -> native, codex ->
+  fallback (skill-backed), hermes stays unsupported; adds sources S11 (Claude
+  subagents) + S12 (Cursor subagents). Respects STATUS_VOCABULARY.
+- Gitignore .claude/agents + .cursor/agents (generated at setup, like skills);
+  ship agents/ in package files. Refresh D20 bd call-site artifact (line shift).
+
+Tests: test/agents-renderer.test.js (manifest load, valid frontmatter, symmetry
+across harnesses, codex skill-backing, idempotence) + matrix assertions.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .gitignore                                    |   6 +
+ agents/implementer.md                         |  32 +++
+ agents/quality_reviewer.md                    |  28 +++
+ agents/spec_reviewer.md                       |  29 +++
+ docs/reference/AGENT_SKILL_PARITY.md          |   2 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/agents-renderer.js                        | 190 ++++++++++++++++++
+ lib/commands/setup.js                         |  29 +++
+ lib/harness-capability-matrix.js              |  10 +-
+ package.json                                  |   1 +
+ test/agents-renderer.test.js                  | 129 ++++++++++++
+ test/harness-capability-matrix.test.js        |  11 +-
+ 12 files changed, 460 insertions(+), 9 deletions(-)
+ create mode 100644 agents/implementer.md
+ create mode 100644 agents/quality_reviewer.md
+ create mode 100644 agents/spec_reviewer.md
+ create mode 100644 lib/agents-renderer.js
+ create mode 100644 test/agents-renderer.test.js
+
+diff --git a/.gitignore b/.gitignore
+index acc81254..e43b7651 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -65,6 +65,12 @@ skills-lock.json
+ .cursor/skills/
+ .github/skills/
+ 
++# Subagent (role) files rendered at setup from the canonical agents/ manifest
++# (lib/agents-renderer.js). Gitignored like the skill dirs above — regenerated
++# locally, never hand-edited. The canonical source is agents/<role>.md.
++.claude/agents/
++.cursor/agents/
++
+ # MCP local configuration (use .mcp.json.example as template)
+ .mcp.json
+ 
+diff --git a/agents/implementer.md b/agents/implementer.md
+new file mode 100644
+index 00000000..a27503a9
+--- /dev/null
++++ b/agents/implementer.md
+@@ -0,0 +1,32 @@
++---
++name: implementer
++description: TDD implementer for a single task from the /dev task list. Use to implement one task end-to-end under strict RED-GREEN-REFACTOR discipline, writing the failing test first and showing real command output at each phase.
++---
++
++You are the Forge **implementer** subagent. You own the implementation of exactly
++one task from the current `/dev` task list, in a fresh context with the complete
++task text and the relevant design-doc sections.
++
++## Mandate
++
++Implement the task under a HARD-GATED RED-GREEN-REFACTOR loop. Never skip a phase,
++never claim a phase passed without showing the command output that proves it.
++
++1. **RED** — Write the failing test FIRST. Run it and show the failing output.
++   A test that has never failed proves nothing.
++2. **GREEN** — Write the minimal code that makes the test pass. Run the test and
++   show the passing output.
++3. **REFACTOR** — Clean up names, duplication, and structure while keeping every
++   test green. Re-run the tests and show they still pass.
++
++## Rules
++
++- Stay strictly within the scope of the assigned task. Do not gold-plate, and do
++  not start adjacent tasks.
++- Prefer editing existing files over creating new ones; follow the surrounding
++  code's conventions and lint rules (`--max-warnings 0`, prefix unused params with `_`).
++- If you hit a spec gap the design doc does not resolve, make the conservative,
++  documented choice and record it for the decision gate — do not silently invent
++  behavior.
++- "Should be fine" and "was passing earlier" are never evidence. Run the command,
++  show the output, then declare the phase done.
+diff --git a/agents/quality_reviewer.md b/agents/quality_reviewer.md
+new file mode 100644
+index 00000000..9820e225
+--- /dev/null
++++ b/agents/quality_reviewer.md
+@@ -0,0 +1,28 @@
++---
++name: quality_reviewer
++description: Code-quality reviewer that runs AFTER spec compliance passes on a /dev task. Use to review the diff for correctness bugs, reuse and simplification opportunities, security issues, and adherence to project conventions.
++---
++
++You are the Forge **quality_reviewer** subagent. You review a `/dev` task's diff
++for **code quality**, and you run only after the spec reviewer has confirmed
++compliance.
++
++## Mandate
++
++Review the implementer's diff and its tests for:
++
++- **Correctness** — Real bugs, edge cases, off-by-one errors, unhandled failures,
++  race conditions, and incorrect assumptions.
++- **Reuse & simplicity** — Duplicated logic that should reuse an existing helper,
++  over-complex constructs that can be simplified, dead code.
++- **Efficiency** — Needless work, N+1 patterns, or allocations in hot paths.
++- **Conventions** — Lint cleanliness (`--max-warnings 0`), naming, error handling,
++  and the surrounding code's established patterns.
++- **Security** — Injection, path traversal, secret leakage, and unsafe input handling.
++
++## Output
++
++Report findings ordered by severity, each with the file/line and a concrete,
++actionable fix. Prefer a small number of high-confidence findings over a long list
++of speculative nits. If the diff is clean, say so explicitly — do not manufacture
++findings. You judge quality; you do not expand the task's scope.
+diff --git a/agents/spec_reviewer.md b/agents/spec_reviewer.md
+new file mode 100644
+index 00000000..51fb2d5d
+--- /dev/null
++++ b/agents/spec_reviewer.md
+@@ -0,0 +1,29 @@
++---
++name: spec_reviewer
++description: Spec-compliance reviewer that runs BEFORE quality review on every /dev task. Use to check the implementation against the task spec and design doc, catching missing requirements, scope drift, and unhandled acceptance criteria.
++---
++
++You are the Forge **spec_reviewer** subagent. You review a completed `/dev` task
++for **specification compliance** — before the quality reviewer runs.
++
++## Mandate
++
++Given the task text, the relevant design-doc sections, and the implementer's diff,
++decide whether the implementation actually satisfies what was asked.
++
++Check, one criterion at a time:
++
++- **Coverage** — Is every acceptance criterion in the task implemented and tested?
++- **Fidelity** — Does the behavior match the design doc, not a plausible-looking
++  substitute?
++- **Scope** — Did the implementer stay within the task, without silently adding or
++  dropping behavior?
++- **Evidence** — Do the tests actually exercise the required behavior (not tautologies)?
++
++## Output
++
++For each criterion, state PASS or GAP with a one-line justification grounded in the
++diff or the tests. When you find a spec gap, describe it precisely so the decision
++gate can score it (7-dimension impact scoring routes to PROCEED / SPEC-REVIEWER /
++BLOCKED). Do not rewrite the code yourself — your job is to judge compliance and
++hand a clear verdict to the quality reviewer or the decision gate.
+diff --git a/docs/reference/AGENT_SKILL_PARITY.md b/docs/reference/AGENT_SKILL_PARITY.md
+index 10568041..7772bd4e 100644
+--- a/docs/reference/AGENT_SKILL_PARITY.md
++++ b/docs/reference/AGENT_SKILL_PARITY.md
+@@ -168,7 +168,7 @@ Known gaps intentionally left for follow-up. Tier-2 work is tracked under kernel
+ - Cursor Agent Skill files ARE generated by Forge at setup (`.cursor/skills`), so the matrix marks Cursor skills/stages `native`; live auto-invocation is simply not asserted by the W0 metadata fixture. `.cursor/rules` remains the policy target.
+ - Claude stage distribution is skills-first: the legacy `.claude/commands/` surface was removed (A0d) and the stage skill (`.claude/skills/<stage>`) is the authority — the stage graph no longer emits a command shim.
+ - **Hooks (`988ae187`)**: NO harness-native hook file is rendered for ANY harness — all lifecycle enforcement is delivered via Lefthook git hooks. The matrix marks Claude/Codex hooks `contract-only` and Cursor hooks `not-delivered` (Cursor 1.7+ exposes `.cursor/hooks.json`, not yet rendered). Native hook renderers are the deliverable.
+-- **Agents/subagents (`802aa4d8`)**: the whole domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. The matrix marks every harness `not-delivered`/`unsupported`. A subagent renderer is the deliverable.
++- **Agents/subagents (`802aa4d8`)**: DELIVERED. A canonical role manifest (`agents/<role>.md` for the real `/dev` roles — implementer, spec_reviewer, quality_reviewer) is the single source of truth, and `lib/agents-renderer.js` emits symmetric subagent files from it: `.claude/agents/<role>.md` and `.cursor/agents/<role>.md` share identical `name`+`description` frontmatter (the intersection both Claude Code and Cursor recognize), and Codex gets skill-backed `.codex/skills/<role>/SKILL.md`. Wired into `forge setup`. The matrix marks Claude/Cursor agents `native`, Codex `fallback`, and Hermes `unsupported`.
+ - **Typed memory (`dce9da46`)**: typed memory is WRITE-ONLY (`insights.js`); no generator projects a memory section into any instruction/rule file. All four typedMemory rows are marked `not-delivered`. A memory-projection renderer is the deliverable.
+ - **Codex paths (`55dfeccf`)**: `.codex/skills` is the committed staging mirror; skills install to `$CODEX_HOME/skills`. Direct Codex repo discovery uses `.agents/skills`, which Forge does not yet generate. Codex MCP is global-config-only (`$CODEX_HOME/config.toml`), so `(mcp, codex)` is `not-delivered` at project setup.
+ - **Safety domains (`1e68255c`)**: Claude permissions, `.cursorignore`, and Codex sandbox/approvals are not yet modeled in the matrix.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 2c11fb41..6af3220c 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -55,7 +55,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/forge-issues.js (15)
+   - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 105 (bd), 106 (bd), 109 (bd), 143 (bd), 167 (bd), 169 (bd), 173 (bd), 273 (bd), 298 (bd)
+ - [ ] lib/harness-capability-matrix.js (1)
+-  - lines: 151 (bd)
++  - lines: 153 (bd)
+ - [ ] lib/insights.js (7)
+   - lines: 112 (.beads), 123 (.beads), 131 (.beads), 157 (.beads), 176 (.beads), 338 (.beads), 341 (.beads)
+ - [ ] lib/migrate-dry-run.js (8)
+diff --git a/lib/agents-renderer.js b/lib/agents-renderer.js
+new file mode 100644
+index 00000000..3e0a6211
+--- /dev/null
++++ b/lib/agents-renderer.js
+@@ -0,0 +1,190 @@
++'use strict';
++
++/**
++ * Subagent (role) renderer.
++ *
++ * Emits SYMMETRIC subagent files for every supported harness from ONE canonical
++ * role manifest (`agents/<role>.md` at the Forge package root). This closes the
++ * "agents" capability gap: before this renderer no harness delivered a subagent
++ * surface (kernel issue 802aa4d8 downgraded every row to not-delivered/unsupported).
++ *
++ * Canonical source — `agents/<role>.md`:
++ *
++ *   ---
++ *   name: <role>            # must equal the filename base (the dev.js audit role id)
++ *   description: <trigger>  # when the harness should delegate to this subagent
++ *   ---
++ *   <markdown system prompt body>
++ *
++ * The roles are the REAL roles the /dev TDD loop already emits as runtime audit
++ * events (lib/commands/dev.js): implementer, spec_reviewer, quality_reviewer.
++ *
++ * Harness targets — the frontmatter contract is the shared intersection that BOTH
++ * Claude Code and Cursor subagent files recognize (name + description + a markdown
++ * system-prompt body), verified from vendor docs, so ONE rendered file is valid in
++ * both. Codex has no native subagent surface, so the role is delivered as a skill.
++ *
++ *   - Claude : `.claude/agents/<role>.md`   (YAML frontmatter: name, description)
++ *   - Cursor : `.cursor/agents/<role>.md`   (same frontmatter shape)
++ *   - Codex  : `.codex/skills/<role>/SKILL.md` (skill-backed role fallback)
++ *
++ * Built on the `yaml` production dependency (never gray-matter, which Forge does
++ * not depend on) so it runs under `bun test` and the release gates.
++ *
++ * @module agents-renderer
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++const YAML = require('yaml');
++
++/** Canonical role-manifest directory, relative to the Forge package root. */
++const CANONICAL_ROLES_DIR = 'agents';
++
++/**
++ * Native subagent output directory per harness. Claude Code and Cursor share the
++ * SAME frontmatter contract, so both render from the one canonical manifest.
++ */
++const HARNESS_AGENT_DIRS = {
++  claude: '.claude/agents',
++  cursor: '.cursor/agents',
++};
++
++/** Codex delivers roles as skills (no native subagent surface). */
++const CODEX_ROLE_SKILLS_DIR = '.codex/skills';
++
++/** The only harnesses this renderer targets (hermes has no subagent contract). */
++const AGENT_HARNESSES = ['claude', 'cursor', 'codex'];
++
++/** Thrown when a canonical role file is malformed (missing name/description). */
++class RoleManifestError extends Error {
++  constructor(message) {
++    super(message);
++    this.name = 'RoleManifestError';
++  }
++}
++
++/** Split a markdown file into its YAML frontmatter block and body. */
++function splitFrontmatter(raw) {
++  const match = String(raw).match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
++  if (!match) {
++    return { data: {}, body: String(raw) };
++  }
++  const data = YAML.parse(match[1]) || {};
++  return { data: typeof data === 'object' && data ? data : {}, body: match[2] };
++}
++
++/**
++ * Load the canonical role manifest.
++ * @param {string} packageRoot - Forge package root (contains `agents/`).
++ * @returns {{ id, name, description, body }[]} roles sorted by id.
++ */
++function loadRoleManifest(packageRoot) {
++  const dir = path.join(packageRoot, CANONICAL_ROLES_DIR);
++  if (!fs.existsSync(dir)) return [];
++  return fs.readdirSync(dir)
++    .filter((f) => f.endsWith('.md'))
++    .sort()
++    .map((file) => {
++      const id = path.basename(file, '.md');
++      const raw = fs.readFileSync(path.join(dir, file), 'utf8');
++      const { data, body } = splitFrontmatter(raw);
++      const name = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : id;
++      const description = typeof data.description === 'string' ? data.description.trim() : '';
++      if (!description) {
++        throw new RoleManifestError(`role '${id}' (${file}) is missing a frontmatter description`);
++      }
++      if (name !== id) {
++        throw new RoleManifestError(`role '${id}' frontmatter name '${name}' must match its filename`);
++      }
++      return { id, name, description, body: `${body.trim()}\n` };
++    });
++}
++
++/**
++ * Render one role into a subagent file string. The frontmatter carries ONLY the
++ * fields both Claude Code and Cursor recognize (name + description), so the exact
++ * same bytes are valid across harnesses — the guarantee the symmetry test checks.
++ * @param {{ name, description, body }} role
++ * @returns {string}
++ */
++function renderSubagentFile(role) {
++  const frontmatter = YAML.stringify({ name: role.name, description: role.description }).trimEnd();
++  return `---\n${frontmatter}\n---\n\n${role.body.trim()}\n`;
++}
++
++/** Codex role skill = the same rendered content, written to a SKILL.md path. */
++function renderCodexRoleSkill(role) {
++  return renderSubagentFile(role);
++}
++
++/**
++ * Write per-harness subagent files for `.claude/agents` / `.cursor/agents`.
++ * Idempotent: rerun overwrites Forge-owned role files with identical bytes.
++ * @param {{ harness, targetRoot, roles }} params
++ * @returns {{ written: string[] }}
++ */
++function writeAgentFiles({ harness, targetRoot, roles }) {
++  const rel = HARNESS_AGENT_DIRS[harness];
++  if (!rel) throw new Error(`Unknown subagent harness: ${harness}`);
++  const dir = path.join(targetRoot, rel);
++  fs.mkdirSync(dir, { recursive: true });
++  const written = [];
++  for (const role of roles) {
++    const file = path.join(dir, `${role.id}.md`);
++    fs.writeFileSync(file, renderSubagentFile(role), 'utf8');
++    written.push(file);
++  }
++  return { written };
++}
++
++/** Write Codex skill-backed role files at `.codex/skills/<role>/SKILL.md`. */
++function writeCodexRoleSkills({ targetRoot, roles }) {
++  const written = [];
++  for (const role of roles) {
++    const dir = path.join(targetRoot, CODEX_ROLE_SKILLS_DIR, role.id);
++    fs.mkdirSync(dir, { recursive: true });
++    const file = path.join(dir, 'SKILL.md');
++    fs.writeFileSync(file, renderCodexRoleSkill(role), 'utf8');
++    written.push(file);
++  }
++  return { written };
++}
++
++/**
++ * Render all (or the requested) harness subagent surfaces from the one manifest.
++ * This is the function `forge setup` calls.
++ * @param {object} params
++ * @param {string} params.packageRoot - Forge package root (contains `agents/`).
++ * @param {string} params.targetRoot - Project root to write into.
++ * @param {string[]} [params.harnesses] - Subset of AGENT_HARNESSES (default: all).
++ * @returns {{ roles, claude?, cursor?, codex? }}
++ */
++function renderSubagentRoles({ packageRoot, targetRoot, harnesses }) {
++  const roles = loadRoleManifest(packageRoot);
++  const set = harnesses || AGENT_HARNESSES;
++  const result = { roles };
++  for (const harness of set) {
++    if (harness === 'codex') {
++      result.codex = writeCodexRoleSkills({ targetRoot, roles });
++    } else if (HARNESS_AGENT_DIRS[harness]) {
++      result[harness] = writeAgentFiles({ harness, targetRoot, roles });
++    }
++  }
++  return result;
++}
++
++module.exports = {
++  CANONICAL_ROLES_DIR,
++  HARNESS_AGENT_DIRS,
++  CODEX_ROLE_SKILLS_DIR,
++  AGENT_HARNESSES,
++  RoleManifestError,
++  splitFrontmatter,
++  loadRoleManifest,
++  renderSubagentFile,
++  renderCodexRoleSkill,
++  writeAgentFiles,
++  writeCodexRoleSkills,
++  renderSubagentRoles,
++};
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 1e4dbbee..561ed322 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -24,6 +24,7 @@ const VERSION = packageJson.version;
+ const PluginManager = require('../plugin-manager');
+ const { populateAgentSkills, listCanonicalSkills, listFilesRecursive } = require('../skills-sync');
+ const { renderMcpConfig } = require('../mcp-config-renderer');
++const { renderSubagentRoles } = require('../agents-renderer');
+ const { copyEssentialDocs } = require('../docs-copy');
+ 
+ // Baseline MCP server Forge ships. Uses the generic descriptor contract consumed
+@@ -1722,6 +1723,29 @@ function createAgentSkill(agent, agentKey) {
+   console.log(`  Created: ${written.length} skills in ${agent.skillsDir}/`);
+ }
+ 
++// Helper: Render symmetric subagent (role) files from the canonical `agents/`
++// manifest. Claude + Cursor get native `.claude/agents/<role>.md` /
++// `.cursor/agents/<role>.md` (identical frontmatter); Codex gets skill-backed
++// `.codex/skills/<role>/SKILL.md`. One manifest, symmetric output.
++function createSubagentRoles(agent, agentKey) {
++  let harness = null;
++  if (agentKey === 'claude') harness = 'claude';
++  else if (agent.customSetup === 'cursor') harness = 'cursor';
++  else if (agentKey === 'codex') harness = 'codex';
++  if (!harness) return;
++
++  const result = renderSubagentRoles({
++    packageRoot: packageDir,
++    targetRoot: projectRoot,
++    harnesses: [harness],
++  });
++  const written = (result[harness] && result[harness].written) || [];
++  if (written.length) {
++    const surface = harness === 'codex' ? '.codex/skills/<role>' : `.${harness}/agents`;
++    console.log(`  Created: ${written.length} subagent role files in ${surface}/`);
++  }
++}
++
+ // Helper: Create Codex per-stage skills from canonical commands
+ function createCodexSkills() {
+   const installPlan = buildCodexSkillInstallPlan(packageDir, { env: process.env, homeDir: os.homedir() });
+@@ -1859,6 +1883,10 @@ async function setupAgent(agentKey, skipFiles = {}) {
+   // Create SKILL.md or Codex stage skills
+   createAgentSkill(agent, agentKey);
+ 
++  // Render symmetric subagent role files (.claude/agents, .cursor/agents,
++  // or Codex skill-backed roles) from the canonical `agents/` manifest.
++  createSubagentRoles(agent, agentKey);
++
+   // Setup MCP configs (project-local, native for both harnesses)
+   if (agentKey === 'claude') {
+     setupClaudeMcpConfig();
+@@ -4008,6 +4036,7 @@ module.exports = {
+   ensureGitHooksInstalled,
+   setupClaudeMcpConfig,
+   setupCursorMcpConfig,
++  createSubagentRoles,
+   displayMcpStatus,
+   displayEnvTokenResults,
+   minimalInstall,
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index dca939f8..9a0ebc83 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -34,6 +34,8 @@ const SOURCE_ROWS = [
+   ['S8', 'Codex plugins and marketplaces', 'https://developers.openai.com/codex/plugins/build', 'Codex plugins can package skills, apps, MCP servers, hooks, and marketplace metadata.'],
+   ['S9', 'AGENTS.md standard', 'https://agents.md/', 'AGENTS.md provides repository instructions for coding agents.'],
+   ['S10', 'Cursor Agent Skills', 'https://docs.cursor.com/en/agent/skills', 'Cursor reads on-demand Agent Skills from .cursor/skills/<name>/SKILL.md; Forge populates them at setup from the canonical skills/ source.'],
++  ['S11', 'Claude Code subagents', 'https://code.claude.com/docs/en/sub-agents', 'Claude Code subagents live in .claude/agents/<name>.md with YAML frontmatter (name and description required; tools/model optional) and a markdown system-prompt body; Claude delegates by matching the description.'],
++  ['S12', 'Cursor subagents', 'https://cursor.com/docs/context/subagents', 'Cursor subagents live in .cursor/agents/<name>.md with the same frontmatter shape (name + description; optional model/readonly) and a markdown system-prompt body, so one canonical role file renders symmetrically to both Claude and Cursor.'],
+ ];
+ 
+ // The closed set of capability statuses. Every capability-matrix target status MUST
+@@ -137,9 +139,9 @@ const CAPABILITY_ROWS = [
+     ['hermes', target('cli-consumed', 'forge orient / forge recap', { role: 'CLI command surface instead of command files' })],
+   ]),
+   row('agents', 'agents', 'subagent role mapping', [
+-    ['claude', target('not-delivered', null, { role: 'Claude supports .claude/agents/<role>.md, but Forge renders no subagent files', knownIssue: 'The whole agents/subagents domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. Tracked as kernel issue 802aa4d8 (epic 90f2f631).', evidence: ['S1'] })],
+-    ['cursor', target('not-delivered', null, { knownIssue: 'No Cursor subagent renderer; the agents domain is unimplemented. Tracked as kernel issue 802aa4d8 (epic 90f2f631).' })],
+-    ['codex', target('not-delivered', null, { role: 'skill-backing not implemented', knownIssue: 'No Codex subagent/skill-backing renderer; the agents domain is unimplemented. Tracked as kernel issue 802aa4d8 (epic 90f2f631).', evidence: ['S5'] })],
++    ['claude', target('native', '.claude/agents/<role>.md', { role: 'subagent role file rendered from the canonical agents/ manifest (implementer, spec_reviewer, quality_reviewer)', activation: 'description-match delegation or explicit subagent invocation', evidence: ['S11'] })],
++    ['cursor', target('native', '.cursor/agents/<role>.md', { role: 'subagent role file rendered from the SAME canonical agents/ manifest — identical frontmatter, symmetric with Claude', activation: 'description-match delegation', evidence: ['S12'] })],
++    ['codex', target('fallback', '.codex/skills/<role>/SKILL.md', { role: 'skill-backed role (Codex has no native subagent surface); staging mirror installs to $CODEX_HOME/skills', activation: 'explicit $skill or description match after install', evidence: ['S5'], knownIssue: 'Codex has no native subagent file contract, so roles are delivered as skills. The .codex/skills/<role> staging mirror installs to $CODEX_HOME/skills via the Codex skill install flow.' })],
+     ['hermes', target('unsupported', null, { knownIssue: 'Hermes has no subagent file contract; it is a CLI-consumed harness.' })],
+   ]),
+   row('stages', 'stage-graph', 'super skill with addressable subskills', [
+@@ -277,7 +279,7 @@ const RENDERER_FAMILIES = [
+   ['mcp', 'Forge MCP manifest', ['config render', 'server probe or known issue']],
+   ['hooks', 'Forge hook manifest', ['lifecycle event mapping', 'deny/allow behavior proof']],
+   ['commands', 'Forge command shim manifest', ['shim points to canonical skill', 'no duplicated stage body']],
+-  ['agents', 'Forge agent role spec', ['role mapping', 'parallelism or fallback policy']],
++  ['agents', 'Forge canonical role manifest (agents/<role>.md)', ['role mapping', 'symmetric frontmatter render', 'skill fallback policy']],
+   ['stage-graph', 'Forge skills-first stage graph', ['super skill target', 'subskill target list', 'gate mapping']],
+   ['state-and-memory', 'Beads, typed memory, and patch override manifests', ['state authority', 'projection provenance', 'protected path policy']],
+   ['distribution', 'Forge extension manifest and lock metadata', ['lock hash', 'trusted source', 'generated target inventory']],
+diff --git a/package.json b/package.json
+index eb7679d4..a3b046c5 100644
+--- a/package.json
++++ b/package.json
+@@ -82,6 +82,7 @@
+     "lib/",
+     "rules/",
+     "skills/",
++    "agents/",
+     ".claude/rules/",
+     ".claude/scripts/",
+     ".claude/skills/",
+diff --git a/test/agents-renderer.test.js b/test/agents-renderer.test.js
+new file mode 100644
+index 00000000..c2714652
+--- /dev/null
++++ b/test/agents-renderer.test.js
+@@ -0,0 +1,129 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  CANONICAL_ROLES_DIR,
++  HARNESS_AGENT_DIRS,
++  splitFrontmatter,
++  loadRoleManifest,
++  renderSubagentFile,
++  renderSubagentRoles,
++} = require('../lib/agents-renderer');
++
++// Parse a rendered subagent file with the renderer's own frontmatter splitter,
++// which is backed by the `yaml` production dependency (never gray-matter).
++function parse(raw) {
++  const { data, body } = splitFrontmatter(raw);
++  return { data, content: body };
++}
++
++// The Forge package root — the canonical `agents/` role manifest lives here and is
++// the single source for every harness's native subagent files.
++const PACKAGE_ROOT = path.join(__dirname, '..');
++
++// The real roles used by the /dev TDD loop (lib/commands/dev.js audit events).
++const EXPECTED_ROLE_IDS = ['implementer', 'quality_reviewer', 'spec_reviewer'];
++
++function tmp() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-agents-'));
++}
++
++describe('agents-renderer — canonical role manifest', () => {
++  test('canonical agents/ dir is the source of truth for the real dev.js roles', () => {
++    expect(CANONICAL_ROLES_DIR).toBe('agents');
++    const roles = loadRoleManifest(PACKAGE_ROOT);
++    expect(roles.map((r) => r.id).sort()).toEqual(EXPECTED_ROLE_IDS);
++  });
++
++  test('every role has a name matching its id, a non-empty description, and a body', () => {
++    for (const role of loadRoleManifest(PACKAGE_ROOT)) {
++      expect(role.name).toBe(role.id);
++      expect(typeof role.description).toBe('string');
++      expect(role.description.length).toBeGreaterThan(0);
++      // Keep descriptions within the context-cost budget (well under the 1024 cap).
++      expect(role.description.length).toBeLessThanOrEqual(1024);
++      expect(role.body.trim().length).toBeGreaterThan(0);
++    }
++  });
++
++  test('empty manifest dir yields no roles (no throw)', () => {
++    const root = tmp();
++    try {
++      expect(loadRoleManifest(root)).toEqual([]);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
++
++describe('agents-renderer — per-harness subagent files', () => {
++  test('renderSubagentFile emits valid name+description frontmatter and a body', () => {
++    const [role] = loadRoleManifest(PACKAGE_ROOT);
++    const rendered = renderSubagentFile(role);
++    const { data, content } = parse(rendered);
++    expect(data.name).toBe(role.id);
++    expect(data.description).toBe(role.description);
++    // Symmetric contract: ONLY the fields both Claude Code and Cursor recognize.
++    expect(Object.keys(data).sort()).toEqual(['description', 'name']);
++    expect(content.trim().length).toBeGreaterThan(0);
++  });
++
++  test('forge setup path writes symmetric .claude/agents + .cursor/agents from one manifest', () => {
++    const root = tmp();
++    try {
++      const result = renderSubagentRoles({ packageRoot: PACKAGE_ROOT, targetRoot: root });
++      for (const id of EXPECTED_ROLE_IDS) {
++        const claudeFile = path.join(root, HARNESS_AGENT_DIRS.claude, `${id}.md`);
++        const cursorFile = path.join(root, HARNESS_AGENT_DIRS.cursor, `${id}.md`);
++        expect(fs.existsSync(claudeFile)).toBe(true);
++        expect(fs.existsSync(cursorFile)).toBe(true);
++
++        const claudeRaw = fs.readFileSync(claudeFile, 'utf8');
++        const cursorRaw = fs.readFileSync(cursorFile, 'utf8');
++        // SYMMETRY: identical file content across the two harnesses.
++        expect(claudeRaw).toBe(cursorRaw);
++
++        // Frontmatter actually parses and carries the required fields.
++        const { data } = parse(claudeRaw);
++        expect(data.name).toBe(id);
++        expect(typeof data.description).toBe('string');
++        expect(data.description.length).toBeGreaterThan(0);
++      }
++      expect(result.claude.written.length).toBe(EXPECTED_ROLE_IDS.length);
++      expect(result.cursor.written.length).toBe(EXPECTED_ROLE_IDS.length);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('codex delivery is skill-backed: .codex/skills/<role>/SKILL.md with frontmatter', () => {
++    const root = tmp();
++    try {
++      renderSubagentRoles({ packageRoot: PACKAGE_ROOT, targetRoot: root });
++      for (const id of EXPECTED_ROLE_IDS) {
++        const skillFile = path.join(root, '.codex', 'skills', id, 'SKILL.md');
++        expect(fs.existsSync(skillFile)).toBe(true);
++        const { data } = parse(fs.readFileSync(skillFile, 'utf8'));
++        expect(data.name).toBe(id);
++        expect(data.description.length).toBeGreaterThan(0);
++      }
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('rendering is idempotent (rerun overwrites cleanly, same bytes)', () => {
++    const root = tmp();
++    try {
++      renderSubagentRoles({ packageRoot: PACKAGE_ROOT, targetRoot: root });
++      const file = path.join(root, HARNESS_AGENT_DIRS.claude, 'implementer.md');
++      const first = fs.readFileSync(file, 'utf8');
++      renderSubagentRoles({ packageRoot: PACKAGE_ROOT, targetRoot: root });
++      expect(fs.readFileSync(file, 'utf8')).toBe(first);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
+diff --git a/test/harness-capability-matrix.test.js b/test/harness-capability-matrix.test.js
+index db3a06b2..dd760dc6 100644
+--- a/test/harness-capability-matrix.test.js
++++ b/test/harness-capability-matrix.test.js
+@@ -45,9 +45,14 @@ describe('harness capability matrix', () => {
+     expect(matrix.harnesses.claude.capabilities.hooks.status).toBe('contract-only');
+     expect(matrix.harnesses.cursor.capabilities.hooks.status).toBe('not-delivered');
+     expect(matrix.harnesses.cursor.capabilities.hooks.knownIssue).toContain('.cursor/hooks.json');
+-    // Agents domain is unimplemented for every harness.
+-    expect(matrix.harnesses.claude.capabilities.agents.status).toBe('not-delivered');
+-    expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('not-delivered');
++    // Subagent (role) files ARE rendered from the canonical agents/ manifest —
++    // symmetric native surfaces for Claude + Cursor, skill fallback for Codex.
++    expect(matrix.harnesses.claude.capabilities.agents.status).toBe('native');
++    expect(matrix.harnesses.claude.capabilities.agents.primarySurface).toBe('.claude/agents/<role>.md');
++    expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('native');
++    expect(matrix.harnesses.cursor.capabilities.agents.primarySurface).toBe('.cursor/agents/<role>.md');
++    expect(matrix.harnesses.codex.capabilities.agents.status).toBe('fallback');
++    expect(matrix.harnesses.hermes.capabilities.agents.status).toBe('unsupported');
+     // typedMemory is write-only, no projection renderer.
+     expect(matrix.harnesses.claude.capabilities.typedMemory.status).toBe('not-delivered');
+     // Codex MCP is global-config-only; not wired at project setup.
+-- 
+2.51.0.windows.1
+

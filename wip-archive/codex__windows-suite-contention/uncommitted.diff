@@ -1,0 +1,22 @@
+diff --git a/test/kernel/fs-class.test.js b/test/kernel/fs-class.test.js
+index 54163e8c..3afd455a 100644
+--- a/test/kernel/fs-class.test.js
++++ b/test/kernel/fs-class.test.js
+@@ -699,6 +699,17 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
+ });
+ 
+ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
++	test('does not launch PowerShell after a successful net use miss', () => {
++		const seenFiles = [];
++		const fakeExec = (file) => {
++			seenFiles.push(file);
++			if (file === 'powershell') throw new Error('PowerShell fallback must not run after net use succeeds');
++			return '';
++		};
++		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('fixed');
++		expect(seenFiles).toEqual(['net']);
++	}, T);
++
+ 	test('B1: both net use and PowerShell execs pass timeout=1500 + killSignal SIGKILL', () => {
+ 		const seenOptions = [];
+ 		const fakeExec = (_file, _args, options) => {

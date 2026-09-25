@@ -1,0 +1,83 @@
+From 7bbf1fb3af374eeee26147726a60d097a71065ab Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 15:41:28 +0530
+Subject: [PATCH] ci: add Cross-OS Gate required check + fix bypass name drift
+
+Cross-platform is verified (test.yml runs the full bun-test matrix on
+ubuntu+macos+windows) but NOT enforced: the only required status checks on master
+are CodeQL + ESLint, so a red Windows/macOS smoke run cannot block a merge today.
+
+- Add a stable `Cross-OS Gate` job (if: always, needs [windows-smoke, macos-smoke])
+  that fails a PR unless both smoke lanes pass. This is the single context to mark
+  Required in branch protection so cross-platform stops being verifiable-yet-unenforced.
+- Add a matching `Cross-OS Gate` no-op to required-checks-bypass.yml so doc-only PRs
+  (real smoke lanes path-filtered out) still satisfy the check.
+- Fix the name drift the audit found: bypass `Test Dashboard` -> `Test Dashboard (PR)`.
+
+Follow-up (settings, post-merge): add "Cross-OS Gate" to master branch-protection
+required_status_checks (a check context must exist before it can be required).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .github/workflows/required-checks-bypass.yml |  8 ++++++-
+ .github/workflows/test.yml                   | 25 ++++++++++++++++++++
+ 2 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/.github/workflows/required-checks-bypass.yml b/.github/workflows/required-checks-bypass.yml
+index da3794d1..a5c8051d 100644
+--- a/.github/workflows/required-checks-bypass.yml
++++ b/.github/workflows/required-checks-bypass.yml
+@@ -54,7 +54,13 @@ jobs:
+       - run: echo "No code changes — E2E tests not needed"
+ 
+   test-dashboard:
+-    name: Test Dashboard
++    name: Test Dashboard (PR)
+     runs-on: ubuntu-latest
+     steps:
+       - run: echo "No code changes — dashboard not needed"
++
++  cross-os-gate:
++    name: Cross-OS Gate
++    runs-on: ubuntu-latest
++    steps:
++      - run: echo "No code changes — cross-OS smoke not needed"
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 6ae2b01a..09463da2 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -206,6 +206,31 @@ jobs:
+           path: test-results/
+           retention-days: 7
+ 
++  cross-os-gate:
++    # Stable, single required status check that enforces the cross-OS smoke lanes.
++    # Runs even when a smoke lane fails (if: always) and fails the PR unless BOTH
++    # Windows and macOS smoke succeeded (or were legitimately skipped). This is the
++    # context to mark Required in branch protection so a red Windows/macOS run
++    # cannot merge. For doc-only PRs the real smoke lanes are path-filtered out and
++    # the Cross-OS Gate no-op in required-checks-bypass.yml satisfies the check.
++    name: Cross-OS Gate
++    if: ${{ always() && github.event_name == 'pull_request' }}
++    needs: [windows-smoke, macos-smoke]
++    runs-on: ubuntu-latest
++    steps:
++      - name: Require Windows + macOS smoke to pass
++        run: |
++          w='${{ needs.windows-smoke.result }}'
++          m='${{ needs.macos-smoke.result }}'
++          echo "windows-smoke=$w  macos-smoke=$m"
++          for r in "$w" "$m"; do
++            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
++              echo "::error::Cross-OS smoke did not pass (windows=$w macos=$m)"
++              exit 1
++            fi
++          done
++          echo "Cross-OS smoke OK (success or skipped on both)."
++
+   followup-tests:
+     name: Targeted PR Tests (${{ matrix.label }})
+     if: github.event_name == 'pull_request'
+-- 
+2.51.0.windows.1
+

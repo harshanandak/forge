@@ -1,0 +1,105 @@
+From 0e8b80f38aa89727a9b5409ac6532f002af7ee88 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 15:25:30 +0530
+Subject: [PATCH] fix(shepherd): canonicalize legacy marker paths before
+ hashing migration evidence
+
+---
+ lib/pr-monitor/reconcile-executor.js          | 36 ++++++++++++++++---
+ .../reconcile-migration-gate.test.js          | 26 ++++++++++++++
+ 2 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 82ccb748..b57b0e6e 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -421,6 +421,36 @@ function hashLegacyEntry(entry) {
+ 	return crypto.createHash('sha256').update(stableJson(projectLegacyHashEntry(entry))).digest('hex');
+ }
+ 
++// Legacy discovery labels each root by how the *invoking* checkout reached it, so the same
++// shared marker is recorded as `.forge/pr-monitor/...` from the primary checkout and
++// `git-common-root/.forge/pr-monitor/...` from a linked worktree. Hash a checkout-independent
++// identity instead, or an interrupted cutover resumed from another checkout self-conflicts.
++const LEGACY_ROOT_LABELS = [
++	'git-common-root/.forge/pr-monitor',
++	'git-common/forge/pr-monitor',
++	'.forge/pr-monitor',
++];
++
++function canonicalMarkerPath(rawPath) {
++	let value = String(rawPath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
++	for (const label of LEGACY_ROOT_LABELS) {
++		if (value === label || value.startsWith(`${label}/`)) {
++			value = value.slice(label.length).replace(/^\/+/, '');
++			break;
++		}
++	}
++	return process.platform === 'win32' ? value.toLowerCase() : value;
++}
++
++function canonicalMarkers(sources) {
++	const unique = new Map();
++	for (const source of sources) {
++		const marker = { path: canonicalMarkerPath(source?.path), content: source?.content };
++		unique.set(stableJson(marker), marker);
++	}
++	return [...unique.values()].sort((left, right) => stableJson(left).localeCompare(stableJson(right)));
++}
++
+ function hashLegacySnapshot(snapshot) {
+ 	const canonical = snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+ 		? {
+@@ -429,10 +459,8 @@ function hashLegacySnapshot(snapshot) {
+ 			entries: (Array.isArray(snapshot.entries) ? snapshot.entries : [])
+ 				.map(projectLegacyHashEntry)
+ 				.sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
+-			markers: (Array.isArray(snapshot.sources) ? snapshot.sources : [])
+-				.filter(source => /generation|cleanup/i.test(path.basename(String(source?.path || ''))))
+-				.map(source => ({ path: source.path, content: source.content }))
+-				.sort((left, right) => stableJson(left).localeCompare(stableJson(right))),
++			markers: canonicalMarkers((Array.isArray(snapshot.sources) ? snapshot.sources : [])
++				.filter(source => /generation|cleanup/i.test(path.basename(String(source?.path || ''))))),
+ 		}
+ 		: snapshot;
+ 	const encoded = stableJson(canonical);
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index ca13f39c..681c9078 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -211,6 +211,32 @@ describe('one-release watcher authority migration gate', () => {
+ 		}
+ 	});
+ 
++	test('hashes shared markers identically from the primary checkout and a linked worktree', () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-legacy-marker-'));
++		const gitCommonDir = path.join(root, '.git');
++		try {
++			const monitorDir = path.join(root, '.forge', 'pr-monitor', 'acme-repo-7');
++			fs.mkdirSync(monitorDir, { recursive: true });
++			fs.writeFileSync(path.join(monitorDir, 'snapshot.json'), JSON.stringify({
++				repo: 'acme/repo', pr: 7, startedAt: '2026-08-19T00:00:00.000Z', state: 'open',
++			}));
++			fs.writeFileSync(path.join(monitorDir, 'watch.pid'), '107');
++			fs.writeFileSync(path.join(monitorDir, 'watch.generation'), 'generation-a');
++			fs.writeFileSync(path.join(monitorDir, 'cleanup.marker'), 'cleanup-a');
++			const worktreeRoot = path.join(root, '.worktrees', 'feature');
++			fs.mkdirSync(worktreeRoot, { recursive: true });
++
++			const fromPrimary = defaultReadLegacySnapshot(root, { gitCommonDir, repo: 'acme/repo' });
++			const fromWorktree = defaultReadLegacySnapshot(worktreeRoot, { gitCommonDir, repo: 'acme/repo' });
++
++			expect(fromPrimary.sources.some(source => source.path.startsWith('.forge/pr-monitor/'))).toBe(true);
++			expect(fromWorktree.sources.some(source => source.path.startsWith('git-common-root/.forge/pr-monitor/'))).toBe(true);
++			expect(hashLegacySnapshot(fromWorktree)).toBe(hashLegacySnapshot(fromPrimary));
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
+ 	test('assigns distinct stable hashes to each canonical migrated entry', async () => {
+ 		const legacy = snapshot([
+ 			entry('zeta/repo', 2, { pid: 102 }),
+-- 
+2.51.0.windows.1
+

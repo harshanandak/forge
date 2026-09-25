@@ -1,0 +1,66 @@
+From 456f05b93adf9d3efa359817c4a6ca3bd98d60f7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 08:55:30 +0530
+Subject: [PATCH] fix: redact degraded monitor diagnostics
+
+---
+ lib/pr-monitor/flow-monitor.js       |  6 +++++-
+ test/pr-monitor/flow-monitor.test.js | 18 ++++++++++++++++++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 14df4fa4..abd4f8e7 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -22,6 +22,7 @@ const JOB_URL_LIMIT = 2048;
+ const MAX_REOPEN_DEPTH = 8;
+ const SNAPSHOT_FORMAT = 'digest-v1';
+ const SNAPSHOT_EVIDENCE_KEYS = new Set(['checks', 'threads', 'reviews', 'comments', 'degraded']);
++const UNSAFE_PROVIDER_DIAGNOSTIC = /(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk_(?:live|test)_[a-z0-9]{16,}|sk-[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}|(?:^|[\\/])(?:users|home|root)[\\/]\S+)/i;
+ 
+ class FlowMonitorError extends Error {
+   constructor(code, message, options) {
+@@ -66,7 +67,10 @@ function validBoundedJobUrl(value) {
+ }
+ 
+ function boundMonitorRecord(record) {
+-  const bounded = boundSnapshotScalar(record);
++  const safeRecord = typeof record.data?.error === 'string' && UNSAFE_PROVIDER_DIAGNOSTIC.test(record.data.error)
++    ? { ...record, data: { ...record.data, error: '[provider diagnostic redacted]' } }
++    : record;
++  const bounded = boundSnapshotScalar(safeRecord);
+   bounded.key = boundIdentity(record.key);
+   for (const field of ['name', 'threadId', 'author', 'commitOid', 'surface']) {
+     if (typeof record.data?.[field] === 'string') bounded.data[field] = boundIdentity(record.data[field]);
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 1eb3b5f8..7d25921e 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -277,6 +277,24 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+   });
+ 
++  test('redacts unsafe degraded provider diagnostics before durable and legacy persistence', async () => {
++    const store = durableStore();
++    const delivered = [];
++    const unsafe = 'token=supersecret123 from /home/runner/work/private/repo';
++
++    await runFlowMonitorPass(context(
++      store,
++      async () => snapshot({ degraded: [{ surface: 'checks', error: unsafe }] }),
++      async record => delivered.push(record),
++    ));
++
++    const durable = store.events.find(event => event.payload.type === 'monitor.degraded')
++      ?.payload.bounded_payload.record.data.error;
++    const legacy = delivered.find(record => record.type === 'monitor.degraded')?.data.error;
++    expect(durable).toBe('[provider diagnostic redacted]');
++    expect(legacy).toBe('[provider diagnostic redacted]');
++  });
++
+   test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {
+     const store = durableStore();
+     let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
+-- 
+2.51.0.windows.1
+

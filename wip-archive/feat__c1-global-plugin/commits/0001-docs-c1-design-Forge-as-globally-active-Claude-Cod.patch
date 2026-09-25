@@ -1,0 +1,353 @@
+From e2ec22a399edb4ccbad871e5493b6da2c4600a42 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 00:20:25 +0530
+Subject: [PATCH] docs(c1): design Forge as globally-active Claude Code plugin
+
+Design for issue f5f82593 (parent epic 64d6c458). Grounded in real
+inspection of installed plugins (superpowers, beads) under ~/.claude/plugins/.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../2026-07-16-forge-global-plugin/design.md  | 330 ++++++++++++++++++
+ 1 file changed, 330 insertions(+)
+ create mode 100644 docs/work/2026-07-16-forge-global-plugin/design.md
+
+diff --git a/docs/work/2026-07-16-forge-global-plugin/design.md b/docs/work/2026-07-16-forge-global-plugin/design.md
+new file mode 100644
+index 00000000..905d6a71
+--- /dev/null
++++ b/docs/work/2026-07-16-forge-global-plugin/design.md
+@@ -0,0 +1,330 @@
++# Forge as a globally-active Claude Code plugin
++
++**Issue:** f5f82593-757f-4f0e-be4b-2407fb01fa0f (parent epic 64d6c458, blocks 00d477ba)
++**Author:** C1 design agent · 2026-07-16
++**Status:** DESIGN — not implemented
++
++## Problem
++
++`superpowers` skills (`superpowers:brainstorming`, …) are invocable first-try in **any**
++project on this machine with **zero per-project install**, because superpowers is a
++**user-scoped Claude Code plugin**: installed once via a marketplace, its skills are
++registered globally and activate in every repo. Forge has no such surface — it is only an npm
++dev-dep (`forge-workflow`) that must be `bun add -D`'d, then `forge init`, then `forge setup`
++**per project**. Until that runs, Forge is invisible to the agent inside a project.
++
++**Goal:** one-time global install ⇒ Forge's skills + `forge` verbs discoverable and usable in
++**every** project **before** any per-project setup, with `.forge/` (kernel DB, config)
++created **lazily** on first real use — exactly the superpowers activation model.
++
++> Precise scope: "zero per-project install" = install the plugin once at user scope; it then
++> activates everywhere. It is **not** "present with no user action ever." That one global
++> install replaces the per-project `bun add -D` + `forge init` + `forge setup` as the
++> precondition for *discovery*.
++
++---
++
++## 1. How the Claude Code plugin mechanism actually works (verified on this machine)
++
++All paths below were inspected directly under `~/.claude/plugins/`.
++
++### 1.1 On-disk layout
++
++Installed plugins are cached at:
++```
++~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
++```
++Verified example (superpowers):
++`~/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/`
++
++Inside a plugin version directory:
++- `.claude-plugin/plugin.json` — the plugin manifest (required)
++- `.claude-plugin/marketplace.json` — self-marketplace descriptor (for source-of-truth repos)
++- `skills/<name>/SKILL.md` — one dir per skill, YAML-frontmatter markdown
++- `commands/*.md` — slash-command definitions (frontmatter markdown)
++- `agents/` — subagent definitions
++- `hooks/hooks.json` + `hooks/` scripts — lifecycle hooks
++- Sibling `.codex-plugin/`, `.cursor-plugin/`, `.kimi-plugin/`, `gemini-extension.json` —
++  the same content re-exported for other agent harnesses (agent-agnostic distribution).
++
++### 1.2 Registration files (user-global state)
++
++- `~/.claude/plugins/known_marketplaces.json` — maps marketplace name → source. Verified
++  entry shape:
++  ```json
++  "beads-marketplace": {
++    "source": { "source": "github", "repo": "steveyegge/beads" },
++    "installLocation": "C:\\Users\\harsha_befach\\.claude\\plugins\\marketplaces\\beads-marketplace",
++    "lastUpdated": "2026-01-28T09:06:45.882Z"
++  }
++  ```
++- `~/.claude/plugins/installed_plugins.json` — `version: 2`, keyed by `"<plugin>@<marketplace>"`,
++  value is an array of installs each with `scope: "user"`, `installPath`, `version`,
++  `installedAt`, optional `gitCommitSha`. **`scope: "user"` is what makes it global** — it
++  activates in every project, not just the cwd.
++- `~/.claude/plugins/config.json`, `plugin-catalog-cache.json`, `.install-manifests/` —
++  maintained by the `/plugin` CLI; we do not hand-edit these.
++
++The user installs by adding the marketplace then installing the plugin (e.g.
++`/plugin marketplace add <repo>` → `/plugin install forge@forge`). After that, Forge is
++user-scoped and present everywhere.
++
++### 1.3 plugin.json manifest (verified)
++
++superpowers `.claude-plugin/plugin.json` (abridged, real):
++```json
++{
++  "name": "superpowers",
++  "version": "6.1.1",
++  "description": "Core skills library for Claude Code: TDD, debugging, collaboration patterns…",
++  "author": { "name": "Jesse Vincent", "email": "jesse@fsck.com" },
++  "homepage": "…", "repository": "…", "license": "MIT",
++  "keywords": ["skills","tdd",…],
++  "skills": "./skills/",
++  "interface": { "displayName": "Superpowers", "category": "Coding", … }
++}
++```
++Key fields: `name` (becomes the skill/command namespace → `superpowers:brainstorming`),
++`version`, `skills` (path to the skills root; defaults to `./skills/` when omitted), optional
++`hooks`, and an optional `interface` block for store presentation.
++
++### 1.4 Skill discovery
++
++Each `skills/<name>/SKILL.md` has YAML frontmatter. Verified superpowers sample:
++```yaml
++name: brainstorming
++description: "You MUST use this before any creative work - creating features…"
++```
++Forge's canonical skills already match this exactly — e.g. `skills/status/SKILL.md`:
++```yaml
++name: status
++description: > … Reach for this at session start or whenever the user says "/status"…
++allowed-tools: Bash, Read, Grep, Glob
++```
++The **description is the entire trigger surface** — the model sees only the description until
++the skill is invoked. Forge's descriptions are already rich and disambiguated (each says what
++it is *not* for), which is exactly what global activation needs.
++
++### 1.5 Commands (verified via beads)
++
++`commands/<verb>.md` with frontmatter `description` + `argument-hint`, body = the instruction.
++beads `blocked.md` frontmatter: `description: Show blocked issues` / `argument-hint: []`.
++Exposed to the user as `/beads:blocked`.
++
++### 1.6 Hooks + auto-activation (the mechanism behind "self-initiating")
++
++Two verified patterns:
++
++- **superpowers** — `hooks/hooks.json`:
++  ```json
++  { "hooks": { "SessionStart": [ {
++      "matcher": "startup|clear|compact",
++      "hooks": [ { "type": "command",
++        "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start",
++        "async": false } ] } ] } }
++  ```
++  `${CLAUDE_PLUGIN_ROOT}` resolves to the installed version dir. On Windows a `run-hook.cmd`
++  wrapper shells into the real `session-start` script — **this is the Windows-safe hook
++  pattern we copy.**
++
++- **beads** — hooks declared **inline in plugin.json** (`SessionStart` and `PreCompact` both
++  run `bd prime`). beads is the closest analog to Forge: a **CLI-wrapping plugin** that ships
++  `commands/`, `skills/`, `agents/`, and a SessionStart hook, and requires its binary (`bd`)
++  on PATH. Forge should mirror beads' shape, not superpowers' pure-prose shape.
++
++**The distinction that drives Forge's whole design:** superpowers skills are self-contained
++prose — no runtime needed. Forge (like beads) skills **shell out to a binary** (`forge ready`,
++`forge claim`…). Global skill *discovery* is free; global *invocation* requires `forge` to be
++resolvable. Section 2.3 is dedicated to this.
++
++---
++
++## 2. How Forge ships as a global plugin
++
++### 2.1 Single source of truth: canonical `skills/` → plugin surface
++
++Forge already has 20 canonical skills in `/skills/` (status, ship, plan, validate, review,
++verify, kernel, memory, smith, …). There is **also** a stale, wrong-format scaffold at
++`packages/skills/forge-plugin/` — a `manifest.json` (not `.claude-plugin/plugin.json`) listing
++only 6 CLI-wrapper skills (ready/show/claim/comment/close/recap). **This scaffold is the wrong
++format, wrong location, and a stale subset. Do not build on it; retire it** (fold anything
++unique into canonical skills, then delete).
++
++Design: the plugin surface is **generated from the canonical assets**, never hand-forked.
++Add a `.claude-plugin/` at the repo root and a build step that assembles the plugin tree:
++
++```
++<repo root>/
++  .claude-plugin/
++    plugin.json          # name: "forge", skills: "./skills/", hooks inline
++    marketplace.json     # self-marketplace, plugins:[{name:"forge", source:"./"}]
++  skills/        → canonical (already exists; consumed as-is)
++  commands/      → GENERATED thin wrappers for the top-level forge verbs
++  agents/        → canonical agents/ (already exists)
++  hooks/         → activation + lazy-init hook + Windows run-hook.cmd
++```
++
++Because `skills`, `agents`, and `rules` already live at the repo root in the right shape, the
++plugin can point `skills: "./skills/"` straight at them. A generator (`scripts/gen-plugin.mjs`)
++produces `commands/` and validates the manifest so the plugin tree and the CLI never drift.
++This reuses the existing `gen-command-manifest.js` machinery (already in package.json scripts).
++
++### 2.2 Verbs → command surface
++
++`forge`'s user-facing verbs (`ready`, `status`, `claim`, `ship`, `validate`, `review`, …) are
++projected as `/forge:<verb>` slash commands via generated `commands/<verb>.md`. Each is a thin
++wrapper whose body instructs the agent to run the corresponding `forge <verb>` through the
++resolver (2.3) and interpret the output — matching beads' command style. The generator reads
++the same command registry the CLI uses, so adding a verb adds a command for free.
++
++### 2.3 Runtime availability — the crux (reconciles single-binary 6f11d483)
++
++Skills/commands must resolve a runnable `forge`. A **resolver shim** shipped in the plugin
++(`${CLAUDE_PLUGIN_ROOT}/bin/forge-resolve`) is what every skill/command calls. It resolves in
++priority order and **local always wins** (ties into shadowing 9e11cf47):
++
++1. **Project-local install** — `./node_modules/.bin/forge` (npm dev-dep path; the current
++   channel). If present, use it → local version shadows global.
++2. **Global npm** — `forge` on PATH from a global npm install.
++3. **Bundled single static binary** — `${CLAUDE_PLUGIN_ROOT}/bin/forge-<platform>` produced by
++   the single-binary epic (6f11d483, `bun build --compile`, zero native deps). This is what
++   makes the plugin **self-sufficient with no Node/Bun prerequisite**, matching superpowers'
++   "just works" property.
++4. **Not found** → the skill emits a one-line, copy-pasteable install hint and stops (never
++   silently fails).
++
++**Recommendation:** ship the resolver from day one; have it prefer local, fall back to a
++bundled binary. C1 depends on 6f11d483 for the bundled-binary tier but is **not blocked** by
++it — tiers 1–2 already work today, and the plugin degrades to "install forge" messaging until
++the binary lands. This keeps C1 shippable now and strictly better once 6f11d483 completes.
++
++Distribution weight: skills/commands/agents/rules are ~tens of KB and ship in every plugin
++copy cheaply. The per-platform binaries (~60–110MB) are the only heavy asset; publish them via
++GitHub Releases and have the resolver/postinstall fetch the matching platform binary lazily
++rather than bundling all five in the marketplace repo.
++
++### 2.4 Distribution
++
++A self-marketplace at the repo root (verified pattern — superpowers' `marketplace.json` uses
++`"source": "./"`), so the Forge GitHub repo *is* the marketplace:
++```json
++{ "name": "forge", "plugins": [ { "name": "forge", "version": "…", "source": "./" } ] }
++```
++User install: `/plugin marketplace add harshanandak/forge` → `/plugin install forge@forge`.
++Additive to npm; the npm package is untouched.
++
++---
++
++## 3. Lazy `.forge/` creation (ties to auto-init epic 64d6c458)
++
++**Discovery ≠ initialization.** The plugin's presence must create **nothing** in the user's
++repo. This mirrors beads (present globally; `.beads/` only appears on first real use).
++
++- **SessionStart hook** (`hooks/`): read-only. It MUST NOT create `.forge/`. It may, at most,
++  detect whether the cwd is a git repo and whether `.forge/` already exists, and surface a
++  one-line orientation ("Forge active; no project state yet — a workflow verb will initialize
++  it"). No writes. (beads runs `bd prime`, read-only priming — same spirit.)
++- **Lazy trigger:** the first skill/verb that performs a **real mutation** (e.g. `forge claim`,
++  `forge issue create`, `forge memory remember`) calls an internal `ensureForgeHome()` that
++  creates the **bare-minimum** skeleton on demand. Read-only verbs (`forge ready`, `status` on
++  an uninitialized repo) return an empty/na state without writing.
++- **Bare-minimum skeleton** (equivalent to today's `forge init --minimal`, which the CuraPod
++  session confirmed is the clean, gates-disabled, kernel-working baseline):
++  ```
++  .forge/
++    config.json      # { "backend": "kernel", "gates": "disabled", "created": "lazy" }
++    kernel.db        # empty kernel/issue store
++  ```
++  **No** TDD/protected-path hooks, **no** lefthook.yml, **no** `.mcp.json`, **no** 74-file
++  scripts tree. Those are the all-or-nothing `forge setup` payload the session explicitly
++  rejected.
++- **Progressive growth:** each heavier capability initializes its own slice on first use and
++  stays optional — memory store on first `remember`, gate config on first `validate`, hooks
++  only when the user runs the (still-available) full `forge setup`. `forge setup` /
++  `configure-properly` remains for users who want everything at once; it is never forced. This
++  is the direct implementation of epic 64d6c458's "auto-init bare-minimum + grow progressively;
++  configure-properly stays available, never forced," and links to progressive-memory dae18794.
++
++---
++
++## 4. Windows / Git-Bash considerations (native-Windows-first)
++
++- **Hook execution:** copy superpowers' `run-hook.cmd` wrapper pattern verbatim in spirit — a
++  `.cmd` shim that Claude Code can launch on Windows, which then invokes the real hook script.
++  Do **not** rely on a bare shebang script as the `command`.
++- **`${CLAUDE_PLUGIN_ROOT}`** is the only reliable way to reference plugin-internal files;
++  never hardcode paths. Quote it (`"${CLAUDE_PLUGIN_ROOT}/…"`) — install paths contain spaces
++  (`C:\Users\harsha_befach\.claude\…`).
++- **Path style:** skills/resolver must accept Windows backslash paths (`installPath` in
++  `installed_plugins.json` is backslash-escaped) while emitting forward-slash paths for
++  Git-Bash. Forge already spawns git/gh via Git-Bash; keep that, and keep the runtime-health
++  checks (git/gh/Git-Bash still required even with the bundled binary — the binary only removes
++  the Node/Bun prerequisite, per 6f11d483 notes).
++- **Binary selection:** the resolver picks `forge-windows-x64` on Windows; smoke-test the
++  Windows target explicitly in the cross-compile job (6f11d483 step 3 already lists it).
++- **CRLF:** generated `commands/*.md` and hook scripts must be LF; add a `.gitattributes` guard
++  so Windows checkouts don't corrupt hook scripts.
++
++---
++
++## 5. Coexistence with the npm dev-dep path (no regression)
++
++Both channels remain first-class:
++
++| Concern | npm dev-dep (today) | Global plugin (new) |
++|---|---|---|
++| Discovery | after `bun add -D` + `forge init/setup` | one global install, every project |
++| `forge` binary | `node_modules/.bin/forge` | resolver → local, else global, else bundled |
++| Skills surface | none in-agent | `forge:*` skills + `/forge:*` commands |
++| Project state | `.forge/` from `forge init` | `.forge/` lazy on first mutation |
++
++**Shadowing rule (9e11cf47):** local **always** wins. If a project has a local `forge-workflow`
++install and/or a `.forge/`, the resolver uses the local binary and the local config/skills
++override the global plugin's. A project can opt out of a global skill by shadowing it locally
++or via config. The global plugin is the *floor*, never an override of an inited project. This
++guarantees: installing the plugin never changes behavior in a repo that already uses the npm
++path.
++
++---
++
++## 6. Task breakdown (child build tasks)
++
++Ordered; each is a discrete PR. B1–B4 ship value without 6f11d483; B5 upgrades once it lands.
++
++1. **B1 — Plugin manifest + self-marketplace + skills projection.** Add root
++   `.claude-plugin/plugin.json` (`name: forge`, `skills: ./skills/`, keywords, interface) and
++   `.claude-plugin/marketplace.json` (`source: "./"`). Point `skills`/`agents` at the existing
++   canonical dirs. Validate that all 20 canonical skill descriptions load and namespace as
++   `forge:<name>`. *No new skill content.*
++2. **B2 — Retire the stale `packages/skills/forge-plugin/` scaffold.** Fold any unique wrapper
++   guidance into canonical skills, delete the scaffold + its `manifest.json`, remove references.
++3. **B3 — Command generator + `/forge:*` surface.** `scripts/gen-plugin.mjs` generates
++   `commands/<verb>.md` from the CLI command registry (reuse `gen-command-manifest.js`); add
++   `gen:plugin:check` to CI so the tree never drifts from the CLI.
++4. **B4 — Runtime resolver shim + lazy `.forge/`.** Ship `bin/forge-resolve` (tiers 1–2–4 now,
++   tier 3 stubbed), route all skills/commands through it. Implement `ensureForgeHome()` +
++   bare-minimum skeleton; make read-only verbs no-write; wire SessionStart read-only hook with
++   the `run-hook.cmd` Windows wrapper.
++5. **B5 — Bundle the single static binary (depends on 6f11d483).** Enable resolver tier 3;
++   lazy-fetch the platform binary from GitHub Releases; per-platform smoke test incl. Windows.
++6. **B6 — Install docs + marketplace publish + agent-agnostic exports.** README install flow
++   (`/plugin marketplace add …`), coexistence note, and optional `.codex-plugin/`,
++   `.cursor-plugin/`, `gemini-extension.json` re-exports (superpowers pattern) for
++   agent-agnostic distribution.
++7. **B7 — E2E activation test.** In a throwaway repo with only the global plugin installed and
++   **no** `forge init`: assert a `forge:*` skill is discoverable, a read-only verb runs with no
++   `.forge/` written, and a mutating verb lazily creates the bare-minimum skeleton. This is the
++   acceptance test for issue 00d477ba (the dependent).
++
++**Sequencing:** B1→B2→B3→B4 are the core and unblock the dependent 00d477ba; B5 waits on the
++single-binary epic; B6/B7 close out. Link (do not duplicate) 9e11cf47 (shadowing), 6f11d483
++(binary), 64d6c458 (auto-init direction), dae18794 (progressive memory).
++
++## Open questions for team-lead review
++
++1. **Binary distribution weight** — bundle all platform binaries in the marketplace repo, or
++   lazy-fetch per-platform from Releases? (Recommended: lazy-fetch.)
++2. **Marketplace hosting** — self-marketplace on `harshanandak/forge` directly, or a dedicated
++   `forge-marketplace` repo? (Recommended: self-marketplace, matches superpowers.)
++3. **Command breadth** — expose *all* verbs as `/forge:*` commands, or only the top workflow
++   verbs to avoid namespace clutter? (Recommended: curated top verbs; skills cover the rest.)
+-- 
+2.51.0.windows.1
+

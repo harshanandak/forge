@@ -1,0 +1,141 @@
+From d99bd97c5bd71dd0872e0f5909d13b8c0dd9d55a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 13:11:00 +0530
+Subject: [PATCH] fix(monitor): fail-closed CI guard + producer-proof
+ availability checks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+renderChecks had the same false-clean hole the thread guard just closed: on a
+gather outage the fallback bundle carries empty ci arrays, so it rendered
+'No failing or pending checks' for CI that was NEVER read — a literal
+false-green claim in the monitor's own output, the exact failure this monitor
+exists to prevent.
+
+- renderChecks now surfaces 'Checks were unreadable' unless ciAvailable === true.
+- Workflow stamps ciAvailable:true on the successful gather (the shepherd bundle
+  has no such flag) and ciAvailable:false in the degraded fallback, so both
+  threads and checks read as unreadable on an outage.
+- Both guards now use '!== true' (producer-proof): a bundle that omits an
+  availability flag is treated as unread, never as clean. Added tests for the
+  CI bypass and the missing-flag case.
+
+Refs: 35ee8d78, b5c154cd, c2d398e5.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/pr-monitor.yml      | 12 +++++++++---
+ lib/pr-monitor/render-sticky.js       | 20 ++++++++++++++++----
+ test/pr-monitor/render-sticky.test.js | 20 ++++++++++++++++++++
+ 3 files changed, 45 insertions(+), 7 deletions(-)
+
+diff --git a/.github/workflows/pr-monitor.yml b/.github/workflows/pr-monitor.yml
+index 99d5bc95..d40a997d 100644
+--- a/.github/workflows/pr-monitor.yml
++++ b/.github/workflows/pr-monitor.yml
+@@ -112,15 +112,21 @@ jobs:
+           set -uo pipefail
+           # Reuse Forge's own agnostic gather so the monitor and the CLI share one
+           # implementation. Read-only: --bundle decides nothing and takes no action.
+-          if node bin/forge.js shepherd "$PR" --bundle --json > bundle.json 2> gather.err; then
++          # On success we stamp ciAvailable:true — the shepherd bundle doesn't carry
++          # that flag, and the renderer treats a missing flag as "unread" (fail-closed),
++          # so we must assert here that CI WAS read on this path.
++          if node bin/forge.js shepherd "$PR" --bundle --json > raw.json 2> gather.err \
++             && jq '. + {ciAvailable: true}' raw.json > bundle.json 2>/dev/null; then
+             echo "gathered=true" >> "$GITHUB_OUTPUT"
+           else
+             echo "gathered=false" >> "$GITHUB_OUTPUT"
+             echo "::warning::Bundle gather failed; posting a degraded surface. See log."
+             cat gather.err || true
+-            # Fail-closed degraded bundle: unreadable threads are NOT rendered as zero.
++            # Fail-closed degraded bundle: NEITHER threads NOR checks were read, so
++            # both availability flags are false — the renderer surfaces both as
++            # unreadable rather than a false "zero unresolved / no failing checks".
+             ERR=$(head -c 300 gather.err 2>/dev/null | tr '\n' ' ' | sed 's/"/\\"/g')
+-            printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
++            printf '{"pr":"%s","unresolvedComments":[],"unresolvedCommentsAvailable":false,"unresolvedCommentsError":"gather failed: %s","ciAvailable":false,"ci":{"checks":[],"failing":[],"pending":[]},"branch":{"ahead":0,"behind":0}}' "$PR" "$ERR" > bundle.json
+           fi
+ 
+       - name: Render sticky comment body
+diff --git a/lib/pr-monitor/render-sticky.js b/lib/pr-monitor/render-sticky.js
+index 5bf73abc..27849989 100644
+--- a/lib/pr-monitor/render-sticky.js
++++ b/lib/pr-monitor/render-sticky.js
+@@ -48,9 +48,9 @@ function renderThreads(bundle, lines) {
+   // Fail-closed: if the thread read was not available for ANY reason — it threw
+   // (error set) OR the adapter cannot read comments at all (capability absent,
+   // error null) — NEVER render "zero / clean". Only a genuine available:true read
+-  // may report "no unresolved threads". Guarding on the error string too would let
+-  // the capability-absent case fall through to a misleading zero.
+-  if (bundle.unresolvedCommentsAvailable === false) {
++  // may report "no unresolved threads". Guard on `!== true` (not `=== false`) so a
++  // producer that omits the flag is also treated as unread, never as clean.
++  if (bundle.unresolvedCommentsAvailable !== true) {
+     const why = bundle.unresolvedCommentsError || 'thread read unavailable (capability absent)';
+     lines.push('### Review threads');
+     lines.push(`⚠️ Review threads were **unreadable** this pass (\`${why}\`) — not treated as zero. Re-run once the read recovers.`);
+@@ -81,8 +81,20 @@ function renderThreads(bundle, lines) {
+   lines.push('');
+ }
+ 
+-/** Render the failing / pending check sections. */
++/** Render the failing / pending check sections (author-agnostic + fail-closed). */
+ function renderChecks(bundle, lines) {
++  // Fail-closed, mirroring renderThreads: empty ci arrays are AMBIGUOUS — they
++  // mean either "read, genuinely all-clear" or "never read (gather outage)". Only
++  // an explicit ciAvailable === true lets us render the summary; anything else
++  // ("!== true": false or missing) surfaces as unreadable, so the monitor never
++  // prints a false "no failing checks" for CI it did not actually read.
++  if (bundle.ciAvailable !== true) {
++    lines.push('### Checks');
++    lines.push('⚠️ Checks were **unreadable** this pass — not treated as green. Re-run once the read recovers.');
++    lines.push('');
++    return;
++  }
++
+   const ci = bundle.ci || {};
+   const failing = Array.isArray(ci.failing) ? ci.failing : [];
+   const pending = Array.isArray(ci.pending) ? ci.pending : [];
+diff --git a/test/pr-monitor/render-sticky.test.js b/test/pr-monitor/render-sticky.test.js
+index 8e56cb32..e7a6cefc 100644
+--- a/test/pr-monitor/render-sticky.test.js
++++ b/test/pr-monitor/render-sticky.test.js
+@@ -21,6 +21,7 @@ function makeBundle(overrides = {}) {
+     unresolvedCommentsAvailable: true,
+     unresolvedCommentsError: null,
+     mergeState: { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', state: 'OPEN' },
++    ciAvailable: true,
+     ci: { checks: [], failing: [], pending: [] },
+     branch: { ahead: 1, behind: 0 },
+     conflicts: { supported: true, conflicted: false },
+@@ -84,6 +85,25 @@ describe('renderStickyComment', () => {
+     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+   });
+ 
++  test('unread CI (ciAvailable false) renders degraded, never a false "no failing checks"', () => {
++    // Mirror of the thread bypass on the CHECK side: on a gather outage the
++    // fallback bundle carries empty ci arrays. Without a guard renderChecks would
++    // print "No failing or pending checks" for CI that was NEVER read — a literal
++    // false-green claim in the monitor's own output.
++    const bundle = makeBundle({ ciAvailable: false, ci: { checks: [], failing: [], pending: [] } });
++    const { body } = renderStickyComment(bundle, { now: NOW });
++    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
++    expect(body.toLowerCase()).toContain('checks were **unreadable**'.toLowerCase());
++  });
++
++  test('CI with a missing availability flag is treated as unread (producer-proof, fail-closed)', () => {
++    const bundle = makeBundle();
++    delete bundle.ciAvailable;
++    const { body } = renderStickyComment(bundle, { now: NOW });
++    expect(body.toLowerCase()).not.toContain('no failing or pending checks');
++    expect(body.toLowerCase()).toContain('unreadable');
++  });
++
+   test('unavailable thread read with NO error string (capability absent) still renders degraded, never zero', () => {
+     // The bypass: gatherUnresolvedComments returns { available:false, error:null }
+     // when the adapter cannot read comments at all. A guard that also required a
+-- 
+2.51.0.windows.1
+

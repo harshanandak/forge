@@ -1,0 +1,33 @@
+From 9fcd8ea9b81a36d8a5936141b3d39622c108ed73 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 12:28:15 +0530
+Subject: [PATCH] fix(review): name validation exit code assertion (940b904b)
+
+---
+ test/kernel/kernel-parity-bugs.test.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/test/kernel/kernel-parity-bugs.test.js b/test/kernel/kernel-parity-bugs.test.js
+index 03cf0d12..27dba027 100644
+--- a/test/kernel/kernel-parity-bugs.test.js
++++ b/test/kernel/kernel-parity-bugs.test.js
+@@ -7,6 +7,7 @@ const path = require('node:path');
+ 
+ const { createLocalBroker } = require('../../lib/kernel/broker');
+ const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const { ISSUE_COMMAND_EXIT_CODES } = require('../../lib/kernel/issue-command-contract');
+ 
+ // Kernel-parity regression suite. Three confirmed divergences from the Beads
+ // behavior the Kernel replaced:
+@@ -386,7 +387,7 @@ describe('Kernel parity bugs', () => {
+ 		);
+ 
+ 		expect(result.ok).toBe(false);
+-		expect(result.error.exit_code).toBe(6);
++		expect(result.error.exit_code).toBe(ISSUE_COMMAND_EXIT_CODES.validation);
+ 		const shown = await driver.issueOperation('show', ['close-illegal-1'], {}, config);
+ 		expect(shown.data.status).toBe('open');
+ 		expect(shown.data.revision).toBe(0);
+-- 
+2.51.0.windows.1
+

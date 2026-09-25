@@ -1,0 +1,24 @@
+From 6c89197072122bad7cb03a99f14759055cdd30be Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 23:34:14 +0530
+Subject: [PATCH] docs(changelog): record PR lifecycle hardening
+
+---
+ CHANGELOG.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b9195456..e5fc8856 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **PR lifecycle acceptance fails closed at its authority and privacy boundaries.** Every opened linkage write now proves exact live claim ownership, timed-out persistence reconciles only through bounded durable trace evidence, and bare POSIX user-home paths are rejected before WorkPacket publication. (#530, issue `50571aa3-b1cd-42f4-9c50-2c7576d1b0d4`)
+ - **Official skill-mirror writes retain protected-state authority.** The canonical `.agents/skills` sync now uses one-time, actor/path/content/source-HEAD/worktree-bound authorization and completion receipts, verifies byte equality with `skills/`, and continues to deny direct, stale, replayed, or foreign writes. (issue `209d80bc-f521-4947-9953-e5b5bf7020f6`)
+ - **Workspace lockfile proofs are path-independent.** Bun regeneration now receives the isolated proof root explicitly, preventing temporary proof paths from leaking into workspace keys. (issue `3eb1db42-eaa3-4847-9878-7b77310d1beb`)
+ - **Windows lockfile proofs canonicalize temporary roots.** Native path resolution prevents 8.3 TEMP aliases from changing regenerated lock bytes. (issue `3eb1db42-eaa3-4847-9878-7b77310d1beb`)
+-- 
+2.51.0.windows.1
+

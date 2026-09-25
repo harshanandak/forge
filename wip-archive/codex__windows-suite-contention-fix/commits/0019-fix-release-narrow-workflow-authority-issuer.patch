@@ -1,0 +1,187 @@
+From 4632573c56bbcc9fae613f0cac68e0f098958ac1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 17:31:44 +0530
+Subject: [PATCH] fix(release): narrow workflow authority issuer
+
+---
+ lib/npm-publish-workflow.js            | 18 ++++------
+ lib/protected-state-authority.js       | 18 ++++++++--
+ test/npm-publish-workflow.test.js      | 47 +++++++++++++++++++++++++-
+ test/protected-state-authority.test.js |  3 +-
+ 4 files changed, 71 insertions(+), 15 deletions(-)
+
+diff --git a/lib/npm-publish-workflow.js b/lib/npm-publish-workflow.js
+index 065b215c..e6c4bef3 100644
+--- a/lib/npm-publish-workflow.js
++++ b/lib/npm-publish-workflow.js
+@@ -9,8 +9,7 @@ const {
+ 	writeProtectedFile,
+ } = require('./protected-state-surfaces');
+ const {
+-	NPM_WORKFLOW_SOURCE_COMMAND,
+-	issueProtectedStateAuthorization,
++	issueNpmPublishWorkflowAuthorization,
+ } = require('./protected-state-authority');
+ 
+ const NPM_PUBLISH_WORKFLOW_PATH = '.github/workflows/npm-publish.yml';
+@@ -181,7 +180,7 @@ async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 	const actor = options.actor || options.env?.FORGE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'unknown';
+ 	const protectedWriter = options.writeProtectedFile || writeProtectedFile;
+ 	const auditWriter = options.recordProtectedStateAuditEvent || recordProtectedStateAuditEvent;
+-	const authorizationWriter = options.issueProtectedStateAuthorization || issueProtectedStateAuthorization;
++	const authorizationWriter = options.issueNpmPublishWorkflowAuthorization || issueNpmPublishWorkflowAuthorization;
+ 	const snapshot = snapshotWorkflow(projectRoot);
+ 	const writeOptions = {
+ 		actor,
+@@ -229,14 +228,11 @@ async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 
+ 	let trustedAuthorization;
+ 	try {
+-		trustedAuthorization = await authorizationWriter(projectRoot, {
+-			actor,
+-			surface: 'workflows',
+-			path: NPM_PUBLISH_WORKFLOW_PATH,
+-			content,
+-			operation: 'generate_npm_workflow',
+-			sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
+-		}, { deps: options.kernelDeps });
++		trustedAuthorization = await authorizationWriter(
++			projectRoot,
++			{ actor },
++			{ deps: options.kernelDeps },
++		);
+ 	} catch (error) {
+ 		trustedAuthorization = { success: false, error: error.message };
+ 	}
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index f1168b85..07f4ec19 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -212,6 +212,21 @@ async function issueProtectedStateAuthorization(projectRoot, request = {}, optio
+ 	}
+ }
+ 
++async function issueNpmPublishWorkflowAuthorization(projectRoot, params = {}, options = {}) {
++	const {
++		NPM_PUBLISH_WORKFLOW_PATH,
++		renderNpmPublishWorkflow,
++	} = require('./npm-publish-workflow');
++	return issueProtectedStateAuthorization(projectRoot, {
++		actor: params.actor,
++		surface: 'workflows',
++		path: NPM_PUBLISH_WORKFLOW_PATH,
++		content: renderNpmPublishWorkflow(),
++		operation: 'generate_npm_workflow',
++		sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
++	}, options);
++}
++
+ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [], options = {}) {
+ 	if (requests.length === 0) return { success: true, decisions: [] };
+ 	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot);
+@@ -273,11 +288,10 @@ module.exports = {
+ 	PROTECTED_STATE_ENTITY_TYPE,
+ 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
+ 	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
+-	NPM_WORKFLOW_SOURCE_COMMAND,
+ 	resolveWorktreeScope,
+ 	authorizationEntityId,
+ 	parseAuthorizationEvent,
+ 	evaluateAuthorization,
+-	issueProtectedStateAuthorization,
++	issueNpmPublishWorkflowAuthorization,
+ 	authorizeAndConsumeProtectedStateWrites,
+ };
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+index d090fa42..a6292775 100644
+--- a/test/npm-publish-workflow.test.js
++++ b/test/npm-publish-workflow.test.js
+@@ -15,6 +15,7 @@ const {
+ const {
+ 	PROTECTED_STATE_AUDIT_LOG,
+ } = require('../lib/protected-state-surfaces');
++const protectedStateAuthority = require('../lib/protected-state-authority');
+ const {
+ 	createReleaseSuiteReceipt,
+ 	verifyReleaseSuiteReceipt,
+@@ -279,7 +280,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 			fs.writeFileSync(workflowPath, previous);
+ 			const result = await generateNpmPublishWorkflow(root, {
+ 				actor: 'release-test',
+-				issueProtectedStateAuthorization: async () => ({
++				issueNpmPublishWorkflowAuthorization: async () => ({
+ 					success: false,
+ 					error: 'kernel authority unavailable',
+ 				}),
+@@ -383,6 +384,50 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	}, 15_000);
+ 
++	test('generic library callers cannot mint authority for arbitrary workflow bytes', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-generic-issuer-'));
++		const actor = 'spoofed-release-actor';
++		const checker = path.join(repoRoot, 'scripts', 'protected-state-check.js');
++		const arbitraryContent = 'name: attacker-controlled workflow\non: push\n';
++		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
++		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
++		try {
++			expect(run('git', ['init']).status).toBe(0);
++			if (typeof protectedStateAuthority.issueProtectedStateAuthorization === 'function') {
++				await protectedStateAuthority.issueProtectedStateAuthorization(root, {
++					actor,
++					surface: 'workflows',
++					path: NPM_PUBLISH_WORKFLOW_PATH,
++					content: arbitraryContent,
++					operation: 'generate_npm_workflow',
++					sourceCommand: protectedStateAuthority.NPM_WORKFLOW_SOURCE_COMMAND,
++				});
++			} else {
++				await protectedStateAuthority.issueNpmPublishWorkflowAuthorization(root, {
++					actor,
++					content: arbitraryContent,
++					path: NPM_PUBLISH_WORKFLOW_PATH,
++					operation: 'generate_npm_workflow',
++					sourceCommand: 'spoofed direct caller',
++				});
++			}
++			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
++			fs.writeFileSync(workflowPath, arbitraryContent, 'utf8');
++			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
++
++			const result = spawnSync(process.execPath, [checker], {
++				cwd: root,
++				encoding: 'utf8',
++				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
++			});
++
++			expect(result.status).toBe(1);
++			expect(protectedStateAuthority.issueProtectedStateAuthorization).toBeUndefined();
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 30_000);
++
+ 	test('hook consumes authorization and denies a later same-content stale replay', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-same-content-replay-'));
+ 		const actor = 'release-replay-test';
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index 1f721dbe..018c06af 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -5,11 +5,12 @@ const { hashProtectedContent } = require('../lib/protected-state-surfaces');
+ const {
+ 	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
+ 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
+-	NPM_WORKFLOW_SOURCE_COMMAND,
+ 	authorizationEntityId,
+ 	evaluateAuthorization,
+ } = require('../lib/protected-state-authority');
+ 
++const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
++
+ const target = {
+ 	actor: 'forge-release',
+ 	surface: 'workflows',
+-- 
+2.51.0.windows.1
+

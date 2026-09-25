@@ -1,0 +1,82 @@
+From 3d4a3bf6fd658bdc95055a705a8fc8f85be31688 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 15:21:47 +0530
+Subject: [PATCH] fix(release): rethrow real git errors in trackedRepoFiles
+ (CodeRabbit #339)
+
+Only fall back to the raw walk for a genuine non-git tree (git: "not a git
+repository"); rethrow any OTHER git/exec failure so a real error cannot silently
+reintroduce the untracked-scan nondeterminism this fix removes. NOSONAR S4036 on
+the by-design PATH-resolved git spawn (repo-wide convention). Adds a non-git-tree
+fallback test.
+---
+ lib/release-readiness.js               | 27 +++++++++++++++++---------
+ test/release-readiness-tracked.test.js | 10 ++++++++++
+ 2 files changed, 28 insertions(+), 9 deletions(-)
+
+diff --git a/lib/release-readiness.js b/lib/release-readiness.js
+index 590fd64c..c7d18163 100644
+--- a/lib/release-readiness.js
++++ b/lib/release-readiness.js
+@@ -494,21 +494,30 @@ function addCallSites(groups, group, relativePath, lineEntries) {
+ // makes the census deterministic under a dirty/parallel working tree: an untracked temp
+ // file a concurrent test drops under a scan root no longer perturbs it (issue 1d4077d8).
+ function trackedRepoFiles(projectRoot) {
++  let output;
+   try {
+-    const output = execFileSync('git', ['-C', projectRoot, 'ls-files', '-z'], {
++    // NOSONAR S4036 — `git` is resolved from PATH by design (cross-platform CLI; the repo
++    // spawns git this way throughout and cannot hardcode a portable absolute path).
++    output = execFileSync('git', ['-C', projectRoot, 'ls-files', '-z'], {
+       encoding: 'utf8',
+       maxBuffer: 64 * 1024 * 1024,
+     });
+-    const tracked = new Set();
+-    for (const entry of output.split('\0')) {
+-      if (entry) {
+-        tracked.add(normalizeRepoPath(entry));
+-      }
++  } catch (error) {
++    // Fall back to the raw walk ONLY for a genuine non-git tree (which legitimately has no
++    // tracked set). Any OTHER git/exec failure must NOT silently reintroduce the untracked-
++    // scan nondeterminism this fix removes — surface it instead of masking it.
++    if (/not a git repository/i.test(String(error && error.stderr))) {
++      return null;
++    }
++    throw error;
++  }
++  const tracked = new Set();
++  for (const entry of output.split('\0')) {
++    if (entry) {
++      tracked.add(normalizeRepoPath(entry));
+     }
+-    return tracked;
+-  } catch (_error) {
+-    return null;
+   }
++  return tracked;
+ }
+ 
+ function auditBdCallSites(projectRoot, options = {}) {
+diff --git a/test/release-readiness-tracked.test.js b/test/release-readiness-tracked.test.js
+index 49996f4f..11158777 100644
+--- a/test/release-readiness-tracked.test.js
++++ b/test/release-readiness-tracked.test.js
+@@ -53,4 +53,14 @@ describe('auditBdCallSites is deterministic under working-tree pollution (1d4077
+     expect(polluted.totalCount).toBe(clean.totalCount);
+     expect(polluted.totalFiles).toBe(clean.totalFiles);
+   });
++
++  test('falls back to the raw walk in a non-git tree (no tracked set)', () => {
++    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-nogit-'));
++    tempDirs.push(dir);
++    fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
++    fs.writeFileSync(path.join(dir, 'docs', 'note.md'), 'run `bd list`\n');
++    // Not a git repo -> trackedRepoFiles() returns null -> auditBdCallSites still scans.
++    const audit = auditBdCallSites(dir, { scanRoots: ['docs'] });
++    expect(audit.totalCount).toBeGreaterThan(0);
++  });
+ });
+-- 
+2.51.0.windows.1
+

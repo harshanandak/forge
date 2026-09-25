@@ -1,0 +1,396 @@
+From b4925c65af4aae176398bf1984253dec1edd08a8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 23:41:23 +0530
+Subject: [PATCH] fix: close post-push convergence gaps
+
+---
+ lib/commands/merge.js                 | 105 +++++++++++++-------------
+ lib/commands/shepherd.js              |  24 +++---
+ lib/pr-monitor/flow-monitor.js        |  14 +++-
+ lib/pr-monitor/reconcile-executor.js  |  17 +++--
+ test/commands/merge-authority.test.js |  24 +++---
+ test/commands/shepherd.test.js        |  14 ++++
+ test/pr-monitor/flow-monitor.test.js  |   7 ++
+ 7 files changed, 121 insertions(+), 84 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index ae3f42ae..33e8c296 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -1084,9 +1084,8 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
+   const gh = deps.gh || defaultGh;
+   const exactMergeIdentity = !parsed.error && parsed.expectedHead && parsed.issueId;
+-  let prContext; let prState = '';
+-  let preProviderReplayFailure = null;
+-  if (exactMergeIdentity) {
++  let prContext; let prState;
++  const replayBeforeProvider = async () => {
+     const resolveLocalRepository = deps.resolveLocalRepository || defaultResolveLocalRepository;
+     let localRepository;
+     try {
+@@ -1095,41 +1094,40 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       localRepository = null;
+     }
+     if (!localRepository) {
+-      preProviderReplayFailure = {
++      return { failure: {
+         success: false,
+         merged: false,
+         error: 'Local repository identity is unavailable for terminal evidence replay.',
+-      };
+-    } else {
+-      try {
+-        const replay = await recoverMergedTerminal({
+-          pr,
+-          parsed,
+-          root,
+-          config: {},
+-          prContext: {
+-            number: Number(pr),
+-            headSha: parsed.expectedHead,
+-            repository: localRepository,
+-          },
+-          ownershipActor,
+-          ownershipSessionId,
+-          deps,
+-          replayOnly: true,
+-        });
+-        if (replay.replayMissing !== true) {
+-          if (replay.success) return replay;
+-          preProviderReplayFailure = { ...replay, merged: false };
+-        }
+-      } catch (error) {
+-        preProviderReplayFailure = {
+-          success: false,
+-          merged: false,
+-          error: `Merged PR terminal evidence replay failed: ${error.message}`,
+-        };
++      } };
++    }
++    try {
++      const replay = await recoverMergedTerminal({
++        pr,
++        parsed,
++        root,
++        config: {},
++        prContext: {
++          number: Number(pr),
++          headSha: parsed.expectedHead,
++          repository: localRepository,
++        },
++        ownershipActor,
++        ownershipSessionId,
++        deps,
++        replayOnly: true,
++      });
++      if (replay.replayMissing !== true) {
++        return replay.success ? { replay } : { failure: { ...replay, merged: false } };
+       }
++    } catch (error) {
++      return { failure: {
++        success: false,
++        merged: false,
++        error: `Merged PR terminal evidence replay failed: ${error.message}`,
++      } };
+     }
+-  }
++    return {};
++  };
+ 
+   const loadConfig = deps.loadConfig || loadRawConfig;
+   let config;
+@@ -1153,27 +1151,6 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: false, reason };
+   }
+-  if (preProviderReplayFailure) return preProviderReplayFailure;
+-
+-  if (exactMergeIdentity) {
+-    try {
+-      prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
+-    } catch (err) {
+-      return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
+-    }
+-    prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
+-    if (prState === 'MERGED') {
+-      try {
+-        const replay = await recoverMergedTerminal({
+-          pr, parsed, root, config: {}, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
+-        });
+-        if (replay.replayMissing !== true) return replay;
+-      } catch (error) {
+-        return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
+-      }
+-    }
+-  }
+-
+   // Opted in but no rules → refuse (fail-closed): an empty ruleset is vacuously
+   // "allowed", which would merge unconditionally. Treat that as misconfiguration.
+   if (rules.length === 0) {
+@@ -1204,6 +1181,26 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       error: `Active Kernel ownership claim with the exact session is required for issue ${parsed.issueId}; refusing to merge.`,
+     };
+   }
++  const preProvider = await replayBeforeProvider();
++  if (preProvider.failure) return preProvider.failure;
++  if (preProvider.replay) return preProvider.replay;
++
++  try {
++    prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
++  }
++  prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
++  if (prState === 'MERGED') {
++    try {
++      const replay = await recoverMergedTerminal({
++        pr, parsed, root, config: {}, prContext, ownershipActor, ownershipSessionId, deps, replayOnly: true,
++      });
++      if (replay.replayMissing !== true) return replay;
++    } catch (error) {
++      return { success: false, merged: true, error: `Merged PR terminal evidence replay failed: ${error.message}` };
++    }
++  }
+ 
+   if (prState === 'MERGED') {
+     if (!ownershipSessionId) {
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 5d26fa62..7a4c9bb8 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -145,6 +145,14 @@ function formatAction(action) {
+   }
+ }
+ 
++function writePassSummary(pr, state, reason, actions) {
++  const passActions = Array.isArray(actions) ? actions : [];
++  const reasonSuffix = reason ? ` — ${reason}` : '';
++  process.stdout.write(`Shepherd pass — PR #${pr}: ${state}${reasonSuffix}\n`);
++  for (const action of passActions) process.stdout.write(`  • ${formatAction(action)}\n`);
++  if (!passActions.length) process.stdout.write('  • no actions this pass\n');
++}
++
+ /**
+  * Build the DEFAULT `check.failed` enrichment hook for the events pull surface.
+  *
+@@ -697,12 +705,14 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     const evidenceContext = result.expectedHead ? { ...ctx, headSha: result.expectedHead } : ctx;
+     evidence = await collectEvidence({ args, pr, projectRoot, context: evidenceContext, adapter, deps });
+   } catch (error) {
++    const reason = `Durable convergence evidence is unavailable: ${error.message}`;
++    writePassSummary(pr, 'INCOMPLETE', reason, result.actions);
+     return {
+       success: false,
+       state: 'INCOMPLETE',
+       remoteState: result.state,
+-      reason: `Durable convergence evidence is unavailable: ${error.message}`,
+-      actions: [],
++      reason,
++      actions: result.actions || [],
+       localPreflight,
+       deltas: [],
+       deltaOverflow: false,
+@@ -804,15 +814,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+ 
+   // Surface the pass outcome so the monitor is legible when run interactively or
+   // tailed by a scheduler (the bounded state machine is otherwise silent).
+-  const passActions = Array.isArray(confirmedResult.actions) ? confirmedResult.actions : [];
+-  const reasonSuffix = effectiveReason ? ` — ${effectiveReason}` : '';
+-  process.stdout.write(`Shepherd pass — PR #${pr}: ${effectiveState}${reasonSuffix}\n`);
+-  for (const action of passActions) {
+-    process.stdout.write(`  • ${formatAction(action)}\n`);
+-  }
+-  if (!passActions.length) {
+-    process.stdout.write('  • no actions this pass\n');
+-  }
++  writePassSummary(pr, effectiveState, effectiveReason, confirmedResult.actions);
+ 
+   return {
+     success: effectiveState !== 'HARD_STOP' && effectiveState !== 'INCOMPLETE',
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 8c16e97c..f04c5035 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -1028,6 +1028,17 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+   return true;
+ }
+ 
++function remainingSegmentedRecords(segmented) {
++  const remaining = segmented.records.slice(segmented.remainingOffset);
++  if (remaining.length === 0) {
++    throw new FlowMonitorError(
++      'MONITOR_HISTORY_INCOMPLETE',
++      'Pending monitor transition has no remaining records',
++    );
++  }
++  return remaining;
++}
++
+ async function finalizePass(ctx, bridge, spec, {
+   state,
+   snapshot,
+@@ -1119,7 +1130,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const receiptIds = replayed.receiptIds;
+   if (pendingEvents.length > 0) {
+     if (segmented) {
+-      const remaining = segmented.records.slice(segmented.remainingOffset);
++      const remaining = remainingSegmentedRecords(segmented);
+       const timestamp = remaining[0].ts;
+       const persisted = await persistRecords(ctx, bridge, spec, {
+         initialState: state,
+@@ -1251,6 +1262,7 @@ module.exports = {
+     appendPendingBatch,
+     decodePrivateSafeBase64,
+     encodePrivateSafeBase64,
++    remainingSegmentedRecords,
+     validOrphanedPrecommitPlan,
+   },
+ };
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 0cbf38d2..c4ccfff2 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -434,6 +434,15 @@ function daemonCanRetire(convergence) {
+ 		&& (!Array.isArray(convergence.watchers) || convergence.watchers.length === 0);
+ }
+ 
++function stoppedWatcherAcknowledgement(entry, at) {
++	const phase = entry.lifecycle.state.phase;
++	if (phase === 'CANCEL_REQUESTED') return lifecycleEvent(entry, 'cancel-acknowledged', at);
++	if (phase === 'FORCE_KILL_REQUESTED') {
++		return lifecycleEvent(entry, 'forced-kill-acknowledged', at, { signal: 'SIGKILL' });
++	}
++	return phase === 'TERMINATION_ACKNOWLEDGED' ? null : undefined;
++}
++
+ /**
+  * Per-action-type handlers, keyed by `action.type`. Extracted from `execute` so
+  * each is small and independently testable and the dispatcher stays a flat loop
+@@ -492,11 +501,9 @@ const ACTION_HANDLERS = {
+ 				}
+ 				continue;
+ 			}
+-			if (entry.lifecycle.state.phase === 'CANCEL_REQUESTED') {
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-acknowledged', at), s);
+-			} else if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'forced-kill-acknowledged', at, { signal: 'SIGKILL' }), s);
+-			} else if (entry.lifecycle.state.phase !== 'TERMINATION_ACKNOWLEDGED') continue;
++			const acknowledgement = stoppedWatcherAcknowledgement(entry, at);
++			if (acknowledgement === undefined) continue;
++			if (acknowledgement) checkpointLifecycle(entry, acknowledgement, s);
+ 			checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
+ 			s.removeClaim(entry); // clear the start-time marker so a reused PID can't match it later
+ 		}
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 9fe1dd1f..cc105f5b 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -424,7 +424,7 @@ describe('merge command — mandatory release authority', () => {
+     expect(gateChecks).toBe(0);
+   });
+ 
+-  test('replays existing terminal evidence after auto-merge configuration is disabled', async () => {
++  test('keeps terminal evidence private when auto-merge is disabled', async () => {
+     let ownershipChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       loadConfig: () => ({ merge: { auto: { enabled: false } } }),
+@@ -439,14 +439,13 @@ describe('merge command — mandatory release authority', () => {
+       }),
+     }));
+ 
+-    expect(out).toMatchObject({
+-      success: true, merged: true, recovered: true,
+-      decisionId: 'decision-existing', receiptId: 'receipt-existing',
+-    });
++    expect(out).toMatchObject({ success: true, merged: false, enabled: false });
++    expect(out.decisionId).toBeUndefined();
++    expect(out.receiptId).toBeUndefined();
+     expect(ownershipChecks).toBe(0);
+   });
+ 
+-  test('replays existing terminal evidence after the live ownership claim expires', async () => {
++  test('requires live ownership before exposing terminal evidence', async () => {
+     let ownershipChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       verifyIssueOwnership: async () => {
+@@ -466,11 +465,10 @@ describe('merge command — mandatory release authority', () => {
+       }),
+     }));
+ 
+-    expect(out).toMatchObject({
+-      success: true, merged: true, recovered: true,
+-      decisionId: 'decision-existing', receiptId: 'receipt-existing', receiptHash: 'f'.repeat(64),
+-    });
+-    expect(ownershipChecks).toBe(0);
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(out.error).toMatch(/ownership|claim/i);
++    expect(out.decisionId).toBeUndefined();
++    expect(ownershipChecks).toBe(1);
+   });
+ 
+   test('requires live ownership before repairing missing terminal evidence', async () => {
+@@ -631,7 +629,7 @@ describe('merge command — mandatory release authority', () => {
+     }
+   });
+ 
+-  test('requires an active Kernel claim after the read-only terminal replay check', async () => {
++  test('requires an active Kernel claim before provider state', async () => {
+     let fetchCalls = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       verifyIssueOwnership: async () => ({
+@@ -644,7 +642,7 @@ describe('merge command — mandatory release authority', () => {
+     expect(out.success).toBe(false);
+     expect(out.merged).toBe(false);
+     expect(out.error).toMatch(/ownership|claim/i);
+-    expect(fetchCalls).toBe(1);
++    expect(fetchCalls).toBe(0);
+   });
+ 
+   test('requires the live claim to carry the exact merge session before mutation', async () => {
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index c1601e1d..6a460eaf 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -37,6 +37,20 @@ describe('shepherd command handler', () => {
+     expect(out.state).toBe('PENDING');
+   });
+ 
++  test('preserves performed actions when durable convergence evidence fails', async () => {
++    const actions = [{ type: 'rerunCheck', name: 'ci' }];
++    const out = await shepherdCmd.handler(['123'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async () => ({ state: 'PENDING', actions, reason: 'reran ci' }),
++      collectConvergenceEvidence: async () => { throw new Error('Memory unavailable'); },
++      buildContext: async () => ({
++        pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      }),
++    });
++
++    expect(out).toMatchObject({ success: false, state: 'INCOMPLETE', actions });
++  });
++
+   test('--auto-rebase defaults to false and is opt-in via flag', async () => {
+     let seenAutoRebase;
+     const fakeRun = async (ctx) => {
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 7fb0df51..16805d2b 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -512,6 +512,13 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(batches).toHaveLength(128);
+   });
+ 
++  test('fails closed when segmented recovery has no remaining records', () => {
++    expect(() => _internals.remainingSegmentedRecords({
++      records: [{ seq: 1 }],
++      remainingOffset: 1,
++    })).toThrow('Pending monitor transition has no remaining records');
++  });
++
+   test('supersedes a pre-commit plan truncated by its replacement at the bounded tail', async () => {
+     const store = durableStore();
+     const checks = Array.from({ length: 128 }, (_, index) => ({
+-- 
+2.51.0.windows.1
+

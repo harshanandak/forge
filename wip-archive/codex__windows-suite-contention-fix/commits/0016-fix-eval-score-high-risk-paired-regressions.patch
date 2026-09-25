@@ -1,0 +1,97 @@
+From c0910b0713144704fc8203cb27ec7aa63c5de279 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 16:09:59 +0530
+Subject: [PATCH] fix(eval): score high-risk paired regressions
+
+---
+ scripts/lib/promotion-scorecard.js    | 15 ++++--------
+ test/eval/promotion-scorecard.test.js | 34 +++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 11 deletions(-)
+
+diff --git a/scripts/lib/promotion-scorecard.js b/scripts/lib/promotion-scorecard.js
+index 8c802e0e..207ca62a 100644
+--- a/scripts/lib/promotion-scorecard.js
++++ b/scripts/lib/promotion-scorecard.js
+@@ -224,22 +224,15 @@ function operationalRatios(testPairs) {
+   };
+ }
+ 
+-function casePassRate(pairs, armName) {
+-  const cases = new Map();
+-  for (const pair of pairs) {
+-    const passed = pair[armName].status === 'PASS';
+-    cases.set(pair.caseId, (cases.get(pair.caseId) ?? true) && passed);
+-  }
+-  return [...cases.values()].filter(Boolean).length / cases.size;
+-}
+-
+ function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, operations }) {
+   const perModelDelta = models.every((model) => {
+     const stats = absolute.byModel[model];
+     return stats.bounded.rate - stats.current.rate >= 0;
+   });
+   const highRisk = pairs.filter((pair) => pair.risk === 'high');
+-  const highRiskDelta = casePassRate(highRisk, 'bounded') - casePassRate(highRisk, 'current');
++  const highRiskRegression = models.every((model) => (
++    pairedDelta(highRisk.filter((pair) => pair.model === model)) >= -0.02
++  ));
+   return {
+     zeroHardFailures: pairs.every((pair) => !pair.current.hardFailure && !pair.bounded.hardFailure),
+     highRiskTestPass: testPairs
+@@ -247,7 +240,7 @@ function evaluateThresholds({ pairs, testPairs, models, absolute, bootstrap, ope
+       .every((pair) => pair.bounded.status === 'PASS'),
+     pooledDelta: bootstrap.delta >= 0.05 && bootstrap.interval.lower > 0,
+     perModelDelta,
+-    highRiskRegression: highRiskDelta >= -0.02,
++    highRiskRegression,
+     latency: operations.latencyP95 <= 1.25,
+     tokens: operations.tokenMedian <= 1.20,
+   };
+diff --git a/test/eval/promotion-scorecard.test.js b/test/eval/promotion-scorecard.test.js
+index 1e11c654..a308f45f 100644
+--- a/test/eval/promotion-scorecard.test.js
++++ b/test/eval/promotion-scorecard.test.js
+@@ -166,6 +166,40 @@ describe('promotion scorecard', () => {
+     }).reasons).toContain('token_cap');
+   });
+ 
++  test('computes the high-risk regression veto over paired evidence rows per model', () => {
++    const maskedRegression = completePairs(100);
++    for (const pair of maskedRegression) {
++      if (pair.risk === 'high') {
++        pair.current.status = 'PASS';
++        pair.bounded.status = 'PASS';
++      }
++    }
++    const targetCase = maskedRegression.find((pair) => pair.risk === 'high' && pair.split === 'DEV').caseId;
++    const targetRows = maskedRegression.filter((pair) => pair.caseId === targetCase);
++    targetRows[0].current.status = 'FAIL';
++    for (const pair of targetRows) pair.bounded.status = 'FAIL';
++
++    const regressed = scorePromotion({ tier: 100, pairs: maskedRegression });
++    expect(regressed).toMatchObject({ status: 'FAIL', winner: null });
++    expect(regressed.reasons).toContain('high_risk_regression');
++
++    const boundary = completePairs(300);
++    for (const pair of boundary) {
++      if (pair.risk === 'high') {
++        pair.current.status = 'PASS';
++        pair.bounded.status = 'PASS';
++      }
++    }
++    const boundaryRows = boundary
++      .filter((pair) => pair.risk === 'high' && pair.split === 'DEV' && pair.model === 'sol')
++      .slice(0, 6);
++    for (const pair of boundaryRows) pair.bounded.status = 'FAIL';
++
++    const exactBoundary = scorePromotion({ tier: 300, pairs: boundary });
++    expect(exactBoundary.thresholds.highRiskRegression).toBe(true);
++    expect(exactBoundary.reasons).not.toContain('high_risk_regression');
++  });
++
+   test('never permits an exception to the token cap', () => {
+     const pairs = completePairs(100, { boundedTokens: 121 });
+     const score = scorePromotion({
+-- 
+2.51.0.windows.1
+

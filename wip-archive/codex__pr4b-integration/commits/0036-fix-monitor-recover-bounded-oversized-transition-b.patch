@@ -1,0 +1,255 @@
+From 15010a58bab16fd9e60ce4b3b3887aefd5f7d786 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 11:34:40 +0530
+Subject: [PATCH] fix(monitor): recover bounded oversized transition batches
+
+---
+ lib/pr-monitor/flow-monitor.js       | 62 +++++++++++++++++------
+ test/pr-monitor/flow-monitor.test.js | 74 ++++++++++++++++++++++++++++
+ 2 files changed, 120 insertions(+), 16 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 0c4d3543..cd0f2797 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -20,10 +20,14 @@ const SNAPSHOT_TEXT_LIMIT = 64;
+ const SNAPSHOT_OBJECT_KEY_LIMIT = 24;
+ const JOB_URL_LIMIT = 2048;
+ const PENDING_BATCH_LIMIT = 12_000;
++const PENDING_BATCH_OUTPUT_LIMIT = 262_144;
++// One event per bounded surface delta, plus a second reply/resolution event per thread.
++const PENDING_BATCH_RECORD_LIMIT = 538;
+ const MAX_REOPEN_DEPTH = 8;
+ const SNAPSHOT_FORMAT = 'digest-v1';
+ const SNAPSHOT_EVIDENCE_KEYS = new Set(['checks', 'threads', 'reviews', 'comments', 'degraded']);
+ const UNSAFE_PROVIDER_DIAGNOSTIC = /(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk_(?:live|test)_[a-z0-9]{16,}|sk-[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}|(?:^|[\\/])(?:users|home|root)[\\/]\S+)/i;
++const REDACTED_PROVIDER_DIAGNOSTIC = '[provider diagnostic redacted]';
+ 
+ class FlowMonitorError extends Error {
+   constructor(code, message, options) {
+@@ -70,9 +74,16 @@ function validBoundedJobUrl(value) {
+   }
+ }
+ 
++function safeProviderDiagnostic(value) {
++  return typeof value === 'string' && UNSAFE_PROVIDER_DIAGNOSTIC.test(value)
++    ? REDACTED_PROVIDER_DIAGNOSTIC
++    : value;
++}
++
+ function boundMonitorRecord(record) {
+-  const safeRecord = typeof record.data?.error === 'string' && UNSAFE_PROVIDER_DIAGNOSTIC.test(record.data.error)
+-    ? { ...record, data: { ...record.data, error: '[provider diagnostic redacted]' } }
++  const safeError = safeProviderDiagnostic(record.data?.error);
++  const safeRecord = safeError !== record.data?.error
++    ? { ...record, data: { ...record.data, error: safeError } }
+     : record;
+   const bounded = boundSnapshotScalar(safeRecord);
+   bounded.key = boundIdentity(record.key);
+@@ -93,6 +104,9 @@ function durableMonitorRecord(record) {
+ }
+ 
+ function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
++  if (records.length < 2 || records.length > PENDING_BATCH_RECORD_LIMIT) {
++    throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its record bound');
++  }
+   const core = {
+     monitor_id: ctx.monitorId,
+     subject_revision: subjectRevision,
+@@ -100,10 +114,14 @@ function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
+     records: records.map(durableMonitorRecord),
+     snapshot,
+   };
+-  const encoded = zlib.gzipSync(JSON.stringify({
++  const serialized = JSON.stringify({
+     ...core,
+     batch_id: computeContentHash(core),
+-  }), { level: 9 }).toString('base64url');
++  });
++  if (Buffer.byteLength(serialized) > PENDING_BATCH_OUTPUT_LIMIT) {
++    throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its recovery bound');
++  }
++  const encoded = zlib.gzipSync(serialized, { level: 9 }).toString('base64url');
+   if (encoded.length > PENDING_BATCH_LIMIT) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its durable bound');
+   }
+@@ -116,13 +134,14 @@ function decodePendingBatch(value, ctx, subjectRevision) {
+   }
+   try {
+     const decoded = JSON.parse(zlib.gunzipSync(Buffer.from(value, 'base64url'), {
+-      maxOutputLength: 65_536,
++      maxOutputLength: PENDING_BATCH_OUTPUT_LIMIT,
+     }));
+     const { batch_id: batchId, ...core } = decoded || {};
+     if (core.monitor_id !== ctx.monitorId || core.subject_revision !== subjectRevision
+       || core.snapshot_identity !== snapshotIdentity(core.snapshot)
+       || batchId !== computeContentHash(core)
+-      || !Array.isArray(core.records) || core.records.length < 2 || core.records.length > MAX_HISTORY) {
++      || !Array.isArray(core.records) || core.records.length < 2
++      || core.records.length > PENDING_BATCH_RECORD_LIMIT) {
+       throw new Error('invalid pending batch');
+     }
+     return { ...core, batchId, encoded: value };
+@@ -213,7 +232,7 @@ function comparableSnapshot(compact, source = null) {
+     degraded: evidence.degraded.map((item, index) => ({
+       surface: item[0],
+       displaySurface: boundSnapshotScalar(source?.degraded?.[index]?.surface),
+-      error: boundSnapshotScalar(source?.degraded?.[index]?.error),
++      error: boundSnapshotScalar(safeProviderDiagnostic(source?.degraded?.[index]?.error)),
+     })),
+   };
+ }
+@@ -492,6 +511,8 @@ async function persistRecords(ctx, bridge, spec, {
+   const batchEvidence = pendingBatch || (batchRecords.length > 1
+     ? encodePendingBatch(ctx, subjectRevision, batchRecords, snapshot)
+     : null);
++  const prepared = [];
++  let validatedState = state;
+   for (const [index, record] of records.entries()) {
+     const checkpointComplete = batchOffset + index === batchRecords.length - 1;
+     const event = monitorEvent(
+@@ -503,14 +524,19 @@ async function persistRecords(ctx, bridge, spec, {
+       checkpointComplete ? null : batchEvidence,
+       recordsAreBounded,
+     );
+-    const transition = reduceMonitor(spec, state, { kind: 'observation', event });
+-    await bridge.persistEvent(event);
++    const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+-    await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+-    receiptIds.push(receipt.object_id);
+-    state = event.payload.actionability === 'advisory'
++    const nextState = event.payload.actionability === 'advisory'
+       ? transition.state
+       : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
++    prepared.push({ event, receipt, nextState });
++    validatedState = nextState;
++  }
++  for (const { event, receipt, nextState } of prepared) {
++    await bridge.persistEvent(event);
++    await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
++    receiptIds.push(receipt.object_id);
++    state = nextState;
+   }
+   return { state, receiptIds };
+ }
+@@ -590,15 +616,19 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   if (pendingEvents.length > 0) {
+     const pendingValue = pendingEvents.at(-1).payload.bounded_payload.pending_batch;
+     const batch = decodePendingBatch(pendingValue, ctx, subjectRevision);
+-    if (pendingEvents.length >= batch.records.length) {
++    const retainedOffset = pendingEvents[0].payload.sequence - batch.records[0].seq;
++    const remainingOffset = retainedOffset + pendingEvents.length;
++    if (!Number.isSafeInteger(retainedOffset) || retainedOffset < 0
++      || remainingOffset >= batch.records.length) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition batch has no remaining checkpoint');
+     }
+     for (const [index, pending] of pendingEvents.entries()) {
+-      if (computeContentHash(pending.payload.bounded_payload.record) !== computeContentHash(batch.records[index])) {
++      if (pending.payload.bounded_payload.pending_batch !== batch.encoded
++        || computeContentHash(pending.payload.bounded_payload.record) !== computeContentHash(batch.records[retainedOffset + index])) {
+         throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition identity is inconsistent');
+       }
+     }
+-    const remaining = batch.records.slice(pendingEvents.length);
++    const remaining = batch.records.slice(remainingOffset);
+     const timestamp = remaining[0].ts;
+     const persisted = await persistRecords(ctx, bridge, spec, {
+       initialState: state,
+@@ -607,7 +637,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+       subjectRevision,
+       timestamp,
+       batchRecords: batch.records,
+-      batchOffset: pendingEvents.length,
++      batchOffset: remainingOffset,
+       pendingBatch: batch.encoded,
+       recordsAreBounded: true,
+     });
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 16850588..d31a71d9 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -245,6 +245,80 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(resumed.terminalReceiptId).toBeString();
+   });
+ 
++  test('recovers an accepted transition batch larger than the retained history tail', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    const appendEvent = store.appendEvent;
++    let appends = 0;
++    store.appendEvent = async (...args) => {
++      appends += 1;
++      if (appends === 2) throw new Error('mid-batch storage failure');
++      return appendEvent(...args);
++    };
++
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    store.appendEvent = appendEvent;
++    ctx.gather = async () => { throw new Error('accepted batch recovery must precede provider state'); };
++
++    const resumed = await runFlowMonitorPass(ctx);
++
++    expect(resumed.events).toHaveLength(129);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
++  });
++
++  test('recovers a retained suffix of an accepted transition batch', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    const appendEvent = store.appendEvent;
++    let appends = 0;
++    store.appendEvent = async (...args) => {
++      appends += 1;
++      if (appends === 130) throw new Error('late storage failure');
++      return appendEvent(...args);
++    };
++
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    store.appendEvent = appendEvent;
++    ctx.gather = async () => { throw new Error('retained suffix recovery must precede provider state'); };
++
++    const resumed = await runFlowMonitorPass(ctx);
++
++    expect(resumed.events).toHaveLength(1);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
++  });
++
++  test('validates every transition record before the first durable mutation', async () => {
++    const store = durableStore();
++    let next = snapshot({ prState: 'OPEN', checks: [{ name: 'ci', class: 'green' }] });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++    const before = store.events.length;
++
++    next = snapshot({ prState: 'MERGED', checks: [{ name: 'ci', class: 'failed' }] });
++    ctx.enrich = async records => {
++      expect(records.length).toBeGreaterThan(1);
++      Object.assign(records[1].data, Object.fromEntries(Array.from({ length: 24 }, (_, outer) => [
++        `group-${outer}`,
++        Object.fromEntries(Array.from({ length: 24 }, (_, inner) => [`item-${inner}`, 'x'.repeat(64)])),
++      ])));
++    };
++
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({
++      code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
++    });
++    expect(store.events).toHaveLength(before);
++  });
++
+   test('preserves the provider root cause when durable history is unavailable', async () => {
+     const store = durableStore();
+     const cause = new Error('socket closed');
+-- 
+2.51.0.windows.1
+

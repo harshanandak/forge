@@ -1,0 +1,25 @@
+From 0b74c62c7e82c2de24f4702f68c3be2f4cbe9600 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 23:17:54 +0530
+Subject: [PATCH] fix: simplify committed lock guard
+
+---
+ lib/bun-lockfile-proof.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/bun-lockfile-proof.js b/lib/bun-lockfile-proof.js
+index cceebf26..2c23c513 100644
+--- a/lib/bun-lockfile-proof.js
++++ b/lib/bun-lockfile-proof.js
+@@ -240,7 +240,7 @@ function assertLockTransition(transition) {
+ 		throw new Error('Indexed bun.lock is missing or is not a regular file');
+ 	}
+ 	if (!transition.proposed.length) throw new Error('Proposed bun.lock is empty');
+-	if (!transition.baseEntry || transition.baseEntry.type !== 'blob' || !REGULAR_GIT_MODES.has(transition.baseEntry.mode)) {
++	if (transition.baseEntry?.type !== 'blob' || !REGULAR_GIT_MODES.has(transition.baseEntry.mode)) {
+ 		throw new Error('Committed bun.lock is missing or is not a regular file');
+ 	}
+ 	if (!transition.baseLock.length) throw new Error('Committed bun.lock is empty');
+-- 
+2.51.0.windows.1
+

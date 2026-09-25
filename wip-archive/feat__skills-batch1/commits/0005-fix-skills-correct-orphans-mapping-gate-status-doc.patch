@@ -1,0 +1,124 @@
+From 2b13b681afb99cc5de5488d383a0bc25ff615021 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 14:58:37 +0530
+Subject: [PATCH] fix(skills): correct orphans mapping + gate status doc +
+ worktree/gates routing
+
+Second review round on #430 (Codex + CodeRabbit), all verified against source:
+- coverage.json: revert orphans -> issue-basics. 'orphans' is 'forge issue orphans'
+  (dangling dependency edges, lib/commands/_issue.js), an issue command, not
+  worktree reaping. Earlier round mis-mapped it to worktree.
+- using-forge.js: issue-basics gains orphan/dangling cues so 'show orphan issues'
+  routes (discoverability); worktree gains diagnostic + 'forge worktree' anchors
+  (restores the 'worktree miss its node_modules' should_trigger fixture that the
+  bare-'worktree' removal broke); gates gains 'forge gate'/'gate check'/'gate
+  status' command anchors.
+- gates/SKILL.md: 'forge gate status' also requires <issue-id> (handleStatus
+  rejects a missing id), same as 'gate check'.
+- regenerate worktree(83)/gates(84) scorecards; .agents synced by hook.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/gates/SKILL.md                | 2 +-
+ .agents/skills/worktree/evals/scorecard.json | 4 ++--
+ lib/using-forge.js                           | 6 +++---
+ skills/coverage.json                         | 2 +-
+ skills/gates/SKILL.md                        | 2 +-
+ skills/worktree/evals/scorecard.json         | 4 ++--
+ 6 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/.agents/skills/gates/SKILL.md b/.agents/skills/gates/SKILL.md
+index 61f34dec..152ddd20 100644
+--- a/.agents/skills/gates/SKILL.md
++++ b/.agents/skills/gates/SKILL.md
+@@ -51,7 +51,7 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
+ ```bash
+ forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
+ forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
+-forge gate status  [--json]                                 # list recorded events (resume-safe)
++forge gate status  <issue-id> [--json]                      # list recorded events for that issue (resume-safe)
+ forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
+ ```
+ 
+diff --git a/.agents/skills/worktree/evals/scorecard.json b/.agents/skills/worktree/evals/scorecard.json
+index 4b8c8423..8c3e4af7 100644
+--- a/.agents/skills/worktree/evals/scorecard.json
++++ b/.agents/skills/worktree/evals/scorecard.json
+@@ -24,9 +24,9 @@
+     "router_exempt": false,
+     "fixtures": "present",
+     "fixtures_total": 6,
+-    "fixtures_best_hit": 5,
++    "fixtures_best_hit": 6,
+     "reachable": true,
+-    "keyword_alignment": 0.83
++    "keyword_alignment": 1
+   },
+   "behavioral": {
+     "trigger_recall": null,
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index a259f291..bbc58119 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -177,13 +177,13 @@ const INTENT_RULES = Object.freeze([
+   { skill: 'verify', weight: 3, keywords: ['post-merge', 'after merge', 'verify health', 'health check', 'ci on main', 'close the issue after merge'] },
+   { skill: 'triage-ready', weight: 3, keywords: ['what should i work on', 'what to work on', 'next ready', 'ready queue', 'pick the next', 'what is ready', 'rank the'] },
+   { skill: 'status', weight: 3, keywords: ['where am i', 'current stage', 'what stage', 'stale work', 'status', 'active work', 'whats going on'] },
+-  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue'] },
++  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue', 'orphan issues', 'orphaned issues', 'dangling dependencies', 'dangling deps'] },
+   { skill: 'memory', weight: 2, keywords: ['remember', 'recall', 'remember that', 'recall the', 'save a note', 'persist a note', 'note the decision', 'jot down', 'remind me'] },
+   { skill: 'claim-safety', weight: 2, keywords: ['claim an issue', 'claim the issue', 'prove ownership', 'own the lease', 'lease'] },
+   { skill: 'smith', weight: 2, keywords: ['end to end', 'end-to-end', 'drive one issue', 'plan to merged', 'whole issue', 'from plan to pr'] },
+   { skill: 'shepherd', weight: 3, keywords: ['monitor a pr', 'shepherd', 'watch the pr', 'watch my pr', 'ci status', 'poll the pr', 'pr checks', 'pr blocked', 'blocking my pr', 'blocking the pr', 'pr merging', 'pr not merging', 'ready to merge', 'merge ready', 'pr check failed', 'pr check went red', 'keep an eye on my pr', 'keep an eye on the pr', 'keep an eye on my prs', 'babysit my pr', 'babysit the pr', 'keep watching my pr', 'keep watching the pr', 'pr verdict', 'shepherd daemon', 'watch the pull request'] },
+-  { skill: 'worktree', weight: 3, keywords: ['create a worktree', 'worktree for', 'isolated branch', 'isolated worktree', 'isolated checkout', 'spin up a worktree', 'work on another pr', 'merged worktrees', 'clean up merged', 'clean merged'] },
+-  { skill: 'gates', weight: 3, keywords: ['disable the gate', 'disable a gate', 'enable a gate', 'enable the gate', 'toggle a gate', 'toggle the gate', 'tdd gate', 'disable the tdd', 'turn off tdd', 'tdd enforcement', 'tdd intent', 'kernel tracking rail', 'auto shepherd rail', 'loosen enforcement', 'approve the human gate', 'approve a human gate', 'human gate', 'forge control'] },
++  { skill: 'worktree', weight: 3, keywords: ['forge worktree', 'create a worktree', 'worktree for', 'worktree list', 'isolated branch', 'isolated worktree', 'isolated checkout', 'spin up a worktree', 'work on another pr', 'merged worktrees', 'clean up merged', 'clean merged', 'orphaned worktree', 'remove the worktree', 'worktree miss', 'worktree dependencies'] },
++  { skill: 'gates', weight: 3, keywords: ['disable the gate', 'disable a gate', 'enable a gate', 'enable the gate', 'toggle a gate', 'toggle the gate', 'tdd gate', 'disable the tdd', 'turn off tdd', 'tdd enforcement', 'tdd intent', 'kernel tracking rail', 'auto shepherd rail', 'loosen enforcement', 'approve the human gate', 'approve a human gate', 'human gate', 'forge control', 'forge gate', 'forge gate check', 'gate check', 'gate status'] },
+   { skill: 'research', weight: 2, keywords: ['research', 'best practices', 'investigate the landscape', 'deep research', 'compare libraries'] },
+   { skill: 'parallel-deep-research', weight: 2, keywords: ['market research', 'competitive research', 'competitor analysis', 'competitive analysis', 'competitive landscape', 'market landscape'] },
+   { skill: 'sonarcloud', weight: 2, keywords: ['sonarcloud', 'sonar', 'quality gate', 'code smell', 'code smells', 'cognitive complexity'] },
+diff --git a/skills/coverage.json b/skills/coverage.json
+index 801c3837..99adefb0 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -30,7 +30,7 @@
+ 
+     "worktree": "worktree",
+     "clean": "worktree",
+-    "orphans": "worktree",
++    "orphans": "issue-basics",
+     "rollback": "rollback",
+     "review": "review",
+     "verify": "verify",
+diff --git a/skills/gates/SKILL.md b/skills/gates/SKILL.md
+index 61f34dec..152ddd20 100644
+--- a/skills/gates/SKILL.md
++++ b/skills/gates/SKILL.md
+@@ -51,7 +51,7 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
+ ```bash
+ forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
+ forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
+-forge gate status  [--json]                                 # list recorded events (resume-safe)
++forge gate status  <issue-id> [--json]                      # list recorded events for that issue (resume-safe)
+ forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
+ ```
+ 
+diff --git a/skills/worktree/evals/scorecard.json b/skills/worktree/evals/scorecard.json
+index 4b8c8423..8c3e4af7 100644
+--- a/skills/worktree/evals/scorecard.json
++++ b/skills/worktree/evals/scorecard.json
+@@ -24,9 +24,9 @@
+     "router_exempt": false,
+     "fixtures": "present",
+     "fixtures_total": 6,
+-    "fixtures_best_hit": 5,
++    "fixtures_best_hit": 6,
+     "reachable": true,
+-    "keyword_alignment": 0.83
++    "keyword_alignment": 1
+   },
+   "behavioral": {
+     "trigger_recall": null,
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,67 @@
+From 78a3478345054b1fef189632f6d0f564da88322d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 17 Aug 2026 17:12:58 +0530
+Subject: [PATCH] fix: normalize Windows CLAUDE pointer authorization
+
+---
+ lib/commands/setup.js                  | 13 ++++++++++++-
+ test/setup-claude-pointer-head.test.js |  5 +++++
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 7ab85f32..b873c44a 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -184,6 +184,16 @@ function resolveCurrentSourceHead(cwd = projectRoot, commandRunner = execFileSyn
+   }
+ }
+ 
++/**
++ * Normalize Git's Windows checkout line endings before authorizing the exact
++ * root CLAUDE.md pointer bytes.
++ * @param {Buffer|string} content - Existing CLAUDE.md bytes
++ * @returns {Buffer} LF-normalized content
++ */
++function normalizeClaudePointerContent(content) {
++  return Buffer.from(String(content || '').replace(/\r\n/g, '\n'));
++}
++
+ /**
+  * Detect package manager
+  */
+@@ -2092,7 +2102,7 @@ async function createAgentLinkFile(agent, symlinkOnly = false) {
+   if (agent.linkFile !== 'CLAUDE.md' || result !== 'existing-import') return;
+ 
+   const sourceHead = resolveCurrentSourceHead();
+-  const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'));
++  const content = normalizeClaudePointerContent(fs.readFileSync(path.join(projectRoot, 'CLAUDE.md')));
+   const actor = process.env.FORGE_PROTECTED_STATE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'forge';
+   const authorization = await issueGeneratedHarnessClaudeAuthorization(projectRoot, {
+     actor,
+@@ -4578,6 +4588,7 @@ module.exports = {
+   _showBanner: showBanner,
+   backupAndRemoveLegacyCursorRules,
+   resolveCurrentSourceHead,
++  normalizeClaudePointerContent,
+ 
+   // State accessors for testing
+   _getState: () => ({ projectRoot, FORCE_MODE, VERBOSE_MODE, NON_INTERACTIVE, SYMLINK_ONLY, PKG_MANAGER }),
+diff --git a/test/setup-claude-pointer-head.test.js b/test/setup-claude-pointer-head.test.js
+index dac105c2..fd8ffbf5 100644
+--- a/test/setup-claude-pointer-head.test.js
++++ b/test/setup-claude-pointer-head.test.js
+@@ -4,6 +4,11 @@ const { describe, test, expect } = require('bun:test');
+ const setupCommand = require('../lib/commands/setup');
+ 
+ describe('CLAUDE.md pointer authorization source head', () => {
++	test('normalizes Git Windows line endings before exact pointer authorization', () => {
++		expect(setupCommand.normalizeClaudePointerContent(Buffer.from('@AGENTS.md\r\n'))).toEqual(Buffer.from('@AGENTS.md\n'));
++		expect(setupCommand.normalizeClaudePointerContent(Buffer.from('@AGENTS.md\r\nextra\r\n'))).toEqual(Buffer.from('@AGENTS.md\nextra\n'));
++	});
++
+ 	test('passes HEAD^{commit} as argv without shell parsing', () => {
+ 		let call;
+ 		const sourceHead = setupCommand.resolveCurrentSourceHead('C:\\repo', (file, args, options) => {
+-- 
+2.51.0.windows.1
+

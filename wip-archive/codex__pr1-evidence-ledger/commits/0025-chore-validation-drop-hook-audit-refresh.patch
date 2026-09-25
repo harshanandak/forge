@@ -1,0 +1,34 @@
+From a71021ce173554e4e8e46ca02ec70fb9543840d6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 17:32:07 +0530
+Subject: [PATCH] chore(validation): drop hook audit refresh
+
+---
+ .../bd-call-site-kill-list.md                                 | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 626bf826..d4f48ba0 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -20,7 +20,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/migrate.js (17)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (6)
+-  - lines: 254 (bd), 257 (bd), 258 (bd), 505 (bd), 912 (bd), 948 (bd)
++  - lines: 250 (bd), 253 (bd), 254 (bd), 501 (bd), 908 (bd), 944 (bd)
+ - [ ] lib/commands/status.js (2)
+   - lines: 368 (bd), 427 (bd)
+ - [ ] lib/commands/validate.js (1)
+@@ -51,7 +51,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/upgrade-safety.js (2)
+   - lines: 103 (.beads), 216 (.beads)
+ - [ ] lib/workflow/enforce-stage.js (1)
+-  - lines: 431 (bd)
++  - lines: 390 (bd)
+ - [ ] scripts/bootstrap-windows-tools.sh (2)
+   - lines: 42 (bd), 63 (bd)
+ - [ ] scripts/branch-protection.js (2)
+-- 
+2.51.0.windows.1
+

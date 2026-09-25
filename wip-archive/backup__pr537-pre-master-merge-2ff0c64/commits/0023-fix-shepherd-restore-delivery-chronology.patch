@@ -1,0 +1,171 @@
+From 9ad869e260a7c81c973db736cb56c708e8e5524a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 02:07:26 +0530
+Subject: [PATCH] fix(shepherd): restore delivery chronology
+
+---
+ lib/adapters/pr-state-adapter.js     |  5 +++++
+ lib/pr-monitor/flow-monitor.js       | 13 ++++++-------
+ test/pr-monitor/flow-monitor.test.js | 17 ++++++++++++++++-
+ test/pr-state-adapter.test.js        | 26 ++++++++++++++++++++++++++
+ 4 files changed, 53 insertions(+), 8 deletions(-)
+
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index b65d93d0..291436ed 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -433,6 +433,11 @@ class PrStateAdapter {
+         `HEAD:refs/heads/${branch}`,
+       ], opts);
+     } catch (error) {
++      try {
++        this._git('git', ['reset', '--keep', previousHead], opts);
++      } catch (restoreError) {
++        error.restoreError = restoreError;
++      }
+       if (/stale info|rejected|force-with-lease/i.test(`${error?.message || ''} ${error?.stderr || ''}`)) {
+         error.leaseRejected = true;
+       }
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index eb7a7bee..47566d01 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -690,7 +690,6 @@ async function persistRecords(ctx, bridge, spec, {
+   records,
+   snapshot,
+   subjectRevision,
+-  timestamp,
+   batchRecords = records,
+   batchOffset = 0,
+   pendingBatch = null,
+@@ -715,15 +714,15 @@ async function persistRecords(ctx, bridge, spec, {
+       batchPlan: typeof batchPlan === 'function' ? batchPlan(batchOffset + index) : batchPlan,
+     });
+     const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+-    const receipt = deliveryReceipt(ctx, event, timestamp);
+     const nextState = event.payload.actionability === 'advisory'
+       ? transition.state
+       : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
+-    prepared.push({ event, receipt, nextState });
++    prepared.push({ event, nextState });
+     validatedState = nextState;
+   }
+-  for (const { event, receipt, nextState } of prepared) {
++  for (const { event, nextState } of prepared) {
+     await bridge.persistEvent(event);
++    const receipt = deliveryReceipt(ctx, event, (ctx.now || defaultNow)());
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+     state = nextState;
+@@ -807,18 +806,18 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+       batchPlan: entry.batchPlan,
+     });
+     const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+-    const receipt = deliveryReceipt(ctx, event, timestamp);
+     const nextState = event.payload.actionability === 'advisory'
+       ? transition.state
+       : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: entry.record.seq }).state;
+-    prepared.push({ event, receipt, nextState });
++    prepared.push({ event, nextState });
+     validatedState = nextState;
+   }
+ 
+   let state = initialState;
+   const receiptIds = [];
+-  for (const { event, receipt, nextState } of prepared) {
++  for (const { event, nextState } of prepared) {
+     await bridge.persistEvent(event);
++    const receipt = deliveryReceipt(ctx, event, (ctx.now || defaultNow)());
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+     state = nextState;
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index b348d6ec..497e6bbc 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -26,9 +26,11 @@ function durableStore() {
+   const events = [];
+   const cursors = new Map();
+   const terminalReceipts = new Map();
++  const deliveryReceipts = [];
+   let outboxOverflow = false;
+   return {
+     events,
++    deliveryReceipts,
+     setCursor(target, sequence, monitorId = 'pr:owner/forge:42') {
+       if (!cursors.has(monitorId)) cursors.set(monitorId, new Map());
+       cursors.get(monitorId).set(target, sequence);
+@@ -89,6 +91,7 @@ function durableStore() {
+       };
+     },
+     async recordDeliveryReceipt(receipt) {
++      deliveryReceipts.push(structuredClone(receipt));
+       const event = events.find(item => item.payload.event_id === receipt.payload.event_id);
+       if (!cursors.has(event.payload.monitor_id)) cursors.set(event.payload.monitor_id, new Map());
+       cursors.get(event.payload.monitor_id).set(receipt.payload.target, event.payload.sequence);
+@@ -305,7 +308,12 @@ describe('Flow-backed PR monitor authority', () => {
+     }));
+     let next = snapshot({ checks });
+     const delivered = [];
+-    const ctx = context(store, async () => next, async record => delivered.push(record));
++    let deliveryTick = 0;
++    const ctx = context(store, async () => next, async record => {
++      delivered.push(record);
++      deliveryTick += 1;
++    });
++    ctx.now = () => new Date(Date.UTC(2026, 7, 12, 12, 0, deliveryTick)).toISOString();
+     await runFlowMonitorPass(ctx);
+ 
+     next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+@@ -331,6 +339,13 @@ describe('Flow-backed PR monitor authority', () => {
+ 
+     expect(resumed.events).toHaveLength(127);
+     expect(delivered.filter(event => event.type === 'check.failed')).toHaveLength(128);
++    const failedEventIds = new Set(store.events
++      .filter(event => event.payload.type === 'check.failed')
++      .map(event => event.payload.event_id));
++    const failedDeliveryTimes = store.deliveryReceipts
++      .filter(receipt => failedEventIds.has(receipt.payload.event_id))
++      .map(receipt => receipt.payload.delivered_at);
++    expect(new Set(failedDeliveryTimes).size).toBe(128);
+     expect(Math.max(...manifests.map(value => value.length))).toBeLessThanOrEqual(12_000);
+     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+ 
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 511897c4..450c1d78 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -899,4 +899,30 @@ describe('PrStateAdapter — lease-bound rebase', () => {
+     expect(calls).toContainEqual({ cmd: 'git', args: ['rebase', '--abort'], opts: { cwd: '/wt' } });
+     expect(calls.some(({ args }) => args[0] === 'push')).toBe(false);
+   });
++
++  test('restores the exact previous head when the leased push fails', async () => {
++    const previousHead = 'a'.repeat(40);
++    const nextHead = 'b'.repeat(40);
++    const pushFailure = new Error('stale info');
++    let headReads = 0;
++    const calls = [];
++    const git = (cmd, args, opts) => {
++      calls.push({ cmd, args, opts });
++      if (args.join(' ') === 'rev-parse HEAD') {
++        headReads += 1;
++        return `${headReads === 1 ? previousHead : nextHead}\n`;
++      }
++      if (args[0] === 'push') throw pushFailure;
++      return '';
++    };
++    const adapter = new PrStateAdapter({ gh: () => '', git, cwd: '/wt' });
++
++    await expect(adapter.rebaseOntoBase({
++      baseRef: 'upstream/master', expectedHead: previousHead, headRef: 'feature', pushRemote: 'origin',
++    })).rejects.toBe(pushFailure);
++    expect(pushFailure.leaseRejected).toBe(true);
++    expect(calls).toContainEqual({
++      cmd: 'git', args: ['reset', '--keep', previousHead], opts: { cwd: '/wt' },
++    });
++  });
+ });
+-- 
+2.51.0.windows.1
+

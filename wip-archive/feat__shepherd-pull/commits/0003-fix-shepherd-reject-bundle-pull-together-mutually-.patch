@@ -1,0 +1,55 @@
+From ce6b074a703a3ac9cebb48ed3ab2a4a66804df9e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 17:43:18 +0530
+Subject: [PATCH] =?UTF-8?q?fix(shepherd):=20reject=20--bundle=20+=20--pull?=
+ =?UTF-8?q?=20together=20=E2=80=94=20mutually=20exclusive=20output=20modes?=
+ =?UTF-8?q?=20(CodeRabbit=20#341)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ bin/forge-cmd.js                | 9 +++++++++
+ test/forge-cmd-shepherd.test.js | 6 ++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/bin/forge-cmd.js b/bin/forge-cmd.js
+index 5026a7a8..34b718c1 100644
+--- a/bin/forge-cmd.js
++++ b/bin/forge-cmd.js
+@@ -189,6 +189,15 @@ function validateArgs(command, args) {
+ 		};
+ 	}
+ 
++	// `--bundle` and `--pull` are mutually exclusive output modes — shepherd.js returns on
++	// `--pull` first, so accepting both would silently drop the bundle. Fail fast.
++	if (command === 'shepherd' && args.includes('--bundle') && args.includes('--pull')) {
++		return {
++			valid: false,
++			error: "Error: 'forge shepherd <pr>' accepts '--bundle' OR '--pull', not both",
++		};
++	}
++
+ 	if (required.length > 0 && positionalArgs.length < required.length) {
+ 		const missing = required.slice(positionalArgs.length);
+ 		return {
+diff --git a/test/forge-cmd-shepherd.test.js b/test/forge-cmd-shepherd.test.js
+index 3710a136..f139b1fc 100644
+--- a/test/forge-cmd-shepherd.test.js
++++ b/test/forge-cmd-shepherd.test.js
+@@ -67,6 +67,12 @@ describe('forge-cmd shepherd dispatch', () => {
+     expect(v.valid).toBe(true);
+   });
+ 
++  test('validateArgs rejects --bundle and --pull together (mutually exclusive output modes)', () => {
++    const v = validateArgs('shepherd', ['123', '--bundle', '--pull']);
++    expect(v.valid).toBe(false);
++    expect(v.error).toContain('not both');
++  });
++
+   test('forge shepherd with an unknown flag exits non-zero before running a pass', () => {
+     const res = spawnSync('node', [CLI, 'shepherd', '123', '--auto-reabse'], { encoding: 'utf8', timeout: 20000 });
+     const combined = `${res.stdout || ''}${res.stderr || ''}`;
+-- 
+2.51.0.windows.1
+

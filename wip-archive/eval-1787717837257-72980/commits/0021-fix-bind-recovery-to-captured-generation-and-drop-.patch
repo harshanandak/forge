@@ -1,0 +1,126 @@
+From c4a2bc62f13b8be486cb854c61046ad0dd99bb7a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 14:25:39 +0530
+Subject: [PATCH] fix: bind recovery to captured generation and drop retry
+ idempotent
+
+---
+ lib/pr-monitor/watch-owner.js       | 11 ++++++-
+ test/pr-monitor/watch-owner.test.js | 48 ++++++++++++++++++++++++++---
+ 2 files changed, 53 insertions(+), 6 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index b4641ab4..811cfcd6 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -773,6 +773,11 @@ async function recoverDeadStarting(ctx, input, opts = {}) {
+ 	if (!value || !positivePid(controllerPid) || !positivePid(recoveryControllerPid)) return invalid('invalid_pid');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
++	if (!captured.snapshot || captured.snapshot.phase !== 'starting'
++		|| captured.snapshot.generation !== value.generation
++		|| captured.snapshot.controller_pid !== Number(controllerPid)) {
++		return invalid('generation_mismatch');
++	}
+ 	if (await pidState(Number(controllerPid), boundOpts) !== false) return invalid('pid_live');
+ 	return invoke('watchOwnerRecoverDeadStarting', value, {
+ 		expectedControllerPid: Number(controllerPid), controllerPid: Number(recoveryControllerPid),
+@@ -792,6 +797,11 @@ async function recoverDeadWatcher(ctx, input, opts = {}) {
+ 	if (!value || !positivePid(watcherPid) || !positivePid(recoveryControllerPid)) return invalid('invalid_pid');
+ 	const captured = captureAuthoritySnapshot(ctx, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
++	if (!captured.snapshot || !['running', 'stop_requested'].includes(captured.snapshot.phase)
++		|| captured.snapshot.generation !== value.generation
++		|| captured.snapshot.watcher_pid !== Number(watcherPid)) {
++		return invalid('generation_mismatch');
++	}
+ 	if (await pidState(Number(watcherPid), boundOpts) !== false) return invalid('pid_live');
+ 	if (!await evidenceVerified(value, providerEvidence, ['open', 'terminal'], boundOpts)) return invalid('provider_evidence_invalid');
+ 	return invoke('watchOwnerRecoverDeadWatcher', value, {
+@@ -959,7 +969,6 @@ const GATE_ENVELOPE_CONTRACTS = Object.freeze({
+ 	]),
+ 	watchGateRetryConflict: Object.freeze([
+ 		Object.freeze({ changed: true, reason: 'retry_bound' }),
+-		Object.freeze({ changed: false, reason: 'idempotent' }),
+ 	]),
+ 	watchGateCompleteMigration: Object.freeze([
+ 		Object.freeze({ changed: true, reason: 'complete' }),
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index be6bf8de..a042848d 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -310,13 +310,14 @@ describe('watch owner SQLite authority', () => {
+ 			importLegacyStarting: 'imported',
+ 			importLegacyComplete: 'imported',
+ 		};
+-		const makeDriver = (_label, blocked = false) => {
++		const makeDriver = (_label, blocked = false, starting = false) => {
+ 			const calls = [];
+ 			const row = {
+ 				repo: 'acme/forge', pr: 77, version: 1, generation: 'generation-77',
+-				phase: blocked ? 'blocked' : 'running', controller_pid: null,
+-				watcher_pid: blocked ? null : 101, started_at: NOW, updated_at: NOW,
+-				heartbeat_at: blocked ? null : NOW, terminal_receipt_id: blocked ? null : null,
++				phase: starting ? 'starting' : (blocked ? 'blocked' : 'running'),
++				controller_pid: starting ? 101 : null,
++				watcher_pid: starting || blocked ? null : 101, started_at: NOW, updated_at: NOW,
++				heartbeat_at: starting || blocked ? null : NOW, terminal_receipt_id: null,
+ 				block_reason: blocked ? 'legacy_lossy' : null, legacy_evidence_hash: blocked ? OTHER_HASH : null,
+ 			};
+ 			const driver = {
+@@ -350,7 +351,7 @@ describe('watch owner SQLite authority', () => {
+ 			return driver;
+ 		};
+ 
+-		const driverA = makeDriver('A', scenario.blocked);
++		const driverA = makeDriver('A', scenario.blocked, method === 'recoverDeadStarting');
+ 		const driverB = makeDriver('B', scenario.blocked);
+ 		const opts = {
+ 			driver: driverA,
+@@ -2545,6 +2546,43 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
+ 	});
+ 
++	test('binds dead-watcher recovery to the captured generation and watcher', async () => {
++		const ctx = { repo: 'acme/forge', pr: 971 };
++		const prior = await seedLifecycle(ctx, 'running');
++		let recoveryAttempts = 0;
++		const foreignPid = await owner.recoverDeadWatcher(ctx, {
++			generation: prior.generation, pid: WATCHER_PID + 1,
++			recoveryControllerPid: RECOVERY_PID, providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
++		}, authorityOpts({
++			...driver,
++			isPidAlive: async () => false,
++			watchOwnerRecoverDeadWatcher: () => {
++				recoveryAttempts += 1;
++				return { ok: true, changed: true, reason: 'recovered' };
++			},
++		}));
++		expect(foreignPid).toEqual({ ok: false, changed: false, reason: 'generation_mismatch', record: null });
++		expect(recoveryAttempts).toBe(0);
++	});
++
++	test('rejects idempotent conflict-retry claims the builtin driver cannot produce', async () => {
++		await seedGate({ repo: 'acme/forge', pr: 972 });
++		await owner.publishMigrationConflict({
++			snapshotHash: HASH, conflictCode: 'legacy_snapshot_changed', updatedAt: LATER,
++		}, authorityOpts());
++		const result = await owner.retryMigrationConflict({
++			expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_snapshot_changed',
++			replacementSnapshotHash: OTHER_HASH, updatedAt: NEXT,
++		}, authorityOpts({
++			...driver,
++			watchGateRetryConflict: () => ({
++				ok: true, changed: false, reason: 'idempotent',
++				gate: { singleton: 1, state: 'quarantined', snapshot_hash: OTHER_HASH, conflict_code: null, updated_at: LATER },
++			}),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
++	});
++
+ 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 960 };
+ 		const result = await owner.readOwner(ctx, authorityOpts({
+-- 
+2.51.0.windows.1
+

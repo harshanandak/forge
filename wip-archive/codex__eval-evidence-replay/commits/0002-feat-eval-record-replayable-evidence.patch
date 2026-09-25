@@ -1,0 +1,511 @@
+From 51daae84e6df19637b6e9c71f0f25abe0c963981 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 18:39:04 +0530
+Subject: [PATCH] feat(eval): record replayable evidence
+
+---
+ scripts/lib/eval-evidence.js    | 175 ++++++++++++++++++++++++++++++++
+ scripts/lib/eval-runner.js      |  21 +++-
+ scripts/run-command-eval.js     |   7 +-
+ test/eval/eval-evidence.test.js | 118 +++++++++++++++++++++
+ test/eval/eval-pipeline.test.js |  46 +++++++++
+ test/eval/eval-runner.test.js   |  22 ++++
+ 6 files changed, 385 insertions(+), 4 deletions(-)
+ create mode 100644 scripts/lib/eval-evidence.js
+ create mode 100644 test/eval/eval-evidence.test.js
+
+diff --git a/scripts/lib/eval-evidence.js b/scripts/lib/eval-evidence.js
+new file mode 100644
+index 00000000..3244842e
+--- /dev/null
++++ b/scripts/lib/eval-evidence.js
+@@ -0,0 +1,175 @@
++'use strict';
++
++const { stableStringify } = require('../../lib/kernel/evaluators');
++const { contentHash } = require('../../lib/file-hash');
++const { resolveOwnedKernel, closeIfOwned } = require('../../lib/kernel/owned-kernel');
++const { resolveIssueActor } = require('../../lib/forge-issues');
++
++const SCHEMA_VERSION = 1;
++const EVIDENCE_KIND = 'eval.evidence';
++const EVENT_TYPE = 'eval.evidence.recorded';
++const HEX_40 = /^[0-9a-f]{40}$/;
++const HEX_64 = /^[0-9a-f]{64}$/;
++
++const CASE_FIELDS = [
++  'issue_id', 'pr', 'head_sha', 'model', 'effort', 'role', 'hashes',
++  'started_at', 'ended_at', 'active_ms', 'passive_ms', 'tokens',
++  'retries', 'compactions', 'gates',
++];
++
++function assertObject(value, path) {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) {
++    throw new Error(`${path} must be an object`);
++  }
++}
++
++function assertExactFields(value, allowed, path) {
++  assertObject(value, path);
++  for (const key of Object.keys(value)) {
++    if (!allowed.includes(key)) throw new Error(`Unknown field '${path}.${key}'`);
++  }
++  for (const key of allowed) {
++    if (!Object.hasOwn(value, key)) throw new Error(`${path}.${key} is required`);
++  }
++}
++
++function assertString(value, path) {
++  if (typeof value !== 'string' || value.length === 0) throw new Error(`${path} is required`);
++}
++
++function assertCount(value, path) {
++  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${path} must be a non-negative integer`);
++}
++
++function assertTimestamp(value, path) {
++  if (typeof value !== 'string' || Number.isNaN(Date.parse(value)) || new Date(value).toISOString() !== value) {
++    throw new Error(`${path} must be an ISO timestamp`);
++  }
++}
++
++function validateEvidence(evidence) {
++  assertExactFields(evidence, CASE_FIELDS, 'evidence');
++  assertString(evidence.issue_id, 'evidence.issue_id');
++  if (!Number.isSafeInteger(evidence.pr) || evidence.pr <= 0) throw new Error('evidence.pr must be a positive integer');
++  if (!HEX_40.test(evidence.head_sha)) throw new Error('evidence.head_sha must be a full 40-character commit SHA');
++  for (const field of ['model', 'effort', 'role']) assertString(evidence[field], `evidence.${field}`);
++
++  assertExactFields(evidence.hashes, ['prompt', 'skill', 'tool'], 'evidence.hashes');
++  for (const field of ['prompt', 'skill', 'tool']) {
++    if (!HEX_64.test(evidence.hashes[field])) {
++      throw new Error(`evidence.hashes.${field} must be a 64-character lowercase SHA-256 hash`);
++    }
++  }
++
++  assertTimestamp(evidence.started_at, 'evidence.started_at');
++  assertTimestamp(evidence.ended_at, 'evidence.ended_at');
++  if (Date.parse(evidence.ended_at) < Date.parse(evidence.started_at)) {
++    throw new Error('evidence.ended_at must not precede evidence.started_at');
++  }
++
++  for (const field of ['active_ms', 'passive_ms', 'retries', 'compactions']) {
++    assertCount(evidence[field], `evidence.${field}`);
++  }
++  assertExactFields(evidence.tokens, ['input', 'output', 'cached'], 'evidence.tokens');
++  for (const field of ['input', 'output', 'cached']) assertCount(evidence.tokens[field], `evidence.tokens.${field}`);
++
++  if (!Array.isArray(evidence.gates)) throw new Error('evidence.gates must be an array');
++  evidence.gates.forEach((gate, index) => {
++    assertExactFields(gate, ['name', 'passed'], `evidence.gates[${index}]`);
++    assertString(gate.name, `evidence.gates[${index}].name`);
++    if (typeof gate.passed !== 'boolean') throw new Error(`evidence.gates[${index}].passed must be a boolean`);
++  });
++}
++
++function hashableEnvelope(evidence) {
++  return { schema_version: SCHEMA_VERSION, kind: EVIDENCE_KIND, evidence };
++}
++
++function createEvalEvidence(evidence) {
++  validateEvidence(evidence);
++  const normalized = JSON.parse(stableStringify(evidence));
++  return {
++    ...hashableEnvelope(normalized),
++    content_hash: contentHash(stableStringify(hashableEnvelope(normalized))),
++  };
++}
++
++function verifyEvalEvidence(envelope) {
++  assertExactFields(envelope, ['schema_version', 'kind', 'evidence', 'content_hash'], 'envelope');
++  if (envelope.schema_version !== SCHEMA_VERSION) throw new Error(`Unsupported evidence schema version '${envelope.schema_version}'`);
++  if (envelope.kind !== EVIDENCE_KIND) throw new Error(`Unsupported evidence kind '${envelope.kind}'`);
++  if (!HEX_64.test(envelope.content_hash)) throw new Error('envelope.content_hash must be a 64-character lowercase SHA-256 hash');
++  validateEvidence(envelope.evidence);
++  const actual = contentHash(stableStringify(hashableEnvelope(envelope.evidence)));
++  if (actual !== envelope.content_hash) throw new Error('Eval evidence content hash mismatch');
++  return envelope.evidence;
++}
++
++function verifyEvalReplay(envelope, hashes) {
++  const evidence = verifyEvalEvidence(envelope);
++  assertExactFields(hashes, ['prompt', 'skill', 'tool'], 'replay.hashes');
++  for (const field of ['prompt', 'skill', 'tool']) {
++    if (!HEX_64.test(hashes[field])) throw new Error(`replay.hashes.${field} must be a 64-character lowercase SHA-256 hash`);
++    if (hashes[field] !== evidence.hashes[field]) throw new Error(`${field} hash drift detected`);
++  }
++  return evidence;
++}
++
++function parseStoredEnvelope(row) {
++  const envelope = row.payload_json ? JSON.parse(row.payload_json) : row.payload;
++  verifyEvalEvidence(envelope);
++  return envelope;
++}
++
++function isIdempotencyRace(error) {
++  const message = error && error.message ? String(error.message) : '';
++  return /UNIQUE constraint failed/i.test(message) && /idempotency_key/i.test(message);
++}
++
++async function appendEvalEvidence(projectRoot, envelope, options = {}) {
++  const evidence = verifyEvalEvidence(envelope);
++  const actor = resolveIssueActor(options.env || process.env) || 'forge';
++  const kernel = await resolveOwnedKernel(projectRoot, options.deps);
++  const { driver, config } = kernel;
++  const idempotencyKey = `${EVENT_TYPE}:${envelope.content_hash}`;
++
++  try {
++    const issue = await driver.loadKernelEntity('issue', evidence.issue_id, {}, config);
++    if (!issue) return { ok: false, issueMissing: true, actor };
++
++    const existing = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
++    if (existing) return { ok: true, duplicate: true, event: existing, envelope: parseStoredEnvelope(existing), actor };
++
++    const event = {
++      entity_type: 'issue',
++      entity_id: evidence.issue_id,
++      event_type: EVENT_TYPE,
++      idempotency_key: idempotencyKey,
++      expected_revision: 0,
++      actor,
++      origin: 'eval',
++      payload: envelope,
++      created_at: options.now || new Date().toISOString(),
++    };
++    try {
++      const inserted = await driver.insertKernelEvent(event, {}, config);
++      return { ok: true, duplicate: false, event: inserted, envelope, actor };
++    } catch (error) {
++      if (!isIdempotencyRace(error)) throw error;
++      const winner = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
++      return { ok: true, duplicate: true, event: winner, envelope: parseStoredEnvelope(winner), actor };
++    }
++  } finally {
++    closeIfOwned(kernel);
++  }
++}
++
++module.exports = {
++  SCHEMA_VERSION,
++  EVIDENCE_KIND,
++  EVENT_TYPE,
++  createEvalEvidence,
++  verifyEvalEvidence,
++  verifyEvalReplay,
++  appendEvalEvidence,
++};
+diff --git a/scripts/lib/eval-runner.js b/scripts/lib/eval-runner.js
+index 6f9524cb..f2245dd6 100644
+--- a/scripts/lib/eval-runner.js
++++ b/scripts/lib/eval-runner.js
+@@ -10,7 +10,7 @@
+ 
+ const path = require('path');
+ const fs = require('fs');
+-const { execSync } = require('node:child_process');
++const { execFileSync, execSync } = require('node:child_process');
+ 
+ // ── active worktree tracking (cleanup on crash) ─────────────────────
+ // Tracks active eval worktrees so we can clean up on process exit/crash.
+@@ -119,9 +119,24 @@ function getWorktreesDir() {
+ /**
+  * Create a git worktree with a unique name for eval isolation.
+  *
++ * @param {string} [headSha] — optional full commit SHA for exact replay
+  * @returns {Promise<{ path: string, branch: string }>}
+  */
+-async function createEvalWorktree() {
++async function createEvalWorktree(headSha) {
++  if (headSha !== undefined) {
++    if (!/^[0-9a-f]{40}$/.test(headSha)) {
++      throw new Error('Eval replay requires a full 40-character commit SHA');
++    }
++    try {
++      const resolved = execFileSync('git', ['rev-parse', '--verify', `${headSha}^{commit}`], {
++        cwd: getRepoRoot(), encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
++      }).trim();
++      if (resolved !== headSha) throw new Error('mismatch');
++    } catch (_err) {
++      throw new Error(`Eval replay commit is not available: ${headSha}`);
++    }
++  }
++
+   // Self-heal: remove stale eval dirs from previous crashed runs
+   cleanupStaleEvalWorktrees();
+ 
+@@ -133,7 +148,7 @@ async function createEvalWorktree() {
+   const wtPath = path.join(worktreesDir, name);
+ 
+   // Create the worktree with a detached HEAD first, then create branch
+-  execSync(`git worktree add -b "${branch}" "${wtPath}" HEAD`, {
++  execFileSync('git', ['worktree', 'add', '-b', branch, wtPath, headSha || 'HEAD'], {
+     cwd: getRepoRoot(),
+     encoding: 'utf-8',
+     stdio: ['pipe', 'pipe', 'pipe'],
+diff --git a/scripts/run-command-eval.js b/scripts/run-command-eval.js
+index 749dfe46..b0c3d816 100644
+--- a/scripts/run-command-eval.js
++++ b/scripts/run-command-eval.js
+@@ -20,6 +20,7 @@ const {
+ } = require('./lib/eval-runner');
+ const { gradeTranscript } = require('./lib/grading');
+ const { saveEvalResult } = require('./lib/eval-storage');
++const { verifyEvalReplay } = require('./lib/eval-evidence');
+ 
+ // ---------------------------------------------------------------------------
+ // parseArgs
+@@ -89,6 +90,7 @@ function runShellCommand(command, worktreePath) {
+  * @param {string} [options._basePath] — eval-logs base path for testing
+  * @param {boolean} [options._skipWorktree=false] — skip worktree creation for unit tests
+  * @param {Function} [options._executeOverride] — injectable command executor for testing
++ * @param {{envelope: object, hashes: object}} [options.replay] — exact-SHA replay binding
+  * @returns {Promise<{ command: string, results: Array, overall_score: number, passed: boolean, duration_ms: number }>}
+  */
+ async function runEvalPipeline(evalSetPath, options = {}) {
+@@ -98,6 +100,7 @@ async function runEvalPipeline(evalSetPath, options = {}) {
+   const execOverride = options._executeOverride || null;
+   const invokeGrader = options._invokeGrader || null;
+   const basePath = options._basePath || undefined;
++  const replay = options.replay || null;
+ 
+   const startTime = Date.now();
+ 
+@@ -105,10 +108,12 @@ async function runEvalPipeline(evalSetPath, options = {}) {
+   const evalSet = loadEvalSet(evalSetPath);
+   const { command, queries } = evalSet;
+ 
++  const replayEvidence = replay ? verifyEvalReplay(replay.envelope, replay.hashes) : null;
++
+   // 2. Create eval worktree (unless skipped for testing)
+   let worktreePath = null;
+   if (!skipWorktree) {
+-    const wt = await createEvalWorktree();
++    const wt = await createEvalWorktree(replayEvidence ? replayEvidence.head_sha : undefined);
+     worktreePath = wt.path;
+   }
+ 
+diff --git a/test/eval/eval-evidence.test.js b/test/eval/eval-evidence.test.js
+new file mode 100644
+index 00000000..2b51a1bd
+--- /dev/null
++++ b/test/eval/eval-evidence.test.js
+@@ -0,0 +1,118 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++
++const {
++  createEvalEvidence,
++  verifyEvalEvidence,
++  appendEvalEvidence,
++} = require('../../scripts/lib/eval-evidence');
++const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-factory');
++
++const ISSUE_ID = '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3';
++const SHA = 'a'.repeat(40);
++const HASHES = {
++  prompt: '1'.repeat(64),
++  skill: '2'.repeat(64),
++  tool: '3'.repeat(64),
++};
++
++function validCase(overrides = {}) {
++  return {
++    issue_id: ISSUE_ID,
++    pr: 484,
++    head_sha: SHA,
++    model: 'model-a',
++    effort: 'high',
++    role: 'implementation',
++    hashes: HASHES,
++    started_at: '2026-08-05T10:00:00.000Z',
++    ended_at: '2026-08-05T10:00:03.000Z',
++    active_ms: 2000,
++    passive_ms: 1000,
++    tokens: { input: 100, output: 25, cached: 5 },
++    retries: 0,
++    compactions: 0,
++    gates: [{ name: 'tests', passed: true }],
++    ...overrides,
++  };
++}
++
++async function freshKernel() {
++  const kernel = await buildMigratedKernelIssueDeps({ databasePath: ':memory:' });
++  const created = await kernel.kernelBroker.runIssueOperation(
++    'create',
++    ['--id', ISSUE_ID, '--title', 'eval evidence', '--type', 'task'],
++    { actor: 'seed', origin: 'test' },
++  );
++  expect(created.ok).toBe(true);
++  return kernel;
++}
++
++function deps(kernel) {
++  return { kernelBroker: kernel.kernelBroker, kernelDriver: kernel.kernelDriver };
++}
++
++describe('eval evidence', () => {
++  test('requires the complete model-neutral case metadata', () => {
++    const input = validCase();
++    delete input.role;
++    expect(() => createEvalEvidence(input)).toThrow(/role.*required/i);
++  });
++
++  test('rejects unknown fields at every level so private material cannot persist', () => {
++    expect(() => createEvalEvidence(validCase({ prompt: 'raw prompt' }))).toThrow(/unknown field.*prompt/i);
++    expect(() => createEvalEvidence(validCase({
++      tokens: { input: 1, output: 1, cached: 0, secret: 'token' },
++    }))).toThrow(/unknown field.*secret/i);
++    expect(() => createEvalEvidence(validCase({
++      gates: [{ name: 'tests', passed: true, transcript: 'raw transcript' }],
++    }))).toThrow(/unknown field.*transcript/i);
++  });
++
++  test('uses stable serialization for a deterministic content hash', () => {
++    const first = createEvalEvidence(validCase());
++    const reordered = createEvalEvidence({
++      gates: [{ passed: true, name: 'tests' }],
++      compactions: 0,
++      retries: 0,
++      tokens: { cached: 5, output: 25, input: 100 },
++      passive_ms: 1000,
++      active_ms: 2000,
++      ended_at: '2026-08-05T10:00:03.000Z',
++      started_at: '2026-08-05T10:00:00.000Z',
++      hashes: { tool: HASHES.tool, skill: HASHES.skill, prompt: HASHES.prompt },
++      role: 'implementation',
++      effort: 'high',
++      model: 'model-a',
++      head_sha: SHA,
++      pr: 484,
++      issue_id: ISSUE_ID,
++    });
++
++    expect(first.content_hash).toMatch(/^[0-9a-f]{64}$/);
++    expect(reordered).toEqual(first);
++  });
++
++  test('detects corruption', () => {
++    const envelope = createEvalEvidence(validCase());
++    envelope.evidence.tokens.output += 1;
++    expect(() => verifyEvalEvidence(envelope)).toThrow(/content hash mismatch/i);
++  });
++
++  test('appends one idempotent Kernel event per content hash', async () => {
++    const kernel = await freshKernel();
++    const envelope = createEvalEvidence(validCase());
++    const options = { deps: deps(kernel), env: { FORGE_ACTOR: 'eval-test' } };
++
++    const first = await appendEvalEvidence('/unused', envelope, options);
++    const duplicate = await appendEvalEvidence('/unused', envelope, options);
++    const events = await kernel.kernelDriver.listKernelEvents('issue', ISSUE_ID, {}, kernel.kernelBroker.config);
++    const evidenceEvents = events.filter(event => event.event_type === 'eval.evidence.recorded');
++
++    expect(first.duplicate).toBe(false);
++    expect(duplicate.duplicate).toBe(true);
++    expect(evidenceEvents).toHaveLength(1);
++    expect(JSON.parse(evidenceEvents[0].payload_json)).toEqual(envelope);
++  });
++});
+diff --git a/test/eval/eval-pipeline.test.js b/test/eval/eval-pipeline.test.js
+index edaeb923..5647f48b 100644
+--- a/test/eval/eval-pipeline.test.js
++++ b/test/eval/eval-pipeline.test.js
+@@ -3,6 +3,8 @@ const fs = require('fs');
+ const path = require('path');
+ const os = require('os');
+ const { runEvalPipeline, parseArgs } = require('../../scripts/run-command-eval');
++const { createEvalEvidence } = require('../../scripts/lib/eval-evidence');
++const { contentHash } = require('../../lib/file-hash');
+ 
+ // ---------------------------------------------------------------------------
+ // Helpers
+@@ -104,6 +106,50 @@ function fakeGraderSequence(scores) {
+ // ---------------------------------------------------------------------------
+ 
+ describe('runEvalPipeline', () => {
++  test('rejects replay hash drift before worktree creation or command execution', async () => {
++    const evalSetPath = writeTmpEvalSet(minimalEvalSet());
++    const tmpDir = makeTmpDir();
++    let executed = false;
++    const envelope = createEvalEvidence({
++      issue_id: '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3',
++      pr: 484,
++      head_sha: 'a'.repeat(40),
++      model: 'model-a',
++      effort: 'high',
++      role: 'implementation',
++      hashes: {
++        prompt: contentHash('recorded prompt'),
++        skill: contentHash('recorded skill'),
++        tool: contentHash('recorded tool'),
++      },
++      started_at: '2026-08-05T10:00:00.000Z',
++      ended_at: '2026-08-05T10:00:03.000Z',
++      active_ms: 2000,
++      passive_ms: 1000,
++      tokens: { input: 100, output: 25, cached: 5 },
++      retries: 0,
++      compactions: 0,
++      gates: [{ name: 'tests', passed: true }],
++    });
++
++    await expect(runEvalPipeline(evalSetPath, {
++      replay: {
++        envelope,
++        hashes: { ...envelope.evidence.hashes, prompt: contentHash('drifted prompt') },
++      },
++      _skipWorktree: true,
++      _executeOverride: async (...args) => {
++        executed = true;
++        return fakeExecute(...args);
++      },
++      _invokeGrader: fakeGraderPass,
++      _basePath: tmpDir,
++    })).rejects.toThrow(/prompt hash drift/i);
++
++    expect(executed).toBe(false);
++    expect(fs.readdirSync(tmpDir)).toHaveLength(0);
++  });
++
+   test('accepts eval set path and returns result object', async () => {
+     const evalSetPath = writeTmpEvalSet(minimalEvalSet());
+     const tmpDir = makeTmpDir();
+diff --git a/test/eval/eval-runner.test.js b/test/eval/eval-runner.test.js
+index 167644a8..77d53b9b 100644
+--- a/test/eval/eval-runner.test.js
++++ b/test/eval/eval-runner.test.js
+@@ -72,6 +72,28 @@ describe('eval-runner', () => {
+       }).trim();
+       expect(gitDir).toBeTruthy();
+     });
++
++    test('creates a worktree at an exact full commit SHA', async () => {
++      const exactSha = execSync('git rev-parse HEAD~1', {
++        cwd: WORKTREE_ROOT,
++        encoding: 'utf-8',
++      }).trim();
++      const wt = await createEvalWorktree(exactSha);
++
++      try {
++        const actual = execSync('git rev-parse HEAD', {
++          cwd: wt.path,
++          encoding: 'utf-8',
++        }).trim();
++        expect(actual).toBe(exactSha);
++      } finally {
++        await destroyEvalWorktree(wt.path);
++      }
++    });
++
++    test('rejects an unavailable full SHA before creating a worktree', async () => {
++      await expect(createEvalWorktree('f'.repeat(40))).rejects.toThrow(/commit.*available/i);
++    });
+   });
+ 
+   // ── destroyEvalWorktree ─────────────────────────────────────────────
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,494 @@
+From 210744c146d9ab02764b2db40528562c811a0370 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 22:31:04 +0530
+Subject: [PATCH] feat(upgrade): guide 0.0.10 -> current beads->kernel breaking
+ upgrade
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The 0.0.10 -> current upgrade flipped the DEFAULT issue backend
+Beads -> Kernel, but beads->kernel migration fires ONLY from
+setup/init, never lazily on the issue path. A user who runs
+`bun update` then `forge list`/`ready` reads an EMPTY kernel and
+their 0.0.10 issues APPEAR GONE (data safe in .beads/*.jsonl, just
+invisible) with no nudge. This closes that footgun and surfaces the
+breaking boundary instead of failing silently.
+
+- lib/commands/_issue.js: on a kernel-default empty list/ready read
+  with a .beads/*.jsonl store still present, print a one-time stderr
+  hint pointing at `forge migrate --from beads` + `forge setup`.
+  Best-effort, never throws, never alters the result envelope; fires
+  once per project root; suppressed on explicit beads opt-in or a
+  non-empty read.
+- lib/upgrade-safety.js: `forge upgrade --dry-run` now detects the
+  beads->kernel boundary and renders a "Breaking change since 0.0.10
+  — action required" section with the guided migration path. Advisory
+  only — it never flips `ok` (scripts keying on it stay stable).
+- lib/commands/migrate.js: export detectBeadsJsonlSource() as the
+  shared, side-effect-free detector both surfaces reuse.
+
+TDD: 2 new test files (9 assertions), red before implement, green
+after. ESLint clean.
+
+Refs: a5399f3d-28df-474e-b5f3-08af6bd7b388
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/_issue.js                       |  81 ++++++++++++++
+ lib/commands/migrate.js                      |  27 +++++
+ lib/upgrade-safety.js                        |  56 ++++++++++
+ test/commands/issue-path-beads-nudge.test.js | 109 +++++++++++++++++++
+ test/upgrade-safety.test.js                  |  69 ++++++++++++
+ 5 files changed, 342 insertions(+)
+ create mode 100644 test/commands/issue-path-beads-nudge.test.js
+ create mode 100644 test/upgrade-safety.test.js
+
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index ec1f553a..8b1cba8f 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -691,6 +691,84 @@ async function runKernelBatchClose(runner, operation, ids, flags, projectRoot, o
+   return normalized;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Unmigrated-beads nudge (kernel issue a5399f3d — upgrade-safety 0.0.10 -> current).
++//
++// The 0.0.10 -> current upgrade flipped the DEFAULT issue backend Beads -> Kernel,
++// but the beads -> kernel migration fires ONLY from `forge setup`/`init`, never
++// lazily on the issue path. So a user who runs `bun update` then `forge list` /
++// `forge ready` reads an EMPTY kernel and their 0.0.10 issues APPEAR GONE — the
++// data is safe in .beads/*.jsonl, just invisible, with no nudge. This boundary
++// closes that footgun: when the resolved backend is the (default) Kernel, a read
++// comes back empty, AND a .beads/*.jsonl store still exists, print a one-time
++// guided hint. Best-effort and non-blocking: it NEVER throws and never alters the
++// read result. Fires at most once per project root per process to avoid spam.
++const BEADS_NUDGE_READS = new Set(['list', 'ready']);
++const beadsNudgeWarnedRoots = new Set();
++
++// A kernel read looks empty when its contract data carries no issues. Handles the
++// issue.list/issue.ready shape ({ issues, count }) plus a bare array / null, and
++// is deliberately conservative: anything it cannot confirm as empty is treated as
++// NON-empty so a user with real kernel issues is never nagged.
++function kernelReadLooksEmpty(result) {
++  if (!result || typeof result !== 'object' || result.ok !== true) {
++    return false;
++  }
++  const data = result.data;
++  if (data === null || data === undefined) {
++    return true;
++  }
++  if (Array.isArray(data)) {
++    return data.length === 0;
++  }
++  if (Array.isArray(data.issues)) {
++    return data.issues.length === 0;
++  }
++  if (Array.isArray(data.items)) {
++    return data.items.length === 0;
++  }
++  if (typeof data.count === 'number') {
++    return data.count === 0;
++  }
++  return false;
++}
++
++function maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts = {}) {
++  try {
++    if (!BEADS_NUDGE_READS.has(subcommand) || !projectRoot) {
++      return;
++    }
++    if (beadsNudgeWarnedRoots.has(projectRoot)) {
++      return;
++    }
++    const env = rawOpts.env || process.env;
++    // Resolve the EFFECTIVE backend (default kernel). An explicit `beads` opt-in
++    // means the user is on Beads deliberately — no migration to nudge about.
++    const backend = resolveIssueBackend({ deps: rawOpts, env, projectRoot, warn: () => {} });
++    if (backend !== 'kernel' || !kernelReadLooksEmpty(result)) {
++      return;
++    }
++    // Lazy-require to keep the hot issue path's module graph unchanged and avoid
++    // any require cycle with the migrate command module.
++    const { detectBeadsJsonlSource } = require('./migrate');
++    if (!detectBeadsJsonlSource(projectRoot)) {
++      return;
++    }
++    beadsNudgeWarnedRoots.add(projectRoot);
++    console.error(
++      '\n[forge] Beads issue data detected (.beads/*.jsonl) but the Kernel issue store is empty.\n'
++      + 'Forge now defaults to the Kernel backend (breaking change since 0.0.10). Your Beads\n'
++      + 'issues are safe on disk but will not appear until migrated. To migrate:\n'
++      + '  forge migrate --from beads   # import your Beads issues into the Kernel\n'
++      + '  forge setup                  # (re)wire hooks + provision the Kernel store\n'
++      + 'Prefer to stay on Beads? Set `issueBackend: beads` in .forge/config.yaml '
++      + '(or FORGE_ISSUE_BACKEND=beads).\n',
++    );
++  } catch (_err) {
++    /* the nudge is a best-effort hint; it must never break a read */ // NOSONAR S2486
++  }
++}
++
+ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+   const spec = SUBCOMMANDS[subcommand];
+   if (!spec) {
+@@ -769,6 +847,9 @@ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+   }
+   // Best-effort, non-blocking: mirror a stage-transition comment into stage_runs.
+   recordStageTransitionFromComment(subcommand, operationArgs, result, opts);
++  // Best-effort, non-blocking: nudge a returning 0.0.10 user whose empty Kernel
++  // read hides an unmigrated .beads/*.jsonl store (kernel issue a5399f3d).
++  maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts);
+   // Contract output is opt-in for the human-first reads: an explicit --json flag
+   // or FORGE_JSON=1 in the environment (for scripts that cannot alter argv).
+   const jsonRequested = normalizeArgs(args).includes('--json')
+diff --git a/lib/commands/migrate.js b/lib/commands/migrate.js
+index 034845ad..6873e02b 100644
+--- a/lib/commands/migrate.js
++++ b/lib/commands/migrate.js
+@@ -151,6 +151,32 @@ function cleanupResolved(resolved, deps) {
+   }
+ }
+ 
++/**
++ * Cheap, side-effect-free detector: return the absolute path of a `.beads/`
++ * directory that holds at least one `*.jsonl` file under `projectRoot`, else
++ * null. Used by the upgrade-safety preview and the issue-path unmigrated-beads
++ * nudge (kernel issue a5399f3d) to spot a returning 0.0.10 install whose Beads
++ * issues have not yet been migrated into the Kernel. Never throws.
++ *
++ * @param {string} [projectRoot]
++ * @param {object} [deps] — { fs } injection seam for tests.
++ * @returns {string|null}
++ */
++function detectBeadsJsonlSource(projectRoot, deps = {}) {
++  const fsImpl = deps.fs || fs;
++  const root = projectRoot || process.cwd();
++  const beadsDir = path.join(root, '.beads');
++  try {
++    if (!fsImpl.existsSync(beadsDir)) {
++      return null;
++    }
++    return directoryHasJsonl(beadsDir, fsImpl) ? beadsDir : null;
++  } catch (_err) {
++    /* intentional: an unreadable project root has no detectable beads source */ // NOSONAR S2486
++    return null;
++  }
++}
++
+ function summarizeGaps(gaps) {
+   const items = Array.isArray(gaps) ? gaps : [];
+   return {
+@@ -302,6 +328,7 @@ async function runBeadsMigration(options, projectRoot, opts) {
+ }
+ 
+ module.exports = {
++  detectBeadsJsonlSource,
+   name: 'migrate',
+   description: 'Migrate a Beads issue store into the Forge Kernel with --from beads, '
+     + 'or preview the v2→v3 migration (preview only — --dry-run required; applying it is not yet available)',
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index e4bb50c4..df275fe8 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -6,6 +6,7 @@ const path = require('node:path');
+ const { lintRuntimeGraphConfig } = require('./core/runtime-graph');
+ const { resolvePatchIntentRecords } = require('./patch-intent');
+ const { verifyForgeLock, readForgeLock } = require('./forge-lock');
++const { readConfigBackend } = require('./issue-backend');
+ 
+ function checkStatus(ok) {
+   return ok ? 'pass' : 'fail';
+@@ -56,6 +57,38 @@ function buildSelfHealCandidates(projectRoot) {
+   return candidates;
+ }
+ 
++// Detect the 0.0.10 -> current breaking boundary that hides a returning user's
++// issues (kernel issue a5399f3d): a `.beads/*.jsonl` store still present while the
++// default backend has flipped to the Kernel. `needsMigration` is true only when
++// the user has NOT explicitly opted back into Beads (config issueBackend: beads),
++// i.e. exactly the population whose issues silently vanish under the new default.
++function beadsDirHasJsonl(beadsDir) {
++  try {
++    return fs.existsSync(beadsDir)
++      && fs.readdirSync(beadsDir).some(entry => entry.endsWith('.jsonl'));
++  } catch {
++    return false;
++  }
++}
++
++function safeConfigBackend(projectRoot) {
++  try {
++    return readConfigBackend(projectRoot);
++  } catch {
++    return null;
++  }
++}
++
++function buildBeadsMigrationSummary(projectRoot) {
++  const jsonlPresent = beadsDirHasJsonl(path.join(projectRoot, '.beads'));
++  const configBackend = safeConfigBackend(projectRoot);
++  return {
++    jsonlPresent,
++    configBackend,
++    needsMigration: jsonlPresent && configBackend !== 'beads',
++  };
++}
++
+ function buildUpgradeDryRunReport(projectRoot = process.cwd()) {
+   const root = path.resolve(projectRoot);
+   const runtime = lintRuntimeGraphConfig({ projectRoot: root });
+@@ -66,8 +99,12 @@ function buildUpgradeDryRunReport(projectRoot = process.cwd()) {
+   const failedLockEntries = lockReport.results.filter(result => result.status === 'fail');
+   const untrustedOptIns = countUntrustedOptIns(lock);
+   const lockTrustOk = lockReport.ok && untrustedOptIns === 0;
++  const beadsMigration = buildBeadsMigrationSummary(root);
+ 
+   return {
++    // A pending beads -> kernel migration is a guided ADVISORY, not an integrity
++    // failure — it never flips `ok` (scripts keying on it stay stable); it surfaces
++    // as its own prominent "action required" section in the rendered report.
+     ok: runtime.ok && patchIntent.ok && lockTrustOk,
+     projectRoot: root,
+     runtime,
+@@ -77,6 +114,7 @@ function buildUpgradeDryRunReport(projectRoot = process.cwd()) {
+     lockTrustOk,
+     selfHealCandidates,
+     failedLockEntries,
++    beadsMigration,
+   };
+ }
+ 
+@@ -139,6 +177,22 @@ function appendSelfHealResult(lines, selfHealResult) {
+   }
+ }
+ 
++function appendBeadsMigration(lines, beadsMigration) {
++  if (!beadsMigration || !beadsMigration.needsMigration) {
++    return;
++  }
++  lines.push(
++    '',
++    'Breaking change since 0.0.10 — action required',
++    'Detected a Beads issue store (.beads/*.jsonl). Forge now defaults to the Kernel',
++    'issue backend, so these issues will NOT appear until migrated (your data is safe',
++    'on disk in the meantime). To migrate:',
++    '  forge migrate --from beads   # import your Beads issues into the Kernel',
++    '  forge setup                  # (re)wire hooks + provision the Kernel store',
++    'Prefer to stay on Beads? Set `issueBackend: beads` in .forge/config.yaml.',
++  );
++}
++
+ function renderUpgradeDryRunReport(report, selfHealResult = null) {
+   const lines = [
+     'Forge upgrade dry-run',
+@@ -149,6 +203,7 @@ function renderUpgradeDryRunReport(report, selfHealResult = null) {
+     ...readinessLines(report),
+   ];
+ 
++  appendBeadsMigration(lines, report.beadsMigration);
+   appendPlannedSelfHeal(lines, report.selfHealCandidates);
+   appendSelfHealResult(lines, selfHealResult);
+ 
+@@ -194,6 +249,7 @@ function applySelfHeal(projectRoot, report) {
+ module.exports = {
+   applySelfHeal,
+   buildUpgradeDryRunReport,
++  buildBeadsMigrationSummary,
+   buildSelfHealCandidates,
+   renderUpgradeDryRunReport,
+ };
+diff --git a/test/commands/issue-path-beads-nudge.test.js b/test/commands/issue-path-beads-nudge.test.js
+new file mode 100644
+index 00000000..07705972
+--- /dev/null
++++ b/test/commands/issue-path-beads-nudge.test.js
+@@ -0,0 +1,109 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
++const { tmpdir } = require('node:os');
++const path = require('node:path');
++
++const { runIssueSubcommand } = require('../../lib/commands/_issue');
++
++// Upgrade-safety footgun (kernel issue a5399f3d): the 0.0.10 -> current default
++// flipped Beads -> Kernel, but beads -> kernel migration fires ONLY from
++// setup/init, never lazily on the issue path. So a user who runs `bun update`
++// then `forge list`/`forge ready` reads an EMPTY kernel and their 0.0.10 issues
++// APPEAR GONE (data is safe in .beads/*.jsonl, just invisible) with no nudge.
++// These tests pin the guided nudge: kernel default + empty read + .beads/*.jsonl
++// present -> a one-time stderr hint pointing at `forge migrate --from beads`.
++
++function makeRoot({ withBeads } = {}) {
++  const root = mkdtempSync(path.join(tmpdir(), 'forge-beads-nudge-'));
++  if (withBeads) {
++    mkdirSync(path.join(root, '.beads'), { recursive: true });
++    writeFileSync(path.join(root, '.beads', 'issues.jsonl'), '{"id":"bd-1","title":"legacy"}\n');
++  }
++  return root;
++}
++
++// Kernel list/ready envelope: { ok, data: { issues: [...], count } }.
++function kernelListRunner(issues) {
++  return async () => ({
++    ok: true,
++    schema_version: 'forge.issue.v1',
++    command: 'issue.list',
++    data: { issues, count: issues.length },
++    next_commands: [],
++  });
++}
++
++let errors;
++const originalError = console.error;
++beforeEach(() => {
++  errors = [];
++  console.error = (...args) => { errors.push(args.join(' ')); };
++});
++afterEach(() => {
++  console.error = originalError;
++});
++
++function joined() {
++  return errors.join('\n');
++}
++
++describe('issue-path unmigrated-beads nudge', () => {
++  test('kernel default + empty list + .beads/*.jsonl present -> guided nudge', async () => {
++    const root = makeRoot({ withBeads: true });
++    await runIssueSubcommand('list', [], root, {
++      env: {},
++      runIssueOperation: kernelListRunner([]),
++    });
++    const out = joined();
++    expect(out).toContain('forge migrate --from beads');
++    expect(out.toLowerCase()).toContain('beads');
++  });
++
++  test('kernel default + empty ready + .beads present -> nudge (ready is also a returning-user read)', async () => {
++    const root = makeRoot({ withBeads: true });
++    await runIssueSubcommand('ready', [], root, {
++      env: {},
++      runIssueOperation: kernelListRunner([]),
++    });
++    expect(joined()).toContain('forge migrate --from beads');
++  });
++
++  test('NON-empty kernel list suppresses the nudge (issues already visible)', async () => {
++    const root = makeRoot({ withBeads: true });
++    await runIssueSubcommand('list', [], root, {
++      env: {},
++      runIssueOperation: kernelListRunner([{ id: 'k-1', title: 'live' }]),
++    });
++    expect(joined()).not.toContain('forge migrate');
++  });
++
++  test('no .beads/*.jsonl -> no nudge even on an empty kernel', async () => {
++    const root = makeRoot({ withBeads: false });
++    await runIssueSubcommand('list', [], root, {
++      env: {},
++      runIssueOperation: kernelListRunner([]),
++    });
++    expect(joined()).not.toContain('forge migrate');
++  });
++
++  test('explicit beads backend suppresses the nudge (user is on Beads on purpose)', async () => {
++    const root = makeRoot({ withBeads: true });
++    await runIssueSubcommand('list', [], root, {
++      env: { FORGE_ISSUE_BACKEND: 'beads' },
++      issueBackend: 'beads',
++      runIssueOperation: kernelListRunner([]),
++    });
++    expect(joined()).not.toContain('forge migrate');
++  });
++
++  test('nudge fires at most once per project root (no spam across repeated reads)', async () => {
++    const root = makeRoot({ withBeads: true });
++    const opts = { env: {}, runIssueOperation: kernelListRunner([]) };
++    await runIssueSubcommand('list', [], root, opts);
++    await runIssueSubcommand('ready', [], root, opts);
++    const hits = errors.filter(line => line.includes('forge migrate --from beads')).length;
++    expect(hits).toBe(1);
++  });
++});
+diff --git a/test/upgrade-safety.test.js b/test/upgrade-safety.test.js
+new file mode 100644
+index 00000000..9a2c9bfe
+--- /dev/null
++++ b/test/upgrade-safety.test.js
+@@ -0,0 +1,69 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
++const { tmpdir } = require('node:os');
++const path = require('node:path');
++
++const {
++  buildUpgradeDryRunReport,
++  renderUpgradeDryRunReport,
++} = require('../lib/upgrade-safety');
++
++// Upgrade-safety (kernel issue a5399f3d): `forge upgrade --dry-run` must surface
++// the 0.0.10 -> current breaking boundary rather than silently pass. When a repo
++// still carries a Beads issue store (.beads/*.jsonl) and has NOT opted back into
++// beads, the preview must warn that the kernel default hides those issues and
++// offer the guided migration path.
++
++function makeRoot({ beadsJsonl, configBackend } = {}) {
++  const root = mkdtempSync(path.join(tmpdir(), 'forge-upgrade-beads-'));
++  if (beadsJsonl) {
++    mkdirSync(path.join(root, '.beads'), { recursive: true });
++    writeFileSync(path.join(root, '.beads', 'issues.jsonl'), '{"id":"bd-1"}\n');
++  }
++  if (configBackend) {
++    mkdirSync(path.join(root, '.forge'), { recursive: true });
++    writeFileSync(path.join(root, '.forge', 'config.yaml'), `issueBackend: ${configBackend}\n`);
++  }
++  return root;
++}
++
++describe('upgrade preview — beads -> kernel breaking boundary', () => {
++  test('a beads-backed 0.0.10 repo flags the migration in the report + rendered output', () => {
++    const root = makeRoot({ beadsJsonl: true });
++    const report = buildUpgradeDryRunReport(root);
++
++    expect(report.beadsMigration).toBeDefined();
++    expect(report.beadsMigration.jsonlPresent).toBe(true);
++    expect(report.beadsMigration.needsMigration).toBe(true);
++
++    const output = renderUpgradeDryRunReport(report);
++    expect(output).toContain('0.0.10');
++    expect(output).toContain('forge migrate --from beads');
++    expect(output).toContain('forge setup');
++  });
++
++  test('an explicit beads opt-in (config) does NOT flag a migration', () => {
++    const root = makeRoot({ beadsJsonl: true, configBackend: 'beads' });
++    const report = buildUpgradeDryRunReport(root);
++
++    expect(report.beadsMigration.jsonlPresent).toBe(true);
++    expect(report.beadsMigration.configBackend).toBe('beads');
++    expect(report.beadsMigration.needsMigration).toBe(false);
++
++    const output = renderUpgradeDryRunReport(report);
++    expect(output).not.toContain('forge migrate --from beads');
++  });
++
++  test('a repo with no beads store shows no migration section', () => {
++    const root = makeRoot({ beadsJsonl: false });
++    const report = buildUpgradeDryRunReport(root);
++
++    expect(report.beadsMigration.jsonlPresent).toBe(false);
++    expect(report.beadsMigration.needsMigration).toBe(false);
++
++    const output = renderUpgradeDryRunReport(report);
++    expect(output).not.toContain('forge migrate --from beads');
++  });
++});
+-- 
+2.51.0.windows.1
+

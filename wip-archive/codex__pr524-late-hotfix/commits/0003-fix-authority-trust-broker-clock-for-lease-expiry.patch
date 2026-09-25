@@ -1,0 +1,115 @@
+From ceaf529228f7ba0469caaec7862895a8fe53d858 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 23:40:56 +0530
+Subject: [PATCH] fix(authority): trust broker clock for lease expiry
+
+---
+ lib/kernel/broker.js      |  6 +++---
+ test/kernel/trace.test.js | 18 +++++++++++++++---
+ 2 files changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 3f4b619a..653e3848 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -601,7 +601,7 @@ function assertAtomicRunIdentity(events, payload) {
+ 	}
+ }
+ 
+-async function assertExactLifecycleOwnership(driver, evidence, context, config) {
++async function assertExactLifecycleOwnership(driver, evidence, context, config, now) {
+ 	for (const method of ['loadActiveKernelClaim', 'loadKernelEntity']) requireDriverMethod(driver, method);
+ 	if (typeof context.actor !== 'string' || !context.actor || typeof context.sessionId !== 'string' || !context.sessionId) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordOpenedPrLinkage requires exact actor and session authority');
+@@ -610,7 +610,6 @@ async function assertExactLifecycleOwnership(driver, evidence, context, config)
+ 		driver.loadKernelEntity('issue', evidence.issue_id, context, config),
+ 		driver.loadActiveKernelClaim(evidence.issue_id, context, config),
+ 	]);
+-	const now = context.now || new Date().toISOString();
+ 	if (!issue || isTerminalStatus(issue.status) || !claim || claim.state !== 'active'
+ 		|| claim.actor !== context.actor || claim.session_id !== context.sessionId || isLeaseExpired(claim, now)) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordOpenedPrLinkage claimant no longer owns the live issue');
+@@ -1529,6 +1528,7 @@ async function mapMutationResult(driver, operation, event, result, context, conf
+ 
+ function createLocalBroker(options = {}) {
+ 	const driver = options.driver;
++	const now = typeof options.now === 'function' ? options.now : () => new Date().toISOString();
+ 	let cachedConfig;
+ 
+ 	// Memoized config build AND the structural home of the D19 default-on
+@@ -1825,7 +1825,7 @@ function createLocalBroker(options = {}) {
+ 				await beginImmediate(transactionDriver, config);
+ 				transactionOpen = true;
+ 				if (linkageInput.phase === 'opened' || context.requireExactLifecycleOwnership === true) {
+-					await assertExactLifecycleOwnership(transactionDriver, evidence, context, config);
++					await assertExactLifecycleOwnership(transactionDriver, evidence, context, config, now());
+ 				}
+ 				const inferred = await transactionDriver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
+ 				assertResolvedPrLinkage(inferred, evidence);
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index ed4eed96..5a4d26fb 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -96,6 +96,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 	let branch;
+ 	let workFolder;
+ 	let rawRecordPrLinkage;
++	let brokerNow;
+ 
+ 	beforeEach(async () => {
+ 		root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-trace-'));
+@@ -105,7 +106,9 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		fs.mkdirSync(gitCommonDir, { recursive: true });
+ 		config = { databasePath: path.join(root, 'kernel.sqlite') };
+ 		driver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
+-		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver });
++		brokerNow = '2026-08-11T00:10:00.000Z';
++		broker = createLocalBroker({ projectRoot: root, gitCommonDir, databasePath: config.databasePath, driver,
++			now: () => brokerNow });
+ 		await broker.initialize();
+ 		await driver.exec(
+ 			"INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-trace', 'Trace', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');",
+@@ -209,7 +212,8 @@ describe('Kernel receipt-bound PR trace', () => {
+ 	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
+ 		const memoryConfig = { databasePath: ':memory:' };
+ 		const memoryDriver = createBuiltinSQLiteDriver({});
+-		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver });
++		const memoryBroker = createLocalBroker({ projectRoot: root, gitCommonDir, ...memoryConfig, driver: memoryDriver,
++			now: () => '2026-08-11T00:10:00.000Z' });
+ 		await memoryBroker.initialize();
+ 		try {
+ 			await memoryDriver.exec(
+@@ -307,7 +311,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			return fork;
+ 		};
+ 		await broker.recordPrLinkage(linkage());
+-		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-1', sessionId: 'session-1' }))
++		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2' }))
+ 			.rejects.toBeInstanceOf(Error);
+ 		expect(closes).toBe(2);
+ 		driver.forkConnection = originalFork;
+@@ -374,6 +378,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		await driver.insertKernelClaim({ id: 'claim-2', issue_id: 'issue-trace', actor: 'agent-2', session_id: 'session-2',
+ 			state: 'active', claimed_at: '2026-08-11T00:11:00.000Z', expires_at: '2026-08-11T00:12:00.000Z' }, {}, config);
+ 		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		brokerNow = '2026-08-11T00:13:00.000Z';
+ 		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2', now: '2026-08-11T00:13:00.000Z' }))
+ 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+ 	});
+@@ -385,6 +390,13 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+ 	});
+ 
++	test('uses broker time instead of caller time to reject expired opened linkage ownership', async () => {
++		brokerNow = '2026-08-11T01:01:00.000Z';
++		await expect(rawRecordPrLinkage(linkage(), {
++			actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z',
++		})).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++	});
++
+ 	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {
+ 		await driver.exec("INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');", config);
+ 		await driver.upsertPr({ id: 'foreign-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
+-- 
+2.51.0.windows.1
+

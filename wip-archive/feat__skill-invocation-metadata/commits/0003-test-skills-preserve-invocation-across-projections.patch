@@ -1,0 +1,115 @@
+From f92ae38193c4018704ca43cd7ada35f0afa43377 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 16:33:23 +0530
+Subject: [PATCH] test(skills): preserve invocation across projections
+
+---
+ lib/skills-sync.js                |  9 ++++++---
+ packages/skills/test/sync.test.js | 13 +++++++------
+ test/skills/skills-sync.test.js   | 22 ++++++++++++++++++++++
+ 3 files changed, 35 insertions(+), 9 deletions(-)
+
+diff --git a/lib/skills-sync.js b/lib/skills-sync.js
+index 177b4770..b780af81 100644
+--- a/lib/skills-sync.js
++++ b/lib/skills-sync.js
+@@ -34,6 +34,7 @@
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { parseFrontmatter } = require('./using-forge');
+ 
+ /** Canonical skills live under this directory at the repo/package root. */
+ const CANONICAL_SKILLS_DIR = 'skills';
+@@ -71,7 +72,7 @@ function isValidSkillName(name) {
+  * @param {string} sourceRoot - Directory containing the canonical `skills/` dir.
+  * @param {object} [options]
+  * @param {Set<string>|string[]} [options.only] - Restrict to these skill names.
+- * @returns {{name: string, sourcePath: string}[]} Sorted list of skills.
++ * @returns {{name: string, sourcePath: string, invocation: string}[]} Sorted list of skills.
+  */
+ function listCanonicalSkills(sourceRoot, options = {}) {
+   const skillsDir = path.join(sourceRoot, CANONICAL_SKILLS_DIR);
+@@ -88,9 +89,11 @@ function listCanonicalSkills(sourceRoot, options = {}) {
+     if (only && !only.has(entry.name)) continue;
+ 
+     const sourcePath = path.join(skillsDir, entry.name);
+-    if (!fs.existsSync(path.join(sourcePath, 'SKILL.md'))) continue;
++    const skillFile = path.join(sourcePath, 'SKILL.md');
++    if (!fs.existsSync(skillFile)) continue;
+ 
+-    skills.push({ name: entry.name, sourcePath });
++    const { invocation } = parseFrontmatter(fs.readFileSync(skillFile, 'utf8'));
++    skills.push({ name: entry.name, sourcePath, invocation });
+   }
+ 
+   skills.sort((a, b) => a.name.localeCompare(b.name));
+diff --git a/packages/skills/test/sync.test.js b/packages/skills/test/sync.test.js
+index 5f4c532c..a7d3f33f 100644
+--- a/packages/skills/test/sync.test.js
++++ b/packages/skills/test/sync.test.js
+@@ -254,21 +254,22 @@ describe('Sync Command', () => {
+   test('syncCommand reads skills from root skills/ directory', async () => {
+     mkdirSync('.cursor', { recursive: true });
+     mkdirSync('skills/root-skill', { recursive: true });
+-    writeFileSync('skills/root-skill/SKILL.md',
+-      '---\nname: root-skill\ndescription: A root skill\n---\n\n# Root Skill');
++    const source = '---\nname: root-skill\ninvocation: user\ndescription: A root skill\n---\n\n# Root Skill';
++    writeFileSync('skills/root-skill/SKILL.md', source);
+     await syncCommand({});
+-    expect(existsSync('.cursor/skills/root-skill/SKILL.md')).toBe(true);
++    expect(readFileSync('.cursor/skills/root-skill/SKILL.md', 'utf8')).toBe(source);
+   });
+ 
+   test('syncCommand deduplicates: .skills/ takes priority over skills/', async () => {
+     mkdirSync('.cursor', { recursive: true });
+     mkdirSync('skills/test-skill', { recursive: true });
+     writeFileSync('skills/test-skill/SKILL.md',
+-      '---\nname: test-skill\ndescription: Root version\n---\n\n# Root Version');
++      '---\nname: test-skill\ninvocation: model\ndescription: Root version\n---\n\n# Root Version');
++    const shadow = '---\nname: test-skill\ninvocation: user\ndescription: Shadow version\n---\n\n# Test Skill';
++    writeFileSync('.skills/test-skill/SKILL.md', shadow);
+     await syncCommand({});
+     const content = readFileSync('.cursor/skills/test-skill/SKILL.md', 'utf8');
+-    expect(content).toContain('Test Skill'); // .skills/ version wins
+-    expect(content).not.toContain('Root Version');
++    expect(content).toBe(shadow);
+   });
+ 
+   test('syncCommand updates registry with sync timestamp', async () => {
+diff --git a/test/skills/skills-sync.test.js b/test/skills/skills-sync.test.js
+index bdf75895..a83cfa7f 100644
+--- a/test/skills/skills-sync.test.js
++++ b/test/skills/skills-sync.test.js
+@@ -48,6 +48,28 @@ describe('skills-sync: listCanonicalSkills', () => {
+   test('returns [] when skills/ is absent', () => {
+     expect(listCanonicalSkills(tmp)).toEqual([]);
+   });
++
++  test('reports effective invocation without filtering either mode', () => {
++    const omitted = '---\nname: omitted\ndescription: Omitted\n---\n# Omitted\n';
++    const model = '---\nname: model\ninvocation: model\ndescription: Model\n---\n# Model\n';
++    const user = '---\nname: user\ninvocation: user\ndescription: User\n---\n# User\n';
++    write('skills/omitted/SKILL.md', omitted);
++    write('skills/model/SKILL.md', model);
++    write('skills/user/SKILL.md', user);
++
++    const skills = listCanonicalSkills(tmp);
++    expect(skills.map(({ name, invocation }) => ({ name, invocation }))).toEqual([
++      { name: 'model', invocation: 'model' },
++      { name: 'omitted', invocation: 'model' },
++      { name: 'user', invocation: 'user' },
++    ]);
++
++    const target = path.join(tmp, '.codex/skills');
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
++    expect(fs.readFileSync(path.join(target, 'model/SKILL.md'), 'utf8')).toBe(model);
++    expect(fs.readFileSync(path.join(target, 'omitted/SKILL.md'), 'utf8')).toBe(omitted);
++    expect(fs.readFileSync(path.join(target, 'user/SKILL.md'), 'utf8')).toBe(user);
++  });
+ });
+ 
+ describe('skills-sync: populateAgentSkills', () => {
+-- 
+2.51.0.windows.1
+

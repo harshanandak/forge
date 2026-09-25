@@ -1,0 +1,180 @@
+From 26a36c5b968b32ccf1f95c68fc7331a902f21efb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 19:56:19 +0530
+Subject: [PATCH] fix(skills): reauthorize mirror sync retries
+
+---
+ lib/protected-state-authority.js         |  6 ++++
+ scripts/sync-agent-skills.js             | 15 ++++++---
+ test/protected-state-authority.test.js   | 23 ++++++++++++++
+ test/sync-agent-skills-authority.test.js | 40 ++++++++++++++++++++++--
+ 4 files changed, 77 insertions(+), 7 deletions(-)
+
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index dae08140..f68fccd9 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -439,6 +439,9 @@ async function issueGeneratedHarnessSkillAuthorization(projectRoot, params = {},
+ 	if (!canonical) {
+ 		return { success: false, error: 'Protected skill mirror authorization requires a canonical .agents/skills/<name>/<file> path.' };
+ 	}
++	if (writeIntent === 'delete' && canonical.missing !== true) {
++		return { success: false, error: 'Protected skill mirror deletion authorization requires the canonical source to be absent.' };
++	}
+ 	return issueProtectedStateAuthorization(projectRoot, {
+ 		actor: params.actor,
+ 		surface: 'generated_harness',
+@@ -464,6 +467,9 @@ async function completeGeneratedHarnessSkillAuthorization(projectRoot, params =
+ 	if (!canonical) {
+ 		return { success: false, error: 'Protected skill mirror completion requires a canonical .agents/skills/<name>/<file> path.' };
+ 	}
++	if (writeIntent === 'delete' && canonical.missing !== true) {
++		return { success: false, error: 'Protected skill mirror deletion completion requires the canonical source to be absent.' };
++	}
+ 	const actor = params.actor;
+ 	const contentHash = hashProtectedContent(canonical.content);
+ 	const mirrorTarget = path.resolve(projectRoot, canonical.normalizedPath);
+diff --git a/scripts/sync-agent-skills.js b/scripts/sync-agent-skills.js
+index 0aeafe3c..cac4349f 100644
+--- a/scripts/sync-agent-skills.js
++++ b/scripts/sync-agent-skills.js
+@@ -28,13 +28,18 @@ function actorFromEnv(env) {
+   return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
+ }
+ 
+-function stagedPaths(root, runGit) {
++function generatedDriftPaths(root, runGit) {
+   try {
+-    return new Set(runGit('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT'], {
++    const commands = [
++      ['diff', '--cached', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
++      ['diff', '--name-only', '--diff-filter=ACMRDT', '--', '.agents/skills'],
++      ['ls-files', '--others', '--exclude-standard', '--', '.agents/skills'],
++    ];
++    return new Set(commands.flatMap(args => runGit('git', args, {
+       cwd: root,
+       encoding: 'utf8',
+       stdio: ['ignore', 'pipe', 'pipe'],
+-    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean));
++    }).split(/\r?\n/).map(value => value.trim().replace(/\\/g, '/')).filter(Boolean)));
+   } catch {
+     return new Set();
+   }
+@@ -55,7 +60,7 @@ function walkRegularFiles(root, visit, current = root) {
+ 
+ function changedSkillFiles(root, runGit = execFileSync) {
+   const mirror = resolveCodexRepoSkillsDir(root);
+-  const staged = stagedPaths(root, runGit);
++  const drift = generatedDriftPaths(root, runGit);
+   const changed = [];
+   for (const { name, sourcePath: sourceRoot } of listCanonicalSkills(root)) {
+     walkRegularFiles(sourceRoot, (sourcePath, relative) => {
+@@ -63,7 +68,7 @@ function changedSkillFiles(root, runGit = execFileSync) {
+       const mirrorPath = path.join(mirror, name, relative);
+       const repoPath = `.agents/skills/${name}/${relative}`;
+       try {
+-        if (canonical.equals(fs.readFileSync(mirrorPath)) && !staged.has(repoPath)) return;
++        if (canonical.equals(fs.readFileSync(mirrorPath)) && !drift.has(repoPath)) return;
+       } catch (error) {
+         if (error.code !== 'ENOENT') throw error;
+       }
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index cd6bbe26..6e55849c 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -264,4 +264,27 @@ describe('protected-state Kernel authority', () => {
+ 			fs.rmSync(outside, { recursive: true, force: true });
+ 		}
+ 	});
++
++	test('refuses delete authority while the canonical source still exists', async () => {
++		const fs = require('node:fs');
++		const os = require('node:os');
++		const path = require('node:path');
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-live-delete-'));
++		try {
++			fs.mkdirSync(path.join(root, 'skills', 'review'), { recursive: true });
++			const content = Buffer.from('live canonical bytes\n');
++			fs.writeFileSync(path.join(root, 'skills', 'review', 'SKILL.md'), content);
++			const result = await issueGeneratedHarnessSkillAuthorization(root, {
++				actor: 'skill-sync',
++				path: '.agents/skills/review/SKILL.md',
++				sourceHead: TEST_HEAD,
++				writeIntent: 'delete',
++				priorContent: content,
++			});
++			expect(result.success).toBe(false);
++			expect(result.error).toContain('source to be absent');
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
+ });
+diff --git a/test/sync-agent-skills-authority.test.js b/test/sync-agent-skills-authority.test.js
+index 177b0a8b..db287a28 100644
+--- a/test/sync-agent-skills-authority.test.js
++++ b/test/sync-agent-skills-authority.test.js
+@@ -28,7 +28,7 @@ describe('command-owned agent skill sync', () => {
+         env: { FORGE_ACTOR: 'skill-sync-owner' },
+         execFileSync: (_command, args) => {
+           if (args[0] === 'rev-parse') return `${HEAD}\n`;
+-          if (args[0] === 'diff') return '';
++          if (args[0] === 'diff' || args[0] === 'ls-files') return '';
+           calls.push('stage');
+           return '';
+         },
+@@ -67,7 +67,7 @@ describe('command-owned agent skill sync', () => {
+         env: { FORGE_ACTOR: 'skill-sync-owner' },
+         execFileSync: (_command, args) => {
+           if (args[0] === 'rev-parse') return `${HEAD}\n`;
+-          if (args[0] === 'diff') return '';
++          if (args[0] === 'diff' || args[0] === 'ls-files') return '';
+           staged = true;
+           return '';
+         },
+@@ -80,6 +80,42 @@ describe('command-owned agent skill sync', () => {
+     }
+   });
+ 
++  test('reauthorizes unstaged generated drift after completion fails before staging', async () => {
++    const root = fixture();
++    const run = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
++    let completions = 0;
++    let authorizations = 0;
++    try {
++      expect(run(['init']).status).toBe(0);
++      expect(run(['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
++      expect(run(['config', 'user.name', 'Forge Test']).status).toBe(0);
++      expect(run(['add', '.']).status).toBe(0);
++      expect(run(['commit', '-m', 'base']).status).toBe(0);
++      fs.writeFileSync(path.join(root, 'skills/review/SKILL.md'), 'new canonical bytes\n');
++      expect(run(['add', 'skills/review/SKILL.md']).status).toBe(0);
++      const options = {
++        root,
++        env: { FORGE_ACTOR: 'skill-retry-owner' },
++        issueAuthorization: async () => ({ success: true, capabilityId: `capability-${++authorizations}` }),
++        completeAuthorization: async () => (
++          ++completions === 1
++            ? { success: false, error: 'forced completion failure' }
++            : { success: true }
++        ),
++      };
++
++      await expect(syncAgentSkills(options)).rejects.toThrow('completion failed');
++      expect(run(['diff', '--name-only']).stdout.trim()).toBe('.agents/skills/review/SKILL.md');
++      expect(run(['diff', '--cached', '--name-only']).stdout).not.toContain('.agents/skills/review/SKILL.md');
++
++      await syncAgentSkills(options);
++      expect(authorizations).toBe(2);
++      expect(run(['diff', '--cached', '--name-only']).stdout).toContain('.agents/skills/review/SKILL.md');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  }, 30_000);
++
+   test('real hook accepts one exact sync and denies replay or foreign actor', async () => {
+     const root = fixture();
+     const actor = 'skill-sync-integration';
+-- 
+2.51.0.windows.1
+

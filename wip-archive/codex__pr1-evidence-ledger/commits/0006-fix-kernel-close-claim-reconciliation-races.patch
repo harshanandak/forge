@@ -1,0 +1,414 @@
+From 22ed4a40f165d75faada61ce6596d53a3f709119 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 14:22:15 +0530
+Subject: [PATCH] fix(kernel): close claim reconciliation races
+
+---
+ lib/commands/clean.js                |  16 +++-
+ lib/kernel/claim-reconciler.js       |  43 ++++++++---
+ lib/kernel/sqlite-driver.js          |  45 ++++++++++++
+ scripts/process-tree.js              |   6 +-
+ test/commands/clean.test.js          |  26 ++++++-
+ test/kernel/claim-reconciler.test.js | 105 ++++++++++++++++++++++++++-
+ 6 files changed, 225 insertions(+), 16 deletions(-)
+
+diff --git a/lib/commands/clean.js b/lib/commands/clean.js
+index b53aabde..69003bc5 100644
+--- a/lib/commands/clean.js
++++ b/lib/commands/clean.js
+@@ -626,11 +626,21 @@ async function reconcileDeadClaims(projectRoot, runFile, opts = {}) {
+     let driver = opts._kernelDriver;
+     let owned = false;
+     if (!driver) {
+-      if (!tryRun(runFile, 'git', ['-C', projectRoot, 'rev-parse', '--git-common-dir'])) {
++      const commonDirOutput = tryRun(runFile, 'git', ['-C', projectRoot, 'rev-parse', '--git-common-dir']);
++      if (!commonDirOutput) {
+         return { examined: 0, released: [] };
+       }
+-      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+-      const deps = await buildMigratedKernelIssueDeps({ projectRoot });
++      const gitCommonDir = path.isAbsolute(commonDirOutput)
++        ? commonDirOutput
++        : path.resolve(projectRoot, commonDirOutput);
++      const {
++        buildMigratedKernelIssueDeps,
++        resolveKernelDatabasePath,
++      } = require('../kernel/cli-broker-factory');
++      const databasePath = resolveKernelDatabasePath({ gitCommonDir });
++      const fsApi = opts._fs || fs;
++      if (!fsApi.existsSync(databasePath)) return { examined: 0, released: [] };
++      const deps = await buildMigratedKernelIssueDeps({ projectRoot, gitCommonDir, databasePath });
+       driver = deps.kernelDriver;
+       owned = true;
+     }
+diff --git a/lib/kernel/claim-reconciler.js b/lib/kernel/claim-reconciler.js
+index 40d682ab..3aa7b161 100644
+--- a/lib/kernel/claim-reconciler.js
++++ b/lib/kernel/claim-reconciler.js
+@@ -83,16 +83,31 @@ function createWorktreeInspector(driver, fsApi = fs) {
+ 		try {
+ 			if (typeof fsApi.lstatSync === 'function') {
+ 				fsApi.lstatSync(linked[0].path);
+-				return true;
++				return { exists: true, row: linked[0] };
+ 			}
+-			return fsApi.existsSync(linked[0].path) ? true : false;
++			return { exists: fsApi.existsSync(linked[0].path), row: linked[0] };
+ 		} catch (error) {
+-			if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
++			if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
++				return { exists: false, row: linked[0] };
++			}
+ 			return null;
+ 		}
+ 	};
+ }
+ 
++function createMissingPathVerifier(fsApi = fs) {
++	return (worktreePath) => {
++		try {
++			if (typeof fsApi.lstatSync === 'function') fsApi.lstatSync(worktreePath);
++			else if (fsApi.existsSync(worktreePath)) return false;
++			else return true;
++			return false;
++		} catch (error) {
++			return error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
++		}
++	};
++}
++
+ async function reconcileClaims(options = {}) {
+ 	const claims = Array.isArray(options.claims) ? options.claims : [];
+ 	const readManifest = options.readManifest;
+@@ -120,13 +135,15 @@ async function reconcileClaims(options = {}) {
+ 		const verified = verifiedManifestForClaim(claim, manifest);
+ 		if (!verified) continue;
+ 
+-		let worktreePresent;
++		let worktreeInspection;
+ 		try {
+-			worktreePresent = await worktreeExists(verified.worktreeId, claim);
++			worktreeInspection = await worktreeExists(verified.worktreeId, claim);
+ 		} catch {
+ 			continue;
+ 		}
+-		if (worktreePresent !== false) continue;
++		const worktreeMissing = worktreeInspection === false
++			|| worktreeInspection?.exists === false;
++		if (!worktreeMissing) continue;
+ 
+ 		let ownerAlive;
+ 		try {
+@@ -164,7 +181,7 @@ async function reconcileClaims(options = {}) {
+ 		});
+ 
+ 		try {
+-			if (await releaseClaim(claim, evidence)) released.push(claim.id);
++			if (await releaseClaim(claim, evidence, worktreeInspection)) released.push(claim.id);
+ 		} catch {
+ 			// A failed release is not evidence that authority changed.
+ 		}
+@@ -176,7 +193,7 @@ async function reconcileClaims(options = {}) {
+ async function reconcileKernelClaims(options = {}) {
+ 	const driver = options.driver;
+ 	if (!driver || typeof driver.listWorktrees !== 'function'
+-		|| typeof driver.releaseExactClaim !== 'function') {
++		|| typeof driver.releaseExactClaimIfWorktreeMissing !== 'function') {
+ 		return { examined: 0, released: [] };
+ 	}
+ 
+@@ -198,8 +215,14 @@ async function reconcileKernelClaims(options = {}) {
+ 		worktreeExists: options.worktreeExists || createWorktreeInspector(driver, options.fsApi || fs),
+ 		isProcessAlive: options.isProcessAlive || defaultIsProcessAlive,
+ 		getProcessIdentity: options.getProcessIdentity || (pid => defaultGetProcessIdentity(pid, options)),
+-		releaseClaim: async (claim, evidence) => {
+-			const released = await driver.releaseExactClaim(claim, evidence, options.config || {});
++		releaseClaim: async (claim, evidence, inspection) => {
++			const released = await driver.releaseExactClaimIfWorktreeMissing(
++				claim,
++				inspection?.row,
++				createMissingPathVerifier(options.fsApi || fs),
++				evidence,
++				options.config || {},
++			);
+ 			if (released && typeof options.onEvidence === 'function') options.onEvidence(evidence);
+ 			return released;
+ 		},
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 79a3f33f..47f7ebff 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1126,6 +1126,46 @@ function releaseExactKernelClaimRow(runtime, db, claim) {
+ 	return Number(result?.changes || 0) === 1;
+ }
+ 
++function releaseExactKernelClaimIfWorktreeMissing(runtime, db, claim, expectedWorktree, isMissing) {
++	if (!expectedWorktree || typeof isMissing !== 'function') return false;
++	execSql(runtime, db, 'BEGIN IMMEDIATE;');
++	try {
++		const rows = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_worktrees
++			 WHERE id = ? AND git_common_dir IS ? AND path = ? AND branch IS ?
++				AND actor IS ? AND issue_id IS ? AND work_folder IS ?
++				AND registered_at IS ? AND state = 'active'`,
++			[
++				expectedWorktree.id,
++				expectedWorktree.git_common_dir ?? null,
++				expectedWorktree.path,
++				expectedWorktree.branch ?? null,
++				expectedWorktree.actor ?? null,
++				expectedWorktree.issue_id ?? null,
++				expectedWorktree.work_folder ?? null,
++				expectedWorktree.registered_at ?? null,
++			],
++		);
++		const exact = rows.length === 1 && rows[0];
++		if (!exact || isMissing(exact.path, exact) !== true) {
++			execSql(runtime, db, 'ROLLBACK;');
++			return false;
++		}
++		const released = releaseExactKernelClaimRow(runtime, db, claim);
++		if (!released) {
++			execSql(runtime, db, 'ROLLBACK;');
++			return false;
++		}
++		execSql(runtime, db, 'COMMIT;');
++		return true;
++	} catch (error) {
++		try { execSql(runtime, db, 'ROLLBACK;'); } catch { /* preserve original failure */ }
++		throw error;
++	}
++}
++
+ // --- Worktree-linkage primitives (P0 kernel linkage backbone). The kernel_worktrees
+ // table is a plain authority registry (NOT event-sourced): `forge worktree create`
+ // writes a row here so the kernel records issue → worktree → work-folder, and
+@@ -2529,6 +2569,11 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		async releaseExactClaim(claim, _evidence = {}, config = {}) {
+ 			return releaseExactKernelClaimRow(runtime, getDatabase(config), claim);
+ 		},
++		async releaseExactClaimIfWorktreeMissing(claim, worktree, isMissing, _evidence = {}, config = {}) {
++			return releaseExactKernelClaimIfWorktreeMissing(
++				runtime, getDatabase(config), claim, worktree, isMissing,
++			);
++		},
+ 		// commitGuardedAccept invokes this (typeof-guarded) INSIDE its BEGIN IMMEDIATE
+ 		// transaction to apply an accepted issue event to the authority tables. The
+ 		// returned summary ({id, revision, comment_id?}) flows back through
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index 61357298..6cf45c05 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -9,6 +9,7 @@ const { spawnSync: defaultSpawnSync } = require('node:child_process');
+ const MANIFEST_ENV = 'FORGE_TEST_PROCESS_MANIFEST';
+ const TOKEN_ENV = 'FORGE_TEST_PROCESS_TOKEN';
+ const INSTANCE_ENV = 'FORGE_TEST_PROCESS_INSTANCE';
++const SESSION_ENV = 'FORGE_SESSION_ID';
+ const MANIFEST_VERSION = 1;
+ const DEFAULT_MANIFEST_DIR = path.join(os.tmpdir(), 'forge-test-processes');
+ 
+@@ -326,7 +327,10 @@ function createProcessTree(options = {}) {
+     if (!identity && !hasCustomIdentity) return `unverified:${pid}`;
+     return identity;
+   };
+-  const token = String(options.token || env[TOKEN_ENV] || randomUUID());
++  // A Forge claim records FORGE_SESSION_ID. Use that same stable runtime token
++  // for the root manifest, while preserving an inherited manifest token for
++  // nested process trees that are already attached to their parent run.
++  const token = String(options.token || env[TOKEN_ENV] || env[SESSION_ENV] || randomUUID());
+   const explicitManifestPath = nonEmptyString(options.manifestPath);
+   const environmentManifestPath = nonEmptyString(env[MANIFEST_ENV]);
+   const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
+diff --git a/test/commands/clean.test.js b/test/commands/clean.test.js
+index a12d7b45..d3ffc2a3 100644
+--- a/test/commands/clean.test.js
++++ b/test/commands/clean.test.js
+@@ -3,6 +3,7 @@
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
++const { execFileSync } = require('node:child_process');
+ const { describe, test, expect } = require('bun:test');
+ 
+ // ---------------------------------------------------------------------------
+@@ -991,7 +992,10 @@ describe('forge clean — close linked issues on merge', () => {
+         path: path.join(root, 'missing-worktree'),
+         state: 'active',
+       }],
+-      releaseExactClaim: (candidate) => {
++      releaseExactClaimIfWorktreeMissing: (candidate, worktree, isMissing) => {
++        const current = driver.listWorktrees().find(row => row.id === worktree?.id
++          && row.path === worktree.path && row.issue_id === worktree.issue_id);
++        if (!current || isMissing(current.path) !== true) return false;
+         if (candidate.id !== claim.id || claim.state !== 'active') return false;
+         claim.state = 'released';
+         mutations += 1;
+@@ -1031,6 +1035,26 @@ describe('forge clean — close linked issues on merge', () => {
+     expect(reconciliations).toBe(0);
+   });
+ 
++  test('a no-op non-dry clean does not create or migrate a missing Kernel store', async () => {
++    const { _internals } = require('../../lib/commands/clean');
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-clean-no-kernel-'));
++    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
++    const databasePath = path.join(root, '.git', 'forge', 'kernel.sqlite');
++
++    try {
++      const result = await _internals.reconcileDeadClaims(
++        root,
++        () => Buffer.from('.git'),
++        { _fs: fs },
++      );
++
++      expect(result).toEqual({ examined: 0, released: [] });
++      expect(fs.existsSync(databasePath)).toBe(false);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
+   test('an unlinked branch is reported as nothing closed', async () => {
+     const mod = require('../../lib/commands/clean');
+     const result = await mod.handler([], {}, ROOT, {
+diff --git a/test/kernel/claim-reconciler.test.js b/test/kernel/claim-reconciler.test.js
+index e4fdde26..9933dd34 100644
+--- a/test/kernel/claim-reconciler.test.js
++++ b/test/kernel/claim-reconciler.test.js
+@@ -7,6 +7,8 @@ const { afterEach, describe, expect, test } = require('bun:test');
+ 
+ const { reconcileClaims, reconcileKernelClaims } = require('../../lib/kernel/claim-reconciler');
+ const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const { runIssueOperation } = require('../../lib/forge-issues');
++const { createProcessTree, readProcessManifest } = require('../../scripts/process-tree');
+ 
+ const tempDirs = [];
+ 
+@@ -41,6 +43,41 @@ function manifestFor(candidate, overrides = {}) {
+ }
+ 
+ describe('kernel claim reconciler', () => {
++	test('uses one propagated runtime token for the process manifest and claim session', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-runtime-'));
++		tempDirs.push(root);
++		const manifestPath = path.join(root, 'run.json');
++		const sessionId = 'session-runtime-propagation';
++		const tree = createProcessTree({
++			manifestPath,
++			env: { FORGE_SESSION_ID: sessionId },
++			processApi: { pid: 4400, kill() {} },
++			getProcessIdentity: () => 'process-start-4400',
++			reconcile: false,
++		});
++		const childEnv = tree.envFor({
++			FORGE_SESSION_ID: sessionId,
++			FORGE_WORKTREE_ID: 'worktree-runtime-propagation',
++		});
++		let claimContext;
++
++		await runIssueOperation('claim', ['issue-runtime-propagation'], root, {
++			env: childEnv,
++			createService: () => ({
++				async run(_operation, _args, context) {
++					claimContext = context;
++					return { success: true, ok: true };
++				},
++			}),
++		});
++
++		const manifest = readProcessManifest(manifestPath);
++		expect(manifest.token).toBe(sessionId);
++		expect(claimContext.sessionId).toBe(manifest.token);
++		expect(claimContext.worktreeId).toBe('worktree-runtime-propagation');
++		tree.cleanup('SIGTERM');
++	});
++
+ 	test('releases only a manifest-verified dead run whose linked worktree is missing', async () => {
+ 		const eligible = claim('eligible');
+ 		const live = claim('live');
+@@ -129,7 +166,10 @@ describe('kernel claim reconciler', () => {
+ 					{ id: unrelated.worktree_id, issue_id: unrelated.issue_id, path: liveWorktreePath, state: 'active' },
+ 				];
+ 			},
+-			async releaseExactClaim(candidate, receipt) {
++			async releaseExactClaimIfWorktreeMissing(candidate, worktree, isMissing, receipt) {
++				const currentWorktree = this.listWorktrees().find(row => row.id === worktree?.id
++					&& row.path === worktree.path && row.registered_at === worktree.registered_at);
++				if (!currentWorktree || isMissing(currentWorktree.path) !== true) return false;
+ 				const stored = state.find(row => row.id === candidate.id
+ 					&& row.issue_id === candidate.issue_id
+ 					&& row.session_id === candidate.session_id
+@@ -183,6 +223,69 @@ describe('kernel claim reconciler', () => {
+ 		driver.close();
+ 	});
+ 
++	test('does not release when a missing worktree is re-registered before the guarded claim CAS', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-worktree-race-'));
++		tempDirs.push(root);
++		const databasePath = path.join(root, 'kernel.sqlite');
++		const first = createBuiltinSQLiteDriver({ databasePath });
++		const second = createBuiltinSQLiteDriver({ databasePath });
++		await first.exec(`
++			CREATE TABLE kernel_claims (
++				id TEXT PRIMARY KEY, issue_id TEXT, actor TEXT, state TEXT,
++				session_id TEXT, worktree_id TEXT, claimed_at TEXT, expires_at TEXT
++			);
++			CREATE TABLE kernel_worktrees (
++				id TEXT PRIMARY KEY, git_common_dir TEXT, path TEXT, branch TEXT,
++				actor TEXT, issue_id TEXT, work_folder TEXT, registered_at TEXT, state TEXT
++			);
++			INSERT INTO kernel_claims VALUES (
++				'claim-race', 'issue-race', 'actor-race', 'active',
++				'session-race', 'worktree-race', '2026-08-09T00:00:00.000Z', NULL
++			);
++			INSERT INTO kernel_worktrees VALUES (
++				'worktree-race', '.git', 'missing-path', 'codex/race',
++				'actor-race', 'issue-race', NULL, '2026-08-09T00:00:00.000Z', 'active'
++			);
++		`);
++		let interleaved = false;
++		const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
++		const fsApi = {
++			lstatSync() {
++				if (!interleaved) {
++					interleaved = true;
++					void second.exec("UPDATE kernel_worktrees SET path = 'recreated-path', registered_at = '2026-08-09T00:01:00.000Z' WHERE id = 'worktree-race'");
++				}
++				throw missing;
++			},
++		};
++		const candidate = claim('race', {
++			id: 'claim-race', issue_id: 'issue-race', actor: 'actor-race',
++			session_id: 'session-race', worktree_id: 'worktree-race',
++		});
++
++		const result = await reconcileKernelClaims({
++			driver: first,
++			fsApi,
++			readManifest: () => manifestFor(candidate),
++			isProcessAlive: () => false,
++		});
++
++		expect(interleaved).toBe(true);
++		expect(result).toEqual({ examined: 1, released: [] });
++		expect((await first.listActiveClaims()).map(row => row.id)).toEqual(['claim-race']);
++
++		const settled = await reconcileKernelClaims({
++			driver: first,
++			fsApi,
++			readManifest: () => manifestFor(candidate),
++			isProcessAlive: () => false,
++		});
++		expect(settled).toEqual({ examined: 1, released: ['claim-race'] });
++		expect(await first.listActiveClaims()).toEqual([]);
++		first.close();
++		second.close();
++	});
++
+ 	test('fails closed for incomplete claims and dependency errors', async () => {
+ 		const incomplete = claim('incomplete', { session_id: null });
+ 		const unreadable = claim('unreadable');
+-- 
+2.51.0.windows.1
+

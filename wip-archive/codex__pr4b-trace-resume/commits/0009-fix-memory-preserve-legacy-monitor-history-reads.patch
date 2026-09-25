@@ -1,0 +1,65 @@
+From 8ebe8de61f9230f2371494bddd4e71875f230b5d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 02:53:19 +0530
+Subject: [PATCH] fix(memory): preserve legacy monitor history reads
+
+---
+ lib/kernel/sqlite-driver.js       | 19 +++++++++++--------
+ test/memory/monitor-store.test.js |  4 ++++
+ 2 files changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 37db67f9..25d8bc8b 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3014,6 +3014,16 @@ function getMonitorEventRow(runtime, db, eventId) {
+ 	)[0] || null;
+ }
+ 
++function listMonitorEventRows(runtime, db, monitorId) {
++	return allParams(
++		runtime,
++		db,
++		`SELECT event_id, monitor_id, sequence, content_hash, envelope_json, artifact_digest, created_at
++		 FROM memory_monitor_events WHERE monitor_id = ? ORDER BY sequence ASC, event_id ASC`,
++		[monitorId],
++	);
++}
++
+ function readMonitorEventTailRows(runtime, db, monitorId, options = {}) {
+ 	const limit = monitorReadLimit(options);
+ 	const selected = allParams(
+@@ -3566,14 +3576,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			return readMonitorDeliveryStateRows(runtime, getDatabase(config), monitorId, options);
+ 		},
+ 		async listMonitorEvents(monitorId, config = {}) {
+-			const database = getDatabase(config);
+-			const result = readMonitorEventTailRows(runtime, database, monitorId, {
+-				limit: config.monitorReadLimit ?? MONITOR_MAX_READ_LIMIT,
+-			});
+-			if (result.overflow) {
+-				throw monitorStoreError('MONITOR_READ_OVERFLOW', 'Monitor event history exceeds the bounded public read');
+-			}
+-			return result.events;
++			return listMonitorEventRows(runtime, getDatabase(config), monitorId);
+ 		},
+ 		async backup(destinationPath, config = {}) {
+ 			const databasePath = resolveDatabasePath(config);
+diff --git a/test/memory/monitor-store.test.js b/test/memory/monitor-store.test.js
+index 074b77fc..71b367fd 100644
+--- a/test/memory/monitor-store.test.js
++++ b/test/memory/monitor-store.test.js
+@@ -460,6 +460,10 @@ await (async () => {
+ 		const event = await store.getEvent('event-1');
+ 		expect(event).toMatchObject({ event_id: 'event-1', monitor_id: 'monitor-1', sequence: 1 });
+ 		expect(JSON.parse(event.envelope_json).payload.event_id).toBe('event-1');
++		expect((await store.listEvents('monitor-1', { monitorReadLimit: 2 }))
++			.map(row => [row.sequence, row.event_id])).toEqual([
++				[0, 'event-0'], [1, 'event-1'], [2, 'event-2'],
++			]);
+ 
+ 		expect(await store.readEventTail('monitor-1', { limit: 2 })).toMatchObject({
+ 			events: [{ sequence: 1 }, { sequence: 2 }],
+-- 
+2.51.0.windows.1
+

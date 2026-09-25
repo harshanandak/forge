@@ -1,0 +1,75 @@
+From 8b180473f851c28558db5b4454e942a3e0123791 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 15:49:23 +0530
+Subject: [PATCH] ci: run tests on skills/ changes + fix stale plan-skill
+ assertion
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Root-causes a coverage gap surfaced by the Cross-OS Gate: skills/** was absent from
+test.yml's paths filter, so skills-only PRs never ran the test suite. That let #292's
+correct removal of the invalid `forge issue dep cycles` command from the plan skill
+merge while a test still asserted the string — a break invisible until this PR
+(touching .github/workflows/**) first triggered the suite.
+
+- Add skills/** to test.yml push+PR paths so skill changes run the full matrix.
+- Add skills/** to required-checks-bypass.yml paths-ignore so skills PRs run the real
+  tests instead of the doc-only no-op (kept mutually exclusive).
+- Fix the stale assertion: dep-guard.plan.test.js now expects `forge issue blocked`
+  (the real command the corrected plan skill documents), not `forge issue dep cycles`.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .github/workflows/required-checks-bypass.yml | 1 +
+ .github/workflows/test.yml                   | 2 ++
+ test/scripts/dep-guard.plan.test.js          | 2 +-
+ 3 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/.github/workflows/required-checks-bypass.yml b/.github/workflows/required-checks-bypass.yml
+index a5c8051d..0d57be60 100644
+--- a/.github/workflows/required-checks-bypass.yml
++++ b/.github/workflows/required-checks-bypass.yml
+@@ -23,6 +23,7 @@ on:
+       - 'lib/**'
+       - 'scripts/**'
+       - 'packages/**'
++      - 'skills/**'
+       - 'package.json'
+       - '*.js'
+       - '.claude/**/*.js'
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index 09463da2..9f443c83 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -9,6 +9,7 @@ on:
+       - 'scripts/**'
+       - 'test/**'
+       - 'test-env/**'
++      - 'skills/**'
+       - 'packages/**'
+       - 'package.json'
+       - 'bunfig.toml'
+@@ -21,6 +22,7 @@ on:
+       - 'scripts/**'
+       - 'test/**'
+       - 'test-env/**'
++      - 'skills/**'
+       - 'packages/**'
+       - 'package.json'
+       - 'bunfig.toml'
+diff --git a/test/scripts/dep-guard.plan.test.js b/test/scripts/dep-guard.plan.test.js
+index a2a04d0f..7abe1246 100644
+--- a/test/scripts/dep-guard.plan.test.js
++++ b/test/scripts/dep-guard.plan.test.js
+@@ -47,6 +47,6 @@ describe('plan.md integration', () => {
+     expect(content).toContain('forge worktree create');
+     expect(content).toContain('logic-level dependency review');
+     expect(content).toContain('user approval');
+-    expect(content).toContain('forge issue dep cycles');
++    expect(content).toContain('forge issue blocked');
+   });
+ });
+-- 
+2.51.0.windows.1
+

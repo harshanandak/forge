@@ -1,0 +1,43 @@
+From 3499c348002a57cb74ca79a53c946e8d79c2292d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 23:22:48 +0530
+Subject: [PATCH] docs: record registry guard review fixes
+
+---
+ docs/work/2026-09-08-github-account-context/decisions.md | 1 +
+ docs/work/2026-09-08-github-account-context/tasks.md     | 4 ++--
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-09-08-github-account-context/decisions.md b/docs/work/2026-09-08-github-account-context/decisions.md
+index d8452099..99139807 100644
+--- a/docs/work/2026-09-08-github-account-context/decisions.md
++++ b/docs/work/2026-09-08-github-account-context/decisions.md
+@@ -18,6 +18,7 @@
+ - The new `github` command participates in normal skill-coverage validation; it receives no exemption.
+ - Repository access resolves a validated `owner/repo` and passes it explicitly to `gh`. HTTPS and direct GitHub SSH work directly; custom SSH aliases are accepted only when local `ssh -G` resolves their host to `github.com`. Insecure HTTP/Git and non-GitHub origins fail before repository access or binding writes.
+ - Changes to the GitHub command or public CLI select both lifecycle and launcher regression suites through Forge's normal targeted-test maps.
++- Registry changes select both the existing registry suite and the GitHub-context guard suite. Positional `help` is not a universal bypass; only actual `--help`/`-h` flags before a child delimiter skip account preparation.
+ 
+ ## Plan-review evidence
+ 
+diff --git a/docs/work/2026-09-08-github-account-context/tasks.md b/docs/work/2026-09-08-github-account-context/tasks.md
+index 61e7231c..2aac4972 100644
+--- a/docs/work/2026-09-08-github-account-context/tasks.md
++++ b/docs/work/2026-09-08-github-account-context/tasks.md
+@@ -31,11 +31,11 @@
+ 
+ ### Task 3: Registry metadata and guard
+ 
+-**Owns:** `lib/commands/_registry.js`, `test/commands/_registry-github-context.test.js`
++**Owns:** `lib/commands/_registry.js`, `test/commands/_registry-github-context.test.js`, `lib/commands/test.js`, `scripts/test.js`, `test/scripts/test-runner.test.js`
+ 
+ 1. Write failing tests for `githubAuth: true`, predicate true/false, invalid metadata, help bypass, unmarked commands, and context-preparation failure.
+ 2. Validate metadata as absent, boolean, or function. After successful stage enforcement and before handler entry, resolve the private context and merge it into the handler-options seam without mutating `process.env`.
+-3. Prove local/unmarked commands perform no account lookup and marked unbound commands continue with existing behavior after one local Git-config lookup.
++3. Prove local/unmarked commands perform no account lookup and marked unbound commands continue with existing behavior after one local Git-config lookup. Keep both the core registry and GitHub-context suites in the targeted-test selectors for registry changes.
+ 
+ **Exit:** one registry path guards only declared GitHub routes and passes a private runner to handlers.
+ 
+-- 
+2.51.0.windows.1
+

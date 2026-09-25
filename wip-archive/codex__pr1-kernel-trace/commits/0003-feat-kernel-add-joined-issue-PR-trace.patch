@@ -1,0 +1,486 @@
+From 1921d6175f8c5b2a475f78beeb758133370a9689 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 13:50:28 +0530
+Subject: [PATCH] feat(kernel): add joined issue PR trace
+
+---
+ lib/kernel/broker.js        | 118 ++++++++++++++++++++++++
+ lib/kernel/sqlite-driver.js | 126 ++++++++++++++++++++++++-
+ test/kernel/trace.test.js   | 178 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 421 insertions(+), 1 deletion(-)
+ create mode 100644 test/kernel/trace.test.js
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index b511160c..aec894a3 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
+ const path = require('node:path');
+ const { randomUUID } = require('node:crypto');
+ const { buildConflict, evaluateKernelEvent, normalizePayload } = require('./evaluators');
+@@ -117,6 +118,50 @@ function requireDriverMethod(driver, methodName) {
+ 	}
+ }
+ 
++function readTraceArtifact(projectRoot, workFolder, filename) {
++	if (!workFolder) return null;
++	const root = fs.realpathSync(path.resolve(projectRoot));
++	const candidateFolder = path.resolve(root, workFolder);
++	if (!fs.existsSync(candidateFolder)) return null;
++	const folder = fs.realpathSync(candidateFolder);
++	const relativeFolder = path.relative(root, folder);
++	if (relativeFolder.startsWith('..') || path.isAbsolute(relativeFolder)) return null;
++	const file = path.join(folder, filename);
++	if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
++	return {
++		path: path.posix.join(String(workFolder).replaceAll('\\', '/'), filename),
++		content: fs.readFileSync(file, 'utf8'),
++	};
++}
++
++function buildTraceEnvelope(projectRoot, target, rows) {
++	const artifacts = {
++		plan: readTraceArtifact(projectRoot, rows.work_folder, 'plan.md'),
++		tasks: readTraceArtifact(projectRoot, rows.work_folder, 'tasks.md'),
++		decisions: readTraceArtifact(projectRoot, rows.work_folder, 'decisions.md'),
++	};
++	const gaps = [];
++	if (!rows.issue) gaps.push('issue');
++	if (!rows.worktree) gaps.push('worktree');
++	if (!rows.work_folder) gaps.push('work_folder');
++	for (const name of ['plan', 'tasks', 'decisions']) {
++		if (!artifacts[name]) gaps.push(name);
++	}
++	if (rows.pull_requests.length === 0) gaps.push('pull_requests');
++	return {
++		schema_version: 'forge.trace.v1',
++		target: target.issue_id
++			? { kind: 'issue', id: target.issue_id }
++			: { kind: 'pr', number: Number(target.pr_number), repo: target.repo ?? null },
++		issue: rows.issue,
++		worktree: rows.worktree,
++		work_folder: rows.work_folder,
++		artifacts,
++		pull_requests: rows.pull_requests,
++		gaps,
++	};
++}
++
+ // The migration ledger records which migration ids have been applied so initialize()
+ // applies each migration AT MOST ONCE — no full re-run, no blanket duplicate-error
+ // swallow. The ledger table is broker-managed bookkeeping (created before the plan is
+@@ -1211,6 +1256,79 @@ function createLocalBroker(options = {}) {
+ 			return driver.upsertPr(row, context, getConfig());
+ 		},
+ 
++		// Ship/merge linkage fixture: infer the issue/worktree from the active branch
++		// registration, upsert the single PR row, and append one idempotent iteration
++		// event. Replaying either phase keeps one linkage row and one event per head.
++		async recordPrLinkage(input, context = {}) {
++			if (!input || !['opened', 'merged'].includes(input.phase)) {
++				throw new Error('recordPrLinkage phase must be opened or merged');
++			}
++			for (const field of ['git_common_dir', 'repo', 'number']) {
++				if (input[field] === undefined || input[field] === null || input[field] === '') {
++					throw new Error(`recordPrLinkage requires ${field}`);
++				}
++			}
++			requireDriverMethod(driver, 'resolvePrLinkage');
++			requireDriverMethod(driver, 'upsertPr');
++			requireDriverMethod(driver, 'retirePr');
++			const config = getConfig();
++			const inferred = await driver.resolvePrLinkage(input, context, config);
++			if (input.issue_revision !== undefined
++				&& (inferred.issue_revision === null
++					|| Number(input.issue_revision) !== Number(inferred.issue_revision))) {
++				throw new Error(`recordPrLinkage stale issue revision: expected ${input.issue_revision}, actual ${inferred.issue_revision}`);
++			}
++			const linked = await driver.upsertPr({
++				...input,
++				issue_id: input.issue_id ?? inferred.issue_id,
++				worktree_id: input.worktree_id ?? inferred.worktree_id,
++				registered_at: input.occurred_at,
++			}, context, config);
++			const eventType = `pr.${input.phase}`;
++			const event = await runGuardedEventImpl({
++				entity_type: 'pr',
++				entity_id: linked.id,
++				event_type: eventType,
++				idempotency_key: `${eventType}:${linked.id}:${input.head_sha || 'headless'}`,
++				expected_revision: 0,
++				actor: context.actor || 'forge',
++				origin: context.origin || 'cli',
++				created_at: input.occurred_at || new Date().toISOString(),
++				payload: {
++					issue_id: linked.issue_id ?? null,
++					issue_revision: input.issue_revision ?? inferred.issue_revision ?? null,
++					worktree_id: linked.worktree_id ?? null,
++					repo: linked.repo,
++					number: linked.number,
++					url: input.url ?? null,
++					head_sha: input.head_sha ?? null,
++					work_packet_hash: input.work_packet_hash ?? null,
++					risk_manifest_digest: input.risk_manifest_digest ?? null,
++					gate_receipts: input.gate_receipts ?? null,
++				},
++			}, context);
++			if (input.phase === 'merged') {
++				await driver.retirePr({
++					git_common_dir: linked.git_common_dir,
++					repo: linked.repo,
++					number: linked.number,
++				}, {
++					state: 'merged',
++					retired_at: input.occurred_at,
++				}, context, config);
++			}
++			return { link: linked, iteration: event };
++		},
++
++		async readTrace(target, context = {}) {
++			if (!target || (!target.issue_id && target.pr_number === undefined)) {
++				throw new Error('readTrace requires issue_id or pr_number');
++			}
++			requireDriverMethod(driver, 'readTrace');
++			const rows = await driver.readTrace(target, context, getConfig());
++			return buildTraceEnvelope(getConfig().projectRoot, target, rows);
++		},
++
+ 		async updatePrVerdict(key, patch = {}, context = {}) {
+ 			requireDriverMethod(driver, 'updatePrVerdict');
+ 			return driver.updatePrVerdict(key, patch, context, getConfig());
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index bd8000e5..63bef191 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1216,6 +1216,118 @@ function listWorktreeRows(runtime, db, filter = {}) {
+ 	return safeAll(runtime, db, 'SELECT * FROM kernel_worktrees ORDER BY registered_at DESC');
+ }
+ 
++function resolvePrLinkageRow(runtime, db, input = {}) {
++	let worktree = null;
++	if (input.worktree_id) {
++		worktree = safeAll(runtime, db, 'SELECT * FROM kernel_worktrees WHERE id = ? LIMIT 1', [input.worktree_id])[0] || null;
++	} else if (input.branch && input.git_common_dir) {
++		worktree = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_worktrees
++			 WHERE git_common_dir = ? AND branch = ? AND state = 'active'
++			 ORDER BY registered_at DESC LIMIT 1`,
++			[input.git_common_dir, input.branch],
++		)[0] || null;
++	}
++	const issueId = input.issue_id ?? worktree?.issue_id ?? null;
++	const issue = issueId
++		? safeAll(runtime, db, 'SELECT id, entity_revision FROM kernel_issues WHERE id = ? LIMIT 1', [issueId])[0] || null
++		: null;
++	return {
++		issue_id: issueId,
++		issue_revision: issue?.entity_revision ?? null,
++		worktree_id: input.worktree_id ?? worktree?.id ?? null,
++	};
++}
++
++function parseTraceEvent(row) {
++	let payload;
++	try {
++		payload = JSON.parse(row.payload_json || '{}');
++	} catch {
++		payload = {};
++	}
++	return {
++		id: row.id,
++		type: row.event_type,
++		at: row.created_at,
++		issue_revision: payload.issue_revision ?? null,
++		head_sha: payload.head_sha ?? null,
++		work_packet_hash: payload.work_packet_hash ?? null,
++		risk_manifest_digest: payload.risk_manifest_digest ?? null,
++		gate_receipts: payload.gate_receipts ?? null,
++		url: payload.url ?? null,
++	};
++}
++
++function loadTraceRows(runtime, db, target = {}) {
++	let selectedPr = null;
++	if (target.pr_number !== undefined && target.pr_number !== null) {
++		const clauses = ['number = ?'];
++		const params = [Number(target.pr_number)];
++		if (target.repo) {
++			clauses.push('repo = ?');
++			params.push(target.repo);
++		}
++		if (target.git_common_dir) {
++			clauses.push('git_common_dir = ?');
++			params.push(target.git_common_dir);
++		}
++		const matches = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_pr WHERE ${clauses.join(' AND ')} ORDER BY registered_at DESC`,
++			params,
++		);
++		if (matches.length > 1) throw new Error('Kernel trace PR target is ambiguous; supply repo and git_common_dir');
++		selectedPr = matches[0] || null;
++	}
++
++	const issueId = target.issue_id ?? selectedPr?.issue_id ?? null;
++	const issue = issueId
++		? safeAll(runtime, db, 'SELECT * FROM kernel_issues WHERE id = ? LIMIT 1', [issueId])[0] || null
++		: null;
++	let pullRequests = issue
++		? safeAll(runtime, db, 'SELECT * FROM kernel_pr WHERE issue_id = ? ORDER BY registered_at ASC, number ASC', [issue.id])
++		: [];
++	if (selectedPr && !pullRequests.some(row => row.id === selectedPr.id)) pullRequests = [selectedPr];
++
++	let worktree = null;
++	const preferredWorktreeId = selectedPr?.worktree_id || pullRequests.find(row => row.worktree_id)?.worktree_id;
++	if (preferredWorktreeId) {
++		worktree = safeAll(runtime, db, 'SELECT * FROM kernel_worktrees WHERE id = ? LIMIT 1', [preferredWorktreeId])[0] || null;
++	}
++	if (!worktree && issue) {
++		worktree = safeAll(
++			runtime,
++			db,
++			`SELECT * FROM kernel_worktrees WHERE issue_id = ?
++			 ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, registered_at DESC LIMIT 1`,
++			[issue.id],
++		)[0] || null;
++	}
++
++	return {
++		issue,
++		worktree,
++		work_folder: worktree?.work_folder ?? null,
++		pull_requests: pullRequests.map(row => {
++			const iterations = safeAll(
++				runtime,
++				db,
++				"SELECT * FROM kernel_events WHERE entity_type = 'pr' AND entity_id = ? ORDER BY created_at ASC, rowid ASC",
++				[row.id],
++			).map(parseTraceEvent);
++			return {
++				...row,
++				url: iterations.find(event => event.url)?.url ?? null,
++				iterations,
++			};
++		}),
++	};
++}
++
+ // --- Stage-run registry (f61601ab). kernel_stage_runs records the REAL workflow
+ // phase per issue so the dashboard/`show` read the phase instead of guessing it
+ // from status+claim (a claimed-open issue with a merged PR would otherwise still
+@@ -2396,7 +2508,19 @@ function createDriver(runtime, configuredDatabasePath) {
+ 					registeredAt,
+ 				],
+ 			);
+-			return { ok: true, id };
++			const persisted = allParams(
++				runtime,
++				getDatabase(config),
++				'SELECT * FROM kernel_pr WHERE git_common_dir = ? AND repo = ? AND number = ? LIMIT 1',
++				[row.git_common_dir, row.repo, row.number],
++			)[0];
++			return { ok: true, ...persisted };
++		},
++		async resolvePrLinkage(input, _context = {}, config = {}) {
++			return resolvePrLinkageRow(runtime, getDatabase(config), input);
++		},
++		async readTrace(target, _context = {}, config = {}) {
++			return loadTraceRows(runtime, getDatabase(config), target);
+ 		},
+ 		// The ONE verdict authority WRITE (design §1.2 rule 2) — FRESHEST-HEAD-SHA
+ 		// PRECEDENCE enforced in the WHERE so a verdict computed against a SUPERSEDED head is
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+new file mode 100644
+index 00000000..f20695ae
+--- /dev/null
++++ b/test/kernel/trace.test.js
+@@ -0,0 +1,178 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++describe('Kernel trace backbone', () => {
++	let root;
++	let driver;
++	let broker;
++	let config;
++
++	beforeEach(async () => {
++		root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-trace-'));
++		const gitCommonDir = path.join(root, '.git');
++		fs.mkdirSync(gitCommonDir, { recursive: true });
++		config = { databasePath: path.join(root, 'kernel.sqlite') };
++		driver = createBuiltinSQLiteDriver({});
++		broker = createLocalBroker({
++			projectRoot: root,
++			gitCommonDir,
++			databasePath: config.databasePath,
++			driver,
++		});
++		await broker.initialize();
++	});
++
++	afterEach(() => {
++		driver?.close();
++		try {
++			fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
++		} catch {
++			// Bun's Windows SQLite handle can linger briefly after close; temp cleanup is best effort.
++		}
++	});
++
++	test('ship and merge replay one inferred PR link and expose its joined trace', async () => {
++		const issueId = 'issue-trace-1';
++		const worktreeId = 'worktree-trace-1';
++		const workFolder = 'docs/work/2026-08-09-trace';
++		const worktreePath = path.join(root, '.worktrees', 'trace');
++		const branch = 'codex/trace';
++		const gitCommonDir = path.join(root, '.git');
++		const now = '2026-08-09T09:00:00.000Z';
++
++		await driver.exec(
++			`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++			 VALUES ('${issueId}', 'Trace backbone', '${now}', '${now}');`,
++			config,
++		);
++		driver.registerWorktree({
++			id: worktreeId,
++			git_common_dir: gitCommonDir,
++			path: worktreePath,
++			branch,
++			issue_id: issueId,
++			work_folder: workFolder,
++			registered_at: now,
++		}, config);
++		for (const [name, content] of [
++			['plan.md', '# Plan\n'],
++			['tasks.md', '# Tasks\n'],
++			['decisions.md', '# Decisions\n'],
++		]) {
++			const file = path.join(root, workFolder, name);
++			fs.mkdirSync(path.dirname(file), { recursive: true });
++			fs.writeFileSync(file, content, 'utf8');
++		}
++
++		const ship = {
++			phase: 'opened',
++			git_common_dir: gitCommonDir,
++			repo: 'owner/forge',
++			number: 501,
++			url: 'https://github.com/owner/forge/pull/501',
++			branch,
++			head_sha: 'a'.repeat(40),
++			issue_revision: 0,
++			work_packet_hash: 'work-packet-hash',
++			risk_manifest_digest: 'risk-manifest-digest',
++			gate_receipts: ['gate-receipt-1'],
++			occurred_at: '2026-08-09T09:10:00.000Z',
++		};
++		const merge = {
++			...ship,
++			phase: 'merged',
++			occurred_at: '2026-08-09T09:20:00.000Z',
++		};
++		await broker.recordPrLinkage(ship);
++		await broker.recordPrLinkage(ship);
++		await broker.recordPrLinkage(merge);
++		await broker.recordPrLinkage(merge);
++
++		const trace = await broker.readTrace({ issue_id: issueId });
++		expect(trace.schema_version).toBe('forge.trace.v1');
++		expect(trace.issue.id).toBe(issueId);
++		expect(trace.worktree.id).toBe(worktreeId);
++		expect(trace.work_folder).toBe(workFolder);
++		expect(trace.artifacts).toEqual({
++			plan: { path: `${workFolder}/plan.md`, content: '# Plan\n' },
++			tasks: { path: `${workFolder}/tasks.md`, content: '# Tasks\n' },
++			decisions: { path: `${workFolder}/decisions.md`, content: '# Decisions\n' },
++		});
++		expect(trace.pull_requests).toHaveLength(1);
++		expect(trace.pull_requests[0]).toMatchObject({
++			number: 501,
++			issue_id: issueId,
++			worktree_id: worktreeId,
++			state: 'merged',
++		});
++		expect(trace.pull_requests[0].iterations.map(event => event.type)).toEqual([
++			'pr.opened',
++			'pr.merged',
++		]);
++		expect(trace.pull_requests[0].iterations[0]).toMatchObject({
++			issue_revision: 0,
++			head_sha: 'a'.repeat(40),
++			work_packet_hash: 'work-packet-hash',
++			risk_manifest_digest: 'risk-manifest-digest',
++			gate_receipts: ['gate-receipt-1'],
++		});
++		expect(trace.gaps).toEqual([]);
++		const prTrace = await broker.readTrace({
++			pr_number: 501,
++			repo: 'owner/forge',
++			git_common_dir: gitCommonDir,
++		});
++		expect(prTrace.target).toEqual({ kind: 'pr', number: 501, repo: 'owner/forge' });
++		expect(prTrace.issue.id).toBe(issueId);
++
++		const prRows = await driver.queryAll('SELECT * FROM kernel_pr;', config);
++		const prEvents = await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config);
++		expect(prRows).toHaveLength(1);
++		expect(prEvents).toHaveLength(2);
++	});
++
++	test('returns explicit null gaps for a partial historical issue', async () => {
++		const now = '2026-08-09T10:00:00.000Z';
++		await driver.exec(
++			`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++			 VALUES ('issue-with-gaps', 'Historical issue', '${now}', '${now}');`,
++			config,
++		);
++
++		const trace = await broker.readTrace({ issue_id: 'issue-with-gaps' });
++		expect(trace).toMatchObject({
++			worktree: null,
++			work_folder: null,
++			artifacts: { plan: null, tasks: null, decisions: null },
++			pull_requests: [],
++			gaps: ['worktree', 'work_folder', 'plan', 'tasks', 'decisions', 'pull_requests'],
++		});
++	});
++
++	test('rejects stale issue linkage before writing a PR row or iteration', async () => {
++		const now = '2026-08-09T11:00:00.000Z';
++		await driver.exec(
++			`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++			 VALUES ('issue-stale', 'Stale issue', '${now}', '${now}');`,
++			config,
++		);
++
++		expect(broker.recordPrLinkage({
++			phase: 'opened',
++			git_common_dir: path.join(root, '.git'),
++			repo: 'owner/forge',
++			number: 502,
++			issue_id: 'issue-stale',
++			issue_revision: 1,
++		})).rejects.toThrow('stale issue revision');
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++	});
++});
+-- 
+2.51.0.windows.1
+

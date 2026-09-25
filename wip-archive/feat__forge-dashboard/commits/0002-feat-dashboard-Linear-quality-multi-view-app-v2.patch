@@ -1,0 +1,2220 @@
+From bfeb3e3b931874da6ff4beab96377f20957c6503 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 18:43:09 +0530
+Subject: [PATCH] feat(dashboard): Linear-quality multi-view app (v2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Rebuild the single page into a routed app shell: fixed sidebar + hash-routed
+views, each with Refresh + updated-stamp. Six views:
+- Work Board (Kanban) — independent-scroll columns; Tasks<->Epics level
+  toggle; clicking an epic focuses the task board to its children.
+- Epics/Initiatives — Linear-style table, expandable parent->child hierarchy,
+  derived health, done/total progress, Active/Planned/Completed/All tabs.
+- Decisions & Architecture — kernel decisions + prime headline PDs + ADRs.
+- Plans & History — docs/work timeline grouped by month.
+- Live Ops — git worktrees, gh PRs, active claims.
+- Overview — health tiles + distributions + recent activity.
+Global search spans issues+epics+decisions. Body never scrolls horizontally;
+column scroll is isolated (both verified in-browser).
+
+Snapshot generator v2 emits decisions/architecture/plans/ops sections.
+app.test.js extended (epicRollup + epicHealth); 7 tests pass.
+
+Refs: 21cc7139-b088-4e23-a69c-82840e170394
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-10-forge-dashboard/plan.md |  49 ++
+ web/dashboard/README.md                      |  77 +-
+ web/dashboard/app.js                         | 725 ++++++++++--------
+ web/dashboard/app.test.js                    |  27 +
+ web/dashboard/generate-snapshot.mjs          | 180 ++++-
+ web/dashboard/index.html                     | 109 +--
+ web/dashboard/styles.css                     | 726 ++++++++-----------
+ 7 files changed, 1048 insertions(+), 845 deletions(-)
+
+diff --git a/docs/work/2026-07-10-forge-dashboard/plan.md b/docs/work/2026-07-10-forge-dashboard/plan.md
+index 160f7dcd..86a9082a 100644
+--- a/docs/work/2026-07-10-forge-dashboard/plan.md
++++ b/docs/work/2026-07-10-forge-dashboard/plan.md
+@@ -91,3 +91,52 @@ Proposed live stack (for orchestrator to confirm):
+ 
+ Recommendation: ship A behind the same `DataSource` interface now-ish; graduate to
+ B when the Phase-2 kernel server lands. No dashboard rewrite either way.
++
++---
++
++## v2 — Linear-quality multi-view app (2026-07-10, same branch)
++
++Rebuilt the single page into a routed **app shell** after user feedback ("no
++single page", "cuts badly", Kanban must scroll independently, epics/tasks were
++disconnected).
++
++### Structure
++- **App shell**: fixed left sidebar (brand + global search + per-view nav) +
++  main area that owns its own scroll. `body { overflow: hidden }` — the page body
++  never scrolls horizontally (verified: `scrollWidth <= clientWidth`).
++- **Hash router** (dependency-light): `#/overview`, `#/board`, `#/epics`,
++  `#/decisions`, `#/plans`, `#/ops`.
++- **Refresh**: every view has a Refresh button + "updated <time>" stamp;
++  `DataSource.refetch()` re-reads `data.json` (cache-busted) over HTTP, else a
++  full reload picks up the regenerated `snapshot.js`. 60s auto-refresh when the
++  tab is visible. Real-time push deferred to the sync rail via `subscribe()`.
++
++### Kanban (centerpiece, mandatory)
++- Fixed-height board; each column is a flex child with its own `overflow-y:auto`
++  (verified: scrolling a column leaves `window.scrollY === 0`).
++- **Level toggle**: Tasks (grouped by status Ready/In-progress/Blocked/Done) ⇄
++  Epics (grouped by derived health On-track/At-risk/Off-track/Completed). Same
++  independent-scroll columns either way.
++- Epic↔task tie-in: clicking an epic card focuses the task board to that epic's
++  children (filter chip, clearable). Epics also link from the Epics table + search.
++
++### Epics / Initiatives (Linear model)
++- Table: Name (icon + title + subtitle, expandable parent→child), Target, Health
++  (colored dot from closed/blocked ratio), `done/total` + progress bar, Active
++  (in-progress amber / blocked red dots), Activity (recency). Tabs Active /
++  Planned / Completed / All. Hierarchy uses kernel `parent_id`.
++
++### New views
++- **Decisions & Architecture**: kernel `type=decision` + `forge prime` headline
++  PD records + `docs/adr/*.md` + `docs/architecture` list, with status/component/
++  rationale.
++- **Plans & History**: `docs/work/*` folders on a month-grouped timeline.
++- **Live Ops**: `git worktree list`, `gh pr list --json`, and active claims.
++
++### Data (snapshot generator v2)
++Extended `generate-snapshot.mjs` to also emit `decisions`, `architecture`,
++`plans`, and `ops` (worktrees + PRs + activeClaims). Verified counts: 610 issues,
++27 decisions, 3 arch docs, 93 plans, 23 worktrees, 2 PRs, 15 active claims.
++
++### Tests
++`app.test.js` extended to cover `epicRollup` + `epicHealth` (7 tests, all pass).
+diff --git a/web/dashboard/README.md b/web/dashboard/README.md
+index 962df13c..be6f1633 100644
+--- a/web/dashboard/README.md
++++ b/web/dashboard/README.md
+@@ -1,10 +1,10 @@
+-# Forge Dashboard (read-only, Phase 1)
++# Forge Dashboard (read-only)
+ 
+-The first Forge "screen": a self-contained, local dashboard that renders a **live
+-kernel snapshot** — work board, epics, decisions, health and recent activity — from
+-the real kernel (611 issues at time of writing). No framework, no build step, no
+-external assets. This is the **rail-independent read layer**; live/real-time sync is
+-deferred to the sync rail (see the seam below).
++A self-contained, zero-build **multi-view** app that renders a **live kernel
++snapshot** — a Linear-style work board, epic hierarchy, decisions, plans, and
++live ops — from the real kernel (610 issues at time of writing). No framework,
++no build step, no external assets. This is the **rail-independent read layer**;
++real-time push is deferred to the sync rail (see the seam below).
+ 
+ ## Run it (two steps)
+ 
+@@ -13,52 +13,59 @@ deferred to the sync rail (see the seam below).
+ node web/dashboard/generate-snapshot.mjs
+ 
+ # 2. Open the dashboard — just double-click it, no server needed
+-#    Windows:
+-start web/dashboard/index.html
+-#    macOS:   open web/dashboard/index.html
+-#    Linux:   xdg-open web/dashboard/index.html
++#    Windows:  start web/dashboard/index.html
++#    macOS:    open web/dashboard/index.html
++#    Linux:    xdg-open web/dashboard/index.html
+ ```
+ 
+-The snapshot is baked into `snapshot.js` as a browser global, so `index.html` works
+-directly from `file://` — no local server, no CORS.
++The snapshot is baked into `snapshot.js` as a browser global, so `index.html`
++works directly from `file://` — no local server, no CORS.
+ 
+-*(Optional)* To serve over HTTP instead (uses `data.json` via `fetch`):
++*(Optional)* Serve over HTTP so the in-app **Refresh** button can re-fetch
++`data.json` without a full reload:
+ 
+ ```sh
+ cd web/dashboard && python -m http.server 8080   # → http://localhost:8080
+ ```
+ 
+-## What it shows (all real kernel data)
++## Views (sidebar nav, hash-routed)
+ 
+-| View | Source | Notes |
+-|------|--------|-------|
+-| **Health** | derived from `issue list` | totals, % complete, open/ready/in-progress/blocked, priority + type distribution |
+-| **Work board** | `issue list` | Ready / In progress / Blocked / Done, derived per-issue; search + type/priority filters; capped render with "show more" |
+-| **Epics** | `type=epic` (36) | status, priority, child rollup where `parent_id` linkage exists |
+-| **Decisions** | `type=decision` (6) | title + body excerpt (the "why") |
+-| **Activity + memory** | recent `updated_at` + `recall` | timeline of recent changes; memory panel (empty-state until `recall` returns entries) |
++| Route | View | Source | Notes |
++|-------|------|--------|-------|
++| `#/overview` | **Overview** | issues + counts | health tiles, priority/type distribution, recent activity, ops summary |
++| `#/board` | **Work Board (Kanban)** | issues + epics | independent-scroll columns; **Tasks ⇄ Epics level toggle**; click an epic card to drill the task board to it |
++| `#/epics` | **Epics / Initiatives** | epics + `parent_id` children | Linear-style table, expandable hierarchy, Health (on/at-risk/off-track), `done/total`, Active/Planned/Completed/All tabs |
++| `#/decisions` | **Decisions & Architecture** | kernel `type=decision` + `forge prime` headline PDs + `docs/adr` + `docs/architecture` | ADR board with status/component/rationale |
++| `#/plans` | **Plans & History** | `docs/work/*` | timeline of work folders grouped by month, plan/tasks/decisions tags |
++| `#/ops` | **Live Ops** | `git worktree list` + `gh pr list` + active claims | running agents (claims), open PRs, worktrees |
++
++Global **search** (top of sidebar, `/` to focus) spans issues + epics + decisions.
++Every view has a **Refresh** button and an "updated <time>" stamp; a 60s
++auto-refresh re-reads the snapshot when the page is served over HTTP.
+ 
+ ## Files
+ 
+-- `index.html` — structure and section landmarks
+-- `styles.css` — design system (tokens, light/dark, responsive)
+-- `app.js` — render + filter/search + the `DataSource` live-view seam
+-- `generate-snapshot.mjs` — Node generator; shells `forge issue list/status/recall --json`
+-- `snapshot.js` — **generated** `window.FORGE_SNAPSHOT` global (git-ignorable)
+-- `data.json` — **generated** same payload, machine-readable
++- `index.html` — app shell (sidebar + topbar + routed view container)
++- `styles.css` — design system (tokens, light/dark, independent-scroll Kanban, tables)
++- `app.js` — hash router, six views, refresh, global search, board toggle, `DataSource` seam
++- `generate-snapshot.mjs` — Node generator; shells `forge` + `git` + `gh`
++- `snapshot.js` — **generated** `window.FORGE_SNAPSHOT` global (gitignored)
++- `data.json` — **generated** same payload, machine-readable (gitignored)
++- `app.test.js` — unit tests for the pure board/epic/filter logic
+ 
+ ## Live view — deferred (the seam)
+ 
+-`app.js` reads all data through a single `DataSource` object. Today `load()` returns
+-the baked snapshot. When the **sync rail** lands, swap `load()` to `fetch('data.json')`
+-and implement `subscribe(onDelta)` over the outbox feed (`EventSource('/events')`) —
+-**no render code changes**.
++`app.js` reads all data through a single `DataSource`. Today `load()` returns the
++baked snapshot and `refetch()` re-reads `data.json` (Refresh / auto-refresh).
++When the **sync rail** lands, implement `subscribe(onDelta)` over the outbox feed
++(`EventSource('/events')`) — the views update with **no render changes**.
+ 
+-Proposed live stack (for orchestrator to confirm — see `docs/work/2026-07-10-forge-dashboard/plan.md`):
++Proposed live stack (for orchestrator to confirm — see
++`docs/work/2026-07-10-forge-dashboard/plan.md`):
+ 
+-- **Option A (near-term):** tiny local Node/Bun server shells `forge --json` and serves
+-  `data.json` + an SSE `/events` endpoint fed by the sync-rail outbox. Lowest lift.
+-- **Option B (Phase-2):** read API on the serialized kernel server (per
++- **Option A (near-term):** a tiny local Node/Bun server shells `forge --json` and
++  serves `data.json` + an SSE `/events` endpoint fed by the sync-rail outbox.
++- **Option B (Phase-2):** a read API on the serialized kernel server (per
+   `PD-20260606-sqlite-local-authority`); team/multi-machine safe.
+ 
+ Ship A behind the existing `DataSource` interface; graduate to B with no rewrite.
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index 5fa07c25..cd7fae57 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -1,55 +1,88 @@
+-/* Forge Dashboard — read-only render layer.
+-   Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT). No framework, no build. */
++/* Forge Dashboard v2 — read-only multi-view app.
++   Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT). No framework, no build.
++   Views: overview, board (task/epic kanban), epics, decisions, plans, ops. */
+ 
+ /* ============================================================================
+  * DataSource — the LIVE-VIEW SEAM.
+- * Today: returns the baked snapshot synchronously wrapped in a promise.
+- * LATER (sync rail): swap `load()` to fetch('data.json') and subscribe to the
+- * outbox feed via EventSource('/events'), calling onDelta() to patch state.
+- * The rest of the app only depends on this interface, so the live upgrade needs
+- * no render changes. See docs/work/2026-07-10-forge-dashboard/plan.md.
++ * load()  : returns a snapshot. Baked global today; re-fetch over HTTP on refresh.
++ * refresh(): re-reads data.json (cache-busted) so the manual/auto Refresh gets
++ *            fresh data after the generator re-runs. When the sync rail lands,
++ *            implement subscribe(onDelta) over the outbox feed (EventSource) and
++ *            the views update with NO render changes.
+  * ========================================================================== */
+ const DataSource = {
+   async load() {
+     if (window.FORGE_SNAPSHOT) return window.FORGE_SNAPSHOT;
+-    // Fallback path for when the page is served over HTTP with only data.json.
+-    const res = await fetch('data.json');
++    return (await fetch('data.json')).json();
++  },
++  async refetch() {
++    // Works when served over HTTP (data.json present). Throws on file:// — caller
++    // falls back to a full reload (which re-reads the regenerated snapshot.js).
++    const res = await fetch('data.json?ts=' + Date.now(), { cache: 'no-store' });
++    if (!res.ok) throw new Error('HTTP ' + res.status);
+     return res.json();
+   },
+-  // TODO(sync-rail): subscribe(onDelta) { new EventSource('/events')... }
+-  subscribe() { /* no-op until the sync rail lands */ },
++  subscribe() { /* TODO(sync-rail): new EventSource('/events') → onDelta(patch) */ },
+ };
+ 
+-/* ---------- small helpers ---------- */
+-const $ = (sel, root = document) => root.querySelector(sel);
+-const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+-const esc = (s) => (s == null ? '' : String(s));
++/* ---------- helpers ---------- */
++const $ = (s, r = document) => r.querySelector(s);
++const $$ = (s, r = document) => [...r.querySelectorAll(s)];
++const esc = (s) => (s == null ? '' : String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
+ const clamp = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
+ 
+ const PRIO_ORDER = ['P0', 'P1', 'P2', 'P3', 'P4'];
+ const PRIO_VAR = { P0: '--p0', P1: '--p1', P2: '--p2', P3: '--p3', P4: '--p4' };
+ const TYPE_LABEL = { feature: 'feat', task: 'task', bug: 'bug', epic: 'epic', decision: 'dec', chore: 'chore' };
++const HEALTH = {
++  ok: { label: 'On track', v: '--ok' }, warn: { label: 'At risk', v: '--warn' },
++  risk: { label: 'Off track', v: '--risk' }, done: { label: 'Completed', v: '--ok' },
++  neutral: { label: '—', v: '--neutral' },
++};
+ 
+ function relTime(iso) {
+   if (!iso) return '';
+-  const d = new Date(iso), now = Date.now();
+-  const s = Math.round((now - d) / 1000);
++  const d = new Date(iso), s = Math.round((Date.now() - d) / 1000);
+   if (s < 60) return s + 's ago';
+   const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
+   const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
+-  const days = Math.round(h / 24); if (days < 30) return days + 'd ago';
++  const dd = Math.round(h / 24); if (dd < 30) return dd + 'd ago';
+   return d.toISOString().slice(0, 10);
+ }
+ 
+-/* ---------- global state ---------- */
++function icon(name) {
++  const p = {
++    overview: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
++    board: '<rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/>',
++    epics: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
++    decisions: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.5 6H14a2 2 0 0 1 2 2v2"/>',
++    plans: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
++    ops: '<path d="M3 12h4l2 6 4-14 2 8h6"/>',
++    doc: '<path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/>',
++    branch: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M6 8.5v7M18 8.5V11a3 3 0 0 1-3 3H6"/>',
++  }[name] || '';
++  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
++}
++
++/* ---------- state ---------- */
+ const State = {
+-  snapshot: null,
+-  issues: [],
++  snapshot: null, issues: [], epics: [], byId: {}, kids: {},
+   filters: { q: '', type: null, prio: null },
+-  limits: { ready: 12, progress: 12, blocked: 12, done: 10 },
++  board: { level: 'tasks', epicFocus: null, limits: {} },
++  epicsTab: 'active', epicsExpanded: new Set(),
++  route: 'overview',
+ };
+ 
+-/* ---------- board derivation ---------- */
++function rebuild(snap) {
++  State.snapshot = snap;
++  const issues = (snap.issues || []).filter((i) => i && i.type !== 'zzzbogus');
++  State.issues = issues;
++  State.byId = {}; State.kids = {};
++  issues.forEach((i) => { State.byId[i.id] = i; if (i.parent_id) (State.kids[i.parent_id] = State.kids[i.parent_id] || []).push(i); });
++  State.epics = issues.filter((i) => i.type === 'epic');
++}
++
++/* ---------- pure derivation (exported for tests) ---------- */
+ function columnOf(i) {
+   if (i.status === 'done') return 'done';
+   if (i.status === 'cancelled') return null;
+@@ -57,341 +90,449 @@ function columnOf(i) {
+   if (i.claimed_by) return 'progress';
+   return 'ready';
+ }
+-
+ function matchesFilter(i) {
+   const f = State.filters;
+   if (f.type && i.type !== f.type) return false;
+   if (f.prio && i.priority !== f.prio) return false;
+   if (f.q) {
+-    const q = f.q.toLowerCase();
+     const hay = (i.title + ' ' + i.id + ' ' + (i.claimed_by || '') + ' ' + (i.labels || []).join(' ')).toLowerCase();
+-    if (!hay.includes(q)) return false;
++    if (!hay.includes(f.q.toLowerCase())) return false;
+   }
+   return true;
+ }
++function epicRollup(epic, kids) {
++  kids = kids || State.kids[epic.id] || [];
++  const total = kids.length;
++  const done = kids.filter((k) => k.status === 'done').length;
++  const blocked = kids.filter((k) => k.blocked && k.status === 'open').length;
++  const inprog = kids.filter((k) => k.claimed_by && k.status === 'open' && !k.blocked).length;
++  return { total, done, blocked, inprog, open: total - done, ratio: total ? done / total : 0 };
++}
++function epicHealth(epic, kids) {
++  if (epic.status === 'done') return 'done';
++  if (epic.status === 'cancelled') return 'neutral';
++  const r = epicRollup(epic, kids);
++  if (r.total === 0) return epic.blocked ? 'risk' : 'ok';
++  if (r.blocked / r.total >= 0.25) return 'risk';
++  if (r.ratio >= 0.5) return 'ok';
++  if (r.ratio >= 0.2 || r.inprog > 0) return 'warn';
++  return r.blocked > 0 ? 'risk' : 'warn';
++}
+ 
+-/* ---------- renderers ---------- */
+-function renderStats() {
++/* ---------- shared bits ---------- */
++const prioBadge = (p) => `<span class="badge badge--prio" style="background:var(${PRIO_VAR[p] || '--faint'})">${esc(p || '—')}</span>`;
++const typeBadge = (t) => `<span class="badge badge--type">${esc(TYPE_LABEL[t] || t)}</span>`;
++const epicRef = (i) => {
++  if (!i.parent_id) return '';
++  const e = State.byId[i.parent_id]; if (!e) return '';
++  return `<span class="epicref"><span class="dot"></span>${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 26))}</span>`;
++};
++function taskCard(i) {
++  const owner = i.claimed_by
++    ? `<span class="kcard__owner"><span class="av">${esc(i.claimed_by.slice(0, 2))}</span>${esc(i.claimed_by)}</span>` : '';
++  const deps = i.dependencies && i.dependencies.length ? `<span class="badge badge--soft">${i.dependencies.length} dep</span>` : '';
++  return `<div class="kcard" style="--prio:var(${PRIO_VAR[i.priority] || '--border'})">
++    <div class="kcard__top">${typeBadge(i.type)}${prioBadge(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
++    <div class="kcard__title">${esc(clamp(i.title, 120))}</div>
++    <div class="kcard__meta">${owner}${epicRef(i)}${deps}</div>
++  </div>`;
++}
++function epicCard(e) {
++  const r = epicRollup(e); const h = HEALTH[epicHealth(e)];
++  return `<div class="kcard kcard--epic" data-act="focus-epic" data-id="${esc(e.id)}" style="--prio:var(${h.v})">
++    <div class="kcard__top"><span class="hdot" style="background:var(${h.v})"></span>${prioBadge(e.priority)}<span class="kcard__id">${r.total} tasks</span></div>
++    <div class="kcard__title">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 110))}</div>
++    <div class="kcard__roll"><div class="kcard__prog"><span style="width:${Math.round(r.ratio * 100)}%"></span></div>
++      <span class="kcard__rolltext">${r.done}/${r.total || '·'}</span></div>
++  </div>`;
++}
++
++/* ============================================================================
++ * VIEWS
++ * ========================================================================== */
++const VIEWS = [
++  { id: 'overview', title: 'Overview', flush: false, render: renderOverview },
++  { id: 'board', title: 'Work Board', flush: true, render: renderBoard },
++  { id: 'epics', title: 'Epics', flush: false, render: renderEpics },
++  { id: 'decisions', title: 'Decisions', flush: false, render: renderDecisions },
++  { id: 'plans', title: 'Plans & History', flush: false, render: renderPlans },
++  { id: 'ops', title: 'Live Ops', flush: false, render: renderOps },
++];
++
++/* ---- Overview ---- */
++function renderOverview() {
+   const all = State.issues;
+-  const by = (fn) => all.reduce((a, i) => (a[fn(i)] = (a[fn(i)] || 0) + 1, a), {});
+-  const st = by((i) => i.status);
+-  const done = st.done || 0, open = st.open || 0;
+-  const total = all.length;
++  const st = (k) => all.filter((i) => i.status === k).length;
++  const total = all.length, done = st('done'), open = st('open');
+   const donePct = total ? Math.round((done / total) * 100) : 0;
+   const blocked = all.filter((i) => i.blocked && i.status !== 'done').length;
+   const active = all.filter((i) => i.claimed_by && i.status === 'open').length;
+   const ready = all.filter((i) => columnOf(i) === 'ready').length;
++  const c = State.snapshot.counts || {};
+ 
+   const tiles = [
+-    { n: total, l: 'Total issues', sub: State.snapshot.schema_version || '', hero: true },
+-    { n: donePct + '%', l: 'Complete', sub: done + ' done', v: '--done' },
+-    { n: open, l: 'Open', sub: ready + ' ready', v: '--ready' },
+-    { n: active, l: 'In progress', sub: 'claimed now', v: '--progress' },
+-    { n: blocked, l: 'Blocked', sub: 'need unblocking', v: '--blocked' },
++    { n: total, l: 'Total issues', s: State.snapshot.schema_version || '', v: '--accent' },
++    { n: donePct + '%', l: 'Complete', s: done + ' done', v: '--ok' },
++    { n: open, l: 'Open', s: ready + ' ready', v: '--st-ready' },
++    { n: active, l: 'In progress', s: 'claimed now', v: '--st-progress' },
++    { n: blocked, l: 'Blocked', s: 'need unblocking', v: '--st-blocked' },
++    { n: State.epics.length, l: 'Epics', s: (c.decisions || 0) + ' decisions', v: '--accent' },
+   ];
+-  const wrap = $('#stats'); wrap.innerHTML = '';
+-  tiles.forEach((t, idx) => {
+-    const s = el('div', 'stat' + (t.hero ? ' stat--hero' : ''));
+-    if (t.v) s.style.setProperty('--accar', `var(${t.v})`);
+-    s.style.animation = `rise .4s ${idx * 0.04}s both`;
+-    s.append(el('div', 'stat__num', t.n), el('div', 'stat__label', t.l), el('div', 'stat__sub', t.sub));
+-    wrap.append(s);
+-  });
+-  $('#healthCount').textContent = `${total} issues · snapshot`;
+-}
+ 
+-function renderMeters() {
+-  const all = State.issues;
+   const prio = {}; PRIO_ORDER.forEach((p) => (prio[p] = 0));
+   all.forEach((i) => { if (prio[i.priority] != null) prio[i.priority]++; });
+-  const total = all.length || 1;
+-  const bar = $('#prioBar'); bar.innerHTML = '';
+-  const legend = $('#prioLegend'); legend.innerHTML = '';
+-  PRIO_ORDER.forEach((p) => {
+-    const seg = el('span'); seg.style.width = (prio[p] / total) * 100 + '%';
+-    seg.style.background = `var(${PRIO_VAR[p]})`; seg.title = `${p}: ${prio[p]}`;
+-    bar.append(seg);
+-    const item = el('div', 'item');
+-    const sw = el('span', 'swatch'); sw.style.background = `var(${PRIO_VAR[p]})`;
+-    item.append(sw, document.createTextNode(p + ' '), Object.assign(el('b'), { textContent: prio[p] }));
+-    legend.append(item);
+-  });
+-
+   const types = {}; all.forEach((i) => (types[i.type] = (types[i.type] || 0) + 1));
+-  const chips = $('#typeChips'); chips.innerHTML = '';
+-  Object.entries(types).sort((a, b) => b[1] - a[1]).forEach(([t, n]) => {
+-    if (t === 'zzzbogus') return;
+-    const c = el('div', 'typechip');
+-    c.append(document.createTextNode((TYPE_LABEL[t] || t) + ' '), Object.assign(el('b'), { textContent: n }));
+-    chips.append(c);
+-  });
+-}
+ 
+-function card(i) {
+-  const c = el('div', 'card');
+-  c.style.setProperty('--prio', `var(${PRIO_VAR[i.priority] || '--border'})`);
+-  const top = el('div', 'card__top');
+-  const tb = el('span', 'badge badge--type', TYPE_LABEL[i.type] || i.type);
+-  const pb = el('span', 'badge badge--prio', i.priority || '—');
+-  pb.style.background = `var(${PRIO_VAR[i.priority] || '--faint'})`;
+-  const id = el('span', 'card__id', String(i.id).slice(0, 8));
+-  top.append(tb, pb, id);
+-  c.append(top, el('div', 'card__title', clamp(i.title, 120)));
+-
+-  const meta = el('div', 'card__meta');
+-  if (i.claimed_by) {
+-    const o = el('span', 'card__owner');
+-    const av = el('span', 'av', i.claimed_by.slice(0, 2));
+-    o.append(av, document.createTextNode(i.claimed_by));
+-    meta.append(o);
+-  }
+-  (i.labels || []).slice(0, 2).forEach((l) => meta.append(el('span', 'chip', l)));
+-  if (i.dependencies && i.dependencies.length) meta.append(el('span', 'chip', `${i.dependencies.length} dep`));
+-  if (meta.childNodes.length) c.append(meta);
+-  return c;
++  const bar = PRIO_ORDER.map((p) => `<span title="${p}: ${prio[p]}" style="width:${(prio[p] / (total || 1)) * 100}%;background:var(${PRIO_VAR[p]})"></span>`).join('');
++  const legend = PRIO_ORDER.map((p) => `<span class="item"><span class="sw" style="background:var(${PRIO_VAR[p]})"></span>${p} <b>${prio[p]}</b></span>`).join('');
++  const chips = Object.entries(types).sort((a, b) => b[1] - a[1])
++    .map(([t, n]) => `<span class="item"><span class="sw" style="background:var(--surface-3)"></span>${esc(TYPE_LABEL[t] || t)} <b>${n}</b></span>`).join('');
++
++  const recent = all.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 8)
++    .map((i) => `<div class="pr-row"><span class="hdot" style="background:var(${i.blocked ? '--st-blocked' : i.status === 'done' ? '--st-done' : '--st-ready'})"></span>
++      <span class="pr-title">${esc(clamp(i.title, 70))}</span><span class="pr-branch">${esc(relTime(i.updated_at))}</span></div>`).join('');
++
++  return `<div class="fade-in">
++    <div class="stats">${tiles.map((t) => `<div class="stat" style="--accar:var(${t.v})"><div class="stat__num">${esc(t.n)}</div><div class="stat__label">${esc(t.l)}</div><div class="stat__sub">${esc(t.s)}</div></div>`).join('')}</div>
++    <div class="overview-grid">
++      <div class="panel"><h3>Priority distribution</h3><div class="bar">${bar}</div><div class="legend">${legend}</div></div>
++      <div class="panel"><h3>Issue types</h3><div class="legend">${chips}</div></div>
++    </div>
++    <div class="overview-grid">
++      <div class="panel" style="padding:0"><h3 style="padding:16px 16px 0">Recent activity</h3><div style="padding:6px 4px">${recent}</div></div>
++      <div class="panel"><h3>Live ops</h3><div class="legend">
++        <span class="item">Worktrees <b>${c.worktrees || 0}</b></span>
++        <span class="item">Open PRs <b>${c.prs || 0}</b></span>
++        <span class="item">Active claims <b>${(State.snapshot.ops && State.snapshot.ops.activeClaims.length) || 0}</b></span>
++        <span class="item">Plans <b>${c.plans || 0}</b></span>
++      </div><div style="margin-top:14px;color:var(--faint);font-size:12px">Jump into <a href="#/ops" style="color:var(--accent)">Live Ops →</a></div></div>
++    </div>
++  </div>`;
+ }
+ 
+-const COLS = [
+-  { key: 'ready', title: 'Ready', v: '--ready' },
+-  { key: 'progress', title: 'In progress', v: '--progress' },
+-  { key: 'blocked', title: 'Blocked', v: '--blocked' },
+-  { key: 'done', title: 'Done', v: '--done' },
++/* ---- Work Board (Kanban) ---- */
++const TASK_COLS = [
++  { key: 'ready', title: 'Ready', v: '--st-ready' },
++  { key: 'progress', title: 'In progress', v: '--st-progress' },
++  { key: 'blocked', title: 'Blocked', v: '--st-blocked' },
++  { key: 'done', title: 'Done', v: '--st-done' },
++];
++const EPIC_COLS = [
++  { key: 'ok', title: 'On track', v: '--ok' },
++  { key: 'warn', title: 'At risk', v: '--warn' },
++  { key: 'risk', title: 'Off track', v: '--risk' },
++  { key: 'done', title: 'Completed', v: '--ok' },
+ ];
+ 
+ function renderBoard() {
+-  const buckets = { ready: [], progress: [], blocked: [], done: [] };
+-  State.issues.forEach((i) => {
+-    if (!matchesFilter(i)) return;
+-    const col = columnOf(i); if (col) buckets[col].push(i);
+-  });
+-  buckets.done.sort((a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at));
+-  const rank = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
+-  ['ready', 'progress', 'blocked'].forEach((k) =>
+-    buckets[k].sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || new Date(b.updated_at) - new Date(a.updated_at)));
+-
+-  const host = $('#boardCols'); host.innerHTML = '';
+-  let shown = 0;
+-  COLS.forEach(({ key, title, v }) => {
+-    const col = el('div', 'col');
+-    const head = el('div', 'col__head');
+-    const dot = el('span', 'col__dot'); dot.style.background = `var(${v})`;
+-    head.append(dot, el('span', 'col__title', title));
+-    head.append(Object.assign(el('span', 'col__count'), { textContent: buckets[key].length }));
+-    col.append(head);
+-    const list = el('div', 'col__list');
+-    const lim = State.limits[key];
+-    const items = buckets[key];
+-    if (!items.length) list.append(el('div', 'empty', 'Nothing here.'));
+-    items.slice(0, lim).forEach((i, idx) => { const c = card(i); c.style.animationDelay = (idx * 0.015) + 's'; list.append(c); shown++; });
+-    if (items.length > lim) {
+-      const btn = el('button', 'more', `Show ${Math.min(20, items.length - lim)} more (${items.length - lim} hidden)`);
+-      btn.onclick = () => { State.limits[key] += 20; renderBoard(); };
+-      list.append(btn);
+-    }
+-    col.append(list);
+-    host.append(col);
+-  });
+-  $('#boardCount').textContent = `${shown} shown · ${State.issues.filter(matchesFilter).length} match`;
++  const B = State.board;
++  const focus = B.epicFocus ? State.byId[B.epicFocus] : null;
++  const levelSeg = `<div class="seg">
++    <button data-act="board-level" data-level="tasks" class="${B.level === 'tasks' ? 'on' : ''}">Tasks</button>
++    <button data-act="board-level" data-level="epics" class="${B.level === 'epics' ? 'on' : ''}">Epics</button></div>`;
++  const focusChip = focus ? `<span class="chipfilter">Epic: ${esc(clamp(focus.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 34))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
++
++  let chips = '';
++  if (B.level === 'tasks') {
++    const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
++    chips = `<div class="controls">${types.map((t) => `<button class="btn" data-act="chip-type" data-val="${t}" style="${State.filters.type === t ? 'border-color:var(--accent);color:var(--accent)' : ''}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
++      ${PRIO_ORDER.map((p) => `<button class="btn" data-act="chip-prio" data-val="${p}" style="${State.filters.prio === p ? 'border-color:var(--accent);color:var(--accent)' : ''}">${p}</button>`).join('')}</div>`;
++  }
++  const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
++    <input id="boardSearch" type="search" placeholder="Filter cards…" value="${esc(State.filters.q)}"></div>`;
++
++  const cols = B.level === 'epics' ? renderEpicColumns() : renderTaskColumns(focus);
++  return `<div class="boardbar">${levelSeg}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
+ }
+ 
+-function renderFilters() {
+-  const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'zzzbogus');
+-  const tf = $('#typeFilters'); tf.innerHTML = '';
+-  types.forEach((t) => {
+-    const b = el('button', '', TYPE_LABEL[t] || t);
+-    b.onclick = () => { State.filters.type = State.filters.type === t ? null : t; syncFilterUI(); renderBoard(); };
+-    b.dataset.type = t; tf.append(b);
+-  });
+-  const pf = $('#prioFilters'); pf.innerHTML = '';
+-  PRIO_ORDER.forEach((p) => {
+-    const b = el('button', '', p);
+-    b.onclick = () => { State.filters.prio = State.filters.prio === p ? null : p; syncFilterUI(); renderBoard(); };
+-    b.dataset.prio = p; pf.append(b);
+-  });
++function column(col, cards, count, key) {
++  const lim = State.board.limits[key] ?? 25;
++  const shown = cards.slice(0, lim);
++  const more = cards.length > lim
++    ? `<button class="kmore" data-act="more" data-col="${key}">Show ${Math.min(25, cards.length - lim)} more · ${cards.length - lim} hidden</button>` : '';
++  const body = shown.length ? shown.join('') + more : `<div class="kempty">Nothing here.</div>`;
++  return `<div class="kcol"><div class="kcol__head"><span class="hdot" style="background:var(${col.v})"></span>
++    <span class="kcol__title">${esc(col.title)}</span><span class="kcol__count">${count}</span></div>
++    <div class="kcol__body">${body}</div></div>`;
++}
++function renderTaskColumns(focus) {
++  let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
++  if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
++  const buckets = { ready: [], progress: [], blocked: [], done: [] };
++  pool.forEach((i) => { const c = columnOf(i); if (c) buckets[c].push(i); });
++  const rank = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
++  ['ready', 'progress', 'blocked'].forEach((k) => buckets[k].sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || new Date(b.updated_at) - new Date(a.updated_at)));
++  buckets.done.sort((a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at));
++  return TASK_COLS.map((c) => column(c, buckets[c.key].map(taskCard), buckets[c.key].length, c.key)).join('');
+ }
+-function syncFilterUI() {
+-  document.querySelectorAll('#typeFilters button').forEach((b) => b.classList.toggle('on', b.dataset.type === State.filters.type));
+-  document.querySelectorAll('#prioFilters button').forEach((b) => b.classList.toggle('on', b.dataset.prio === State.filters.prio));
++function renderEpicColumns() {
++  const buckets = { ok: [], warn: [], risk: [], done: [] };
++  State.epics.filter((e) => !State.filters.q || (e.title.toLowerCase().includes(State.filters.q.toLowerCase())))
++    .forEach((e) => { const h = epicHealth(e); const key = h === 'neutral' ? 'warn' : h; (buckets[key] || buckets.warn).push(e); });
++  Object.keys(buckets).forEach((k) => buckets[k].sort((a, b) => epicRollup(b).total - epicRollup(a).total));
++  return EPIC_COLS.map((c) => column(c, buckets[c.key].map(epicCard), buckets[c.key].length, 'e_' + c.key)).join('');
+ }
+ 
++/* ---- Epics / Initiatives table ---- */
++const EPIC_TABS = [
++  { id: 'active', label: 'Active' }, { id: 'planned', label: 'Planned' },
++  { id: 'completed', label: 'Completed' }, { id: 'all', label: 'All' },
++];
++function epicTabMatch(e) {
++  const r = epicRollup(e);
++  switch (State.epicsTab) {
++    case 'completed': return e.status === 'done';
++    case 'planned': return e.status === 'open' && r.total === 0 && !e.claimed_by;
++    case 'active': return e.status === 'open' && (r.total > 0 || e.claimed_by || e.blocked);
++    default: return true;
++  }
++}
+ function renderEpics() {
+-  const kids = {};
+-  State.issues.forEach((i) => { if (i.parent_id) (kids[i.parent_id] = kids[i.parent_id] || []).push(i); });
+-  const epics = State.issues.filter((i) => i.type === 'epic')
+-    .sort((a, b) => (a.status === 'done') - (b.status === 'done') || new Date(b.updated_at) - new Date(a.updated_at));
+-  $('#epicCount').textContent = `${epics.length}`;
+-  const grid = $('#epicGrid'); grid.innerHTML = '';
+-  epics.forEach((e) => {
+-    const box = el('div', 'epic');
+-    const top = el('div', 'epic__top');
+-    const pb = el('span', 'badge badge--prio', e.priority || '—');
+-    pb.style.background = `var(${PRIO_VAR[e.priority] || '--faint'})`;
+-    top.append(pb, el('span', 'badge badge--type', e.status));
+-    box.append(top, el('div', 'epic__title', clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 90)));
+-    const ch = kids[e.id] || [];
+-    if (ch.length) {
+-      const done = ch.filter((c) => c.status === 'done').length;
+-      const roll = el('div', 'epic__roll');
+-      const pg = el('div', 'epic__prog'); const span = el('span'); span.style.width = (done / ch.length * 100) + '%'; pg.append(span);
+-      roll.append(pg, el('span', 'epic__rolltext', `${done}/${ch.length}`));
+-      box.append(roll);
+-    } else {
+-      box.append(el('div', 'epic__rolltext', 'no linked children'));
++  const tabs = `<div class="tabs">${EPIC_TABS.map((t) => `<button data-act="epics-tab" data-tab="${t.id}" class="${State.epicsTab === t.id ? 'on' : ''}">${t.label}</button>`).join('')}</div>`;
++  const eps = State.epics.filter(epicTabMatch)
++    .sort((a, b) => epicRollup(b).total - epicRollup(a).total || new Date(b.updated_at) - new Date(a.updated_at));
++
++  const rows = eps.map((e) => {
++    const r = epicRollup(e); const h = HEALTH[epicHealth(e)];
++    const kids = State.kids[e.id] || [];
++    const open = State.epicsExpanded.has(e.id);
++    const sub = (e.labels || [])[0] ? `<div class="sub">${esc(e.labels[0])}</div>` : '';
++    const workdots = `<span class="workdots">${r.inprog ? `<span class="wd"><span class="dot" style="background:var(--st-progress)"></span>${r.inprog}</span>` : ''}${r.blocked ? `<span class="wd"><span class="dot" style="background:var(--st-blocked)"></span>${r.blocked}</span>` : ''}${!r.inprog && !r.blocked ? '<span class="wd">—</span>' : ''}</span>`;
++    const parentRow = `<tr>
++      <td><div class="rowname">
++        <span class="chev ${kids.length ? (open ? 'open' : '') : 'leaf'}" data-act="toggle-epic" data-id="${esc(e.id)}">${kids.length ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" width="12" height="12"><path d="m9 6 6 6-6 6"/></svg>' : ''}</span>
++        <span class="ic">${icon('epics')}</span>
++        <span><span class="tt" data-act="focus-epic" data-id="${esc(e.id)}" style="cursor:pointer">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 68))}</span>${sub}</span>
++      </div></td>
++      <td class="num" style="color:var(--faint)">—</td>
++      <td><span class="health"><span class="hdot" style="background:var(${h.v})"></span>${h.label}</span></td>
++      <td><div class="progresscell"><div class="mini"><span style="width:${Math.round(r.ratio * 100)}%;background:var(${h.v})"></span></div><span class="frac">${r.done}/${r.total || '·'}</span></div></td>
++      <td>${workdots}</td>
++      <td><span class="trend">${esc(relTime(e.updated_at))}</span></td></tr>`;
++    let childRows = '';
++    if (open) {
++      childRows = kids.slice().sort((a, b) => (a.status === 'done') - (b.status === 'done')).map((k) => `<tr class="child">
++        <td><div class="rowname"><span class="chev leaf"></span>${typeBadge(k.type)}<span class="tt">${esc(clamp(k.title, 62))}</span></div></td>
++        <td></td>
++        <td><span class="health"><span class="dot" style="background:var(${k.blocked ? '--st-blocked' : k.status === 'done' ? '--st-done' : k.claimed_by ? '--st-progress' : '--st-ready'})"></span>${esc(k.blocked ? 'blocked' : k.status)}</span></td>
++        <td>${prioBadge(k.priority)}</td>
++        <td>${k.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(k.claimed_by.slice(0, 2))}</span></span>` : ''}</td>
++        <td><span class="trend">${esc(relTime(k.updated_at))}</span></td></tr>`).join('');
+     }
+-    grid.append(box);
+-  });
++    return parentRow + childRows;
++  }).join('');
++
++  const body = eps.length ? `<div class="tblwrap"><table class="tbl">
++    <thead><tr><th>Name</th><th>Target</th><th>Health</th><th>Progress</th><th>Active</th><th>Activity</th></tr></thead>
++    <tbody>${rows}</tbody></table></div>` : `<div class="empty-state"><h4>No epics in this tab</h4><p>Try the “All” tab.</p></div>`;
++  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · click a row title to open it in the board</span></div>${body}</div>`;
+ }
+ 
++/* ---- Decisions + Architecture ---- */
+ function renderDecisions() {
+-  const decs = State.issues.filter((i) => i.type === 'decision')
+-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+-  $('#decCount').textContent = `${decs.length}`;
+-  const grid = $('#decGrid'); grid.innerHTML = '';
+-  if (!decs.length) { grid.append(el('div', 'empty', 'No decision records in this snapshot.')); return; }
+-  decs.forEach((d) => {
+-    const box = el('div', 'decision');
+-    const top = el('div', 'decision__top');
+-    top.append(el('span', 'badge badge--type', 'decision'), el('span', 'badge badge--type', d.status));
+-    box.append(top, el('div', 'decision__title', d.title));
+-    const body = (d.body || '').replace(/^#+\s.*$/gm, '').replace(/\n{2,}/g, '\n').trim();
+-    box.append(el('div', 'decision__body', clamp(body, 340)));
+-    box.append(el('div', 'decision__id', String(d.id)));
+-    grid.append(box);
++  const decs = State.snapshot.decisions || [];
++  const groups = [
++    { key: 'kernel', label: 'Kernel decisions' },
++    { key: 'headline', label: 'Architecture decisions (headline)' },
++    { key: 'adr', label: 'ADRs' },
++  ];
++  const statusClass = (s) => { const l = (s || '').toLowerCase(); if (l.startsWith('accept')) return 'accepted'; if (l.startsWith('propos')) return 'proposed'; if (l.startsWith('supersed')) return 'superseded'; if (l.startsWith('deprecat')) return 'deprecated'; if (l === 'done') return 'done'; return 'open'; };
++  const card = (d) => `<div class="deccard">
++    <div class="deccard__top"><span class="stbadge ${statusClass(d.status)}">${esc(d.status || 'open')}</span>${d.component ? `<span class="badge badge--soft">${esc(clamp(d.component, 28))}</span>` : ''}</div>
++    <div class="deccard__title">${esc(d.title)}</div>
++    <div class="deccard__body">${esc(clamp(d.rationale || '', 320))}</div>
++    <div class="deccard__foot"><span class="deccard__id">${esc(String(d.id))}</span></div></div>`;
++
++  let html = '<div class="fade-in">';
++  groups.forEach((g) => {
++    const items = decs.filter((d) => d.source === g.key);
++    if (!items.length) return;
++    html += `<div class="section-title">${esc(g.label)} · ${items.length}</div><div class="deckgrid">${items.map(card).join('')}</div>`;
+   });
++  const arch = State.snapshot.architecture || [];
++  html += `<div class="section-title">Architecture docs · ${arch.length}</div>`;
++  html += arch.length ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="ic">${icon('doc')}</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
++    : `<div class="empty-state"><h4>No architecture docs indexed</h4><p>Add records under docs/architecture/ or docs/adr/.</p></div>`;
++  if (!decs.length) html += `<div class="empty-state"><h4>No decisions in this snapshot</h4><p>Kernel type=decision issues and headline PDs appear here.</p></div>`;
++  return html + '</div>';
+ }
+ 
+-function renderActivity() {
+-  const recent = State.issues.slice()
+-    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 14);
+-  const tl = $('#timeline'); tl.innerHTML = '';
+-  const stColor = { done: '--done', open: '--ready', cancelled: '--faint' };
+-  recent.forEach((i) => {
+-    const row = el('div', 'tl');
+-    row.style.setProperty('--st', `var(${(i.blocked ? '--blocked' : stColor[i.status]) || '--faint'})`);
+-    row.append(el('span', 'tl__time', relTime(i.updated_at)));
+-    const t = el('span', 'tl__title');
+-    const b = el('span', 'badge badge--type', TYPE_LABEL[i.type] || i.type);
+-    t.append(b, document.createTextNode(clamp(i.title, 74)));
+-    row.append(t);
+-    tl.append(row);
++/* ---- Plans & History ---- */
++function renderPlans() {
++  const plans = (State.snapshot.plans || []).slice();
++  const monthLabel = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Undated';
++  const groups = {};
++  plans.forEach((p) => { const m = p.date ? p.date.slice(0, 7) : 'zzzz'; (groups[m] = groups[m] || []).push(p); });
++  const months = Object.keys(groups).sort((a, b) => b.localeCompare(a));
++  const tag = (on, label) => on ? `<span class="badge badge--soft">${label}</span>` : '';
++  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first</span></div>`;
++  months.forEach((m) => {
++    html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div>`;
++    groups[m].forEach((p) => {
++      html += `<div class="tl-row">
++        <span class="tl-date">${esc(p.date || '—')}</span>
++        <div><div class="tl-title">${esc(clamp(p.title, 84))}</div><div class="tl-slug">${esc(p.slug)}</div></div>
++        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="badge badge--soft">${p.docCount} docs</span></div>
++      </div>`;
++    });
+   });
++  return html + '</div>';
++}
+ 
+-  const mem = Array.isArray(State.snapshot.memory) ? State.snapshot.memory : [];
+-  const mp = $('#memPanel'); mp.innerHTML = '';
+-  if (mem.length) {
+-    mp.classList.remove('mempanel'); mp.className = 'timeline';
+-    mem.slice(0, 12).forEach((m) => {
+-      const row = el('div', 'tl');
+-      row.append(el('span', 'tl__time', relTime(m.created_at || m.updated_at)));
+-      row.append(el('span', 'tl__title', clamp(m.text || m.content || m.title || JSON.stringify(m), 80)));
+-      mp.append(row);
+-    });
+-  } else {
+-    mp.innerHTML = `
+-      <div class="mp-ic">
+-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="30" height="30">
+-          <path d="M12 3a4 4 0 0 1 4 4v1a4 4 0 0 1 0 8v1a4 4 0 0 1-8 0v-1a4 4 0 0 1 0-8V7a4 4 0 0 1 4-4Z"/>
+-        </svg></div>
+-      <h4>Kernel memory is empty</h4>
+-      <p><code>forge recall</code> returned no entries yet. Recalled facts will
+-      stream here as the kernel records them.</p>`;
+-  }
++/* ---- Live Ops ---- */
++function renderOps() {
++  const ops = State.snapshot.ops || { worktrees: [], prs: [], activeClaims: [] };
++  const claims = ops.activeClaims || [];
++  const claimsHtml = claims.length ? claims.map((c) => `<div class="pr-row"><span class="kcard__owner"><span class="av">${esc((c.owner || '?').slice(0, 2))}</span></span>
++    <span class="pr-title">${esc(clamp(c.title, 56))}</span>${prioBadge(c.priority)}<span class="pr-branch">${esc(relTime(c.updated_at))}</span></div>`).join('')
++    : `<div class="empty-state"><h4>No active claims</h4><p>Claimed-and-open issues appear here.</p></div>`;
++
++  const prs = ops.prs || [];
++  const prsHtml = prs.length ? prs.map((p) => `<div class="pr-row"><span class="pr-num">#${esc(p.number)}</span>
++    <span class="pr-title">${esc(clamp(p.title, 60))}</span>${p.isDraft ? '<span class="badge badge--soft">draft</span>' : ''}
++    <span class="stbadge ${p.state === 'OPEN' ? 'open' : 'done'}">${esc((p.state || '').toLowerCase())}</span></div>`).join('')
++    : `<div class="empty-state"><h4>No open PRs</h4><p>gh pr list returned none (or gh is unavailable).</p></div>`;
++
++  const trees = ops.worktrees || [];
++  const treeRows = trees.map((w) => `<tr><td><div class="rowname"><span class="ic">${icon('branch')}</span><span class="tt">${esc(w.branch || '(detached)')}</span></div></td>
++    <td class="num" style="color:var(--faint)">${esc(w.head || '')}</td><td><span class="mono-path">${esc(w.path)}</span></td></tr>`).join('');
++
++  return `<div class="fade-in">
++    <div class="ops-grid">
++      <div class="panel" style="padding:0"><h3 style="padding:16px 16px 6px">Active work · ${claims.length}</h3><div>${claimsHtml}</div></div>
++      <div class="panel" style="padding:0"><h3 style="padding:16px 16px 6px">Open pull requests · ${prs.length}</h3><div>${prsHtml}</div></div>
++    </div>
++    <div class="section-title">Git worktrees · ${trees.length}</div>
++    <div class="tblwrap"><table class="tbl"><thead><tr><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead><tbody>${treeRows}</tbody></table></div>
++  </div>`;
+ }
+ 
+-function renderFooter() {
+-  const s = State.snapshot;
+-  $('#footer').innerHTML =
+-    `snapshot ${esc(s.generated_at)} · ${State.issues.length} issues · source: ${esc(s.source || 'forge --json')}` +
+-    `<div class="live-todo">LIVE-VIEW SEAM · This is a baked read-only snapshot. ` +
+-    `The sync-rail outbox feed will later push real-time deltas through <code>DataSource</code> ` +
+-    `(fetch data.json + EventSource /events) with no render changes. See plan.md.</div>`;
++/* ============================================================================
++ * Router + chrome
++ * ========================================================================== */
++function currentView() { return VIEWS.find((v) => v.id === State.route) || VIEWS[0]; }
++function route() {
++  const id = (location.hash.replace(/^#\/?/, '') || 'overview').split('?')[0];
++  State.route = VIEWS.some((v) => v.id === id) ? id : 'overview';
++  const v = currentView();
++  $('#viewTitle').textContent = v.title;
++  $('#viewCrumb').textContent = '';
++  $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === v.id));
++  const view = $('#view');
++  view.classList.toggle('view--flush', !!v.flush);
++  view.innerHTML = v.render();
++  view.scrollTop = 0;
++  afterRender();
++}
++function afterRender() {
++  const bs = $('#boardSearch');
++  if (bs) bs.addEventListener('input', (e) => { State.filters.q = e.target.value.trim(); rerender(); }, { once: false });
+ }
++function rerender() { const v = currentView(); const view = $('#view'); const focus = document.activeElement?.id; view.innerHTML = v.render(); afterRender(); if (focus === 'boardSearch') { const el = $('#boardSearch'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } }
+ 
+-function renderSnapMeta() {
+-  const s = State.snapshot;
+-  const when = s.generated_at ? new Date(s.generated_at) : new Date();
+-  $('#snapmeta').innerHTML =
+-    `<b>snapshot</b><br>${when.toISOString().slice(0, 16).replace('T', ' ')} UTC<br>` +
+-    `<b>${State.issues.length}</b> issues · read-only`;
+-  $('#brandTag').textContent = (s.status?.context?.branch) ? 'branch ' + s.status.context.branch : 'kernel dashboard';
++function buildNav() {
++  const counts = { board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length, decisions: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.worktrees || []).length };
++  $('#nav').innerHTML = `<div class="nav__label">Views</div>` + VIEWS.map((v) =>
++    `<a href="#/${v.id}" data-view="${v.id}">${icon(v.id)}<span>${esc(v.title)}</span>${counts[v.id] != null ? `<span class="n">${counts[v.id]}</span>` : ''}</a>`).join('');
+ }
+ 
+-/* ---------- interactions ---------- */
+-function wireSearch() {
+-  let t;
+-  $('#search').addEventListener('input', (e) => {
+-    clearTimeout(t);
+-    t = setTimeout(() => {
+-      State.filters.q = e.target.value.trim();
+-      State.limits = { ready: 12, progress: 12, blocked: 12, done: 10 };
+-      renderBoard();
+-    }, 120);
++/* ---- delegated actions ---- */
++function onViewClick(e) {
++  const t = e.target.closest('[data-act]'); if (!t) return;
++  const act = t.dataset.act;
++  if (act === 'board-level') { State.board.level = t.dataset.level; State.board.limits = {}; rerender(); }
++  else if (act === 'focus-epic') { State.board.epicFocus = t.dataset.id; State.board.level = 'tasks'; State.board.limits = {}; location.hash = '#/board'; }
++  else if (act === 'clear-focus') { State.board.epicFocus = null; rerender(); }
++  else if (act === 'more') { const k = t.dataset.col; State.board.limits[k] = (State.board.limits[k] ?? 25) + 25; rerender(); }
++  else if (act === 'chip-type') { State.filters.type = State.filters.type === t.dataset.val ? null : t.dataset.val; rerender(); }
++  else if (act === 'chip-prio') { State.filters.prio = State.filters.prio === t.dataset.val ? null : t.dataset.val; rerender(); }
++  else if (act === 'epics-tab') { State.epicsTab = t.dataset.tab; rerender(); }
++  else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
++}
++
++/* ---- global search ---- */
++function wireGlobalSearch() {
++  const input = $('#globalSearch'), box = $('#searchResults');
++  const run = () => {
++    const q = input.value.trim().toLowerCase();
++    if (!q) { box.classList.remove('on'); box.innerHTML = ''; return; }
++    const iss = State.issues.filter((i) => i.type !== 'epic' && (i.title.toLowerCase().includes(q) || String(i.id).toLowerCase().includes(q))).slice(0, 6);
++    const eps = State.epics.filter((e) => e.title.toLowerCase().includes(q)).slice(0, 5);
++    const dec = (State.snapshot.decisions || []).filter((d) => (d.title + ' ' + d.id).toLowerCase().includes(q)).slice(0, 5);
++    const grp = (label, items, html) => items.length ? `<div class="sr-group">${label}</div>${items.map(html).join('')}` : '';
++    box.innerHTML =
++      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="board" data-q="${esc(i.title)}">${typeBadge(i.type)}<span class="t">${esc(clamp(i.title, 52))}</span></div>`) +
++      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="epic" data-id="${esc(e.id)}"><span class="hdot" style="background:var(${HEALTH[epicHealth(e)].v})"></span><span class="t">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 50))}</span></div>`) +
++      grp('Decisions', dec, (d) => `<div class="sr-item" data-nav="decisions"><span class="stbadge accepted">${esc(d.status)}</span><span class="t">${esc(clamp(d.title, 46))}</span></div>`) ||
++      `<div class="sr-empty">No matches for “${esc(q)}”.</div>`;
++    box.classList.add('on');
++  };
++  input.addEventListener('input', run);
++  input.addEventListener('focus', run);
++  box.addEventListener('click', (e) => {
++    const it = e.target.closest('[data-nav]'); if (!it) return;
++    const nav = it.dataset.nav;
++    box.classList.remove('on'); input.value = '';
++    if (nav === 'board') { State.board.epicFocus = null; State.board.level = 'tasks'; State.filters.q = it.dataset.q || ''; location.hash = '#/board'; }
++    else if (nav === 'epic') { State.epicsExpanded.add(it.dataset.id); location.hash = '#/epics'; }
++    else if (nav === 'decisions') { location.hash = '#/decisions'; }
++  });
++  document.addEventListener('click', (e) => { if (!e.target.closest('.search')) box.classList.remove('on'); });
++  document.addEventListener('keydown', (e) => {
++    if (e.key === '/' && document.activeElement !== input && !/input|textarea/i.test(document.activeElement?.tagName || '')) { e.preventDefault(); input.focus(); }
++    if (e.key === 'Escape') { box.classList.remove('on'); input.blur(); }
+   });
+ }
+ 
++/* ---- theme / refresh / stamp ---- */
+ function wireTheme() {
+   const root = document.documentElement;
+-  const saved = localStorage.getItem('forge-theme');
+-  if (saved) root.setAttribute('data-theme', saved);
+-  const paint = () => {
+-    const dark = root.getAttribute('data-theme') !== 'light';
+-    $('#themeLabel').textContent = dark ? 'Light' : 'Dark';
+-    $('#themeIcon').textContent = dark ? '◐' : '◑';
+-  };
++  const saved = localStorage.getItem('forge-theme'); if (saved) root.setAttribute('data-theme', saved);
++  const paint = () => { const dark = root.getAttribute('data-theme') !== 'light'; $('#themeLabel').textContent = dark ? 'Light' : 'Dark'; $('#themeIcon').textContent = dark ? '◐' : '◑'; };
+   paint();
+-  $('#themeToggle').addEventListener('click', () => {
+-    const dark = root.getAttribute('data-theme') !== 'light';
+-    root.setAttribute('data-theme', dark ? 'light' : 'dark');
+-    localStorage.setItem('forge-theme', dark ? 'light' : 'dark');
+-    paint();
+-  });
++  $('#themeToggle').addEventListener('click', () => { const dark = root.getAttribute('data-theme') !== 'light'; root.setAttribute('data-theme', dark ? 'light' : 'dark'); localStorage.setItem('forge-theme', dark ? 'light' : 'dark'); paint(); });
+ }
+-
+-function wireScrollSpy() {
+-  const links = [...document.querySelectorAll('#nav a')];
+-  const map = new Map(links.map((a) => [a.getAttribute('href').slice(1), a]));
+-  const obs = new IntersectionObserver((entries) => {
+-    entries.forEach((en) => {
+-      if (en.isIntersecting) {
+-        links.forEach((l) => l.classList.remove('active'));
+-        map.get(en.target.id)?.classList.add('active');
+-      }
+-    });
+-  }, { rootMargin: '-20% 0px -70% 0px' });
+-  ['health', 'board', 'epics', 'decisions', 'activity'].forEach((id) => {
+-    const s = document.getElementById(id); if (s) obs.observe(s);
+-  });
++function updateStamp() {
++  const g = State.snapshot.generated_at;
++  $('#updatedText').textContent = 'updated ' + (g ? relTime(g) : '—');
++  const when = g ? new Date(g) : new Date();
++  $('#sidebarMeta').innerHTML = `snapshot ${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · read-only`;
++  $('#brandVer').textContent = State.snapshot.status?.context?.branch ? esc(State.snapshot.status.context.branch) : 'kernel dashboard';
++}
++async function doRefresh(silent) {
++  const btn = $('#refreshBtn');
++  if (!silent) btn.classList.add('spin');
++  try {
++    const snap = await DataSource.refetch();
++    rebuild(snap); buildNav(); route(); updateStamp();
++  } catch (err) {
++    if (!silent) { location.reload(); return; } // file:// — reload picks up regenerated snapshot.js
++  } finally { btn.classList.remove('spin'); }
+ }
+ 
+-/* ---------- boot ---------- */
++/* ---- boot ---- */
+ async function boot() {
+   try {
+     const snap = await DataSource.load();
+-    State.snapshot = snap;
+-    State.issues = (snap.issues || []).filter((i) => i && i.type !== 'zzzbogus');
+-    renderSnapMeta();
+-    renderStats();
+-    renderMeters();
+-    renderFilters();
+-    renderBoard();
+-    renderEpics();
+-    renderDecisions();
+-    renderActivity();
+-    renderFooter();
+-    wireSearch();
++    rebuild(snap);
++    buildNav();
+     wireTheme();
+-    wireScrollSpy();
++    wireGlobalSearch();
++    $('#refreshBtn').addEventListener('click', () => doRefresh(false));
++    $('#view').addEventListener('click', onViewClick);
++    $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
++    window.addEventListener('hashchange', route);
++    if (!location.hash) location.hash = '#/overview';
++    route();
++    updateStamp();
++    setInterval(updateStamp, 15000);
++    setInterval(() => { if (document.visibilityState === 'visible') doRefresh(true); }, 60000);
+   } catch (err) {
+-    document.querySelector('.main').innerHTML =
+-      `<div style="padding:40px;color:var(--muted)"><h2>Could not load snapshot</h2>
+-       <p>${esc(err.message)}</p><p>Run <code>node web/dashboard/generate-snapshot.mjs</code> to bake it.</p></div>`;
++    $('#view').innerHTML = `<div class="empty-state"><h4>Could not load snapshot</h4><p>${esc(err.message)}</p><p>Run <code>node web/dashboard/generate-snapshot.mjs</code> to bake it.</p></div>`;
+   }
+ }
+ 
+-// Run in the browser; stay inert (and unit-testable) under Node/Bun.
+ if (typeof document !== 'undefined') boot();
+-
+-// Export the pure, DOM-free logic for tests (see app.test.js).
+ if (typeof module !== 'undefined' && module.exports) {
+-  module.exports = { columnOf, matchesFilter, relTime, State };
++  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, State };
+ }
+diff --git a/web/dashboard/app.test.js b/web/dashboard/app.test.js
+index fd750332..f9565d66 100644
+--- a/web/dashboard/app.test.js
++++ b/web/dashboard/app.test.js
+@@ -14,6 +14,33 @@ test('module exports the pure helpers without touching the DOM', () => {
+   expect(typeof app.columnOf).toBe('function');
+   expect(typeof app.matchesFilter).toBe('function');
+   expect(typeof app.relTime).toBe('function');
++  expect(typeof app.epicRollup).toBe('function');
++  expect(typeof app.epicHealth).toBe('function');
++});
++
++test('epicRollup counts children by state', () => {
++  const kids = [
++    { status: 'done' }, { status: 'done' },
++    { status: 'open', blocked: true }, { status: 'open', claimed_by: 'a' }, { status: 'open' },
++  ];
++  const r = app.epicRollup({ id: 'e1' }, kids);
++  expect(r.total).toBe(5);
++  expect(r.done).toBe(2);
++  expect(r.blocked).toBe(1);
++  expect(r.inprog).toBe(1);
++  expect(r.ratio).toBeCloseTo(0.4);
++});
++
++test('epicHealth derives on-track / at-risk / off-track / completed', () => {
++  expect(app.epicHealth({ status: 'done' }, [])).toBe('done');
++  // >=25% blocked → off-track
++  expect(app.epicHealth({ status: 'open' }, [{ status: 'open', blocked: true }, { status: 'done' }, { status: 'open' }, { status: 'open' }])).toBe('risk');
++  // >=50% done, no blocking → on-track
++  expect(app.epicHealth({ status: 'open' }, [{ status: 'done' }, { status: 'done' }, { status: 'open' }])).toBe('ok');
++  // some progress but low → at-risk
++  expect(app.epicHealth({ status: 'open' }, [{ status: 'done' }, { status: 'open' }, { status: 'open' }, { status: 'open' }, { status: 'open' }])).toBe('warn');
++  // childless leaf, not blocked → on-track
++  expect(app.epicHealth({ status: 'open' }, [])).toBe('ok');
+ });
+ 
+ test('columnOf routes each issue to exactly one board column', () => {
+diff --git a/web/dashboard/generate-snapshot.mjs b/web/dashboard/generate-snapshot.mjs
+index 4c0435cd..e082e918 100644
+--- a/web/dashboard/generate-snapshot.mjs
++++ b/web/dashboard/generate-snapshot.mjs
+@@ -1,15 +1,18 @@
+ #!/usr/bin/env node
+-// Forge Dashboard — snapshot generator (read-only).
++// Forge Dashboard — snapshot generator (read-only, v2).
+ //
+-// Shells the Forge CLI (`forge issue list/status --json`) and bakes the result
+-// into `snapshot.js` (a browser global, so index.html opens by double-click with
+-// NO server) and `data.json` (machine-readable, same payload).
++// Shells the Forge CLI + git + gh and bakes a rich snapshot into:
++//   snapshot.js  — a browser global (index.html opens by double-click, no server)
++//   data.json    — the same payload, machine-readable (used by Refresh over HTTP)
++//
++// Sections: issues (+epic/parent links), decisions (kernel + ADR + headline),
++// architecture docs, work-folder plans/history, and live ops (worktrees + PRs).
+ //
+ // Usage:  node web/dashboard/generate-snapshot.mjs
+ // Run from anywhere inside the repo/worktree; it locates bin/forge.js by walking up.
+ 
+ import { execFileSync } from 'node:child_process';
+-import { existsSync, writeFileSync } from 'node:fs';
++import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+ import { dirname, join, resolve } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ 
+@@ -29,43 +32,169 @@ function findRepoRoot(start) {
+ const ROOT = findRepoRoot(HERE);
+ const FORGE = join(ROOT, 'bin', 'forge.js');
+ 
+-function forge(args) {
+-  const out = execFileSync(process.execPath, [FORGE, ...args], {
++function run(cmd, args, opts = {}) {
++  return execFileSync(cmd, args, {
+     cwd: ROOT,
+     encoding: 'utf8',
+     maxBuffer: 64 * 1024 * 1024,
++    stdio: ['pipe', 'pipe', 'pipe'],
++    ...opts,
+   });
+-  return JSON.parse(out);
+ }
+-
+-function safe(args, fallback) {
+-  try {
+-    return forge(args);
+-  } catch (err) {
+-    console.warn(`  ! forge ${args.join(' ')} failed: ${err.message.split('\n')[0]}`);
+-    return fallback;
+-  }
++function forge(args) { return JSON.parse(run(process.execPath, [FORGE, ...args])); }
++function tryRun(fn, fallback, label) {
++  try { return fn(); }
++  catch (err) { console.warn(`  ! ${label} failed: ${String(err.message).split('\n')[0]}`); return fallback; }
+ }
+ 
+-console.log('Forge dashboard snapshot');
++const firstHeading = (md) => {
++  const m = md.match(/^#\s+(.+)$/m);
++  return m ? m[1].trim() : null;
++};
++const titleFromSlug = (slug) =>
++  slug.replace(/^\d{4}-\d{2}-\d{2}-/, '').replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
++
++console.log('Forge dashboard snapshot (v2)');
+ console.log('  repo:', ROOT);
+ 
++// ---- issues ---------------------------------------------------------------
+ const listRes = forge(['issue', 'list', '--json']);
+-const issues = listRes?.data?.issues ?? [];
++const issues = (listRes?.data?.issues ?? []).filter((i) => i && i.type !== 'zzzbogus');
+ console.log(`  issues: ${issues.length}`);
++const statusRes = tryRun(() => forge(['status', '--json']), null, 'forge status');
++const memory = tryRun(() => {
++  const r = forge(['recall', '--json']);
++  return Array.isArray(r) ? r : r?.data ?? [];
++}, [], 'forge recall');
++
++// ---- decisions: kernel issues + headline PDs + real ADRs -------------------
++const decisions = [];
++issues.filter((i) => i.type === 'decision').forEach((d) => {
++  const body = (d.body || '').replace(/\r/g, '');
++  decisions.push({
++    id: d.id, title: d.title, status: d.status || 'open',
++    rationale: body.replace(/^#+.*$/gm, '').replace(/\n{2,}/g, '\n').trim().slice(0, 600),
++    component: (d.labels || [])[0] || null, source: 'kernel',
++    updated_at: d.updated_at,
++  });
++});
++
++// forge prime → "## Headline Decisions" block of PD-* records
++tryRun(() => {
++  const prime = run(process.execPath, [FORGE, 'prime']);
++  const section = prime.split(/^##\s+Headline Decisions\s*$/m)[1];
++  if (!section) return;
++  const block = section.split(/^##\s+/m)[0];
++  const chunks = block.split(/^- (?=PD-)/m).slice(1);
++  chunks.forEach((c) => {
++    const id = (c.split('\n')[0] || '').trim();
++    const topic = (c.match(/topic:\s*(.+)/) || [])[1]?.trim() || null;
++    const status = (c.match(/status:\s*(.+)/) || [])[1]?.trim() || 'accepted';
++    const decision = (c.match(/decision:\s*([\s\S]+?)(?:\n\s*- PD-|\n*$)/) || [])[1]?.trim() || '';
++    if (id) decisions.push({ id, title: topic || id, status, rationale: decision.slice(0, 600), component: topic, source: 'headline' });
++  });
++}, null, 'forge prime headline decisions');
++
++// docs/adr/*.md (excluding README) — real ADRs when they exist
++const adrDir = join(ROOT, 'docs', 'adr');
++if (existsSync(adrDir)) {
++  readdirSync(adrDir).filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md').forEach((f) => {
++    const md = readFileSync(join(adrDir, f), 'utf8');
++    decisions.push({
++      id: f.replace(/\.md$/, ''), title: firstHeading(md) || f,
++      status: (md.match(/\*\*Status\*\*:\s*(.+)/i) || [])[1]?.trim() || 'proposed',
++      rationale: (md.split(/^##\s+Decision/mi)[1] || md).replace(/^#+.*$/gm, '').trim().slice(0, 600),
++      component: null, source: 'adr',
++    });
++  });
++}
++console.log(`  decisions: ${decisions.length}`);
++
++// ---- architecture docs ----------------------------------------------------
++const architecture = [];
++const archDir = join(ROOT, 'docs', 'architecture');
++const walkMd = (dir, rel = '') => {
++  if (!existsSync(dir)) return;
++  for (const name of readdirSync(dir)) {
++    const p = join(dir, name); const r = rel ? `${rel}/${name}` : name;
++    const st = statSync(p);
++    if (st.isDirectory()) walkMd(p, r);
++    else if (name.endsWith('.md')) {
++      const md = readFileSync(p, 'utf8');
++      architecture.push({ path: `docs/architecture/${r}`, title: firstHeading(md) || r, bytes: st.size });
++    }
++  }
++};
++walkMd(archDir);
++console.log(`  architecture docs: ${architecture.length}`);
++
++// ---- plans / history (work folders) ---------------------------------------
++const plans = [];
++const workDir = join(ROOT, 'docs', 'work');
++if (existsSync(workDir)) {
++  for (const slug of readdirSync(workDir)) {
++    if (slug.startsWith('_')) continue;
++    const dir = join(workDir, slug);
++    if (!statSync(dir).isDirectory()) continue;
++    const files = readdirSync(dir).filter((f) => f.endsWith('.md'));
++    const design = files.includes('plan.md') ? 'plan.md' : files.find((f) => f !== 'README.md') || files[0];
++    let title = titleFromSlug(slug);
++    if (design) { const h = firstHeading(readFileSync(join(dir, design), 'utf8')); if (h) title = h; }
++    const dateMatch = slug.match(/^(\d{4}-\d{2}-\d{2})/);
++    plans.push({
++      slug, title, date: dateMatch ? dateMatch[1] : null,
++      hasPlan: files.includes('plan.md'), hasTasks: files.includes('tasks.md'),
++      hasDecisions: files.includes('decisions.md'), docCount: files.length,
++      path: `docs/work/${slug}${design ? '/' + design : ''}`,
++    });
++  }
++  plans.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
++}
++console.log(`  plans: ${plans.length}`);
++
++// ---- live ops: worktrees + PRs --------------------------------------------
++const worktrees = tryRun(() => {
++  const out = run('git', ['worktree', 'list', '--porcelain']);
++  const trees = [];
++  let cur = {};
++  out.split('\n').forEach((line) => {
++    if (line.startsWith('worktree ')) { cur = { path: line.slice(9).trim() }; }
++    else if (line.startsWith('HEAD ')) { cur.head = line.slice(5, 12); }
++    else if (line.startsWith('branch ')) { cur.branch = line.slice(7).replace('refs/heads/', '').trim(); }
++    else if (line.trim() === '' && cur.path) { trees.push(cur); cur = {}; }
++  });
++  if (cur.path) trees.push(cur);
++  return trees;
++}, [], 'git worktree list');
++
++const prs = tryRun(() => {
++  const out = run('gh', ['pr', 'list', '--json', 'number,title,state,headRefName,isDraft,reviewDecision,createdAt', '--limit', '30']);
++  return JSON.parse(out);
++}, [], 'gh pr list');
++
++const activeClaims = issues
++  .filter((i) => i.claimed_by && i.status === 'open')
++  .map((i) => ({ id: i.id, title: i.title, owner: i.claimed_by, priority: i.priority, updated_at: i.updated_at }));
+ 
+-const statusRes = safe(['status', '--json'], null);
+-const recallRes = safe(['recall', '--json'], []);
+-const recall = Array.isArray(recallRes) ? recallRes : recallRes?.data ?? [];
++console.log(`  ops: ${worktrees.length} worktrees, ${prs.length} PRs, ${activeClaims.length} active claims`);
+ 
++// ---- assemble + write -----------------------------------------------------
+ const snapshot = {
+   generated_at: new Date().toISOString(),
+   schema_version: listRes?.schema_version ?? null,
+-  source: 'forge issue list --json + forge status --json + forge recall --json',
+-  counts: { issues: issues.length },
++  source: 'forge issue list/status/recall/prime + git worktree + gh pr list',
++  counts: {
++    issues: issues.length, decisions: decisions.length,
++    architecture: architecture.length, plans: plans.length,
++    worktrees: worktrees.length, prs: prs.length,
++  },
+   status: statusRes,
+-  memory: recall,
++  memory,
+   issues,
++  decisions,
++  architecture,
++  plans,
++  ops: { worktrees, prs, activeClaims },
+ };
+ 
+ const json = JSON.stringify(snapshot);
+@@ -76,6 +205,5 @@ writeFileSync(
+     `window.FORGE_SNAPSHOT = ${json};\n`,
+ );
+ 
+-console.log('  wrote: web/dashboard/snapshot.js');
+-console.log('  wrote: web/dashboard/data.json');
++console.log('  wrote: web/dashboard/snapshot.js + data.json');
+ console.log(`  done @ ${snapshot.generated_at}`);
+diff --git a/web/dashboard/index.html b/web/dashboard/index.html
+index cbda9797..e2871b5f 100644
+--- a/web/dashboard/index.html
++++ b/web/dashboard/index.html
+@@ -8,108 +8,57 @@
+ </head>
+ <body>
+   <div class="app">
+-    <!-- Left rail -->
+-    <aside class="rail">
++    <!-- ============ Sidebar ============ -->
++    <aside class="sidebar" id="sidebar">
+       <div class="brand">
+         <div class="brand__mark" aria-hidden="true">
+-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+-               stroke-linecap="round" stroke-linejoin="round">
++          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+             <path d="M4 20h6M7 20V9M4 9l6-5 6 4-1 4M14 12l6 2-1 6-6-1z"/>
+           </svg>
+         </div>
+         <div>
+           <div class="brand__name">Forge</div>
+-          <div class="brand__tag" id="brandTag">kernel dashboard</div>
++          <div class="brand__ver" id="brandVer">kernel dashboard</div>
+         </div>
+       </div>
+ 
++      <div class="search">
++        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
++        <input id="globalSearch" type="search" placeholder="Search issues, epics, decisions…" autocomplete="off" />
++        <span class="search__kbd">/</span>
++        <div class="searchresults" id="searchResults"></div>
++      </div>
++
+       <nav class="nav" id="nav">
+-        <a href="#health" class="active"><span class="dot" style="background:var(--accent)"></span> Health</a>
+-        <a href="#board"><span class="dot" style="background:var(--ready)"></span> Work board</a>
+-        <a href="#epics"><span class="dot" style="background:var(--progress)"></span> Epics</a>
+-        <a href="#decisions"><span class="dot" style="background:var(--accent-2)"></span> Decisions</a>
+-        <a href="#activity"><span class="dot" style="background:var(--done)"></span> Activity</a>
++        <div class="nav__label">Views</div>
++        <!-- nav items injected by app.js -->
+       </nav>
+ 
+-      <div class="rail__foot">
++      <div class="sidebar__foot">
+         <button class="themetoggle" id="themeToggle" type="button" aria-label="Toggle theme">
+           <span id="themeIcon">◐</span> <span id="themeLabel">Light</span>
+         </button>
+-        <div class="snapmeta" id="snapmeta">loading snapshot…</div>
++        <div class="sidebar__meta" id="sidebarMeta">loading…</div>
+       </div>
+     </aside>
+ 
+-    <!-- Main -->
++    <!-- ============ Main ============ -->
+     <main class="main">
+-      <header class="masthead">
+-        <h1>Kernel <span class="accent">dashboard</span></h1>
+-        <p id="masthead-sub">A read-only view of the live Forge kernel — work board,
+-          epics, decisions and recent activity from a baked snapshot.</p>
++      <header class="topbar">
++        <button class="menu" id="menuBtn" aria-label="Menu">
++          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
++        </button>
++        <h1 id="viewTitle">Overview</h1>
++        <span class="crumb" id="viewCrumb"></span>
++        <div class="topbar__spacer"></div>
++        <div class="updated" id="updated"><span class="live-dot"></span><span id="updatedText">—</span></div>
++        <button class="btn" id="refreshBtn" type="button">
++          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
++          Refresh
++        </button>
+       </header>
+ 
+-      <!-- 1. Health -->
+-      <section id="health">
+-        <div class="section-head">
+-          <h2>Health</h2><span class="count" id="healthCount"></span><span class="rule"></span>
+-        </div>
+-        <div class="stats" id="stats"></div>
+-        <div class="meters">
+-          <div class="meter">
+-            <h3>Priority distribution</h3>
+-            <div class="bar" id="prioBar"></div>
+-            <div class="legend" id="prioLegend"></div>
+-          </div>
+-          <div class="meter">
+-            <h3>Issue types</h3>
+-            <div class="typechips" id="typeChips"></div>
+-          </div>
+-        </div>
+-      </section>
+-
+-      <!-- 2. Work board -->
+-      <section id="board">
+-        <div class="section-head">
+-          <h2>Work board</h2><span class="count" id="boardCount"></span><span class="rule"></span>
+-        </div>
+-        <div class="toolbar">
+-          <label class="search">
+-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+-                 stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+-            <input id="search" type="search" placeholder="Search 611 issues by title, id, owner…" autocomplete="off" />
+-          </label>
+-          <div class="filters" id="typeFilters"></div>
+-          <div class="filters" id="prioFilters"></div>
+-        </div>
+-        <div class="board" id="boardCols"></div>
+-      </section>
+-
+-      <!-- 3. Epics -->
+-      <section id="epics">
+-        <div class="section-head">
+-          <h2>Epics</h2><span class="count" id="epicCount"></span><span class="rule"></span>
+-        </div>
+-        <div class="cards-grid" id="epicGrid"></div>
+-      </section>
+-
+-      <!-- 4. Decisions -->
+-      <section id="decisions">
+-        <div class="section-head">
+-          <h2>Decisions</h2><span class="count" id="decCount"></span><span class="rule"></span>
+-        </div>
+-        <div class="cards-grid" id="decGrid"></div>
+-      </section>
+-
+-      <!-- 5. Activity + memory -->
+-      <section id="activity">
+-        <div class="section-head">
+-          <h2>Recent activity &amp; memory</h2><span class="rule"></span>
+-        </div>
+-        <div class="split">
+-          <div class="timeline" id="timeline"></div>
+-          <div class="mempanel" id="memPanel"></div>
+-        </div>
+-        <div class="footer" id="footer"></div>
+-      </section>
++      <div class="view" id="view"><!-- routed view injected here --></div>
+     </main>
+   </div>
+ 
+diff --git a/web/dashboard/styles.css b/web/dashboard/styles.css
+index c30ea393..55f5a195 100644
+--- a/web/dashboard/styles.css
++++ b/web/dashboard/styles.css
+@@ -1,454 +1,356 @@
+-/* Forge Dashboard — foundry/kernel aesthetic.
+-   Neutral steel surfaces, a single molten-ember accent, mono-forward display.
+-   Dark is the hero; light fully supported. Zero external assets. */
++/* Forge Dashboard v2 — Linear-quality multi-view app.
++   Fixed sidebar + routed views, independent-scroll Kanban, dense tables.
++   Indigo accent, colored health/status dots. Dark default + light. */
+ 
+ :root {
+   color-scheme: dark;
+ 
+-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+-    "Helvetica Neue", sans-serif;
+-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code",
+-    "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
++  --font-sans: "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
++  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+ 
+   /* dark (default) */
+-  --bg: #0d0e10;
+-  --bg-grid: rgba(255, 255, 255, 0.014);
+-  --surface: #15171a;
+-  --surface-2: #1b1e22;
+-  --surface-3: #22262b;
+-  --border: #292d33;
+-  --border-soft: #21252a;
++  --bg: #0b0c0e;
++  --sidebar: #0e1013;
++  --surface: #131519;
++  --surface-2: #181b20;
++  --surface-3: #1e2228;
++  --hover: #16191e;
++  --border: #23262c;
++  --border-soft: #1a1d22;
+   --text: #e7e9ec;
+-  --muted: #969ca3;
+-  --faint: #666c73;
+-
+-  --accent: #ff6a2b;
+-  --accent-2: #ff8f5e;
+-  --accent-ink: #1a0d05;
+-  --accent-glow: rgba(255, 106, 43, 0.16);
+-
+-  --ready: #6ea8fe;
+-  --progress: #f0a83a;
+-  --blocked: #f2555a;
+-  --done: #45c07a;
+-
+-  --p0: #f2555a;
+-  --p1: #ff8f3a;
+-  --p2: #f0c04a;
++  --muted: #8b9198;
++  --faint: #5c626a;
++
++  --accent: #6e79e6;
++  --accent-2: #8b93f0;
++  --accent-ink: #ffffff;
++  --accent-soft: rgba(110, 121, 230, 0.14);
++
++  /* health */
++  --ok: #46b17b;
++  --warn: #e6b450;
++  --risk: #e0625f;
++  --neutral: #6b7280;
++
++  /* issue status */
++  --st-ready: #6ea8fe;
++  --st-progress: #e6b450;
++  --st-blocked: #e0625f;
++  --st-done: #46b17b;
++
++  /* priority */
++  --p0: #e0625f;
++  --p1: #e6905a;
++  --p2: #e6b450;
+   --p3: #7f8791;
+-  --p4: #5a616a;
++  --p4: #565c64;
+ 
+-  --radius: 12px;
+-  --radius-sm: 8px;
+-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+-  --maxw: 1400px;
++  --radius: 10px;
++  --radius-sm: 7px;
++  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 34px rgba(0,0,0,.34);
++  --sidebar-w: 236px;
+ }
+ 
+ :root[data-theme="light"] {
+   color-scheme: light;
+-  --bg: #f5f4f1;
+-  --bg-grid: rgba(0, 0, 0, 0.018);
++  --bg: #fbfbfa;
++  --sidebar: #f6f5f3;
+   --surface: #ffffff;
+-  --surface-2: #f3f2ee;
+-  --surface-3: #e9e8e2;
+-  --border: #e3e1da;
+-  --border-soft: #ecebe4;
+-  --text: #191b1d;
+-  --muted: #5c626b;
+-  --faint: #8a9099;
+-
+-  --accent: #e0531c;
+-  --accent-2: #c74712;
+-  --accent-ink: #fff5ef;
+-  --accent-glow: rgba(224, 83, 28, 0.12);
+-
+-  --ready: #2f6bd4;
+-  --progress: #c07a12;
+-  --blocked: #d13b41;
+-  --done: #2b9a5b;
+-
+-  --p0: #d13b41;
+-  --p1: #d16a1a;
+-  --p2: #b58a12;
+-  --p3: #6a727c;
+-  --p4: #9aa0a8;
+-
+-  --shadow: 0 1px 2px rgba(20, 20, 20, 0.06), 0 10px 30px rgba(20, 20, 20, 0.07);
++  --surface-2: #f5f4f2;
++  --surface-3: #ecebe8;
++  --hover: #f2f1ef;
++  --border: #e5e3de;
++  --border-soft: #eeece8;
++  --text: #17191c;
++  --muted: #5f656d;
++  --faint: #969ba2;
++
++  --accent: #5b62d6;
++  --accent-2: #4a51c4;
++  --accent-ink: #ffffff;
++  --accent-soft: rgba(91, 98, 214, 0.12);
++
++  --ok: #2f9e64;
++  --warn: #c4901f;
++  --risk: #cf4b48;
++  --neutral: #7a828c;
++
++  --st-ready: #2f6bd4;
++  --st-progress: #c4901f;
++  --st-blocked: #cf4b48;
++  --st-done: #2f9e64;
++
++  --p0: #cf4b48; --p1: #c76a2a; --p2: #b58a12; --p3: #6a727c; --p4: #9aa0a8;
++  --shadow: 0 1px 2px rgba(20,20,20,.05), 0 12px 30px rgba(20,20,20,.08);
+ }
+ 
+ * { box-sizing: border-box; }
+-
+-html { scroll-behavior: smooth; }
+-
++html, body { height: 100%; }
+ body {
+   margin: 0;
+   font-family: var(--font-sans);
++  font-size: 14px;
+   background: var(--bg);
+-  background-image:
+-    linear-gradient(var(--bg-grid) 1px, transparent 1px),
+-    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+-  background-size: 44px 44px;
+   color: var(--text);
+   -webkit-font-smoothing: antialiased;
+-  line-height: 1.45;
++  overflow: hidden; /* the app shell owns all scrolling; body never scrolls */
+ }
++a { color: inherit; text-decoration: none; }
++::selection { background: var(--accent-soft); }
++::-webkit-scrollbar { width: 10px; height: 10px; }
++::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
++::-webkit-scrollbar-thumb:hover { background: var(--border); background-clip: padding-box; }
+ 
+-a { color: inherit; }
+-
+-::selection { background: var(--accent-glow); }
+-
+-/* ---------- Layout shell ---------- */
++/* ===================== App shell ===================== */
++.app { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); height: 100vh; overflow: hidden; }
+ 
+-.app {
+-  display: grid;
+-  grid-template-columns: 248px minmax(0, 1fr);
+-  max-width: var(--maxw);
+-  margin: 0 auto;
+-  min-height: 100vh;
+-}
+-
+-.rail {
+-  position: sticky;
+-  top: 0;
+-  align-self: start;
+-  height: 100vh;
+-  padding: 22px 18px;
++.sidebar {
++  height: 100vh; overflow-y: auto; background: var(--sidebar);
+   border-right: 1px solid var(--border-soft);
+-  display: flex;
+-  flex-direction: column;
+-  gap: 22px;
+-  background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
++  display: flex; flex-direction: column; gap: 14px; padding: 16px 12px;
+ }
+-
+-.brand { display: flex; align-items: center; gap: 11px; }
++.brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px; }
+ .brand__mark {
+-  width: 34px; height: 34px; border-radius: 9px;
+-  display: grid; place-items: center;
+-  background: radial-gradient(120% 120% at 30% 20%, var(--accent-2), var(--accent));
+-  box-shadow: 0 0 0 1px var(--border), 0 6px 18px var(--accent-glow);
+-  color: var(--accent-ink);
+-  font-weight: 800;
+-}
+-.brand__mark svg { width: 19px; height: 19px; }
+-.brand__name {
+-  font-family: var(--font-mono);
+-  font-weight: 700;
+-  letter-spacing: 0.14em;
+-  text-transform: uppercase;
+-  font-size: 14px;
+-}
+-.brand__tag {
+-  font-size: 10.5px;
+-  color: var(--faint);
+-  letter-spacing: 0.05em;
+-  margin-top: 2px;
++  width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
++  background: linear-gradient(150deg, var(--accent-2), var(--accent));
++  color: var(--accent-ink); box-shadow: 0 4px 12px var(--accent-soft);
+ }
++.brand__mark svg { width: 16px; height: 16px; }
++.brand__name { font-weight: 650; letter-spacing: -0.01em; font-size: 15px; }
++.brand__ver { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+ 
+-.nav { display: flex; flex-direction: column; gap: 2px; }
++.search { position: relative; }
++.search input {
++  width: 100%; padding: 7px 10px 7px 30px; font-size: 13px;
++  background: var(--surface); border: 1px solid var(--border);
++  border-radius: var(--radius-sm); color: var(--text); outline: none;
++  transition: border-color .15s, box-shadow .15s;
++}
++.search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
++.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--faint); }
++.search__kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-family: var(--font-mono); font-size: 10px; color: var(--faint); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
++
++.searchresults {
++  position: absolute; top: 38px; left: 0; right: 0; z-index: 40;
++  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
++  box-shadow: var(--shadow); max-height: 60vh; overflow-y: auto; padding: 6px; display: none;
++}
++.searchresults.on { display: block; }
++.sr-group { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 8px 8px 4px; font-weight: 600; }
++.sr-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
++.sr-item:hover { background: var(--hover); }
++.sr-item .badge { flex: 0 0 auto; }
++.sr-item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.sr-empty { padding: 12px 8px; color: var(--faint); font-size: 12.5px; }
++
++.nav { display: flex; flex-direction: column; gap: 1px; }
++.nav__label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 6px 8px 4px; font-weight: 600; }
+ .nav a {
+-  display: flex; align-items: center; gap: 10px;
+-  padding: 8px 11px;
+-  border-radius: var(--radius-sm);
+-  text-decoration: none;
+-  color: var(--muted);
+-  font-size: 13.5px;
+-  font-weight: 500;
+-  transition: background 0.15s, color 0.15s;
+-}
+-.nav a:hover { color: var(--text); background: var(--surface-2); }
+-.nav a.active { color: var(--text); background: var(--surface-2); }
+-.nav a.active::before {
+-  content: ""; width: 3px; height: 15px; border-radius: 3px;
+-  background: var(--accent); margin-left: -3px;
+-}
+-.nav a .dot { width: 7px; height: 7px; border-radius: 50%; }
+-
+-.rail__foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
+-.snapmeta {
+-  font-family: var(--font-mono);
+-  font-size: 10.5px;
+-  color: var(--faint);
+-  line-height: 1.7;
++  display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 7px;
++  color: var(--muted); font-size: 13.5px; font-weight: 500; transition: background .13s, color .13s;
+ }
+-.snapmeta b { color: var(--muted); font-weight: 600; }
++.nav a:hover { background: var(--hover); color: var(--text); }
++.nav a.active { background: var(--surface-2); color: var(--text); }
++.nav a svg { width: 16px; height: 16px; flex: 0 0 auto; opacity: .85; }
++.nav a .n { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+ 
++.sidebar__foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; padding: 8px 6px 2px; }
+ .themetoggle {
+-  display: inline-flex; align-items: center; gap: 8px;
+-  align-self: flex-start;
+-  padding: 7px 12px;
+-  border: 1px solid var(--border);
+-  background: var(--surface-2);
+-  color: var(--muted);
+-  border-radius: 20px;
+-  font-size: 12px; cursor: pointer;
+-  transition: border-color 0.15s, color 0.15s;
++  display: inline-flex; align-items: center; gap: 7px; align-self: flex-start;
++  padding: 6px 10px; border: 1px solid var(--border); background: var(--surface);
++  color: var(--muted); border-radius: 18px; font-size: 12px; cursor: pointer;
+ }
+ .themetoggle:hover { color: var(--text); border-color: var(--accent); }
+-
+-/* ---------- Main ---------- */
+-
+-.main { padding: 30px clamp(18px, 3vw, 40px) 80px; min-width: 0; }
+-
+-.masthead { margin-bottom: 26px; }
+-.masthead h1 {
+-  margin: 0;
+-  font-family: var(--font-mono);
+-  font-size: clamp(24px, 3vw, 33px);
+-  letter-spacing: -0.01em;
+-  font-weight: 700;
+-}
+-.masthead h1 .accent { color: var(--accent); }
+-.masthead p { margin: 6px 0 0; color: var(--muted); font-size: 14px; max-width: 60ch; }
+-
+-section { scroll-margin-top: 20px; margin-bottom: 40px; }
+-.section-head {
+-  display: flex; align-items: baseline; gap: 12px;
+-  margin: 0 0 14px;
+-}
+-.section-head h2 {
+-  margin: 0; font-size: 13px; font-weight: 700;
+-  letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+-  font-family: var(--font-mono);
+-}
+-.section-head .count { font-family: var(--font-mono); font-size: 12px; color: var(--faint); }
+-.section-head .rule { flex: 1; height: 1px; background: var(--border-soft); }
+-
+-/* ---------- Health strip ---------- */
+-
+-.stats {
+-  display: grid;
+-  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+-  gap: 12px;
+-  margin-bottom: 16px;
+-}
+-.stat {
+-  position: relative;
+-  padding: 16px 16px 14px;
+-  border: 1px solid var(--border);
+-  border-radius: var(--radius);
+-  background: var(--surface);
+-  overflow: hidden;
+-}
+-.stat::after {
+-  content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
+-  background: var(--accar, var(--border));
+-}
+-.stat--hero { background: linear-gradient(150deg, var(--surface-2), var(--surface)); }
+-.stat--hero::after { background: var(--accent); }
+-.stat__num {
+-  font-family: var(--font-mono);
+-  font-size: 30px; font-weight: 700; letter-spacing: -0.02em;
+-  line-height: 1; font-variant-numeric: tabular-nums;
+-}
+-.stat__label {
+-  margin-top: 8px; font-size: 11.5px; color: var(--muted);
+-  letter-spacing: 0.04em; text-transform: uppercase;
+-}
+-.stat__sub { margin-top: 3px; font-size: 11px; color: var(--faint); font-family: var(--font-mono); }
+-
+-.meters { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+-@media (max-width: 720px) { .meters { grid-template-columns: 1fr; } }
+-.meter {
+-  padding: 15px 16px; border: 1px solid var(--border);
+-  border-radius: var(--radius); background: var(--surface);
+-}
+-.meter h3 {
+-  margin: 0 0 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+-  text-transform: uppercase; color: var(--muted); font-family: var(--font-mono);
+-}
+-.bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-3); }
+-.bar span { display: block; transition: width 0.6s cubic-bezier(.2,.7,.2,1); }
+-.legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 12px; }
+-.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+-.legend .swatch { width: 9px; height: 9px; border-radius: 2px; }
+-.legend .item b { font-family: var(--font-mono); color: var(--text); font-weight: 600; }
+-
+-.typechips { display: flex; flex-wrap: wrap; gap: 8px; }
+-.typechip {
+-  display: inline-flex; align-items: center; gap: 7px;
+-  padding: 6px 11px; border: 1px solid var(--border);
+-  border-radius: 20px; background: var(--surface); font-size: 12.5px; color: var(--muted);
+-}
+-.typechip b { font-family: var(--font-mono); color: var(--text); font-weight: 600; }
+-
+-/* ---------- Toolbar ---------- */
+-
+-.toolbar {
+-  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+-  margin-bottom: 16px;
+-}
+-.search {
+-  position: relative; flex: 1; min-width: 210px;
+-}
+-.search input {
+-  width: 100%; padding: 9px 12px 9px 34px;
+-  background: var(--surface); border: 1px solid var(--border);
+-  border-radius: var(--radius-sm); color: var(--text);
+-  font-size: 13.5px; font-family: var(--font-sans);
+-  outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+-}
+-.search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+-.search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--faint); }
+-
+-.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+-.filters button {
+-  padding: 7px 12px; border: 1px solid var(--border);
+-  background: var(--surface); color: var(--muted);
+-  border-radius: 20px; font-size: 12px; cursor: pointer; font-family: var(--font-mono);
+-  transition: all 0.15s;
+-}
+-.filters button:hover { color: var(--text); border-color: var(--faint); }
+-.filters button.on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+-
+-/* ---------- Board ---------- */
+-
+-.board {
+-  display: grid;
+-  grid-template-columns: repeat(4, minmax(0, 1fr));
+-  gap: 14px;
+-}
+-@media (max-width: 1080px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+-@media (max-width: 620px) { .board { grid-template-columns: 1fr; } }
+-
+-.col { min-width: 0; }
+-.col__head {
+-  display: flex; align-items: center; gap: 8px;
+-  padding: 0 4px 10px; margin-bottom: 4px;
+-  border-bottom: 1px solid var(--border-soft);
+-}
+-.col__dot { width: 9px; height: 9px; border-radius: 50%; }
+-.col__title { font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+-.col__count {
+-  margin-left: auto; font-family: var(--font-mono); font-size: 11.5px;
+-  color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: 20px;
+-}
+-.col__list { display: flex; flex-direction: column; gap: 9px; padding-top: 10px; }
+-
+-.card {
+-  position: relative;
+-  padding: 12px 13px 12px 15px;
+-  border: 1px solid var(--border);
+-  border-radius: var(--radius-sm);
+-  background: var(--surface);
+-  cursor: default;
+-  transition: border-color 0.15s, transform 0.12s, box-shadow 0.15s;
+-  animation: rise 0.4s both;
+-}
+-.card:hover { border-color: var(--faint); transform: translateY(-1px); box-shadow: var(--shadow); }
+-.card::before {
+-  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+-  border-radius: 3px; background: var(--prio, var(--border));
+-}
+-.card__top { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+-.card__title { font-size: 13px; line-height: 1.4; font-weight: 500; }
+-.card__meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+-.card__owner {
+-  display: inline-flex; align-items: center; gap: 5px;
+-  font-size: 11px; color: var(--muted); font-family: var(--font-mono);
+-}
+-.card__owner .av {
+-  width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center;
+-  background: var(--surface-3); font-size: 8.5px; color: var(--text); font-weight: 700; text-transform: uppercase;
+-}
+-.card__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-left: auto; }
+-
+-.badge {
+-  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+-  padding: 2px 6px; border-radius: 5px; letter-spacing: 0.03em;
+-  text-transform: uppercase; white-space: nowrap;
+-}
++.sidebar__meta { font-family: var(--font-mono); font-size: 10px; color: var(--faint); line-height: 1.6; }
++
++/* ===================== Main + topbar ===================== */
++.main { height: 100vh; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
++.topbar {
++  flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
++  padding: 0 22px; height: 52px; border-bottom: 1px solid var(--border-soft);
++  background: color-mix(in srgb, var(--bg) 86%, transparent);
++}
++.topbar h1 { font-size: 15px; font-weight: 620; margin: 0; letter-spacing: -0.01em; }
++.topbar .crumb { color: var(--faint); font-size: 13px; }
++.topbar__spacer { flex: 1; }
++.updated { font-family: var(--font-mono); font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 6px; }
++.updated .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
++.btn {
++  display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
++  border: 1px solid var(--border); background: var(--surface); color: var(--text);
++  border-radius: var(--radius-sm); font-size: 12.5px; cursor: pointer; font-weight: 500;
++  transition: background .13s, border-color .13s;
++}
++.btn:hover { background: var(--hover); border-color: var(--faint); }
++.btn svg { width: 14px; height: 14px; }
++.btn.spin svg { animation: spin .7s linear infinite; }
++@keyframes spin { to { transform: rotate(360deg); } }
++
++/* Controls row (tabs, toggles, filters) */
++.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
++.tabs { display: flex; gap: 2px; background: var(--surface-2); padding: 3px; border-radius: 9px; }
++.tabs button { padding: 5px 12px; border: none; background: transparent; color: var(--muted); border-radius: 6px; font-size: 12.5px; cursor: pointer; font-weight: 500; }
++.tabs button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
++.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
++.seg button { padding: 5px 12px; border: none; background: var(--surface); color: var(--muted); font-size: 12.5px; cursor: pointer; font-weight: 500; }
++.seg button + button { border-left: 1px solid var(--border); }
++.seg button.on { background: var(--accent); color: var(--accent-ink); }
++.chipfilter { display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px 5px 11px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); border-radius: 18px; font-size: 12px; }
++.chipfilter button { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
++.chipfilter button:hover { color: var(--text); }
++.minisearch { position: relative; margin-left: auto; }
++.minisearch input { width: 220px; padding: 6px 10px 6px 28px; font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); outline: none; }
++.minisearch input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
++.minisearch svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; color: var(--faint); }
++
++/* The routed view. Default: scrolls vertically. */
++.view { flex: 1 1 auto; overflow-y: auto; min-height: 0; padding: 18px 22px 40px; }
++.view--flush { padding: 0; overflow: hidden; display: flex; flex-direction: column; } /* board owns layout */
++.viewhead { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
++.section-title { font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); font-family: var(--font-mono); margin: 26px 0 12px; }
++
++/* ===================== Badges / dots ===================== */
++.badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 5px; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; }
+ .badge--type { background: var(--surface-3); color: var(--muted); }
+ .badge--prio { color: #fff; }
+-.chip {
+-  font-size: 10.5px; color: var(--muted); background: var(--surface-2);
+-  padding: 2px 7px; border-radius: 5px; border: 1px solid var(--border-soft);
+-  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+-}
+-
+-.more {
+-  margin-top: 4px; padding: 8px; width: 100%;
+-  border: 1px dashed var(--border); background: transparent; color: var(--muted);
+-  border-radius: var(--radius-sm); cursor: pointer; font-size: 12px; font-family: var(--font-mono);
+-  transition: all 0.15s;
+-}
+-.more:hover { color: var(--text); border-color: var(--faint); }
+-.empty { color: var(--faint); font-size: 12.5px; padding: 14px 4px; font-style: italic; }
+-
+-/* ---------- Epics / Decisions / Activity ---------- */
+-
+-.cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+-
+-.epic {
+-  padding: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+-  background: var(--surface); display: flex; flex-direction: column; gap: 9px;
+-}
+-.epic__top { display: flex; align-items: center; gap: 8px; }
+-.epic__title { font-size: 13.5px; font-weight: 600; line-height: 1.4; }
+-.epic__roll { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+-.epic__prog { flex: 1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+-.epic__prog span { display: block; height: 100%; background: var(--done); }
+-.epic__rolltext { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+-
+-.decision {
+-  padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
+-  background:
+-    radial-gradient(140% 100% at 100% 0%, var(--accent-glow), transparent 55%),
+-    var(--surface);
+-}
+-.decision__top { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+-.decision__title { font-size: 14px; font-weight: 650; line-height: 1.35; }
+-.decision__body { font-size: 12.5px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; }
+-.decision__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-top: 10px; }
+-
+-.timeline { position: relative; padding-left: 22px; }
+-.timeline::before {
+-  content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px;
+-  background: var(--border);
+-}
+-.tl {
+-  position: relative; padding: 7px 0 7px 4px; display: flex; gap: 12px; align-items: baseline;
+-}
+-.tl::before {
+-  content: ""; position: absolute; left: -19px; top: 12px;
+-  width: 9px; height: 9px; border-radius: 50%; background: var(--surface);
+-  border: 2px solid var(--st, var(--faint));
+-}
+-.tl__time { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); min-width: 84px; }
+-.tl__title { font-size: 12.5px; color: var(--text); }
+-.tl__title .badge { margin-right: 6px; }
+-
+-.mempanel {
+-  padding: 20px; border: 1px dashed var(--border); border-radius: var(--radius);
+-  background: var(--surface); text-align: center;
+-}
+-.mempanel .mp-ic { width: 30px; height: 30px; margin: 0 auto 10px; color: var(--faint); }
+-.mempanel h4 { margin: 0 0 4px; font-size: 13px; }
+-.mempanel p { margin: 0; color: var(--muted); font-size: 12.5px; }
+-
+-.split { display: grid; grid-template-columns: 1.5fr 1fr; gap: 16px; align-items: start; }
+-@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+-
+-.footer {
+-  margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--border-soft);
+-  font-size: 11.5px; color: var(--faint); font-family: var(--font-mono); line-height: 1.7;
+-}
+-.footer .live-todo {
+-  margin-top: 8px; padding: 10px 12px; border-left: 2px solid var(--accent);
+-  background: var(--surface); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+-  color: var(--muted);
+-}
+-
+-@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
++.badge--soft { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border-soft); text-transform: none; font-family: var(--font-sans); font-weight: 600; }
++.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
++.hdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
++.epicref { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border-soft); padding: 1px 7px; border-radius: 20px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.epicref .dot { width: 6px; height: 6px; background: var(--accent); }
++
++/* ===================== Stat row (overview) ===================== */
++.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 11px; }
++.stat { padding: 15px 15px 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); position: relative; overflow: hidden; }
++.stat::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accar, var(--border)); }
++.stat__num { font-family: var(--font-mono); font-size: 27px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
++.stat__label { margin-top: 7px; font-size: 11px; color: var(--muted); letter-spacing: .03em; text-transform: uppercase; }
++.stat__sub { margin-top: 2px; font-size: 11px; color: var(--faint); font-family: var(--font-mono); }
++.panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 16px; }
++.panel h3 { margin: 0 0 12px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-family: var(--font-mono); }
++.bar { display: flex; height: 11px; border-radius: 6px; overflow: hidden; background: var(--surface-3); }
++.bar span { display: block; }
++.legend { display: flex; flex-wrap: wrap; gap: 9px 15px; margin-top: 11px; }
++.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
++.legend .sw { width: 9px; height: 9px; border-radius: 2px; }
++.legend b { font-family: var(--font-mono); color: var(--text); font-weight: 600; }
++.overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
++@media (max-width: 820px) { .overview-grid { grid-template-columns: 1fr; } }
+ 
+-/* ---------- Mobile rail ---------- */
+-@media (max-width: 860px) {
++/* ===================== KANBAN (independent-scroll) ===================== */
++.boardbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; }
++.board {
++  flex: 1 1 auto; min-height: 0; display: flex; gap: 12px;
++  padding: 14px 22px 16px; overflow-x: auto; overflow-y: hidden;
++}
++.kcol {
++  flex: 0 0 300px; display: flex; flex-direction: column; min-height: 0; height: 100%;
++  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius);
++}
++.kcol__head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid var(--border-soft); }
++.kcol__title { font-size: 12px; font-weight: 650; letter-spacing: .02em; }
++.kcol__count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 1px 7px; border-radius: 20px; }
++.kcol__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 9px; display: flex; flex-direction: column; gap: 8px; } /* THE independent scroll */
++
++.kcard { position: relative; padding: 10px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); cursor: default; transition: border-color .13s, transform .1s; }
++.kcard:hover { border-color: var(--faint); transform: translateY(-1px); }
++.kcard::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: var(--prio, transparent); }
++.kcard__top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
++.kcard__title { font-size: 12.5px; line-height: 1.4; font-weight: 500; }
++.kcard__meta { display: flex; align-items: center; gap: 7px; margin-top: 8px; flex-wrap: wrap; }
++.kcard__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-left: auto; }
++.kcard__owner { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); font-family: var(--font-mono); }
++.kcard__owner .av { width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); font-size: 8px; font-weight: 700; text-transform: uppercase; }
++.kcard--epic { cursor: pointer; }
++.kcard--epic:hover { border-color: var(--accent); }
++.kcard__roll { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
++.kcard__prog { flex: 1; height: 5px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
++.kcard__prog span { display: block; height: 100%; background: var(--ok); }
++.kcard__rolltext { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
++.kmore { margin: 2px 0; padding: 7px; border: 1px dashed var(--border); background: transparent; color: var(--muted); border-radius: var(--radius-sm); cursor: pointer; font-size: 11.5px; font-family: var(--font-mono); }
++.kmore:hover { color: var(--text); border-color: var(--faint); }
++.kempty { color: var(--faint); font-size: 12px; padding: 12px 6px; font-style: italic; }
++
++/* ===================== Tables (epics / plans / ops) ===================== */
++.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
++.tbl thead th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; padding: 8px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 1; }
++.tbl tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
++.tbl tbody tr { transition: background .1s; }
++.tbl tbody tr:hover { background: var(--hover); }
++.tbl .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
++.tblwrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
++
++.rowname { display: flex; align-items: center; gap: 9px; }
++.rowname .chev { width: 16px; height: 16px; color: var(--faint); cursor: pointer; flex: 0 0 auto; transition: transform .15s; display: grid; place-items: center; }
++.rowname .chev.open { transform: rotate(90deg); }
++.rowname .chev.leaf { visibility: hidden; }
++.rowname .ic { width: 15px; height: 15px; flex: 0 0 auto; color: var(--accent); }
++.rowname .tt { font-weight: 550; }
++.rowname .sub { color: var(--faint); font-size: 11.5px; font-weight: 400; margin-top: 1px; }
++tr.child td { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
++tr.child .rowname { padding-left: 26px; }
++tr.child .rowname .tt { font-weight: 450; font-size: 12.5px; color: var(--muted); }
++
++.health { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
++.progresscell { display: flex; align-items: center; gap: 9px; min-width: 120px; }
++.progresscell .mini { flex: 1; height: 5px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
++.progresscell .mini span { display: block; height: 100%; background: var(--ok); }
++.progresscell .frac { font-family: var(--font-mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
++.workdots { display: inline-flex; gap: 8px; align-items: center; }
++.workdots .wd { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
++.trend { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--faint); font-family: var(--font-mono); }
++
++/* ===================== Decisions / ADR ===================== */
++.deckgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
++.deccard { padding: 15px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); display: flex; flex-direction: column; gap: 9px; }
++.deccard__top { display: flex; align-items: center; gap: 8px; }
++.deccard__title { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
++.deccard__body { font-size: 12px; color: var(--muted); line-height: 1.55; }
++.deccard__foot { display: flex; align-items: center; gap: 8px; margin-top: auto; }
++.deccard__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
++.stbadge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
++.stbadge.accepted { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
++.stbadge.proposed { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
++.stbadge.superseded, .stbadge.deprecated { color: var(--neutral); background: color-mix(in srgb, var(--neutral) 15%, transparent); text-decoration: line-through; }
++.stbadge.open { color: var(--st-ready); background: color-mix(in srgb, var(--st-ready) 13%, transparent); }
++.stbadge.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
++.arch-list { display: flex; flex-direction: column; gap: 6px; }
++.arch-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface); }
++.arch-row .ic { color: var(--accent); width: 15px; height: 15px; flex: 0 0 auto; }
++.arch-row .p { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); margin-left: auto; }
++
++/* ===================== Plans / history timeline ===================== */
++.tl-month { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-family: var(--font-mono); margin: 22px 0 10px; }
++.tl-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 14px; align-items: center; padding: 11px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 7px; transition: border-color .12s; }
++.tl-row:hover { border-color: var(--border); }
++.tl-date { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
++.tl-title { font-weight: 520; font-size: 13px; }
++.tl-slug { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); margin-top: 2px; }
++.tl-tags { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
++
++/* ===================== Ops ===================== */
++.ops-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
++@media (max-width: 980px) { .ops-grid { grid-template-columns: 1fr; } }
++.pr-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border-soft); }
++.pr-row:last-child { border-bottom: none; }
++.pr-num { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 600; }
++.pr-title { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
++.pr-branch { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
++.mono-path { font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++
++.empty-state { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
++.empty-state h4 { margin: 0 0 5px; font-size: 13px; color: var(--text); }
++.empty-state p { margin: 0; font-size: 12.5px; }
++
++.fade-in { animation: fade .28s ease both; }
++@keyframes fade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
++
++/* ===================== Responsive ===================== */
++.topbar .menu { display: none; background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; }
++@media (max-width: 720px) {
+   .app { grid-template-columns: 1fr; }
+-  .rail {
+-    position: static; height: auto; flex-direction: row; flex-wrap: wrap;
+-    align-items: center; gap: 14px; border-right: none; border-bottom: 1px solid var(--border-soft);
+-  }
+-  .rail__foot { margin: 0 0 0 auto; flex-direction: row; align-items: center; }
+-  .snapmeta { display: none; }
+-  .nav { flex-direction: row; flex-wrap: wrap; }
+-  .nav a.active::before { display: none; }
++  .sidebar { position: fixed; z-index: 60; width: 260px; transform: translateX(-100%); transition: transform .2s; }
++  .sidebar.open { transform: none; }
++  .topbar .menu { display: inline-flex; }
++  .minisearch input { width: 150px; }
+ }
+-- 
+2.51.0.windows.1
+

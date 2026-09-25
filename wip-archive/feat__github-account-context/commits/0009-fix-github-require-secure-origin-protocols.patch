@@ -1,0 +1,38 @@
+From 332af669fec4788af0bf8efaa7830c2d6d362a6b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 22:51:43 +0530
+Subject: [PATCH] fix(github): require secure origin protocols
+
+---
+ lib/commands/github.js       | 1 +
+ test/commands/github.test.js | 2 ++
+ 2 files changed, 3 insertions(+)
+
+diff --git a/lib/commands/github.js b/lib/commands/github.js
+index 8aba3693..8e3d08ec 100644
+--- a/lib/commands/github.js
++++ b/lib/commands/github.js
+@@ -31,6 +31,7 @@ function isGithubOrigin(remote, root, options) {
+   try {
+     const scpHost = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):/.exec(remote);
+     const parsed = scpHost ? null : new URL(remote);
++    if (parsed && !['https:', 'ssh:'].includes(parsed.protocol)) return false;
+     const host = scpHost ? scpHost[1] : parsed.hostname;
+     if (host.toLowerCase() === 'github.com') return true;
+     if ((!scpHost && parsed.protocol !== 'ssh:') || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(host)) return false;
+diff --git a/test/commands/github.test.js b/test/commands/github.test.js
+index cb12dbd6..f5d210ed 100644
+--- a/test/commands/github.test.js
++++ b/test/commands/github.test.js
+@@ -136,6 +136,8 @@ describe('forge github lifecycle', () => {
+   });
+ 
+   test.each([
++    { remote: 'http://github.com/org/project.git' },
++    { remote: 'git://github.com/org/project.git' },
+     { remote: 'https://gitlab.com/org/project.git' },
+     { remote: 'https://github.com/org/project/extra' },
+     { remote: `https://user:${CANARY}@github.com/org/project.git` },
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,209 @@
+From 4901e45c71e9244be277678c3aa6c4c6a92c4708 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 26 Jun 2026 20:00:05 +0530
+Subject: [PATCH] test(skills): lock stage-skill invariants; fix 4 unparseable
+ frontmatters
+
+Add test/skills/stage-skills.test.js asserting each of the 12 stage skills +
+kernel umbrella: SKILL.md exists, frontmatter parses as YAML, name matches
+dirname, description + allowed-tools present, body non-empty, and Beads-free
+(no bd/.beads/dolt). Fix plan/ship/premerge/research descriptions that had an
+unquoted colon (YAML compact-mapping parse failure) by folding to block scalars.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ skills/plan/SKILL.md             |   7 +-
+ skills/premerge/SKILL.md         |   8 ++-
+ skills/research/SKILL.md         |   6 +-
+ skills/ship/SKILL.md             |   6 +-
+ test/skills/stage-skills.test.js | 111 +++++++++++++++++++++++++++++++
+ 5 files changed, 134 insertions(+), 4 deletions(-)
+ create mode 100644 test/skills/stage-skills.test.js
+
+diff --git a/skills/plan/SKILL.md b/skills/plan/SKILL.md
+index bff36a11..e8020d1d 100644
+--- a/skills/plan/SKILL.md
++++ b/skills/plan/SKILL.md
+@@ -1,6 +1,11 @@
+ ---
+ name: plan
+-description: Use for the Forge plan stage: capture design intent through one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up the branch, worktree, and a complete TDD task list ready for /dev. Trigger when starting a new feature, planning or scoping work, writing a design doc, or preparing a worktree and task list before development.
++description: >
++  Use for the Forge plan stage to capture design intent through
++  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
++  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
++  starting a new feature, planning or scoping work, writing a design doc, or preparing
++  a worktree and task list before development.
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/premerge/SKILL.md b/skills/premerge/SKILL.md
+index 93a4ec8c..8c0a4d73 100644
+--- a/skills/premerge/SKILL.md
++++ b/skills/premerge/SKILL.md
+@@ -1,6 +1,12 @@
+ ---
+ name: premerge
+-description: Completes all documentation updates on the feature branch (CHANGELOG, README, API reference, CLAUDE.md USER section, AGENTS.md), verifies CI is green, syncs the Forge issue store, and hands the PR off to the user for manual merge in the GitHub UI — it never runs the merge itself. Use for the Forge premerge stage when finalizing a PR before merge, after /review, to make a PR merge-ready with code, tests, and docs in one unit (keywords: premerge, merge-readiness, doc updates, CHANGELOG, hand off PR).
++description: >
++  Completes all documentation updates on the feature branch (CHANGELOG, README, API
++  reference, CLAUDE.md USER section, AGENTS.md), verifies CI is green, syncs the Forge
++  issue store, and hands the PR off to the user for manual merge in the GitHub UI; it
++  never runs the merge itself. Use for the Forge premerge stage when finalizing a PR
++  before merge, after /review, to make a PR merge-ready with code, tests, and docs in
++  one unit. Keywords: premerge, merge-readiness, doc updates, CHANGELOG, hand off PR.
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/research/SKILL.md b/skills/research/SKILL.md
+index e2281752..3a471da6 100644
+--- a/skills/research/SKILL.md
++++ b/skills/research/SKILL.md
+@@ -1,6 +1,10 @@
+ ---
+ name: research
+-description: Runs deep, parallel web and codebase research and documents findings in the design doc. Use for the Forge research stage when gathering technical research, OWASP analysis, and TDD scenarios before planning or development. Trigger keywords: research, deep research, web search, OWASP, codebase exploration, technical research.
++description: >
++  Runs deep, parallel web and codebase research and documents findings in the design
++  doc. Use for the Forge research stage when gathering technical research, OWASP
++  analysis, and TDD scenarios before planning or development. Trigger keywords are
++  research, deep research, web search, OWASP, codebase exploration, technical research.
+ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+ 
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index 318a890e..2955455c 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -1,6 +1,10 @@
+ ---
+ name: ship
+-description: Pushes the validated branch and opens a pull request populated from the project's PR template with full context and documentation links. Use for the Forge ship stage after /validate passes — triggers: ship, create PR, open pull request, push branch, gh pr create.
++description: >
++  Pushes the validated branch and opens a pull request populated from the project's
++  PR template with full context and documentation links. Use for the Forge ship stage
++  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
++  gh pr create.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/test/skills/stage-skills.test.js b/test/skills/stage-skills.test.js
+new file mode 100644
+index 00000000..4409274a
+--- /dev/null
++++ b/test/skills/stage-skills.test.js
+@@ -0,0 +1,111 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++const YAML = require('yaml');
++
++// Repo root
++const repoRoot = path.resolve(__dirname, '../..');
++const skillsDir = path.join(repoRoot, 'skills');
++
++// The 12 workflow stage skills migrated from the removed .claude/commands/ surface,
++// plus the `kernel` umbrella that indexes them. These are the canonical, committed
++// skill source — agent harness dirs are generated from these by `forge setup` /
++// `skills sync`.
++const STAGE_SKILLS = [
++  'plan',
++  'dev',
++  'validate',
++  'verify',
++  'ship',
++  'review',
++  'premerge',
++  'research',
++  'rollback',
++  'status',
++  'sonarcloud',
++  'shepherd',
++];
++const UMBRELLA_SKILLS = ['kernel'];
++const ALL_SKILLS = [...STAGE_SKILLS, ...UMBRELLA_SKILLS];
++
++// Forbidden Beads tokens — the stage surface must be fully Beads-free so it clears
++// the D20 bd-hot-path gate (skill roots are hot-path surfaces). Matches the
++// release-readiness audit intent: bare `bd`, `.beads` paths, and `dolt`.
++const BD_PATTERNS = [/\bbd\b/i, /\.beads\b/, /\bdolt\b/i];
++
++function readSkill(name) {
++  const file = path.join(skillsDir, name, 'SKILL.md');
++  return fs.readFileSync(file, 'utf8');
++}
++
++function parseFrontmatter(content) {
++  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
++  if (!match) {
++    throw new Error('no YAML frontmatter block');
++  }
++  return YAML.parse(match[1]);
++}
++
++describe('stage skill surface (skills/<stage>/SKILL.md)', () => {
++  for (const name of ALL_SKILLS) {
++    const file = path.join(skillsDir, name, 'SKILL.md');
++
++    test(`${name}: SKILL.md exists`, () => {
++      expect(fs.existsSync(file)).toBeTruthy();
++    });
++
++    test(`${name}: frontmatter parses as valid YAML`, () => {
++      const content = readSkill(name);
++      expect(() => parseFrontmatter(content)).not.toThrow();
++    });
++
++    test(`${name}: name matches directory name`, () => {
++      const fm = parseFrontmatter(readSkill(name));
++      expect(fm.name).toBe(name);
++    });
++
++    test(`${name}: has a non-empty description`, () => {
++      const fm = parseFrontmatter(readSkill(name));
++      expect(typeof fm.description).toBe('string');
++      expect(fm.description.trim().length).toBeGreaterThan(20);
++    });
++
++    test(`${name}: declares allowed-tools`, () => {
++      const fm = parseFrontmatter(readSkill(name));
++      expect(typeof fm['allowed-tools']).toBe('string');
++      expect(fm['allowed-tools'].trim().length).toBeGreaterThan(0);
++    });
++
++    test(`${name}: has body content after frontmatter`, () => {
++      const content = readSkill(name);
++      const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
++      expect(body.trim().length).toBeGreaterThan(100);
++    });
++
++    test(`${name}: is Beads-free (no bd / .beads / dolt tokens)`, () => {
++      const lines = readSkill(name).split(/\r?\n/);
++      const hits = [];
++      lines.forEach((line, i) => {
++        if (BD_PATTERNS.some((re) => re.test(line))) {
++          hits.push(`L${i + 1}: ${line.trim()}`);
++        }
++      });
++      expect(hits).toEqual([]);
++    });
++  }
++});
++
++describe('stage skill surface completeness', () => {
++  test('all 12 stage skills + kernel umbrella are present', () => {
++    const present = fs.existsSync(skillsDir)
++      ? fs
++          .readdirSync(skillsDir)
++          .filter((entry) =>
++            fs.existsSync(path.join(skillsDir, entry, 'SKILL.md'))
++          )
++      : [];
++    for (const name of ALL_SKILLS) {
++      expect(present).toContain(name);
++    }
++  });
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,38 @@
+template:
+  kind: forge.adoptionTemplate
+  version: 0.0.16
+  profile: minimal
+  description: Config-only adoption for a clean repository.
+  ancestry:
+    - forge.runtimeGraph.currentCommandFlow@0.0.17
+    - forge.profile.minimal@0.0.16
+workflow:
+  phases:
+    plan:
+      enabled: true
+    dev:
+      enabled: true
+    validate:
+      enabled: true
+    ship:
+      enabled: true
+  gates:
+    gate.plan-exit:
+      enabled: false
+    gate.dev-exit:
+      enabled: false
+    gate.validate-exit:
+      enabled: false
+    gate.ship-entry:
+      enabled: false
+    rail.tdd_intent:
+      enabled: false
+adapters:
+  issue:
+    enabled: false
+    primary: none
+    mirrors: []
+  harness:
+    enabled: false
+    targets: []
+protectedPaths: []

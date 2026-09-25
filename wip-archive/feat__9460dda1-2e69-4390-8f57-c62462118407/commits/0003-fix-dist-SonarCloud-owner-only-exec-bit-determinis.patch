@@ -1,0 +1,107 @@
+From c3dc1371216413f83e9011140533c373f7b5fefe Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 19:20:39 +0530
+Subject: [PATCH] =?UTF-8?q?fix(dist):=20SonarCloud=20=E2=80=94=20owner-onl?=
+ =?UTF-8?q?y=20exec=20bit=20+=20deterministic=20codepoint=20sort?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- S2612 (MAJOR): exec-bit restore chmod 0o755 → 0o700. The extraction target is a
+  per-user cache dir; no group/other access is needed, so owner-only rwx is both
+  safer and satisfies the permission check.
+- S2871 (BUG): replace bare .sort() (locale-default) with a locale-INDEPENDENT
+  codepoint comparator in listAssets(), the generator (readdir + collectAssetFiles),
+  and the drift test. Locale-default order would diverge by machine locale and make
+  the embed manifest non-byte-identical across step-3's cross-compile targets.
+
+Manifest regenerated; verified byte-identical across repeated runs. npm channel
+unchanged (120 unit+drift+regression green, eslint clean).
+
+Issue: 9460dda1-2e69-4390-8f57-c62462118407
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/package-root.js                | 10 ++++++++--
+ scripts/gen-embedded-assets.mjs    |  9 +++++++--
+ test/embedded-assets-drift.test.js |  2 +-
+ 3 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/lib/package-root.js b/lib/package-root.js
+index 5cc4fb56..74dd28bc 100644
+--- a/lib/package-root.js
++++ b/lib/package-root.js
+@@ -173,7 +173,9 @@ function extractEmbeddedAssets(destDir, assets, executable) {
+     fs.writeFileSync(outPath, fs.readFileSync(embeddedPath));
+     if (execSet.has(relPath)) {
+       try {
+-        fs.chmodSync(outPath, 0o755); // no-op semantics on Windows
++        // Owner-only rwx (0o700) — this is a per-user cache dir; no group/other
++        // needs access. chmod is a no-op on Windows.
++        fs.chmodSync(outPath, 0o700);
+       } catch {
+         // Non-fatal: mode restore best-effort; the copy already succeeded.
+       }
+@@ -332,7 +334,11 @@ function getPackageRoot(diskFallback = DISK_PACKAGE_ROOT) {
+ function listAssets() {
+   if (!isCompiledBinary()) return [];
+   try {
+-    return Object.keys(loadEmbeddedManifest().EMBEDDED_ASSETS).sort();
++    // Deterministic, locale-INDEPENDENT codepoint order (must match the generator
++    // so the embed set is byte-identical across cross-compile targets).
++    return Object.keys(loadEmbeddedManifest().EMBEDDED_ASSETS).sort((a, b) =>
++      a < b ? -1 : a > b ? 1 : 0
++    );
+   } catch {
+     return [];
+   }
+diff --git a/scripts/gen-embedded-assets.mjs b/scripts/gen-embedded-assets.mjs
+index 0e384631..ee397df8 100644
+--- a/scripts/gen-embedded-assets.mjs
++++ b/scripts/gen-embedded-assets.mjs
+@@ -25,6 +25,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
+ const REPO_ROOT = path.resolve(__dirname, '..');
+ const OUT_FILE = path.join(REPO_ROOT, 'lib', 'embedded-assets.generated.mjs');
+ 
++// Deterministic, locale-INDEPENDENT codepoint comparator. Locale-default sort would
++// diverge by machine locale and produce different embed bytes across the step-3
++// cross-compile targets, so sorting is pinned to codepoint order everywhere.
++const byteCompare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
++
+ /** True when the asset needs the executable bit restored on extraction (files-only embedding drops mode). */
+ export function isExecutableAsset(relPosixPath) {
+   return relPosixPath.endsWith('.sh') || relPosixPath.startsWith('.forge/hooks/');
+@@ -35,7 +40,7 @@ function walk(absPath, relPath, out) {
+   const stat = fs.lstatSync(absPath);
+   if (stat.isSymbolicLink()) return;
+   if (stat.isDirectory()) {
+-    for (const entry of fs.readdirSync(absPath).sort()) {
++    for (const entry of fs.readdirSync(absPath).sort(byteCompare)) {
+       walk(path.join(absPath, entry), `${relPath}/${entry}`, out);
+     }
+   } else if (stat.isFile()) {
+@@ -51,7 +56,7 @@ export function collectAssetFiles(repoRoot = REPO_ROOT, roots = ASSET_ROOTS) {
+     if (!fs.existsSync(abs)) continue;
+     walk(abs, root.split(path.sep).join('/'), files);
+   }
+-  return [...new Set(files)].sort();
++  return [...new Set(files)].sort(byteCompare);
+ }
+ 
+ function render(files) {
+diff --git a/test/embedded-assets-drift.test.js b/test/embedded-assets-drift.test.js
+index b58077fd..531a88ba 100644
+--- a/test/embedded-assets-drift.test.js
++++ b/test/embedded-assets-drift.test.js
+@@ -33,7 +33,7 @@ function independentWalk(root, roots) {
+     if (!fs.existsSync(abs)) continue;
+     visit(abs, r.split(path.sep).join('/'));
+   }
+-  return out.sort();
++  return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+ }
+ 
+ test('embed set == on-disk asset set (both directions)', () => {
+-- 
+2.51.0.windows.1
+

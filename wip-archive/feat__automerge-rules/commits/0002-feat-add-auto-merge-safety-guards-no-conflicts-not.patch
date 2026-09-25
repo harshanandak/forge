@@ -1,0 +1,310 @@
+From 60880244e433d5d36d5d01eefb6ef858d106eb5b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 17:34:37 +0530
+Subject: [PATCH] feat: add auto-merge safety guards (no_conflicts, not_draft,
+ state pre-flight, TOCTOU re-check)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two new fail-closed rules — no_conflicts (mergeStateStatus DIRTY /
+mergeable CONFLICTING) and not_draft — plus command-layer safety:
+defaultFetchPrContext now exposes conflicting/isDraft/state from
+gh pr view; a pre-flight guard makes an already merged/closed PR a
+graceful no-op (idempotent re-runs); and the live TOCTOU re-check
+(re-fetch + re-evaluate before mergePr) is covered by a test.
+Documents auto_update / required-checks scoping / merge method /
+branch-delete as follow-ups.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                |  2 +-
+ lib/commands/merge.js       | 66 +++++++++++++++++++++++++++++++++----
+ lib/merge-rules.js          | 32 ++++++++++++++++--
+ test/commands/merge.test.js | 34 +++++++++++++++++++
+ test/merge-rules.test.js    | 15 +++++++++
+ 5 files changed, 138 insertions(+), 11 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 139f5f37..d813a2f4 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -17,7 +17,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ - **Onboarding now auto-migrates Beads → Kernel and self-installs git hooks.** `forge setup` (quick, `--yes`, and interactive agent paths) and `forge init` now detect an existing jsonl-backed `.beads` store and **auto-import** its issues, comments, and dependencies into the Kernel — reusing the idempotent `forge migrate --from beads` spine, reading the committed jsonl sidecars directly (no external issue-tracker CLI required, so it works even when the legacy SQL backend is offline) and surfacing the same honest field-gap report. A fresh `forge init` also now installs git hooks, so `forge validate`/`plan` are no longer immediately blocked by `HOOKS_NOT_ACTIVE` — closing the init → hooks catch-22. Both steps are idempotent and degrade to a warning rather than aborting onboarding.
+ - `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fields with no dedicated Kernel column are folded into the issue `metadata` blob instead of being dropped: beads `owner` → `assignee` (falling back after an explicit assignee, else `metadata.beads_owner`), plus `metadata.beads_external_ref` (linked GitHub issue/run) and `metadata.beads_started_at`; `design`/`assignee` land on their Kernel columns. The loader also tolerates a split `.beads` layout (events under `.beads/backup/`, interactions at `.beads/interactions.jsonl`) so neither sidecar is silently half-read. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. The **only remaining reported gap is `dependencies.created_by`** (the Kernel dependency row has no creator column); beads-internal/derived fields such as `content_hash` are intentionally not carried (not user data).
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+-- **Opt-in conditional auto-merge rules engine (default OFF).** A new pure evaluator `lib/merge-rules.js` — `evaluateMergeRules(prContext, rules) → { allowed, unmet }` — decides whether a PR may merge by ANDing a list of composable, config-driven rules over an already-fetched PR context (no network in the evaluator). Built-in rule types: `checks_green`, `threads_resolved`, `not_behind`, `min_approvals:N`, `settle_min:N` (quiet since the last comment), `idle_min:N` (quiet since the last activity), `last_comment_by:X`, `approved_by:[..]`, `not_commented_by:[..]`, composed with `any_of:[..]` groups and a `not:` wrapper; an unknown or malformed rule, or unreadable context, is surfaced as unmet (fail-closed). A thin `forge merge --auto <pr>` command reads the opt-in `merge.auto` section of `.forge/config.yaml` (`{ enabled: false, rules: [...] }`), fetches the PR context via `gh` behind an injectable seam, and merges **only** when `enabled === true` **and** every rule passes — printing the unmet rules and doing nothing otherwise. Absent config or `enabled` not true is a strict no-op, so the test-enforced never-auto-merge-by-default invariant is preserved; it merely promotes the proven `settle-merge.sh` baseline to a native capability. The bring-your-own custom-predicate seam is a documented follow-up.
++- **Opt-in conditional auto-merge rules engine (default OFF).** A new pure evaluator `lib/merge-rules.js` — `evaluateMergeRules(prContext, rules) → { allowed, unmet }` — decides whether a PR may merge by ANDing a list of composable, config-driven rules over an already-fetched PR context (no network in the evaluator). Built-in rule types: `checks_green`, `threads_resolved`, `not_behind`, `no_conflicts`, `not_draft`, `min_approvals:N`, `settle_min:N` (quiet since the last comment), `idle_min:N` (quiet since the last activity), `last_comment_by:X`, `approved_by:[..]`, `not_commented_by:[..]`, composed with `any_of:[..]` groups and a `not:` wrapper; an unknown or malformed rule, or unreadable context, is surfaced as unmet (fail-closed). A thin `forge merge --auto <pr>` command reads the opt-in `merge.auto` section of `.forge/config.yaml` (`{ enabled: false, rules: [...] }`), fetches the PR context via `gh` behind an injectable seam, and merges **only** when `enabled === true` **and** every rule passes — printing the unmet rules and doing nothing otherwise. Two safety layers wrap the decision: a pre-flight guard that no-ops on an already merged/closed PR (idempotent re-runs), and a TOCTOU live re-check that re-fetches and re-evaluates immediately before merging so a since-changed PR is never merged from a stale snapshot. Absent config or `enabled` not true is a strict no-op, so the test-enforced never-auto-merge-by-default invariant is preserved; it merely promotes the proven `settle-merge.sh` baseline to a native capability. Documented follow-ups (not built): the bring-your-own custom-predicate seam (`forge add`), an opt-in `auto_update` executor (update-branch when behind → wait CI → re-check → merge), required-checks scoping for `checks_green` (read the branch-protection required set), a configurable merge `method` (squash/merge/rebase), and post-merge branch deletion.
+ 
+ ### Changed
+ 
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 118d56cf..4e24e762 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -13,6 +13,7 @@
+  *       rules:                  # ALL must pass (see lib/merge-rules.js)
+  *         - checks_green
+  *         - threads_resolved
++ *         - no_conflicts        # recommended: never merge a conflicting branch
+  *         - not_behind
+  *         - settle_min: 10
+  *
+@@ -20,12 +21,18 @@
+  * it prints why and merges nothing, preserving the test-enforced
+  * never-auto-merge-by-default invariant. When enabled, it fetches the PR
+  * context via `gh`, evaluates the rules with the pure `evaluateMergeRules`, and
+- * merges ONLY when every rule passes. The gh-fetch and the merge action are
+- * isolated behind injectable `fetchPrContext` / `mergePr` seams so the decision
+- * path is unit-testable without the network.
++ * merges ONLY when every rule passes. Two extra safety layers wrap that decision:
++ * a pre-flight guard that no-ops on an already merged/closed PR (idempotent
++ * re-runs), and a TOCTOU live re-check that re-fetches and re-evaluates right
++ * before merging so a stale snapshot can never merge a since-changed PR. The
++ * gh-fetch and the merge action are isolated behind injectable `fetchPrContext`
++ * / `mergePr` seams so the decision path is unit-testable without the network.
+  *
+  * A bring-your-own custom-predicate seam (registered via `forge add`) is a
+- * documented follow-up and intentionally NOT wired here.
++ * documented follow-up and intentionally NOT wired here. Further follow-ups
++ * documented in lib/merge-rules.js: opt-in `auto_update`, required-checks
++ * scoping for `checks_green`, a configurable merge `method`, and post-merge
++ * branch deletion.
+  *
+  * @module commands/merge
+  */
+@@ -83,7 +90,7 @@ function fetchUnresolvedThreadCount(gh, pr) {
+  */
+ function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
+-    'number,state,mergeStateStatus,statusCheckRollup,reviews,comments,updatedAt']) || {};
++    'number,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,updatedAt']) || {};
+ 
+   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : null;
+   const checks = (rollup || []).map((c) => ({
+@@ -103,13 +110,25 @@ function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     .filter((r) => String(r.state).toUpperCase() === 'APPROVED')
+     .map((r) => ({ author: (r.author && r.author.login) || '' }));
+ 
+-  // Behind-base from GitHub's mergeStateStatus. Only a known set maps to a
+-  // definite answer; anything else stays undefined so `not_behind` fails closed.
++  // Derive from GitHub's mergeStateStatus / mergeable. Only a known set maps to
++  // a definite answer; anything else stays undefined so the dependent rule fails
++  // closed rather than guessing.
+   const mergeStateStatus = String(view.mergeStateStatus || '').toUpperCase();
++  const mergeable = String(view.mergeable || '').toUpperCase();
++
+   let behindBase;
+   if (mergeStateStatus === 'BEHIND') behindBase = true;
+   else if (['CLEAN', 'UNSTABLE', 'HAS_HOOKS', 'BLOCKED', 'DIRTY'].includes(mergeStateStatus)) behindBase = false;
+ 
++  // Conflict status: DIRTY (or mergeable=CONFLICTING) → conflicting; a clean set
++  // of states → not conflicting; UNKNOWN / missing / still-computing → undefined.
++  let conflicting;
++  if (mergeStateStatus === 'DIRTY' || mergeable === 'CONFLICTING') conflicting = true;
++  else if (['CLEAN', 'UNSTABLE', 'HAS_HOOKS', 'BLOCKED'].includes(mergeStateStatus)) conflicting = false;
++
++  const isDraft = typeof view.isDraft === 'boolean' ? view.isDraft : undefined;
++  const state = view.state ? String(view.state).toUpperCase() : undefined;
++
+   const stamps = [
+     ...comments.map((c) => c.at),
+     ...reviews.map((r) => r.submittedAt || r.createdAt || ''),
+@@ -122,6 +141,9 @@ function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     requiredChecksKnown: rollup !== null,
+     unresolvedThreads: fetchUnresolvedThreadCount(gh, pr),
+     behindBase,
++    conflicting,
++    isDraft,
++    state,
+     approvals,
+     comments,
+     lastActivityAt,
+@@ -191,6 +213,16 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
+   }
+ 
++  // Pre-flight: a PR that is already merged or closed is terminal. Re-running the
++  // command must be an idempotent NO-OP — never an error and never a second merge
++  // attempt. (An absent/unknown state falls through to the fail-closed rules.)
++  const prState = prContext && prContext.state ? String(prContext.state).toUpperCase() : '';
++  if (prState && prState !== 'OPEN') {
++    const reason = `PR #${pr} is ${prState} (not OPEN) — nothing to merge. No action taken.`;
++    process.stdout.write(`${reason}\n`);
++    return { success: true, merged: false, enabled: true, state: prState, reason };
++  }
++
+   const { allowed, unmet } = evaluateMergeRules(prContext, rules);
+ 
+   if (!allowed) {
+@@ -201,6 +233,26 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: true, merged: false, enabled: true, allowed: false, unmet, reason: 'auto-merge conditions not met' };
+   }
+ 
++  // TOCTOU guard: PR state can change between the first fetch and the merge — a
++  // new comment resets settle_min, a required check regresses, a thread opens.
++  // Re-pull LIVE data and re-evaluate immediately before merging so our custom
++  // rules (which GitHub's server-side branch protection does NOT enforce) are
++  // honored against the freshest possible state, never a stale snapshot.
++  let freshContext;
++  try {
++    freshContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to re-fetch PR context before merge: ${err.message}` };
++  }
++  const recheck = evaluateMergeRules(freshContext, rules);
++  if (!recheck.allowed) {
++    process.stdout.write(`Auto-merge ABORTED for PR #${pr} — state changed since first check; ${recheck.unmet.length} rule(s) now unmet:\n`);
++    for (const item of recheck.unmet) {
++      process.stdout.write(`  x ${item.rule} — ${item.reason}\n`);
++    }
++    return { success: true, merged: false, enabled: true, allowed: false, unmet: recheck.unmet, reason: 'PR state changed before merge (live re-check failed)' };
++  }
++
+   try {
+     const mergeResult = await mergePr({ pr, projectRoot: root, gh });
+     process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index 54e0f4fd..6a1c38c3 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -29,17 +29,26 @@
+  *   - comments:           Array<{ author, at }>         PR/review comments
+  *   - lastActivityAt:     number | string (epoch ms or ISO)
+  *   - now:                number | string (epoch ms or ISO)
++ *   - conflicting:        boolean                       true if the branch conflicts with base
++ *   - isDraft:            boolean                       true if the PR is a draft
++ *   - state:              string (OPEN | MERGED | CLOSED)  read by the command pre-flight, not a rule
+  *
+  * Built-in rule types (compose as a list, ANDed by default):
+- *   checks_green | threads_resolved | not_behind | min_approvals:N |
+- *   settle_min:N | idle_min:N | last_comment_by:X | approved_by:[..] |
+- *   not_commented_by:[..]
++ *   checks_green | threads_resolved | not_behind | no_conflicts | not_draft |
++ *   min_approvals:N | settle_min:N | idle_min:N | last_comment_by:X |
++ *   approved_by:[..] | not_commented_by:[..]
+  * Composition wrappers:
+  *   { any_of: [rule, ...] }  passes if ANY member passes
+  *   { not: rule }            passes if the inner rule FAILS
+  *
+  * A custom-predicate seam (bring-your-own script via `forge add`) is a
+  * documented follow-up and intentionally NOT implemented here.
++ *
++ * Follow-ups (documented, NOT built here): an opt-in `auto_update` executor
++ * (update-branch when behind → wait for CI → re-check → merge); required-checks
++ * SCOPING for `checks_green` (read the branch-protection required set instead of
++ * requiring every rollup check green); a configurable merge `method`
++ * (squash | merge | rebase); and post-merge branch deletion.
+  */
+ 
+ const SUCCESS_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'PASS', 'PASSED']);
+@@ -142,6 +151,21 @@ function notBehind(ctx) {
+   return fail('behind-base status is unknown (fail-closed).');
+ }
+ 
++function noConflicts(ctx) {
++  const conflicting = ctx.conflicting;
++  if (conflicting === false) return pass();
++  if (conflicting === true) return fail('branch has merge conflicts with base.');
++  // undefined/unknown mergeability → never merge blind.
++  return fail('conflict status is unknown (fail-closed).');
++}
++
++function notDraft(ctx) {
++  const isDraft = ctx.isDraft;
++  if (isDraft === false) return pass();
++  if (isDraft === true) return fail('PR is a draft.');
++  return fail('draft status is unknown (fail-closed).');
++}
++
+ function minApprovals(ctx, arg) {
+   const need = Number.parseInt(arg, 10);
+   if (!Number.isFinite(need)) return fail('min_approvals requires a numeric argument, e.g. "min_approvals:2".');
+@@ -226,6 +250,8 @@ const PREDICATES = {
+   checks_green: (ctx) => checksGreen(ctx),
+   threads_resolved: (ctx) => threadsResolved(ctx),
+   not_behind: (ctx) => notBehind(ctx),
++  no_conflicts: (ctx) => noConflicts(ctx),
++  not_draft: (ctx) => notDraft(ctx),
+   min_approvals: (ctx, arg) => minApprovals(ctx, arg),
+   settle_min: (ctx, arg) => settleMin(ctx, arg),
+   idle_min: (ctx, arg) => idleMin(ctx, arg),
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index bf075834..282b4cf7 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -111,4 +111,38 @@ describe('merge command — opt-in conditional auto-merge', () => {
+     expect((await mergeCmd.handler(['1'], {}, root, {})).success).toBe(false);
+     expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
+   });
++
++  test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
++    const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
++    let mergeCalled = false;
++    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
++      fetchPrContext: async () => ({ state: 'MERGED' }),
++      mergePr: async () => { mergeCalled = true; },
++    });
++    expect(out.success).toBe(true);
++    expect(out.merged).toBe(false);
++    expect(out.state).toBe('MERGED');
++    expect(mergeCalled).toBe(false);
++  });
++
++  test('TOCTOU: aborts the merge when the live re-check fails (state changed after first pass)', async () => {
++    const root = makeProject({ merge: { auto: { enabled: true, rules: ['no_conflicts'] } } });
++    let mergeCalled = false;
++    let call = 0;
++    const out = await mergeCmd.handler(['77', '--auto'], {}, root, {
++      // 1st fetch: allowed (no conflicts). 2nd (pre-merge) fetch: now conflicting.
++      fetchPrContext: async () => {
++        call += 1;
++        return call === 1
++          ? { state: 'OPEN', conflicting: false }
++          : { state: 'OPEN', conflicting: true };
++      },
++      mergePr: async () => { mergeCalled = true; return { merged: true }; },
++    });
++    expect(call).toBe(2);
++    expect(out.merged).toBe(false);
++    expect(out.allowed).toBe(false);
++    expect(mergeCalled).toBe(false);
++    expect(out.reason).toMatch(/state changed|re-check/i);
++  });
+ });
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index e159e52e..3164d932 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -26,6 +26,9 @@ function greenContext(overrides = {}) {
+       { author: 'bob', at: minAgo(15) },
+     ],
+     lastActivityAt: minAgo(15),
++    conflicting: false,
++    isDraft: false,
++    state: 'OPEN',
+     now: NOW,
+     ...overrides,
+   };
+@@ -133,6 +136,18 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     expect(evaluateMergeRules(greenContext({ behindBase: undefined }), ['not_behind']).allowed).toBe(false);
+   });
+ 
++  test('no_conflicts fails on a conflicting (DIRTY) branch and is fail-closed when unknown', () => {
++    expect(evaluateMergeRules(greenContext({ conflicting: true }), ['no_conflicts']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ conflicting: undefined }), ['no_conflicts']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ conflicting: false }), ['no_conflicts']).allowed).toBe(true);
++  });
++
++  test('not_draft fails on a draft PR and is fail-closed when unknown', () => {
++    expect(evaluateMergeRules(greenContext({ isDraft: true }), ['not_draft']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ isDraft: undefined }), ['not_draft']).allowed).toBe(false);
++    expect(evaluateMergeRules(greenContext({ isDraft: false }), ['not_draft']).allowed).toBe(true);
++  });
++
+   test('idle_min:30 requires 30 minutes since the last activity', () => {
+     expect(evaluateMergeRules(greenContext({ lastActivityAt: minAgo(5) }), ['idle_min:30']).allowed).toBe(false);
+     expect(evaluateMergeRules(greenContext({ lastActivityAt: minAgo(45) }), ['idle_min:30']).allowed).toBe(true);
+-- 
+2.51.0.windows.1
+

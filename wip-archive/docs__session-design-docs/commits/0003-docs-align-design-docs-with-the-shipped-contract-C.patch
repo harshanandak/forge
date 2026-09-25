@@ -1,0 +1,104 @@
+From 1f2ab00d8370536feccdf001ced4a8d4a6bb4500 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 01:06:51 +0530
+Subject: [PATCH] docs: align design docs with the shipped contract (CodeRabbit
+ #290)
+
+- decisions.md: gate events are event_type gate.approved/gate.rejected with the
+  gate id in the payload (not gate.approved:<gate-id>); the verbs shipped in #286.
+- extensibility-architecture.md: label roles.merge.onPass / `forge role --on-pass`
+  as PLANNED (role.js ships only --use/--ideology today).
+- super-skill-orchestrator.md: fold naming to the LOCKED smith/compass; clarify
+  that `forge gate` only toggles existing gates (add/remove = a runtime-graph change).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../2026-07-04-kernel-native-skills/decisions.md | 13 +++++++------
+ .../extensibility-architecture.md                | 10 ++++++----
+ .../super-skill-orchestrator.md                  | 16 +++++++++-------
+ 3 files changed, 22 insertions(+), 17 deletions(-)
+
+diff --git a/docs/work/2026-07-04-kernel-native-skills/decisions.md b/docs/work/2026-07-04-kernel-native-skills/decisions.md
+index 4856fb94..2ff0a211 100644
+--- a/docs/work/2026-07-04-kernel-native-skills/decisions.md
++++ b/docs/work/2026-07-04-kernel-native-skills/decisions.md
+@@ -14,12 +14,13 @@ Confirmed by the user after a cross-verify audit + a Fable guidance pass.
+ - Internal store stays "kernel" in code/docs; never in a user-facing skill/command name.
+ 
+ ## Architecture decisions (from Fable guidance, adopted)
+-- **Human gates are enforced by kernel EVENTS, not skill prose.** Record gate approvals as
+-  kernel events on the issue (e.g. `gate.approved:<gate-id>` by actor `human`). `ship`
+-  (and the relevant stage) refuses to proceed without the required gate event UNLESS that
+-  gate is toggled off. → evidence-checked HARD-GATEs + resume-from-kernel-state for free.
+-  Add a real verb `forge gate approve <issue> <gate>` that writes the event; define the
+-  rejection/redirect path (which stage a rejection loops back to).
++- **Human gates are enforced by kernel EVENTS, not skill prose.** (SHIPPED, #286.) Gate
++  decisions are durable kernel events on the issue — `event_type` `gate.approved` /
++  `gate.rejected`, with the gate id stored **separately in the payload** (not encoded as
++  `gate.approved:<gate-id>`) — written via `forge gate approve|reject|status|check <issue>
++  <gate>`. A stage refuses to proceed without the required gate event UNLESS that gate is
++  toggled off → evidence-checked HARD-GATEs + resume-from-kernel-state for free. (Follow-up:
++  define the rejection/redirect path — which stage a rejection loops back to.)
+ - **Autonomy is calibrated in planning, not fixed.** `smith` reads the issue's size ×
+   importance × complexity, maps it to an autonomy tier, and PROPOSES it at the intent gate;
+   the human confirms or overrides. Higher stakes → MORE human checkpoints (design-approval,
+diff --git a/docs/work/2026-07-04-kernel-native-skills/extensibility-architecture.md b/docs/work/2026-07-04-kernel-native-skills/extensibility-architecture.md
+index e618eecb..fe3a1c73 100644
+--- a/docs/work/2026-07-04-kernel-native-skills/extensibility-architecture.md
++++ b/docs/work/2026-07-04-kernel-native-skills/extensibility-architecture.md
+@@ -193,12 +193,14 @@ now keeps them independent so each is a clean single move:
+ 1. **Stop pausing (TOGGLE):** `forge gate disable gate.merge` → `workflow.gates.gate.merge.enabled
+    = false`. The orchestrator no longer pauses for human approval at MERGE_READY. **By itself this
+    merges nothing** — it just removes the pause.
+-2. **Perform the merge (SWAP of a shipped, default-OFF executor):** the merge role carries an
+-   on-pass action, `roles.merge.onPass`, with two shipped values:
++2. **Perform the merge (SWAP of a default-OFF executor) — PLANNED (§8), not yet shipped:** the
++   merge role would carry an on-pass action, `roles.merge.onPass`. NOTE: this is design intent —
++   the shipped `forge role` CLI today supports only `--use`/`--ideology` (`lib/commands/role.js`);
++   the `onPass` field and the `--on-pass` flag are future work. Two intended values:
+    - `handoff` — **default**. Present the PR and stop (today's behavior; honors the
+      never-auto-merge invariant: `pr-shepherd.js:11`, `ship/SKILL.md:218,243`).
+-   - `auto-merge` — a **shipped executor that Forge provides but ships OFF**. `forge role merge
+-     --on-pass auto-merge` opts in. The executor runs `gh pr merge --auto` **only when the
++   - `auto-merge` — a Forge-provided executor that would ship OFF. `forge role merge
++     --on-pass auto-merge` would opt in. The executor runs `gh pr merge --auto` **only when the
+      family-B CI/review gates resolve green** (it reads `forge options gates --json`, see B),
+      so "once CI + review pass" is the executor's own precondition.
+ 
+diff --git a/docs/work/2026-07-04-kernel-native-skills/super-skill-orchestrator.md b/docs/work/2026-07-04-kernel-native-skills/super-skill-orchestrator.md
+index f529caed..0becc91a 100644
+--- a/docs/work/2026-07-04-kernel-native-skills/super-skill-orchestrator.md
++++ b/docs/work/2026-07-04-kernel-native-skills/super-skill-orchestrator.md
+@@ -38,8 +38,9 @@ Autonomy ≠ absence of the human. The orchestrator is maximally *driving* but h
+ - **Merge/ship gate.** Human approves the PR/merge (or a *configured* gated auto-merge).
+ - **Between gates:** the agent works autonomously (TDD per task, validate, address review).
+ 
+-Gates are **configurable** (ideology): a user can move a gate, remove one, or add one.
+-Default = the three above. This is "conversational autonomy": drive between gates,
++Gates are **configurable** (ideology): a user can toggle a gate on/off via the config surface
++(`forge gate enable|disable`, which only flips *existing* gate ids). Adding, removing, or
++reordering a gate is a runtime-graph/schema change, not a config flip. Default = the three above. This is "conversational autonomy": drive between gates,
+ steer at gates.
+ 
+ ## 3b. Autonomy calibration — `smith` sets the human-loop density in planning
+@@ -107,11 +108,12 @@ setup profile). A docs typo skips brainstorming; a critical feature runs the ful
+ "Kernel" is the internal event-sourced store (`.git/forge/kernel.sqlite`). It must not
+ surface in user-facing skill/agent names.
+ 
+-- **Super-skill (the flagship):** candidates — `forge-flow`, `flow`, `operator`,
+-  `conductor`, `driver`, `forge-agent`. (Avoid `autopilot` — implies no human.)
+-- **Existing `kernel` umbrella skill:** also user-facing; rename candidates — `forge`,
+-  `workflow`, `orient`, `surface`. Its ROLE (index/router that documents the issue verbs)
+-  stays; only the name changes.
++- **Super-skill (the flagship): LOCKED → `smith`** (see `decisions.md`). Considered but not
++  chosen: `forge-flow`, `flow`, `operator`, `conductor`, `driver` (avoid `autopilot` — implies
++  no human).
++- **Existing `kernel` umbrella skill: LOCKED → rename to `compass`** (see `decisions.md`). Its
++  ROLE (index/router that documents the issue verbs) stays; only the name changes. Considered:
++  `forge`, `workflow`, `orient`, `surface`.
+ - **Internal code / issue store:** stays "kernel" — it's an implementation term, fine in
+   source and docs, not in the skill surface a customer reads.
+ 
+-- 
+2.51.0.windows.1
+

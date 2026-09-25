@@ -1,0 +1,198 @@
+From b949f094cc2290a1646e3dcb76c18c0cf4c17b70 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 16:32:18 +0530
+Subject: [PATCH] fix(audit): publish capped records atomically
+
+---
+ lib/capped-jsonl-log.js           | 58 ++++++++++++++++++-------------
+ test/npm-publish-workflow.test.js | 50 +++++++++++++++++++++++++-
+ 2 files changed, 82 insertions(+), 26 deletions(-)
+
+diff --git a/lib/capped-jsonl-log.js b/lib/capped-jsonl-log.js
+index 93d7d04c..df42b668 100644
+--- a/lib/capped-jsonl-log.js
++++ b/lib/capped-jsonl-log.js
+@@ -21,7 +21,6 @@ const TRIM_DELTA_PASSES = 3;
+  * that drained concurrent appends can still sit above it, and one more quiet
+  * pass settles that; the bound stops a relentless writer from pinning the lock.
+  */
+-const TRIM_CAP_PASSES = 3;
+ const NEWLINE_BYTE = 0x0a;
+ /** The trim rewrite takes milliseconds, so an older lock outlived its process. */
+ const TRIM_LOCK_STALE_MS = 5000;
+@@ -141,11 +140,16 @@ function readAppendsSince(logPath, offset) {
+  * concurrent appenders ride above the cap, so the caller has to check.
+  * Must be called with the trim lock held.
+  */
+-function rewriteToCap(logPath, maxRecords) {
++function rewriteToCap(logPath, maxRecords, pendingLine = null) {
+ 	const snapshot = snapshotJsonl(logPath);
+-	if (snapshot.lines.length <= maxRecords) return snapshot.lines.length;
++	if (snapshot.lines.length < maxRecords && pendingLine !== null) {
++		fs.appendFileSync(logPath, `${pendingLine}\n`, 'utf8');
++		return snapshot.lines.length + 1;
++	}
++	if (snapshot.lines.length <= maxRecords && pendingLine === null) return snapshot.lines.length;
+ 
+-	const kept = snapshot.lines.slice(-maxRecords);
++	const candidates = pendingLine === null ? snapshot.lines : [...snapshot.lines, pendingLine];
++	const kept = candidates.slice(-maxRecords);
+ 	// Write-then-rename so a crash mid-trim cannot leave a torn log behind.
+ 	const tempPath = `${logPath}.${process.pid}.tmp`;
+ 	fs.writeFileSync(tempPath, `${kept.join('\n')}\n`, 'utf8');
+@@ -163,6 +167,10 @@ function rewriteToCap(logPath, maxRecords) {
+ 		offset += appended.bytes.length;
+ 		drained += appended.records;
+ 	}
++	if (pendingLine !== null && drained > 0) {
++		const prepared = snapshotJsonl(tempPath).lines;
++		fs.writeFileSync(tempPath, `${prepared.slice(-maxRecords).join('\n')}\n`, 'utf8');
++	}
+ 
+ 	try {
+ 		fs.renameSync(tempPath, logPath);
+@@ -173,43 +181,38 @@ function rewriteToCap(logPath, maxRecords) {
+ 		fs.rmSync(tempPath, { force: true });
+ 		return null;
+ 	}
+-	return kept.length + drained;
++	return pendingLine === null ? kept.length + drained : Math.min(kept.length + drained, maxRecords);
+ }
+ 
+-function trimJsonlToCap(logPath, maxRecords) {
++function appendAtCap(logPath, recordLine, maxRecords) {
+ 	const snapshot = snapshotJsonl(logPath);
+-	if (snapshot.lines.length <= maxRecords) return snapshot.lines.length;
+ 
+ 	const lockPath = `${logPath}.lock`;
+ 	const lock = acquireTrimLock(lockPath);
+ 	// A held lock means another writer is already trimming. These logs are
+ 	// best-effort sinks on the hot path of a hook or a command, so skip and let
+ 	// the next writer past the cap trim instead of blocking the caller.
+-	if (lock === null) return snapshot.lines.length;
++	if (lock === null) {
++		fs.appendFileSync(logPath, `${recordLine}\n`, 'utf8');
++		return snapshot.lines.length + 1;
++	}
+ 
+ 	try {
+-		let count = snapshot.lines.length;
+-		// A rewrite that drained concurrent appends lands above the cap, and no
+-		// later append is guaranteed to arrive and clear it, so rewrite again until
+-		// the log is capped. Bounded: a writer appending through every pass leaves
+-		// its records in an over-cap log rather than costing the caller more time.
+-		for (let pass = 0; pass < TRIM_CAP_PASSES; pass += 1) {
+-			const rewritten = rewriteToCap(logPath, maxRecords);
+-			if (rewritten === null) return count;
+-			count = rewritten;
+-			if (count <= maxRecords) break;
++		const rewritten = rewriteToCap(logPath, maxRecords, recordLine);
++		if (rewritten === null) {
++			fs.appendFileSync(logPath, `${recordLine}\n`, 'utf8');
++			return snapshotJsonl(logPath).lines.length;
+ 		}
+-		return count;
++		return rewritten;
+ 	} finally {
+ 		releaseTrimLock(lock, lockPath);
+ 	}
+ }
+ 
+ /**
+- * The append is lock-free: O_APPEND makes a single small record atomic, so
+- * concurrent processes cannot overwrite each other. Only the trim rewrite is
+- * serialised, because that is the read-modify-write that could drop a record
+- * appended between its read and its write.
++ * Below the cap, O_APPEND keeps each small record atomic. At the cap, the new
++ * record is prepared inside the locked replacement so failure cannot be
++ * reported after the authorization has already landed in the live log.
+  *
+  * That leaves one window, and the trim narrows rather than closes it: records
+  * appended after the trim's snapshot are drained onto the replacement file right
+@@ -219,8 +222,13 @@ function trimJsonlToCap(logPath, maxRecords) {
+  */
+ function appendCappedJsonlRecord(logPath, record, maxRecords) {
+ 	fs.mkdirSync(path.dirname(logPath), { recursive: true });
+-	fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, 'utf8');
+-	return trimJsonlToCap(logPath, maxRecords);
++	const recordLine = JSON.stringify(record);
++	const snapshot = snapshotJsonl(logPath);
++	if (snapshot.lines.length < maxRecords) {
++		fs.appendFileSync(logPath, `${recordLine}\n`, 'utf8');
++		return snapshot.lines.length + 1;
++	}
++	return appendAtCap(logPath, recordLine, maxRecords);
+ }
+ 
+ module.exports = {
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+index 6ec270ab..7e3d0df3 100644
+--- a/test/npm-publish-workflow.test.js
++++ b/test/npm-publish-workflow.test.js
+@@ -12,7 +12,10 @@ const {
+ 	generateNpmPublishWorkflow,
+ 	renderNpmPublishWorkflow,
+ } = require('../lib/npm-publish-workflow');
+-const { PROTECTED_STATE_AUDIT_LOG } = require('../lib/protected-state-surfaces');
++const {
++	PROTECTED_STATE_AUDIT_LOG,
++	verifyProtectedStateAuthorization,
++} = require('../lib/protected-state-surfaces');
+ const {
+ 	createReleaseSuiteReceipt,
+ 	verifyReleaseSuiteReceipt,
+@@ -226,6 +229,51 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
++	test('real capped audit failure cannot leave a reusable authorization behind', () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-capped-audit-'));
++		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
++		const auditPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
++		const previous = Buffer.from('previous workflow\n', 'utf8');
++		const realWriteFileSync = fs.writeFileSync;
++		try {
++			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
++			fs.mkdirSync(path.dirname(auditPath), { recursive: true });
++			fs.writeFileSync(workflowPath, previous);
++			const seeded = Array.from({ length: 500 }, (_, index) => JSON.stringify({
++				kind: 'protected_state_write',
++				decision: 'blocked',
++				seq: index,
++			}));
++			fs.writeFileSync(auditPath, `${seeded.join('\n')}\n`, 'utf8');
++			fs.writeFileSync = (target, ...args) => {
++				if (String(target).startsWith(`${auditPath}.`) && String(target).endsWith('.tmp')) {
++					const error = new Error('forced audit temp failure');
++					error.code = 'ENOSPC';
++					throw error;
++				}
++				return realWriteFileSync(target, ...args);
++			};
++
++			const result = generateNpmPublishWorkflow(root, { actor: 'release-test' });
++			expect(result).toMatchObject({
++				success: false,
++				error: 'Could not record protected-state authorization: forced audit temp failure',
++			});
++			expect(fs.readFileSync(workflowPath)).toEqual(previous);
++			const records = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
++			expect(records).toHaveLength(500);
++			expect(verifyProtectedStateAuthorization({
++				actor: 'release-test',
++				surface: 'workflows',
++				path: NPM_PUBLISH_WORKFLOW_PATH,
++				content: renderNpmPublishWorkflow(),
++			}, records).allowed).toBe(false);
++		} finally {
++			fs.writeFileSync = realWriteFileSync;
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
+ 	test('hook accepts exact generator evidence but denies raw edits and missing evidence', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-hook-'));
+ 		const actor = 'release-hook-test';
+-- 
+2.51.0.windows.1
+

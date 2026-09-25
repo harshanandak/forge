@@ -1,0 +1,220 @@
+From 2aa04b4c82480149460855c01e3d36e953bf2f2a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 14:18:01 +0530
+Subject: [PATCH] fix(test-runner): preserve signal exit status and ownership
+
+---
+ scripts/process-tree.js           | 41 ++++++++++++++++++++++-----
+ scripts/test.js                   |  4 +++
+ test/scripts/process-tree.test.js | 24 ++++++++++++++++
+ test/scripts/test-runner.test.js  | 47 +++++++++++++++++++++++++++++++
+ 4 files changed, 109 insertions(+), 7 deletions(-)
+
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index 1dce965c..e1b23414 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -38,7 +38,11 @@ function isValidManifestEntry(entry) {
+   if (!nonEmptyString(entry.id) || !nonEmptyString(entry.token)) return false;
+   if (!['reserved', 'running'].includes(entry.status)) return false;
+   if (!nonEmptyString(entry.startedAt)) return false;
+-  if (entry.status === 'reserved') return entry.pid == null && entry.identity == null;
++  if (entry.status === 'reserved') {
++    if (entry.pid == null) return entry.identity == null;
++    return normalizePid(entry.pid) === entry.pid
++      && (entry.identity == null || normalizeIdentity(entry.identity) !== null);
++  }
+   return normalizePid(entry.pid) === entry.pid && normalizeIdentity(entry.identity) !== null;
+ }
+ 
+@@ -387,6 +391,9 @@ function createProcessTree(options = {}) {
+         && isVerifiableEntry(finalManifest, entry)
+         && (options.isAlive || defaultIsAlive)(entry.pid, processApi),
+     );
++    const hasOutstandingReservation = finalManifest?.children.some(
++      (entry) => entry.status === 'reserved',
++    );
+     const hasFailedLiveEntry = finalManifest?.children.some(
+       (entry) => entry.status === 'running'
+         && isVerifiableEntry(finalManifest, entry)
+@@ -395,6 +402,7 @@ function createProcessTree(options = {}) {
+     );
+     const safeToRemove = finalManifest
+       && !hasUnverifiableRunningEntry
++      && !hasOutstandingReservation
+       && !hasFailedLiveEntry
+       && (force || !hasLiveRunningEntry);
+     if (safeToRemove && finalManifest.token === token) {
+@@ -419,11 +427,9 @@ function createProcessTree(options = {}) {
+       killSucceeded = false;
+     }
+ 
+-    unregisterChild(reservation);
+-    // The child handle above is the exact process returned by spawn, so a
+-    // direct signal is safe even when registration could not capture start
+-    // evidence. Remove an empty marker after the reservation is released.
+-    if (killSucceeded || !normalizePid(child && child.pid)) {
++    const pid = normalizePid(child && child.pid);
++    if (killSucceeded || !pid) {
++      unregisterChild(reservation);
+       cleanup('SIGKILL');
+       return killSucceeded;
+     }
+@@ -435,7 +441,28 @@ function createProcessTree(options = {}) {
+         return true;
+       }
+     })();
+-    if (!alive) cleanup('SIGKILL');
++    if (!alive) {
++      unregisterChild(reservation);
++      cleanup('SIGKILL');
++      return killSucceeded;
++    }
++
++    const latest = currentManifest();
++    const id = reservation && reservation.id;
++    const entry = latest?.children.find((candidate) => candidate.id === id);
++    if (latest && entry && entry.token === token && entry.status === 'reserved') {
++      const identity = captureIdentity(pid);
++      entry.pid = pid;
++      entry.identity = identity;
++      if (identity) {
++        entry.status = 'running';
++        entry.registeredAt = nowIso();
++      }
++      persist(latest);
++      // If identity evidence was available, cleanup can attempt a verified
++      // tree kill. Otherwise retain the reservation for later reconciliation.
++      cleanup('SIGKILL');
++    }
+     return killSucceeded;
+   }
+ 
+diff --git a/scripts/test.js b/scripts/test.js
+index 0aa6d80a..7f510a58 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -410,23 +410,27 @@ function runTestExecutionPlan(plan, deps = {}) {
+     if (plan.runFullSuite) {
+       console.log(`  Mode: full suite (${plan.reason})`);
+       const status = runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawnSync);
++      if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     } else if (plan.testTargets.length > 0) {
+       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
+       const command = pkgManager === 'bun' ? bunCommand : pkgManager;
+       const status = runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawnSync);
++      if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     }
+ 
+     if (plan.runE2E) {
+       console.log('  Extra: running affected e2e tests');
+       const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawnSync);
++      if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     }
+ 
+     if (!plan.runFullSuite && plan.runTestEnv) {
+       console.log('  Extra: running affected edge-case tests');
+       const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawnSync);
++      if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     }
+ 
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index f1935337..6b7a67e2 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -223,6 +223,30 @@ describe('scripts/process-tree.js', () => {
+     expect(fs.existsSync(manifestPath)).toBe(false);
+   });
+ 
++  test('retains ownership when a Windows child kill fails while the child remains alive', () => {
++    const manifestPath = path.join(makeTempDir(), 'run.json');
++    const tree = createProcessTree({
++      manifestPath,
++      token: 'windows-abort-token',
++      platform: 'win32',
++      processApi: { pid: 9000 },
++      isAlive: () => true,
++      getProcessIdentity: () => null,
++      spawnSync: () => ({ status: 1 }),
++    });
++    const reservation = tree.reserveChild({ kind: 'shard', label: 'unit-0' });
++    const child = { pid: 9017, kill: () => false };
++
++    expect(tree.registerChild(reservation, child)).toBeNull();
++    tree.abortChild(reservation, child);
++
++    const retained = readProcessManifest(manifestPath);
++    expect(retained).toBeTruthy();
++    expect(retained.children).toHaveLength(1);
++    expect(retained.children[0].status).toBe('reserved');
++    expect(retained.children[0].pid).toBe(9017);
++  });
++
+   test('startup reconciliation reaps only owned orphan manifests with a dead owner', () => {
+     const manifestDir = makeTempDir();
+     const orphanPath = path.join(manifestDir, 'orphan.json');
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 3d54531e..b7a772da 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -717,6 +717,53 @@ describe('scripts/test pre-push runner', () => {
+     expect(status).toBe(124);
+     expect(events).toContain('SIGKILL');
+   });
++
++  test('captured SIGINT and SIGTERM override nonzero targeted and E2E lane statuses', () => {
++    for (const [received, expected] of [['SIGINT', 130], ['SIGTERM', 143]]) {
++      for (const plan of [
++        {
++          runE2E: false,
++          runFullSuite: false,
++          runTestEnv: false,
++          testTargets: ['test/commands/ship.test.js'],
++        },
++        {
++          runE2E: true,
++          runFullSuite: false,
++          runTestEnv: false,
++          testTargets: [],
++        },
++      ]) {
++        const cleanupSignals = [];
++        let notifySignal;
++        const processTree = {
++          envFor: (env) => env,
++          installSignalHandlers: (notify) => {
++            notifySignal = notify;
++            return () => {};
++          },
++          cleanup: (signal) => cleanupSignals.push(signal),
++        };
++        const status = runTestExecutionPlan({
++          changedFiles: ['lib/commands/ship.js'],
++          mode: 'targeted',
++          reason: 'known changes mapped to targeted tests',
++          ...plan,
++        }, {
++          env: { PATH: process.env.PATH || '' },
++          pkgManager: 'bun',
++          processTree,
++          spawnSync: () => {
++            notifySignal(received);
++            return { status: 7 };
++          },
++        });
++
++        expect(status).toBe(expected);
++        expect(cleanupSignals).toEqual(['SIGKILL']);
++      }
++    }
++  });
+ });
+ 
+ describe('quick push lane', () => {
+-- 
+2.51.0.windows.1
+

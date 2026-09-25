@@ -1,0 +1,110 @@
+From 7344e13325e8163086726ad4335c4a1033424b54 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 11 Jul 2026 11:44:43 +0530
+Subject: [PATCH] chore(dashboard): make the dashboard lint-clean for CI
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+First time the browser dashboard files hit the repo's Node-oriented flat ESLint
+config. Add a dashboard-scoped override so `eslint . --max-warnings 0` passes:
+
+- web/dashboard/app.js → browser + node globals (it runs in the browser and is
+  require()-able for its unit tests), sourceType commonjs.
+- web/dashboard/**/*.test.js → ESM + node (bun test).
+- Ignore generated artifacts web/dashboard/snapshot.js + docs.js.
+- Prefix the three intentionally-unused caught errors with `_` (repo convention).
+
+No behavior change; lint-only. `npx eslint web/dashboard/ --max-warnings 0` → clean.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ eslint.config.js     | 35 +++++++++++++++++++++++++++++++++++
+ web/dashboard/app.js |  6 +++---
+ 2 files changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/eslint.config.js b/eslint.config.js
+index f70e5cc0..1710c6ef 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -14,6 +14,9 @@ export default [
+       'test-env/fixtures/**',
+       'packages/skills/test/fixtures/**',
+       'test/e2e/fixtures/**',
++      // Generated dashboard artifacts (baked kernel snapshot + work-folder docs)
++      'web/dashboard/snapshot.js',
++      'web/dashboard/docs.js',
+     ],
+   },
+   // ES Modules — .mjs files (Node scripts using ESM)
+@@ -73,4 +76,36 @@ export default [
+       'no-undef': 'warn',
+     },
+   },
++  // Browser — read-only dashboard app (baked-snapshot consumer; runs in the browser,
++  // also require()-able under Node for its unit tests via module.exports).
++  {
++    files: ['web/dashboard/app.js'],
++    languageOptions: {
++      ecmaVersion: 2022,
++      sourceType: 'commonjs',
++      globals: {
++        ...globals.browser,
++        ...globals.node,
++      },
++    },
++    rules: {
++      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
++      'no-undef': 'warn',
++    },
++  },
++  // Dashboard unit tests — ESM (bun test), Node env.
++  {
++    files: ['web/dashboard/**/*.test.js'],
++    languageOptions: {
++      ecmaVersion: 2022,
++      sourceType: 'module',
++      globals: {
++        ...globals.node,
++      },
++    },
++    rules: {
++      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
++      'no-undef': 'warn',
++    },
++  },
+ ];
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index 0644e3ea..ba333e8f 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -785,7 +785,7 @@ function handleAct(t) {
+   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
+   else if (act === 'ws-arch') { State.wsArchived = t.dataset.v === '1'; rerender(); }
+   else if (act === 'board-closed') { State.board.showClosed = !State.board.showClosed; State.board.limits = {}; rerender(); }
+-  else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (e) { /* private mode */ } rerender(); }
++  else if (act === 'board-mode') { State.board.mode = t.dataset.mode === 'table' ? 'table' : 'kanban'; try { localStorage.setItem('forge-board-mode', State.board.mode); } catch (_e) { /* private mode */ } rerender(); }
+   else if (act === 'toggle-workgroup') { const id = t.dataset.id; State.board.tableCollapsed.has(id) ? State.board.tableCollapsed.delete(id) : State.board.tableCollapsed.add(id); rerender(); }
+ }
+ function onViewClick(e) {
+@@ -847,7 +847,7 @@ async function doRefresh(silent) {
+   const btn = $('#refreshBtn');
+   if (!silent) btn.classList.add('spin');
+   try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); State.rendered = null; route(); updateStamp(); }
+-  catch (err) { if (!silent) { location.reload(); return; } }
++  catch (_err) { if (!silent) { location.reload(); return; } }
+   finally { btn.classList.remove('spin'); }
+ }
+ 
+@@ -855,7 +855,7 @@ async function boot() {
+   try {
+     const snap = await DataSource.load();
+     rebuild(snap);
+-    try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (e) { /* private mode */ }
++    try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (_e) { /* private mode */ }
+     buildNav(); wireTheme(); wireGlobalSearch();
+     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
+     $('#view').addEventListener('click', onViewClick);
+-- 
+2.51.0.windows.1
+

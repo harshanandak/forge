@@ -1,0 +1,28 @@
+From cfcc33e903d138d7f75cd583ba9ace6228c9b7f7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 12:23:51 +0530
+Subject: [PATCH] test(skills): add worktree + gates to expected skill-dirs
+ list
+
+The skills-structure test asserts an exact set of skill directories; the two new
+skills tripped it. Refs: 25c9324c
+---
+ test/skills-structure.test.js | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/test/skills-structure.test.js b/test/skills-structure.test.js
+index ee42455c..b045d3aa 100644
+--- a/test/skills-structure.test.js
++++ b/test/skills-structure.test.js
+@@ -131,6 +131,8 @@ describe('skills/ directory structure', () => {
+       'verify',
+       'kernel',
+       'claim-safety',
++      'worktree',
++      'gates',
+       'hermes-forge',
+       'parallel-deep-research',
+       'sonarcloud-analysis',
+-- 
+2.51.0.windows.1
+

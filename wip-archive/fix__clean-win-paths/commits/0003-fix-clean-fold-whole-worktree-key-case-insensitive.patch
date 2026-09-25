@@ -1,0 +1,53 @@
+From 770723f49ec8744466c2f7c38a63d54b4c413782 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 7 Jul 2026 18:16:41 +0530
+Subject: [PATCH] fix(clean): fold whole worktree key case-insensitively on
+ win32
+
+Windows filesystems are case-insensitive beyond the drive letter; segment-case
+differences between porcelain output and path.resolve must not miss the map
+lookup. Platform param injectable for tests; POSIX stays case-sensitive.
+---
+ lib/commands/clean.js       | 8 ++++++--
+ test/commands/clean.test.js | 6 ++++++
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/clean.js b/lib/commands/clean.js
+index 14f805bc..8e1bce04 100644
+--- a/lib/commands/clean.js
++++ b/lib/commands/clean.js
+@@ -63,8 +63,12 @@ function getDefaultBranch(runFile) {
+  * @param {string} p - Path in either separator style
+  * @returns {string} Canonical forward-slash key
+  */
+-function normalizeWorktreeKey(p) {
+-  return String(p).replace(/\\/g, '/').replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
++function normalizeWorktreeKey(p, platform = process.platform) {
++  const key = String(p).replace(/\\/g, '/').replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`);
++  // Windows filesystems are case-insensitive, so fold the WHOLE key there —
++  // segment-level case differences between porcelain output and path.resolve
++  // must not miss the lookup. POSIX paths stay case-sensitive.
++  return platform === 'win32' ? key.toLowerCase() : key;
+ }
+ 
+ /**
+diff --git a/test/commands/clean.test.js b/test/commands/clean.test.js
+index ae8120cf..70df8297 100644
+--- a/test/commands/clean.test.js
++++ b/test/commands/clean.test.js
+@@ -371,6 +371,12 @@ describe('forge clean — squash-merge aware detection', () => {
+       .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
+     expect(_internals.normalizeWorktreeKey('c:/repo/.worktrees/x'))
+       .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
++    // Windows filesystems are case-insensitive beyond the drive letter too:
++    // segment-case differences must fold on win32 but stay significant on POSIX.
++    expect(_internals.normalizeWorktreeKey('C:/Repo/.Worktrees/X', 'win32'))
++      .toBe(_internals.normalizeWorktreeKey('c:/repo/.worktrees/x', 'win32'));
++    expect(_internals.normalizeWorktreeKey('/a/Branch', 'linux'))
++      .not.toBe(_internals.normalizeWorktreeKey('/a/branch', 'linux'));
+ 
+     const mod = require('../../lib/commands/clean');
+     const removed = [];
+-- 
+2.51.0.windows.1
+

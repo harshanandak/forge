@@ -1,0 +1,485 @@
+From a65062b3fedcaad8290e0cf1ca6df8ed76d33610 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 00:44:59 +0530
+Subject: [PATCH] feat(skills): add smith orchestrator super-skill
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add the flagship `smith` super-skill: a thin orchestrator that COMPOSES the
+existing stage skills (triage-ready → claim-safety → plan → dev → validate →
+ship → review → verify) into the right path for a piece of work, driving
+autonomously between human gates and pausing at them. It invents no stage
+logic — it picks the path by change classification, enforces the three human
+gates as durable kernel events (forge gate check|approve|reject|status over
+gate.intent · gate.plan-approval · gate.merge, so a gated run is resume-safe),
+proves lease ownership via claim-safety/forge issue owns, and certifies
+forge release check before close.
+
+During planning, smith calibrates human-loop density from the issue's
+size × importance × complexity, proposing an autonomy tier (lean/standard/high)
+at the intent gate; the human confirms or overrides, and low confidence fails
+toward more oversight. A Fork points section documents the heuristic, the
+tier → gate-set mapping, gate density, and the composed flow.
+
+Registered in the kernel umbrella skill and mirrored into .codex/skills via
+skills-sync (generated, not hand-edited); added to the skills-structure
+expected set. Skill doc only — no new stage code.
+
+Closes 7da81cbd-f890-49dc-b237-9ce4729ed6be
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/kernel/SKILL.md |  23 ++++-
+ .codex/skills/smith/SKILL.md  | 154 ++++++++++++++++++++++++++++++++++
+ CHANGELOG.md                  |   1 +
+ skills/kernel/SKILL.md        |  23 ++++-
+ skills/smith/SKILL.md         | 154 ++++++++++++++++++++++++++++++++++
+ test/skills-structure.test.js |   8 +-
+ 6 files changed, 352 insertions(+), 11 deletions(-)
+ create mode 100644 .codex/skills/smith/SKILL.md
+ create mode 100644 skills/smith/SKILL.md
+
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+index 1f061748..536c746f 100644
+--- a/.codex/skills/kernel/SKILL.md
++++ b/.codex/skills/kernel/SKILL.md
+@@ -3,10 +3,11 @@ name: kernel
+ description: >
+   Forge kernel surface — the umbrella index for working in a Forge project. Use
+   at the start of any session and whenever you need to orient: it routes to the
+-  per-stage workflow skills (plan, dev, validate, ship, review, verify,
+-  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
+-  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
+-  and orientation verbs of the `forge` CLI. Trigger on
++  `smith` orchestrator super-skill, the per-stage workflow skills (plan, dev,
++  validate, ship, review, verify, plus status, research, rollback, sonarcloud,
++  shepherd) and the kernel-native skills (triage-ready, issue-basics), and
++  documents the day-to-day issue, board, and orientation verbs of the `forge`
++  CLI. Trigger on
+   "what's the workflow", "what should I work on", "forge issues", "claim an
+   issue", "project status", "orient", or when deciding between Forge issues and
+   an ad-hoc TodoWrite list.
+@@ -53,6 +54,20 @@ mutating it — a claim returning ok:true does not by itself prove ownership).
+ status → plan → dev → validate → ship → review → verify
+ ```
+ 
++## Orchestrator super-skill
++
++`smith` is the flagship: a thin orchestrator that COMPOSES the skills above into
++the right path for a piece of work — pick (`triage-ready`) → claim
++(`claim-safety`) → `plan` → `dev` → `validate` → `ship` → `review` → `verify` —
++driving autonomously between human gates and pausing AT them. The human gates are
++durable kernel EVENTS (`forge gate check|approve|reject|status <issue> <gate>`;
++gates `gate.intent` · `gate.plan-approval` · `gate.merge`), so a gated run is
++resume-safe across compaction. During planning `smith` calibrates how many gates
++the work needs from its size × importance × complexity and proposes that tier at
++the intent gate (the human confirms or overrides). Reach for `smith` to run a
++whole issue end to end under human control; invoke an individual stage skill to
++run a single step.
++
+ ## Kernel-native skills
+ 
+ Read-and-repair skills that work directly against the kernel's issue store. They
+diff --git a/.codex/skills/smith/SKILL.md b/.codex/skills/smith/SKILL.md
+new file mode 100644
+index 00000000..cafec3ac
+--- /dev/null
++++ b/.codex/skills/smith/SKILL.md
+@@ -0,0 +1,154 @@
++---
++name: smith
++description: >
++  The flagship Forge orchestrator super-skill. Given a goal or a ready issue, it
++  COMPOSES the existing stage skills (triage-ready · claim-safety · plan · dev ·
++  validate · ship · review · verify) into the right path for the work — driving
++  autonomously BETWEEN human gates and pausing AT them. It invents no stage logic;
++  it picks the path, enforces the human gates as durable kernel events, and (during
++  planning) calibrates how many human checkpoints the work needs from its size ×
++  importance × complexity. Use to run a whole piece of work end to end under human
++  control. Trigger on "orchestrate this issue", "drive plan to merge", "run the
++  whole workflow", "take this to done", "smith", or "autonomous but gated".
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Smith — the orchestrator super-skill
++
++Smith is the Forge analog of a meta-skill: a **thin orchestrator** that composes
++the stage skills into the *right path for this work*. It is maximally *driving*
++but human-*gated* — it works autonomously between gates and stops at them to loop
++the human in. It adds no new stage behaviour; every step below is an existing
++skill or `forge` verb. The judgement smith supplies is **which path to take** and
++**how densely to involve the human**.
++
++`kernel` is the internal event store — never surface that word to users. Smith is
++the flagship skill; the sub-skills are its callable set.
++
++## The orchestration procedure
++
++1. **Pick work.** Invoke `triage-ready` (read-only): rank the ready queue with
++   `forge issue ready --json`, explain why the top pick is workable, and hand off
++   ONE issue. Never claim epics/decisions.
++
++2. **Claim safely.** Invoke `claim-safety`: `FORGE_ACTOR=<actor> forge claim <id>`,
++   then **prove the lease** with `forge issue owns <id>` (exit 0 = owned). A claim's
++   `ok:true` does not by itself prove ownership. If NOT owned → do not work it;
++   reselect via `triage-ready`.
++
++3. **Calibrate autonomy (planning phase).** Read the issue's **size × importance ×
++   complexity**, map it to an autonomy tier (see below), and **PROPOSE** that tier —
++   i.e. which human gates to enforce — at the intent gate. The human confirms or
++   overrides. This read extends the existing change-classification
++   (critical/standard/simple/hotfix/docs/refactor); the tier selects the REQUIRED
++   gate set. **Uncertainty fails toward oversight:** a low-confidence read defaults
++   to MORE gates, never fewer. The human always wins.
++
++4. **Drive the stages.** Take the path that fits the change class:
++   `plan → dev → validate → ship → review → verify`. A docs typo skips
++   brainstorming and most of the ladder; a critical feature runs the full ladder
++   (intent brainstorm → design doc + task DAG → per-task TDD → validate → PR →
++   address review → post-merge verify). Invoke each stage skill as its step is
++   reached; smith sequences them, it does not reimplement them.
++
++5. **Stop at every enabled human gate.** Human gates are durable **kernel events**,
++   not prose. Before proceeding past a gate, run:
++
++   ```bash
++   forge gate check <issue> <gate>     # exit 0 iff the gate is DISABLED or APPROVED
++   ```
++
++   - **exit 0** → satisfied (approved, or disabled for this repo) → proceed.
++   - **non-zero** → STOP. Tell the human to run
++     `forge gate approve <issue> <gate> [--reason "…"]` (or
++     `forge gate reject <issue> <gate> --reason "…"` to send it back). Do not
++     advance until `check` passes. Inspect history any time with
++     `forge gate status <issue> [--json]`.
++
++   Because approvals are recorded events, smith **re-checks on resume** and survives
++   compaction/crash — a gate approved before a restart stays approved.
++
++6. **Before close.** Re-invoke `claim-safety` (`forge issue owns <id>` again — a
++   lease can be reclaimed on expiry), then run the release-readiness gate:
++
++   ```bash
++   forge release check --target <version> --json   # success:true ⇒ healthy
++   ```
++
++   Close only when ownership holds AND readiness is healthy:
++   `forge close <id> --reason "…"`, then `forge sync`.
++
++## The three human gates
++
++Registered in the runtime graph as approval-satisfied events (`requires: []`),
++additive to the evidence exit-gates. Each is toggleable via
++`workflow.gates.<id>.enabled`; a disabled gate makes `check` return satisfied.
++
++| Gate | Fires | Meaning |
++|------|-------|---------|
++| `gate.intent` | before planning/brainstorm | Human agrees the goal + proposed autonomy tier before any design |
++| `gate.plan-approval` | after design doc + task DAG, before `dev` | Human approves the plan (or redirects) |
++| `gate.merge` | after `review`, before merge | Human approves the PR/merge |
++
++(Evidence exit-gates — `gate.plan-exit`, `gate.dev-exit`, `gate.validate-exit`,
++`gate.ship-entry` — are satisfied by artifacts inside the stage skills, not by a
++human; smith relies on the stage skills' own HARD-GATES for those.)
++
++## Autonomy calibration — stakes → gate density
++
++Smith proposes a tier at `gate.intent`; the human enacts add/drop by
++`forge gate enable|disable <gate-id>` (repo default) and smith enforces every
++*enabled* gate via `check`.
++
++| Tier | Stakes read | Enforced human gates | Extra checkpoints |
++|------|-------------|----------------------|-------------------|
++| **Lean** | small · simple · low-importance (docs typo, one-line fix) | just `gate.merge`, or none under CI | skip the intent brainstorm; lean on CI + evidence gates |
++| **Standard** (default) | ordinary feature/bug | `gate.intent` · `gate.plan-approval` · `gate.merge` | the evidence exit-gates as configured |
++| **High** | large · important · or complex (critical feature, risky refactor) | all three human gates, enabled | per-milestone / per-task human check-ins (pause + `forge comment`), an explicit pre-ship review pass |
++
++Mechanics (reuses what exists, invents nothing): the tier maps to which gate
++EVENTS are required for this issue. Because they are per-issue events, the human
++can add or drop a checkpoint mid-flight and smith re-reads it via `check` /
++`status` on the next step. Higher stakes → more checkpoints so the work stays on
++point; lower stakes → run lean.
++
++## Composition map — smith invents nothing
++
++| Step | Composed skill / verb |
++|------|-----------------------|
++| Pick work | `triage-ready` (`forge issue ready/blocked/stats`) |
++| Claim + prove | `claim-safety` (`forge claim` → `forge issue owns`) |
++| Human gates | `forge gate check/approve/reject/status <issue> <gate>` |
++| Plan | `plan` (intent brainstorm → design doc → task DAG) |
++| Build | `dev` (per-task implementer → spec → quality TDD) |
++| Validate | `validate` (types · lint · security · tests) |
++| Ship | `ship` (push + PR) |
++| Review | `review` (address CI / bot feedback) |
++| Verify | `verify` (post-merge health) |
++| Release readiness | `forge release check --target <version> --json` |
++
++## Reliability
++
++- **Human always wins; fail toward oversight.** Smith only *proposes* a tier; a
++  low-confidence assessment defaults to MORE gates. A rejected gate sends the work
++  back, it does not proceed.
++- **Resume-safe.** Gate approvals are durable kernel events; re-check with `check`
++  after any interruption rather than trusting memory.
++- **Prove ownership twice** — after claim and again before `close`/`release`.
++- **Never bypass** — no `LEFTHOOK=0`, no `--no-verify`. A failed gate or hook is a
++  stop, not an obstacle to route around.
++
++## Fork points
++
++Smith is a **default assembly**, not a fixed ladder — re-carve it:
++
++| Knob | Default | How to change |
++|------|---------|---------------|
++| **Stakes heuristic** | size × importance × complexity → tier | Re-weight (e.g. weight blast-radius or reversibility higher), or map your own change-classes to tiers. |
++| **Tier → gate set** | lean / standard / high as above | Change which human gates each tier enforces; enact per repo with `forge gate enable\|disable <gate-id>`. |
++| **Gate density** | intent · plan-approval · merge | Add a checkpoint (enable a gate; add a per-milestone pause) or drop one (disable it) — the human overrides smith's proposal at `gate.intent`. |
++| **Composed flow** | triage → claim → plan → dev → validate → ship → review → verify | Skip stages by change class (docs typo → doc-only path), reorder, or swap a sub-skill for your own `plan`/`dev`/`review` adapter. |
++| **Release target** | `forge release check` default target | Pass `--target <version>` for the release you are certifying. |
++
++Smith is the assembled hammer; the sub-skills are the head and handle; the gates
++are the grip adjustments. Give the parts + a good default, then let users re-carve.
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f0335d28..0ff8d70f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,6 +22,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ - **Human gates are enforced by kernel EVENTS, not skill prose.** Three human gates — `gate.intent`, `gate.plan-approval`, `gate.merge` — are registered in the runtime graph (additive to the existing `gate.*-exit` set, so each is toggleable via `workflow.gates.<id>.enabled` and surfaced by `forge options gates`). New verbs record and query approval as durable kernel events on the issue: `forge gate approve <issue> <gate>` writes a `gate.approved` event and `forge gate reject <issue> <gate> [--reason <text>]` writes a `gate.rejected` event (both carrying the resolved actor; idempotent per issue+gate+actor+decision, so re-approving mints no duplicate). `forge gate status <issue> [--json]` lists an issue's gate events (who approved/rejected, when) — making gate state resume-safe after a compaction or crash. `forge gate check <issue> <gate>` is the reusable enforcement primitive a stage skill calls: it exits 0 iff the gate is disabled OR a `gate.approved` event exists, and non-zero (`gate <id> not approved for <issue>`) otherwise. Gate events are a pure append to the issue's event stream (they do not mutate the issue or participate in its revision CAS).
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+ - **Opt-in conditional auto-merge rules engine (default OFF).** A new pure evaluator `lib/merge-rules.js` — `evaluateMergeRules(prContext, rules) → { allowed, unmet }` — decides whether a PR may merge by ANDing a list of composable, config-driven rules over an already-fetched PR context (no network in the evaluator). Built-in rule types: `checks_green`, `threads_resolved`, `not_behind`, `no_conflicts`, `not_draft`, `min_approvals:N`, `settle_min:N` (quiet since the last comment), `idle_min:N` (quiet since the last activity), `last_comment_by:X`, `approved_by:[..]`, `not_commented_by:[..]`, composed with `any_of:[..]` groups and a `not:` wrapper; an unknown or malformed rule, or unreadable context, is surfaced as unmet (fail-closed). `checks_green` is bare (all checks must be green) or scoped — `{ checks_green: { ignore: [...] } }` exempts the named checks, `{ checks_green: { only: [...] } }` requires only the named checks (both together is malformed → fail-closed). A thin `forge merge --auto <pr>` command reads the opt-in `merge.auto` section of `.forge/config.yaml` (`{ enabled: false, rules: [...] }`), fetches the PR context via `gh` behind an injectable seam, and merges **only** when `enabled === true` **and** every rule passes — printing the unmet rules and doing nothing otherwise. Two safety layers wrap the decision: a pre-flight guard that no-ops on an already merged/closed PR (idempotent re-runs), and a TOCTOU live re-check that re-fetches and re-evaluates immediately before merging so a since-changed PR is never merged from a stale snapshot. Absent config or `enabled` not true is a strict no-op, so the test-enforced never-auto-merge-by-default invariant is preserved; it merely promotes the proven `settle-merge.sh` baseline to a native capability. Documented follow-ups (not built): the bring-your-own custom-predicate seam (`forge add`), an opt-in `auto_update` executor (update-branch when behind → wait CI → re-check → merge), required-checks scoping for `checks_green` (read the branch-protection required set), a configurable merge `method` (squash/merge/rebase), and post-merge branch deletion.
++- **`smith` orchestrator super-skill.** A new flagship skill (`skills/smith/SKILL.md`, registered through the `kernel` umbrella and mirrored into the generated agent skill dirs) that COMPOSES the existing stage skills — `triage-ready` → `claim-safety` → `plan` → `dev` → `validate` → `ship` → `review` → `verify` — into the right path for a piece of work, driving autonomously BETWEEN human gates and pausing AT them. It invents no stage logic: it picks the path by change classification, enforces the three human gates as durable kernel events (`forge gate check|approve|reject|status <issue> <gate>` over `gate.intent` · `gate.plan-approval` · `gate.merge`, so a gated run is resume-safe across compaction), proves lease ownership before and after work via `claim-safety`/`forge issue owns`, and certifies `forge release check` before close. During the planning phase `smith` **calibrates the human-loop density** from the issue's size × importance × complexity, proposing an autonomy tier (lean / standard / high) — i.e. which gates to enforce — at the intent gate; the human confirms or overrides, and a low-confidence read fails toward MORE oversight. A `## Fork points` section documents the stakes heuristic, the tier → gate-set mapping, gate density, and the composed flow so users can re-carve the assembly. This is a skill doc — no new stage code. (kernel 7da81cbd)
+ 
+ ### Changed
+ 
+diff --git a/skills/kernel/SKILL.md b/skills/kernel/SKILL.md
+index 1f061748..536c746f 100644
+--- a/skills/kernel/SKILL.md
++++ b/skills/kernel/SKILL.md
+@@ -3,10 +3,11 @@ name: kernel
+ description: >
+   Forge kernel surface — the umbrella index for working in a Forge project. Use
+   at the start of any session and whenever you need to orient: it routes to the
+-  per-stage workflow skills (plan, dev, validate, ship, review, verify,
+-  plus status, research, rollback, sonarcloud, shepherd) and the kernel-native
+-  skills (triage-ready, issue-basics), and documents the day-to-day issue, board,
+-  and orientation verbs of the `forge` CLI. Trigger on
++  `smith` orchestrator super-skill, the per-stage workflow skills (plan, dev,
++  validate, ship, review, verify, plus status, research, rollback, sonarcloud,
++  shepherd) and the kernel-native skills (triage-ready, issue-basics), and
++  documents the day-to-day issue, board, and orientation verbs of the `forge`
++  CLI. Trigger on
+   "what's the workflow", "what should I work on", "forge issues", "claim an
+   issue", "project status", "orient", or when deciding between Forge issues and
+   an ad-hoc TodoWrite list.
+@@ -53,6 +54,20 @@ mutating it — a claim returning ok:true does not by itself prove ownership).
+ status → plan → dev → validate → ship → review → verify
+ ```
+ 
++## Orchestrator super-skill
++
++`smith` is the flagship: a thin orchestrator that COMPOSES the skills above into
++the right path for a piece of work — pick (`triage-ready`) → claim
++(`claim-safety`) → `plan` → `dev` → `validate` → `ship` → `review` → `verify` —
++driving autonomously between human gates and pausing AT them. The human gates are
++durable kernel EVENTS (`forge gate check|approve|reject|status <issue> <gate>`;
++gates `gate.intent` · `gate.plan-approval` · `gate.merge`), so a gated run is
++resume-safe across compaction. During planning `smith` calibrates how many gates
++the work needs from its size × importance × complexity and proposes that tier at
++the intent gate (the human confirms or overrides). Reach for `smith` to run a
++whole issue end to end under human control; invoke an individual stage skill to
++run a single step.
++
+ ## Kernel-native skills
+ 
+ Read-and-repair skills that work directly against the kernel's issue store. They
+diff --git a/skills/smith/SKILL.md b/skills/smith/SKILL.md
+new file mode 100644
+index 00000000..cafec3ac
+--- /dev/null
++++ b/skills/smith/SKILL.md
+@@ -0,0 +1,154 @@
++---
++name: smith
++description: >
++  The flagship Forge orchestrator super-skill. Given a goal or a ready issue, it
++  COMPOSES the existing stage skills (triage-ready · claim-safety · plan · dev ·
++  validate · ship · review · verify) into the right path for the work — driving
++  autonomously BETWEEN human gates and pausing AT them. It invents no stage logic;
++  it picks the path, enforces the human gates as durable kernel events, and (during
++  planning) calibrates how many human checkpoints the work needs from its size ×
++  importance × complexity. Use to run a whole piece of work end to end under human
++  control. Trigger on "orchestrate this issue", "drive plan to merge", "run the
++  whole workflow", "take this to done", "smith", or "autonomous but gated".
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Smith — the orchestrator super-skill
++
++Smith is the Forge analog of a meta-skill: a **thin orchestrator** that composes
++the stage skills into the *right path for this work*. It is maximally *driving*
++but human-*gated* — it works autonomously between gates and stops at them to loop
++the human in. It adds no new stage behaviour; every step below is an existing
++skill or `forge` verb. The judgement smith supplies is **which path to take** and
++**how densely to involve the human**.
++
++`kernel` is the internal event store — never surface that word to users. Smith is
++the flagship skill; the sub-skills are its callable set.
++
++## The orchestration procedure
++
++1. **Pick work.** Invoke `triage-ready` (read-only): rank the ready queue with
++   `forge issue ready --json`, explain why the top pick is workable, and hand off
++   ONE issue. Never claim epics/decisions.
++
++2. **Claim safely.** Invoke `claim-safety`: `FORGE_ACTOR=<actor> forge claim <id>`,
++   then **prove the lease** with `forge issue owns <id>` (exit 0 = owned). A claim's
++   `ok:true` does not by itself prove ownership. If NOT owned → do not work it;
++   reselect via `triage-ready`.
++
++3. **Calibrate autonomy (planning phase).** Read the issue's **size × importance ×
++   complexity**, map it to an autonomy tier (see below), and **PROPOSE** that tier —
++   i.e. which human gates to enforce — at the intent gate. The human confirms or
++   overrides. This read extends the existing change-classification
++   (critical/standard/simple/hotfix/docs/refactor); the tier selects the REQUIRED
++   gate set. **Uncertainty fails toward oversight:** a low-confidence read defaults
++   to MORE gates, never fewer. The human always wins.
++
++4. **Drive the stages.** Take the path that fits the change class:
++   `plan → dev → validate → ship → review → verify`. A docs typo skips
++   brainstorming and most of the ladder; a critical feature runs the full ladder
++   (intent brainstorm → design doc + task DAG → per-task TDD → validate → PR →
++   address review → post-merge verify). Invoke each stage skill as its step is
++   reached; smith sequences them, it does not reimplement them.
++
++5. **Stop at every enabled human gate.** Human gates are durable **kernel events**,
++   not prose. Before proceeding past a gate, run:
++
++   ```bash
++   forge gate check <issue> <gate>     # exit 0 iff the gate is DISABLED or APPROVED
++   ```
++
++   - **exit 0** → satisfied (approved, or disabled for this repo) → proceed.
++   - **non-zero** → STOP. Tell the human to run
++     `forge gate approve <issue> <gate> [--reason "…"]` (or
++     `forge gate reject <issue> <gate> --reason "…"` to send it back). Do not
++     advance until `check` passes. Inspect history any time with
++     `forge gate status <issue> [--json]`.
++
++   Because approvals are recorded events, smith **re-checks on resume** and survives
++   compaction/crash — a gate approved before a restart stays approved.
++
++6. **Before close.** Re-invoke `claim-safety` (`forge issue owns <id>` again — a
++   lease can be reclaimed on expiry), then run the release-readiness gate:
++
++   ```bash
++   forge release check --target <version> --json   # success:true ⇒ healthy
++   ```
++
++   Close only when ownership holds AND readiness is healthy:
++   `forge close <id> --reason "…"`, then `forge sync`.
++
++## The three human gates
++
++Registered in the runtime graph as approval-satisfied events (`requires: []`),
++additive to the evidence exit-gates. Each is toggleable via
++`workflow.gates.<id>.enabled`; a disabled gate makes `check` return satisfied.
++
++| Gate | Fires | Meaning |
++|------|-------|---------|
++| `gate.intent` | before planning/brainstorm | Human agrees the goal + proposed autonomy tier before any design |
++| `gate.plan-approval` | after design doc + task DAG, before `dev` | Human approves the plan (or redirects) |
++| `gate.merge` | after `review`, before merge | Human approves the PR/merge |
++
++(Evidence exit-gates — `gate.plan-exit`, `gate.dev-exit`, `gate.validate-exit`,
++`gate.ship-entry` — are satisfied by artifacts inside the stage skills, not by a
++human; smith relies on the stage skills' own HARD-GATES for those.)
++
++## Autonomy calibration — stakes → gate density
++
++Smith proposes a tier at `gate.intent`; the human enacts add/drop by
++`forge gate enable|disable <gate-id>` (repo default) and smith enforces every
++*enabled* gate via `check`.
++
++| Tier | Stakes read | Enforced human gates | Extra checkpoints |
++|------|-------------|----------------------|-------------------|
++| **Lean** | small · simple · low-importance (docs typo, one-line fix) | just `gate.merge`, or none under CI | skip the intent brainstorm; lean on CI + evidence gates |
++| **Standard** (default) | ordinary feature/bug | `gate.intent` · `gate.plan-approval` · `gate.merge` | the evidence exit-gates as configured |
++| **High** | large · important · or complex (critical feature, risky refactor) | all three human gates, enabled | per-milestone / per-task human check-ins (pause + `forge comment`), an explicit pre-ship review pass |
++
++Mechanics (reuses what exists, invents nothing): the tier maps to which gate
++EVENTS are required for this issue. Because they are per-issue events, the human
++can add or drop a checkpoint mid-flight and smith re-reads it via `check` /
++`status` on the next step. Higher stakes → more checkpoints so the work stays on
++point; lower stakes → run lean.
++
++## Composition map — smith invents nothing
++
++| Step | Composed skill / verb |
++|------|-----------------------|
++| Pick work | `triage-ready` (`forge issue ready/blocked/stats`) |
++| Claim + prove | `claim-safety` (`forge claim` → `forge issue owns`) |
++| Human gates | `forge gate check/approve/reject/status <issue> <gate>` |
++| Plan | `plan` (intent brainstorm → design doc → task DAG) |
++| Build | `dev` (per-task implementer → spec → quality TDD) |
++| Validate | `validate` (types · lint · security · tests) |
++| Ship | `ship` (push + PR) |
++| Review | `review` (address CI / bot feedback) |
++| Verify | `verify` (post-merge health) |
++| Release readiness | `forge release check --target <version> --json` |
++
++## Reliability
++
++- **Human always wins; fail toward oversight.** Smith only *proposes* a tier; a
++  low-confidence assessment defaults to MORE gates. A rejected gate sends the work
++  back, it does not proceed.
++- **Resume-safe.** Gate approvals are durable kernel events; re-check with `check`
++  after any interruption rather than trusting memory.
++- **Prove ownership twice** — after claim and again before `close`/`release`.
++- **Never bypass** — no `LEFTHOOK=0`, no `--no-verify`. A failed gate or hook is a
++  stop, not an obstacle to route around.
++
++## Fork points
++
++Smith is a **default assembly**, not a fixed ladder — re-carve it:
++
++| Knob | Default | How to change |
++|------|---------|---------------|
++| **Stakes heuristic** | size × importance × complexity → tier | Re-weight (e.g. weight blast-radius or reversibility higher), or map your own change-classes to tiers. |
++| **Tier → gate set** | lean / standard / high as above | Change which human gates each tier enforces; enact per repo with `forge gate enable\|disable <gate-id>`. |
++| **Gate density** | intent · plan-approval · merge | Add a checkpoint (enable a gate; add a per-milestone pause) or drop one (disable it) — the human overrides smith's proposal at `gate.intent`. |
++| **Composed flow** | triage → claim → plan → dev → validate → ship → review → verify | Skip stages by change class (docs typo → doc-only path), reorder, or swap a sub-skill for your own `plan`/`dev`/`review` adapter. |
++| **Release target** | `forge release check` default target | Pass `--target <version>` for the release you are certifying. |
++
++Smith is the assembled hammer; the sub-skills are the head and handle; the gates
++are the grip adjustments. Give the parts + a good default, then let users re-carve.
+diff --git a/test/skills-structure.test.js b/test/skills-structure.test.js
+index e926cbf4..5f5146c7 100644
+--- a/test/skills-structure.test.js
++++ b/test/skills-structure.test.js
+@@ -110,9 +110,10 @@ describe('skills/ directory structure', () => {
+   describe('skills/ contains only expected directories', () => {
+     // Canonical skill set after the skills-only migration: the 11 workflow stage
+     // skills + the `kernel` umbrella (ported from the removed .claude/commands/
+-    // surface) plus the three packaged skills, and the kernel-native skills
+-    // (triage-ready, issue-basics) registered through the umbrella. These are the
+-    // single source of truth; agent harness dirs are generated from them by
++    // surface) plus the three packaged skills, the kernel-native skills
++    // (triage-ready, issue-basics) registered through the umbrella, and the
++    // `smith` orchestrator super-skill that composes the stage skills. These are
++    // the single source of truth; agent harness dirs are generated from them by
+     // `skills sync` / setup. Pre-merge is a doc-update gate embedded in
+     // ship/review, not a skill.
+     const expectedSkillDirs = [
+@@ -134,6 +135,7 @@ describe('skills/ directory structure', () => {
+       'sonarcloud-analysis',
+       'triage-ready',
+       'issue-basics',
++      'smith',
+     ];
+ 
+     test('skills/ contains exactly the expected skill directories', () => {
+-- 
+2.51.0.windows.1
+

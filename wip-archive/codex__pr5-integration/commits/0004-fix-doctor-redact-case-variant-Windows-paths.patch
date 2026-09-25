@@ -1,0 +1,68 @@
+From 78f8c7e0cc57acffaccfe5d21bc3a5f7355e5334 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 00:01:04 +0530
+Subject: [PATCH] fix(doctor): redact case-variant Windows paths
+
+---
+ lib/health/doctor-runner.js       |  5 +++--
+ test/health/doctor-runner.test.js | 14 ++++++++++++++
+ 2 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/lib/health/doctor-runner.js b/lib/health/doctor-runner.js
+index 77d003ae..6073079e 100644
+--- a/lib/health/doctor-runner.js
++++ b/lib/health/doctor-runner.js
+@@ -14,8 +14,9 @@ const SECRET_PATTERNS = [
+   /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
+ ];
+ const USER_PATH_PATTERNS = [
+-  /\\\\[^\\\s]+\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/g,
+-  /\b[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/g,
++  /\\\\\?\\UNC\\[^\\\s]+\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/gi,
++  /\\\\[^\\\s]+\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/gi,
++  /\b[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/gi,
+   /\/root(?:\/[^\s"']*)?/g,
+   /\/(?:Users|home)\/[^/\s]+(?:\/[^\s"']*)?/g,
+ ];
+diff --git a/test/health/doctor-runner.test.js b/test/health/doctor-runner.test.js
+index 12eeec89..344dd8d0 100644
+--- a/test/health/doctor-runner.test.js
++++ b/test/health/doctor-runner.test.js
+@@ -20,6 +20,13 @@ describe('Doctor health runner', () => {
+   });
+ 
+   test('redacts secrets, prompts, and user-home paths before serialization', async () => {
++    const caseVariantPaths = [
++      String.raw`C:\users\lower-user\private\config.json`,
++      String.raw`c:\UsErS\mixed-user\private\config.json`,
++      String.raw`\\server\users\unc-user\private\config.json`,
++      String.raw`\\SERVER\UsErS\mixed-unc-user\private\config.json`,
++      String.raw`\\?\UNC\server\Users\extended-user\private\config.json`,
++    ];
+     const checks = [definition('redaction', 'core', ['doctor'], async () => ({
+       status: 'WARN',
+       evidence: {
+@@ -34,6 +41,8 @@ describe('Doctor health runner', () => {
+           [String.raw`\\server\Users\bob\private-key`]: 'safe-looking',
+           ghp_abcdefghijklmnopqrstuvwxyz123456: 'safe-looking',
+         },
++        caseVariantPaths,
++        caseVariantKeys: Object.fromEntries(caseVariantPaths.map(candidate => [candidate, 'safe-looking'])),
+         rawPrompt: 'do the private thing with customer data',
+       },
+       remediation: 'Remove token=super-secret-value from C:\\Users\\alice\\private\\config.json',
+@@ -50,6 +59,11 @@ describe('Doctor health runner', () => {
+     expect(serialized).not.toContain('server\\\\Users');
+     expect(serialized).not.toContain('alice');
+     expect(serialized).not.toContain('bob');
++    expect(serialized.toLowerCase()).not.toContain('users');
++    expect(serialized.toLowerCase()).not.toContain('lower-user');
++    expect(serialized.toLowerCase()).not.toContain('mixed-user');
++    expect(serialized.toLowerCase()).not.toContain('unc-user');
++    expect(serialized.toLowerCase()).not.toContain('extended-user');
+     expect(serialized).toContain('<redacted>');
+     expect(serialized).toContain('<redacted-path>');
+   });
+-- 
+2.51.0.windows.1
+

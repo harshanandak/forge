@@ -1,0 +1,204 @@
+From d5254a9e12f0e50f99d3ce914717ecc0a352c8d5 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 15:15:20 +0530
+Subject: [PATCH] fix(validate): retain captured budget on timeout
+
+---
+ .../2026-09-18-delivery-budget/decisions.md   | 15 ++++
+ lib/commands/validate.js                      | 11 ++-
+ test/commands/validate.test.js                | 73 ++++++++++++++++++-
+ 3 files changed, 93 insertions(+), 6 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-budget/decisions.md b/docs/work/2026-09-18-delivery-budget/decisions.md
+index 0f4407c2..947ac0e3 100644
+--- a/docs/work/2026-09-18-delivery-budget/decisions.md
++++ b/docs/work/2026-09-18-delivery-budget/decisions.md
+@@ -95,3 +95,18 @@ The largest attributed test file was `test/protected-state-surfaces.test.js`
+ at 99.037s. Repeated Git fixture setup is a hypothesis to measure separately in
+ issue `6eb0147a-ea09-4c8a-83dd-ed8c74acb7bc`, preserving all isolation and authority
+ assertions. No fixture optimization is included in this PR.
++
++The next exact-head review found budget evidence being lost before formatting:
++`testExecutionErrorResult` returned from timeout classification before parsing
++captured stdout. Move parsing ahead of classification and retain only observed
++budget metadata. Timeout and termination remain failures with zero test counts;
++captured partial counts cannot become completion evidence. Missing runner/root
++and no-output cases must not invent an effective budget. Audit of the canonical
++producer confirmed zero-test shard receipts already become `INCOMPLETE` through
++the existing budget-preserving path, so no zero-test behavior change was needed.
++
++The timeout, termination and public-handler composition regressions reproduced
++the loss before the correction. The complete focused file then passed 76 tests
++with 13 skips, zero failures and 190 assertions in 12.32s; strict file lint passed.
++The composition test uses real execution-result parsing and orchestration with an
++injected subprocess timeout, rather than only mocking the final result envelope.
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index 2af2bde0..feb6e96f 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -666,10 +666,14 @@ function unavailableValidationRootResult(startTime) {
+ }
+ 
+ function testExecutionErrorResult(error, startTime, rootDir, useFullSuite, timeout) {
++	const output = error.stdout || error.message;
++	const counts = parseTestCounts(output);
++	const budgetEvidence = counts.resourceBudget ? { resourceBudget: counts.resourceBudget } : {};
+ 	if (error.code === 'ETIMEDOUT' || (error.killed && error.signal === 'SIGTERM')) {
+ 		return {
+ 			success: false,
+ 			fullSuite: useFullSuite,
++			...budgetEvidence,
+ 			duration: Date.now() - startTime,
+ 			passed: 0,
+ 			failed: 0,
+@@ -679,12 +683,15 @@ function testExecutionErrorResult(error, startTime, rootDir, useFullSuite, timeo
+ 	}
+ 
+ 	if (isCommandNotFound(error)) {
+-		if (!isValidationRootAvailable(rootDir)) return unavailableValidationRootResult(startTime);
++		if (!isValidationRootAvailable(rootDir)) {
++			return { ...unavailableValidationRootResult(startTime), ...budgetEvidence };
++		}
+ 		return {
+ 			success: true,
+ 			skipped: true,
+ 			testsFound: false,
+ 			fullSuite: useFullSuite,
++			...budgetEvidence,
+ 			duration: Date.now() - startTime,
+ 			passed: 0,
+ 			failed: 0,
+@@ -693,8 +700,6 @@ function testExecutionErrorResult(error, startTime, rootDir, useFullSuite, timeo
+ 		};
+ 	}
+ 
+-	const output = error.stdout || error.message;
+-	const counts = parseTestCounts(output);
+ 	if (counts.resourceBudget?.outcome === 'rejected') {
+ 		return {
+ 			success: false,
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 3732d7b8..794942ff 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -242,6 +242,47 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			expect(calls[0][2]).toBe(2);
+ 			expect(result.validationReceipt).toBe(false);
+ 		});
++
++		test('composes captured timeout budget evidence through runAllTests and the public handler', async () => {
++			const rootDir = path.resolve(__dirname, '..', '..');
++			const result = await validateHandler(['--shards', '2'], {}, rootDir, {
++				executeValidate: (options) => executeValidate({
++					...options,
++					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
++					runAllTests: (_exec, testRoot, budget) => runAllTests(() => {
++						throw Object.assign(new Error('full suite timed out'), {
++							code: 'ETIMEDOUT',
++							stdout: [
++								'Full suite resource budget: requested=2 effective=2',
++								'3 pass',
++								'1 fail',
++								'Ran 4 tests across 1 file.',
++							].join('\n'),
++						});
++					}, testRoot, budget),
++					validationReceipt: {
++						beginValidation: () => ({ head: 'timeout-snapshot' }),
++						completeValidation: () => false,
++					},
++				}),
++			});
++
++			expect(result).toMatchObject({
++				success: false,
++				error: 'Test execution timed out after 25 minutes',
++				output: 'Full suite resource budget: requested=2 effective=2',
++				checks: {
++					tests: {
++						success: false,
++						resourceBudget: { requested: 2, effective: 2 },
++						passed: 0,
++						failed: 0,
++						total: 0,
++					},
++				},
++				failedChecks: ['tests'],
++			});
++		});
+ 	});
+ 	describe('Type checking', () => {
+ 		test.skip('should run type check successfully', async () => {
+@@ -341,6 +382,7 @@ describe('Validate Command - Validation Orchestration', () => {
+ 				expect(result.success).toBe(false);
+ 				expect(result.skipped).not.toBe(true);
+ 				expect(result.message).toMatch(/root directory/i);
++				expect(result.resourceBudget).toBeUndefined();
+ 			} finally {
+ 				fs.rmSync(parentDir, { recursive: true, force: true });
+ 			}
+@@ -357,6 +399,7 @@ describe('Validate Command - Validation Orchestration', () => {
+ 				expect(result.success).toBe(false);
+ 				expect(result.skipped).not.toBe(true);
+ 				expect(result.message).toMatch(/root directory/i);
++				expect(result.resourceBudget).toBeUndefined();
+ 			} finally {
+ 				fs.rmSync(rootDir, { recursive: true, force: true });
+ 			}
+@@ -444,12 +487,32 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			}
+ 		});
+ 
+-		test('reports the full-suite timeout using its selected limit without waiting', async () => {
++		test.each([
++			['ETIMEDOUT', { code: 'ETIMEDOUT' }],
++			['killed SIGTERM', { killed: true, signal: 'SIGTERM' }],
++		])('reports the full-suite timeout and captured budget for %s without waiting', async (_name, terminalState) => {
+ 			const result = await runAllTests(() => {
+-				throw Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
+-			}, path.resolve(__dirname, '..', '..'));
++				throw Object.assign(new Error('full suite terminated'), terminalState, {
++					stdout: 'Full suite resource budget: requested=2 effective=2',
++				});
++			}, path.resolve(__dirname, '..', '..'), 2);
+ 			expect(result.success).toBe(false);
+ 			expect(result.message).toBe('Test execution timed out after 25 minutes');
++			expect(result).toMatchObject({
++				passed: 0,
++				failed: 0,
++				total: 0,
++				resourceBudget: { requested: 2, effective: 2 },
++			});
++		});
++
++		test('does not invent budget evidence when a full-suite timeout has no output', async () => {
++			const result = await runAllTests(() => {
++				throw Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' });
++			}, path.resolve(__dirname, '..', '..'), 2);
++
++			expect(result).toMatchObject({ success: false, passed: 0, failed: 0, total: 0 });
++			expect(result.resourceBudget).toBeUndefined();
+ 		});
+ 	});
+ 
+@@ -957,6 +1020,9 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			expect(result.skipped).toBe(true);
+ 			expect(result.testsFound).toBe(false);
+ 			expect(result.total).toBe(0);
++			expect(result.resourceBudget).toBeUndefined();
++			// Forge's full-suite producer rejects zero-test shard receipts as INCOMPLETE
++			// before this branch; raw Bun is the reachable zero-test producer here.
+ 			// The status label must not read PASS when nothing ran.
+ 			expect(getCheckStatus(result)).toBe('SKIPPED');
+ 			expect(result.message).toMatch(/no tests|0 tests/i);
+@@ -988,6 +1054,7 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			const exec = () => { const e = new Error(message); e.code = 'ENOENT'; throw e; };
+ 			const result = await runAllTests(exec);
+ 			expect(result.skipped).toBe(true);
++			expect(result.resourceBudget).toBeUndefined();
+ 			expect(getCheckStatus(result)).toBe('SKIPPED');
+ 			expect(result.message).toMatch(/bun|test runner/i);
+ 		});
+-- 
+2.51.0.windows.1
+

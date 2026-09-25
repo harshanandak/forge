@@ -1,0 +1,130 @@
+From cd36eda619f7109f6ccbad6f177470c71d7da1b2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 22:31:45 +0530
+Subject: [PATCH] fix(dashboard): wire the real kernel backlog status (b2f856b1
+ merged)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+b2f856b1 landed a real `status==='backlog'` kernel state, so the Backlog column
+now reads it directly (honest — empty until something is parked) instead of the
+v5 stopgap that mapped Backlog→blocked (which conflated two different things).
+
+- columnOf: `status==='backlog'` → its own column, taking precedence over the
+  blocked flag; blocked is NOT a column — blocked-open items stay in Ready with a
+  ✕ glyph so the ~47 blocked issues remain visible without being mislabelled parked.
+- Work Board: Backlog column = status backlog; Backlog view lists real parked
+  issues (empty-state explains blocked ≠ parked).
+- Tests: columnOf backlog cases + snapshot-integrity bucket updated. 12 pass.
+
+Addresses the v5 interpretation-call flagged to the team-lead. Refs b2f856b1.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ web/dashboard/app.js      | 29 +++++++++++++++++------------
+ web/dashboard/app.test.js |  7 +++++--
+ 2 files changed, 22 insertions(+), 14 deletions(-)
+
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index 94a81696..8856f12d 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -83,7 +83,8 @@ function rebuild(snap) {
+ function columnOf(i) {
+   if (i.status === 'done') return 'done';
+   if (i.status === 'cancelled') return null;
+-  if (i.blocked) return 'blocked';
++  if (i.status === 'backlog') return 'backlog'; // real kernel backlog state (b2f856b1)
++  if (i.blocked) return 'blocked'; // blocked = a card glyph, not a column (stays visible in Ready)
+   if (i.claimed_by) return 'progress';
+   return 'ready';
+ }
+@@ -135,7 +136,7 @@ function wtSummary(w) {
+ const rankByPrio = (a, b) => (({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[a.priority] ?? 9) - ({ P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 }[b.priority] ?? 9));
+ 
+ /* ---------- grayscale encodings ---------- */
+-const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○' };
++const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○', backlog: '◇' };
+ const ATTN_GLYPH = { ready: '●', fail: '✕', open: '○', warn: '◐' };
+ const HEALTH_GLYPH = { ok: '●', warn: '◐', risk: '○', done: '●', neutral: '–' };
+ const HEALTH_LABEL = { ok: 'On track', warn: 'At risk', risk: 'Off track', done: 'Completed', neutral: '—' };
+@@ -251,15 +252,18 @@ function renderTaskColumns(focus) {
+   let pool = State.issues.filter((i) => i.type !== 'epic' && matchesFilter(i));
+   if (focus) pool = pool.filter((i) => i.parent_id === focus.id);
+   const byRecent = (a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at);
++  // Real kernel statuses now (backlog state b2f856b1 merged). Backlog = status
++  // 'backlog' (parked; honest if empty). Blocked is NOT a column — blocked items
++  // stay in Ready with a ✕ glyph (columnOf), so they're visible, not mislabeled.
+   const g = { backlog: [], ready: [], progress: [] };
+   pool.forEach((i) => {
+     if (i.status === 'done' || i.status === 'cancelled') return;
+-    if (i.claimed_by) g.progress.push(i);
+-    else if (i.blocked) g.backlog.push(i);
++    if (i.status === 'backlog') g.backlog.push(i);
++    else if (i.claimed_by) g.progress.push(i);
+     else g.ready.push(i);
+   });
+   const defs = [
+-    { key: 'backlog', title: 'Backlog', note: 'blocked · parked', items: g.backlog },
++    { key: 'backlog', title: 'Backlog', note: 'parked · not scheduled', items: g.backlog },
+     { key: 'ready', title: 'Ready', items: g.ready },
+     { key: 'progress', title: 'In progress', items: g.progress },
+   ];
+@@ -488,14 +492,15 @@ function renderWorkspaces() {
+     <div class="seamnote">Linked kernel issue · lifecycle phase · real harness/region — SEAM (worktree↔issue + lease-read ${esc(seamId('harnessRegion', '7dc229d4'))}).</div></div>`;
+ }
+ 
+-/* ---- Backlog (SEAM until kernel backlog state lands) ---- */
++/* ---- Backlog ---- (real kernel backlog state b2f856b1; honest if empty) */
+ function renderBacklog() {
+-  const seam = seamId('backlogState', 'b2f856b1');
+-  return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled</span></div>
+-    <div class="empty-state"><h4>Backlog — SEAM</h4>
+-      <p>A real kernel <b>backlog lifecycle state</b> is pending (<span class="mono">${esc(seam)}</span>). Once it lands, parked ideas render here and promote → task / epic.</p>
+-      <p style="margin-top:10px;color:var(--faint)">Today, open + blocked work appears as the <b>Backlog column</b> on the Work Board (parked until unblocked).</p>
+-    </div></div>`;
++  const parked = State.issues.filter((i) => i.status === 'backlog').sort(rankByPrio);
++  const grid = parked.length
++    ? `<div class="cardgrid">${parked.map(card).join('')}</div>`
++    : `<div class="empty-state"><h4>Nothing parked</h4>
++        <p>No issues are in the kernel <span class="mono">backlog</span> state yet. Parked ideas / discussions land here and promote → task / epic.</p>
++        <p style="margin-top:10px;color:var(--faint)">Blocked-but-open work is not "parked" — it stays on the Work Board (Ready column, marked with a ✕ blocked glyph).</p></div>`;
++  return `<div class="fade-in"><div class="viewhead"><span class="crumb">parked ideas / discussions not yet scheduled · ${parked.length}</span></div>${grid}</div>`;
+ }
+ 
+ /* ---- Memory ---- (work-folder memory + recall SEAM + Graphiti SEAM) */
+diff --git a/web/dashboard/app.test.js b/web/dashboard/app.test.js
+index bc1f8333..46482e55 100644
+--- a/web/dashboard/app.test.js
++++ b/web/dashboard/app.test.js
+@@ -87,11 +87,14 @@ test('epicHealth derives on-track / at-risk / off-track / completed', () => {
+ test('columnOf routes each issue to exactly one board column', () => {
+   expect(app.columnOf({ status: 'done' })).toBe('done');
+   expect(app.columnOf({ status: 'cancelled' })).toBe(null); // excluded
++  expect(app.columnOf({ status: 'backlog' })).toBe('backlog'); // real kernel backlog state
+   expect(app.columnOf({ status: 'open', blocked: true })).toBe('blocked');
+   expect(app.columnOf({ status: 'open', claimed_by: 'agent' })).toBe('progress');
+   expect(app.columnOf({ status: 'open' })).toBe('ready');
+   // blocked takes precedence over a claim
+   expect(app.columnOf({ status: 'open', blocked: true, claimed_by: 'a' })).toBe('blocked');
++  // backlog status wins over a blocked flag (parked, not "blocked in Ready")
++  expect(app.columnOf({ status: 'backlog', blocked: true })).toBe('backlog');
+ });
+ 
+ test('matchesFilter: multi-select (OR within a facet, AND across facets) + text query', () => {
+@@ -168,9 +171,9 @@ test('baked snapshot, when generated, is well-formed', () => {
+   ['id', 'title', 'type', 'status', 'priority'].forEach((k) => expect(first).toHaveProperty(k));
+ 
+   // Every non-cancelled issue lands in exactly one column.
+-  const buckets = { ready: 0, progress: 0, blocked: 0, done: 0, none: 0 };
++  const buckets = { ready: 0, progress: 0, blocked: 0, done: 0, backlog: 0, none: 0 };
+   snap.issues.forEach((i) => { const c = app.columnOf(i); buckets[c || 'none']++; });
+-  const placed = buckets.ready + buckets.progress + buckets.blocked + buckets.done;
++  const placed = buckets.ready + buckets.progress + buckets.blocked + buckets.done + buckets.backlog;
+   const cancelled = snap.issues.filter((i) => i.status === 'cancelled').length;
+   expect(placed + cancelled).toBe(snap.issues.length);
+ });
+-- 
+2.51.0.windows.1
+

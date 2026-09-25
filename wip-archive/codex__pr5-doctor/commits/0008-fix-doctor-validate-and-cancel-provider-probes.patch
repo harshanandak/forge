@@ -1,0 +1,267 @@
+From a2e41cc5345a67a52375f020648d4a369cb38313 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 23:48:12 +0530
+Subject: [PATCH] fix(doctor): validate and cancel provider probes
+
+---
+ lib/commands/doctor.js              | 70 ++++++++++++++++++++++++-----
+ lib/health/doctor-runner.js         | 45 +++++++++++++++----
+ test/commands/doctor-health.test.js | 45 +++++++++++++++++++
+ test/health/doctor-runner.test.js   | 33 ++++++++++++++
+ 4 files changed, 174 insertions(+), 19 deletions(-)
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index 06e1e1ae..d42c1287 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -211,7 +211,7 @@ function buildHealthCheckDefinitions(projectRoot, deps = {}) {
+ 			id: 'integrations-provider', version: 1, owner: 'forge.integrations', scope: 'integrations', default: false,
+ 			network: true,
+ 			affectedCommandFamilies: affectedFamilies('integrations-provider'),
+-			run: async () => runProviderCheck(deps),
++			run: async ({ signal }) => runProviderCheck(deps, signal),
+ 		},
+ 		{
+ 			id: 'release-tooling', version: 1, owner: 'forge.release', scope: 'release', default: true,
+@@ -263,7 +263,49 @@ function runFlowCheck(deps) {
+ 	}
+ }
+ 
+-async function runProviderCheck(deps) {
++const PROVIDER_RESULT_KEYS = new Set(['available', 'failed', 'notApplicable', 'reason', 'supported']);
++
++function validateProviderResult(value) {
++	try {
++		if (!value || typeof value !== 'object' || Array.isArray(value)
++			|| Object.getPrototypeOf(value) !== Object.prototype) {
++			return { valid: false };
++		}
++		const keys = Object.keys(value);
++		if (keys.some(key => !PROVIDER_RESULT_KEYS.has(key))) return { valid: false };
++		const data = Object.create(null);
++		for (const key of keys) {
++			const descriptor = Object.getOwnPropertyDescriptor(value, key);
++			if (!descriptor || !Object.hasOwn(descriptor, 'value')) return { valid: false };
++			if (key === 'reason' && typeof descriptor.value !== 'string') return { valid: false };
++			if (key !== 'reason' && typeof descriptor.value !== 'boolean') return { valid: false };
++			data[key] = descriptor.value;
++		}
++		if (data.notApplicable === true && keys.every(key => ['notApplicable', 'reason'].includes(key))) {
++			return { valid: true, state: 'not-applicable', reason: data.reason };
++		}
++		if (data.supported === false && keys.every(key => ['supported', 'reason'].includes(key))) {
++			return { valid: true, state: 'unsupported', reason: data.reason };
++		}
++		if (data.available === false && data.failed === undefined && data.notApplicable === undefined
++			&& (data.supported === undefined || data.supported === true)) {
++			return { valid: true, state: 'unavailable', reason: data.reason };
++		}
++		if (data.failed === true && data.notApplicable === undefined && data.supported !== false
++			&& data.available !== false) {
++			return { valid: true, state: 'failed', reason: data.reason };
++		}
++		if (data.supported === true && data.available === true && data.failed === false
++			&& data.notApplicable === undefined) {
++			return { valid: true, state: 'available' };
++		}
++		return { valid: false };
++	} catch {
++		return { valid: false };
++	}
++}
++
++async function runProviderCheck(deps, signal) {
+ 	if (typeof deps.providerProbe !== 'function') {
+ 		return {
+ 			status: 'INCOMPLETE',
+@@ -271,28 +313,36 @@ async function runProviderCheck(deps) {
+ 			remediation: 'Install or configure a supported provider adapter, then re-run with --scope integrations.',
+ 		};
+ 	}
+-	const probe = await deps.providerProbe();
+-	if (probe?.notApplicable) {
++	const probe = await deps.providerProbe({ signal });
++	const validation = validateProviderResult(probe);
++	if (!validation.valid) {
++		return {
++			status: 'INCOMPLETE',
++			evidence: { providerState: 'invalid-response' },
++			remediation: 'Update the provider probe to return one documented, explicit provider state.',
++		};
++	}
++	if (validation.state === 'not-applicable') {
+ 		return { status: 'PASS', evidence: { providerState: 'not-applicable' }, remediation: '' };
+ 	}
+-	if (probe?.supported === false) {
++	if (validation.state === 'unsupported') {
+ 		return {
+ 			status: 'INCOMPLETE',
+-			evidence: { providerState: 'unsupported', reason: probe.reason || 'unsupported' },
++			evidence: { providerState: 'unsupported', reason: validation.reason || 'unsupported' },
+ 			remediation: 'Use a provider version with a side-effect-free probe adapter.',
+ 		};
+ 	}
+-	if (probe?.available === false) {
++	if (validation.state === 'unavailable') {
+ 		return {
+ 			status: 'INCOMPLETE',
+-			evidence: { providerState: 'unavailable', reason: probe.reason || 'unavailable' },
++			evidence: { providerState: 'unavailable', reason: validation.reason || 'unavailable' },
+ 			remediation: 'Check provider availability and credentials outside Doctor, then retry explicitly.',
+ 		};
+ 	}
+-	if (probe?.failed) {
++	if (validation.state === 'failed') {
+ 		return {
+ 			status: 'FAIL',
+-			evidence: { providerState: 'failed', reason: probe.reason || 'probe failed' },
++			evidence: { providerState: 'failed', reason: validation.reason || 'probe failed' },
+ 			remediation: 'Repair the provider integration and retry the explicit check.',
+ 		};
+ 	}
+diff --git a/lib/health/doctor-runner.js b/lib/health/doctor-runner.js
+index 9f76b9f9..77d003ae 100644
+--- a/lib/health/doctor-runner.js
++++ b/lib/health/doctor-runner.js
+@@ -14,7 +14,9 @@ const SECRET_PATTERNS = [
+   /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
+ ];
+ const USER_PATH_PATTERNS = [
++  /\\\\[^\\\s]+\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/g,
+   /\b[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/g,
++  /\/root(?:\/[^\s"']*)?/g,
+   /\/(?:Users|home)\/[^/\s]+(?:\/[^\s"']*)?/g,
+ ];
+ const SENSITIVE_KEY_PATTERN = /(?:api[_-]?key|authorization|credential|password|prompt|secret|token)/i;
+@@ -35,30 +37,46 @@ function sanitize(value, depth = 0) {
+ 
+ 	const output = {};
+ 	for (const key of Object.keys(value).sort().slice(0, 30)) {
+-		output[key] = SENSITIVE_KEY_PATTERN.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
++		const safeKey = redactString(key);
++		output[safeKey] = SENSITIVE_KEY_PATTERN.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
+ 	}
+   return output;
+ }
+ 
+-function timeoutResult(reason) {
++function timeoutResult(reason, options = {}) {
+   return {
+     status: 'INCOMPLETE',
+-    evidence: { reason },
+-    remediation: 'Re-run this check explicitly after the unavailable dependency or deadline is resolved.',
++    evidence: {
++      reason,
++      abortRequested: Boolean(options.abortRequested),
++      isolation: options.isolation || 'not-started',
++    },
++    remediation: options.abortRequested
++      ? 'The deadline requested cooperative cancellation; non-cooperative in-process work cannot be forcibly isolated.'
++      : 'Re-run this check explicitly after the unavailable dependency or deadline is resolved.',
+   };
+ }
+ 
+-async function runWithTimeout(run, timeoutMs) {
++async function runWithTimeout(run, timeoutMs, reason, options) {
++  const controller = new AbortController();
++  const schedule = options.setTimeout || setTimeout;
++  const cancel = options.clearTimeout || clearTimeout;
+   let timer;
+   try {
+     return await Promise.race([
+-      Promise.resolve().then(run),
++      Promise.resolve().then(() => run(controller.signal)),
+       new Promise(resolve => {
+-        timer = setTimeout(() => resolve(timeoutResult('timeout')), timeoutMs);
++        timer = schedule(() => {
++          resolve(timeoutResult(reason, {
++            abortRequested: true,
++            isolation: 'cooperative-abort',
++          }));
++          controller.abort(reason);
++        }, timeoutMs);
+       }),
+     ]);
+   } finally {
+-    if (timer) clearTimeout(timer);
++    if (timer !== undefined) cancel(timer);
+   }
+ }
+ 
+@@ -86,10 +104,19 @@ async function runOne(definition, context, options, startedAt) {
+     definition.timeoutMs || options.perCheckTimeoutMs || DEFAULT_PER_CHECK_TIMEOUT_MS,
+     remaining,
+   ));
++  const timeoutReason = remaining <= (definition.timeoutMs
++    || options.perCheckTimeoutMs || DEFAULT_PER_CHECK_TIMEOUT_MS)
++    ? 'global-deadline'
++    : 'timeout';
+   const checkStarted = now();
+   let raw;
+   try {
+-    raw = await runWithTimeout(() => definition.run(context), timeoutMs);
++    raw = await runWithTimeout(
++      signal => definition.run({ ...context, signal }),
++      timeoutMs,
++      timeoutReason,
++      options,
++    );
+   } catch (error) {
+     raw = {
+       status: 'INCOMPLETE',
+diff --git a/test/commands/doctor-health.test.js b/test/commands/doctor-health.test.js
+index 98e0c0c5..33ed4dbd 100644
+--- a/test/commands/doctor-health.test.js
++++ b/test/commands/doctor-health.test.js
+@@ -88,6 +88,51 @@ describe('forge doctor health report contract', () => {
+     expect(timeout.checks[0].evidence.reason).toBe('timeout');
+   });
+ 
++  test('provider responses fail closed unless they match a strict result shape', async () => {
++    const root = makeProjectRoot('provider-shape');
++    for (const response of [undefined, null, {}, 'available', [], { available: true }]) {
++      const report = await doctor.runDoctorReport(root, localDeps(root, {
++        scopes: ['integrations'],
++        providerProbe: async () => response,
++      }));
++      expect(report.status).toBe('INCOMPLETE');
++      expect(report.checks[0].evidence.providerState).toBe('invalid-response');
++    }
++
++    const valid = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['integrations'],
++      providerProbe: async () => ({ supported: true, available: true, failed: false }),
++    }));
++    expect(valid.status).toBe('PASS');
++  });
++
++  test('provider timeout supplies and aborts an AbortSignal for cooperative cleanup', async () => {
++    const root = makeProjectRoot('provider-abort');
++    let receivedSignal;
++    let providerActive = false;
++    const report = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['integrations'],
++      perCheckTimeoutMs: 5,
++      globalTimeoutMs: 20,
++      providerProbe: ({ signal }) => new Promise(resolve => {
++        receivedSignal = signal;
++        providerActive = true;
++        const providerTimer = setInterval(() => {}, 1000);
++        signal.addEventListener('abort', () => {
++          clearInterval(providerTimer);
++          providerActive = false;
++          resolve({ supported: true, available: true, failed: false });
++        }, { once: true });
++      }),
++    }));
++    expect(receivedSignal).toBeInstanceOf(AbortSignal);
++    expect(receivedSignal.aborted).toBe(true);
++    expect(providerActive).toBe(false);
++    expect(report.status).toBe('INCOMPLETE');
++    expect(report.checks[0].evidence.abortRequested).toBe(true);
++    expect(report.checks[0].evidence.isolation).toBe('cooperative-abort');
++  });
++
+   test('Flow passes only after probing its inert public runtime adapter', async () => {
+     const root = makeProjectRoot('flow-probe');
+     const inventoryOnly = await doctor.runDoctorReport(root, localDeps(root, {

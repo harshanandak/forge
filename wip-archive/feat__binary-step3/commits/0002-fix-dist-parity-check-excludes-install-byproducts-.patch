@@ -1,0 +1,155 @@
+From 68b8ddda6464839c4d143d03ea85060d642580c6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 15:11:33 +0530
+Subject: [PATCH] fix(dist): parity-check excludes install byproducts
+ (node_modules, lockfiles)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Step 3 parity CI job failed on a false positive: `setup --quick --yes` runs
+a package install on Linux, producing package-lock.json + node_modules/.package-
+lock.json whose bytes are legitimately non-deterministic between runs/channels/
+OSes. Those are NOT Forge-managed assets, so comparing them flagged phantom drift
+(every real asset — skills/rules/.forge/AGENTS.md/hooks — was byte-identical).
+
+hashTree now skips node_modules/** entirely and any package-lock.json /
+.package-lock.json via EXCLUDED_DIRS / EXCLUDED_FILES sets, so parity compares
+only Forge assets. Real asset drift is still detected (stays strict). Guarded
+main() behind import.meta.main + exported hashTree/exclusion sets so the new
+unit test can exercise the filtering without triggering a build.
+
+Adds scripts/parity-check.test.mjs: excludes install artifacts, still detects a
+real asset byte change, and pins the exclusion sets.
+
+Issue: f13b5073-3b9f-4098-bbe4-432b7bd69485
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ scripts/parity-check.mjs      | 32 ++++++++++++++++---
+ scripts/parity-check.test.mjs | 58 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 86 insertions(+), 4 deletions(-)
+ create mode 100644 scripts/parity-check.test.mjs
+
+diff --git a/scripts/parity-check.mjs b/scripts/parity-check.mjs
+index bae555db..e8a419d1 100644
+--- a/scripts/parity-check.mjs
++++ b/scripts/parity-check.mjs
+@@ -29,17 +29,35 @@ function sha256(file) {
+   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+ }
+ 
+-/** Map of relative-posix-path → sha256 for every file under dir (excluding .git). */
++// Directories to skip entirely while walking a setup tree. `node_modules` is a
++// package-manager install artifact, NOT a Forge-managed asset — `setup --quick`
++// may run an npm/bun install whose output (dependency trees, registry metadata)
++// is legitimately non-deterministic between runs, channels, and OSes. Comparing
++// it produces false-positive drift, so it is excluded. `.git` is runtime VCS state.
++const EXCLUDED_DIRS = new Set(['.git', 'node_modules']);
++
++// Files to skip regardless of location. Lockfiles are install byproducts: their
++// bytes vary with registry ordering/timestamps and are not Forge assets. Excluding
++// them keeps parity strict for real assets (skills/rules/hooks/.forge/AGENTS.md)
++// while ignoring package-manager noise. `.package-lock.json` normally lives under
++// node_modules/ (already excluded) but is guarded here too for robustness.
++const EXCLUDED_FILES = new Set(['package-lock.json', '.package-lock.json']);
++
++/**
++ * Map of relative-posix-path → sha256 for every Forge-managed file under dir.
++ * Excludes .git, node_modules/**, and package-manager lockfiles (see the
++ * EXCLUDED_* sets above) so parity compares only Forge assets, not install output.
++ */
+ function hashTree(dir) {
+   const map = {};
+   const walk = (abs, rel) => {
+     for (const e of fs.readdirSync(abs)) {
+-      if (e === '.git') continue;
++      if (EXCLUDED_DIRS.has(e)) continue;
+       const a = path.join(abs, e);
+       const r = rel ? `${rel}/${e}` : e;
+       const st = fs.lstatSync(a);
+       if (st.isDirectory()) walk(a, r);
+-      else if (st.isFile()) map[r] = sha256(a);
++      else if (st.isFile() && !EXCLUDED_FILES.has(e)) map[r] = sha256(a);
+     }
+   };
+   walk(dir, '');
+@@ -118,4 +136,10 @@ function main() {
+   }
+ }
+ 
+-main();
++// Exported for unit testing the asset-vs-install-artifact filtering. `hashTree`
++// and the exclusion sets are the load-bearing parity logic; the rest of the file
++// drives real builds and only runs when executed directly (guarded below).
++export { hashTree, EXCLUDED_DIRS, EXCLUDED_FILES };
++
++// Only build + compare when run as a script, not when imported by a test.
++if (import.meta.main) main();
+diff --git a/scripts/parity-check.test.mjs b/scripts/parity-check.test.mjs
+new file mode 100644
+index 00000000..20a3e0ea
+--- /dev/null
++++ b/scripts/parity-check.test.mjs
+@@ -0,0 +1,58 @@
++// Unit test for the parity-check asset filtering. The parity check compares the
++// npm-vs-binary `setup --quick` trees; it MUST ignore package-manager install
++// byproducts (node_modules/**, lockfiles) that are legitimately non-deterministic
++// between runs/channels/OSes, while staying strict for real Forge assets. This
++// test pins that exclusion so a genuine skills/rules/hook drift still fails but
++// install junk never produces a false-positive parity failure.
++
++import { test, expect } from 'bun:test';
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import { hashTree, EXCLUDED_DIRS, EXCLUDED_FILES } from './parity-check.mjs';
++
++function mkTree() {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parity-hashtree-'));
++  // Real Forge-managed assets — these MUST be compared.
++  fs.mkdirSync(path.join(dir, 'skills'), { recursive: true });
++  fs.writeFileSync(path.join(dir, 'skills', 'SKILL.md'), 'real asset\n');
++  fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'real asset\n');
++  // Install byproducts — these MUST be excluded.
++  fs.mkdirSync(path.join(dir, 'node_modules', 'left-pad'), { recursive: true });
++  fs.writeFileSync(path.join(dir, 'node_modules', 'left-pad', 'index.js'), 'junk\n');
++  fs.writeFileSync(path.join(dir, 'node_modules', '.package-lock.json'), '{}\n');
++  fs.writeFileSync(path.join(dir, 'package-lock.json'), '{"v":1}\n');
++  return dir;
++}
++
++test('hashTree excludes node_modules and lockfiles but keeps real assets', () => {
++  const dir = mkTree();
++  try {
++    const keys = Object.keys(hashTree(dir)).sort();
++    expect(keys).toEqual(['AGENTS.md', 'skills/SKILL.md']);
++    // No install artifact leaked into the comparison set.
++    expect(keys.some(k => k.includes('node_modules'))).toBe(false);
++    expect(keys.some(k => k.endsWith('package-lock.json'))).toBe(false);
++  } finally {
++    fs.rmSync(dir, { recursive: true, force: true });
++  }
++});
++
++test('a real asset byte change is still detected (parity stays strict)', () => {
++  const dir = mkTree();
++  try {
++    const before = hashTree(dir);
++    fs.writeFileSync(path.join(dir, 'skills', 'SKILL.md'), 'DRIFTED asset\n');
++    const after = hashTree(dir);
++    expect(after['skills/SKILL.md']).not.toBe(before['skills/SKILL.md']);
++  } finally {
++    fs.rmSync(dir, { recursive: true, force: true });
++  }
++});
++
++test('exclusion sets document the intended artifacts', () => {
++  expect(EXCLUDED_DIRS.has('node_modules')).toBe(true);
++  expect(EXCLUDED_DIRS.has('.git')).toBe(true);
++  expect(EXCLUDED_FILES.has('package-lock.json')).toBe(true);
++  expect(EXCLUDED_FILES.has('.package-lock.json')).toBe(true);
++});
+-- 
+2.51.0.windows.1
+

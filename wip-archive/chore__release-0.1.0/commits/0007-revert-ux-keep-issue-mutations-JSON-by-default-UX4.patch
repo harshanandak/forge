@@ -1,0 +1,195 @@
+From a16afcf592307d606059cb67656e15a81fb073dd Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 18:29:49 +0530
+Subject: [PATCH] revert(ux): keep issue mutations JSON-by-default (UX4a needs
+ a design decision)
+
+The mutation human-render conflicted with a deliberate, tested contract: forge
+create/claim/close return a machine-parseable JSON envelope by default so scripts and
+pipes work without --json (test/commands/issue-human-output.test.js, non-interactive-
+banner-stderr.test.js). Making writes human-first is a breaking output-contract change,
+so it needs an explicit call (leave-JSON / human-always / TTY-aware). Reverting the
+render change here; the other four journey-audit fixes (claim guard, prime/orient
+placeholder, filesystem wording, DEP0190) stand. Tracked as 60e196f4.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                 |  2 +-
+ lib/commands/_issue.js       |  6 +-----
+ lib/issue-render.js          | 37 +-----------------------------------
+ test/commands/_issue.test.js |  7 ++-----
+ test/issue-render.test.js    | 36 -----------------------------------
+ 5 files changed, 5 insertions(+), 83 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b7da4292..c22796fe 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -24,7 +24,7 @@ First public release. The default issue backend changed from Beads to the built-
+ ### Fixed
+ 
+ - **The core workflow is now reachable out of the box after `forge init` / `forge setup`.** Previously, lefthook's own postinstall dropped a fully-commented stub `lefthook.yml` that blocked Forge from writing a real config, so `forge plan` / `dev` / `ship` all dead-ended on `HOOKS_NOT_ACTIVE: missing required hooks: pre-commit, pre-push`. Forge now writes a minimal user-facing lefthook config wiring the self-contained TDD gate (`.forge/hooks/check-tdd.js`) on pre-commit and the project's own tests on pre-push — referencing only files a user project actually has (never Forge's repo-internal `scripts/`) — and overwrites the disposable stub while never clobbering a real config. (#334)
+-- End-to-end new-user UX polish (all surfaced by a fresh-project journey audit): `forge claim`/`show`/etc. with no id now return a clean "Missing required argument <id>" and a non-zero exit instead of fabricating a random UUID and quarantining it; `forge create`/`claim`/`close` and the other writes print a concise human confirmation (`✓ Created <id>`) instead of dumping the raw contract JSON (still available via `--json`/`FORGE_JSON=1`); `forge prime`/`orient` no longer show internal "D21 placeholder" text; the kernel filesystem note dropped its alarming "database corruption" wording on the fail-open path; and `forge init` no longer emits a Node `DEP0190` deprecation warning. (#334)
++- End-to-end new-user UX polish (all surfaced by a fresh-project journey audit): `forge claim`/`show`/etc. with no id now return a clean "Missing required argument <id>" and a non-zero exit instead of fabricating a random UUID and quarantining it; `forge prime`/`orient` no longer show internal "D21 placeholder" text; the kernel filesystem note dropped its alarming "database corruption" wording on the fail-open path; and `forge init` no longer emits a Node `DEP0190` deprecation warning. (#334)
+ - `forge export` now actually projects Kernel issues to git-tracked JSONL. The command dispatcher injects a Kernel broker for `export`, and Kernel mutations enqueue the projection-outbox marker under the `jsonl` target the export consumer drains — so the Kernel git-persistence/portability loop works end to end. (#270)
+ - First-run hint from `forge status` pointed at a nonexistent docs topic (`forge docs workflow`); it now points at `forge docs setup`. (#334)
+ - Removed stale "Beads" wording from live `forge --help` output — the `board` and `test` command descriptions now reference the kernel. (#334)
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index 4a0551b1..97981aa1 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -122,11 +122,7 @@ const WRITE_SUBCOMMANDS = new Set(['create', 'update', 'claim', 'release', 'comm
+ // byte-identical contract output for scripts. DELIBERATE breaking change to the
+ // DEFAULT output only, approved before the 0.1.0 API freeze — the kernel
+ // contract itself is untouched.
+-const HUMAN_RENDERED_SUBCOMMANDS = new Set([
+-  'ready', 'list', 'show',
+-  // Writes: render a concise confirmation instead of the raw contract JSON (842a8be7).
+-  'create', 'update', 'claim', 'release', 'comment', 'close',
+-]);
++const HUMAN_RENDERED_SUBCOMMANDS = new Set(['ready', 'list', 'show']);
+ const DEP_ACTIONS = Object.keys(SUBCOMMANDS.dep.actions);
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/lib/issue-render.js b/lib/issue-render.js
+index e402685b..d1e32741 100644
+--- a/lib/issue-render.js
++++ b/lib/issue-render.js
+@@ -146,42 +146,8 @@ function renderIssueShow(envelope) {
+   return lines.join('\n');
+ }
+ 
+-// Write subcommands → the past-tense verb used in their confirmation line.
+-const MUTATION_VERBS = {
+-  create: 'Created',
+-  update: 'Updated',
+-  claim: 'Claimed',
+-  release: 'Released',
+-  comment: 'Commented on',
+-  close: 'Closed',
+-};
+-
+-// Concise, human-first confirmation for a write. Mutations used to dump the raw
+-// contract JSON (schema_version/revision/next_commands) while reads rendered as text.
+-function renderIssueMutation(subcommand, envelope) {
+-  const issue = envelope && envelope.data && typeof envelope.data === 'object' ? envelope.data : {};
+-  const verb = MUTATION_VERBS[subcommand] || 'Updated';
+-  const id = issue.id ? String(issue.id) : '(issue)';
+-  let headline = `✓ ${verb} ${id}`;
+-  if (typeof issue.title === 'string' && issue.title.trim() !== '') {
+-    headline += `  ${issue.title.trim()}`;
+-  }
+-  if (issue.status) {
+-    headline += `  [${issue.status}]`;
+-  }
+-  const lines = [headline];
+-  const verification = verificationLines(envelope);
+-  if (verification.length > 0) {
+-    lines.push(...verification);
+-  }
+-  return lines.join('\n');
+-}
+-
+-// Dispatch a human rendering for one subcommand's success envelope.
++// Dispatch a human rendering for one read subcommand's success envelope.
+ function renderIssueEnvelope(subcommand, envelope) {
+-  if (MUTATION_VERBS[subcommand]) {
+-    return renderIssueMutation(subcommand, envelope);
+-  }
+   if (subcommand === 'show') {
+     return renderIssueShow(envelope);
+   }
+@@ -194,6 +160,5 @@ module.exports = {
+   shortId,
+   renderIssueList,
+   renderIssueShow,
+-  renderIssueMutation,
+   renderIssueEnvelope,
+ };
+diff --git a/test/commands/_issue.test.js b/test/commands/_issue.test.js
+index 7031732e..885a034e 100644
+--- a/test/commands/_issue.test.js
++++ b/test/commands/_issue.test.js
+@@ -171,10 +171,8 @@ describe('issue backend resolution from env/config', () => {
+     const calls = [];
+     const create = createIssueSubcommand('create');
+ 
+-    // FORGE_JSON=1 requests the machine contract: mutations are human-first by default
+-    // (842a8be7), so the FULL envelope is exposed via --json / FORGE_JSON.
+     const result = await create.handler(['--title', 'Smoke'], {}, '/repo', {
+-      env: { FORGE_ISSUE_BACKEND: 'kernel', FORGE_JSON: '1' },
++      env: { FORGE_ISSUE_BACKEND: 'kernel' },
+       ...VERIFY_OFF,
+       runIssueOperation: async (operation, args, projectRoot, deps) => {
+         calls.push({ operation, args, projectRoot, deps });
+@@ -277,7 +275,7 @@ describe('issue backend resolution from env/config', () => {
+ 
+     const result = await create.handler(['--title', 'X'], {}, '/repo', {
+       issueBackend: 'kernel',
+-      env: { FORGE_JSON: '1' }, // mutations are human-first by default; --json/FORGE_JSON exposes the envelope (842a8be7)
++      env: {},
+       runIssueOperation: async () => ({
+         ok: true,
+         schema_version: 'forge.issue.v1',
+@@ -465,7 +463,6 @@ describe('kernel batch close (KAP-9)', () => {
+ 
+     const result = await close.handler(['k1'], {}, '/repo', {
+       issueBackend: 'kernel',
+-      env: { FORGE_JSON: '1' }, // mutations are human-first by default; --json/FORGE_JSON exposes the envelope (842a8be7)
+       ...VERIFY_OFF,
+       runIssueOperation: async (operation, args) => {
+         calls.push({ operation, args });
+diff --git a/test/issue-render.test.js b/test/issue-render.test.js
+index 5ec3d574..01fb492f 100644
+--- a/test/issue-render.test.js
++++ b/test/issue-render.test.js
+@@ -11,7 +11,6 @@ const {
+   shortId,
+   renderIssueList,
+   renderIssueShow,
+-  renderIssueMutation,
+   renderIssueEnvelope,
+ } = require('../lib/issue-render');
+ 
+@@ -195,38 +194,3 @@ describe('renderIssueEnvelope dispatch', () => {
+     expect(out).toContain('T');
+   });
+ });
+-
+-describe('renderIssueMutation (842a8be7: writes are human-first, not raw JSON)', () => {
+-  test('create renders a confirmation with the id (and title/status when present)', () => {
+-    const out = renderIssueMutation('create', envelope('issue.create', {
+-      id: UUID_A, title: 'Wire the thing', status: 'open',
+-    }));
+-    expect(out).toContain('✓ Created');
+-    expect(out).toContain(UUID_A);
+-    expect(out).toContain('Wire the thing');
+-    expect(out).toContain('[open]');
+-    expect(out).not.toContain('schema_version'); // no raw contract JSON
+-  });
+-
+-  test('claim / close use their own past-tense verb', () => {
+-    expect(renderIssueMutation('claim', envelope('issue.claim', { id: UUID_A })))
+-      .toContain('✓ Claimed');
+-    expect(renderIssueMutation('close', envelope('issue.close', { id: UUID_A, status: 'done' })))
+-      .toContain('✓ Closed');
+-  });
+-
+-  test('renderIssueEnvelope routes mutations to the mutation renderer', () => {
+-    const out = renderIssueEnvelope('claim', envelope('issue.claim', { id: UUID_A }));
+-    expect(out).toContain('✓ Claimed');
+-    expect(out).toContain(UUID_A);
+-  });
+-
+-  test('surfaces check-after-write verification lines when present', () => {
+-    const out = renderIssueMutation('close', envelope('issue.close', { id: UUID_A }, {
+-      verified: false,
+-      mismatches: [{ field: 'status', expected: 'done', got: null }],
+-    }));
+-    expect(out).toContain('✓ Closed');
+-    expect(out.toLowerCase()).toContain('verif'); // verification note rendered, not dropped
+-  });
+-});
+-- 
+2.51.0.windows.1
+

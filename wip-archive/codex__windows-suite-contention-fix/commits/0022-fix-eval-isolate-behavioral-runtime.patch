@@ -1,0 +1,194 @@
+From 1a0589d0038de817ebe49b83d68d9f065adf22a7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 18:14:01 +0530
+Subject: [PATCH] fix(eval): isolate behavioral runtime
+
+---
+ scripts/lib/behavioral-eval-runtime.js    | 68 ++++++++++++++++-------
+ test/eval/behavioral-eval-runtime.test.js | 25 ++++++++-
+ 2 files changed, 72 insertions(+), 21 deletions(-)
+
+diff --git a/scripts/lib/behavioral-eval-runtime.js b/scripts/lib/behavioral-eval-runtime.js
+index ea41b63e..55057f90 100644
+--- a/scripts/lib/behavioral-eval-runtime.js
++++ b/scripts/lib/behavioral-eval-runtime.js
+@@ -20,6 +20,12 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
+ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
+ const EFFORTS = new Set(['low', 'medium', 'high', 'max']);
++const RUNTIME_CONTROLS = Object.freeze({
++  customizationIsolation: 'safe-mode',
++  sessionPersistence: false,
++  tokenEnforcement: 'parsed-usage',
++  tools: Object.freeze([]),
++});
+ const OBSERVATION_KEYS = Object.freeze([
+   'decision', 'contract', 'head', 'review', 'checks', 'ci', 'claim', 'security',
+   'order', 'platform', 'scope', 'compaction', 'wait', 'hardFailure', 'observer',
+@@ -181,6 +187,7 @@ function buildConfig({ tier, skillName, skillText, models, command, env }) {
+     models,
+     conditions: ['current', 'bounded'],
+     runtime: command,
++    runtimeControls: RUNTIME_CONTROLS,
+     effort,
+     budget,
+   };
+@@ -192,7 +199,10 @@ function buildConfig({ tier, skillName, skillText, models, command, env }) {
+       arms.push({ id, model, config: condition, budget: budgetId });
+     }
+   }
+-  return { arms, budget, budgetHash, configHash, effort, skillHash };
++  return {
++    arms, budget, budgetHash, configHash, effort,
++    runtimeControls: RUNTIME_CONTROLS, skillHash,
++  };
+ }
+ 
+ function probeRuntime(command, spawn = spawnSync) {
+@@ -216,26 +226,45 @@ function parseJsonResult(stdout) {
+     : parsed;
+ }
+ 
++function parseUsage(usage) {
++  if (!usage) return null;
++  const input = Number(usage.input_tokens);
++  const output = Number(usage.output_tokens);
++  const cached = usage.cache_read_input_tokens === undefined
++    ? 0 : Number(usage.cache_read_input_tokens);
++  return [input, output, cached].every((value) => Number.isFinite(value) && value >= 0)
++    ? { input, output, cached }
++    : null;
++}
++
++function parseUsageEvent(line) {
++  try {
++    const event = JSON.parse(line);
++    if (event?.type === 'result' && Object.hasOwn(event, 'usage')) {
++      return { kind: 'result', tokens: parseUsage(event.usage) };
++    }
++    const tokens = parseUsage(event?.message?.usage);
++    return tokens ? { kind: 'assistant', tokens } : null;
++  } catch {
++    return null;
++  }
++}
++
+ function countTokens(stdout) {
+-  const tokens = { input: 0, output: 0, cached: 0 };
+-  let found = false;
++  const assistant = { input: 0, output: 0, cached: 0 };
++  let assistantFound = false;
++  let result;
+   for (const line of String(stdout || '').split('\n')) {
+-    try {
+-      const event = JSON.parse(line);
+-      const usage = event?.message?.usage || event?.usage;
+-      if (!usage) continue;
+-      const input = Number(usage.input_tokens);
+-      const output = Number(usage.output_tokens);
+-      const cached = usage.cache_read_input_tokens === undefined
+-        ? 0 : Number(usage.cache_read_input_tokens);
+-      if (![input, output, cached].every((value) => Number.isFinite(value) && value >= 0)) continue;
+-      found = true;
+-      tokens.input += input;
+-      tokens.output += output;
+-      tokens.cached += cached;
+-    } catch { /* non-JSON runtime line */ }
++    const usage = parseUsageEvent(line);
++    if (usage?.kind === 'result') result = usage;
++    if (usage?.kind !== 'assistant') continue;
++    assistantFound = true;
++    assistant.input += usage.tokens.input;
++    assistant.output += usage.tokens.output;
++    assistant.cached += usage.tokens.cached;
+   }
+-  return found ? tokens : null;
++  if (result) return result.tokens;
++  return assistantFound ? assistant : null;
+ }
+ 
+ function buildPrompt({ armId, packet, skillName, config, skillText }) {
+@@ -263,6 +292,7 @@ function buildRuntimeArgv({ command, prompt, model, effort }) {
+     '--output-format', 'stream-json',
+     '--verbose',
+     '--no-session-persistence',
++    '--safe-mode',
+     '--tools', '',
+     '--model', model,
+     '--effort', effort,
+@@ -307,7 +337,7 @@ function createExecutor({ projectRoot, skillName, skillText, command, budget, ef
+           skill: skillHash,
+           tool: contentHash(stableStringify({
+             command, model: input.model, effort: appliedEffort,
+-            tools: [], tokenEnforcement: budget.tokenEnforcement,
++            runtimeControls: RUNTIME_CONTROLS,
+           })),
+         },
+         startedAt,
+diff --git a/test/eval/behavioral-eval-runtime.test.js b/test/eval/behavioral-eval-runtime.test.js
+index bc3f3d71..53e09260 100644
+--- a/test/eval/behavioral-eval-runtime.test.js
++++ b/test/eval/behavioral-eval-runtime.test.js
+@@ -27,6 +27,12 @@ describe('behavioral eval production runtime', () => {
+       'model-two:current', 'model-two:bounded',
+     ]);
+     expect(new Set(first.arms.map((arm) => arm.id)).size).toBe(4);
++    expect(first.runtimeControls).toEqual({
++      customizationIsolation: 'safe-mode',
++      sessionPersistence: false,
++      tokenEnforcement: 'parsed-usage',
++      tools: [],
++    });
+ 
+     const differentEffort = _internal.buildConfig({
+       ...input,
+@@ -101,6 +107,7 @@ describe('behavioral eval production runtime', () => {
+       '--output-format', 'stream-json',
+       '--verbose',
+       '--no-session-persistence',
++      '--safe-mode',
+       '--tools', '',
+       '--model', 'model-one',
+       '--effort', 'max',
+@@ -115,7 +122,7 @@ describe('behavioral eval production runtime', () => {
+         "const observation = JSON.parse(process.env.FORGE_TEST_OBSERVATION);",
+         "const text = JSON.stringify(observation);",
+         "console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text}],usage:{input_tokens:3,output_tokens:2,cache_read_input_tokens:1}}}));",
+-        "console.log(JSON.stringify({type:'result',result:text}));",
++        "console.log(JSON.stringify({type:'result',result:text,usage:{input_tokens:3,output_tokens:2,cache_read_input_tokens:1}}));",
+       ].join('\n'));
+       const packet = loadTier(30).cases[0];
+       const env = {
+@@ -127,7 +134,7 @@ describe('behavioral eval production runtime', () => {
+         skillName: 'dev',
+         skillText: 'bounded contract',
+         command: [process.execPath, runtimePath],
+-        budget: { timeoutMs: 10000, maxTokens: 8192 },
++        budget: { timeoutMs: 10000, maxTokens: 5, tokenEnforcement: 'parsed-usage' },
+         skillHash: 'a'.repeat(64),
+         env,
+       });
+@@ -154,6 +161,20 @@ describe('behavioral eval production runtime', () => {
+     }
+   });
+ 
++  test('uses terminal aggregate usage instead of double-counting assistant usage', () => {
++    const stdout = [
++      JSON.stringify({
++        type: 'assistant',
++        message: { usage: { input_tokens: 8, output_tokens: 5, cache_read_input_tokens: 2 } },
++      }),
++      JSON.stringify({
++        type: 'result',
++        usage: { input_tokens: 8, output_tokens: 5, cache_read_input_tokens: 2 },
++      }),
++    ].join('\n');
++    expect(_internal.countTokens(stdout)).toEqual({ input: 8, output: 5, cached: 2 });
++  });
++
+   test('fails closed when usage is missing or exceeds the applied post-run token budget', async () => {
+     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-behavioral-budget-'));
+     const runtimePath = path.join(root, 'runtime.js');
+-- 
+2.51.0.windows.1
+

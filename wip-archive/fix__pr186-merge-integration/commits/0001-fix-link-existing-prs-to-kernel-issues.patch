@@ -1,0 +1,748 @@
+From 423bc80730f8d7bfe3397282162c38864f60135f Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 00:02:45 +0530
+Subject: [PATCH] fix: link existing prs to kernel issues
+
+---
+ lib/commands/pr.js            | 275 +++++++++++++++++++++++++++++-
+ lib/kernel/sqlite-driver.js   |  12 +-
+ test/commands/pr-link.test.js | 303 ++++++++++++++++++++++++++++++++++
+ test/kernel/pr-write.test.js  |  64 +++++++
+ 4 files changed, 650 insertions(+), 4 deletions(-)
+ create mode 100644 test/commands/pr-link.test.js
+
+diff --git a/lib/commands/pr.js b/lib/commands/pr.js
+index c110104f..511da76e 100644
+--- a/lib/commands/pr.js
++++ b/lib/commands/pr.js
+@@ -1,10 +1,274 @@
+ 'use strict';
+ 
++const path = require('node:path');
++const { execFileSync } = require('node:child_process');
++
+ const ship = require('./ship');
+ const preflight = require('./preflight');
+ const shepherd = require('./shepherd');
+ const merge = require('./merge');
+ const { stripGlobalFlags } = require('../global-flags');
++const { resolveOwnedKernel, closeIfOwned } = require('../kernel/owned-kernel');
++
++const ISSUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
++const MAX_LINKAGE_ROWS = 10_000;
++const EXTERNAL_COMMAND_TIMEOUT_MS = 120_000;
++
++function normalizeRepository(value) {
++  const candidate = typeof value === 'string' ? value.trim() : '';
++  return REPOSITORY.test(candidate) ? candidate.toLowerCase() : null;
++}
++
++function normalizePath(value) {
++  if (typeof value !== 'string' || !value) return null;
++  const resolved = path.resolve(value);
++  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++}
++
++function parseLinkArgs(argv) {
++  const input = stripGlobalFlags(Array.isArray(argv) ? argv : []);
++  const parsed = { pr: null, issueId: null, expectedHead: null, error: null };
++  const seen = new Set();
++
++  for (let index = 0; index < input.length; index += 1) {
++    const raw = String(input[index]);
++    const option = raw === '--issue' || raw.startsWith('--issue=')
++      ? '--issue'
++      : (raw === '--expect-head' || raw.startsWith('--expect-head=') ? '--expect-head' : null);
++    if (option) {
++      if (seen.has(option)) return { ...parsed, error: `Duplicate ${option} is not allowed.` };
++      seen.add(option);
++      let value = raw.includes('=') ? raw.slice(raw.indexOf('=') + 1) : null;
++      if (value === null) {
++        value = input[index + 1];
++        if (!value || String(value).startsWith('--')) {
++          return { ...parsed, error: `${option} requires a value.` };
++        }
++        index += 1;
++      }
++      if (option === '--issue') parsed.issueId = ISSUE_ID.test(value) ? value.toLowerCase() : null;
++      else parsed.expectedHead = merge.normalizeFullHeadSha(value);
++      if (option === '--issue' && !parsed.issueId) return { ...parsed, error: '--issue requires a full UUID.' };
++      if (option === '--expect-head' && !parsed.expectedHead) {
++        return { ...parsed, error: '--expect-head requires an exact 40-character SHA.' };
++      }
++      continue;
++    }
++    if (raw.startsWith('--')) return { ...parsed, error: `Unknown pr link option: ${raw}` };
++    if (parsed.pr !== null) return { ...parsed, error: 'Exactly one PR number is required.' };
++    parsed.pr = merge.normalizePrNumber(raw);
++    if (!parsed.pr) return { ...parsed, error: 'PR selector must be one positive decimal PR number.' };
++  }
++
++  if (!parsed.pr || !parsed.issueId || !parsed.expectedHead) {
++    parsed.error = 'Usage: forge pr link <pr> --issue <full-uuid> --expect-head <40-char-sha>';
++  }
++  return parsed;
++}
++
++function commandText(exec, bin, args, cwd) {
++  return String(exec(bin, args, {
++    cwd,
++    encoding: 'utf8',
++    timeout: EXTERNAL_COMMAND_TIMEOUT_MS,
++    stdio: ['pipe', 'pipe', 'pipe'],
++    windowsHide: true,
++  })).trim();
++}
++
++function commandJson(exec, bin, args, cwd) {
++  return JSON.parse(commandText(exec, bin, args, cwd));
++}
++
++function exactOwnership(ownership, env) {
++  const actor = (typeof env.FORGE_ACTOR === 'string' && env.FORGE_ACTOR.trim())
++    || (typeof env.FORGE_SESSION_ID === 'string' && env.FORGE_SESSION_ID.trim())
++    || null;
++  const sessionId = typeof env.FORGE_SESSION_ID === 'string' && env.FORGE_SESSION_ID.trim()
++    ? env.FORGE_SESSION_ID.trim()
++    : null;
++  return actor && ownership?.owned === true && ownership.expired === false
++    && ownership.actor === actor && ownership.claimedBy === actor
++    && ownership.sessionId === sessionId
++    ? { actor, sessionId }
++    : null;
++}
++
++function selectWorktree(rows, { root, branch, commonDir, issueId }) {
++  if (!Array.isArray(rows)) return { error: 'Kernel worktree linkage is unreadable.' };
++  if (rows.length > MAX_LINKAGE_ROWS) return { error: 'Kernel worktree linkage is oversized.' };
++  const active = rows.filter(row => row?.state === 'active'
++    && normalizePath(row.git_common_dir) === normalizePath(commonDir));
++  const pathMatches = active.filter(row => normalizePath(row.path) === normalizePath(root));
++  const branchMatches = active.filter(row => row.branch === branch);
++  const exact = active.filter(row => normalizePath(row.path) === normalizePath(root)
++    && row.branch === branch);
++  if (exact.length !== 1 || pathMatches.length !== 1 || branchMatches.length !== 1) {
++    return { error: exact.length === 0
++      ? 'No exact active Kernel worktree matches the current path and branch.'
++      : 'Kernel worktree linkage is ambiguous for the current path or branch.' };
++  }
++  if (exact[0].issue_id !== issueId) {
++    return { error: 'The current worktree is linked to a different issue.' };
++  }
++  if (typeof exact[0].id !== 'string' || !exact[0].id) {
++    return { error: 'The current worktree linkage has no authoritative id.' };
++  }
++  return { row: exact[0] };
++}
++
++function selectOpenPr(rows, repository, number) {
++  if (!Array.isArray(rows)) return { error: 'Kernel PR linkage is unreadable.' };
++  if (rows.length > MAX_LINKAGE_ROWS) return { error: 'Kernel open PR linkage is oversized.' };
++  const matches = rows.filter(row => normalizeRepository(row?.repo) === repository
++    && Number(row?.number) === Number(number));
++  if (matches.length > 1) return { error: 'Kernel PR linkage is ambiguous.' };
++  return { row: matches[0] || null };
++}
++
++function existingLinkConflict(row, { issueId, worktreeId, branch }) {
++  if (!row) return null;
++  if (row.state !== 'open') return 'Kernel PR linkage is not open.';
++  if (row.issue_id && row.issue_id !== issueId) return 'Kernel PR row is linked to a different issue.';
++  if (row.worktree_id && row.worktree_id !== worktreeId) return 'Kernel PR row is linked to a different worktree.';
++  if (row.branch && row.branch !== branch) return 'Kernel PR row is linked to a different branch.';
++  return null;
++}
++
++function exactReadBack(row, expected) {
++  return row?.state === 'open'
++    && normalizePath(row.git_common_dir) === normalizePath(expected.gitCommonDir)
++    && normalizeRepository(row.repo) === expected.repository
++    && Number(row.number) === Number(expected.number)
++    && row.issue_id === expected.issueId
++    && row.worktree_id === expected.worktreeId
++    && row.branch === expected.branch
++    && merge.normalizeFullHeadSha(row.head_sha) === expected.headSha;
++}
++
++async function linkExistingPr(args, _flags, projectRoot, opts = {}) {
++  const parsed = parseLinkArgs(args);
++  if (parsed.error) return { success: false, error: parsed.error };
++
++  const root = path.resolve(projectRoot || process.cwd());
++  const exec = opts._execFileSync || execFileSync;
++  const env = opts.env || process.env;
++  const verifyOwnership = opts._verifyIssueOwnership || merge.defaultVerifyIssueOwnership;
++  let kernel = null;
++  try {
++    const topLevel = commandText(exec, 'git', ['rev-parse', '--show-toplevel'], root);
++    const branch = commandText(exec, 'git', ['branch', '--show-current'], root);
++    const localHead = merge.normalizeFullHeadSha(commandText(exec, 'git', ['rev-parse', 'HEAD'], root));
++    const gitCommonDir = commandText(
++      exec, 'git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], root,
++    );
++    if (normalizePath(topLevel) !== normalizePath(root) || !branch || !localHead || !gitCommonDir) {
++      return { success: false, error: 'Run forge pr link from the PR branch worktree root.' };
++    }
++    if (localHead !== parsed.expectedHead) {
++      return { success: false, error: 'The current worktree HEAD does not match --expect-head.' };
++    }
++
++    const repoIdentity = commandJson(
++      exec, 'gh', ['repo', 'view', '--json', 'nameWithOwner,isFork,parent'], root,
++    );
++    const repository = repoIdentity?.isFork === true
++      ? normalizeRepository(repoIdentity?.parent?.nameWithOwner)
++      : (repoIdentity?.isFork === false ? normalizeRepository(repoIdentity?.nameWithOwner) : null);
++    if (!repository) return { success: false, error: 'GitHub repository identity is unreadable.' };
++
++    kernel = await resolveOwnedKernel(root, opts);
++    if (!kernel.driver || typeof kernel.driver.listWorktrees !== 'function'
++      || !kernel.broker || typeof kernel.broker.listOpenPrs !== 'function'
++      || typeof kernel.broker.upsertPr !== 'function') {
++      return { success: false, error: 'Kernel PR linkage broker is unavailable.' };
++    }
++    const worktree = selectWorktree(await kernel.driver.listWorktrees({ state: 'active' }), {
++      root, branch, commonDir: gitCommonDir, issueId: parsed.issueId,
++    });
++    if (!worktree.row) return { success: false, error: worktree.error };
++
++    const before = selectOpenPr(await kernel.broker.listOpenPrs(gitCommonDir), repository, parsed.pr);
++    if (before.error) return { success: false, error: before.error };
++    const conflict = existingLinkConflict(before.row, {
++      issueId: parsed.issueId, worktreeId: worktree.row.id, branch,
++    });
++    if (conflict) return { success: false, error: conflict };
++
++    const prContext = commandJson(exec, 'gh', [
++      'pr', 'view', String(parsed.pr), '--repo', repository, '--json',
++      'number,state,headRefName,headRefOid,headRepository,isCrossRepository',
++    ], root);
++    if (prContext?.number !== Number(parsed.pr) || prContext?.state !== 'OPEN') {
++      return { success: false, error: 'The requested GitHub PR is missing or not open.' };
++    }
++    if (merge.normalizeFullHeadSha(prContext.headRefOid) !== parsed.expectedHead
++      || prContext.headRefName !== branch) {
++      return { success: false, error: 'The GitHub PR branch or head does not match the current worktree.' };
++    }
++    const reportedHeadRepository = prContext?.headRepository?.nameWithOwner;
++    if (prContext.isCrossRepository !== false
++      || (reportedHeadRepository
++        && normalizeRepository(reportedHeadRepository) !== repository)) {
++      return { success: false, error: 'Cross-repository or mismatched GitHub PR linkage is not allowed.' };
++    }
++
++    const ownership = await verifyOwnership({
++      issueId: parsed.issueId, projectRoot: root, env,
++    });
++    const identity = exactOwnership(ownership, env);
++    if (!identity) {
++      return {
++        success: false,
++        error: `Active Kernel ownership claim with the exact actor/session is required for issue ${parsed.issueId}.`,
++      };
++    }
++
++    await kernel.broker.upsertPr({
++      git_common_dir: gitCommonDir,
++      repo: repository,
++      number: Number(parsed.pr),
++      issue_id: parsed.issueId,
++      worktree_id: worktree.row.id,
++      branch,
++      head_sha: parsed.expectedHead,
++      state: 'open',
++      registered_at: (opts._now || (() => new Date()))().toISOString(),
++    }, identity);
++
++    const after = selectOpenPr(await kernel.broker.listOpenPrs(gitCommonDir), repository, parsed.pr);
++    if (!after.row || !exactReadBack(after.row, {
++      gitCommonDir,
++      repository,
++      number: parsed.pr,
++      issueId: parsed.issueId,
++      worktreeId: worktree.row.id,
++      branch,
++      headSha: parsed.expectedHead,
++    })) {
++      return { success: false, error: `Failed to verify the exact open PR binding after write${after.error ? `: ${after.error}` : '.'}` };
++    }
++
++    return {
++      success: true,
++      linked: true,
++      repository,
++      pr: Number(parsed.pr),
++      issueId: parsed.issueId,
++      worktreeId: worktree.row.id,
++      branch,
++      headSha: parsed.expectedHead,
++      output: `Linked ${repository}#${parsed.pr} to issue ${parsed.issueId}.`,
++    };
++  } catch (error) {
++    return { success: false, error: `Could not link the existing PR: ${error.message}` };
++  } finally {
++    closeIfOwned(kernel);
++  }
++}
++
++const link = { handler: linkExistingPr };
+ 
+ // One memorable surface over the EXISTING pull-request commands (kernel issue
+ // 6ab3f30c): every subcommand delegates to the standalone ship/preflight/shepherd/
+@@ -19,6 +283,10 @@ const { stripGlobalFlags } = require('../global-flags');
+ // command module currently exports, keeping the standalone command the single
+ // source of truth for its own behaviour.
+ const SUBCOMMANDS = {
++  link: {
++    module: link,
++    summary: 'Bind an existing open GitHub PR to its exact active Kernel issue/worktree',
++  },
+   ship: {
+     module: ship,
+     summary: 'Create a pull request from validated feature work (= forge ship)',
+@@ -37,7 +305,7 @@ const SUBCOMMANDS = {
+   },
+ };
+ 
+-const usage = 'Usage: forge pr <ship|preflight|shepherd|merge> [args]';
++const usage = 'Usage: forge pr <link|ship|preflight|shepherd|merge> [args]';
+ 
+ function renderHelp() {
+   const width = Math.max(...Object.keys(SUBCOMMANDS).map(name => name.length));
+@@ -82,7 +350,10 @@ async function handler(args, flags, projectRoot, opts) {
+ module.exports = {
+   name: 'pr',
+   description:
+-    'Unified pull-request surface: forge pr ship|preflight|shepherd|merge (wraps ship/preflight/shepherd/merge)',
++    'Unified pull-request surface: forge pr link|ship|preflight|shepherd|merge',
+   usage,
+   handler,
++  // Test/reuse seams for the guarded existing-PR binding.
++  linkExistingPr,
++  parseLinkArgs,
+ };
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index b9332f88..925f3b18 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4980,7 +4980,9 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		// Register/refresh a PR row keyed by (git_common_dir, repo, number). Idempotent via
+ 		// ON CONFLICT on the unique idx_pr_common_dir_repo_number: a re-upsert updates the
+ 		// mutable columns and coalesces soft links (a later null never clobbers an existing
+-		// issue_id/worktree_id). registered_at is set on INSERT only; state defaults 'open'.
++		// issue_id/worktree_id). Conflicting non-null links fail closed in the atomic UPSERT
++		// predicate, so concurrent binders cannot overwrite each other. registered_at is set
++		// on INSERT only; state defaults 'open'.
+ 		async upsertPr(row, _context = {}, config = {}) {
+ 			const id = row.id || randomUUID();
+ 			const registeredAt = row.registered_at || new Date().toISOString();
+@@ -5013,7 +5015,9 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 					-- never clears. (Codex review, PR #426.)
+ 					verdict = CASE WHEN excluded.head_sha IS NOT NULL AND excluded.head_sha IS NOT kernel_pr.head_sha THEN NULL ELSE kernel_pr.verdict END,
+ 					verdict_source = CASE WHEN excluded.head_sha IS NOT NULL AND excluded.head_sha IS NOT kernel_pr.head_sha THEN NULL ELSE kernel_pr.verdict_source END,
+-					verdict_at = CASE WHEN excluded.head_sha IS NOT NULL AND excluded.head_sha IS NOT kernel_pr.head_sha THEN NULL ELSE kernel_pr.verdict_at END`,
++					verdict_at = CASE WHEN excluded.head_sha IS NOT NULL AND excluded.head_sha IS NOT kernel_pr.head_sha THEN NULL ELSE kernel_pr.verdict_at END
++				 WHERE (excluded.issue_id IS NULL OR kernel_pr.issue_id IS NULL OR excluded.issue_id = kernel_pr.issue_id)
++					AND (excluded.worktree_id IS NULL OR kernel_pr.worktree_id IS NULL OR excluded.worktree_id = kernel_pr.worktree_id)`,
+ 				[
+ 					id,
+ 					row.git_common_dir,
+@@ -5037,6 +5041,10 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			if (!persisted) {
+ 				throw new Error(`Kernel SQLite driver upsertPr: no kernel_pr row after upsert for ${row.repo}#${row.number}`);
+ 			}
++			if ((row.issue_id != null && row.issue_id !== persisted.issue_id)
++				|| (row.worktree_id != null && row.worktree_id !== persisted.worktree_id)) {
++				throw new Error(`Kernel SQLite driver upsertPr: linkage conflict for ${row.repo}#${row.number}`);
++			}
+ 			return { ok: true, ...persisted };
+ 		},
+ 		async resolvePrLinkage(input, _context = {}, config = {}) {
+diff --git a/test/commands/pr-link.test.js b/test/commands/pr-link.test.js
+new file mode 100644
+index 00000000..16396bef
+--- /dev/null
++++ b/test/commands/pr-link.test.js
+@@ -0,0 +1,303 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { spawnSync } = require('node:child_process');
++const path = require('node:path');
++
++const pr = require('../../lib/commands/pr');
++const merge = require('../../lib/commands/merge');
++
++const ISSUE = '619e1cd4-b5b0-4524-b1d6-793bf395cad8';
++const OTHER_ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
++const HEAD = 'a'.repeat(40);
++const ROOT = path.resolve('C:/repo/.worktrees/feature');
++const COMMON = path.resolve('C:/repo/.git');
++const BRANCH = 'feat/existing-pr';
++const REPO = 'acme/product';
++
++function buildHarness(overrides = {}) {
++  let persisted = overrides.existingPr || null;
++  let upserts = 0;
++  let reads = 0;
++  const worktrees = overrides.worktrees || [{
++    id: 'WT-1',
++    path: ROOT,
++    git_common_dir: COMMON,
++    branch: BRANCH,
++    issue_id: ISSUE,
++    state: 'active',
++  }];
++  const execFileSync = (bin, args, options) => {
++    if (overrides.execOptions) overrides.execOptions.push({ bin, options });
++    const key = `${bin} ${args.join(' ')}`;
++    if (key === 'git rev-parse --show-toplevel') return `${ROOT}\n`;
++    if (key === 'git branch --show-current') return `${BRANCH}\n`;
++    if (key === 'git rev-parse HEAD') return `${overrides.localHead || HEAD}\n`;
++    if (key === 'git rev-parse --path-format=absolute --git-common-dir') return `${COMMON}\n`;
++    if (key === 'gh repo view --json nameWithOwner,isFork,parent') {
++      return JSON.stringify({ nameWithOwner: REPO, isFork: false, parent: null });
++    }
++    if (key.startsWith('gh pr view 42 --repo acme/product --json ')) {
++      return JSON.stringify({
++        number: 42,
++        state: 'OPEN',
++        headRefName: BRANCH,
++        headRefOid: overrides.remoteHead || HEAD,
++        headRepository: { nameWithOwner: overrides.headRepository ?? REPO },
++        isCrossRepository: overrides.crossRepository || false,
++      });
++    }
++    throw new Error(`unexpected command: ${key}`);
++  };
++  const broker = {
++    listOpenPrs: async () => {
++      reads += 1;
++      if (overrides.openPrRows) return overrides.openPrRows;
++      if (overrides.readBackFailure && upserts > 0) return [];
++      return persisted ? [persisted] : [];
++    },
++    upsertPr: async (row) => {
++      upserts += 1;
++      persisted = {
++        ...(persisted || {}),
++        ...row,
++        issue_id: persisted?.issue_id || row.issue_id,
++        worktree_id: persisted?.worktree_id || row.worktree_id,
++        journal_ptr: persisted?.journal_ptr || null,
++        state: 'open',
++      };
++      return { ok: true, ...persisted };
++    },
++  };
++  const driver = { listWorktrees: () => worktrees };
++  const env = overrides.env || { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' };
++  const opts = {
++    env,
++    _execFileSync: execFileSync,
++    _verifyIssueOwnership: async () => overrides.owned === false
++      ? { owned: false }
++      : {
++        owned: true,
++        actor: env.FORGE_ACTOR || env.FORGE_SESSION_ID,
++        claimedBy: env.FORGE_ACTOR || env.FORGE_SESSION_ID,
++        sessionId: env.FORGE_SESSION_ID || null,
++        expired: false,
++      },
++    kernelBroker: broker,
++    kernelDriver: driver,
++    _now: () => new Date('2026-08-23T12:00:00.000Z'),
++  };
++  return {
++    opts,
++    broker,
++    driver,
++    calls: () => ({ upserts, reads, persisted }),
++  };
++}
++
++async function link(harness, args = ['link', '42', '--issue', ISSUE, '--expect-head', HEAD]) {
++  return pr.handler(args, {}, ROOT, harness.opts);
++}
++
++describe('forge pr link', () => {
++  test('bounds every git and gh probe with the calibrated external-I/O timeout', async () => {
++    const execOptions = [];
++    const harness = buildHarness({ execOptions });
++
++    expect((await link(harness)).success).toBe(true);
++    expect(new Set(execOptions.map(call => call.bin))).toEqual(new Set(['git', 'gh']));
++    expect(new Set(execOptions.map(call => call.options.timeout))).toEqual(new Set([120_000]));
++  });
++
++  test('is registered on the real public CLI surface', () => {
++    const result = spawnSync(process.execPath, [
++      path.resolve(__dirname, '../../bin/forge.js'), 'pr', '--help',
++    ], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8' });
++
++    expect(result.status).toBe(0);
++    expect(result.stdout).toContain('forge pr <link|ship|preflight|shepherd|merge>');
++  });
++
++  test('binds an existing open PR to the exact active worktree issue', async () => {
++    const harness = buildHarness();
++
++    const result = await link(harness);
++
++    expect(result).toMatchObject({
++      success: true,
++      linked: true,
++      repository: REPO,
++      pr: 42,
++      issueId: ISSUE,
++      branch: BRANCH,
++      headSha: HEAD,
++      worktreeId: 'WT-1',
++    });
++    expect(harness.calls().upserts).toBe(1);
++    expect(harness.calls().persisted).toMatchObject({
++      repo: REPO,
++      number: 42,
++      issue_id: ISSUE,
++      worktree_id: 'WT-1',
++      state: 'open',
++    });
++  });
++
++  test('is idempotent and preserves existing linkage metadata', async () => {
++    const existingPr = {
++      git_common_dir: COMMON,
++      repo: REPO,
++      number: 42,
++      issue_id: ISSUE,
++      worktree_id: 'WT-1',
++      branch: BRANCH,
++      head_sha: HEAD,
++      state: 'open',
++      journal_ptr: 'journal/existing.jsonl',
++    };
++    const harness = buildHarness({ existingPr });
++
++    expect((await link(harness)).success).toBe(true);
++    expect((await link(harness)).success).toBe(true);
++
++    expect(harness.calls().upserts).toBe(2);
++    expect(harness.calls().persisted.journal_ptr).toBe('journal/existing.jsonl');
++  });
++
++  test('produces the exact open binding required by guarded merge', async () => {
++    const harness = buildHarness();
++    expect((await link(harness)).success).toBe(true);
++
++    const binding = await merge.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: ROOT,
++      prContext: { number: 42, repository: REPO },
++      buildBroker: async () => ({
++        gitCommonDir: COMMON,
++        broker: harness.broker,
++        driver: harness.driver,
++      }),
++    });
++
++    expect(binding).toMatchObject({
++      bound: true,
++      repository: REPO,
++      number: 42,
++      issueId: ISSUE,
++      branch: BRANCH,
++    });
++  });
++
++  test('refuses an oversized open-PR registry before writing', async () => {
++    const openPrRows = Array.from({ length: 10_001 }, (_, index) => ({
++      git_common_dir: COMMON,
++      repo: REPO,
++      number: index + 1,
++      state: 'open',
++    }));
++    const harness = buildHarness({ openPrRows });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/oversized/i);
++    expect(harness.calls().upserts).toBe(0);
++  });
++
++  test('refuses a PR head that drifted from the exact expected head', async () => {
++    const harness = buildHarness({ remoteHead: 'b'.repeat(40) });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/head/i);
++    expect(harness.calls().upserts).toBe(0);
++  });
++
++  test('refuses a worktree linked to a different issue', async () => {
++    const harness = buildHarness({
++      worktrees: [{
++        id: 'WT-1', path: ROOT, git_common_dir: COMMON, branch: BRANCH,
++        issue_id: OTHER_ISSUE, state: 'active',
++      }],
++    });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/different issue|exact issue/i);
++    expect(harness.calls().upserts).toBe(0);
++  });
++
++  test('refuses without exact live actor and session ownership', async () => {
++    const harness = buildHarness({ owned: false });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/ownership|claim/i);
++    expect(harness.calls().upserts).toBe(0);
++  });
++
++  test('accepts an exact actor-owned sessionless claim like guarded merge', async () => {
++    const harness = buildHarness({ env: { FORGE_ACTOR: 'release-actor' } });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(true);
++    expect(harness.calls().upserts).toBe(1);
++  });
++
++  test('refuses ambiguous active worktree rows for the current path or branch', async () => {
++    const row = {
++      path: ROOT, git_common_dir: COMMON, branch: BRANCH, issue_id: ISSUE, state: 'active',
++    };
++    const harness = buildHarness({ worktrees: [{ id: 'WT-1', ...row }, { id: 'WT-2', ...row }] });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/ambiguous/i);
++    expect(harness.calls().upserts).toBe(0);
++  });
++
++  test('refuses a cross-repository PR head', async () => {
++    const harness = buildHarness({ headRepository: 'someone/fork', crossRepository: true });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/repository|cross/i);
++    expect(harness.calls().upserts).toBe(0);
++  });
++
++  test('accepts same-repository GitHub output with an empty nested repository owner', async () => {
++    const harness = buildHarness({ headRepository: '', crossRepository: false });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(true);
++    expect(harness.calls().upserts).toBe(1);
++  });
++
++  test('fails when the exact open binding cannot be read back after the write', async () => {
++    const harness = buildHarness({ readBackFailure: true });
++
++    const result = await link(harness);
++
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/read.back|verify/i);
++    expect(harness.calls().upserts).toBe(1);
++  });
++
++  test('requires the full issue UUID and exact 40-character head', async () => {
++    const harness = buildHarness();
++
++    expect((await link(harness, ['link', '42', '--issue', '619e1cd4', '--expect-head', HEAD])).success)
++      .toBe(false);
++    expect((await link(harness, ['link', '42', '--issue', ISSUE, '--expect-head', 'abc'])).success)
++      .toBe(false);
++    expect(harness.calls().upserts).toBe(0);
++  });
++});
+diff --git a/test/kernel/pr-write.test.js b/test/kernel/pr-write.test.js
+index d8937ad4..04afc113 100644
+--- a/test/kernel/pr-write.test.js
++++ b/test/kernel/pr-write.test.js
+@@ -81,6 +81,70 @@ describe('kernel_pr write path (§5a)', () => {
+ 		expect(row.head_sha).toBe('sha2');
+ 	});
+ 
++	test('competing non-null PR bindings have one winner and fail closed atomically', async () => {
++		const first = makeBroker();
++		const secondDriver = createBuiltinSQLiteDriver({});
++		const second = createLocalBroker({
++			projectRoot: tmpDir,
++			execFileSync: () => path.join(tmpDir, '.git'),
++			databasePath: config.databasePath,
++			driver: secondDriver,
++		});
++		await first.initialize();
++		await second.initialize();
++		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 8 };
++
++		try {
++			const attempts = await Promise.allSettled([
++				first.upsertPr({ ...key, head_sha: 'shaA', issue_id: 'ISSUE-A', worktree_id: 'WT-A' }),
++				second.upsertPr({ ...key, head_sha: 'shaB', issue_id: 'ISSUE-B', worktree_id: 'WT-B' }),
++			]);
++			expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1);
++			expect(attempts.filter(result => result.status === 'rejected')).toHaveLength(1);
++			expect(attempts.find(result => result.status === 'rejected').reason.message)
++				.toMatch(/linkage conflict/i);
++
++			const row = await readRow('/repo-a/.git', 'owner/a', 8);
++			expect([
++				['ISSUE-A', 'WT-A', 'shaA'],
++				['ISSUE-B', 'WT-B', 'shaB'],
++			]).toContainEqual([row.issue_id, row.worktree_id, row.head_sha]);
++		} finally {
++			secondDriver.close();
++		}
++	});
++
++	test('a foreign retired binding cannot be reopened or mutated by upsertPr', async () => {
++		const broker = makeBroker();
++		await broker.initialize();
++		const key = { git_common_dir: '/repo-a/.git', repo: 'owner/a', number: 10 };
++		await broker.upsertPr({
++			...key,
++			branch: 'feat/foreign',
++			head_sha: 'shaForeign',
++			issue_id: 'ISSUE-FOREIGN',
++			worktree_id: 'WT-FOREIGN',
++		});
++		await broker.retirePr(key, { state: 'closed', retired_at: '2026-08-24T00:00:00.000Z' });
++
++		await expect(broker.upsertPr({
++			...key,
++			branch: 'feat/local',
++			head_sha: 'shaLocal',
++			issue_id: 'ISSUE-LOCAL',
++			worktree_id: 'WT-LOCAL',
++		})).rejects.toThrow(/linkage conflict/i);
++
++		const row = await readRow('/repo-a/.git', 'owner/a', 10);
++		expect(row).toMatchObject({
++			state: 'closed',
++			branch: 'feat/foreign',
++			head_sha: 'shaForeign',
++			issue_id: 'ISSUE-FOREIGN',
++			worktree_id: 'WT-FOREIGN',
++		});
++	});
++
+ 	test('upsertPr coalesces journal_ptr: a head-only refresh does not sever the journal link', async () => {
+ 		// journal_ptr is a soft link — a head change that omits it must NOT null it (Codex #426).
+ 		const broker = makeBroker();
+-- 
+2.51.0.windows.1
+

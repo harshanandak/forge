@@ -1,0 +1,281 @@
+From 0595fbcf668020166d9aadaa553999934c51346d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 13:12:24 +0530
+Subject: [PATCH] fix(test): weight full-suite subprocess workers by process
+ cost
+
+---
+ CHANGELOG.md                         |   1 +
+ scripts/test-full-suite.js           | 107 ++++++++++++++++++---------
+ test/scripts/test-full-suite.test.js |  81 ++++++++++++++++++++
+ 3 files changed, 156 insertions(+), 33 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b8b6d3ee..905956c4 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **The full-suite worker budget now weights subprocess workers by real process cost.** A subprocess-lane worker owns two Windows processes (its own bun runtime plus the `bun.exe` grandchild its tests spawn), so granting three of them on a 4-vCPU runner oversubscribed the box and produced wall-clock-only failures. Grants are now made against the budget by cost (subprocess/exclusive = 2 units on `win32`, 1 elsewhere; unit = 1), the strongest lane always keeps one worker so the schedule can never stall at zero, and the plan log prints the *granted* concurrency plus the cost and budget instead of the nominal lane concurrency. Non-Windows scheduling is unchanged. (issue `9b8dfa31-4a76-4ef2-b7e9-331d248e3850`)
+ - **The targeted PR lane's full-suite fallback now uses the lane-aware runner.** When the execution planner returns `mode=full`, the follow-up job runs `scripts/test-full-suite.js` instead of a raw `bun test test/`, so subprocess-heavy files get resource-lane separation and the worker budget the full matrix already had — closing the Windows-only spawn failures that hit only this lane.
+ - **Full-suite validation now respects the computed worker budget.** Resource-aware lanes share the reserved worker pool by default, and `forge validate` uses that runner when available, preventing mixed unit and subprocess shards from oversubscribing Windows runners. (PR #545, issue `8cb52d50-24ea-4c69-8579-b30a0f1ee467`)
+ - **Windows legacy-claim repair now preserves owner-only ACL guarantees without PowerShell transport stalls.** The operator-only repair path uses bounded, privacy-safe Windows security-descriptor verification, exact owner/DACL replacement, Unicode-safe targets, transaction-isolated async hardening, and fail-closed timeout cleanup. (#538, issue `eb2c56e8-5054-4542-8f02-3f9fe635fd2d`)
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index f075a6f8..0d4f3a63 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -472,6 +472,66 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
+   return lanes;
+ }
+ 
++// A subprocess-lane worker owns two OS processes on Windows: the shard's own bun
++// runtime plus the bun.exe grandchild its tests spawn. Counting such a worker as
++// one budget unit oversubscribes small runners (3 workers is ~6 processes on 4
++// vCPU), so weight the grant by real process cost instead of by worker count.
++function laneWorkerCost(laneName, platform = process.platform) {
++  if (platform !== 'win32') return 1;
++  return laneName === 'unit' ? 1 : 2;
++}
++
++function computeLaneGrants(lanes, options = {}) {
++  const platform = options.platform || process.platform;
++  const workerBudget = Number.isInteger(options.workerBudget) && options.workerBudget > 0
++    ? options.workerBudget
++    : null;
++  const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
++  const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
++  const grants = new Map();
++  for (const lane of lanes) {
++    grants.set(lane, {
++      cost: laneWorkerCost(lane.name, platform),
++      deferred: false,
++      granted: lane.concurrency,
++      workerBudget,
++    });
++  }
++  if (workerBudget === null) {
++    for (const lane of sharedLanes) {
++      // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
++      grants.get(lane).granted = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
++    }
++    return grants;
++  }
++  // An explicit shard count is an operator-imposed cap on total concurrent
++  // children; reserve the budget for heavier subprocess workers first and
++  // defer leftover lanes until capacity frees instead of exceeding it.
++  const ordered = [...sharedLanes].sort(
++    (left, right) => (left.name === 'subprocess' ? 0 : 1) - (right.name === 'subprocess' ? 0 : 1),
++  );
++  let reservedCost = 0;
++  for (const [position, lane] of ordered.entries()) {
++    const entry = grants.get(lane);
++    const want = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
++    const affordable = Math.floor(Math.max(0, workerBudget - reservedCost) / entry.cost);
++    // The strongest lane always keeps one worker so the suite can never stall at zero.
++    const granted = position === 0
++      ? Math.max(1, Math.min(want, affordable))
++      : Math.min(want, affordable);
++    entry.granted = granted;
++    entry.deferred = granted === 0;
++    if (entry.deferred) {
++      entry.deferredConcurrency = Math.max(
++        1,
++        Math.min(lane.concurrency, Math.floor(workerBudget / entry.cost)),
++      );
++    }
++    reservedCost += granted * entry.cost;
++  }
++  return grants;
++}
++
+ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {}) {
+   const runLane = async (lane, concurrency = lane.concurrency, schedule = { stopped: false }) => {
+     const laneResults = new Array(lane.shards.length);
+@@ -506,45 +566,18 @@ async function runLaneSchedule(lanes, execute, cancel = () => {}, options = {})
+ 
+   const resultsByLane = new Map();
+   const sharedLanes = lanes.filter((lane) => lane.name !== 'exclusive');
+-  const overlapsSubprocess = sharedLanes.some((lane) => lane.name === 'subprocess');
+   const sharedSchedule = { stopped: false };
+-  // An explicit shard count is an operator-imposed cap on total concurrent
+-  // children; reserve the budget for heavier subprocess workers first and
+-  // defer leftover lanes until capacity frees instead of exceeding it.
+-  const workerBudget = Number.isInteger(options.workerBudget) && options.workerBudget > 0
+-    ? options.workerBudget
+-    : null;
+-  const grants = new Map();
+-  if (workerBudget !== null) {
+-    let reservedWorkers = 0;
+-    const grantWorkers = (want) => {
+-      const grant = Math.min(want, Math.max(0, workerBudget - reservedWorkers));
+-      reservedWorkers += grant;
+-      return grant;
+-    };
+-    for (const lane of [...sharedLanes].sort((a, b) => (a.name === 'subprocess' ? 0 : 1) - (b.name === 'subprocess' ? 0 : 1))) {
+-      const base = overlapsSubprocess && lane.name === 'unit' ? 1 : lane.concurrency;
+-      grants.set(lane, grantWorkers(base));
+-    }
+-  }
+-  const deferredLanes = grants.size > 0
+-    ? sharedLanes.filter((lane) => grants.get(lane) === 0)
+-    : [];
+-  const immediateLanes = grants.size > 0
+-    ? sharedLanes.filter((lane) => (grants.get(lane) ?? lane.concurrency) > 0)
+-    : sharedLanes;
++  const grants = options.grants || computeLaneGrants(lanes, options);
++  const deferredLanes = sharedLanes.filter((lane) => grants.get(lane).deferred);
++  const immediateLanes = sharedLanes.filter((lane) => !grants.get(lane).deferred);
+   const settledSharedLanes = await Promise.allSettled(immediateLanes.map(async (lane) => {
+-    // One unit worker fills otherwise-idle CPU without recreating broad process pressure.
+-    const concurrency = workerBudget === null && overlapsSubprocess && lane.name === 'unit'
+-      ? 1
+-      : (grants.get(lane) ?? lane.concurrency);
+-    resultsByLane.set(lane, await runLane(lane, concurrency, sharedSchedule));
++    resultsByLane.set(lane, await runLane(lane, grants.get(lane).granted, sharedSchedule));
+   }));
+   const sharedFailure = settledSharedLanes.find((result) => result.status === 'rejected');
+   if (sharedFailure) throw sharedFailure.reason;
+   // Budget-exhausted lanes start only after reserved capacity has been released.
+   const settledDeferredLanes = await Promise.allSettled(deferredLanes.map(async (lane) => {
+-    resultsByLane.set(lane, await runLane(lane, Math.min(lane.concurrency, workerBudget), sharedSchedule));
++    resultsByLane.set(lane, await runLane(lane, grants.get(lane).deferredConcurrency, sharedSchedule));
+   }));
+   const deferredFailure = settledDeferredLanes.find((result) => result.status === 'rejected');
+   if (deferredFailure) throw deferredFailure.reason;
+@@ -817,8 +850,12 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+     const runReportDir = fs.mkdtempSync(path.join(reportDir, 'full-suite-'));
+ 
+     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
++    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
+     for (const lane of lanePlan) {
+-      console.log(`Resource lane ${lane.name}: files=${lane.shards.reduce((total, shard) => total + shard.files.length, 0)} shards=${lane.shards.length} concurrency=${lane.concurrency}`);
++      const grant = laneGrants.get(lane);
++      const granted = grant.deferred ? grant.deferredConcurrency : grant.granted;
++      const files = lane.shards.reduce((total, shard) => total + shard.files.length, 0);
++      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${shardTotal}${grant.deferred ? ' deferred' : ''})`);
+     }
+     const childEnv = stripFullSuiteChildEnv(
+       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
+@@ -849,6 +886,8 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+         scheduleCancelled = true;
+         processTree.cleanup('SIGKILL');
+       }, {
++        grants: laneGrants,
++        platform,
+         workerBudget: shardTotal,
+       });
+     } catch (error) {
+@@ -918,7 +957,9 @@ module.exports = {
+   buildShardTestArgs,
+   buildShardSpecs,
+   classifyTestResource,
++  computeLaneGrants,
+   extractFailedTestCases,
++  laneWorkerCost,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
+   loadTestResourceMap,
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 5b0aad7e..c2f7cf3a 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -688,6 +688,7 @@ describe('scripts/test-full-suite.js', () => {
+       classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
+       durationMap: new Map(),
+       cpuCount: 4,
++      platform: 'linux',
+       processTree: fakeProcessTree(),
+       spawn,
+     });
+@@ -696,6 +697,86 @@ describe('scripts/test-full-suite.js', () => {
+     expect(maxActive).toBe(3);
+   });
+ 
++  test('windows subprocess workers are weighted at two budget units each', async () => {
++    let unitActive = 0;
++    let subprocessActive = 0;
++    let maxSubprocessActive = 0;
++    let maxWeightedCost = 0;
++    const spawn = (_command, args) => {
++      const isSubprocessShard = args.some((arg) => String(arg).indexOf('spawn') !== -1);
++      if (isSubprocessShard) subprocessActive += 1;
++      else unitActive += 1;
++      maxSubprocessActive = Math.max(maxSubprocessActive, subprocessActive);
++      maxWeightedCost = Math.max(maxWeightedCost, (subprocessActive * 2) + unitActive);
++      const child = new EventEmitter();
++      child.pid = 9800 + subprocessActive + unitActive;
++      child.stdout = new EventEmitter();
++      child.stderr = new EventEmitter();
++      const junitPath = args[args.indexOf('--reporter-outfile') + 1];
++      fs.writeFileSync(junitPath, passingShardReceipt);
++      process.nextTick(() => {
++        child.stdout.emit('data', '1 pass\nRan 1 test across 1 file.\n');
++        child.emit('close', 0);
++        if (isSubprocessShard) subprocessActive -= 1;
++        else unitActive -= 1;
++      });
++      return child;
++    };
++
++    const status = await runFullSuiteInParallel({}, {
++      allTests: [
++        'test/a.test.js',
++        'test/b.test.js',
++        'test/spawn-a.test.js',
++        'test/spawn-b.test.js',
++        'test/spawn-c.test.js',
++        'test/spawn-d.test.js',
++      ],
++      classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
++      durationMap: new Map(),
++      cpuCount: 4,
++      platform: 'win32',
++      processTree: fakeProcessTree(),
++      spawn,
++    });
++
++    expect(status).toBe(0);
++    expect(maxSubprocessActive).toBe(1);
++    expect(maxWeightedCost).toBeLessThanOrEqual(3);
++  });
++
++  test('resource lane plan output reports granted concurrency and budget', async () => {
++    const logged = [];
++    const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
++      logged.push(parts.join(' '));
++    });
++    try {
++      const status = await runFullSuiteInParallel({}, {
++        allTests: [
++          'test/a.test.js',
++          'test/spawn-a.test.js',
++          'test/spawn-b.test.js',
++          'test/spawn-c.test.js',
++        ],
++        classify: (file) => (file.indexOf('spawn') !== -1 ? 'subprocess' : 'unit'),
++        durationMap: new Map(),
++        cpuCount: 4,
++        platform: 'win32',
++        processTree: fakeProcessTree(),
++        spawn: (_command, args) => fakeShardChild(0, 9900, args),
++      });
++      expect(status).toBe(0);
++    } finally {
++      logSpy.mockRestore();
++    }
++
++    const subprocessLine = logged.find((line) => line.startsWith('Resource lane subprocess:'));
++    expect(subprocessLine).toContain('concurrency=1');
++    expect(subprocessLine).toContain('nominal=3');
++    expect(subprocessLine).toContain('cost=2');
++    expect(subprocessLine).toContain('budget=3');
++  });
++
+   test('runLaneSchedule propagates deferred-lane failures instead of masking them', async () => {
+     const lanes = [
+       { name: 'unit', concurrency: 1, shards: [{ files: ['test/a.test.js'], index: 0 }] },
+-- 
+2.51.0.windows.1
+

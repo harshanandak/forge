@@ -1,0 +1,123 @@
+From 26dfadd150ab94dee0bdfcc9c9de95a55fd21907 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 16:43:46 +0530
+Subject: [PATCH] fix(memory): fail closed on incomplete linkage evidence
+
+---
+ lib/kernel/sqlite-driver.js                   |  1 +
+ packages/memory/src/pr-lifecycle-authority.js | 12 ++++++--
+ .../test/pr-lifecycle-authority.test.js       | 29 ++++++++++++++-----
+ 3 files changed, 32 insertions(+), 10 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 86f5e924..052c2046 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1390,6 +1390,7 @@ function isCompleteTraceIteration(event) {
+ 		&& Number.isInteger(event.issue_revision) && event.issue_revision >= 0
+ 		&& /^[0-9a-f]{40}$/.test(event.head_sha)
+ 		&& /^[0-9a-f]{64}$/.test(event.work_packet_hash)
++		&& typeof event.work_packet_identity === 'string' && event.work_packet_identity.length > 0
+ 		&& /^[0-9a-f]{64}$/.test(event.run_receipt_hash)
+ 		&& /^[0-9a-f]{64}$/.test(event.risk_manifest_digest)
+ 		&& Array.isArray(event.gate_receipts) && event.gate_receipts.length > 0
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 3549c87b..513d9a81 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -521,13 +521,16 @@ function assertPacketLiveBindings(packet, live) {
+ 
+ function deriveLinkage(packet, receipt, gates) {
+   const target = packet.payload.target ?? {};
+-  const prEvidence = receipt.payload.evidence_refs.filter(entry => Number.isInteger(entry?.pr_number));
++  const prEvidence = receipt.payload.evidence_refs.filter(entry => entry?.kind === 'pr' && Number.isInteger(entry?.pr_number));
++  const evidenceNumbers = new Set(prEvidence.map(entry => entry.pr_number));
++  if (evidenceNumbers.size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR numbers');
+   if (Number.isInteger(target.pr_number) && prEvidence.some(entry => entry.pr_number !== target.pr_number)) {
+     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR number conflicts with packet target');
+   }
+   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
+   if (prNumber === undefined) prNumber = prEvidence[0]?.pr_number;
+   const matchingEvidence = prEvidence.filter(entry => entry.pr_number === prNumber && typeof entry?.url === 'string');
++  if (new Set(matchingEvidence.map(entry => entry.url)).size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR URLs');
+   if (typeof target.url === 'string' && matchingEvidence.some(entry => entry.url !== target.url)) {
+     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR URL conflicts with packet target');
+   }
+@@ -633,8 +636,9 @@ function projectReadyResponse(value) {
+   const issues = Array.isArray(envelope) ? envelope : dataProperty(envelope, 'issues');
+   if (!Array.isArray(issues)) return value;
+   if (types.isProxy(issues)) throw new TypeError('ready provider queue cannot be a Proxy');
++  if (issues.length > MAX_READY_ITEMS) fail('PR_LIFECYCLE_READINESS_STALE', 'authoritative ready queue exceeds lifecycle bounds');
+   const selected = [];
+-  const length = Math.min(issues.length, MAX_READY_ITEMS);
++  const length = issues.length;
+   for (let index = 0; index < length; index += 1) {
+     const descriptor = Object.getOwnPropertyDescriptor(issues, String(index));
+     if (!descriptor || !Object.hasOwn(descriptor, 'value') || descriptor.enumerable !== true) {
+@@ -648,7 +652,9 @@ function projectReadyResponse(value) {
+       });
+       selected.push(descriptor.value);
+     } catch (error) {
+-      if (['CANONICAL_BYTE_LIMIT', 'CANONICAL_NODE_LIMIT', 'CANONICAL_DEPTH_LIMIT'].includes(error?.code)) break;
++      if (['CANONICAL_BYTE_LIMIT', 'CANONICAL_NODE_LIMIT', 'CANONICAL_DEPTH_LIMIT'].includes(error?.code)) {
++        fail('PR_LIFECYCLE_READINESS_STALE', 'authoritative ready queue exceeds lifecycle bounds');
++      }
+       throw error;
+     }
+   }
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 5a2406a2..c98cb8c3 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -701,6 +701,26 @@ describe('public PR lifecycle authority', () => {
+     expect(writes).toBe(0);
+   });
+ 
++  test('rejects ambiguous or non-PR linkage evidence before writing', async () => {
++    let writes = 0;
++    const workPacket = packet({ payload: { target: { branch: 'codex/test', git_common_dir: '/repo/.git' } } });
++    for (const evidence_refs of [
++      [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514' },
++        { kind: 'pr', pr_number: 515, url: 'https://example.test/pull/515' }],
++      [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514' },
++        { kind: 'pr', pr_number: 514, url: 'https://example.test/pull/other' }],
++      [{ kind: 'validation', pr_number: 514, url: 'https://example.test/pull/514' }],
++    ]) {
++      const runReceipt = receipt(workPacket, { payload: { evidence_refs } });
++      const authority = createPrLifecycleAuthority({ provider: provider({
++        recordPrLinkage: async () => { writes += 1; return { ok: true }; },
++      }) });
++      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
++        .rejects.toMatchObject({ code: expect.stringMatching(/PR_LIFECYCLE_(?:LINKAGE_CONFLICT|LINKAGE_UNAVAILABLE)/) });
++    }
++    expect(writes).toBe(0);
++  });
++
+   test('preserves only a validated git common directory in projected trace rows', async () => {
+     const gitCommonDir = 'C:\\repo\\.git';
+     const workPacket = packet({ payload: { target: { ...packet().payload.target, git_common_dir: gitCommonDir } } });
+@@ -784,19 +804,14 @@ describe('public PR lifecycle authority', () => {
+     await expect(authority.requestNextWork()).resolves.toEqual([{ id: 'z' }, { id: 'a' }]);
+   });
+ 
+-  test('projects an ordered bounded ready subset before snapshotting the Kernel envelope', async () => {
++  test('fails closed instead of prefix-truncating an authoritative ready queue', async () => {
+     const base = provider();
+     delete base.listReadyWork;
+     base.runIssueOperation = async () => ({ ok: true, data: { issues: Array.from({ length: 140 }, (_, index) => ({
+       id: `issue-${index}`, title: `title-${index}`, body: 'x'.repeat(1_000), rank: index,
+     })), count: 140 } });
+     const authority = createPrLifecycleAuthority({ provider: base });
+-    const ready = await authority.requestNextWork();
+-    expect(ready.length).toBeGreaterThan(0);
+-    expect(ready.length).toBeLessThanOrEqual(128);
+-    expect(ready.length).toBeLessThan(140);
+-    expect(ready[0].id).toBe('issue-0');
+-    expect(ready.at(-1).id).toBe(`issue-${ready.length - 1}`);
++    await expect(authority.requestNextWork()).rejects.toMatchObject({ code: 'PR_LIFECYCLE_READINESS_STALE' });
+   });
+ 
+   test('does not conceal malformed ready entries behind bounded projection', async () => {
+-- 
+2.51.0.windows.1
+

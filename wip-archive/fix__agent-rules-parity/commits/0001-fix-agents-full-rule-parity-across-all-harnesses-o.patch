@@ -1,0 +1,2226 @@
+From 00b7bc228c31e1cda0f2fe7499960f5de9ca722c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 14:06:46 +0530
+Subject: [PATCH] =?UTF-8?q?fix(agents):=20full=20rule=20parity=20across=20?=
+ =?UTF-8?q?all=20harnesses=20=E2=80=94=20one=20canonical=20source,=20drift?=
+ =?UTF-8?q?-enforced?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+One canonical rule source rendered into each harness's native surface, killing the
+duplicated hand-authored Cursor generators and the drifting .claude/rules/workflow.md
+copy. Rules are thin pointers (content parity via AGENTS.md projection), not always-on
+policy bodies duplicated per harness.
+
+- rules/: single canonical source (workflow, tdd, security, documentation) as THIN
+  pointers to AGENTS.md + stage skills — no 100-line policy bodies.
+- lib/rules-sync.js: renders Cursor .cursor/rules/*.mdc from the canonical source (the
+  only harness with a first-class native rule surface). Claude/Codex/Hermes receive the
+  same policy through their AGENTS.md instruction projection — no always-on token bloat.
+- lib/agents-config.js: generateCursorConfig now derives from rules-sync; deleted the
+  hardcoded generateCursorWorkflow/Tdd/Security/Documentation duplicates.
+- Drop deprecated .cursorrules emission: cursor.plugin.json rootConfig removed, committed
+  file deleted, protected-surfaces list updated, legacy-file cleanup added to setup.
+  Cursor detection (detect-agent) is kept.
+- setup.js: Claude no longer copies always-on rule files (uses AGENTS.md); removed the
+  copyAgentRules mechanism.
+- Drift enforcement (no committed .claude/.cursor/.hermes mirrors; .codex/skills stays
+  the committed sentinel): rules use a regenerate-into-temp determinism gate; skills add
+  an all-four-harness render round-trip (test/structural/*).
+- Hermes: added to HARNESS_IDS + every capability row (CLI-consumed model); reconciled
+  docs/reference/AGENT_SKILL_PARITY.md ("Hermes support is planned" was false).
+- Fixed stage-graph contradiction: removed the .claude/commands command shim (commands
+  were removed in A0d) and corrected stale parity-doc lines (Cursor "unproven", Claude
+  "command-first", .claude/commands shim vs commands: removed).
+- lib/mcp-config-renderer.js: generic per-harness MCP renderer (read->merge->write,
+  idempotent) fixing setup's .mcp.json skip-if-exists bug; frozen descriptor
+  {name, transport, command, args, envRefs} with ${VAR} env references only.
+- Regenerated the D20 bd call-site kill-list artifact (line-number shifts).
+
+Refs: agent-rules parity audit.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .claude/rules/workflow.md                     | 124 ------
+ .cursorrules                                  | 139 ------
+ docs/reference/AGENT_SKILL_PARITY.md          |  42 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/agents-config.js                          | 396 +-----------------
+ lib/agents/cursor.plugin.json                 |   3 -
+ lib/commands/setup.js                         | 101 ++---
+ lib/harness-capability-matrix.js              |  27 +-
+ lib/mcp-config-renderer.js                    | 208 +++++++++
+ lib/protected-state-surfaces.js               |   2 +-
+ lib/rules-sync.js                             | 246 +++++++++++
+ package.json                                  |   4 +-
+ rules/documentation.md                        |  19 +
+ rules/security.md                             |  22 +
+ rules/tdd.md                                  |  20 +
+ rules/workflow.md                             |  27 ++
+ test-env/validation/agent-validator.test.js   |  10 +-
+ test/docs-consistency.test.js                 |   5 +-
+ test/harness-capability-matrix.test.js        |  21 +-
+ test/mcp-config-renderer.test.js              | 114 +++++
+ test/release-readiness.test.js                |  22 +-
+ test/rules-sync.test.js                       | 113 +++++
+ test/structural/skills-sync-drift.test.js     |  49 ++-
+ 23 files changed, 956 insertions(+), 760 deletions(-)
+ delete mode 100644 .claude/rules/workflow.md
+ delete mode 100644 .cursorrules
+ create mode 100644 lib/mcp-config-renderer.js
+ create mode 100644 lib/rules-sync.js
+ create mode 100644 rules/documentation.md
+ create mode 100644 rules/security.md
+ create mode 100644 rules/tdd.md
+ create mode 100644 rules/workflow.md
+ create mode 100644 test/mcp-config-renderer.test.js
+ create mode 100644 test/rules-sync.test.js
+
+diff --git a/.claude/rules/workflow.md b/.claude/rules/workflow.md
+deleted file mode 100644
+index f3c735b1..00000000
+--- a/.claude/rules/workflow.md
++++ /dev/null
+@@ -1,124 +0,0 @@
+-# Forge Workflow Rules
+-
+-TDD-first development workflow for any project: plan → dev → validate → ship → review → verify (pre-merge gate before merge).
+-
+-## Workflow Commands
+-
+-| Stage | Command | Purpose |
+-|-------|---------|---------|
+-| utility | `/status` | Check current stage, active work, recent completions |
+-| 1 | `/plan` | Design intent (brainstorm) → research → branch + worktree + task list |
+-| 2 | `/dev` | Subagent-driven TDD per task: implementer → spec review → quality review |
+-| 3 | `/validate` | Type check, lint, code review, security, tests — all fresh output |
+-| 4 | `/ship` | Push and create PR with design doc reference |
+-| 5 | `/review` | Handle ALL PR issues (GitHub Actions, Greptile, SonarCloud) |
+-| 6 | `/verify` | Post-merge health check (CI on main, close issues) |
+-
+-> **Pre-merge gate (not a numbered stage)**: finish docs on the feature branch, confirm CI is green, and hand off the PR — embedded in the `/ship` and `/review` stages, not a standalone command.
+-
+-## Core Principles
+-
+-### Design-First Planning
+-- All features start with Phase 1: one-question-at-a-time Q&A to capture design intent
+-- Design doc saved to `docs/work/YYYY-MM-DD-<slug>/plan.md`
+-- Research (Phase 2) and task list (Phase 3) follow design approval
+-- Phase 1 quality directly determines /dev autonomy — resolve ambiguity upfront
+-
+-### TDD-First Development
+-- Task list pre-made in /plan Phase 3; /dev reads and executes it
+-- Each task: implementer subagent → spec compliance reviewer → code quality reviewer
+-- RED-GREEN-REFACTOR enforced inside implementer via HARD-GATE
+-- Decision gate (7-dimension scoring) fires when spec gap found mid-task
+-
+-### HARD-GATES at Stage Exits
+-- Structural enforcement — not soft instructions
+-- Every stage exit has explicit conditions that must be met
+-- "Should be fine" and "was passing earlier" are never evidence
+-- Run the command, show the output, THEN declare done
+-
+-### Security Built-In
+-- OWASP Top 10 analysis documented in design doc (Phase 2)
+-- Security test scenarios identified before /dev
+-- Automated scans + manual review at /validate
+-
+-## Issue Tracking
+-
+-Use the Forge Kernel for persistent tracking across sessions (`forge issue <subcommand>`):
+-```bash
+-forge issue create --title="Feature name" --type=feature   # Create issue
+-forge issue claim <id>                                     # Claim work
+-forge issue comment <id> "Progress"                        # Add a note
+-forge issue close <id> --reason="Done"                     # Complete
+-```
+-Run `forge issue --help` for the full subcommand list (ready, list, show, dep, blocked, …).
+-
+-## Forge CLI Commands
+-
+-Use forge commands instead of raw tools — forge handles OS quirks, issue tracking, and quality gates:
+-
+-| Instead of... | Use... |
+-|---------------|--------|
+-| `git worktree add .worktrees/<slug> -b feat/<slug>` | `forge worktree create <slug>` |
+-| Manual issue-store sync | `forge sync` |
+-| `bun test` / `bun run test` | `forge test` or `forge test --affected` |
+-| `git push` (with manual checks) | `forge push` or `forge push --quick` |
+-| Manual worktree cleanup | `forge clean` or `forge clean --dry-run` |
+-
+-## Git Workflow
+-
+-```bash
+-# Branch naming
+-feat/<feature-slug>
+-fix/<bug-slug>
+-docs/<doc-slug>
+-
+-# Commit pattern
+-git commit -m "test: add validation tests"     # RED
+-git commit -m "feat: implement validation"     # GREEN
+-git commit -m "refactor: extract helpers"      # REFACTOR
+-
+-# Worktrees (required for /dev)
+-git worktree add .worktrees/<slug> feat/<slug>
+-# .worktrees/ is gitignored
+-
+-# Push workflow (preferred)
+-forge push              # Full quality gates: branch protection + lint + tests + push
+-forge push --quick      # Review-cycle: lint-only + push (CI runs full suite)
+-```
+-
+-## Configuration
+-
+-Customize these commands for your stack:
+-
+-```bash
+-# In your project's CLAUDE.md or .claude/rules/
+-TYPE_CHECK_COMMAND="bun run typecheck"   # or: npm run typecheck, tsc, etc.
+-LINT_COMMAND="bun run lint"               # or: npm run lint, eslint, etc.
+-TEST_COMMAND="bun test"                   # or: npm run test, jest, etc.
+-SECURITY_SCAN="bunx npm audit"            # or: npm audit, snyk test, etc.
+-```
+-
+-## Skills Integration
+-
+-### Parallel AI (MANDATORY for Phase 2 web research)
+-Use focused skills from `skills/` directory:
+-```bash
+-Skill("parallel-deep-research")  # Deep analysis, market reports, web research
+-```
+-
+-### sonarcloud (Code quality)
+-```bash
+-/sonarcloud  # Query PR-specific issues
+-```
+-
+-## Flow Visualization
+-
+-```
+-/plan → /dev → /validate → /ship → /review → /verify
+-  ↓        ↓        ↓        ↓        ↓         ↓
+-Design   Task-by  Validate   PR      Address   Verify
+-+Research  task    +GATE    create   feedback   CI on
+-+Tasks    TDD                                   master
+-
+-Pre-merge gate (docs done + CI green + hand off PR) runs inside /ship and /review, before merge.
+-```
+diff --git a/.cursorrules b/.cursorrules
+deleted file mode 100644
+index 64739bf1..00000000
+--- a/.cursorrules
++++ /dev/null
+@@ -1,139 +0,0 @@
+-# Forge - 7-Stage TDD Workflow
+-
+-A TDD-first workflow for AI coding agents. Ship features with confidence.
+-
+-## Commands (7 Stages)
+-
+-| Stage | Command | Description |
+-|-------|---------|-------------|
+-| utility | `/status` | Check current context, active work, recent completions |
+-| 1 | `/plan` | Design intent Q&A → research → branch + task list |
+-| 2 | `/dev` | Subagent-driven TDD per task (spec + quality review) |
+-| 3 | `/validate` | Validation (type/lint/security/tests) |
+-| 4 | `/ship` | Create PR with full documentation |
+-| 5 | `/review` | Address ALL PR feedback |
+-| 6 | `/premerge` | Complete docs on feature branch, hand off PR to user |
+-| 7 | `/verify` | Post-merge health check (CI on main) |
+-
+-## Workflow Flow
+-
+-```
+-/plan → /dev → /validate → /ship → /review → /premerge → /verify
+-```
+-
+-## Core Principles
+-
+-- **TDD-First**: Write tests BEFORE implementation (RED-GREEN-REFACTOR)
+-- **Design-First**: One-question-at-a-time Q&A captures design intent upfront
+-- **HARD-GATEs**: Every stage exit has explicit pass criteria — run the commands, show the output
+-- **Security Built-In**: OWASP Top 10 analysis for every feature
+-
+-## Prerequisites
+-
+-- Git, GitHub CLI (`gh`)
+-- Forge Kernel: built-in issue tracking (no separate install needed)
+-
+-## Quick Start
+-
+-1. `/status` - Check where you are
+-2. `/plan <feature-slug>` - Design intent → research → branch + task list
+-3. `/dev` - Implement with TDD
+-4. `/validate` - Validate everything
+-5. `/ship` - Create PR
+-6. `/review <pr-number>` - Address all feedback
+-7. `/premerge <pr-number>` - Docs + hand off to user
+-
+-## Stage Details
+-
+-### Utility: Status (`/status`)
+-
+-Check current context before starting work:
+-- Active issues (via Beads if installed)
+-- Recent completions
+-- Current branch state
+-
+-### 1. Plan (`/plan <feature-slug>`)
+-
+-Three phases:
+-- **Phase 1**: Design intent Q&A (one-question-at-a-time with user)
+-- **Phase 2**: Technical research (web + codebase, OWASP Top 10)
+-- **Phase 3**: Create branch + task list (TDD-ordered)
+-
+-### 2. Development (`/dev`)
+-
+-Subagent-driven TDD per task:
+-- Implementer subagent: RED-GREEN-REFACTOR enforced by HARD-GATE
+-- Spec compliance reviewer: checks every task
+-- Code quality reviewer: checks after spec compliance
+-- Decision gate: 7-dimension scoring when spec gap found
+-
+-### 3. Validate (`/validate`)
+-
+-Validate everything (HARD-GATE exit — fresh output required):
+-- Type checking
+-- Linting (0 errors, 0 warnings)
+-- All tests passing
+-- Security scan (OWASP Top 10)
+-
+-### 4. Ship (`/ship`)
+-
+-Create pull request:
+-- Push branch
+-- Create PR with design doc reference
+-- Link to Beads issue
+-
+-### 5. Review (`/review <pr-number>`)
+-
+-Address ALL feedback:
+-- GitHub Actions failures
+-- Greptile inline comments (reply + resolve each)
+-- SonarCloud issues
+-- Other CI/CD tool feedback
+-
+-### 6. Premerge (`/premerge <pr-number>`)
+-
+-Complete docs and hand off (NEVER merges):
+-- Update CLAUDE.md, AGENTS.md, GEMINI.md, README as needed
+-- Commit docs to feature branch
+-- Hand off PR URL to user for merge
+-
+-### 7. Verify (`/verify`)
+-
+-Post-merge health check:
+-- CI on main: all checks green
+-- Close Beads issue
+-- Confirm merge landed
+-
+-## Directory Structure
+-
+-```
+-your-project/
+-├── AGENTS.md                    # Universal (Claude Code, Codex, Cursor)
+-├── CLAUDE.md                    # Claude Code
+-├── .cursorrules                 # Cursor
+-│
+-├── .claude/commands/            # Claude Code commands
+-└── docs/
+-    ├── plans/
+-    │   ├── YYYY-MM-DD-<slug>-plan.md
+-    │   └── YYYY-MM-DD-<slug>-tasks.md
+-    └── TOOLCHAIN.md
+-```
+-
+-## Supported Agents
+-
+-Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
+-
+-| Agent | Instructions | Commands |
+-|-------|-------------|----------|
+-| Claude Code | CLAUDE.md | .claude/commands/ |
+-| Codex CLI | AGENTS.md | .codex/skills/ |
+-| Cursor | .cursorrules | .cursor/rules/ |
+-
+-## License
+-
+-MIT
+-
+----
+-
+-See `AGENTS.md` for the complete workflow guide.
+diff --git a/docs/reference/AGENT_SKILL_PARITY.md b/docs/reference/AGENT_SKILL_PARITY.md
+index d302d198..f34bfe12 100644
+--- a/docs/reference/AGENT_SKILL_PARITY.md
++++ b/docs/reference/AGENT_SKILL_PARITY.md
+@@ -8,13 +8,19 @@ For Week 3 planning, see [Week 3 Runtime Capability Packs](../work/2026-04-28-sk
+ 
+ ## Supported Surfaces
+ 
+-Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
++Forge supports Claude Code, Codex, Cursor, and Hermes. Hermes is a **CLI-consumed**
++harness: it reads Forge project state through `forge orient` / `forge recap` and
++ships the `hermes-forge` skill (`.hermes/skills`), rather than consuming generated
++rule/MCP/hook files. The W0 metadata fixture below proves the file-surface metadata
++for Claude Code, Cursor, and Codex; Hermes is modeled in the capability matrix
++(`lib/harness-capability-matrix.js`) as CLI-consumed.
+ 
+ | Harness | Forge fixture path | Activation metadata | Proof status |
+ | --- | --- | --- | --- |
+ | Claude Code | `.claude/skills/<name>/SKILL.md` | `description` in `SKILL.md` frontmatter | Proven by metadata fixture |
+ | Cursor | `.cursor/rules/<name>.mdc` | `description`, blank `globs`, `alwaysApply: false` | Proven by metadata fixture |
+ | Codex CLI | `.codex/skills/<name>/SKILL.md` | `name` and `description` in `SKILL.md` frontmatter | Proven by metadata fixture and Forge packaging helper |
++| Hermes | `.hermes/skills/<name>/SKILL.md` | `name` and `description` in `SKILL.md` frontmatter | CLI-consumed (forge orient/recap); not part of the W0 file-metadata fixture |
+ 
+ The shared rule is: keep the skill name, description, and task body canonical, then generate the smallest native wrapper each harness needs.
+ 
+@@ -35,26 +41,30 @@ node scripts/spikes/harness-capability-matrix.js
+ 
+ The output is JSON with three top-level contracts:
+ 
+-- `harnesses[]`: Claude, Cursor, and Codex capability support across instructions, skills, rules, MCP, hooks, commands, agents/subagents, stages, Beads, typed memory, patch overrides, marketplace trust, and extension packs.
++- `harnesses[]`: Claude, Cursor, Codex, and Hermes capability support across instructions, skills, rules, MCP, hooks, commands, agents/subagents, stages, Beads, typed memory, patch overrides, marketplace trust, and extension packs.
+ - `stageGraph`: canonical Forge workflow stages as skills-first super skills with addressable subskills, plus utility skills such as `status` outside workflow transitions.
+ - `rendererContract`: the evidence a renderer must provide before Forge emits broad harness files.
+ 
+-Forge stage parity should become skills-first across Claude, Cursor, and Codex:
++Forge stage parity is skills-first across all harnesses. Claude stage skills have
++**no command shim** — the legacy `.claude/commands/` surface was removed (A0d), so
++the stage skill is the authority. Cursor stage skill files are **generated** by
++Forge, though live auto-invocation is not yet proven. Hermes is CLI-consumed and
++reads the stage graph through `forge orient` / `forge recap` (no per-stage file).
+ 
+ | Forge stage | Canonical surface | Claude render | Cursor render | Codex render |
+ | --- | --- | --- | --- | --- |
+-| `plan` | super skill with phases | `.claude/skills/plan/SKILL.md` plus command shim | `.cursor/skills/plan/SKILL.md` (unproven) | `.codex/skills/plan/SKILL.md` |
+-| `dev` | super skill with TDD subskills | `.claude/skills/dev/SKILL.md` plus command shim | `.cursor/skills/dev/SKILL.md` (unproven) | `.codex/skills/dev/SKILL.md` |
+-| `validate` | super skill with check subskills | `.claude/skills/validate/SKILL.md` plus command shim | `.cursor/skills/validate/SKILL.md` (unproven) | `.codex/skills/validate/SKILL.md` |
+-| `ship` | super skill with PR subskills | `.claude/skills/ship/SKILL.md` plus command shim | `.cursor/skills/ship/SKILL.md` (unproven) | `.codex/skills/ship/SKILL.md` |
+-| `review` | super skill with feedback subskills | `.claude/skills/review/SKILL.md` plus command shim | `.cursor/skills/review/SKILL.md` (unproven) | `.codex/skills/review/SKILL.md` |
+-| `verify` | super skill with post-merge subskills | `.claude/skills/verify/SKILL.md` plus command shim | `.cursor/skills/verify/SKILL.md` (unproven) | `.codex/skills/verify/SKILL.md` |
++| `plan` | super skill with phases | `.claude/skills/plan/SKILL.md` | `.cursor/skills/plan/SKILL.md` (generated) | `.codex/skills/plan/SKILL.md` |
++| `dev` | super skill with TDD subskills | `.claude/skills/dev/SKILL.md` | `.cursor/skills/dev/SKILL.md` (generated) | `.codex/skills/dev/SKILL.md` |
++| `validate` | super skill with check subskills | `.claude/skills/validate/SKILL.md` | `.cursor/skills/validate/SKILL.md` (generated) | `.codex/skills/validate/SKILL.md` |
++| `ship` | super skill with PR subskills | `.claude/skills/ship/SKILL.md` | `.cursor/skills/ship/SKILL.md` (generated) | `.codex/skills/ship/SKILL.md` |
++| `review` | super skill with feedback subskills | `.claude/skills/review/SKILL.md` | `.cursor/skills/review/SKILL.md` (generated) | `.codex/skills/review/SKILL.md` |
++| `verify` | super skill with post-merge subskills | `.claude/skills/verify/SKILL.md` | `.cursor/skills/verify/SKILL.md` (generated) | `.codex/skills/verify/SKILL.md` |
+ 
+ Pre-merge is not a skill or a workflow stage — it is a documentation-and-handoff gate embedded in the `ship` and `review` skills, so it has no parity row.
+ 
+ `status` remains a utility skill, not a workflow stage. The stage graph exposes it in `utilitySkills[]` so renderers can still generate status affordances without adding invalid workflow transitions.
+ 
+-Claude commands should become compatibility shims, not the workflow authority. The canonical workflow should live in stage skills and subskills.
++The legacy `.claude/commands/` surface was removed (A0d): the canonical workflow lives in stage skills and subskills, and the stage skill — not a command shim — is the workflow authority.
+ 
+ The super-skill structure should follow the same pattern as rich local skills such as `impeccable`: one top-level skill handles routing and context, while individual subskills or references handle specific phases. For Forge, that means examples like:
+ 
+@@ -77,18 +87,18 @@ The full Forge extension parity model must cover more than skills:
+ | --- | --- | --- | --- | --- | --- |
+ | Project instructions | structured `AGENTS.md` sections | `CLAUDE.md` shim or generated file | `.cursor/rules/*.mdc` for scoped policy | `AGENTS.md` | semantic section comparison |
+ | Skills/playbooks | agentskills.io-compatible `SKILL.md` | `.claude/skills` | `.cursor/skills` | `.codex/skills` packaging source; `.agents/skills` after generator migration | generated file and trigger metadata |
+-| Rules/policies | Forge rule manifest | `CLAUDE.md` or `.claude/rules` if supported | `.cursor/rules/*.mdc` | `AGENTS.md` section | rule target and unsupported-surface notes |
++| Rules/policies | Forge rule manifest (`rules/<name>.md`) | `AGENTS.md` instruction projection (no always-on `.claude/rules/*` policy bloat) | `.cursor/rules/*.mdc` (rendered from `rules/`) | `AGENTS.md` section | rule target and unsupported-surface notes |
+ | MCP tools/resources | Forge MCP manifest | Claude MCP config | `.cursor/mcp.json` | Codex MCP config | config render and server probe |
+ | Hooks | Forge hook manifest | Claude hook adapter if supported | unsupported unless verified | Codex hook adapter if supported | supported/unsupported matrix |
+-| Commands | Forge command shim manifest | `.claude/commands` thin shims | native command surface if supported | CLI docs or skill backstop | shim points to canonical skill |
++| Commands | Forge stage-skill manifest | `.claude/skills/<stage>` (legacy `.claude/commands` removed in A0d) | stage skills if supported | CLI docs or skill backstop | stage skill is the authority |
+ | Agents/subagents | Forge agent role spec | Claude subagents | Cursor agent/subagent config if supported | Codex skill/agent backstop | role mapping or known issue |
+ | Marketplace/extensions | `extension.yaml` plus lock metadata | plugin/skills/commands/hooks | skills/rules/`.cursor/mcp.json` config | skills/MCP/hooks | lockfile, SHA, trust, generated targets |
+ 
+ The machine-readable matrix intentionally separates similar-looking surfaces:
+ 
+ - Skills are on-demand workflows: `.claude/skills/<skill>/SKILL.md`, `.cursor/skills/<skill>/SKILL.md`, and Forge's current `.codex/skills/<skill>/SKILL.md` packaging source for Codex. Direct Codex repo discovery should use `.agents/skills/<skill>/SKILL.md` after the Forge generator migrates.
+-- Rules are policy/context projections: Cursor uses `.cursor/rules/<rule>.mdc`; Claude and Codex receive policy through instruction projections unless a native rule surface is verified.
+-- Commands are shims: Claude command files remain useful for compatibility, but the command body must point to the canonical stage skill instead of duplicating the workflow.
++- Rules are policy/context projections rendered from one canonical `rules/<name>.md` source: only Cursor has a first-class native rule surface (`.cursor/rules/<rule>.mdc`); Claude, Codex, and Hermes receive the same policy through their `AGENTS.md` instruction projection (adding always-on `.claude/rules/*` policy files would triple-deliver the same context as token bloat).
++- Commands are removed, not shims: the legacy `.claude/commands/` and `.cursor/commands/` surfaces were removed in A0d. The canonical workflow lives in stage skills (`.claude/skills/<stage>`, `.codex/skills/<stage>`); Codex/Hermes fall back to the stage skill, not a command file.
+ - MCP is config plumbing: each harness gets native MCP config only when the matrix records a target path and probe evidence.
+ - Hooks are lifecycle adapters: Claude and Codex have native hook targets; Cursor remains a known issue until a hook surface is proven.
+ - Distribution is not a skill directory dump: Codex can use plugins and marketplaces; Forge extension packs must carry lock/trust metadata before installation.
+@@ -155,7 +165,7 @@ No harness-specific metadata issue is known for this fixture. Live proprietary-a
+ 
+ Known gaps intentionally left for follow-up:
+ 
+-- Cursor Agent Skills are not proven in the W0 fixture; the capability matrix records `.cursor/skills` as the intended on-demand target and `.cursor/rules` as the policy target.
+-- Claude still has command-first stage distribution in the current Forge setup; the skills-first graph records commands as shims over `.claude/skills`.
++- Cursor Agent Skill files are generated by Forge, but live auto-invocation is not proven in the W0 fixture; the capability matrix records `.cursor/skills` as the intended on-demand target and `.cursor/rules` as the policy target.
++- Claude stage distribution is skills-first: the legacy `.claude/commands/` surface was removed (A0d) and the stage skill (`.claude/skills/<stage>`) is the authority — the stage graph no longer emits a command shim.
+ - Cursor hooks remain unsupported until a verified hook surface exists; use Forge-owned hooks or file-watcher backstop for protected-path enforcement.
+ - MCPs, hooks, stage/gate renderers, Beads wiring, typed memory, patch overrides, marketplace trust, and extension packs are covered by the capability matrix contract, but broad renderer implementation remains future work.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index a4df3aee..c9c12965 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -55,7 +55,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/forge-issues.js (15)
+   - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 105 (bd), 106 (bd), 109 (bd), 143 (bd), 167 (bd), 169 (bd), 173 (bd), 273 (bd), 298 (bd)
+ - [ ] lib/harness-capability-matrix.js (1)
+-  - lines: 121 (bd)
++  - lines: 130 (bd)
+ - [ ] lib/insights.js (7)
+   - lines: 112 (.beads), 123 (.beads), 131 (.beads), 157 (.beads), 176 (.beads), 338 (.beads), 341 (.beads)
+ - [ ] lib/migrate-dry-run.js (8)
+diff --git a/lib/agents-config.js b/lib/agents-config.js
+index deb74dd5..a7bbb394 100644
+--- a/lib/agents-config.js
++++ b/lib/agents-config.js
+@@ -1,6 +1,12 @@
+ const fs = require('node:fs');
+ const path = require('node:path');
+ 
++const { renderRulesForHarness } = require('./rules-sync');
++
++// Forge package root — the canonical `rules/` manifest lives here and is the
++// single source for every harness's native rule files.
++const PACKAGE_ROOT = path.join(__dirname, '..');
++
+ /**
+  * Generate universal AGENTS.md file that works with all supported AI agents
+  * @param {string} projectPath - Path to the project root
+@@ -68,25 +74,6 @@ async function detectProjectMetadata(projectPath) {
+   return meta;
+ }
+ 
+-/**
+- * Write a file unless it already exists, unless overwrite is enabled.
+- *
+- * @param {string} filePath
+- * @param {string} content
+- * @param {boolean} overwrite
+- * @returns {Promise<void>}
+- */
+-async function writeIfNeeded(filePath, content, overwrite = false) {
+-  const exists = await fs.promises.access(filePath).then(() => true).catch(() => false);
+-  if (!exists || overwrite) {
+-    await fs.promises.writeFile(filePath, content, 'utf-8');
+-  }
+-}
+-
+-function createConditionalWriter(overwrite) {
+-  return (filePath, content) => writeIfNeeded(filePath, content, overwrite);
+-}
+-
+ /**
+  * Generate AGENTS.md content
+  * @param {Object} meta - Project metadata
+@@ -278,367 +265,16 @@ For questions or issues with Forge workflow, see project documentation or GitHub
+ async function generateCursorConfig(projectPath, options = {}) {
+   const { overwrite = false } = options;
+ 
+-  // Detect project metadata
+-  const projectMeta = await detectProjectMetadata(projectPath);
+-
+-  // Create .cursor/rules directory structure
+-  const cursorDir = path.join(projectPath, '.cursor');
+-  const rulesDir = path.join(cursorDir, 'rules');
+-
+-  await fs.promises.mkdir(rulesDir, { recursive: true });
+-
+-  const writeConfigFile = createConditionalWriter(overwrite);
+-
+-  // 1. Create .cursor/rules/forge-workflow.mdc
+-  const workflowPath = path.join(rulesDir, 'forge-workflow.mdc');
+-  const workflowContent = generateCursorWorkflowContent(projectMeta);
+-  await writeConfigFile(workflowPath, workflowContent);
+-
+-  // 2. Create .cursor/rules/tdd-enforcement.mdc
+-  const tddPath = path.join(rulesDir, 'tdd-enforcement.mdc');
+-  const tddContent = generateCursorTddContent();
+-  await writeConfigFile(tddPath, tddContent);
+-
+-  // 3. Create .cursor/rules/security-scanning.mdc
+-  const securityPath = path.join(rulesDir, 'security-scanning.mdc');
+-  const securityContent = generateCursorSecurityContent();
+-  await writeConfigFile(securityPath, securityContent);
+-
+-  // 4. Create .cursor/rules/documentation.mdc
+-  const docsPath = path.join(rulesDir, 'documentation.mdc');
+-  const docsContent = generateCursorDocumentationContent();
+-  await writeConfigFile(docsPath, docsContent);
+-}
+-
+-/**
+- * Generate .cursor/rules/forge-workflow.mdc content
+- */
+-function generateCursorWorkflowContent(meta) {
+-  const packageManager = meta.testCommand?.includes('bun') ? 'bun' : 'npm';
+-
+-  return `---
+-description: "When working with Forge workflow commands"
+-alwaysApply: true
+----
+-
+-# Forge TDD Workflow Template
+-
+-Use these default commands as composable workflow building blocks:
+-
+-## Utility: /status
+-Check current context and active work
+-- Review git status and recent commits
+-- Check Beads issues (if installed) for active work
+-- Identify current workflow stage
+-
+-## /plan
+-Create implementation plan
+-- Research with parallel-ai
+-- Document findings in \`docs/work/YYYY-MM-DD-<feature-slug>/plan.md\`
+-- **Security**: OWASP Top 10 analysis
+-- Generate plan, create Beads issue, break into TDD cycles
+-
+-## /dev
+-**TDD development (RED-GREEN-REFACTOR)**
+-- **RED**: Write failing test FIRST
+-- **GREEN**: Implement minimal code to pass
+-- **REFACTOR**: Clean up and optimize
+-- Commit after each cycle
+-- Push regularly to remote
+-
+-## /validate
+-Validation (type/lint/tests/security)
+-- Type checking${meta.language === 'TypeScript' ? ' (TypeScript strict mode)' : ''}
+-- Linting (ESLint - no errors)
+-- Security scanning (npm audit, OWASP)
+-- Test suite (all tests must pass)
+-- Code coverage (80%+ required)
+-
+-## /ship
+-Create PR with documentation
+-- Generate PR body with context
+-- Reference Beads issues
+-- Include test coverage metrics
+-- Link to research and plan documents
+-
+-## /review
+-Address ALL PR feedback
+-- GitHub Actions failures
+-- Code review comments
+-- AI review tools (Greptile, CodeRabbit)
+-- Security scan results
+-- **IMPORTANT**: Resolve all comment threads
+-
+-> **Pre-merge gate** (not a numbered stage): before merge, finish docs on the feature branch, confirm CI is green, and hand off the PR. Embedded in the \`/ship\` and \`/review\` stages, not a standalone command.
+-
+-## /verify
+-Final documentation verification
+-- Verify all docs updated correctly
+-- Check for broken links
+-- Validate code examples
+-- Ensure consistency across documentation
+-
+-## TDD Requirements
+-
+-**MANDATORY - No implementation without failing test**:
+-- Write test FIRST (RED phase)
+-- Implement minimal code to pass (GREEN phase)
+-- Refactor and commit (REFACTOR phase)
+-- No code changes without corresponding tests
+-
+-## Tech Stack
+-
+-${meta.language ? `- **Language**: ${meta.language}` : '- **Language**: JavaScript'}
+-- **Package Manager**: ${packageManager}
+-- **Testing**: TDD-first approach (tests before implementation)
+-- **Security**: OWASP Top 10 compliance
+-- **Version Control**: Git with conventional commits
+-
+-## Cursor Native Modes
+-
+-Leverage Cursor's built-in modes:
+-- **Agent Mode** (default): Full tools for implementation
+-- **Ask Mode**: Read-only exploration and learning
+-- **Plan Mode** (Shift+Tab): Create plans before coding
+-- **Debug Mode**: Specialized bug hunting with instrumentation
+-
+-Use Plan Mode for complex features and architectural decisions.
+-`;
+-}
+-
+-/**
+- * Generate .cursor/rules/tdd-enforcement.mdc content
+- */
+-function generateCursorTddContent() {
+-  return `---
+-description: "TDD patterns and enforcement"
+-globs: ["**/*.ts", "**/*.js", "**/*.test.ts", "**/*.test.js"]
+----
+-
+-# TDD Enforcement
+-
+-## RED-GREEN-REFACTOR Cycle
+-
+-### RED Phase (Write Failing Test)
+-1. **Write test FIRST** - Before any implementation
+-2. Run test to confirm it fails for the right reason
+-3. Commit: \`git commit -m "test: add [feature] tests (RED)"\`
+-
+-### GREEN Phase (Make Test Pass)
+-1. **Write minimal code** to make the test pass
+-2. Keep implementation simple and focused
+-3. Don't add features not covered by tests
+-4. Commit: \`git commit -m "feat: implement [feature] (GREEN)"\`
+-
+-### REFACTOR Phase (Clean Up)
+-1. Improve code while keeping tests green
+-2. Extract helpers, remove duplication
+-3. Optimize performance if needed
+-4. Commit: \`git commit -m "refactor: [description]"\`
+-
+-## Test Structure
+-
+-### Naming Convention
+-\`\`\`javascript
+-test('should [expected behavior] when [condition]', async () => {
+-  // Arrange: Set up test data
+-  // Act: Execute code under test
+-  // Assert: Verify outcome
+-});
+-\`\`\`
+-
+-### Best Practices
+-- One assertion per test (or closely related assertions)
+-- Test edge cases and error scenarios
+-- Mock external dependencies (APIs, databases, file system)
+-- Use fixtures for complex test data
+-- Keep tests fast and independent
+-
+-## Coverage Requirements
+-- Minimum 80% code coverage
+-- Focus on testing behavior, not implementation
+-- Test public interfaces, not private methods
+-- Include integration tests for critical paths
+-
+-## Security Testing
+-- Test input validation and sanitization
+-- Verify authentication and authorization
+-- Test error messages don't leak sensitive data
+-- Include security-specific test cases for OWASP Top 10
+-`;
+-}
+-
+-/**
+- * Generate .cursor/rules/security-scanning.mdc content
+- */
+-function generateCursorSecurityContent() {
+-  return `---
+-description: "OWASP Top 10 security checks"
+----
+-
+-# Security Scanning Guidelines
+-
+-## OWASP Top 10 (2021)
+-
+-For every new feature, analyze these security risks:
+-
+-### A01: Broken Access Control
+-- Verify authorization checks on all protected resources
+-- Test that users can't access data they shouldn't
+-- Implement principle of least privilege
+-
+-### A02: Cryptographic Failures
+-- Never store passwords in plaintext
+-- Use strong encryption algorithms (AES-256, RSA-2048+)
+-- Protect data in transit (HTTPS, TLS 1.2+)
+-- Secure key management
+-
+-### A03: Injection
+-- **SQL Injection**: Use parameterized queries
+-- **XSS**: Sanitize output, use Content Security Policy
+-- **Command Injection**: Validate and sanitize all inputs
+-- Never concatenate user input into commands or queries
+-
+-### A04: Insecure Design
+-- Security requirements defined upfront
+-- Threat modeling for new features
+-- Defense in depth (multiple security layers)
+-- Secure defaults
+-
+-### A05: Security Misconfiguration
+-- Remove default credentials
+-- Disable unnecessary features and services
+-- Keep dependencies up to date
+-- Implement security headers
+-
+-### A06: Vulnerable and Outdated Components
+-- Regular dependency audits (\`npm audit\`)
+-- Update dependencies promptly
+-- Use Software Composition Analysis (SCA) tools
+-- Monitor security advisories
+-
+-### A07: Identification and Authentication Failures
+-- Implement multi-factor authentication where appropriate
+-- Secure password storage (bcrypt, Argon2)
+-- Protect against brute force attacks (rate limiting)
+-- Secure session management
+-
+-### A08: Software and Data Integrity Failures
+-- Verify digital signatures
+-- Use integrity checks for critical data
+-- Implement code signing
+-- Secure CI/CD pipelines
+-
+-### A09: Security Logging and Monitoring Failures
+-- Log all security-relevant events
+-- Protect logs from tampering
+-- Implement alerting for suspicious activity
+-- Regular log review
+-
+-### A10: Server-Side Request Forgery (SSRF)
+-- Validate and sanitize all URLs
+-- Use allowlists for external requests
+-- Disable unnecessary protocols
+-- Network segmentation
+-
+-## Security Testing Checklist
+-
+-For each feature:
+-- [ ] Input validation implemented and tested
+-- [ ] Output sanitization verified
+-- [ ] Authentication and authorization tested
+-- [ ] Error messages don't leak sensitive data
+-- [ ] Dependencies scanned for vulnerabilities
+-- [ ] Security test cases added to test suite
+-- [ ] OWASP Top 10 risks analyzed
+-`;
+-}
+-
+-/**
+- * Generate .cursor/rules/documentation.mdc content
+- */
+-function generateCursorDocumentationContent() {
+-  return `---
+-description: "Progressive documentation standards"
+----
+-
+-# Documentation Standards
+-
+-## Progressive Documentation
+-
+-Update documentation at relevant stages (not deferred to end):
+-
+-### During /plan (Stage 1)
+-- Document findings in \`docs/work/YYYY-MM-DD-<feature-slug>/plan.md\`
+-- Include decision rationale
+-- Document alternatives considered
+-- Security considerations (OWASP analysis)
+-
+-### During /plan (Stage 3)
+-- Create implementation plan in \`docs/work/YYYY-MM-DD-<feature-slug>/tasks.md\`
+-- Document test scenarios
+-- Identify affected files
+-
+-### During /dev (Stage 4)
+-- Add inline code comments for complex logic
+-- Update JSDoc/TSDoc for public APIs
+-- Keep comments synchronized with code changes
+-
+-### During /ship (Stage 6)
+-- Update README if user-facing changes
+-- Update CHANGELOG with conventional commit summary
+-- Document breaking changes
+-- Add migration guide if needed
+-
+-### During /verify (Stage 7)
+-- Cross-check all documentation updated
+-- Validate code examples still work
+-- Check for broken internal links
+-- Ensure terminology consistency
+-
+-## Documentation Types
+-
+-### Code Comments
+-- **What to comment**: Why, not what
+-- Document non-obvious decisions
+-- Explain complex algorithms
+-- Note security considerations
+-- Reference tickets/issues for context
+-
+-### API Documentation
+-- Use JSDoc/TSDoc for public APIs
+-- Include parameter types and return types
+-- Provide usage examples
+-- Document error conditions
+-- List breaking changes in version updates
+-
+-### README Updates
+-- Keep Quick Start section current
+-- Update feature list
+-- Maintain installation instructions
+-- Document configuration options
+-- Include troubleshooting section
+-
+-## Documentation Quality
+-
+-### Consistency
+-- Use consistent terminology across docs
+-- Follow project style guide
+-- Maintain consistent formatting
+-- Use same voice and tone
+-
+-### Clarity
+-- Write for your audience (developers, users, etc.)
+-- Use examples liberally
+-- Avoid jargon without explanation
+-- Keep sentences short and clear
+-
+-### Maintainability
+-- Link to code where appropriate
+-- Use relative links for internal docs
+-- Keep docs close to the code they describe
+-- Remove outdated documentation promptly
+-`;
++  // Cursor rule CONTENT is not hand-authored here. It is rendered from the
++  // canonical `rules/<name>.md` manifest — the same single source that produces
++  // Claude's `.claude/rules/*.md` — so the two harnesses can never drift.
++  // See lib/rules-sync.js and docs/reference/AGENT_SKILL_PARITY.md.
++  renderRulesForHarness({
++    sourceRoot: PACKAGE_ROOT,
++    targetRoot: projectPath,
++    harness: 'cursor',
++    overwrite,
++  });
+ }
+ 
+ /**
+diff --git a/lib/agents/cursor.plugin.json b/lib/agents/cursor.plugin.json
+index 72997575..229e91a9 100644
+--- a/lib/agents/cursor.plugin.json
++++ b/lib/agents/cursor.plugin.json
+@@ -13,9 +13,6 @@
+     "rules": ".cursor/rules",
+     "skills": ".cursor/skills"
+   },
+-  "files": {
+-    "rootConfig": ".cursorrules"
+-  },
+   "setup": {
+     "copyRules": true,
+     "createSkill": true,
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index af05014f..157948c1 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -23,7 +23,18 @@ const VERSION = packageJson.version;
+ // Load PluginManager for discoverable agent architecture
+ const PluginManager = require('../plugin-manager');
+ const { populateAgentSkills, listCanonicalSkills, listFilesRecursive } = require('../skills-sync');
++const { renderMcpConfig } = require('../mcp-config-renderer');
+ const { copyEssentialDocs } = require('../docs-copy');
++
++// Baseline MCP server Forge ships. Uses the generic descriptor contract consumed
++// by lib/mcp-config-renderer.js (envRefs are '${VAR}' references, never secrets).
++const CONTEXT7_MCP_DESCRIPTOR = {
++  name: 'context7',
++  transport: 'stdio',
++  command: 'npx',
++  args: ['-y', '@upstash/context7-mcp@latest'],
++  envRefs: {},
++};
+ const { secureExecFileSync } = require('../shell-utils');
+ const { askYesNo: _askYesNoBase } = require('../ui-utils');
+ 
+@@ -361,10 +372,6 @@ function ensureDir(dir) {
+ 
+ 
+ 
+-function writeFile(filePath, content) {
+-  return fileUtils.writeFile(filePath, content, projectRoot);
+-}
+-
+ function writeManagedAbsoluteFile(absolutePath, content, displayPath) {
+   try {
+     if (!FORCE_MODE && fileMatchesContent(absolutePath, content)) {
+@@ -389,10 +396,6 @@ function writeManagedAbsoluteFile(absolutePath, content, displayPath) {
+ 
+ 
+ 
+-function readFile(filePath) {
+-  return fileUtils.readFile(filePath);
+-}
+-
+ function resetSetupNotes() {
+   SETUP_NOTES = [];
+   CODEX_SETUP_REPORT = null;
+@@ -1652,11 +1655,14 @@ function minimalInstall() {
+ // Helper: Setup Claude agent
+ function setupClaudeAgent(_skipFiles) {
+   // _skipFiles is accepted for call-site arity parity only; it is unused because
+-  // this skills-only surface writes rules/scripts unconditionally (no skip prompts).
++  // this skills-only surface writes scripts unconditionally (no skip prompts).
+   // Skills-only surface: per-skill SKILL.md dirs are populated by createAgentSkill.
+-  // Copy rules
+-  const rulesSrc = path.join(packageDir, '.claude/rules/workflow.md');
+-  copyFile(rulesSrc, '.claude/rules/workflow.md');
++  //
++  // Claude receives workflow/TDD/security/documentation policy through the
++  // CLAUDE.md → AGENTS.md instruction projection, NOT always-on `.claude/rules/*`
++  // files — those would triple-deliver the same policy into every session as
++  // token bloat. See lib/rules-sync.js and lib/harness-capability-matrix.js.
++  // Only Cursor has a first-class native rule surface (rendered by setupCursorAgent).
+ 
+   // Copy scripts
+   const scriptSrc = path.join(packageDir, '.claude/scripts/load-env.sh');
+@@ -1668,26 +1674,17 @@ function setupClaudeAgent(_skipFiles) {
+ 
+ // Helper: Setup Cursor agent
+ async function setupCursorAgent() {
++  // Remove the deprecated root config: Cursor reads AGENTS.md natively and rules
++  // now live in .cursor/rules/*.mdc (rendered from the canonical rules/ source).
++  const legacyCursorRules = path.join(projectRoot, '.cursorrules');
++  if (fs.existsSync(legacyCursorRules)) {
++    fs.rmSync(legacyCursorRules, { force: true });
++    console.log('  Removed: .cursorrules (deprecated — Cursor reads AGENTS.md + .cursor/rules/*.mdc)');
++  }
+   await generateCursorConfig(projectRoot, { overwrite: false });
+   console.log('  Created: Cursor native rules');
+ }
+ 
+-// Helper: Copy rules for agent
+-function copyAgentRules(agent) {
+-  if (!agent.needsConversion) return;
+-
+-  const workflowMdPath = path.join(projectRoot, '.claude/rules/workflow.md');
+-  if (!fs.existsSync(workflowMdPath)) return;
+-
+-  const rulesDir = agent.dirs.find(d => d.includes('/rules'));
+-  if (!rulesDir) return;
+-
+-  const ruleContent = readFile(workflowMdPath);
+-  if (ruleContent) {
+-    writeFile(`${rulesDir}/workflow.md`, ruleContent);
+-  }
+-}
+-
+ // Helper: Create skill file for agent
+ 
+ 
+@@ -1756,23 +1753,21 @@ function createCodexSkills() {
+ 
+ 
+ // Helper: Setup MCP config for Claude
++//
++// Read → merge → write (idempotent). A pre-existing `.mcp.json` is MERGED, not
++// skipped: the old skip-if-exists behavior silently refused to add the Context7
++// server whenever any config already existed. User/other servers are preserved.
+ function setupClaudeMcpConfig() {
+-  const mcpPath = path.join(projectRoot, '.mcp.json');
+-  if (fs.existsSync(mcpPath)) {
+-    console.log('  Skipped: .mcp.json already exists');
+-    return;
+-  }
+-
+-  const mcpConfig = {
+-    mcpServers: {
+-      context7: {
+-        command: 'npx',
+-        args: ['-y', '@upstash/context7-mcp@latest']
+-      }
+-    }
+-  };
+-  writeFile('.mcp.json', JSON.stringify(mcpConfig, null, 2));
+-  console.log('  Created: .mcp.json with Context7 MCP');
++  const { existed } = renderMcpConfig({
++    harness: 'claude',
++    targetRoot: projectRoot,
++    descriptors: [CONTEXT7_MCP_DESCRIPTOR],
++  });
++  console.log(
++    existed
++      ? '  Updated: .mcp.json (merged Context7 MCP, preserved existing servers)'
++      : '  Created: .mcp.json with Context7 MCP',
++  );
+ }
+ 
+ // Helper: Create agent link file
+@@ -1815,9 +1810,6 @@ async function setupAgent(agentKey, skipFiles = {}) {
+     await setupCursorAgent();
+   }
+ 
+-  // Copy rules if needed
+-  copyAgentRules(agent);
+-
+   // Create SKILL.md or Codex stage skills
+   createAgentSkill(agent, agentKey);
+ 
+@@ -3421,9 +3413,9 @@ function dryRunSetup(agents) { // NOSONAR — Extracted as-is from bin/forge.js;
+       addFileAction(dir + '/', 'Create agent directory');
+     }
+ 
+-    // Claude-specific files (skills are listed by the per-skill block below)
++    // Claude-specific files (skills are listed by the per-skill block below).
++    // Claude gets policy via CLAUDE.md → AGENTS.md, not always-on .claude/rules/* files.
+     if (agentKey === 'claude') {
+-      addFileAction('.claude/rules/workflow.md', 'Workflow rules');
+       addFileAction('.claude/scripts/load-env.sh', 'Environment loader script');
+       addFileAction('.mcp.json', 'MCP server configuration');
+       addFileAction('CLAUDE.md', 'Claude root config (links to AGENTS.md)');
+@@ -3435,7 +3427,7 @@ function dryRunSetup(agents) { // NOSONAR — Extracted as-is from bin/forge.js;
+       }
+     }
+ 
+-    // Cursor-specific files
++    // Cursor-specific files (rendered from the canonical rules/ source)
+     if (agent.customSetup === 'cursor') {
+       addFileAction('.cursor/rules/forge-workflow.mdc', 'Cursor workflow rule');
+       addFileAction('.cursor/rules/tdd-enforcement.mdc', 'Cursor TDD rule');
+@@ -3443,15 +3435,6 @@ function dryRunSetup(agents) { // NOSONAR — Extracted as-is from bin/forge.js;
+       addFileAction('.cursor/rules/documentation.mdc', 'Cursor documentation rule');
+     }
+ 
+-
+-    // Agent rules (copied from Claude)
+-    if (agent.needsConversion) {
+-      const rulesDir = agent.dirs.find(d => d.includes('/rules'));
+-      if (rulesDir) {
+-        addFileAction(`${rulesDir}/workflow.md`, 'Workflow rules');
+-      }
+-    }
+-
+     // Agent skill
+     if (agentKey === 'codex') {
+       const skillEntries = buildCodexSkillInstallPlan(packageDir, { env: process.env, homeDir: os.homedir() });
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index de6b8f33..5ee2c672 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -2,7 +2,7 @@
+ 
+ const { STAGE_IDS: WORKFLOW_STAGE_IDS } = require('./workflow/stages');
+ 
+-const HARNESS_IDS = ['claude', 'cursor', 'codex'];
++const HARNESS_IDS = ['claude', 'cursor', 'codex', 'hermes'];
+ 
+ const CAPABILITY_IDS = [
+   'instructions',
+@@ -58,6 +58,7 @@ const HARNESS_NAMES = {
+   claude: 'Claude Code',
+   cursor: 'Cursor',
+   codex: 'OpenAI Codex',
++  hermes: 'Hermes',
+ };
+ 
+ function harnessTargets(entries) {
+@@ -82,58 +83,69 @@ const CAPABILITY_ROWS = [
+     ['claude', target('shim', 'CLAUDE.md', { evidence: ['S1', 'S9'] })],
+     ['cursor', target('native', 'AGENTS.md', { evidence: ['S3', 'S9'] })],
+     ['codex', target('native', 'AGENTS.md', { evidence: ['S9'] })],
++    ['hermes', target('cli-consumed', 'AGENTS.md via forge orient/recap', { role: 'CLI-consumed instruction projection', evidence: ['S9'] })],
+   ]),
+   row('skills', 'skills', 'on-demand workflow', [
+     ['claude', target('native', '.claude/skills/<skill>/SKILL.md', { activation: 'description match or /skill-name', evidence: ['S1', 'S2'] })],
+     ['cursor', target('unproven', '.cursor/skills/<skill>/SKILL.md', { activation: 'description match or explicit skill invocation', knownIssue: 'Cursor Agent Skills are the intended on-demand workflow target, but Forge does not yet have matching source evidence or live invocation proof.' })],
+     ['codex', target('packaged', '.codex/skills/<skill>/SKILL.md', { activation: 'description match or explicit $skill mention after install', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
++    ['hermes', target('native', '.hermes/skills/<skill>/SKILL.md', { activation: 'forge orient/recap CLI plus description', role: 'CLI-consumed on-demand skill' })],
+   ]),
+   row('rules', 'rules', null, [
+     ['claude', target('shim', 'CLAUDE.md', { role: 'always-on policy projection', evidence: ['S1'] })],
+     ['cursor', target('native', '.cursor/rules/<rule>.mdc', { role: 'always-on or scoped policy', activation: 'description, globs, alwaysApply, or manual rule mention', evidence: ['S3'] })],
+     ['codex', target('projection', 'AGENTS.md', { role: 'always-on policy projection', evidence: ['S9'] })],
++    ['hermes', target('projection', 'AGENTS.md via forge orient', { role: 'always-on policy projection', evidence: ['S9'] })],
+   ]),
+   row('mcp', 'mcp', 'tool and resource plumbing', [
+     ['claude', target('native', 'Claude MCP config', { evidence: ['S1'] })],
+     ['cursor', target('native', '.cursor/mcp.json', { evidence: ['S4'] })],
+     ['codex', target('native', '.codex/config.toml', { evidence: ['S6'] })],
++    ['hermes', target('unsupported', null, { knownIssue: 'Hermes consumes Forge state through the CLI (forge orient/recap); it has no native MCP config surface.' })],
+   ]),
+   row('hooks', 'hooks', 'lifecycle enforcement', [
+     ['claude', target('native', 'Claude settings hooks', { evidence: ['S1'] })],
+     ['cursor', target('unsupported', null, { knownIssue: 'No verified Cursor hook surface; use Forge CLI hooks or file-watcher fallback until Cursor hook support is proven.' })],
+     ['codex', target('native', 'Codex hooks config', { evidence: ['S7'] })],
++    ['hermes', target('unsupported', null, { knownIssue: 'No Hermes hook surface; lifecycle enforcement runs through Forge CLI gates.' })],
+   ]),
+   row('commands', 'commands', null, [
+     ['claude', target('removed', null, { role: 'legacy .claude/commands/ surface removed in A0d; stage skills live in .claude/skills/<stage>/SKILL.md', evidence: ['S1'] })],
+     ['cursor', target('removed', null, { role: 'legacy .cursor/commands/ surface removed in A0d; stage skills live in .cursor/skills/<stage>/SKILL.md', evidence: ['S3'] })],
+     ['codex', target('fallback', '.codex/skills/<stage>/SKILL.md', { role: 'skill fallback instead of command authority', activation: 'explicit $skill or description match after install', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
++    ['hermes', target('cli-consumed', 'forge orient / forge recap', { role: 'CLI command surface instead of command files' })],
+   ]),
+   row('agents', 'agents', 'subagent role mapping', [
+     ['claude', target('native', '.claude/agents/<role>.md', { evidence: ['S1'] })],
+     ['cursor', target('unproven', '.cursor/agents/<role>.md', { knownIssue: 'Cursor agent/subagent file contract is not proven in Forge tests yet.' })],
+     ['codex', target('skill-backed', '.codex/skills/<role>/SKILL.md', { role: 'subagent role fallback through skill metadata', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
++    ['hermes', target('unsupported', null, { knownIssue: 'Hermes has no subagent file contract; it is a CLI-consumed harness.' })],
+   ]),
+   row('stages', 'stage-graph', 'super skill with addressable subskills', [
+     ['claude', target('skill-first', '.claude/skills/<stage>/SKILL.md', { evidence: ['S1'] })],
+     ['cursor', target('unproven', '.cursor/skills/<stage>/SKILL.md', { knownIssue: 'Cursor Agent Skills are the intended stage target, but Forge does not yet have matching source evidence or live invocation proof.' })],
+     ['codex', target('skill-first', '.codex/skills/<stage>/SKILL.md', { evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
++    ['hermes', target('cli-consumed', 'forge orient/recap over the Forge Kernel stage graph', { role: 'CLI-consumed stage graph' })],
+   ]),
+   row('beads', 'state-and-memory', 'issue and audit state authority', HARNESS_IDS.map(id => [id, target('forge-owned', 'forge CLI + bd adapter')])),
+   row('typedMemory', 'state-and-memory', 'typed memory projection', [
+     ['claude', target('projection', 'CLAUDE.md plus generated memory sections')],
+     ['cursor', target('projection', 'AGENTS.md and .cursor/rules memory projections')],
+     ['codex', target('projection', 'AGENTS.md plus Codex skill references')],
++    ['hermes', target('projection', 'AGENTS.md plus forge recap memory projection')],
+   ]),
+   row('patchOverrides', 'state-and-memory', 'project override source', HARNESS_IDS.map(id => [id, target('forge-owned', '.forge/patch.md')])),
+   row('marketplaceTrust', 'distribution', 'trusted distribution metadata', [
+     ['claude', target('plugin-aware', 'Claude plugin or Forge lock metadata', { evidence: ['S1'] })],
+     ['cursor', target('forge-owned', 'extension lock metadata')],
+     ['codex', target('native', '.agents/plugins/marketplace.json plus plugin lock metadata', { evidence: ['S8'] })],
++    ['hermes', target('forge-owned', 'Forge extension lock metadata')],
+   ]),
+   row('extensionPacks', 'distribution', null, [
+     ['claude', target('plugin-aware', 'plugin skills/commands/hooks', { role: 'installable Forge extension pack', evidence: ['S1'] })],
+     ['cursor', target('generated', '.cursor/skills + .cursor/rules + .cursor/mcp.json', { role: 'installable Forge extension pack projection' })],
+     ['codex', target('native', 'Codex plugin with skills, MCP servers, hooks, and apps', { role: 'installable Forge extension pack', evidence: ['S8'] })],
++    ['hermes', target('forge-owned', '.hermes/skills projected from Forge extension state', { role: 'installable Forge extension pack projection' })],
+   ]),
+ ];
+ 
+@@ -181,12 +193,9 @@ const STAGE_SUBSKILLS = {
+ function buildSkillsFirstStageGraph() {
+   const renderTargetsForSkill = (id) => ({
+     claude: {
++      // Stage skills are skill-first: `.claude/commands/` was removed in A0d, so
++      // there is NO command shim (that contradicted the commands capability row).
+       skill: `.claude/skills/${id}/SKILL.md`,
+-      commandShim: {
+-        path: `.claude/commands/${id}.md`,
+-        pointsTo: `.claude/skills/${id}/SKILL.md`,
+-        shimOnly: true,
+-      },
+     },
+     cursor: {
+       skill: `.cursor/skills/${id}/SKILL.md`,
+@@ -199,6 +208,12 @@ function buildSkillsFirstStageGraph() {
+       installTarget: '$CODEX_HOME/skills',
+       directRepoDiscoveryTarget: `.agents/skills/${id}/SKILL.md`,
+     },
++    hermes: {
++      // Hermes is CLI-consumed: it reads the Forge Kernel stage graph through
++      // `forge orient` / `forge recap` and does not render per-stage skill files.
++      cliConsumed: true,
++      via: 'forge orient / forge recap',
++    },
+   });
+ 
+   return {
+diff --git a/lib/mcp-config-renderer.js b/lib/mcp-config-renderer.js
+new file mode 100644
+index 00000000..cdb50fed
+--- /dev/null
++++ b/lib/mcp-config-renderer.js
+@@ -0,0 +1,208 @@
++'use strict';
++
++/**
++ * Per-harness MCP config renderer.
++ *
++ * Renders a GENERIC MCP server descriptor into each harness's native MCP config,
++ * using read → merge → write (idempotent, preserves user/other servers). This
++ * replaces the old skip-if-exists behavior in setup, which silently refused to
++ * add a server whenever a config file already existed.
++ *
++ * Frozen descriptor interface (consumers build this shape; this module never
++ * references any specific server):
++ *
++ *   {
++ *     name: string,                       // server key
++ *     transport: 'stdio' | 'http',        // launch transport
++ *     command: string,                    // executable (stdio) / launcher
++ *     args: string[],                     // command arguments
++ *     envRefs: Record<string, string>,    // env var REFERENCES ('${VAR}') — never secrets
++ *   }
++ *
++ * `envRefs` values MUST be `${VAR}` reference strings; literal secrets are rejected.
++ * Each harness expands them per its own semantics:
++ *
++ *   - Claude : `.mcp.json`            (JSON `mcpServers` map)
++ *   - Cursor : `.cursor/mcp.json`     (JSON `mcpServers` map)
++ *   - Codex  : `.codex/config.toml`   (TOML `[mcp_servers.<name>]` tables)
++ *
++ * Dependency-free (no TOML lib) so it runs under `bun test` and the release gates.
++ *
++ * @module mcp-config-renderer
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const HARNESS_MCP_FILES = {
++  claude: '.mcp.json',
++  cursor: '.cursor/mcp.json',
++  codex: '.codex/config.toml',
++};
++
++const ENV_REF_PATTERN = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
++
++/**
++ * Validate + normalize a generic MCP server descriptor.
++ * @param {object} d
++ * @returns {{ name, transport, command, args, envRefs }}
++ */
++function validateDescriptor(d) {
++  if (!d || typeof d !== 'object') {
++    throw new Error('MCP descriptor must be an object');
++  }
++  if (!d.name || typeof d.name !== 'string') {
++    throw new Error('MCP descriptor.name is required');
++  }
++  const transport = d.transport || 'stdio';
++  if (transport !== 'stdio' && transport !== 'http') {
++    throw new Error(`MCP descriptor.transport must be 'stdio' or 'http' (got ${transport})`);
++  }
++  const command = typeof d.command === 'string' ? d.command : '';
++  const args = Array.isArray(d.args) ? d.args.map(String) : [];
++  const envRefs = d.envRefs && typeof d.envRefs === 'object' ? d.envRefs : {};
++  for (const [key, value] of Object.entries(envRefs)) {
++    if (typeof value !== 'string' || !ENV_REF_PATTERN.test(value)) {
++      throw new Error(
++        `MCP descriptor.envRefs.${key} must be a '\${VAR}' reference string, not a literal value`,
++      );
++    }
++  }
++  return { name: d.name, transport, command, args, envRefs };
++}
++
++/** Build the JSON server entry (Claude + Cursor share the `mcpServers` schema). */
++function toJsonServerEntry(descriptor) {
++  const d = validateDescriptor(descriptor);
++  const entry = {};
++  if (d.transport === 'http') entry.type = 'http';
++  if (d.command) entry.command = d.command;
++  if (d.args.length) entry.args = d.args;
++  if (Object.keys(d.envRefs).length) entry.env = { ...d.envRefs };
++  return entry;
++}
++
++/**
++ * Merge descriptors into an existing JSON MCP config string (read → merge → write).
++ * Preserves every server not named in `descriptors`.
++ * @param {string} existingText
++ * @param {object[]} descriptors
++ * @returns {string}
++ */
++function mergeJsonMcp(existingText, descriptors) {
++  let obj = {};
++  if (existingText && existingText.trim()) {
++    try {
++      obj = JSON.parse(existingText);
++    } catch {
++      obj = {};
++    }
++  }
++  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) obj = {};
++  if (!obj.mcpServers || typeof obj.mcpServers !== 'object') obj.mcpServers = {};
++  for (const descriptor of descriptors) {
++    const d = validateDescriptor(descriptor);
++    obj.mcpServers[d.name] = toJsonServerEntry(d);
++  }
++  return JSON.stringify(obj, null, 2) + '\n';
++}
++
++function tomlString(value) {
++  return '"' + String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
++}
++
++function tomlArray(values) {
++  return '[' + values.map(tomlString).join(', ') + ']';
++}
++
++/** Render a single Codex `[mcp_servers.<name>]` TOML block (+ optional env table). */
++function renderCodexServerBlock(descriptor) {
++  const d = validateDescriptor(descriptor);
++  const lines = [`[mcp_servers.${d.name}]`];
++  if (d.command) lines.push(`command = ${tomlString(d.command)}`);
++  lines.push(`args = ${tomlArray(d.args)}`);
++  if (d.transport !== 'stdio') lines.push(`transport = ${tomlString(d.transport)}`);
++  let block = lines.join('\n') + '\n';
++  const envKeys = Object.keys(d.envRefs);
++  if (envKeys.length) {
++    block += `\n[mcp_servers.${d.name}.env]\n`;
++    for (const key of envKeys) {
++      block += `${key} = ${tomlString(d.envRefs[key])}\n`;
++    }
++  }
++  return block;
++}
++
++/** Remove a TOML section (header line through the line before the next `[section]`). */
++function stripTomlSection(text, header) {
++  const lines = String(text).split('\n');
++  const out = [];
++  let skipping = false;
++  for (const line of lines) {
++    const isHeader = line.trimStart().startsWith('[');
++    if (isHeader) {
++      if (line.trim() === header) {
++        skipping = true;
++        continue;
++      }
++      skipping = false;
++    }
++    if (!skipping) out.push(line);
++  }
++  return out.join('\n');
++}
++
++/**
++ * Merge descriptors into an existing Codex `config.toml` string (read → merge →
++ * write). Only the targeted `[mcp_servers.<name>]` (+ `.env`) sections are
++ * replaced; all other config is preserved. Idempotent.
++ * @param {string} existingText
++ * @param {object[]} descriptors
++ * @returns {string}
++ */
++function mergeCodexToml(existingText, descriptors) {
++  let text = existingText || '';
++  for (const descriptor of descriptors) {
++    const d = validateDescriptor(descriptor);
++    text = stripTomlSection(text, `[mcp_servers.${d.name}]`);
++    text = stripTomlSection(text, `[mcp_servers.${d.name}.env]`);
++  }
++  const preamble = text.replace(/\s+$/, '');
++  let result = preamble ? preamble + '\n\n' : '';
++  result += descriptors.map(renderCodexServerBlock).join('\n');
++  return result.replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') + '\n';
++}
++
++/**
++ * Render (merge) MCP descriptors into one harness's native config on disk.
++ *
++ * @param {object} params
++ * @param {'claude'|'cursor'|'codex'} params.harness
++ * @param {string} params.targetRoot - Project root.
++ * @param {object[]} params.descriptors - Generic MCP server descriptors.
++ * @returns {{ file: string, existed: boolean }}
++ */
++function renderMcpConfig({ harness, targetRoot, descriptors }) {
++  const rel = HARNESS_MCP_FILES[harness];
++  if (!rel) throw new Error(`Unknown MCP harness: ${harness}`);
++  const filePath = path.join(targetRoot, rel);
++  fs.mkdirSync(path.dirname(filePath), { recursive: true });
++  const existed = fs.existsSync(filePath);
++  const existing = existed ? fs.readFileSync(filePath, 'utf-8') : '';
++  const merged = harness === 'codex'
++    ? mergeCodexToml(existing, descriptors)
++    : mergeJsonMcp(existing, descriptors);
++  fs.writeFileSync(filePath, merged, 'utf-8');
++  return { file: filePath, existed };
++}
++
++module.exports = {
++  HARNESS_MCP_FILES,
++  validateDescriptor,
++  toJsonServerEntry,
++  mergeJsonMcp,
++  renderCodexServerBlock,
++  mergeCodexToml,
++  stripTomlSection,
++  renderMcpConfig,
++};
+diff --git a/lib/protected-state-surfaces.js b/lib/protected-state-surfaces.js
+index ae4e9fba..c4c119d6 100644
+--- a/lib/protected-state-surfaces.js
++++ b/lib/protected-state-surfaces.js
+@@ -94,7 +94,7 @@ const PROTECTED_SURFACES = [
+ 				'.codex/skills',
+ 				'.cursor/rules',
+ 			]) ||
+-			['AGENTS.md', 'CLAUDE.md', '.cursorrules', '.mcp.json'].includes(filePath),
++			['AGENTS.md', 'CLAUDE.md', '.mcp.json'].includes(filePath),
+ 		repairHint: 'Regenerate harness files with forge setup or the owning Forge API surface instead of direct edits.',
+ 	},
+ 	{
+diff --git a/lib/rules-sync.js b/lib/rules-sync.js
+new file mode 100644
+index 00000000..61b4c773
+--- /dev/null
++++ b/lib/rules-sync.js
+@@ -0,0 +1,246 @@
++'use strict';
++
++/**
++ * Canonical rule source → Cursor native rule renderer.
++ *
++ * Forge policy rules (workflow, TDD, security, documentation) have ONE canonical
++ * source in `rules/<name>.md`. Each canonical file is a THIN POINTER: a short
++ * frontmatter (`description`, `globs`, `alwaysApply`) plus a few lines that point
++ * at `AGENTS.md` and the relevant stage skill. The full policy bodies are NOT
++ * duplicated here — they live in `AGENTS.md` and `skills/<stage>/SKILL.md`.
++ *
++ * Only ONE harness has a first-class native rule surface, so only one renderer
++ * exists:
++ *
++ *   - Cursor : `.cursor/rules/<name>.mdc`  (MDC frontmatter + pointer body)
++ *
++ * Claude, Codex, and Hermes receive this same policy through their INSTRUCTION
++ * projection (`CLAUDE.md` → `AGENTS.md`, `AGENTS.md`, `forge orient`) — adding
++ * always-on `.claude/rules/*.md` files would triple-deliver the same policy into
++ * every session as pure token bloat. See `lib/harness-capability-matrix.js`
++ * (the `rules` row) and `docs/reference/AGENT_SKILL_PARITY.md`.
++ *
++ * The generated `.cursor/rules/*.mdc` files are NOT committed — they are produced
++ * at `forge setup` from the canonical source (like the gitignored, setup-populated
++ * skill dirs). The structural drift gate regenerates them into a temp dir and
++ * asserts the render is deterministic and well-formed, rather than committing a
++ * mirror. Never hand-edit a generated `.mdc` — edit `rules/<name>.md`.
++ *
++ * Dependency-free (no YAML/markdown deps) so it runs under `bun test` and the
++ * release gates without pulling `@forge/*` workspaces.
++ *
++ * @module rules-sync
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++/** Canonical rule source directory (relative to a repo/package root). */
++const CANONICAL_RULES_DIR = 'rules';
++
++/** Cursor native rule surface (relative to a project root). */
++const CURSOR_RULES_DIR = '.cursor/rules';
++
++/** Canonical rule name → Cursor `.mdc` filename. */
++const CURSOR_RULE_FILES = {
++  workflow: 'forge-workflow.mdc',
++  tdd: 'tdd-enforcement.mdc',
++  security: 'security-scanning.mdc',
++  documentation: 'documentation.mdc',
++};
++
++const CANONICAL_RULE_NAMES = Object.keys(CURSOR_RULE_FILES);
++
++const GENERATED_NOTE =
++  'Generated by Forge from the canonical rules/ source. Do not edit — edit ' +
++  'rules/<name>.md and re-run `forge setup` (or the rules renderer).';
++
++/**
++ * Parse the minimal YAML frontmatter Forge authors in canonical rule files.
++ * Only flat `key: value` pairs are supported (values kept as raw strings so
++ * arrays/booleans round-trip verbatim into the rendered output).
++ *
++ * @param {string} raw
++ * @returns {{ meta: Record<string,string>, body: string }}
++ */
++function parseFrontmatter(raw) {
++  const norm = String(raw).replace(/\r\n/g, '\n');
++  if (!norm.startsWith('---\n')) {
++    return { meta: {}, body: norm };
++  }
++  const end = norm.indexOf('\n---\n', 4);
++  if (end === -1) {
++    return { meta: {}, body: norm };
++  }
++  const block = norm.slice(4, end);
++  const body = norm.slice(end + 5);
++  const meta = {};
++  for (const line of block.split('\n')) {
++    const m = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
++    if (m) meta[m[1]] = m[2].trim();
++  }
++  return { meta, body };
++}
++
++/** Body with leading blank lines removed and a single trailing newline. */
++function normalizeBody(body) {
++  return body.replace(/^\n+/, '').replace(/\s+$/, '') + '\n';
++}
++
++/**
++ * Read one canonical rule from disk into a render-ready descriptor.
++ *
++ * @param {string} sourceRoot - Repo/package root containing `rules/`.
++ * @param {string} name - Canonical rule name (stem of `rules/<name>.md`).
++ * @returns {{ name, description, globs, alwaysApply, body }}
++ */
++function readCanonicalRule(sourceRoot, name) {
++  const filePath = path.join(sourceRoot, CANONICAL_RULES_DIR, `${name}.md`);
++  const raw = fs.readFileSync(filePath, 'utf-8');
++  const { meta, body } = parseFrontmatter(raw);
++  return {
++    name,
++    description: meta.description || '""',
++    globs: meta.globs || '[]',
++    alwaysApply: meta.alwaysApply || 'false',
++    body: normalizeBody(body),
++  };
++}
++
++/**
++ * List all canonical rules (in stable CURSOR_RULE_FILES order).
++ *
++ * @param {string} sourceRoot - Repo/package root containing `rules/`.
++ * @param {{ only?: Iterable<string> }} [options]
++ * @returns {Array<ReturnType<typeof readCanonicalRule>>}
++ */
++function listCanonicalRules(sourceRoot, options = {}) {
++  const only = options.only ? new Set(options.only) : null;
++  return CANONICAL_RULE_NAMES
++    .filter((name) => !only || only.has(name))
++    .map((name) => readCanonicalRule(sourceRoot, name));
++}
++
++/** Render the Cursor native rule (`.mdc` — MDC frontmatter + pointer body). */
++function renderCursorRule(rule) {
++  const frontmatter = [
++    '---',
++    `description: ${rule.description}`,
++    `globs: ${rule.globs}`,
++    `alwaysApply: ${rule.alwaysApply}`,
++    '---',
++    '',
++    `<!-- ${GENERATED_NOTE} -->`,
++    '',
++    '',
++  ].join('\n');
++  return frontmatter + rule.body;
++}
++
++/**
++ * Render every canonical rule to Cursor `.mdc` content, keyed by output filename.
++ * Pure with respect to the target filesystem (only reads canonical `rules/`),
++ * so callers can diff two renders to prove determinism.
++ *
++ * @param {string} sourceRoot - Root containing canonical `rules/`.
++ * @param {{ only?: Iterable<string> }} [options]
++ * @returns {Record<string, string>} filename → rendered content
++ */
++function renderCursorRuleMap(sourceRoot, options = {}) {
++  const map = {};
++  for (const rule of listCanonicalRules(sourceRoot, options)) {
++    map[CURSOR_RULE_FILES[rule.name]] = renderCursorRule(rule);
++  }
++  return map;
++}
++
++/**
++ * Render canonical rules into a project's Cursor rule directory.
++ *
++ * @param {object} params
++ * @param {string} params.sourceRoot - Root containing canonical `rules/`.
++ * @param {string} params.targetRoot - Project root to write native rules under.
++ * @param {'cursor'} [params.harness='cursor'] - Only Cursor has a native rule surface.
++ * @param {boolean} [params.overwrite=false] - Overwrite existing files.
++ * @param {Iterable<string>} [params.only] - Restrict to these canonical names.
++ * @returns {{ written: string[], skipped: string[] }}
++ */
++function renderRulesForHarness({ sourceRoot, targetRoot, harness = 'cursor', overwrite = false, only }) {
++  if (harness !== 'cursor') {
++    throw new Error(
++      `No native rule surface for harness "${harness}"; Claude/Codex/Hermes ` +
++      'receive rule policy through their AGENTS.md instruction projection.',
++    );
++  }
++  const outDir = path.join(targetRoot, CURSOR_RULES_DIR);
++  fs.mkdirSync(outDir, { recursive: true });
++
++  const map = renderCursorRuleMap(sourceRoot, { only });
++  const written = [];
++  const skipped = [];
++  for (const [file, content] of Object.entries(map)) {
++    const outPath = path.join(outDir, file);
++    if (!overwrite && fs.existsSync(outPath)) {
++      skipped.push(file);
++      continue;
++    }
++    fs.writeFileSync(outPath, content, 'utf-8');
++    written.push(file);
++  }
++  return { written, skipped };
++}
++
++/**
++ * Structural drift gate for rules: regenerate into a temp dir and assert the
++ * render is deterministic and well-formed. No committed mirror is compared —
++ * the canonical `rules/` source is the only tracked artifact, and Cursor rules
++ * are setup-populated (like the gitignored skill dirs).
++ *
++ * @param {object} params
++ * @param {string} params.sourceRoot - Root containing canonical `rules/`.
++ * @returns {{ ok: boolean, issues: object[], files: string[] }}
++ */
++function checkRulesRenderDeterminism({ sourceRoot }) {
++  const issues = [];
++  const first = renderCursorRuleMap(sourceRoot);
++  const second = renderCursorRuleMap(sourceRoot);
++  const files = Object.keys(first);
++
++  for (const file of files) {
++    if (first[file] !== second[file]) {
++      issues.push({ file, status: 'non-deterministic' });
++      continue;
++    }
++    const content = first[file];
++    if (!content.startsWith('---\n')) {
++      issues.push({ file, status: 'missing-frontmatter' });
++    }
++    if (!content.includes('description:')) {
++      issues.push({ file, status: 'missing-description' });
++    }
++  }
++
++  // Every canonical rule must map to exactly one Cursor output file.
++  for (const name of CANONICAL_RULE_NAMES) {
++    if (!files.includes(CURSOR_RULE_FILES[name])) {
++      issues.push({ file: CURSOR_RULE_FILES[name], status: 'unrendered-canonical' });
++    }
++  }
++
++  return { ok: issues.length === 0, issues, files };
++}
++
++module.exports = {
++  CANONICAL_RULES_DIR,
++  CURSOR_RULES_DIR,
++  CURSOR_RULE_FILES,
++  CANONICAL_RULE_NAMES,
++  GENERATED_NOTE,
++  parseFrontmatter,
++  listCanonicalRules,
++  readCanonicalRule,
++  renderCursorRule,
++  renderCursorRuleMap,
++  renderRulesForHarness,
++  checkRulesRenderDeterminism,
++};
+diff --git a/package.json b/package.json
+index 60b5bd9b..eb7679d4 100644
+--- a/package.json
++++ b/package.json
+@@ -80,6 +80,7 @@
+   "files": [
+     "bin/",
+     "lib/",
++    "rules/",
+     "skills/",
+     ".claude/rules/",
+     ".claude/scripts/",
+@@ -109,8 +110,7 @@
+     "lefthook.yml",
+     "AGENTS.md",
+     "CLAUDE.md",
+-    ".mcp.json.example",
+-    ".cursorrules"
++    ".mcp.json.example"
+   ],
+   "dependencies": {
+     "@babel/parser": "^8.0.0",
+diff --git a/rules/documentation.md b/rules/documentation.md
+new file mode 100644
+index 00000000..b8aef8e5
+--- /dev/null
++++ b/rules/documentation.md
+@@ -0,0 +1,19 @@
++---
++description: "Progressive documentation standards"
++alwaysApply: false
++globs: []
++---
++
++# Documentation Standards
++
++Thin pointer — progressive documentation is part of every stage; the authoritative
++guidance lives in `AGENTS.md` and the `ship`/`verify` skills. Do not duplicate it here.
++
++Update documentation as you go, not at the end:
++
++- **/plan** — record design intent, rationale, and alternatives in the plan doc.
++- **/dev** — comment the *why* for non-obvious logic; keep JSDoc/TSDoc current.
++- **/ship** — update README/CHANGELOG for user-facing or breaking changes.
++- **/verify** — cross-check docs, validate examples, fix broken internal links.
++
++Keep terminology consistent, link to code, and remove stale docs promptly.
+diff --git a/rules/security.md b/rules/security.md
+new file mode 100644
+index 00000000..f1462fe0
+--- /dev/null
++++ b/rules/security.md
+@@ -0,0 +1,22 @@
++---
++description: "OWASP Top 10 security checks"
++alwaysApply: false
++globs: []
++---
++
++# Security Scanning Guidelines
++
++Thin pointer — full security analysis is documented in the plan design doc
++(OWASP Top 10 pass during `/plan`) and enforced in the `validate` skill. Do not
++duplicate the checklist here.
++
++For every feature, analyze the **OWASP Top 10 (2021)**: broken access control,
++cryptographic failures, injection (SQL/XSS/command), insecure design, security
++misconfiguration, vulnerable components, auth failures, integrity failures,
++logging/monitoring gaps, and SSRF.
++
++- Parameterize queries; sanitize output; validate all inputs.
++- Never store secrets or keys in code; reference env vars.
++- Run dependency audits (`npm audit`) and add security test cases.
++
++Load the `validate` skill and see `AGENTS.md` for the enforced gates.
+diff --git a/rules/tdd.md b/rules/tdd.md
+new file mode 100644
+index 00000000..c7028a15
+--- /dev/null
++++ b/rules/tdd.md
+@@ -0,0 +1,20 @@
++---
++description: "TDD patterns and enforcement"
++alwaysApply: false
++globs: ["**/*.ts", "**/*.js", "**/*.test.ts", "**/*.test.js"]
++---
++
++# TDD Enforcement
++
++Thin pointer — the full TDD procedure lives in the `dev` skill
++(`skills/dev/SKILL.md`) and `AGENTS.md`. Do not duplicate it here.
++
++**RED → GREEN → REFACTOR** is mandatory. No implementation without a failing
++test first:
++
++- **RED** — write the failing test first; run it and see it fail for the right reason.
++- **GREEN** — write the minimal code to pass; nothing beyond the test's scope.
++- **REFACTOR** — clean up while keeping tests green; commit each phase.
++
++Test behavior, not implementation. Cover edge cases, errors, and OWASP-relevant
++inputs. Load the `dev` skill for the enforced HARD-GATE loop and decision gate.
+diff --git a/rules/workflow.md b/rules/workflow.md
+new file mode 100644
+index 00000000..f44528bf
+--- /dev/null
++++ b/rules/workflow.md
+@@ -0,0 +1,27 @@
++---
++description: "When working with Forge workflow commands"
++alwaysApply: true
++globs: []
++---
++
++# Forge TDD Workflow Template
++
++TDD-first workflow. This rule is a **thin pointer** — the authoritative contract
++lives in `AGENTS.md`, and each stage's detailed steps live in its skill
++(`skills/<stage>/SKILL.md`). Do not duplicate policy here.
++
++Stages: `/plan` → `/dev` → `/validate` → `/ship` → `/review` → `/verify`
++(pre-merge gate before merge). `/status` and `/shepherd` are utilities, not stages.
++
++- `/plan` — design intent → research → branch + worktree + task list
++- `/dev` — subagent-driven TDD per task (RED → GREEN → REFACTOR)
++- `/validate` — type check, lint, tests, security (HARD-GATE on exit)
++- `/ship` — push and open a PR referencing the design doc
++- `/review` — resolve ALL PR feedback (CI, Greptile, SonarCloud)
++- `/verify` — post-merge health check on the default branch
++
++> **Pre-merge gate** (not a numbered stage): finish docs on the branch, confirm CI
++> is green, hand off the PR. Embedded in `/ship` and `/review`, not a command.
++
++Load the matching stage skill for the full procedure. Default stack: `bun` test
++runner, Git conventional commits, OWASP-aware. See `AGENTS.md` for the rest.
+diff --git a/test-env/validation/agent-validator.test.js b/test-env/validation/agent-validator.test.js
+index 43f348cf..ebc0fe21 100644
+--- a/test-env/validation/agent-validator.test.js
++++ b/test-env/validation/agent-validator.test.js
+@@ -122,9 +122,13 @@ describe('agent-validator', () => {
+       expect(Array.isArray(files)).toBeTruthy();
+       expect(files.length > 0).toBeTruthy();
+ 
+-      // Should include .cursorrules (not CURSOR.md)
+-      const hasCursorRules = files.some(f => f.path && f.path.includes('.cursorrules'));
+-      expect(hasCursorRules).toBeTruthy();
++      // .cursorrules was dropped as a Forge-managed surface: Cursor reads AGENTS.md
++      // natively and rules render to .cursor/rules/*.mdc. The expected files now come
++      // from the plugin's directories (.cursor/rules, .cursor/skills), not a rootConfig.
++      const hasCursorRulesDir = files.some(f => f.path && f.path.includes('.cursor/rules'));
++      expect(hasCursorRulesDir).toBeTruthy();
++      const hasLegacyRootConfig = files.some(f => f.path === '.cursorrules');
++      expect(hasLegacyRootConfig).toBe(false);
+     });
+ 
+     test('should return expected files for all supported agents', () => {
+diff --git a/test/docs-consistency.test.js b/test/docs-consistency.test.js
+index d31cb070..18248a07 100644
+--- a/test/docs-consistency.test.js
++++ b/test/docs-consistency.test.js
+@@ -101,8 +101,9 @@ describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {
+   it('documents the skills-first stage graph follow-up', () => {
+     expect(parity).toContain('Required Follow-Up: Skills-First Stage Graph');
+     expect(parity).toContain('Tracked as `forge-wj36`');
+-    expect(parity).toContain('Claude commands should become compatibility shims');
+-    expect(parity).toContain('Cursor Agent Skills are not proven in the W0 fixture');
++    // Commands were REMOVED in A0d (not "shims") — the stage skill is the authority.
++    expect(parity).toContain('the stage skill — not a command shim — is the workflow authority');
++    expect(parity).toContain('Cursor Agent Skill files are generated');
+   });
+ 
+   it('documents the machine-readable capability matrix evidence command', () => {
+diff --git a/test/harness-capability-matrix.test.js b/test/harness-capability-matrix.test.js
+index ea38767e..7d5c7003 100644
+--- a/test/harness-capability-matrix.test.js
++++ b/test/harness-capability-matrix.test.js
+@@ -94,14 +94,25 @@ describe('skills-first stage graph', () => {
+     }));
+   });
+ 
+-  test('keeps Claude commands as shims instead of canonical workflow authority', () => {
++  test('renders Claude stages skill-first with NO command shim (commands removed in A0d)', () => {
+     const graph = getSkillsFirstStageGraph();
+ 
+     for (const stage of graph.stages) {
+-      expect(stage.renderTargets.claude.commandShim).toEqual({
+-        path: `.claude/commands/${stage.id}.md`,
+-        pointsTo: `.claude/skills/${stage.id}/SKILL.md`,
+-        shimOnly: true,
++      // The legacy `.claude/commands/` surface was removed; the stage SKILL is
++      // the authority. Emitting a command shim contradicted the commands
++      // capability row (which records Claude commands as `removed`).
++      expect(stage.renderTargets.claude.skill).toBe(`.claude/skills/${stage.id}/SKILL.md`);
++      expect(stage.renderTargets.claude.commandShim).toBeUndefined();
++    }
++  });
++
++  test('models Hermes stages as CLI-consumed (no per-stage skill file)', () => {
++    const graph = getSkillsFirstStageGraph();
++
++    for (const stage of graph.stages) {
++      expect(stage.renderTargets.hermes).toEqual({
++        cliConsumed: true,
++        via: 'forge orient / forge recap',
+       });
+     }
+   });
+diff --git a/test/mcp-config-renderer.test.js b/test/mcp-config-renderer.test.js
+new file mode 100644
+index 00000000..c892f2a1
+--- /dev/null
++++ b/test/mcp-config-renderer.test.js
+@@ -0,0 +1,114 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  validateDescriptor,
++  mergeJsonMcp,
++  mergeCodexToml,
++  renderMcpConfig,
++} = require('../lib/mcp-config-renderer');
++
++// The frozen generic descriptor shape the memory feature will supply.
++const descriptor = {
++  name: 'demo-memory',
++  transport: 'stdio',
++  command: 'npx',
++  args: ['-y', '@example/demo-mcp@latest'],
++  envRefs: { DEMO_API_KEY: '${DEMO_API_KEY}' },
++};
++
++function tmp() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-mcp-'));
++}
++
++describe('mcp config renderer — generic descriptor contract', () => {
++  test('rejects literal secrets in envRefs (references only)', () => {
++    expect(() =>
++      validateDescriptor({ ...descriptor, envRefs: { DEMO_API_KEY: 'sk-live-abc123' } }),
++    ).toThrow(/reference string/);
++  });
++
++  test('accepts the locked descriptor shape', () => {
++    const d = validateDescriptor(descriptor);
++    expect(d.name).toBe('demo-memory');
++    expect(d.transport).toBe('stdio');
++    expect(d.args).toEqual(['-y', '@example/demo-mcp@latest']);
++    expect(d.envRefs.DEMO_API_KEY).toBe('${DEMO_API_KEY}');
++  });
++
++  test('Claude .mcp.json: merge preserves pre-existing servers, writes env refs', () => {
++    const root = tmp();
++    try {
++      // Pre-existing user config with an unrelated server.
++      fs.writeFileSync(
++        path.join(root, '.mcp.json'),
++        JSON.stringify({ mcpServers: { context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp@latest'] } } }, null, 2),
++      );
++      renderMcpConfig({ harness: 'claude', targetRoot: root, descriptors: [descriptor] });
++      const cfg = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf-8'));
++      expect(cfg.mcpServers.context7).toBeDefined(); // preserved
++      expect(cfg.mcpServers['demo-memory'].command).toBe('npx');
++      expect(cfg.mcpServers['demo-memory'].env.DEMO_API_KEY).toBe('${DEMO_API_KEY}');
++      // env ref, not a literal secret
++      expect(fs.readFileSync(path.join(root, '.mcp.json'), 'utf-8')).not.toContain('sk-');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('Cursor .cursor/mcp.json: created under .cursor and merges', () => {
++    const root = tmp();
++    try {
++      const { file } = renderMcpConfig({ harness: 'cursor', targetRoot: root, descriptors: [descriptor] });
++      expect(file.endsWith(path.join('.cursor', 'mcp.json'))).toBe(true);
++      const cfg = JSON.parse(fs.readFileSync(file, 'utf-8'));
++      expect(cfg.mcpServers['demo-memory'].args).toEqual(['-y', '@example/demo-mcp@latest']);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('Codex config.toml: merge preserves other config + appends server table', () => {
++    const root = tmp();
++    try {
++      fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
++      fs.writeFileSync(
++        path.join(root, '.codex/config.toml'),
++        'model = "gpt-5"\n\n[mcp_servers.existing]\ncommand = "foo"\nargs = []\n',
++      );
++      renderMcpConfig({ harness: 'codex', targetRoot: root, descriptors: [descriptor] });
++      const toml = fs.readFileSync(path.join(root, '.codex/config.toml'), 'utf-8');
++      expect(toml).toContain('model = "gpt-5"'); // preserved
++      expect(toml).toContain('[mcp_servers.existing]'); // preserved
++      expect(toml).toContain('[mcp_servers.demo-memory]');
++      expect(toml).toContain('[mcp_servers.demo-memory.env]');
++      expect(toml).toContain('DEMO_API_KEY = "${DEMO_API_KEY}"');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('all three renderers are idempotent (render twice = same bytes)', () => {
++    for (const harness of ['claude', 'cursor', 'codex']) {
++      const root = tmp();
++      try {
++        renderMcpConfig({ harness, targetRoot: root, descriptors: [descriptor] });
++        const file = renderMcpConfig({ harness, targetRoot: root, descriptors: [descriptor] }).file;
++        const once = fs.readFileSync(file, 'utf-8');
++        renderMcpConfig({ harness, targetRoot: root, descriptors: [descriptor] });
++        expect(fs.readFileSync(file, 'utf-8')).toBe(once);
++      } finally {
++        fs.rmSync(root, { recursive: true, force: true });
++      }
++    }
++  });
++
++  test('merge helpers upsert by name (no duplicate entries)', () => {
++    const json = mergeJsonMcp(mergeJsonMcp('', [descriptor]), [descriptor]);
++    expect(Object.keys(JSON.parse(json).mcpServers)).toEqual(['demo-memory']);
++    const toml = mergeCodexToml(mergeCodexToml('', [descriptor]), [descriptor]);
++    expect((toml.match(/\[mcp_servers\.demo-memory\]/g) || []).length).toBe(1);
++  });
++});
+diff --git a/test/release-readiness.test.js b/test/release-readiness.test.js
+index 01e747a9..8a960fb1 100644
+--- a/test/release-readiness.test.js
++++ b/test/release-readiness.test.js
+@@ -226,24 +226,10 @@ describe('release readiness bd call-site audit', () => {
+     expect(hotPathBlocker.evidence.some(item => item.path === '.cursor/rules/permissions-guidance.mdc')).toBe(true);
+   });
+ 
+-  test('includes Cursor root config in the default hot-path scan', () => {
+-    const root = makeRepo();
+-    writeRepoAgentPluginManifests(root);
+-    writeFile(root, '.cursorrules', 'Run `bd init` before using Cursor commands.\n');
+-
+-    const audit = auditBdCallSites(root);
+-    const report = buildReadinessReport(root, { target: '0.1.0' });
+-    const hotPathBlocker = report.blockers.find(blocker => blocker.id === 'bd-hot-path-issue-commands');
+-
+-    expect(audit.groups.docs.files).toEqual([
+-      expect.objectContaining({
+-        path: '.cursorrules',
+-        count: 1,
+-      }),
+-    ]);
+-    expect(hotPathBlocker).toBeDefined();
+-    expect(hotPathBlocker.evidence.some(item => item.path === '.cursorrules')).toBe(true);
+-  });
++  // NOTE: `.cursorrules` was dropped as a Forge-managed surface (Cursor reads
++  // AGENTS.md natively + `.cursor/rules/*.mdc`). Cursor instruction scanning is now
++  // covered by the `.cursor/rules/*.mdc` assertions in the test above; the legacy
++  // `.cursorrules` hot-path test was removed with that surface.
+ 
+   test('derives default hot-path scan roots from agent plugin manifests', () => {
+     const root = makeRepo();
+diff --git a/test/rules-sync.test.js b/test/rules-sync.test.js
+new file mode 100644
+index 00000000..ad05c1fd
+--- /dev/null
++++ b/test/rules-sync.test.js
+@@ -0,0 +1,113 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  CURSOR_RULE_FILES,
++  CANONICAL_RULE_NAMES,
++  listCanonicalRules,
++  renderCursorRule,
++  renderCursorRuleMap,
++  renderRulesForHarness,
++  checkRulesRenderDeterminism,
++} = require('../lib/rules-sync');
++
++const repoRoot = path.resolve(__dirname, '..');
++
++// ─── rule drift detection (one canonical source → Cursor native rule surface) ──
++//
++// Canonical policy rules live in `rules/` as THIN POINTERS. Only Cursor has a
++// first-class native rule surface, so only `.cursor/rules/*.mdc` is rendered.
++// Instead of committing mirrors (which would fight the gitignored setup-dir
++// design and bloat the repo), the gate regenerates into a temp dir and asserts
++// the render is deterministic + well-formed. Claude/Codex/Hermes get the same
++// policy through their AGENTS.md instruction projection — NOT always-on rule
++// files, which would triple-deliver the policy as token bloat.
++
++describe('rules sync drift detection', () => {
++  test('Cursor rule render is deterministic and well-formed', () => {
++    const result = checkRulesRenderDeterminism({ sourceRoot: repoRoot });
++    if (!result.ok) {
++      throw new Error(`Rule render issues:\n${JSON.stringify(result.issues, null, 2)}`);
++    }
++    expect(result.issues).toHaveLength(0);
++  });
++
++  test('canonical source defines the four policy rules', () => {
++    expect(CANONICAL_RULE_NAMES).toEqual(['workflow', 'tdd', 'security', 'documentation']);
++    const rules = listCanonicalRules(repoRoot);
++    expect(rules.map((r) => r.name).sort()).toEqual(
++      ['documentation', 'security', 'tdd', 'workflow'],
++    );
++  });
++
++  test('regenerate-into-temp is byte-identical across runs (drift-free)', () => {
++    const a = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rules-a-'));
++    const b = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rules-b-'));
++    try {
++      renderRulesForHarness({ sourceRoot: repoRoot, targetRoot: a, overwrite: true });
++      renderRulesForHarness({ sourceRoot: repoRoot, targetRoot: b, overwrite: true });
++      for (const file of Object.values(CURSOR_RULE_FILES)) {
++        const fa = path.join(a, '.cursor/rules', file);
++        const fb = path.join(b, '.cursor/rules', file);
++        expect(fs.existsSync(fa)).toBe(true);
++        expect(fs.readFileSync(fa, 'utf-8')).toBe(fs.readFileSync(fb, 'utf-8'));
++      }
++    } finally {
++      fs.rmSync(a, { recursive: true, force: true });
++      fs.rmSync(b, { recursive: true, force: true });
++    }
++  });
++
++  test('only Cursor has a native rule renderer (Claude/Codex/Hermes use AGENTS.md)', () => {
++    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-rules-'));
++    try {
++      for (const harness of ['claude', 'codex', 'hermes']) {
++        expect(() =>
++          renderRulesForHarness({ sourceRoot: repoRoot, targetRoot: tmp, harness }),
++        ).toThrow(/native rule surface/);
++      }
++    } finally {
++      fs.rmSync(tmp, { recursive: true, force: true });
++    }
++  });
++
++  test('canonical rules are THIN POINTERS, not full policy bodies', () => {
++    for (const rule of listCanonicalRules(repoRoot)) {
++      const lines = rule.body.split('\n').length;
++      // A thin pointer is short; a re-bloated 90-line policy body would fail here.
++      expect(lines).toBeLessThan(40);
++      // Each rule must point at the authoritative source rather than duplicate it.
++      expect(/AGENTS\.md|skill/i.test(rule.body)).toBe(true);
++    }
++  });
++
++  test('Claude does NOT get always-on policy rule files (no token bloat)', () => {
++    for (const name of ['workflow', 'tdd', 'security', 'documentation']) {
++      expect(fs.existsSync(path.join(repoRoot, '.claude/rules', `${name}.md`))).toBe(false);
++    }
++  });
++
++  test('generated Cursor rules are not committed (setup-populated only)', () => {
++    for (const file of Object.values(CURSOR_RULE_FILES)) {
++      expect(fs.existsSync(path.join(repoRoot, '.cursor/rules', file))).toBe(false);
++    }
++  });
++
++  test('workflow rule carries the tokens Cursor requires', () => {
++    const [workflow] = listCanonicalRules(repoRoot, { only: ['workflow'] });
++    const cursor = renderCursorRule(workflow);
++    for (const token of ['/status', '/plan', '/dev', '/validate', '/ship', '/review', '/verify']) {
++      expect(cursor.includes(token)).toBe(true);
++    }
++    expect(cursor.includes('alwaysApply: true')).toBe(true);
++    expect(cursor.includes('/premerge')).toBe(false);
++    expect(/pre-merge gate/i.test(cursor)).toBe(true);
++  });
++
++  test('renderCursorRuleMap covers every canonical rule exactly once', () => {
++    const map = renderCursorRuleMap(repoRoot);
++    expect(Object.keys(map).sort()).toEqual(Object.values(CURSOR_RULE_FILES).sort());
++  });
++});
+diff --git a/test/structural/skills-sync-drift.test.js b/test/structural/skills-sync-drift.test.js
+index e01cbb3f..a5495baf 100644
+--- a/test/structural/skills-sync-drift.test.js
++++ b/test/structural/skills-sync-drift.test.js
+@@ -1,7 +1,15 @@
+ const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
+ const path = require('node:path');
+ 
+-const { checkSkillsSync } = require('../../lib/skills-sync');
++const {
++  checkSkillsSync,
++  populateAgentSkills,
++  listCanonicalSkills,
++  diffSkillDir,
++  AGENT_SKILL_DIRS,
++} = require('../../lib/skills-sync');
+ 
+ const repoRoot = path.resolve(__dirname, '../..');
+ 
+@@ -34,3 +42,42 @@ describe('skills sync drift detection', () => {
+     expect(result.checkedAgents).toContain('.codex/skills');
+   });
+ });
++
++// ─── all four harnesses render correctly from source (regenerate-into-temp) ────
++//
++// Only `.codex/skills` is committed as the sentinel mirror. Rather than committing
++// `.claude/.cursor/.hermes` skill mirrors (which fights the gitignored,
++// setup-populated design and bloats the repo), we prove drift-freedom for ALL
++// FOUR harnesses by regenerating each into a temp dir from the canonical source
++// and asserting a byte-identical render. This guards Claude/Cursor/Hermes from
++// silently rotting even though their dirs are not committed.
++
++describe('all harness skill dirs render from canonical source', () => {
++  test('AGENT_SKILL_DIRS covers all four supported harnesses', () => {
++    expect(AGENT_SKILL_DIRS).toEqual([
++      '.claude/skills',
++      '.codex/skills',
++      '.cursor/skills',
++      '.hermes/skills',
++    ]);
++  });
++
++  test('each harness dir regenerates byte-identically from skills/', () => {
++    const canonical = listCanonicalSkills(repoRoot);
++    expect(canonical.length).toBeGreaterThan(0);
++
++    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-'));
++    try {
++      for (const rel of AGENT_SKILL_DIRS) {
++        const targetSkillsDir = path.join(tmp, rel);
++        populateAgentSkills({ sourceRoot: repoRoot, targetSkillsDir, clean: true });
++        for (const skill of canonical) {
++          const drift = diffSkillDir(skill.sourcePath, path.join(targetSkillsDir, skill.name));
++          expect(drift).toEqual([]);
++        }
++      }
++    } finally {
++      fs.rmSync(tmp, { recursive: true, force: true });
++    }
++  });
++});
+-- 
+2.51.0.windows.1
+

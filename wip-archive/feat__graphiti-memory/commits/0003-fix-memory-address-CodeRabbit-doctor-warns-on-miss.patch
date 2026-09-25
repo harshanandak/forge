@@ -1,0 +1,109 @@
+From 5d51da0df90cf8ed5561f09358e72ebe30cb8ca5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 15:00:56 +0530
+Subject: [PATCH] =?UTF-8?q?fix(memory):=20address=20CodeRabbit=20=E2=80=94?=
+ =?UTF-8?q?=20doctor=20warns=20on=20missing=20MCP=20server;=20Neo4j=20cred?=
+ =?UTF-8?q?s?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- doctor.js: memory-backend check now reports ok:serverPathExists for the
+  graphiti backend, so a missing MCP server renders as `!` (warn) not a
+  misleading `✓`. Overall doctor exit is unaffected (governed solely by the
+  filesystem-class check), so an uninstalled opt-in server warns without
+  failing `forge doctor`. Test locks both the present (ok) and missing
+  (warn, report stays ok) cases.
+- memory-backends.md: Neo4j alternate backend also needs NEO4J_USER and
+  NEO4J_PASSWORD, not just NEO4J_URI.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/guides/memory-backends.md      |  3 ++-
+ lib/commands/doctor.js              |  7 ++++++-
+ test/commands/doctor-memory.test.js | 29 ++++++++++++++++++++++++++---
+ 3 files changed, 34 insertions(+), 5 deletions(-)
+
+diff --git a/docs/guides/memory-backends.md b/docs/guides/memory-backends.md
+index 6de1fdfb..d19ad68c 100644
+--- a/docs/guides/memory-backends.md
++++ b/docs/guides/memory-backends.md
+@@ -124,7 +124,8 @@ Set `memory.graphiti.mcpServerPath` in `.forge/config.yaml` to the checkout's
+ 
+ - **Graph DB:** FalkorDB (Docker, default) · FalkorDB-lite (embedded, Python
+   3.12+, no server) · Neo4j (production). Set `memory.graphiti.graphDb` +
+-  `dbUri` accordingly (Neo4j uses `NEO4J_URI`).
++  `dbUri` accordingly (Neo4j uses `NEO4J_URI` plus `NEO4J_USER` and
++  `NEO4J_PASSWORD`).
+ - **LLM/embedder:** OpenAI (best quality) · any OpenAI-compatible endpoint
+   (OpenRouter, DeepSeek, Together) · **Ollama** for a fully local/offline stack
+   (`ollama pull deepseek-r1:7b` + `ollama pull nomic-embed-text`). Set
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index a4890c75..22f70390 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -43,8 +43,13 @@ function buildMemoryCheck(projectRoot, env) {
+ 			? `mcp_server present at ${serverPath}`
+ 			: `mcp_server path not found locally (${serverPath}); run it before agents can use graph memory`;
+ 		return {
++			// Reflect reality in the line symbol: a graphiti backend whose MCP server
++			// isn't present yet renders as `!` (warn), not a misleading `✓`. This does
++			// NOT affect the overall doctor exit — report.ok is governed solely by the
++			// filesystem-class check (see buildDoctorReport), so an uninstalled opt-in
++			// memory server warns without failing `forge doctor`.
+ 			id: 'memory-backend',
+-			ok: true,
++			ok: serverPathExists,
+ 			backend,
+ 			serverPathExists,
+ 			detail: `memory backend: graphiti — served to agents via the graphiti-memory MCP server; ${reach}`,
+diff --git a/test/commands/doctor-memory.test.js b/test/commands/doctor-memory.test.js
+index ac122554..1bb3af4e 100644
+--- a/test/commands/doctor-memory.test.js
++++ b/test/commands/doctor-memory.test.js
+@@ -82,16 +82,39 @@ describe('forge doctor: memory backend check', () => {
+     expect(report.ok).toBe(fsCheck.ok);
+   });
+ 
+-  test('graphiti fully configured reports ok and the configured server path', () => {
++  test('graphiti configured with an existing server path reports ok', () => {
+     const projectRoot = makeProjectRoot();
++    // Point at a real, existing directory so the presence check passes.
++    const serverDir = path.join(projectRoot, 'mcp_server');
++    fs.mkdirSync(serverDir, { recursive: true });
++    const yamlPath = serverDir.replace(/\\/g, '/'); // forward-slash for clean YAML on Windows
+     writeConfig(
+       projectRoot,
+-      'memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: /opt/graphiti/mcp_server\n',
++      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${yamlPath}\n`,
+     );
+     const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
+     const check = memoryCheck(report);
+     expect(check.backend).toBe('graphiti');
++    expect(check.serverPathExists).toBe(true);
+     expect(check.ok).toBe(true);
+-    expect(check.detail).toContain('/opt/graphiti/mcp_server');
++    expect(check.detail).toContain(yamlPath);
++  });
++
++  test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {
++    const projectRoot = makeProjectRoot();
++    // mcpServerPath is set (config is valid) but the directory does not exist on disk.
++    const missing = `${projectRoot.replace(/\\/g, '/')}/no-such-mcp-server`;
++    writeConfig(
++      projectRoot,
++      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${missing}\n`,
++    );
++    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
++    const check = memoryCheck(report);
++    expect(check.backend).toBe('graphiti');
++    expect(check.serverPathExists).toBe(false);
++    // A missing MCP server renders as a warning (ok:false), not a misleading ✓ …
++    expect(check.ok).toBe(false);
++    // … but must never drag the overall doctor report to failure (fs-class governs).
++    expect(report.ok).toBe(true);
+   });
+ });
+-- 
+2.51.0.windows.1
+

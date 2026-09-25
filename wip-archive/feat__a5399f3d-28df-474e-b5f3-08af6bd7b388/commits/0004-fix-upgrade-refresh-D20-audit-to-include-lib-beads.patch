@@ -1,0 +1,49 @@
+From f3aa7398cef70d09a62064085062cd6d8f0b10f1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 23:56:05 +0530
+Subject: [PATCH] fix(upgrade): refresh D20 audit to include lib/beads-nudge.js
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The prior regen ran while lib/beads-nudge.js was still untracked, so the
+git-tracked-only bd call-site census (release-readiness.js) skipped it
+and the committed kill-list went stale at head (runtime 249/34, no
+beads-nudge entry) → the d20-audit-artifact-current blocker fired on CI.
+
+Regenerated from the canonical generator with the FINAL tree fully
+git-tracked: runtime is now 252/35 and the artifact records the
+lib/beads-nudge.js entry, matching a fresh scan at head byte-for-byte.
+
+Refs: a5399f3d-28df-474e-b5f3-08af6bd7b388
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                                 | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index d8d6e81f..51574ff2 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+ | command | 71 | 8 |
+-| runtime | 249 | 34 |
++| runtime | 252 | 35 |
+ | docs | 395 | 47 |
+ | skills | 1 | 1 |
+ | hooks | 0 | 0 |
+@@ -44,6 +44,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 148 (bd), 214 (bd), 240 (bd)
+ - [ ] lib/beads-detect.js (2)
+   - lines: 29 (.beads), 38 (.beads)
++- [ ] lib/beads-nudge.js (3)
++  - lines: 18 (.beads), 20 (bd), 75 (.beads)
+ - [ ] lib/beads-setup.js (41)
+   - lines: 17 (.beads), 18 (dolt), 19 (.beads), 76 (.beads), 78 (.beads), 86 (.beads), 94 (dolt), 102 (.beads, dolt), 104 (.beads), 109 (.beads), 117 (dolt), 118 (dolt), 160 (.beads), 161 (dolt), 162 (.beads), 187 (.beads), 188 (dolt), 189 (.beads), 237 (.beads), 238 (.beads), 241 (bd, dolt), 244 (bd), 250 (.beads), 262 (bd), 278 (dolt), 286 (.beads), 312 (.beads), 319 (dolt), 323 (bd), 411 (bd), 417 (bd), 424 (bd), 425 (bd), 430 (.beads, dolt), 432 (bd), 440 (bd), 441 (bd), 476 (.beads, dolt), 480 (.beads), 487 (bd), 496 (bd)
+ - [ ] lib/beads-sync-scaffold.js (3)
+-- 
+2.51.0.windows.1
+

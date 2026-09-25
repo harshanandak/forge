@@ -1,0 +1,172 @@
+From 240a6d5b896fc7dd6e03f306be4e49b489c79ea1 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 16:18:37 +0530
+Subject: [PATCH] fix: fail closed on unfetched upstream and resolve Sonar
+ smells
+
+---
+ lib/base-remote.js                    | 28 ++++++++++++++++++---------
+ scripts/protected-state-check.js      | 14 +++++++++++++-
+ test/base-remote.test.js              |  7 +++++++
+ test/protected-state-surfaces.test.js | 17 ++++++++++++++++
+ 4 files changed, 56 insertions(+), 10 deletions(-)
+
+diff --git a/lib/base-remote.js b/lib/base-remote.js
+index 3865b139..09853d7f 100644
+--- a/lib/base-remote.js
++++ b/lib/base-remote.js
+@@ -23,10 +23,13 @@ function getQuietProbeOptions(cwd) {
+  *
+  * @param {Function} [exec] - Injected execFileSync.
+  * @param {string} [cwd] - Repository directory.
+- * @param {string} remoteName - Remote to probe.
++ * @param {string} [remoteName] - Remote to probe.
+  * @returns {string|null} Fully-qualified ref, or null.
+  */
+-function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remoteName) {
++function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remoteName = undefined) {
++	if (!remoteName) {
++		return null;
++	}
+ 	try {
+ 		const symbolicRef = exec('git', ['symbolic-ref', `refs/remotes/${remoteName}/HEAD`], getQuietProbeOptions(cwd)).trim();
+ 		if (!symbolicRef) {
+@@ -34,7 +37,8 @@ function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remot
+ 		}
+ 		exec('git', ['rev-parse', '--verify', symbolicRef], getQuietProbeOptions(cwd));
+ 		return symbolicRef;
+-	} catch (_error) {
++	} catch (_error) { // NOSONAR S2486 - intentional: missing ref is the expected probe failure
++		void _error;
+ 		return null;
+ 	}
+ }
+@@ -45,10 +49,13 @@ function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remot
+  *
+  * @param {Function} [exec] - Injected execFileSync.
+  * @param {string} [cwd] - Repository directory.
+- * @param {string} remoteName - Remote to probe.
++ * @param {string} [remoteName] - Remote to probe.
+  * @returns {boolean} Whether a usable tracking base exists.
+  */
+-function remoteHasTrackingBase(exec = execFileSync, cwd = process.cwd(), remoteName) {
++function remoteHasTrackingBase(exec = execFileSync, cwd = process.cwd(), remoteName = undefined) {
++	if (!remoteName) {
++		return false;
++	}
+ 	if (resolveRemoteHeadTarget(exec, cwd, remoteName)) {
+ 		return true;
+ 	}
+@@ -57,7 +64,8 @@ function remoteHasTrackingBase(exec = execFileSync, cwd = process.cwd(), remoteN
+ 		try {
+ 			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietProbeOptions(cwd));
+ 			return true;
+-		} catch (_error) {
++		} catch (_error) { // NOSONAR S2486 - intentional: speculative probe, try next candidate
++			void _error;
+ 			// Probe next candidate.
+ 		}
+ 	}
+@@ -81,7 +89,8 @@ function resolveBaseRemote(exec = execFileSync, cwd = process.cwd()) {
+ 			if (remoteHasTrackingBase(exec, cwd, candidate)) {
+ 				return candidate;
+ 			}
+-		} catch (_error) {
++		} catch (_error) { // NOSONAR S2486 - intentional: speculative probe, try next candidate
++			void _error;
+ 			// Probe next candidate.
+ 		}
+ 	}
+@@ -101,7 +110,7 @@ function resolveBaseBranch(exec = execFileSync, cwd = process.cwd(), remoteName
+ 	const symbolicRef = resolveRemoteHeadTarget(exec, cwd, remoteName);
+ 	if (symbolicRef) {
+ 		const match = new RegExp(`^refs/remotes/${remoteName}/(.+)$`).exec(symbolicRef);
+-		if (match && match[1]) {
++		if (match?.[1]) {
+ 			return match[1];
+ 		}
+ 	}
+@@ -110,7 +119,8 @@ function resolveBaseBranch(exec = execFileSync, cwd = process.cwd(), remoteName
+ 		try {
+ 			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietProbeOptions(cwd));
+ 			return candidate;
+-		} catch (_error) {
++		} catch (_error) { // NOSONAR S2486 - intentional: speculative probe, try next candidate
++			void _error;
+ 			// Probe next candidate.
+ 		}
+ 	}
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 16d0ba06..b8eea4e7 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -228,9 +228,21 @@ function baseRemoteProbe(_command, args) {
+ // fork-style checkout the feature branch tracks the contributor-owned fork, and
+ // trusting it would let a change merged from the fork's default branch pass as
+ // "already published on the base" when it never reached the official repo.
++// Fail closed when the official `upstream` remote is configured but has no
++// fetched tracking refs: falling through to `origin` would change trust domains
++// and let fork-only content pass as already published upstream.
+ // Returns a fully-qualified ref name, or null when it cannot be established.
+ function canonicalUpstreamRef() {
+-	const remote = resolveBaseRemote(baseRemoteProbe, process.cwd());
++	const cwd = process.cwd();
++	const remote = resolveBaseRemote(baseRemoteProbe, cwd);
++	if (remote === 'origin') {
++		try {
++			gitCapture(['remote', 'get-url', 'upstream']);
++			return null;
++		} catch {
++			// No upstream configured; origin fallback is legitimate.
++		}
++	}
+ 	try {
+ 		const remotes = gitCapture(['remote']).split(/\r?\n/).map(line => line.trim());
+ 		if (!remotes.includes(remote)) return null;
+diff --git a/test/base-remote.test.js b/test/base-remote.test.js
+index d96bde98..1764d80d 100644
+--- a/test/base-remote.test.js
++++ b/test/base-remote.test.js
+@@ -86,6 +86,13 @@ describe('lib/base-remote', () => {
+ 		expect(remoteHasTrackingBase(exec, '/repo', 'origin')).toBe(false);
+ 	});
+ 
++	test('fails closed when the remote name is missing', () => {
++		const exec = fakeExec({});
++
++		expect(resolveRemoteHeadTarget(exec, '/repo', undefined)).toBeNull();
++		expect(remoteHasTrackingBase(exec, '/repo', undefined)).toBe(false);
++	});
++
+ 	// One implementation, two surfaces: `/ship` picks the PR base with these, and
+ 	// scripts/protected-state-check.js resolves merge provenance with them. If they
+ 	// ever diverge, a fork-published protected change could pass the ancestry gate.
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 95285694..f41367b9 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -876,4 +876,21 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+ 	}, 60_000);
++
++	test('blocks a fork-only merge when upstream is configured but has no fetched tracking refs', () => {
++		const root = createTempDir();
++		try {
++			const work = initForkRepo(root);
++			startForkMerge(work, { publishUpstream: false });
++			// Simulate an unfetched official remote: upstream exists but has no
++			// tracking refs, so falling through to origin would change trust domains.
++			runGit(work, ['remote', 'set-head', 'upstream', '-d']);
++			runGit(work, ['update-ref', '-d', 'refs/remotes/upstream/master']);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
+ });
+-- 
+2.51.0.windows.1
+

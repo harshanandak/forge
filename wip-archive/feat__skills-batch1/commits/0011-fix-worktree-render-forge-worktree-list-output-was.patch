@@ -1,0 +1,82 @@
+From 9108ae5daaf5d13ebe7e276d533561c12827752f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 17:02:08 +0530
+Subject: [PATCH] fix(worktree): render 'forge worktree list' output (was a
+ silent no-op)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Round-8 (Codex): handleList returned {worktrees} with no 'output', and the CLI
+dispatcher (bin/forge.js:4155) prints only result.output — so the documented
+inspection step 'forge worktree list' exited 0 and displayed nothing.
+- handleList now renders the registry (path | branch | issue | state) into
+  result.output; keeps the worktrees array for programmatic/JSON callers.
+- behavioral audit of BOTH skills' documented commands: clean --dry-run,
+  control status, gate status/check all render; only worktree list was silent.
+  create/remove are side-effect commands (quiet success, unchanged).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/worktree.js               | 23 ++++++++++++++++++++++-
+ test/commands/worktree-linkage.test.js |  5 +++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/worktree.js b/lib/commands/worktree.js
+index a2a7f6d0..2ccfa3d3 100644
+--- a/lib/commands/worktree.js
++++ b/lib/commands/worktree.js
+@@ -406,12 +406,33 @@ async function handleList(projectRoot, opts) {
+       const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+       driver = (await buildMigratedKernelIssueDeps({ projectRoot })).kernelDriver;
+     }
+-    return { success: true, worktrees: driver.listWorktrees({}) };
++    const worktrees = driver.listWorktrees({});
++    return { success: true, worktrees, output: renderWorktreeList(worktrees) };
+   } catch (error) {
+     return { success: false, error: error.message, worktrees: [] };
+   }
+ }
+ 
++/**
++ * Render the worktree registry as human-readable text for the CLI. The dispatcher
++ * prints only `result.output`, so without this `forge worktree list` is silent.
++ * @param {Array<object>} worktrees - Rows from driver.listWorktrees()
++ * @returns {string} One line per worktree (path, branch, linked issue, state).
++ */
++function renderWorktreeList(worktrees) {
++  if (!Array.isArray(worktrees) || worktrees.length === 0) {
++    return 'No worktrees registered.';
++  }
++  const lines = worktrees.map((w) => {
++    const parts = [w.path || '(unknown path)'];
++    if (w.branch) parts.push(`branch: ${w.branch}`);
++    if (w.issue_id) parts.push(`issue: ${w.issue_id}`);
++    if (w.state) parts.push(w.state);
++    return `  ${parts.join('  |  ')}`;
++  });
++  return `Registered worktrees (${worktrees.length}):\n${lines.join('\n')}`;
++}
++
+ /**
+  * Handle the "remove" subcommand.
+  * @param {string} slug - Worktree slug
+diff --git a/test/commands/worktree-linkage.test.js b/test/commands/worktree-linkage.test.js
+index 7d0a3617..0178b256 100644
+--- a/test/commands/worktree-linkage.test.js
++++ b/test/commands/worktree-linkage.test.js
+@@ -120,6 +120,11 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', ()
+     expect(list.success).toBe(true);
+     expect(Array.isArray(list.worktrees)).toBe(true);
+     expect(list.worktrees.some(w => w.issue_id === 'forge-linktest' && w.branch === 'feat/s1')).toBe(true);
++    // The CLI dispatcher only prints result.output, so a display command MUST
++    // render one — otherwise `forge worktree list` is a silent no-op.
++    expect(typeof list.output).toBe('string');
++    expect(list.output.length).toBeGreaterThan(0);
++    expect(list.output).toContain('feat/s1');
+   }, TIMEOUT);
+ });
+ 
+-- 
+2.51.0.windows.1
+

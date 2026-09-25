@@ -1,0 +1,108 @@
+From 99c8ef3a4b6bcc07f92f1b4dc8a3bca184d9b37e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 00:04:14 +0530
+Subject: [PATCH] fix(skills): address CodeRabbit review on rollback refs +
+ plan dep-guard test
+
+rollback/references/workflow-integration.md (canonical + .codex mirror):
+- Recovery Scenarios: point leaked-secret cleanup at the secret-removal runbook
+  instead of implying rollback+force-push purges history (rollback never
+  force-pushes elsewhere in the doc).
+- File-path validation snippet: replace the sibling-prefix-prone
+  `resolved.startsWith(projectRoot)` with a `path.relative` guard rejecting
+  `..`/absolute results.
+
+test/scripts/dep-guard.plan.test.js: plan is kept whole, so read SKILL.md
+directly (asserted to exist, fail-fast) rather than existsSync-filtering
+now-deleted phase references.
+
+Mirror regenerated via populateAgentSkills.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../references/workflow-integration.md        |  5 +++--
+ .../references/workflow-integration.md        |  5 +++--
+ test/scripts/dep-guard.plan.test.js           | 20 +++++++++----------
+ 3 files changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/.codex/skills/rollback/references/workflow-integration.md b/.codex/skills/rollback/references/workflow-integration.md
+index ae8af33c..c5e26d8c 100644
+--- a/.codex/skills/rollback/references/workflow-integration.md
++++ b/.codex/skills/rollback/references/workflow-integration.md
+@@ -20,7 +20,7 @@
+ - Rollback PR merge commit
+ 
+ **Recovery Scenarios**:
+-- Accidentally committed sensitive data (rollback + force push)
++- Accidentally committed sensitive data (follow the secret-removal runbook; rollback alone does not purge history)
+ - Merge conflict resolution went wrong
+ - Refactor broke existing functionality
+ 
+@@ -250,7 +250,8 @@ if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
+ **File paths**:
+ ```javascript
+ const resolved = path.resolve(projectRoot, file);
+-if (!resolved.startsWith(projectRoot)) {
++const rel = path.relative(projectRoot, resolved);
++if (rel.startsWith('..') || path.isAbsolute(rel)) {
+   return { valid: false, error: 'Path outside project' };
+ }
+ ```
+diff --git a/skills/rollback/references/workflow-integration.md b/skills/rollback/references/workflow-integration.md
+index ae8af33c..c5e26d8c 100644
+--- a/skills/rollback/references/workflow-integration.md
++++ b/skills/rollback/references/workflow-integration.md
+@@ -20,7 +20,7 @@
+ - Rollback PR merge commit
+ 
+ **Recovery Scenarios**:
+-- Accidentally committed sensitive data (rollback + force push)
++- Accidentally committed sensitive data (follow the secret-removal runbook; rollback alone does not purge history)
+ - Merge conflict resolution went wrong
+ - Refactor broke existing functionality
+ 
+@@ -250,7 +250,8 @@ if (target !== 'HEAD' && !/^[0-9a-f]{4,40}$/i.test(target)) {
+ **File paths**:
+ ```javascript
+ const resolved = path.resolve(projectRoot, file);
+-if (!resolved.startsWith(projectRoot)) {
++const rel = path.relative(projectRoot, resolved);
++if (rel.startsWith('..') || path.isAbsolute(rel)) {
+   return { valid: false, error: 'Path outside project' };
+ }
+ ```
+diff --git a/test/scripts/dep-guard.plan.test.js b/test/scripts/dep-guard.plan.test.js
+index cb2de8da..ecc56062 100644
+--- a/test/scripts/dep-guard.plan.test.js
++++ b/test/scripts/dep-guard.plan.test.js
+@@ -5,18 +5,16 @@ const { describe, test, expect } = require('bun:test');
+ describe('plan.md integration', () => {
+   const planDir = path.join(__dirname, '..', '..', 'skills', 'plan');
+ 
+-  // The plan skill uses progressive disclosure: SKILL.md is a table-of-contents and
+-  // the per-phase detail lives in references/. These tests assert the skill DOCUMENTS
+-  // each step, so they read the combined content (SKILL.md + the phase references, in
+-  // phase order) rather than SKILL.md alone.
++  // The plan skill body is kept whole (its HARD-GATEs and stage-transition contracts
++  // must load on every trigger), so all documented steps live in SKILL.md. These tests
++  // assert the skill DOCUMENTS each dep-guard step by reading SKILL.md directly — asserted
++  // to exist so a missing/renamed skill file fails fast instead of reading empty content.
+   function readPlanSkill() {
+-    const files = [
+-      path.join(planDir, 'SKILL.md'),
+-      path.join(planDir, 'references', 'phase1-design.md'),
+-      path.join(planDir, 'references', 'phase2-research.md'),
+-      path.join(planDir, 'references', 'phase3-setup.md'),
+-    ];
+-    return files.filter((f) => fs.existsSync(f)).map((f) => fs.readFileSync(f, 'utf-8')).join('\n');
++    const skillFile = path.join(planDir, 'SKILL.md');
++    if (!fs.existsSync(skillFile)) {
++      throw new Error(`Missing plan skill file: ${skillFile}`);
++    }
++    return fs.readFileSync(skillFile, 'utf-8');
+   }
+ 
+   test('Phase 1 includes dep-guard ripple check step', () => {
+-- 
+2.51.0.windows.1
+

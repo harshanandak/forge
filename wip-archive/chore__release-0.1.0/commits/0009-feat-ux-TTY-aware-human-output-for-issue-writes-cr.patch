@@ -1,0 +1,260 @@
+From 1935fafc4b67d8edd0ed15e94123a1ad82f3671b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 19:09:34 +0530
+Subject: [PATCH] =?UTF-8?q?feat(ux):=20TTY-aware=20human=20output=20for=20?=
+ =?UTF-8?q?issue=20writes=20(create/claim/close/=E2=80=A6)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Resolves UX4a (60e196f4) without breaking the scripting contract: writes render a
+concise '✓ Created <id>' confirmation at an interactive terminal, but keep the
+machine-parseable JSON envelope when piped/scripted/non-interactive. The CLI entry
+(bin/forge.js) passes isInteractive from process.stdout.isTTY; the library defaults to
+non-interactive so scripts and tests get JSON by default. Reads stay human-first always.
+Regenerated the D20 bd-call-site artifact (line shift). Verified: piped create → JSON,
+interactive → confirmation; 65 issue/render tests + 55 release-readiness tests green.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |  2 +-
+ bin/forge.js                                  |  4 +-
+ .../bd-call-site-kill-list.md                 |  2 +-
+ lib/commands/_issue.js                        | 15 +++++++-
+ lib/issue-render.js                           | 38 ++++++++++++++++++-
+ test/commands/issue-human-output.test.js      | 24 +++++++++++-
+ test/issue-render.test.js                     | 36 ++++++++++++++++++
+ 7 files changed, 115 insertions(+), 6 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c22796fe..9895a35a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -24,7 +24,7 @@ First public release. The default issue backend changed from Beads to the built-
+ ### Fixed
+ 
+ - **The core workflow is now reachable out of the box after `forge init` / `forge setup`.** Previously, lefthook's own postinstall dropped a fully-commented stub `lefthook.yml` that blocked Forge from writing a real config, so `forge plan` / `dev` / `ship` all dead-ended on `HOOKS_NOT_ACTIVE: missing required hooks: pre-commit, pre-push`. Forge now writes a minimal user-facing lefthook config wiring the self-contained TDD gate (`.forge/hooks/check-tdd.js`) on pre-commit and the project's own tests on pre-push — referencing only files a user project actually has (never Forge's repo-internal `scripts/`) — and overwrites the disposable stub while never clobbering a real config. (#334)
+-- End-to-end new-user UX polish (all surfaced by a fresh-project journey audit): `forge claim`/`show`/etc. with no id now return a clean "Missing required argument <id>" and a non-zero exit instead of fabricating a random UUID and quarantining it; `forge prime`/`orient` no longer show internal "D21 placeholder" text; the kernel filesystem note dropped its alarming "database corruption" wording on the fail-open path; and `forge init` no longer emits a Node `DEP0190` deprecation warning. (#334)
++- End-to-end new-user UX polish (all surfaced by a fresh-project journey audit): `forge claim`/`show`/etc. with no id now return a clean "Missing required argument <id>" and a non-zero exit instead of fabricating a random UUID and quarantining it; issue writes (`forge create`/`claim`/`close`/…) print a concise human confirmation (`✓ Created <id>`) at an interactive terminal while keeping the machine-parseable JSON envelope when piped or scripted (so automation is unchanged); `forge prime`/`orient` no longer show internal "D21 placeholder" text; the kernel filesystem note dropped its alarming "database corruption" wording on the fail-open path; and `forge init` no longer emits a Node `DEP0190` deprecation warning. (#334)
+ - `forge export` now actually projects Kernel issues to git-tracked JSONL. The command dispatcher injects a Kernel broker for `export`, and Kernel mutations enqueue the projection-outbox marker under the `jsonl` target the export consumer drains — so the Kernel git-persistence/portability loop works end to end. (#270)
+ - First-run hint from `forge status` pointed at a nonexistent docs topic (`forge docs workflow`); it now points at `forge docs setup`. (#334)
+ - Removed stale "Beads" wording from live `forge --help` output — the `board` and `test` command descriptions now reference the kernel. (#334)
+diff --git a/bin/forge.js b/bin/forge.js
+index e5f6e326..4e6afa10 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4019,7 +4019,9 @@ async function main() {
+         flags,
+         projectRoot,
+         {
+-          commandOpts,
++          // Pass interactivity so issue writes render a human confirmation at a real
++          // terminal but stay machine-parseable JSON when piped/scripted (842a8be7).
++          commandOpts: { ...(commandOpts || {}), isInteractive: Boolean(process.stdout.isTTY) },
+           enforceStage: (context) => enforceStageEntry({
+             commandName: context.commandName,
+             args: context.args,
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 63ff5083..8ca071f2 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## command
+ 
+ - [ ] bin/forge.js (26)
+-  - lines: 2184 (bd), 2186 (bd), 2342 (bd), 2785 (bd), 2794 (bd), 2807 (bd), 2820 (.beads), 2840 (bd), 2842 (bd), 2844 (bd), 2879 (bd), 2903 (bd), 2989 (bd), 3033 (bd), 3057 (bd), 3063 (bd), 3067 (bd), 3072 (bd), 3078 (bd), 3088 (bd), 3220 (bd), 3225 (bd), 3236 (bd), 3303 (bd), 4008 (bd), 4513 (bd)
++  - lines: 2184 (bd), 2186 (bd), 2342 (bd), 2785 (bd), 2794 (bd), 2807 (bd), 2820 (.beads), 2840 (bd), 2842 (bd), 2844 (bd), 2879 (bd), 2903 (bd), 2989 (bd), 3033 (bd), 3057 (bd), 3063 (bd), 3067 (bd), 3072 (bd), 3078 (bd), 3088 (bd), 3220 (bd), 3225 (bd), 3236 (bd), 3303 (bd), 4008 (bd), 4515 (bd)
+ - [ ] lib/commands/_resolve-command-opts.js (2)
+   - lines: 8 (bd), 10 (bd)
+ - [ ] lib/commands/dev.js (1)
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index 97981aa1..643b2bc7 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -123,6 +123,9 @@ const WRITE_SUBCOMMANDS = new Set(['create', 'update', 'claim', 'release', 'comm
+ // DEFAULT output only, approved before the 0.1.0 API freeze — the kernel
+ // contract itself is untouched.
+ const HUMAN_RENDERED_SUBCOMMANDS = new Set(['ready', 'list', 'show']);
++// Writes render a human confirmation ONLY at an interactive TTY; piped/CI callers keep
++// the machine-parseable JSON envelope by default so scripts work without --json (842a8be7).
++const HUMAN_RENDERED_WRITE_SUBCOMMANDS = new Set(['create', 'update', 'claim', 'release', 'comment', 'close']);
+ const DEP_ACTIONS = Object.keys(SUBCOMMANDS.dep.actions);
+ 
+ // ---------------------------------------------------------------------------
+@@ -739,9 +742,19 @@ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+   if (subcommand === 'owns') {
+     return normalizeOwnsResult(result, operation, { json: jsonRequested });
+   }
++  // Reads render human-first always; writes only when the caller is an interactive
++  // terminal. The CLI entry (bin/forge.js) sets rawOpts.isInteractive from
++  // process.stdout.isTTY; every other caller (scripts, tests, pipes) defaults to
++  // non-interactive and keeps the machine-parseable JSON envelope (842a8be7).
++  const interactive = rawOpts.isInteractive === true;
++  const humanSubcommand = !jsonRequested
++    && (HUMAN_RENDERED_SUBCOMMANDS.has(subcommand)
++      || (interactive && HUMAN_RENDERED_WRITE_SUBCOMMANDS.has(subcommand)))
++    ? subcommand
++    : null;
+   return normalizeIssueResult(result, operation, {
+     json: jsonRequested,
+-    humanRender: !jsonRequested && HUMAN_RENDERED_SUBCOMMANDS.has(subcommand) ? subcommand : null,
++    humanRender: humanSubcommand,
+   });
+ }
+ 
+diff --git a/lib/issue-render.js b/lib/issue-render.js
+index d1e32741..d5f26658 100644
+--- a/lib/issue-render.js
++++ b/lib/issue-render.js
+@@ -146,8 +146,43 @@ function renderIssueShow(envelope) {
+   return lines.join('\n');
+ }
+ 
+-// Dispatch a human rendering for one read subcommand's success envelope.
++// Write subcommands → the past-tense verb used in their confirmation line.
++const MUTATION_VERBS = {
++  create: 'Created',
++  update: 'Updated',
++  claim: 'Claimed',
++  release: 'Released',
++  comment: 'Commented on',
++  close: 'Closed',
++};
++
++// Concise, human-first confirmation for a write, used only at an interactive terminal
++// (piped/non-interactive callers keep the machine-parseable JSON envelope — see the
++// TTY gate in lib/commands/_issue.js).
++function renderIssueMutation(subcommand, envelope) {
++  const issue = envelope && envelope.data && typeof envelope.data === 'object' ? envelope.data : {};
++  const verb = MUTATION_VERBS[subcommand] || 'Updated';
++  const id = issue.id ? String(issue.id) : '(issue)';
++  let headline = `✓ ${verb} ${id}`;
++  if (typeof issue.title === 'string' && issue.title.trim() !== '') {
++    headline += `  ${issue.title.trim()}`;
++  }
++  if (issue.status) {
++    headline += `  [${issue.status}]`;
++  }
++  const lines = [headline];
++  const verification = verificationLines(envelope);
++  if (verification.length > 0) {
++    lines.push(...verification);
++  }
++  return lines.join('\n');
++}
++
++// Dispatch a human rendering for one subcommand's success envelope.
+ function renderIssueEnvelope(subcommand, envelope) {
++  if (MUTATION_VERBS[subcommand]) {
++    return renderIssueMutation(subcommand, envelope);
++  }
+   if (subcommand === 'show') {
+     return renderIssueShow(envelope);
+   }
+@@ -160,5 +195,6 @@ module.exports = {
+   shortId,
+   renderIssueList,
+   renderIssueShow,
++  renderIssueMutation,
+   renderIssueEnvelope,
+ };
+diff --git a/test/commands/issue-human-output.test.js b/test/commands/issue-human-output.test.js
+index 9eb3f47d..315e00b9 100644
+--- a/test/commands/issue-human-output.test.js
++++ b/test/commands/issue-human-output.test.js
+@@ -120,11 +120,12 @@ describe('human-first default output (ready/list/show)', () => {
+     expect(result.output).toContain('read back "B"');
+   });
+ 
+-  test('mutations keep the JSON envelope default (only reads went human-first)', async () => {
++  test('mutations keep the JSON envelope when NON-interactive (scripts/pipes get the contract)', async () => {
+     const create = createIssueSubcommand('create');
+     const result = await create.handler(['--title', 'X'], {}, '/repo', {
+       issueBackend: 'kernel',
+       env: {},
++      isInteractive: false, // piped / CI → machine-parseable envelope (842a8be7)
+       resolveRuntimeGraph: () => ({ gates: [{ id: 'gate.issue_verify', enabled: false }] }),
+       runIssueOperation: async () => ({
+         ok: true,
+@@ -139,6 +140,27 @@ describe('human-first default output (ready/list/show)', () => {
+     expect(parsed.command).toBe('issue.create');
+   });
+ 
++  test('mutations render a human confirmation when INTERACTIVE (TTY)', async () => {
++    const create = createIssueSubcommand('create');
++    const result = await create.handler(['--title', 'X'], {}, '/repo', {
++      issueBackend: 'kernel',
++      env: {},
++      isInteractive: true, // interactive terminal → clean confirmation, not raw JSON
++      resolveRuntimeGraph: () => ({ gates: [{ id: 'gate.issue_verify', enabled: false }] }),
++      runIssueOperation: async () => ({
++        ok: true,
++        schema_version: 'forge.issue.v1',
++        command: 'issue.create',
++        data: { id: UUID, title: 'X' },
++        next_commands: [],
++      }),
++    });
++
++    expect(result.output).toContain('✓ Created');
++    expect(result.output).toContain(UUID);
++    expect(() => JSON.parse(result.output)).toThrow(); // not JSON in interactive mode
++  });
++
+   test('a Beads-shaped {success,output} read result still passes through unchanged', async () => {
+     const list = createIssueSubcommand('list');
+     const result = await list.handler([], {}, '/repo', {
+diff --git a/test/issue-render.test.js b/test/issue-render.test.js
+index 01fb492f..067b749a 100644
+--- a/test/issue-render.test.js
++++ b/test/issue-render.test.js
+@@ -11,6 +11,7 @@ const {
+   shortId,
+   renderIssueList,
+   renderIssueShow,
++  renderIssueMutation,
+   renderIssueEnvelope,
+ } = require('../lib/issue-render');
+ 
+@@ -194,3 +195,38 @@ describe('renderIssueEnvelope dispatch', () => {
+     expect(out).toContain('T');
+   });
+ });
++
++describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gated in _issue.js)', () => {
++  test('create renders a confirmation with the id (and title/status when present)', () => {
++    const out = renderIssueMutation('create', envelope('issue.create', {
++      id: UUID_A, title: 'Wire the thing', status: 'open',
++    }));
++    expect(out).toContain('✓ Created');
++    expect(out).toContain(UUID_A);
++    expect(out).toContain('Wire the thing');
++    expect(out).toContain('[open]');
++    expect(out).not.toContain('schema_version'); // no raw contract JSON
++  });
++
++  test('claim / close use their own past-tense verb', () => {
++    expect(renderIssueMutation('claim', envelope('issue.claim', { id: UUID_A })))
++      .toContain('✓ Claimed');
++    expect(renderIssueMutation('close', envelope('issue.close', { id: UUID_A, status: 'done' })))
++      .toContain('✓ Closed');
++  });
++
++  test('renderIssueEnvelope routes mutations to the mutation renderer', () => {
++    const out = renderIssueEnvelope('claim', envelope('issue.claim', { id: UUID_A }));
++    expect(out).toContain('✓ Claimed');
++    expect(out).toContain(UUID_A);
++  });
++
++  test('surfaces check-after-write verification lines when present', () => {
++    const out = renderIssueMutation('close', envelope('issue.close', { id: UUID_A }, {
++      verified: false,
++      mismatches: [{ field: 'status', expected: 'done', got: null }],
++    }));
++    expect(out).toContain('✓ Closed');
++    expect(out.toLowerCase()).toContain('verif'); // verification note rendered, not dropped
++  });
++});
+-- 
+2.51.0.windows.1
+

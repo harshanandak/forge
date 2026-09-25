@@ -1,0 +1,165 @@
+From 6d0f43219744c536d74e444ab240f1763d06790f Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 15:54:09 +0530
+Subject: [PATCH] fix(shepherd): reject reused PIDs when importing legacy
+ watchers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Legacy import classified liveness from isPidAlive alone. When a dead legacy
+watcher's PID has been inherited by an unrelated long-lived process, migration
+wrote a blocked/legacy_live_pid owner, and every later recheck saw the same
+live PID — so the PR stayed unwatched permanently.
+
+Compare the observed process start time against the legacy startedAt marker
+(60s slack). A process that started materially after the marker cannot be the
+watcher that wrote it, so its PID evidence is discarded and the entry migrates
+as lossy legacy evidence. An unknown start time fails closed on the live PID.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/reconcile-executor.js          | 56 ++++++++++++++++++-
+ .../reconcile-migration-gate.test.js          | 37 ++++++++++++
+ 2 files changed, 92 insertions(+), 1 deletion(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 86580782..740f2804 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -30,6 +30,10 @@ const MAX_LEGACY_SNAPSHOT_BYTES = 4 * 1024 * 1024;
+ const MAX_MIGRATION_ATTEMPTS = 3;
+ const MAX_MONITOR_ID_LENGTH = 128;
+ const OWNER_HEARTBEAT_STALE_MS = 4 * 60_000;
++// A watcher stamps `startedAt` just after its process starts, so an observed process
++// start time later than the marker by more than this slack means the PID was reused.
++const PID_START_SKEW_MS = 60_000;
++const LINUX_USER_HZ = 100;
+ 
+ function normalizeRepository(value) {
+ 	if (typeof value !== 'string') return null;
+@@ -680,10 +684,45 @@ async function defaultReadProviderState(entry, opts = {}) {
+ 	}
+ }
+ 
++/**
++ * Epoch-ms start time of `pid`, or null when this platform cannot answer. Null is
++ * "unknown", never "reused" — callers must not weaken liveness on an unknown.
++ * Linux reads /proc without spawning; other platforms have no dependency-free probe
++ * here, so they return null and can inject `pidStartedAt` instead.
++ */
++function defaultPidStartedAt(pid) {
++	if (!Number.isSafeInteger(pid) || pid <= 0) return null;
++	if (process.platform !== 'linux') return null;
++	try {
++		const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
++		// Fields after the (possibly space-bearing) comm field; starttime is overall
++		// field 22, i.e. index 19 counting from `state`.
++		const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
++		const ticks = Number(fields[19]);
++		const uptimeSeconds = Number(String(fs.readFileSync('/proc/uptime', 'utf8')).trim().split(/\s+/)[0]);
++		if (!Number.isFinite(ticks) || !Number.isFinite(uptimeSeconds)) return null;
++		return Math.round(Date.now() - uptimeSeconds * 1000 + (ticks / LINUX_USER_HZ) * 1000);
++	} catch {
++		return null;
++	}
++}
++
++async function legacyPidWasReused(entry, pid, options, opts) {
++	const marker = Date.parse(entry.startedAt);
++	if (!Number.isFinite(marker)) return false;
++	let observed;
++	try {
++		observed = await (options.pidStartedAt || opts.pidStartedAt || defaultPidStartedAt)(pid);
++	} catch { return false; }
++	const startedAtMs = Number(observed);
++	if (!Number.isFinite(startedAtMs)) return false;
++	return startedAtMs > marker + PID_START_SKEW_MS;
++}
++
+ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 	const ctx = identity(entry);
+ 	const pid = Number(entry.pid);
+-	const hasPid = Number.isSafeInteger(pid) && pid > 0;
++	let hasPid = Number.isSafeInteger(pid) && pid > 0;
+ 	let pidState = false;
+ 	if (hasPid) {
+ 		try {
+@@ -691,6 +730,20 @@ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 			pidState = typeof observed === 'boolean' ? observed : null;
+ 		} catch { pidState = null; }
+ 	}
++	// A bare `isPidAlive` hit is not proof the LEGACY watcher is alive: an unrelated
++	// long-lived process may have inherited the number. Importing that as
++	// blocked/legacy_live_pid is unrecoverable, because every later recheck sees the
++	// same live PID and the PR stays unwatched forever. Compare the process start time
++	// against the legacy start marker; a process that booted materially AFTER the
++	// marker cannot be the watcher that wrote it, so its PID evidence is discarded and
++	// the entry migrates as lossy legacy evidence. An unknown start time changes
++	// nothing (fail closed on the live PID).
++	const pidReused = hasPid && pidState === true
++		&& await legacyPidWasReused(entry, pid, options, opts);
++	if (pidReused) {
++		hasPid = false;
++		pidState = false;
++	}
+ 	let conflictingPidUnsafe = false;
+ 	if (entry.lifecycleConflict) {
+ 		const conflictPids = [...new Set((entry.legacyEvidence || [])
+@@ -736,6 +789,7 @@ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 		providerVerified,
+ 		receiptVerified,
+ 		conflictingPidUnsafe,
++		pidReused,
+ 	};
+ }
+ 
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index 8d6c220d..f580f2c0 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -1093,4 +1093,41 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
+ 		expect(api.rows.size).toBe(0);
+ 	});
++
++	test('treats a legacy PID whose process started after the legacy marker as reused, not live', async () => {
++		const api = authorityHarness();
++		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
++		const result = await run(api, legacy, {
++			isAlive: () => true,
++			// PID 107 is alive, but the process holding it booted two hours AFTER the
++			// legacy watcher recorded startedAt — the original watcher is long gone and
++			// this is an unrelated process that inherited the number.
++			pidStartedAt: async () => Date.parse('2026-08-19T02:00:00.000Z'),
++		});
++		expect(result).toMatchObject({ ok: true, state: 'complete' });
++		expect(api.calls).not.toContain('blocked:acme/repo#7:legacy_live_pid');
++		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_lossy' });
++	});
++
++	test('still imports a genuinely live legacy PID as blocked/legacy_live_pid', async () => {
++		const api = authorityHarness();
++		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
++		const result = await run(api, legacy, {
++			isAlive: () => true,
++			pidStartedAt: async () => Date.parse('2026-08-18T23:59:00.000Z'),
++		});
++		expect(result).toMatchObject({ ok: true, state: 'complete' });
++		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_live_pid' });
++	});
++
++	test('keeps a live legacy PID blocked when its process start time is unknown', async () => {
++		const api = authorityHarness();
++		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
++		const result = await run(api, legacy, {
++			isAlive: () => true,
++			pidStartedAt: async () => null,
++		});
++		expect(result).toMatchObject({ ok: true, state: 'complete' });
++		expect(api.rows.get('acme/repo#7')).toMatchObject({ phase: 'blocked', blockReason: 'legacy_live_pid' });
++	});
+ });
+-- 
+2.51.0.windows.1
+

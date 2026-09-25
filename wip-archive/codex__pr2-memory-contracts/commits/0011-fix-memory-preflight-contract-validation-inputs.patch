@@ -1,0 +1,264 @@
+From cd4370f97c1ed0192c7d662c6fd9aaab7260d9ed Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 22:16:17 +0530
+Subject: [PATCH] fix(memory): preflight contract validation inputs
+
+---
+ .../compatibility-matrix.v1.json              |  2 +-
+ .../contract-baseline.v1.json                 | 12 +++--
+ .../v1/structured-error-privacy-reject.json   |  1 +
+ .../schemas/v1/run-receipt.schema.json        |  2 +-
+ .../schemas/v1/structured-error.schema.json   |  2 +-
+ packages/memory-contracts/src/canonical.js    |  6 ++-
+ packages/memory-contracts/src/definitions.js  |  6 +--
+ packages/memory-contracts/src/validate.js     | 17 +++++-
+ .../test/quality-review.test.js               | 54 +++++++++++++++++++
+ 9 files changed, 90 insertions(+), 12 deletions(-)
+ create mode 100644 packages/memory-contracts/fixtures/v1/structured-error-privacy-reject.json
+
+diff --git a/packages/memory-contracts/compatibility-matrix.v1.json b/packages/memory-contracts/compatibility-matrix.v1.json
+index 983856b3..9ae2eea1 100644
+--- a/packages/memory-contracts/compatibility-matrix.v1.json
++++ b/packages/memory-contracts/compatibility-matrix.v1.json
+@@ -1 +1 @@
+-{"matrix_version":1,"readers":{"0.1.0-beta.6":{"accepted":{"forge.memory.work-packet.v1":[1],"forge.memory.context-packet.v1":[1],"forge.memory.claim-request.v1":[1],"forge.memory.lease-receipt.v1":[1],"forge.memory.capability-manifest.v1":[1],"forge.memory.run-receipt.v1":[1],"forge.memory.feedback-report.v1":[1],"forge.memory.structured-error.v1":[1],"forge.memory.monitor-event.v1":[1],"forge.memory.delivery-receipt.v1":[1],"forge.memory.monitor-receipt.v1":[1]},"validation_surfaces":{"structural":"no_authority_or_freshness_claim","consequential":"requires_independent_live_expected"},"run_receipt_non_authoritative_statuses":["NOT_EXECUTED"],"unknown_advisory":"preserve","unknown_consequential":"reject","unknown_schema_version":"reject"}}}
++{"matrix_version":1,"readers":{"0.1.0-beta.6":{"accepted":{"forge.memory.work-packet.v1":[1],"forge.memory.context-packet.v1":[1],"forge.memory.claim-request.v1":[1],"forge.memory.lease-receipt.v1":[1],"forge.memory.capability-manifest.v1":[1],"forge.memory.run-receipt.v1":[1],"forge.memory.feedback-report.v1":[1],"forge.memory.structured-error.v1":[1],"forge.memory.monitor-event.v1":[1],"forge.memory.delivery-receipt.v1":[1],"forge.memory.monitor-receipt.v1":[1]},"validation_surfaces":{"structural":"no_authority_or_freshness_claim","consequential":"requires_independent_live_expected"},"schema_annotations":{"generic_json_schema_enforces_x_forge":false,"conformance_helper":"validateContractStructure","requirement":"x-forge bounds and privacy annotations require the Forge runtime validator"},"run_receipt_non_authoritative_statuses":["NOT_EXECUTED"],"unknown_advisory":"preserve","unknown_consequential":"reject","unknown_schema_version":"reject"}}}
+diff --git a/packages/memory-contracts/contract-baseline.v1.json b/packages/memory-contracts/contract-baseline.v1.json
+index 11cdd31c..30951f84 100644
+--- a/packages/memory-contracts/contract-baseline.v1.json
++++ b/packages/memory-contracts/contract-baseline.v1.json
+@@ -1,10 +1,10 @@
+ {
+   "baseline_version": 1,
+-  "generator_version": "memory-contracts-schema-gen/4",
++  "generator_version": "memory-contracts-schema-gen/5",
+   "artifacts": [
+     {
+       "path": "compatibility-matrix.v1.json",
+-      "sha256": "aed7099ebde7294ca8b8415c31589ac1b711a6532859a591e543d5058a02fae8"
++      "sha256": "4ca93d10ae9bff80dd3785bb5ebfc77610cf19e928b9b9ae3f6a1ad9c2fea18e"
+     },
+     {
+       "path": "fixtures/v1/canonical-hash.json",
+@@ -54,6 +54,10 @@
+       "path": "fixtures/v1/stale-authority-reject.json",
+       "sha256": "700173546cff08486df201316472921d8304ea892c29770b5f199e63c92601b3"
+     },
++    {
++      "path": "fixtures/v1/structured-error-privacy-reject.json",
++      "sha256": "008186d22ed5048e4926c7b56c08a71802392886425944d0e1a22b10c7433d58"
++    },
+     {
+       "path": "fixtures/v1/unknown-advisory-roundtrip.json",
+       "sha256": "674e1dd9585d86ed7c8851a3d7e2b0ce81427a3dbc59c149409ee87375f9e879"
+@@ -108,11 +112,11 @@
+     },
+     {
+       "path": "schemas/v1/run-receipt.schema.json",
+-      "sha256": "3c53acac7bbf0d1f247448f3ea283154ed5620811d0a3423b0003efc0367203e"
++      "sha256": "31d35cfbb28c00ee437a324e82b8d6a9a412ab6a4b287eca6596c20faffe7b8b"
+     },
+     {
+       "path": "schemas/v1/structured-error.schema.json",
+-      "sha256": "a99b58bededc620a4091770b942c4cd829fbd6e6dbbecd0de905119c056e9715"
++      "sha256": "deef772c84c50e136783d5df7d3d64da3d7e7dc6c97b4565a68e5c614d54549b"
+     },
+     {
+       "path": "schemas/v1/work-packet.schema.json",
+diff --git a/packages/memory-contracts/fixtures/v1/structured-error-privacy-reject.json b/packages/memory-contracts/fixtures/v1/structured-error-privacy-reject.json
+new file mode 100644
+index 00000000..8fc739ba
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/structured-error-privacy-reject.json
+@@ -0,0 +1 @@
++{"fixture_id":"structured-error-privacy-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.structured-error.v1"},"mutation":{"operation":"replace","path":"payload.safe_details","value":{"detail":"token=ghp_123456789012345678901234567890"},"rehash":true},"operation":"validate-structure","expected":{"ok":false,"code":"PRIVACY_SECRET_PATTERN"}}
+diff --git a/packages/memory-contracts/schemas/v1/run-receipt.schema.json b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+index 2dbc8ef0..2dd9dfcf 100644
+--- a/packages/memory-contracts/schemas/v1/run-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","NOT_EXECUTED"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object"},"cleanup":{"type":"object"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","NOT_EXECUTED"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"cleanup":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/structured-error.schema.json b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+index 0f40d155..c8a6b368 100644
+--- a/packages/memory-contracts/schemas/v1/structured-error.schema.json
++++ b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"error_occurrence_id":{"type":"string","minLength":1},"code":{"type":"string","minLength":1},"terminal_classification":{"type":"string","enum":["FAIL","INCOMPLETE"]},"safe_details":{"type":"object"},"retryable":{"type":"boolean"},"evidence_refs":{"type":"array","items":{"type":"object"}}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"error_occurrence_id":{"type":"string","minLength":1},"code":{"type":"string","minLength":1},"terminal_classification":{"type":"string","enum":["FAIL","INCOMPLETE"]},"safe_details":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"retryable":{"type":"boolean"},"evidence_refs":{"type":"array","items":{"type":"object"}}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/src/canonical.js b/packages/memory-contracts/src/canonical.js
+index c13c17b4..36957724 100644
+--- a/packages/memory-contracts/src/canonical.js
++++ b/packages/memory-contracts/src/canonical.js
+@@ -128,6 +128,10 @@ function canonicalize(value, options = {}) {
+   return serialize(value, state, 0);
+ }
+ 
++function preflightCanonicalValue(value, options = {}) {
++  canonicalize(value, options);
++}
++
+ function withoutContentHash(value) {
+   if (!value || typeof value !== "object" || Array.isArray(value)) fail("CANONICAL_CONTRACT_OBJECT", "Contract object must be a plain JSON object");
+   const descriptors = descriptorsForPlainObject(value);
+@@ -144,4 +148,4 @@ function computeContentHash(value, options = {}) {
+     .digest("hex");
+ }
+ 
+-module.exports = { CanonicalizationError, canonicalize, computeContentHash };
++module.exports = { CanonicalizationError, canonicalize, computeContentHash, preflightCanonicalValue };
+diff --git a/packages/memory-contracts/src/definitions.js b/packages/memory-contracts/src/definitions.js
+index 1b279fe1..a3030c89 100644
+--- a/packages/memory-contracts/src/definitions.js
++++ b/packages/memory-contracts/src/definitions.js
+@@ -136,9 +136,9 @@ const PAYLOAD_FIELDS = deepFreeze({
+   "forge.memory.run-receipt.v1": {
+     packet_hash: HASH, run_id: STRING, attempt_id: STRING, exact_head: HEAD, packet_revision: POSITIVE_INTEGER,
+     manifest_digest: HASH, workflow_config_revision: STRING, status: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"] },
+-    executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: OBJECT, cleanup: OBJECT,
++    executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: BOUNDED_OBJECT, cleanup: BOUNDED_OBJECT,
+     lease_epoch: POSITIVE_INTEGER, tokens: OBJECT, retries: INTEGER, corrections: INTEGER,
+-    mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: OBJECT,
++    mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: BOUNDED_OBJECT,
+     active_time_ms: INTEGER, passive_time_ms: INTEGER,
+   },
+   "forge.memory.feedback-report.v1": {
+@@ -149,7 +149,7 @@ const PAYLOAD_FIELDS = deepFreeze({
+   },
+   "forge.memory.structured-error.v1": {
+     parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
+-    terminal_classification: { type: "string", enum: ["FAIL", "INCOMPLETE"] }, safe_details: OBJECT,
++    terminal_classification: { type: "string", enum: ["FAIL", "INCOMPLETE"] }, safe_details: BOUNDED_OBJECT,
+     retryable: BOOLEAN, evidence_refs: OBJECT_ARRAY,
+   },
+   "forge.memory.monitor-event.v1": {
+diff --git a/packages/memory-contracts/src/validate.js b/packages/memory-contracts/src/validate.js
+index 4069b029..fa3a4faf 100644
+--- a/packages/memory-contracts/src/validate.js
++++ b/packages/memory-contracts/src/validate.js
+@@ -1,6 +1,6 @@
+ "use strict";
+ 
+-const { canonicalize, computeContentHash } = require("./canonical.js");
++const { canonicalize, computeContentHash, preflightCanonicalValue } = require("./canonical.js");
+ const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
+ 
+ const ENVELOPE_FIELDS = Object.freeze([
+@@ -34,6 +34,11 @@ function error(errors, path, code) {
+ 
+ function validateEnvelope(value, options = {}) {
+   const errors = [];
++  try {
++    preflightCanonicalValue(value);
++  } catch {
++    return { ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] };
++  }
+   if (!value || typeof value !== "object" || Array.isArray(value)) {
+     return { ok: false, errors: [{ path: "$", code: "INVALID_ENVELOPE" }] };
+   }
+@@ -161,6 +166,14 @@ function validateBoundedPrivacy(value, errors) {
+     targets.push([value.payload.bounded_payload, "$.payload.bounded_payload"]);
+   } else if (value?.schema_id === "forge.memory.monitor-receipt.v1") {
+     targets.push([value.payload?.process_cleanup, "$.payload.process_cleanup"], [value.payload?.lease_cleanup, "$.payload.lease_cleanup"]);
++  } else if (value?.schema_id === "forge.memory.structured-error.v1") {
++    targets.push([value.payload?.safe_details, "$.payload.safe_details"]);
++  } else if (value?.schema_id === "forge.memory.run-receipt.v1") {
++    targets.push(
++      [value.payload?.validation, "$.payload.validation"],
++      [value.payload?.cleanup, "$.payload.cleanup"],
++    );
++    if (value.payload?.structured_error !== undefined) targets.push([value.payload.structured_error, "$.payload.structured_error"]);
+   }
+   for (const [target, path] of targets) {
+     if (target === undefined) continue;
+@@ -233,6 +246,7 @@ function validateConsequentialEvidence(value, expected, errors) {
+ 
+ function validateContractStructure(value, options = {}) {
+   const envelope = validateEnvelope(value, options);
++  if (envelope.errors.some((item) => item.code === "NON_CANONICAL_VALUE")) return envelope;
+   const errors = [...envelope.errors];
+   const definition = CONTRACTS[value?.schema_id];
+   if (definition && value?.payload && typeof value.payload === "object" && !Array.isArray(value.payload)) {
+@@ -252,6 +266,7 @@ function validateContractStructure(value, options = {}) {
+ 
+ function validateContract(value, options = {}) {
+   const structural = validateContractStructure(value, options);
++  if (structural.errors.some((item) => item.code === "NON_CANONICAL_VALUE")) return structural;
+   const errors = [...structural.errors];
+   validateConsequentialEvidence(value, options.expected, errors);
+   return { ok: errors.length === 0, errors };
+diff --git a/packages/memory-contracts/test/quality-review.test.js b/packages/memory-contracts/test/quality-review.test.js
+index 443394e3..e254c91c 100644
+--- a/packages/memory-contracts/test/quality-review.test.js
++++ b/packages/memory-contracts/test/quality-review.test.js
+@@ -110,6 +110,24 @@ describe("privacy-safe bounded contract fields", () => {
+     expect(validateContractStructure(receipt).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
+   });
+ 
++  test("bounds and privacy-checks StructuredError safe details and inline run evidence", () => {
++    const structured = fixture("forge.memory.structured-error.v1");
++    structured.payload.safe_details = { detail: "token=ghp_123456789012345678901234567890" };
++    rehash(structured);
++    expect(validateContractStructure(structured).errors.map((item) => item.code)).toContain("PRIVACY_SECRET_PATTERN");
++
++    const receipt = fixture("forge.memory.run-receipt.v1");
++    receipt.payload.validation = { output: "C:\\Users\\alice\\private.log" };
++    rehash(receipt);
++    expect(validateContractStructure(receipt).errors.map((item) => item.code)).toContain("PRIVACY_ABSOLUTE_PATH");
++
++    const structuredShape = generateJsonSchema("forge.memory.structured-error.v1").properties.payload.properties.safe_details;
++    const runShape = generateJsonSchema("forge.memory.run-receipt.v1").properties.payload.properties.validation;
++    expect(structuredShape["x-forge-max-serialized-bytes"]).toBeNumber();
++    expect(runShape["x-forge-secret-pattern"]).toBeString();
++    expect(() => JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", "structured-error-privacy-reject.json"), "utf8"))).not.toThrow();
++  });
++
+   test("mirrors privacy and bounds in generated schemas and negative fixtures", () => {
+     const feedback = generateJsonSchema("forge.memory.feedback-report.v1").properties.payload.properties.redacted_reproduction_steps;
+     expect(feedback.maxItems).toBeNumber();
+@@ -124,6 +142,42 @@ describe("privacy-safe bounded contract fields", () => {
+   });
+ });
+ 
++describe("validation descriptor preflight", () => {
++  test("never invokes hostile top-level or nested getters", () => {
++    let invoked = 0;
++    const topLevel = {};
++    Object.defineProperty(topLevel, "schema_id", { enumerable: true, get() { invoked += 1; throw new Error("executed"); } });
++    let topResult;
++    expect(() => { topResult = validateContractStructure(topLevel); }).not.toThrow();
++    expect(invoked).toBe(0);
++    expect(topResult).toEqual({ ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] });
++
++    const nested = fixture("forge.memory.work-packet.v1");
++    Object.defineProperty(nested.payload, "issue_id", { enumerable: true, get() { invoked += 1; throw new Error("executed"); } });
++    let nestedResult;
++    expect(() => { nestedResult = validateContractStructure(nested); }).not.toThrow();
++    expect(invoked).toBe(0);
++    expect(nestedResult).toEqual({ ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] });
++  });
++
++  test("returns the same stable failure for nested proxies", () => {
++    const packet = fixture("forge.memory.work-packet.v1");
++    packet.payload = new Proxy(packet.payload, { get() { throw new Error("proxy trap executed"); } });
++    expect(() => validateContractStructure(packet)).not.toThrow();
++    expect(validateContractStructure(packet)).toEqual({ ok: false, errors: [{ path: "$", code: "NON_CANONICAL_VALUE" }] });
++  });
++});
++
++describe("schema annotation truthfulness", () => {
++  test("declares Forge runtime conformance rather than generic JSON Schema enforcement", () => {
++    const matrix = JSON.parse(readFileSync(join(__dirname, "..", "compatibility-matrix.v1.json"), "utf8"));
++    const annotations = matrix.readers["0.1.0-beta.6"].schema_annotations;
++    expect(annotations.generic_json_schema_enforces_x_forge).toBe(false);
++    expect(annotations.conformance_helper).toBe("validateContractStructure");
++    expect(typeof validateContractStructure).toBe("function");
++  });
++});
++
+ describe("extension schema and runtime parity", () => {
+   test("generated schemas encode the same advisory-only extension contract", () => {
+     const extensions = generateJsonSchema("forge.memory.work-packet.v1").properties.extensions;
+-- 
+2.51.0.windows.1
+

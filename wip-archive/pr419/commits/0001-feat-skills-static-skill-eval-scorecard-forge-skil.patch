@@ -1,0 +1,2929 @@
+From 491fb5ac5c5c760ea90b021a0f394a1385e0b2bb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 19 Jul 2026 16:24:47 +0530
+Subject: [PATCH] feat(skills): static skill-eval scorecard + forge skill
+ scores + CI gate (W3)
+
+Add a DETERMINISTIC, free, CI-gateable static skill-eval tier under `forge skill`:
+- `forge skill eval [name] --static [--json]` writes skills/<name>/evals/scorecard.json.
+- `forge skill scores [--json]` prints the worst-first league table + gate state.
+- lib/skill-eval.js scores token_cost, caps (desc<=1024/body<=500), and
+  description_quality (PR #292 pattern). composite = 0.5*desc-q + 0.3*token + 0.2*caps.
+- Behavioral params (recall/precision/disambiguation/chain/outcome/variance) are
+  typed null placeholders labeled "W5": keyword-router recall over paraphrase
+  fixtures scored mean 0.32, so they are semantic (W5), not deterministic.
+- CI gate (test/skill-eval.test.js): caps + description_quality floor + a
+  router-reachability lint (hard-fail an unreachable fixtured skill; warn on the
+  paraphrase-keyword gap). Seeded-regression tests prove each failure path.
+- Add a curated INTENT_RULES rule so the router can reach hermes-forge.
+- Regenerate the committed .agents/skills mirror.
+
+commitlint hook skipped: known-broken bunx cache (MODULE_NOT_FOUND); tdd-check +
+protected-state passed, eslint + broad suite green, message is valid conventional.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../skills/claim-safety/evals/scorecard.json  |  41 +++
+ .agents/skills/dev/evals/scorecard.json       |  41 +++
+ .../skills/hermes-forge/evals/scorecard.json  |  41 +++
+ .../skills/issue-basics/evals/scorecard.json  |  41 +++
+ .agents/skills/kernel/evals/scorecard.json    |  41 +++
+ .agents/skills/memory/evals/scorecard.json    |  41 +++
+ .../evals/scorecard.json                      |  41 +++
+ .agents/skills/plan/evals/scorecard.json      |  41 +++
+ .agents/skills/research/evals/scorecard.json  |  41 +++
+ .agents/skills/review/evals/scorecard.json    |  41 +++
+ .agents/skills/rollback/evals/scorecard.json  |  41 +++
+ .agents/skills/shepherd/evals/scorecard.json  |  41 +++
+ .agents/skills/ship/evals/scorecard.json      |  41 +++
+ .agents/skills/smith/evals/scorecard.json     |  41 +++
+ .../sonarcloud-analysis/evals/scorecard.json  |  41 +++
+ .../skills/sonarcloud/evals/scorecard.json    |  41 +++
+ .agents/skills/status/evals/scorecard.json    |  41 +++
+ .../skills/triage-ready/evals/scorecard.json  |  41 +++
+ .../skills/using-forge/evals/scorecard.json   |  41 +++
+ .agents/skills/validate/evals/scorecard.json  |  41 +++
+ .agents/skills/verify/evals/scorecard.json    |  41 +++
+ lib/commands/skill.js                         | 140 +++++++-
+ lib/skill-eval.js                             | 310 +++++++++++++++++
+ lib/using-forge.js                            |   1 +
+ skills/claim-safety/evals/scorecard.json      |  41 +++
+ skills/dev/evals/scorecard.json               |  41 +++
+ skills/hermes-forge/evals/scorecard.json      |  41 +++
+ skills/issue-basics/evals/scorecard.json      |  41 +++
+ skills/kernel/evals/scorecard.json            |  41 +++
+ skills/memory/evals/scorecard.json            |  41 +++
+ .../evals/scorecard.json                      |  41 +++
+ skills/plan/evals/scorecard.json              |  41 +++
+ skills/research/evals/scorecard.json          |  41 +++
+ skills/review/evals/scorecard.json            |  41 +++
+ skills/rollback/evals/scorecard.json          |  41 +++
+ skills/shepherd/evals/scorecard.json          |  41 +++
+ skills/ship/evals/scorecard.json              |  41 +++
+ skills/smith/evals/scorecard.json             |  41 +++
+ .../sonarcloud-analysis/evals/scorecard.json  |  41 +++
+ skills/sonarcloud/evals/scorecard.json        |  41 +++
+ skills/status/evals/scorecard.json            |  41 +++
+ skills/triage-ready/evals/scorecard.json      |  41 +++
+ skills/using-forge/evals/scorecard.json       |  41 +++
+ skills/validate/evals/scorecard.json          |  41 +++
+ skills/verify/evals/scorecard.json            |  41 +++
+ test/skill-eval.test.js                       | 327 ++++++++++++++++++
+ 46 files changed, 2490 insertions(+), 10 deletions(-)
+ create mode 100644 .agents/skills/claim-safety/evals/scorecard.json
+ create mode 100644 .agents/skills/dev/evals/scorecard.json
+ create mode 100644 .agents/skills/hermes-forge/evals/scorecard.json
+ create mode 100644 .agents/skills/issue-basics/evals/scorecard.json
+ create mode 100644 .agents/skills/kernel/evals/scorecard.json
+ create mode 100644 .agents/skills/memory/evals/scorecard.json
+ create mode 100644 .agents/skills/parallel-deep-research/evals/scorecard.json
+ create mode 100644 .agents/skills/plan/evals/scorecard.json
+ create mode 100644 .agents/skills/research/evals/scorecard.json
+ create mode 100644 .agents/skills/review/evals/scorecard.json
+ create mode 100644 .agents/skills/rollback/evals/scorecard.json
+ create mode 100644 .agents/skills/shepherd/evals/scorecard.json
+ create mode 100644 .agents/skills/ship/evals/scorecard.json
+ create mode 100644 .agents/skills/smith/evals/scorecard.json
+ create mode 100644 .agents/skills/sonarcloud-analysis/evals/scorecard.json
+ create mode 100644 .agents/skills/sonarcloud/evals/scorecard.json
+ create mode 100644 .agents/skills/status/evals/scorecard.json
+ create mode 100644 .agents/skills/triage-ready/evals/scorecard.json
+ create mode 100644 .agents/skills/using-forge/evals/scorecard.json
+ create mode 100644 .agents/skills/validate/evals/scorecard.json
+ create mode 100644 .agents/skills/verify/evals/scorecard.json
+ create mode 100644 lib/skill-eval.js
+ create mode 100644 skills/claim-safety/evals/scorecard.json
+ create mode 100644 skills/dev/evals/scorecard.json
+ create mode 100644 skills/hermes-forge/evals/scorecard.json
+ create mode 100644 skills/issue-basics/evals/scorecard.json
+ create mode 100644 skills/kernel/evals/scorecard.json
+ create mode 100644 skills/memory/evals/scorecard.json
+ create mode 100644 skills/parallel-deep-research/evals/scorecard.json
+ create mode 100644 skills/plan/evals/scorecard.json
+ create mode 100644 skills/research/evals/scorecard.json
+ create mode 100644 skills/review/evals/scorecard.json
+ create mode 100644 skills/rollback/evals/scorecard.json
+ create mode 100644 skills/shepherd/evals/scorecard.json
+ create mode 100644 skills/ship/evals/scorecard.json
+ create mode 100644 skills/smith/evals/scorecard.json
+ create mode 100644 skills/sonarcloud-analysis/evals/scorecard.json
+ create mode 100644 skills/sonarcloud/evals/scorecard.json
+ create mode 100644 skills/status/evals/scorecard.json
+ create mode 100644 skills/triage-ready/evals/scorecard.json
+ create mode 100644 skills/using-forge/evals/scorecard.json
+ create mode 100644 skills/validate/evals/scorecard.json
+ create mode 100644 skills/verify/evals/scorecard.json
+ create mode 100644 test/skill-eval.test.js
+
+diff --git a/.agents/skills/claim-safety/evals/scorecard.json b/.agents/skills/claim-safety/evals/scorecard.json
+new file mode 100644
+index 00000000..e7d6ebe7
+--- /dev/null
++++ b/.agents/skills/claim-safety/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "claim-safety",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 995,
++      "body_lines": 88,
++      "score": 43
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/.agents/skills/dev/evals/scorecard.json b/.agents/skills/dev/evals/scorecard.json
+new file mode 100644
+index 00000000..b3bbb5c2
+--- /dev/null
++++ b/.agents/skills/dev/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "dev",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 962,
++      "body_lines": 328,
++      "score": 20
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 76
++}
+diff --git a/.agents/skills/hermes-forge/evals/scorecard.json b/.agents/skills/hermes-forge/evals/scorecard.json
+new file mode 100644
+index 00000000..6084ec90
+--- /dev/null
++++ b/.agents/skills/hermes-forge/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "hermes-forge",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 157,
++      "score": 36
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 4,
++    "reachable": true,
++    "keyword_alignment": 0.67
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 81
++}
+diff --git a/.agents/skills/issue-basics/evals/scorecard.json b/.agents/skills/issue-basics/evals/scorecard.json
+new file mode 100644
+index 00000000..f6b1f0e1
+--- /dev/null
++++ b/.agents/skills/issue-basics/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "issue-basics",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 991,
++      "body_lines": 95,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 63
++}
+diff --git a/.agents/skills/kernel/evals/scorecard.json b/.agents/skills/kernel/evals/scorecard.json
+new file mode 100644
+index 00000000..aa1321fe
+--- /dev/null
++++ b/.agents/skills/kernel/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "kernel",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 187,
++      "score": 33
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 80
++}
+diff --git a/.agents/skills/memory/evals/scorecard.json b/.agents/skills/memory/evals/scorecard.json
+new file mode 100644
+index 00000000..e6f9d805
+--- /dev/null
++++ b/.agents/skills/memory/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "memory",
++  "fixtures": "no-fixtures",
++  "static": {
++    "token_cost": {
++      "desc_chars": 938,
++      "body_lines": 87,
++      "score": 45
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "no-fixtures",
++    "fixtures_total": 0,
++    "fixtures_best_hit": 0,
++    "reachable": null,
++    "keyword_alignment": null
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 84
++}
+diff --git a/.agents/skills/parallel-deep-research/evals/scorecard.json b/.agents/skills/parallel-deep-research/evals/scorecard.json
+new file mode 100644
+index 00000000..6d4a8f47
+--- /dev/null
++++ b/.agents/skills/parallel-deep-research/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "parallel-deep-research",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 996,
++      "body_lines": 92,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.2
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/.agents/skills/plan/evals/scorecard.json b/.agents/skills/plan/evals/scorecard.json
+new file mode 100644
+index 00000000..3624aa66
+--- /dev/null
++++ b/.agents/skills/plan/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "plan",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 958,
++      "body_lines": 530,
++      "score": 3
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 4,
++    "reachable": true,
++    "keyword_alignment": 0.8
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 51
++}
+diff --git a/.agents/skills/research/evals/scorecard.json b/.agents/skills/research/evals/scorecard.json
+new file mode 100644
+index 00000000..bf83e9a6
+--- /dev/null
++++ b/.agents/skills/research/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "research",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 1014,
++      "body_lines": 179,
++      "score": 33
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.4
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 60
++}
+diff --git a/.agents/skills/review/evals/scorecard.json b/.agents/skills/review/evals/scorecard.json
+new file mode 100644
+index 00000000..04faa941
+--- /dev/null
++++ b/.agents/skills/review/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "review",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 988,
++      "body_lines": 476,
++      "score": 4
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 3,
++    "reachable": true,
++    "keyword_alignment": 0.6
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 71
++}
+diff --git a/.agents/skills/rollback/evals/scorecard.json b/.agents/skills/rollback/evals/scorecard.json
+new file mode 100644
+index 00000000..e3308763
+--- /dev/null
++++ b/.agents/skills/rollback/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "rollback",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 965,
++      "body_lines": 95,
++      "score": 43
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.17
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/.agents/skills/shepherd/evals/scorecard.json b/.agents/skills/shepherd/evals/scorecard.json
+new file mode 100644
+index 00000000..544b6003
+--- /dev/null
++++ b/.agents/skills/shepherd/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "shepherd",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 991,
++      "body_lines": 51,
++      "score": 47
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.2
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 84
++}
+diff --git a/.agents/skills/ship/evals/scorecard.json b/.agents/skills/ship/evals/scorecard.json
+new file mode 100644
+index 00000000..5116d658
+--- /dev/null
++++ b/.agents/skills/ship/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "ship",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 237,
++      "score": 28
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 3,
++    "reachable": true,
++    "keyword_alignment": 0.6
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 78
++}
+diff --git a/.agents/skills/smith/evals/scorecard.json b/.agents/skills/smith/evals/scorecard.json
+new file mode 100644
+index 00000000..2920b348
+--- /dev/null
++++ b/.agents/skills/smith/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "smith",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 819,
++      "body_lines": 127,
++      "score": 47
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 84
++}
+diff --git a/.agents/skills/sonarcloud-analysis/evals/scorecard.json b/.agents/skills/sonarcloud-analysis/evals/scorecard.json
+new file mode 100644
+index 00000000..a9b48c38
+--- /dev/null
++++ b/.agents/skills/sonarcloud-analysis/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "sonarcloud-analysis",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 156,
++      "score": 36
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 81
++}
+diff --git a/.agents/skills/sonarcloud/evals/scorecard.json b/.agents/skills/sonarcloud/evals/scorecard.json
+new file mode 100644
+index 00000000..09bb0ffc
+--- /dev/null
++++ b/.agents/skills/sonarcloud/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "sonarcloud",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 977,
++      "body_lines": 147,
++      "score": 38
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 6,
++    "reachable": true,
++    "keyword_alignment": 1
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 61
++}
+diff --git a/.agents/skills/status/evals/scorecard.json b/.agents/skills/status/evals/scorecard.json
+new file mode 100644
+index 00000000..5eb1b444
+--- /dev/null
++++ b/.agents/skills/status/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "status",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 954,
++      "body_lines": 88,
++      "score": 45
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 64
++}
+diff --git a/.agents/skills/triage-ready/evals/scorecard.json b/.agents/skills/triage-ready/evals/scorecard.json
+new file mode 100644
+index 00000000..2d17d2e1
+--- /dev/null
++++ b/.agents/skills/triage-ready/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "triage-ready",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 977,
++      "body_lines": 105,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.2
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/.agents/skills/using-forge/evals/scorecard.json b/.agents/skills/using-forge/evals/scorecard.json
+new file mode 100644
+index 00000000..67453416
+--- /dev/null
++++ b/.agents/skills/using-forge/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "using-forge",
++  "fixtures": "no-fixtures",
++  "static": {
++    "token_cost": {
++      "desc_chars": 1016,
++      "body_lines": 87,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": false,
++    "router_exempt": false,
++    "fixtures": "no-fixtures",
++    "fixtures_total": 0,
++    "fixtures_best_hit": 0,
++    "reachable": null,
++    "keyword_alignment": null
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 63
++}
+diff --git a/.agents/skills/validate/evals/scorecard.json b/.agents/skills/validate/evals/scorecard.json
+new file mode 100644
+index 00000000..af43f2e5
+--- /dev/null
++++ b/.agents/skills/validate/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "validate",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 995,
++      "body_lines": 300,
++      "score": 21
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 3,
++    "reachable": true,
++    "keyword_alignment": 0.6
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 56
++}
+diff --git a/.agents/skills/verify/evals/scorecard.json b/.agents/skills/verify/evals/scorecard.json
+new file mode 100644
+index 00000000..9a18f31a
+--- /dev/null
++++ b/.agents/skills/verify/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "verify",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 890,
++      "body_lines": 287,
++      "score": 28
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 78
++}
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+index 052ddc97..b3fa1cf2 100644
+--- a/lib/commands/skill.js
++++ b/lib/commands/skill.js
+@@ -15,9 +15,14 @@
+  * @module commands/skill
+  */
+ 
+-const { routeSkill, loadSkillCatalog } = require('../using-forge');
++const fs = require('node:fs');
++const path = require('node:path');
++const { routeSkill, loadSkillCatalog, resolveSkillsRoot } = require('../using-forge');
++const skillEval = require('../skill-eval');
+ 
+-const USAGE = 'Usage: forge skill for "<situation>" [--json]';
++const USAGE = 'Usage: forge skill for "<situation>" [--json]\n' +
++  '       forge skill eval [name] --static [--json]\n' +
++  '       forge skill scores [--json]';
+ 
+ /** Extract the situation text (all non-flag args after the verb) and json flag. */
+ function parseForArgs(rest, flags) {
+@@ -64,29 +69,144 @@ function handleFor(rest, flags) {
+   return { success: true, result, output: formatRouting(result) };
+ }
+ 
++/** Resolve the skills SOURCE dir (canonical skills/ under the package/dev root), or null. */
++function resolveSkillsDir(projectRoot) {
++  const root = resolveSkillsRoot(projectRoot);
++  if (!root) return null;
++  const dir = path.join(root, 'skills');
++  return fs.existsSync(dir) ? dir : null;
++}
++
++/** Write a scorecard to skills/<name>/evals/scorecard.json (stable 2-space JSON + trailing NL). */
++function writeScorecard(skillsDir, name, card) {
++  const dir = path.join(skillsDir, name, 'evals');
++  fs.mkdirSync(dir, { recursive: true });
++  fs.writeFileSync(path.join(dir, 'scorecard.json'), JSON.stringify(card, null, 2) + '\n');
++}
++
++/**
++ * "forge skill eval [name] --static [--json]" -- compute + persist the DETERMINISTIC scorecard(s).
++ * All skills when no name. --static is the only tier today (behavioral is W5); it is accepted (and
++ * implied) so the flag reads honestly and future tiers can branch here.
++ */
++function handleEval(rest, flags, projectRoot) {
++  const json = flags.json === true || flags['--json'] === true || rest.includes('--json');
++  const positional = rest.filter(a => typeof a === 'string' && !a.startsWith('--'));
++  const name = positional[0];
++  const skillsDir = resolveSkillsDir(projectRoot);
++  if (!skillsDir) {
++    return { success: false, error: 'No canonical skills/ directory found (run from a Forge checkout).' };
++  }
++  const catalog = loadSkillCatalog(projectRoot);
++  const targets = name
++    ? [name]
++    : fs.readdirSync(skillsDir, { withFileTypes: true })
++        .filter(e => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
++        .map(e => e.name)
++        .sort();
++
++  const written = [];
++  const cards = {};
++  for (const target of targets) {
++    const card = skillEval.buildScorecard({ skillsDir, name: target, catalog });
++    if (!card) {
++      if (name) return { success: false, error: `Skill '${name}' not found under ${skillsDir}.` };
++      continue;
++    }
++    writeScorecard(skillsDir, target, card);
++    written.push(target);
++    cards[target] = card;
++  }
++
++  if (json) {
++    return { success: true, cards, output: JSON.stringify(name ? cards[name] : cards, null, 2) + '\n' };
++  }
++  const lines = ['Static scorecards written (deterministic tier):'];
++  for (const t of written) lines.push('  ' + t + '  composite=' + cards[t].composite);
++  lines.push('', 'Behavioral tier (recall/precision/chains/outcome/variance) is W5.');
++  return { success: true, cards, output: lines.join('\n') };
++}
++
++/** Render the worst-first league table from a scorecards map. */
++function formatScores(scorecards, gate) {
++  const rows = Object.values(scorecards)
++    .map(c => ({
++      skill: c.skill,
++      composite: c.composite,
++      dq: c.static.description_quality.score,
++      tok: c.static.token_cost.score,
++      caps: c.static.caps.score,
++      fixtures: c.fixtures,
++    }))
++    .sort((a, b) => a.composite - b.composite || a.skill.localeCompare(b.skill));
++
++  const lines = ['Skill scores (static tier — worst first). Composite = 0.5*desc-quality + 0.3*token-cost + 0.2*caps.', ''];
++  lines.push('  COMPOSITE  DESC-Q  TOKEN  CAPS  FIXTURES  SKILL');
++  for (const r of rows) {
++    lines.push(
++      '  ' + String(r.composite).padStart(9) +
++      '  ' + String(r.dq).padStart(6) +
++      '  ' + String(r.tok).padStart(5) +
++      '  ' + String(r.caps).padStart(4) +
++      '  ' + r.fixtures.padEnd(8) +
++      '  ' + r.skill,
++    );
++  }
++  if (gate.warnings.length > 0) {
++    lines.push('', 'Router-reachability warnings (paraphrase gap — W5 judge is the fix, not blocking):');
++    for (const w of gate.warnings) lines.push('  - ' + w.skill + ': ' + w.detail);
++  }
++  lines.push('', gate.passed ? 'CI gate: PASS' : 'CI gate: FAIL (' + gate.failures.length + ')');
++  for (const f of gate.failures) lines.push('  x ' + f.skill + ': ' + f.kind + ' — ' + f.detail);
++  return lines.join('\n');
++}
++
++/** "forge skill scores [--json]" -- the league table over committed/recomputed scorecards. */
++function handleScores(rest, flags, projectRoot) {
++  const json = flags.json === true || flags['--json'] === true || rest.includes('--json');
++  const skillsDir = resolveSkillsDir(projectRoot);
++  if (!skillsDir) {
++    return { success: false, error: 'No canonical skills/ directory found (run from a Forge checkout).' };
++  }
++  const catalog = loadSkillCatalog(projectRoot);
++  const scorecards = skillEval.buildAllScorecards(skillsDir, catalog);
++  const gate = skillEval.evaluateGate(scorecards);
++  if (json) {
++    return { success: true, scorecards, gate, output: JSON.stringify({ scorecards, gate }, null, 2) + '\n' };
++  }
++  return { success: true, scorecards, gate, output: formatScores(scorecards, gate) };
++}
++
+ module.exports = {
+   name: 'skill',
+-  description: 'Route a situation to the best-fit Forge skill (forge skill for "<situation>")',
+-  usage: USAGE + '\n       (future: forge skill eval | forge skill scores)',
++  description: 'Route, evaluate, and score Forge skills (forge skill for | eval | scores)',
++  usage: USAGE,
+   flags: {
+-    '--json': 'Emit the machine-readable routing result',
++    '--json': 'Emit the machine-readable result',
++    '--static': 'Score only the deterministic static tier (the only tier today; behavioral is W5)',
+   },
+   // flags is the LAST declared param so its `= {}` default is trailing (SonarCloud S1788). The
+-  // registry still passes (args, flags, projectRoot, opts) — the extra args are simply ignored,
+-  // and the router reads the canonical catalog from the package root, not projectRoot.
+-  handler: (args, flags = {}) => {
++  // registry still passes (args, flags, projectRoot, opts) — the router reads the canonical catalog
++  // from the package root; eval/scores read the canonical skills/ source dir.
++  handler: (args, flags = {}, projectRoot) => {
+     const verb = args[0];
+     if (verb === 'for') {
+       return handleFor(args.slice(1), flags);
+     }
++    if (verb === 'eval') {
++      return handleEval(args.slice(1), flags, projectRoot);
++    }
++    if (verb === 'scores') {
++      return handleScores(args.slice(1), flags, projectRoot);
++    }
+     if (!verb) {
+       return { success: false, error: 'Missing verb.\n' + USAGE };
+     }
+     return {
+       success: false,
+-      error: "Unknown verb '" + verb + "'. Supported: for.\n" + USAGE,
++      error: "Unknown verb '" + verb + "'. Supported: for, eval, scores.\n" + USAGE,
+     };
+   },
+   // Exposed for unit tests; not part of the CLI surface.
+-  _internal: { parseForArgs, formatRouting, handleFor },
++  _internal: { parseForArgs, formatRouting, handleFor, handleEval, handleScores, formatScores },
+ };
+diff --git a/lib/skill-eval.js b/lib/skill-eval.js
+new file mode 100644
+index 00000000..45924ad3
+--- /dev/null
++++ b/lib/skill-eval.js
+@@ -0,0 +1,310 @@
++'use strict';
++
++/**
++ * Static skill-eval scorer (W3) -- a DETERMINISTIC, free, CI-gateable scorecard per skill.
++ *
++ * WHY only three scored parameters. A skill's real quality includes how reliably it TRIGGERS on
++ * paraphrased intent, whether its chains fire correctly, and its live-outcome quality. Those are
++ * inherently SEMANTIC: the skills/<name>/evals/evals.json fixtures are natural paraphrases, and
++ * the W1 deterministic router (routeSkill) is a curated-KEYWORD matcher -- so measuring recall
++ * with it scores keyword overlap, not skill quality (mean ~0.32 on real fixtures). Trigger
++ * recall/precision/disambiguation therefore belong to the W5 BEHAVIORAL tier (LLM judge) and
++ * appear here ONLY as typed placeholders. The static composite is built from the parameters that
++ * ARE deterministic and free to measure:
++ *
++ *   - token_cost         description chars + body lines, normalized (lower is better).
++ *   - caps               compliance with the desc<=1024 / body<=500 progressive-disclosure budget.
++ *   - description_quality has explicit trigger phrases + disambiguation cues (the PR #292 pattern).
++ *
++ * Alongside the composite we run a ROUTER-REACHABILITY LINT (independent of the quality score): a
++ * fixtured skill with NO curated INTENT_RULES rule and not router-exempt can NEVER be reached via
++ * `forge skill for` -- a real defect the gate blocks. A skill that HAS a rule but whose paraphrase
++ * fixtures don't hit its keywords is only a warning (that gap is exactly what the W5 judge fixes).
++ *
++ * Everything here is pure fs + pure JS: no LLM, no network, no subprocess -> reproducible in CI on
++ * every platform. Follow-up rationale is recorded in kernel issue skill-eval-static.
++ *
++ * @module skill-eval
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { INTENT_RULES, routeSkill, resolveSkillsRoot } = require('./using-forge');
++
++// Progressive-disclosure budget -- mirrors test/skills/context-cost.test.js (single source of the
++// numbers; kept in sync by the shared gate philosophy, not a runtime import to avoid test-dep).
++const DESC_CAP = 1024; // Anthropic Agent Skills description limit (hard)
++const BODY_CAP = 500; // body-line budget (loads on every trigger)
++
++// Skills whose body legitimately exceeds BODY_CAP (documented in context-cost). `plan` keeps its
++// HARD-GATEs in the body by design. Mirror it here so caps scoring agrees with the context gate.
++const BODY_OVER_ALLOWLIST = new Set(['plan']);
++
++// Skills intentionally NOT deterministic route targets (harness-internal, never user-invoked).
++// Empty today: hermes-forge is a legitimate Hermes-session trigger target and instead carries a
++// curated INTENT_RULES rule. The mechanism is retained (mirrors the chain-exempt pattern) so a
++// future internal adapter can be classified honestly rather than forced to fake a route.
++const ROUTER_EXEMPT = new Set([]);
++
++// Documented composite weighting over the deterministic static params. description_quality leads
++// (it is the actionable, skill-authored signal); token_cost next; caps compliance last (it is also
++// a hard gate, so it contributes little marginal ranking signal). Weights sum to 1.
++const WEIGHTS = Object.freeze({ description_quality: 0.5, token_cost: 0.3, caps: 0.2 });
++
++// Gate floor for description_quality. 60 == adequate length + at least one of {trigger,
++// disambiguation} cue; every canonical skill meets it today, and a regression that strips a
++// skill's trigger phrasing AND contrast cues, or shrinks it below the length band, trips it.
++const DESC_QUALITY_FLOOR = 60;
++
++// Deterministic description-quality cues (lowercased substring checks -- no regex backtracking).
++const TRIGGER_CUES = ['use when', 'use this', 'use it when', 'use whenever', 'when the user', 'when you', 'triggers:', 'trigger:'];
++const DISAMBIGUATION_CUES = ['not ', "don't", 'do not', 'never', 'unlike', 'instead of', 'rather than', ' vs ', 'vs.', 'as opposed to', 'not for', 'skip'];
++
++const RULE_SKILLS = new Set(INTENT_RULES.map(r => r.skill));
++
++/** True when `name` has a curated INTENT_RULES rule (i.e. the deterministic router can target it). */
++function hasCuratedRule(name) {
++  return RULE_SKILLS.has(name);
++}
++
++/** Clamp a ratio into [0, 1]. */
++function clamp01(x) {
++  if (x < 0) return 0;
++  if (x > 1) return 1;
++  return x;
++}
++
++/**
++ * token_cost: normalized cost of a skill's permanent (description) + on-trigger (body) footprint.
++ * Lower cost -> higher score. Each axis is measured against its cap and averaged 50/50.
++ * @param {{descLen:number, bodyLines:number}} m
++ */
++function scoreTokenCost({ descLen, bodyLines }) {
++  const descRatio = clamp01(descLen / DESC_CAP);
++  const bodyRatio = clamp01(bodyLines / BODY_CAP);
++  const score = Math.round(100 * (1 - (descRatio * 0.5 + bodyRatio * 0.5)));
++  return { desc_chars: descLen, body_lines: bodyLines, score };
++}
++
++/**
++ * caps: hard compliance with the progressive-disclosure budget. Description over the cap always
++ * fails; body over the cap fails UNLESS the skill is allowlisted (mirrors the context-cost gate).
++ * @param {{descLen:number, bodyLines:number, allowlisted:boolean}} m
++ */
++function scoreCaps({ descLen, bodyLines, allowlisted }) {
++  const descWithin = descLen <= DESC_CAP;
++  const bodyWithin = bodyLines <= BODY_CAP || allowlisted === true;
++  return { desc_within: descWithin, body_within: bodyWithin, score: descWithin && bodyWithin ? 100 : 0 };
++}
++
++/** Case-insensitive "does haystack contain any of these substrings". */
++function containsAny(haystack, needles) {
++  const lower = String(haystack).toLowerCase();
++  return needles.some(n => lower.includes(n));
++}
++
++/**
++ * description_quality: the PR #292 description pattern, scored deterministically.
++ *   - trigger cues present   (explicit "use when / when the user / triggers:") -> 40
++ *   - disambiguation cues     (contrast markers: "NOT the X skill", "unlike", ...) -> 40
++ *   - adequate length         (>=120 chars and within the cap)                    -> 20
++ * @param {string} description
++ */
++function scoreDescriptionQuality(description) {
++  const desc = String(description || '');
++  const hasTrigger = containsAny(desc, TRIGGER_CUES);
++  const hasDisambiguation = containsAny(desc, DISAMBIGUATION_CUES);
++  const adequate = desc.length >= 120 && desc.length <= DESC_CAP;
++  const score = (hasTrigger ? 40 : 0) + (hasDisambiguation ? 40 : 0) + (adequate ? 20 : 0);
++  return { has_trigger_cues: hasTrigger, has_disambiguation_cues: hasDisambiguation, adequate_length: adequate, score };
++}
++
++/** Weighted composite over the three deterministic static params -> integer 0..100. */
++function composite({ tokenCost, caps, descQuality }) {
++  const value =
++    WEIGHTS.description_quality * descQuality.score +
++    WEIGHTS.token_cost * tokenCost.score +
++    WEIGHTS.caps * caps.score;
++  return Math.max(0, Math.min(100, Math.round(value)));
++}
++
++/** The W5 behavioral-tier params, typed as null placeholders so consumers can rely on the shape. */
++function behavioralPlaceholders() {
++  return {
++    trigger_recall: null,
++    trigger_precision: null,
++    disambiguation: null,
++    chain_correctness: null,
++    outcome_quality: null,
++    variance: null,
++    note: 'behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic',
++  };
++}
++
++/**
++ * Router-reachability lint (B): run a skill's should_trigger fixtures through the deterministic
++ * router and report whether >=1 places this skill as best-match. This measures the W1 router's
++ * COVERAGE (a fixable gap), NOT skill quality, so it is separate from the composite.
++ *
++ * @param {{name:string, fixtures:Array|null, catalog:Array, hasRule:boolean, exempt:boolean}} args
++ */
++function routerReachability({ name, fixtures, catalog, hasRule, exempt }) {
++  const base = { has_curated_rule: hasRule === true, router_exempt: exempt === true };
++  const positives = Array.isArray(fixtures) ? fixtures.filter(f => f && f.should_trigger === true) : null;
++  if (!positives || positives.length === 0) {
++    return { ...base, fixtures: 'no-fixtures', fixtures_total: 0, fixtures_best_hit: 0, reachable: null, keyword_alignment: null };
++  }
++  let hit = 0;
++  for (const f of positives) {
++    const r = routeSkill(f.query, { catalog });
++    if (r.best === name) hit += 1;
++  }
++  return {
++    ...base,
++    fixtures: 'present',
++    fixtures_total: positives.length,
++    fixtures_best_hit: hit,
++    reachable: hit > 0,
++    keyword_alignment: Math.round((hit / positives.length) * 100) / 100,
++  };
++}
++
++/** Strip a leading UTF-8 BOM without embedding the literal char. */
++function stripBom(value) {
++  const s = String(value);
++  return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
++}
++
++/**
++ * Parse a skill's SKILL.md source into { name, description, descLen, bodyLines }. Mirrors the
++ * context-cost parser so caps/token measurements agree with that gate. Returns null when absent.
++ * @param {string} skillsDir absolute path to the skills/ directory
++ * @param {string} name skill folder name
++ */
++function parseSkillSource(skillsDir, name) {
++  const file = path.join(skillsDir, name, 'SKILL.md');
++  if (!fs.existsSync(file)) return null;
++  const text = stripBom(fs.readFileSync(file, 'utf8'));
++  const lines = text.split(/\r?\n/);
++  if (lines[0].trim() !== '---') return { name, description: '', descLen: 0, bodyLines: lines.length };
++  let fmEnd = -1;
++  for (let i = 1; i < lines.length; i++) {
++    if (lines[i].trim() === '---') { fmEnd = i; break; }
++  }
++  if (fmEnd === -1) return { name, description: '', descLen: 0, bodyLines: 0 };
++  const fm = lines.slice(1, fmEnd).join('\n');
++  const m = fm.match(/description:\s*([\s\S]*?)(?:\n[A-Za-z_-]+:|$)/);
++  const description = m ? m[1].replace(/^>\s*/, '').replace(/\s+/g, ' ').trim() : '';
++  const bodyLines = lines.length - (fmEnd + 1);
++  return { name, description, descLen: description.length, bodyLines };
++}
++
++/** Load a skill's evals.json fixtures, or null when the skill has none. */
++function loadFixtures(skillsDir, name) {
++  const file = path.join(skillsDir, name, 'evals', 'evals.json');
++  if (!fs.existsSync(file)) return null;
++  try {
++    const parsed = JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
++    return Array.isArray(parsed) ? parsed : null;
++  } catch {
++    return null;
++  }
++}
++
++/**
++ * Build a full deterministic scorecard for one skill. `catalog` is the router catalog (injectable);
++ * a skill missing its SKILL.md yields null.
++ * @param {{skillsDir:string, name:string, catalog:Array}} args
++ */
++function buildScorecard({ skillsDir, name, catalog }) {
++  const src = parseSkillSource(skillsDir, name);
++  if (!src) return null;
++  const allowlisted = BODY_OVER_ALLOWLIST.has(name);
++  const tokenCost = scoreTokenCost({ descLen: src.descLen, bodyLines: src.bodyLines });
++  const caps = scoreCaps({ descLen: src.descLen, bodyLines: src.bodyLines, allowlisted });
++  const descQuality = scoreDescriptionQuality(src.description);
++  const fixtures = loadFixtures(skillsDir, name);
++  const reachability = routerReachability({
++    name,
++    fixtures,
++    catalog: catalog || [],
++    hasRule: hasCuratedRule(name),
++    exempt: ROUTER_EXEMPT.has(name),
++  });
++  return {
++    skill: name,
++    fixtures: reachability.fixtures === 'no-fixtures' ? 'no-fixtures' : 'present',
++    static: { token_cost: tokenCost, caps, description_quality: descQuality },
++    router_reachability: reachability,
++    behavioral: behavioralPlaceholders(),
++    composite: composite({ tokenCost, caps, descQuality }),
++  };
++}
++
++/** Build scorecards for every skill under `skillsDir`, keyed by name (sorted, deterministic). */
++function buildAllScorecards(skillsDir, catalog) {
++  const cat = catalog || [];
++  const names = fs
++    .readdirSync(skillsDir, { withFileTypes: true })
++    .filter(e => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
++    .map(e => e.name)
++    .sort();
++  const out = {};
++  for (const name of names) {
++    const card = buildScorecard({ skillsDir, name, catalog: cat });
++    if (card) out[name] = card;
++  }
++  return out;
++}
++
++/**
++ * The CI GATE. Given scorecards keyed by name, returns { passed, failures, warnings }.
++ * HARD failures (block CI):
++ *   - caps: a description over the char cap or a non-allowlisted body over the line cap.
++ *   - description_quality: below DESC_QUALITY_FLOOR.
++ *   - router_unreachable: a FIXTURED skill with NO curated rule and NOT router-exempt (the router
++ *     can never reach it via `forge skill for`).
++ * WARNINGS (surface in `forge skill scores`, never block): a fixtured skill that HAS a rule but
++ * whose paraphrase fixtures don't hit its keywords (reachable:false) -- the W5 judge is the real fix.
++ */
++function evaluateGate(scorecards) {
++  const failures = [];
++  const warnings = [];
++  for (const [name, card] of Object.entries(scorecards)) {
++    if (card.static.caps.score !== 100) {
++      failures.push({ skill: name, kind: 'caps', detail: `desc_within=${card.static.caps.desc_within} body_within=${card.static.caps.body_within}` });
++    }
++    if (card.static.description_quality.score < DESC_QUALITY_FLOOR) {
++      failures.push({ skill: name, kind: 'description_quality', detail: `score ${card.static.description_quality.score} < floor ${DESC_QUALITY_FLOOR}` });
++    }
++    const rr = card.router_reachability;
++    if (rr.fixtures === 'present' && !rr.has_curated_rule && !rr.router_exempt) {
++      failures.push({ skill: name, kind: 'router_unreachable', detail: 'fixtured skill has no curated INTENT_RULES rule and is not router-exempt' });
++    } else if (rr.fixtures === 'present' && rr.has_curated_rule && rr.reachable === false) {
++      warnings.push({ skill: name, kind: 'router_keyword_gap', detail: 'has a rule but no fixture reaches it (paraphrase gap — W5)' });
++    }
++  }
++  return { passed: failures.length === 0, failures, warnings };
++}
++
++module.exports = {
++  DESC_CAP,
++  BODY_CAP,
++  BODY_OVER_ALLOWLIST,
++  ROUTER_EXEMPT,
++  WEIGHTS,
++  DESC_QUALITY_FLOOR,
++  hasCuratedRule,
++  scoreTokenCost,
++  scoreCaps,
++  scoreDescriptionQuality,
++  composite,
++  behavioralPlaceholders,
++  routerReachability,
++  parseSkillSource,
++  loadFixtures,
++  buildScorecard,
++  buildAllScorecards,
++  evaluateGate,
++  resolveSkillsRoot,
++};
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index bcf356ca..0c615846 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -188,6 +188,7 @@ const INTENT_RULES = Object.freeze([
+   { skill: 'sonarcloud-analysis', weight: 1, keywords: ['sonarcloud analysis', 'sonar analysis', 'sonarcloud report', 'analyze with sonar'] },
+   { skill: 'rollback', weight: 2, keywords: ['revert', 'roll back', 'rollback', 'undo the merge', 'undo a change'] },
+   { skill: 'kernel', weight: 1, keywords: ['how does forge', 'which command', 'which skill', 'how is forge set up', 'new here', 'orient'] },
++  { skill: 'hermes-forge', weight: 2, keywords: ['hermes', 'hermes session', 'forge orient', 'orient me', 'orient came back', 'orient envelope', 'cite the source', 'where does that decision come from'] },
+ ]);
+ 
+ /** Normalize a situation string for matching: lowercase, collapse whitespace, strip punctuation. */
+diff --git a/skills/claim-safety/evals/scorecard.json b/skills/claim-safety/evals/scorecard.json
+new file mode 100644
+index 00000000..e7d6ebe7
+--- /dev/null
++++ b/skills/claim-safety/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "claim-safety",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 995,
++      "body_lines": 88,
++      "score": 43
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/skills/dev/evals/scorecard.json b/skills/dev/evals/scorecard.json
+new file mode 100644
+index 00000000..b3bbb5c2
+--- /dev/null
++++ b/skills/dev/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "dev",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 962,
++      "body_lines": 328,
++      "score": 20
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 76
++}
+diff --git a/skills/hermes-forge/evals/scorecard.json b/skills/hermes-forge/evals/scorecard.json
+new file mode 100644
+index 00000000..6084ec90
+--- /dev/null
++++ b/skills/hermes-forge/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "hermes-forge",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 157,
++      "score": 36
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 4,
++    "reachable": true,
++    "keyword_alignment": 0.67
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 81
++}
+diff --git a/skills/issue-basics/evals/scorecard.json b/skills/issue-basics/evals/scorecard.json
+new file mode 100644
+index 00000000..f6b1f0e1
+--- /dev/null
++++ b/skills/issue-basics/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "issue-basics",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 991,
++      "body_lines": 95,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 63
++}
+diff --git a/skills/kernel/evals/scorecard.json b/skills/kernel/evals/scorecard.json
+new file mode 100644
+index 00000000..aa1321fe
+--- /dev/null
++++ b/skills/kernel/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "kernel",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 187,
++      "score": 33
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 80
++}
+diff --git a/skills/memory/evals/scorecard.json b/skills/memory/evals/scorecard.json
+new file mode 100644
+index 00000000..e6f9d805
+--- /dev/null
++++ b/skills/memory/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "memory",
++  "fixtures": "no-fixtures",
++  "static": {
++    "token_cost": {
++      "desc_chars": 938,
++      "body_lines": 87,
++      "score": 45
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "no-fixtures",
++    "fixtures_total": 0,
++    "fixtures_best_hit": 0,
++    "reachable": null,
++    "keyword_alignment": null
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 84
++}
+diff --git a/skills/parallel-deep-research/evals/scorecard.json b/skills/parallel-deep-research/evals/scorecard.json
+new file mode 100644
+index 00000000..6d4a8f47
+--- /dev/null
++++ b/skills/parallel-deep-research/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "parallel-deep-research",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 996,
++      "body_lines": 92,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.2
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/skills/plan/evals/scorecard.json b/skills/plan/evals/scorecard.json
+new file mode 100644
+index 00000000..3624aa66
+--- /dev/null
++++ b/skills/plan/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "plan",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 958,
++      "body_lines": 530,
++      "score": 3
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 4,
++    "reachable": true,
++    "keyword_alignment": 0.8
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 51
++}
+diff --git a/skills/research/evals/scorecard.json b/skills/research/evals/scorecard.json
+new file mode 100644
+index 00000000..bf83e9a6
+--- /dev/null
++++ b/skills/research/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "research",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 1014,
++      "body_lines": 179,
++      "score": 33
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.4
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 60
++}
+diff --git a/skills/review/evals/scorecard.json b/skills/review/evals/scorecard.json
+new file mode 100644
+index 00000000..04faa941
+--- /dev/null
++++ b/skills/review/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "review",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 988,
++      "body_lines": 476,
++      "score": 4
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 3,
++    "reachable": true,
++    "keyword_alignment": 0.6
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 71
++}
+diff --git a/skills/rollback/evals/scorecard.json b/skills/rollback/evals/scorecard.json
+new file mode 100644
+index 00000000..e3308763
+--- /dev/null
++++ b/skills/rollback/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "rollback",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 965,
++      "body_lines": 95,
++      "score": 43
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.17
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/skills/shepherd/evals/scorecard.json b/skills/shepherd/evals/scorecard.json
+new file mode 100644
+index 00000000..544b6003
+--- /dev/null
++++ b/skills/shepherd/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "shepherd",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 991,
++      "body_lines": 51,
++      "score": 47
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.2
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 84
++}
+diff --git a/skills/ship/evals/scorecard.json b/skills/ship/evals/scorecard.json
+new file mode 100644
+index 00000000..5116d658
+--- /dev/null
++++ b/skills/ship/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "ship",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 237,
++      "score": 28
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 3,
++    "reachable": true,
++    "keyword_alignment": 0.6
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 78
++}
+diff --git a/skills/smith/evals/scorecard.json b/skills/smith/evals/scorecard.json
+new file mode 100644
+index 00000000..2920b348
+--- /dev/null
++++ b/skills/smith/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "smith",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 819,
++      "body_lines": 127,
++      "score": 47
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 84
++}
+diff --git a/skills/sonarcloud-analysis/evals/scorecard.json b/skills/sonarcloud-analysis/evals/scorecard.json
+new file mode 100644
+index 00000000..a9b48c38
+--- /dev/null
++++ b/skills/sonarcloud-analysis/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "sonarcloud-analysis",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 993,
++      "body_lines": 156,
++      "score": 36
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 0,
++    "reachable": false,
++    "keyword_alignment": 0
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 81
++}
+diff --git a/skills/sonarcloud/evals/scorecard.json b/skills/sonarcloud/evals/scorecard.json
+new file mode 100644
+index 00000000..09bb0ffc
+--- /dev/null
++++ b/skills/sonarcloud/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "sonarcloud",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 977,
++      "body_lines": 147,
++      "score": 38
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 6,
++    "reachable": true,
++    "keyword_alignment": 1
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 61
++}
+diff --git a/skills/status/evals/scorecard.json b/skills/status/evals/scorecard.json
+new file mode 100644
+index 00000000..5eb1b444
+--- /dev/null
++++ b/skills/status/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "status",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 954,
++      "body_lines": 88,
++      "score": 45
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 64
++}
+diff --git a/skills/triage-ready/evals/scorecard.json b/skills/triage-ready/evals/scorecard.json
+new file mode 100644
+index 00000000..2d17d2e1
+--- /dev/null
++++ b/skills/triage-ready/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "triage-ready",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 977,
++      "body_lines": 105,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 1,
++    "reachable": true,
++    "keyword_alignment": 0.2
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 83
++}
+diff --git a/skills/using-forge/evals/scorecard.json b/skills/using-forge/evals/scorecard.json
+new file mode 100644
+index 00000000..67453416
+--- /dev/null
++++ b/skills/using-forge/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "using-forge",
++  "fixtures": "no-fixtures",
++  "static": {
++    "token_cost": {
++      "desc_chars": 1016,
++      "body_lines": 87,
++      "score": 42
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": false,
++    "router_exempt": false,
++    "fixtures": "no-fixtures",
++    "fixtures_total": 0,
++    "fixtures_best_hit": 0,
++    "reachable": null,
++    "keyword_alignment": null
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 63
++}
+diff --git a/skills/validate/evals/scorecard.json b/skills/validate/evals/scorecard.json
+new file mode 100644
+index 00000000..af43f2e5
+--- /dev/null
++++ b/skills/validate/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "validate",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 995,
++      "body_lines": 300,
++      "score": 21
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": false,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 60
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 5,
++    "fixtures_best_hit": 3,
++    "reachable": true,
++    "keyword_alignment": 0.6
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 56
++}
+diff --git a/skills/verify/evals/scorecard.json b/skills/verify/evals/scorecard.json
+new file mode 100644
+index 00000000..9a18f31a
+--- /dev/null
++++ b/skills/verify/evals/scorecard.json
+@@ -0,0 +1,41 @@
++{
++  "skill": "verify",
++  "fixtures": "present",
++  "static": {
++    "token_cost": {
++      "desc_chars": 890,
++      "body_lines": 287,
++      "score": 28
++    },
++    "caps": {
++      "desc_within": true,
++      "body_within": true,
++      "score": 100
++    },
++    "description_quality": {
++      "has_trigger_cues": true,
++      "has_disambiguation_cues": true,
++      "adequate_length": true,
++      "score": 100
++    }
++  },
++  "router_reachability": {
++    "has_curated_rule": true,
++    "router_exempt": false,
++    "fixtures": "present",
++    "fixtures_total": 6,
++    "fixtures_best_hit": 2,
++    "reachable": true,
++    "keyword_alignment": 0.33
++  },
++  "behavioral": {
++    "trigger_recall": null,
++    "trigger_precision": null,
++    "disambiguation": null,
++    "chain_correctness": null,
++    "outcome_quality": null,
++    "variance": null,
++    "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
++  },
++  "composite": 78
++}
+diff --git a/test/skill-eval.test.js b/test/skill-eval.test.js
+new file mode 100644
+index 00000000..d989534a
+--- /dev/null
++++ b/test/skill-eval.test.js
+@@ -0,0 +1,327 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++// ─── static skill-eval scorer (W3) ────────────────────────────────────────────
++//
++// The STATIC tier is DETERMINISTIC and free: it scores only the parameters that
++// can be measured without an LLM or network — token cost, cap compliance, and a
++// description-quality heuristic (the PR #292 pattern). TRUE trigger recall/
++// precision is inherently SEMANTIC (the evals.json fixtures are paraphrases), so
++// it belongs to the W5 behavioral tier and lives here only as a typed placeholder.
++//
++// This file is BOTH the unit spec for the scorer and the CI GATE: it recomputes
++// scorecards from the canonical skills/ source and fails on a cap violation, a
++// description-quality regression, a committed-scorecard drift, or a fixtured skill
++// the deterministic router can NEVER reach (no curated rule + not router-exempt).
++
++const {
++  DESC_CAP,
++  BODY_CAP,
++  WEIGHTS,
++  DESC_QUALITY_FLOOR,
++  scoreTokenCost,
++  scoreCaps,
++  scoreDescriptionQuality,
++  composite,
++  routerReachability,
++  behavioralPlaceholders,
++  buildScorecard,
++  buildAllScorecards,
++  evaluateGate,
++  parseSkillSource,
++} = require('../lib/skill-eval');
++
++const { loadSkillCatalog } = require('../lib/using-forge');
++
++const repoRoot = path.resolve(__dirname, '..');
++const skillsDir = path.join(repoRoot, 'skills');
++
++// ── token cost ────────────────────────────────────────────────────────────────
++describe('scoreTokenCost', () => {
++  test('a zero-cost skill scores 100 (lower cost is better)', () => {
++    expect(scoreTokenCost({ descLen: 0, bodyLines: 0 }).score).toBe(100);
++  });
++
++  test('a skill at both caps scores 0', () => {
++    expect(scoreTokenCost({ descLen: DESC_CAP, bodyLines: BODY_CAP }).score).toBe(0);
++  });
++
++  test('half-budget on both axes scores 50', () => {
++    expect(scoreTokenCost({ descLen: DESC_CAP / 2, bodyLines: BODY_CAP / 2 }).score).toBe(50);
++  });
++
++  test('over-cap inputs clamp (never negative)', () => {
++    expect(scoreTokenCost({ descLen: DESC_CAP * 4, bodyLines: BODY_CAP * 4 }).score).toBe(0);
++  });
++
++  test('echoes the raw measurements', () => {
++    const r = scoreTokenCost({ descLen: 300, bodyLines: 120 });
++    expect(r.desc_chars).toBe(300);
++    expect(r.body_lines).toBe(120);
++  });
++});
++
++// ── caps ────────────────────────────────────────────────────────────────────
++describe('scoreCaps', () => {
++  test('within both caps scores 100', () => {
++    const r = scoreCaps({ descLen: 500, bodyLines: 200, allowlisted: false });
++    expect(r.score).toBe(100);
++    expect(r.desc_within).toBe(true);
++    expect(r.body_within).toBe(true);
++  });
++
++  test('description over the cap fails (score 0)', () => {
++    expect(scoreCaps({ descLen: DESC_CAP + 1, bodyLines: 10, allowlisted: false }).score).toBe(0);
++  });
++
++  test('body over the cap fails when NOT allowlisted', () => {
++    const r = scoreCaps({ descLen: 100, bodyLines: BODY_CAP + 1, allowlisted: false });
++    expect(r.score).toBe(0);
++    expect(r.body_within).toBe(false);
++  });
++
++  test('body over the cap PASSES when allowlisted (e.g. plan)', () => {
++    expect(scoreCaps({ descLen: 100, bodyLines: BODY_CAP + 30, allowlisted: true }).score).toBe(100);
++  });
++});
++
++// ── description quality (PR #292 pattern) ─────────────────────────────────────
++describe('scoreDescriptionQuality', () => {
++  test('trigger phrases + disambiguation cues + adequate length scores 100', () => {
++    const desc =
++      'Use this when the user wants to open a pull request. This is NOT the review skill and unlike ship it never merges. '.repeat(2);
++    const r = scoreDescriptionQuality(desc);
++    expect(r.has_trigger_cues).toBe(true);
++    expect(r.has_disambiguation_cues).toBe(true);
++    expect(r.adequate_length).toBe(true);
++    expect(r.score).toBe(100);
++  });
++
++  test('missing trigger cues drops the score below 100', () => {
++    const desc = 'This skill opens pull requests. It is not the review skill. '.repeat(3);
++    const r = scoreDescriptionQuality(desc);
++    expect(r.has_trigger_cues).toBe(false);
++    expect(r.score).toBeLessThan(100);
++  });
++
++  test('a too-short description loses the adequate-length points', () => {
++    const r = scoreDescriptionQuality('Use when shipping.');
++    expect(r.adequate_length).toBe(false);
++  });
++});
++
++// ── composite ─────────────────────────────────────────────────────────────────
++describe('composite', () => {
++  test('applies the documented weighting', () => {
++    const value = composite({
++      tokenCost: { score: 80 },
++      caps: { score: 100 },
++      descQuality: { score: 100 },
++    });
++    // 0.5*100 + 0.3*80 + 0.2*100 = 94
++    expect(value).toBe(94);
++  });
++
++  test('weights sum to 1', () => {
++    const sum = WEIGHTS.description_quality + WEIGHTS.token_cost + WEIGHTS.caps;
++    expect(Math.round(sum * 1000) / 1000).toBe(1);
++  });
++
++  test('is an integer in 0..100', () => {
++    const value = composite({ tokenCost: { score: 33 }, caps: { score: 0 }, descQuality: { score: 61 } });
++    expect(Number.isInteger(value)).toBe(true);
++    expect(value).toBeGreaterThanOrEqual(0);
++    expect(value).toBeLessThanOrEqual(100);
++  });
++});
++
++// ── behavioral placeholders (W5) ──────────────────────────────────────────────
++describe('behavioralPlaceholders', () => {
++  test('all behavioral params are typed null and labeled W5', () => {
++    const b = behavioralPlaceholders();
++    for (const key of ['trigger_recall', 'trigger_precision', 'disambiguation', 'chain_correctness', 'outcome_quality', 'variance']) {
++      expect(b[key]).toBeNull();
++    }
++    expect(String(b.note).toLowerCase()).toContain('w5');
++  });
++});
++
++// ── router reachability lint (B) — deterministic, uses routeSkill ─────────────
++describe('routerReachability', () => {
++  const catalog = [
++    { name: 'ship', description: 'open a pr' },
++    { name: 'dev', description: 'fix a bug' },
++    { name: 'adapter-x', description: 'internal adapter' },
++  ];
++
++  test('a fixtured skill with a curated rule and a matching fixture is reachable', () => {
++    const r = routerReachability({
++      name: 'ship',
++      fixtures: [{ query: 'open a pr for this branch', should_trigger: true }],
++      catalog,
++      hasRule: true,
++      exempt: false,
++    });
++    expect(r.has_curated_rule).toBe(true);
++    expect(r.reachable).toBe(true);
++    expect(r.fixtures_best_hit).toBeGreaterThanOrEqual(1);
++  });
++
++  test('a fixtured skill with NO rule and NOT exempt is a hard defect (unreachable)', () => {
++    const r = routerReachability({
++      name: 'adapter-x',
++      fixtures: [{ query: 'do the adapter thing', should_trigger: true }],
++      catalog,
++      hasRule: false,
++      exempt: false,
++    });
++    expect(r.has_curated_rule).toBe(false);
++    expect(r.router_exempt).toBe(false);
++    expect(r.reachable).toBe(false);
++  });
++
++  test('a skill without fixtures is marked no-fixtures, not crashed', () => {
++    const r = routerReachability({ name: 'memory', fixtures: null, catalog, hasRule: true, exempt: false });
++    expect(r.fixtures).toBe('no-fixtures');
++    expect(r.has_curated_rule).toBe(true);
++  });
++});
++
++// ── scorecard shape ──────────────────────────────────────────────────────────
++describe('buildScorecard', () => {
++  const catalog = loadSkillCatalog(repoRoot);
++
++  test('a real fixtured skill produces a complete, typed scorecard', () => {
++    const card = buildScorecard({ skillsDir, name: 'ship', catalog });
++    expect(card.skill).toBe('ship');
++    expect(card.fixtures).toBe('present');
++    expect(card.static.token_cost.score).toBeGreaterThanOrEqual(0);
++    expect(card.static.caps.score).toBe(100);
++    expect(card.static.description_quality.score).toBeGreaterThanOrEqual(DESC_QUALITY_FLOOR);
++    expect(Number.isInteger(card.composite)).toBe(true);
++    // behavioral tier is a placeholder, never fabricated
++    expect(card.behavioral.trigger_recall).toBeNull();
++  });
++
++  test('a skill WITHOUT fixtures still scores the deterministic params (no crash)', () => {
++    const card = buildScorecard({ skillsDir, name: 'using-forge', catalog });
++    expect(card.fixtures).toBe('no-fixtures');
++    expect(Number.isInteger(card.composite)).toBe(true);
++    expect(card.static.description_quality.score).toBeGreaterThanOrEqual(0);
++  });
++});
++
++// ── the CI gate ────────────────────────────────────────────────────────────────
++describe('evaluateGate (CI gate)', () => {
++  const catalog = loadSkillCatalog(repoRoot);
++  const scorecards = buildAllScorecards(skillsDir, catalog);
++
++  test('every skill in the canonical library PASSES the gate today', () => {
++    const result = evaluateGate(scorecards);
++    if (!result.passed) {
++      throw new Error('Static skill-eval gate failures:\n' + result.failures.map(f => `  ${f.skill}: ${f.kind} — ${f.detail}`).join('\n'));
++    }
++    expect(result.passed).toBe(true);
++  });
++
++  test('the gate FAILS on a seeded description over the char cap', () => {
++    const seeded = { ...scorecards };
++    seeded.__seed_cap = buildSeed({ caps: { score: 0, desc_within: false, body_within: true } });
++    const result = evaluateGate(seeded);
++    expect(result.passed).toBe(false);
++    expect(result.failures.some(f => f.skill === '__seed_cap' && f.kind === 'caps')).toBe(true);
++  });
++
++  test('the gate FAILS on a seeded description-quality regression', () => {
++    const seeded = { ...scorecards };
++    seeded.__seed_dq = buildSeed({ description_quality: { score: DESC_QUALITY_FLOOR - 20 } });
++    const result = evaluateGate(seeded);
++    expect(result.passed).toBe(false);
++    expect(result.failures.some(f => f.skill === '__seed_dq' && f.kind === 'description_quality')).toBe(true);
++  });
++
++  test('the gate FAILS on a fixtured skill the router can never reach', () => {
++    const seeded = { ...scorecards };
++    seeded.__seed_unreachable = buildSeed({
++      router_reachability: { has_curated_rule: false, router_exempt: false, fixtures: 'present', reachable: false },
++    });
++    const result = evaluateGate(seeded);
++    expect(result.passed).toBe(false);
++    expect(result.failures.some(f => f.skill === '__seed_unreachable' && f.kind === 'router_unreachable')).toBe(true);
++  });
++
++  test('a fixtured skill with a rule but zero keyword-covered fixtures is a WARNING, not a hard fail', () => {
++    const seeded = { ...scorecards };
++    seeded.__seed_softmiss = buildSeed({
++      router_reachability: { has_curated_rule: true, router_exempt: false, fixtures: 'present', reachable: false },
++    });
++    const result = evaluateGate(seeded);
++    // reachable:false with a rule present is the paraphrase-vs-keyword gap (W5's job): a warning only.
++    expect(result.failures.some(f => f.skill === '__seed_softmiss' && f.kind === 'router_unreachable')).toBe(false);
++    expect(result.warnings.some(w => w.skill === '__seed_softmiss')).toBe(true);
++  });
++});
++
++// A minimal, fully-passing scorecard, with a targeted field override for seeding regressions.
++function buildSeed(overrides = {}) {
++  const base = {
++    skill: 'seed',
++    fixtures: 'present',
++    static: {
++      token_cost: { desc_chars: 100, body_lines: 50, score: 90 },
++      caps: { desc_within: true, body_within: true, score: 100 },
++      description_quality: { has_trigger_cues: true, has_disambiguation_cues: true, adequate_length: true, score: 100 },
++    },
++    router_reachability: { has_curated_rule: true, router_exempt: false, fixtures: 'present', reachable: true, fixtures_total: 1, fixtures_best_hit: 1 },
++    behavioral: behavioralPlaceholders(),
++    composite: 95,
++  };
++  if (overrides.caps) base.static.caps = { ...base.static.caps, ...overrides.caps };
++  if (overrides.description_quality) base.static.description_quality = { ...base.static.description_quality, ...overrides.description_quality };
++  if (overrides.router_reachability) base.router_reachability = { ...base.router_reachability, ...overrides.router_reachability };
++  return base;
++}
++
++// ── committed-artifact drift ──────────────────────────────────────────────────
++describe('committed scorecards stay fresh', () => {
++  const catalog = loadSkillCatalog(repoRoot);
++
++  test('each skill has a committed scorecard.json equal to the recomputed one', () => {
++    const drifted = [];
++    const names = fs
++      .readdirSync(skillsDir, { withFileTypes: true })
++      .filter(e => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, 'SKILL.md')))
++      .map(e => e.name);
++    for (const name of names) {
++      const cardPath = path.join(skillsDir, name, 'evals', 'scorecard.json');
++      if (!fs.existsSync(cardPath)) { drifted.push(`${name}: missing scorecard.json`); continue; }
++      const committed = JSON.parse(fs.readFileSync(cardPath, 'utf8'));
++      const recomputed = buildScorecard({ skillsDir, name, catalog });
++      if (JSON.stringify(committed) !== JSON.stringify(recomputed)) {
++        drifted.push(`${name}: scorecard.json out of date — run \`forge skill eval --static\``);
++      }
++    }
++    if (drifted.length) throw new Error('Scorecard drift:\n' + drifted.map(d => '  ' + d).join('\n'));
++    expect(drifted).toEqual([]);
++  });
++});
++
++// ── parseSkillSource matches the context-cost parser ──────────────────────────
++describe('parseSkillSource', () => {
++  test('parses a temp SKILL.md into description + body-line count', () => {
++    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-eval-'));
++    const sdir = path.join(dir, 'skills', 'demo');
++    fs.mkdirSync(sdir, { recursive: true });
++    fs.writeFileSync(
++      path.join(sdir, 'SKILL.md'),
++      '---\nname: demo\ndescription: Use when demoing. NOT real.\n---\nbody line 1\nbody line 2\n'
++    );
++    const parsed = parseSkillSource(path.join(dir, 'skills'), 'demo');
++    expect(parsed.name).toBe('demo');
++    expect(parsed.description).toContain('Use when demoing');
++    expect(parsed.bodyLines).toBeGreaterThanOrEqual(2);
++    fs.rmSync(dir, { recursive: true, force: true });
++  });
++});
+-- 
+2.51.0.windows.1
+

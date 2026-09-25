@@ -1,0 +1,51 @@
+From 6e6c464cfc4511df7e9d98d7f96795e061f9f190 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 11 Jul 2026 16:03:40 +0530
+Subject: [PATCH] test(skills): assert /validate note synced to committed
+ .agents/skills, not gitignored .codex
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The hybrid single-source model untracks .codex/skills (setup-generated, gitignored),
+so the committed agent mirror is .agents/skills. Point the disambiguation-note sync
+assertion there. Swept test/ for other committed-.codex existence assertions: none —
+v2-fixture-corpus uses a temp synthetic corpus, shepherd-skill-sync is existsSync-guarded.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/commands/validate-disambiguation.test.js | 18 ++++++++++++------
+ 1 file changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/test/commands/validate-disambiguation.test.js b/test/commands/validate-disambiguation.test.js
+index 93081492..0f3082b4 100644
+--- a/test/commands/validate-disambiguation.test.js
++++ b/test/commands/validate-disambiguation.test.js
+@@ -26,12 +26,18 @@ describe("/validate disambiguation note", () => {
+     expect(existsSync(legacyPath)).toBe(false);
+   });
+ 
+-  it("is synced to .codex agent directory", () => {
+-    const codexPath = join(ROOT, ".codex", "skills", "validate", "SKILL.md");
+-    if (!existsSync(codexPath)) {
+-      throw new Error(".codex/skills/validate/SKILL.md does not exist — run sync-commands.js");
++  it("is synced to the committed .agents/skills agent directory", () => {
++    // Hybrid single-source (#342): .codex/skills is gitignored + setup-generated,
++    // so the committed agent mirror is .agents/skills (Codex's repo-local discovery
++    // path — checked in for teammate-clone discovery, kept byte-identical to skills/
++    // by scripts/sync-agent-skills.js + the drift gate).
++    const agentsPath = join(ROOT, ".agents", "skills", "validate", "SKILL.md");
++    if (!existsSync(agentsPath)) {
++      throw new Error(
++        ".agents/skills/validate/SKILL.md does not exist — run `forge setup` (or node scripts/sync-agent-skills.js)"
++      );
+     }
+-    const codexContent = readFileSync(codexPath, "utf-8");
+-    expect(codexContent).toContain("forge-preflight");
++    const agentsContent = readFileSync(agentsPath, "utf-8");
++    expect(agentsContent).toContain("forge-preflight");
+   });
+ });
+-- 
+2.51.0.windows.1
+

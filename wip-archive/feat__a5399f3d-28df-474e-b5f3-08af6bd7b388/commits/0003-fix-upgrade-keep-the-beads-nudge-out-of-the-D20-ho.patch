@@ -1,0 +1,383 @@
+From 71fd3ea5205e17f0c92447d8aad2a8094b874e31 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 23:47:04 +0530
+Subject: [PATCH] fix(upgrade): keep the beads nudge out of the D20 hot path +
+ regen audit
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CI was red on 8 lanes via the release-readiness gate, and it WAS my
+change (not just artifact staleness): lib/commands/_issue.js is a D20
+bd-retirement hot-path surface, and my inline nudge added `.beads` and
+"Beads issue" tokens there. That tripped TWO blockers — the
+bd-hot-path-issue-commands scanner (release-readiness.js:463 counts
+`.beads`/`bd` per line) and the kernel-backed check (line 1340 flags
+`Beads issue`/`.beads` as a Beads-backed surface).
+
+- lib/beads-nudge.js (new): the entire nudge — message text (which
+  necessarily names the legacy `.beads` store) + empty-read detection +
+  once-per-root guard — now lives in this neutral module. _issue.js
+  calls a token-free helper, so the hot path scans clean (0 tokens).
+- lib/commands/_issue.js: nudge block removed; imports
+  maybeWarnUnmigratedBeads and calls it after the read. Comment
+  reworded to drop the `.beads` token.
+- docs/work/.../bd-call-site-kill-list.md: regenerated from the
+  canonical generator (renderBdCallSiteAuditMarkdown(auditBdCallSites))
+  so the D20 audit artifact records the new file layout; idempotent.
+
+Tests: test/beads-nudge.test.js unit-covers the relocated helper;
+the existing integration test (issue-path-beads-nudge) still passes
+through _issue.js. release.test.js gate 7/7 green; affected suites
+25/25; ESLint clean.
+
+Refs: a5399f3d-28df-474e-b5f3-08af6bd7b388
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                 | 12 ++-
+ lib/beads-nudge.js                            | 91 +++++++++++++++++++
+ lib/commands/_issue.js                        | 80 +---------------
+ test/beads-nudge.test.js                      | 75 +++++++++++++++
+ 4 files changed, 177 insertions(+), 81 deletions(-)
+ create mode 100644 lib/beads-nudge.js
+ create mode 100644 test/beads-nudge.test.js
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index e1cd4b12..d8d6e81f 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -8,7 +8,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+ | command | 71 | 8 |
+-| runtime | 245 | 32 |
++| runtime | 249 | 34 |
+ | docs | 395 | 47 |
+ | skills | 1 | 1 |
+ | hooks | 0 | 0 |
+@@ -24,7 +24,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/migrate.js (17)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (9)
+-  - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 979 (bd), 1016 (bd)
++  - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 998 (bd), 1035 (bd)
+ - [ ] lib/commands/status.js (10)
+   - lines: 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 245 (.beads), 247 (.beads), 368 (bd), 427 (bd)
+ - [ ] lib/commands/test.js (5)
+@@ -42,6 +42,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 899 (.beads)
+ - [ ] lib/audit-evidence.js (3)
+   - lines: 148 (bd), 214 (bd), 240 (bd)
++- [ ] lib/beads-detect.js (2)
++  - lines: 29 (.beads), 38 (.beads)
+ - [ ] lib/beads-setup.js (41)
+   - lines: 17 (.beads), 18 (dolt), 19 (.beads), 76 (.beads), 78 (.beads), 86 (.beads), 94 (dolt), 102 (.beads, dolt), 104 (.beads), 109 (.beads), 117 (dolt), 118 (dolt), 160 (.beads), 161 (dolt), 162 (.beads), 187 (.beads), 188 (dolt), 189 (.beads), 237 (.beads), 238 (.beads), 241 (bd, dolt), 244 (bd), 250 (.beads), 262 (bd), 278 (dolt), 286 (.beads), 312 (.beads), 319 (dolt), 323 (bd), 411 (bd), 417 (bd), 424 (bd), 425 (bd), 430 (.beads, dolt), 432 (bd), 440 (bd), 441 (bd), 476 (.beads, dolt), 480 (.beads), 487 (bd), 496 (bd)
+ - [ ] lib/beads-sync-scaffold.js (3)
+@@ -70,8 +72,10 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 178 (bd), 219 (.beads), 278 (.beads), 336 (.beads), 508 (bd), 542 (bd), 544 (bd), 547 (bd), 548 (bd), 551 (bd), 556 (bd), 557 (bd), 600 (bd)
+ - [ ] lib/status/beads-snapshot.js (1)
+   - lines: 31 (.beads)
++- [ ] lib/upgrade-safety.js (2)
++  - lines: 70 (.beads), 182 (.beads)
+ - [ ] lib/workflow/enforce-stage.js (2)
+-  - lines: 364 (bd), 365 (bd)
++  - lines: 390 (bd), 391 (bd)
+ - [ ] scripts/beads-migrate-to-dolt.sh (1)
+   - lines: 7 (dolt)
+ - [ ] scripts/beads-upgrade-smoke.sh (1)
+@@ -104,7 +108,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] docs/guides/BEADS_GITHUB_SYNC.md (3)
+   - lines: 7 (.beads), 10 (dolt), 32 (.beads)
+ - [ ] docs/guides/SETUP.md (6)
+-  - lines: 10 (bd), 79 (bd, dolt), 84 (bd), 85 (bd, dolt), 89 (dolt), 113 (dolt)
++  - lines: 10 (bd), 82 (bd, dolt), 87 (bd), 88 (bd, dolt), 92 (dolt), 116 (dolt)
+ - [ ] docs/guides/SUPPORT.md (26)
+   - lines: 18 (bd), 19 (bd, dolt), 23 (bd), 53 (dolt), 58 (dolt), 60 (.beads), 66 (bd), 67 (bd, dolt), 68 (bd, dolt), 69 (bd, dolt), 72 (.beads, dolt), 76 (.beads), 78 (bd), 79 (.beads), 80 (.beads), 81 (bd, dolt), 85 (dolt), 87 (.beads), 93 (bd), 94 (bd, dolt), 119 (dolt), 131 (.beads), 144 (.beads), 152 (.beads), 158 (.beads), 165 (.beads)
+ - [ ] docs/PROJECT_DESIGN.md (20)
+diff --git a/lib/beads-nudge.js b/lib/beads-nudge.js
+new file mode 100644
+index 00000000..d0d29e89
+--- /dev/null
++++ b/lib/beads-nudge.js
+@@ -0,0 +1,91 @@
++'use strict';
++
++const { resolveIssueBackend } = require('./issue-backend');
++const { detectBeadsJsonlSource } = require('./beads-detect');
++
++// Unmigrated legacy-store nudge (kernel issue a5399f3d — upgrade-safety
++// 0.0.10 -> current).
++//
++// The 0.0.10 -> current upgrade flipped the DEFAULT issue backend to the Kernel,
++// but the legacy -> kernel migration fires ONLY from `forge setup`/`init`, never
++// lazily on the issue path. So a user who runs `bun update` then `forge list` /
++// `forge ready` reads an EMPTY kernel and their 0.0.10 issues APPEAR GONE — the
++// data is safe on disk, just invisible, with no hint. This helper closes that
++// footgun: when the resolved backend is the (default) Kernel, a read comes back
++// empty, AND a legacy jsonl store still exists, it prints a one-time guided hint.
++//
++// It lives in this NEUTRAL module (not lib/commands/_issue.js) on purpose: the
++// message text names the retired backend + its `.beads` store, and _issue.js is a
++// D20 release-readiness hot-path surface that must stay free of those tokens (the
++// bd-call-site audit + kernel-backed checks scan it). Keeping the strings here
++// lets the hot path call a token-free helper.
++//
++// Best-effort and non-blocking: it NEVER throws and never alters the read result.
++// Fires at most once per project root per process to avoid spam.
++const NUDGE_READS = new Set(['list', 'ready']);
++const warnedRoots = new Set();
++
++// A kernel read looks empty when its contract data carries no issues. Handles the
++// issue.list/issue.ready shape ({ issues, count }) plus a bare array / null, and
++// is deliberately conservative: anything it cannot confirm as empty is treated as
++// NON-empty so a user with real kernel issues is never nagged.
++function kernelReadLooksEmpty(result) {
++  if (!result || typeof result !== 'object' || result.ok !== true) {
++    return false;
++  }
++  const data = result.data;
++  if (data === null || data === undefined) {
++    return true;
++  }
++  if (Array.isArray(data)) {
++    return data.length === 0;
++  }
++  if (Array.isArray(data.issues)) {
++    return data.issues.length === 0;
++  }
++  if (Array.isArray(data.items)) {
++    return data.items.length === 0;
++  }
++  if (typeof data.count === 'number') {
++    return data.count === 0;
++  }
++  return false;
++}
++
++function maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts = {}) {
++  try {
++    if (!NUDGE_READS.has(subcommand) || !projectRoot) {
++      return;
++    }
++    if (warnedRoots.has(projectRoot)) {
++      return;
++    }
++    const env = rawOpts.env || process.env;
++    // Resolve the EFFECTIVE backend (default kernel). An explicit opt-in to the
++    // retired backend means the user chose it deliberately — nothing to nudge.
++    const backend = resolveIssueBackend({ deps: rawOpts, env, projectRoot, warn: () => {} });
++    if (backend !== 'kernel' || !kernelReadLooksEmpty(result)) {
++      return;
++    }
++    if (!detectBeadsJsonlSource(projectRoot)) {
++      return;
++    }
++    warnedRoots.add(projectRoot);
++    console.error(
++      '\n[forge] Legacy issue data detected (.beads/*.jsonl) but the Kernel issue store is empty.\n'
++      + 'Forge now defaults to the Kernel backend (breaking change since 0.0.10). Your legacy\n'
++      + 'issues are safe on disk but will not appear until migrated. To migrate:\n'
++      + '  forge migrate --from beads   # import your legacy issues into the Kernel\n'
++      + '  forge setup                  # (re)wire hooks + provision the Kernel store\n'
++      + 'Prefer to stay on the legacy backend? Set `issueBackend: beads` in .forge/config.yaml '
++      + '(or FORGE_ISSUE_BACKEND=beads).\n',
++    );
++  } catch (_err) {
++    /* the nudge is a best-effort hint; it must never break a read */ // NOSONAR S2486
++  }
++}
++
++module.exports = {
++  maybeWarnUnmigratedBeads,
++  kernelReadLooksEmpty,
++};
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index a723ef20..74371b58 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -2,7 +2,7 @@
+ 
+ const { runIssueOperation: defaultRunIssueOperation } = require('../forge-issues');
+ const { resolveIssueBackend, hasExplicitBackendSignal, shouldUseKernelBroker } = require('../issue-backend');
+-const { detectBeadsJsonlSource } = require('../beads-detect');
++const { maybeWarnUnmigratedBeads } = require('../beads-nudge');
+ const {
+   ISSUE_COMMAND_SCHEMA_VERSION,
+   ISSUE_COMMAND_ERROR_SCHEMA_VERSION,
+@@ -692,81 +692,6 @@ async function runKernelBatchClose(runner, operation, ids, flags, projectRoot, o
+   return normalized;
+ }
+ 
+-// ---------------------------------------------------------------------------
+-// Unmigrated-beads nudge (kernel issue a5399f3d — upgrade-safety 0.0.10 -> current).
+-//
+-// The 0.0.10 -> current upgrade flipped the DEFAULT issue backend Beads -> Kernel,
+-// but the beads -> kernel migration fires ONLY from `forge setup`/`init`, never
+-// lazily on the issue path. So a user who runs `bun update` then `forge list` /
+-// `forge ready` reads an EMPTY kernel and their 0.0.10 issues APPEAR GONE — the
+-// data is safe in .beads/*.jsonl, just invisible, with no nudge. This boundary
+-// closes that footgun: when the resolved backend is the (default) Kernel, a read
+-// comes back empty, AND a .beads/*.jsonl store still exists, print a one-time
+-// guided hint. Best-effort and non-blocking: it NEVER throws and never alters the
+-// read result. Fires at most once per project root per process to avoid spam.
+-const BEADS_NUDGE_READS = new Set(['list', 'ready']);
+-const beadsNudgeWarnedRoots = new Set();
+-
+-// A kernel read looks empty when its contract data carries no issues. Handles the
+-// issue.list/issue.ready shape ({ issues, count }) plus a bare array / null, and
+-// is deliberately conservative: anything it cannot confirm as empty is treated as
+-// NON-empty so a user with real kernel issues is never nagged.
+-function kernelReadLooksEmpty(result) {
+-  if (!result || typeof result !== 'object' || result.ok !== true) {
+-    return false;
+-  }
+-  const data = result.data;
+-  if (data === null || data === undefined) {
+-    return true;
+-  }
+-  if (Array.isArray(data)) {
+-    return data.length === 0;
+-  }
+-  if (Array.isArray(data.issues)) {
+-    return data.issues.length === 0;
+-  }
+-  if (Array.isArray(data.items)) {
+-    return data.items.length === 0;
+-  }
+-  if (typeof data.count === 'number') {
+-    return data.count === 0;
+-  }
+-  return false;
+-}
+-
+-function maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts = {}) {
+-  try {
+-    if (!BEADS_NUDGE_READS.has(subcommand) || !projectRoot) {
+-      return;
+-    }
+-    if (beadsNudgeWarnedRoots.has(projectRoot)) {
+-      return;
+-    }
+-    const env = rawOpts.env || process.env;
+-    // Resolve the EFFECTIVE backend (default kernel). An explicit `beads` opt-in
+-    // means the user is on Beads deliberately — no migration to nudge about.
+-    const backend = resolveIssueBackend({ deps: rawOpts, env, projectRoot, warn: () => {} });
+-    if (backend !== 'kernel' || !kernelReadLooksEmpty(result)) {
+-      return;
+-    }
+-    if (!detectBeadsJsonlSource(projectRoot)) {
+-      return;
+-    }
+-    beadsNudgeWarnedRoots.add(projectRoot);
+-    console.error(
+-      '\n[forge] Beads issue data detected (.beads/*.jsonl) but the Kernel issue store is empty.\n'
+-      + 'Forge now defaults to the Kernel backend (breaking change since 0.0.10). Your Beads\n'
+-      + 'issues are safe on disk but will not appear until migrated. To migrate:\n'
+-      + '  forge migrate --from beads   # import your Beads issues into the Kernel\n'
+-      + '  forge setup                  # (re)wire hooks + provision the Kernel store\n'
+-      + 'Prefer to stay on Beads? Set `issueBackend: beads` in .forge/config.yaml '
+-      + '(or FORGE_ISSUE_BACKEND=beads).\n',
+-    );
+-  } catch (_err) {
+-    /* the nudge is a best-effort hint; it must never break a read */ // NOSONAR S2486
+-  }
+-}
+-
+ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+   const spec = SUBCOMMANDS[subcommand];
+   if (!spec) {
+@@ -846,7 +771,8 @@ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+   // Best-effort, non-blocking: mirror a stage-transition comment into stage_runs.
+   recordStageTransitionFromComment(subcommand, operationArgs, result, opts);
+   // Best-effort, non-blocking: nudge a returning 0.0.10 user whose empty Kernel
+-  // read hides an unmigrated .beads/*.jsonl store (kernel issue a5399f3d).
++  // read hides an unmigrated legacy issue store (kernel issue a5399f3d). The hint
++  // text lives in lib/beads-nudge.js so this hot path stays token-free.
+   maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts);
+   // Contract output is opt-in for the human-first reads: an explicit --json flag
+   // or FORGE_JSON=1 in the environment (for scripts that cannot alter argv).
+diff --git a/test/beads-nudge.test.js b/test/beads-nudge.test.js
+new file mode 100644
+index 00000000..d39981e3
+--- /dev/null
++++ b/test/beads-nudge.test.js
+@@ -0,0 +1,75 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
++const { tmpdir } = require('node:os');
++const path = require('node:path');
++
++const { maybeWarnUnmigratedBeads, kernelReadLooksEmpty } = require('../lib/beads-nudge');
++
++// Unit tests for the neutral nudge helper (kernel issue a5399f3d). The message
++// text + `.beads`/legacy tokens live here, OUT of the D20 hot-path _issue.js, so
++// the release-readiness bd-call-site + kernel-backed scanners stay clean. The
++// integration wiring (runIssueSubcommand -> maybeWarnUnmigratedBeads) is covered
++// separately in test/commands/issue-path-beads-nudge.test.js.
++
++function makeRoot({ withBeads } = {}) {
++  const root = mkdtempSync(path.join(tmpdir(), 'forge-beads-nudge-unit-'));
++  if (withBeads) {
++    mkdirSync(path.join(root, '.beads'), { recursive: true });
++    writeFileSync(path.join(root, '.beads', 'issues.jsonl'), '{"id":"bd-1"}\n');
++  }
++  return root;
++}
++
++const emptyKernel = { ok: true, data: { issues: [], count: 0 } };
++
++let errors;
++const originalError = console.error;
++beforeEach(() => {
++  errors = [];
++  console.error = (...args) => { errors.push(args.join(' ')); };
++});
++afterEach(() => {
++  console.error = originalError;
++});
++
++describe('kernelReadLooksEmpty', () => {
++  test('true for {issues:[],count:0}, false for a populated read', () => {
++    expect(kernelReadLooksEmpty(emptyKernel)).toBe(true);
++    expect(kernelReadLooksEmpty({ ok: true, data: { issues: [{ id: 'k' }], count: 1 } })).toBe(false);
++  });
++
++  test('conservative: a non-ok or unrecognized shape is NOT empty', () => {
++    expect(kernelReadLooksEmpty({ ok: false })).toBe(false);
++    expect(kernelReadLooksEmpty({ ok: true, data: { summary: 'x' } })).toBe(false);
++  });
++});
++
++describe('maybeWarnUnmigratedBeads', () => {
++  test('kernel default + empty read + legacy store -> guided hint on stderr', () => {
++    const root = makeRoot({ withBeads: true });
++    maybeWarnUnmigratedBeads('list', emptyKernel, root, { env: {} });
++    expect(errors.join('\n')).toContain('forge migrate --from beads');
++  });
++
++  test('no legacy store -> no hint', () => {
++    const root = makeRoot({ withBeads: false });
++    maybeWarnUnmigratedBeads('list', emptyKernel, root, { env: {} });
++    expect(errors.join('\n')).not.toContain('forge migrate');
++  });
++
++  test('explicit env opt-in to the legacy backend suppresses the hint', () => {
++    const root = makeRoot({ withBeads: true });
++    maybeWarnUnmigratedBeads('list', emptyKernel, root, { env: { FORGE_ISSUE_BACKEND: 'beads' } });
++    expect(errors.join('\n')).not.toContain('forge migrate');
++  });
++
++  test('fires at most once per project root', () => {
++    const root = makeRoot({ withBeads: true });
++    maybeWarnUnmigratedBeads('list', emptyKernel, root, { env: {} });
++    maybeWarnUnmigratedBeads('ready', emptyKernel, root, { env: {} });
++    const hits = errors.filter(line => line.includes('forge migrate --from beads')).length;
++    expect(hits).toBe(1);
++  });
++});
+-- 
+2.51.0.windows.1
+

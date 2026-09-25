@@ -1,0 +1,29 @@
+From f3c394e4dc18e9f7afbbdc13ae8211d47f746d90 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 23:52:10 +0530
+Subject: [PATCH] docs: explain stale repair blocker cleanup
+
+---
+ docs/reference/LEGACY_CLAIM_REPAIR.md | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/docs/reference/LEGACY_CLAIM_REPAIR.md b/docs/reference/LEGACY_CLAIM_REPAIR.md
+index 75f016b8..b3aa6d22 100644
+--- a/docs/reference/LEGACY_CLAIM_REPAIR.md
++++ b/docs/reference/LEGACY_CLAIM_REPAIR.md
+@@ -76,6 +76,12 @@ bun scripts/legacy-claim-repair.js --apply \
+   --actor <operator-id>
+ ```
+ 
++If an apply process is forcibly terminated, it may leave empty blocker
++directories named `<backup>-wal`, `<backup>-shm`, and `<backup>-journal`. After
++confirming that no repair process is still running, remove those stale
++directories before verifying or reusing that backup. An already committed
++receipt can still be replayed without this cleanup.
++
+ ## Restore boundary
+ 
+ Restore is deliberately not automated. Fence every Kernel writer, stop Forge
+-- 
+2.51.0.windows.1
+

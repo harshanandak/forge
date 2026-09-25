@@ -1,0 +1,260 @@
+From a4888533353238501aa82e355b7c34f3560dadc6 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 19:19:32 +0530
+Subject: [PATCH] fix(validate): retain captured timeout evidence
+
+---
+ .../decisions.md                              | 43 +++++++++++
+ .../plan.md                                   | 24 +++++++
+ .../tasks.md                                  |  9 +++
+ lib/commands/validate.js                      | 10 ++-
+ test/commands/validate.test.js                | 71 +++++++++++++------
+ 5 files changed, 133 insertions(+), 24 deletions(-)
+ create mode 100644 docs/work/2026-09-24-validation-timeout-evidence/decisions.md
+ create mode 100644 docs/work/2026-09-24-validation-timeout-evidence/plan.md
+ create mode 100644 docs/work/2026-09-24-validation-timeout-evidence/tasks.md
+
+diff --git a/docs/work/2026-09-24-validation-timeout-evidence/decisions.md b/docs/work/2026-09-24-validation-timeout-evidence/decisions.md
+new file mode 100644
+index 00000000..b321812a
+--- /dev/null
++++ b/docs/work/2026-09-24-validation-timeout-evidence/decisions.md
+@@ -0,0 +1,43 @@
++# Decisions
++
++## 2026-09-24
++
++Independent Claude review disproved the previous interpretation of five JUnit
++files as a finished run waiting for shutdown: 17 exclusive files were required,
++only the first completed, and the second was still running at timeout. Stdout
++containing the lane inventory was dropped by the timeout return path.
++
++Repair this evidence-loss defect separately from dependency-ripple duplicate
++lookup optimization. Reuse existing result fields and output helpers; avoid a
++new instrumentation framework. Root owns the proved lease as
++`delivery-reliability-root-20260924`.
++
++## Focused implementation evidence
++
++Six nonempty-output timeout cases failed before the fix. Afterward, all nine
++focused cases passed; the command file had 84 pass, 13 pre-existing skips and
++0 failures. Strict lint passed. Both ETIMEDOUT and killed SIGTERM preserve
++available stdout/stderr while remaining failures with zero partial counts;
++the receipt predicate still rejects completion. Ordinary failure rendering is
++unchanged. Raw evidence is in ignored `test-results/validation-timeout-evidence/`.
++
++Root accepts an internal `timedOut: true` flag rather than matching error prose
++or expanding rendering to every failure. No CLI surface, scheduler, deadline,
++or gate was changed. Independent specification and quality review are still
++required before canonical validation. No successful receipt is claimed.
++
++## Independent review and landing selection
++
++Separate Claude Opus 5.5 specification and quality reviewers approved both
++modified files with no blockers. The repeated budget line is accepted to keep
++captured output intact without adding presentation filtering. The existing
++SIGTERM classification can also label a maxBuffer termination as a timeout;
++that predates this change and requires a separate follow-up.
++
++This branch is the next validation candidate because it preserves useful
++failure evidence. A fresh fetch found zero commits behind origin/master.
++Canonical validation remains pending: three brief Windows CIM samples at
++13:47:34-37 UTC reported 100 percent CPU and 1.32-1.41 GiB free physical memory.
++This is not a diagnosis of previous failures. Keep the supported budget choice
++explicit; the prior budget of two serialized subprocess shards and exhausted
++the deadline before most exclusive files could run.
+diff --git a/docs/work/2026-09-24-validation-timeout-evidence/plan.md b/docs/work/2026-09-24-validation-timeout-evidence/plan.md
+new file mode 100644
+index 00000000..9b8745ff
+--- /dev/null
++++ b/docs/work/2026-09-24-validation-timeout-evidence/plan.md
+@@ -0,0 +1,24 @@
++# Preserve timeout evidence
++
++Issue: `6621bbf2-28d0-4b46-a18b-3fadad6fd60e`.
++User authorized the delivery reliability prerequisite and parallel Claude work.
++
++The full-suite timeout result drops captured stdout, hiding the actual resource
++lane inventory. That contributed to an incorrect interpretation of partial
++JUnit evidence as a complete run. Preserve observed output through the timeout
++result and public command path, using existing helpers and result shapes.
++
++Keep the result failed/incomplete, preserve observed budget metadata, retain
++zero untrusted partial counts, and issue no validation receipt. Do not change
++deadlines, add retries, skip tests, add dependencies, or change scheduler logic.
++Existing non-timeout behavior must stay compatible.
++
++One Claude owner may edit `lib/commands/validate.js` and
++`test/commands/validate.test.js`. Root owns documentation, Git, issue state and
++review. Any required shared formatter change must be explicitly reassigned.
++
++Use injected exec failures for fast, deterministic RED/GREEN proof. Include
++ETIMEDOUT and killed SIGTERM, stdout, stderr, both streams and empty capture;
++test the public result/rendering path and absence of passing receipt. Run
++focused tests/lint and obtain independent spec then quality review before
++canonical validation. No broad suite during implementation.
+diff --git a/docs/work/2026-09-24-validation-timeout-evidence/tasks.md b/docs/work/2026-09-24-validation-timeout-evidence/tasks.md
+new file mode 100644
+index 00000000..e8231a11
+--- /dev/null
++++ b/docs/work/2026-09-24-validation-timeout-evidence/tasks.md
+@@ -0,0 +1,9 @@
++# Implementation task
++
++1. Read the timeout branch, all callers, existing output helpers, and public
++   rendering path. Add the smallest deterministic regression that loses
++   captured timeout output today, and run it RED.
++2. Preserve observed output with a minimal correction. Verify failure status,
++   zero/incomplete counts, budget evidence, public output, and receipt refusal.
++3. Run the focused existing file and strict lint. Return exact evidence for
++   independent spec and quality review. Root handles commit and publication.
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index feb6e96f..016dbb18 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -670,8 +670,11 @@ function testExecutionErrorResult(error, startTime, rootDir, useFullSuite, timeo
+ 	const counts = parseTestCounts(output);
+ 	const budgetEvidence = counts.resourceBudget ? { resourceBudget: counts.resourceBudget } : {};
+ 	if (error.code === 'ETIMEDOUT' || (error.killed && error.signal === 'SIGTERM')) {
++		// Keep whatever the runner printed before it was killed; counts stay zero because the run is incomplete.
++		const capturedOutput = [error.stdout, error.stderr].filter(Boolean).join('\n');
+ 		return {
+ 			success: false,
++			timedOut: true,
+ 			fullSuite: useFullSuite,
+ 			...budgetEvidence,
+ 			duration: Date.now() - startTime,
+@@ -679,6 +682,7 @@ function testExecutionErrorResult(error, startTime, rootDir, useFullSuite, timeo
+ 			failed: 0,
+ 			total: 0,
+ 			message: validationTimeoutMessage('Test execution', timeout),
++			...(capturedOutput ? { output: capturedOutput } : {}),
+ 		};
+ 	}
+ 
+@@ -1035,11 +1039,13 @@ module.exports = {
+ 			if (check?.success !== false || check.skipped === true || !check.message) continue;
+ 			if (!errorParts.some(error => error.endsWith(check.message))) errorParts.push(check.message);
+ 		}
+-		const budget = result.checks?.tests?.resourceBudget;
++		const tests = result.checks?.tests;
++		const budget = tests?.resourceBudget;
+ 		const budgetOutput = Number.isInteger(budget?.effective)
+ 			? `Full suite resource budget: requested=${budget.requested ?? 'default'} effective=${budget.effective}`
+ 			: null;
+-		const output = [result.success ? result.summary : null, budgetOutput].filter(Boolean).join('\n');
++		const timeoutOutput = tests?.timedOut === true ? tests.output : null;
++		const output = [result.success ? result.summary : null, budgetOutput, timeoutOutput].filter(Boolean).join('\n');
+ 		const error = result.error || result.message || errorParts.join('; ') || result.summary;
+ 		return {
+ 			...result,
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 794942ff..6217363c 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -15,7 +15,7 @@ const {
+ 	executeValidate,
+ 	executeDebugMode,
+ } = require('../../lib/commands/validate.js');
+-const { resolveReceiptPath } = require('../../lib/validation-receipt.js');
++const { resolveReceiptPath, validationIsComplete } = require('../../lib/validation-receipt.js');
+ 
+ setDefaultTimeout(30000);
+ 
+@@ -243,45 +243,72 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			expect(result.validationReceipt).toBe(false);
+ 		});
+ 
+-		test('composes captured timeout budget evidence through runAllTests and the public handler', async () => {
++		const timeoutStdout = [
++			'Full suite resource budget: requested=2 effective=2',
++			'Resource lane exclusive: files=17 shards=17 concurrency=1',
++			'3 pass',
++			'1 fail',
++			'Ran 4 tests across 1 file.',
++		].join('\n');
++		const timeoutStderr = 'shard exclusive-2 still running';
++		const timeoutBudgetLine = 'Full suite resource budget: requested=2 effective=2';
++		test.each([
++			['ETIMEDOUT', { code: 'ETIMEDOUT' }],
++			['killed SIGTERM', { killed: true, signal: 'SIGTERM' }],
++		].flatMap(([terminal, terminalState]) => [
++			[terminal, 'stdout and stderr', terminalState, { stdout: timeoutStdout, stderr: timeoutStderr }, `${timeoutStdout}\n${timeoutStderr}`],
++			[terminal, 'stdout only', terminalState, { stdout: timeoutStdout }, timeoutStdout],
++			[terminal, 'stderr only', terminalState, { stderr: timeoutStderr }, timeoutStderr],
++			[terminal, 'empty capture', terminalState, { stdout: '', stderr: '' }, undefined],
++		]))('renders captured timeout evidence through the public handler (%s, %s)', async (_terminal, _capture, terminalState, streams, captured) => {
+ 			const rootDir = path.resolve(__dirname, '..', '..');
++			const receiptResults = [];
+ 			const result = await validateHandler(['--shards', '2'], {}, rootDir, {
+ 				executeValidate: (options) => executeValidate({
+ 					...options,
+ 					skip: ['conflictMarkers', 'typeCheck', 'lint', 'security'],
+ 					runAllTests: (_exec, testRoot, budget) => runAllTests(() => {
+-						throw Object.assign(new Error('full suite timed out'), {
+-							code: 'ETIMEDOUT',
+-							stdout: [
+-								'Full suite resource budget: requested=2 effective=2',
+-								'3 pass',
+-								'1 fail',
+-								'Ran 4 tests across 1 file.',
+-							].join('\n'),
+-						});
++						throw Object.assign(new Error('spawnSync node ETIMEDOUT'), terminalState, streams);
+ 					}, testRoot, budget),
+ 					validationReceipt: {
+ 						beginValidation: () => ({ head: 'timeout-snapshot' }),
+-						completeValidation: () => false,
++						completeValidation: (_root, _snapshot, validation) => {
++							receiptResults.push(validationIsComplete(validation));
++							return false;
++						},
+ 					},
+ 				}),
+ 			});
+ 
++			const budgetEvidence = streams.stdout ? { resourceBudget: { requested: 2, effective: 2 } } : {};
+ 			expect(result).toMatchObject({
+ 				success: false,
+ 				error: 'Test execution timed out after 25 minutes',
+-				output: 'Full suite resource budget: requested=2 effective=2',
+-				checks: {
+-					tests: {
+-						success: false,
+-						resourceBudget: { requested: 2, effective: 2 },
+-						passed: 0,
+-						failed: 0,
+-						total: 0,
+-					},
+-				},
++				checks: { tests: { success: false, timedOut: true, ...budgetEvidence, passed: 0, failed: 0, total: 0 } },
+ 				failedChecks: ['tests'],
++				validationReceipt: false,
+ 			});
++			expect(result.checks.tests.skipped).toBeUndefined();
++			expect(result.checks.tests.output).toBe(captured);
++			expect(result.output).toBe(
++				[streams.stdout ? timeoutBudgetLine : null, captured].filter(Boolean).join('\n') || undefined,
++			);
++			expect(receiptResults).toEqual([false]);
++		});
++
++		test('keeps ordinary test-failure output out of the public handler render', async () => {
++			const tests = { success: false, message: '1/4 tests failed', output: '3 pass\n1 fail' };
++			const result = await validateHandler([], {}, 'C:/repo', {
++				executeValidate: async () => ({
++					success: false,
++					summary: 'Checks failed: tests',
++					checks: { tests },
++					failedChecks: ['tests'],
++				}),
++			});
++
++			expect(result.error).toBe('1/4 tests failed');
++			expect(result.output).toBeUndefined();
+ 		});
+ 	});
+ 	describe('Type checking', () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,42 @@
+From af08328dbce95c3598ff206035866130d4105e86 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 12:25:00 +0530
+Subject: [PATCH] docs(control): make the state<->resolver-field<->locus
+ mapping explicit (B6 review)
+
+Per review: the guarantee matrix now states, in one contract table, each control
+state, the exact resolver field it writes (workflow.gates.<id>.enabled), the
+enforcement-locus it activates, and how it is enforced. Names the real
+forge gate approval-event mechanism for `permission` and records the empirical
+check (permission -> not approved; optional -> disabled/satisfied).
+
+Issues: 7dc59af2, 724356ea
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/reference/control-plane-guarantees.md | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/docs/reference/control-plane-guarantees.md b/docs/reference/control-plane-guarantees.md
+index 27380698..8311c699 100644
+--- a/docs/reference/control-plane-guarantees.md
++++ b/docs/reference/control-plane-guarantees.md
+@@ -57,6 +57,16 @@ is the *truth*. State is therefore **derived**, never stored twice:
+ | `optional` | `workflow.gates.<id>.enabled = false` | unlocked gates & rails |
+ | `permission` | `workflow.gates.<id>.enabled = true` | human gates only (enforced via approval event) |
+ 
++The explicit contract — each control state ↔ the **real resolver field it sets**
++↔ the **enforcement-locus** it thereby activates (this is what `forge control`
++writes and what badges read from):
++
++| State | Resolver field written | Enforcement-locus activated | How it is enforced |
++|---|---|---|---|
++| `mandatory` | `workflow.gates.<id>.enabled = true` | `run-time-deny (gate)` / `(rail)` | stage transition / resolver refuses without the gate's evidence (`enforce-stage.js`; `validate`/`preflight` fail-closed). |
++| `optional` | `workflow.gates.<id>.enabled = false` | none (advisory) | resolver does not deny; `forge gate check` returns *disabled — satisfied* without any approval. Unlocked gates/rails only. |
++| `permission` (human gates only) | `workflow.gates.<id>.enabled = true` | `run-time-deny (permission)` | the gate is ACTIVE, so `forge gate check <issue> <id>` **fails until** a durable `gate.approved` event exists via `forge gate approve <issue> <id>` — the real `forge gate` human-gate approval-event mechanism (`lib/gate-events.js`). Verified: `permission` → `check` returns *not approved*; `optional` → *disabled — satisfied*. |
++
+ Read-back derives the label from `(enabled, locked, isHumanGate)`:
+ - human gate + enabled → `permission`; human gate + disabled → `optional`.
+ - non-human gate/rail + enabled → `mandatory`; + disabled → `optional`.
+-- 
+2.51.0.windows.1
+

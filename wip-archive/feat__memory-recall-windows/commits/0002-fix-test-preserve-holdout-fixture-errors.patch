@@ -1,0 +1,29 @@
+From 79e76ff55067dff99029e960752b886a3fbf2c36 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 6 Aug 2026 15:49:53 +0530
+Subject: [PATCH] fix(test): preserve holdout fixture errors
+
+---
+ test/e2e/memory-recall-holdout.test.js | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 8e33d6c5..f558d9d9 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -283,7 +283,11 @@ describe('project-local memory recall holdout', () => {
+         value: fixture.seen.eligibleContent,
+       });
+     } catch (error) {
+-      await context.store.exec('ROLLBACK;');
++      try {
++        await context.store.exec('ROLLBACK;');
++      } catch {
++        // A rollback failure must not mask the original fixture error.
++      }
+       throw error;
+     }
+     await context.store.exec('COMMIT;');
+-- 
+2.51.0.windows.1
+

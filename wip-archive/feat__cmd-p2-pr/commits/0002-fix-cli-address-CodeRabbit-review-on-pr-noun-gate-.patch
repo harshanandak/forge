@@ -1,0 +1,201 @@
+From 048fb5e200db361d9948e579b68cde118aa4fa76 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 17:19:43 +0530
+Subject: [PATCH] fix(cli): address CodeRabbit review on pr noun / gate doc
+ (P2)
+
+- Rewrite: locate the stage token as the first positional after the noun
+  (scan past global flags via new firstPositionalIndex), so
+  `forge pr --path /tmp ship ...` shares the stage-entry path instead of
+  falling through to pr.handler. Intervening flags are preserved into argv.
+- gate: advertise `gate doc` in usage() and the unknown-action error.
+- test: run() now fails on spawnSync timeout/null status instead of
+  comparing null==null; add a flag-before-stage equivalence case and
+  firstPositionalIndex unit tests.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                      | 14 ++++++++++++--
+ lib/commands/gate.js              |  7 +++++--
+ lib/global-flags.js               | 30 ++++++++++++++++++++++++++++++
+ test/cli/pr-noun-dispatch.test.js | 12 ++++++++++++
+ test/global-flags.test.js         | 25 ++++++++++++++++++++++++-
+ 5 files changed, 83 insertions(+), 5 deletions(-)
+
+diff --git a/bin/forge.js b/bin/forge.js
+index f28711a8..e1bbe910 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -74,6 +74,7 @@ const { resolveCommandOpts } = require('../lib/commands/_resolve-command-opts');
+ const { getPackageRoot } = require('../lib/package-root');
+ const { enforceStageEntry } = require('../lib/workflow/enforce-stage');
+ const { normalizeStageId } = require('../lib/workflow/stages');
++const { firstPositionalIndex } = require('../lib/global-flags');
+ 
+ // Load enhanced onboarding modules (static relative requires — bundleable)
+ const contextMerge = require('../lib/context-merge');
+@@ -4084,12 +4085,21 @@ async function main() {
+   // stage AND its bare alias's canonical is exactly `<command> <sub>` (so only a
+   // genuine noun→stage form matches; non-stage pr/gate subcommands route via
+   // their noun handler as usual). Only `pr ship` matches today.
+-  const nounSub = dispatchArgv[1];
++  //
++  // The stage token is located as the first POSITIONAL after the noun (scanning
++  // past any global flags and their values), so `forge pr --path /tmp ship ...`
++  // shares the same stage path as `forge pr ship ...` instead of falling through
++  // to pr.handler and missing stage-entry enforcement. Intervening global flags
++  // are preserved into the rewritten argv so the stage handler still sees them.
++  const stageIdx = firstPositionalIndex(dispatchArgv, 1);
++  const nounSub = stageIdx >= 0 ? dispatchArgv[stageIdx] : undefined;
+   if (nounSub && normalizeStageId(nounSub) && registry.commands.has(nounSub)) {
+     const bareAlias = resolveAlias(nounSub);
+     if (bareAlias && bareAlias.canonical === `${command} ${nounSub}`) {
+       command = nounSub;
+-      dispatchArgv = dispatchArgv.slice(1);
++      // Drop only the consumed stage token (the noun at index 0 is dropped by the
++      // registry dispatch's own `.slice(1)`); keep the intervening global flags.
++      dispatchArgv = [nounSub, ...dispatchArgv.slice(1, stageIdx), ...dispatchArgv.slice(stageIdx + 1)];
+     }
+   }
+ 
+diff --git a/lib/commands/gate.js b/lib/commands/gate.js
+index 26a22f55..c04dcc71 100644
+--- a/lib/commands/gate.js
++++ b/lib/commands/gate.js
+@@ -40,7 +40,10 @@ const TOGGLE_ACTIONS = new Set(['enable', 'disable']);
+ const EVENT_ACTIONS = new Set(['approve', 'reject', 'status', 'check']);
+ 
+ function usage() {
+-  return 'Usage: forge gate <enable|disable|approve|reject|status|check> [<issue-id>] <gate-id> [--reason <text>] [--json]';
++  return [
++    'Usage: forge gate <enable|disable|approve|reject|status|check> [<issue-id>] <gate-id> [--reason <text>] [--json]',
++    '       forge gate doc <detect|check|init|okf|...> [args]   (doc-update gate; = forge doc-gate, run `forge doc-gate --help`)',
++  ].join('\n');
+ }
+ 
+ // The known-toggle set is gates PLUS unlocked toggleable rails (e.g.
+@@ -194,7 +197,7 @@ async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {})
+ 
+   return {
+     success: false,
+-    error: `Expected 'enable', 'disable', 'approve', 'reject', 'status', or 'check'.\n${usage()}`,
++    error: `Expected 'enable', 'disable', 'approve', 'reject', 'status', 'check', or 'doc'.\n${usage()}`,
+   };
+ }
+ 
+diff --git a/lib/global-flags.js b/lib/global-flags.js
+index 76d9e33c..164af47b 100644
+--- a/lib/global-flags.js
++++ b/lib/global-flags.js
+@@ -67,8 +67,38 @@ function stripGlobalFlags(args) {
+   return kept;
+ }
+ 
++/**
++ * Index of the first positional token (a bare, non-flag argument), skipping any
++ * leading global flags and their consumed values. Returns -1 when no positional
++ * exists. Uses the SAME flag-consumption rules as {@link stripGlobalFlags} so the
++ * two agree on what counts as a positional. Unlike stripGlobalFlags this returns
++ * an index into the ORIGINAL array, so callers can splice out the positional
++ * while preserving the intervening flags.
++ *
++ * @param {string[]} args - Raw command arguments.
++ * @param {number} [start=0] - Index to begin scanning from.
++ * @returns {number} Index into `args` of the first positional token, or -1.
++ */
++function firstPositionalIndex(args, start = 0) {
++  for (let index = start; index < args.length; index += 1) {
++    const arg = args[index];
++    if (GLOBAL_BOOLEAN_FLAGS.has(arg)) continue;
++    if (GLOBAL_VALUE_FLAG_PREFIXES.some((prefix) => arg.startsWith(prefix))) continue;
++    if (GLOBAL_VALUE_FLAGS.has(arg)) {
++      const next = args[index + 1];
++      if (next !== undefined && !next.startsWith('-')) index += 1;
++      continue;
++    }
++    // Any other dash-prefixed token is a non-global flag, not the positional.
++    if (arg.startsWith('-')) continue;
++    return index;
++  }
++  return -1;
++}
++
+ module.exports = {
+   GLOBAL_BOOLEAN_FLAGS,
+   GLOBAL_VALUE_FLAGS,
+   stripGlobalFlags,
++  firstPositionalIndex,
+ };
+diff --git a/test/cli/pr-noun-dispatch.test.js b/test/cli/pr-noun-dispatch.test.js
+index da764a29..4fdd96f6 100644
+--- a/test/cli/pr-noun-dispatch.test.js
++++ b/test/cli/pr-noun-dispatch.test.js
+@@ -24,6 +24,15 @@ function run(argv) {
+     encoding: 'utf8',
+     timeout: 30000,
+   });
++  // spawnSync signals a timeout (or spawn failure) with `error` set and a null
++  // status. Fail loudly instead of comparing null==null, which would let a
++  // double-timeout silently pass the equality assertions below.
++  if (result.error) {
++    throw new Error(`forge ${argv.join(' ')} failed to run: ${result.error.message}`);
++  }
++  if (result.status === null) {
++    throw new Error(`forge ${argv.join(' ')} did not exit with an integer status (killed by signal ${result.signal})`);
++  }
+   return { status: result.status, out: result.stdout || '', err: result.stderr || '' };
+ }
+ 
+@@ -32,6 +41,9 @@ function run(argv) {
+ // network mutation (nonexistent slug / PR number).
+ const EQUIVALENT_INVOCATIONS = [
+   { name: 'ship (stage — must share stage-entry enforcement)', bare: ['ship', 'nonexistent-slug-xyz'], noun: ['pr', 'ship', 'nonexistent-slug-xyz'] },
++  // Global flag BETWEEN the noun and the stage must still route through the stage
++  // path (the rewrite scans past global flags, not just dispatchArgv[1]).
++  { name: 'ship with a global flag before the stage', bare: ['ship', '--path', '.', 'nonexistent-slug-xyz'], noun: ['pr', '--path', '.', 'ship', 'nonexistent-slug-xyz'] },
+   { name: 'shepherd --pull --json (flag passthrough)', bare: ['shepherd', '999999', '--pull', '--json'], noun: ['pr', 'shepherd', '999999', '--pull', '--json'] },
+   { name: 'shepherd events (subcommand shape passthrough)', bare: ['shepherd', 'events', '999999', '--since', '1', '--json'], noun: ['pr', 'shepherd', 'events', '999999', '--since', '1', '--json'] },
+   { name: 'merge --auto (fail-closed preview)', bare: ['merge', '--auto', '999999'], noun: ['pr', 'merge', '--auto', '999999'] },
+diff --git a/test/global-flags.test.js b/test/global-flags.test.js
+index 9a51b96e..8f7b20f2 100644
+--- a/test/global-flags.test.js
++++ b/test/global-flags.test.js
+@@ -2,7 +2,7 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ 
+-const { stripGlobalFlags } = require('../lib/global-flags');
++const { stripGlobalFlags, firstPositionalIndex } = require('../lib/global-flags');
+ 
+ describe('stripGlobalFlags', () => {
+   test('strips -p and its value (kernel c1e090ff regression)', () => {
+@@ -42,3 +42,26 @@ describe('stripGlobalFlags', () => {
+     expect(stripGlobalFlags(['force', 'sync', 'path'])).toEqual(['force', 'sync', 'path']);
+   });
+ });
++
++describe('firstPositionalIndex', () => {
++  test('returns 0 when the first token is already positional', () => {
++    expect(firstPositionalIndex(['ship', 'slug'])).toBe(0);
++  });
++
++  test('skips a value-taking global flag and its value', () => {
++    // ['pr', '--path', '/tmp', 'ship'] scanned from index 1 → 'ship' at index 3.
++    expect(firstPositionalIndex(['pr', '--path', '/tmp', 'ship'], 1)).toBe(3);
++  });
++
++  test('skips the --path=<dir> form and boolean global flags', () => {
++    expect(firstPositionalIndex(['pr', '--path=/tmp', '--verbose', 'ship'], 1)).toBe(3);
++  });
++
++  test('skips non-global flags too (only bare words are positional)', () => {
++    expect(firstPositionalIndex(['pr', '--json', 'ship'], 1)).toBe(2);
++  });
++
++  test('returns -1 when there is no positional token', () => {
++    expect(firstPositionalIndex(['pr', '--path', '/tmp'], 1)).toBe(-1);
++  });
++});
+-- 
+2.51.0.windows.1
+

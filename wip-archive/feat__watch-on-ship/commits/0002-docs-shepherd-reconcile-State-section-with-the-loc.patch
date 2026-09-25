@@ -1,0 +1,39 @@
+From c3700a2834815368bc34aabf0e4bbc0c049add0f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 18:19:57 +0530
+Subject: [PATCH] docs(shepherd): reconcile State section with the local
+ PR-monitor journal
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CodeRabbit (minor): the State section claimed "no separate local state store",
+which contradicts the durable per-PR NDJSON journal under
+`.forge/pr-monitor/<repo>-<pr>/` documented above. Narrow the claim: the journal
+(events.ndjson + snapshot + consumer cursors) IS the one local store — the
+delivery/replay surface for `forge shepherd watch` / `events --since`; only the
+bounded shepherd pass keeps no separate local state.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/reference/shepherd.md | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index 778e50b2..0149bbec 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -128,5 +128,8 @@ surface as every other rail.
+ 
+ ## State
+ 
+-Progress is durable in GitHub PR comments and labels plus `git`. There is no
+-separate local state store.
++Progress is durable in GitHub PR comments and labels plus `git`. The one local
++store is the constant monitor's per-PR journal under
++`.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
++consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
++`events --since`. The bounded shepherd pass itself keeps no separate local state.
+-- 
+2.51.0.windows.1
+

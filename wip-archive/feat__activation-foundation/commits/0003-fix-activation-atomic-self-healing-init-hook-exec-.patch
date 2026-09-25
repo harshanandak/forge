@@ -1,0 +1,139 @@
+From 83dc9175c1c8bc4ab6114b91389c7f1fca753b7d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 11:09:05 +0530
+Subject: [PATCH] fix(activation): atomic self-healing init + hook exec bit +
+ LF polyglot (CodeRabbit #400)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+T2 (ensure-forge-home): key the no-clobber check on config.yaml PRESENCE, not
+the .forge/ dir alone. A half-init (dir created but config never written — disk
+full, killed mid-write) now self-heals on the next call instead of being
+permanently stuck behind a dir-exists early-return. Never overwrites an existing
+config.yaml, so a real inited repo is still never clobbered. +2 tests
+(self-heal; write-failure leaves a retryable state).
+
+T3 (run-hook.cmd, session-start): set the executable bit (100644 -> 100755) so
+the SessionStart hook launches on Unix. Matches superpowers (session-start 755).
+
+T1 (.gitattributes): keep run-hook.cmd LF and document why. It is a
+cross-platform POLYGLOT (superpowers pattern) that runs under sh on Unix via a
+`: << 'CMDBLOCK'` heredoc — CRLF makes the terminator never match and breaks the
+hook on macOS/Linux. cmd.exe tolerates LF for this straight-line script. Matches
+superpowers' own `*.cmd text eol=lf`. Explicit per-file rules replace the glob.
+
+29/29 activation tests green, ESLint clean.
+---
+ .gitattributes                            |  8 +++++-
+ lib/activation/ensure-forge-home.js       | 14 +++++++---
+ plugin/hooks/run-hook.cmd                 |  0
+ plugin/hooks/session-start                |  0
+ test/activation/ensure-forge-home.test.js | 33 ++++++++++++++++++++---
+ 5 files changed, 47 insertions(+), 8 deletions(-)
+ mode change 100644 => 100755 plugin/hooks/run-hook.cmd
+ mode change 100644 => 100755 plugin/hooks/session-start
+
+diff --git a/.gitattributes b/.gitattributes
+index 5c4f5e37..0f6768f3 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -10,7 +10,13 @@ docs/** text eol=lf
+ scripts/** text eol=lf
+ .forge/hooks/** text eol=lf
+ .claude/scripts/** text eol=lf
+-plugin/hooks/** text eol=lf
++# Plugin hooks are a cross-platform POLYGLOT (superpowers pattern): run-hook.cmd
++# runs under cmd.exe on Windows AND under sh on Unix (the `: << 'CMDBLOCK'`
++# heredoc). It MUST be LF — CRLF makes the Unix heredoc terminator (`CMDBLOCK\r`)
++# never match and breaks the hook on macOS/Linux. cmd.exe tolerates LF for this
++# straight-line script (no labels/goto). Matches superpowers' own `*.cmd text eol=lf`.
++plugin/hooks/run-hook.cmd text eol=lf
++plugin/hooks/session-start text eol=lf
+ AGENTS.md text eol=lf
+ 
+ # Binary files — do not modify
+diff --git a/lib/activation/ensure-forge-home.js b/lib/activation/ensure-forge-home.js
+index 5d5c506d..1ca7150b 100644
+--- a/lib/activation/ensure-forge-home.js
++++ b/lib/activation/ensure-forge-home.js
+@@ -110,10 +110,16 @@ function ensureForgeHome(projectRoot = process.cwd(), deps = {}) {
+   const forgeDir = path.join(projectRoot, '.forge');
+   const configPath = path.join(forgeDir, 'config.yaml');
+ 
+-  // Never clobber: an existing .forge/ (even without config.yaml) is the user's.
+-  if (fsImpl.existsSync(forgeDir)) {
+-    const reason = fsImpl.existsSync(configPath) ? 'config-exists' : 'forge-dir-exists';
+-    return { created: false, reason, configPath };
++  // Idempotent + self-healing. The presence of `config.yaml` — NOT the `.forge/`
++  // directory alone — is what marks the home as initialized. Keying the
++  // no-clobber check on the config FILE means a half-init (dir created but config
++  // never written: disk full, permission error, or the process killed between
++  // mkdir and write) is COMPLETED on the next call instead of being permanently
++  // stuck behind a dir-exists early-return. We only ever ADD a missing
++  // config.yaml and never overwrite an existing one, so a real inited repo is
++  // still never clobbered. `mkdirSync({recursive})` is a no-op if the dir exists.
++  if (fsImpl.existsSync(configPath)) {
++    return { created: false, reason: 'config-exists', configPath };
+   }
+ 
+   fsImpl.mkdirSync(forgeDir, { recursive: true });
+diff --git a/plugin/hooks/run-hook.cmd b/plugin/hooks/run-hook.cmd
+old mode 100644
+new mode 100755
+diff --git a/plugin/hooks/session-start b/plugin/hooks/session-start
+old mode 100644
+new mode 100755
+diff --git a/test/activation/ensure-forge-home.test.js b/test/activation/ensure-forge-home.test.js
+index 2e6a0ccf..d6591849 100644
+--- a/test/activation/ensure-forge-home.test.js
++++ b/test/activation/ensure-forge-home.test.js
+@@ -79,15 +79,42 @@ describe('ensureForgeHome', () => {
+     expect(fs.readFileSync(configPath, 'utf8')).toBe('user: sacred\n');
+   });
+ 
+-  test('no-ops when .forge/ exists even without config.yaml (never clobber)', () => {
++  test('self-heals a half-init: .forge/ exists but config.yaml is missing', () => {
++    // A prior run that was killed between mkdir and write (or a disk-full write)
++    // leaves .forge/ without config.yaml. The next call must COMPLETE init, not
++    // return stuck. No-clobber keys on config.yaml presence, so this is safe.
+     const root = makeBareRepo();
+     fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+ 
+     const result = ensureForgeHome(root);
+ 
+-    expect(result.created).toBe(false);
+-    expect(result.reason).toBe('forge-dir-exists');
++    expect(result.created).toBe(true);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
++  });
++
++  test('a write failure after mkdir leaves a RETRYABLE state, not a stuck half-init', () => {
++    const root = makeBareRepo();
++    let throwOnce = true;
++    const failingFirstWrite = {
++      existsSync: fs.existsSync,
++      mkdirSync: fs.mkdirSync,
++      writeFileSync: (...args) => {
++        if (throwOnce) {
++          throwOnce = false;
++          throw new Error('ENOSPC: no space left on device');
++        }
++        return fs.writeFileSync(...args);
++      },
++    };
++
++    // First attempt fails mid-write (dir created, config not written).
++    expect(() => ensureForgeHome(root, { fs: failingFirstWrite })).toThrow('ENOSPC');
+     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(false);
++
++    // Next attempt (fs recovered) COMPLETES init instead of being stuck.
++    const result = ensureForgeHome(root);
++    expect(result.created).toBe(true);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
+   });
+ });
+ 
+-- 
+2.51.0.windows.1
+

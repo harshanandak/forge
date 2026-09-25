@@ -1,0 +1,728 @@
+From c521273401a586d8ebcebec1004346cae7cc8611 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 15:21:05 +0530
+Subject: [PATCH] feat: add forge issue owns lease-ownership verification +
+ claim-safety skill
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A claim returning ok:true does not prove lease ownership — a same-key duplicate
+replay also returns ok:true — so a worker must verify before mutating a claimed
+issue. Add `forge issue owns <id>`: a kernel-only READ that exits 0 iff the
+resolving actor (FORGE_ACTOR -> FORGE_SESSION_ID -> default forge) holds the
+single active claim AND the lease has not expired; otherwise it exits non-zero
+(conflict, code 4) with a clear "you do not own the lease" message. Add the
+reusable `claim-safety` skill (claim -> owns -> work -> re-verify before
+close/release), registered in the kernel umbrella skill and mirrored to
+.codex/skills. Regenerate the D20 bd call-site kill-list (line-shift only).
+
+Closes eea2f9ce
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/claim-safety/SKILL.md           |  98 ++++++++++++++
+ .codex/skills/kernel/SKILL.md                 |  11 +-
+ CHANGELOG.md                                  |   1 +
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/adapters/beads-issue-adapter.js           |   6 +
+ lib/adapters/kernel-issue-adapter.js          |   1 +
+ lib/commands/_issue.js                        |  64 +++++++++
+ lib/commands/_resolve-command-opts.js         |   3 +
+ lib/forge-issues.js                           |  12 ++
+ lib/kernel/sqlite-driver.js                   |  39 +++++-
+ skills/claim-safety/SKILL.md                  |  98 ++++++++++++++
+ skills/kernel/SKILL.md                        |  11 +-
+ test/kernel/claim-ownership.test.js           | 127 ++++++++++++++++++
+ test/skills-structure.test.js                 |   1 +
+ 14 files changed, 468 insertions(+), 6 deletions(-)
+ create mode 100644 .codex/skills/claim-safety/SKILL.md
+ create mode 100644 skills/claim-safety/SKILL.md
+ create mode 100644 test/kernel/claim-ownership.test.js
+
+diff --git a/.codex/skills/claim-safety/SKILL.md b/.codex/skills/claim-safety/SKILL.md
+new file mode 100644
+index 00000000..a06f8182
+--- /dev/null
++++ b/.codex/skills/claim-safety/SKILL.md
+@@ -0,0 +1,98 @@
++---
++name: claim-safety
++description: >
++  Claim a Forge issue and PROVE you own the lease before doing any work. Use
++  whenever you (or an orchestrator/agent) are about to mutate a claimed issue —
++  after `forge claim`, before `dev`/edit/`close`/`release`, or when two agents
++  might contend for the same work. A claim returning ok:true does NOT prove you
++  won the lease (a duplicate replay also returns ok:true), so this procedure adds
++  the mandatory ownership check via `forge issue owns <id>`. Trigger on "claim an
++  issue safely", "did I win the lease", "verify ownership", "claim conflict",
++  "two agents same issue", or before any claimed-issue mutation.
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Claim safety — claim, then prove you own the lease
++
++Claiming is not owning. The Forge kernel keys a claim's idempotency on
++`claim.create:<issue_id>:<actor>`, so a **same-key duplicate replay returns
++`ok:true`** echoing the *current* call's `claim_id`. A genuine cross-actor
++conflict returns `ok:false` (the partial-UNIQUE active-lease index guarantees one
++lease) — but `ok:true` **alone does not prove sole ownership**. A live lease can
++also be **reclaimed on expiry** (an expired lease is superseded by the next
++claimant). Therefore every worker MUST verify ownership before mutating a claimed
++issue, and RE-verify before `close`/`release`.
++
++This is a reusable, standalone procedure: any skill or agent that mutates a
++claimed issue embeds it (it is NOT folded into one orchestrator).
++
++## The verification primitive
++
++```bash
++forge issue owns <id>          # exit 0 iff YOU hold the live lease; non-zero otherwise
++forge issue owns <id> --json   # { ok:true, data:{ owned, claimed_by, expired, actor, expires_at } }
++```
++
++`owns` resolves your actor the same way the kernel does — `FORGE_ACTOR` →
++`FORGE_SESSION_ID` → default `forge` — then reports `owned:true` iff you hold the
++**single active claim** AND that lease **has not expired**. It exits `0` when you
++own it and non-zero (conflict, code 4) when you do not, with a clear "you do not
++own the lease for `<id>` (held by `<actor>`)" message. It is a strict READ — it
++never mutates kernel state. (`data.claimed_by` is lease-derived; there is no
++`claims` command.)
++
++## Procedure
++
++1. **Select** work — `forge issue ready --json` (see the `triage-ready` skill).
++   Never claim epics/decisions or defer-windowed items.
++2. **Claim** — `FORGE_ACTOR=<your-actor> forge claim <id>`. Always run under a
++   distinct actor so a losing claim reaches the conflict guard instead of
++   collapsing to a shared-actor duplicate.
++3. **Prove ownership BEFORE working** — `forge issue owns <id>`.
++   - **exit 0 (OWNED)** → the lease is yours; proceed to work.
++   - **non-zero (NOT OWNED)** → you lost the race, or your claim collapsed to a
++     foreign/duplicate-collapsed claim. Do NOT work the issue. **Reselect** via
++     `forge issue ready --json` and start over at step 1.
++4. **Work** the issue (`dev`/edit/etc.).
++5. **RE-verify before `close`/`release`** — a live lease can be reclaimed on
++   expiry while you worked. Run `forge issue owns <id>` again:
++   - **OWNED** → `forge release check --json` (release-readiness), then
++     `forge close <id> --reason "…"` or `forge release <id>`.
++   - **NOT OWNED** → the lease was reclaimed (likely expired). Do NOT close/
++     release someone else's lease; reselect and, if the work is still needed,
++     re-claim and reconcile.
++
++## Contract (what each result means)
++
++| `forge claim` result | Meaning | Action |
++|----------------------|---------|--------|
++| `ok:false` (conflict, code 4) | A live lease is held by another actor | Reselect (`ready`) |
++| `ok:true` | Provisionally yours — **not proof** (duplicate replays also return ok:true) | **Run `forge issue owns <id>`** |
++
++| `forge issue owns` | Meaning | Action |
++|--------------------|---------|--------|
++| exit 0, `owned:true` | You hold the live, unexpired lease | Work / close / release |
++| non-zero, `owned:false` | Someone else holds it, or your lease expired | Reselect; never mutate |
++
++## Fork points
++
++- **Actor source** — how `<your-actor>` is derived (`FORGE_ACTOR` explicit id →
++  `FORGE_SESSION_ID` → default `forge`). Use a distinct per-agent actor so
++  contending claims reach the conflict guard rather than collapsing to a duplicate.
++- **Expiry / lease TTL** — whether claims carry an `expires_at` and how long;
++  `owns` treats an expired lease as NOT owned (it can be reclaimed).
++- **Re-verify cadence** — verify after claim and again before `close`/`release`;
++  a longer task may re-verify more often (e.g. before each irreversible step).
++- **Reselection policy** — on NOT-OWNED, how the next item is chosen (ranking /
++  filters live in the `triage-ready` skill).
++- **Fail-closed posture** — with no usable clock/state, treat ownership as NOT
++  proven (mirror the readiness model's "no usable clock ⇒ not workable").
++
++## Reliability notes
++
++- A genuine cross-actor conflict returns `ok:false` — there is no phantom
++  `ok:true`-on-conflict. The real hazards are (a) a duplicate replay's `ok:true`
++  and (b) expiry-driven reclaim. `owns` closes both.
++- Full multi-agent safety depends on the actor-identity kernel fix (distinct
++  actors per agent, kernel `d71a824b`): without distinct actors, two agents
++  share one idempotency key and `owns` cannot tell them apart.
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+index 2f9eeca5..d70a37fa 100644
+--- a/.codex/skills/kernel/SKILL.md
++++ b/.codex/skills/kernel/SKILL.md
+@@ -44,6 +44,10 @@ Utility skills outside the linear ladder: `research` (deep web research),
+ `rollback` (safe revert operations), `sonarcloud` (code-quality queries),
+ `shepherd` (cross-harness PR monitoring).
+ 
++Procedure skills (reusable operations any stage/agent embeds): `claim-safety`
++(claim an issue and PROVE you own the lease via `forge issue owns <id>` before
++mutating it — a claim returning ok:true does not by itself prove ownership).
++
+ ```
+ status → plan → dev → validate → ship → review → verify
+ ```
+@@ -63,6 +67,7 @@ families. Run them through Bash; never hand-edit the issue store.
+ | List / filter issues | `forge list [--status …] [--json]` |
+ | Create an issue | `forge create --title "…" --type <feature\|bug\|task>` |
+ | Claim work (DB-enforced lease) | `forge claim <id>` |
++| Prove you own the lease | `forge issue owns <id>` — exit 0 iff you hold the live lease (see the `claim-safety` skill) |
+ | Release a claim | `forge release <id>` |
+ | Update fields | `forge update <id> --priority <n>` (etc.) |
+ | Add a handoff comment | `forge comment <id> "…"` |
+@@ -111,8 +116,10 @@ the team. TodoWrite is for scratch tracking only.
+ 
+ 1. **Orient first.** Start with the `status` skill (or `forge prime` /
+    `forge orient`) — never reconstruct project state from raw files.
+-2. **Claim before you build.** `forge claim <id>` takes the lease; one issue at a
+-   time. `forge release <id>` if you abandon it.
++2. **Claim before you build — then prove it.** `forge claim <id>` takes the lease;
++   one issue at a time. A claim's ok:true does not by itself prove ownership, so
++   confirm with `forge issue owns <id>` before working and again before
++   `close`/`release` (the `claim-safety` skill). `forge release <id>` if you abandon it.
+ 3. **Work the ladder.** `plan` → `dev` → `validate` → `ship` → `review` →
+    `verify`, skipping stages only when the plan allows. The pre-merge doc gate
+    runs inside `ship` and `review` before merge — it is not a separate stage.
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 03654642..1c637463 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,6 +13,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Added
+ 
++- **Lease-ownership verification: `forge issue owns <id>`.** A claim returning `ok:true` does not by itself prove you won the lease — a same-key duplicate replay also returns `ok:true` (echoing the current call's `claim_id`), and a live lease can be reclaimed on expiry. The new Kernel read exits `0` iff the resolving actor (`FORGE_ACTOR` → `FORGE_SESSION_ID` → default `forge`) holds the **single active claim** and that lease has **not expired**; otherwise it exits non-zero (conflict, code `4`) with a clear "you do not own the lease for `<id>` (held by `<actor>`)" message. `--json` emits `{ ok:true, data:{ owned, claimed_by, expired, actor, expires_at } }`. It is a strict READ (never mutates state) and is Kernel-only (the Beads passthrough returns a clear kernel-only error). The new `claim-safety` skill packages the reusable procedure — claim → `owns` → work → re-verify before `close`/`release` — and is registered in the `kernel` umbrella skill. (kernel eea2f9ce, builds on d71a824b)
+ - Toggle-driven workflow config: a sparse writer for the schema-validated `.forge/config.yaml` surface (`lib/config-writer.js`) plus two thin verbs over it. `forge gate <enable|disable> <gate-id>` writes `workflow.gates.<gate-id>.enabled` and `forge role <role> --use <skill> [--ideology <name>]` writes `roles.<role>.skill` / `roles.<role>.ideology`, so users re-carve the assembly with config writes instead of editing Forge code. The reader gains an additive, backward-compatible `roles` section (siblings to `workflow.gates`) with open-world skill validation — the closed `PLAN_SUBSKILL` enum stays scoped to `planning.template.partialInvocation` and never blocks a `roles.<role>.skill` value — and `forge options roles --json` now reflects the resolved bindings. Both verbs validate at write time: an unknown gate id, unknown role, or unresolvable skill (no `SKILL.md` under `.skills/ > skills/`) errors before anything is written, never mid-run.
+ - **Onboarding now auto-migrates Beads → Kernel and self-installs git hooks.** `forge setup` (quick, `--yes`, and interactive agent paths) and `forge init` now detect an existing jsonl-backed `.beads` store and **auto-import** its issues, comments, and dependencies into the Kernel — reusing the idempotent `forge migrate --from beads` spine, reading the committed jsonl sidecars directly (no external issue-tracker CLI required, so it works even when the legacy SQL backend is offline) and surfacing the same honest field-gap report. A fresh `forge init` also now installs git hooks, so `forge validate`/`plan` are no longer immediately blocked by `HOOKS_NOT_ACTIVE` — closing the init → hooks catch-22. Both steps are idempotent and degrade to a warning rather than aborting onboarding.
+ - `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fields with no dedicated Kernel column are folded into the issue `metadata` blob instead of being dropped: beads `owner` → `assignee` (falling back after an explicit assignee, else `metadata.beads_owner`), plus `metadata.beads_external_ref` (linked GitHub issue/run) and `metadata.beads_started_at`; `design`/`assignee` land on their Kernel columns. The loader also tolerates a split `.beads` layout (events under `.beads/backup/`, interactions at `.beads/interactions.jsonl`) so neither sidecar is silently half-read. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. The **only remaining reported gap is `dependencies.created_by`** (the Kernel dependency row has no creator column); beads-internal/derived fields such as `content_hash` are intentionally not carried (not user data).
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 776436a4..1610249f 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -53,7 +53,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/deprecated-sync-cleanup.js (4)
+   - lines: 20 (bd), 31 (bd), 92 (bd), 118 (bd)
+ - [ ] lib/forge-issues.js (15)
+-  - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 99 (bd), 100 (bd), 103 (bd), 137 (bd), 161 (bd), 163 (bd), 167 (bd), 267 (bd), 286 (bd)
++  - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 105 (bd), 106 (bd), 109 (bd), 143 (bd), 167 (bd), 169 (bd), 173 (bd), 273 (bd), 298 (bd)
+ - [ ] lib/harness-capability-matrix.js (1)
+   - lines: 121 (bd)
+ - [ ] lib/insights.js (7)
+diff --git a/lib/adapters/beads-issue-adapter.js b/lib/adapters/beads-issue-adapter.js
+index 6f051623..d2a411f4 100644
+--- a/lib/adapters/beads-issue-adapter.js
++++ b/lib/adapters/beads-issue-adapter.js
+@@ -101,6 +101,12 @@ class BeadsIssueAdapter extends IssueAdapter {
+     return this.run('lint', args, context);
+   }
+ 
++  // Lease ownership is Kernel-only; the beads layer returns the Kernel-only contract
++  // error (handled in runBeadsOperation), matching the release passthrough.
++  owns(args = [], context = {}) {
++    return this.run('owns', args, context);
++  }
++
+   mapStatus(status, context = {}) {
+     return normalizeIssueStatus(status, context);
+   }
+diff --git a/lib/adapters/kernel-issue-adapter.js b/lib/adapters/kernel-issue-adapter.js
+index 420fa358..c1c9eb62 100644
+--- a/lib/adapters/kernel-issue-adapter.js
++++ b/lib/adapters/kernel-issue-adapter.js
+@@ -16,6 +16,7 @@ const KERNEL_ISSUE_OPERATIONS = Object.freeze({
+ 	orphans: 'orphans',
+ 	lint: 'lint',
+ 	children: 'children',
++	owns: 'owns',
+ 	read: 'show',
+ 	show: 'show',
+ 	create: 'create',
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index f4488e42..ca72855f 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -89,6 +89,15 @@ const SUBCOMMANDS = {
+     description: 'Show an epic\'s child issues + rollup via Forge',
+     usage: 'forge issue children <epic-id> [--json]',
+   },
++  // Lease-ownership verification (kernel d71a824b). A READ whose EXIT CODE encodes the
++  // verdict: exit 0 iff the resolving actor holds the live lease, non-zero otherwise.
++  // A claim returning ok:true does not prove ownership (a duplicate replay also returns
++  // ok:true), so a worker calls `owns` to CONFIRM before mutating a claimed issue. A
++  // READ, so intentionally NOT in WRITE_SUBCOMMANDS.
++  owns: {
++    description: 'Verify the current actor holds the live lease on an issue via Forge',
++    usage: 'forge issue owns <id> [--json]',
++  },
+   dep: {
+     description: 'Manage issue dependencies via Forge',
+     usage: 'forge issue dep <add|remove> <issue-id> <blocks-issue-id>',
+@@ -279,6 +288,55 @@ function normalizeIssueResult(result, operation, { json = false } = {}) {
+   return normalized;
+ }
+ 
++// `owns` is a read whose EXIT CODE encodes the ownership verdict: exit 0 when the
++// resolving actor holds the live lease, non-zero otherwise. The kernel read itself
++// succeeds (ok:true) whether or not the actor owns the lease — the verdict rides in
++// `data.owned` — so the plain read normalizer (which maps every ok:true to success)
++// would exit 0 on a NON-owned issue and let a worker mutate someone else's claim.
++// This normalizer converts a `owned:false` verdict into a non-zero conflict result
++// with a clear "you do not own the lease" message, while a genuine read failure (issue
++// not found) still flows through normalizeIssueResult with its contract exit code. The
++// `output` (the full envelope) is preserved even on the non-owned failure so `--json`
++// consumers still receive `{ ok:true, data:{ owned:false, ... } }` on stdout.
++function normalizeOwnsResult(result, operation, { json = false } = {}) {
++  // Raw read failure (e.g. not found) or a non-contract shape → defer to the standard
++  // normalizer so the contract exit code (notFound=3, ...) and error envelope survive.
++  if (!result || typeof result !== 'object' || result.ok !== true) {
++    return normalizeIssueResult(result, operation, { json });
++  }
++
++  const data = result.data && typeof result.data === 'object' ? result.data : {};
++  const envelope = JSON.stringify({
++    ok: true,
++    schema_version: result.schema_version,
++    command: result.command,
++    data,
++    next_commands: result.next_commands ?? [],
++  }, null, 2);
++
++  if (data.owned === true) {
++    return { success: true, operation, output: envelope };
++  }
++
++  const heldBy = typeof data.claimed_by === 'string' && data.claimed_by ? data.claimed_by : 'nobody';
++  const expiredNote = data.expired ? ' — the lease has expired and can be reclaimed' : '';
++  const issueId = typeof data.id === 'string' && data.id ? data.id : '<issue>';
++  const normalized = {
++    success: false,
++    operation,
++    error: `You do not own the lease for ${issueId} (held by ${heldBy}${expiredNote}). `
++      + 'You lost the race or the claim collapsed to a duplicate — reselect via '
++      + '`forge issue ready --json` and re-claim before working.',
++    exitCode: ISSUE_COMMAND_EXIT_CODES.conflict,
++  };
++  // On --json, surface the full ownership envelope on stdout (the bin printer emits
++  // result.output before the stderr error) so machine consumers still get the verdict.
++  if (json) {
++    normalized.output = envelope;
++  }
++  return normalized;
++}
++
+ // Split close args into the leading run of positional ids and the trailing flag
+ // tokens (everything from the first `-`-prefixed token onward). A flag value such
+ // as `done` in `--reason done` sits after a dash token, so it is correctly kept
+@@ -406,6 +464,11 @@ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+     projectRoot,
+     { ...opts, kernelBroker: opts.kernelBroker },
+   );
++  // `owns` maps the ownership verdict (data.owned) to the process exit code; every
++  // other subcommand uses the plain read/mutation normalization.
++  if (subcommand === 'owns') {
++    return normalizeOwnsResult(result, operation, { json: normalizeArgs(args).includes('--json') });
++  }
+   return normalizeIssueResult(result, operation, { json: normalizeArgs(args).includes('--json') });
+ }
+ 
+@@ -453,6 +516,7 @@ module.exports = {
+   createIssueSubcommand,
+   normalizeArgs,
+   normalizeIssueResult,
++  normalizeOwnsResult,
+   resolveIssueOperation,
+   resolveOperationArgs,
+   runIssueSubcommand,
+diff --git a/lib/commands/_resolve-command-opts.js b/lib/commands/_resolve-command-opts.js
+index c7cb663b..265db708 100644
+--- a/lib/commands/_resolve-command-opts.js
++++ b/lib/commands/_resolve-command-opts.js
+@@ -48,6 +48,9 @@ const ISSUE_COMMANDS = new Set([
+   // Epic grouping read — must be kernel-routed (its issue.children rollup has no
+   // verified Beads equivalent), so it belongs in ISSUE_COMMANDS like the rest.
+   'children',
++  // Lease-ownership verification — a kernel-only read (leases live in the Kernel),
++  // so it is kernel-routed like the rest of the issue surface.
++  'owns',
+   'search',
+   'stats',
+   'dep',
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 31992249..8f68ae2b 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -46,6 +46,12 @@ const BEADS_RELEASE_KERNEL_ONLY_ERROR =
+ const BEADS_CHILDREN_KERNEL_ONLY_ERROR =
+   'forge issue children is defined for the Kernel issue backend; Beads passthrough has no equivalent issue.children rollup.';
+ 
++// Lease ownership lives only in the Kernel backend (kernel_claims); Beads has no
++// verified lease to check. Reject the beads path explicitly so `forge issue owns <id>`
++// fails loudly instead of mapping to an unrelated/absent Beads subcommand.
++const BEADS_OWNS_KERNEL_ONLY_ERROR =
++  'forge issue owns <id> is defined for the Kernel issue backend; Beads passthrough has no lease-ownership verification.';
++
+ const OPERATION_METHOD_ALIASES = {
+   'dep.add': 'depAdd',
+   'dep.remove': 'depRemove',
+@@ -269,6 +275,12 @@ async function runBeadsOperation(operation, args, context, deps) {
+     return { success: false, error: BEADS_CHILDREN_KERNEL_ONLY_ERROR };
+   }
+ 
++  // `owns` verifies a Kernel lease; Beads has no such lease. Fail loudly rather
++  // than silently proxy to a non-existent Beads subcommand.
++  if (operation === 'owns' && !isHelpInvocation(args)) {
++    return { success: false, error: BEADS_OWNS_KERNEL_ONLY_ERROR };
++  }
++
+   const checkInit = deps.isBeadsInitialized || isBeadsInitialized;
+   if (!isHelpInvocation(args) && !checkInit(context.projectRoot)) {
+     return {
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 370599f1..5011db3b 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -15,6 +15,7 @@ const {
+ const { buildReadinessIndex } = require('./readiness-model');
+ const { buildMemoryProjectionMigration } = require('./migrations');
+ const { rankForPriorityLabel } = require('./taxonomy-validator');
++const { isLeaseExpired } = require('./lease-enforcer');
+ 
+ const BUILTIN_SQLITE_RUNTIME_ORDER = Object.freeze(['bun:sqlite', 'node:sqlite']);
+ let probeCounter = 0;
+@@ -471,6 +472,42 @@ function runIssueReadOperation(runtime, db, operation, args, context) {
+ 			comments,
+ 		});
+ 	}
++	if (operation === 'owns') {
++		// Lease-ownership verification (kernel d71a824b). A claim returning ok:true does
++		// not prove the caller won the lease: a duplicate replay also returns ok:true, so
++		// a worker must CONFIRM it holds the live lease before mutating a claimed issue.
++		// `owned` is true iff the resolving actor holds the SINGLE active claim AND that
++		// lease has not expired. read summaries derive `claimed_by` from state='active'
++		// only (never expiry — see loadActiveKernelClaimRow), so owns re-applies the
++		// expiry check here: an expired-but-not-yet-reclaimed lease is NOT ownership
++		// (planClaimAcquisition would supersede it). Actor resolution mirrors the mutation
++		// path's `context.actor || 'forge'` default so a bare CLI invocation matches its
++		// own claims; `now` falls back to the wall clock like the mutation route.
++		const id = firstPositional(args);
++		const rows = allParams(runtime, db, 'SELECT * FROM kernel_issues WHERE id = ?', [id]);
++		if (!rows[0]) {
++			return formatIssueCommandError({
++				command: 'issue.owns',
++				code: 'FORGE_ISSUE_NOT_FOUND',
++				message: `Issue ${id ?? '<missing id>'} not found`,
++				exitCode: ISSUE_COMMAND_EXIT_CODES.notFound,
++			});
++		}
++		const now = context.now || new Date().toISOString();
++		const actor = context.actor || 'forge';
++		const claim = loadActiveKernelClaimRow(runtime, db, id);
++		const claimedBy = claim ? (claim.actor ?? null) : null;
++		const expired = claim ? isLeaseExpired(claim, now) : false;
++		const owned = Boolean(claim) && !expired && claimedBy === actor;
++		return okIssueResponse('issue.owns', {
++			id,
++			actor,
++			claimed_by: claimedBy,
++			owned,
++			expired,
++			expires_at: claim ? (claim.expires_at ?? null) : null,
++		});
++	}
+ 	if (operation === 'search') {
+ 		const term = `%${firstPositional(args) || ''}%`;
+ 		const rows = allParams(
+@@ -1637,7 +1674,7 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		},
+ 		async issueOperation(operation, args = [], context = {}, config = {}) {
+ 			const database = getDatabase(config);
+-			const READ_OPERATIONS = new Set(['ready', 'list', 'show', 'search', 'stats', 'blocked', 'stale', 'orphans', 'lint', 'children']);
++			const READ_OPERATIONS = new Set(['ready', 'list', 'show', 'search', 'stats', 'blocked', 'stale', 'orphans', 'lint', 'children', 'owns']);
+ 			if (READ_OPERATIONS.has(operation)) {
+ 				return runIssueReadOperation(runtime, database, operation, args, context);
+ 			}
+diff --git a/skills/claim-safety/SKILL.md b/skills/claim-safety/SKILL.md
+new file mode 100644
+index 00000000..a06f8182
+--- /dev/null
++++ b/skills/claim-safety/SKILL.md
+@@ -0,0 +1,98 @@
++---
++name: claim-safety
++description: >
++  Claim a Forge issue and PROVE you own the lease before doing any work. Use
++  whenever you (or an orchestrator/agent) are about to mutate a claimed issue —
++  after `forge claim`, before `dev`/edit/`close`/`release`, or when two agents
++  might contend for the same work. A claim returning ok:true does NOT prove you
++  won the lease (a duplicate replay also returns ok:true), so this procedure adds
++  the mandatory ownership check via `forge issue owns <id>`. Trigger on "claim an
++  issue safely", "did I win the lease", "verify ownership", "claim conflict",
++  "two agents same issue", or before any claimed-issue mutation.
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Claim safety — claim, then prove you own the lease
++
++Claiming is not owning. The Forge kernel keys a claim's idempotency on
++`claim.create:<issue_id>:<actor>`, so a **same-key duplicate replay returns
++`ok:true`** echoing the *current* call's `claim_id`. A genuine cross-actor
++conflict returns `ok:false` (the partial-UNIQUE active-lease index guarantees one
++lease) — but `ok:true` **alone does not prove sole ownership**. A live lease can
++also be **reclaimed on expiry** (an expired lease is superseded by the next
++claimant). Therefore every worker MUST verify ownership before mutating a claimed
++issue, and RE-verify before `close`/`release`.
++
++This is a reusable, standalone procedure: any skill or agent that mutates a
++claimed issue embeds it (it is NOT folded into one orchestrator).
++
++## The verification primitive
++
++```bash
++forge issue owns <id>          # exit 0 iff YOU hold the live lease; non-zero otherwise
++forge issue owns <id> --json   # { ok:true, data:{ owned, claimed_by, expired, actor, expires_at } }
++```
++
++`owns` resolves your actor the same way the kernel does — `FORGE_ACTOR` →
++`FORGE_SESSION_ID` → default `forge` — then reports `owned:true` iff you hold the
++**single active claim** AND that lease **has not expired**. It exits `0` when you
++own it and non-zero (conflict, code 4) when you do not, with a clear "you do not
++own the lease for `<id>` (held by `<actor>`)" message. It is a strict READ — it
++never mutates kernel state. (`data.claimed_by` is lease-derived; there is no
++`claims` command.)
++
++## Procedure
++
++1. **Select** work — `forge issue ready --json` (see the `triage-ready` skill).
++   Never claim epics/decisions or defer-windowed items.
++2. **Claim** — `FORGE_ACTOR=<your-actor> forge claim <id>`. Always run under a
++   distinct actor so a losing claim reaches the conflict guard instead of
++   collapsing to a shared-actor duplicate.
++3. **Prove ownership BEFORE working** — `forge issue owns <id>`.
++   - **exit 0 (OWNED)** → the lease is yours; proceed to work.
++   - **non-zero (NOT OWNED)** → you lost the race, or your claim collapsed to a
++     foreign/duplicate-collapsed claim. Do NOT work the issue. **Reselect** via
++     `forge issue ready --json` and start over at step 1.
++4. **Work** the issue (`dev`/edit/etc.).
++5. **RE-verify before `close`/`release`** — a live lease can be reclaimed on
++   expiry while you worked. Run `forge issue owns <id>` again:
++   - **OWNED** → `forge release check --json` (release-readiness), then
++     `forge close <id> --reason "…"` or `forge release <id>`.
++   - **NOT OWNED** → the lease was reclaimed (likely expired). Do NOT close/
++     release someone else's lease; reselect and, if the work is still needed,
++     re-claim and reconcile.
++
++## Contract (what each result means)
++
++| `forge claim` result | Meaning | Action |
++|----------------------|---------|--------|
++| `ok:false` (conflict, code 4) | A live lease is held by another actor | Reselect (`ready`) |
++| `ok:true` | Provisionally yours — **not proof** (duplicate replays also return ok:true) | **Run `forge issue owns <id>`** |
++
++| `forge issue owns` | Meaning | Action |
++|--------------------|---------|--------|
++| exit 0, `owned:true` | You hold the live, unexpired lease | Work / close / release |
++| non-zero, `owned:false` | Someone else holds it, or your lease expired | Reselect; never mutate |
++
++## Fork points
++
++- **Actor source** — how `<your-actor>` is derived (`FORGE_ACTOR` explicit id →
++  `FORGE_SESSION_ID` → default `forge`). Use a distinct per-agent actor so
++  contending claims reach the conflict guard rather than collapsing to a duplicate.
++- **Expiry / lease TTL** — whether claims carry an `expires_at` and how long;
++  `owns` treats an expired lease as NOT owned (it can be reclaimed).
++- **Re-verify cadence** — verify after claim and again before `close`/`release`;
++  a longer task may re-verify more often (e.g. before each irreversible step).
++- **Reselection policy** — on NOT-OWNED, how the next item is chosen (ranking /
++  filters live in the `triage-ready` skill).
++- **Fail-closed posture** — with no usable clock/state, treat ownership as NOT
++  proven (mirror the readiness model's "no usable clock ⇒ not workable").
++
++## Reliability notes
++
++- A genuine cross-actor conflict returns `ok:false` — there is no phantom
++  `ok:true`-on-conflict. The real hazards are (a) a duplicate replay's `ok:true`
++  and (b) expiry-driven reclaim. `owns` closes both.
++- Full multi-agent safety depends on the actor-identity kernel fix (distinct
++  actors per agent, kernel `d71a824b`): without distinct actors, two agents
++  share one idempotency key and `owns` cannot tell them apart.
+diff --git a/skills/kernel/SKILL.md b/skills/kernel/SKILL.md
+index 2f9eeca5..d70a37fa 100644
+--- a/skills/kernel/SKILL.md
++++ b/skills/kernel/SKILL.md
+@@ -44,6 +44,10 @@ Utility skills outside the linear ladder: `research` (deep web research),
+ `rollback` (safe revert operations), `sonarcloud` (code-quality queries),
+ `shepherd` (cross-harness PR monitoring).
+ 
++Procedure skills (reusable operations any stage/agent embeds): `claim-safety`
++(claim an issue and PROVE you own the lease via `forge issue owns <id>` before
++mutating it — a claim returning ok:true does not by itself prove ownership).
++
+ ```
+ status → plan → dev → validate → ship → review → verify
+ ```
+@@ -63,6 +67,7 @@ families. Run them through Bash; never hand-edit the issue store.
+ | List / filter issues | `forge list [--status …] [--json]` |
+ | Create an issue | `forge create --title "…" --type <feature\|bug\|task>` |
+ | Claim work (DB-enforced lease) | `forge claim <id>` |
++| Prove you own the lease | `forge issue owns <id>` — exit 0 iff you hold the live lease (see the `claim-safety` skill) |
+ | Release a claim | `forge release <id>` |
+ | Update fields | `forge update <id> --priority <n>` (etc.) |
+ | Add a handoff comment | `forge comment <id> "…"` |
+@@ -111,8 +116,10 @@ the team. TodoWrite is for scratch tracking only.
+ 
+ 1. **Orient first.** Start with the `status` skill (or `forge prime` /
+    `forge orient`) — never reconstruct project state from raw files.
+-2. **Claim before you build.** `forge claim <id>` takes the lease; one issue at a
+-   time. `forge release <id>` if you abandon it.
++2. **Claim before you build — then prove it.** `forge claim <id>` takes the lease;
++   one issue at a time. A claim's ok:true does not by itself prove ownership, so
++   confirm with `forge issue owns <id>` before working and again before
++   `close`/`release` (the `claim-safety` skill). `forge release <id>` if you abandon it.
+ 3. **Work the ladder.** `plan` → `dev` → `validate` → `ship` → `review` →
+    `verify`, skipping stages only when the plan allows. The pre-merge doc gate
+    runs inside `ship` and `review` before merge — it is not a separate stage.
+diff --git a/test/kernel/claim-ownership.test.js b/test/kernel/claim-ownership.test.js
+new file mode 100644
+index 00000000..7e3b419a
+--- /dev/null
++++ b/test/kernel/claim-ownership.test.js
+@@ -0,0 +1,127 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const { runIssueSubcommand } = require('../../lib/commands/_issue');
++
++// Reliability truth (kernel d71a824b / eea2f9ce): a claim returning ok:true does NOT
++// by itself prove the caller won the lease — a SAME-key duplicate replay also returns
++// ok:true (echoing the current call's claim_id), and pre actor-identity fix a losing
++// agent's claim collapsed to that duplicate. The `forge issue owns <id>` primitive is
++// the authority: it reports OWNED iff the resolving actor holds the LIVE (active +
++// unexpired) lease, so a worker must verify ownership before doing work rather than
++// trusting the claim result. See skills/claim-safety/SKILL.md.
++describe('forge issue owns — lease ownership verification', () => {
++  let tmpDir;
++  let driver;
++  let broker;
++  let config;
++  const now = '2026-06-20T00:00:00.000Z';
++
++  async function createIssue(id, title = id) {
++    return broker.runIssueOperation(
++      'create',
++      ['--id', id, '--title', title, '--type', 'task'],
++      { now, actor: 'tester' },
++    );
++  }
++
++  async function claim(id, actor, at = now) {
++    return broker.runIssueOperation('claim', ['--issue', id], { now: at, actor });
++  }
++
++  beforeEach(async () => {
++    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claim-owns-'));
++    const dbPath = path.join(tmpDir, 'kernel.sqlite');
++    config = { databasePath: dbPath };
++    driver = createBuiltinSQLiteDriver({});
++    broker = createLocalBroker({
++      projectRoot: tmpDir,
++      execFileSync: () => path.join(tmpDir, '.git'),
++      databasePath: dbPath,
++      driver,
++    });
++    await broker.initialize();
++  });
++
++  afterEach(() => {
++    if (driver) driver.close();
++    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
++  });
++
++  test('A wins the lease; owns reports OWNED for A and NON-OWNED for the loser B (driver level)', async () => {
++    await createIssue('own-1', 'Contended');
++    const a = await claim('own-1', 'forge-a');
++    expect(a.ok).toBe(true);
++    // With distinct actors (post actor-identity fix) B's second claim is a genuine
++    // conflict; even if it had duplicate-collapsed to ok:true, owns — not the claim
++    // result — is what decides ownership.
++    await claim('own-1', 'forge-b', '2026-06-20T00:01:00.000Z');
++
++    const asA = await driver.issueOperation('owns', ['own-1'], { now, actor: 'forge-a' }, config);
++    expect(asA.ok).toBe(true);
++    expect(asA.command).toBe('issue.owns');
++    expect(asA.data.owned).toBe(true);
++    expect(asA.data.claimed_by).toBe('forge-a');
++
++    const asB = await driver.issueOperation('owns', ['own-1'], { now, actor: 'forge-b' }, config);
++    expect(asB.ok).toBe(true);
++    expect(asB.data.owned).toBe(false);
++    expect(asB.data.claimed_by).toBe('forge-a');
++  });
++
++  test('CLI: owns exits 0 for the lease holder and non-zero for a non-owner', async () => {
++    await createIssue('own-2', 'Contended');
++    await claim('own-2', 'forge-a');
++
++    const opts = { issueBackend: 'kernel', kernelBroker: broker };
++    const ownedA = await runIssueSubcommand('owns', ['own-2'], tmpDir, {
++      ...opts,
++      env: { FORGE_ACTOR: 'forge-a' },
++    });
++    expect(ownedA.success).toBe(true);
++
++    const ownedB = await runIssueSubcommand('owns', ['own-2'], tmpDir, {
++      ...opts,
++      env: { FORGE_ACTOR: 'forge-b' },
++    });
++    expect(ownedB.success).toBe(false);
++    expect(ownedB.exitCode).toBeGreaterThan(0);
++    expect(ownedB.error).toContain('own-2');
++  });
++
++  test('owns treats an expired lease as NON-OWNED even for the original holder', async () => {
++    await createIssue('own-3', 'Expiring');
++    // Insert a claim with a fixed expires_at directly (the CLI expiry flag is out of
++    // scope for this primitive) so the expiry branch is exercised deterministically.
++    await driver.exec(
++      'INSERT INTO kernel_claims (id, issue_id, actor, state, claimed_at, expires_at) VALUES '
++        + "('c-own-3', 'own-3', 'forge-a', 'active', '2026-06-20T00:00:00.000Z', '2026-06-20T00:00:30.000Z');",
++      config,
++    );
++
++    const before = await driver.issueOperation(
++      'owns', ['own-3'], { now: '2026-06-20T00:00:10.000Z', actor: 'forge-a' }, config,
++    );
++    expect(before.data.owned).toBe(true);
++    expect(before.data.expired).toBe(false);
++
++    const after = await driver.issueOperation(
++      'owns', ['own-3'], { now: '2026-06-20T00:01:00.000Z', actor: 'forge-a' }, config,
++    );
++    expect(after.data.owned).toBe(false);
++    expect(after.data.expired).toBe(true);
++  });
++
++  test('owns on an unknown issue is a not-found error', async () => {
++    const missing = await driver.issueOperation('owns', ['nope'], { now, actor: 'forge-a' }, config);
++    expect(missing.ok).toBe(false);
++    expect(missing.error.code).toBe('FORGE_ISSUE_NOT_FOUND');
++    expect(missing.error.exit_code).toBe(3);
++  });
++});
+diff --git a/test/skills-structure.test.js b/test/skills-structure.test.js
+index 756798a7..0fec6d47 100644
+--- a/test/skills-structure.test.js
++++ b/test/skills-structure.test.js
+@@ -126,6 +126,7 @@ describe('skills/ directory structure', () => {
+       'validate',
+       'verify',
+       'kernel',
++      'claim-safety',
+       'hermes-forge',
+       'parallel-deep-research',
+       'sonarcloud-analysis',
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,31 @@
+From 8c94fc3461ff630efc2f9fcab1f247b8aa436139 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <212836255+harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 14:35:42 +0530
+Subject: [PATCH] docs: make root CLAUDE pointer-only (#536)
+
+Co-authored-by: forge-shepherd <noreply@anthropic.com>
+---
+ CLAUDE.md | 12 ------------
+ 1 file changed, 12 deletions(-)
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 943baf11..43c994c2 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,13 +1 @@
+-# Project Instructions
+-
+-Forge uses **[AGENTS.md](AGENTS.md)** as the single source of truth for all agent
+-instructions: the workflow template, change classification, detailed stage
+-instructions, git hooks and push workflow, build/shell/MCP toolchain, issue
+-tracking, project learnings, and session completion. This file intentionally
+-holds no content of its own — it only loads AGENTS.md.
+-
+ @AGENTS.md
+-
+-> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of
+-> every session to load the current Forge workflow contract. AGENTS.md is
+-> authoritative; do not duplicate its content here.
+-- 
+2.51.0.windows.1
+

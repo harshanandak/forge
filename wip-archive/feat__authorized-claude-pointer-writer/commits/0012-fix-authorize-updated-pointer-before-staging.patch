@@ -1,0 +1,126 @@
+From a75af3afa6ebf8988c0b7db4e15955af89a0f8c3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 16:11:54 +0530
+Subject: [PATCH] fix: authorize updated pointer before staging
+
+---
+ lib/commands/setup.js                  | 51 ++++++++++++++++----------
+ test/setup-claude-pointer-head.test.js | 22 +++++++++++
+ 2 files changed, 53 insertions(+), 20 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index a488e7c9..b50d4cf8 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -194,6 +194,33 @@ function normalizeClaudePointerContent(content) {
+   return Buffer.from(String(content || '').replace(/\r\n/g, '\n'));
+ }
+ 
++function isExactClaudePointerBytes(content) {
++	const bytes = Buffer.from(content || '');
++	return bytes.equals(Buffer.from('@AGENTS.md\n')) || bytes.equals(Buffer.from('@AGENTS.md\r\n'));
++}
++
++function readCleanClaudePointerWorktreeContent(cwd, commandRunner) {
++	const worktreeContent = fs.readFileSync(path.join(cwd, 'CLAUDE.md'));
++	const normalizedContent = normalizeClaudePointerContent(worktreeContent);
++	try {
++		const cleanHash = String(commandRunner('git', ['hash-object', '--path=CLAUDE.md', '--stdin'], {
++			cwd,
++			input: worktreeContent,
++			encoding: 'utf8',
++			stdio: 'pipe',
++		})).trim();
++		const normalizedHash = String(commandRunner('git', ['hash-object', '--stdin'], {
++			cwd,
++			input: normalizedContent,
++			encoding: 'utf8',
++			stdio: 'pipe',
++		})).trim();
++		return cleanHash === normalizedHash ? normalizedContent : worktreeContent;
++	} catch (_hashError) {
++		return worktreeContent;
++	}
++}
++
+ /**
+  * Read the exact staged CLAUDE.md bytes that the protected-state hook will hash.
+  * @param {string} cwd - Repository working directory
+@@ -202,11 +229,13 @@ function normalizeClaudePointerContent(content) {
+  */
+ function readStagedClaudePointerContent(cwd = projectRoot, commandRunner = execFileSync) {
+ 	try {
+-		return commandRunner('git', ['show', ':CLAUDE.md'], {
++		const stagedContent = commandRunner('git', ['show', ':CLAUDE.md'], {
+ 			cwd,
+ 			encoding: null,
+ 			stdio: 'pipe',
+ 		});
++		if (isExactClaudePointerBytes(stagedContent)) return stagedContent;
++		return readCleanClaudePointerWorktreeContent(cwd, commandRunner);
+ 	} catch (showError) {
+ 		try {
+ 			commandRunner('git', ['ls-files', '--error-unmatch', '--', 'CLAUDE.md'], {
+@@ -218,25 +247,7 @@ function readStagedClaudePointerContent(cwd = projectRoot, commandRunner = execF
+ 		} catch (trackedError) {
+ 			if (trackedError?.status !== 1) throw showError;
+ 		}
+-		const worktreeContent = fs.readFileSync(path.join(cwd, 'CLAUDE.md'));
+-		const normalizedContent = normalizeClaudePointerContent(worktreeContent);
+-		try {
+-			const cleanHash = String(commandRunner('git', ['hash-object', '--path=CLAUDE.md', '--stdin'], {
+-				cwd,
+-				input: worktreeContent,
+-				encoding: 'utf8',
+-				stdio: 'pipe',
+-			})).trim();
+-			const normalizedHash = String(commandRunner('git', ['hash-object', '--stdin'], {
+-				cwd,
+-				input: normalizedContent,
+-				encoding: 'utf8',
+-				stdio: 'pipe',
+-			})).trim();
+-			return cleanHash === normalizedHash ? normalizedContent : worktreeContent;
+-		} catch (_hashError) {
+-			return worktreeContent;
+-		}
++		return readCleanClaudePointerWorktreeContent(cwd, commandRunner);
+ 	}
+ }
+ 
+diff --git a/test/setup-claude-pointer-head.test.js b/test/setup-claude-pointer-head.test.js
+index e05b57f7..aff3b7d0 100644
+--- a/test/setup-claude-pointer-head.test.js
++++ b/test/setup-claude-pointer-head.test.js
+@@ -51,6 +51,28 @@ describe('CLAUDE.md pointer authorization source head', () => {
+ 		});
+ 	});
+ 
++	test('uses clean worktree pointer bytes when the index still has previous content', () => {
++		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-pointer-'));
++		try {
++			fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), Buffer.from('@AGENTS.md\r\n'));
++			const calls = [];
++			const content = setupCommand.readStagedClaudePointerContent(cwd, (file, args, options) => {
++				calls.push({ file, args, options });
++				if (args[0] === 'show') return Buffer.from('previous-content\n');
++				return Buffer.from('clean-pointer-hash\n');
++			});
++
++			expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
++			expect(calls.map(call => call.args)).toEqual([
++				['show', ':CLAUDE.md'],
++				['hash-object', '--path=CLAUDE.md', '--stdin'],
++				['hash-object', '--stdin'],
++			]);
++		} finally {
++			fs.rmSync(cwd, { recursive: true, force: true });
++		}
++	});
++
+ 	test('cleans untracked pointer bytes using Git filters before authorization', () => {
+ 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-pointer-'));
+ 		try {
+-- 
+2.51.0.windows.1
+

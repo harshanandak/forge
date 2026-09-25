@@ -1,0 +1,298 @@
+From 23f5854f069ccfb22324d1266f132b930745a9a3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 2 Aug 2026 15:42:37 +0530
+Subject: [PATCH] fix(merge): source review activity from GraphQL
+
+---
+ .../decisions.md                              |  2 ++
+ .../tasks.md                                  |  2 ++
+ lib/adapters/pr-state-adapter.js              | 29 +++++++++++----
+ lib/commands/merge.js                         | 20 ++++++-----
+ ...merge-authority-review-regressions.test.js | 35 +++++++++++++++++--
+ test/commands/merge-authority.test.js         |  8 +++++
+ test/pr-state-adapter.test.js                 | 14 ++++----
+ 7 files changed, 86 insertions(+), 24 deletions(-)
+
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+index 6c87db0c..18b05ca2 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -48,6 +48,8 @@ Candidate `331943cce424ed57ef9afcd5dc773a89692fc41b` is rejected after two termi
+ 
+ Candidate `66d7b4d18d58ac007ce66ac8c31471111419bbc2` is rejected after the shared-projection lane proved that GitHub's explicit `UNKNOWN` enum and recognized `BLOCKED` state could still reach Shepherd `MERGE_READY`. The adapter now treats explicit `UNKNOWN` as non-readable authority evidence. At Shepherd's terminal handoff seam, only `CLEAN`, `HAS_HOOKS`, or `UNSTABLE` provider merge states may produce `MERGE_READY`; `UNKNOWN`, `BLOCKED`, `DRAFT`, inconsistent `BEHIND`, malformed values, and conflicts remain non-authorizing. The exact counterexamples were RED before the change and GREEN afterward; the bounded affected manifest remained green.
+ 
++Candidate `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a` is rejected after a predecessor review result proved its settle evidence still relied on the lossy `gh pr view --json reviews` projection, which omits review creation/edit timestamps. Merge authority now reads fully paginated GraphQL review evidence with mandatory `createdAt`, `updatedAt`, and `submittedAt`, preserves the latest activity across every review per author while retaining latest-submission semantics, and computes settle freshness from that source. Review authority is permanently agent/vendor agnostic: human and automated reviewers are governed by identical mechanism-based thread, submission, timestamp, head-binding, and resolution evidence; no name allowlists or vendor-specific trust exist.
++
+ ## Bounded residuals
+ 
+ GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+index 7d9c4053..5f4bd4a8 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -35,6 +35,8 @@
+ - [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
+ - [x] Reconcile exact-SHA review of `66d7b4d18d58ac007ce66ac8c31471111419bbc2`: reject after explicit `UNKNOWN` and recognized `BLOCKED` merge states reached Shepherd `MERGE_READY`.
+ - [x] Require an authorizing provider merge state at Shepherd's terminal handoff; add RED/GREEN coverage and rerun the bounded affected manifest once.
++- [x] Reconcile the late predecessor review finding against `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a`: reject because `gh pr view` omits review edit timestamps.
++- [x] Move settle authority to fully paginated, agent-agnostic GraphQL review evidence; require creation/update/submission timestamps and retain latest activity per author.
+ - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+ - [ ] Push/open PR only after PASS.
+ - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 6ec638ad..ed5f6e08 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -644,16 +644,16 @@ class PrStateAdapter {
+   /**
+    * Read submitted PR REVIEWS (not inline threads) — the latest review per
+    * author, each with the commit it was submitted against. This is the
+-   * review-at-head signal that catches the #365 race: a CodeRabbit review from
+-   * an earlier commit whose `commit.oid` no longer matches HEAD is STALE, so the
+-   * post-push re-review is still pending. Uses GraphQL because `gh pr view`
++   * review-at-head signal that catches the #365 race: any reviewer submission
++   * from an earlier commit whose `commit.oid` no longer matches HEAD is STALE,
++   * so the post-push re-review is still pending. Uses GraphQL because `gh pr view`
+    * cannot return a review's target commit oid. Fully paginated by cursor.
+    *
+    * @param {{ owner: string, repo: string, pr: string }} ctx
+-   * @returns {Promise<Array<{ author: string, state: string, submittedAt: string|null, commitOid: string|null, body: string }>>}
++   * @returns {Promise<Array<{ author: string, state: string, createdAt: string, updatedAt: string, submittedAt: string, activityAt: string, commitOid: string, body: string }>>}
+    */
+   async readReviews({ owner, repo, pr }) {
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id author{__typename login} state submittedAt commit{oid} body}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id author{__typename login} state createdAt updatedAt submittedAt commit{oid} body}}}}}';
+     const all = this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviews,
+@@ -666,6 +666,8 @@ class PrStateAdapter {
+           throw new Error(`Review ${id} has missing or malformed actor type`);
+         }
+         if (typeof r.state !== 'string' || !r.state
++          || typeof r.createdAt !== 'string' || !r.createdAt
++          || typeof r.updatedAt !== 'string' || !r.updatedAt
+           || typeof r.submittedAt !== 'string' || !r.submittedAt
+           || typeof r.commit?.oid !== 'string' || !r.commit.oid
+           || typeof r.body !== 'string') {
+@@ -676,6 +678,8 @@ class PrStateAdapter {
+           author: author.replace(/\[bot\]$/, ''),
+           authorTypename: r.author.__typename,
+           state: r.state.toUpperCase(),
++          createdAt: r.createdAt,
++          updatedAt: r.updatedAt,
+           submittedAt: r.submittedAt,
+           commitOid: r.commit.oid,
+           body: r.body,
+@@ -685,11 +689,24 @@ class PrStateAdapter {
+     // Keep only the LATEST review per author (first:100 yields oldest→newest, so
+     // a later entry supersedes an earlier one from the same login).
+     const latest = new Map();
++    const latestActivity = new Map();
+     for (const r of all) {
+       if (!r.author) continue;
+       latest.set(r.author, r);
++      const activity = Math.max(
++        Date.parse(r.createdAt),
++        Date.parse(r.updatedAt),
++        Date.parse(r.submittedAt),
++      );
++      if (!Number.isFinite(activity)) {
++        throw new Error(`Review ${r.id} has malformed activity timestamps`);
++      }
++      latestActivity.set(r.author, Math.max(latestActivity.get(r.author) || 0, activity));
+     }
+-    return Array.from(latest.values());
++    return Array.from(latest.values()).map((review) => ({
++      ...review,
++      activityAt: new Date(latestActivity.get(review.author)).toISOString(),
++    }));
+   }
+ 
+   /**
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 3380a3cf..1304032f 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -497,7 +497,7 @@ function fetchCheckRunObservations(gh, { owner, repo, head }) {
+  */
+ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
+-    'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,updatedAt']) || {};
++    'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,comments,updatedAt']) || {};
+ 
+   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : null;
+ 
+@@ -510,10 +510,16 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     }))
+     : [];
+ 
+-  const reviews = Array.isArray(view.reviews) ? view.reviews : [];
++  const repoIdentity = ghJson(gh, ['repo', 'view', '--json', 'owner,name']);
++  const owner = repoIdentity && repoIdentity.owner && repoIdentity.owner.login;
++  const repo = repoIdentity && repoIdentity.name;
++  const adapter = owner && repo
++    ? new PrStateAdapter({ gh: (_cmd, adapterArgs) => gh(adapterArgs) })
++    : null;
++  const reviews = adapter ? await adapter.readReviews({ owner, repo, pr }) : [];
+   const approvals = reviews
+     .filter((r) => String(r.state).toUpperCase() === 'APPROVED')
+-    .map((r) => ({ author: (r.author && r.author.login) || '' }));
++    .map((r) => ({ author: typeof r.author === 'string' ? r.author : '' }));
+ 
+   // Derive from GitHub's mergeStateStatus / mergeable. Only a known set maps to
+   // a definite answer; anything else stays undefined so the dependent rule fails
+@@ -536,22 +542,18 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+ 
+   const stamps = [
+     ...comments.map((c) => c.at),
+-    ...reviews.flatMap((r) => [r.createdAt, r.updatedAt, r.submittedAt]),
++    ...reviews.flatMap((r) => [r.activityAt, r.createdAt, r.updatedAt, r.submittedAt]),
+     view.updatedAt || '',
+   ].map((s) => Date.parse(s)).filter((n) => !Number.isNaN(n));
+   const lastActivityAt = stamps.length ? Math.max(...stamps) : undefined;
+ 
+-  const repoIdentity = ghJson(gh, ['repo', 'view', '--json', 'owner,name']);
+-  const owner = repoIdentity && repoIdentity.owner && repoIdentity.owner.login;
+-  const repo = repoIdentity && repoIdentity.name;
+   const base = typeof view.baseRefName === 'string' ? view.baseRefName : null;
+   const headSha = normalizeFullHeadSha(view.headRefOid);
+   let requiredChecks = null;
+   let requiredCheckSource = null;
+   let checks = null;
+   const providerObservations = rollup ? rollup.map(normalizeRollupObservation) : null;
+-  if (owner && repo && base) {
+-    const adapter = new PrStateAdapter({ gh: (_cmd, adapterArgs) => gh(adapterArgs) });
++  if (adapter && base) {
+     requiredChecks = await adapter.readRequiredCheckPolicy({ owner, repo, base });
+     requiredCheckSource = adapter.lastRequiredSource;
+     const checkRuns = headSha ? fetchCheckRunObservations(gh, { owner, repo, head: headSha }) : null;
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index ccfafa89..e27ea0dc 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -48,7 +48,7 @@ function deps(overrides = {}) {
+ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
+   return (argv) => {
+     if (argv[0] === 'pr' && argv[1] === 'view') {
+-      return JSON.stringify({
++      const payload = {
+         number: 42,
+         headRefOid: HEAD,
+         baseRefName: 'master',
+@@ -61,7 +61,15 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
+         comments: [],
+         updatedAt: '2026-08-01T00:00:00Z',
+         ...viewOverrides,
+-      });
++      };
++      // Match the real `gh pr view --json reviews` projection: review edit and
++      // creation timestamps are not exported on this surface.
++      payload.reviews = (viewOverrides.reviews || []).map((review) => ({
++        author: review.author,
++        state: review.state,
++        submittedAt: review.submittedAt,
++      }));
++      return JSON.stringify(payload);
+     }
+     if (argv[0] === 'repo' && argv[1] === 'view') {
+       return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
+@@ -80,7 +88,28 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
+         }];
+       return JSON.stringify([{ total_count: runs.length, check_runs: runs }]);
+     }
+-    if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(threadPayload);
++    if (argv[0] === 'api' && argv[1] === 'graphql') {
++      const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
++      if (queryArg.includes('reviews(first')) {
++        const nodes = (viewOverrides.reviews || []).map((review, index) => ({
++          id: review.id || `R-${index + 1}`,
++          author: {
++            __typename: review.author?.__typename || 'User',
++            login: review.author?.login || 'reviewer',
++          },
++          state: review.state || 'COMMENTED',
++          createdAt: review.createdAt || review.submittedAt,
++          updatedAt: review.updatedAt || review.submittedAt,
++          submittedAt: review.submittedAt,
++          commit: review.commit || { oid: HEAD },
++          body: review.body || '',
++        }));
++        return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++          nodes, pageInfo: { hasNextPage: false, endCursor: null },
++        } } } } });
++      }
++      return JSON.stringify(threadPayload);
++    }
+     throw new Error(`unexpected gh call: ${argv.join(' ')}`);
+   };
+ }
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index e1d64046..d2070183 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -300,6 +300,14 @@ describe('merge command — mandatory release authority', () => {
+         }] }]);
+       }
+       if (argv[0] === 'api' && argv[1] === 'graphql') {
++        const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
++        if (queryArg.includes('reviews(first')) {
++          return JSON.stringify({
++            data: { repository: { pullRequest: { reviews: {
++              nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
++            } } } },
++          });
++        }
+         return JSON.stringify({
+           data: { repository: { pullRequest: { reviewThreads: {
+             nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 89217c22..20ea8f09 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -715,9 +715,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+           // Oldest→newest: coderabbitai's second review supersedes its first.
+-          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
+-          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
+-          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
++          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T12:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
++          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
++          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', createdAt: '2026-07-12T10:59:00Z', updatedAt: '2026-07-12T11:00:00Z', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+         ],
+       } } } },
+     });
+@@ -728,12 +728,14 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     // Latest-per-author: coderabbitai collapses to its newer (second) review.
+     expect(reviews).toHaveLength(2);
+     const cr = reviews.find((r) => r.author === 'coderabbitai');
+-    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
++    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', activityAt: '2026-07-12T12:00:00.000Z', commitOid: 'head-sha', body: 'second pass' });
+     const alice = reviews.find((r) => r.author === 'alice');
+     expect(alice.commitOid).toBe('head-sha');
+     expect(alice.authorTypename).toBe('User');
+     // A GraphQL request was constructed (not a `gh pr view`).
+     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
++    const query = calls.find((c) => c.args.join(' ').includes('reviews(first')).args.join(' ');
++    expect(query).toContain('createdAt updatedAt submittedAt');
+   });
+ 
+   test('readReviews paginates until hasNextPage is false', async () => {
+@@ -747,12 +749,12 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       if (call === 1) {
+         return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+           pageInfo: { hasNextPage: true, endCursor: 'CUR' },
+-          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
++          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+         } } } } });
+       }
+       return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+         pageInfo: { hasNextPage: false, endCursor: null },
+-        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
++        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', createdAt: '2026-07-12T09:59:00Z', updatedAt: '2026-07-12T10:00:00Z', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+       } } } } });
+     };
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+-- 
+2.51.0.windows.1
+

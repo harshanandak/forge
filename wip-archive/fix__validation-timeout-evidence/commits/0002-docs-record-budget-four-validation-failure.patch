@@ -1,0 +1,124 @@
+From 189907ccaa5d40753b662931a18e1d9ccff4dff9 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 11:39:19 +0530
+Subject: [PATCH] docs: record budget-four validation failure
+
+---
+ .../validation-20260925.md                    | 105 ++++++++++++++++++
+ 1 file changed, 105 insertions(+)
+ create mode 100644 docs/work/2026-09-24-validation-timeout-evidence/validation-20260925.md
+
+diff --git a/docs/work/2026-09-24-validation-timeout-evidence/validation-20260925.md b/docs/work/2026-09-24-validation-timeout-evidence/validation-20260925.md
+new file mode 100644
+index 00000000..5c93ec17
+--- /dev/null
++++ b/docs/work/2026-09-24-validation-timeout-evidence/validation-20260925.md
+@@ -0,0 +1,105 @@
++# Canonical validation: 2026-09-25
++
++## Result and authority
++
++- Tested head: `a4888533353238501aa82e355b7c34f3560dadc6`.
++- Command: `node bin/forge.js validate --shards 4`.
++- Started: `2026-09-25T05:31:33.436Z`.
++- Exit: 1 after 1720.253 seconds (28 minutes 40.253 seconds overall).
++- The test phase hit its unchanged 25-minute deadline.
++- Fresh fetch before the run: zero commits behind `origin/master`.
++- Lease: verified under `delivery-reliability-root-20260925`.
++- Receipt verification afterward: `valid: false`, `reason: missing-or-invalid`.
++- Tested head and worktree were unchanged at terminal verification. No push or
++  PR was attempted. No second canonical run was started.
++
++Preflight observed 7.23 GiB free physical memory and eight logical processors.
++An unrelated focused Bun test was present; no Forge full-suite runner was found.
++These are point-in-time observations, not evidence identifying the cause of the
++subsequent timeouts. Increasing available RAM did not suffice to make this run
++complete successfully.
++
++## What actually ran
++
++The captured top-level inventory reports requested/effective budget 4, with 29
++shards across 617 files:
++
++| Group | Files | Shards | Granted concurrency | Terminal evidence |
++| --- | ---: | ---: | ---: | --- |
++| Unit | 227 | 4 | 4, deferred | No terminal report |
++| Subprocess | 369 | 4 | 2, cost 2 each | Two terminal reports; two missing |
++| Exclusive | 21 | 21 | 1, cost 2 | No terminal report |
++
++Windows unit work is deliberately deferred behind subprocess work in the
++existing scheduler. Exclusive work follows shared work. A larger budget is not
++permission to overlap these groups or weaken their isolation. The observed
++duration is not a proven scheduler defect or a valid before/after benchmark.
++
++| Completed report | Cases | Failures | Skips | Reported seconds |
++| --- | ---: | ---: | ---: | ---: |
++| `local-full-shard-4.xml` | 1352 | 6 | 0 | 1331.817 |
++| `local-full-shard-5.xml` | 1164 | 0 | 25 | 735.679 |
++
++Only these two terminal reports exist. Missing XML alone does not prove that
++no work started; it leaves that work unverified. These totals must not be
++presented as the result of the full suite. The process tree was checked after exit: none of
++the previously observed runner/worker PIDs or Bun commands naming this report
++directory remained. This is bounded cleanup evidence, not a system-wide orphan
++process audit.
++
++## All observed failures
++
++The six failures in the completed JUnit report were parsed with an XML parser.
++Four additional failures have source locations and error details in the
++captured output of unfinished shards. Wrapped and repeated copies of the same
++failure were deduplicated; raw marker counts are not test counts.
++
++| Source | Case | Observed failure |
++| --- | --- | --- |
++| `test/check-forge-token.test.js` | Bun-issued proof in the real Node checker | Test timeout, 30.347 s |
++| `test/check-forge-token.test.js:195` | Node-only proof in the Node checker | Child `ETIMEDOUT`, null status, 12.225 s |
++| `test/cli/pr-noun-dispatch.test.js:67` | Shepherd events alias compatibility | Child Bun `ETIMEDOUT`, 56.615 s |
++| `test/cli/pr-noun-dispatch.test.js:66` | Guarded merge alias compatibility | Child Bun `ETIMEDOUT`, 30.131 s |
++| `test/protected-state-surfaces.test.js` | Safe staged edit with reproducible lock | Test timeout, 16.133 s |
++| `test/protected-state-surfaces.test.js` | Reject surface-only environment declaration | Test timeout, 15.103 s |
++| `test/commands/doc-gate-init.test.js` | JSON output equals the scaffold | Test timeout, 30.901 s; no terminal shard XML |
++| `test-env/automation/setup-fixtures.test.js:37` | All 15 fixture directories exist | Existence assertion false |
++| `test-env/automation/setup-fixtures.test.js:85` | Monorepo workspace manifest exists | `pnpm-workspace.yaml` absent |
++| `test-env/automation/setup-fixtures.test.js:92` | Large AGENTS file exists | `ENOENT` for `large-agents-md/AGENTS.md` |
++
++There are ten observed failures: seven timeouts and three missing-fixture
++assertions. Unexecuted and unfinished work remains unknown. No attribution to
++the timeout-evidence change, host load, or a particular shared helper is proven.
++
++## Useful timing evidence
++
++In the completed green shard, setup rerun took 59.53 seconds, the large
++Git-indexed validation fixture 41.86 seconds, setup discovery 27.68 seconds,
++and two status cases 25.20 and 21.74 seconds. Its test-case durations sum to
++664.64 seconds against a shard duration of 735.68 seconds. These are individual
++observations under this workload, not repeatable speedup measurements.
++
++The timeout-evidence implementation was exercised by the real failure: the
++public output retained the resource inventory and subprocess output instead
++of losing it, and completion still failed without a valid receipt. This proves
++that failure path; it does not validate the whole branch.
++
++## Durable artifacts and follow-up boundary
++
++Raw artifacts were copied byte-for-byte into the common repository directory:
++`.git/forge/verification-artifacts/validation-a4888533-20260925/`.
++Each copy was SHA-256 checked against its source before recording:
++
++| Artifact | Bytes | SHA-256 |
++| --- | ---: | --- |
++| `canonical-20260925-budget4.log` | 2357372 | `E62D65FA2E3CFB96F6483CEB1326BF71C770BB6DFBD024FB0CEE4FE8E94F2C10` |
++| `local-full-shard-4.xml` | 367857 | `1918F60B72CD7169F6877458B062EAFFDCB77A62E1225B35BEACB2A66F0AD904` |
++| `local-full-shard-5.xml` | 316559 | `0A4DCC26DAAE71E6DE8C4C8AFBAF73E9BC6C05479F2BB936BDF30884A046F22E` |
++
++The existing delivery reliability issue
++`a04a58d4-9266-4fff-8c1a-24cd6bd014fe` owns investigation of shared subprocess
++and fixture costs. Missing fixture readiness is tracked separately as
++`77037eab-8157-4b65-bf6b-7ee0b5451e66`; trace
++its preparation and error propagation before changing it. Neither investigation
++authorizes more test retries, longer deadlines, skips, or changes to this
++timeout-output fix. Kernel issue comments carry the current handoff and linkage.
+-- 
+2.51.0.windows.1
+

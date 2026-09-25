@@ -1,0 +1,25 @@
+From 924b3909163d0a9562a9230dc515346c25b6e4ef Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 18:58:40 +0530
+Subject: [PATCH] docs(plan): escape issue title markers
+
+---
+ .../2026-08-09-forge-product-restructure/issue-disposition.md   | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md b/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+index bf2f737c..79c81463 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
++++ b/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+@@ -96,7 +96,7 @@ The original snapshot hash remains immutable. The user-approved post-snapshot ad
+ |d9cb9823-d002-4657-8d0e-194875f85f63|Beads-removal: add slice exit-criteria DoD appendix to the plan|open|no|control-plane/debt|Memory|PR6|Memory Beads migration exit-criteria suite|migrate|
+ |dae18794-662c-4bb2-a94c-d0897739723d|[memory] Progressive disclosure + scoped recall (ranked index first; scope by worktree/issue)|open|no|architecture/memory|Memory|defer|Memory scoped-recall benchmark|defer|
+ |e2420489-b4cb-487a-918b-a5de0938c9e4|[shepherd] Compact verdict read-interface: forge shepherd <pr> --verdict --json|open|no|architecture/flow|Flow|PR4B|Flow verdict read-interface suite|implement|
+-|ffbdb6b7-570c-4c30-b984-b6f4df6c3ab7|[shepherd][test-quality] Seam-helper discipline for reconcile-executor tests (fafCtx/daemonOpts)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd test suite|implement|
++|ffbdb6b7-570c-4c30-b984-b6f4df6c3ab7|\[shepherd\]\[test-quality\] Seam-helper discipline for reconcile-executor tests (fafCtx/daemonOpts)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd test suite|implement|
+ |28d67d69-c175-4542-bc29-f6091a784330|[memory] Add an end-to-end node bin/forge.js memory smoke test (the --type-vs-real-CLI class)|open|no|architecture/memory|Memory|PR7|Memory CLI hardening/smoke suite|implement|
+ |bb5b054c-c8e1-45aa-a42d-3e57140c5dd9|[memory] recall --kind scans only the newest 1000-note window then filters — misses older typed notes while claiming capped:false|open|no|architecture/memory|Memory|PR3|Memory recall cap regression suite|implement|
+ |f21279f4-473a-4d20-95d4-533ddbb1d102|Add an event-driven efficiency supervisor for Flow runs|open|yes|architecture/flow|Flow (Memory evidence dependency PR1)|PR4A|Flow efficiency thresholds/recommendation + Kernel evidence suite|implement|
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,153 @@
+From a4c382e2d9a81dab136e30c929812a9c803dbbed Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 17:17:06 +0530
+Subject: [PATCH] fix(kernel): isolate linkage transactions
+
+---
+ lib/kernel/broker.js        | 47 +++++++++++++++++++++++--------------
+ lib/kernel/sqlite-driver.js |  3 +++
+ 2 files changed, 32 insertions(+), 18 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 3f741754..92ca6e57 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -470,7 +470,6 @@ function assertCompatiblePrEvidence(existingEvent, payload) {
+ const PR_LINKAGE_DRIVER_METHODS = [
+ 	'exec', 'resolvePrLinkage', 'upsertPr', 'retirePr', 'readTrace',
+ 	'listKernelEvents', 'loadKernelEventByIdempotencyKey', 'insertKernelEvent', 'enqueueKernelProjection',
+-	'loadActiveKernelClaim', 'loadKernelEntity',
+ ];
+ 
+ function preparePrLinkageInput(input, driver) {
+@@ -569,6 +568,7 @@ function assertAtomicPrEvidence(trace, input, evidence) {
+ }
+ 
+ async function assertExactLifecycleOwnership(driver, evidence, context, config) {
++	for (const method of ['loadActiveKernelClaim', 'loadKernelEntity']) requireDriverMethod(driver, method);
+ 	if (typeof context.actor !== 'string' || !context.actor || typeof context.sessionId !== 'string' || !context.sessionId) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordOpenedPrLinkage requires exact actor and session authority');
+ 	}
+@@ -595,7 +595,7 @@ async function beginImmediate(driver, config) {
+ 			return;
+ 		} catch (error) {
+ 			if (!isDatabaseLocked(error) || attempt === 499) {
+-				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++				await restoreBusyTimeout(driver, config);
+ 				throw error;
+ 			}
+ 			await new Promise(resolve => setTimeout(resolve, 10));
+@@ -603,6 +603,14 @@ async function beginImmediate(driver, config) {
+ 	}
+ }
+ 
++async function restoreBusyTimeout(driver, config) {
++	try {
++		await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++	} catch {
++		// Recovery must never hide the authoritative linkage result.
++	}
++}
++
+ // The migration ledger records which migration ids have been applied so initialize()
+ // applies each migration AT MOST ONCE — no full re-run, no blanket duplicate-error
+ // swallow. The ledger table is broker-managed bookkeeping (created before the plan is
+@@ -1761,20 +1769,21 @@ function createLocalBroker(options = {}) {
+ 		},
+ 
+ 		async recordPrLinkage(input, context = {}) {
+-			const linkageInput = preparePrLinkageInput(input, driver);
++			const transactionDriver = typeof driver.forkConnection === 'function' ? driver.forkConnection() : driver;
++			const linkageInput = preparePrLinkageInput(input, transactionDriver);
+ 			const evidence = derivePrEvidence(linkageInput);
+ 			const config = getConfig();
+-			return withPrLinkageTurn(driver, async () => {
+-			await beginImmediate(driver, config);
++			return withPrLinkageTurn(transactionDriver, async () => {
++			await beginImmediate(transactionDriver, config);
+ 			try {
+ 				if (context.requireExactLifecycleOwnership === true) {
+-					await assertExactLifecycleOwnership(driver, evidence, context, config);
++					await assertExactLifecycleOwnership(transactionDriver, evidence, context, config);
+ 				}
+-				const inferred = await driver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
++				const inferred = await transactionDriver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
+ 				assertResolvedPrLinkage(inferred, evidence);
+-				const issueEvents = await driver.listKernelEvents('issue', evidence.issue_id, context, config);
++				const issueEvents = await transactionDriver.listKernelEvents('issue', evidence.issue_id, context, config);
+ 				const gateReceipts = resolveGateReceipts(issueEvents, evidence.gate_ids, linkageInput.occurred_at);
+-				const issueRows = await driver.readTrace({ issue_id: evidence.issue_id, pr_number: linkageInput.number,
++				const issueRows = await transactionDriver.readTrace({ issue_id: evidence.issue_id, pr_number: linkageInput.number,
+ 					repo: linkageInput.repo, git_common_dir: linkageInput.git_common_dir }, context, config);
+ 				assertAtomicPrEvidence(issueRows, linkageInput, evidence);
+ 				const priorPr = findPriorPr(issueRows.pull_requests, linkageInput);
+@@ -1783,41 +1792,43 @@ function createLocalBroker(options = {}) {
+ 				const payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
+ 				const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
+ 				assertTerminalPrCompatibility(terminalPr, linkageInput, evidence, worktreeId);
+-				const linked = terminalPr ? { ok: true, ...terminalPr } : await driver.upsertPr({
++				const linked = terminalPr ? { ok: true, ...terminalPr } : await transactionDriver.upsertPr({
+ 					...linkageInput, head_sha: evidence.head_sha, issue_id: evidence.issue_id,
+ 					worktree_id: worktreeId, registered_at: linkageInput.occurred_at,
+ 				}, context, config);
+ 				const idempotencyKey = `${eventType}:${linked.id}:${evidence.head_sha}`;
+-				const existingEvent = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
++				const existingEvent = await transactionDriver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
+ 				assertCompatiblePrEvidence(existingEvent, payload);
+ 				assertTerminalPrEvent(terminalPr, existingEvent);
+ 				let iteration;
+ 				if (existingEvent) {
+ 					iteration = { decision: 'duplicate', originalEvent: existingEvent, projection: false };
+ 				} else {
+-					const event = await driver.insertKernelEvent({
++					const event = await transactionDriver.insertKernelEvent({
+ 						entity_type: 'pr', entity_id: linked.id, event_type: eventType,
+ 						idempotency_key: idempotencyKey, expected_revision: 0,
+ 						actor: context.actor || 'forge', origin: context.origin || 'cli',
+ 						created_at: linkageInput.occurred_at, payload,
+ 					}, context, config);
+-					const outboxEntry = await driver.enqueueKernelProjection(
++					const outboxEntry = await transactionDriver.enqueueKernelProjection(
+ 						buildProjectionOutboxEntry(event, context.projectionTarget || 'beads', linkageInput.occurred_at),
+ 						context, config,
+ 					);
+ 					iteration = { decision: 'accept', event, outboxEntry, projection: true };
+ 				}
+ 				if (linkageInput.phase === 'merged' && !terminalPr) {
+-					await driver.retirePr({ git_common_dir: linked.git_common_dir, repo: linked.repo, number: linked.number },
++					await transactionDriver.retirePr({ git_common_dir: linked.git_common_dir, repo: linked.repo, number: linked.number },
+ 						{ state: 'merged', retired_at: linkageInput.occurred_at }, context, config);
+ 				}
+-				await driver.exec('COMMIT;', config);
+-				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++				await transactionDriver.exec('COMMIT;', config);
++				await restoreBusyTimeout(transactionDriver, config);
+ 				return { link: linked, iteration };
+ 			} catch (error) {
+-				await driver.exec('ROLLBACK;', config);
+-				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
++				try { await transactionDriver.exec('ROLLBACK;', config); } catch { /* preserve original error */ }
++				await restoreBusyTimeout(transactionDriver, config);
+ 				throw error;
++			} finally {
++				if (transactionDriver !== driver) transactionDriver.close();
+ 			}
+ 			});
+ 		},
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 052c2046..f6905a8a 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3193,6 +3193,9 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			experimental: runtime.experimental,
+ 		},
+ 		databasePath: configuredDatabasePath,
++		forkConnection() {
++			return createDriver(runtime, configuredDatabasePath, driverOptions);
++		},
+ 		async exec(statement, config) {
+ 			execSql(runtime, getDatabase(config), statement);
+ 		},
+-- 
+2.51.0.windows.1
+

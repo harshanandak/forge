@@ -1,0 +1,809 @@
+From e8cf49f5471df75fc029e1109e8385887e987fe6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 03:31:40 +0530
+Subject: [PATCH] fix(release): harden protected workflow writer
+
+---
+ lib/npm-publish-workflow.js            |  76 +++++++----
+ lib/protected-state-authority.js       | 120 ++++++++++++++++++
+ lib/protected-state-surfaces.js        | 169 ++++++++++++++++++++++++-
+ test/npm-publish-workflow.test.js      |  60 ++++++---
+ test/protected-state-authority.test.js |  22 +++-
+ test/protected-state-surfaces.test.js  |  33 +++++
+ 6 files changed, 436 insertions(+), 44 deletions(-)
+
+diff --git a/lib/npm-publish-workflow.js b/lib/npm-publish-workflow.js
+index df31fcbb..e724d81f 100644
+--- a/lib/npm-publish-workflow.js
++++ b/lib/npm-publish-workflow.js
+@@ -7,9 +7,11 @@ const { execFileSync } = require('node:child_process');
+ const {
+ 	createProtectedStateAuditRecord,
+ 	recordProtectedStateAuditEvent,
++	removeProtectedFile,
+ 	writeProtectedFile,
+ } = require('./protected-state-surfaces');
+ const {
++	completeNpmPublishWorkflowAuthorization,
+ 	issueNpmPublishWorkflowAuthorization,
+ } = require('./protected-state-authority');
+ 
+@@ -89,21 +91,24 @@ function snapshotWorkflow(projectRoot) {
+ 	}
+ }
+ 
+-function rollbackWorkflow(snapshot, projectRoot, protectedWriter, writeOptions) {
++function recoverWorkflow(snapshot, projectRoot, generatedContent, protectedWriter, protectedRemover, writeOptions) {
++	const recoveryOptions = {
++		...writeOptions,
++		operation: 'recover_npm_workflow',
++		expectedContent: generatedContent,
++	};
+ 	if (!snapshot.existed) {
+-		fs.rmSync(snapshot.fullPath, { force: true });
+-		return;
++		return protectedRemover(projectRoot, NPM_PUBLISH_WORKFLOW_PATH, recoveryOptions);
+ 	}
+ 	if (!Buffer.isBuffer(snapshot.content)) {
+-		throw new Error('Previous workflow was not a regular file');
++		return { allowed: false, reason: 'Previous workflow was not a regular file' };
+ 	}
+-	const restored = protectedWriter(
++	return protectedWriter(
+ 		projectRoot,
+ 		NPM_PUBLISH_WORKFLOW_PATH,
+ 		snapshot.content,
+-		writeOptions,
++		recoveryOptions,
+ 	);
+-	if (!restored.allowed) throw new Error(restored.reason || 'Protected workflow restore was denied');
+ }
+ 
+ function renderNpmPublishWorkflow() {
+@@ -265,8 +270,10 @@ async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 	const content = renderNpmPublishWorkflow();
+ 	const actor = options.actor || options.env?.FORGE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'unknown';
+ 	const protectedWriter = options.writeProtectedFile || writeProtectedFile;
++	const protectedRemover = options.removeProtectedFile || removeProtectedFile;
+ 	const auditWriter = options.recordProtectedStateAuditEvent || recordProtectedStateAuditEvent;
+-	const authorizationWriter = options.issueNpmPublishWorkflowAuthorization || issueNpmPublishWorkflowAuthorization;
++	const prepareAuthorization = options.prepareNpmPublishWorkflowAuthorization || issueNpmPublishWorkflowAuthorization;
++	const activateAuthorization = options.activateNpmPublishWorkflowAuthorization || completeNpmPublishWorkflowAuthorization;
+ 	const snapshot = snapshotWorkflow(projectRoot);
+ 	const writeOptions = {
+ 		actor,
+@@ -274,9 +281,30 @@ async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 		viaForgeApi: true,
+ 		surface: 'workflows',
+ 	};
++	let trustedAuthorization;
++	try {
++		trustedAuthorization = await prepareAuthorization(
++			projectRoot,
++			{ actor, sourceHead },
++			{ deps: options.kernelDeps },
++		);
++	} catch (error) {
++		trustedAuthorization = { success: false, error: error.message };
++	}
++	if (!trustedAuthorization.success) {
++		return {
++			success: false,
++			error: `Could not record trusted protected-state authorization: ${trustedAuthorization.error}`,
++			trustedAuthorization,
++		};
++	}
++
+ 	let write;
+ 	try {
+-		write = protectedWriter(projectRoot, NPM_PUBLISH_WORKFLOW_PATH, content, writeOptions);
++		write = protectedWriter(projectRoot, NPM_PUBLISH_WORKFLOW_PATH, content, {
++			...writeOptions,
++			...(options.beforeAtomicCommit ? { beforeAtomicCommit: options.beforeAtomicCommit } : {}),
++		});
+ 	} catch (error) {
+ 		return { success: false, error: error.message };
+ 	}
+@@ -300,43 +328,44 @@ async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 		audit = { success: false, error: error.message };
+ 	}
+ 	if (!audit.success) {
+-		let rollbackError;
++		let recovery;
+ 		try {
+-			rollbackWorkflow(snapshot, projectRoot, protectedWriter, writeOptions);
++			recovery = recoverWorkflow(snapshot, projectRoot, content, protectedWriter, protectedRemover, writeOptions);
+ 		} catch (error) {
+-			rollbackError = error.message;
++			recovery = { allowed: false, reason: error.message };
+ 		}
+ 		return {
+ 			success: false,
+ 			error: `Could not record protected-state authorization: ${audit.error}`,
+ 			audit,
+-			rollbackError,
++			recovery,
+ 		};
+ 	}
+ 
+-	let trustedAuthorization;
++	let writeCompletion;
+ 	try {
+-		trustedAuthorization = await authorizationWriter(
++		writeCompletion = await activateAuthorization(
+ 			projectRoot,
+-			{ actor, sourceHead },
++			{ actor, sourceHead, capabilityId: trustedAuthorization.capabilityId },
+ 			{ deps: options.kernelDeps },
+ 		);
+ 	} catch (error) {
+-		trustedAuthorization = { success: false, error: error.message };
++		writeCompletion = { success: false, error: error.message };
+ 	}
+-	if (!trustedAuthorization.success) {
+-		let rollbackError;
++	if (!writeCompletion.success) {
++		let recovery;
+ 		try {
+-			rollbackWorkflow(snapshot, projectRoot, protectedWriter, writeOptions);
++			recovery = recoverWorkflow(snapshot, projectRoot, content, protectedWriter, protectedRemover, writeOptions);
+ 		} catch (error) {
+-			rollbackError = error.message;
++			recovery = { allowed: false, reason: error.message };
+ 		}
+ 		return {
+ 			success: false,
+-			error: `Could not record trusted protected-state authorization: ${trustedAuthorization.error}`,
++			error: `Could not complete trusted protected-state authorization: ${writeCompletion.error}`,
+ 			audit,
+ 			trustedAuthorization,
+-			rollbackError,
++			writeCompletion,
++			recovery,
+ 		};
+ 	}
+ 
+@@ -348,6 +377,7 @@ async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 		write,
+ 		audit,
+ 		trustedAuthorization,
++		writeCompletion,
+ 	};
+ }
+ 
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 1ec6da3f..0038f51b 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -11,6 +11,7 @@ const { hashProtectedContent, normalizeRepoPath } = require('./protected-state-s
+ 
+ const PROTECTED_STATE_ENTITY_TYPE = 'protected_state';
+ const PROTECTED_STATE_AUTHORIZATION_ISSUED = 'protected_state.authorization.issued';
++const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
+ const PROTECTED_STATE_AUTHORIZATION_CONSUMED = 'protected_state.authorization.consumed';
+ const PROTECTED_STATE_AUTHORIZATION_VERSION = 1;
+ const PROTECTED_STATE_AUTHORIZATION_ORIGIN = 'cli';
+@@ -56,6 +57,7 @@ function parseAuthorizationEvent(row) {
+ 		surface: payload.surface,
+ 		contentHash: payload.contentHash,
+ 		operation: payload.operation,
++		viaForgeApi: payload.viaForgeApi === true,
+ 		sourceCommand: payload.sourceCommand,
+ 		sourceHead: payload.sourceHead,
+ 		worktreeScope: payload.worktreeScope,
+@@ -114,6 +116,7 @@ function evaluateAuthorization(request, rows = []) {
+ 		latest.actor === latest.payloadActor &&
+ 		latest.worktreeScope === expected.worktreeScope &&
+ 		latest.entityId === authorizationEntityId(expected.worktreeScope, latest.path) &&
++		latest.viaForgeApi === true &&
+ 		latest.sourceCommand === NPM_WORKFLOW_SOURCE_COMMAND &&
+ 		/^[0-9a-f]{40}$/.test(latest.sourceHead || '');
+ 	if (!structurallyValid) {
+@@ -130,6 +133,29 @@ function evaluateAuthorization(request, rows = []) {
+ 		return blockedDecision(request, 'The latest Forge-owned authorization does not match this actor, surface, path, content hash, and source HEAD.');
+ 	}
+ 
++	const matchingCompletions = rows
++		.filter(row => row?.event_type === PROTECTED_STATE_WRITE_COMPLETED)
++		.map(parseAuthorizationEvent)
++		.filter(event =>
++			event.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
++			event.capabilityId === latest.capabilityId &&
++			event.origin === PROTECTED_STATE_AUTHORIZATION_ORIGIN &&
++			event.actor === latest.actor &&
++			event.payloadActor === latest.payloadActor &&
++			event.entityId === latest.entityId &&
++			event.path === latest.path &&
++			event.surface === latest.surface &&
++			event.contentHash === latest.contentHash &&
++			event.sourceHead === latest.sourceHead &&
++			event.worktreeScope === latest.worktreeScope &&
++			event.operation === 'generate_npm_workflow_completed' &&
++			event.viaForgeApi === true &&
++			event.sourceCommand === NPM_WORKFLOW_SOURCE_COMMAND
++		);
++	if (matchingCompletions.length !== 1) {
++		return blockedDecision(request, 'The latest Forge-owned authorization is not completed by its owning writer; failing closed.');
++	}
++
+ 	return {
+ 		allowed: true,
+ 		decision: 'allowed',
+@@ -140,6 +166,7 @@ function evaluateAuthorization(request, rows = []) {
+ 		declaredSurface: expected.surface,
+ 		contentHash: expected.contentHash,
+ 		sourceHead: expected.sourceHead,
++		viaForgeApi: true,
+ 		capabilityId: latest.capabilityId,
+ 		worktreeScope: latest.worktreeScope,
+ 		reason: 'Staged content matches the latest unconsumed Forge-owned authorization.',
+@@ -175,6 +202,7 @@ async function issueProtectedStateAuthorization(projectRoot, request = {}, optio
+ 			contentHash: hashProtectedContent(request.content),
+ 			worktreeScope,
+ 			operation: request.operation || 'generate',
++			viaForgeApi: request.viaForgeApi === true,
+ 			sourceCommand: request.sourceCommand || NPM_WORKFLOW_SOURCE_COMMAND,
+ 			...(request.sourceHead ? { sourceHead: request.sourceHead } : {}),
+ 		},
+@@ -216,6 +244,7 @@ async function issueProtectedStateAuthorization(projectRoot, request = {}, optio
+ 					sourceHead: existing.sourceHead,
+ 					worktreeScope,
+ 					operation: 'superseded',
++					viaForgeApi: existing.viaForgeApi === true,
+ 					sourceCommand: request.sourceCommand || NPM_WORKFLOW_SOURCE_COMMAND,
+ 				},
+ 				created_at: createdAt,
+@@ -245,11 +274,99 @@ async function issueNpmPublishWorkflowAuthorization(projectRoot, params = {}, op
+ 		path: NPM_PUBLISH_WORKFLOW_PATH,
+ 		content: renderNpmPublishWorkflow(),
+ 		operation: 'generate_npm_workflow',
++		viaForgeApi: true,
+ 		sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
+ 		sourceHead: params.sourceHead,
+ 	}, options);
+ }
+ 
++async function completeNpmPublishWorkflowAuthorization(projectRoot, params = {}, options = {}) {
++	if (!/^[0-9a-f]{40}$/.test(params.sourceHead || '')) {
++		return {
++			success: false,
++			error: 'Protected npm workflow completion requires a full 40-character lowercase source HEAD.',
++		};
++	}
++	if (typeof params.capabilityId !== 'string' || params.capabilityId.length === 0) {
++		return { success: false, error: 'Protected npm workflow completion requires a capability id.' };
++	}
++
++	const {
++		NPM_PUBLISH_WORKFLOW_PATH,
++		renderNpmPublishWorkflow,
++	} = require('./npm-publish-workflow');
++	const actor = params.actor;
++	const normalizedPath = normalizeRepoPath(NPM_PUBLISH_WORKFLOW_PATH);
++	const contentHash = hashProtectedContent(renderNpmPublishWorkflow());
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
++	const entityId = authorizationEntityId(worktreeScope, normalizedPath);
++	const createdAt = options.now || new Date().toISOString();
++	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
++	try {
++		const rows = await kernel.driver.listKernelEvents(
++			PROTECTED_STATE_ENTITY_TYPE,
++			entityId,
++			{},
++			kernel.config,
++		);
++		const issued = (rows || [])
++			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_ISSUED)
++			.map(parseAuthorizationEvent)
++			.find(event => event.capabilityId === params.capabilityId);
++		const consumed = (rows || [])
++			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)
++			.map(parseAuthorizationEvent)
++			.some(event => event.capabilityId === params.capabilityId);
++		const exactIssued = issued &&
++			issued.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
++			issued.origin === PROTECTED_STATE_AUTHORIZATION_ORIGIN &&
++			issued.actor === actor &&
++			issued.payloadActor === actor &&
++			issued.entityId === entityId &&
++			issued.path === normalizedPath &&
++			issued.surface === 'workflows' &&
++			issued.contentHash === contentHash &&
++			issued.sourceHead === params.sourceHead &&
++			issued.worktreeScope === worktreeScope &&
++			issued.viaForgeApi === true &&
++			issued.sourceCommand === NPM_WORKFLOW_SOURCE_COMMAND;
++		if (!exactIssued || consumed) {
++			return {
++				success: false,
++				error: 'Protected npm workflow completion does not match one active exact authorization.',
++			};
++		}
++
++		const event = {
++			entity_type: PROTECTED_STATE_ENTITY_TYPE,
++			entity_id: entityId,
++			event_type: PROTECTED_STATE_WRITE_COMPLETED,
++			idempotency_key: `${PROTECTED_STATE_WRITE_COMPLETED}:${params.capabilityId}`,
++			expected_revision: 0,
++			actor,
++			origin: PROTECTED_STATE_AUTHORIZATION_ORIGIN,
++			payload: {
++				version: PROTECTED_STATE_AUTHORIZATION_VERSION,
++				capabilityId: params.capabilityId,
++				actor,
++				path: normalizedPath,
++				surface: 'workflows',
++				contentHash,
++				sourceHead: params.sourceHead,
++				worktreeScope,
++				operation: 'generate_npm_workflow_completed',
++				viaForgeApi: true,
++				sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
++			},
++			created_at: createdAt,
++		};
++		const inserted = await kernel.driver.insertKernelEvent(event, {}, kernel.config);
++		return { success: true, capabilityId: params.capabilityId, event: parseAuthorizationEvent(inserted) };
++	} finally {
++		closeIfOwned(kernel);
++	}
++}
++
+ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [], options = {}) {
+ 	if (requests.length === 0) return { success: true, decisions: [] };
+ 	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
+@@ -296,6 +413,7 @@ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [
+ 					sourceHead: decision.sourceHead,
+ 					worktreeScope: decision.worktreeScope,
+ 					operation: 'staged_edit',
++					viaForgeApi: decision.viaForgeApi === true,
+ 					sourceCommand: 'scripts/protected-state-check.js',
+ 				},
+ 				created_at: createdAt,
+@@ -311,11 +429,13 @@ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [
+ module.exports = {
+ 	PROTECTED_STATE_ENTITY_TYPE,
+ 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
++	PROTECTED_STATE_WRITE_COMPLETED,
+ 	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
+ 	resolveWorktreeScope,
+ 	authorizationEntityId,
+ 	parseAuthorizationEvent,
+ 	evaluateAuthorization,
+ 	issueNpmPublishWorkflowAuthorization,
++	completeNpmPublishWorkflowAuthorization,
+ 	authorizeAndConsumeProtectedStateWrites,
+ };
+diff --git a/lib/protected-state-surfaces.js b/lib/protected-state-surfaces.js
+index 4130165d..68dd1d30 100644
+--- a/lib/protected-state-surfaces.js
++++ b/lib/protected-state-surfaces.js
+@@ -306,6 +306,84 @@ function assertProtectedWriteAllowed(filePath, options = {}) {
+ 	};
+ }
+ 
++function fileIdentity(stat) {
++	return `${stat.dev}:${stat.ino}`;
++}
++
++function blockedAtomicDecision(decision, reason) {
++	return {
++		...decision,
++		allowed: false,
++		decision: 'blocked',
++		reason,
++		repairHint: 'Retry through the owning Forge command after confirming the protected path is unchanged.',
++	};
++}
++
++function captureParentBoundary(root, target) {
++	const parent = path.dirname(target);
++	const stat = lstatIfPresent(parent);
++	if (!stat?.isDirectory() || stat.isSymbolicLink()) {
++		return { ok: false, reason: `Protected write parent boundary changed: ${parent}` };
++	}
++	const realRoot = fs.realpathSync(root);
++	const realParent = fs.realpathSync(parent);
++	if (!pathStaysInsideRoot(realRoot, realParent)) {
++		return { ok: false, reason: `Protected write parent boundary changed outside project root: ${parent}` };
++	}
++	return { ok: true, parent, realParent, identity: fileIdentity(stat) };
++}
++
++function captureTargetState(target) {
++	const before = lstatIfPresent(target);
++	if (!before) return { ok: true, exists: false };
++	if (!before.isFile() || before.isSymbolicLink()) {
++		return { ok: false, reason: `Protected write target boundary changed: ${target}` };
++	}
++	const content = fs.readFileSync(target);
++	const after = fs.lstatSync(target);
++	if (fileIdentity(before) !== fileIdentity(after) || after.isSymbolicLink()) {
++		return { ok: false, reason: `Protected write target boundary changed while reading: ${target}` };
++	}
++	return {
++		ok: true,
++		exists: true,
++		identity: fileIdentity(after),
++		content,
++		contentHash: hashProtectedContent(content),
++	};
++}
++
++function sameParentBoundary(left, right) {
++	return left.ok && right.ok && left.realParent === right.realParent && left.identity === right.identity;
++}
++
++function sameTargetState(left, right) {
++	if (!left.ok || !right.ok || left.exists !== right.exists) return false;
++	if (!left.exists) return true;
++	return left.identity === right.identity && left.contentHash === right.contentHash;
++}
++
++function expectedTargetMatches(state, expectedContent) {
++	if (expectedContent === null) return !state.exists;
++	if (!state.exists) return false;
++	const expected = Buffer.isBuffer(expectedContent)
++		? expectedContent
++		: Buffer.from(String(expectedContent), 'utf8');
++	return state.content.equals(expected);
++}
++
++function cleanupOwnedTemp(tempPath, identity) {
++	try {
++		const current = fs.lstatSync(tempPath);
++		if (current.isFile() && !current.isSymbolicLink() && fileIdentity(current) === identity) {
++			fs.unlinkSync(tempPath);
++		}
++	} catch (error) {
++		if (error.code !== 'ENOENT') throw error;
++	}
++}
++
+ function writeProtectedFile(projectRoot, filePath, content, options = {}) {
+ 	const resolved = resolveRepoRelativePath(projectRoot, filePath);
+ 	if (!resolved.insideRoot) {
+@@ -344,8 +422,94 @@ function writeProtectedFile(projectRoot, filePath, content, options = {}) {
+ 		};
+ 	}
+ 
+-	fs.writeFileSync(resolved.target, content, options.encoding || 'utf8');
+-	return { ...decision, contentHash: hashProtectedContent(content), fullPath: resolved.target };
++	const initialParent = captureParentBoundary(resolved.root, resolved.target);
++	if (!initialParent.ok) return blockedAtomicDecision(decision, initialParent.reason);
++	const initialTarget = captureTargetState(resolved.target);
++	if (!initialTarget.ok) return blockedAtomicDecision(decision, initialTarget.reason);
++	if (
++		Object.prototype.hasOwnProperty.call(options, 'expectedContent') &&
++		!expectedTargetMatches(initialTarget, options.expectedContent)
++	) {
++		return blockedAtomicDecision(decision, 'Protected workflow has a concurrent content change; refusing to overwrite it.');
++	}
++
++	const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content), options.encoding || 'utf8');
++	const tempPath = path.join(
++		initialParent.parent,
++		`.${path.basename(resolved.target)}.forge-${process.pid}-${crypto.randomUUID()}.tmp`,
++	);
++	let tempIdentity;
++	try {
++		const flags = fs.constants.O_NOFOLLOW
++			? fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW
++			: 'wx';
++		const fd = fs.openSync(tempPath, flags, 0o600);
++		try {
++			fs.writeFileSync(fd, bytes);
++			fs.fsyncSync(fd);
++			tempIdentity = fileIdentity(fs.fstatSync(fd));
++		} finally {
++			fs.closeSync(fd);
++		}
++
++		if (typeof options.beforeAtomicCommit === 'function') {
++			options.beforeAtomicCommit({ parent: initialParent.parent, target: resolved.target, tempPath });
++		}
++
++		const finalParent = captureParentBoundary(resolved.root, resolved.target);
++		const finalTarget = captureTargetState(resolved.target);
++		if (!sameParentBoundary(initialParent, finalParent) || !sameTargetState(initialTarget, finalTarget)) {
++			return blockedAtomicDecision(decision, 'Protected write boundary changed before atomic replacement.');
++		}
++		if (
++			Object.prototype.hasOwnProperty.call(options, 'expectedContent') &&
++			!expectedTargetMatches(finalTarget, options.expectedContent)
++		) {
++			return blockedAtomicDecision(decision, 'Protected workflow has a concurrent content change; refusing to overwrite it.');
++		}
++		const tempState = fs.lstatSync(tempPath);
++		if (!tempState.isFile() || tempState.isSymbolicLink() || fileIdentity(tempState) !== tempIdentity) {
++			return blockedAtomicDecision(decision, 'Protected write temporary-file identity changed before atomic replacement.');
++		}
++
++		fs.renameSync(tempPath, resolved.target);
++		tempIdentity = null;
++		return { ...decision, contentHash: hashProtectedContent(bytes), fullPath: resolved.target };
++	} catch (error) {
++		return blockedAtomicDecision(decision, `Protected atomic write failed: ${error.message}`);
++	} finally {
++		if (tempIdentity) cleanupOwnedTemp(tempPath, tempIdentity);
++	}
++}
++
++function removeProtectedFile(projectRoot, filePath, options = {}) {
++	const resolved = resolveRepoRelativePath(projectRoot, filePath);
++	if (!resolved.insideRoot) {
++		return blockedAtomicDecision({}, `Protected remove path escapes project root: ${filePath}`);
++	}
++	const decision = assertProtectedWriteAllowed(resolved.relativePath, {
++		...options,
++		operation: options.operation || 'remove',
++	});
++	if (!decision.allowed) return decision;
++	const initialParent = captureParentBoundary(resolved.root, resolved.target);
++	const initialTarget = captureTargetState(resolved.target);
++	if (!initialParent.ok || !initialTarget.ok) {
++		return blockedAtomicDecision(decision, initialParent.reason || initialTarget.reason);
++	}
++	if (!Object.prototype.hasOwnProperty.call(options, 'expectedContent') || !expectedTargetMatches(initialTarget, options.expectedContent)) {
++		return blockedAtomicDecision(decision, 'Protected workflow has a concurrent content change; refusing to remove it.');
++	}
++	if (typeof options.beforeAtomicCommit === 'function') {
++		options.beforeAtomicCommit({ parent: initialParent.parent, target: resolved.target });
++	}
++	const finalParent = captureParentBoundary(resolved.root, resolved.target);
++	const finalTarget = captureTargetState(resolved.target);
++	if (!sameParentBoundary(initialParent, finalParent) || !sameTargetState(initialTarget, finalTarget)) {
++		return blockedAtomicDecision(decision, 'Protected remove boundary changed before exact-content removal.');
++	}
++	fs.unlinkSync(resolved.target);
++	return { ...decision, removed: true, fullPath: resolved.target };
+ }
+ 
+ function buildProtectedStateAuditEvent(decision) {
+@@ -416,6 +580,7 @@ module.exports = {
+ 	classifyProtectedPath,
+ 	assertProtectedWriteAllowed,
+ 	writeProtectedFile,
++	removeProtectedFile,
+ 	buildProtectedStateAuditEvent,
+ 	recordProtectedStateAuditEvent,
+ };
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+index ab71b985..c60d6ca1 100644
+--- a/test/npm-publish-workflow.test.js
++++ b/test/npm-publish-workflow.test.js
+@@ -259,16 +259,28 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
+-	test('does not publish authorization when the protected write fails', async () => {
++	test('acquires trusted authority before attempting a protected workflow write', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-write-failure-'));
++		const calls = [];
+ 		let auditCalls = 0;
+ 		try {
+ 			const result = await generateNpmPublishWorkflow(root, generationOptions({
+-				writeProtectedFile: () => ({
+-					allowed: false,
+-					decision: 'blocked',
+-					reason: 'injected write failure',
+-				}),
++				prepareNpmPublishWorkflowAuthorization: async () => {
++					calls.push('authority');
++					return { success: true, capabilityId: 'prepared-1' };
++				},
++				writeProtectedFile: () => {
++					calls.push('write');
++					return {
++						allowed: false,
++						decision: 'blocked',
++						reason: 'injected write failure',
++					};
++				},
++				activateNpmPublishWorkflowAuthorization: async () => {
++					calls.push('activate');
++					return { success: true };
++				},
+ 				recordProtectedStateAuditEvent: () => {
+ 					auditCalls += 1;
+ 					return { success: true };
+@@ -276,6 +288,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 			}));
+ 
+ 			expect(result).toMatchObject({ success: false, error: 'injected write failure' });
++			expect(calls).toEqual(['authority', 'write']);
+ 			expect(auditCalls).toBe(0);
+ 			expect(fs.existsSync(path.join(root, PROTECTED_STATE_AUDIT_LOG))).toBe(false);
+ 		} finally {
+@@ -283,25 +296,29 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
+-	test('restores previous workflow bytes when authorization audit persistence fails', async () => {
++	test('never overwrites a concurrent workflow update during audit-failure recovery', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-failure-'));
+ 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+ 		const previous = Buffer.from('previous workflow bytes\r\n', 'utf8');
++		const concurrent = Buffer.from('concurrent workflow bytes\n', 'utf8');
+ 		try {
+ 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+ 			fs.writeFileSync(workflowPath, previous);
+ 			const result = await generateNpmPublishWorkflow(root, generationOptions({
+-				recordProtectedStateAuditEvent: () => ({
+-					success: false,
+-					error: 'audit sink unavailable',
+-				}),
++				prepareNpmPublishWorkflowAuthorization: async () => ({ success: true, capabilityId: 'prepared-2' }),
++				recordProtectedStateAuditEvent: () => {
++					fs.writeFileSync(workflowPath, concurrent);
++					return { success: false, error: 'audit sink unavailable' };
++				},
+ 			}));
+ 
+ 			expect(result).toMatchObject({
+ 				success: false,
+ 				error: 'Could not record protected-state authorization: audit sink unavailable',
+ 			});
+-			expect(fs.readFileSync(workflowPath)).toEqual(previous);
++			expect(fs.readFileSync(workflowPath)).toEqual(concurrent);
++			expect(result.recovery).toMatchObject({ allowed: false, decision: 'blocked' });
++			expect(result.recovery.reason).toContain('concurrent');
+ 		} finally {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+@@ -367,24 +384,33 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
+-	test('restores previous workflow bytes when trusted authorization persistence fails', async () => {
++	test('does not mutate protected workflow bytes when pre-write authority fails', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-authority-failure-'));
+ 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+ 		const previous = Buffer.from('previous trusted workflow bytes\n', 'utf8');
++		let writeCalls = 0;
++		const authorityFailure = async () => ({
++			success: false,
++			error: 'kernel authority unavailable',
++		});
+ 		try {
+ 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+ 			fs.writeFileSync(workflowPath, previous);
+ 			const result = await generateNpmPublishWorkflow(root, generationOptions({
+-				issueNpmPublishWorkflowAuthorization: async () => ({
+-					success: false,
+-					error: 'kernel authority unavailable',
+-				}),
++				prepareNpmPublishWorkflowAuthorization: authorityFailure,
++				issueNpmPublishWorkflowAuthorization: authorityFailure,
++				writeProtectedFile: () => {
++					writeCalls += 1;
++					return { allowed: true, contentHash: 'sha256:injected' };
++				},
++				recordProtectedStateAuditEvent: () => ({ success: true }),
+ 			}));
+ 
+ 			expect(result).toMatchObject({
+ 				success: false,
+ 				error: 'Could not record trusted protected-state authorization: kernel authority unavailable',
+ 			});
++			expect(writeCalls).toBe(0);
+ 			expect(fs.readFileSync(workflowPath)).toEqual(previous);
+ 		} finally {
+ 			fs.rmSync(root, { recursive: true, force: true });
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index a7b80ff5..cc1339c0 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -11,6 +11,7 @@ const {
+ } = require('../lib/protected-state-authority');
+ 
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
++const PROTECTED_STATE_WRITE_COMPLETED = 'protected_state.write.completed';
+ const TEST_HEAD = 'a'.repeat(40);
+ 
+ const target = {
+@@ -45,12 +46,15 @@ function eventRow(eventType, capabilityId, overrides = {}) {
+ 			surface,
+ 			contentHash: hashProtectedContent(content),
+ 			worktreeScope: overrides.worktreeScope || target.worktreeScope,
+-			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED ? 'generate_npm_workflow' : 'staged_edit',
++			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
++				? 'generate_npm_workflow'
++				: (eventType === PROTECTED_STATE_WRITE_COMPLETED ? 'generate_npm_workflow_completed' : 'staged_edit'),
++			viaForgeApi: overrides.viaForgeApi !== false,
+ 			sourceHead: Object.prototype.hasOwnProperty.call(overrides, 'sourceHead')
+ 				? overrides.sourceHead
+ 				: target.sourceHead,
+ 			sourceCommand: overrides.sourceCommand || (
+-				eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
++				eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED || eventType === PROTECTED_STATE_WRITE_COMPLETED
+ 					? NPM_WORKFLOW_SOURCE_COMMAND
+ 					: 'scripts/protected-state-check.js'
+ 			),
+@@ -73,6 +77,7 @@ describe('protected-state Kernel authority', () => {
+ 	test('accepts one exact unconsumed command-issued capability', () => {
+ 		const decision = evaluateAuthorization(target, [
+ 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-1'),
++			eventRow(PROTECTED_STATE_WRITE_COMPLETED, 'capability-1'),
+ 		]);
+ 
+ 		expect(decision).toMatchObject({
+@@ -84,6 +89,15 @@ describe('protected-state Kernel authority', () => {
+ 		});
+ 	});
+ 
++	test('denies a pre-write authorization until the owning writer records completion', () => {
++		const decision = evaluateAuthorization(target, [
++			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
++		]);
++
++		expect(decision).toMatchObject({ allowed: false, decision: 'blocked' });
++		expect(decision.reason).toContain('not completed');
++	});
++
+ 	test('fails closed when the staged HEAD differs from or is absent on the capability', () => {
+ 		const mismatched = evaluateAuthorization(
+ 			{ ...target, sourceHead: 'b'.repeat(40) },
+@@ -112,10 +126,14 @@ describe('protected-state Kernel authority', () => {
+ 				sourceCommand: 'raw sqlite write',
+ 			}),
+ 		]);
++		const nonApiIssuer = evaluateAuthorization(target, [
++			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-non-api', { viaForgeApi: false }),
++		]);
+ 
+ 		expect(crossActor.allowed).toBe(false);
+ 		expect(crossSurface.allowed).toBe(false);
+ 		expect(malformedIssuer.allowed).toBe(false);
++		expect(nonApiIssuer.allowed).toBe(false);
+ 	});
+ 
+ 	test('denies a capability issued from a different worktree scope', () => {
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 23755cda..2df41c8b 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -234,6 +234,39 @@ describe('protected state surfaces', () => {
+ 		}
+ 	});
+ 
++	test('blocks an injected parent-boundary swap before atomic replacement', () => {
++		const root = createTempDir();
++		const outside = createTempDir();
++		const parent = path.join(root, '.forge');
++		const movedParent = path.join(root, '.forge-original');
++		let swapped = false;
++		try {
++			fs.mkdirSync(parent, { recursive: true });
++			const result = writeProtectedFile(root, '.forge/config.yaml', 'version: 2\n', {
++				actor: 'forge',
++				surface: 'forge_config',
++				viaForgeApi: true,
++				beforeAtomicCommit: () => {
++					fs.renameSync(parent, movedParent);
++					fs.symlinkSync(outside, parent, process.platform === 'win32' ? 'junction' : 'dir');
++					swapped = true;
++				},
++			});
++
++			expect(swapped).toBe(true);
++			expect(result).toMatchObject({ allowed: false, decision: 'blocked' });
++			expect(result.reason).toContain('boundary changed');
++			expect(fs.existsSync(path.join(outside, 'config.yaml'))).toBe(false);
++			expect(fs.existsSync(path.join(movedParent, 'config.yaml'))).toBe(false);
++		} finally {
++			try {
++				if (fs.lstatSync(parent).isSymbolicLink()) fs.unlinkSync(parent);
++			} catch {}
++			fs.rmSync(root, { recursive: true, force: true });
++			fs.rmSync(outside, { recursive: true, force: true });
++		}
++	});
++
+ 	test('builds complete audit payloads for protected edit attempts', () => {
+ 		const decision = assertProtectedWriteAllowed('.forge/log.jsonl', {
+ 			actor: 'codex',
+-- 
+2.51.0.windows.1
+

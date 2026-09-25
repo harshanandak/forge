@@ -1,0 +1,85 @@
+From 73c02ff7011516375f5e7e2c1b70316c93896165 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 16:50:50 +0530
+Subject: [PATCH] fix(validate): run local eslint shims portably
+
+---
+ .../2026-09-18-delivery-lint/decisions.md     |  7 ++++
+ lib/commands/validate.js                      |  2 +-
+ test/commands/validate.test.js                | 33 +++++++++++++++++++
+ 3 files changed, 41 insertions(+), 1 deletion(-)
+ create mode 100644 docs/work/2026-09-18-delivery-lint/decisions.md
+
+diff --git a/docs/work/2026-09-18-delivery-lint/decisions.md b/docs/work/2026-09-18-delivery-lint/decisions.md
+new file mode 100644
+index 00000000..499577aa
+--- /dev/null
++++ b/docs/work/2026-09-18-delivery-lint/decisions.md
+@@ -0,0 +1,7 @@
++# Delivery lint portability decisions
++
++No specification gaps encountered.
++
++- Reuse `secureExecFileSync` as `runLint`'s default executor so Windows local `.cmd` shims use the existing hardened path.
++- Preserve injected executors for focused unit tests and preserve the existing missing-ESLint consumer skip.
++- Do not change lint arguments, success criteria, validation receipt rules, or dependencies.
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index 6973ab6f..10a472a4 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -357,7 +357,7 @@ async function runTypeCheck() {
+  * const result = await runLint();
+  * console.log(`Warnings: ${result.warnings}, Errors: ${result.errors}`);
+  */
+-async function runLint(exec = execFileSync) {
++async function runLint(exec = secureExecFileSync) {
+ 	const startTime = Date.now();
+ 
+ 	try {
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 3cc5c030..ecf14fad 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -52,6 +52,39 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			expect(invocations).toBe(1);
+ 			expect(result).toMatchObject({ success: false, errors: 2, warnings: 0 });
+ 		});
++
++		test.skipIf(process.platform !== 'win32')('default executor runs a local Windows ESLint cmd shim under Node', () => {
++			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-eslint-shim-'));
++			const binDir = path.join(rootDir, 'node_modules', '.bin');
++			const nodeExecutable = process.env.FORGE_TEST_NODE_EXECUTABLE || globalThis.Bun?.which?.('node') || 'node';
++			try {
++				fs.mkdirSync(binDir, { recursive: true });
++				fs.writeFileSync(path.join(binDir, 'eslint.cmd'), '@echo off\r\nexit /b 0\r\n');
++				const script = [
++					`const { runLint } = require(${JSON.stringify(path.resolve(__dirname, '..', '..', 'lib', 'commands', 'validate.js'))});`,
++					"runLint().then((result) => process.stdout.write(JSON.stringify(result)));",
++				].join('\n');
++				const output = execFileSync(nodeExecutable, ['-e', script], {
++					cwd: rootDir,
++					encoding: 'utf8',
++					env: { ...process.env, PATH: binDir },
++				});
++				const result = JSON.parse(output);
++				expect(result).toMatchObject({ success: true, errors: 0, warnings: 0 });
++				expect(result.skipped).not.toBe(true);
++			} finally {
++				fs.rmSync(rootDir, { recursive: true, force: true });
++			}
++		});
++
++		test('preserves the missing ESLint consumer fallback', async () => {
++			const result = await runLint(() => {
++				throw Object.assign(new Error('spawnSync eslint ENOENT'), { code: 'ENOENT' });
++			});
++
++			expect(result).toMatchObject({ success: true, skipped: true });
++			expect(result.message).toMatch(/ESLint not found/);
++		});
+ 	});
+ 
+ 	describe('Security scanning', () => {
+-- 
+2.51.0.windows.1
+

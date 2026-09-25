@@ -1,0 +1,241 @@
+From e279725e0960e21a7a4bace8a0b60a99f0947cb1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 15:08:57 +0530
+Subject: [PATCH] fix(shepherd): address CodeRabbit stability findings on the
+ watch loop
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- watch.js: make the cadence sleep abortable — defaultSleep now races the timer
+  against ctx.signal, so SIGINT/SIGTERM stops the loop at once instead of waiting
+  out the current jittered interval (~72s). Timer + abort listener both cleaned up.
+- watch.js: make the watcher claim atomic — the watcherRunning check and writePid
+  now run TOGETHER inside the cross-process journal lock (defaultClaim), so two
+  concurrent starts can never both claim and emit duplicate NDJSON.
+- watch-lifecycle.js: attach a no-op 'error' listener to the detached child, so an
+  async spawn error (ENOENT/EACCES after return) can never become an unhandled
+  exception that crashes ship.
+
+Tests: abortable-sleep (already/mid-abort + normal timer), concurrent atomic
+claim (exactly one wins), EventEmitter child emitting 'error' post-return.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/pr-monitor/watch-lifecycle.js       |  5 +++
+ lib/pr-monitor/watch.js                 | 48 ++++++++++++++++++----
+ test/pr-monitor/watch-lifecycle.test.js | 15 +++++++
+ test/pr-monitor/watch.test.js           | 54 ++++++++++++++++++++++++-
+ 4 files changed, 114 insertions(+), 8 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-lifecycle.js b/lib/pr-monitor/watch-lifecycle.js
+index 1eb940e7..009fa138 100644
+--- a/lib/pr-monitor/watch-lifecycle.js
++++ b/lib/pr-monitor/watch-lifecycle.js
+@@ -75,6 +75,11 @@ function startPrWatcherDetached(opts = {}) {
+       [forgeBin(), 'shepherd', 'watch', String(prNumber)],
+       { cwd, detached: true, stdio: 'ignore', windowsHide: true },
+     );
++    // spawn can emit an ASYNC 'error' (ENOENT/EACCES) AFTER returning; with no
++    // listener that becomes an unhandled exception that could crash ship. A no-op
++    // handler keeps a failed detached start best-effort (the watch loop's own
++    // journal claim is the authoritative de-dup anyway).
++    if (child && typeof child.on === 'function') child.on('error', () => {});
+     if (child && typeof child.unref === 'function') child.unref();
+     return { started: true, pid: child?.pid ?? null };
+   } catch (err) {
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index c99d9761..c9ea5283 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -35,9 +35,23 @@ function defaultEmit(event) {
+   process.stdout.write(`${JSON.stringify(event)}\n`);
+ }
+ 
+-/** Non-blocking sleep (overridden in tests by a fake clock). */
+-function defaultSleep(ms) {
+-  return new Promise((resolve) => { setTimeout(resolve, ms); });
++/**
++ * Non-blocking sleep that resolves early when `signal` aborts (Ctrl-C), so a
++ * SIGINT never has to wait out a full jittered interval (~72s). The timer and
++ * the abort listener are both cleaned up whichever path wins. Overridden in
++ * tests by a fake clock.
++ */
++function defaultSleep(ms, signal) {
++  return new Promise((resolve) => {
++    if (signal?.aborted) { resolve(); return; }
++    const finish = () => {
++      clearTimeout(timer);
++      signal?.removeEventListener?.('abort', finish);
++      resolve();
++    };
++    const timer = setTimeout(finish, ms);
++    signal?.addEventListener?.('abort', finish, { once: true });
++  });
+ }
+ 
+ /** The check name an event refers to (check.failed / check.recovered). */
+@@ -56,6 +70,21 @@ function isAborted(signal) {
+   return Boolean(signal && signal.aborted);
+ }
+ 
++/**
++ * Atomically claim the watcher slot for this PR: the `watcherRunning` check and
++ * the `writePid` write run TOGETHER inside the cross-process journal lock, so two
++ * concurrent starts can never both pass the check and both begin emitting
++ * duplicate NDJSON. The (possibly injected) `watcherRunning`/`writePid` primitives
++ * are honored, so test injection still works. Returns true only when claimed.
++ */
++function defaultClaim(dir, { watcherRunning, writePid, lockOpts }) {
++  return journal.withJournalLock(dir, () => {
++    if (watcherRunning(dir)) return false;
++    writePid(dir);
++    return true;
++  }, lockOpts);
++}
++
+ /**
+  * Split a pass's events into: held-candidate failures (by check name), terminal
+  * events (pr.merged/closed), and everything else (emitted immediately).
+@@ -155,12 +184,15 @@ async function watchLoop(ctx) {
+   const watcherRunning = ctx.watcherRunning || journal.watcherRunning;
+   const writePid = ctx.writePid || journal.writePid;
+   const removePid = ctx.removePid || journal.removePid;
++  const claim = ctx.claim || (() => defaultClaim(dir, { watcherRunning, writePid, lockOpts: ctx.lockOpts }));
+ 
+-  // Idempotent claim: a live OTHER watcher already owns this PR → no-op.
+-  if (watcherRunning(dir)) {
++  // Atomic idempotent claim: a live OTHER watcher already owns this PR → no-op.
++  // The check+write are serialized under the journal lock so concurrent starts
++  // cannot both succeed (see defaultClaim).
++  const claimed = await claim(dir);
++  if (!claimed) {
+     return { started: false, passes: 0, stopped: false, reason: 'watcher-already-running' };
+   }
+-  writePid(dir);
+ 
+   const state = { pending: new Map() };
+   let passes = 0;
+@@ -171,7 +203,7 @@ async function watchLoop(ctx) {
+       passes += 1;
+       if (result.terminal) { stopped = true; break; }
+       if (passes >= maxPasses || isAborted(ctx.signal)) break;
+-      await sleep(jitter(intervalMs, rng));
++      await sleep(jitter(intervalMs, rng), ctx.signal);
+     }
+   } finally {
+     removePid(dir);
+@@ -182,6 +214,8 @@ async function watchLoop(ctx) {
+ module.exports = {
+   watchLoop,
+   runWatchPass,
++  defaultSleep,
++  defaultClaim,
+   jitter,
+   partition,
+   contradictions,
+diff --git a/test/pr-monitor/watch-lifecycle.test.js b/test/pr-monitor/watch-lifecycle.test.js
+index ffc87c79..97ee857b 100644
+--- a/test/pr-monitor/watch-lifecycle.test.js
++++ b/test/pr-monitor/watch-lifecycle.test.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { describe, test, expect } = require('bun:test');
++const { EventEmitter } = require('node:events');
+ 
+ const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
+ const { maybeStartPrWatcher } = require('../../lib/commands/ship');
+@@ -72,6 +73,20 @@ describe('startPrWatcherDetached', () => {
+     expect(res.started).toBe(true);
+   });
+ 
++  test('attaches an error listener so an ASYNC spawn error never crashes ship', () => {
++    // spawn() can emit 'error' (ENOENT/EACCES) AFTER returning; on an EventEmitter
++    // with no 'error' listener that emit THROWS (would be an unhandled exception in
++    // the ship process). The no-op listener we attach must absorb it.
++    const child = new EventEmitter();
++    child.pid = 555;
++    child.unref = () => {};
++    const res = startPrWatcherDetached({ prNumber: 3, cwd: '/repo', resolveSlug: () => null, spawn: () => child });
++    expect(res.started).toBe(true);
++    expect(child.listenerCount('error')).toBe(1);
++    // With the listener present, a post-return async error is absorbed, not thrown.
++    expect(() => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))).not.toThrow();
++  });
++
+   test('never throws when spawn fails — degrades to not-started', () => {
+     const res = startPrWatcherDetached({
+       prNumber: 9,
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index c8e6dbe3..c0de9cfb 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -6,7 +6,9 @@ const os = require('node:os');
+ const path = require('node:path');
+ 
+ const journal = require('../../lib/pr-monitor/journal');
+-const { watchLoop, jitter, DEFAULT_INTERVAL_MS } = require('../../lib/pr-monitor/watch');
++const {
++  watchLoop, jitter, defaultSleep, defaultClaim, DEFAULT_INTERVAL_MS,
++} = require('../../lib/pr-monitor/watch');
+ const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
+ 
+ function snap(over = {}) {
+@@ -148,3 +150,53 @@ describe('jitter', () => {
+     expect(jitter(1000, () => 0.5)).toBe(1000);
+   });
+ });
++
++describe('defaultSleep (abortable)', () => {
++  test('resolves immediately when the signal is already aborted', async () => {
++    const controller = new AbortController();
++    controller.abort();
++    const start = Date.now();
++    await defaultSleep(10000, controller.signal); // would be 10s if it ignored abort
++    expect(Date.now() - start).toBeLessThan(500);
++  });
++
++  test('resolves early when the signal aborts mid-sleep (Ctrl-C never waits out the interval)', async () => {
++    const controller = new AbortController();
++    const start = Date.now();
++    const sleeping = defaultSleep(10000, controller.signal);
++    controller.abort();
++    await sleeping;
++    expect(Date.now() - start).toBeLessThan(500);
++  });
++
++  test('a normal (un-aborted) sleep still honors the timer', async () => {
++    const start = Date.now();
++    await defaultSleep(30);
++    expect(Date.now() - start).toBeGreaterThanOrEqual(20);
++  });
++});
++
++describe('defaultClaim (atomic watcher claim)', () => {
++  test('two concurrent claims on the same PR: exactly ONE succeeds', async () => {
++    // Simulate a cross-process pid via shared state; the journal lock must
++    // serialize the check+write so both starts cannot both claim (and both begin
++    // emitting duplicate NDJSON).
++    let pid = null;
++    const primitives = {
++      watcherRunning: () => pid != null,
++      writePid: () => { pid = 4242; },
++    };
++    const [a, b] = await Promise.all([
++      defaultClaim(dir, primitives),
++      defaultClaim(dir, primitives),
++    ]);
++    expect([a, b].filter(Boolean)).toHaveLength(1);
++  });
++
++  test('a claim fails once the slot is already owned', async () => {
++    let pid = null;
++    const primitives = { watcherRunning: () => pid != null, writePid: () => { pid = 1; } };
++    expect(await defaultClaim(dir, primitives)).toBe(true);
++    expect(await defaultClaim(dir, primitives)).toBe(false);
++  });
++});
+-- 
+2.51.0.windows.1
+

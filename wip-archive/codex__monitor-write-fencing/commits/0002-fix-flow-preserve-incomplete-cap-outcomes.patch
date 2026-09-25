@@ -1,0 +1,119 @@
+From fb375ffc54662fa6f9ea32422b1f0832b62b28d4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 22:03:26 +0530
+Subject: [PATCH] fix(flow): preserve incomplete cap outcomes
+
+---
+ packages/flow/src/process-lifecycle.js       |  8 ++-
+ packages/flow/test/process-lifecycle.test.js | 51 ++++++++++++++++++--
+ 2 files changed, 53 insertions(+), 6 deletions(-)
+
+diff --git a/packages/flow/src/process-lifecycle.js b/packages/flow/src/process-lifecycle.js
+index 19bc2510..bf1b2cbd 100644
+--- a/packages/flow/src/process-lifecycle.js
++++ b/packages/flow/src/process-lifecycle.js
+@@ -262,8 +262,12 @@ function createProcessState(rawOptions, now = 0) {
+   return createState(options, now);
+ }
+ 
++function isResourceLimitOutcome(reason) {
++  return reason === "ATTEMPT_CAP" || reason === "ELAPSED_CAP";
++}
++
+ function terminalStatus(state) {
+-  if (state.terminalReason === "ELAPSED_CAP") return "INCOMPLETE";
++  if (isResourceLimitOutcome(state.terminalReason)) return "INCOMPLETE";
+   if (state.cancellationRequested || state.forcedKill) return "CANCELLED";
+   if (state.orphaned) return "INCOMPLETE";
+   if (state.signal !== null) return "FAIL";
+@@ -356,7 +360,7 @@ function reduceProcessLifecycle(rawState, rawEvent, rawOptions = {}) {
+     case "cancel-acknowledged":
+       if (state.phase !== "CANCEL_REQUESTED") invalidPhase("CANCEL_REQUESTED phase");
+       next.phase = "TERMINATION_ACKNOWLEDGED";
+-      next.status = next.terminalReason === "ELAPSED_CAP" ? "INCOMPLETE" : "CANCELLED";
++      next.status = isResourceLimitOutcome(next.terminalReason) ? "INCOMPLETE" : "CANCELLED";
+       next.terminationAcknowledged = true;
+       result = { state: next, effects: [{ type: "REAP_CHILD" }] };
+       break;
+diff --git a/packages/flow/test/process-lifecycle.test.js b/packages/flow/test/process-lifecycle.test.js
+index 2342ae85..84575bca 100644
+--- a/packages/flow/test/process-lifecycle.test.js
++++ b/packages/flow/test/process-lifecycle.test.js
+@@ -60,13 +60,25 @@ function startRunning(overrides = {}) {
+ describe("process lifecycle state machine", () => {
+   test("covers normal exit, termination acknowledgement, child reaping, and terminal receipt", () => {
+     const lifecycle = startRunning();
+-    expect(lifecycle.dispatch(event("exit", "exit", { code: 0 })).effects)
+-      .toEqual([{ type: "ACKNOWLEDGE_TERMINATION", code: 0, signal: null }]);
+-    expect(lifecycle.snapshot()).toMatchObject({ phase: "EXITED", terminationAcknowledged: false, childReaped: false });
++    const exited = lifecycle.dispatch(event("exit", "exit", { code: 0 }));
++    expect(exited.effects).toEqual([{ type: "ACKNOWLEDGE_TERMINATION", code: 0, signal: null }]);
++    expect(exited.state).toMatchObject({
++      phase: "EXITED",
++      status: "RUNNING",
++      terminal: false,
++      terminationAcknowledged: false,
++      childReaped: false,
++    });
+ 
+     const acknowledged = lifecycle.dispatch(event("ack", "termination-acknowledged"));
+     expect(acknowledged.effects).toEqual([{ type: "REAP_CHILD" }]);
+-    expect(acknowledged.state.phase).toBe("TERMINATION_ACKNOWLEDGED");
++    expect(acknowledged.state).toMatchObject({
++      phase: "TERMINATION_ACKNOWLEDGED",
++      status: "RUNNING",
++      terminal: false,
++      terminationAcknowledged: true,
++      childReaped: false,
++    });
+ 
+     const reaped = lifecycle.dispatch(event("reap", "reap", { childReaped: true }));
+     expect(reaped.effects).toEqual([{ type: "REAP_COMPLETE" }]);
+@@ -102,6 +114,7 @@ describe("process lifecycle state machine", () => {
+     expect(expired.state.phase).toBe("FORCE_KILL_REQUESTED");
+     const killed = lifecycle.dispatch(event("kill-ack", "forced-kill-acknowledged", { signal: "SIGKILL" }));
+     expect(killed.effects).toEqual([{ type: "REAP_CHILD" }]);
++    expect(killed.state).toMatchObject({ phase: "TERMINATION_ACKNOWLEDGED", status: "CANCELLED", terminal: false });
+     const terminal = lifecycle.dispatch(event("reap", "reap", { childReaped: true }));
+     expect(terminal.state).toMatchObject({ phase: "TERMINAL", status: "CANCELLED", forcedKill: true });
+   });
+@@ -272,6 +285,36 @@ describe("process lifecycle state machine", () => {
+     expect(terminal.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
+   });
+ 
++  test("attempt cap remains INCOMPLETE through cancellation acknowledgement and reap", () => {
++    const lifecycle = startRunning({ maxAttempts: 1 });
++    const capped = lifecycle.dispatch(event("cap-attempt", "attempt"));
++    expect(capped.state).toMatchObject({
++      phase: "CANCEL_REQUESTED",
++      status: "INCOMPLETE",
++      terminalReason: "ATTEMPT_CAP",
++    });
++    expect(capped.effects).toEqual([
++      { type: "ATTEMPT_CAP", attempts: 2 },
++      { type: "REQUEST_TERMINATION" },
++    ]);
++
++    const acknowledged = lifecycle.dispatch(event("ack-attempt", "cancel-acknowledged"));
++    expect(acknowledged.state).toMatchObject({
++      phase: "TERMINATION_ACKNOWLEDGED",
++      status: "INCOMPLETE",
++      terminal: false,
++      terminalReason: "ATTEMPT_CAP",
++    });
++
++    const terminal = lifecycle.dispatch(event("reap-attempt", "reap", { childReaped: true }));
++    expect(terminal.state).toMatchObject({
++      phase: "TERMINAL",
++      status: "INCOMPLETE",
++      terminal: true,
++      terminalReason: "ATTEMPT_CAP",
++    });
++  });
++
+   test("accepts the configured 256-event ceiling with fixed-size seen-event digests", () => {
+     const lifecycle = createProcessLifecycle(options({
+       clock: () => 0,
+-- 
+2.51.0.windows.1
+

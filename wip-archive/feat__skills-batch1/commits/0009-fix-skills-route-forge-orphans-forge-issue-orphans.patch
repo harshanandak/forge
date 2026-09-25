@@ -1,0 +1,32 @@
+From 3150f1536e1341e3f16110bd49e3c313503e2e2c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 16:29:21 +0530
+Subject: [PATCH] fix(skills): route forge orphans / forge issue orphans to
+ issue-basics
+
+Round-6 (Codex): issue-basics had prose cues (orphan issues/dangling deps) but
+not the command form; routeSkill('forge orphans')/('forge issue orphans')
+returned no match. Added both command anchors. Last of #430's exempt->mapped
+entries to get a command anchor; systemic fix tracked in 7920f747.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/using-forge.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index acb0994d..77ff8e06 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -177,7 +177,7 @@ const INTENT_RULES = Object.freeze([
+   { skill: 'verify', weight: 3, keywords: ['post-merge', 'after merge', 'verify health', 'health check', 'ci on main', 'close the issue after merge'] },
+   { skill: 'triage-ready', weight: 3, keywords: ['what should i work on', 'what to work on', 'next ready', 'ready queue', 'pick the next', 'what is ready', 'rank the'] },
+   { skill: 'status', weight: 3, keywords: ['where am i', 'current stage', 'what stage', 'stale work', 'status', 'active work', 'whats going on'] },
+-  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue', 'orphan issues', 'orphaned issues', 'dangling dependencies', 'dangling deps'] },
++  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue', 'orphan issues', 'orphaned issues', 'dangling dependencies', 'dangling deps', 'forge orphans', 'forge issue orphans'] },
+   { skill: 'memory', weight: 2, keywords: ['remember', 'recall', 'remember that', 'recall the', 'save a note', 'persist a note', 'note the decision', 'jot down', 'remind me'] },
+   { skill: 'claim-safety', weight: 2, keywords: ['claim an issue', 'claim the issue', 'prove ownership', 'own the lease', 'lease'] },
+   { skill: 'smith', weight: 2, keywords: ['end to end', 'end-to-end', 'drive one issue', 'plan to merged', 'whole issue', 'from plan to pr'] },
+-- 
+2.51.0.windows.1
+

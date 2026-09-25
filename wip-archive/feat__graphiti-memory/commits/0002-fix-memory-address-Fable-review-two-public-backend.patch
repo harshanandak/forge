@@ -1,0 +1,210 @@
+From 4b33172de165b68b7b3ee102671a033b929440ad Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 14:16:46 +0530
+Subject: [PATCH] =?UTF-8?q?fix(memory):=20address=20Fable=20review=20?=
+ =?UTF-8?q?=E2=80=94=20two=20public=20backends,=20fast-follow=20doc=20accu?=
+ =?UTF-8?q?racy?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- skills/memory/SKILL.md (+ .codex mirror): description said "three backends
+  (local, kernel, opt-in Graphiti)" while the body/router say TWO public
+  backends. Corrected to "two public backends (local default, opt-in Graphiti;
+  kernel internal-only)" so an agent can't be led to set memory.backend: kernel.
+- docs/guides/memory-backends.md: MCP wiring is a FAST-FOLLOW, not present-tense.
+  Fixed "wires the MCP server into your .mcp.json" and "Turning it off → delete
+  the entry" to say Forge does not write one yet; annotated the config block so
+  reserved (no-op-until-renderer) keys are marked distinct from active ones.
+- lib/memory/graphiti-mcp.js: DEFAULTS now document which keys are CONSUMED vs
+  RESERVED (dbUri/neo4jUri/llmProvider/model/groupId have no effect until the
+  fast-follow renderer).
+- lib/memory/router.js: fireAndForgetGraphitiEmit gains a CONTRACT comment — any
+  future emitter MUST bound its own timeout and unref()/leave no lingering handle
+  so it can never keep the event loop alive or stall CLI exit.
+- test/commands/doctor-memory.test.js: add a case locking non-fatality
+  (report.ok stays true when the memory check reports a problem).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .codex/skills/memory/SKILL.md       |  4 ++--
+ docs/guides/memory-backends.md      | 22 ++++++++++++++++------
+ lib/memory/graphiti-mcp.js          | 24 ++++++++++++++++++------
+ lib/memory/router.js                |  9 +++++++++
+ skills/memory/SKILL.md              |  4 ++--
+ test/commands/doctor-memory.test.js | 17 +++++++++++++++++
+ 6 files changed, 64 insertions(+), 16 deletions(-)
+
+diff --git a/.codex/skills/memory/SKILL.md b/.codex/skills/memory/SKILL.md
+index 2dc454ea..e1b605a5 100644
+--- a/.codex/skills/memory/SKILL.md
++++ b/.codex/skills/memory/SKILL.md
+@@ -7,8 +7,8 @@ description: >
+   that...", "note for later", "save this"), or when you need to recall what was learned
+   before ("what did we decide about X", "have we seen this"). It explains WHEN to use
+   `forge remember` / `forge recall` versus a per-issue `forge issue comment`, how the
+-  three backends work (local JSONL default, kernel, opt-in Graphiti), and -- when Graphiti
+-  is enabled -- how to add episodes and search facts via the graphiti-memory MCP tools
++  two public backends work (local JSONL default, opt-in Graphiti; kernel is internal-only),
++  and -- when Graphiti is enabled -- how to add episodes and search facts via the graphiti-memory MCP tools
+   (add_memory, search_memory_facts, search_nodes) with group_id scoping and provenance.
+   The local backend is always the offline floor. Not for: issue create/list/close ops
+   (issue-basics), workflow status (status), or transient scratch notes.
+diff --git a/docs/guides/memory-backends.md b/docs/guides/memory-backends.md
+index 49822446..6de1fdfb 100644
+--- a/docs/guides/memory-backends.md
++++ b/docs/guides/memory-backends.md
+@@ -46,8 +46,11 @@ was true in the world, and when the system learned it), and superseded facts are
+ true at time T", with a pointer back to the source (provenance). It is served to
+ any MCP agent through Graphiti's **MCP server**; Forge only wires it in.
+ 
+-Forge does **not** bundle or reimplement Graphiti. It wires the MCP server into
+-your `.mcp.json` and documents how to run it. Design rationale and trade-offs:
++Forge does **not** bundle or reimplement Graphiti. This PR ships the config +
++router seam and documents how to run Graphiti; **automatically writing the MCP
++server into your agent's config is a fast-follow** (a per-harness renderer that
++consumes the descriptor in `lib/memory/graphiti-mcp.js`). Until then you add the
++server entry yourself (template below). Design rationale and trade-offs:
+ [`docs/work/2026-07-06-graphiti-memory/research.md`](../work/2026-07-06-graphiti-memory/research.md).
+ 
+ ### 1. Turn it on (config)
+@@ -58,16 +61,23 @@ Set the backend in `.forge/config.yaml` — additive and reversible:
+ memory:
+   backend: graphiti
+   graphiti:
++    # --- active today (validated by the router / forge doctor) ---
+     transport: stdio            # stdio | http
+-    mcpServerPath: ./graphiti/mcp_server
++    mcpServerPath: ./graphiti/mcp_server   # required — path to the Graphiti checkout's mcp_server dir
+     graphDb: falkordb           # falkordb | falkordb-lite | neo4j
++    apiKeyEnv: OPENAI_API_KEY    # referenced by NAME — never store the key here
++    # --- reserved: consumed by the fast-follow MCP renderer; NO EFFECT yet ---
+     dbUri: redis://localhost:6379
+     llmProvider: openai
+     model: gpt-5.5
+-    apiKeyEnv: OPENAI_API_KEY    # referenced by NAME — never store the key here
+     groupId: <your-project>
+ ```
+ 
++Only `mcpServerPath` is required today (it's what `forge doctor` checks and what
++the descriptor threads into the launch args). The keys under "reserved" have no
++effect until the per-harness MCP renderer lands — set them now only if you like,
++they are no-ops until then.
++
+ Forge exposes the MCP server as a harness-agnostic **descriptor** (see
+ `lib/memory/graphiti-mcp.js`, `buildGraphitiServerDescriptor`) so a per-harness
+ renderer can wire it into the right place for each agent (Claude `.mcp.json`,
+@@ -151,5 +161,5 @@ local JSONL store as a safety floor, so a note is never lost.
+ 
+ Remove `memory.backend` (and the `memory.graphiti` block) from
+ `.forge/config.yaml` — the router falls straight back to `local`. Your local
+-JSONL notes were never touched. You may also delete the `graphiti-memory` entry
+-from `.mcp.json`.
++JSONL notes were never touched. If you manually added a `graphiti-memory` entry
++to your agent's MCP config, delete it too (Forge did not write one).
+diff --git a/lib/memory/graphiti-mcp.js b/lib/memory/graphiti-mcp.js
+index 993f26cd..88ba1f35 100644
+--- a/lib/memory/graphiti-mcp.js
++++ b/lib/memory/graphiti-mcp.js
+@@ -20,17 +20,29 @@
+  * shape matches the Graphiti MCP server README (stdio transport, `uv run`).
+  */
+ 
+-/** Documented recommended defaults for a fresh opt-in (FalkorDB + OpenAI-compatible). */
++/**
++ * Documented recommended defaults for a fresh opt-in (FalkorDB + OpenAI-compatible).
++ *
++ * CONSUMED TODAY by `buildGraphitiServerDescriptor`: `transport`, `command`,
++ * `mcpServerPath`, `graphDb`, `apiKeyEnv`.
++ *
++ * RESERVED for the fast-follow MCP wiring (the per-harness renderer that turns
++ * this descriptor into concrete env values) — `dbUri`, `neo4jUri`, `llmProvider`,
++ * `model`, `groupId` have NO EFFECT until then: the descriptor emits `${VAR}`
++ * references, not these literal values. They are kept here (and documented) so
++ * the shape is stable when the renderer lands; setting them now is a no-op.
++ */
+ const DEFAULTS = Object.freeze({
+-  transport: 'stdio', // 'stdio' | 'http'
+-  command: 'uv',
+-  mcpServerPath: './graphiti/mcp_server',
+-  graphDb: 'falkordb', // 'falkordb' | 'falkordb-lite' | 'neo4j'
++  transport: 'stdio', // 'stdio' | 'http'   (consumed)
++  command: 'uv', //                          (consumed)
++  mcpServerPath: './graphiti/mcp_server', // (consumed)
++  graphDb: 'falkordb', // 'falkordb' | 'falkordb-lite' | 'neo4j'   (consumed)
++  apiKeyEnv: 'OPENAI_API_KEY', //            (consumed — emitted as ${OPENAI_API_KEY})
++  // --- reserved (no effect until the fast-follow MCP renderer) ---
+   dbUri: 'redis://localhost:6379', // documented default for the FalkorDB path
+   neo4jUri: 'bolt://localhost:7687',
+   llmProvider: 'openai',
+   model: 'gpt-5.5',
+-  apiKeyEnv: 'OPENAI_API_KEY',
+   groupId: 'forge',
+ });
+ 
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index 775466b6..f68137d6 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -152,6 +152,15 @@ function assertMemoryConfigValid({ deps = {}, env = process.env, projectRoot, co
+  * throws and NEVER blocks the caller — any error/timeout is swallowed so the
+  * local floor write is the only thing that can affect `remember`'s result.
+  *
++ * CONTRACT for the fast-follow emitter (MUST hold — safe today only because no
++ * emitter is constructed): the emitter MUST NOT keep the Node event loop alive
++ * or delay CLI exit. Any spawned process/socket/timer it creates MUST be
++ * `child.unref()`'d (or otherwise detached / left with no lingering handle), and
++ * any network/RPC call MUST be bounded by its OWN timeout so a hung sidecar can
++ * never stall `forge remember`. This function does NOT await the emit, so a
++ * lingering handle inside `emit()` would be the ONLY way to break the
++ * never-hang guarantee — the emitter, not this seam, owns preventing that.
++ *
+  * @param {object} [emitter] - optional `{ emit(entry) }` injected by callers.
+  * @param {object} entry - the persisted local entry.
+  */
+diff --git a/skills/memory/SKILL.md b/skills/memory/SKILL.md
+index 2dc454ea..e1b605a5 100644
+--- a/skills/memory/SKILL.md
++++ b/skills/memory/SKILL.md
+@@ -7,8 +7,8 @@ description: >
+   that...", "note for later", "save this"), or when you need to recall what was learned
+   before ("what did we decide about X", "have we seen this"). It explains WHEN to use
+   `forge remember` / `forge recall` versus a per-issue `forge issue comment`, how the
+-  three backends work (local JSONL default, kernel, opt-in Graphiti), and -- when Graphiti
+-  is enabled -- how to add episodes and search facts via the graphiti-memory MCP tools
++  two public backends work (local JSONL default, opt-in Graphiti; kernel is internal-only),
++  and -- when Graphiti is enabled -- how to add episodes and search facts via the graphiti-memory MCP tools
+   (add_memory, search_memory_facts, search_nodes) with group_id scoping and provenance.
+   The local backend is always the offline floor. Not for: issue create/list/close ops
+   (issue-basics), workflow status (status), or transient scratch notes.
+diff --git a/test/commands/doctor-memory.test.js b/test/commands/doctor-memory.test.js
+index a2939646..ac122554 100644
+--- a/test/commands/doctor-memory.test.js
++++ b/test/commands/doctor-memory.test.js
+@@ -63,6 +63,23 @@ describe('forge doctor: memory backend check', () => {
+     // Non-fatal: the memory backend must never fail doctor overall.
+     // (Overall ok is governed by the filesystem-class check only.)
+     expect(report.checks[0].id).toBe('filesystem-class');
++    expect(report.ok).toBe(true);
++  });
++
++  test('report.ok stays true even when the memory check reports a problem (locks non-fatality)', () => {
++    const projectRoot = makeProjectRoot();
++    // Misconfigured graphiti → memory check ok:false, but filesystem is safe.
++    writeConfig(projectRoot, 'memory:\n  backend: graphiti\n');
++    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
++
++    const fsCheck = report.checks.find(c => c.id === 'filesystem-class');
++    const memCheck = memoryCheck(report);
++    // Precondition: filesystem is the healthy gate, memory is the unhealthy reporter.
++    expect(fsCheck.ok).toBe(true);
++    expect(memCheck.ok).toBe(false);
++    // The unhealthy memory check must NOT drag the overall report to failure.
++    expect(report.ok).toBe(true);
++    expect(report.ok).toBe(fsCheck.ok);
+   });
+ 
+   test('graphiti fully configured reports ok and the configured server path', () => {
+-- 
+2.51.0.windows.1
+

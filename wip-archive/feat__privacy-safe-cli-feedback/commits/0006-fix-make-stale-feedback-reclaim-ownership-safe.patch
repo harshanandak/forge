@@ -1,0 +1,201 @@
+From 3de1766bb8ebe22cd509ced5d74690e484809cb9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 18:47:58 +0530
+Subject: [PATCH] fix: make stale feedback reclaim ownership-safe
+
+---
+ lib/feedback.js                       | 53 +++++++++++++++++++---
+ test/feedback.test.js                 | 65 ++++++++++++++++++++++++++-
+ test/fixtures/feedback-race-worker.js |  5 ++-
+ 3 files changed, 112 insertions(+), 11 deletions(-)
+
+diff --git a/lib/feedback.js b/lib/feedback.js
+index 323856a2..87267d49 100644
+--- a/lib/feedback.js
++++ b/lib/feedback.js
+@@ -166,21 +166,58 @@ function feedbackLockPath(options = {}) {
+   return `${feedbackStatePath(options)}.lock`;
+ }
+ 
+-function lockIsStale(io, file, staleMs) {
++function inspectFeedbackLock(io, file, staleMs) {
++  let raw;
+   let owner;
+   try {
+-    owner = JSON.parse(io.readFileSync(file, 'utf8'));
++    raw = io.readFileSync(file, 'utf8');
++    owner = JSON.parse(raw);
+   } catch {
+     owner = null;
+   }
+   if (Number.isInteger(owner?.pid)) {
+-    return !processIsAlive(owner.pid);
++    return { raw, stale: !processIsAlive(owner.pid) };
+   }
+   try {
+-    return Date.now() - io.statSync(file).mtimeMs > staleMs;
++    return { raw, stale: Date.now() - io.statSync(file).mtimeMs > staleMs };
+   } catch {
+-    return true;
++    return { raw, stale: true };
++  }
++}
++
++function restoreMovedLock(io, tombstone, file) {
++  try {
++    io.linkSync(tombstone, file);
++  } catch {
++    return;
++  }
++  try { io.unlinkSync(tombstone); } catch { /* canonical hard link preserves the lock */ }
++}
++
++function reclaimStaleFeedbackLock(io, file, snapshot) {
++  if (typeof snapshot.raw !== 'string') return 'changed';
++  const tombstone = `${file}.stale.${crypto.randomUUID()}`;
++  try {
++    io.renameSync(file, tombstone);
++  } catch (error) {
++    if (error?.code === 'ENOENT') return 'missing';
++    if (LOCK_CONTENTION_CODES.has(error?.code)) return 'missing';
++    throw error;
++  }
++
++  let movedRaw;
++  try {
++    movedRaw = io.readFileSync(tombstone, 'utf8');
++  } catch {
++    restoreMovedLock(io, tombstone, file);
++    return 'changed';
++  }
++  if (movedRaw !== snapshot.raw) {
++    restoreMovedLock(io, tombstone, file);
++    return 'changed';
+   }
++  try { io.unlinkSync(tombstone); } catch { /* stale tombstone is harmless */ }
++  return 'reclaimed';
+ }
+ 
+ function releaseFeedbackLock(io, lock) {
+@@ -217,8 +254,10 @@ function acquireFeedbackLock(options = {}) {
+         releaseFeedbackLock(io, lock);
+       }
+       if (!LOCK_CONTENTION_CODES.has(error?.code)) throw error;
+-      if (lockIsStale(io, file, staleMs)) {
+-        try { io.unlinkSync(file); } catch { /* another process reclaimed first */ }
++      const snapshot = inspectFeedbackLock(io, file, staleMs);
++      if (snapshot.stale) {
++        const reclaimResult = reclaimStaleFeedbackLock(io, file, snapshot);
++        if (reclaimResult === 'changed' && attempt + 1 < attempts) sleepSync(waitMs);
+         continue;
+       }
+       if (attempt + 1 < attempts) sleepSync(waitMs);
+diff --git a/test/feedback.test.js b/test/feedback.test.js
+index 3cc34d55..2c4fa142 100644
+--- a/test/feedback.test.js
++++ b/test/feedback.test.js
+@@ -46,9 +46,9 @@ async function waitFor(predicate, message, timeoutMs = 3000) {
+   }
+ }
+ 
+-function runCaptureWorker(homeDir, readyFile, goFile, code, subsystem) {
++function runCaptureWorker(homeDir, readyFile, goFile, code, subsystem, barrierTarget = 'state') {
+   const worker = path.join(__dirname, 'fixtures', 'feedback-race-worker.js');
+-  return spawn(process.execPath, [worker, homeDir, readyFile, goFile, code, subsystem], {
++  return spawn(process.execPath, [worker, homeDir, readyFile, goFile, code, subsystem, barrierTarget], {
+     cwd: path.join(__dirname, '..'),
+     stdio: ['ignore', 'pipe', 'pipe'],
+   });
+@@ -597,6 +597,67 @@ describe('privacy-safe feedback core', () => {
+     fs.unlinkSync(lock);
+   });
+ 
++  test('stale reclaim preserves a successor injected between inspection and removal', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    const successorToken = '33333333-3333-4333-8333-333333333333';
++    fs.writeFileSync(lock, JSON.stringify({ pid: 999999999, owner_token: 'stale-owner' }));
++    const injectingFs = {
++      ...fs,
++      renameSync(from, to) {
++        if (from === lock) {
++          fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, owner_token: successorToken }));
++        }
++        return fs.renameSync(from, to);
++      },
++      unlinkSync(file) {
++        if (file === lock) {
++          fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, owner_token: successorToken }));
++        }
++        return fs.unlinkSync(file);
++      },
++    };
++
++    await expect(captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      fs: injectingFs,
++      lockAttempts: 1,
++    })).rejects.toThrow('Feedback state is busy');
++    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).owner_token).toBe(successorToken);
++    fs.unlinkSync(lock);
++  });
++
++  test('two concurrent stale reclaimers serialize without losing either draft', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    fs.writeFileSync(lock, JSON.stringify({ pid: 999999999, owner_token: 'stale-owner' }));
++    const goFile = path.join(homeDir, 'stale-go');
++    fs.writeFileSync(goFile, 'go');
++    const first = runCaptureWorker(
++      homeDir,
++      path.join(homeDir, 'stale-ready-a'),
++      goFile,
++      'FORGE_INTERNAL_ERROR',
++      'cli',
++      'lock',
++    );
++    const second = runCaptureWorker(
++      homeDir,
++      path.join(homeDir, 'stale-ready-b'),
++      goFile,
++      'FORGE_INTERNAL_TIMEOUT',
++      'workflow',
++      'lock',
++    );
++    await Promise.all([workerExit(first), workerExit(second)]);
++
++    expect(Object.keys(loadFeedbackState({ homeDir }).drafts)).toHaveLength(2);
++    expect(fs.existsSync(lock)).toBe(false);
++  });
++
+   test('corrupt or unreadable state fails closed and preserves original bytes', async () => {
+     for (const raw of ['{"consent":"disabled"', '[]']) {
+       const homeDir = tempHome();
+diff --git a/test/fixtures/feedback-race-worker.js b/test/fixtures/feedback-race-worker.js
+index c953ac3c..dcc02f44 100644
+--- a/test/fixtures/feedback-race-worker.js
++++ b/test/fixtures/feedback-race-worker.js
+@@ -3,14 +3,15 @@
+ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+-const [homeDir, readyFile, goFile, code, subsystem] = process.argv.slice(2);
++const [homeDir, readyFile, goFile, code, subsystem, barrierTarget] = process.argv.slice(2);
+ const stateFile = path.join(homeDir, 'state.json');
++const barrierFile = barrierTarget === 'lock' ? `${stateFile}.lock` : stateFile;
+ const originalRead = fs.readFileSync;
+ let paused = false;
+ 
+ fs.readFileSync = function readWithBarrier(file, ...args) {
+   const result = originalRead.call(this, file, ...args);
+-  if (!paused && path.resolve(String(file)) === path.resolve(stateFile)) {
++  if (!paused && path.resolve(String(file)) === path.resolve(barrierFile)) {
+     paused = true;
+     fs.writeFileSync(readyFile, 'ready');
+     const sleeper = new Int32Array(new SharedArrayBuffer(4));
+-- 
+2.51.0.windows.1
+

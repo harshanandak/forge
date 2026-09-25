@@ -1,0 +1,66 @@
+From 27b1a1299d511097819ec1559a3d33618aac0188 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 19:39:12 +0530
+Subject: [PATCH] fix: map feedback command to setup skill
+
+---
+ .agents/skills/setup/SKILL.md | 9 +++++++++
+ skills/coverage.json          | 1 +
+ skills/setup/SKILL.md         | 9 +++++++++
+ 3 files changed, 19 insertions(+)
+
+diff --git a/.agents/skills/setup/SKILL.md b/.agents/skills/setup/SKILL.md
+index d9cc02d2..c61daea8 100644
+--- a/.agents/skills/setup/SKILL.md
++++ b/.agents/skills/setup/SKILL.md
+@@ -40,6 +40,15 @@ forge init --classification standard --dry-run       # preview the adoption conf
+ 
+ `forge init` writes the Forge adoption config (`.forge/config.yaml`). The profile picks how much enforcement ships on: `minimal` (rails off) → `standard` → `full`. This configures the workflow; toggling an individual gate afterward is the **gates** skill.
+ 
++# Feedback consent
++
++```bash
++forge feedback          # inspect pending privacy-safe reports and consent state
++forge feedback disable  # opt out and delete queued drafts plus the anonymous ID
++```
++
++Feedback defaults off and sends only after the exact structured payload is previewed and approved. Non-interactive use never prompts or sends.
++
+ # Diagnose
+ 
+ ```bash
+diff --git a/skills/coverage.json b/skills/coverage.json
+index 54f4624a..44250830 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -63,6 +63,7 @@
+     "doctor": "setup",
+     "hooks": "setup",
+     "recommend": "setup",
++    "feedback": "setup",
+ 
+     "push": { "exempt": "ship skill push/preflight extension pending (plan §3.2 B)" },
+     "preflight": { "exempt": "ship skill push/preflight extension pending (plan §3.2 B)" },
+diff --git a/skills/setup/SKILL.md b/skills/setup/SKILL.md
+index d9cc02d2..c61daea8 100644
+--- a/skills/setup/SKILL.md
++++ b/skills/setup/SKILL.md
+@@ -40,6 +40,15 @@ forge init --classification standard --dry-run       # preview the adoption conf
+ 
+ `forge init` writes the Forge adoption config (`.forge/config.yaml`). The profile picks how much enforcement ships on: `minimal` (rails off) → `standard` → `full`. This configures the workflow; toggling an individual gate afterward is the **gates** skill.
+ 
++# Feedback consent
++
++```bash
++forge feedback          # inspect pending privacy-safe reports and consent state
++forge feedback disable  # opt out and delete queued drafts plus the anonymous ID
++```
++
++Feedback defaults off and sends only after the exact structured payload is previewed and approved. Non-interactive use never prompts or sends.
++
+ # Diagnose
+ 
+ ```bash
+-- 
+2.51.0.windows.1
+

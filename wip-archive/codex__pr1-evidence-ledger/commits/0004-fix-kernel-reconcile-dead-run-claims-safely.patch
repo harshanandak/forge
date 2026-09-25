@@ -1,0 +1,251 @@
+From 9d88facf271466d9efcdd64fd077d7099bf49a4e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 13:39:19 +0530
+Subject: [PATCH] fix(kernel): reconcile dead-run claims safely
+
+---
+ lib/kernel/claim-reconciler.js       | 114 +++++++++++++++++++++++++++
+ test/kernel/claim-reconciler.test.js | 110 ++++++++++++++++++++++++++
+ 2 files changed, 224 insertions(+)
+ create mode 100644 lib/kernel/claim-reconciler.js
+ create mode 100644 test/kernel/claim-reconciler.test.js
+
+diff --git a/lib/kernel/claim-reconciler.js b/lib/kernel/claim-reconciler.js
+new file mode 100644
+index 00000000..241b33c3
+--- /dev/null
++++ b/lib/kernel/claim-reconciler.js
+@@ -0,0 +1,114 @@
++'use strict';
++
++const PROCESS_MANIFEST_VERSION = 1;
++
++function nonEmptyString(value) {
++	return typeof value === 'string' && value.trim().length > 0 ? value : null;
++}
++
++function positivePid(value) {
++	return Number.isInteger(value) && value > 0 ? value : null;
++}
++
++function verifiedManifestForClaim(claim, manifest) {
++	const sessionId = nonEmptyString(claim?.session_id);
++	const worktreeId = nonEmptyString(claim?.worktree_id);
++	if (!nonEmptyString(claim?.id) || !nonEmptyString(claim?.issue_id) || !sessionId || !worktreeId) return null;
++	if (claim.state != null && claim.state !== 'active') return null;
++	if (!manifest || manifest.version !== PROCESS_MANIFEST_VERSION || manifest.token !== sessionId) return null;
++
++	const owner = manifest.owner;
++	const pid = positivePid(owner?.pid);
++	const identity = nonEmptyString(owner?.identity);
++	const startedAt = nonEmptyString(owner?.startedAt);
++	if (!pid || !identity || identity.startsWith('unverified:') || !startedAt || !Array.isArray(manifest.children)) {
++		return null;
++	}
++
++	return { sessionId, worktreeId, pid, identity, startedAt };
++}
++
++async function reconcileClaims(options = {}) {
++	const claims = Array.isArray(options.claims) ? options.claims : [];
++	const readManifest = options.readManifest;
++	const worktreeExists = options.worktreeExists;
++	const isProcessAlive = options.isProcessAlive;
++	const getProcessIdentity = options.getProcessIdentity;
++	const releaseClaim = options.releaseClaim;
++	const released = [];
++	const attempted = new Set();
++
++	if (![readManifest, worktreeExists, isProcessAlive, getProcessIdentity, releaseClaim]
++		.every(dependency => typeof dependency === 'function')) {
++		return { examined: claims.length, released };
++	}
++
++	for (const claim of claims) {
++		if (!nonEmptyString(claim?.id) || attempted.has(claim.id)) continue;
++
++		let manifest;
++		try {
++			manifest = await readManifest(claim.session_id, claim);
++		} catch {
++			continue;
++		}
++		const verified = verifiedManifestForClaim(claim, manifest);
++		if (!verified) continue;
++
++		let worktreePresent;
++		try {
++			worktreePresent = await worktreeExists(verified.worktreeId, claim);
++		} catch {
++			continue;
++		}
++		if (worktreePresent !== false) continue;
++
++		let ownerAlive;
++		try {
++			ownerAlive = await isProcessAlive(verified.pid);
++		} catch {
++			continue;
++		}
++		if (ownerAlive !== false) {
++			if (ownerAlive !== true) continue;
++			let currentIdentity;
++			try {
++				currentIdentity = await getProcessIdentity(verified.pid);
++			} catch {
++				continue;
++			}
++			// A matching owner is live. A mismatch is PID reuse or otherwise
++			// unverifiable; neither authorizes releasing its claim.
++			if (currentIdentity !== verified.identity) continue;
++			continue;
++		}
++
++		attempted.add(claim.id);
++		const evidence = Object.freeze({
++			claim_id: claim.id,
++			issue_id: claim.issue_id,
++			session_id: verified.sessionId,
++			worktree_id: verified.worktreeId,
++			manifest_version: manifest.version,
++			manifest_token: manifest.token,
++			owner_pid: verified.pid,
++			owner_identity: verified.identity,
++			owner_started_at: verified.startedAt,
++			run_state: 'dead',
++			worktree_state: 'missing',
++		});
++
++		try {
++			if (await releaseClaim(claim, evidence)) released.push(claim.id);
++		} catch {
++			// A failed release is not evidence that authority changed.
++		}
++	}
++
++	return { examined: claims.length, released };
++}
++
++module.exports = {
++	reconcileClaims,
++	verifiedManifestForClaim,
++};
+diff --git a/test/kernel/claim-reconciler.test.js b/test/kernel/claim-reconciler.test.js
+new file mode 100644
+index 00000000..7180101b
+--- /dev/null
++++ b/test/kernel/claim-reconciler.test.js
+@@ -0,0 +1,110 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++
++const { reconcileClaims } = require('../../lib/kernel/claim-reconciler');
++
++function claim(id, overrides = {}) {
++	return {
++		id,
++		issue_id: `issue-${id}`,
++		actor: 'forge-agent',
++		session_id: `session-${id}`,
++		worktree_id: `worktree-${id}`,
++		state: 'active',
++		...overrides,
++	};
++}
++
++function manifestFor(candidate, overrides = {}) {
++	return {
++		version: 1,
++		token: candidate.session_id,
++		owner: {
++			pid: 4100,
++			identity: 'process-start-4100',
++			startedAt: '2026-08-09T00:00:00.000Z',
++		},
++		children: [],
++		...overrides,
++	};
++}
++
++describe('kernel claim reconciler', () => {
++	test('releases only a manifest-verified dead run whose linked worktree is missing', async () => {
++		const eligible = claim('eligible');
++		const live = claim('live');
++		const activeWorktree = claim('active-worktree');
++		const missingMarker = claim('missing-marker');
++		const markerMismatch = claim('marker-mismatch');
++		const unverifiable = claim('unverifiable');
++		const released = [];
++		const manifests = new Map([
++			[eligible.session_id, manifestFor(eligible)],
++			[live.session_id, manifestFor(live, { owner: { pid: 4200, identity: 'live-4200', startedAt: '2026-08-09T00:00:00.000Z' } })],
++			[activeWorktree.session_id, manifestFor(activeWorktree)],
++			[markerMismatch.session_id, manifestFor(markerMismatch, { token: 'another-session' })],
++			[unverifiable.session_id, manifestFor(unverifiable, { owner: { pid: 4300, identity: null, startedAt: '2026-08-09T00:00:00.000Z' } })],
++		]);
++
++		const result = await reconcileClaims({
++			claims: [eligible, live, activeWorktree, missingMarker, markerMismatch, unverifiable],
++			readManifest: (sessionId) => manifests.get(sessionId) || null,
++			worktreeExists: (worktreeId) => worktreeId === activeWorktree.worktree_id,
++			isProcessAlive: (pid) => pid === 4200,
++			getProcessIdentity: (pid) => (pid === 4200 ? 'live-4200' : null),
++			releaseClaim: async (candidate, evidence) => released.push({ candidate, evidence }),
++		});
++
++		expect(released).toHaveLength(1);
++		expect(released[0].candidate).toBe(eligible);
++		expect(released[0].evidence).toEqual(expect.objectContaining({
++			claim_id: eligible.id,
++			issue_id: eligible.issue_id,
++			session_id: eligible.session_id,
++			worktree_id: eligible.worktree_id,
++			owner_pid: 4100,
++			owner_identity: 'process-start-4100',
++			manifest_token: eligible.session_id,
++		}));
++		expect(result).toEqual({ examined: 6, released: [eligible.id] });
++	});
++
++	test('is idempotent when the release reports that the claim is already inactive', async () => {
++		const candidate = claim('once');
++		let calls = 0;
++		const options = {
++			claims: [candidate],
++			readManifest: () => manifestFor(candidate),
++			worktreeExists: () => false,
++			isProcessAlive: () => false,
++			getProcessIdentity: () => null,
++			releaseClaim: async () => {
++				calls += 1;
++				return calls === 1;
++			},
++		};
++
++		expect(await reconcileClaims(options)).toEqual({ examined: 1, released: [candidate.id] });
++		expect(await reconcileClaims(options)).toEqual({ examined: 1, released: [] });
++		expect(calls).toBe(2);
++	});
++
++	test('fails closed for incomplete claims and dependency errors', async () => {
++		const incomplete = claim('incomplete', { session_id: null });
++		const unreadable = claim('unreadable');
++		const released = [];
++
++		const result = await reconcileClaims({
++			claims: [incomplete, unreadable],
++			readManifest: () => { throw new Error('marker cannot be inspected'); },
++			worktreeExists: () => { throw new Error('worktree cannot be inspected'); },
++			isProcessAlive: () => { throw new Error('process cannot be inspected'); },
++			getProcessIdentity: () => { throw new Error('identity cannot be inspected'); },
++			releaseClaim: async (candidate) => released.push(candidate),
++		});
++
++		expect(result).toEqual({ examined: 2, released: [] });
++		expect(released).toEqual([]);
++	});
++});
+-- 
+2.51.0.windows.1
+

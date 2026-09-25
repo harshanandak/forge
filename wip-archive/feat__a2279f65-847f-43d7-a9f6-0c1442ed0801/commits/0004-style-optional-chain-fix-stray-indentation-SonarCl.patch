@@ -1,0 +1,41 @@
+From 81707e325403be1e065db665971a22a00ee869a8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 13:42:52 +0530
+Subject: [PATCH] style: optional chain + fix stray indentation (SonarCloud
+ minor nits)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/plan.js          | 2 +-
+ lib/workflow/enforce-stage.js | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index 044b1025..ae3321dc 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -1088,7 +1088,7 @@ module.exports = {
+ 		const lines = [`${header}: ${result.summary || result.branchName || featureName}`];
+ 		if (result.issueId) lines.push(`${issueBackendLabel(result.issueBackend)}: ${result.issueId}`);
+ 		if (result.branchName) lines.push(`Branch: ${result.branchName}`);
+-				if (result.nextCommand) lines.push(`Next: ${result.nextCommand}`);
++		if (result.nextCommand) lines.push(`Next: ${result.nextCommand}`);
+ 
+ 		return {
+ 			...result,
+diff --git a/lib/workflow/enforce-stage.js b/lib/workflow/enforce-stage.js
+index e7b9d57c..5e5aa53a 100644
+--- a/lib/workflow/enforce-stage.js
++++ b/lib/workflow/enforce-stage.js
+@@ -83,7 +83,7 @@ function evaluateKernelStageGate(driver, issueId, stageId) {
+ 
+   const predecessor = stagePredecessor(stageId);
+   const predecessorRun = predecessor ? findLatestStageRun(driver, issueId, predecessor) : null;
+-  if (predecessorRun && predecessorRun.status === 'done') {
++  if (predecessorRun?.status === 'done') {
+     return { allowed: true };
+   }
+   if (predecessorRun) {
+-- 
+2.51.0.windows.1
+

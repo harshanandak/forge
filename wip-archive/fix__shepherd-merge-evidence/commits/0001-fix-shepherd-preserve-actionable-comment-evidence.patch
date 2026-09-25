@@ -1,0 +1,638 @@
+From 3d7142d0a6350e7d39b99ba8568755cb1d2f896a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 17:01:08 +0530
+Subject: [PATCH] fix(shepherd): preserve actionable comment evidence
+
+---
+ CHANGELOG.md                                  |   1 +
+ docs/reference/shepherd.md                    |  11 +-
+ .../decisions.md                              |  64 +++++++++++
+ .../opus-review.md                            |  45 ++++++++
+ .../plan.md                                   |  24 ++++
+ .../tasks.md                                  |  28 +++++
+ lib/adapters/pr-state-adapter.js              |   4 +-
+ lib/pr-monitor/auto-actions.js                |   5 +-
+ lib/pr-pull.js                                |  77 +++++++++++--
+ test/pr-monitor/auto-actions.test.js          |  16 +++
+ test/pr-state-adapter.test.js                 |  13 ++-
+ test/shepherd-merge-safety.test.js            | 106 +++++++++++++++++-
+ 12 files changed, 373 insertions(+), 21 deletions(-)
+ create mode 100644 docs/work/2026-09-24-shepherd-merge-evidence/decisions.md
+ create mode 100644 docs/work/2026-09-24-shepherd-merge-evidence/opus-review.md
+ create mode 100644 docs/work/2026-09-24-shepherd-merge-evidence/plan.md
+ create mode 100644 docs/work/2026-09-24-shepherd-merge-evidence/tasks.md
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2be21cfe..cf91a91a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **Shepherd distinguishes known successful workflow updates from actionable PR comments.** Successful Forge package-size reports and test-completion review triggers no longer create false review blockers. Unknown or failing bot comments still block, and direct-comment blockers retain their observed identity and link with guidance distinct from resolving a review thread. These blockers also prevent opt-in automatic branch updates from moving the freshness boundary past unaddressed feedback. (issues `c8c322a9-0e3d-48ef-8ad3-17f0d7724311`, `1694b724-1368-4b30-804a-1d7676dadb63`)
+ - **Canonical validation exposes an honest full-suite resource budget.** `forge validate --shards N` forwards a positive integer budget to the Forge scheduler. Windows budgets that cannot fund a required worker fail before test workers start; automatic defaults normalize visibly. Requested/effective or rejection evidence is retained and displayed by the CLI without changing required tests, deadlines, or receipt identity. (#574, issue `e0cb0671-735c-4980-944b-286d6f78fe48`)
+ - **Standalone package smoke installs identify packed packages before npm builds the install tree.** The fixture now carries each package name from the same successful `npm pack --json` result into its local tarball specification, avoiding npm's redundant add-request name discovery while preserving tarball extraction, bundled workspaces, installed identity checks, CLI version/setup coverage, and the existing deadlines. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
+ - **Exact version queries avoid loading the command graph.** Direct `forge --version` and `forge -V` print the packaged version before loading command modules, reducing cold startup during standalone installation checks. Imported helpers and mixed command arguments keep their existing behavior. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index 8d07d732..c20ec109 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -90,7 +90,7 @@ checks, resolved/outdated threads, and satisfied policy are omitted.
+ | --- | --- |
+ | `state` / `summary` | Decision state + a one-line WHY (leads with the primary blocker). |
+ | `mergeable` / `mergeStateStatus` | GitHub's raw merge signals (e.g. `BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`). |
+-| `blockers[]` | Ordered `{type, detail}` list — the human-readable WHY. Types: `draft`, `conflict`, `check-failing`, `check-missing`, `check-skipped`, `check-pending`, `behind`, `changes-requested`, `review-required`, `unresolved-threads`, `blocked-unknown`, `unstable`. |
++| `blockers[]` | Ordered `{type, detail}` list — the human-readable WHY. Types: `draft`, `conflict`, `check-failing`, `check-missing`, `check-skipped`, `check-pending`, `behind`, `changes-requested`, `review-required`, `unresolved-threads`, `direct-comment`, `blocked-unknown`, `unstable`. Direct-comment blockers also expose observed `commentId`, `url`, and `author` when available. |
+ | `requiredChecks` | Branch-protection required set classified vs what the PR produced: `missing` (never reported), `skipped` (a **required** check that resolved SKIPPED — NOT a pass to branch protection; this is why an all-green PR can stay `BLOCKED`), `pending`, `failing`. Omitted entirely when the required set is all green. |
+ | `failures[]` | Per failed check: `name`, `conclusion`, `jobUrl`, the exact failure **excerpt** pulled from the job log, and `alsoFailedOn` (matrix duplicates collapse to one). |
+ | `pendingChecks[]` | Names of checks still running. |
+@@ -101,6 +101,15 @@ checks, resolved/outdated threads, and satisfied policy are omitted.
+ | `draft` | Present only when the PR is a draft. |
+ | `truncated` | Flags when `failures`/`reviewThreads` were capped for size. |
+ 
++Successful package-size reports and test-completion review triggers in Forge's
++known GitHub Actions formats are informational. Unrecognized Actions comments,
++failure reports and unknown bots retain the existing blocking behavior. A direct
++comment blocker identifies the PR comment to inspect and address; it is separate
++from `reviewThreads[]` and cannot be cleared by resolving a review thread.
++Required checks, review decisions, freshness and settle rules still apply.
++The recognized package-size format uses the 10 MB threshold emitted by Forge's
++workflow; customized formats remain actionable until explicitly supported.
++
+ `--bundle --json` is the sibling COMPLETE (not-only-actionable) read-only state
+ bundle; `--pull` and `--bundle` are mutually exclusive.
+ 
+diff --git a/docs/work/2026-09-24-shepherd-merge-evidence/decisions.md b/docs/work/2026-09-24-shepherd-merge-evidence/decisions.md
+new file mode 100644
+index 00000000..3c3c4e95
+--- /dev/null
++++ b/docs/work/2026-09-24-shepherd-merge-evidence/decisions.md
+@@ -0,0 +1,64 @@
++# Decisions and evidence
++
++## 2026-09-24: bounded root-cause repair
++
++The user authorized the next repair while preserving the wider objective of
++faster, easier and reliable CI and merging. Reuse the existing two issues and
++deliver their shared mechanism in one PR. Known successful workflow comments
++are informational; unknown or actionable feedback continues to block.
++
++Both issue leases were proved for `shepherd-review-root-20260924`. Work uses
++`fix/shepherd-merge-evidence` based on freshly fetched `origin/master`.
++The shared root and other worktrees remain untouched. Sol owns implementation;
++the main agent owns issue state, coordination and integration.
++
++## Spec review corrections
++
++The first regression run reproduced 11 failures: missing adapter identity/URL,
++known informational comments blocking, and actionable comments losing blocker
++evidence. The shared correction passed the original 100-test focused set.
++
++Spec review identified overly broad wording about human-shaped comments and
++an overly broad numeric threshold match. Preserve existing human direct-comment
++semantics; human prose never grants a bot-specific classification or clears
++another blocker. Match the current package-size producer's literal 10 MB
++threshold, with its integer arithmetic, rather than recognizing arbitrary
++size-policy formats. Unknown/customized formats remain visible blockers.
++
++A single earlier host-load reading was not representative. Fresh three-sample
++performance counters showed 69-89% CPU and about 4 GiB available memory. Use the
++supported two-unit validation budget after review; an idle machine is not a
++prerequisite. These readings are observations, not a performance benchmark.
++
++## Focused verification
++
++Both spec corrections reproduced as failing tests before the correction. The
++final combined command covered `test/pr-pull.test.js`,
++`test/pr-state-adapter.test.js` and `test/shepherd-merge-safety.test.js`:
++175 passed, zero failed, 423 assertions, 3.55s runner / 5.41s wall time.
++Strict lint on the four changed source/test files passed in 4.81s; the existing
++Node package module-type diagnostic is separate from ESLint warnings.
++
++The adapter keeps its `id` alias and adds canonical `commentId` and `url`.
++The existing issue-comment query fetches the URL without another request.
++`evidence.botComments` keeps its ID-list shape; `direct-comment` blockers carry
++observed identity and clear action guidance, including a missing-identity reason.
++
++## Independent review
++
++The final spec review approved the corrected producer matching and end-to-end
++evidence projection. A separate quality review approved the implementation,
++security boundary, meaningful regressions, compatibility, and documentation.
++Both reviews found no remaining blocker. These are source-level reviews, not
++claims of canonical validation or live PR behavior; those remain the next proof.
++
++The user subsequently requested Opus 5.5 review. The completed review approved
++the patch and proposed three useful documentation/test improvements, assigned
++to Sol before canonical validation. See `opus-review.md` for the model evidence,
++accepted improvements, deferred display concern, and startup limitation.
++
++Sol completed the three accepted improvements without another runtime logic
++change. Focused Shepherd safety and auto-action tests passed: 81 tests, zero
++failures, 149 assertions, 4.06s runner / 7.21s wall time. Strict lint on the four
++touched files passed in 25.55s, with only the existing Node module-type diagnostic.
++The main agent reviewed the small follow-up before canonical validation.
+diff --git a/docs/work/2026-09-24-shepherd-merge-evidence/opus-review.md b/docs/work/2026-09-24-shepherd-merge-evidence/opus-review.md
+new file mode 100644
+index 00000000..ac38af88
+--- /dev/null
++++ b/docs/work/2026-09-24-shepherd-merge-evidence/opus-review.md
+@@ -0,0 +1,45 @@
++# Independent Opus review
++
++The user requested Claude Opus 5.5 to challenge the patch before canonical
++validation. Claude Code's runtime result identified `claude-opus-5-5`, provider
++`firstParty`, and completed successfully. The bounded review took 254 seconds.
++This was a source review: no tests or live GitHub requests were performed by
++the reviewer, and it does not replace canonical validation or live PR proof.
++
++Verdict: approved, with no correctness, security, or compatibility blocker.
++The reviewer traced adapter, gathering, ranking, blocker construction, and
++JSON/text rendering against both tracked workflow producers. It confirmed
++exact success matching, failure/unknown blocking, human-author semantics,
++identity compatibility, and shared freshness selection.
++
++## Accepted improvements
++
++- Document that actionable direct comments prevent opt-in automatic branch
++  updates. Otherwise a new push can advance the freshness boundary beyond
++  unaddressed feedback. Add a focused regression for the existing decision path.
++- Correct helper comments to describe normalized bot identity and place the
++  issue-comment login description on the corresponding helper.
++- Add an explicit over-limit success-shaped package report: 11 MB / 11264 KB,
++  threshold 10 MB, and a claimed successful status must remain blocking.
++
++## Deferred observation
++
++The direct-comment display currently includes every fresh actionable comment.
++Bounded presentation could help with chatty bots, but silently slicing the
++list could hide evidence. Evaluate a separate contract with complete authority
++and explicit total/omitted counts. The current patch preserves all blockers.
++Follow-up issue: `c448036d-e653-4e80-8ca0-c57da60459a3`.
++
++## Execution limitation and recovery
++
++The first review bridge stalled before confirming startup. A direct launch
++selected the requested model but exceeded its context limit before review:
++about 1.53 million total tokens versus about 21 thousand conversation tokens.
++The successful launch used only four repository-reading tools and disabled
++optional MCP integrations for that invocation. Hooks and permission checks
++remained enabled; no global configuration changed. Track that startup problem
++separately in issue `afac7d9e-add7-4cf7-8958-c4f5c40248bf`.
++
++Raw runtime evidence is held in the ignored `test-results/opus-review*.jsonl`
++files. This document preserves the review outcome and decisions without
++committing provider traces or transient runtime output.
+diff --git a/docs/work/2026-09-24-shepherd-merge-evidence/plan.md b/docs/work/2026-09-24-shepherd-merge-evidence/plan.md
+new file mode 100644
+index 00000000..5300e1f4
+--- /dev/null
++++ b/docs/work/2026-09-24-shepherd-merge-evidence/plan.md
+@@ -0,0 +1,24 @@
++# Accurate Shepherd merge evidence
++
++Primary issue: c8c322a9-0e3d-48ef-8ad3-17f0d7724311.
++Related evidence defect: 1694b724-1368-4b30-804a-1d7676dadb63.
++
++PR #574 demonstrated that successful package-size and test/review-trigger
++comments from GitHub Actions become false review blockers. The adapter's `id`
++and verdict's `commentId` mismatch then hides the responsible evidence.
++
++Fix this shared classification and projection path together. Recognize only the
++repository's stable informational workflow formats from the expected bot author;
++do not exclude all GitHub Actions comments. Preserve unknown comments, failures,
++human review requests, unresolved threads, freshness rules and required checks.
++Every blocking direct comment must appear as an actionable reason with its
++observed identity and link when available, distinct from a resolvable thread.
++
++This is a Simple bug fix. Reuse existing helpers and contracts. No workflow
++edits, added polling, new dependencies, automatic merging, gate exemptions,
++daemon lifecycle changes, cleanup changes or test reductions are included.
++
++Efficiency is fewer false review loops and enough evidence in one normal pull
++to identify the real blocker. Record validation/push timings without claiming
++a controlled speed improvement. Review first, run one canonical validation,
++then let the unchanged push reuse its exact-head receipt.
+diff --git a/docs/work/2026-09-24-shepherd-merge-evidence/tasks.md b/docs/work/2026-09-24-shepherd-merge-evidence/tasks.md
+new file mode 100644
+index 00000000..724b1297
+--- /dev/null
++++ b/docs/work/2026-09-24-shepherd-merge-evidence/tasks.md
+@@ -0,0 +1,28 @@
++# Task: fix classification and explain every direct-comment blocker
++
++1. Trace actual workflow message producers, adapter identities, all classifier
++   callers, verdict ranking and JSON/text rendering before editing.
++2. Reproduce the PR #574 success comments becoming blockers and an actual direct
++   comment losing its ID/reason. Use the real adapter-to-verdict path where
++   practical; do not test only invented terminal envelopes.
++3. Implement the smallest shared correction. Match only known success formats
++   and expected bot authors. Normalize identity once where existing contracts
++   belong, preserving compatibility with current callers.
++4. Prove unknown bots, unrecognized Actions comments, package-size failures,
++   success near-matches with extra actionable text or a changed threshold,
++   unresolved threads, changes requested and mixed blockers remain blocking.
++   Preserve human direct-comment behavior: human-shaped success prose cannot
++   gain bot status or hide an actual blocker; humans still block through
++   unresolved threads and review decisions.
++   Cover actual login/line-ending formats, stale comments, and legacy ID fields.
++   Missing identity must not produce an unexplained empty blocker result.
++5. Verify direct comments expose observed IDs/links and accurate action guidance;
++   do not tell users to resolve them as review threads. Keep required-check,
++   freshness and settle behavior unchanged, with no extra provider requests.
++6. Run focused RED/GREEN tests and strict lint; obtain independent spec then
++   quality review. Update the existing Shepherd documentation and changelog.
++
++After implementation review, commit and run canonical validation with the
++supported budget. Push unchanged using the personal account, then check
++current-head reviews and CI. A live pull on the new PR must recognize its real
++informational comments.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index c01ff8d4..efd2bf1f 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -622,7 +622,7 @@ class PrStateAdapter {
+     // `author{__typename login}` surfaces the GraphQL actor TYPE ('Bot' vs 'User')
+     // so a non-human direct comment can be detected GENERICALLY — by mechanism,
+     // not by a hardcoded bot-name list — which fails closed for unknown bots.
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body createdAt updatedAt}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId url author{__typename login} body createdAt updatedAt}}}}}';
+     return this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.comments,
+@@ -638,6 +638,8 @@ class PrStateAdapter {
+         }
+         return {
+           id,
++          commentId: id,
++          url: typeof c.url === 'string' && c.url ? c.url : null,
+           author: c.author.login,
+           authorTypename: c.author.__typename,
+           body: c.body,
+diff --git a/lib/pr-monitor/auto-actions.js b/lib/pr-monitor/auto-actions.js
+index b9c46bde..2e828201 100644
+--- a/lib/pr-monitor/auto-actions.js
++++ b/lib/pr-monitor/auto-actions.js
+@@ -86,8 +86,9 @@ function isDegraded(payload) {
+  *   - the read is not degraded;
+  *   - and the ONLY blocker is the behind-base one — every other blocker type
+  *     (failing/missing/skipped/pending required checks, bot-status gates,
+- *     unresolved threads, changes-requested / review-required, conflict) is
+- *     absent. `blockers[]` is computed independently of the verdict precedence,
++ *     unresolved threads, actionable direct comments, changes-requested /
++ *     review-required, conflict) is absent. `blockers[]` is computed independently
++ *     of the verdict precedence,
+  *     so it still lists lower-precedence blockers that `BEHIND` masks — which is
+  *     exactly why we key on it rather than on the single verdict string.
+  *
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index f5c1df35..59b675ad 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -213,14 +213,41 @@ function commentAuthorClass(author) {
+   return 'human';
+ }
+ 
++/** Normalize a bot login for comparison: trim, lowercase, and drop `[bot]`. */
++function normalizeBotLogin(login) {
++  return String(login || '').trim().toLowerCase().replace(/\[bot\]$/, '');
++}
++
+ /** Lowercased login of an issue comment ({author:{login}} or a bare string). */
+ function issueCommentLogin(comment) {
+-  return String(comment.author?.login || comment.author || '').toLowerCase();
++  return normalizeBotLogin(comment.author?.login || comment.author);
+ }
+ 
+-/** Drop the trailing `[bot]` suffix for a readable bot name in the blocker text. */
++/** Normalized bot name for blocker text: lowercase with no `[bot]` suffix. */
+ function prettyBotName(login) {
+-  return String(login || '').replace(/\[bot\]$/i, '');
++  return normalizeBotLogin(login);
++}
++
++const PACKAGE_SIZE_SUCCESS = /^## \u{1F4E6} Package Size Report\n\*\*Size:\*\* (0|[1-9]\d*)MB \((0|[1-9]\d*)KB\)\n\*\*Threshold:\*\* 10MB\n\*\*Status:\*\* \u2705 Within threshold$/u;
++const CODERABBIT_TRIGGER_SUCCESS = /^Tests passed in https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/actions\/runs\/[1-9]\d*\. @coderabbitai review$/;
++
++function normalizedProducerBody(body) {
++  return String(body || '').replace(/\r\n?/g, '\n')
++    .split('\n').map((line) => line.trim()).filter(Boolean).join('\n');
++}
++
++function isKnownInformationalActionsComment(comment) {
++  if (String(comment?.authorTypename || '').toLowerCase() !== 'bot'
++      || normalizeBotLogin(comment?.author) !== 'github-actions') return false;
++  const body = normalizedProducerBody(comment.body);
++  if (CODERABBIT_TRIGGER_SUCCESS.test(body)) return true;
++  const size = body.match(PACKAGE_SIZE_SUCCESS);
++  if (!size) return false;
++  const sizeMb = Number(size[1]);
++  const sizeKb = Number(size[2]);
++  return [sizeMb, sizeKb].every(Number.isSafeInteger)
++    && sizeMb === Math.floor(sizeKb / 1024)
++    && sizeMb <= 10;
+ }
+ 
+ /**
+@@ -456,6 +483,23 @@ function reviewDecisionBlocker(decision) {
+   return null;
+ }
+ 
++function directCommentBlocker(comment) {
++  const author = String(comment?.author || '').trim();
++  const commentId = comment?.commentId || comment?.id || null;
++  const url = typeof comment?.url === 'string' && comment.url ? comment.url : null;
++  const identity = !author && !commentId
++    ? 'author and comment id unavailable'
++    : `${author ? `author ${author}` : 'author unavailable'}, ${commentId ? `comment ${commentId}` : 'comment id unavailable'}`;
++  const link = url ? ` at ${url}` : '';
++  return {
++    type: 'direct-comment',
++    ...(commentId ? { commentId } : {}),
++    ...(url ? { url } : {}),
++    ...(author ? { author } : {}),
++    detail: `Direct PR comment (${identity})${link} requires inspection and action; address the PR comment, which is not a resolvable review thread.`,
++  };
++}
++
+ /**
+  * Last-resort blocker for a PR that is NOT clean yet nothing concrete explained
+  * why. Emitted ONLY when no specific blocker fired, so a non-mergeable PR is
+@@ -505,6 +549,7 @@ function computeBlockers({
+   reviewDecision = null,
+   requiredClass = { missing: [], skipped: [], pending: [], failing: [], unreadable: false },
+   botStatusBlockers = [],
++  directComments = [],
+   unresolvedThreadCount = 0,
+   behind = 0,
+   conflicts = null,
+@@ -529,6 +574,7 @@ function computeBlockers({
+     out.push({ type: 'behind', detail: `Branch is ${behind} commit(s) behind base — update/rebase the branch (protection requires branches be up to date).` });
+   }
+   pushMaybe(out, reviewDecisionBlocker(decision));
++  out.push(...(Array.isArray(directComments) ? directComments.map(directCommentBlocker) : []));
+   if (unresolvedThreadCount > 0) {
+     out.push({ type: 'unresolved-threads', detail: `${unresolvedThreadCount} unresolved review thread(s) must be resolved before merge (see reviewThreads[]).` });
+   }
+@@ -773,9 +819,10 @@ function isBotAuthor(comment) {
+  * shepherd's own comment or a suppressed status/deploy/quality bot. Humans do
+  * not block via direct comments (they block via threads/reviews). */
+ function isActionableBotComment(comment, self) {
+-  const login = String(comment?.author || '').toLowerCase();
+-  if (!login || login === String(self || '').toLowerCase()) return false;
++  const login = normalizeBotLogin(comment?.author);
++  if (login && login === normalizeBotLogin(self)) return false;
+   if (!isBotAuthor(comment)) return false;
++  if (isKnownInformationalActionsComment(comment)) return false;
+   return !SUPPRESSED_COMMENT_BOT_LOGINS.has(login);
+ }
+ 
+@@ -793,6 +840,14 @@ function parseTime(s) {
+   return Number.isFinite(t) ? t : null;
+ }
+ 
++function freshDirectBotComments(comments, headPushKnown, headPushTimeMs) {
++  const anchor = headPushKnown ? headPushTimeMs : 0;
++  return (Array.isArray(comments) ? comments : []).filter((comment) => {
++    const createdAt = parseTime(comment.createdAt);
++    return createdAt !== null && createdAt > anchor;
++  });
++}
++
+ /** The ONLY mergeStateStatus values from which CLEAN-MERGEABLE is reachable.
+  * Everything else — UNKNOWN, '', BLOCKED, BEHIND, DIRTY, UNSTABLE, HAS_HOOKS —
+  * fails closed (GitHub returns UNKNOWN while recomputing right after a push, and
+@@ -918,12 +973,8 @@ function rankChecks(v) {
+  * fresh non-human direct comment (posted AFTER the last head push, anchored to
+  * the push not to later agent chatter), or a CHANGES_REQUESTED review decision. */
+ function rankThreads(v) {
+-  const anchor = v.headPushKnown ? v.headPushTimeMs : 0;
+-  const botComments = v.botDirectComments.filter((c) => {
+-    const t = parseTime(c.createdAt);
+-    return t !== null && t > anchor;
+-  });
+-  v.evidence.botComments = botComments.map((c) => c.commentId || null).filter(Boolean);
++  const botComments = freshDirectBotComments(v.botDirectComments, v.headPushKnown, v.headPushTimeMs);
++  v.evidence.botComments = botComments.map((c) => c.commentId || c.id || null).filter(Boolean);
+   const changesRequested = String(v.reviewDecision || '').toUpperCase() === 'CHANGES_REQUESTED';
+   v.evidence.changesRequested = changesRequested;
+   const blocked = v.unresolvedThreadCount > 0 || botComments.length > 0 || changesRequested;
+@@ -1300,7 +1351,8 @@ async function gatherPullSignal(ctx) {
+   const snap = await gatherPrSnapshot(ctx);
+   const {
+     state, requiredSet, threads, behind, conflicts, botStatusBlockers,
+-    requiredChecks, pendingChecks, draft, reviewDecision, verdict, evidence, degraded,
++    requiredChecks, pendingChecks, draft, reviewDecision, botDirectComments,
++    headPushTimeMs, headPushKnown, verdict, evidence, degraded,
+   } = snap;
+ 
+   // `verdict` is the SINGLE consumer-facing vocabulary. The back-compat `state`
+@@ -1320,6 +1372,7 @@ async function gatherPullSignal(ctx) {
+     reviewDecision,
+     requiredClass: requiredChecks,
+     botStatusBlockers,
++    directComments: freshDirectBotComments(botDirectComments, headPushKnown, headPushTimeMs),
+     unresolvedThreadCount: reviewThreads.length,
+     behind,
+     conflicts,
+diff --git a/test/pr-monitor/auto-actions.test.js b/test/pr-monitor/auto-actions.test.js
+index 67f6c342..ab701ba5 100644
+--- a/test/pr-monitor/auto-actions.test.js
++++ b/test/pr-monitor/auto-actions.test.js
+@@ -55,6 +55,22 @@ describe('decideUpdateBranch — the otherwise-clean-behind gate', () => {
+     expect(d.reason).toContain('unresolved-threads');
+   });
+ 
++  test('BEHIND + fresh actionable direct comment blocks the update', () => {
++    const d = decideUpdateBranch(behindPayload({
++      evidence: { unreadable: [], tornRead: false, behind: 2, botComments: ['902'] },
++      blockers: [
++        { type: 'behind', detail: 'behind' },
++        {
++          type: 'direct-comment', commentId: '902', author: 'review-agent[bot]',
++          url: 'https://github.com/o/r/pull/1#issuecomment-902',
++          detail: 'Direct PR comment requires inspection and action',
++        },
++      ],
++    }));
++    expect(d.should).toBe(false);
++    expect(d.reason).toContain('direct-comment');
++  });
++
+   test('BEHIND + changes-requested → NO update', () => {
+     const d = decideUpdateBranch(behindPayload({
+       blockers: [
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 503a8d75..6f7cac16 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -705,14 +705,14 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(vercel.detailsUrl).toBe('https://vercel.com/x'); // targetUrl → detailsUrl
+   });
+ 
+-  test('readIssueComments returns id/author/authorTypename/body/createdAt from paginated GraphQL', async () => {
++  test('readIssueComments returns compatible ids and the comment URL from paginated GraphQL', async () => {
+     const page = JSON.stringify({
+       data: { repository: { pullRequest: { comments: {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+           // With fullDatabaseId → the stable REST id is used as the monitor key.
+-          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
+-          { fullDatabaseId: '1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
++          { fullDatabaseId: '999', url: 'https://github.com/o/r/pull/7#issuecomment-999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
++          { fullDatabaseId: '1000', url: 'https://github.com/o/r/pull/7#issuecomment-1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
+         ],
+       } } } },
+     });
+@@ -721,10 +721,15 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
+     expect(comments).toHaveLength(2);
+     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
+-    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' });
++    expect(comments[0]).toEqual({
++      id: '999', commentId: '999', url: 'https://github.com/o/r/pull/7#issuecomment-999',
++      author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed',
++      createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z',
++    });
+     expect(comments[1].id).toBe('1000');
+     expect(comments[1].authorTypename).toBe('User');
+     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
++    expect(calls.find((c) => c.args.join(' ').includes('comments(first')).args.join(' ')).toContain('url');
+   });
+ 
+   test('readReviews constructs a GraphQL request and keeps the LATEST review per author with commitOid', async () => {
+diff --git a/test/shepherd-merge-safety.test.js b/test/shepherd-merge-safety.test.js
+index a77e8978..4334710b 100644
+--- a/test/shepherd-merge-safety.test.js
++++ b/test/shepherd-merge-safety.test.js
+@@ -8,7 +8,8 @@
+ const path = require('node:path');
+ const { describe, test, expect } = require('bun:test');
+ 
+-const { computeVerdict, gatherPullSignal } = require('../lib/pr-pull');
++const { computeVerdict, gatherPullSignal, renderPullSummary } = require('../lib/pr-pull');
++const { PrStateAdapter } = require('../lib/adapters/pr-state-adapter');
+ const { runShepherdPass } = require('../lib/pr-shepherd');
+ const shepherdCmd = require('../lib/commands/shepherd');
+ const { loadCommands, executeCommand } = require('../lib/commands/_registry');
+@@ -201,6 +202,47 @@ async function gather(spec) {
+   });
+ }
+ 
++function issueCommentNode({
++  id = '901', url = `https://github.com/o/r/pull/5#issuecomment-${id}`,
++  author = 'github-actions[bot]', authorTypename = 'Bot', body,
++  createdAt = new Date(SETTLED).toISOString(),
++}) {
++  return {
++    fullDatabaseId: id, url, author: { __typename: authorTypename, login: author },
++    body, createdAt, updatedAt: createdAt,
++  };
++}
++
++async function gatherThroughIssueCommentAdapter(nodes, spec = {}) {
++  const page = JSON.stringify({
++    data: { repository: { pullRequest: { comments: {
++      pageInfo: { hasNextPage: false, endCursor: null }, nodes,
++    } } } },
++  });
++  const realAdapter = new PrStateAdapter({
++    gh: (_cmd, args) => (args.join(' ').includes('comments(first') ? page : ''),
++    git: () => '',
++  });
++  const adapter = makeAdapter({
++    mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++    headPushTimeMs: NOW - (2 * 3600 * 1000), ...spec,
++  });
++  adapter.readIssueComments = realAdapter.readIssueComments.bind(realAdapter);
++  return gatherPullSignal({
++    pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++    adapter, runGh: () => '', self: 'shepherd-bot', now: NOW,
++  });
++}
++
++const PACKAGE_SIZE_SUCCESS = [
++  '## \u{1F4E6} Package Size Report',
++  '',
++  '**Size:** 9MB (10239KB)',
++  '**Threshold:** 10MB',
++  '**Status:** \u2705 Within threshold',
++].join('\n');
++const TESTS_PASSED = 'Tests passed in https://github.com/owner/repo/actions/runs/123456. @coderabbitai review';
++
+ describe('gatherPullSignal verdict integration', () => {
+   // (c) core regression — 13 unresolved coderabbit threads + green checks.
+   test('(c) 13 unresolved coderabbit threads: pass NOT merge-ready AND verdict BLOCKED-THREADS', async () => {
+@@ -354,6 +396,68 @@ describe('agnostic classification (no hardcoded bot names, fail-closed)', () =>
+ // ---------------------------------------------------------------------------
+ // (g) output contract — handler prints JSON on stdout via the registry
+ // ---------------------------------------------------------------------------
++describe('direct issue-comment evidence', () => {
++  test.each([
++    ['package-size success with producer indentation', 'github-actions[bot]', `  ${PACKAGE_SIZE_SUCCESS.replace(/\n/g, '\n  ')}  `],
++    ['tests-passed trigger with CRLF and login case variant', 'GitHub-Actions', `\r\n${TESTS_PASSED}\r\n`],
++  ])('known Actions %s is informational through adapter -> gather', async (_name, author, body) => {
++    const payload = await gatherThroughIssueCommentAdapter([issueCommentNode({ author, body })]);
++    expect(payload.verdict).toBe('CLEAN-MERGEABLE');
++    expect(payload.evidence.botComments).toEqual([]);
++  });
++
++  test.each([
++    ['package failure', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('\u2705 Within threshold', '\u26A0\uFE0F Exceeds threshold')],
++    ['success with inconsistent integers', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('9MB', '11MB')],
++    ['success over the producer limit', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('9MB (10239KB)', '11MB (11264KB)')],
++    ['success with unsupported threshold', 'github-actions[bot]', PACKAGE_SIZE_SUCCESS.replace('9MB (10239KB)', '11MB (11264KB)').replace('10MB', '20MB')],
++    ['success with appended feedback', 'github-actions[bot]', `${PACKAGE_SIZE_SUCCESS}\nPlease remove the large fixture.`],
++    ['unknown Actions prose', 'github-actions[bot]', 'Tests passed. Please inspect the release artifact.'],
++    ['unknown bot', 'other-check[bot]', PACKAGE_SIZE_SUCCESS],
++  ])('%s remains a direct-comment blocker', async (_name, author, body, authorTypename = 'Bot') => {
++    const payload = await gatherThroughIssueCommentAdapter([issueCommentNode({ author, authorTypename, body })], {
++      mergeStateStatus: 'BLOCKED',
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.blockers.some((b) => b.type === 'direct-comment')).toBe(true);
++  });
++
++  test('mixed comments preserve the actionable comment id, URL and author in JSON and text', async () => {
++    const payload = await gatherThroughIssueCommentAdapter([
++      issueCommentNode({ id: '901', body: PACKAGE_SIZE_SUCCESS }),
++      issueCommentNode({ id: '902', author: 'review-agent[bot]', body: 'Please fix the null path.' }),
++      issueCommentNode({ id: '903', author: 'github-actions', authorTypename: 'User', body: PACKAGE_SIZE_SUCCESS }),
++    ], { mergeStateStatus: 'BLOCKED' });
++    expect(payload.evidence.botComments).toEqual(['902']);
++    expect(payload.blockers).toContainEqual(expect.objectContaining({
++      type: 'direct-comment', commentId: '902',
++      url: 'https://github.com/o/r/pull/5#issuecomment-902', author: 'review-agent[bot]',
++    }));
++    const text = renderPullSummary(payload);
++    expect(text).toContain('issuecomment-902');
++    expect(text).toContain('not a resolvable review thread');
++  });
++
++  test('legacy id alias and missing identity still produce explained blockers', async () => {
++    const createdAt = new Date(NOW - 100 * 1000).toISOString();
++    const aliased = await gather({
++      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
++      headPushTimeMs: NOW - 300 * 1000,
++      issueComments: [{ id: 'legacy-7', author: 'review-agent', authorTypename: 'Bot', body: 'fix it', createdAt }],
++    });
++    expect(aliased.evidence.botComments).toEqual(['legacy-7']);
++    expect(aliased.blockers[0]).toEqual(expect.objectContaining({ commentId: 'legacy-7' }));
++
++    const unidentified = await gather({
++      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi,
++      headPushTimeMs: NOW - 300 * 1000,
++      issueComments: [{ authorTypename: 'Bot', body: 'fix it', createdAt }],
++    });
++    expect(unidentified.verdict).toBe('BLOCKED-THREADS');
++    expect(unidentified.blockers[0].detail).toContain('author and comment id unavailable');
++  });
++});
++
+ describe('(g) output contract: --pull --json serializes the verdict to result.output', () => {
+   test('--pull --json through the registry → result.output parses as JSON carrying the verdict', async () => {
+     const commands = loadCommands(path.join(__dirname, '..', 'lib', 'commands')).commands;
+-- 
+2.51.0.windows.1
+

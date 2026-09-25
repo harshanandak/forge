@@ -1,0 +1,145 @@
+From 66d7b4d18d58ac007ce66ac8c31471111419bbc2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 2 Aug 2026 15:06:30 +0530
+Subject: [PATCH] fix(merge): include review edits and reject unknown merge
+ state
+
+---
+ .../decisions.md                              |  2 ++
+ .../tasks.md                                  |  2 ++
+ lib/adapters/pr-state-adapter.js              | 11 ++++++--
+ lib/commands/merge.js                         |  2 +-
+ ...merge-authority-review-regressions.test.js | 25 +++++++++++++++++++
+ test/pr-state-adapter.test.js                 |  4 +++
+ 6 files changed, 43 insertions(+), 3 deletions(-)
+
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+index a8f34aaf..962ce3da 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -44,6 +44,8 @@ Candidate `3274e04cf71c24c255360fc70007e4dbd4e9687c` is also rejected. Its termi
+ 
+ The terminal amendment validates every REST and rollup observation before policy filtering, requires explicit CheckRun `COMPLETED` + `SUCCESS` and explicit StatusContext `SUCCESS`, requires structured policy entries to carry an explicit app identity field, and requires both ownership probes to return the frozen actor and claimant identities. Mandatory settle includes the newest aggregate activity timestamp. Injected binding drivers remain caller-owned. Pull requires valid full start and end heads without fallback, every review-thread GraphQL path rejects non-canonical PR selectors and requests nested actor type, and Shepherd converts malformed provider evidence into `ESCALATE`. Focused RED reproduced ten counterexamples; focused GREEN passed 191 tests and the bounded affected manifest passed 320 tests, with ESLint, 22 syntax checks, and `git diff --check` green.
+ 
++Candidate `331943cce424ed57ef9afcd5dc773a89692fc41b` is rejected after two terminal review counterexamples; its Kernel/CLI lane passed. Review freshness now takes the maximum of every review's creation, update, and submission timestamps rather than preferring submission and discarding a later edit. The shared PR-state adapter now treats an unknown `mergeStateStatus` enum as unreadable evidence, normalizes its projection to `UNKNOWN`, and therefore routes Shepherd to `ESCALATE` rather than `MERGE_READY`. Both exact regressions were RED before implementation and GREEN afterward; the bounded affected manifest remained green.
++
+ ## Bounded residuals
+ 
+ GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+index f9ac7ab7..48064ef1 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -31,6 +31,8 @@
+ - [x] Reconcile terminal exact-SHA review of `3274e04cf71c24c255360fc70007e4dbd4e9687c`: all three lanes returned `REQUEST_CHANGES`; reject the candidate and retain its concrete counterexamples.
+ - [x] Add focused RED coverage for aggregate activity settle, optional rollup CheckRuns, strict policy/check/ownership identity, injected binding-driver ownership, full final-head evidence, canonical GraphQL selectors, nested actor type, and Shepherd malformed-provider escalation.
+ - [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
++- [x] Reconcile terminal exact-SHA review of `331943cce424ed57ef9afcd5dc773a89692fc41b`: Kernel/CLI passed; reject for later review updates missing from settle and unknown merge-state enums remaining readable.
++- [x] Add RED/GREEN coverage and remediate both final counterexamples; rerun the bounded affected manifest once.
+ - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+ - [ ] Push/open PR only after PASS.
+ - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 65aaa134..0de830b8 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -36,6 +36,9 @@ const CHECK_RUN_CONCLUSIONS = new Set([
+   'ACTION_REQUIRED', 'STALE', 'STARTUP_FAILURE',
+ ]);
+ const STATUS_CONTEXT_STATES = new Set(['ERROR', 'EXPECTED', 'FAILURE', 'PENDING', 'SUCCESS']);
++const MERGE_STATE_STATUSES = new Set([
++  'BEHIND', 'BLOCKED', 'CLEAN', 'DIRTY', 'DRAFT', 'HAS_HOOKS', 'UNKNOWN', 'UNSTABLE',
++]);
+ 
+ function canonicalPrNumber(value) {
+   const raw = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
+@@ -140,16 +143,20 @@ class PrStateAdapter {
+     const lifecycleReadable = typeof data.state === 'string'
+       && ['OPEN', 'MERGED', 'CLOSED'].includes(data.state.toUpperCase())
+       && typeof data.isDraft === 'boolean';
++    const mergeStateStatus = typeof data.mergeStateStatus === 'string'
++      ? data.mergeStateStatus.toUpperCase()
++      : '';
++    const mergeStateReadable = MERGE_STATE_STATUSES.has(mergeStateStatus);
+     const rollupReadable = Array.isArray(data.statusCheckRollup)
+       && data.statusCheckRollup.every(validRollupNode);
+-    const providerEvidenceReadable = lifecycleReadable && rollupReadable
++    const providerEvidenceReadable = lifecycleReadable && mergeStateReadable && rollupReadable
+       && typeof data.headRefOid === 'string' && FULL_HEAD_SHA.test(data.headRefOid);
+     const rollup = rollupReadable ? data.statusCheckRollup : [];
+     return {
+       headSha: typeof data.headRefOid === 'string' ? data.headRefOid : '',
+       state: lifecycleReadable ? data.state.toUpperCase() : 'UNKNOWN',
+       mergeable: data.mergeable || 'UNKNOWN',
+-      mergeStateStatus: data.mergeStateStatus || 'UNKNOWN',
++      mergeStateStatus: mergeStateReadable ? mergeStateStatus : 'UNKNOWN',
+       reviewDecision: data.reviewDecision || null,
+       isDraft: typeof data.isDraft === 'boolean' ? data.isDraft : null,
+       providerEvidenceReadable,
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 48658d2e..3380a3cf 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -536,7 +536,7 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+ 
+   const stamps = [
+     ...comments.map((c) => c.at),
+-    ...reviews.map((r) => r.submittedAt || r.createdAt || ''),
++    ...reviews.flatMap((r) => [r.createdAt, r.updatedAt, r.submittedAt]),
+     view.updatedAt || '',
+   ].map((s) => Date.parse(s)).filter((n) => !Number.isNaN(n));
+   const lastActivityAt = stamps.length ? Math.max(...stamps) : undefined;
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index fec498bb..ccfafa89 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -121,6 +121,31 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(fetched.comments[0].at).toBe(editedAt);
+   });
+ 
++  test('uses a later review update for mandatory settle evidence', async () => {
++    const updatedAt = new Date(NOW - 60_000).toISOString();
++    const fetched = await mergeCmd.defaultFetchPrContext({
++      pr: '42',
++      now: NOW,
++      gh: makeGh(validThreads, {
++        reviews: [{
++          author: { login: 'reviewer' },
++          state: 'COMMENTED',
++          createdAt: new Date(NOW - 40 * 60_000).toISOString(),
++          submittedAt: new Date(NOW - 30 * 60_000).toISOString(),
++          updatedAt,
++        }],
++      }),
++    });
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => fetched,
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(fetched.lastActivityAt).toBe(Date.parse(updatedAt));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++  });
++
+   test('uses recent PR or review activity for mandatory settle without comments', async () => {
+     let merges = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 1241ac1a..766d4255 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -107,6 +107,10 @@ describe('PrStateAdapter', () => {
+         headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
+         statusCheckRollup: [{ __typename: 'CheckRun', name: 'optional' }],
+       },
++      {
++        headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
++        mergeStateStatus: 'BOGUS', statusCheckRollup: [],
++      },
+     ]) {
+       const { run } = makeRunner([['pr view', JSON.stringify(payload)]]);
+       const state = await new PrStateAdapter({ gh: run, git: run }).readState('123');
+-- 
+2.51.0.windows.1
+

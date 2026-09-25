@@ -1,0 +1,150 @@
+From 03a6c2f86f3ebf585cbcbbaa7ac10df2e740932e Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 27 Apr 2026 01:12:55 +0530
+Subject: [PATCH] fix: close project memory edge cases
+
+---
+ lib/project-memory.js       | 35 +++++++++++++++++++--------
+ test/project-memory.test.js | 47 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 72 insertions(+), 10 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index b7c9e2fc..b898056b 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -26,7 +26,9 @@ function nearestExistingPath(targetPath) {
+ 
+ function assertRealPathInsideProjectRoot(root, targetPath) {
+   const realRoot = fs.realpathSync.native(root);
+-  const existingPath = nearestExistingPath(path.dirname(targetPath));
++  const existingPath = fs.existsSync(targetPath)
++    ? targetPath
++    : nearestExistingPath(path.dirname(targetPath));
+   const realExistingPath = fs.realpathSync.native(existingPath);
+ 
+   if (realExistingPath === realRoot) {
+@@ -72,19 +74,34 @@ function isProcessAlive(pid) {
+ function readLock(lockPath) {
+   try {
+     return JSON.parse(fs.readFileSync(lockPath, 'utf8'));
++  } catch (err) {
++    return {
++      pid: null,
++      createdAt: null,
++      invalid: true,
++      readError: err.message,
++    };
++  }
++}
++
++function invalidLockIsOld(lockPath, options = {}) {
++  const staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
++  try {
++    return Date.now() - fs.statSync(lockPath).mtimeMs >= staleLockMs;
+   } catch (_err) {
+-    return null;
++    return false;
+   }
+ }
+ 
+ function removeStaleLock(lockPath, options = {}) {
+   const lock = readLock(lockPath);
+-  const staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
+-  const createdAt = lock?.createdAt ? Date.parse(lock.createdAt) : NaN;
+-  const isOld = Number.isNaN(createdAt) || Date.now() - createdAt >= staleLockMs;
++  if (lock.invalid && !invalidLockIsOld(lockPath, options)) {
++    return false;
++  }
++
+   const ownerAlive = isProcessAlive(lock?.pid);
+ 
+-  if (!ownerAlive && isOld) {
++  if (!ownerAlive) {
+     fs.rmSync(lockPath, { force: true });
+     return true;
+   }
+@@ -102,14 +119,12 @@ function acquireLock(filePath, options = {}) {
+ 
+   while (true) {
+     try {
+-      const fd = fs.openSync(lockPath, 'wx');
+-      fs.writeFileSync(fd, JSON.stringify({
++      fs.writeFileSync(lockPath, JSON.stringify({
+         pid: process.pid,
+         createdAt: new Date().toISOString(),
+-      }));
++      }), { flag: 'wx' });
+ 
+       return () => {
+-        fs.closeSync(fd);
+         fs.rmSync(lockPath, { force: true });
+       };
+     } catch (err) {
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index c85d3bcf..c3571c55 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -247,6 +247,28 @@ describe('project memory', () => {
+     })).toThrow('projectRoot');
+   });
+ 
++  test('rejects symlinked memory files outside the project root', () => {
++    if (process.platform === 'win32') {
++      return;
++    }
++
++    const root = tempRoot();
++    const outside = tempRoot();
++    const memoryDir = path.join(root, '.forge', 'memory');
++    const outsideFile = path.join(outside, 'entries.jsonl');
++    fs.mkdirSync(memoryDir, { recursive: true });
++    fs.writeFileSync(outsideFile, JSON.stringify({
++      key: 'policy.external',
++      value: 'external data',
++      'source-agent': 'Codex',
++      timestamp: '2026-04-26T00:00:00.000Z',
++      tags: [],
++    }) + '\n', 'utf8');
++    fs.symlinkSync(outsideFile, path.join(memoryDir, 'entries.jsonl'), 'file');
++
++    expect(() => projectMemory.list(root)).toThrow('projectRoot');
++  });
++
+   test('recovers stale lockfiles owned by dead processes', () => {
+     const root = tempRoot();
+     const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
+@@ -272,6 +294,31 @@ describe('project memory', () => {
+     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+   });
+ 
++  test('recovers fresh lockfiles owned by dead processes', () => {
++    const root = tempRoot();
++    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
++    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
++    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
++      pid: 99999999,
++      createdAt: new Date().toISOString(),
++    }), 'utf8');
++
++    projectMemory.write(root, {
++      key: 'policy.fresh-dead-lock',
++      value: 'recovered',
++      sourceAgent: 'Codex',
++      tags: [],
++    }, {
++      lockTimeoutMs: 250,
++      lockRetryMs: 5,
++    });
++
++    expect(projectMemory.read(root, 'policy.fresh-dead-lock')).toMatchObject({
++      value: 'recovered',
++    });
++    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
++  });
++
+   test('serializes concurrent writers without losing entries', async () => {
+     const root = tempRoot();
+     const worker = `
+-- 
+2.51.0.windows.1
+

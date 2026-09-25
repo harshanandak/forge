@@ -1,0 +1,604 @@
+From 5443322d1e803f477e5112c958d14d2e76df623d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 17:36:18 +0530
+Subject: [PATCH] =?UTF-8?q?fix(agents):=20make=20every=20capability-matrix?=
+ =?UTF-8?q?=20claim=20true=20=E2=80=94=20deliver=20or=20downgrade=20honest?=
+ =?UTF-8?q?ly=20(Tier=201)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A parity cross-check found the matrix advertising surfaces Forge never generates.
+Tier 1 makes each claim TRUE (deliver) or honestly not-yet-delivered (downgrade),
+without building the heavy renderers (tracked under kernel epic 90f2f631).
+
+DELIVERED
+- MCP: wire Cursor project-local .cursor/mcp.json (setupCursorMcpConfig, mirrors
+  Claude) via the tested renderer; read→merge→write preserves user servers and the
+  JSONC data-loss guard carries through. displayMcpStatus reports both auto-wired
+  (dropped the manual "Configure via Cursor Settings" hint).
+- skills/stages: Cursor unproven→native (.cursor/skills IS populated at setup);
+  add S10 Cursor Agent Skills source. Hermes native→forge-owned and the stage-graph
+  now reflects reality (Forge writes .hermes/skills/<stage>; no more "no per-stage
+  file" contradiction). Codex labels fixed: .codex/skills is the staging mirror,
+  install target is $CODEX_HOME/skills.
+
+DOWNGRADED (honest not-yet-delivered, each pointing at tracked kernel work)
+- hooks: no harness-native hook is rendered — all enforcement is git hooks. claude/
+  codex native→contract-only; cursor unsupported→not-delivered (.cursor/hooks.json,
+  Cursor 1.7+). Fixed the S1 skills-doc miscitation. (kernel 988ae187)
+- agents/subagents: whole domain unimplemented → every harness not-delivered/
+  unsupported; added to AGENT_SKILL_PARITY future-work. (kernel 802aa4d8)
+- typedMemory: write-only (insights.js), no projection renderer → all 4 rows
+  not-delivered. (kernel dce9da46)
+- codex mcp: Codex reads GLOBAL $CODEX_HOME/config.toml, not project-local →
+  not-delivered at project setup. codex .agents/skills repo discovery (55dfeccf).
+
+GUARDS + CLEANUP
+- STATUS_VOCABULARY enum + a test asserting no row uses an off-vocabulary (dishonest)
+  status; removed 'unproven'/'skill-backed'.
+- Dropped directories.rules + copyRules from claude.plugin.json (no more empty
+  never-populated .claude/rules on setup); kept .claude/rules in the D20 scanner via
+  STATIC_INSTRUCTION_ROOTS so bd-retirement coverage is preserved.
+- Fixed the stale agents-config.js generateCursorConfig comment; corrected the parity
+  doc's Cursor instructions column to AGENTS.md; regenerated the D20 artifact.
+
+Tier-2 follow-ups tracked under kernel epic 90f2f631 (children 55dfeccf/988ae187/
+802aa4d8/dce9da46/1e68255c).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/reference/AGENT_SKILL_PARITY.md          | 14 ++--
+ .../bd-call-site-kill-list.md                 |  2 +-
+ lib/agents-config.js                          |  5 +-
+ lib/agents/claude.plugin.json                 |  2 -
+ lib/commands/setup.js                         | 47 +++++++----
+ lib/harness-capability-matrix.js              | 80 ++++++++++++-------
+ lib/release-readiness.js                      | 10 ++-
+ test/docs-consistency.test.js                 |  6 +-
+ test/harness-capability-matrix.test.js        | 63 +++++++++++----
+ test/setup-cursor-mcp.test.js                 | 63 +++++++++++++++
+ 10 files changed, 222 insertions(+), 70 deletions(-)
+ create mode 100644 test/setup-cursor-mcp.test.js
+
+diff --git a/docs/reference/AGENT_SKILL_PARITY.md b/docs/reference/AGENT_SKILL_PARITY.md
+index f34bfe12..10568041 100644
+--- a/docs/reference/AGENT_SKILL_PARITY.md
++++ b/docs/reference/AGENT_SKILL_PARITY.md
+@@ -85,7 +85,7 @@ The full Forge extension parity model must cover more than skills:
+ 
+ | Capability | Canonical Forge source | Claude | Cursor | Codex | Required evidence |
+ | --- | --- | --- | --- | --- | --- |
+-| Project instructions | structured `AGENTS.md` sections | `CLAUDE.md` shim or generated file | `.cursor/rules/*.mdc` for scoped policy | `AGENTS.md` | semantic section comparison |
++| Project instructions | structured `AGENTS.md` sections | `CLAUDE.md` shim or generated file | `AGENTS.md` (native) + `.cursor/rules/*.mdc` for scoped policy | `AGENTS.md` | semantic section comparison |
+ | Skills/playbooks | agentskills.io-compatible `SKILL.md` | `.claude/skills` | `.cursor/skills` | `.codex/skills` packaging source; `.agents/skills` after generator migration | generated file and trigger metadata |
+ | Rules/policies | Forge rule manifest (`rules/<name>.md`) | `AGENTS.md` instruction projection (no always-on `.claude/rules/*` policy bloat) | `.cursor/rules/*.mdc` (rendered from `rules/`) | `AGENTS.md` section | rule target and unsupported-surface notes |
+ | MCP tools/resources | Forge MCP manifest | Claude MCP config | `.cursor/mcp.json` | Codex MCP config | config render and server probe |
+@@ -163,9 +163,13 @@ If a future release needs live invocation proof, add a separate transcript-produ
+ 
+ No harness-specific metadata issue is known for this fixture. Live proprietary-agent auto-invocation is intentionally outside this deterministic test and is reported in `proofBoundary`.
+ 
+-Known gaps intentionally left for follow-up:
++Known gaps intentionally left for follow-up. Tier-2 work is tracked under kernel epic `90f2f631` (Cross-agent parity Tier 2):
+ 
+-- Cursor Agent Skill files are generated by Forge, but live auto-invocation is not proven in the W0 fixture; the capability matrix records `.cursor/skills` as the intended on-demand target and `.cursor/rules` as the policy target.
++- Cursor Agent Skill files ARE generated by Forge at setup (`.cursor/skills`), so the matrix marks Cursor skills/stages `native`; live auto-invocation is simply not asserted by the W0 metadata fixture. `.cursor/rules` remains the policy target.
+ - Claude stage distribution is skills-first: the legacy `.claude/commands/` surface was removed (A0d) and the stage skill (`.claude/skills/<stage>`) is the authority — the stage graph no longer emits a command shim.
+-- Cursor hooks remain unsupported until a verified hook surface exists; use Forge-owned hooks or file-watcher backstop for protected-path enforcement.
+-- MCPs, hooks, stage/gate renderers, Beads wiring, typed memory, patch overrides, marketplace trust, and extension packs are covered by the capability matrix contract, but broad renderer implementation remains future work.
++- **Hooks (`988ae187`)**: NO harness-native hook file is rendered for ANY harness — all lifecycle enforcement is delivered via Lefthook git hooks. The matrix marks Claude/Codex hooks `contract-only` and Cursor hooks `not-delivered` (Cursor 1.7+ exposes `.cursor/hooks.json`, not yet rendered). Native hook renderers are the deliverable.
++- **Agents/subagents (`802aa4d8`)**: the whole domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. The matrix marks every harness `not-delivered`/`unsupported`. A subagent renderer is the deliverable.
++- **Typed memory (`dce9da46`)**: typed memory is WRITE-ONLY (`insights.js`); no generator projects a memory section into any instruction/rule file. All four typedMemory rows are marked `not-delivered`. A memory-projection renderer is the deliverable.
++- **Codex paths (`55dfeccf`)**: `.codex/skills` is the committed staging mirror; skills install to `$CODEX_HOME/skills`. Direct Codex repo discovery uses `.agents/skills`, which Forge does not yet generate. Codex MCP is global-config-only (`$CODEX_HOME/config.toml`), so `(mcp, codex)` is `not-delivered` at project setup.
++- **Safety domains (`1e68255c`)**: Claude permissions, `.cursorignore`, and Codex sandbox/approvals are not yet modeled in the matrix.
++- MCP is now auto-wired project-local for both Claude (`.mcp.json`) and Cursor (`.cursor/mcp.json`) via the tested `lib/mcp-config-renderer.js`. Beads/patch-override state, marketplace trust, and extension packs remain as the matrix records them.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index a4275060..2c11fb41 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -55,7 +55,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/forge-issues.js (15)
+   - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 105 (bd), 106 (bd), 109 (bd), 143 (bd), 167 (bd), 169 (bd), 173 (bd), 273 (bd), 298 (bd)
+ - [ ] lib/harness-capability-matrix.js (1)
+-  - lines: 130 (bd)
++  - lines: 151 (bd)
+ - [ ] lib/insights.js (7)
+   - lines: 112 (.beads), 123 (.beads), 131 (.beads), 157 (.beads), 176 (.beads), 338 (.beads), 341 (.beads)
+ - [ ] lib/migrate-dry-run.js (8)
+diff --git a/lib/agents-config.js b/lib/agents-config.js
+index a7bbb394..7c91dee4 100644
+--- a/lib/agents-config.js
++++ b/lib/agents-config.js
+@@ -266,8 +266,9 @@ async function generateCursorConfig(projectPath, options = {}) {
+   const { overwrite = false } = options;
+ 
+   // Cursor rule CONTENT is not hand-authored here. It is rendered from the
+-  // canonical `rules/<name>.md` manifest — the same single source that produces
+-  // Claude's `.claude/rules/*.md` — so the two harnesses can never drift.
++  // canonical `rules/<name>.md` manifest. Cursor is the only harness with a native
++  // rule surface; Claude/Codex/Hermes receive the same policy via their AGENTS.md
++  // instruction projection (no always-on `.claude/rules/*` files are generated).
+   // See lib/rules-sync.js and docs/reference/AGENT_SKILL_PARITY.md.
+   renderRulesForHarness({
+     sourceRoot: PACKAGE_ROOT,
+diff --git a/lib/agents/claude.plugin.json b/lib/agents/claude.plugin.json
+index a95d4ce4..17e2c547 100644
+--- a/lib/agents/claude.plugin.json
++++ b/lib/agents/claude.plugin.json
+@@ -10,7 +10,6 @@
+     "hooks": true
+   },
+   "directories": {
+-    "rules": ".claude/rules",
+     "skills": ".claude/skills",
+     "scripts": ".claude/scripts"
+   },
+@@ -18,7 +17,6 @@
+     "rootConfig": "CLAUDE.md"
+   },
+   "setup": {
+-    "copyRules": true,
+     "copyScripts": true,
+     "createSkill": true
+   }
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index f0bc2f46..1e4dbbee 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -1432,23 +1432,13 @@ function displayMcpStatus(selectedAgents) {
+   console.log('Provides up-to-date library docs for AI coding agents.');
+   console.log('');
+ 
+-  // Show what was/will be auto-installed
++  // Show what was/will be auto-installed. Both Claude and Cursor read a
++  // project-local MCP config, so Forge auto-wires both (no manual step needed).
+   if (selectedAgents.includes('claude')) {
+     console.log('  ✓ Auto-installed for Claude Code (.mcp.json)');
+   }
+-  // Show manual setup instructions for GUI-based agents
+-  const manualMcpMap = {
+-    cursor: 'Cursor: Configure via Cursor Settings > MCP',
+-  };
+-  const needsManualMcp = Object.entries(manualMcpMap)
+-    .filter(([key]) => selectedAgents.includes(key))
+-    .map(([, msg]) => msg);
+-
+-  if (needsManualMcp.length > 0) {
+-    needsManualMcp.forEach(msg => console.log(`  ! ${msg}`));
+-    console.log('');
+-    console.log('  Package: @upstash/context7-mcp@latest');
+-    console.log('  Docs: https://github.com/upstash/context7-mcp');
++  if (selectedAgents.includes('cursor')) {
++    console.log('  ✓ Auto-installed for Cursor (.cursor/mcp.json)');
+   }
+ }
+ 
+@@ -1803,6 +1793,29 @@ function setupClaudeMcpConfig() {
+   );
+ }
+ 
++// Helper: Setup MCP config for Cursor (project-local .cursor/mcp.json).
++// Cursor reads a project-local MCP config, so this is a real native delivery
++// (mirrors setupClaudeMcpConfig). Read → merge → write, preserving user servers.
++function setupCursorMcpConfig() {
++  const { existed, skipped, backup } = renderMcpConfig({
++    harness: 'cursor',
++    targetRoot: projectRoot,
++    descriptors: [CONTEXT7_MCP_DESCRIPTOR],
++  });
++  if (skipped) {
++    console.log(
++      `  Skipped: .cursor/mcp.json is not valid JSON — left untouched to avoid data loss`
++      + `${backup ? ` (backed up to ${backup})` : ''}. Add the Context7 MCP server manually.`,
++    );
++    return;
++  }
++  console.log(
++    existed
++      ? '  Updated: .cursor/mcp.json (merged Context7 MCP, preserved existing servers)'
++      : '  Created: .cursor/mcp.json with Context7 MCP',
++  );
++}
++
+ // Helper: Create agent link file
+ // When symlinkOnly is true (--symlink flag), skip copy fallback
+ 
+@@ -1846,10 +1859,13 @@ async function setupAgent(agentKey, skipFiles = {}) {
+   // Create SKILL.md or Codex stage skills
+   createAgentSkill(agent, agentKey);
+ 
+-  // Setup MCP configs
++  // Setup MCP configs (project-local, native for both harnesses)
+   if (agentKey === 'claude') {
+     setupClaudeMcpConfig();
+   }
++  if (agent.customSetup === 'cursor') {
++    setupCursorMcpConfig();
++  }
+ 
+   // Create link file (SYMLINK_ONLY = --symlink flag disables copy fallback)
+   createAgentLinkFile(agent, SYMLINK_ONLY);
+@@ -3991,6 +4007,7 @@ module.exports = {
+   autoMigrateBeadsToKernel,
+   ensureGitHooksInstalled,
+   setupClaudeMcpConfig,
++  setupCursorMcpConfig,
+   displayMcpStatus,
+   displayEnvTokenResults,
+   minimalInstall,
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index 5ee2c672..dca939f8 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -33,6 +33,27 @@ const SOURCE_ROWS = [
+   ['S7', 'Codex hooks', 'https://developers.openai.com/codex/hooks', 'Codex hooks run deterministic scripts during lifecycle events.'],
+   ['S8', 'Codex plugins and marketplaces', 'https://developers.openai.com/codex/plugins/build', 'Codex plugins can package skills, apps, MCP servers, hooks, and marketplace metadata.'],
+   ['S9', 'AGENTS.md standard', 'https://agents.md/', 'AGENTS.md provides repository instructions for coding agents.'],
++  ['S10', 'Cursor Agent Skills', 'https://docs.cursor.com/en/agent/skills', 'Cursor reads on-demand Agent Skills from .cursor/skills/<name>/SKILL.md; Forge populates them at setup from the canonical skills/ source.'],
++];
++
++// The closed set of capability statuses. Every capability-matrix target status MUST
++// be one of these — a test in test/harness-capability-matrix.test.js enforces it so
++// no future row can introduce an off-vocabulary (and likely dishonest) status.
++const STATUS_VOCABULARY = [
++  'native',         // Forge renders the harness's native surface and it is delivered
++  'shim',           // instruction shim (e.g. CLAUDE.md → AGENTS.md)
++  'projection',     // policy projected into an instruction file (delivered)
++  'cli-consumed',   // consumed through the forge CLI (Hermes)
++  'forge-owned',    // Forge-owned state/projection (beads, patch overrides, .hermes/skills, locks)
++  'packaged',       // packaged/staged for install into a global/harness location
++  'fallback',       // skill fallback stands in for an unsupported surface
++  'skill-first',    // stage delivered as a skill (no command surface)
++  'plugin-aware',   // delivered via the harness plugin/marketplace mechanism
++  'generated',      // composite of other generated surfaces
++  'contract-only',  // capability delivered via a contract (git hooks), NOT a harness-native render
++  'not-delivered',  // Forge does not yet render this surface (honest not-yet-delivered)
++  'unsupported',    // the harness has no such surface
++  'removed',        // the surface was intentionally removed
+ ];
+ 
+ const SOURCES = SOURCE_ROWS.map(([label, title, url, summary]) => ({
+@@ -87,9 +108,9 @@ const CAPABILITY_ROWS = [
+   ]),
+   row('skills', 'skills', 'on-demand workflow', [
+     ['claude', target('native', '.claude/skills/<skill>/SKILL.md', { activation: 'description match or /skill-name', evidence: ['S1', 'S2'] })],
+-    ['cursor', target('unproven', '.cursor/skills/<skill>/SKILL.md', { activation: 'description match or explicit skill invocation', knownIssue: 'Cursor Agent Skills are the intended on-demand workflow target, but Forge does not yet have matching source evidence or live invocation proof.' })],
+-    ['codex', target('packaged', '.codex/skills/<skill>/SKILL.md', { activation: 'description match or explicit $skill mention after install', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
+-    ['hermes', target('native', '.hermes/skills/<skill>/SKILL.md', { activation: 'forge orient/recap CLI plus description', role: 'CLI-consumed on-demand skill' })],
++    ['cursor', target('native', '.cursor/skills/<skill>/SKILL.md', { activation: 'description match or explicit skill invocation', evidence: ['S3', 'S10'] })],
++    ['codex', target('packaged', '$CODEX_HOME/skills/<skill>/SKILL.md', { role: 'installed from the committed .codex/skills staging mirror', activation: 'description match or explicit $skill mention after install', evidence: ['S5'], knownIssue: 'Codex installs to $CODEX_HOME/skills; .codex/skills is the packaging staging mirror, not the install path. Direct repo discovery uses .agents/skills (not yet generated; kernel issue 55dfeccf).' })],
++    ['hermes', target('forge-owned', '.hermes/skills/<skill>/SKILL.md', { role: 'Forge-owned skill projection consumed via forge orient/recap', activation: 'forge orient/recap CLI' })],
+   ]),
+   row('rules', 'rules', null, [
+     ['claude', target('shim', 'CLAUDE.md', { role: 'always-on policy projection', evidence: ['S1'] })],
+@@ -98,41 +119,41 @@ const CAPABILITY_ROWS = [
+     ['hermes', target('projection', 'AGENTS.md via forge orient', { role: 'always-on policy projection', evidence: ['S9'] })],
+   ]),
+   row('mcp', 'mcp', 'tool and resource plumbing', [
+-    ['claude', target('native', 'Claude MCP config', { evidence: ['S1'] })],
++    ['claude', target('native', '.mcp.json', { evidence: ['S1'] })],
+     ['cursor', target('native', '.cursor/mcp.json', { evidence: ['S4'] })],
+-    ['codex', target('native', '.codex/config.toml', { evidence: ['S6'] })],
++    ['codex', target('not-delivered', null, { role: 'Codex reads the GLOBAL $CODEX_HOME/config.toml (per agents-config.js), not a project-local file', knownIssue: 'Forge does not write the global Codex MCP config during project setup; the Codex TOML renderer exists and is tested but is not wired. Tracked as kernel epic 90f2f631.', evidence: ['S6'] })],
+     ['hermes', target('unsupported', null, { knownIssue: 'Hermes consumes Forge state through the CLI (forge orient/recap); it has no native MCP config surface.' })],
+   ]),
+   row('hooks', 'hooks', 'lifecycle enforcement', [
+-    ['claude', target('native', 'Claude settings hooks', { evidence: ['S1'] })],
+-    ['cursor', target('unsupported', null, { knownIssue: 'No verified Cursor hook surface; use Forge CLI hooks or file-watcher fallback until Cursor hook support is proven.' })],
+-    ['codex', target('native', 'Codex hooks config', { evidence: ['S7'] })],
+-    ['hermes', target('unsupported', null, { knownIssue: 'No Hermes hook surface; lifecycle enforcement runs through Forge CLI gates.' })],
++    ['claude', target('contract-only', 'Lefthook git hooks', { role: 'enforcement delivered via git hooks, not a Claude-native hook file', knownIssue: 'Forge renders no Claude-settings hook file; lifecycle enforcement is git-hook-delivered. Native hook renderer tracked as kernel issue 988ae187 (epic 90f2f631).' })],
++    ['cursor', target('not-delivered', null, { knownIssue: 'Cursor 1.7+ exposes .cursor/hooks.json, but Forge does not render it yet; enforcement is git-hook-delivered. Tracked as kernel issue 988ae187 (epic 90f2f631).' })],
++    ['codex', target('contract-only', 'Lefthook git hooks', { role: 'enforcement delivered via git hooks, not a Codex-native hook file', knownIssue: 'Codex supports native hooks (S7) but Forge renders none; enforcement is git-hook-delivered. Native hook renderer tracked as kernel issue 988ae187 (epic 90f2f631).', evidence: ['S7'] })],
++    ['hermes', target('unsupported', null, { knownIssue: 'No Hermes hook surface; lifecycle enforcement runs through Forge CLI gates and git hooks.' })],
+   ]),
+   row('commands', 'commands', null, [
+     ['claude', target('removed', null, { role: 'legacy .claude/commands/ surface removed in A0d; stage skills live in .claude/skills/<stage>/SKILL.md', evidence: ['S1'] })],
+     ['cursor', target('removed', null, { role: 'legacy .cursor/commands/ surface removed in A0d; stage skills live in .cursor/skills/<stage>/SKILL.md', evidence: ['S3'] })],
+-    ['codex', target('fallback', '.codex/skills/<stage>/SKILL.md', { role: 'skill fallback instead of command authority', activation: 'explicit $skill or description match after install', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
++    ['codex', target('fallback', '$CODEX_HOME/skills/<stage>/SKILL.md', { role: 'skill fallback (installed from the .codex/skills staging mirror) instead of command authority', activation: 'explicit $skill or description match after install', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills (not yet generated; kernel issue 55dfeccf).' })],
+     ['hermes', target('cli-consumed', 'forge orient / forge recap', { role: 'CLI command surface instead of command files' })],
+   ]),
+   row('agents', 'agents', 'subagent role mapping', [
+-    ['claude', target('native', '.claude/agents/<role>.md', { evidence: ['S1'] })],
+-    ['cursor', target('unproven', '.cursor/agents/<role>.md', { knownIssue: 'Cursor agent/subagent file contract is not proven in Forge tests yet.' })],
+-    ['codex', target('skill-backed', '.codex/skills/<role>/SKILL.md', { role: 'subagent role fallback through skill metadata', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
++    ['claude', target('not-delivered', null, { role: 'Claude supports .claude/agents/<role>.md, but Forge renders no subagent files', knownIssue: 'The whole agents/subagents domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. Tracked as kernel issue 802aa4d8 (epic 90f2f631).', evidence: ['S1'] })],
++    ['cursor', target('not-delivered', null, { knownIssue: 'No Cursor subagent renderer; the agents domain is unimplemented. Tracked as kernel issue 802aa4d8 (epic 90f2f631).' })],
++    ['codex', target('not-delivered', null, { role: 'skill-backing not implemented', knownIssue: 'No Codex subagent/skill-backing renderer; the agents domain is unimplemented. Tracked as kernel issue 802aa4d8 (epic 90f2f631).', evidence: ['S5'] })],
+     ['hermes', target('unsupported', null, { knownIssue: 'Hermes has no subagent file contract; it is a CLI-consumed harness.' })],
+   ]),
+   row('stages', 'stage-graph', 'super skill with addressable subskills', [
+     ['claude', target('skill-first', '.claude/skills/<stage>/SKILL.md', { evidence: ['S1'] })],
+-    ['cursor', target('unproven', '.cursor/skills/<stage>/SKILL.md', { knownIssue: 'Cursor Agent Skills are the intended stage target, but Forge does not yet have matching source evidence or live invocation proof.' })],
+-    ['codex', target('skill-first', '.codex/skills/<stage>/SKILL.md', { evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills; migrate Forge generators before changing this renderer target.' })],
+-    ['hermes', target('cli-consumed', 'forge orient/recap over the Forge Kernel stage graph', { role: 'CLI-consumed stage graph' })],
++    ['cursor', target('native', '.cursor/skills/<stage>/SKILL.md', { evidence: ['S3', 'S10'] })],
++    ['codex', target('skill-first', '$CODEX_HOME/skills/<stage>/SKILL.md', { role: 'installed from the .codex/skills staging mirror', evidence: ['S5'], knownIssue: 'Direct Codex repo discovery uses .agents/skills (not yet generated; kernel issue 55dfeccf).' })],
++    ['hermes', target('forge-owned', '.hermes/skills/<stage>/SKILL.md', { role: 'Forge-owned stage-skill projection consumed via forge orient/recap' })],
+   ]),
+   row('beads', 'state-and-memory', 'issue and audit state authority', HARNESS_IDS.map(id => [id, target('forge-owned', 'forge CLI + bd adapter')])),
+   row('typedMemory', 'state-and-memory', 'typed memory projection', [
+-    ['claude', target('projection', 'CLAUDE.md plus generated memory sections')],
+-    ['cursor', target('projection', 'AGENTS.md and .cursor/rules memory projections')],
+-    ['codex', target('projection', 'AGENTS.md plus Codex skill references')],
+-    ['hermes', target('projection', 'AGENTS.md plus forge recap memory projection')],
++    ['claude', target('not-delivered', null, { knownIssue: 'Typed memory is WRITE-ONLY (insights.js); no generator projects a memory section into any Claude instruction/rule file. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
++    ['cursor', target('not-delivered', null, { knownIssue: 'Typed memory is write-only; no memory-projection renderer emits a Cursor memory section. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
++    ['codex', target('not-delivered', null, { knownIssue: 'Typed memory is write-only; no memory-projection renderer emits a Codex memory section. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
++    ['hermes', target('not-delivered', null, { knownIssue: 'Typed memory is write-only; forge recall reads notes but no renderer emits a Hermes memory section. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
+   ]),
+   row('patchOverrides', 'state-and-memory', 'project override source', HARNESS_IDS.map(id => [id, target('forge-owned', '.forge/patch.md')])),
+   row('marketplaceTrust', 'distribution', 'trusted distribution metadata', [
+@@ -198,20 +219,24 @@ function buildSkillsFirstStageGraph() {
+       skill: `.claude/skills/${id}/SKILL.md`,
+     },
+     cursor: {
++      // Forge populates .cursor/skills/<stage>/SKILL.md at setup (populateAgentSkills).
++      // No per-stage .cursor/rules/<stage>.mdc is generated — Forge only renders the
++      // 4 policy rules — so no rule-policy fallback is advertised here.
+       skill: `.cursor/skills/${id}/SKILL.md`,
+-      status: 'unproven',
+-      knownIssue: 'Cursor Agent Skills are the intended stage target, but Forge does not yet have matching source evidence or live invocation proof.',
+-      rulePolicy: `.cursor/rules/${id}.mdc`,
++      status: 'native',
+     },
+     codex: {
+-      skill: `.codex/skills/${id}/SKILL.md`,
++      // .codex/skills is the committed staging mirror; skills install to $CODEX_HOME/skills.
++      skill: `$CODEX_HOME/skills/${id}/SKILL.md`,
++      stagingMirror: `.codex/skills/${id}/SKILL.md`,
+       installTarget: '$CODEX_HOME/skills',
+       directRepoDiscoveryTarget: `.agents/skills/${id}/SKILL.md`,
+     },
+     hermes: {
+-      // Hermes is CLI-consumed: it reads the Forge Kernel stage graph through
+-      // `forge orient` / `forge recap` and does not render per-stage skill files.
+-      cliConsumed: true,
++      // Forge populates .hermes/skills/<stage>/SKILL.md at setup (populateAgentSkills);
++      // Hermes then consumes them through `forge orient` / `forge recap`.
++      skill: `.hermes/skills/${id}/SKILL.md`,
++      status: 'forge-owned',
+       via: 'forge orient / forge recap',
+     },
+   });
+@@ -312,6 +337,7 @@ module.exports = {
+   HARNESS_IDS,
+   SOURCES,
+   STAGE_IDS,
++  STATUS_VOCABULARY,
+   UTILITY_SKILL_IDS,
+   buildHarnessCapabilityEvidence,
+   getHarnessCapabilityMatrix,
+diff --git a/lib/release-readiness.js b/lib/release-readiness.js
+index 7cae50f3..172407d0 100644
+--- a/lib/release-readiness.js
++++ b/lib/release-readiness.js
+@@ -14,6 +14,14 @@ const STATIC_ROOT_DOC_FILES = [
+   'README.md',
+ ];
+ 
++// Instruction/rules roots always scanned for lingering `bd` references, independent
++// of plugin manifests. `.claude/rules` was dropped from claude.plugin.json (so setup
++// no longer creates an empty, never-populated dir), but a project may still carry
++// `.claude/rules/*.md`, so the bd-retirement audit must keep scanning it.
++const STATIC_INSTRUCTION_ROOTS = [
++  '.claude/rules',
++];
++
+ const FORGE_SKILLS_PACK_ROOTS = [
+   'packages/skills/forge-plugin',
+   'packages/skills/forge-workflow',
+@@ -299,7 +307,7 @@ function collectAgentInstructionSurfaces(projectRoot) {
+   }
+ 
+   return {
+-    instructionRoots: [...new Set(instructionRoots)],
++    instructionRoots: [...new Set([...STATIC_INSTRUCTION_ROOTS, ...instructionRoots])],
+     rootDocFiles: [...new Set([...STATIC_ROOT_DOC_FILES, ...rootDocFiles])],
+     skillRoots: [...new Set(skillRoots)],
+   };
+diff --git a/test/docs-consistency.test.js b/test/docs-consistency.test.js
+index 18248a07..3ec8440a 100644
+--- a/test/docs-consistency.test.js
++++ b/test/docs-consistency.test.js
+@@ -103,14 +103,16 @@ describe('docs/reference/AGENT_SKILL_PARITY.md follow-up boundary', () => {
+     expect(parity).toContain('Tracked as `forge-wj36`');
+     // Commands were REMOVED in A0d (not "shims") — the stage skill is the authority.
+     expect(parity).toContain('the stage skill — not a command shim — is the workflow authority');
+-    expect(parity).toContain('Cursor Agent Skill files are generated');
++    expect(parity).toContain('Cursor Agent Skill files ARE generated by Forge at setup');
+   });
+ 
+   it('documents the machine-readable capability matrix evidence command', () => {
+     expect(parity).toContain('node scripts/spikes/harness-capability-matrix.js');
+     expect(parity).toContain('lib/harness-capability-matrix.js');
+     expect(parity).toContain('rendererContract.rendererFamilies');
+-    expect(parity).toContain('Cursor hooks remain unsupported');
++    // Honest Tier-2 pending marks are backed by tracked kernel work.
++    expect(parity).toContain('Cross-agent parity Tier 2');
++    expect(parity).toContain('NO harness-native hook file is rendered');
+ 	});
+ });
+ 
+diff --git a/test/harness-capability-matrix.test.js b/test/harness-capability-matrix.test.js
+index 7d5c7003..db3a06b2 100644
+--- a/test/harness-capability-matrix.test.js
++++ b/test/harness-capability-matrix.test.js
+@@ -28,22 +28,30 @@ describe('harness capability matrix', () => {
+   test('models Cursor skills and rules as different surfaces', () => {
+     const cursor = getHarnessCapabilityMatrix().harnesses.cursor.capabilities;
+ 
+-    expect(cursor.skills.status).toBe('unproven');
++    // Cursor skills ARE generated by Forge at setup (.cursor/skills), so 'native' — not 'unproven'.
++    expect(cursor.skills.status).toBe('native');
+     expect(cursor.skills.primarySurface).toBe('.cursor/skills/<skill>/SKILL.md');
+     expect(cursor.skills.role).toBe('on-demand workflow');
+-    expect(cursor.skills.evidence).toEqual([]);
+-    expect(cursor.skills.knownIssue).toContain('matching source evidence');
++    expect(cursor.skills.evidence).toContain('S10');
+     expect(cursor.rules.primarySurface).toBe('.cursor/rules/<rule>.mdc');
+     expect(cursor.rules.role).toBe('always-on or scoped policy');
+     expect(cursor.rules.activation).toContain('description');
+   });
+ 
+-  test('records known unsupported or unproven harness surfaces explicitly', () => {
++  test('records unsupported/not-yet-delivered harness surfaces honestly', () => {
+     const matrix = getHarnessCapabilityMatrix();
+ 
+-    expect(matrix.harnesses.cursor.capabilities.hooks.status).toBe('unsupported');
+-    expect(matrix.harnesses.cursor.capabilities.hooks.knownIssue).toContain('No verified Cursor hook surface');
+-    expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('unproven');
++    // Hooks: no harness-native hook is rendered — enforcement is git-hook-delivered.
++    expect(matrix.harnesses.claude.capabilities.hooks.status).toBe('contract-only');
++    expect(matrix.harnesses.cursor.capabilities.hooks.status).toBe('not-delivered');
++    expect(matrix.harnesses.cursor.capabilities.hooks.knownIssue).toContain('.cursor/hooks.json');
++    // Agents domain is unimplemented for every harness.
++    expect(matrix.harnesses.claude.capabilities.agents.status).toBe('not-delivered');
++    expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('not-delivered');
++    // typedMemory is write-only, no projection renderer.
++    expect(matrix.harnesses.claude.capabilities.typedMemory.status).toBe('not-delivered');
++    // Codex MCP is global-config-only; not wired at project setup.
++    expect(matrix.harnesses.codex.capabilities.mcp.status).toBe('not-delivered');
+     expect(matrix.harnesses.claude.capabilities.commands.status).toBe('removed');
+     expect(matrix.harnesses.claude.capabilities.commands.role).toContain('legacy .claude/commands/ surface removed');
+     expect(matrix.harnesses.cursor.capabilities.commands.status).toBe('removed');
+@@ -51,6 +59,23 @@ describe('harness capability matrix', () => {
+     expect(matrix.harnesses.cursor.capabilities.extensionPacks.primarySurface).toContain('.cursor/mcp.json');
+   });
+ 
++  test('every capability status is in the STATUS_VOCABULARY enum (no off-vocab/dishonest labels)', () => {
++    const { STATUS_VOCABULARY } = require('../lib/harness-capability-matrix');
++    const vocab = new Set(STATUS_VOCABULARY);
++    const matrix = getHarnessCapabilityMatrix();
++    const offenders = [];
++    for (const harnessId of Object.keys(matrix.harnesses)) {
++      const caps = matrix.harnesses[harnessId].capabilities;
++      for (const [capId, cap] of Object.entries(caps)) {
++        if (!vocab.has(cap.status)) offenders.push(`${harnessId}.${capId}=${cap.status}`);
++      }
++    }
++    expect(offenders).toEqual([]);
++    // Deprecated dishonest statuses must not resurface.
++    expect(vocab.has('unproven')).toBe(false);
++    expect(vocab.has('skill-backed')).toBe(false);
++  });
++
+   test('evidence object is machine-readable and source-backed', () => {
+     const evidence = buildHarnessCapabilityEvidence();
+ 
+@@ -74,11 +99,17 @@ describe('skills-first stage graph', () => {
+       expect(stage.superSkill).toBe(`${stage.id}`);
+       expect(stage.subskills.length).toBeGreaterThan(0);
+       expect(stage.renderTargets.claude.skill).toBe(`.claude/skills/${stage.id}/SKILL.md`);
++      expect(stage.renderTargets.claude.commandShim).toBeUndefined();
++      // Cursor stage skills ARE populated by Forge at setup — 'native', no rule-policy fallback.
+       expect(stage.renderTargets.cursor.skill).toBe(`.cursor/skills/${stage.id}/SKILL.md`);
+-      expect(stage.renderTargets.cursor.status).toBe('unproven');
+-      expect(stage.renderTargets.cursor.knownIssue).toContain('matching source evidence');
+-      expect(stage.renderTargets.codex.skill).toBe(`.codex/skills/${stage.id}/SKILL.md`);
++      expect(stage.renderTargets.cursor.status).toBe('native');
++      expect(stage.renderTargets.cursor.rulePolicy).toBeUndefined();
++      // .codex/skills is the staging mirror; the install target is $CODEX_HOME/skills.
++      expect(stage.renderTargets.codex.stagingMirror).toBe(`.codex/skills/${stage.id}/SKILL.md`);
+       expect(stage.renderTargets.codex.directRepoDiscoveryTarget).toBe(`.agents/skills/${stage.id}/SKILL.md`);
++      // Hermes DOES get per-stage skill files (populateAgentSkills), consumed via CLI.
++      expect(stage.renderTargets.hermes.skill).toBe(`.hermes/skills/${stage.id}/SKILL.md`);
++      expect(stage.renderTargets.hermes.status).toBe('forge-owned');
+     }
+   });
+ 
+@@ -106,14 +137,16 @@ describe('skills-first stage graph', () => {
+     }
+   });
+ 
+-  test('models Hermes stages as CLI-consumed (no per-stage skill file)', () => {
++  test('models Hermes stages as Forge-owned per-stage skill files (setup populates .hermes/skills)', () => {
+     const graph = getSkillsFirstStageGraph();
+ 
+     for (const stage of graph.stages) {
+-      expect(stage.renderTargets.hermes).toEqual({
+-        cliConsumed: true,
+-        via: 'forge orient / forge recap',
+-      });
++      // Forge populates .hermes/skills/<stage>/SKILL.md at setup (populateAgentSkills);
++      // Hermes consumes them via the CLI. The earlier "no per-stage file" claim
++      // contradicted setup reality and is corrected here.
++      expect(stage.renderTargets.hermes.skill).toBe(`.hermes/skills/${stage.id}/SKILL.md`);
++      expect(stage.renderTargets.hermes.status).toBe('forge-owned');
++      expect(stage.renderTargets.hermes.via).toBe('forge orient / forge recap');
+     }
+   });
+ 
+diff --git a/test/setup-cursor-mcp.test.js b/test/setup-cursor-mcp.test.js
+new file mode 100644
+index 00000000..1d71e4de
+--- /dev/null
++++ b/test/setup-cursor-mcp.test.js
+@@ -0,0 +1,63 @@
++const { describe, test, expect, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const setup = require('../lib/commands/setup');
++
++// The Cursor MCP config is now AUTO-WIRED by setup (mirrors Claude), delivering the
++// matrix's (mcp, cursor) = native '.cursor/mcp.json' claim. Cursor reads a
++// project-local .cursor/mcp.json, so this is a real native delivery.
++
++describe('Cursor MCP is auto-wired (native .cursor/mcp.json)', () => {
++  const created = [];
++  function tmp() {
++    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-cursor-mcp-'));
++    created.push(d);
++    return d;
++  }
++  afterEach(() => {
++    while (created.length) fs.rmSync(created.pop(), { recursive: true, force: true });
++  });
++
++  test('fresh project: writes .cursor/mcp.json with Context7', () => {
++    const root = tmp();
++    setup._setState({ projectRoot: root });
++    setup.setupCursorMcpConfig();
++
++    const p = path.join(root, '.cursor', 'mcp.json');
++    expect(fs.existsSync(p)).toBe(true);
++    const cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
++    expect(cfg.mcpServers.context7).toBeDefined();
++    expect(cfg.mcpServers.context7.command).toBe('npx');
++  });
++
++  test('existing config: merges Context7 and PRESERVES the user\'s servers', () => {
++    const root = tmp();
++    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
++    fs.writeFileSync(
++      path.join(root, '.cursor', 'mcp.json'),
++      JSON.stringify({ mcpServers: { myserver: { command: 'node', args: ['x.js'] } } }, null, 2),
++    );
++
++    setup._setState({ projectRoot: root });
++    setup.setupCursorMcpConfig();
++
++    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.cursor', 'mcp.json'), 'utf-8'));
++    expect(cfg.mcpServers.myserver).toBeDefined(); // preserved
++    expect(cfg.mcpServers.context7).toBeDefined(); // added
++  });
++
++  test('malformed config is NOT clobbered (data-loss guard carries through)', () => {
++    const root = tmp();
++    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
++    const original = '{\n  // jsonc\n  "mcpServers": { "a": { "command": "x" } },\n}\n';
++    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), original);
++
++    setup._setState({ projectRoot: root });
++    setup.setupCursorMcpConfig();
++
++    expect(fs.readFileSync(path.join(root, '.cursor', 'mcp.json'), 'utf-8')).toBe(original);
++    expect(fs.existsSync(path.join(root, '.cursor', 'mcp.json.bak'))).toBe(true);
++  });
++});
+-- 
+2.51.0.windows.1
+

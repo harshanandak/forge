@@ -1,0 +1,17 @@
+From 3cbc2022793436f848f33d46a1e4340deebe5d9b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 12 Sep 2026 15:10:18 +0530
+Subject: [PATCH] fix(docs): keep public research source byte-exact
+
+---
+ ...h.md => 2026-08-30-parallel-public-agent-harness-research.txt} | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ rename docs/work/2026-08-24-agent-harness-architecture/sources/{2026-08-30-parallel-public-agent-harness-research.md => 2026-08-30-parallel-public-agent-harness-research.txt} (100%)
+
+diff --git a/docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.md b/docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.txt
+similarity index 100%
+rename from docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.md
+rename to docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.txt
+-- 
+2.51.0.windows.1
+

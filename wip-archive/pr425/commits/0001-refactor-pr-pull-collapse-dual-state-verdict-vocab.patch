@@ -1,0 +1,232 @@
+From a3762141ac3f3e6d05ff3b5d62ddd10f522c817d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 20 Jul 2026 13:03:21 +0530
+Subject: [PATCH] refactor(pr-pull): collapse dual state/verdict vocabulary to
+ one ladder
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The read-only `--pull` payload dual-emitted two merge vocabularies: the
+7-enum `verdict` (computeVerdict) AND an independently-computed legacy
+`state` from a second runShepherdPass dry-run. Two vocabularies let
+consumers confuse the trustworthy fail-closed verdict with the legacy
+ladder (recon obstacle #4).
+
+Make `verdict` the single consumer-facing vocabulary. Add one
+verdictToLegacyState(verdict) map (single source of truth) and derive the
+back-compat `state` from it, so the two can never disagree. Drop the
+separate dry-run pass entirely — gatherPullSignal now runs ONE gather +
+ONE verdict core. Mark payload `state` deprecated; full removal tracked
+as a follow-up.
+
+Confirms a94d4a08 signals already covered at the verdict level
+(conflict/behind/skipped-required/bot-status in shepherd-merge-safety).
+
+Refs: a94d4a08
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/pr-pull.js       | 51 ++++++++++++++++++++++++++++++++------------
+ test/pr-pull.test.js | 43 +++++++++++++++++++++++++++++++++----
+ 2 files changed, 76 insertions(+), 18 deletions(-)
+
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index 6b96f6d4..cd7812b6 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -28,7 +28,7 @@
+  * @module pr-pull
+  */
+ 
+-const { isFailed, isGreen, runShepherdPass } = require('./pr-shepherd');
++const { isFailed, isGreen } = require('./pr-shepherd');
+ const { fenceUntrusted } = require('./untrusted-content');
+ 
+ /** Token caps that keep the payload bounded regardless of PR size. */
+@@ -680,9 +680,12 @@ function buildPullPayload({
+ 
+   return {
+     ...prField(pr),
++    // DEPRECATED: `state` is the legacy decision-pass ladder, kept only for
++    // back-compat. It is now a PROJECTION of `verdict` (via verdictToLegacyState),
++    // never independently computed. Consumers MUST read `verdict` — the single,
++    // trustworthy, fail-closed merge vocabulary (never false-clean). Full removal
++    // of `state` is tracked as a follow-up kernel issue.
+     state,
+-    // `verdict` is the trustworthy, fail-closed merge signal (never false-clean);
+-    // `state` remains the legacy decision-pass state for back-compat.
+     ...(verdict ? { verdict } : {}),
+     ...(evidence ? { evidence } : {}),
+     summary,
+@@ -993,6 +996,29 @@ function verdictLabel(verdict) {
+ /** The full label reconcile set — one label per canonical verdict. */
+ const VERDICT_LABELS = MERGE_VERDICTS.map((v) => `${VERDICT_LABEL_PREFIX}${v.toLowerCase()}`);
+ 
++/**
++ * The ONE place that maps the canonical 7-enum `verdict` onto the DEPRECATED
++ * legacy `runShepherdPass` ladder (`pr-shepherd.js:34`). `verdict` is the single
++ * consumer-facing vocabulary; the payload's `state` field is a back-compat
++ * PROJECTION of the verdict through this map — never independently computed — so
++ * the two can never disagree. Unknown/empty input fails closed to `UNKNOWN`.
++ *
++ * @param {string} verdict - a canonical MERGE_VERDICTS value.
++ * @returns {string} the deprecated legacy state.
++ */
++function verdictToLegacyState(verdict) {
++  const v = String(verdict || '').toUpperCase();
++  switch (v) {
++    case 'CLEAN-MERGEABLE': return 'MERGE_READY';
++    case 'REVIEW-PENDING': return 'NEEDS_REVIEW';
++    case 'BLOCKED-THREADS': return 'NEEDS_REVIEW';
++    case 'BLOCKED-CHECKS': return 'PENDING';
++    case 'BEHIND': return 'PENDING';
++    case 'BLOCKED-CONFLICT': return 'ESCALATE';
++    default: return 'UNKNOWN';
++  }
++}
++
+ /**
+  * Run an optional read and SURFACE any failure instead of swallowing it: on
+  * throw, record `{ source, error }` into `degraded` (and optionally mark `source`
+@@ -1067,7 +1093,6 @@ function gatherFailureExcerpts(runGh, checks, requiredSet, { maxFailures, maxExc
+  * @param {string} [ctx.self]  - shepherd's own login
+  * @param {object} ctx.adapter - validated pr-state adapter
+  * @param {(args: string[]) => string} ctx.runGh - injected `gh` runner (args → stdout)
+- * @param {Function} [ctx.runPass] - decision pass (default runShepherdPass), injectable for tests
+  * @param {number} [ctx.maxFailures]
+  * @param {number} [ctx.maxThreads]
+  * @param {number} [ctx.maxExcerptLines]
+@@ -1214,7 +1239,6 @@ async function gatherPrSnapshot(ctx) {
+ async function gatherPullSignal(ctx) {
+   const {
+     pr, self, adapter, runGh,
+-    runPass = runShepherdPass,
+     maxFailures = DEFAULT_MAX_FAILURES,
+     maxThreads = DEFAULT_MAX_THREADS,
+     maxExcerptLines = DEFAULT_MAX_EXCERPT_LINES,
+@@ -1237,12 +1261,11 @@ async function gatherPullSignal(ctx) {
+     requiredChecks, pendingChecks, draft, reviewDecision, verdict, evidence, degraded,
+   } = snap;
+ 
+-  // Legacy decision pass (READ-ONLY dryRun) for back-compat `state`. Shares the
+-  // snapshot's `degraded` so a pass-read failure is still surfaced in the payload.
+-  const pass = await safeRead('pass', () => runPass({ ...ctx, adapter, dryRun: true }), {
+-    degraded,
+-    fallback: { state: 'UNKNOWN', reason: 'Decision pass could not complete — a read failed; see verdict evidence.' },
+-  });
++  // `verdict` is the SINGLE consumer-facing vocabulary. The back-compat `state`
++  // field is DERIVED from it through the one `verdictToLegacyState` map — the
++  // read-only `--pull` payload no longer runs a second decision pass to compute
++  // `state` independently, so the two vocabularies can never disagree.
++  const legacyState = verdictToLegacyState(verdict);
+ 
+   const failures = gatherFailureExcerpts(runGh, state.checks, requiredSet, { maxFailures, maxExcerptLines, degraded });
+   const reviewThreads = buildReviewThreads(threads, self, { maxThreads });
+@@ -1261,7 +1284,7 @@ async function gatherPullSignal(ctx) {
+   });
+ 
+   const summary = summarize({
+-    state: pass.state,
++    state: legacyState,
+     failureCount: failures.length,
+     threadCount: reviewThreads.length,
+     blockers,
+@@ -1269,11 +1292,10 @@ async function gatherPullSignal(ctx) {
+ 
+   return buildPullPayload({
+     pr,
+-    state: pass.state,
++    state: legacyState,
+     verdict,
+     evidence,
+     degraded,
+-    reason: pass.reason,
+     summary,
+     mergeable: state.mergeable || 'UNKNOWN',
+     mergeStateStatus: state.mergeStateStatus || 'UNKNOWN',
+@@ -1306,6 +1328,7 @@ module.exports = {
+   renderPullSummary,
+   buildPullPayload,
+   computeVerdict,
++  verdictToLegacyState,
+   MERGE_VERDICTS,
+   VERDICT_LABELS,
+   VERDICT_LABEL_PREFIX,
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index d8d8d031..7ba23d4f 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -17,6 +17,7 @@ const {
+   buildBotStatusBlockers,
+   STATUS_BOT_LOGINS,
+   computeVerdict,
++  verdictToLegacyState,
+   verdictLabel,
+   VERDICT_LABELS,
+   MERGE_VERDICTS,
+@@ -446,7 +447,10 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+       adapter, runGh, runPass, self: 'me',
+     });
+ 
+-    expect(payload.state).toBe('ESCALATE');
++    // `state` is now DERIVED from the verdict (verdictToLegacyState), not from the
++    // injected runPass: failing required matrix checks → BLOCKED-CHECKS → PENDING.
++    expect(payload.state).toBe('PENDING');
++    expect(payload.verdict).toBe('BLOCKED-CHECKS');
+     expect(typeof payload.summary).toBe('string');
+     // matrix collapse: two failing jobs, identical excerpt → ONE failure entry
+     expect(payload.failures.length).toBe(1);
+@@ -471,9 +475,10 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     expect(ghCalls.some((c) => c.includes('111'))).toBe(true);
+   });
+ 
+-  test('is STRICTLY read-only: the real decision pass never fires a Tier-A rerun mutation', async () => {
+-    // Use the REAL runShepherdPass (no injected runPass) with a FAILING required
+-    // check — the path that would normally rerun. --pull must NOT mutate.
++  test('is STRICTLY read-only: never fires a Tier-A rerun mutation on a failing required check', async () => {
++    // --pull derives its verdict/state from a read-only snapshot and NEVER runs the
++    // acting decision pass, so a FAILING required check (the path that would rerun
++    // under `forge shepherd`) must NOT mutate CI here.
+     let rerunCalls = 0;
+     const checks = [
+       { name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/1/job/111' },
+@@ -787,6 +792,36 @@ describe('pull payload carries the merge verdict (c01936be regression)', () => {
+   });
+ });
+ 
++// verdictToLegacyState is the SINGLE source that maps the canonical 7-enum
++// verdict onto the deprecated `runShepherdPass` ladder for back-compat consumers.
++// The read-only `--pull` payload no longer runs a second decision pass to compute
++// `state` independently — it derives `state` from `verdict` through this one map,
++// so the two vocabularies can never disagree.
++describe('verdictToLegacyState (verdict → deprecated legacy ladder, single source)', () => {
++  test('maps every canonical verdict to a legacy terminal state', () => {
++    expect(verdictToLegacyState('CLEAN-MERGEABLE')).toBe('MERGE_READY');
++    expect(verdictToLegacyState('REVIEW-PENDING')).toBe('NEEDS_REVIEW');
++    expect(verdictToLegacyState('BLOCKED-THREADS')).toBe('NEEDS_REVIEW');
++    expect(verdictToLegacyState('BLOCKED-CHECKS')).toBe('PENDING');
++    expect(verdictToLegacyState('BEHIND')).toBe('PENDING');
++    expect(verdictToLegacyState('BLOCKED-CONFLICT')).toBe('ESCALATE');
++    expect(verdictToLegacyState('UNKNOWN')).toBe('UNKNOWN');
++  });
++
++  test('covers the whole MERGE_VERDICTS set (no verdict falls through)', () => {
++    for (const v of MERGE_VERDICTS) {
++      expect(typeof verdictToLegacyState(v)).toBe('string');
++      expect(verdictToLegacyState(v)).not.toBe('');
++    }
++  });
++
++  test('fails closed to UNKNOWN for empty / unrecognized input', () => {
++    expect(verdictToLegacyState('')).toBe('UNKNOWN');
++    expect(verdictToLegacyState(undefined)).toBe('UNKNOWN');
++    expect(verdictToLegacyState('not-a-verdict')).toBe('UNKNOWN');
++  });
++});
++
+ // Regression for 5291f2d2: the BEHIND verdict must track GitHub's actual blocking
+ // state (mergeStateStatus=BEHIND), NOT a raw compareCommits behind-count. A stale
+ // or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
+-- 
+2.51.0.windows.1
+

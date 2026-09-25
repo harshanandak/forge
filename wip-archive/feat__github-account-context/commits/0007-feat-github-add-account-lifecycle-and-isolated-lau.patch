@@ -1,0 +1,632 @@
+From 3fc1f0da3494fe3207eaeaf789e14ca9329d663a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 22:21:49 +0530
+Subject: [PATCH] feat(github): add account lifecycle and isolated launcher
+
+---
+ bin/forge.js                                  |   3 +
+ bun.lock                                      |  17 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/commands/_manifest.js                     |   1 +
+ lib/commands/github.js                        | 184 ++++++++++++++++++
+ package.json                                  |   1 +
+ skills/coverage.json                          |   1 +
+ test/commands/github.test.js                  | 121 ++++++++++++
+ test/github-launcher.test.js                  | 143 ++++++++++++++
+ 9 files changed, 464 insertions(+), 9 deletions(-)
+ create mode 100644 lib/commands/github.js
+ create mode 100644 test/commands/github.test.js
+ create mode 100644 test/github-launcher.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index d6c9be0f..20c37cc2 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -2361,6 +2361,9 @@ function parseFlags() {
+   for (let i = 0; i < args.length;) {
+     const arg = args[i];
+ 
++    // Everything after the explicit launcher delimiter belongs to the child.
++    if (arg === '--' && args[0] === 'github' && args[firstPositionalIndex(args, 1)] === 'run') break;
++
+     if (arg === '--quick' || arg === '-q') {
+       flags.quick = true;
+       i++;
+diff --git a/bun.lock b/bun.lock
+index ea2e2429..dbe26d86 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -1,11 +1,12 @@
+ {
+-  "lockfileVersion": 1,
++  "lockfileVersion": 2,
+   "configVersion": 1,
+   "workspaces": {
+     "": {
+       "name": "forge-workflow",
+       "dependencies": {
+         "@babel/parser": "^8.0.0",
++        "cross-spawn": "^7.0.6",
+         "fastest-levenshtein": "^1.0.16",
+         "yaml": "^2.8.3",
+       },
+@@ -290,7 +291,7 @@
+ 
+     "@types/json-schema": ["@types/json-schema@7.0.15", "", {}, "sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA=="],
+ 
+-    "@types/node": ["@types/node@26.5.0", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-dVSGpriSoCgz8WnDNTuSSuSv1PC/ALXihO4ulRZt7Md8k9mlbdin3lGOcDE8SnWOgf513ByWlXd7BK4azmyg/A=="],
++    "@types/node": ["@types/node@22.20.2", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-xlvWf4Vs9n1PEVYwP1n4vvG07M6y8WgvJ2t0vbrWTmijsIHp1cS+uJ2kMIRdY3nHZK0nCYKrPeD171+SzF4/zw=="],
+ 
+     "@typescript/typescript-aix-ppc64": ["@typescript/typescript-aix-ppc64@7.0.2", "", { "os": "aix", "cpu": "ppc64" }, "sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ=="],
+ 
+@@ -642,7 +643,7 @@
+ 
+     "natural-compare": ["natural-compare@1.4.0", "", {}, "sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw=="],
+ 
+-    "node-releases": ["node-releases@2.0.54", "", {}, "sha512-YHs7BmmcsdAI5Ozuf8JZo6PT0mv2GIWC9vMfvUC3dp65M8hn7Ux8CPL+2oBI7juNuj9d0ndhTcznq2ODBps9cQ=="],
++    "node-releases": ["node-releases@2.0.55", "", {}, "sha512-mIrE/Cw9y+9Au6dS5vDKDhQza9YvG6w+ZrS6X+ZzA7yFW/soAeaups4Qzn1bL6g5FVy8WtP79+0j82oPIbqRjQ=="],
+ 
+     "npm-run-path": ["npm-run-path@6.0.0", "", { "dependencies": { "path-key": "^4.0.0", "unicorn-magic": "^0.3.0" } }, "sha512-9qny7Z9DsQU8Ou39ERsPU4OZQlSTP47ShQzuKZ6PRXpYLtIFgl/DEBYEXKlvcEa+9tHVcK8CF81Y2V72qaZhWA=="],
+ 
+@@ -662,7 +663,7 @@
+ 
+     "path-exists": ["path-exists@4.0.0", "", {}, "sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w=="],
+ 
+-    "path-key": ["path-key@4.0.0", "", {}, "sha512-haREypq7xkM7ErfgIyA0z+Bj4AGKlMSdlQE2jvJo6huWD1EdkKYV+G/T4nq0YEF2vgTT8kqMFKo1uHn950r4SQ=="],
++    "path-key": ["path-key@3.1.1", "", {}, "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q=="],
+ 
+     "path-scurry": ["path-scurry@2.0.2", "", { "dependencies": { "lru-cache": "^11.0.0", "minipass": "^7.1.2" } }, "sha512-3O/iVVsJAPsOnpwWIeD+d6z/7PmqApyQePUtCndjatj/9I5LylHvt5qluFaBT3I5h3r1ejfR056c+FCv+NnNXg=="],
+ 
+@@ -748,7 +749,7 @@
+ 
+     "underscore": ["underscore@1.13.8", "", {}, "sha512-DXtD3ZtEQzc7M8m4cXotyHR+FAS18C64asBYY5vqZexfYryNNnDc02W4hKg3rdQuqOYas1jkseX0+nZXjTXnvQ=="],
+ 
+-    "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
++    "undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+ 
+     "unicorn-magic": ["unicorn-magic@0.3.0", "", {}, "sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA=="],
+ 
+@@ -782,7 +783,7 @@
+ 
+     "yoctocolors": ["yoctocolors@2.2.0", "", {}, "sha512-xYqdZFUK/VYazNl/oCDYN+3WloWQwMfZxBoiNt6qNyk+xfOdi598muWE42rNZFp1kNOiqW936q5RhUdnpqElSg=="],
+ 
+-    "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
++    "zod": ["zod@4.6.1", "", {}, "sha512-341aRWQsve0rvronKNTqZpjmzdbUDlFuzHaI/XLg/Ej82qffDJRRfBTCuv7+9q/rMjB6LSLyEBnW4InJeMtt/Q=="],
+ 
+     "@babel/code-frame/@babel/helper-validator-identifier": ["@babel/helper-validator-identifier@7.29.7", "", {}, "sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg=="],
+ 
+@@ -836,14 +837,14 @@
+ 
+     "cosmiconfig/js-yaml": ["js-yaml@4.3.2", "", { "dependencies": { "argparse": "^2.0.1" }, "bin": { "js-yaml": "bin/js-yaml.js" } }, "sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA=="],
+ 
+-    "cross-spawn/path-key": ["path-key@3.1.1", "", {}, "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q=="],
+-
+     "eslint/ajv": ["ajv@6.15.0", "", { "dependencies": { "fast-deep-equal": "^3.1.1", "fast-json-stable-stringify": "^2.0.0", "json-schema-traverse": "^0.4.1", "uri-js": "^4.2.2" } }, "sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw=="],
+ 
+     "eslint-plugin-sonarjs/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
+ 
+     "import-fresh/resolve-from": ["resolve-from@4.0.0", "", {}, "sha512-pb/MYmXstAkysRFx8piNI1tGFNQIFA3vkE3Gq4EuA1dF6gHp/+vgZqsCGJapvy8N3Q+4o7FwvquPJcnZ7RYy4g=="],
+ 
++    "npm-run-path/path-key": ["path-key@4.0.0", "", {}, "sha512-haREypq7xkM7ErfgIyA0z+Bj4AGKlMSdlQE2jvJo6huWD1EdkKYV+G/T4nq0YEF2vgTT8kqMFKo1uHn950r4SQ=="],
++
+     "path-scurry/lru-cache": ["lru-cache@11.5.2", "", {}, "sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g=="],
+ 
+     "qified/hookified": ["hookified@2.2.0", "", {}, "sha512-p/LgFzRN5FeoD3DLS6bkUapeye6E4SI6yJs6KetENd18S+FBthqYq2amJUWpt5z0EQwwHemidjY5OqJGEKm5uA=="],
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 096e100a..1b64e1f0 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## command
+ 
+ - [ ] bin/forge.js (2)
+-  - lines: 2350 (bd), 3786 (bd)
++  - lines: 2350 (bd), 3789 (bd)
+ - [ ] lib/commands/migrate.js (17)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (6)
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index 62595c38..16af2b9f 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -39,6 +39,7 @@ const commands = [
+   { file: "explain.js", module: require("./explain") },
+   { file: "export.js", module: require("./export") },
+   { file: "gate.js", module: require("./gate") },
++  { file: "github.js", module: require("./github") },
+   { file: "hooks.js", module: require("./hooks") },
+   { file: "inbox.js", module: require("./inbox") },
+   { file: "init.js", module: require("./init") },
+diff --git a/lib/commands/github.js b/lib/commands/github.js
+new file mode 100644
+index 00000000..7e962827
+--- /dev/null
++++ b/lib/commands/github.js
+@@ -0,0 +1,184 @@
++'use strict';
++
++const { execFileSync } = require('node:child_process');
++const { constants } = require('node:os');
++const spawn = require('cross-spawn');
++const {
++  createGithubContext, prepareGithubAccount, readGithubAccount,
++  writeGithubAccount, unsetGithubAccount, validateGithubLogin,
++} = require('../github-context');
++const { stripGlobalFlags } = require('../global-flags');
++
++const usage = 'forge github use <login> | status [--json] | unset | run -- <program> [args...]';
++const ERROR_MESSAGES = {
++  INVALID_GITHUB_LOGIN: 'GitHub login must be 1-39 letters, numbers, or internal hyphens.',
++  GIT_CONFIG_FAILED: 'Unable to access this clone-local GitHub account binding.',
++  GITHUB_NOT_AUTHENTICATED: 'Account is not authenticated. Run gh auth login --hostname github.com for the account, then retry.',
++  GITHUB_AUTH_FAILED: 'Unable to verify the account. Run gh auth login --hostname github.com, then retry.',
++  GITHUB_CLI_UNSUPPORTED: 'Upgrade GitHub CLI to support gh auth token --hostname github.com --user <login>.',
++  GITHUB_ACCOUNT_MISMATCH: 'The authenticated GitHub account does not match this clone binding.',
++  GITHUB_COMMAND_FAILED: 'The selected account cannot view this repository. Check repository permissions and organization SSO.',
++};
++
++function safeFailure(error) {
++  const code = Object.hasOwn(ERROR_MESSAGES, error?.code) ? error.code : 'GITHUB_OPERATION_FAILED';
++  return { success: false, code, error: ERROR_MESSAGES[code] || 'GitHub account operation failed. Run forge github status for diagnostics.' };
++}
++
++function repositoryAccess(context, root) {
++  context.runGh(['repo', 'view', '--json', 'nameWithOwner'], { cwd: root, timeout: 30000 });
++}
++
++function readGit(root, args, options) {
++  try {
++    const run = options.runner || execFileSync;
++    return String(run('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 3000 }) || '').trim();
++  } catch { return ''; }
++}
++
++function boundedText(value) {
++  // Author fields are display data, never terminal control sequences.
++  return value.replace(/\p{Cc}/gu, '').slice(0, 160) || null;
++}
++
++function transportOf(remote) {
++  if (!remote) return 'missing';
++  if (/^https:\/\//i.test(remote)) return 'https';
++  if (/^http:\/\//i.test(remote)) return 'http';
++  if (/^ssh:\/\//i.test(remote) || /^[^\s/:]+@[^\s/:]+:/.test(remote)) return 'ssh';
++  return 'other';
++}
++
++function helperOf(helper) {
++  if (!helper) return 'none';
++  if (/\bgh(?:\.exe)?\s+auth\s+git-credential\b/i.test(helper)) return 'github-cli';
++  if (/\bmanager(?:-core)?\b/i.test(helper)) return 'credential-manager';
++  return 'other';
++}
++
++function localDiagnostics(root, options) {
++  return {
++    author: {
++      name: boundedText(readGit(root, ['config', '--get', 'user.name'], options)),
++      email: boundedText(readGit(root, ['config', '--get', 'user.email'], options)),
++    },
++    transport: transportOf(readGit(root, ['remote', 'get-url', 'origin'], options)),
++    credentialHelper: helperOf(readGit(root, ['config', '--get-all', 'credential.helper'], options)),
++  };
++}
++
++function renderStatus(status) {
++  const lines = [
++    `GitHub: ${status.state}`,
++    `Clone account: ${status.account || 'not selected'}`,
++    `Verified login: ${status.login || 'unavailable'}`,
++    `Commit author: ${status.author.name || 'unset'} <${status.author.email || 'unset'}>`,
++    `Origin transport: ${status.transport}; credential helper: ${status.credentialHelper}`,
++  ];
++  if (status.error) lines.push(status.error);
++  if (status.state === 'unbound') lines.push('Optional: authenticate with gh auth login, then select an account with forge github use <login>.');
++  if (status.transport === 'ssh') lines.push('SSH key selection is controlled by your SSH configuration.');
++  if (status.transport === 'https' && status.credentialHelper === 'github-cli') {
++    lines.push('HTTPS uses the GitHub CLI helper; a launched session may also use its selected token for Git transport.');
++  } else if (status.transport === 'https') {
++    lines.push('HTTPS Git credentials are selected separately by your credential helper.');
++  }
++  return lines.join('\n');
++}
++
++function accountStatus(root, options) {
++  const status = { state: 'unbound', account: null, source: null, login: null, repositoryAccess: null, ...localDiagnostics(root, options) };
++  try {
++    const account = readGithubAccount(root, options);
++    if (!account) return status;
++    status.source = 'clone-local';
++    status.account = validateGithubLogin(account) ? account : null;
++    const context = prepareGithubAccount(root, account, options);
++    status.login = context.login;
++    status.repositoryAccess = false;
++    repositoryAccess(context, root);
++    status.repositoryAccess = true;
++    status.state = 'ready';
++  } catch (error) {
++    const failure = safeFailure(error);
++    status.state = status.login ? 'no_repository_access' : 'unauthenticated';
++    if (failure.code === 'GITHUB_ACCOUNT_MISMATCH') {
++      status.state = 'mismatch';
++      const match = /^GitHub account mismatch: expected [A-Za-z0-9-]+, received ([A-Za-z0-9-]+)\.$/.exec(error.message);
++      status.login = match && validateGithubLogin(match[1]) ? match[1] : null;
++    }
++    status.code = failure.code;
++    status.error = failure.error;
++  }
++  return status;
++}
++
++function launchFailure(error) {
++  if (error?.code === 'ENOENT') return { success: false, code: 'ENOENT', exitCode: 127, error: 'Child program was not found. Check its installation and PATH.' };
++  if (error?.code === 'EACCES') return { success: false, code: 'EACCES', exitCode: 126, error: 'Child program is not executable.' };
++  return { success: false, code: 'CHILD_LAUNCH_FAILED', exitCode: 1, error: 'Unable to launch the child program.' };
++}
++
++function launch(context, program, args, root, options) {
++  return new Promise(resolve => {
++    let child;
++    try {
++      child = context.runChild(program, args, { cwd: root, stdio: 'inherit', shell: false });
++    } catch (error) { resolve(launchFailure(error)); return; }
++    const signals = options.signalSource || process;
++    const forwardInt = () => child.kill('SIGINT');
++    const forwardTerm = () => child.kill('SIGTERM');
++    signals.on('SIGINT', forwardInt);
++    signals.on('SIGTERM', forwardTerm);
++    const finish = result => {
++      signals.removeListener('SIGINT', forwardInt);
++      signals.removeListener('SIGTERM', forwardTerm);
++      resolve(result);
++    };
++    child.once('error', error => finish(launchFailure(error)));
++    child.once('close', (code, signal) => {
++      const exitCode = Number.isInteger(code) ? code : 128 + (constants.signals[signal] || 1);
++      finish({ success: exitCode === 0, exitCode, signal, ...(exitCode ? { error: `Child program exited with status ${exitCode}.` } : {}) });
++    });
++  });
++}
++
++async function handler(args = [], flags = {}, projectRoot = process.cwd(), options = {}) {
++  const delimiter = args.indexOf('--');
++  const ownArgs = stripGlobalFlags(delimiter < 0 ? args : args.slice(0, delimiter));
++  const verb = ownArgs[0];
++  if (!verb || verb === 'help' || (delimiter < 0 && (args.includes('--help') || args.includes('-h')))) {
++    return { success: true, output: usage };
++  }
++  try {
++    if (verb === 'use' && ownArgs.length === 2 && delimiter < 0) {
++      const context = prepareGithubAccount(projectRoot, ownArgs[1], options);
++      repositoryAccess(context, projectRoot);
++      writeGithubAccount(projectRoot, ownArgs[1], options);
++      return { success: true, account: context.account, output: `This clone uses GitHub account ${context.account}.` };
++    }
++    if (verb === 'status' && ownArgs.slice(1).every(arg => arg === '--json') && delimiter < 0) {
++      const status = accountStatus(projectRoot, options);
++      const json = flags.json || flags['--json'] || args.includes('--json');
++      return { success: ['ready', 'unbound'].includes(status.state), status,
++        output: json ? JSON.stringify(status, null, 2) : renderStatus(status),
++        ...(status.error ? { error: status.error } : {}) };
++    }
++    if (verb === 'unset' && ownArgs.length === 1 && delimiter < 0) {
++      unsetGithubAccount(projectRoot, options);
++      return { success: true, output: 'Clone GitHub account binding removed; native account selection applies.' };
++    }
++    if (verb === 'run' && ownArgs.length === 1 && delimiter >= 0 && args[delimiter + 1]) {
++      const context = createGithubContext(projectRoot, { ...options, childRunner: options.childRunner || spawn });
++      return await launch(context, args[delimiter + 1], args.slice(delimiter + 2), projectRoot, options);
++    }
++    return { success: false, error: `Usage: ${usage}` };
++  } catch (error) { return safeFailure(error); }
++}
++
++module.exports = {
++  name: 'github',
++  description: 'Optional clone-local GitHub account selection and isolated session launch',
++  usage,
++  handler,
++};
+diff --git a/package.json b/package.json
+index 8061a891..1a5fabf7 100644
+--- a/package.json
++++ b/package.json
+@@ -117,6 +117,7 @@
+   ],
+   "dependencies": {
+     "@babel/parser": "^8.0.0",
++    "cross-spawn": "^7.0.6",
+     "fastest-levenshtein": "^1.0.16",
+     "yaml": "^2.8.3"
+   },
+diff --git a/skills/coverage.json b/skills/coverage.json
+index 54f4624a..bc3b4694 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -58,6 +58,7 @@
+     "team": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
+ 
+     "setup": "setup",
++    "github": "setup",
+     "init": "setup",
+     "upgrade": "setup",
+     "doctor": "setup",
+diff --git a/test/commands/github.test.js b/test/commands/github.test.js
+new file mode 100644
+index 00000000..861ed4d8
+--- /dev/null
++++ b/test/commands/github.test.js
+@@ -0,0 +1,121 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { handler } = require('../../lib/commands/github');
++
++const CANARY = 'test-only-sensitive-canary';
++
++function fixture(overrides = {}) {
++  const calls = [];
++  let account = overrides.account ?? 'personal';
++  const runner = (command, args, options) => {
++    calls.push({ command, args, options });
++    if (command === 'git') {
++      if (args.join(' ') === 'config --local --get github.account') return account;
++      if (args[2] === 'github.account') { account = args[3]; return ''; }
++      if (args[2] === '--unset') {
++        if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
++        account = ''; return '';
++      }
++      if (args.includes('user.name')) return 'Example Author';
++      if (args.includes('user.email')) return 'author@example.test';
++      if (args.includes('credential.helper')) return `!gh auth git-credential # ${CANARY}`;
++      if (args[0] === 'remote') return overrides.remote || `https://user:${CANARY}@github.com/org/project.git`;
++    }
++    if (command === 'gh') {
++      if (args[0] === 'auth') {
++        if (overrides.authError) throw new Error(CANARY);
++        return CANARY;
++      }
++      if (args[0] === 'api') return overrides.login || 'work';
++      if (args[0] === 'repo') {
++        if (overrides.noAccess) throw Object.assign(new Error(CANARY), { stdout: CANARY, stderr: CANARY });
++        return '{"nameWithOwner":"org/project"}';
++      }
++    }
++    throw new Error(`Unexpected fixture call: ${command}`);
++  };
++  return { calls, options: { runner, baseEnv: { GH_TOKEN: 'ambient-canary', GH_HOST: 'other.example' } }, account: () => account };
++}
++
++describe('forge github lifecycle', () => {
++  test('use verifies the requested account and repository before writing only the local binding', async () => {
++    const f = fixture();
++    const result = await handler(['use', 'work'], {}, '/repo', f.options);
++    expect(result.success).toBe(true);
++    expect(f.account()).toBe('work');
++    expect(f.calls.map(c => [c.command, c.args[0]])).toEqual([
++      ['gh', 'auth'], ['gh', 'api'], ['gh', 'repo'], ['git', 'config'],
++    ]);
++    expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
++    expect(f.calls[2].options.env.GH_TOKEN === CANARY).toBe(true);
++    expect(f.calls[3].args).toEqual(['config', '--local', 'github.account', 'work']);
++    expect(JSON.stringify(result).includes(CANARY)).toBe(false);
++  });
++
++  test.each([{ authError: true }, { login: 'wrong' }, { noAccess: true }])('failed use preserves previous binding and never logs in or switches: %j', async failure => {
++    const f = fixture(failure);
++    const result = await handler(['use', 'work'], {}, '/repo', f.options);
++    expect(result.success).toBe(false);
++    expect(f.account()).toBe('personal');
++    expect(f.calls.some(c => c.command === 'git')).toBe(false);
++    expect(f.calls.some(c => ['login', 'switch'].includes(c.args[1]))).toBe(false);
++    expect(JSON.stringify(result).includes(CANARY)).toBe(false);
++  });
++
++  test.each(['-work', 'work;whoami', 'x'.repeat(40), ''])('invalid use never spawns: %s', async account => {
++    const f = fixture();
++    expect((await handler(['use', account], {}, '/repo', f.options)).success).toBe(false);
++    expect(f.calls).toHaveLength(0);
++  });
++
++  test('status JSON is read-only and classifies remote and helper without exposing either', async () => {
++    const f = fixture({ account: 'Work', login: 'work' });
++    const result = await handler(['status', '--json'], {}, '/repo', f.options);
++    const status = JSON.parse(result.output);
++    expect(status).toMatchObject({ state: 'ready', account: 'Work', source: 'clone-local', login: 'work', repositoryAccess: true,
++      author: { name: 'Example Author', email: 'author@example.test' }, transport: 'https', credentialHelper: 'github-cli' });
++    expect(JSON.stringify(result).includes(CANARY)).toBe(false);
++    expect(JSON.stringify(result).includes('https://user:')).toBe(false);
++    expect(f.account()).toBe('Work');
++    expect(f.calls.every(c => c.command !== 'git' || c.args[0] === 'remote' || c.args.includes('--get') || c.args.includes('--get-all'))).toBe(true);
++  });
++
++  test.each([
++    [{ authError: true }, 'unauthenticated'],
++    [{ login: 'wrong' }, 'mismatch'],
++    [{ noAccess: true }, 'no_repository_access'],
++  ])('status distinguishes failure and keeps diagnostic output safe: %j', async (failure, state) => {
++    const f = fixture({ account: 'work', ...failure });
++    const result = await handler(['status'], {}, '/repo', f.options);
++    expect(result.status.state).toBe(state);
++    expect(JSON.stringify(result).includes(CANARY)).toBe(false);
++    expect(f.account()).toBe('work');
++  });
++
++  test('unbound status makes no gh calls and explains independent SSH selection', async () => {
++    const f = fixture({ account: '', remote: `git@github-work:org/${CANARY}.git` });
++    const result = await handler(['status'], {}, '/repo', f.options);
++    expect(result.status).toMatchObject({ state: 'unbound', account: null, source: null, login: null, transport: 'ssh', repositoryAccess: null });
++    expect(f.calls.some(c => c.command === 'gh')).toBe(false);
++    expect(result.output).toContain('SSH');
++    expect(result.output.includes(CANARY)).toBe(false);
++  });
++
++  test('unset is idempotent and touches only the local key', async () => {
++    const f = fixture();
++    expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
++    expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
++    expect(f.account()).toBe('');
++    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset github.account')).toBe(true);
++  });
++
++  test('help, malformed commands, and missing launcher delimiter perform no context work', async () => {
++    const f = fixture();
++    expect((await handler(['help'], {}, '/repo', f.options)).success).toBe(true);
++    expect((await handler(['run', 'codex'], {}, '/repo', f.options)).success).toBe(false);
++    expect((await handler(['use', 'work', 'extra'], {}, '/repo', f.options)).success).toBe(false);
++    expect((await handler(['unknown'], {}, '/repo', f.options)).success).toBe(false);
++    expect(f.calls).toHaveLength(0);
++  });
++});
+diff --git a/test/github-launcher.test.js b/test/github-launcher.test.js
+new file mode 100644
+index 00000000..7ac995dc
+--- /dev/null
++++ b/test/github-launcher.test.js
+@@ -0,0 +1,143 @@
++// forge-test-resource: exclusive
++'use strict';
++
++const { afterAll, describe, test, expect } = require('bun:test');
++const { EventEmitter } = require('node:events');
++const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const path = require('node:path');
++const { isDeepStrictEqual } = require('node:util');
++const { handler } = require('../lib/commands/github');
++const { createCliSandboxes, runForgeIn } = require('./helpers/cli-subprocess');
++
++const sandboxes = createCliSandboxes('forge-github-launch-');
++afterAll(() => sandboxes.cleanup());
++
++function optionsFor(childRunner, bound = true) {
++  return { childRunner, baseEnv: { GH_TOKEN: 'ambient-only', GITHUB_TOKEN: 'ambient-only', GH_HOST: 'other.example', KEEP: 'yes' },
++    runner: (command, args) => {
++      if (command === 'git') return bound ? 'work' : '';
++      if (args[0] === 'auth') return 'selected-test-only';
++      return 'work';
++    } };
++}
++
++describe('forge github launcher', () => {
++  test('failed use leaves the existing Git config byte-for-byte unchanged', async () => {
++    const root = sandboxes.makeSandbox();
++    execFileSync('git', ['config', '--local', 'github.account', 'personal'], { cwd: root, stdio: 'pipe', windowsHide: true });
++    const configPath = path.join(root, '.git', 'config');
++    const before = fs.readFileSync(configPath);
++    for (const failure of ['auth', 'identity', 'repository']) {
++      const result = await handler(['use', 'work'], {}, root, {
++        baseEnv: {},
++        runner: (command, args, options) => {
++          if (command === 'git') return execFileSync(command, args, options);
++          if (args[0] === 'auth') {
++            if (failure === 'auth') throw new Error('test-only-private-error');
++            return 'test-only-private-value';
++          }
++          if (args[0] === 'api') return failure === 'identity' ? 'other' : 'work';
++          throw new Error('test-only-private-error');
++        },
++      });
++      expect(result.success).toBe(false);
++      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
++      expect(JSON.stringify(result).includes('test-only-private')).toBe(false);
++    }
++  });
++
++  test.each(['codex', 'claude.exe', 't3.cmd'])('launches %s with exact argv and only child-scoped account variables', async program => {
++    let invocation;
++    const child = new EventEmitter();
++    const args = ['', 'two words', '& | > < ^ %VALUE% !VALUE!', '--help', '--version', '-p', 'child-path'];
++    const before = { ...process.env };
++    const result = await handler(['run', '--', program, ...args], {}, '/repo', optionsFor((command, argv, options) => {
++      invocation = { command, argv, options };
++      queueMicrotask(() => child.emit('close', 0, null));
++      return child;
++    }));
++    expect(result.success).toBe(true);
++    expect(invocation.command).toBe(program);
++    expect(invocation.argv).toEqual(args);
++    expect(invocation.options).toMatchObject({ cwd: '/repo', stdio: 'inherit', shell: false });
++    expect(invocation.options.env).toEqual({ GH_TOKEN: 'selected-test-only', GITHUB_TOKEN: 'selected-test-only', GH_HOST: 'github.com', KEEP: 'yes' });
++    expect(JSON.stringify(result).includes('selected-test-only')).toBe(false);
++    expect(isDeepStrictEqual({ ...process.env }, before)).toBe(true);
++  });
++
++  test.each([[23, null, 23], [null, 'SIGINT', 130], [null, 'SIGTERM', 143]])('propagates exit and signal results: %j', async (code, signal, exitCode) => {
++    const child = new EventEmitter();
++    const result = await handler(['run', '--', 'program'], {}, '/repo', optionsFor(() => {
++      queueMicrotask(() => child.emit('close', code, signal)); return child;
++    }));
++    expect(result).toMatchObject({ success: false, exitCode, signal });
++  });
++
++  test('missing program reports ENOENT without raw process errors', async () => {
++    const child = new EventEmitter();
++    const result = await handler(['run', '--', 'absent'], {}, '/repo', optionsFor(() => {
++      queueMicrotask(() => child.emit('error', Object.assign(new Error('selected-test-only'), { code: 'ENOENT' })));
++      return child;
++    }));
++    expect(result).toMatchObject({ success: false, code: 'ENOENT', exitCode: 127 });
++    expect(JSON.stringify(result).includes('selected-test-only')).toBe(false);
++  });
++
++  test('unbound launch preserves native environment', async () => {
++    let environment;
++    const child = new EventEmitter();
++    await handler(['run', '--', 'program'], {}, '/repo', optionsFor((_command, _args, options) => {
++      environment = options.env;
++      queueMicrotask(() => child.emit('close', 0, null)); return child;
++    }, false));
++    expect(environment.GH_TOKEN).toBe('ambient-only');
++    expect(environment.GH_HOST).toBe('other.example');
++  });
++
++  test('forwards termination to the child and removes parent signal listeners', async () => {
++    const signals = new EventEmitter();
++    const child = new EventEmitter();
++    const received = [];
++    child.kill = signal => { received.push(signal); queueMicrotask(() => child.emit('close', null, signal)); };
++    const pending = handler(['run', '--', 'program'], {}, '/repo', {
++      ...optionsFor(() => child), signalSource: signals,
++    });
++    signals.emit('SIGTERM');
++    expect((await pending).exitCode).toBe(143);
++    expect(received).toEqual(['SIGTERM']);
++    expect(signals.listenerCount('SIGINT')).toBe(0);
++    expect(signals.listenerCount('SIGTERM')).toBe(0);
++  });
++
++  test('public CLI preserves child help/version/path flags after delimiter', () => {
++    const root = sandboxes.makeSandbox();
++    const tail = ['--help', '--version', '-p', 'child path', '--path=child-only', 'a&b', ''];
++    const result = runForgeIn(root, ['github', 'run', '--', process.execPath, '-e', 'console.log(JSON.stringify(process.argv.slice(1)))', '--', ...tail], {
++      env: { GH_TOKEN: '', GITHUB_TOKEN: '', GH_HOST: '', FORGE_SHEPHERD_DISABLE: '1' },
++    });
++    expect(result.status).toBe(0);
++    expect(result.stdout).toContain(JSON.stringify(tail));
++  });
++
++  test.skipIf(process.platform !== 'win32')('public launcher resolves Windows cmd shims with spaced and metacharacter arguments', () => {
++    const root = sandboxes.makeSandbox();
++    const shim = path.join(root, 'test program.cmd');
++    fs.writeFileSync(shim, `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" -- %*\r\n`);
++    const tail = ['two words', 'a&b', 'a|b', 'a>b', '^caret', '--help'];
++    const result = runForgeIn(root, ['github', 'run', '--', shim, ...tail], {
++      env: { GH_TOKEN: '', GITHUB_TOKEN: '', GH_HOST: '', FORGE_SHEPHERD_DISABLE: '1' },
++    });
++    expect(result.status).toBe(0);
++    expect(result.stdout).toContain(JSON.stringify(tail));
++  });
++
++  test('public launcher preserves child exit code and reports missing programs', () => {
++    const root = sandboxes.makeSandbox();
++    const env = { GH_TOKEN: '', GITHUB_TOKEN: '', GH_HOST: '', FORGE_SHEPHERD_DISABLE: '1' };
++    expect(runForgeIn(root, ['github', 'run', '--', process.execPath, '-e', 'process.exit(23)'], { env }).status).toBe(23);
++    const missing = runForgeIn(root, ['github', 'run', '--', 'forge-test-program-that-does-not-exist'], { env });
++    expect(missing.status).toBe(127);
++    expect(missing.stderr).toContain('not found');
++  });
++});
+-- 
+2.51.0.windows.1
+

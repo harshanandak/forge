@@ -1,0 +1,90 @@
+From 90b2b2a2378a340c50267a7e1fe50af542f3f48a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 19:09:04 +0530
+Subject: [PATCH] fix(review): stabilize readiness diagnostics
+
+---
+ CHANGELOG.md                                         |  6 ++++++
+ .../bd-call-site-kill-list.md                        |  4 ++--
+ lib/forge-issues.js                                  |  2 +-
+ test/forge-issues.test.js                            | 12 ++++++++++++
+ 4 files changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 321378f2..2e8cd194 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
+ 
++## [Unreleased]
++
++### Added
++
++- **Forge 0.1.0 control-plane foundations.** Adds executable issue-readiness contracts, dead-run claim reconciliation, issue-scoped approval receipts, Kernel-authoritative plan snapshots, fail-closed risk-to-test selection, and distinct npm beta/RC release channels. (#497; issues `4ee7f9a9-4fa0-42c1-bd96-96638cc9feff`, `9b69a551-f5a0-4057-9d9f-96fb0d744fd3`, `b977b0a2-11f6-40d7-a230-8e2ff5f79115`, `b811a974-a866-47e0-8f83-3f5d2423aded`, `7a6a3fb3-c82c-48e7-86ee-630c171b924c`, `3e46debd-11c3-4b1c-b59a-17304c37cb03`)
++
+ ## [0.1.0-beta.5] - 2026-08-09
+ 
+ ### Added
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index d4f48ba0..626bf826 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -20,7 +20,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/migrate.js (17)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (6)
+-  - lines: 250 (bd), 253 (bd), 254 (bd), 501 (bd), 908 (bd), 944 (bd)
++  - lines: 254 (bd), 257 (bd), 258 (bd), 505 (bd), 912 (bd), 948 (bd)
+ - [ ] lib/commands/status.js (2)
+   - lines: 368 (bd), 427 (bd)
+ - [ ] lib/commands/validate.js (1)
+@@ -51,7 +51,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/upgrade-safety.js (2)
+   - lines: 103 (.beads), 216 (.beads)
+ - [ ] lib/workflow/enforce-stage.js (1)
+-  - lines: 390 (bd)
++  - lines: 431 (bd)
+ - [ ] scripts/bootstrap-windows-tools.sh (2)
+   - lines: 42 (bd), 63 (bd)
+ - [ ] scripts/branch-protection.js (2)
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 77ada139..62ccd648 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -238,7 +238,7 @@ function resolveIssueContractPolicy(projectRoot, deps = {}) {
+ 	const ownKeys = Reflect.ownKeys(configured);
+ 	const unknownKeys = ownKeys.filter(key => typeof key !== 'string' || !allowedKeys.has(key));
+ 	if (unknownKeys.length > 0) {
+-		fail(`unknown issues.readiness.contracts keys: ${unknownKeys.map(String).sort().join(', ')}`);
++		fail(`unknown issues.readiness.contracts keys: ${unknownKeys.map(String).sort((left, right) => left.localeCompare(right)).join(', ')}`);
+ 	}
+ 	const values = Object.create(null);
+ 	for (const key of ownKeys) {
+diff --git a/test/forge-issues.test.js b/test/forge-issues.test.js
+index 4438bc73..c4711694 100644
+--- a/test/forge-issues.test.js
++++ b/test/forge-issues.test.js
+@@ -59,6 +59,18 @@ describe('forge issue service contract', () => {
+ 		}
+ 	});
+ 
++	test('reports unknown contract keys in locale-aware alphabetical order', () => {
++		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
++		const contracts = { enabled: true, workClasses: ['task'], zeta: true, Älpha: true };
++
++		expect(() => resolveIssueContractPolicy('/repo', {
++			loadRuntimeGraphConfig: () => ({
++				config: { issues: { readiness: { contracts } } },
++				errors: [],
++			}),
++		})).toThrow('unknown issues.readiness.contracts keys: Älpha, zeta');
++	});
++
+ 	test('contract policy rejects inherited activation and accessors without executing them', () => {
+ 		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+ 		const inherited = Object.create({ enabled: true, workClasses: ['task'] });
+-- 
+2.51.0.windows.1
+

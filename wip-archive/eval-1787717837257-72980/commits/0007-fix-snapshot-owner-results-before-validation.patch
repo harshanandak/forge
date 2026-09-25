@@ -1,0 +1,158 @@
+From 6020000de102cd3a9f0a445ad51d10f796088789 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 22:13:52 +0530
+Subject: [PATCH] fix: snapshot owner results before validation
+
+---
+ lib/pr-monitor/watch-owner.js       | 17 ++++--
+ test/pr-monitor/watch-owner.test.js | 94 ++++++++++++++++++-----------
+ 2 files changed, 71 insertions(+), 40 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 99c72452..46078755 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -427,10 +427,19 @@ function invoke(method, identity, input, opts) {
+ 	try {
+ 		const result = operation({ ...identity, ...input }, opts.databaseConfig || {});
+ 		if (result && typeof result.then === 'function') return invalid('invalid_operation');
+-		const record = fromSqliteOwnerRow(result.row);
+-		if (result.row != null && (validateRecord(record) || !matchesIdentity(record, identity))) return invalid('corrupt');
+-		if (result.ok === true && !validOwnerOperationResult(method, { ...identity, ...input }, result, record)) return invalid('corrupt');
+-		return envelope(result.ok, result.changed, result.reason, record);
++		if (!result || typeof result !== 'object' || Array.isArray(result)) return invalid('corrupt');
++		// Snapshot once: accessor-backed results must not flip between
++		// validation and the returned envelope.
++		const snap = {
++			ok: result.ok === true,
++			changed: result.changed === true,
++			reason: typeof result.reason === 'string' ? result.reason : '',
++			row: result.row,
++		};
++		const record = fromSqliteOwnerRow(snap.row);
++		if (snap.row != null && (validateRecord(record) || !matchesIdentity(record, identity))) return invalid('corrupt');
++		if (snap.ok && !validOwnerOperationResult(method, { ...identity, ...input }, snap, record)) return invalid('corrupt');
++		return envelope(snap.ok, snap.changed, snap.reason, record);
+ 	} catch (error) {
+ 		return invalid(error?.code === 'AUTHORITY_UNAVAILABLE' ? 'authority_unavailable' : 'store_error');
+ 	}
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 04679ff1..17a070a6 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -90,6 +90,42 @@ describe('watch owner SQLite authority', () => {
+ 	let databasePath;
+ 	let driver;
+ 
++	beforeEach(async () => {
++		root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-owner-sqlite-'));
++		databasePath = path.join(root, 'forge', 'kernel.sqlite');
++		driver = createBuiltinSQLiteDriver({ databasePath });
++		await driver.exec(`
++			CREATE TABLE kernel_pr_watch_owners (
++				repo TEXT NOT NULL,
++				pr INTEGER NOT NULL,
++				version INTEGER NOT NULL,
++				generation TEXT NOT NULL,
++				phase TEXT NOT NULL,
++				controller_pid INTEGER,
++				watcher_pid INTEGER,
++				started_at TEXT NOT NULL,
++				updated_at TEXT NOT NULL,
++				heartbeat_at TEXT,
++				terminal_receipt_id TEXT,
++				block_reason TEXT,
++				legacy_evidence_hash TEXT,
++				PRIMARY KEY (repo, pr)
++			);
++			CREATE TABLE kernel_pr_watch_migration_gate (
++				singleton INTEGER NOT NULL PRIMARY KEY,
++				state TEXT NOT NULL,
++				snapshot_hash TEXT,
++				conflict_code TEXT,
++				updated_at TEXT NOT NULL
++			);
++		`);
++	});
++
++	afterEach(() => {
++		driver?.close();
++		fs.rmSync(root, { recursive: true, force: true });
++	});
++
+ 	test('exports only the six exact migration-gate domain API names', () => {
+ 		expect(Object.keys(owner).filter(name => name.includes('Migration')).sort()).toEqual([
+ 			'bindMigrationSnapshot',
+@@ -447,42 +483,6 @@ describe('watch owner SQLite authority', () => {
+ 		expect(calls).toEqual(['read', 'record']);
+ 	});
+ 
+-	beforeEach(async () => {
+-		root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-owner-sqlite-'));
+-		databasePath = path.join(root, 'forge', 'kernel.sqlite');
+-		driver = createBuiltinSQLiteDriver({ databasePath });
+-		await driver.exec(`
+-			CREATE TABLE kernel_pr_watch_owners (
+-				repo TEXT NOT NULL,
+-				pr INTEGER NOT NULL,
+-				version INTEGER NOT NULL,
+-				generation TEXT NOT NULL,
+-				phase TEXT NOT NULL,
+-				controller_pid INTEGER,
+-				watcher_pid INTEGER,
+-				started_at TEXT NOT NULL,
+-				updated_at TEXT NOT NULL,
+-				heartbeat_at TEXT,
+-				terminal_receipt_id TEXT,
+-				block_reason TEXT,
+-				legacy_evidence_hash TEXT,
+-				PRIMARY KEY (repo, pr)
+-			);
+-			CREATE TABLE kernel_pr_watch_migration_gate (
+-				singleton INTEGER NOT NULL PRIMARY KEY,
+-				state TEXT NOT NULL,
+-				snapshot_hash TEXT,
+-				conflict_code TEXT,
+-				updated_at TEXT NOT NULL
+-			);
+-		`);
+-	});
+-
+-	afterEach(() => {
+-		driver?.close();
+-		fs.rmSync(root, { recursive: true, force: true });
+-	});
+-
+ 	test('reserveStarting mints exactly one generation in the authoritative row', async () => {
+ 		const ctx = { repo: 'Acme/Forge', pr: 42 };
+ 		const first = await owner.reserveStarting(ctx, {
+@@ -2187,4 +2187,26 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		}));
+ 		expect(readWithoutRow).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 	});
++
++	test('snapshots accessor-backed driver results before validating success', async () => {
++		let okReads = 0;
++		const flipping = {
++			get ok() {
++				okReads += 1;
++				return okReads > 1;
++			},
++			changed: true,
++			reason: 'acquired',
++			row: null,
++		};
++		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 956 }, {
++			controllerPid: CONTROLLER_PID, startedAt: NOW,
++		}, authorityOpts({
++			...driver,
++			watchOwnerReserveStarting: () => flipping,
++		}));
++		expect(okReads).toBe(1);
++		expect(result.ok).toBe(false);
++		expect(result.record).toBeNull();
++	});
+ });
+-- 
+2.51.0.windows.1
+

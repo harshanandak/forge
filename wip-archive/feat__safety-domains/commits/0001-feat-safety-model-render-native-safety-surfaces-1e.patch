@@ -1,0 +1,806 @@
+From 59c2287b690860efaa170ce06f4cf3446f661e59 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 19:28:37 +0530
+Subject: [PATCH] feat(safety): model + render native safety surfaces
+ (1e68255c)
+
+Model three previously un-modeled native SAFETY surfaces (Claude permissions,
+.cursorignore, Codex sandbox) as capability domains and render safe
+project-local defaults at `forge setup`.
+
+Matrix (lib/harness-capability-matrix.js):
+- New capability rows: permissions, ignore, sandbox (+ 'safety' renderer
+  family, sources S11/S12/S13). Honest per-harness status:
+  - permissions: claude=native (.claude/settings.json), cursor=unsupported
+    (IDE/global-only), codex=not-delivered (global-trust-deferred), hermes=unsupported
+  - ignore: cursor=native (.cursorignore), claude=projection (permissions.deny
+    Read rules; no .claudeignore), codex/hermes=unsupported
+  - sandbox: codex=not-delivered (config.toml honored only under GLOBAL
+    $CODEX_HOME trust, per #311), others=unsupported
+- All statuses stay within STATUS_VOCABULARY (no new statuses).
+
+Renderer (lib/safety-config-renderer.js) + setup wiring:
+- Claude .claude/settings.json permissions: allow the forge/dev workflow,
+  deny rm -rf / force-push / secret reads (.env, keys), ask history-rewrites.
+- Cursor .cursorignore: secrets/.env/node_modules/build artifacts.
+- Read -> merge -> write, preserving user entries; backs up an unparseable
+  settings.json instead of clobbering it (mirrors the MCP renderer guard).
+- Defaults ON but opt-out via FORGE_SKIP_SAFETY_DEFAULTS.
+
+Docs + tracked artifact:
+- AGENT_SKILL_PARITY.md documents the delivered safety domains + deferral.
+- Regenerated D20 bd call-site kill-list (line shift from matrix additions).
+
+Tests: safety-config-renderer + setup-safety-defaults (fresh/preserve/opt-out/
+data-loss backup) + matrix assertions. 145 tests green across affected files;
+ESLint --max-warnings 0 clean; `forge release check` 0 blockers.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/reference/AGENT_SKILL_PARITY.md          |   4 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/commands/setup.js                         |  54 ++++
+ lib/harness-capability-matrix.js              |  27 ++
+ lib/safety-config-renderer.js                 | 263 ++++++++++++++++++
+ test/harness-capability-matrix.test.js        |  31 +++
+ test/safety-config-renderer.test.js           | 139 +++++++++
+ test/setup-safety-defaults.test.js            | 101 +++++++
+ 8 files changed, 618 insertions(+), 3 deletions(-)
+ create mode 100644 lib/safety-config-renderer.js
+ create mode 100644 test/safety-config-renderer.test.js
+ create mode 100644 test/setup-safety-defaults.test.js
+
+diff --git a/docs/reference/AGENT_SKILL_PARITY.md b/docs/reference/AGENT_SKILL_PARITY.md
+index cf348e15..2e07a83a 100644
+--- a/docs/reference/AGENT_SKILL_PARITY.md
++++ b/docs/reference/AGENT_SKILL_PARITY.md
+@@ -41,7 +41,7 @@ node scripts/spikes/harness-capability-matrix.js
+ 
+ The output is JSON with three top-level contracts:
+ 
+-- `harnesses[]`: Claude, Cursor, Codex, and Hermes capability support across instructions, skills, rules, MCP, hooks, commands, agents/subagents, stages, Beads, typed memory, patch overrides, marketplace trust, and extension packs.
++- `harnesses[]`: Claude, Cursor, Codex, and Hermes capability support across instructions, skills, rules, MCP, hooks, commands, agents/subagents, stages, Beads, typed memory, patch overrides, marketplace trust, extension packs, and the native safety surfaces (tool permissions, AI read/index ignore boundary, execution sandbox).
+ - `stageGraph`: canonical Forge workflow stages as skills-first super skills with addressable subskills, plus utility skills such as `status` outside workflow transitions.
+ - `rendererContract`: the evidence a renderer must provide before Forge emits broad harness files.
+ 
+@@ -171,5 +171,5 @@ Known gaps intentionally left for follow-up. Tier-2 work is tracked under kernel
+ - **Agents/subagents (`802aa4d8`)**: the whole domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. The matrix marks every harness `not-delivered`/`unsupported`. A subagent renderer is the deliverable.
+ - **Typed memory (`dce9da46`)**: typed memory is WRITE-ONLY (`insights.js`); no generator projects a memory section into any instruction/rule file. All four typedMemory rows are marked `not-delivered`. A memory-projection renderer is the deliverable.
+ - **Codex paths (`55dfeccf`)**: `.codex/skills` is the committed packaging staging mirror; skills install to the global `$CODEX_HOME/skills`. Codex's repo-local discovery path `.agents/skills` is NOW generated at setup and committed for teammate-clone discovery (this closes the skills/stages half of `55dfeccf`). Codex MCP remains global-config-only (`$CODEX_HOME/config.toml`), so `(mcp, codex)` is still `not-delivered` at project setup.
+-- **Safety domains (`1e68255c`)**: Claude permissions, `.cursorignore`, and Codex sandbox/approvals are not yet modeled in the matrix.
++- **Safety domains (`1e68255c`)**: the native safety surfaces are now modeled as three capability rows (`permissions`, `ignore`, `sandbox`) rendered by the `safety` renderer family. `forge setup` auto-writes safe project-local defaults via the tested `lib/safety-config-renderer.js`: Claude tool permissions (`.claude/settings.json` `permissions` — allow the forge/dev workflow, deny `rm -rf`/force-push/secret reads, ask for history-rewrites) and Cursor `.cursorignore` (secrets/`.env`/`node_modules`/build artifacts). Both use read → merge → write, preserving user entries and backing up an unparseable file rather than clobbering it. Defaults are ON but opt-out-able with `FORGE_SKIP_SAFETY_DEFAULTS`. The Claude `ignore` row is `projection` (its read boundary is delivered as `permissions.deny Read(...)` rules; Claude has no `.claudeignore`). **Global-scope-deferred**: Codex `permissions`/`sandbox` are `not-delivered` — `approval_policy`/`sandbox_mode` live in `config.toml` but a project-local `.codex/config.toml` is honored only when the project is trusted in the GLOBAL `$CODEX_HOME/config.toml` (`projects.<path>.trust_level`), which Forge cannot grant during project-local setup (matches the Codex MCP finding, `#311`). Cursor `permissions` and Hermes safety surfaces are `unsupported` (IDE/global-only and CLI-consumed respectively).
+ - MCP is now auto-wired project-local for both Claude (`.mcp.json`) and Cursor (`.cursor/mcp.json`) via the tested `lib/mcp-config-renderer.js`. Beads/patch-override state, marketplace trust, and extension packs remain as the matrix records them.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index af368787..638a827f 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -55,7 +55,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/forge-issues.js (15)
+   - lines: 24 (bd), 25 (bd), 30 (bd), 33 (bd), 39 (bd), 43 (bd), 105 (bd), 106 (bd), 109 (bd), 143 (bd), 167 (bd), 169 (bd), 173 (bd), 273 (bd), 298 (bd)
+ - [ ] lib/harness-capability-matrix.js (1)
+-  - lines: 151 (bd)
++  - lines: 157 (bd)
+ - [ ] lib/insights.js (7)
+   - lines: 112 (.beads), 123 (.beads), 131 (.beads), 157 (.beads), 176 (.beads), 338 (.beads), 341 (.beads)
+ - [ ] lib/migrate-dry-run.js (8)
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 2ece09a1..466e900f 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -24,6 +24,7 @@ const VERSION = packageJson.version;
+ const PluginManager = require('../plugin-manager');
+ const { populateAgentSkills, listCanonicalSkills, listFilesRecursive } = require('../skills-sync');
+ const { renderMcpConfig } = require('../mcp-config-renderer');
++const { renderClaudePermissions, renderCursorIgnore } = require('../safety-config-renderer');
+ const { copyEssentialDocs } = require('../docs-copy');
+ 
+ // Baseline MCP server Forge ships. Uses the generic descriptor contract consumed
+@@ -1835,6 +1836,53 @@ function setupCursorMcpConfig() {
+   );
+ }
+ 
++// Safe SAFETY defaults are ON by default (non-surprising) but fully opt-out-able.
++// Set FORGE_SKIP_SAFETY_DEFAULTS=1 (or `true`) to skip rendering the permission /
++// ignore defaults — Forge then leaves those surfaces entirely to the user.
++function safetyDefaultsEnabled() {
++  const flag = String(process.env.FORGE_SKIP_SAFETY_DEFAULTS || '').trim().toLowerCase();
++  return !(flag === '1' || flag === 'true' || flag === 'yes');
++}
++
++// Helper: Render safe Claude tool-permission defaults into .claude/settings.json.
++// Read -> merge -> write (idempotent). Preserves the user's existing settings and
++// allow/deny/ask entries; an unparseable file is backed up and left untouched.
++function setupClaudePermissions() {
++  if (!safetyDefaultsEnabled()) {
++    console.log('  Skipped: .claude/settings.json permissions (FORGE_SKIP_SAFETY_DEFAULTS set)');
++    return;
++  }
++  const { existed, skipped, backup } = renderClaudePermissions({ targetRoot: projectRoot });
++  if (skipped) {
++    console.log(
++      '  Skipped: .claude/settings.json is not valid JSON — left untouched to avoid data loss'
++      + `${backup ? ` (backed up to ${backup})` : ''}. Add safe permissions manually.`,
++    );
++    return;
++  }
++  console.log(
++    existed
++      ? '  Updated: .claude/settings.json (merged safe permission defaults, preserved your entries)'
++      : '  Created: .claude/settings.json with safe permission defaults',
++  );
++}
++
++// Helper: Render safe .cursorignore defaults (AI read/index boundary).
++// Read -> merge -> write (idempotent). Preserves user lines; only appends missing
++// default patterns (secrets/.env/node_modules/build artifacts).
++function setupCursorIgnore() {
++  if (!safetyDefaultsEnabled()) {
++    console.log('  Skipped: .cursorignore defaults (FORGE_SKIP_SAFETY_DEFAULTS set)');
++    return;
++  }
++  const { existed } = renderCursorIgnore({ targetRoot: projectRoot });
++  console.log(
++    existed
++      ? '  Updated: .cursorignore (appended safe defaults, preserved your entries)'
++      : '  Created: .cursorignore with safe defaults',
++  );
++}
++
+ // Helper: Create agent link file
+ // When symlinkOnly is true (--symlink flag), skip copy fallback
+ 
+@@ -1881,9 +1929,13 @@ async function setupAgent(agentKey, skipFiles = {}) {
+   // Setup MCP configs (project-local, native for both harnesses)
+   if (agentKey === 'claude') {
+     setupClaudeMcpConfig();
++    // Native safety surface: declarative tool-permission allowlist.
++    setupClaudePermissions();
+   }
+   if (agent.customSetup === 'cursor') {
+     setupCursorMcpConfig();
++    // Native safety surface: AI read/index ignore boundary.
++    setupCursorIgnore();
+   }
+ 
+   // Create link file (SYMLINK_ONLY = --symlink flag disables copy fallback)
+@@ -4029,6 +4081,8 @@ module.exports = {
+   ensureGitHooksInstalled,
+   setupClaudeMcpConfig,
+   setupCursorMcpConfig,
++  setupClaudePermissions,
++  setupCursorIgnore,
+   displayMcpStatus,
+   displayEnvTokenResults,
+   minimalInstall,
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index db7dc0e8..3c36e82a 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -18,6 +18,9 @@ const CAPABILITY_IDS = [
+   'patchOverrides',
+   'marketplaceTrust',
+   'extensionPacks',
++  'permissions',
++  'ignore',
++  'sandbox',
+ ];
+ 
+ const STAGE_IDS = [...WORKFLOW_STAGE_IDS];
+@@ -34,6 +37,9 @@ const SOURCE_ROWS = [
+   ['S8', 'Codex plugins and marketplaces', 'https://developers.openai.com/codex/plugins/build', 'Codex plugins can package skills, apps, MCP servers, hooks, and marketplace metadata.'],
+   ['S9', 'AGENTS.md standard', 'https://agents.md/', 'AGENTS.md provides repository instructions for coding agents.'],
+   ['S10', 'Cursor Agent Skills', 'https://docs.cursor.com/en/agent/skills', 'Cursor reads on-demand Agent Skills from .cursor/skills/<name>/SKILL.md; Forge populates them at setup from the canonical skills/ source.'],
++  ['S11', 'Claude Code settings permissions', 'https://docs.claude.com/en/docs/claude-code/settings', 'Claude Code reads project-local .claude/settings.json with a permissions block (allow/deny/ask rule arrays, evaluated deny then ask then allow); rule syntax is Bash(prefix:*), Read(glob), WebFetch(domain:...).'],
++  ['S12', 'Cursor ignore files', 'https://cursor.com/docs/reference/ignore-file', 'Cursor reads project-local .cursorignore (blocks AI access + indexing) and .cursorindexingignore (index-only), gitignore-style; .gitignore and common secret/lock files are ignored by default.'],
++  ['S13', 'Codex sandbox and approvals config', 'https://developers.openai.com/codex/config-reference', 'Codex config.toml sets sandbox_mode (read-only/workspace-write/danger-full-access) and approval_policy (untrusted/on-request/never); a project-local .codex/config.toml is honored ONLY when the project is trusted in the GLOBAL $CODEX_HOME/config.toml (projects.<path>.trust_level).'],
+ ];
+ 
+ // The closed set of capability statuses. Every capability-matrix target status MUST
+@@ -168,6 +174,26 @@ const CAPABILITY_ROWS = [
+     ['codex', target('native', 'Codex plugin with skills, MCP servers, hooks, and apps', { role: 'installable Forge extension pack', evidence: ['S8'] })],
+     ['hermes', target('forge-owned', '.hermes/skills projected from Forge extension state', { role: 'installable Forge extension pack projection' })],
+   ]),
++  // ---- Native SAFETY surfaces (Tier-2 parity) ----
++  // Security/safety boundaries each harness ships that Forge sets sane defaults for.
++  row('permissions', 'safety', 'tool-permission allowlist', [
++    ['claude', target('native', '.claude/settings.json (permissions allow/deny/ask)', { role: 'declarative tool-permission allowlist rendered with safe forge/dev defaults', activation: 'evaluated deny -> ask -> allow on each tool call', evidence: ['S11'] })],
++    ['cursor', target('unsupported', null, { knownIssue: 'Cursor command allow/deny lists are IDE/global settings (Settings > Chat & Composer), not a project-local committable file; Forge cannot render a project-local Cursor permission allowlist.' })],
++    ['codex', target('not-delivered', null, { role: "Codex approvals live in config.toml (approval_policy)", knownIssue: 'Codex approval_policy is a config.toml surface honored project-locally ONLY when the project is trusted in the GLOBAL $CODEX_HOME/config.toml (projects.<path>.trust_level). Forge cannot grant that global trust during project-local setup, so it is deferred to global-scope wiring. Tracked as kernel epic 90f2f631 (#311).', evidence: ['S13'] })],
++    ['hermes', target('unsupported', null, { knownIssue: 'Hermes is CLI-consumed (forge orient/recap); it has no tool-permission allowlist surface.' })],
++  ]),
++  row('ignore', 'safety', 'AI read/index boundary', [
++    ['claude', target('projection', '.claude/settings.json (permissions.deny Read rules)', { role: 'read/secret boundary projected into permission deny rules (no dedicated ignore file)', knownIssue: 'Claude Code has no .claudeignore file; the read/secret boundary is delivered as permissions.deny Read(...) rules by the permissions renderer, not a separate ignore file.', evidence: ['S11'] })],
++    ['cursor', target('native', '.cursorignore', { role: 'keeps secrets and large/generated dirs out of AI context + index (also .cursorindexingignore for index-only)', activation: 'gitignore-style patterns honored by Cursor AI features', evidence: ['S12'], knownIssue: '.cursorignore blocks Cursor AI features and indexing but is NOT a hard security boundary — terminal/MCP tools can still reach the files.' })],
++    ['codex', target('unsupported', null, { knownIssue: 'Codex has no dedicated AI read/index-ignore file; it honors .gitignore. No project-local ignore surface for Forge to render.' })],
++    ['hermes', target('unsupported', null, { knownIssue: 'Hermes has no AI index/read-ignore surface.' })],
++  ]),
++  row('sandbox', 'safety', 'execution sandbox and approval policy', [
++    ['claude', target('unsupported', null, { role: 'no config-file execution sandbox', knownIssue: 'Claude Code has no config.toml-style execution sandbox; execution safety is delivered by the tool-permission allowlist (permissions row), not a sandbox surface.' })],
++    ['cursor', target('unsupported', null, { knownIssue: 'Cursor has no project-local execution-sandbox config surface.' })],
++    ['codex', target('not-delivered', null, { role: 'Codex sandbox_mode + approval_policy in config.toml', knownIssue: 'Codex sandbox_mode/approval_policy live in config.toml, honored project-locally ONLY when the project is trusted in the GLOBAL $CODEX_HOME/config.toml (projects.<path>.trust_level). Forge cannot grant that global trust during project-local setup, so a rendered project-local sandbox policy would not take effect; deferred to global-scope wiring. Tracked as kernel epic 90f2f631 (#311).', evidence: ['S13'] })],
++    ['hermes', target('unsupported', null, { knownIssue: 'Hermes runs through the Forge CLI; it has no harness execution-sandbox surface.' })],
++  ]),
+ ];
+ 
+ function rowCapability(row, harnessId) {
+@@ -283,6 +309,7 @@ const RENDERER_FAMILIES = [
+   ['stage-graph', 'Forge skills-first stage graph', ['super skill target', 'subskill target list', 'gate mapping']],
+   ['state-and-memory', 'Beads, typed memory, and patch override manifests', ['state authority', 'projection provenance', 'protected path policy']],
+   ['distribution', 'Forge extension manifest and lock metadata', ['lock hash', 'trusted source', 'generated target inventory']],
++  ['safety', 'Forge safety-surface manifest (permissions, ignore, sandbox)', ['permission scope (allow/deny/ask)', 'read/index ignore boundary', 'sandbox/approval policy or global-scope deferral note']],
+ ];
+ 
+ function buildRendererContract() {
+diff --git a/lib/safety-config-renderer.js b/lib/safety-config-renderer.js
+new file mode 100644
+index 00000000..7e00cc8a
+--- /dev/null
++++ b/lib/safety-config-renderer.js
+@@ -0,0 +1,263 @@
++'use strict';
++
++/**
++ * Native SAFETY-surface renderer.
++ *
++ * Renders sane, non-surprising security defaults into the two safety surfaces
++ * Forge can write PROJECT-LOCALLY today:
++ *
++ *   - Claude Code : `.claude/settings.json` -> `permissions` (allow/deny/ask)
++ *   - Cursor      : `.cursorignore`         (gitignore-style AI read/index boundary)
++ *
++ * Both use read -> merge -> write (idempotent, preserves user entries). An existing
++ * `.claude/settings.json` that cannot be parsed is BACKED UP and left untouched
++ * (mirrors the MCP renderer's data-loss guard) rather than clobbering user settings.
++ *
++ * NOT rendered here (honest deferral): the Codex execution sandbox / approvals policy
++ * (`sandbox_mode` / `approval_policy`). Codex honors a project-local `.codex/config.toml`
++ * ONLY when the project is marked trusted in the GLOBAL `$CODEX_HOME/config.toml`
++ * (`projects.<path>.trust_level`). Forge cannot grant that global trust during
++ * project-local setup, so a rendered project-local sandbox policy would not take
++ * effect. It is deferred to global-scope wiring and marked `not-delivered` in the
++ * capability matrix (kernel epic 90f2f631 / #311).
++ *
++ * Defaults follow the principle: ALLOW the routine forge/dev workflow, DENY the
++ * obviously-dangerous, and let everything else fall through to the harness's normal
++ * "ask" behavior (Claude evaluates deny -> ask -> allow; unmatched tools still prompt).
++ * We intentionally do NOT set `defaultMode`, so nothing is silently auto-approved.
++ *
++ * Dependency-free beyond node builtins so it runs under `bun test` and release gates.
++ *
++ * @module safety-config-renderer
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const { backupFile } = require('./mcp-config-renderer');
++
++/** Thrown when an existing settings file cannot be parsed — signals "do not overwrite". */
++class SafetyConfigParseError extends Error {
++  constructor(message, cause) {
++    super(message);
++    this.name = 'SafetyConfigParseError';
++    this.cause = cause;
++  }
++}
++
++// Safe Claude Code permission defaults. Rule syntax per Claude Code settings docs
++// (https://docs.claude.com/en/docs/claude-code/settings ,
++//  https://docs.claude.com/en/docs/claude-code/permissions):
++//   Bash(<prefix>:*)  — command-prefix match; Read(<glob>) — gitignore-style path.
++// Evaluated deny -> ask -> allow (deny always wins), so the deny Read(...) rules
++// protect secrets even though bare Read is not blanket-allowed.
++const CLAUDE_PERMISSION_DEFAULTS = Object.freeze({
++  // Routine, reversible forge/dev workflow — safe to run without a prompt.
++  allow: Object.freeze([
++    'Bash(git status:*)',
++    'Bash(git log:*)',
++    'Bash(git diff:*)',
++    'Bash(git branch:*)',
++    'Bash(git show:*)',
++    'Bash(git add:*)',
++    'Bash(git commit:*)',
++    'Bash(git stash:*)',
++    'Bash(git checkout:*)',
++    'Bash(git switch:*)',
++    'Bash(git pull:*)',
++    'Bash(git fetch:*)',
++    'Bash(git push:*)',
++    'Bash(ls:*)',
++    'Bash(cat:*)',
++    'Bash(pwd)',
++    'Bash(which:*)',
++    'Bash(mkdir:*)',
++    'Bash(cp:*)',
++    'Bash(mv:*)',
++    'Bash(bun run:*)',
++    'Bash(bun test:*)',
++    'Bash(bun install)',
++    'Bash(npm run:*)',
++    'Bash(npm test:*)',
++    'Bash(forge:*)',
++    'Bash(gh pr view:*)',
++    'Bash(gh pr list:*)',
++    'Bash(gh issue list:*)',
++  ]),
++  // Careful, rewrites-history / rewinds-state — worth a confirmation, not a hard block.
++  ask: Object.freeze([
++    'Bash(git rebase:*)',
++    'Bash(git reset:*)',
++    'Bash(git clean:*)',
++  ]),
++  // Obviously-dangerous commands + secret reads. deny wins over allow/ask.
++  deny: Object.freeze([
++    'Bash(rm -rf:*)',
++    'Bash(rm -fr:*)',
++    'Bash(git push --force:*)',
++    'Bash(git push -f:*)',
++    'Bash(git reset --hard:*)',
++    // Read/secret boundary — private keys and secret env files are never readable.
++    'Read(./.env)',
++    'Read(**/.env)',
++    'Read(**/.env.local)',
++    'Read(**/.env.*.local)',
++    'Read(**/*.pem)',
++    'Read(**/*.key)',
++    'Read(**/id_rsa)',
++    'Read(**/id_ed25519)',
++    'Read(./secrets/**)',
++    'Read(**/credentials.json)',
++  ]),
++});
++
++// Safe `.cursorignore` defaults (gitignore-style, per
++// https://cursor.com/docs/reference/ignore-file). Cursor already ignores .gitignore
++// and common lock/.env files by default; listing them here makes the secret/large-dir
++// boundary explicit and self-documenting. `.cursorignore` blocks Cursor AI features +
++// indexing (it is not a hard security boundary — terminal/MCP tools can still reach files).
++const CURSORIGNORE_DEFAULTS = Object.freeze([
++  '.env',
++  '.env.local',
++  '.env.*.local',
++  '*.pem',
++  '*.key',
++  'id_rsa',
++  'id_ed25519',
++  'secrets/',
++  'node_modules/',
++  'dist/',
++  'build/',
++  'out/',
++  'coverage/',
++  '.next/',
++  '*.log',
++]);
++
++const CURSORIGNORE_HEADER = [
++  '# ---- Forge safe defaults (managed) ----',
++  '# Keeps secrets and large/generated dirs out of Cursor AI context + index.',
++  '# Edit freely — Forge only appends missing lines and never removes yours.',
++];
++
++function unionPreserve(existing, defaults) {
++  const base = Array.isArray(existing) ? existing.filter(v => typeof v === 'string') : [];
++  const seen = new Set(base);
++  for (const rule of defaults) {
++    if (!seen.has(rule)) {
++      base.push(rule);
++      seen.add(rule);
++    }
++  }
++  return base;
++}
++
++/**
++ * Merge safe permission defaults into an existing `.claude/settings.json` string
++ * (read -> merge -> write). Preserves every other settings key and every existing
++ * allow/deny/ask entry (union, no duplicates). Idempotent.
++ * @param {string} existingText
++ * @returns {string} pretty JSON with a trailing newline
++ */
++function mergeClaudePermissions(existingText) {
++  let obj = {};
++  if (existingText && existingText.trim()) {
++    try {
++      obj = JSON.parse(existingText);
++    } catch (err) {
++      // DATA-LOSS GUARD: never silently discard a populated-but-unparseable settings
++      // file (e.g. JSONC with comments). Signal the caller to back up and skip.
++      throw new SafetyConfigParseError('existing .claude/settings.json is not valid JSON', err);
++    }
++  }
++  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) obj = {};
++  const existingPerms = (obj.permissions && typeof obj.permissions === 'object' && !Array.isArray(obj.permissions))
++    ? obj.permissions
++    : {};
++  existingPerms.allow = unionPreserve(existingPerms.allow, CLAUDE_PERMISSION_DEFAULTS.allow);
++  existingPerms.ask = unionPreserve(existingPerms.ask, CLAUDE_PERMISSION_DEFAULTS.ask);
++  existingPerms.deny = unionPreserve(existingPerms.deny, CLAUDE_PERMISSION_DEFAULTS.deny);
++  obj.permissions = existingPerms;
++  return JSON.stringify(obj, null, 2) + '\n';
++}
++
++/**
++ * Merge safe ignore defaults into an existing `.cursorignore` string (read -> merge
++ * -> write). Preserves all user lines/comments verbatim and only appends default
++ * patterns that are not already present. Idempotent.
++ * @param {string} existingText
++ * @returns {string}
++ */
++function mergeCursorIgnore(existingText) {
++  const text = typeof existingText === 'string' ? existingText : '';
++  const existingPatterns = new Set(
++    text.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#')),
++  );
++  const missing = CURSORIGNORE_DEFAULTS.filter(pattern => !existingPatterns.has(pattern));
++  const base = text.replace(/\s+$/, '');
++  if (missing.length === 0) {
++    return base ? `${base}\n` : '';
++  }
++  const lines = [];
++  if (base) {
++    lines.push(base, '');
++  }
++  lines.push(...CURSORIGNORE_HEADER, ...missing);
++  return lines.join('\n') + '\n';
++}
++
++/**
++ * Render safe Claude permission defaults into `.claude/settings.json`.
++ * Read -> merge -> write. An unparseable existing file is BACKED UP and left
++ * untouched (never overwritten) to avoid destroying user settings.
++ * @param {object} params
++ * @param {string} params.targetRoot - Project root.
++ * @returns {{ file: string, existed: boolean, skipped: boolean, backup?: string }}
++ */
++function renderClaudePermissions({ targetRoot }) {
++  const filePath = path.join(targetRoot, '.claude', 'settings.json');
++  fs.mkdirSync(path.dirname(filePath), { recursive: true });
++  const existed = fs.existsSync(filePath);
++  const existing = existed ? fs.readFileSync(filePath, 'utf-8') : '';
++
++  let merged;
++  try {
++    merged = mergeClaudePermissions(existing);
++  } catch (err) {
++    if (err instanceof SafetyConfigParseError && existed) {
++      const backup = backupFile(filePath);
++      return { file: filePath, existed, skipped: true, backup };
++    }
++    throw err;
++  }
++
++  fs.writeFileSync(filePath, merged, 'utf-8');
++  return { file: filePath, existed, skipped: false };
++}
++
++/**
++ * Render safe `.cursorignore` defaults at the project root.
++ * Read -> merge -> write, preserving user lines. Line-based, so there is no
++ * parse-failure path (never destructive).
++ * @param {object} params
++ * @param {string} params.targetRoot - Project root.
++ * @returns {{ file: string, existed: boolean, skipped: boolean }}
++ */
++function renderCursorIgnore({ targetRoot }) {
++  const filePath = path.join(targetRoot, '.cursorignore');
++  const existed = fs.existsSync(filePath);
++  const existing = existed ? fs.readFileSync(filePath, 'utf-8') : '';
++  const merged = mergeCursorIgnore(existing);
++  fs.writeFileSync(filePath, merged, 'utf-8');
++  return { file: filePath, existed, skipped: false };
++}
++
++module.exports = {
++  SafetyConfigParseError,
++  CLAUDE_PERMISSION_DEFAULTS,
++  CURSORIGNORE_DEFAULTS,
++  mergeClaudePermissions,
++  mergeCursorIgnore,
++  renderClaudePermissions,
++  renderCursorIgnore,
++};
+diff --git a/test/harness-capability-matrix.test.js b/test/harness-capability-matrix.test.js
+index db3a06b2..3817365b 100644
+--- a/test/harness-capability-matrix.test.js
++++ b/test/harness-capability-matrix.test.js
+@@ -59,6 +59,36 @@ describe('harness capability matrix', () => {
+     expect(matrix.harnesses.cursor.capabilities.extensionPacks.primarySurface).toContain('.cursor/mcp.json');
+   });
+ 
++  test('models native safety surfaces honestly (Tier-2 parity)', () => {
++    const matrix = getHarnessCapabilityMatrix();
++    const { claude, cursor, codex, hermes } = matrix.harnesses;
++
++    // Claude tool-permission allowlist is a real project-local render (.claude/settings.json).
++    expect(claude.capabilities.permissions.status).toBe('native');
++    expect(claude.capabilities.permissions.primarySurface).toContain('.claude/settings.json');
++    expect(claude.capabilities.permissions.evidence).toContain('S11');
++    // Cursor has no project-local permission allowlist (IDE/global only).
++    expect(cursor.capabilities.permissions.status).toBe('unsupported');
++    // Codex approvals/sandbox are config.toml surfaces honored only under GLOBAL trust — deferred.
++    expect(codex.capabilities.permissions.status).toBe('not-delivered');
++    expect(codex.capabilities.sandbox.status).toBe('not-delivered');
++    expect(codex.capabilities.sandbox.knownIssue).toContain('trust');
++    expect(codex.capabilities.sandbox.evidence).toContain('S13');
++
++    // Cursor .cursorignore IS a native project-local read/index boundary.
++    expect(cursor.capabilities.ignore.status).toBe('native');
++    expect(cursor.capabilities.ignore.primarySurface).toBe('.cursorignore');
++    expect(cursor.capabilities.ignore.evidence).toContain('S12');
++    // Claude read boundary is projected into permission deny rules (no .claudeignore).
++    expect(claude.capabilities.ignore.status).toBe('projection');
++
++    // Claude has no config-file sandbox; execution safety is the permissions allowlist.
++    expect(claude.capabilities.sandbox.status).toBe('unsupported');
++    // Hermes is CLI-consumed: no native safety surfaces.
++    expect(hermes.capabilities.permissions.status).toBe('unsupported');
++    expect(hermes.capabilities.sandbox.status).toBe('unsupported');
++  });
++
+   test('every capability status is in the STATUS_VOCABULARY enum (no off-vocab/dishonest labels)', () => {
+     const { STATUS_VOCABULARY } = require('../lib/harness-capability-matrix');
+     const vocab = new Set(STATUS_VOCABULARY);
+@@ -192,6 +222,7 @@ describe('renderer contract', () => {
+       'stage-graph',
+       'state-and-memory',
+       'distribution',
++      'safety',
+     ]);
+     expect(contract.rendererFamilies.every(renderer => renderer.canonicalInput && renderer.requiredEvidence.length > 0)).toBe(true);
+   });
+diff --git a/test/safety-config-renderer.test.js b/test/safety-config-renderer.test.js
+new file mode 100644
+index 00000000..bb409319
+--- /dev/null
++++ b/test/safety-config-renderer.test.js
+@@ -0,0 +1,139 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  CLAUDE_PERMISSION_DEFAULTS,
++  CURSORIGNORE_DEFAULTS,
++  mergeClaudePermissions,
++  mergeCursorIgnore,
++  renderClaudePermissions,
++  renderCursorIgnore,
++  SafetyConfigParseError,
++} = require('../lib/safety-config-renderer');
++
++function tmp() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-safety-'));
++}
++
++describe('safety renderer — Claude permissions defaults', () => {
++  test('defaults are safe: allow dev workflow, deny destructive + secret reads', () => {
++    const { allow, deny, ask } = CLAUDE_PERMISSION_DEFAULTS;
++    // allows the routine forge/dev workflow
++    expect(allow.some(r => /^Bash\(git status/.test(r))).toBe(true);
++    expect(allow.some(r => /^Bash\(git commit/.test(r))).toBe(true);
++    // denies obviously-dangerous operations
++    expect(deny.some(r => /rm -rf/.test(r))).toBe(true);
++    expect(deny.some(r => /git push --force|push -f/.test(r))).toBe(true);
++    // read boundary: secrets are never readable by the agent
++    expect(deny.some(r => /^Read\(.*\.env/.test(r))).toBe(true);
++    // careful operations fall to ask
++    expect(ask.some(r => /git reset|git rebase/.test(r))).toBe(true);
++  });
++
++  test('fresh: writes a valid .claude/settings.json permissions block', () => {
++    const root = tmp();
++    try {
++      const res = renderClaudePermissions({ targetRoot: root });
++      expect(res.existed).toBe(false);
++      expect(res.skipped).toBe(false);
++      const p = path.join(root, '.claude', 'settings.json');
++      const cfg = JSON.parse(fs.readFileSync(p, 'utf-8')); // valid JSON
++      expect(Array.isArray(cfg.permissions.allow)).toBe(true);
++      expect(cfg.permissions.allow.length).toBeGreaterThan(0);
++      expect(cfg.permissions.deny.some(r => /rm -rf/.test(r))).toBe(true);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('merge PRESERVES existing settings keys and user allow/deny entries (union, no dupes)', () => {
++    const existing = JSON.stringify({
++      model: 'opus',
++      permissions: {
++        allow: ['Bash(mytool:*)', 'Bash(git status:*)'],
++        deny: ['Bash(secretcmd:*)'],
++      },
++    }, null, 2);
++    const merged = JSON.parse(mergeClaudePermissions(existing));
++    // unrelated user key preserved
++    expect(merged.model).toBe('opus');
++    // user's custom entries preserved
++    expect(merged.permissions.allow).toContain('Bash(mytool:*)');
++    expect(merged.permissions.deny).toContain('Bash(secretcmd:*)');
++    // forge defaults added
++    expect(merged.permissions.deny.some(r => /rm -rf/.test(r))).toBe(true);
++    // no duplicate of the shared entry
++    const gitStatus = merged.permissions.allow.filter(r => r === 'Bash(git status:*)');
++    expect(gitStatus.length).toBe(1);
++  });
++
++  test('idempotent: merging twice yields identical output', () => {
++    const once = mergeClaudePermissions('');
++    const twice = mergeClaudePermissions(once);
++    expect(twice).toBe(once);
++  });
++
++  test('unparseable settings.json is BACKED UP and left untouched (data-loss guard)', () => {
++    const root = tmp();
++    try {
++      const dir = path.join(root, '.claude');
++      fs.mkdirSync(dir, { recursive: true });
++      const original = '{\n  // jsonc comment\n  "model": "opus",\n}\n';
++      const p = path.join(dir, 'settings.json');
++      fs.writeFileSync(p, original);
++      const res = renderClaudePermissions({ targetRoot: root });
++      expect(res.skipped).toBe(true);
++      expect(fs.readFileSync(p, 'utf-8')).toBe(original); // untouched
++      expect(res.backup && fs.existsSync(res.backup)).toBe(true);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('mergeClaudePermissions throws SafetyConfigParseError on populated unparseable input', () => {
++    expect(() => mergeClaudePermissions('{ not json,,, }')).toThrow(SafetyConfigParseError);
++  });
++});
++
++describe('safety renderer — .cursorignore defaults', () => {
++  test('defaults ignore secrets, env, node_modules, and build artifacts', () => {
++    const text = CURSORIGNORE_DEFAULTS.join('\n');
++    expect(text).toMatch(/\.env/);
++    expect(text).toMatch(/node_modules/);
++    expect(/dist|build|out|coverage/.test(text)).toBe(true);
++    expect(/\*\.pem|\*\.key|secrets/.test(text)).toBe(true);
++  });
++
++  test('fresh: writes .cursorignore with safe defaults', () => {
++    const root = tmp();
++    try {
++      const res = renderCursorIgnore({ targetRoot: root });
++      expect(res.existed).toBe(false);
++      const body = fs.readFileSync(path.join(root, '.cursorignore'), 'utf-8');
++      expect(body).toMatch(/\.env/);
++      expect(body).toMatch(/node_modules/);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('merge PRESERVES user lines and only appends missing defaults', () => {
++    const existing = '# my rules\nmy-private-dir/\n.env\n';
++    const merged = mergeCursorIgnore(existing);
++    // user content preserved verbatim
++    expect(merged).toContain('# my rules');
++    expect(merged).toContain('my-private-dir/');
++    // pre-existing default not duplicated
++    expect(merged.split('\n').filter(l => l.trim() === '.env').length).toBe(1);
++    // a missing default was appended
++    expect(merged).toMatch(/node_modules/);
++  });
++
++  test('idempotent: merging twice yields identical output', () => {
++    const once = mergeCursorIgnore('');
++    const twice = mergeCursorIgnore(once);
++    expect(twice).toBe(once);
++  });
++});
+diff --git a/test/setup-safety-defaults.test.js b/test/setup-safety-defaults.test.js
+new file mode 100644
+index 00000000..2a3f2c3c
+--- /dev/null
++++ b/test/setup-safety-defaults.test.js
+@@ -0,0 +1,101 @@
++const { describe, test, expect, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const setup = require('../lib/commands/setup');
++
++// Native SAFETY surfaces are auto-wired by `forge setup` (mirrors the MCP renderer):
++//   Claude -> .claude/settings.json permissions (safe defaults)
++//   Cursor -> .cursorignore (AI read/index boundary)
++// Defaults are ON but opt-out-able via FORGE_SKIP_SAFETY_DEFAULTS.
++
++describe('forge setup renders native safety defaults', () => {
++  const created = [];
++  function tmp() {
++    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-safety-setup-'));
++    created.push(d);
++    return d;
++  }
++  afterEach(() => {
++    delete process.env.FORGE_SKIP_SAFETY_DEFAULTS;
++    while (created.length) fs.rmSync(created.pop(), { recursive: true, force: true });
++  });
++
++  test('fresh Claude: writes a valid .claude/settings.json permissions block', () => {
++    const root = tmp();
++    setup._setState({ projectRoot: root });
++    setup.setupClaudePermissions();
++
++    const p = path.join(root, '.claude', 'settings.json');
++    expect(fs.existsSync(p)).toBe(true);
++    const cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
++    expect(cfg.permissions.allow.some(r => /git status/.test(r))).toBe(true);
++    expect(cfg.permissions.deny.some(r => /rm -rf/.test(r))).toBe(true);
++    expect(cfg.permissions.deny.some(r => /\.env/.test(r))).toBe(true);
++    // Non-surprising: we do NOT silently auto-approve everything.
++    expect(cfg.permissions.defaultMode).toBeUndefined();
++  });
++
++  test('fresh Cursor: writes .cursorignore with safe defaults', () => {
++    const root = tmp();
++    setup._setState({ projectRoot: root });
++    setup.setupCursorIgnore();
++
++    const body = fs.readFileSync(path.join(root, '.cursorignore'), 'utf-8');
++    expect(body).toMatch(/\.env/);
++    expect(body).toMatch(/node_modules/);
++  });
++
++  test('existing settings.json: preserves user keys and entries', () => {
++    const root = tmp();
++    fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
++    fs.writeFileSync(
++      path.join(root, '.claude', 'settings.json'),
++      JSON.stringify({ model: 'opus', permissions: { allow: ['Bash(mytool:*)'] } }, null, 2),
++    );
++    setup._setState({ projectRoot: root });
++    setup.setupClaudePermissions();
++
++    const cfg = JSON.parse(fs.readFileSync(path.join(root, '.claude', 'settings.json'), 'utf-8'));
++    expect(cfg.model).toBe('opus'); // preserved
++    expect(cfg.permissions.allow).toContain('Bash(mytool:*)'); // preserved
++    expect(cfg.permissions.deny.some(r => /rm -rf/.test(r))).toBe(true); // added
++  });
++
++  test('existing .cursorignore: preserves user lines, appends missing defaults', () => {
++    const root = tmp();
++    fs.writeFileSync(path.join(root, '.cursorignore'), '# mine\nmy-secret-dir/\n');
++    setup._setState({ projectRoot: root });
++    setup.setupCursorIgnore();
++
++    const body = fs.readFileSync(path.join(root, '.cursorignore'), 'utf-8');
++    expect(body).toContain('my-secret-dir/'); // preserved
++    expect(body).toMatch(/node_modules/); // appended
++  });
++
++  test('opt-out: FORGE_SKIP_SAFETY_DEFAULTS leaves both surfaces untouched', () => {
++    const root = tmp();
++    process.env.FORGE_SKIP_SAFETY_DEFAULTS = '1';
++    setup._setState({ projectRoot: root });
++    setup.setupClaudePermissions();
++    setup.setupCursorIgnore();
++
++    expect(fs.existsSync(path.join(root, '.claude', 'settings.json'))).toBe(false);
++    expect(fs.existsSync(path.join(root, '.cursorignore'))).toBe(false);
++  });
++
++  test('malformed settings.json is backed up, not clobbered (data-loss guard)', () => {
++    const root = tmp();
++    fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
++    const original = '{\n  // jsonc\n  "model": "opus",\n}\n';
++    const p = path.join(root, '.claude', 'settings.json');
++    fs.writeFileSync(p, original);
++
++    setup._setState({ projectRoot: root });
++    setup.setupClaudePermissions();
++
++    expect(fs.readFileSync(p, 'utf-8')).toBe(original); // untouched
++    expect(fs.existsSync(`${p}.bak`)).toBe(true);
++  });
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,232 @@
+From a22e33caa501f4fa630c02f2226d241b45b03c66 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 17:50:33 +0530
+Subject: [PATCH] fix(ci): stop pr-monitor red-X + auto-regen the D20 kill-list
+ (97e6a146, bea95810)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+FIX 1 (97e6a146): pr-monitor used concurrency cancel-in-progress:true, so every
+superseded run ended CANCELLED and surfaced as a red/non-SUCCESS check on the PR
+head — cosmetically alarming and it tripped Forge's own merge-gate bundle (any
+non-SUCCESS check read as failure). Flip to cancel-in-progress:false so the group
+serializes instead of cancelling; the idempotent sticky-comment upsert means the
+last run still reflects the latest state. No cancelled run, no false red X.
+
+FIX 2 (bea95810): the D20 bd-call-site kill-list artifact is diffed against a live
+re-scan by lib/release-readiness's d20 check, so every Beads-removal PR shifted the
+census and red-failed CI cross-platform (#387, #391). Add writeAuditArtifact() +
+a `forge release regen-audit` subcommand that rewrites the artifact from a live
+scan, and point the staleness blocker's detail at that exact one-liner so the fix
+is copy-paste, not a byte-for-byte hand-edit.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/pr-monitor.yml | 13 ++++++++++---
+ lib/commands/release.js          | 15 ++++++++++++++-
+ lib/release-readiness.js         | 18 +++++++++++++++++-
+ test/commands/release.test.js    | 19 +++++++++++++++++++
+ test/release-readiness.test.js   | 29 +++++++++++++++++++++++++++++
+ 5 files changed, 89 insertions(+), 5 deletions(-)
+
+diff --git a/.github/workflows/pr-monitor.yml b/.github/workflows/pr-monitor.yml
+index d40a997d..470fb7fe 100644
+--- a/.github/workflows/pr-monitor.yml
++++ b/.github/workflows/pr-monitor.yml
+@@ -29,11 +29,18 @@ permissions:
+   pull-requests: write
+   checks: write
+ 
+-# One run per PR: overlapping events settle to the latest state, and the sticky
+-# comment is an idempotent upsert, so cancelling an in-flight run is safe.
++# One run per PR, but do NOT cancel the in-flight one. cancel-in-progress:true
++# left every superseded run as a CANCELLED workflow run, which GitHub surfaces as
++# a red/non-SUCCESS check on the PR head — cosmetically alarming AND it trips
++# merge-gate tooling (Forge's own pr-bundle) that treats any non-SUCCESS check as
++# a failure. With cancel-in-progress:false the group SERIALIZES instead: overlapping
++# events queue and run to a clean completion in order, and because the sticky comment
++# is an idempotent upsert the last run still reflects the latest state. The extra
++# runner minutes for a lightweight surface-only monitor are worth never leaving a
++# false red X on an otherwise-green PR (kernel issue 97e6a146).
+ concurrency:
+   group: pr-monitor-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_suite.pull_requests[0].number || github.ref }}
+-  cancel-in-progress: true
++  cancel-in-progress: false
+ 
+ jobs:
+   monitor:
+diff --git a/lib/commands/release.js b/lib/commands/release.js
+index 2350c2c9..8fc2a58e 100644
+--- a/lib/commands/release.js
++++ b/lib/commands/release.js
+@@ -4,6 +4,7 @@ const {
+   SUPPORTED_TARGET,
+   buildReadinessReport,
+   renderReadinessReport,
++  writeAuditArtifact,
+ } = require('../release-readiness');
+ const { runIssueOperation: defaultRunIssueOperation } = require('../forge-issues');
+ const { normalizeArgs, normalizeIssueResult, withResolvedIssueBackend } = require('./_issue');
+@@ -13,7 +14,7 @@ const { normalizeArgs, normalizeIssueResult, withResolvedIssueBackend } = requir
+ // dispatches `check` to the gate and routes everything else through the shared
+ // issue dispatch (resolve backend → runIssueOperation('release') → normalize). The
+ // Beads backend has no release op and returns the Kernel-only contract error.
+-const usage = 'Usage: forge release <id>  |  forge release check --target 0.1.0 [--json]';
++const usage = 'Usage: forge release <id>  |  forge release check --target 0.1.0 [--json]  |  forge release regen-audit';
+ 
+ async function runReleaseIssue(args, projectRoot, opts = {}) {
+   const resolved = withResolvedIssueBackend(projectRoot, opts);
+@@ -57,6 +58,18 @@ function parseReleaseArgs(args = []) {
+ async function handler(args, _flags, projectRoot, opts = {}) {
+   const parsed = parseReleaseArgs(args);
+ 
++  if (parsed.subcommand === 'regen-audit') {
++    // forge release regen-audit — rewrite the D20 kill-list from a live re-scan.
++    // The staleness gate (lib/release-readiness d20 check) points here so a
++    // Beads-removal PR that shifts the census is a one-command fix, not a
++    // hand-edit that red-fails CI until it matches byte-for-byte.
++    const { path: artifact } = writeAuditArtifact(projectRoot);
++    return {
++      success: true,
++      output: `Regenerated ${artifact}. Commit it to clear the d20 staleness gate.\n`,
++    };
++  }
++
+   if (parsed.subcommand !== 'check') {
+     // forge release <id> — release a claimed issue via the shared issue dispatch.
+     return runReleaseIssue(args, projectRoot, opts);
+diff --git a/lib/release-readiness.js b/lib/release-readiness.js
+index ff818803..ba726059 100644
+--- a/lib/release-readiness.js
++++ b/lib/release-readiness.js
+@@ -1754,7 +1754,7 @@ function auditArtifactBlocker(projectRoot, audit) {
+     return {
+       id: 'd20-audit-artifact-current',
+       title: 'D20 bd call-site kill-list artifact is not current',
+-      detail: `Regenerate ${AUDIT_ARTIFACT}; current status: ${auditArtifact.reason}.`,
++      detail: `Regenerate ${AUDIT_ARTIFACT} in one command: \`forge release regen-audit\` (then commit it). Current status: ${auditArtifact.reason}.`,
+       evidence: auditArtifact.evidence,
+     };
+   }
+@@ -2074,6 +2074,21 @@ function renderAuditGroup(audit, group) {
+   ];
+ }
+ 
++// Rewrite the tracked kill-list artifact from a live re-scan. This is the exact
++// one-liner (`forge release regen-audit`) the d20 staleness blocker points at:
++// every Beads-removal PR shifts the census, so rather than hand-editing the
++// artifact (and red-failing CI cross-platform until it matches byte-for-byte),
++// a developer regenerates it in one command and commits the diff. `options`
++// forwards to auditBdCallSites so the write uses the same scan roots the gate
++// compares against.
++function writeAuditArtifact(projectRoot, options = {}) {
++  const audit = auditBdCallSites(projectRoot, options);
++  const artifactPath = absolutePath(projectRoot, AUDIT_ARTIFACT);
++  fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
++  fs.writeFileSync(artifactPath, renderBdCallSiteAuditMarkdown(audit), 'utf8');
++  return { path: AUDIT_ARTIFACT, audit };
++}
++
+ module.exports = {
+   AUDIT_ARTIFACT,
+   GROUPS,
+@@ -2083,6 +2098,7 @@ module.exports = {
+   canonicalizeAuditArtifact,
+   renderBdCallSiteAuditMarkdown,
+   renderReadinessReport,
++  writeAuditArtifact,
+   // Exposed for the premerge-de-stage certification tests.
+   premergeEmbeddedGateStatus,
+   premergeEmbeddedGateBlocker,
+diff --git a/test/commands/release.test.js b/test/commands/release.test.js
+index ffadf417..57bbc053 100644
+--- a/test/commands/release.test.js
++++ b/test/commands/release.test.js
+@@ -3,10 +3,12 @@
+ const { describe, expect, test } = require('bun:test');
+ const { spawnSync } = require('node:child_process');
+ const fs = require('node:fs');
++const os = require('node:os');
+ const path = require('node:path');
+ 
+ const releaseCommand = require('../../lib/commands/release');
+ const {
++  AUDIT_ARTIFACT,
+   buildReadinessReport,
+   canonicalizeAuditArtifact,
+   renderBdCallSiteAuditMarkdown,
+@@ -37,6 +39,23 @@ describe('forge release check command', () => {
+     expect(result.report.blockers).toEqual([]);
+   }, FULL_REPO_READINESS_TIMEOUT_MS);
+ 
++  test('forge release regen-audit rewrites the kill-list artifact and clears the d20 blocker', async () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-release-regen-'));
++    try {
++      const result = await releaseCommand.handler(['regen-audit'], {}, root);
++
++      expect(result.success).toBe(true);
++      const artifactPath = path.join(root, ...AUDIT_ARTIFACT.split('/'));
++      expect(fs.existsSync(artifactPath)).toBe(true);
++
++      // The freshly written artifact is current, so the staleness gate no longer fires.
++      const report = buildReadinessReport(root, { target: '0.1.0' });
++      expect(report.blockers.map(blocker => blocker.id)).not.toContain('d20-audit-artifact-current');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
+   test('rejects unsupported targets explicitly', async () => {
+     const result = await releaseCommand.handler(['check', '--target', '0.0.11'], {}, repoRoot);
+ 
+diff --git a/test/release-readiness.test.js b/test/release-readiness.test.js
+index 140ef29a..1c7004e1 100644
+--- a/test/release-readiness.test.js
++++ b/test/release-readiness.test.js
+@@ -10,6 +10,7 @@ const {
+   auditBdCallSites,
+   buildReadinessReport,
+   renderBdCallSiteAuditMarkdown,
++  writeAuditArtifact,
+ } = require('../lib/release-readiness');
+ 
+ const tempRoots = [];
+@@ -463,6 +464,34 @@ module.exports = {
+     expect(blocker.detail).toContain('stale');
+   });
+ 
++  test('names the exact one-liner regen command in the stale-artifact blocker detail', () => {
++    const root = makeRepo();
++    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
++    writeFile(root, AUDIT_ARTIFACT, 'stale artifact\n');
++
++    const report = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
++    const blocker = report.blockers.find(item => item.id === 'd20-audit-artifact-current');
++    // The fix must hand the developer a copy-paste one-liner, not just "regenerate it".
++    expect(blocker.detail).toContain('forge release regen-audit');
++  });
++
++  test('writeAuditArtifact regenerates the kill-list so the d20 blocker clears', () => {
++    const root = makeRepo();
++    writeFile(root, 'lib/commands/_issue.js', "exec('bd', ['show']);\n");
++
++    // Missing artifact → blocked.
++    const before = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
++    expect(before.blockers.map(blocker => blocker.id)).toContain('d20-audit-artifact-current');
++
++    // Regenerate with the same scan roots the gate uses, then the blocker clears.
++    const result = writeAuditArtifact(root, { scanRoots: ['lib'] });
++    expect(result.path).toBe(AUDIT_ARTIFACT);
++    expect(fs.existsSync(path.join(root, ...AUDIT_ARTIFACT.split('/')))).toBe(true);
++
++    const after = buildReadinessReport(root, { target: '0.1.0', scanRoots: ['lib'] });
++    expect(after.blockers.map(blocker => blocker.id)).not.toContain('d20-audit-artifact-current');
++  });
++
+   test('accepts a current kill-list artifact with CRLF line endings', () => {
+     const root = makeRepo();
+     writeFile(root, 'lib/commands/_issue.js', 'const SUBCOMMANDS = {};\n');
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,126 @@
+From 8346393e5b8609a5dbe2dbfdc6639c75ade77c3e Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 15:50:30 +0530
+Subject: [PATCH] fix(shepherd): keep the lease alive across legacy
+ verification
+
+Legacy migration verifies each entry with the SYNCHRONOUS gh runner, blocking
+the event loop that drives the lease heartbeat. A few reads near the 30s
+command timeout age the lease past its 90s TTL, so a concurrent session-start,
+push, or ship trigger can reclaim it while this daemon keeps mutating the
+cutover gate.
+
+Stamp the lease around every verified entry, and re-verify ownership by token
+before the mutations that commit migration results (snapshot bind and gate
+completion), returning lease_lost when the lease was reclaimed.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/reconcile-executor.js          | 22 ++++++++++
+ .../reconcile-migration-gate.test.js          | 42 +++++++++++++++++++
+ 2 files changed, 64 insertions(+)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index b57b0e6e..86580782 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -760,6 +760,24 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	const options = ownerOptions(opts);
+ 	const now = new Date((opts.now || (() => Date.now()))()).toISOString();
+ 	const readSnapshot = opts.readLegacySnapshot || (() => defaultReadLegacySnapshot(projectRoot, opts));
++	// Legacy verification calls the SYNCHRONOUS provider runner once per entry, so the
++	// heartbeat timer started by the daemon cannot fire while a read is in flight. A
++	// handful of reads near the 30s command timeout would otherwise age the lease past
++	// its 90s TTL, let a concurrent trigger reclaim it, and leave two controllers
++	// mutating the same cutover gate. Stamp the lease around every entry, and re-verify
++	// ownership by token before any mutation that commits migration results.
++	const leaseGuarded = opts.token !== undefined && opts.token !== null;
++	const stampLease = opts.stampLease || (opts.acquire ? () => true : shepherdLease.stamp);
++	const ownsLease = opts.ownsLease || (opts.acquire ? () => true : shepherdLease.owns);
++	const leaseArgs = { gitCommonDir: opts.gitCommonDir, token: opts.token };
++	const heartbeatLease = () => {
++		if (!leaseGuarded) return;
++		try { stampLease(projectRoot, leaseArgs); } catch { /* best effort — ownership is rechecked below */ }
++	};
++	const holdsLease = () => {
++		if (!leaseGuarded) return true;
++		try { return ownsLease(projectRoot, leaseArgs) === true; } catch { return false; }
++	};
+ 	const initialGate = await authority.readMigrationGate({}, options);
+ 	if (initialGate?.ok && initialGate.gate?.state === 'complete') {
+ 		const completedSnapshot = await readSnapshot();
+@@ -800,9 +818,12 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 		const evidence = [];
+ 		if (consolidated && !first.unmappable && !consolidated.unmappable) {
+ 			for (const entry of consolidated.entries) {
++				heartbeatLease();
+ 				evidence.push(await collectLegacyEntryEvidence(entry, options, opts, projectRoot));
++				heartbeatLease();
+ 			}
+ 		}
++		if (!holdsLease()) return { ok: false, state: 'quarantined', reason: 'lease_lost' };
+ 		const second = await readSnapshot();
+ 		const secondHash = hashLegacySnapshot(second);
+ 		if (firstHash === secondHash) {
+@@ -918,6 +939,7 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 		&& gate.gate?.snapshot_hash === snapshotHash
+ 		&& ownerRowsMatch(expectedRows, rows.records);
+ 	if (!exact) return { ok: false, state: 'quarantined', reason: 'legacy_reread_mismatch' };
++	if (!holdsLease()) return { ok: false, state: 'quarantined', reason: 'lease_lost' };
+ 	const completed = await authority.completeMigrationGate({ snapshotHash, updatedAt: now }, options);
+ 	if (!completed?.ok) return { ok: false, state: 'quarantined', reason: completed?.reason || 'gate_mismatch' };
+ 	try { await opts.cleanupLegacyEvidence?.(snapshot); } catch {
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index 681c9078..8d6c220d 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -1051,4 +1051,46 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(second).toMatchObject({ ok: true, state: 'complete' });
+ 		expect(cleanupCalls).toBe(2);
+ 	});
++
++	test('refreshes the daemon lease between legacy provider verifications', async () => {
++		const api = authorityHarness();
++		const legacy = snapshot([entry('acme/repo', 7), entry('acme/repo', 8), entry('acme/repo', 9)]);
++		let verifications = 0;
++		const stamps = [];
++		const result = await run(api, legacy, {
++			token: 'lease-token',
++			gitCommonDir: '/repo/.git',
++			stampLease: (root, leaseOpts) => {
++				stamps.push({ root, token: leaseOpts.token, at: verifications });
++				return true;
++			},
++			ownsLease: () => true,
++			readProviderState: async identity => {
++				verifications += 1;
++				return identity.providerState;
++			},
++		});
++		expect(result).toMatchObject({ ok: true, state: 'complete' });
++		// One slow provider read must never starve the heartbeat for the next one:
++		// the lease is stamped before and after every entry, so a 3-entry migration
++		// can never span the 90s lease TTL without a refresh.
++		expect(stamps.every(value => value.root === '/repo' && value.token === 'lease-token')).toBe(true);
++		expect(new Set(stamps.map(value => value.at)).size).toBe(verifications + 1);
++		expect(verifications).toBe(3);
++	});
++
++	test('refuses to commit legacy migration once the lease has been reclaimed', async () => {
++		const api = authorityHarness();
++		const result = await run(api, snapshot([entry('acme/repo', 7)]), {
++			token: 'lease-token',
++			gitCommonDir: '/repo/.git',
++			stampLease: () => false,
++			ownsLease: (_root, leaseOpts) => leaseOpts.token === 'reclaimed-by-someone-else',
++		});
++		expect(result).toMatchObject({ ok: false, state: 'quarantined', reason: 'lease_lost' });
++		expect(api.calls).not.toContain('bind');
++		expect(api.calls).not.toContain('complete-gate');
++		expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
++		expect(api.rows.size).toBe(0);
++	});
+ });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,208 @@
+From 7af6c95133bb4043d3c3d51db890416cabc9072a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 08:06:24 +0530
+Subject: [PATCH] fix(gates): read staged paths NUL-delimited so no pathname is
+ mis-parsed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+parseStagedNameStatus split git's default --name-status output on newlines and
+tabs and trimmed each field. That cannot represent a pathname containing a tab
+or a newline, drops legal leading/trailing whitespace, and receives non-ASCII
+and special-character paths in git's quoted, backslash-escaped form. Every one
+of those mis-reads makes the hook miss a census-impacting staged change and
+skip the regen — the same silent failure the auto-heal exists to prevent.
+
+Ask git for -z instead and parse the flat NUL-delimited token stream, which
+sidesteps quoting and escaping entirely, and never trim a pathname.
+
+The suite's exec seam is now injected the way the rest of the repo does it
+(`exec = execFileSync`), so the argv the hook depends on is asserted without a
+real repo. The real-git suite drops its `describe.if(gitAvailable)` guard and
+runs unconditionally, matching the sibling suite in
+test/release-readiness-tracked.test.js: git is a hard prerequisite here, so a
+silently vanishing suite could only ever hide a broken environment.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ scripts/sync-d20-audit.js          | 38 +++++++++-------
+ test/sync-d20-audit-script.test.js | 70 ++++++++++++++++++++++++++----
+ 2 files changed, 85 insertions(+), 23 deletions(-)
+
+diff --git a/scripts/sync-d20-audit.js b/scripts/sync-d20-audit.js
+index ced7df9a..71c45835 100644
+--- a/scripts/sync-d20-audit.js
++++ b/scripts/sync-d20-audit.js
+@@ -23,9 +23,9 @@ const { execFileSync } = require('node:child_process');
+ const path = require('node:path');
+ const { AUDIT_ARTIFACT, isBdCensusPath, writeAuditArtifact } = require('../lib/release-readiness');
+ 
+-function repoRoot() {
++function repoRoot(exec = execFileSync) {
+   try {
+-    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
++    return exec('git', ['rev-parse', '--show-toplevel'], {
+       encoding: 'utf8',
+       stdio: ['ignore', 'pipe', 'ignore'],
+     }).trim();
+@@ -35,29 +35,37 @@ function repoRoot() {
+ }
+ 
+ /**
+- * Both sides of a rename shift the census — the old path leaves it and the new one may
+- * not enter it — so this reads --name-status rather than --name-only, which would report
+- * the destination alone.
++ * Parses `git diff --cached --name-status -z`: a flat NUL-delimited token stream of a
++ * status followed by its path — `A\0path\0`, and `R100\0old\0new\0` for a rename or copy,
++ * which is read from both sides because both shift the census (the old path leaves it and
++ * the new one may not enter it).
++ *
++ * NUL delimiting is what makes this safe. Git's default output quotes and backslash-
++ * escapes pathnames with non-ASCII or special characters, and no line/tab split can
++ * represent a pathname that itself contains a tab or a newline. Under -z the pathnames are
++ * verbatim, so nothing here may trim them — a mis-read path silently drops a
++ * census-impacting change and skips the regen this hook exists to perform.
+  */
+ function parseStagedNameStatus(output) {
++  const tokens = output.split('\0');
+   const files = [];
+-  for (const line of output.split(/\r?\n/)) {
+-    const parts = line.trim().split('\t').filter(Boolean);
+-    if (parts.length < 2) {
++
++  for (let index = 0; index < tokens.length; index++) {
++    const status = tokens[index];
++    if (status.length === 0) {
+       continue;
+     }
+-    if (/^[RC]/.test(parts[0])) {
+-      files.push(...parts.slice(1, 3));
+-    } else {
+-      files.push(parts[1]);
+-    }
++    const pathCount = /^[RC]/.test(status) ? 2 : 1;
++    files.push(...tokens.slice(index + 1, index + 1 + pathCount).filter(Boolean));
++    index += pathCount;
+   }
++
+   return [...new Set(files)];
+ }
+ 
+-function stagedPaths(projectRoot) {
++function stagedPaths(projectRoot, exec = execFileSync) {
+   return parseStagedNameStatus(
+-    execFileSync('git', ['-C', projectRoot, 'diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
++    exec('git', ['-C', projectRoot, 'diff', '--cached', '--name-status', '-z', '--diff-filter=ACMRDT'], {
+       encoding: 'utf8',
+       stdio: ['ignore', 'pipe', 'ignore'],
+     }),
+diff --git a/test/sync-d20-audit-script.test.js b/test/sync-d20-audit-script.test.js
+index 61579eca..98d8bff7 100644
+--- a/test/sync-d20-audit-script.test.js
++++ b/test/sync-d20-audit-script.test.js
+@@ -13,9 +13,7 @@ const path = require('node:path');
+ const { spawnSync } = require('node:child_process');
+ 
+ const { AUDIT_ARTIFACT } = require('../lib/release-readiness');
+-const { run, parseStagedNameStatus } = require('../scripts/sync-d20-audit');
+-
+-const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
++const { run, parseStagedNameStatus, stagedPaths } = require('../scripts/sync-d20-audit');
+ 
+ function deps(overrides = {}) {
+   const calls = { wrote: 0, staged: [], logs: [] };
+@@ -70,21 +68,73 @@ describe('sync-d20-audit run() — changed-path gate', () => {
+   });
+ });
+ 
++// `--name-status -z` emits a flat NUL-delimited token stream: a status token, then one
++// path (two for R/C). Line/tab splitting could not represent a pathname containing a tab
++// or a newline, and git's non-z output would hand those over in its quoted, backslash-
++// escaped form. Either way the hook would mis-read a census-impacting path and silently
++// skip the regen — the exact failure this auto-heal exists to prevent.
+ describe('sync-d20-audit parseStagedNameStatus', () => {
+   test('reads added/modified/deleted paths', () => {
+-    expect(parseStagedNameStatus('A\tlib/a.js\nM\tlib/b.js\nD\tlib/c.js\n'))
++    expect(parseStagedNameStatus('A\0lib/a.js\0M\0lib/b.js\0D\0lib/c.js\0'))
+       .toEqual(['lib/a.js', 'lib/b.js', 'lib/c.js']);
+   });
+ 
+   // A rename changes the census on BOTH sides — the old path leaves it, the new one may
+   // not enter it — so --name-only (destination only) would miss half the shift.
+   test('reads both sides of a rename or copy', () => {
+-    expect(parseStagedNameStatus('R096\tlib/old.js\tlib/new.js\n'))
++    expect(parseStagedNameStatus('R096\0lib/old.js\0lib/new.js\0'))
+       .toEqual(['lib/old.js', 'lib/new.js']);
+   });
+ 
+-  test('ignores blank lines', () => {
+-    expect(parseStagedNameStatus('\n\nM\tlib/a.js\n\n')).toEqual(['lib/a.js']);
++  test('keeps the status/path pairing across a rename in the middle of the stream', () => {
++    expect(parseStagedNameStatus('A\0lib/a.js\0R100\0lib/old.js\0lib/new.js\0M\0lib/b.js\0'))
++      .toEqual(['lib/a.js', 'lib/old.js', 'lib/new.js', 'lib/b.js']);
++  });
++
++  test('reads a pathname containing a space', () => {
++    expect(parseStagedNameStatus('M\0lib/with space.js\0'))
++      .toEqual(['lib/with space.js']);
++  });
++
++  // Nothing may trim a pathname: leading/trailing whitespace is legal in git, and a
++  // trimmed path stops matching the census predicate.
++  test('preserves whitespace and embedded tabs/newlines in pathnames', () => {
++    expect(parseStagedNameStatus('A\0lib/ padded .js\0M\0lib/tab\there.js\0D\0lib/new\nline.js\0'))
++      .toEqual(['lib/ padded .js', 'lib/tab\there.js', 'lib/new\nline.js']);
++  });
++
++  test('handles empty output and the trailing NUL', () => {
++    expect(parseStagedNameStatus('')).toEqual([]);
++    expect(parseStagedNameStatus('\0')).toEqual([]);
++  });
++});
++
++// The exec seam is injected the way the rest of the repo does it (`exec = execFileSync`),
++// so the argv the hook depends on is asserted without needing a real repo.
++describe('sync-d20-audit stagedPaths', () => {
++  function fakeExec(output) {
++    const calls = [];
++    const exec = (file, args) => {
++      calls.push({ file, args });
++      return output;
++    };
++    return { exec, calls };
++  }
++
++  test('asks git for NUL-delimited output', () => {
++    const { exec, calls } = fakeExec('');
++
++    stagedPaths('/project', exec);
++
++    expect(calls[0].file).toBe('git');
++    expect(calls[0].args).toContain('-z');
++    expect(calls[0].args).toContain('--name-status');
++  });
++
++  test('returns the parsed paths, deduplicated', () => {
++    const { exec } = fakeExec('M\0lib/a.js\0A\0lib/a.js\0D\0lib/b.js\0');
++
++    expect(stagedPaths('/project', exec)).toEqual(['lib/a.js', 'lib/b.js']);
+   });
+ });
+ 
+@@ -105,7 +155,11 @@ describe('lefthook wiring', () => {
+   });
+ });
+ 
+-describe.if(gitAvailable)('sync-d20-audit in a real git repo', () => {
++// Unconditional, like the sibling real-git suite in test/release-readiness-tracked.test.js:
++// git is a hard prerequisite of this repo (the hooks, the census's own `git ls-files`, the
++// push workflow), so a suite that silently vanished without it would only ever hide a
++// broken environment.
++describe('sync-d20-audit in a real git repo', () => {
+   let repo;
+ 
+   beforeEach(() => {
+-- 
+2.51.0.windows.1
+

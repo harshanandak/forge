@@ -1,0 +1,95 @@
+From 55178853d65eac9b61346d485d3c150e8859fae7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 12:11:01 +0530
+Subject: [PATCH] fix(test): harden the docs-bleed guard and fix the USER/FORGE
+ boundary wording
+
+- extractBlock matched only the first FORGE block, so a second one could carry
+  leaked maintainer content past the guard. It now requires exactly one.
+- Content assertions go through requireBlock, so a missing delimiter reports
+  that instead of a secondary "includes of null".
+- The maintainer contract described the product block as "everything above this
+  line", which smartMergeAgentsMd falsifies by re-emitting the USER block first.
+  Point at the FORGE:START / FORGE:END markers instead.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../agents-user-block.md                      | 12 ++++++----
+ test/structural/agents-docs-bleed.test.js     | 23 +++++++++++++++----
+ 2 files changed, 26 insertions(+), 9 deletions(-)
+
+diff --git a/docs/work/2026-08-13-agents-maintainer-contract/agents-user-block.md b/docs/work/2026-08-13-agents-maintainer-contract/agents-user-block.md
+index fa5156d4..f32f44ea 100644
+--- a/docs/work/2026-08-13-agents-maintainer-contract/agents-user-block.md
++++ b/docs/work/2026-08-13-agents-maintainer-contract/agents-user-block.md
+@@ -29,11 +29,13 @@ Verified while writing this (2026-08-13):
+ 
+ ## For people building Forge
+ 
+-Everything above this line is the **product contract**. It is rendered by Forge,
+-it ships to every user, and it must read as if written for someone who has never
+-seen this repository — no repo-local paths, no script names, no hook files, no
+-maintainer trivia. Do not hand-edit it to record something you learned while
+-building Forge; that belongs here.
++The `<!-- FORGE:START -->` … `<!-- FORGE:END -->` block is the **product
++contract** — not "everything above this line", since `smartMergeAgentsMd`
++re-emits this USER block above it. It is rendered by Forge, it ships to every
++user, and it must read as if written for someone who has never seen this
++repository — no repo-local paths, no script names, no hook files, no maintainer
++trivia. Do not hand-edit it to record something you learned while building
++Forge; that belongs here.
+ 
+ This block is ours. It survives `forge setup`. If you are changing Forge, read
+ this and the skills in `.forge/contributor-skills/`. Do **not** read
+diff --git a/test/structural/agents-docs-bleed.test.js b/test/structural/agents-docs-bleed.test.js
+index a22c343a..3ef2992a 100644
+--- a/test/structural/agents-docs-bleed.test.js
++++ b/test/structural/agents-docs-bleed.test.js
+@@ -63,9 +63,24 @@ function readAgentsMd() {
+   return fs.readFileSync(agentsPath, 'utf8').replace(/\r\n?/g, '\n');
+ }
+ 
++function extractBlocks(content, name) {
++  const pattern = new RegExp(`<!-- ${name}:START.*?-->([\\s\\S]*?)<!-- ${name}:END -->`, 'g');
++  return [...content.matchAll(pattern)].map((match) => match[1]);
++}
++
+ function extractBlock(content, name) {
+-  const match = new RegExp(`<!-- ${name}:START.*?-->([\\s\\S]*?)<!-- ${name}:END -->`).exec(content);
+-  return match ? match[1] : null;
++  const blocks = extractBlocks(content, name);
++  return blocks.length === 1 ? blocks[0] : null;
++}
++
++// Content assertions are only meaningful against a block that exists. Without
++// this the delimiter failure is buried under `.includes of null` noise.
++function requireBlock(name) {
++  const blocks = extractBlocks(readAgentsMd(), name);
++  if (blocks.length !== 1) {
++    throw new Error(`Expected exactly one ${name} block in AGENTS.md, found ${blocks.length}.`);
++  }
++  return blocks[0];
+ }
+ 
+ function countOccurrences(haystack, needle) {
+@@ -80,7 +95,7 @@ describe('AGENTS.md docs bleed', () => {
+   });
+ 
+   test('the FORGE block names no repo-local machinery or machine paths', () => {
+-    const forgeBlock = extractBlock(readAgentsMd(), 'FORGE');
++    const forgeBlock = requireBlock('FORGE');
+     const offenders = CLEAN_PATTERNS
+       .filter((pattern) => forgeBlock.includes(pattern))
+       .map((pattern) => `  "${pattern}" appears in the FORGE block`);
+@@ -96,7 +111,7 @@ describe('AGENTS.md docs bleed', () => {
+   });
+ 
+   test('pre-existing bleed never grows, and a cleaned-up entry is removed from the list', () => {
+-    const forgeBlock = extractBlock(readAgentsMd(), 'FORGE');
++    const forgeBlock = requireBlock('FORGE');
+     for (const { pattern, max } of KNOWN_BLEED) {
+       const count = countOccurrences(forgeBlock, pattern);
+       expect(count).toBeLessThanOrEqual(max);
+-- 
+2.51.0.windows.1
+

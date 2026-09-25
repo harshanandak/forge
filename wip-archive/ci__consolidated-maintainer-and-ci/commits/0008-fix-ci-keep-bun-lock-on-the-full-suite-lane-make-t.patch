@@ -1,0 +1,77 @@
+From f27d60ecf3f2123b4fc16590603272bb5d0f9cc3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 11:52:07 +0530
+Subject: [PATCH] fix(ci): keep bun.lock on the full-suite lane; make the
+ quarantine registry honest
+
+Review follow-ups on #533.
+
+- Drop the `bun.lock` DIRECT_TEST_CANDIDATES mapping. A dependency change can
+  break anything, so it belongs on the full-suite lane, not three
+  package-manager tests.
+- QUARANTINE.md claimed a rule ("skip it") that its only row did not follow.
+  Add an explicit `watching` status for a single unreproduced failure and
+  reserve `quarantined` for a confirmed flake, which is when the skip applies.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/commands/test.js | 11 ++---------
+ test/QUARANTINE.md   | 13 ++++++++-----
+ 2 files changed, 10 insertions(+), 14 deletions(-)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 3a190019..357fbf35 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -54,15 +54,8 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'lib/skill-eval.js': ['test/skill-eval.test.js', 'test/skill-accuracy.test.js'],
+ 	'lib/upgrade-safety.js': ['test/commands/upgrade.test.js'],
+ 	'scripts/test.js': ['test/scripts/test-runner.test.js'],
+-	// The repo's lockfile is `bun.lock`, but PACKAGE_LEVEL_PATHS in scripts/test.js
+-	// only ever listed the older `bun.lockb`. A lockfile-only change therefore
+-	// resolved to zero tests and fell through to the 10-minute full-suite lane
+-	// (measured: the 3rd most common full-lane trigger on origin/master).
+-	'bun.lock': [
+-		'test/bun-lockfile-proof.test.js',
+-		'test/commands/preflight-lockfile.test.js',
+-		'test/package-manager-remediation.test.js',
+-	],
++	// `bun.lock` is deliberately absent: a dependency change can break anything,
++	// so it stays on the full-suite lane.
+ 	'lefthook.yml': [
+ 		'test/lefthook-check.test.js',
+ 		'test/lefthook-wiring.test.js',
+diff --git a/test/QUARANTINE.md b/test/QUARANTINE.md
+index 1b659a75..4ba65578 100644
+--- a/test/QUARANTINE.md
++++ b/test/QUARANTINE.md
+@@ -5,9 +5,12 @@ A flaky test is a test whose result changes without the code changing. It is a
+ 
+ ## The rule
+ 
+-When a test is observed flaky:
++A single unreproduced failure is not yet a flake. Log it as `watching`; a second
++occurrence, or any occurrence on CI, promotes it to `quarantined`.
+ 
+-1. **Quarantine it** — skip it in the suite and add a row below.
++When a test is confirmed flaky:
++
++1. **Quarantine it** — skip it in the suite and set the row's status to `quarantined`.
+ 2. **File a kernel issue** for the underlying cause and put the id in the row.
+ 3. **Never** re-run CI until it goes green, and **never** wrap it in a retry.
+ 
+@@ -20,8 +23,8 @@ only when the issue is closed and the test has been un-skipped.
+ 
+ ## Registry
+ 
+-| Test | First seen | Issue | Notes |
+-| --- | --- | --- | --- |
+-| `test/patch-intent.test.js` | 2026-08-16 | `b7a20a71` | ENOTCONN under load in the **local** full suite; kills the suite mid-run with no failing-test output. Not reproduced on CI runners. Not skipped yet — tracked here so the next occurrence is recognised rather than re-diagnosed. |
++| Test | Status | First seen | Issue | Notes |
++| --- | --- | --- | --- | --- |
++| `test/patch-intent.test.js` | watching | 2026-08-16 | `b7a20a71` | ENOTCONN under load in the **local** full suite; kills the suite mid-run with no failing-test output. One occurrence, never on CI, so it stays in the suite until it recurs. |
+ 
+ <!-- Add a row above. Keep it one line per test; details belong in the issue. -->
+-- 
+2.51.0.windows.1
+

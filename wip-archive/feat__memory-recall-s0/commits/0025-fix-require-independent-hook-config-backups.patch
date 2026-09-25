@@ -1,0 +1,120 @@
+From 63f657fda1f8748cf8b190a2b05905c61c184785 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 14:08:00 +0530
+Subject: [PATCH] fix: require independent hook config backups
+
+---
+ lib/hook-renderer.js       | 21 +++++++++++++---
+ test/hook-renderer.test.js | 49 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+), 3 deletions(-)
+
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index af4c6134..a1b37400 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -33,14 +33,13 @@
+  * the protected-path set, and delegates the TDD gate to the real `check-tdd.js`.
+  *
+  * Dependency-free (JSON only; no TOML lib) so it runs under `bun test` and the
+- * release gates. Reuses the MCP renderer's `backupFile` for the data-loss guard.
++ * release gates.
+  *
+  * @module hook-renderer
+  */
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
+-const { backupFile } = require('./mcp-config-renderer');
+ const { assertNoAncestorSymlinkEscape, assertNoSymlinkEscape } = require('./protected-state-surfaces');
+ 
+ const HARNESS_HOOK_FILES = {
+@@ -522,9 +521,25 @@ function hasForgeClaudeHooks(existingText, contract) {
+ 
+ function backupHookConfig(filePath) {
+   const source = fs.readFileSync(filePath);
++  const sourceStat = fs.statSync(filePath);
+   for (let suffix = 0; ; suffix += 1) {
+     const candidate = `${filePath}.bak${suffix ? `.${suffix}` : ''}`;
+-    if (!fs.existsSync(candidate)) return backupFile(filePath);
++    let candidateStat;
++    try {
++      candidateStat = fs.lstatSync(candidate);
++    } catch (error) {
++      if (error.code !== 'ENOENT') throw error;
++      try {
++        fs.copyFileSync(filePath, candidate, fs.constants.COPYFILE_EXCL);
++        return candidate;
++      } catch (copyError) {
++        if (copyError.code === 'EEXIST') continue;
++        throw copyError;
++      }
++    }
++    if (candidateStat.isSymbolicLink()) continue;
++    if (sourceStat.dev != null && sourceStat.ino != null
++      && sourceStat.dev === candidateStat.dev && sourceStat.ino === candidateStat.ino) continue;
+     try {
+       if (source.equals(fs.readFileSync(candidate))) return candidate;
+     } catch {
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index c0c28f0c..b70a3327 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -321,6 +321,55 @@ describe('renderHookConfig — malformed project config safety', () => {
+     }
+   });
+ 
++  test('does not reuse a symlinked backup candidate with matching contents', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    try {
++      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++      fs.writeFileSync(settingsPath, '{ malformed json\n');
++      try {
++        fs.symlinkSync(settingsPath, `${settingsPath}.bak`, 'file');
++      } catch (error) {
++        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
++        throw error;
++      }
++
++      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
++
++      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
++      expect(fs.lstatSync(`${settingsPath}.bak`).isSymbolicLink()).toBe(true);
++      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('does not reuse a hardlinked backup candidate with matching contents', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    try {
++      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++      fs.writeFileSync(settingsPath, '{ malformed json\n');
++      try {
++        fs.linkSync(settingsPath, `${settingsPath}.bak`);
++      } catch (error) {
++        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
++        throw error;
++      }
++
++      const result = renderHookConfig({ harness: 'claude', targetRoot: root });
++
++      expect(result).toMatchObject({ skipped: true, wrote: false, backup: `${settingsPath}.bak.1` });
++      expect(fs.statSync(`${settingsPath}.bak`)).toMatchObject({
++        dev: fs.statSync(settingsPath).dev,
++        ino: fs.statSync(settingsPath).ino,
++      });
++      expect(fs.readFileSync(`${settingsPath}.bak.1`, 'utf8')).toBe('{ malformed json\n');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
+   test('refuses a settings file symlinked outside the project', () => {
+     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
+     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-outside-'));
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,81 @@
+From b3dee87e722ab7609b696c2201688c6b61a2889d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 23:06:53 +0530
+Subject: [PATCH] fix(ci): clear SonarCloud S4036 on upsert-sticky gh calls
+ (97e6a146)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SonarCloud's new_security_rating gate failed (rating B) on 4 javascript:S4036
+findings ("PATH may contain writeable dirs") against the execFileSync('gh', ...)
+calls in lib/pr-monitor/upsert-sticky.js. This is a false positive: 'gh' is a
+hardcoded literal (never user input) and args are passed as an array (no shell),
+so there is no PATH/argument-injection surface — the same developer-tool context
+the repo already annotates at lib/commands/merge.js:49. Route all four calls
+through one runGh() choke point carrying the established `// NOSONAR S4036`
+justification, which also removes the duplicated execFileSync boilerplate.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/pr-monitor/upsert-sticky.js | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/lib/pr-monitor/upsert-sticky.js b/lib/pr-monitor/upsert-sticky.js
+index 63507694..498e1df8 100644
+--- a/lib/pr-monitor/upsert-sticky.js
++++ b/lib/pr-monitor/upsert-sticky.js
+@@ -82,6 +82,14 @@ async function upsertStickyComment({ marker }, client) {
+   return { survivor, deleted };
+ }
+ 
++// Single choke point for the `gh` CLI, matching lib/commands/merge.js. `gh` is a
++// hardcoded literal (never user input) and args are an array (no shell), so the
++// S4036 PATH-search finding is a false positive in this developer-tool context;
++// one annotation here covers every call site.
++function runGh(args, options = {}) {
++  return execFileSync('gh', args, options); // NOSONAR S4036 - hardcoded CLI (gh), args array (no shell), developer-tool context
++}
++
+ /**
+  * GitHub-backed client (shells to `gh api`, like lib/pr-monitor/gather.js). Not
+  * unit-tested — the reconcile logic above is. create/update both send the same
+@@ -90,31 +98,27 @@ async function upsertStickyComment({ marker }, client) {
+ function ghStickyClient({ repo, pr, payloadFile }) {
+   return {
+     async list() {
+-      const out = execFileSync(
+-        'gh',
++      const out = runGh(
+         ['api', `repos/${repo}/issues/${pr}/comments`, '--paginate'],
+         { encoding: 'utf8' },
+       );
+       return out.trim() ? JSON.parse(out) : [];
+     },
+     async create() {
+-      execFileSync(
+-        'gh',
++      runGh(
+         ['api', '-X', 'POST', `repos/${repo}/issues/${pr}/comments`, '--input', payloadFile],
+         { stdio: 'ignore' },
+       );
+     },
+     async update(id) {
+-      execFileSync(
+-        'gh',
++      runGh(
+         ['api', '-X', 'PATCH', `repos/${repo}/issues/comments/${id}`, '--input', payloadFile],
+         { stdio: 'ignore' },
+       );
+     },
+     async remove(id) {
+       try {
+-        execFileSync(
+-          'gh',
++        runGh(
+           ['api', '-X', 'DELETE', `repos/${repo}/issues/comments/${id}`],
+           { stdio: 'ignore' },
+         );
+-- 
+2.51.0.windows.1
+

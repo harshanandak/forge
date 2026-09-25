@@ -1,0 +1,356 @@
+From 74bd940056041e9f03b7d13eefcc8fecfc65da84 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 3 Jul 2026 21:50:38 +0530
+Subject: [PATCH] =?UTF-8?q?fix:=20skills=20accuracy=20pass=20=E2=80=94=20b?=
+ =?UTF-8?q?ackend-accurate=20plan=20labels,=20symlink-safe=20skill=20sync?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- plan: kernel-created issues no longer mislabeled as "Beads". executePlan now
+  returns backend-accurate `issueId` + `issueBackend`; the `forge plan` handler
+  and `forge-cmd` print a backend-accurate label ("Kernel:" vs "Beads:").
+  `beadsIssueId` retained as a deprecated alias of `issueId` for back-compat.
+- skills-sync: populateAgentSkills pre-clears a pre-existing (possibly dangling)
+  symlink at a target skill path before copying. Only symlinks are removed —
+  real directories with content are never deleted.
+- gitignore: corrected stale comment — agent skill dirs are real file copies
+  populated at setup, not junctions/symlinks.
+- docs: regenerated the D20 bd call-site kill-list artifact for shifted plan.js
+  line numbers (release check: 0 blockers).
+- CHANGELOG: added [Unreleased] entries.
+
+Tests: plan, skills-sync (+2 new symlink pre-clean tests), structural drift,
+setup, release-readiness all green; eslint --max-warnings 0 clean.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .gitignore                                    |  4 +-
+ CHANGELOG.md                                  |  3 ++
+ bin/forge-cmd.js                              |  2 +-
+ .../bd-call-site-kill-list.md                 |  2 +-
+ lib/commands/plan.js                          | 29 +++++++++++-
+ lib/skills-sync.js                            | 43 +++++++++++++++++-
+ test/commands/plan.test.js                    | 44 +++++++++++++++++++
+ test/skills/skills-sync.test.js               | 42 ++++++++++++++++++
+ 8 files changed, 163 insertions(+), 6 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 591621ee..acc81254 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -56,7 +56,9 @@ test-results/*
+ .skills/
+ skills-lock.json
+ 
+-# Agent skill dirs created by skills.sh (junctions/symlinks, not committed)
++# Agent skill dirs populated at setup time as real file copies (forge setup /
++# skills-sync populateAgentSkills), not symlinks. Gitignored because they are
++# regenerated locally from canonical skills/; .codex/skills is the committed mirror.
+ .goose/
+ .augment/
+ .claude/skills/
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index d40dd833..90c5ca5d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -20,6 +20,9 @@ The default issue backend changed from Beads to the built-in kernel store.
+ ### Fixed
+ 
+ - `forge export` now projects Kernel issues to git-tracked JSONL (command-dispatcher broker injection + `jsonl` projection-outbox target), so the Kernel's git-persistence/portability loop works end to end. (#270)
++- `forge plan` no longer mislabels kernel-created issues as "Beads": the result now carries backend-accurate `issueId` and `issueBackend`, and the printed label reflects the active backend ("Kernel:" vs "Beads:"). `beadsIssueId` is retained as a deprecated alias of `issueId` for backward compatibility.
++- `skills-sync` setup (`populateAgentSkills`) now pre-clears a pre-existing dangling symlink sitting at a target skill path before copying, fixing skill-sync failures caused by that cruft. Only symlinks are removed — real directories with content are never deleted.
++- Corrected a stale `.gitignore` comment that described agent skill directories as "junctions/symlinks"; they are populated at setup time as real file copies.
+ 
+ #### Migration notes
+ 
+diff --git a/bin/forge-cmd.js b/bin/forge-cmd.js
+index 3e1c2f64..a2a1f7cf 100644
+--- a/bin/forge-cmd.js
++++ b/bin/forge-cmd.js
+@@ -313,7 +313,7 @@ async function main() { // NOSONAR S3776
+ 			result = await HANDLERS.plan.executePlan(positionalArgs[0]);
+ 			if (result.success) {
+ 				console.log(`✓ Plan created: ${result.summary || result.branchName || ''}`);
+-				if (result.beadsIssueId) console.log(`  Beads: ${result.beadsIssueId}`);
++				if (result.issueId) console.log(`  ${HANDLERS.plan.issueBackendLabel(result.issueBackend)}: ${result.issueId}`);
+ 			} else {
+ 				console.error(`✗ Plan failed: ${result.error}`);
+ 				process.exit(1);
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index ef61c766..6076810a 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -24,7 +24,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/migrate.js (14)
+   - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 306 (.beads)
+ - [ ] lib/commands/plan.js (9)
+-  - lines: 237 (bd), 273 (bd), 275 (bd), 289 (bd), 310 (bd), 321 (bd), 324 (bd), 718 (bd), 753 (bd)
++  - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 738 (bd), 773 (bd)
+ - [ ] lib/commands/status.js (10)
+   - lines: 238 (.beads), 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 246 (.beads), 366 (bd), 424 (bd)
+ - [ ] lib/commands/test.js (5)
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index e5b1196b..118d99d9 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -24,6 +24,21 @@ function getExecOptions() {
+ const MAX_SLUG_LENGTH = 100;
+ const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+ 
++/**
++ * Human-readable label for the issue backend that created an issue.
++ * Keeps printed output backend-accurate so kernel-created issues are not
++ * mislabeled as "Beads".
++ *
++ * @param {string} [backend] - Resolved issue backend ('kernel' | 'beads').
++ * @returns {string} Display label ('Kernel', 'Beads', or a neutral 'Issue').
++ * @private
++ */
++function issueBackendLabel(backend) {
++	if (backend === 'beads') return 'Beads';
++	if (backend === 'kernel') return 'Kernel';
++	return 'Issue';
++}
++
+ /**
+  * Validate feature slug format
+  * Ensures slug matches expected pattern and doesn't contain path traversal
+@@ -692,13 +707,18 @@ function applyYAGNIFilter({ task, tasks, designDoc } = {}) {
+  * @returns {Promise<{
+  *   success: boolean,
+  *   scope?: 'tactical'|'strategic',
++ *   issueBackend?: 'kernel'|'beads',
++ *   issueId?: string,
+  *   beadsIssueId?: string,
+  *   branchName?: string,
+  *
+  *   summary?: string,
+  *   nextCommand?: string,
+  *   error?: string
+- * }>} Execution result
++ * }>} Execution result. `issueId` is the created issue id under the active
++ *   backend; `issueBackend` names that backend. `beadsIssueId` is a deprecated
++ *   alias of `issueId` kept for backward compatibility (it does NOT imply the
++ *   issue came from Beads — on the kernel path it holds the kernel issue id).
+  * @example
+  * const result = await executePlan('Payment Integration');
+  * if (result.success) {
+@@ -774,6 +794,10 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 		const result = {
+ 			success: true,
+ 			scope: scope.type,
++			issueBackend,
++			issueId: issue.issueId,
++			// Deprecated alias of issueId, retained for backward compatibility. It does
++			// NOT imply the Beads backend — on the kernel path it holds the kernel id.
+ 			beadsIssueId: issue.issueId,
+ 			branchName: branch.branchName,
+ 			summary: `Plan created for ${featureName} (${scope.type} scope)`,
+@@ -800,7 +824,7 @@ module.exports = {
+ 		}
+ 
+ 		const lines = [`Plan created: ${result.summary || result.branchName || args[0]}`];
+-		if (result.beadsIssueId) lines.push(`Beads: ${result.beadsIssueId}`);
++		if (result.issueId) lines.push(`${issueBackendLabel(result.issueBackend)}: ${result.issueId}`);
+ 		if (result.branchName) lines.push(`Branch: ${result.branchName}`);
+ 		if (result.nextCommand) lines.push(`Next: ${result.nextCommand}`);
+ 
+@@ -819,4 +843,5 @@ module.exports = {
+ 	detectDRYViolation,
+ 	applyYAGNIFilter,
+ 	executePlan,
++	issueBackendLabel,
+ };
+diff --git a/lib/skills-sync.js b/lib/skills-sync.js
+index 6b1b4f11..6aa285f9 100644
+--- a/lib/skills-sync.js
++++ b/lib/skills-sync.js
+@@ -122,6 +122,42 @@ function normalizeContent(buffer) {
+   return buffer.toString('utf8').replace(/\r\n/g, '\n');
+ }
+ 
++/**
++ * Remove a symlink sitting at a target path so a real directory can be written
++ * in its place. Only ever removes the link entry itself — never a real
++ * directory (with content) and never the symlink's target.
++ *
++ * Guards against the exact cruft that broke local skill-sync: a pre-existing
++ * DANGLING symlink at a skill dir path, which makes `mkdirSync`/copy fail.
++ *
++ * @param {string} targetPath - Path that may hold a (possibly dangling) symlink.
++ * @returns {boolean} True if a symlink was cleared, false otherwise.
++ */
++function clearSymlinkAtPath(targetPath) {
++  let linkStat;
++  try {
++    // lstat does NOT follow the link, so a dangling symlink is still detected.
++    linkStat = fs.lstatSync(targetPath);
++  } catch {
++    return false; // nothing at this path
++  }
++
++  if (!linkStat.isSymbolicLink()) {
++    return false; // a real file/dir — leave it for the normal copy path
++  }
++
++  // Remove ONLY the link. Neither unlink nor rm follow a symlink's target, so
++  // the (possibly dangling) target's contents are never touched.
++  try {
++    fs.unlinkSync(targetPath);
++  } catch {
++    // Windows directory symlinks/junctions can reject unlink; rmSync removes the
++    // link entry itself without recursing into the target.
++    fs.rmSync(targetPath, { recursive: true, force: true });
++  }
++  return true;
++}
++
+ /**
+  * Copy a single skill directory (recursively) from source to target,
+  * overwriting existing files. Byte-for-byte copy (matches CLI cpSync).
+@@ -173,7 +209,11 @@ function populateAgentSkills({ sourceRoot, targetSkillsDir, only, clean = false
+ 
+   const written = [];
+   for (const skill of skills) {
+-    copySkillDir(skill.sourcePath, path.join(targetSkillsDir, skill.name));
++    const targetPath = path.join(targetSkillsDir, skill.name);
++    // Defensive: clear a pre-existing (possibly dangling) symlink so the copy
++    // doesn't fail. Only symlinks are removed — real dirs are overwritten in place.
++    clearSymlinkAtPath(targetPath);
++    copySkillDir(skill.sourcePath, targetPath);
+     written.push(skill.name);
+   }
+   return { written };
+@@ -273,6 +313,7 @@ module.exports = {
+   isValidSkillName,
+   listCanonicalSkills,
+   listFilesRecursive,
++  clearSymlinkAtPath,
+   populateAgentSkills,
+   diffSkillDir,
+   checkSkillsSync,
+diff --git a/test/commands/plan.test.js b/test/commands/plan.test.js
+index 3610a029..da2adc12 100644
+--- a/test/commands/plan.test.js
++++ b/test/commands/plan.test.js
+@@ -8,6 +8,7 @@ const {
+ 	extractDesignDecisions,
+ 	extractTasksFromResearch,
+ 	executePlan,
++	handler,
+ } = require('../../lib/commands/plan.js');
+ 
+ const nodeFs = require('node:fs');
+@@ -269,6 +270,11 @@ Major architectural impact.
+ 
+ 				expect(result.success).toBe(true);
+ 				expect(kernelRunnerCalled).toBe(true);
++				// Backend-accurate keys: kernel-created issues report the kernel backend
++				// and a neutral issueId (not mislabeled as a Beads id).
++				expect(result.issueBackend).toBe('kernel');
++				expect(result.issueId).toBe('kernel-xyz');
++				// Backward-compat alias retained for any consumer still reading beadsIssueId.
+ 				expect(result.beadsIssueId).toBe('kernel-xyz');
+ 			} finally {
+ 				process.chdir(prevCwd);
+@@ -277,5 +283,43 @@ Major architectural impact.
+ 				nodeFs.rmSync(repo, { recursive: true, force: true });
+ 			}
+ 		});
++
++		test('handler prints a backend-accurate label (Kernel, not Beads) on the kernel path', async () => {
++			const repo = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-plan-handler-'));
++			const gitEnv = {
++				...process.env,
++				GIT_AUTHOR_NAME: 'test',
++				GIT_AUTHOR_EMAIL: 'test@example.com',
++				GIT_COMMITTER_NAME: 'test',
++				GIT_COMMITTER_EMAIL: 'test@example.com',
++			};
++			nodeExecFileSync('git', ['init', '-q'], { cwd: repo });
++			nodeExecFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo, env: gitEnv });
++			nodeFs.mkdirSync(nodePath.join(repo, 'docs', 'research'), { recursive: true });
++			nodeFs.writeFileSync(
++				nodePath.join(repo, 'docs', 'research', 'kernel-label-demo.md'),
++				'# Kernel Label Demo\n\n**Timeline**: 2 hours\n**Strategic/Tactical**: Tactical\n',
++			);
++
++			const prevCwd = process.cwd();
++			const prevEnv = process.env.FORGE_ISSUE_BACKEND;
++			delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
++			process.chdir(repo);
++			try {
++				const fakeRun = async () => ({ ok: true, command: 'issue.create', data: { id: 'kernel-lbl-1' }, next_commands: [] });
++
++				const result = await handler(['kernel label demo'], {}, repo, { runIssueOperation: fakeRun });
++
++				expect(result.success).toBe(true);
++				// The kernel-created issue must not be mislabeled "Beads:" in the output.
++				expect(result.output).toContain('Kernel: kernel-lbl-1');
++				expect(result.output).not.toContain('Beads:');
++			} finally {
++				process.chdir(prevCwd);
++				if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
++				else process.env.FORGE_ISSUE_BACKEND = prevEnv;
++				nodeFs.rmSync(repo, { recursive: true, force: true });
++			}
++		});
+ 	});
+ });
+diff --git a/test/skills/skills-sync.test.js b/test/skills/skills-sync.test.js
+index a7e966c8..bdf75895 100644
+--- a/test/skills/skills-sync.test.js
++++ b/test/skills/skills-sync.test.js
+@@ -84,6 +84,48 @@ describe('skills-sync: populateAgentSkills', () => {
+     expect(written).toEqual(['plan']);
+     expect(fs.existsSync(path.join(target, 'dev'))).toBe(false);
+   });
++
++  test('pre-cleans a dangling symlink at a target skill path, then writes a real copy', () => {
++    write('skills/plan/SKILL.md', 'plan body');
++    const target = path.join(tmp, '.codex/skills');
++    fs.mkdirSync(target, { recursive: true });
++    const skillPath = path.join(target, 'plan');
++
++    // Seed the exact cruft that broke local skill-sync: a dangling symlink sitting
++    // where the skill dir should be (its target does not exist).
++    try {
++      fs.symlinkSync(path.join(tmp, 'no-such-target'), skillPath, 'dir');
++    } catch (err) {
++      // Windows without admin / Developer Mode cannot create symlinks — skip cleanly.
++      if (['EPERM', 'ENOSYS', 'UNKNOWN'].includes(err.code)) return;
++      throw err;
++    }
++    expect(fs.lstatSync(skillPath).isSymbolicLink()).toBe(true);
++    expect(fs.existsSync(skillPath)).toBe(false); // dangling
++
++    const { written } = populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
++
++    expect(written).toContain('plan');
++    // The dangling link was removed and replaced by a real directory + file.
++    expect(fs.lstatSync(skillPath).isSymbolicLink()).toBe(false);
++    expect(fs.readFileSync(path.join(skillPath, 'SKILL.md'), 'utf8')).toBe('plan body');
++  });
++
++  test('never removes a real (non-symlink) skill dir — overwrites in place', () => {
++    write('skills/plan/SKILL.md', 'new body');
++    const target = path.join(tmp, '.codex/skills');
++    const skillPath = path.join(target, 'plan');
++    fs.mkdirSync(skillPath, { recursive: true });
++    fs.writeFileSync(path.join(skillPath, 'SKILL.md'), 'old body', 'utf8');
++    fs.writeFileSync(path.join(skillPath, 'keepme.txt'), 'preexisting', 'utf8');
++
++    populateAgentSkills({ sourceRoot: tmp, targetSkillsDir: target });
++
++    // Canonical file is overwritten...
++    expect(fs.readFileSync(path.join(skillPath, 'SKILL.md'), 'utf8')).toBe('new body');
++    // ...but the real dir is not nuked: an unrelated pre-existing file survives.
++    expect(fs.readFileSync(path.join(skillPath, 'keepme.txt'), 'utf8')).toBe('preexisting');
++  });
+ });
+ 
+ describe('skills-sync: diffSkillDir', () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,394 @@
+From cdbddb86f389bd570cc6a2b8ac91f2fbd2e448b0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 23:06:25 +0530
+Subject: [PATCH] fix(upgrade): move beads detector to shared module (a7e1443c
+ tombstone)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CI was red on 8 lanes: test/commands/runtime-no-auto-migrate.test.js
+pins `migrateCommand.detectBeadsJsonlSource` UNDEFINED (the a7e1443c
+implicit-auto-migrate tombstone). Re-exporting that name from the
+migrate command revived the identifier and broke Unit Shards 1-3, the
+mac/ubuntu Full Matrix, and Coverage.
+
+- lib/beads-detect.js (new): the single, side-effect-free
+  detectBeadsJsonlSource() lives in a neutral module, NOT the migrate
+  command — so the tombstone stays satisfied (read-only, feeds a
+  stderr nudge, writes nothing) and both consumers share ONE detector.
+- lib/commands/migrate.js: remove the tombstone-reviving export.
+- lib/commands/_issue.js + lib/upgrade-safety.js: both now import the
+  shared detector; upgrade-safety drops its duplicated inline scan.
+- detector now also finds a split store whose jsonl lives only under
+  .beads/backup/ (a layout the migrator itself reads) — the footgun
+  no longer survives that layout for either surface.
+- upgrade advisory now respects the FORGE_ISSUE_BACKEND env opt-in
+  (via resolveIssueBackend), aligning it with the nudge path instead
+  of consulting config alone.
+
+Tests added: shared-detector unit (incl. backup layout); stdout is
+byte-identical with/without the stderr nudge; a pending migration does
+NOT flip upgrade `ok`; env opt-in suppresses the advisory.
+
+Refs: a5399f3d-28df-474e-b5f3-08af6bd7b388
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/beads-detect.js                          | 60 ++++++++++++++++++++
+ lib/commands/_issue.js                       |  4 +-
+ lib/commands/migrate.js                      | 27 ---------
+ lib/upgrade-safety.js                        | 35 +++++-------
+ test/beads-detect.test.js                    | 46 +++++++++++++++
+ test/commands/issue-path-beads-nudge.test.js | 28 +++++++++
+ test/upgrade-safety.test.js                  | 31 ++++++++++
+ 7 files changed, 181 insertions(+), 50 deletions(-)
+ create mode 100644 lib/beads-detect.js
+ create mode 100644 test/beads-detect.test.js
+
+diff --git a/lib/beads-detect.js b/lib/beads-detect.js
+new file mode 100644
+index 00000000..53d7574e
+--- /dev/null
++++ b/lib/beads-detect.js
+@@ -0,0 +1,60 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++// Single-source, side-effect-free Beads-store detector (kernel issue a5399f3d).
++//
++// Both upgrade-safety surfaces reuse this ONE definition: the issue-path
++// unmigrated-beads nudge (lib/commands/_issue.js) and the `forge upgrade`
++// advisory (lib/upgrade-safety.js). It deliberately lives in a neutral module,
++// NOT in lib/commands/migrate.js — re-exporting a `detectBeadsJsonlSource` name
++// from the migrate command would revive the identifier the a7e1443c
++// implicit-auto-migrate tombstone pins gone (test/commands/runtime-no-auto-migrate).
++// This detector only READS the filesystem and never triggers a migration, so it
++// honors that tombstone's spirit while giving both nudges a shared source.
++
++function dirHasJsonl(dir) {
++  try {
++    return fs.readdirSync(dir).some(entry => entry.endsWith('.jsonl'));
++  } catch (_err) {
++    /* intentional: an unreadable directory has no usable jsonl */ // NOSONAR S2486
++    return false;
++  }
++}
++
++/**
++ * Return the absolute path of the directory holding a returning user's Beads
++ * JSONL under `projectRoot`, or null when none is found. Checks the top-level
++ * `.beads/` first, then the split-store `.beads/backup/` layout (jsonl there and
++ * nowhere else — a layout the migrator itself reads), so neither surface misses
++ * it. Never throws.
++ *
++ * @param {string} [projectRoot]
++ * @returns {string|null}
++ */
++function detectBeadsJsonlSource(projectRoot) {
++  const root = projectRoot || process.cwd();
++  const beadsDir = path.join(root, '.beads');
++  try {
++    if (!fs.existsSync(beadsDir)) {
++      return null;
++    }
++    if (dirHasJsonl(beadsDir)) {
++      return beadsDir;
++    }
++    const backupDir = path.join(beadsDir, 'backup');
++    if (fs.existsSync(backupDir) && dirHasJsonl(backupDir)) {
++      return backupDir;
++    }
++    return null;
++  } catch (_err) {
++    /* intentional: an unreadable project root has no detectable beads source */ // NOSONAR S2486
++    return null;
++  }
++}
++
++module.exports = {
++  detectBeadsJsonlSource,
++  dirHasJsonl,
++};
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index 8b1cba8f..a723ef20 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -2,6 +2,7 @@
+ 
+ const { runIssueOperation: defaultRunIssueOperation } = require('../forge-issues');
+ const { resolveIssueBackend, hasExplicitBackendSignal, shouldUseKernelBroker } = require('../issue-backend');
++const { detectBeadsJsonlSource } = require('../beads-detect');
+ const {
+   ISSUE_COMMAND_SCHEMA_VERSION,
+   ISSUE_COMMAND_ERROR_SCHEMA_VERSION,
+@@ -748,9 +749,6 @@ function maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts = {})
+     if (backend !== 'kernel' || !kernelReadLooksEmpty(result)) {
+       return;
+     }
+-    // Lazy-require to keep the hot issue path's module graph unchanged and avoid
+-    // any require cycle with the migrate command module.
+-    const { detectBeadsJsonlSource } = require('./migrate');
+     if (!detectBeadsJsonlSource(projectRoot)) {
+       return;
+     }
+diff --git a/lib/commands/migrate.js b/lib/commands/migrate.js
+index 6873e02b..034845ad 100644
+--- a/lib/commands/migrate.js
++++ b/lib/commands/migrate.js
+@@ -151,32 +151,6 @@ function cleanupResolved(resolved, deps) {
+   }
+ }
+ 
+-/**
+- * Cheap, side-effect-free detector: return the absolute path of a `.beads/`
+- * directory that holds at least one `*.jsonl` file under `projectRoot`, else
+- * null. Used by the upgrade-safety preview and the issue-path unmigrated-beads
+- * nudge (kernel issue a5399f3d) to spot a returning 0.0.10 install whose Beads
+- * issues have not yet been migrated into the Kernel. Never throws.
+- *
+- * @param {string} [projectRoot]
+- * @param {object} [deps] — { fs } injection seam for tests.
+- * @returns {string|null}
+- */
+-function detectBeadsJsonlSource(projectRoot, deps = {}) {
+-  const fsImpl = deps.fs || fs;
+-  const root = projectRoot || process.cwd();
+-  const beadsDir = path.join(root, '.beads');
+-  try {
+-    if (!fsImpl.existsSync(beadsDir)) {
+-      return null;
+-    }
+-    return directoryHasJsonl(beadsDir, fsImpl) ? beadsDir : null;
+-  } catch (_err) {
+-    /* intentional: an unreadable project root has no detectable beads source */ // NOSONAR S2486
+-    return null;
+-  }
+-}
+-
+ function summarizeGaps(gaps) {
+   const items = Array.isArray(gaps) ? gaps : [];
+   return {
+@@ -328,7 +302,6 @@ async function runBeadsMigration(options, projectRoot, opts) {
+ }
+ 
+ module.exports = {
+-  detectBeadsJsonlSource,
+   name: 'migrate',
+   description: 'Migrate a Beads issue store into the Forge Kernel with --from beads, '
+     + 'or preview the v2→v3 migration (preview only — --dry-run required; applying it is not yet available)',
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index df275fe8..39e1d76d 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -6,7 +6,8 @@ const path = require('node:path');
+ const { lintRuntimeGraphConfig } = require('./core/runtime-graph');
+ const { resolvePatchIntentRecords } = require('./patch-intent');
+ const { verifyForgeLock, readForgeLock } = require('./forge-lock');
+-const { readConfigBackend } = require('./issue-backend');
++const { readConfigBackend, resolveIssueBackend } = require('./issue-backend');
++const { detectBeadsJsonlSource } = require('./beads-detect');
+ 
+ function checkStatus(ok) {
+   return ok ? 'pass' : 'fail';
+@@ -57,20 +58,6 @@ function buildSelfHealCandidates(projectRoot) {
+   return candidates;
+ }
+ 
+-// Detect the 0.0.10 -> current breaking boundary that hides a returning user's
+-// issues (kernel issue a5399f3d): a `.beads/*.jsonl` store still present while the
+-// default backend has flipped to the Kernel. `needsMigration` is true only when
+-// the user has NOT explicitly opted back into Beads (config issueBackend: beads),
+-// i.e. exactly the population whose issues silently vanish under the new default.
+-function beadsDirHasJsonl(beadsDir) {
+-  try {
+-    return fs.existsSync(beadsDir)
+-      && fs.readdirSync(beadsDir).some(entry => entry.endsWith('.jsonl'));
+-  } catch {
+-    return false;
+-  }
+-}
+-
+ function safeConfigBackend(projectRoot) {
+   try {
+     return readConfigBackend(projectRoot);
+@@ -79,17 +66,25 @@ function safeConfigBackend(projectRoot) {
+   }
+ }
+ 
+-function buildBeadsMigrationSummary(projectRoot) {
+-  const jsonlPresent = beadsDirHasJsonl(path.join(projectRoot, '.beads'));
++// Detect the 0.0.10 -> current breaking boundary that hides a returning user's
++// issues (kernel issue a5399f3d): a `.beads/*.jsonl` store still present while the
++// default backend has flipped to the Kernel. `needsMigration` is true only when
++// the user has NOT explicitly opted back into Beads — via `.forge/config.yaml`
++// OR `FORGE_ISSUE_BACKEND` — so the advisory respects the SAME env+config opt-in
++// the issue-path nudge does (both resolve through resolveIssueBackend). Uses the
++// single shared detector so the two surfaces cannot drift.
++function buildBeadsMigrationSummary(projectRoot, env = process.env) {
++  const jsonlPresent = detectBeadsJsonlSource(projectRoot) !== null;
+   const configBackend = safeConfigBackend(projectRoot);
++  const backend = resolveIssueBackend({ env, projectRoot, warn: () => {} });
+   return {
+     jsonlPresent,
+     configBackend,
+-    needsMigration: jsonlPresent && configBackend !== 'beads',
++    needsMigration: jsonlPresent && backend === 'kernel',
+   };
+ }
+ 
+-function buildUpgradeDryRunReport(projectRoot = process.cwd()) {
++function buildUpgradeDryRunReport(projectRoot = process.cwd(), env = process.env) {
+   const root = path.resolve(projectRoot);
+   const runtime = lintRuntimeGraphConfig({ projectRoot: root });
+   const patchIntent = buildPatchIntentSummary(root);
+@@ -99,7 +94,7 @@ function buildUpgradeDryRunReport(projectRoot = process.cwd()) {
+   const failedLockEntries = lockReport.results.filter(result => result.status === 'fail');
+   const untrustedOptIns = countUntrustedOptIns(lock);
+   const lockTrustOk = lockReport.ok && untrustedOptIns === 0;
+-  const beadsMigration = buildBeadsMigrationSummary(root);
++  const beadsMigration = buildBeadsMigrationSummary(root, env);
+ 
+   return {
+     // A pending beads -> kernel migration is a guided ADVISORY, not an integrity
+diff --git a/test/beads-detect.test.js b/test/beads-detect.test.js
+new file mode 100644
+index 00000000..c7f97a63
+--- /dev/null
++++ b/test/beads-detect.test.js
+@@ -0,0 +1,46 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
++const { tmpdir } = require('node:os');
++const path = require('node:path');
++
++const { detectBeadsJsonlSource } = require('../lib/beads-detect');
++
++// Single-source Beads detector (kernel issue a5399f3d). Lives in a neutral module
++// so BOTH the issue-path nudge and the upgrade advisory share one definition, and
++// so it does NOT revive the `migrateCommand.detectBeadsJsonlSource` name pinned
++// gone by the a7e1443c auto-migrate tombstone.
++
++function makeRoot() {
++  return mkdtempSync(path.join(tmpdir(), 'forge-beads-detect-'));
++}
++
++describe('detectBeadsJsonlSource', () => {
++  test('detects a top-level .beads/*.jsonl store', () => {
++    const root = makeRoot();
++    mkdirSync(path.join(root, '.beads'), { recursive: true });
++    writeFileSync(path.join(root, '.beads', 'issues.jsonl'), '{"id":"bd-1"}\n');
++    expect(detectBeadsJsonlSource(root)).toBe(path.join(root, '.beads'));
++  });
++
++  test('detects a split store with jsonl ONLY under .beads/backup/', () => {
++    const root = makeRoot();
++    mkdirSync(path.join(root, '.beads', 'backup'), { recursive: true });
++    // No jsonl directly under .beads/ — only under backup/ (a layout the migrator reads).
++    writeFileSync(path.join(root, '.beads', 'backup', 'events.jsonl'), '{"id":"ev-1"}\n');
++    expect(detectBeadsJsonlSource(root)).toBe(path.join(root, '.beads', 'backup'));
++  });
++
++  test('returns null when there is no .beads store', () => {
++    const root = makeRoot();
++    expect(detectBeadsJsonlSource(root)).toBeNull();
++  });
++
++  test('returns null for a .beads dir with no jsonl anywhere', () => {
++    const root = makeRoot();
++    mkdirSync(path.join(root, '.beads', 'backup'), { recursive: true });
++    writeFileSync(path.join(root, '.beads', 'readme.txt'), 'not jsonl\n');
++    expect(detectBeadsJsonlSource(root)).toBeNull();
++  });
++});
+diff --git a/test/commands/issue-path-beads-nudge.test.js b/test/commands/issue-path-beads-nudge.test.js
+index 07705972..2ff6d5fb 100644
+--- a/test/commands/issue-path-beads-nudge.test.js
++++ b/test/commands/issue-path-beads-nudge.test.js
+@@ -106,4 +106,32 @@ describe('issue-path unmigrated-beads nudge', () => {
+     const hits = errors.filter(line => line.includes('forge migrate --from beads')).length;
+     expect(hits).toBe(1);
+   });
++
++  // The nudge is stderr-only: it must NEVER perturb stdout. Pin that `list --json`
++  // stdout is byte-identical whether or not the nudge fires (machine consumers
++  // parse stdout; the hint rides on stderr).
++  test('stdout (--json) is byte-identical with vs without the nudge firing', async () => {
++    const beadsRoot = makeRoot({ withBeads: true });
++    const cleanRoot = makeRoot({ withBeads: false });
++    const runner = kernelListRunner([]);
++
++    const withNudge = await runIssueSubcommand('list', ['--json'], beadsRoot, {
++      env: {},
++      runIssueOperation: runner,
++    });
++    const nudgeFired = errors.some(line => line.includes('forge migrate --from beads'));
++
++    errors = [];
++    const withoutNudge = await runIssueSubcommand('list', ['--json'], cleanRoot, {
++      env: {},
++      runIssueOperation: runner,
++    });
++    const nudgeSuppressed = errors.some(line => line.includes('forge migrate --from beads'));
++
++    // Preconditions: the nudge fired for the beads repo and not for the clean one.
++    expect(nudgeFired).toBe(true);
++    expect(nudgeSuppressed).toBe(false);
++    // The observable stdout payload is identical regardless.
++    expect(withNudge.output).toBe(withoutNudge.output);
++  });
+ });
+diff --git a/test/upgrade-safety.test.js b/test/upgrade-safety.test.js
+index 9a2c9bfe..58ffc1ae 100644
+--- a/test/upgrade-safety.test.js
++++ b/test/upgrade-safety.test.js
+@@ -7,6 +7,7 @@ const path = require('node:path');
+ 
+ const {
+   buildUpgradeDryRunReport,
++  buildBeadsMigrationSummary,
+   renderUpgradeDryRunReport,
+ } = require('../lib/upgrade-safety');
+ 
+@@ -66,4 +67,34 @@ describe('upgrade preview — beads -> kernel breaking boundary', () => {
+     const output = renderUpgradeDryRunReport(report);
+     expect(output).not.toContain('forge migrate --from beads');
+   });
++
++  // The advisory is a GUIDE, not an integrity failure — a pending migration must
++  // never flip `ok` (scripts key on it). Pin it: two otherwise-identical repos,
++  // one with a beads store, produce the SAME `ok`.
++  test('a pending beads migration does NOT flip report.ok', () => {
++    const withBeads = makeRoot({ beadsJsonl: true });
++    const without = makeRoot({ beadsJsonl: false });
++
++    const beadsReport = buildUpgradeDryRunReport(withBeads);
++    const cleanReport = buildUpgradeDryRunReport(without);
++
++    expect(beadsReport.beadsMigration.needsMigration).toBe(true);
++    expect(cleanReport.beadsMigration.needsMigration).toBe(false);
++    // The migration advisory is orthogonal to readiness `ok`.
++    expect(beadsReport.ok).toBe(cleanReport.ok);
++  });
++
++  // The advisory must respect the SAME opt-in the nudge does — including the
++  // FORGE_ISSUE_BACKEND env override, not just config.
++  test('an env opt-in (FORGE_ISSUE_BACKEND=beads) suppresses the advisory', () => {
++    const root = makeRoot({ beadsJsonl: true });
++
++    const envOptIn = buildBeadsMigrationSummary(root, { FORGE_ISSUE_BACKEND: 'beads' });
++    expect(envOptIn.jsonlPresent).toBe(true);
++    expect(envOptIn.needsMigration).toBe(false);
++
++    // Same repo, default env -> the advisory fires.
++    const defaultEnv = buildBeadsMigrationSummary(root, {});
++    expect(defaultEnv.needsMigration).toBe(true);
++  });
+ });
+-- 
+2.51.0.windows.1
+

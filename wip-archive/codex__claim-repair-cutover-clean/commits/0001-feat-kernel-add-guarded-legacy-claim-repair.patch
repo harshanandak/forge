@@ -1,0 +1,2364 @@
+From 3341da4a4f0b6c35a15351548722cf1fbfb9b0b9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 20:16:22 +0530
+Subject: [PATCH] feat(kernel): add guarded legacy claim repair
+
+---
+ CHANGELOG.md                                 |   2 +-
+ docs/reference/FORGE_KERNEL_STORAGE_MODEL.md |   4 +
+ docs/reference/LEGACY_CLAIM_REPAIR.md        |  85 ++
+ lib/kernel/legacy-claim-repair.js            | 426 ++++++++++
+ lib/kernel/sqlite-driver.js                  | 660 +++++++++++++++-
+ lib/kernel/taxonomy-validator.js             |   5 +-
+ scripts/legacy-claim-repair.js               | 133 ++++
+ test/kernel/legacy-claim-repair.test.js      | 779 +++++++++++++++++++
+ test/kernel/sqlite-driver-import.test.js     |  20 +
+ test/kernel/taxonomy-validator.test.js       |   5 +
+ 10 files changed, 2086 insertions(+), 33 deletions(-)
+ create mode 100644 docs/reference/LEGACY_CLAIM_REPAIR.md
+ create mode 100644 lib/kernel/legacy-claim-repair.js
+ create mode 100644 scripts/legacy-claim-repair.js
+ create mode 100644 test/kernel/legacy-claim-repair.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e5fc8856..29c4c537 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Added
+ 
+-- **Public receipt-bound PR lifecycle authority.** `@forge/memory` now issues exact-head WorkPackets, authenticates RunReceipts, durably links exact `pr.opened` evidence through public Kernel provider seams, requires and rechecks live session-bound ownership and authoritative readiness, preserves Kernel ready order, and fails closed on replay conflicts, stale evidence, unsafe paths, provider loss, and unbounded operations. External merge and terminal `pr.merged` linkage remain owned by the guarded Forge merge path; canonical LeaseReceipt epochs remain explicitly deferred for 0.1. (issue `c2a3c655-ade2-4156-a8dc-e6b4ee2827ad`)
++- **Human-gated legacy claim repair.** Adds a fixed-time, privacy-safe claim preflight, separately restored SQLite backup proof, and exact-digest `BEGIN IMMEDIATE` repair with terminal precedence, null-expiry preservation, CAS drift rejection, idempotent receipts, and interruption rollback. The operator-only script is never run at startup. (PR #525, issue `0fd8b8c1-686c-4808-8d99-f9ed5b9571de`)
+ - **Memory recall and session-attention stabilization.** Typed recall now filters before limits, superseded notes hide by default but remain recoverable, Claude read-attention injects only fenced path-matched notes, and session-summary reminders remain current and idempotent. (#504, issue `0874844f-9c0c-449a-994e-a804fe3fc3a5`)
+ - **Frozen beta.5 compatibility evidence.** Adds a content-hashed v0.1.0-beta.5 contract and state corpus, privacy-safe inventory, isolated backup/restore proof, and deterministic non-mutating migration dry-run results for Windows and Linux-safe paths. (#498, issue `5dad8dbf-1c49-444d-a407-a48583537817`)
+ - **Forge 0.1.0 control-plane foundations.** Adds executable issue-readiness contracts, dead-run claim reconciliation, issue-scoped approval receipts, Kernel-authoritative plan snapshots, fail-closed risk-to-test selection, and distinct npm beta, RC, and stable release channels. (#497; issues `4ee7f9a9-4fa0-42c1-bd96-96638cc9feff`, `9b69a551-f5a0-4057-9d9f-96fb0d744fd3`, `b977b0a2-11f6-40d7-a230-8e2ff5f79115`, `b811a974-a866-47e0-8f83-3f5d2423aded`, `7a6a3fb3-c82c-48e7-86ee-630c171b924c`, `3e46debd-11c3-4b1c-b59a-17304c37cb03`)
+diff --git a/docs/reference/FORGE_KERNEL_STORAGE_MODEL.md b/docs/reference/FORGE_KERNEL_STORAGE_MODEL.md
+index f790aeff..4c336c89 100644
+--- a/docs/reference/FORGE_KERNEL_STORAGE_MODEL.md
++++ b/docs/reference/FORGE_KERNEL_STORAGE_MODEL.md
+@@ -79,6 +79,10 @@ Forge Kernel local mode uses a builtin SQLite runtime driver. Driver selection m
+ 
+ The selected driver must pass conformance checks for WAL mode, `busy_timeout`, transactions, WAL checkpointing, backup creation, and FTS5 before Forge claims real local SQLite authority behavior.
+ 
++Legacy claim contradictions are handled only by the explicit, human-gated
++[legacy claim repair](./LEGACY_CLAIM_REPAIR.md). The broker never starts or applies
++that repair automatically.
++
+ ## Team Mode
+ 
+ Team mode requires server authority.
+diff --git a/docs/reference/LEGACY_CLAIM_REPAIR.md b/docs/reference/LEGACY_CLAIM_REPAIR.md
+new file mode 100644
+index 00000000..75f016b8
+--- /dev/null
++++ b/docs/reference/LEGACY_CLAIM_REPAIR.md
+@@ -0,0 +1,85 @@
++# Legacy Claim Repair
++
++This is an explicit operator tool for the one-time pre-0.1.0 reconciliation of
++legacy Kernel claim rows. It is not called by setup, startup, broker migrations,
++claim acquisition, or any background process.
++
++## Safety contract
++
++- Always use an explicit, file-backed database path and a different backup path.
++- The observation time is mandatory and must be one canonical UTC instant. Reuse
++  that literal time for approval and apply.
++- Dry-run does not mutate Kernel authority. It creates a separate SQLite backup,
++  restores that backup into an isolated temporary database, and requires the
++  restored snapshot digest to equal the source preflight digest. On POSIX
++  systems, both the temporary and final backup are forced to owner-only `0600`
++  permissions before the backup is accepted. On Windows, inherited access is
++  removed and a private DACL for the current operator is applied and verified.
++- The digest covers the complete Kernel database schema and every row in every
++  authority table, while the report exposes only the digest and aggregate claim
++  counts. Any intervening Kernel write invalidates approval.
++- Preflight fails closed on integrity, foreign-key, schema/index, duplicate-row,
++  state, timestamp, or read faults.
++- Apply requires the human-approved exact digest and the verified backup. It
++  acquires `BEGIN IMMEDIATE`, re-reads the complete repair snapshot, rejects any
++  digest drift, and compare-and-swaps every exact row before committing one
++  privacy-safe receipt.
++- Terminal issue state wins over expiry: its active claim becomes `released`.
++  An expired active claim on nonterminal work becomes `reclaimable`. Valid
++  unexpired leases and historical null-expiry leases remain active.
++- Replaying the same approved digest returns the original receipt without another
++  mutation. Any interruption before receipt commit rolls back the whole repair.
++
++## Dry-run and approval
++
++Choose the observation time once; do not substitute a moving clock between steps.
++
++```powershell
++bun scripts/legacy-claim-repair.js --dry-run `
++  --database <absolute-kernel.sqlite> `
++  --backup <absolute-separate-backup.sqlite> `
++  --at <YYYY-MM-DDTHH:mm:ss.sssZ>
++```
++
++```bash
++bun scripts/legacy-claim-repair.js --dry-run \
++  --database <absolute-kernel.sqlite> \
++  --backup <absolute-separate-backup.sqlite> \
++  --at <YYYY-MM-DDTHH:mm:ss.sssZ>
++```
++
++Every dry-run requires a new, unused `--backup` path. Repeating a dry-run with
++the same path fails closed instead of overwriting the immutable backup.
++
++Review the privacy-safe counts, `preflight.digest`, `preflight.after_digest`, and
++backup proof. Approval must name the exact `preflight.digest`.
++
++## Apply (human-gated)
++
++Do not run this command until the exact dry-run digest is explicitly approved.
++
++```powershell
++bun scripts/legacy-claim-repair.js --apply `
++  --database <absolute-kernel.sqlite> `
++  --backup <absolute-separate-backup.sqlite> `
++  --at <same-literal-observation-time> `
++  --approved-digest <approved-preflight-digest> `
++  --actor <operator-id>
++```
++
++```bash
++bun scripts/legacy-claim-repair.js --apply \
++  --database <absolute-kernel.sqlite> \
++  --backup <absolute-separate-backup.sqlite> \
++  --at <same-literal-observation-time> \
++  --approved-digest <approved-preflight-digest> \
++  --actor <operator-id>
++```
++
++## Restore boundary
++
++Restore is deliberately not automated. Fence every Kernel writer, stop Forge
++processes, and close all database handles first. Preserve the failed database and
++its `-wal`/`-shm` sidecars for diagnosis, then restore the separately verified
++backup to a new path and run the same fixed-time dry-run there before replacing
++authority. Never overwrite a live or open SQLite database.
+diff --git a/lib/kernel/legacy-claim-repair.js b/lib/kernel/legacy-claim-repair.js
+new file mode 100644
+index 00000000..41a650b3
+--- /dev/null
++++ b/lib/kernel/legacy-claim-repair.js
+@@ -0,0 +1,426 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { createHash } = require('node:crypto');
++
++const { ISSUE_STATUSES } = require('./issue-command-contract');
++const { CLAIM_STATES, isTerminalStatus } = require('./taxonomy-validator');
++const REQUIRED_CLAIM_COLUMNS = Object.freeze([
++	'id', 'issue_id', 'actor', 'state', 'session_id', 'worktree_id', 'claimed_at', 'expires_at',
++]);
++const REQUIRED_ISSUE_COLUMNS = Object.freeze(['id', 'status']);
++const REQUIRED_INDEXES = Object.freeze({
++	idx_kernel_claims_active_lease: Object.freeze({ columns: ['issue_id'], unique: true, partial: true }),
++	idx_kernel_claims_actor_state: Object.freeze({ columns: ['actor', 'state'], unique: false, partial: false }),
++	idx_kernel_claims_issue_state: Object.freeze({ columns: ['issue_id', 'state'], unique: false, partial: false }),
++});
++
++class ClaimRepairError extends Error {
++	constructor(code, message, details = {}) {
++		super(message);
++		this.name = 'ClaimRepairError';
++		this.code = code;
++		this.details = details;
++	}
++}
++
++function canonicalIso(value) {
++	if (typeof value !== 'string') return false;
++	const millis = Date.parse(value);
++	return Number.isFinite(millis) && new Date(millis).toISOString() === value;
++}
++
++function compareCanonical(left, right) {
++	const leftValue = String(left);
++	const rightValue = String(right);
++	if (leftValue < rightValue) return -1;
++	if (leftValue > rightValue) return 1;
++	return 0;
++}
++
++function stableValue(value) {
++	if (Array.isArray(value)) return value.map(stableValue);
++	if (!value || typeof value !== 'object') return value;
++	const sorted = {};
++	for (const key of Object.keys(value).sort(compareCanonical)) {
++		sorted[key] = stableValue(value[key]);
++	}
++	return sorted;
++}
++
++function stableStringify(value) {
++	return JSON.stringify(stableValue(value));
++}
++
++function sha256(value) {
++	return createHash('sha256').update(value).digest('hex');
++}
++
++function normalizeIndex(index = {}) {
++	return {
++		name: String(index.name || ''),
++		columns: Array.isArray(index.columns) ? index.columns.map(String) : [],
++		unique: Boolean(index.unique),
++		partial: Boolean(index.partial),
++		sql: String(index.sql || '').replace(/\s+/g, ' ').trim(),
++	};
++}
++
++function collectSchemaErrors(snapshot) {
++	const errors = [];
++	if (snapshot.integrity !== 'ok') errors.push('integrity_check');
++	if (snapshot.foreign_keys_enabled !== true) errors.push('foreign_keys_disabled');
++	if (Number(snapshot.foreign_key_faults || 0) !== 0) errors.push('foreign_key_fault');
++	if (Array.isArray(snapshot.read_errors) && snapshot.read_errors.length > 0) errors.push('schema_read_failure');
++
++	const claimColumns = new Set(snapshot.claim_columns || []);
++	const issueColumns = new Set(snapshot.issue_columns || []);
++	if (REQUIRED_CLAIM_COLUMNS.some(column => !claimColumns.has(column))) errors.push('claim_schema_columns');
++	if (REQUIRED_ISSUE_COLUMNS.some(column => !issueColumns.has(column))) errors.push('issue_schema_columns');
++
++	const foreignKeys = snapshot.claim_foreign_keys || [];
++	if (!foreignKeys.some(row => row.table === 'kernel_issues' && row.from === 'issue_id' && row.to === 'id')) {
++		errors.push('claim_issue_foreign_key');
++	}
++
++	const indexes = new Map((snapshot.claim_indexes || []).map(index => [index.name, normalizeIndex(index)]));
++	for (const [name, expected] of Object.entries(REQUIRED_INDEXES)) {
++		const actual = indexes.get(name);
++		if (!actual
++			|| stableStringify(actual.columns) !== stableStringify(expected.columns)
++			|| actual.unique !== expected.unique
++			|| actual.partial !== expected.partial) {
++			errors.push(`index:${name}`);
++		}
++	}
++	const activeIndex = indexes.get('idx_kernel_claims_active_lease');
++	if (activeIndex && !/\bon\s+kernel_claims\s*\(\s*issue_id\s*\)\s+where\s+state\s*=\s*'active'\s*;?$/i.test(activeIndex.sql)) {
++		errors.push('index:idx_kernel_claims_active_lease_sql');
++	}
++	return errors;
++}
++
++function exactClaimRow(row) {
++	return {
++		id: row.id,
++		issue_id: row.issue_id,
++		actor: row.actor,
++		state: row.state,
++		session_id: row.session_id ?? null,
++		worktree_id: row.worktree_id ?? null,
++		claimed_at: row.claimed_at,
++		expires_at: row.expires_at ?? null,
++	};
++}
++
++function digestSnapshot(snapshot, observedAt, claims) {
++	const indexes = (snapshot.claim_indexes || []).map(normalizeIndex)
++		.sort((left, right) => compareCanonical(left.name, right.name));
++	const referencedIssueIds = new Set(claims.map(claim => claim.issue_id));
++	const issues = (snapshot.issues || [])
++		.filter(issue => referencedIssueIds.has(issue.id))
++		.map(issue => ({ id: issue.id, status: issue.status }))
++		.sort((left, right) => compareCanonical(left.id, right.id));
++	const canonicalClaims = claims.map(exactClaimRow)
++		.sort((left, right) => compareCanonical(left.id, right.id));
++	const claimsById = new Map(canonicalClaims.map(claim => [claim.id, claim]));
++	const authoritySchema = [...(snapshot.authority_schema || [])]
++		.map(row => ({ type: row.type, name: row.name, table_name: row.tbl_name, sql: row.sql ?? null }))
++		.sort((left, right) => compareCanonical(stableStringify(left), stableStringify(right)));
++	const authorityTables = [...(snapshot.authority_tables || [])]
++		.map(table => {
++			const rows = (table.rows || []).map(row => {
++				if (table.name !== 'kernel_claims') return stableValue(row);
++				const claim = claimsById.get(row.id);
++				return stableValue(claim ? { ...row, state: claim.state } : row);
++			}).sort((left, right) => compareCanonical(stableStringify(left), stableStringify(right)));
++			return { name: table.name, rows };
++		})
++		.sort((left, right) => compareCanonical(left.name, right.name));
++	return sha256(stableStringify({
++		schema_version: 'forge.claim-repair.snapshot.v2',
++		observed_at: observedAt,
++		authority: { schema: authoritySchema, tables: authorityTables },
++		schema: {
++			claim_columns: [...(snapshot.claim_columns || [])]
++				.sort(compareCanonical),
++			issue_columns: [...(snapshot.issue_columns || [])]
++				.sort(compareCanonical),
++			claim_foreign_keys: [...(snapshot.claim_foreign_keys || [])]
++				.map(row => ({ table: row.table, from: row.from, to: row.to }))
++				.sort((left, right) => compareCanonical(stableStringify(left), stableStringify(right))),
++			claim_indexes: indexes,
++		},
++		issues,
++		claims: canonicalClaims,
++	}));
++}
++
++function validateIssueRows(issues, errors) {
++	const issuesById = new Map();
++	for (const issue of issues) {
++		if (typeof issue.id !== 'string' || issue.id.length === 0 || !ISSUE_STATUSES.includes(issue.status)) {
++			errors.push('invalid_issue_state');
++		}
++		if (issuesById.has(issue.id)) errors.push('duplicate_issue_id');
++		issuesById.set(issue.id, issue);
++	}
++	return issuesById;
++}
++
++function claimRowErrors(claim, claimIds, issuesById) {
++	const errors = [];
++	if (typeof claim.id !== 'string' || claim.id.length === 0 || claimIds.has(claim.id)) {
++		errors.push('duplicate_or_invalid_claim_id');
++	}
++	if (typeof claim.issue_id !== 'string' || !issuesById.has(claim.issue_id)) errors.push('orphan_claim');
++	if (typeof claim.actor !== 'string' || claim.actor.trim() === '') errors.push('invalid_claim_actor');
++	if (!CLAIM_STATES.includes(claim.state)) errors.push('invalid_claim_state');
++	if (!canonicalIso(claim.claimed_at)) errors.push('invalid_claimed_at');
++	if (claim.expires_at !== null && claim.expires_at !== undefined && !canonicalIso(claim.expires_at)) {
++		errors.push('invalid_expires_at');
++	}
++	return errors;
++}
++
++function validateClaimRows(claims, issuesById, errors) {
++	const claimIds = new Set();
++	const activeByIssue = new Map();
++	for (const claim of claims) {
++		errors.push(...claimRowErrors(claim, claimIds, issuesById));
++		claimIds.add(claim.id);
++		if (claim.state === 'active') {
++			activeByIssue.set(claim.issue_id, Number(activeByIssue.get(claim.issue_id) || 0) + 1);
++		}
++	}
++	if ([...activeByIssue.values()].some(count => count > 1)) errors.push('duplicate_active_claim');
++}
++
++function throwClaimRepairErrors(errors) {
++	if (errors.length === 0) return;
++	const counts = Object.create(null);
++	for (const error of errors) counts[error] = Number(counts[error] || 0) + 1;
++	const labels = Object.keys(counts).sort(compareCanonical);
++	throw new ClaimRepairError(
++		'CLAIM_REPAIR_PREFLIGHT_FAILED',
++		`Claim repair preflight failed closed (${labels.join(', ')})`,
++		{ errors: counts },
++	);
++}
++
++function classifyClaimActions(claims, issuesById, observedAt) {
++	const actions = [];
++	let preservedNullExpiry = 0;
++	let preservedUnexpired = 0;
++	for (const claim of claims) {
++		if (claim.state !== 'active') continue;
++		const issue = issuesById.get(claim.issue_id);
++		if (isTerminalStatus(issue.status)) {
++			actions.push({ claim: exactClaimRow(claim), issue_status: issue.status, to_state: 'released' });
++			continue;
++		}
++		if (claim.expires_at !== null && claim.expires_at !== undefined
++			&& Date.parse(claim.expires_at) <= Date.parse(observedAt)) {
++			actions.push({ claim: exactClaimRow(claim), issue_status: issue.status, to_state: 'reclaimable' });
++			continue;
++		}
++		if (claim.expires_at === null || claim.expires_at === undefined) preservedNullExpiry += 1;
++		else preservedUnexpired += 1;
++	}
++	return { actions, preservedNullExpiry, preservedUnexpired };
++}
++
++function buildClaimRepairCounts(issues, claims, classification) {
++	const { actions, preservedNullExpiry, preservedUnexpired } = classification;
++	const released = actions.filter(action => action.to_state === 'released').length;
++	const reclaimable = actions.filter(action => action.to_state === 'reclaimable').length;
++	return Object.freeze({
++		total_issues: issues.length,
++		total_claims: claims.length,
++		active_claims: claims.filter(claim => claim.state === 'active').length,
++		non_active_claims: claims.filter(claim => claim.state !== 'active').length,
++		terminal_active_to_release: released,
++		expired_nonterminal_to_reclaimable: reclaimable,
++		preserved_null_expiry_active: preservedNullExpiry,
++		preserved_unexpired_active: preservedUnexpired,
++		planned_mutations: actions.length,
++	});
++}
++
++function buildClaimRepairPlan(snapshot, options = {}) {
++	const observedAt = options.observedAt;
++	if (!canonicalIso(observedAt)) {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_INVALID_OBSERVED_AT',
++			'Claim repair requires an exact canonical UTC timestamp (YYYY-MM-DDTHH:mm:ss.sssZ)',
++		);
++	}
++
++	const errors = collectSchemaErrors(snapshot);
++	const issues = Array.isArray(snapshot.issues) ? snapshot.issues : [];
++	const claims = Array.isArray(snapshot.claims) ? snapshot.claims : [];
++	const issuesById = validateIssueRows(issues, errors);
++	validateClaimRows(claims, issuesById, errors);
++	throwClaimRepairErrors(errors);
++	const classification = classifyClaimActions(claims, issuesById, observedAt);
++	const { actions } = classification;
++
++	const digest = digestSnapshot(snapshot, observedAt, claims);
++	const actionById = new Map(actions.map(action => [action.claim.id, action]));
++	const afterClaims = claims.map(claim => {
++		const action = actionById.get(claim.id);
++		return action ? { ...claim, state: action.to_state } : claim;
++	});
++	const afterDigest = digestSnapshot(snapshot, observedAt, afterClaims);
++	return {
++		observedAt,
++		digest,
++		afterDigest,
++		counts: buildClaimRepairCounts(issues, claims, classification),
++		actions,
++	};
++}
++
++function publicClaimRepairPreflight(plan) {
++	return Object.freeze({
++		schema_version: 'forge.claim-repair.preflight.v1',
++		mode: 'dry-run',
++		observed_at: plan.observedAt,
++		digest: plan.digest,
++		after_digest: plan.afterDigest,
++		counts: plan.counts,
++	});
++}
++
++async function hashFile(filePath) {
++	return new Promise((resolve, reject) => {
++		const hash = createHash('sha256');
++		const stream = fs.createReadStream(filePath);
++		stream.on('error', reject);
++		stream.on('data', chunk => hash.update(chunk));
++		stream.on('end', () => resolve(hash.digest('hex')));
++	});
++}
++
++function cleanupRestoreProofDirectory(directory, fsApi = fs) {
++	try {
++		fsApi.rmSync(directory, {
++			recursive: true,
++			force: true,
++			maxRetries: 5,
++			retryDelay: 100,
++		});
++	} catch {
++		// A closed SQLite handle can remain briefly locked on Windows. The proof is
++		// already valid and the private OS temp directory can be reaped later.
++	}
++}
++
++function prepareRestoreProofSnapshot(backupPath, restoreDir, restorePath, options = {}) {
++	const fsApi = options.fsApi || fs;
++	const hardenPath = options.hardenPath;
++	if (typeof hardenPath !== 'function') {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_PERMISSIONS',
++			'Restore proof requires a platform permission hardener',
++		);
++	}
++	hardenPath(restoreDir);
++	fsApi.copyFileSync(backupPath, restorePath, fs.constants.COPYFILE_EXCL);
++	hardenPath(restorePath);
++}
++
++async function verifyClaimRepairBackup(options = {}) {
++	const { backupPath, observedAt, openDriver, hardenPath } = options;
++	if (!backupPath || typeof openDriver !== 'function' || !fs.existsSync(backupPath)) {
++		throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_REQUIRED', 'A readable separate SQLite backup is required');
++	}
++	if (typeof hardenPath !== 'function') {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_PERMISSIONS',
++			'Backup verification requires a platform permission hardener',
++		);
++	}
++	hardenPath(backupPath);
++	for (const suffix of ['-wal', '-shm', '-journal']) {
++		if (fs.existsSync(`${backupPath}${suffix}`)) {
++			throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_DRIFT', 'Backup sidecars are not allowed during restore proof');
++		}
++	}
++	const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-restore-proof-'));
++	const restorePath = path.join(restoreDir, 'kernel.restored.sqlite');
++	let restoreDriver;
++	try {
++		prepareRestoreProofSnapshot(backupPath, restoreDir, restorePath, { hardenPath });
++		restoreDriver = openDriver(restorePath);
++		const restored = await restoreDriver.preflightLegacyClaimRepair({ observedAt });
++		const restoredHash = await hashFile(restorePath);
++		const currentBackupHash = await hashFile(backupPath);
++		if (currentBackupHash !== restoredHash) {
++			throw new ClaimRepairError(
++				'CLAIM_REPAIR_BACKUP_DRIFT',
++				'Backup changed while its isolated restore proof was being verified',
++			);
++		}
++		return Object.freeze({
++			schema_version: 'forge.claim-repair.backup-proof.v1',
++			integrity: 'ok',
++			backup_sha256: restoredHash,
++			plan_digest: restored.digest,
++			restore_digest: restored.digest,
++		});
++	} finally {
++		if (restoreDriver && typeof restoreDriver.close === 'function') restoreDriver.close();
++		cleanupRestoreProofDirectory(restoreDir);
++	}
++}
++
++async function createVerifiedClaimRepairBackup(options = {}) {
++	const { sourceDriver, backupPath, observedAt, openDriver, hardenPath } = options;
++	if (!sourceDriver || typeof sourceDriver.preflightLegacyClaimRepair !== 'function'
++		|| typeof sourceDriver.backup !== 'function') {
++		throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_UNAVAILABLE', 'Source driver cannot create a verified SQLite backup');
++	}
++	if (!backupPath) {
++		throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_REQUIRED', 'A separate SQLite backup path is required');
++	}
++	if (fs.existsSync(backupPath)) {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_EXISTS',
++			'Refusing to overwrite an existing claim-repair backup; choose a new immutable path',
++		);
++	}
++	const source = await sourceDriver.preflightLegacyClaimRepair({ observedAt });
++	try {
++		await sourceDriver.backup(backupPath, {}, { noReplace: true });
++	} catch (error) {
++		if (error?.code === 'EEXIST') {
++			throw new ClaimRepairError(
++				'CLAIM_REPAIR_BACKUP_EXISTS',
++				'Refusing to overwrite a claim-repair backup path created during publication',
++			);
++		}
++		throw error;
++	}
++	const proof = await verifyClaimRepairBackup({ backupPath, observedAt, openDriver, hardenPath });
++	if (proof.restore_digest !== source.digest) {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_DRIFT',
++			'Backup does not restore to the exact preflight snapshot digest',
++		);
++	}
++	return Object.freeze({ ...proof, plan_digest: source.digest });
++}
++
++module.exports = {
++	CLAIM_STATES,
++	ClaimRepairError,
++	buildClaimRepairPlan,
++	cleanupRestoreProofDirectory,
++	createVerifiedClaimRepairBackup,
++	prepareRestoreProofSnapshot,
++	publicClaimRepairPreflight,
++	verifyClaimRepairBackup,
++};
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index e948e67f..93d782e7 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3,7 +3,8 @@
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+-const { randomUUID } = require('node:crypto');
++const { execFileSync } = require('node:child_process');
++const { createHash, randomUUID } = require('node:crypto');
+ const { types: { isProxy } } = require('node:util');
+ 
+ const {
+@@ -18,6 +19,12 @@ const { buildMemoryProjectionMigration, buildUsageEvidenceMigration, memoryFtsDd
+ const { isTerminalStatus, rankForPriorityLabel } = require('./taxonomy-validator');
+ const { isLeaseExpired } = require('./lease-enforcer');
+ const { isLiveClaim, projectLiveClaims } = require('./live-claim-projection');
++const {
++	ClaimRepairError,
++	buildClaimRepairPlan,
++	publicClaimRepairPreflight,
++	verifyClaimRepairBackup,
++} = require('./legacy-claim-repair');
+ const { CONFLICT_SIGNAL, classifyConflictSignal } = require('./conflict-signal');
+ const { normalizeRecallHit } = require('../memory-recall');
+ const { appendUsageEvidence, rebuildUsageProjection } = require('../../packages/memory');
+@@ -791,11 +798,20 @@ const KERNEL_EVENT_COLUMNS = Object.freeze([
+ 	'created_at',
+ ]);
+ 
++function assertGenericEventNamespace(event) {
++	if (!String(event.idempotency_key || '').startsWith('claim.repair:')) return;
++	throw new ClaimRepairError(
++		'CLAIM_REPAIR_RECEIPT_RESERVED',
++		'Generic event insertion cannot write the reserved claim-repair receipt namespace',
++	);
++}
++
+ // Persist one event. The id is supplied by the caller or minted here (event ids are
+ // TEXT, not autoincrement). The event's payload is stored as payload_json: a
+ // pre-serialized payload_json wins, else the payload object is JSON-stringified. The
+ // native UNIQUE(idempotency_key) error is intentionally NOT caught here.
+ function insertKernelEventRow(runtime, db, event) {
++	assertGenericEventNamespace(event);
+ 	const id = event.id || randomUUID();
+ 	const payloadJson = event.payload_json ?? JSON.stringify(event.payload ?? {});
+ 	const row = {
+@@ -1375,10 +1391,7 @@ function parseTraceEvent(row) {
+ 		issue_revision: payload.issue_revision ?? null,
+ 		head_sha: payload.head_sha ?? null,
+ 		work_packet_hash: payload.work_packet_hash ?? null,
+-		work_packet_identity: payload.work_packet_identity ?? null,
+ 		run_receipt_hash: payload.run_receipt_hash ?? null,
+-		run_id: payload.run_id ?? null,
+-		attempt_id: payload.attempt_id ?? null,
+ 		risk_manifest_digest: payload.risk_manifest_digest ?? null,
+ 		gate_receipts: payload.gate_receipts ?? null,
+ 		url: payload.url ?? null,
+@@ -1392,7 +1405,6 @@ function isCompleteTraceIteration(event) {
+ 		&& Number.isInteger(event.issue_revision) && event.issue_revision >= 0
+ 		&& /^[0-9a-f]{40}$/.test(event.head_sha)
+ 		&& /^[0-9a-f]{64}$/.test(event.work_packet_hash)
+-		&& typeof event.work_packet_identity === 'string' && event.work_packet_identity.length > 0
+ 		&& /^[0-9a-f]{64}$/.test(event.run_receipt_hash)
+ 		&& /^[0-9a-f]{64}$/.test(event.risk_manifest_digest)
+ 		&& Array.isArray(event.gate_receipts) && event.gate_receipts.length > 0
+@@ -2261,6 +2273,7 @@ function importIssueRecords(runtime, db, records = {}, options = {}) {
+ 		for (const event of activityEvents) {
+ 			if (!event || event.id == null) { summary.events.skipped += 1; continue; }
+ 			const row = buildImportEventRow(event, now);
++			assertGenericEventNamespace(row);
+ 			const result = runParams(runtime, db, eventSql, IMPORT_EVENT_COLUMNS.map(column => row[column]));
+ 			summary.events[wasInserted(result) ? 'inserted' : 'skipped'] += 1;
+ 		}
+@@ -3099,6 +3112,461 @@ function readMonitorDeliveryStateRows(runtime, db, monitorId, options = {}) {
+ 	};
+ }
+ 
++const CLAIM_REPAIR_INDEX_NAMES = Object.freeze([
++	'idx_kernel_claims_active_lease',
++	'idx_kernel_claims_actor_state',
++	'idx_kernel_claims_issue_state',
++]);
++const CLAIM_REPAIR_AUTHORITY_ROWID_TABLES = new Set([
++	'kernel_events',
++	'kernel_memories',
++	'kernel_stage_runs',
++	'kernel_worktrees',
++]);
++
++function quoteSqlIdentifier(value) {
++	return `"${String(value).replaceAll('"', '""')}"`;
++}
++
++function loadCompleteAuthoritySnapshot(runtime, db, guardedRead) {
++	const schema = guardedRead(
++		'authority_schema',
++		() => allParams(
++			runtime,
++			db,
++			`SELECT type, name, tbl_name, sql FROM sqlite_master
++			 WHERE name NOT LIKE 'sqlite_%' ORDER BY type ASC, name ASC`,
++		),
++	);
++	const tables = schema
++		.filter(row => row.type === 'table')
++		.map(row => ({
++			name: row.name,
++			rows: guardedRead(
++				`authority_table:${row.name}`,
++				() => allParams(
++					runtime,
++					db,
++					`SELECT ${CLAIM_REPAIR_AUTHORITY_ROWID_TABLES.has(row.name) ? 'rowid AS __forge_rowid, ' : ''}* FROM ${quoteSqlIdentifier(row.name)}`,
++				),
++			),
++		}));
++	return { schema, tables };
++}
++
++function loadLegacyClaimRepairSnapshot(runtime, db) {
++	const readErrors = [];
++	const guardedRead = (label, read, fallback = []) => {
++		try {
++			return read();
++		} catch {
++			readErrors.push(label);
++			return fallback;
++		}
++	};
++	const integrityRows = guardedRead('integrity_check', () => queryAll(runtime, db, 'PRAGMA integrity_check;'));
++	const foreignKeyState = guardedRead('foreign_keys', () => queryOne(runtime, db, 'PRAGMA foreign_keys;'), {});
++	const foreignKeyFaults = guardedRead('foreign_key_check', () => queryAll(runtime, db, 'PRAGMA foreign_key_check;'));
++	const claimColumns = guardedRead('claim_columns', () => queryAll(runtime, db, "PRAGMA table_info('kernel_claims');"));
++	const issueColumns = guardedRead('issue_columns', () => queryAll(runtime, db, "PRAGMA table_info('kernel_issues');"));
++	const claimForeignKeys = guardedRead('claim_foreign_keys', () => queryAll(runtime, db, "PRAGMA foreign_key_list('kernel_claims');"));
++	const indexList = guardedRead('claim_indexes', () => queryAll(runtime, db, "PRAGMA index_list('kernel_claims');"));
++	const indexSqlRows = guardedRead(
++		'claim_index_sql',
++		() => allParams(runtime, db, "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'kernel_claims'"),
++	);
++	const indexSql = new Map(indexSqlRows.map(row => [row.name, row.sql]));
++	const indexByName = new Map(indexList.map(row => [row.name, row]));
++	const claimIndexes = CLAIM_REPAIR_INDEX_NAMES.map(name => {
++		const index = indexByName.get(name) || {};
++		const columns = guardedRead(
++			`index_columns:${name}`,
++			() => queryAll(runtime, db, `PRAGMA index_info('${name}');`),
++		);
++		return {
++			name,
++			columns: columns.map(row => row.name),
++			unique: Number(index.unique) === 1,
++			partial: Number(index.partial) === 1,
++			sql: indexSql.get(name) || '',
++		};
++	});
++	const issues = guardedRead(
++		'issues',
++		() => allParams(runtime, db, 'SELECT id, status FROM kernel_issues ORDER BY id ASC'),
++	);
++	const claims = guardedRead(
++		'claims',
++		() => allParams(
++			runtime,
++			db,
++			`SELECT id, issue_id, actor, state, session_id, worktree_id, claimed_at, expires_at
++			 FROM kernel_claims ORDER BY id ASC`,
++		),
++	);
++	const authority = loadCompleteAuthoritySnapshot(runtime, db, guardedRead);
++	return {
++		integrity: integrityRows.length > 0
++			&& integrityRows.every(row => String(row.integrity_check || '').toLowerCase() === 'ok')
++			? 'ok'
++			: 'failed',
++		foreign_keys_enabled: Number(foreignKeyState.foreign_keys) === 1,
++		foreign_key_faults: foreignKeyFaults.length,
++		claim_columns: claimColumns.map(row => row.name),
++		issue_columns: issueColumns.map(row => row.name),
++		claim_foreign_keys: claimForeignKeys.map(row => ({ table: row.table, from: row.from, to: row.to })),
++		claim_indexes: claimIndexes,
++		issues,
++		claims,
++		authority_schema: authority.schema,
++		authority_tables: authority.tables,
++		read_errors: readErrors,
++	};
++}
++
++function preflightLegacyClaimRepairRow(runtime, db, input = {}) {
++	const snapshot = loadLegacyClaimRepairSnapshot(runtime, db);
++	return publicClaimRepairPreflight(buildClaimRepairPlan(snapshot, input));
++}
++
++function assertClaimRepairApplyInput(input = {}) {
++	const approvedDigest = input.approvedDigest;
++	const proof = input.backupProof;
++	if (!/^[0-9a-f]{64}$/.test(String(approvedDigest || ''))) {
++		throw new ClaimRepairError('CLAIM_REPAIR_APPROVAL_REQUIRED', 'Apply requires the exact approved preflight digest');
++	}
++	if (proof?.schema_version !== 'forge.claim-repair.backup-proof.v1'
++		|| proof.integrity !== 'ok'
++		|| proof.plan_digest !== approvedDigest
++		|| proof.restore_digest !== approvedDigest
++		|| !/^[0-9a-f]{64}$/.test(String(proof.backup_sha256 || ''))) {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_PROOF_REQUIRED',
++			'Apply requires a verified separate backup restored from the exact approved snapshot',
++		);
++	}
++	if (typeof input.actor !== 'string' || input.actor.trim() === '') {
++		throw new ClaimRepairError('CLAIM_REPAIR_ACTOR_REQUIRED', 'Apply requires an explicit operator actor');
++	}
++}
++
++function parseStoredClaimRepairReceipt(row, approvedDigest, backupProof = null) {
++	if (!row) return null;
++	let receipt;
++	try {
++		receipt = JSON.parse(row.payload_json);
++	} catch {
++		throw new ClaimRepairError('CLAIM_REPAIR_RECEIPT_INVALID', 'Stored claim repair receipt is malformed');
++	}
++	if (receipt?.schema_version !== 'forge.claim-repair.receipt.v1'
++		|| row.id !== receipt.receipt_id
++		|| row.entity_type !== 'claim_repair'
++		|| row.entity_id !== 'legacy_claims'
++		|| row.event_type !== 'claim.repair'
++		|| row.origin !== 'forge.claim-repair'
++		|| receipt.approved_digest !== approvedDigest
++		|| (backupProof && receipt.backup_sha256 !== backupProof.backup_sha256)
++		|| !/^[0-9a-f]{64}$/.test(String(receipt.backup_sha256 || ''))
++		|| !/^[0-9a-f]{64}$/.test(String(receipt.after_digest || ''))) {
++		throw new ClaimRepairError('CLAIM_REPAIR_RECEIPT_INVALID', 'Stored claim repair receipt does not match the approved proof');
++	}
++	return receipt;
++}
++
++function replayStoredClaimRepairReceipt(runtime, db, approvedDigest, observedAt) {
++	if (!/^[0-9a-f]{64}$/.test(String(approvedDigest || ''))) return null;
++	const existingRow = allParams(
++		runtime,
++		db,
++		'SELECT * FROM kernel_events WHERE idempotency_key = ? LIMIT 1',
++		[`claim.repair:${approvedDigest}`],
++	)[0];
++	const receipt = parseStoredClaimRepairReceipt(existingRow, approvedDigest);
++	if (receipt && receipt.observed_at !== observedAt) {
++		throw new ClaimRepairError('CLAIM_REPAIR_RECEIPT_INVALID', 'Stored claim repair receipt does not match the fixed observation time');
++	}
++	return receipt ? { ...receipt, replayed: true } : null;
++}
++
++function claimRepairSourceIdentities(databasePath) {
++	return [databasePath, `${databasePath}-wal`, `${databasePath}-shm`, `${databasePath}-journal`]
++		.filter(sourcePath => fs.existsSync(sourcePath))
++		.map(sourcePath => {
++			const stat = fs.statSync(sourcePath);
++			return { device: stat.dev, inode: stat.ino };
++		});
++}
++
++function assertNoClaimRepairBackupSidecars(backupPath) {
++	for (const suffix of ['-wal', '-shm', '-journal']) {
++		if (fs.existsSync(`${backupPath}${suffix}`)) throw new Error('backup sidecar exists');
++	}
++}
++
++function hashOpenFileDescriptor(fileDescriptor) {
++	const hash = createHash('sha256');
++	const buffer = Buffer.allocUnsafe(64 * 1024);
++	let offset = 0;
++	for (;;) {
++		const bytesRead = fs.readSync(fileDescriptor, buffer, 0, buffer.length, offset);
++		if (bytesRead === 0) break;
++		hash.update(buffer.subarray(0, bytesRead));
++		offset += bytesRead;
++	}
++	return hash.digest('hex');
++}
++
++function openClaimRepairBackupFence(databasePath, backupPath, backupProof) {
++	let fileDescriptor;
++	let recoveryPath;
++	try {
++		hardenBackupPermissions(backupPath);
++		assertSafeBackupDestination(databasePath, backupPath);
++		assertNoClaimRepairBackupSidecars(backupPath);
++		const sourceIdentities = claimRepairSourceIdentities(databasePath);
++		fileDescriptor = fs.openSync(backupPath, 'r');
++		const before = fs.fstatSync(fileDescriptor);
++		if (sourceIdentities.some(source => source.device === before.dev && source.inode === before.ino)) {
++			throw new Error('pinned backup aliases source');
++		}
++		const digest = hashOpenFileDescriptor(fileDescriptor);
++		const after = fs.fstatSync(fileDescriptor);
++		const named = fs.statSync(backupPath);
++		if (digest !== backupProof.backup_sha256
++			|| before.size !== after.size
++			|| before.mtimeMs !== after.mtimeMs
++			|| before.dev !== named.dev
++			|| before.ino !== named.ino) {
++			throw new Error('backup identity or content changed');
++		}
++		recoveryPath = `${backupPath}.forge-recovery-${randomUUID()}`;
++		fs.linkSync(backupPath, recoveryPath);
++		hardenBackupPermissions(recoveryPath);
++		const recovery = fs.statSync(recoveryPath);
++		if (recovery.dev !== before.dev || recovery.ino !== before.ino) {
++			throw new Error('recovery name does not preserve the verified inode');
++		}
++		return {
++			databasePath,
++			backupPath,
++			backupSha256: backupProof.backup_sha256,
++			fileDescriptor,
++			device: before.dev,
++			inode: before.ino,
++			recoveryPath,
++		};
++	} catch {
++		if (fileDescriptor !== undefined) fs.closeSync(fileDescriptor);
++		if (recoveryPath) {
++			try { fs.rmSync(recoveryPath); } catch { /* cleanup only */ }
++		}
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_DRIFT',
++			'Verified claim-repair backup changed before receipt commit',
++		);
++	}
++}
++
++function assertClaimRepairBackupFenceCurrent(fence, options = {}) {
++	try {
++		hardenBackupPermissions(fence.backupPath);
++		assertSafeBackupDestination(fence.databasePath, fence.backupPath);
++		if (!options.sidecarsBlocked) assertNoClaimRepairBackupSidecars(fence.backupPath);
++		const before = fs.fstatSync(fence.fileDescriptor);
++		const digest = hashOpenFileDescriptor(fence.fileDescriptor);
++		const after = fs.fstatSync(fence.fileDescriptor);
++		const named = fs.statSync(fence.backupPath);
++		const recovery = fs.statSync(fence.recoveryPath);
++		if (digest !== fence.backupSha256
++			|| before.size !== after.size
++			|| before.mtimeMs !== after.mtimeMs
++			|| before.dev !== fence.device
++			|| before.ino !== fence.inode
++			|| named.dev !== fence.device
++			|| named.ino !== fence.inode
++			|| recovery.dev !== fence.device
++			|| recovery.ino !== fence.inode) {
++			throw new Error('backup fence changed');
++		}
++	} catch {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_DRIFT',
++			'Verified claim-repair backup changed before receipt commit',
++		);
++	}
++}
++
++function assertClaimRepairBackupSidecarsRemainAbsent(backupPath) {
++	assertNoClaimRepairBackupSidecars(backupPath);
++	const blockers = [];
++	try {
++		for (const suffix of ['-wal', '-shm', '-journal']) {
++			const sidecarPath = `${backupPath}${suffix}`;
++			fs.mkdirSync(sidecarPath);
++			blockers.push(sidecarPath);
++		}
++		return blockers;
++	} catch (error) {
++		for (const blocker of blockers) {
++			try { fs.rmdirSync(blocker); } catch { /* cleanup only */ }
++		}
++		throw error;
++	}
++}
++
++function removeClaimRepairBackupSidecarBlockers(blockers = []) {
++	for (const blocker of blockers) {
++		try { fs.rmdirSync(blocker); } catch { /* cleanup cannot change the committed receipt */ }
++	}
++}
++
++function closeClaimRepairBackupFence(fence) {
++	if (!fence) return;
++	try { fs.closeSync(fence.fileDescriptor); } catch { /* descriptor cleanup cannot change a committed receipt */ }
++	try { fs.rmSync(fence.recoveryPath); } catch { /* recovery-name cleanup cannot change a committed receipt */ }
++}
++
++function assertClaimRepairReplayInput(input = {}) {
++	if (!/^[0-9a-f]{64}$/.test(String(input.approvedDigest || ''))) {
++		throw new ClaimRepairError('CLAIM_REPAIR_APPROVAL_REQUIRED', 'Apply requires the exact approved preflight digest');
++	}
++	if (typeof input.actor !== 'string' || input.actor.trim() === '') {
++		throw new ClaimRepairError('CLAIM_REPAIR_ACTOR_REQUIRED', 'Apply requires an explicit operator actor');
++	}
++	if (typeof input.observedAt !== 'string'
++		|| !Number.isFinite(Date.parse(input.observedAt))
++		|| new Date(Date.parse(input.observedAt)).toISOString() !== input.observedAt) {
++		throw new ClaimRepairError('CLAIM_REPAIR_INVALID_TIME', 'Apply requires a fixed canonical UTC observation time');
++	}
++}
++
++function updateExactClaimRepairAction(runtime, db, action) {
++	const claim = action.claim;
++	const result = runParams(
++		runtime,
++		db,
++		`UPDATE kernel_claims SET state = ?
++		 WHERE id = ? AND issue_id = ? AND actor = ? AND state = 'active'
++			AND session_id IS ? AND worktree_id IS ? AND claimed_at = ? AND expires_at IS ?
++			AND EXISTS (
++				SELECT 1 FROM kernel_issues WHERE id = ? AND status = ?
++			)`,
++		[
++			action.to_state,
++			claim.id,
++			claim.issue_id,
++			claim.actor,
++			claim.session_id,
++			claim.worktree_id,
++			claim.claimed_at,
++			claim.expires_at,
++			claim.issue_id,
++			action.issue_status,
++		],
++	);
++	if (Number(result?.changes || 0) !== 1) {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_CAS_CONFLICT',
++			'Claim repair exact-row compare-and-swap rejected concurrent drift',
++		);
++	}
++}
++
++function applyLegacyClaimRepairRow(runtime, db, input = {}, driverOptions = {}) {
++	assertClaimRepairApplyInput(input);
++	const idempotencyKey = `claim.repair:${input.approvedDigest}`;
++	let backupFence;
++	let sidecarBlockers = [];
++	execSql(runtime, db, 'BEGIN IMMEDIATE;');
++	try {
++		const existingRow = allParams(
++			runtime,
++			db,
++			'SELECT * FROM kernel_events WHERE idempotency_key = ? LIMIT 1',
++			[idempotencyKey],
++		)[0];
++		const existingReceipt = parseStoredClaimRepairReceipt(existingRow, input.approvedDigest, input.backupProof);
++		if (existingReceipt) {
++			execSql(runtime, db, 'COMMIT;');
++			return { ...existingReceipt, replayed: true };
++		}
++		const plan = buildClaimRepairPlan(loadLegacyClaimRepairSnapshot(runtime, db), {
++			observedAt: input.observedAt,
++		});
++		if (plan.digest !== input.approvedDigest) {
++			throw new ClaimRepairError(
++				'CLAIM_REPAIR_DIGEST_DRIFT',
++				'Live claim authority changed after approval; generate and approve a new fixed-time preflight',
++			);
++		}
++
++		for (const action of plan.actions) updateExactClaimRepairAction(runtime, db, action);
++		if (typeof driverOptions.claimRepairFaultInjector === 'function') {
++			driverOptions.claimRepairFaultInjector('after-mutations');
++		}
++		const afterPlan = buildClaimRepairPlan(loadLegacyClaimRepairSnapshot(runtime, db), {
++			observedAt: input.observedAt,
++		});
++		if (afterPlan.digest !== plan.afterDigest) {
++			throw new ClaimRepairError('CLAIM_REPAIR_POSTCONDITION_FAILED', 'Claim repair postcondition digest did not match the approved plan');
++		}
++		if (typeof driverOptions.claimRepairFaultInjector === 'function') {
++			driverOptions.claimRepairFaultInjector('before-backup-commit-check');
++		}
++		backupFence = openClaimRepairBackupFence(input.databasePath, input.backupPath, input.backupProof);
++
++		const receiptId = randomUUID();
++		const receipt = {
++			schema_version: 'forge.claim-repair.receipt.v1',
++			receipt_id: receiptId,
++			observed_at: input.observedAt,
++			approved_digest: input.approvedDigest,
++			after_digest: afterPlan.digest,
++			backup_sha256: input.backupProof.backup_sha256,
++			mutations: {
++				released: plan.actions.filter(action => action.to_state === 'released').length,
++				reclaimable: plan.actions.filter(action => action.to_state === 'reclaimable').length,
++				total: plan.actions.length,
++			},
++			replayed: false,
++		};
++		runParams(
++			runtime,
++			db,
++			`INSERT INTO kernel_events (
++				id, entity_type, entity_id, event_type, idempotency_key,
++				expected_revision, actor, origin, payload_json, created_at
++			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++			[
++				receiptId,
++				'claim_repair',
++				'legacy_claims',
++				'claim.repair',
++				idempotencyKey,
++				0,
++				input.actor,
++				'forge.claim-repair',
++				JSON.stringify(receipt),
++				new Date().toISOString(),
++			],
++		);
++		if (typeof driverOptions.claimRepairFaultInjector === 'function') {
++			driverOptions.claimRepairFaultInjector('after-receipt-before-commit');
++		}
++		assertClaimRepairBackupFenceCurrent(backupFence);
++		sidecarBlockers = assertClaimRepairBackupSidecarsRemainAbsent(input.backupPath);
++		assertClaimRepairBackupFenceCurrent(backupFence, { sidecarsBlocked: true });
++		execSql(runtime, db, 'COMMIT;');
++		return receipt;
++	} catch (error) {
++		try { execSql(runtime, db, 'ROLLBACK;'); } catch { /* preserve the original failure */ }
++		throw error;
++	} finally {
++		removeClaimRepairBackupSidecarBlockers(sidecarBlockers);
++		closeClaimRepairBackupFence(backupFence);
++	}
++}
++
+ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 	let db;
+ 	let openedDatabasePath;
+@@ -3187,7 +3655,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		return db;
+ 	}
+ 
+-	const driver = {
++	return {
+ 		runtime: {
+ 			id: runtime.id,
+ 			databaseClassName: runtime.databaseClassName,
+@@ -3195,16 +3663,6 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			experimental: runtime.experimental,
+ 		},
+ 		databasePath: configuredDatabasePath,
+-		forkConnection(config = {}) {
+-			const databasePath = resolveDatabasePath(config);
+-			if (databasePath === ':memory:') {
+-				const fork = Object.create(driver);
+-				Object.defineProperty(fork, 'close', { value() {} });
+-				Object.defineProperty(fork, 'transactionQueueKey', { value: driver });
+-				return fork;
+-			}
+-			return createDriver(runtime, databasePath, driverOptions);
+-		},
+ 		async exec(statement, config) {
+ 			execSql(runtime, getDatabase(config), statement);
+ 		},
+@@ -3387,11 +3845,6 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		async loadKernelEventByIdempotencyKey(idempotencyKey, _context = {}, config = {}) {
+ 			return loadKernelEventByIdempotencyKeyRow(runtime, getDatabase(config), idempotencyKey);
+ 		},
+-		async loadPrEventsByRunId(runId, _context = {}, config = {}) {
+-			return allParams(runtime, getDatabase(config),
+-				"SELECT * FROM kernel_events WHERE entity_type = 'pr' AND json_extract(payload_json, '$.run_id') = ? ORDER BY created_at ASC, rowid ASC",
+-				[runId]);
+-		},
+ 		async insertKernelConflict(conflict, _context = {}, config = {}) {
+ 			return insertKernelConflictRow(runtime, getDatabase(config), conflict);
+ 		},
+@@ -3445,6 +3898,37 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 				runtime, getDatabase(config), claim, worktree, isMissing,
+ 			);
+ 		},
++		// Explicit operator-only legacy data repair. This surface is never called by
++		// broker initialization or normal claim acquisition: dry-run is immutable,
++		// while apply requires a separately verified backup and approved exact digest.
++		async preflightLegacyClaimRepair(input = {}, config = {}) {
++			return preflightLegacyClaimRepairRow(runtime, getDatabase(config), input);
++		},
++		async applyLegacyClaimRepair(input = {}, config = {}) {
++			assertClaimRepairReplayInput(input);
++			const database = getDatabase(config);
++			const replayed = replayStoredClaimRepairReceipt(runtime, database, input.approvedDigest, input.observedAt);
++			if (replayed) return replayed;
++			if (!input.backupPath) {
++				throw new ClaimRepairError(
++					'CLAIM_REPAIR_BACKUP_PROOF_REQUIRED',
++					'Apply requires the path to a separately verified SQLite backup',
++				);
++			}
++			assertSafeBackupDestination(resolveDatabasePath(config), input.backupPath);
++			const backupProof = await verifyClaimRepairBackup({
++				backupPath: input.backupPath,
++				observedAt: input.observedAt,
++				openDriver: databasePath => createDriver(runtime, databasePath),
++				hardenPath: hardenBackupPermissions,
++			});
++			return applyLegacyClaimRepairRow(
++				runtime,
++				database,
++				{ ...input, databasePath: resolveDatabasePath(config), backupProof },
++				driverOptions,
++			);
++		},
+ 		// commitGuardedAccept invokes this (typeof-guarded) INSIDE its BEGIN IMMEDIATE
+ 		// transaction to apply an accepted issue event to the authority tables. The
+ 		// returned summary ({id, revision, comment_id?}) flows back through
+@@ -3610,9 +4094,15 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		async listMonitorEvents(monitorId, config = {}) {
+ 			return listMonitorEventRows(runtime, getDatabase(config), monitorId);
+ 		},
+-		async backup(destinationPath, config = {}) {
++		async backup(destinationPath, config = {}, backupOptions = {}) {
+ 			const databasePath = resolveDatabasePath(config);
+-			return createSafeBackup(runtime, getDatabase(config), databasePath, destinationPath, driverOptions);
++			return createSafeBackup(
++				runtime,
++				getDatabase(config),
++				databasePath,
++				destinationPath,
++				{ ...driverOptions, ...backupOptions },
++			);
+ 		},
+ 		close() {
+ 			closeDatabase(db);
+@@ -3622,7 +4112,6 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			usageEvidenceSchemaEnsured = false;
+ 		},
+ 	};
+-	return driver;
+ }
+ 
+ function assertCapability(runtime, capability, detail) {
+@@ -3729,7 +4218,7 @@ async function createBackup(runtime, db, backupPath) {
+ 		if (typeof db.serialize !== 'function') {
+ 			throw new Error('bun:sqlite Database.serialize() is unavailable');
+ 		}
+-		fs.writeFileSync(backupPath, db.serialize());
++		fs.writeFileSync(backupPath, db.serialize(), { mode: 0o600 });
+ 		return;
+ 	}
+ 
+@@ -3750,6 +4239,16 @@ function assertSafeBackupDestination(databasePath, backupPath) {
+ 	if ([source, `${source}-wal`, `${source}-shm`, `${source}-journal`].includes(destination)) {
+ 		throw new Error('Backup destination must not alias the live SQLite database or its sidecars');
+ 	}
++	if (fs.existsSync(backupPath)) {
++		const destinationStat = fs.statSync(backupPath);
++		for (const sourcePath of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`, `${databasePath}-journal`]) {
++			if (!fs.existsSync(sourcePath)) continue;
++			const sourceStat = fs.statSync(sourcePath);
++			if (sourceStat.dev === destinationStat.dev && sourceStat.ino === destinationStat.ino) {
++				throw new Error('Backup destination must not alias the live SQLite database or its sidecars');
++			}
++		}
++	}
+ }
+ 
+ function verifyBackupFile(runtime, backupPath) {
+@@ -3764,22 +4263,119 @@ function verifyBackupFile(runtime, backupPath) {
+ 	}
+ }
+ 
++function hardenBackupPermissions(filePath, options = {}) {
++	const platform = options.platform || process.platform;
++	const fsApi = options.fsApi || fs;
++	const effectiveUserId = options.effectiveUserId ?? (typeof process.geteuid === 'function' ? process.geteuid() : null);
++	try {
++		if (platform === 'win32') {
++			const aclSecurer = options.aclSecurer || secureWindowsPathAcl;
++			aclSecurer(filePath);
++			return;
++		}
++		const initial = fsApi.statSync(filePath);
++		if (effectiveUserId !== null && Number(initial.uid) !== Number(effectiveUserId)) {
++			throw new Error('path is not owned by the current effective user');
++		}
++		const ownerMode = typeof initial.isDirectory === 'function' && initial.isDirectory() ? 0o700 : 0o600;
++		fsApi.chmodSync(filePath, ownerMode);
++		if ((Number(fsApi.statSync(filePath).mode) & 0o077) !== 0) {
++			throw new Error(`mode remains broader than ${ownerMode.toString(8)}`);
++		}
++	} catch (error) {
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_PERMISSIONS',
++			'SQLite backup could not be secured with owner-only permissions',
++			{ cause: error.message || String(error) },
++		);
++	}
++}
++
++const WINDOWS_PRIVATE_ACL_SCRIPT = [
++	'$targetPath = $env:FORGE_PRIVATE_ACL_TARGET',
++	'$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
++	'$isDirectory = [System.IO.Directory]::Exists($targetPath)',
++	'$acl = if ($isDirectory) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }',
++	'$acl.SetOwner($sid)',
++	'$acl.SetAccessRuleProtection($true, $false)',
++	'$inheritance = if ($isDirectory) { "ContainerInherit,ObjectInherit" } else { "None" }',
++	'$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, "FullControl", $inheritance, "None", "Allow")',
++	'$acl.SetAccessRule($rule)',
++	'if ($isDirectory) { [System.IO.Directory]::SetAccessControl($targetPath, $acl) } else { [System.IO.File]::SetAccessControl($targetPath, $acl) }',
++	'$verified = if ($isDirectory) { [System.IO.Directory]::GetAccessControl($targetPath) } else { [System.IO.File]::GetAccessControl($targetPath) }',
++	'$owner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier])',
++	'$rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
++	'$private = $owner.Value -eq $sid.Value -and $verified.AreAccessRulesProtected -and $rules.Count -eq 1',
++	'$private = $private -and $rules[0].IdentityReference.Value -eq $sid.Value',
++	'$private = $private -and -not $rules[0].IsInherited -and $rules[0].AccessControlType -eq "Allow"',
++	'$private = $private -and (($rules[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl)',
++	'if (-not $private) { throw "owner-only ACL verification failed" }',
++].join('; ');
++
++function resolveWindowsPowerShellPath(environment = process.env) {
++	const systemRoot = environment.SystemRoot;
++	if (typeof systemRoot !== 'string' || !path.win32.isAbsolute(systemRoot)) {
++		throw new Error('Windows backup hardening requires an absolute SystemRoot');
++	}
++	return path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
++}
++
++function secureWindowsPathAcl(filePath) {
++	execFileSync(
++		resolveWindowsPowerShellPath(),
++		['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PRIVATE_ACL_SCRIPT],
++		{
++			encoding: 'utf8',
++			env: {
++				FORGE_PRIVATE_ACL_TARGET: filePath,
++				SystemRoot: process.env.SystemRoot,
++			},
++			stdio: 'pipe',
++			timeout: 15_000,
++			windowsHide: true,
++		},
++	);
++}
++
++function createPrivateBackupDirectory(backupPath) {
++	const directory = fs.mkdtempSync(path.join(path.dirname(backupPath), '.forge-sqlite-backup-'));
++	try {
++		if (process.platform === 'win32') secureWindowsPathAcl(directory);
++		else {
++			fs.chmodSync(directory, 0o700);
++			if ((Number(fs.statSync(directory).mode) & 0o077) !== 0) throw new Error('mode remains broader than 0700');
++		}
++	} catch (error) {
++		fs.rmSync(directory, { recursive: true, force: true });
++		throw new ClaimRepairError(
++			'CLAIM_REPAIR_BACKUP_PERMISSIONS',
++			'SQLite backup workspace could not be secured with owner-only permissions',
++			{ cause: error.message || String(error) },
++		);
++	}
++	return directory;
++}
++
+ async function createSafeBackup(runtime, db, databasePath, backupPath, options = {}) {
+ 	assertSafeBackupDestination(databasePath, backupPath);
+ 	ensureFileBackedDatabaseDirectory(backupPath);
+-	const tempPath = path.join(
+-		path.dirname(backupPath),
+-		`.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.tmp`,
+-	);
++	const tempDirectory = createPrivateBackupDirectory(backupPath);
++	const tempPath = path.join(tempDirectory, `${path.basename(backupPath)}.${process.pid}.${randomUUID()}.tmp`);
+ 	const backupWriter = options.backupWriter || createBackup;
+ 	const backupVerifier = options.backupVerifier || verifyBackupFile;
+-	const backupReplacer = options.backupReplacer || ((source, destination) => fs.renameSync(source, destination));
++	const backupReplacer = options.backupReplacer || (options.noReplace
++		? ((source, destination) => (process.platform === 'win32'
++			? fs.linkSync(source, destination)
++			: fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL)))
++		: ((source, destination) => fs.renameSync(source, destination)));
+ 	try {
+ 		await backupWriter(runtime, db, tempPath);
++		hardenBackupPermissions(tempPath);
+ 		await backupVerifier(runtime, tempPath);
+ 		await backupReplacer(tempPath, backupPath);
++		hardenBackupPermissions(backupPath);
+ 	} finally {
+-		if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
++		fs.rmSync(tempDirectory, { recursive: true, force: true });
+ 	}
+ }
+ 
+@@ -3865,7 +4461,9 @@ module.exports = {
+ 	CONFLICT_SIGNAL,
+ 	classifyConflictSignal,
+ 	createBuiltinSQLiteDriver,
++	hardenBackupPermissions,
+ 	requireSqliteRuntimeModule,
++	resolveWindowsPowerShellPath,
+ 	selectBuiltinSQLiteRuntime,
+ 	validateBuiltinSQLiteRuntimeDriver,
+ };
+diff --git a/lib/kernel/taxonomy-validator.js b/lib/kernel/taxonomy-validator.js
+index 0d926eeb..d1781d07 100644
+--- a/lib/kernel/taxonomy-validator.js
++++ b/lib/kernel/taxonomy-validator.js
+@@ -29,7 +29,10 @@ const STATUS_TRANSITIONS = Object.freeze({
+ 	backlog: Object.freeze(['open', 'cancelled']),
+ });
+ 
+-const CLAIM_STATES = Object.freeze(['active', 'released', 'expired']);
++// `reclaimable` is the historical row left behind when an expired active lease is
++// superseded. It is distinct from `expired`: both are non-authoritative history,
++// but reclaimable records that the slot was deliberately freed for another owner.
++const CLAIM_STATES = Object.freeze(['active', 'released', 'expired', 'reclaimable']);
+ 
+ const DEFAULT_PRIORITY_RANK = 2;
+ const MAX_DISPLAY_PRIORITY_RANK = 4;
+diff --git a/scripts/legacy-claim-repair.js b/scripts/legacy-claim-repair.js
+new file mode 100644
+index 00000000..e469d014
+--- /dev/null
++++ b/scripts/legacy-claim-repair.js
+@@ -0,0 +1,133 @@
++#!/usr/bin/env node
++'use strict';
++
++const path = require('node:path');
++
++const { createBuiltinSQLiteDriver, hardenBackupPermissions } = require('../lib/kernel/sqlite-driver');
++const {
++	ClaimRepairError,
++	createVerifiedClaimRepairBackup,
++} = require('../lib/kernel/legacy-claim-repair');
++
++const HELP = `Usage:
++  bun scripts/legacy-claim-repair.js --dry-run --database <kernel.sqlite> --backup <separate.sqlite> --at <canonical-UTC>
++  bun scripts/legacy-claim-repair.js --apply --database <kernel.sqlite> --backup <separate.sqlite> --at <canonical-UTC> --approved-digest <sha256> --actor <identity>
++
++The tool never discovers or repairs a database automatically. Apply is rejected
++without a verified restorable backup and the exact human-approved dry-run digest.`;
++
++function parseArgs(argv = []) {
++	const result = { mode: null };
++	for (let index = 0; index < argv.length; index += 1) {
++		const arg = argv[index];
++		if (arg === '--help' || arg === '-h') return { help: true };
++		if (arg === '--dry-run' || arg === '--apply') {
++			const mode = arg.slice(2);
++			if (result.mode && result.mode !== mode) throw new Error('Choose exactly one of --dry-run or --apply');
++			result.mode = mode;
++			continue;
++		}
++		const names = {
++			'--database': 'databasePath',
++			'--backup': 'backupPath',
++			'--at': 'observedAt',
++			'--approved-digest': 'approvedDigest',
++			'--actor': 'actor',
++		};
++		if (!Object.hasOwn(names, arg)) throw new Error(`Unknown argument: ${arg}`);
++		const name = names[arg];
++		const value = argv[index + 1];
++		if (!value || value.startsWith('--')) throw new Error(`${arg} requires a value`);
++		result[name] = value;
++		index += 1;
++	}
++	if (!result.mode) throw new Error('Choose exactly one of --dry-run or --apply');
++	for (const required of ['databasePath', 'backupPath', 'observedAt']) {
++		if (!result[required]) throw new Error(`Missing required option: ${required}`);
++	}
++	for (const requiredPath of ['databasePath', 'backupPath']) {
++		if (!path.isAbsolute(result[requiredPath])) {
++			throw new Error(`${requiredPath} must be an absolute path`);
++		}
++	}
++	if (result.mode === 'apply' && !result.approvedDigest) {
++		throw new Error('--apply requires --approved-digest');
++	}
++	if (result.mode === 'apply' && !result.actor) {
++		throw new Error('--apply requires --actor');
++	}
++	if (result.mode === 'dry-run' && result.approvedDigest) {
++		throw new Error('--approved-digest is valid only with --apply');
++	}
++	if (result.mode === 'dry-run' && result.actor) {
++		throw new Error('--actor is valid only with --apply');
++	}
++	return result;
++}
++
++async function run(options, dependencies = {}) {
++	const openDriver = dependencies.openDriver
++		|| (databasePath => createBuiltinSQLiteDriver({ databasePath }));
++	const createBackup = dependencies.createVerifiedClaimRepairBackup
++		|| createVerifiedClaimRepairBackup;
++	const hardenPath = dependencies.hardenPath || hardenBackupPermissions;
++	const sourceDriver = openDriver(options.databasePath);
++	try {
++		if (options.mode === 'dry-run') {
++			const backup = await createBackup({
++				sourceDriver,
++				backupPath: options.backupPath,
++				observedAt: options.observedAt,
++				openDriver,
++				hardenPath,
++			});
++			const preflight = await sourceDriver.preflightLegacyClaimRepair({ observedAt: options.observedAt });
++			if (preflight.digest !== backup.plan_digest) {
++				throw new ClaimRepairError(
++					'CLAIM_REPAIR_BACKUP_DRIFT',
++					'Live claim authority changed while binding the reported preflight to its verified backup',
++				);
++			}
++			return { ok: true, preflight, backup };
++		}
++
++		const receipt = await sourceDriver.applyLegacyClaimRepair({
++			observedAt: options.observedAt,
++			approvedDigest: options.approvedDigest,
++			backupPath: options.backupPath,
++			actor: options.actor,
++		});
++		return { ok: true, receipt };
++	} finally {
++		sourceDriver.close();
++	}
++}
++
++async function main(argv = process.argv.slice(2)) {
++	try {
++		const options = parseArgs(argv);
++		if (options.help) {
++			process.stdout.write(`${HELP}\n`);
++			return;
++		}
++		process.stdout.write(`${JSON.stringify(await run(options), null, 2)}\n`);
++	} catch (error) {
++		process.stderr.write(`${JSON.stringify({
++			ok: false,
++			error: {
++				code: error?.code || 'CLAIM_REPAIR_USAGE',
++				message: error?.message || String(error),
++			},
++		}, null, 2)}\n`);
++		process.exitCode = 1;
++	}
++}
++
++if (require.main === module) void main();
++
++module.exports = {
++	HELP,
++	main,
++	parseArgs,
++	run,
++};
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+new file mode 100644
+index 00000000..35eadc78
+--- /dev/null
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -0,0 +1,779 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const {
++	createBuiltinSQLiteDriver,
++	hardenBackupPermissions,
++	resolveWindowsPowerShellPath,
++} = require('../../lib/kernel/sqlite-driver');
++const {
++	cleanupRestoreProofDirectory,
++	createVerifiedClaimRepairBackup,
++	prepareRestoreProofSnapshot,
++	verifyClaimRepairBackup,
++} = require('../../lib/kernel/legacy-claim-repair');
++const { parseArgs, run } = require('../../scripts/legacy-claim-repair');
++
++const OBSERVED_AT = '2026-08-12T08:00:00.000Z';
++const tempDirs = [];
++const hardenPath = filePath => hardenBackupPermissions(filePath);
++
++async function removeDirWithRetry(dir, attempts = 10) {
++	for (let attempt = 0; attempt < attempts; attempt += 1) {
++		try {
++			fs.rmSync(dir, { recursive: true, force: true });
++			return;
++		} catch (error) {
++			const locked = ['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error.code);
++			if (!locked) throw error;
++			if (attempt === attempts - 1) return;
++			await new Promise(resolve => setTimeout(resolve, 100));
++		}
++	}
++}
++
++afterEach(async () => {
++	while (tempDirs.length > 0) await removeDirWithRetry(tempDirs.pop());
++});
++
++async function createFixture(driverOptions = {}) {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-legacy-claim-repair-'));
++	tempDirs.push(root);
++	const databasePath = path.join(root, 'kernel.sqlite');
++	const config = { databasePath };
++	const driver = createBuiltinSQLiteDriver({ databasePath, ...driverOptions });
++	const broker = createLocalBroker({
++		projectRoot: root,
++		execFileSync: () => path.join(root, '.git'),
++		databasePath,
++		driver,
++	});
++	await broker.initialize();
++
++	async function issue(id, status = 'open') {
++		const created = await broker.runIssueOperation(
++			'create',
++			['--id', id, '--title', `Issue ${id}`, '--type', 'task'],
++			{ now: '2026-08-12T06:00:00.000Z', actor: 'fixture' },
++		);
++		expect(created.ok).toBe(true);
++		if (status !== 'open') {
++			await driver.exec(`UPDATE kernel_issues SET status = '${status}' WHERE id = '${id}';`, config);
++		}
++	}
++
++	async function claim(id, issueId, overrides = {}) {
++		await driver.insertKernelClaim({
++			id,
++			issue_id: issueId,
++			actor: overrides.actor || `actor-${id}`,
++			state: overrides.state || 'active',
++			session_id: overrides.session_id ?? `session-${id}`,
++			worktree_id: overrides.worktree_id ?? `worktree-${id}`,
++			claimed_at: overrides.claimed_at || '2026-08-12T06:30:00.000Z',
++			expires_at: Object.hasOwn(overrides, 'expires_at')
++				? overrides.expires_at
++				: '2026-08-12T09:00:00.000Z',
++		}, {}, config);
++	}
++
++	return { root, databasePath, config, driver, broker, issue, claim };
++}
++
++async function seedMixedClaims(fixture) {
++	await fixture.issue('terminal-expired', 'done');
++	await fixture.claim('claim-terminal', 'terminal-expired', {
++		actor: 'private-terminal-actor',
++		expires_at: '2026-08-12T07:00:00.000Z',
++	});
++	await fixture.issue('expired-open');
++	await fixture.claim('claim-expired', 'expired-open', {
++		actor: 'private-expired-actor',
++		expires_at: '2026-08-12T07:30:00.000Z',
++	});
++	await fixture.issue('durable-open');
++	await fixture.claim('claim-durable', 'durable-open', { expires_at: null });
++	await fixture.issue('future-open');
++	await fixture.claim('claim-future', 'future-open');
++}
++
++describe('legacy claim repair preflight', () => {
++	test('operator script requires an explicit mode, database, backup, and apply approval', () => {
++		const databasePath = path.resolve('kernel.sqlite');
++		const backupPath = path.resolve('backup.sqlite');
++		expect(parseArgs(['--help'])).toEqual({ help: true });
++		expect(parseArgs(['-h'])).toEqual({ help: true });
++		expect(() => parseArgs([])).toThrow('Choose exactly one');
++		expect(() => parseArgs(['--dry-run', '--apply'])).toThrow('Choose exactly one');
++		expect(() => parseArgs(['--unknown'])).toThrow('Unknown argument');
++		expect(() => parseArgs(['--dry-run', '--database', '--backup'])).toThrow('--database requires a value');
++		expect(() => parseArgs(['--dry-run'])).toThrow('Missing required option');
++		expect(() => parseArgs([
++			'--apply', '--database', 'kernel.sqlite', '--backup', 'backup.sqlite', '--at', OBSERVED_AT,
++		])).toThrow('databasePath must be an absolute path');
++		expect(() => parseArgs([
++			'--apply', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
++			'--approved-digest', 'a'.repeat(64),
++		])).toThrow('--apply requires --actor');
++		expect(parseArgs([
++			'--apply', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
++			'--approved-digest', 'a'.repeat(64), '--actor', 'operator@example.com',
++		])).toMatchObject({ mode: 'apply', actor: 'operator@example.com' });
++		expect(parseArgs([
++			'--dry-run', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
++		])).toEqual({
++			mode: 'dry-run',
++			databasePath,
++			backupPath,
++			observedAt: OBSERVED_AT,
++		});
++		expect(() => parseArgs([
++			'--dry-run', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
++			'--approved-digest', 'a'.repeat(64),
++		])).toThrow('--approved-digest is valid only with --apply');
++		expect(() => parseArgs([
++			'--dry-run', '--database', databasePath, '--backup', backupPath, '--at', OBSERVED_AT,
++			'constructor', 'ignored',
++		])).toThrow('Unknown argument: constructor');
++	});
++
++	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
++		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
++			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
++		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
++		const calls = [];
++		hardenBackupPermissions('backup.sqlite', {
++			platform: 'linux',
++			effectiveUserId: 1000,
++			fsApi: {
++				chmodSync(filePath, mode) { calls.push({ filePath, mode }); },
++				statSync() { return { mode: 0o100600, uid: 1000 }; },
++			},
++		});
++		expect(calls).toEqual([{ filePath: 'backup.sqlite', mode: 0o600 }]);
++		const directoryCalls = [];
++		hardenBackupPermissions('restore-dir', {
++			platform: 'linux',
++			effectiveUserId: 1000,
++			fsApi: {
++				chmodSync(filePath, mode) { directoryCalls.push({ filePath, mode }); },
++				statSync() { return { mode: 0o040700, uid: 1000, isDirectory: () => true }; },
++			},
++		});
++		expect(directoryCalls).toEqual([{ filePath: 'restore-dir', mode: 0o700 }]);
++		expect(() => hardenBackupPermissions('backup.sqlite', {
++			platform: 'linux',
++			fsApi: {
++				chmodSync() {},
++				statSync() { return { mode: 0o100644 }; },
++			},
++		})).toThrow('owner-only permissions');
++		const secured = [];
++		hardenBackupPermissions('backup.sqlite', {
++			platform: 'win32',
++			aclSecurer(filePath) { secured.push(filePath); },
++		});
++		expect(secured).toEqual(['backup.sqlite']);
++		expect(() => hardenBackupPermissions('backup.sqlite', {
++			platform: 'win32',
++			aclSecurer() { throw new Error('ACL remained inherited'); },
++		})).toThrow('owner-only permissions');
++	});
++
++	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
++		let cleanupOptions;
++		expect(() => cleanupRestoreProofDirectory('restore-proof', {
++			rmSync(_directory, options) {
++				cleanupOptions = options;
++				const error = new Error('still locked');
++				error.code = 'EBUSY';
++				throw error;
++			},
++		})).not.toThrow();
++		expect(cleanupOptions).toMatchObject({ recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
++	});
++
++	test('hardens the restore-proof directory and copied snapshot before either is opened', () => {
++		const calls = [];
++		const fsApi = {
++			copyFileSync(source, destination, flag) { calls.push(['copy', source, destination, flag]); },
++		};
++		prepareRestoreProofSnapshot('backup.sqlite', 'private-restore', 'private-restore/kernel.sqlite', {
++			fsApi,
++			hardenPath(filePath) { calls.push(['harden', filePath]); },
++		});
++		expect(calls).toEqual([
++			['harden', 'private-restore'],
++			['copy', 'backup.sqlite', 'private-restore/kernel.sqlite', fs.constants.COPYFILE_EXCL],
++			['harden', 'private-restore/kernel.sqlite'],
++		]);
++	});
++
++	test('dry-run reports only a preflight bound to the verified backup snapshot', async () => {
++		const driver = {
++			async preflightLegacyClaimRepair() { return { digest: 'b'.repeat(64) }; },
++			close() {},
++		};
++		await expect(run({
++			mode: 'dry-run',
++			databasePath: 'source.sqlite',
++			backupPath: 'backup.sqlite',
++			observedAt: OBSERVED_AT,
++		}, {
++			openDriver: () => driver,
++			createVerifiedClaimRepairBackup: async () => ({ plan_digest: 'a'.repeat(64) }),
++		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
++	});
++
++	test('classifies terminal rows before expiry and emits deterministic privacy-safe counts', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++
++		const first = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		const second = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++
++		expect(first).toEqual(second);
++		expect(first).toMatchObject({
++			schema_version: 'forge.claim-repair.preflight.v1',
++			mode: 'dry-run',
++			observed_at: OBSERVED_AT,
++			counts: {
++				active_claims: 4,
++				terminal_active_to_release: 1,
++				expired_nonterminal_to_reclaimable: 1,
++				preserved_null_expiry_active: 1,
++				preserved_unexpired_active: 1,
++				planned_mutations: 2,
++			},
++		});
++		expect(first.digest).toMatch(/^[0-9a-f]{64}$/);
++		const serialized = JSON.stringify(first);
++		for (const privateValue of [
++			'claim-terminal', 'terminal-expired', 'private-terminal-actor',
++			'claim-expired', 'expired-open', 'private-expired-actor',
++		]) {
++			expect(serialized).not.toContain(privateValue);
++		}
++		fixture.driver.close();
++	});
++
++	test('fails closed on invalid clocks, issue/claim states, timestamps, foreign keys, indexes, and duplicates', async () => {
++		const invalidClock = await createFixture();
++		await expect(invalidClock.driver.preflightLegacyClaimRepair(
++			{ observedAt: '2026-08-12T08:00:00Z' }, invalidClock.config,
++		)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_INVALID_OBSERVED_AT' });
++		invalidClock.driver.close();
++
++		const invalidRows = await createFixture();
++		await invalidRows.issue('invalid-row');
++		await invalidRows.claim('invalid-claim', 'invalid-row');
++		await invalidRows.driver.exec("UPDATE kernel_claims SET state = 'paused', expires_at = 'tomorrow' WHERE id = 'invalid-claim';", invalidRows.config);
++		await invalidRows.driver.exec("UPDATE kernel_issues SET status = 'finished' WHERE id = 'invalid-row';", invalidRows.config);
++		await expect(invalidRows.driver.preflightLegacyClaimRepair(
++			{ observedAt: OBSERVED_AT }, invalidRows.config,
++		)).rejects.toMatchObject({
++			code: 'CLAIM_REPAIR_PREFLIGHT_FAILED',
++			details: { errors: expect.objectContaining({
++				invalid_issue_state: 1,
++				invalid_claim_state: 1,
++				invalid_expires_at: 1,
++			}) },
++		});
++		invalidRows.driver.close();
++
++		const brokenAuthority = await createFixture();
++		await brokenAuthority.issue('duplicate-target');
++		await brokenAuthority.driver.exec('PRAGMA foreign_keys=OFF;', brokenAuthority.config);
++		await brokenAuthority.driver.exec('DROP INDEX idx_kernel_claims_active_lease;', brokenAuthority.config);
++		await brokenAuthority.claim('duplicate-a', 'duplicate-target');
++		await brokenAuthority.claim('duplicate-b', 'duplicate-target');
++		await brokenAuthority.claim('orphan', 'missing-issue');
++		await expect(brokenAuthority.driver.preflightLegacyClaimRepair(
++			{ observedAt: OBSERVED_AT }, brokenAuthority.config,
++		)).rejects.toMatchObject({
++			code: 'CLAIM_REPAIR_PREFLIGHT_FAILED',
++			details: { errors: expect.objectContaining({
++				foreign_keys_disabled: 1,
++				'index:idx_kernel_claims_active_lease': 1,
++				duplicate_active_claim: 1,
++				orphan_claim: 1,
++			}) },
++		});
++		brokenAuthority.driver.close();
++	});
++});
++
++describe('legacy claim repair backup and apply', () => {
++	test('proves a separate SQLite backup can be restored to the exact approved snapshot', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const backupPath = path.join(fixture.root, 'backups', 'claims-before.sqlite');
++		const hardenedPaths = [];
++		const trackingHardener = filePath => {
++			hardenedPaths.push(filePath);
++			hardenPath(filePath);
++		};
++
++		const proof = await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath: trackingHardener,
++		});
++
++		expect(fs.existsSync(backupPath)).toBe(true);
++		expect(proof).toMatchObject({
++			schema_version: 'forge.claim-repair.backup-proof.v1',
++			integrity: 'ok',
++		});
++		expect(proof.backup_sha256).toMatch(/^[0-9a-f]{64}$/);
++		expect(proof.plan_digest).toBe(proof.restore_digest);
++		expect(hardenedPaths.filter(filePath => filePath === backupPath)).toHaveLength(1);
++		await expect(createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_EXISTS' });
++		const verifiedAgain = await verifyClaimRepairBackup({
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++		expect(verifiedAgain).toEqual(proof);
++		fixture.driver.close();
++	});
++
++	test('rejects a backup changed after the restore snapshot was read', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		await fixture.driver.backup(backupPath, {}, { noReplace: true });
++
++		await expect(verifyClaimRepairBackup({
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver(databasePath) {
++				const restored = createBuiltinSQLiteDriver({ databasePath });
++				return {
++					async preflightLegacyClaimRepair(input) {
++						const result = await restored.preflightLegacyClaimRepair(input);
++						fs.writeFileSync(backupPath, 'replaced-after-restore');
++						return result;
++					},
++					close() { restored.close(); },
++				};
++			},
++			hardenPath,
++		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
++		fixture.driver.close();
++	});
++
++	test('never replaces a backup path created during publication', async () => {
++		let racedBackupPath;
++		const fixture = await createFixture({
++			backupVerifier() {
++				fs.writeFileSync(racedBackupPath, 'racing-writer', { flag: 'wx' });
++			},
++		});
++		await seedMixedClaims(fixture);
++		racedBackupPath = path.join(fixture.root, 'raced-backup.sqlite');
++		await expect(createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath: racedBackupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_EXISTS' });
++		expect(fs.readFileSync(racedBackupPath, 'utf8')).toBe('racing-writer');
++		fixture.driver.close();
++	});
++
++	test('rejects a hardlink backup alias without reusing that SQLite handle', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		fixture.driver.close();
++		const aliasDriver = createBuiltinSQLiteDriver({ databasePath: fixture.databasePath });
++		const hardlinkPath = path.join(fixture.root, 'kernel-hardlink.sqlite');
++		fs.linkSync(fixture.databasePath, hardlinkPath);
++		await expect(aliasDriver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath: hardlinkPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toThrow('must not alias');
++		aliasDriver.close();
++	});
++
++	test('requires the approved digest, applies exact CAS updates, and replays idempotently', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath: fixture.databasePath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toThrow('must not alias');
++		// Apply accepts only a backupPath and recomputes its proof itself; a
++		// caller-supplied proof cannot bypass this missing-path guard.
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_PROOF_REQUIRED' });
++
++		const applied = await fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config);
++		expect(applied).toMatchObject({
++			schema_version: 'forge.claim-repair.receipt.v1',
++			approved_digest: preflight.digest,
++			replayed: false,
++			mutations: { released: 1, reclaimable: 1, total: 2 },
++		});
++		const rows = await fixture.driver.queryAll('SELECT id, state FROM kernel_claims ORDER BY id;', fixture.config);
++		expect(rows).toEqual([
++			{ id: 'claim-durable', state: 'active' },
++			{ id: 'claim-expired', state: 'reclaimable' },
++			{ id: 'claim-future', state: 'active' },
++			{ id: 'claim-terminal', state: 'released' },
++		]);
++		// A lost-response retry must replay its durable receipt even after normal
++		// claim authority changes the mutable snapshot.
++		await fixture.issue('unrelated-after-repair');
++		await fixture.claim('claim-after-repair', 'unrelated-after-repair');
++		const replay = await fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config);
++		expect(replay).toEqual({ ...applied, replayed: true });
++		fs.rmSync(backupPath, { force: true });
++		const replayWithoutBackup = await fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config);
++		expect(replayWithoutBackup).toEqual({ ...applied, replayed: true });
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_ACTOR_REQUIRED' });
++		const receipts = await fixture.driver.queryAll(
++			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
++			fixture.config,
++		);
++		expect(receipts).toHaveLength(1);
++		expect(receipts[0].payload_json).not.toContain('claim-terminal');
++		fixture.driver.close();
++	});
++
++	test('reserves the durable claim-repair receipt namespace from generic event writers', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		const forgedReceipt = {
++			schema_version: 'forge.claim-repair.receipt.v1',
++			receipt_id: 'forged-row',
++			observed_at: OBSERVED_AT,
++			approved_digest: preflight.digest,
++			after_digest: 'a'.repeat(64),
++			backup_sha256: 'b'.repeat(64),
++			mutations: { released: 1, reclaimable: 1, total: 2 },
++			replayed: false,
++		};
++		await expect(fixture.driver.insertKernelEvent({
++			id: 'forged-row',
++			entity_type: 'claim_repair',
++			entity_id: 'legacy_claims',
++			event_type: 'claim.repair',
++			idempotency_key: `claim.repair:${preflight.digest}`,
++			expected_revision: 0,
++			actor: 'attacker',
++			origin: 'forge.claim-repair',
++			payload_json: JSON.stringify(forgedReceipt),
++			created_at: OBSERVED_AT,
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECEIPT_RESERVED' });
++		fixture.driver.close();
++	});
++
++	test('rejects drift from the approved snapshot without mutating rows', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++		await fixture.driver.exec("UPDATE kernel_claims SET actor = 'changed-after-approval' WHERE id = 'claim-expired';", fixture.config);
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_DIGEST_DRIFT' });
++		const states = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
++		expect(states.filter(row => row.state !== 'active')).toEqual([]);
++		fixture.driver.close();
++	});
++
++	test('rejects unrelated authority writes after backup without mutating claims', async () => {
++		const fixture = await createFixture();
++		await seedMixedClaims(fixture);
++		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++		await fixture.issue('unrelated-after-backup');
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_DIGEST_DRIFT' });
++		const states = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
++		expect(states).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
++		fixture.driver.close();
++	});
++
++	test('binds the digest to rowids used for stage-history and recent-memory ordering', async () => {
++		const fixture = await createFixture();
++		await fixture.issue('rowid-ordering');
++		await fixture.driver.exec(`
++			INSERT INTO kernel_stage_runs (
++				id, issue_id, stage, substage, status, started_at, completed_at, evidence_id
++			) VALUES
++				('run-target', 'rowid-ordering', 'dev', NULL, 'done', '${OBSERVED_AT}', '${OBSERVED_AT}', NULL),
++				('run-sentinel', 'rowid-ordering', 'dev', NULL, 'done', '${OBSERVED_AT}', '${OBSERVED_AT}', NULL);
++			INSERT INTO kernel_memories (
++				key, value_json, source_agent, scope, confidence, tags_json,
++				supersedes_json, beads_refs_json, created_at, updated_at
++			) VALUES
++				('memory-target', '{}', 'fixture', NULL, NULL, NULL, NULL, NULL, '${OBSERVED_AT}', '${OBSERVED_AT}'),
++				('memory-sentinel', '{}', 'fixture', NULL, NULL, NULL, NULL, NULL, '${OBSERVED_AT}', '${OBSERVED_AT}');
++		`, fixture.config);
++		const beforeStageReinsert = await fixture.driver.preflightLegacyClaimRepair(
++			{ observedAt: OBSERVED_AT },
++			fixture.config,
++		);
++		await fixture.driver.exec(`
++			DELETE FROM kernel_stage_runs WHERE id = 'run-target';
++			INSERT INTO kernel_stage_runs (
++				id, issue_id, stage, substage, status, started_at, completed_at, evidence_id
++			) VALUES ('run-target', 'rowid-ordering', 'dev', NULL, 'done', '${OBSERVED_AT}', '${OBSERVED_AT}', NULL);
++		`, fixture.config);
++		const afterStageReinsert = await fixture.driver.preflightLegacyClaimRepair(
++			{ observedAt: OBSERVED_AT },
++			fixture.config,
++		);
++		await fixture.driver.exec(`
++			DELETE FROM kernel_memories WHERE key = 'memory-target';
++			INSERT INTO kernel_memories (
++				key, value_json, source_agent, scope, confidence, tags_json,
++				supersedes_json, beads_refs_json, created_at, updated_at
++			) VALUES ('memory-target', '{}', 'fixture', NULL, NULL, NULL, NULL, NULL, '${OBSERVED_AT}', '${OBSERVED_AT}');
++		`, fixture.config);
++		const afterMemoryReinsert = await fixture.driver.preflightLegacyClaimRepair(
++			{ observedAt: OBSERVED_AT },
++			fixture.config,
++		);
++
++		expect(afterStageReinsert.digest).not.toBe(beforeStageReinsert.digest);
++		expect(afterMemoryReinsert.digest).not.toBe(afterStageReinsert.digest);
++		fixture.driver.close();
++	});
++
++	test('rolls back every state change when interrupted before the receipt commit', async () => {
++		const fixture = await createFixture({
++			claimRepairFaultInjector(phase) {
++				if (phase === 'after-mutations') throw new Error('simulated interruption');
++			},
++		});
++		await seedMixedClaims(fixture);
++		const backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toThrow('simulated interruption');
++		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
++		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
++		const receipts = await fixture.driver.queryAll(
++			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
++			fixture.config,
++		);
++		expect(receipts).toEqual([]);
++		fixture.driver.close();
++	});
++
++	test('rolls back when the verified backup changes immediately before receipt commit', async () => {
++		let backupPath;
++		const fixture = await createFixture({
++			claimRepairFaultInjector(phase) {
++				if (phase === 'before-backup-commit-check') fs.writeFileSync(backupPath, 'replaced');
++			},
++		});
++		await seedMixedClaims(fixture);
++		backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
++		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
++		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
++		fixture.driver.close();
++	});
++
++	test('keeps the verified backup fenced through receipt insertion and rolls back late replacement', async () => {
++		let backupPath;
++		const fixture = await createFixture({
++			claimRepairFaultInjector(phase) {
++				if (phase === 'after-receipt-before-commit') fs.writeFileSync(backupPath, 'replaced-late');
++			},
++		});
++		await seedMixedClaims(fixture);
++		backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
++		const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
++		expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
++		const receipts = await fixture.driver.queryAll(
++			"SELECT * FROM kernel_events WHERE event_type = 'claim.repair';",
++			fixture.config,
++		);
++		expect(receipts).toEqual([]);
++		fixture.driver.close();
++	});
++
++	test('rejects a backup replaced by a source alias at the commit-fence seam', async () => {
++		let backupPath;
++		let databasePath;
++		const fixture = await createFixture({
++			claimRepairFaultInjector(phase) {
++				if (phase !== 'before-backup-commit-check') return;
++				fs.rmSync(backupPath);
++				fs.linkSync(databasePath, backupPath);
++			},
++		});
++		await seedMixedClaims(fixture);
++		backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		databasePath = fixture.databasePath;
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: restoredPath => createBuiltinSQLiteDriver({ databasePath: restoredPath }),
++			hardenPath,
++		});
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
++		if (process.platform !== 'darwin') {
++			const rows = await fixture.driver.queryAll('SELECT state FROM kernel_claims ORDER BY id;', fixture.config);
++			expect(rows).toEqual([{ state: 'active' }, { state: 'active' }, { state: 'active' }, { state: 'active' }]);
++		}
++		fixture.driver.close();
++	});
++
++	test.skipIf(process.platform === 'win32')('restores owner-only backup permissions immediately before commit', async () => {
++		let backupPath;
++		const fixture = await createFixture({
++			claimRepairFaultInjector(phase) {
++				if (phase === 'after-receipt-before-commit') fs.chmodSync(backupPath, 0o644);
++			},
++		});
++		await seedMixedClaims(fixture);
++		backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).resolves.toMatchObject({ replayed: false });
++		expect(fs.statSync(backupPath).mode & 0o077).toBe(0);
++		fixture.driver.close();
++	});
++});
+diff --git a/test/kernel/sqlite-driver-import.test.js b/test/kernel/sqlite-driver-import.test.js
+index 5876cf1c..45b96d84 100644
+--- a/test/kernel/sqlite-driver-import.test.js
++++ b/test/kernel/sqlite-driver-import.test.js
+@@ -132,6 +132,26 @@ describe('Kernel SQLite driver — faithful beads import write path', () => {
+ 		expect(shown.data.close_reason).toBe('Cancelled — superseded');
+ 	});
+ 
++	test('rejects imported activity events from the reserved claim-repair receipt namespace', async () => {
++		await expect(broker.importIssues({
++			issues: [{ id: 'reserved-import', title: 'Reserved import' }],
++			activityEvents: [{
++				id: 'forged-repair-receipt',
++				entity_type: 'claim_repair',
++				entity_id: 'legacy_claims',
++				event_type: 'claim.repair',
++				idempotency_key: `claim.repair:${'a'.repeat(64)}`,
++				actor: 'attacker',
++				origin: 'forge.claim-repair',
++				payload_json: '{}',
++				created_at: now,
++			}],
++		}, { now })).rejects.toMatchObject({ code: 'CLAIM_REPAIR_RECEIPT_RESERVED' });
++
++		expect(await driver.issueOperation('show', ['reserved-import'], {}, config))
++			.toMatchObject({ ok: false });
++	});
++
+ 	// GAP 1 + GAP 3 end-to-end: the legacy-backup fixtures flow through
+ 	// loadBeadsSnapshotFromDirectory → importBeadsSnapshot → broker.importIssues, and
+ 	// every issue keeps its original timestamps/status while its comments and the
+diff --git a/test/kernel/taxonomy-validator.test.js b/test/kernel/taxonomy-validator.test.js
+index 3ae341f0..9b4b8204 100644
+--- a/test/kernel/taxonomy-validator.test.js
++++ b/test/kernel/taxonomy-validator.test.js
+@@ -354,6 +354,11 @@ describe('claim-lease invariants (validation layer)', () => {
+ describe('claim validator — extra branches', () => {
+ 	const now = '2026-06-17T00:00:00.000Z';
+ 
++	test('accepts reclaimable as non-authoritative claim history', () => {
++		const result = validateClaim({ issue_id: 'forge-1', actor: 'a', state: 'reclaimable' }, { now });
++		expect(result.valid).toBe(true);
++	});
++
+ 	test('rejects an unknown claim state', () => {
+ 		const result = validateClaim({ issue_id: 'forge-1', actor: 'a', state: 'paused' }, { now });
+ 		expect(result.valid).toBe(false);
+-- 
+2.51.0.windows.1
+

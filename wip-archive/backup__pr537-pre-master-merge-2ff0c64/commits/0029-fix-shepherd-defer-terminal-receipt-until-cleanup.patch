@@ -1,0 +1,297 @@
+From 2ff0c64e6224fca115d79592295e2cab19f76372 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 04:29:27 +0530
+Subject: [PATCH] fix(shepherd): defer terminal receipt until cleanup
+
+---
+ lib/commands/shepherd.js               | 50 +++++++++++++++++++++++---
+ lib/pr-monitor/flow-monitor.js         | 13 +++++--
+ lib/pr-monitor/shepherd-lease.js       | 13 +++++++
+ test/commands/shepherd.test.js         | 30 ++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js   | 27 ++++++++++++++
+ test/pr-monitor/shepherd-lease.test.js | 12 +++++++
+ test/pr-monitor/shepherd-watch.test.js |  1 +
+ 7 files changed, 140 insertions(+), 6 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index f3ae0493..663af004 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -40,6 +40,7 @@ const { watchLoop } = require('../pr-monitor/watch');
+ const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
+ const reconcileExecutor = require('../pr-monitor/reconcile-executor');
+ const monitorJournal = require('../pr-monitor/journal');
++const shepherdLease = require('../pr-monitor/shepherd-lease');
+ const brokerMod = require('../kernel/broker');
+ const { EVENT_TYPES: T } = require('../pr-monitor/events');
+ const { autoShepherdRailEnabled } = require('./ship');
+@@ -294,6 +295,35 @@ function optionalGitCommonDir(projectRoot, deps) {
+   }
+ }
+ 
++function terminalCleanupEvidence(ctx, deps = {}) {
++  try {
++    const watcherRunning = deps.watcherRunning || monitorJournal.watcherRunning;
++    if (watcherRunning(ctx.dir)) return { complete: false };
++    const inspectLease = deps.inspectLease || shepherdLease.inspect;
++    const lease = inspectLease(ctx.projectRoot, { gitCommonDir: ctx.gitCommonDir });
++    if (!lease || lease.status === 'invalid' || !Array.isArray(lease.watchers)) return { complete: false };
++    const pr = Number(ctx.pr);
++    const canonicalRepo = `${ctx.owner}/${ctx.repo}`.toLowerCase();
++    const localRepo = String(ctx.repo).toLowerCase();
++    const stillLeased = lease.watchers.some((watcher) => {
++      if (Number(typeof watcher === 'object' ? watcher?.pr : watcher) !== pr) return false;
++      if (!watcher || typeof watcher !== 'object' || watcher.repo == null) return true;
++      const repo = String(watcher.repo).toLowerCase();
++      return repo === canonicalRepo || repo === localRepo;
++    });
++    if (stillLeased) return { complete: false };
++    const readClaim = deps.readClaim || reconcileExecutor.readClaimMarker;
++    if (readClaim(ctx.projectRoot, canonicalRepo, pr, ctx.gitCommonDir) != null) return { complete: false };
++    return {
++      complete: true,
++      processCleanup: { status: 'reaped', owner: 'repo-singleton-shepherd' },
++      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
++    };
++  } catch {
++    return { complete: false };
++  }
++}
++
+ async function buildMonitorAuthority(ctx, projectRoot, gitCommonDir, deps) {
+   if (deps.store) return injectedMonitorAuthority(deps);
+   const buildKernelDeps = deps.buildKernelDeps
+@@ -328,14 +358,18 @@ async function buildLiveMonitorContext(pr, projectRoot, deps) {
+   const gitCommonDir = optionalGitCommonDir(projectRoot, deps);
+   const authority = await buildMonitorAuthority(ctx, projectRoot, gitCommonDir, deps);
+   if (authority.error) return authority;
++  const dir = deps.dir || monitorJournal.journalDir({
++    root: projectRoot || process.cwd(), gitCommonDir, repo: ctx.repo, pr: ctx.pr,
++  });
+   return {
+-    dir: deps.dir || monitorJournal.journalDir({
+-      root: projectRoot || process.cwd(), gitCommonDir, repo: ctx.repo, pr: ctx.pr,
+-    }),
++    dir,
+     gather: deps.gather || (() => gatherMonitorSnapshot({ ...ctx, adapter, self: deps.self })),
+     enrich: deps.enrich || makeCheckFailureEnricher({
+       ...ctx, adapter, self: deps.self, runGh: (ghArgs) => gh('gh', ghArgs), gatherPull: deps.gatherPull,
+     }),
++    terminalCleanupEvidence: deps.terminalCleanupEvidence || (() => terminalCleanupEvidence({
++      ...ctx, dir, projectRoot: projectRoot || process.cwd(), gitCommonDir,
++    }, deps)),
+     ...authority,
+   };
+ }
+@@ -353,7 +387,13 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+   if (deps.forceAuthority && !deps.store) {
+     return { error: 'Durable monitor authority is unavailable.' };
+   }
+-  return { dir: deps.dir, gather: deps.gather, enrich, ...injectedMonitorAuthority(deps) };
++  return {
++    dir: deps.dir,
++    gather: deps.gather,
++    enrich,
++    terminalCleanupEvidence: deps.terminalCleanupEvidence,
++    ...injectedMonitorAuthority(deps),
++  };
+ }
+ 
+ /**
+@@ -520,6 +560,7 @@ async function handleWatch(args, projectRoot, deps = {}) {
+       maxPasses: deps.maxPasses,
+       lockOpts: deps.lockOpts,
+       signal: wired.signal,
++      terminalCleanupEvidence: deps.terminalCleanupEvidence || (() => ({ complete: false })),
+       watcherRunning: deps.watcherRunning,
+       writePid: deps.writePid,
+       removePid: deps.removePid,
+@@ -936,4 +977,5 @@ module.exports = {
+   convergenceHandoff,
+   defaultBuildContext,
+   isWorkingTreeClean,
++  terminalCleanupEvidence,
+ };
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 61760db7..02b2ec1e 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -574,12 +574,21 @@ function terminalPrState(snapshot) {
+ async function recordTerminalHandoff(ctx, bridge, spec, state, snapshot) {
+   const terminalState = terminalPrState(snapshot);
+   if (!terminalState) return null;
++  let cleanup;
++  try {
++    cleanup = await ctx.terminalCleanupEvidence?.({ snapshot, terminalState });
++  } catch {
++    return null;
++  }
++  if (cleanup?.complete !== true
++    || !cleanup.processCleanup || typeof cleanup.processCleanup !== 'object'
++    || !cleanup.leaseCleanup || typeof cleanup.leaseCleanup !== 'object') return null;
+   const createdAt = (ctx.now || defaultNow)();
+   const terminating = reduceMonitor(spec, state, { kind: 'subject-terminal', terminalState }).state;
+   const terminal = reduceMonitor(spec, terminating, {
+     kind: 'cleanup-complete',
+-    processCleanup: { status: 'not-required', owner: 'repo-singleton-shepherd' },
+-    leaseCleanup: { status: 'checkpointed', continuing_authority: false },
++    processCleanup: cleanup.processCleanup,
++    leaseCleanup: cleanup.leaseCleanup,
+   }).state;
+   const receipt = createMonitorReceipt(spec, terminal, {
+     objectId: uuidFrom(`terminal:${ctx.monitorId}:${terminalState}:${terminal.lastSequence}`),
+diff --git a/lib/pr-monitor/shepherd-lease.js b/lib/pr-monitor/shepherd-lease.js
+index 088924d4..179538d1 100644
+--- a/lib/pr-monitor/shepherd-lease.js
++++ b/lib/pr-monitor/shepherd-lease.js
+@@ -66,6 +66,18 @@ function readLock(file) {
+   }
+ }
+ 
++function inspect(projectRoot, opts = {}) {
++  const file = lockFilePath(projectRoot, opts);
++  if (!fs.existsSync(file)) return { status: 'absent', watchers: [] };
++  const held = readLock(file);
++  if (!held || !Array.isArray(held.watchers)) return { status: 'invalid', watchers: [] };
++  try {
++    return { status: 'valid', watchers: structuredClone(held.watchers) };
++  } catch {
++    return { status: 'invalid', watchers: [] };
++  }
++}
++
+ // Is `pid` a live process? `process.kill(pid, 0)` sends no signal but throws
+ // ESRCH when the pid is gone. EPERM means it exists but isn't ours — still live.
+ function pidAlive(pid) {
+@@ -261,6 +273,7 @@ module.exports = {
+   WATCHER_CHECKPOINT_CAPACITY_EXCEEDED,
+   WATCHER_CHECKPOINT_INVALID_PAYLOAD,
+   lockFilePath,
++  inspect,
+   pidAlive,
+   ownsLock,
+   acquire,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index a5d7a999..d5393620 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -30,6 +30,36 @@ describe('shepherd command handler', () => {
+     expect(typeof shepherdCmd.handler).toBe('function');
+   });
+ 
++  test('terminal cleanup evidence requires a reaped watcher and a reduced valid lease checkpoint', () => {
++    const base = {
++      owner: 'owner', repo: 'forge', pr: 42, dir: '/journal',
++      projectRoot: '/repo', gitCommonDir: '/repo/.git',
++    };
++    const deps = {
++      watcherRunning: () => false,
++      inspectLease: () => ({ status: 'valid', watchers: [] }),
++      readClaim: () => null,
++    };
++
++    expect(shepherdCmd.terminalCleanupEvidence(base, deps)).toMatchObject({
++      complete: true,
++      processCleanup: { status: 'reaped' },
++      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
++    });
++    expect(shepherdCmd.terminalCleanupEvidence(base, {
++      ...deps, watcherRunning: () => true,
++    })).toEqual({ complete: false });
++    expect(shepherdCmd.terminalCleanupEvidence(base, {
++      ...deps, inspectLease: () => ({ status: 'valid', watchers: [{ repo: 'owner/forge', pr: 42 }] }),
++    })).toEqual({ complete: false });
++    expect(shepherdCmd.terminalCleanupEvidence(base, {
++      ...deps, inspectLease: () => ({ status: 'invalid', watchers: [] }),
++    })).toEqual({ complete: false });
++    expect(shepherdCmd.terminalCleanupEvidence(base, {
++      ...deps, readClaim: () => 'still-owned',
++    })).toEqual({ complete: false });
++  });
++
+   test('one invocation runs exactly ONE bounded pass (no in-process loop)', async () => {
+     let passCount = 0;
+     const fakeRun = async () => {
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index f4949cac..e6050b6a 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -118,6 +118,11 @@ function context(store, gather, deliverLegacy) {
+     gather,
+     deliverLegacy,
+     now: () => '2026-08-12T12:00:00.000Z',
++    terminalCleanupEvidence: async () => ({
++      complete: true,
++      processCleanup: { status: 'reaped', owner: 'repo-singleton-shepherd' },
++      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
++    }),
+   };
+ }
+ 
+@@ -1000,6 +1005,28 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
+   });
+ 
++  test('defers terminal receipt authority until watcher cleanup is durably checkpointed', async () => {
++    const store = durableStore();
++    const merged = snapshot({ state: 'MERGED' });
++    const ctx = context(store, async () => merged, async () => {});
++    ctx.terminalCleanupEvidence = async () => ({ complete: false });
++
++    const pending = await runFlowMonitorPass(ctx);
++
++    expect(pending.terminalReceiptId).toBeUndefined();
++    expect(store.terminalReceipt).toBeNull();
++
++    ctx.terminalCleanupEvidence = async () => ({
++      complete: true,
++      processCleanup: { status: 'reaped', owner: 'repo-singleton-shepherd' },
++      leaseCleanup: { status: 'checkpointed', continuing_authority: false },
++    });
++    const completed = await runFlowMonitorPass(ctx);
++
++    expect(completed.terminalReceiptId).toBeString();
++    expect(store.terminalReceipt.payload.process_cleanup.status).toBe('reaped');
++  });
++
+   test('starts a new lifecycle when a terminal closed PR is reopened', async () => {
+     const store = durableStore();
+     let next = snapshot({ state: 'CLOSED' });
+diff --git a/test/pr-monitor/shepherd-lease.test.js b/test/pr-monitor/shepherd-lease.test.js
+index 04bd6788..519c3f55 100644
+--- a/test/pr-monitor/shepherd-lease.test.js
++++ b/test/pr-monitor/shepherd-lease.test.js
+@@ -39,6 +39,18 @@ describe('shepherd-lease', () => {
+     expect(held.watchers).toEqual([]);
+   });
+ 
++  test('inspection exposes only durable watcher cleanup evidence and fails closed on corruption', () => {
++    expect(lease.inspect(null, opts())).toEqual({ status: 'absent', watchers: [] });
++    const acquired = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
++    const watchers = [{ repo: 'owner/forge', pr: 42, pid: 1234, startedAt: 't1' }];
++    expect(lease.updateWatchers(null, watchers, opts({ pid: 100, token: acquired.token }))).toBe(true);
++
++    expect(lease.inspect(null, opts())).toEqual({ status: 'valid', watchers });
++
++    fs.writeFileSync(lease.lockFilePath(null, { gitCommonDir }), '{not-json');
++    expect(lease.inspect(null, opts())).toEqual({ status: 'invalid', watchers: [] });
++  });
++
+   test('(1) live + fresh holder blocks a second acquire', () => {
+     lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
+     const res = lease.acquire(null, opts({ pid: 200, isAlive: alive, now: () => 1000 }));
+diff --git a/test/pr-monitor/shepherd-watch.test.js b/test/pr-monitor/shepherd-watch.test.js
+index b8519f07..20dfdf7a 100644
+--- a/test/pr-monitor/shepherd-watch.test.js
++++ b/test/pr-monitor/shepherd-watch.test.js
+@@ -28,6 +28,7 @@ describe('forge shepherd watch <pr>', () => {
+     expect(seen.emit).toBe(deps.emit);
+     expect(seen.signal).toBe(deps.signal);
+     expect(typeof seen.gather).toBe('function');
++    expect(await seen.terminalCleanupEvidence()).toEqual({ complete: false });
+   });
+ 
+   test('the top-level handler dispatches `watch` to handleWatch', async () => {
+-- 
+2.51.0.windows.1
+

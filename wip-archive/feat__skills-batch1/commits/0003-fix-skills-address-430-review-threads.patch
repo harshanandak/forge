@@ -1,0 +1,115 @@
+From 2627300d67b40cdb39cdf0d90936dc31b3f66940 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 12:53:46 +0530
+Subject: [PATCH] fix(skills): address #430 review threads
+
+- coverage.json: map orphans to worktree (orphan reaping is worktree lifecycle)
+- using-forge.js: drop bare worktree/parallel-work keywords that misrouted validation-in-worktree
+- gates/SKILL.md: forge gate check requires issue-id and gate-id (approvals are issue-scoped)
+- regenerate worktree scorecard; .agents mirrors synced by hook
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/gates/SKILL.md                | 4 ++--
+ .agents/skills/worktree/evals/scorecard.json | 4 ++--
+ lib/using-forge.js                           | 2 +-
+ skills/coverage.json                         | 2 +-
+ skills/gates/SKILL.md                        | 4 ++--
+ skills/worktree/evals/scorecard.json         | 4 ++--
+ 6 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/.agents/skills/gates/SKILL.md b/.agents/skills/gates/SKILL.md
+index 768c0e15..61f34dec 100644
+--- a/.agents/skills/gates/SKILL.md
++++ b/.agents/skills/gates/SKILL.md
+@@ -52,10 +52,10 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
+ forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
+ forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
+ forge gate status  [--json]                                 # list recorded events (resume-safe)
+-forge gate check   <gate-id>                                # exit 0 iff gate DISABLED or an approval exists
++forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
+ ```
+ 
+-`check` is the reusable enforcement primitive a stage skill calls: it passes when the gate is disabled or an approval event has been recorded. Events are durable on the issue, so they survive a compaction or crash.
++`check` is the reusable enforcement primitive a stage skill calls: it passes when the gate is disabled or an approval event has been recorded for that specific issue id (approvals are issue-scoped, so pass the same `<issue-id>` you approved against). Events are durable on the issue, so they survive a compaction or crash.
+ 
+ ## Tri-state control (declared intent)
+ 
+diff --git a/.agents/skills/worktree/evals/scorecard.json b/.agents/skills/worktree/evals/scorecard.json
+index 8c3e4af7..4b8c8423 100644
+--- a/.agents/skills/worktree/evals/scorecard.json
++++ b/.agents/skills/worktree/evals/scorecard.json
+@@ -24,9 +24,9 @@
+     "router_exempt": false,
+     "fixtures": "present",
+     "fixtures_total": 6,
+-    "fixtures_best_hit": 6,
++    "fixtures_best_hit": 5,
+     "reachable": true,
+-    "keyword_alignment": 1
++    "keyword_alignment": 0.83
+   },
+   "behavioral": {
+     "trigger_recall": null,
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index 6e1fe65b..a259f291 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -182,7 +182,7 @@ const INTENT_RULES = Object.freeze([
+   { skill: 'claim-safety', weight: 2, keywords: ['claim an issue', 'claim the issue', 'prove ownership', 'own the lease', 'lease'] },
+   { skill: 'smith', weight: 2, keywords: ['end to end', 'end-to-end', 'drive one issue', 'plan to merged', 'whole issue', 'from plan to pr'] },
+   { skill: 'shepherd', weight: 3, keywords: ['monitor a pr', 'shepherd', 'watch the pr', 'watch my pr', 'ci status', 'poll the pr', 'pr checks', 'pr blocked', 'blocking my pr', 'blocking the pr', 'pr merging', 'pr not merging', 'ready to merge', 'merge ready', 'pr check failed', 'pr check went red', 'keep an eye on my pr', 'keep an eye on the pr', 'keep an eye on my prs', 'babysit my pr', 'babysit the pr', 'keep watching my pr', 'keep watching the pr', 'pr verdict', 'shepherd daemon', 'watch the pull request'] },
+-  { skill: 'worktree', weight: 3, keywords: ['worktree', 'isolated branch', 'isolated worktree', 'isolated checkout', 'spin up a worktree', 'parallel work', 'work on another pr', 'merged worktrees', 'clean up merged', 'clean merged'] },
++  { skill: 'worktree', weight: 3, keywords: ['create a worktree', 'worktree for', 'isolated branch', 'isolated worktree', 'isolated checkout', 'spin up a worktree', 'work on another pr', 'merged worktrees', 'clean up merged', 'clean merged'] },
+   { skill: 'gates', weight: 3, keywords: ['disable the gate', 'disable a gate', 'enable a gate', 'enable the gate', 'toggle a gate', 'toggle the gate', 'tdd gate', 'disable the tdd', 'turn off tdd', 'tdd enforcement', 'tdd intent', 'kernel tracking rail', 'auto shepherd rail', 'loosen enforcement', 'approve the human gate', 'approve a human gate', 'human gate', 'forge control'] },
+   { skill: 'research', weight: 2, keywords: ['research', 'best practices', 'investigate the landscape', 'deep research', 'compare libraries'] },
+   { skill: 'parallel-deep-research', weight: 2, keywords: ['market research', 'competitive research', 'competitor analysis', 'competitive analysis', 'competitive landscape', 'market landscape'] },
+diff --git a/skills/coverage.json b/skills/coverage.json
+index 99adefb0..801c3837 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -30,7 +30,7 @@
+ 
+     "worktree": "worktree",
+     "clean": "worktree",
+-    "orphans": "issue-basics",
++    "orphans": "worktree",
+     "rollback": "rollback",
+     "review": "review",
+     "verify": "verify",
+diff --git a/skills/gates/SKILL.md b/skills/gates/SKILL.md
+index 768c0e15..61f34dec 100644
+--- a/skills/gates/SKILL.md
++++ b/skills/gates/SKILL.md
+@@ -52,10 +52,10 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
+ forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
+ forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
+ forge gate status  [--json]                                 # list recorded events (resume-safe)
+-forge gate check   <gate-id>                                # exit 0 iff gate DISABLED or an approval exists
++forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
+ ```
+ 
+-`check` is the reusable enforcement primitive a stage skill calls: it passes when the gate is disabled or an approval event has been recorded. Events are durable on the issue, so they survive a compaction or crash.
++`check` is the reusable enforcement primitive a stage skill calls: it passes when the gate is disabled or an approval event has been recorded for that specific issue id (approvals are issue-scoped, so pass the same `<issue-id>` you approved against). Events are durable on the issue, so they survive a compaction or crash.
+ 
+ ## Tri-state control (declared intent)
+ 
+diff --git a/skills/worktree/evals/scorecard.json b/skills/worktree/evals/scorecard.json
+index 8c3e4af7..4b8c8423 100644
+--- a/skills/worktree/evals/scorecard.json
++++ b/skills/worktree/evals/scorecard.json
+@@ -24,9 +24,9 @@
+     "router_exempt": false,
+     "fixtures": "present",
+     "fixtures_total": 6,
+-    "fixtures_best_hit": 6,
++    "fixtures_best_hit": 5,
+     "reachable": true,
+-    "keyword_alignment": 1
++    "keyword_alignment": 0.83
+   },
+   "behavioral": {
+     "trigger_recall": null,
+-- 
+2.51.0.windows.1
+

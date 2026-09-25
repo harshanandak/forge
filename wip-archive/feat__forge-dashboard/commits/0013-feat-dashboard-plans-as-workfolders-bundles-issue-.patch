@@ -1,0 +1,180 @@
+From 7f70ae1c951255dfa46b842591e1b4041ddcaf93 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 11 Jul 2026 12:21:59 +0530
+Subject: [PATCH] =?UTF-8?q?feat(dashboard):=20plans-as-workfolders=20?=
+ =?UTF-8?q?=E2=80=94=20bundles=20+=20issue=E2=86=94folder=20links=20(f4a42?=
+ =?UTF-8?q?1d7)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Last v6-brief item. Reframes Plans as work folders and wires the bidirectional link.
+
+- Plans → Work folders: each folder is a bundle card (plan · tasks · decisions ·
+  docs) with its files as chips that open the in-render markdown reader; renamed the
+  nav/title "Plans" → "Work folders" (route id + #/work/:slug reader unchanged).
+- Bidirectional link (grounded, not fuzzy): a work-link index built in rebuild()
+  from issues that cite `docs/work/<slug>` in their body/design/notes (20 issues →
+  6 folders here). Work-folder cards show their linked epic/tasks (chips → detail);
+  the issue/epic detail hub's Work-folder slot is now a real link → the reader.
+- Honest SEAM (56461780) for folders/issues without a citation — no fuzzy matching.
+
+Dark-default, mono, routing (cards/chips are entity links), one-card grammar.
+Interaction-verified: 93 bundle cards, 287 file chips, 6 real linked folders + 87
+SEAMs, folder→reader, linked-issue chip→detail, issue detail→work folder→reader.
+ESLint clean, 12 tests pass. Screenshot: v6-plans-workfolders.png.
+
+v6-brief now feature-complete pending the data SEAMs (7dc229d4 lease/surface,
+f61601ab stage_runs, 56461780 work-graph, c7971150 Graphiti). Refs f4a421d7.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ web/dashboard/README.md  |  2 +-
+ web/dashboard/app.js     | 54 ++++++++++++++++++++++++++++++----------
+ web/dashboard/styles.css | 20 +++++++++++++++
+ 3 files changed, 62 insertions(+), 14 deletions(-)
+
+diff --git a/web/dashboard/README.md b/web/dashboard/README.md
+index cbdd8616..81dff337 100644
+--- a/web/dashboard/README.md
++++ b/web/dashboard/README.md
+@@ -46,7 +46,7 @@ cd web/dashboard && python -m http.server 8080   # → http://localhost:8080
+ | `#/board` | **Work Board** | issues + epics | **status is the only axis** — a persisted **Kanban ⇄ Table** toggle: *Kanban* = independent-scroll columns **Backlog → Ready → In progress** (+ **Done / Cancelled** via show/hide) with **epics as grouping headers** inside each column; *Table* = the same items as a list, **rows grouped by collapsible epic** with columns Title · Status · Priority · Owner · Live · PR (status = sort geometry). Blocked items stay visible with a ✕ glyph (blocked ≠ backlog). One filter bar (multi-select, OR-within/AND-across, visible selected state) + `#/board?epic=:id` focus drive both views |
+ | `#/epics` | **Epics / Initiatives** | epics + `parent_id` children | Linear-style table, expandable hierarchy, Health (on/at-risk/off-track), `done/total`, Active/Planned/Completed/All tabs |
+ | `#/architecture` | **Architecture** | kernel `type=decision` + `forge prime` headline PDs + `docs/adr` + `docs/architecture` | decisions grouped into **architecture areas as folder-nodes** (from the dotted `component`, e.g. `authority.*` → *authority*); open an area → its decisions (status glyph + source/component tags), click one → its detail + a **thread** of related decisions in the same area; architecture-docs index. Supersede/relates/conflicts edges = SEAM (`56461780`) |
+-| `#/plans` | **Plans & History** | `docs/work/*` (+ baked markdown) | timeline of work folders grouped by month; **click a folder to read its markdown in-render** (heading/list/code, tab per `.md`) — for terminal users who can't open `.md` files |
++| `#/plans` | **Work folders** | `docs/work/*` (+ baked markdown) + issue back-refs | each work folder is a **bundle card** (plan · tasks · decisions · docs) — title/file chips **open the markdown in-render** (tab per `.md`); shows its **linked epic/tasks** (grounded where an issue cites `docs/work/<slug>` in its body/design/notes; SEAM `56461780` otherwise). The issue/epic detail hub links back to its work folder. Month-grouped, newest first |
+ | `#/workspaces` | **Workspaces** | `git worktree list` (+ahead/behind/dirty) + PR/CI match | worktree = card: branch · surface chip · real git ahead/behind/dirty · **"working on"** (its PR/branch) · CI; Active/Merged filter; linked-issue/phase/harness = SEAM |
+ | `#/memory` | **Memory** | decisions + recall (`.remember`) | ONE **reverse-chronological Memory Stream** — typed entries (glyph · text · timestamp · provenance chips: area/source/status), banded (dated → undated). Click an entry → its **thread** (related decisions in the area). A pinned **Canon** rail (accepted-decisions count + architecture docs). `forge recall` (empty) + user-global `.remember` rotation are honest **SEAMs** (the latter is deliberately not baked — cross-project leak; needs a slug-scoped ingestor). No empty graph pane |
+ | `#/backlog` | **Backlog** | kernel backlog state (pending) | honest SEAM — parked ideas render once `b2f856b1` lands |
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index 2d1de6e9..38807a5e 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -77,6 +77,21 @@ function rebuild(snap) {
+   State.byId = {}; State.kids = {};
+   issues.forEach((i) => { State.byId[i.id] = i; if (i.parent_id) (State.kids[i.parent_id] = State.kids[i.parent_id] || []).push(i); });
+   State.epics = issues.filter((i) => i.type === 'epic');
++  // Grounded work-folder ↔ issue links: issues that reference docs/work/<slug> in
++  // their body/design/notes (real citation, not fuzzy title matching). The rest is
++  // a SEAM (the work-graph 56461780) — no back-ref field on the kernel record yet.
++  State.workLinks = { bySlug: {}, byIssue: {} };
++  const slugSet = new Set((snap.plans || []).map((p) => p.slug));
++  const RE = /docs\/work\/(\d{4}-\d{2}-\d{2}-[a-z0-9._-]+)/gi;
++  issues.forEach((i) => {
++    const hay = `${i.body || ''}\n${i.design || ''}\n${i.notes || ''}\n${i.acceptance_criteria || ''}`;
++    const found = new Set();
++    for (const m of hay.matchAll(RE)) { if (slugSet.has(m[1])) found.add(m[1]); }
++    if (found.size) {
++      State.workLinks.byIssue[i.id] = [...found];
++      found.forEach((s) => { (State.workLinks.bySlug[s] = State.workLinks.bySlug[s] || []).push(i.id); });
++    }
++  });
+ }
+ 
+ /* ---------- pure derivation (exported for tests) ---------- */
+@@ -185,7 +200,7 @@ const VIEWS = [
+   { id: 'workspaces', title: 'Workspaces', flush: false, render: renderWorkspaces },
+   { id: 'backlog', title: 'Backlog', flush: false, render: renderBacklog },
+   { id: 'architecture', title: 'Architecture', flush: false, render: renderArchitecture },
+-  { id: 'plans', title: 'Plans', flush: false, render: renderPlans },
++  { id: 'plans', title: 'Work folders', flush: false, render: renderPlans },
+   { id: 'memory', title: 'Memory', flush: false, render: renderMemory },
+   { id: 'ops', title: 'Now', flush: false, render: renderNow },
+ ];
+@@ -442,24 +457,34 @@ function renderArchitecture() {
+   </div>`;
+ }
+ 
+-/* ---- Plans ---- (rows open the in-render markdown reader via #/work/:slug) */
++/* ---- Work folders ---- (each bundles plan+tasks+decisions+docs; linked to issues) */
+ function renderPlans() {
+   const plans = (State.snapshot.plans || []).slice();
+   const monthLabel = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Undated';
+   const groups = {};
+   plans.forEach((p) => { const m = p.date ? p.date.slice(0, 7) : 'zzzz'; (groups[m] = groups[m] || []).push(p); });
+   const months = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+-  const tag = (on, label) => on ? `<span class="tag">${label}</span>` : '';
+-  const readable = (slug) => docsFor(slug).length > 0;
+-  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first · a folder opens its markdown in-render</span></div>`;
++  const wfSeam = seamId('workFolderGraph', '56461780');
++  const linkedIssues = (slug) => {
++    const ids = State.workLinks.bySlug[slug] || [];
++    if (!ids.length) return `<span class="seam-inline">linked epic / tasks — SEAM ${esc(wfSeam)}</span>`;
++    const chips = ids.slice(0, 4).map((id) => { const it = State.byId[id]; return it ? `<span class="link wf-issue" data-act="open" data-kind="${it.type === 'epic' ? 'epic' : 'issue'}" data-id="${esc(id)}">${it.type === 'epic' ? '▲ ' : ''}${esc(clamp(deEpic(it.title), 32))}</span>` : ''; }).join('');
++    return `<span class="wf-linked"><span class="wf-linked__k">${ids.length} linked</span>${chips}${ids.length > 4 ? `<span class="wf-more">+${ids.length - 4}</span>` : ''}</span>`;
++  };
++  const bundle = (p) => {
++    const keys = docsFor(p.slug);
++    const canRead = keys.length > 0;
++    const files = keys.slice(0, 6).map((k) => `<span class="wf-file" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}>${esc(fileLabel(k))}</span>`).join('') || '<span class="seam-inline">no baked docs</span>';
++    return `<div class="wf-card ${canRead ? '' : 'nonread'}">
++      <div class="wf-card__top"><span class="wf-card__title" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}>${esc(clamp(p.title, 74))}${canRead ? ' <span class="readmark">read ↗</span>' : ''}</span><span class="wf-card__date">${esc(p.date || '—')}</span></div>
++      <div class="wf-card__slug">${esc(p.slug)}</div>
++      <div class="wf-files">${files}</div>
++      <div class="wf-card__foot">${linkedIssues(p.slug)}</div>
++    </div>`;
++  };
++  let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · each bundles plan · tasks · decisions · docs · newest first</span></div>`;
+   months.forEach((m) => {
+-    html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div>`;
+-    groups[m].forEach((p) => {
+-      const canRead = readable(p.slug);
+-      html += `<div class="tl-row ${canRead ? 'readable' : ''}" ${canRead ? `data-act="open" data-kind="work" data-id="${esc(p.slug)}"` : ''}><span class="tl-date">${esc(p.date || '—')}</span>
+-        <div><div class="tl-title">${esc(clamp(p.title, 84))}${canRead ? ' <span class="readmark">read ↗</span>' : ''}</div><div class="tl-slug">${esc(p.slug)}</div></div>
+-        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="tag">${p.docCount} docs</span></div></div>`;
+-    });
++    html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div><div class="wf-grid">${groups[m].map(bundle).join('')}</div>`;
+   });
+   return html + '</div>';
+ }
+@@ -663,6 +688,9 @@ function issueDetailHtml(i) {
+   const slot = (label, val, on) => `<div class="linkrow"><span class="linkrow__k">${esc(label)}</span><span class="linkrow__v">${on ? val : `<span class="seamtag">SEAM ${esc(seam)}</span>`}</span></div>`;
+   const parentSlot = parent ? `<span class="link" data-act="open" data-kind="epic" data-id="${esc(parent.id)}">${esc(clamp(deEpic(parent.title), 44))}</span>` : '—';
+   const r = i.type === 'epic' ? epicRollup(i) : null;
++  // Grounded work-folder link (issue cites docs/work/<slug>); opens the in-render reader.
++  const wfSlugs = State.workLinks.byIssue[i.id] || [];
++  const wfVal = wfSlugs.map((s) => `<span class="link" data-act="open" data-kind="work" data-id="${esc(s)}">${esc(s)}</span>`).join(' · ');
+   return `<button class="detail__close" data-act="detail-close">✕ esc</button>
+     <div class="detail__eyebrow"><span class="tag">${esc(TYPE_LABEL[i.type] || i.type)}</span>${pmark(i.priority)}<span class="slabel">${esc(i.blocked ? 'blocked' : i.status)}</span>${isLive(i) ? pulse(true) : ''}${phaseTag(i)}</div>
+     <h2 class="detail__title">${esc(deEpic(i.title))}</h2>
+@@ -683,7 +711,7 @@ function issueDetailHtml(i) {
+       ${slot('Parent epic', parentSlot, !!parent)}
+       ${slot('Pull request', '', false)}
+       ${slot('Worktree', '', false)}
+-      ${slot('Work folder', '', false)}
++      ${slot('Work folder', wfVal, wfSlugs.length > 0)}
+       ${slot('Files changed', '', false)}
+       ${slot('Comments', '', false)}
+     </div>
+diff --git a/web/dashboard/styles.css b/web/dashboard/styles.css
+index d13fc499..05c0f312 100644
+--- a/web/dashboard/styles.css
++++ b/web/dashboard/styles.css
+@@ -602,3 +602,23 @@ tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
+ .canon__row b { color: var(--text); font-size: 14px; }
+ .canon__doc { display: flex; align-items: center; gap: 7px; padding: 7px 0; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+ .canon__seam { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); font-family: var(--mono); font-size: 9.5px; color: var(--faint); line-height: 1.6; }
++
++/* Work folders — bundle cards (f4a421d7) */
++.wf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 10px; }
++@media (max-width: 820px) { .wf-grid { grid-template-columns: 1fr; } }
++.wf-card { border: 1px solid var(--line); background: var(--surface); padding: 13px 14px; display: flex; flex-direction: column; gap: 9px; }
++.wf-card.nonread { opacity: .6; }
++.wf-card__top { display: flex; align-items: baseline; gap: 10px; }
++.wf-card__title { font-family: var(--sans); font-weight: 600; font-size: 13.5px; line-height: 1.35; flex: 1; }
++.wf-card__title[data-act] { cursor: pointer; }
++.wf-card__title[data-act]:hover { text-decoration: underline; text-underline-offset: 2px; }
++.wf-card__date { font-family: var(--mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
++.wf-card__slug { font-family: var(--mono); font-size: 10px; color: var(--faint); }
++.wf-files { display: flex; flex-wrap: wrap; gap: 6px; }
++.wf-file { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line); padding: 1px 7px; color: var(--muted); cursor: pointer; }
++.wf-file:hover { border-color: var(--text); color: var(--text); }
++.wf-card__foot { border-top: 1px solid var(--line); padding-top: 9px; }
++.wf-linked { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++.wf-linked__k { font-family: var(--mono); font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
++.wf-issue { font-family: var(--mono); font-size: 11px; }
++.wf-more { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+-- 
+2.51.0.windows.1
+

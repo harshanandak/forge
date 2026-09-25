@@ -1,0 +1,2217 @@
+From b4c36d504ace7d6996b6d00c9a6849c3ec4910c1 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 12 Sep 2026 16:40:42 +0530
+Subject: [PATCH] feat(facade): add truthful capability negotiation
+
+---
+ lib/capabilities/delivery.js                 | 190 +++++++++++++++
+ lib/capabilities/executor.js                 | 100 ++++++++
+ lib/capabilities/index.js                    |   2 +
+ lib/capabilities/model.js                    |  16 ++
+ lib/capabilities/probes.js                   |  35 ++-
+ lib/commands/_manifest.js                    |   1 +
+ lib/commands/capabilities.js                 |  76 ++++++
+ lib/commands/doctor.js                       |  13 +-
+ lib/commands/preflight.js                    | 101 +++++++-
+ lib/commands/test.js                         |  11 +
+ lib/health/doctor-manifest.js                |   2 +
+ lib/pr-monitor/review-preflight.js           |  55 ++++-
+ lib/preflight/gates.js                       |  21 +-
+ lib/validation/risk-manifest.js              | 141 ++++++++++-
+ scripts/test.js                              |   5 +
+ test/capabilities/delivery.test.js           | 241 +++++++++++++++++++
+ test/capabilities/executor.test.js           |  60 +++++
+ test/capabilities/probes.test.js             |  29 +++
+ test/capability/fixtures.js                  |   8 +-
+ test/capability/harness-probes.test.js       |   4 +-
+ test/commands/capabilities.test.js           |  88 +++++++
+ test/commands/doctor-health.test.js          |  22 ++
+ test/commands/preflight.test.js              | 161 +++++++++++++
+ test/commands/test.test.js                   |  19 +-
+ test/pr-monitor/review-preflight.test.js     |  41 +++-
+ test/scripts/test-runner.test.js             |  19 +-
+ test/structural/pr2-root-integration.test.js |   7 +-
+ test/validation/risk-manifest.test.js        | 147 ++++++++++-
+ 28 files changed, 1574 insertions(+), 41 deletions(-)
+ create mode 100644 lib/capabilities/delivery.js
+ create mode 100644 lib/capabilities/executor.js
+ create mode 100644 lib/commands/capabilities.js
+ create mode 100644 test/capabilities/delivery.test.js
+ create mode 100644 test/capabilities/executor.test.js
+ create mode 100644 test/commands/capabilities.test.js
+
+diff --git a/lib/capabilities/delivery.js b/lib/capabilities/delivery.js
+new file mode 100644
+index 00000000..8f338c89
+--- /dev/null
++++ b/lib/capabilities/delivery.js
+@@ -0,0 +1,190 @@
++'use strict';
++
++const MAX_DELIVERY_TIMEOUT_MS = 5000;
++
++const TIER_DEFINITIONS = Object.freeze([
++  Object.freeze({ id: 'T0', mode: 'deterministic', action: 'durable_pull', capabilities: [] }),
++  Object.freeze({ id: 'T1', mode: 'deterministic', action: 'next_turn_injection', capabilities: ['initiating_agent_delivery'] }),
++  Object.freeze({ id: 'T2', mode: 'bounded-adaptive', action: 'active_session_delivery', capabilities: ['native_streaming_monitor', 'initiating_agent_delivery'] }),
++  Object.freeze({ id: 'T3', mode: 'bounded-adaptive', action: 'resume_or_wake', capabilities: ['wake_resume'] }),
++  Object.freeze({ id: 'T4', mode: 'deterministic', action: 'human_notification', capabilities: ['human_notification'] }),
++]);
++
++const TIER_IDS = Object.freeze(TIER_DEFINITIONS.map(({ id }) => id));
++
++function freedomEnvelope(definition) {
++  return Object.freeze({
++    mode: definition.mode,
++    allowed_actions: Object.freeze([definition.action]),
++    forbidden_actions: Object.freeze([
++      'authoritative_state_mutation',
++      'unprobed_native_delivery',
++      'delivery_outside_declared_target',
++    ]),
++    decision_points: Object.freeze([
++      'capability_probe_result',
++      'preferred_delivery_tier',
++      'durable_persistence_result',
++    ]),
++    budgets: Object.freeze({ time_ms: MAX_DELIVERY_TIMEOUT_MS, token_count: 0, action_count: definition.id === 'T0' ? 1 : 2 }),
++    approval_requirements: Object.freeze(definition.id === 'T4' ? ['configured_human_notification_consent'] : []),
++    rollback_strategy: 'degrade_to_T0',
++    evidence_requirements: Object.freeze(['capability_probe_result_hash', 'delivery_receipt']),
++    escalation_conditions: Object.freeze([
++      'capability_unavailable',
++      'capability_incomplete',
++      'delivery_unacknowledged',
++    ]),
++  });
++}
++
++function projectCapabilityFreedom(capability) {
++  if (!capability || typeof capability.id !== 'string' || capability.id.length === 0) {
++    throw new TypeError('capability.id must be a non-empty string');
++  }
++  return freedomEnvelope({
++    id: 'CAPABILITY',
++    mode: 'deterministic',
++    action: capability.id,
++  });
++}
++
++function capabilityMap(probeResult) {
++  if (!probeResult || typeof probeResult !== 'object' || !Array.isArray(probeResult.capabilities)) {
++    throw new TypeError('probeResult must contain capabilities');
++  }
++  return new Map(probeResult.capabilities.map((capability) => [capability.id, capability]));
++}
++
++function projectDeliveryTiers(probeResult, handlers = {}) {
++  const capabilities = capabilityMap(probeResult);
++  const durableAvailable = typeof handlers.T0 === 'function';
++  return TIER_DEFINITIONS.map((definition) => {
++    const required = definition.capabilities.map((id) => capabilities.get(id));
++    const probeSupported = definition.id === 'T0'
++      || (required.length > 0 && required.every((capability) => capability?.available === true));
++    const adapterAvailable = typeof handlers[definition.id] === 'function';
++    const available = probeSupported && adapterAvailable && (definition.id === 'T0' || durableAvailable);
++    let reason = 'PROBED_SUPPORTED';
++    if (definition.id === 'T0' && adapterAvailable) reason = 'PORTABLE_DURABLE_PULL';
++    else if (definition.id === 'T0') reason = 'ADAPTER_UNAVAILABLE';
++    else if (probeSupported && !durableAvailable) reason = 'DURABLE_HANDLER_UNAVAILABLE';
++    else if (!probeSupported && required.some((capability) => capability?.status === 'INCOMPLETE')) reason = 'PROBE_INCOMPLETE';
++    else if (!probeSupported && required.some((capability) => capability?.reason === 'BEHAVIOR_UNVERIFIED')) reason = 'BEHAVIOR_UNVERIFIED';
++    else if (!probeSupported) reason = 'PROBED_UNSUPPORTED';
++    else if (!adapterAvailable) reason = 'ADAPTER_UNAVAILABLE';
++    return Object.freeze({
++      id: definition.id,
++      available,
++      status: available ? 'AVAILABLE' : 'UNAVAILABLE',
++      reason,
++      required_capabilities: Object.freeze([...definition.capabilities]),
++      freedom_envelope: freedomEnvelope(definition),
++    });
++  });
++}
++
++function assertHandler(handler, tier) {
++  if (typeof handler !== 'function') throw new TypeError(`${tier} delivery handler must be a function`);
++}
++
++function hasApprovals(tier, deliveryOptions) {
++  const approvals = Array.isArray(deliveryOptions.approvals) ? deliveryOptions.approvals : [];
++  return tier.freedom_envelope.approval_requirements.every((approval) => approvals.includes(approval));
++}
++
++function selectTier(tiers, handlers, preferredTier, deliveryOptions) {
++  const preferredIndex = TIER_IDS.indexOf(preferredTier);
++  if (preferredIndex === -1) throw new TypeError(`Unsupported delivery tier: ${preferredTier}`);
++  for (let index = preferredIndex; index >= 0; index -= 1) {
++    const id = TIER_IDS[index];
++    if (tiers[index].available && typeof handlers[id] === 'function' && hasApprovals(tiers[index], deliveryOptions)) {
++      return id;
++    }
++  }
++  return 'T0';
++}
++
++function assertTimeoutMs(timeoutMs) {
++  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_DELIVERY_TIMEOUT_MS) {
++    throw new TypeError(`timeoutMs must be an integer between 1 and ${MAX_DELIVERY_TIMEOUT_MS}`);
++  }
++}
++
++function timeoutError(tier, timeoutMs, persistence, abortRequested) {
++  const error = new Error(`${tier} delivery timed out after ${timeoutMs}ms`);
++  error.code = 'DELIVERY_TIMEOUT';
++  error.evidence = Object.freeze({
++    status: 'INCOMPLETE',
++    reason: 'DELIVERY_TIMEOUT',
++    tier,
++    timeout_ms: timeoutMs,
++    abort_requested: abortRequested,
++    ...(persistence === undefined ? {} : { persistence }),
++  });
++  return error;
++}
++
++async function runBeforeDeadline(handler, event, target, tier, deadline, persistence) {
++  const remainingMs = deadline - Date.now();
++  if (remainingMs <= 0) throw timeoutError(tier, 0, persistence, false);
++
++  const controller = new AbortController();
++  let timer;
++  const timeout = new Promise((_resolve, reject) => {
++    timer = setTimeout(() => {
++      const error = timeoutError(tier, remainingMs, persistence, true);
++      controller.abort(error);
++      reject(error);
++    }, remainingMs);
++  });
++  try {
++    return await Promise.race([
++      Promise.resolve().then(() => handler(event, target, { signal: controller.signal })),
++      timeout,
++    ]);
++  } finally {
++    clearTimeout(timer);
++  }
++}
++
++function createHarnessDeliveryAdapter(options) {
++  if (!options || typeof options !== 'object') throw new TypeError('delivery adapter options are required');
++  const { probeResult, handlers = {} } = options;
++  assertHandler(handlers.T0, 'T0');
++  for (const [tier, handler] of Object.entries(handlers)) {
++    if (!TIER_IDS.includes(tier)) throw new TypeError(`Unsupported delivery tier: ${tier}`);
++    assertHandler(handler, tier);
++  }
++  const timeoutMs = options.timeoutMs ?? MAX_DELIVERY_TIMEOUT_MS;
++  assertTimeoutMs(timeoutMs);
++  const tiers = projectDeliveryTiers(probeResult, handlers);
++  return Object.freeze({
++    harness_id: probeResult.harness_id,
++    tiers,
++    async deliver(event, target, deliveryOptions = {}) {
++      const preferredTier = deliveryOptions.preferredTier ?? 'T4';
++      const tier = selectTier(tiers, handlers, preferredTier, deliveryOptions);
++      const deadline = Date.now() + timeoutMs;
++      const persistence = await runBeforeDeadline(handlers.T0, event, target, 'T0', deadline);
++      const delivery = tier === 'T0'
++        ? persistence
++        : await runBeforeDeadline(handlers[tier], event, target, tier, deadline, persistence);
++      return Object.freeze({
++        harness_id: probeResult.harness_id,
++        tier,
++        degraded_from: tier === preferredTier ? null : preferredTier,
++        persistence,
++        delivery,
++      });
++    },
++  });
++}
++
++module.exports = {
++  TIER_DEFINITIONS,
++  TIER_IDS,
++  createHarnessDeliveryAdapter,
++  projectCapabilityFreedom,
++  projectDeliveryTiers,
++};
+diff --git a/lib/capabilities/executor.js b/lib/capabilities/executor.js
+new file mode 100644
+index 00000000..e84e4185
+--- /dev/null
++++ b/lib/capabilities/executor.js
+@@ -0,0 +1,100 @@
++'use strict';
++
++const { execFile } = require('node:child_process');
++const { createHash } = require('node:crypto');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const WINDOWS_SHIM_EXTENSIONS = new Set(['.bat', '.cmd']);
++const UNSAFE_WINDOWS_PATH = /["&|<>^%!\r\n]/;
++const SAFE_PROBE_ARGUMENT = /^[a-z0-9._=+-]+$/i;
++
++function execFileResult(file, args, options) {
++  return new Promise((resolve) => {
++    execFile(file, args, options, (error, stdout = '', stderr = '') => {
++      resolve({ error, stdout: String(stdout), stderr: String(stderr) });
++    });
++  });
++}
++
++function isExecutable(candidate) {
++  try {
++    if (!fs.statSync(candidate).isFile()) return false;
++    if (process.platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function resolveExecutable(command, env) {
++  const pathValue = env.PATH ?? env.Path ?? env.path ?? '';
++  const extensions = process.platform === 'win32' ? ['.exe', '.com', '.cmd', '.bat', ''] : [''];
++  for (const directory of pathValue.split(path.delimiter).filter(Boolean)) {
++    for (const extension of extensions) {
++      const candidate = path.join(directory, `${command}${extension}`);
++      if (isExecutable(candidate)) return candidate;
++    }
++  }
++  return null;
++}
++
++function executionTarget(executable, args) {
++  const extension = path.extname(executable).toLowerCase();
++  if (process.platform !== 'win32' || !WINDOWS_SHIM_EXTENSIONS.has(extension)) {
++    return { file: executable, args };
++  }
++  if (UNSAFE_WINDOWS_PATH.test(executable)) {
++    return null;
++  }
++  if (!args.every((argument) => SAFE_PROBE_ARGUMENT.test(argument))) return null;
++  return {
++    file: process.env.ComSpec || 'cmd.exe',
++    args: ['/d', '/c', executable, ...args],
++  };
++}
++
++function executableIdentity(executable) {
++  return createHash('sha256')
++    .update(path.resolve(executable), 'utf8')
++    .update('\0', 'utf8')
++    .update(fs.readFileSync(executable))
++    .digest('hex');
++}
++
++async function executeHarnessProbe(request, options = {}) {
++  const commonOptions = {
++    cwd: options.projectRoot ?? process.cwd(),
++    env: options.env ?? process.env,
++    maxBuffer: request.maxOutputBytes,
++    signal: request.signal,
++    timeout: request.timeoutMs,
++    windowsHide: true,
++  };
++  const executable = resolveExecutable(request.command, commonOptions.env);
++  if (!executable) {
++    return { exitCode: null, stdout: '', stderr: '', errorCode: 'ENOENT' };
++  }
++  const target = executionTarget(executable, request.args);
++  if (!target) {
++    return { exitCode: null, stdout: '', stderr: '', errorCode: 'UNSAFE_EXECUTABLE_PATH' };
++  }
++  const result = await execFileResult(target.file, target.args, commonOptions);
++  return {
++    exitCode: result.error ? (result.error.code ?? null) : 0,
++    stdout: result.stdout,
++    stderr: result.stderr,
++    errorCode: result.error?.code,
++    timedOut: Boolean(result.error?.killed || result.error?.code === 'ETIMEDOUT'),
++    executableIdentity: executableIdentity(executable),
++  };
++}
++
++function createHarnessProbeExecutor(options = {}) {
++  return (request) => executeHarnessProbe(request, options);
++}
++
++module.exports = {
++  createHarnessProbeExecutor,
++  executeHarnessProbe,
++};
+diff --git a/lib/capabilities/index.js b/lib/capabilities/index.js
+index 22d56883..92dd6cd6 100644
+--- a/lib/capabilities/index.js
++++ b/lib/capabilities/index.js
+@@ -2,8 +2,10 @@
+ 
+ const model = require('./model');
+ const probes = require('./probes');
++const delivery = require('./delivery');
+ 
+ module.exports = {
+   ...model,
+   ...probes,
++  ...delivery,
+ };
+diff --git a/lib/capabilities/model.js b/lib/capabilities/model.js
+index 12b28c52..a5f9862a 100644
+--- a/lib/capabilities/model.js
++++ b/lib/capabilities/model.js
+@@ -38,12 +38,28 @@ function normalizeCapability(capability) {
+   if (capability.available !== (capability.status === 'AVAILABLE')) {
+     throw new TypeError('capability.available must agree with capability.status');
+   }
++  const surfaceAvailable = capability.surface_available ?? capability.available;
++  const surfaceStatus = capability.surface_status ?? capability.status;
++  const surfaceReason = capability.surface_reason ?? capability.reason;
++  if (typeof surfaceAvailable !== 'boolean') {
++    throw new TypeError('capability.surface_available must be a boolean');
++  }
++  assertEnum(surfaceStatus, CAPABILITY_STATUSES, 'capability.surface_status');
++  if (surfaceAvailable !== (surfaceStatus === 'AVAILABLE')) {
++    throw new TypeError('capability.surface_available must agree with capability.surface_status');
++  }
++  if (typeof surfaceReason !== 'string' || surfaceReason.length === 0) {
++    throw new TypeError('capability.surface_reason must be a non-empty string');
++  }
+   return {
+     id: capability.id,
+     available: capability.available,
+     status: capability.status,
+     reason: capability.reason,
+     probe_id: capability.probe_id,
++    surface_available: surfaceAvailable,
++    surface_status: surfaceStatus,
++    surface_reason: surfaceReason,
+   };
+ }
+ 
+diff --git a/lib/capabilities/probes.js b/lib/capabilities/probes.js
+index a1b8f779..b99d0e7c 100644
+--- a/lib/capabilities/probes.js
++++ b/lib/capabilities/probes.js
+@@ -3,8 +3,8 @@
+ const { createProbeResult } = require('./model');
+ 
+ const PROBE_REVISION = 'forge.harness-capability-probe.v1';
+-const DEFAULT_TIMEOUT_MS = 1500;
+-const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024;
++const DEFAULT_TIMEOUT_MS = 5000;
++const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
+ const MAX_TIMEOUT_MS = 30 * 1000;
+ const MAX_OUTPUT_BYTES = 64 * 1024;
+ const EXECUTABLE_IDENTITY_PATTERN = /^[0-9a-f]{64}$/;
+@@ -19,6 +19,7 @@ const HARNESS_IDS = Object.freeze(['claude', 'codex', 'cursor', 'hermes']);
+ const CAPABILITY_IDS = Object.freeze([
+   'native_streaming_monitor',
+   'bounded_background_tasks',
++  'human_notification',
+   'wake_resume',
+   'cancellation',
+   'session_scoped_cleanup',
+@@ -47,9 +48,10 @@ function harnessSpec(command, versionPattern, capabilities) {
+ }
+ 
+ const HARNESS_PROBE_SPECS = Object.freeze({
+-  claude: harnessSpec('claude', /^(?:claude(?:\s+code)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)$/i, [
++  claude: harnessSpec('claude', /^(?:claude(?:\s+code)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)(?:\s+\(claude code\))?$/i, [
+     capability('native_streaming_monitor', 'claude.stream-json-help.v1', ['--help'], ['--output-format', 'stream-json']),
+     capability('bounded_background_tasks', 'claude.remote-help.v1', ['--help'], ['--remote']),
++    capability('human_notification', 'claude.notification-help.v1', ['--help'], ['notification']),
+     capability('wake_resume', 'claude.resume-help.v1', ['--help'], ['--resume']),
+     capability('cancellation', 'claude.cancel-help.v1', ['--help'], ['--cancel']),
+     capability('session_scoped_cleanup', 'claude.session-cleanup-help.v1', ['--help'], ['session', 'delete']),
+@@ -58,6 +60,7 @@ const HARNESS_PROBE_SPECS = Object.freeze({
+   codex: harnessSpec('codex', /^(?:codex(?:-cli)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)$/i, [
+     capability('native_streaming_monitor', 'codex.json-help.v1', ['--help'], ['--json', 'output-schema']),
+     capability('bounded_background_tasks', 'codex.cloud-help.v1', ['cloud', '--help'], ['task']),
++    capability('human_notification', 'codex.notification-help.v1', ['cloud', '--help'], ['notification']),
+     capability('wake_resume', 'codex.resume-help.v1', ['resume', '--help'], ['resume']),
+     capability('cancellation', 'codex.cloud-cancel-help.v1', ['cloud', '--help'], ['cancel']),
+     capability('session_scoped_cleanup', 'codex.cloud-cleanup-help.v1', ['cloud', '--help'], ['delete']),
+@@ -66,6 +69,7 @@ const HARNESS_PROBE_SPECS = Object.freeze({
+   cursor: harnessSpec('cursor-agent', /^(?:cursor(?:-agent)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)$/i, [
+     capability('native_streaming_monitor', 'cursor.json-help.v1', ['--help'], ['--json']),
+     capability('bounded_background_tasks', 'cursor.background-help.v1', ['--help'], ['background']),
++    capability('human_notification', 'cursor.notification-help.v1', ['--help'], ['notification']),
+     capability('wake_resume', 'cursor.resume-help.v1', ['resume', '--help'], ['resume']),
+     capability('cancellation', 'cursor.cancel-help.v1', ['cancel', '--help'], ['cancel']),
+     capability('session_scoped_cleanup', 'cursor.session-cleanup-help.v1', ['sessions', '--help'], ['sessions', 'delete']),
+@@ -74,6 +78,7 @@ const HARNESS_PROBE_SPECS = Object.freeze({
+   hermes: harnessSpec('hermes', /^(?:hermes(?:-agent)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)$/i, [
+     capability('native_streaming_monitor', 'hermes.monitor-help.v1', ['monitor', '--help'], ['monitor', 'stream']),
+     capability('bounded_background_tasks', 'hermes.cron-help.v1', ['cron', '--help'], ['cron', 'task']),
++    capability('human_notification', 'hermes.notification-help.v1', ['cron', '--help'], ['notification']),
+     capability('wake_resume', 'hermes.resume-help.v1', ['resume', '--help'], ['resume']),
+     capability('cancellation', 'hermes.cron-cancel-help.v1', ['cron', '--help'], ['pause', 'remove']),
+     capability('session_scoped_cleanup', 'hermes.session-cleanup-help.v1', ['sessions', '--help'], ['sessions', 'delete']),
+@@ -125,6 +130,7 @@ function normalizeExecution(response, maxOutputBytes) {
+     stdout: response.stdout,
+     stderr: response.stderr,
+     executableIdentity: response.executableIdentity,
++    behaviorVerified: response.behaviorVerified === true,
+   };
+ }
+ 
+@@ -170,6 +176,9 @@ function incompleteCapabilities(spec, reason) {
+     status: 'INCOMPLETE',
+     reason,
+     probe_id: item.probeId,
++    surface_available: false,
++    surface_status: 'INCOMPLETE',
++    surface_reason: reason,
+   }));
+ }
+ 
+@@ -200,9 +209,22 @@ function capabilityFromExecution(item, execution, identity) {
+     reason = 'EXECUTABLE_IDENTITY_CHANGED';
+   } else if (execution.complete) {
+     const output = execution.stdout.toLowerCase();
+-    available = item.requiredTokens.every((token) => output.includes(token.toLowerCase()));
++    const surfaceAvailable = item.requiredTokens.every((token) => output.includes(token.toLowerCase()));
++    available = surfaceAvailable && execution.behaviorVerified;
+     status = available ? 'AVAILABLE' : 'UNAVAILABLE';
+-    reason = available ? 'PROBED_SUPPORTED' : 'PROBED_UNSUPPORTED';
++    reason = available
++      ? 'PROBED_SUPPORTED'
++      : (surfaceAvailable ? 'BEHAVIOR_UNVERIFIED' : 'PROBED_UNSUPPORTED');
++    return {
++      id: item.id,
++      available,
++      status,
++      reason,
++      probe_id: item.probeId,
++      surface_available: surfaceAvailable,
++      surface_status: surfaceAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
++      surface_reason: surfaceAvailable ? 'SURFACE_PROBED_SUPPORTED' : 'SURFACE_PROBED_UNSUPPORTED',
++    };
+   }
+   return {
+     id: item.id,
+@@ -210,6 +232,9 @@ function capabilityFromExecution(item, execution, identity) {
+     status,
+     reason,
+     probe_id: item.probeId,
++    surface_available: false,
++    surface_status: status,
++    surface_reason: reason,
+   };
+ }
+ 
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index 16af2b9f..97f828cc 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -26,6 +26,7 @@ const commands = [
+   { file: "add.js", module: require("./add") },
+   { file: "audit.js", module: require("./audit") },
+   { file: "blocked.js", module: require("./blocked") },
++  { file: "capabilities.js", module: require("./capabilities") },
+   { file: "claim.js", module: require("./claim") },
+   { file: "claims.js", module: require("./claims") },
+   { file: "clean.js", module: require("./clean") },
+diff --git a/lib/commands/capabilities.js b/lib/commands/capabilities.js
+new file mode 100644
+index 00000000..ebe2a159
+--- /dev/null
++++ b/lib/commands/capabilities.js
+@@ -0,0 +1,76 @@
++'use strict';
++
++const {
++  probeAllHarnesses,
++  projectCapabilityFreedom,
++  projectDeliveryTiers,
++} = require('../capabilities');
++const { createHarnessProbeExecutor } = require('../capabilities/executor');
++
++const PRODUCTS = Object.freeze([
++  Object.freeze({ id: 'flow', packageName: '@forge/flow', unavailable: 'FORGE_FLOW_UNAVAILABLE' }),
++  Object.freeze({ id: 'memory', packageName: '@forge/memory', unavailable: 'FORGE_MEMORY_UNAVAILABLE' }),
++]);
++
++function defaultResolveProduct(product, projectRoot) {
++  const definition = PRODUCTS.find((item) => item.id === product);
++  try {
++    require.resolve(definition.packageName, { paths: [projectRoot] });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++function productReport(resolveProduct, projectRoot) {
++  return PRODUCTS.map(({ id, unavailable }) => {
++    const available = resolveProduct(id, projectRoot) === true;
++    return {
++      id,
++      available,
++      status: available ? 'AVAILABLE' : 'UNAVAILABLE',
++      reason: available ? 'PACKAGE_RESOLVED' : unavailable,
++    };
++  });
++}
++
++async function handler(args, _flags, projectRoot, deps = {}) {
++  if (args.length !== 1 || args[0] !== '--json') {
++    return { success: false, error: 'Usage: forge capabilities --json' };
++  }
++  const execute = deps.execute ?? createHarnessProbeExecutor({ projectRoot, env: deps.env });
++  const resolveProduct = deps.resolveProduct ?? defaultResolveProduct;
++  const deliveryHandlers = deps.deliveryHandlers || {};
++  const probes = await probeAllHarnesses({
++    execute,
++    observedAt: deps.observedAt,
++    timeoutMs: deps.timeoutMs,
++    maxOutputBytes: deps.maxOutputBytes,
++  });
++  const harnesses = probes.map((probe) => ({
++    ...probe,
++    capabilities: probe.capabilities.map((capability) => ({
++      ...capability,
++      freedom_envelope: projectCapabilityFreedom(capability),
++    })),
++    delivery_tiers: projectDeliveryTiers(probe, deliveryHandlers[probe.harness_id] || {}),
++  }));
++  const report = {
++    schema: 'forge.capabilities.v1',
++    schemaVersion: 1,
++    command: 'capabilities',
++    products: productReport(resolveProduct, projectRoot),
++    harnesses,
++  };
++  return { success: true, output: `${JSON.stringify(report, null, 2)}\n` };
++}
++
++module.exports = {
++  name: 'capabilities',
++  description: 'Report installed products and probed harness capabilities',
++  usage: 'Usage: forge capabilities --json',
++  flags: {
++    '--json': 'Emit the versioned forge.capabilities.v1 report',
++  },
++  handler,
++};
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index ba5ee138..b2d136e3 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -361,10 +361,19 @@ function selectHealthChecks(definitions, deps = {}) {
+ }
+ 
+ async function runDoctorReport(projectRoot, deps = {}) {
++	const legacyChecks = new Map(buildDoctorReport(projectRoot, deps).checks.map(check => [check.id, check]));
+ 	const definitions = deps.healthChecks || buildHealthCheckDefinitions(projectRoot, deps);
+ 	const selected = selectHealthChecks(definitions, deps);
+ 	const execution = await runHealthChecks(selected, { projectRoot }, deps);
+-	const status = execution.status;
++	const checks = execution.checks.map(check => ({ ...(legacyChecks.get(check.id) || {}), ...check }));
++	const explicitSelection = Boolean(deps.check)
++		|| (Array.isArray(deps.scopes) && deps.scopes.length > 0)
++		|| Boolean(deps.healthChecks);
++	const overallChecks = explicitSelection
++		? checks
++		: checks.filter(check => !['memory-backend', 'flow-runtime'].includes(check.id));
++	const status = ['FAIL', 'INCOMPLETE', 'WARN', 'PASS']
++		.find(candidate => overallChecks.some(check => check.status === candidate)) || 'PASS';
+ 	return {
+ 		schema: 'forge.doctor.v1',
+ 		schemaVersion: SCHEMA_VERSION,
+@@ -373,7 +382,7 @@ async function runDoctorReport(projectRoot, deps = {}) {
+ 		ok: status === 'PASS' || status === 'WARN',
+ 		scopes: SCOPES.filter(scope => selected.some(check => check.scope === scope)),
+ 		durationMs: execution.durationMs,
+-		checks: execution.checks,
++		checks,
+ 	};
+ }
+ 
+diff --git a/lib/commands/preflight.js b/lib/commands/preflight.js
+index bffdc3f5..54c7ad48 100644
+--- a/lib/commands/preflight.js
++++ b/lib/commands/preflight.js
+@@ -17,8 +17,12 @@
+  */
+ 
+ const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const path = require('node:path');
+ const { buildGates } = require('../preflight/gates');
+ const { runGates } = require('../preflight/runner');
++const riskManifestApi = require('../validation/risk-manifest');
++const validationReceiptApi = require('../validation-receipt');
+ 
+ /**
+  * Strictly resolve a base ref to diff HEAD against. Returns the ref name, or
+@@ -157,6 +161,56 @@ function reportBaseUnresolved(log, reason) {
+   log('  Or scan the whole tree explicitly: forge preflight --all');
+ }
+ 
++function resolveValidationSelection(projectRoot, changedFiles, deps = {}) {
++  const manifestPath = path.join(projectRoot, 'validation', 'risk-manifest.v1.json');
++  const exists = deps.riskManifestExists || fs.existsSync;
++  if (!exists(manifestPath)) return null;
++  const load = deps.loadRiskManifest || riskManifestApi.loadRiskManifest;
++  const select = deps.selectValidation || riskManifestApi.selectValidation;
++  let evidence = deps.validationEvidence === undefined ? {} : deps.validationEvidence;
++  const verifyReceipt = deps.verifyValidationReceipt || validationReceiptApi.verifyValidationReceipt;
++  const receipt = verifyReceipt(projectRoot);
++  if (receipt?.valid === true && evidence && typeof evidence === 'object' && !Array.isArray(evidence)) {
++    evidence = {
++      ...evidence,
++      currentHead: evidence.currentHead ?? receipt.head,
++      exactShaReceipts: evidence.exactShaReceipts
++        ?? [{ head: receipt.head, status: 'PASS' }],
++    };
++  }
++  const selection = select({
++    manifest: load(manifestPath),
++    changedSurfaces: changedFiles.map(value => ({ kind: 'path', value })),
++    evidence,
++  });
++  validateValidationSelection(selection);
++  return selection;
++}
++
++function validateValidationSelection(selection) {
++  if (!selection || typeof selection !== 'object' || Array.isArray(selection)) {
++    throw new Error('validation selection must be an object');
++  }
++  if (selection.schema_id !== 'forge.validation.selection.v1') {
++    throw new Error('validation selection schema_id is invalid');
++  }
++  if (!['autonomous', 'reviewed', 'governed'].includes(selection.validation_class)) {
++    throw new Error('validation selection validation_class is invalid');
++  }
++  for (const field of ['selected_tests', 'excluded_tests', 'reasons', 'risk_coverage', 'platforms', 'commands']) {
++    if (!Array.isArray(selection[field])) throw new Error(`validation selection ${field} must be an array`);
++  }
++  if (!selection.selected_tests.every(value => typeof value === 'string' && value.length > 0)) {
++    throw new Error('validation selection selected_tests must contain non-empty strings');
++  }
++  if (!['HIGH', 'LOW'].includes(selection.confidence)) {
++    throw new Error('validation selection confidence is invalid');
++  }
++  if (typeof selection.full_suite_required !== 'boolean') {
++    throw new Error('validation selection full_suite_required must be boolean');
++  }
++}
++
+ /** Summary mark for one gate result. */
+ function gateMark(result) {
+   if (result.skipped) return 'SKIP';
+@@ -200,13 +254,33 @@ module.exports = {
+ 
+     const changedFiles = changeSet.changedFiles || [];
+ 
++    let validationSelection;
++    try {
++      validationSelection = resolveValidationSelection(projectRoot, changedFiles, deps);
++    } catch (error) {
++      const reason = `risk-based validation selection failed: ${error?.message || String(error)}`;
++      log('forge preflight — fast blast-radius gate (deterministic parity with CI)');
++      log('');
++      log(`preflight FAILED — ${reason}`);
++      return {
++        success: false,
++        results: [],
++        reason,
++        selectionUnresolved: true,
++        confidence: 'LOW',
++      };
++    }
++
+     log('forge preflight — fast blast-radius gate (deterministic parity with CI)');
+     log(runAll
+       ? '  scope: whole tree (--all)'
+       : `  scope: ${changedFiles.length} changed file(s) vs base branch`);
++    if (validationSelection) {
++      log(`  validation: ${validationSelection.validation_class} (${validationSelection.confidence} confidence)`);
++    }
+     log('');
+ 
+-    const gates = build({ projectRoot, changedFiles, runAll });
++    const gates = build({ projectRoot, changedFiles, runAll, validationSelection });
+     const { ok, results } = await run(gates, { log: (line) => log(`  ${line}`) });
+ 
+     log('');
+@@ -216,13 +290,30 @@ module.exports = {
+       log(`  [${gateMark(r)}] ${r.name}${suffix}`);
+     }
+     log('');
+-    log(ok
+-      ? 'preflight passed — safe to push'
+-      : 'preflight FAILED — fix the failing gate above before `forge push`');
++    const needsExactHeadValidation = validationSelection?.confidence === 'LOW';
++    if (!ok) {
++      log('preflight FAILED — fix the failing gate above before `forge push`');
++    } else if (needsExactHeadValidation) {
++      log('preflight INCOMPLETE — run full validation on this exact clean head, then retry');
++    } else {
++      log('preflight passed — safe to push');
++    }
+ 
+-    return { success: ok, results };
++    return {
++      success: ok && !needsExactHeadValidation,
++      results,
++      ...(validationSelection ? {
++        validationSelection,
++        confidence: validationSelection.confidence,
++      } : {}),
++      ...(needsExactHeadValidation ? {
++        selectionIncomplete: true,
++        reason: 'exact-head full-suite validation receipt is required',
++      } : {}),
++    };
+   },
+ };
+ 
+ module.exports.resolveChangeSet = resolveChangeSet;
+ module.exports.resolveBaseRef = resolveBaseRef;
++module.exports.resolveValidationSelection = resolveValidationSelection;
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index e65a352e..8d3dda77 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -64,6 +64,17 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	],
+ 	'lib/lefthook-check.js': ['test/lefthook-check.test.js', 'test/runtime-health.test.js'],
+ 	'lib/runtime-health.js': ['test/runtime-health.test.js'],
++	'lib/capabilities/delivery.js': ['test/capabilities/delivery.test.js'],
++	'lib/capabilities/executor.js': ['test/capabilities/executor.test.js'],
++	'lib/commands/capabilities.js': ['test/commands/capabilities.test.js'],
++	'lib/health/doctor-manifest.js': [
++		'test/commands/doctor-health.test.js',
++		'test/health/doctor-manifest.test.js',
++	],
++	'lib/health/doctor-runner.js': [
++		'test/commands/doctor-health.test.js',
++		'test/health/doctor-runner.test.js',
++	],
+ 	// skill-eval hosts the accuracy-lint detectors (auditCommandDocumentation /
+ 	// auditRouterPrecision), so edits there must also run their detector suite.
+ 	'lib/skill-eval.js': ['test/skill-eval.test.js', 'test/skill-accuracy.test.js'],
+diff --git a/lib/health/doctor-manifest.js b/lib/health/doctor-manifest.js
+index 460139f7..572a46e5 100644
+--- a/lib/health/doctor-manifest.js
++++ b/lib/health/doctor-manifest.js
+@@ -8,6 +8,7 @@ const HEALTH_COVERAGE = Object.freeze({
+   adapter: { checkId: 'integrations-provider' },
+   add: { sharedDependencyCheck: 'filesystem-class' },
+   audit: { sharedDependencyCheck: 'manifest-coverage' },
++  capabilities: { notApplicableReason: 'Capabilities runs its own bounded side-effect-free executable probes.' },
+   clean: { sharedDependencyCheck: 'filesystem-class' },
+   comment: { sharedDependencyCheck: 'filesystem-class' },
+   control: { sharedDependencyCheck: 'flow-runtime' },
+@@ -16,6 +17,7 @@ const HEALTH_COVERAGE = Object.freeze({
+   explain: { sharedDependencyCheck: 'manifest-coverage' },
+   export: { sharedDependencyCheck: 'filesystem-class' },
+   gate: { sharedDependencyCheck: 'filesystem-class' },
++  github: { sharedDependencyCheck: 'integrations-provider' },
+   hooks: { sharedDependencyCheck: 'filesystem-class' },
+   inbox: { sharedDependencyCheck: 'filesystem-class' },
+   init: { sharedDependencyCheck: 'filesystem-class' },
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 3e69ba4d..6dbf4474 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -180,9 +180,50 @@ async function codeRabbitResult(context, probeCodeRabbit, runCodeRabbit) {
+ 
+ async function deterministicResult(context, runDeterministic) {
+   try {
+-    return await runDeterministic(context);
++    const result = await runDeterministic(context);
++    if (!result || typeof result !== 'object' || typeof result.success !== 'boolean'
++      || !Array.isArray(result.results)) {
++      return {
++        success: false,
++        incomplete: true,
++        confidence: 'LOW',
++        results: [],
++        reason: 'deterministic preflight result is malformed or missing gate evidence',
++      };
++    }
++    const required = [
++      ['lint', name => name === 'lint'],
++      ['sonar', name => name.startsWith('sonar')],
++      ['affected-tests', name => name === 'affected-tests'],
++    ];
++    const validResults = result.results.every((gate) => gate && typeof gate === 'object'
++      && typeof gate.name === 'string' && typeof gate.ok === 'boolean'
++      && typeof gate.summary === 'string');
++    const missing = required.filter(([, matches]) => !result.results.some((gate) => matches(gate?.name || '')))
++      .map(([id]) => id);
++    const lowConfidence = Object.hasOwn(result, 'confidence') && result.confidence !== 'HIGH';
++    if (!validResults || missing.length > 0 || lowConfidence) {
++      return {
++        success: false,
++        incomplete: true,
++        confidence: 'LOW',
++        results: result.results,
++        reason: missing.length > 0
++          ? `deterministic preflight is missing required evidence: ${missing.join(', ')}`
++          : (lowConfidence
++            ? 'deterministic preflight evidence confidence is insufficient'
++            : 'deterministic preflight gate evidence is malformed'),
++      };
++    }
++    return { ...result, confidence: 'HIGH', incomplete: false };
+   } catch (error) {
+-    return { success: false, results: [], reason: error?.message || String(error) };
++    return {
++      success: false,
++      incomplete: true,
++      confidence: 'LOW',
++      results: [],
++      reason: error?.message || String(error),
++    };
+   }
+ }
+ 
+@@ -225,7 +266,8 @@ async function runLocalReviewPreflight(context, deps = {}) {
+   const coderabbit = await codeRabbitResult(reviewContext, probeCodeRabbit, runCodeRabbit);
+   const deterministic = await deterministicResult(reviewContext, runDeterministic);
+   const gateResults = Array.isArray(deterministic?.results) ? deterministic.results : [];
+-  const deterministicOk = deterministic?.success === true;
++  const deterministicIncomplete = deterministic?.incomplete === true;
++  const deterministicOk = deterministic?.success === true && !deterministicIncomplete;
+   const findings = [
+     ...coderabbit.findings.map(detail => ({ provider: 'coderabbit', detail })),
+     ...deterministicFindings(gateResults),
+@@ -237,8 +279,8 @@ async function runLocalReviewPreflight(context, deps = {}) {
+     });
+   }
+ 
+-  const failed = !deterministicOk || coderabbit.status === 'FAIL';
+-  const incomplete = coderabbit.status === 'UNAVAILABLE';
++  const failed = (!deterministicOk && !deterministicIncomplete) || coderabbit.status === 'FAIL';
++  const incomplete = deterministicIncomplete || coderabbit.status === 'UNAVAILABLE';
+   const blocking = failed || incomplete;
+   let status = 'PASS';
+   if (failed) status = 'FAIL';
+@@ -249,8 +291,9 @@ async function runLocalReviewPreflight(context, deps = {}) {
+     providers: {
+       coderabbit,
+       deterministic: {
+-        status: deterministicOk ? 'PASS' : 'FAIL',
++        status: deterministicOk ? 'PASS' : (deterministicIncomplete ? 'INCOMPLETE' : 'FAIL'),
+         ok: deterministicOk,
++        confidence: deterministic?.confidence || 'LOW',
+         results: gateResults,
+       },
+     },
+diff --git a/lib/preflight/gates.js b/lib/preflight/gates.js
+index 236a962f..3b335832 100644
+--- a/lib/preflight/gates.js
++++ b/lib/preflight/gates.js
+@@ -237,17 +237,30 @@ function runAffectedTests({
+  * @param {string} args.projectRoot
+  * @param {string[]} args.changedFiles
+  * @param {boolean} [args.runAll]  - lint/scan whole tree instead of changed files
++ * @param {Object} [args.validationSelection] - validated risk-manifest selection
+  * @param {Object} [args.deps]     - { eslint, structural, sonar, affected }
+  * @returns {{ name: string, run: () => Promise<{ok:boolean, summary?:string}> }[]}
+  */
+-function buildGates({ projectRoot, changedFiles = [], runAll = false, deps = {} }) {
++function buildGates({
++  projectRoot,
++  changedFiles = [],
++  runAll = false,
++  validationSelection = null,
++  deps = {},
++}) {
+   const normalizedChangedFiles = normalizeChangedFiles(changedFiles);
+   const inputFingerprint = fingerprintChangedFiles(normalizedChangedFiles);
++  const selectedTests = validationSelection
++    ? Object.freeze([...validationSelection.selected_tests])
++    : null;
+   const eslint = deps.eslint || ((files) => runEslint(files, { projectRoot }));
+   const structural = deps.structural || (() => runStructural({ projectRoot }));
+   const sonar = deps.sonar || ((files) => runSonar(files, { projectRoot }));
+-  const affected = deps.affected
+-    || ((files) => runAffectedTests({ projectRoot, changedFiles: files }));
++  const affected = deps.affected || ((files, tests) => runAffectedTests({
++    projectRoot,
++    changedFiles: files,
++    ...(tests ? { resolveTests: () => tests } : {}),
++  }));
+ 
+   // Under --all, scope BOTH lint and sonar to the whole tree (null). Otherwise
+   // sonar would receive changedFiles=[] and report a vacuous "no changed files"
+@@ -264,7 +277,7 @@ function buildGates({ projectRoot, changedFiles = [], runAll = false, deps = {}
+       summary: 'whole-tree mode (--all): affected-test mapping N/A — run the full suite (CI does)',
+       inputFingerprint,
+     })
+-    : async () => affected(normalizedChangedFiles);
++    : async () => affected(normalizedChangedFiles, selectedTests);
+ 
+   return [
+     { name: 'lint', run: async () => eslint(scanTargets) },
+diff --git a/lib/validation/risk-manifest.js b/lib/validation/risk-manifest.js
+index d7664b01..471bf9a8 100644
+--- a/lib/validation/risk-manifest.js
++++ b/lib/validation/risk-manifest.js
+@@ -260,9 +260,71 @@ function resolveCommands(manifest, gateIds, laneIds) {
+   });
+ }
+ 
+-function selectValidation({ manifest, changedSurfaces }) {
++const GOVERNED_EVIDENCE_FLAGS = Object.freeze([
++  ['authorityBoundaryChanged', 'authority_boundary_changed'],
++  ['irreversibleChange', 'irreversible_change'],
++  ['migrationChanged', 'migration_changed'],
++  ['publicContractChanged', 'public_contract_changed'],
++  ['releaseChanged', 'release_changed'],
++  ['securityBoundaryChanged', 'security_boundary_changed'],
++]);
++
++function normalizeEvidence(evidence) {
++  if (evidence === undefined) return {};
++  assert(evidence && typeof evidence === 'object' && !Array.isArray(evidence), 'evidence must be an object');
++  return evidence;
++}
++
++function normalizeImpactSurfaces(value, field) {
++  if (value === undefined) return { provided: false, surfaces: [] };
++  assert(Array.isArray(value), `${field} must be an array`);
++  const surfaces = value.map((entry) => normalizeSurface(
++    typeof entry === 'string' ? { kind: 'path', value: entry } : entry,
++  ));
++  return { provided: true, surfaces: normalizeChangedSurfaces(surfaces) };
++}
++
++function receiptState(evidence) {
++  const receipts = Array.isArray(evidence.exactShaReceipts) ? evidence.exactShaReceipts : [];
++  const head = typeof evidence.currentHead === 'string' && /^[0-9a-f]{40}$/i.test(evidence.currentHead)
++    ? evidence.currentHead.toLowerCase()
++    : null;
++  if (receipts.length === 0) return { status: 'UNAVAILABLE', exact_head: head, receipt_count: 0 };
++  const exact = head && receipts.some((receipt) => receipt?.status === 'PASS'
++    && typeof receipt.head === 'string' && receipt.head.toLowerCase() === head);
++  return { status: exact ? 'AVAILABLE' : 'STALE', exact_head: head, receipt_count: receipts.length };
++}
++
++function derivedGovernedReasons(surfaces) {
++  const reasons = new Set();
++  for (const surface of surfaces) {
++    if (surface.kind === 'schema') reasons.add('public_contract_changed');
++    if (surface.kind !== 'path') continue;
++    const value = surface.value.toLowerCase();
++    if (/(^|\/)(?:auth|permission|security)(?:\/|\.|$)/u.test(value)) {
++      reasons.add('security_boundary_changed');
++    }
++    if (/(?:^|\/)(?:migrate|migration)(?:\/|\.|$)/u.test(value)) {
++      reasons.add('migration_changed');
++    }
++    if (value === 'package.json' || value === 'bun.lock' || value.startsWith('.github/workflows/')
++      || /(?:^|\/)(?:publish|release)(?:\/|\.|$)/u.test(value)) {
++      reasons.add('release_changed');
++    }
++  }
++  return [...reasons].sort(compareText);
++}
++
++function selectValidation({ manifest, changedSurfaces, evidence: rawEvidence }) {
+   validateManifest(manifest);
+-  const surfaces = normalizeChangedSurfaces(changedSurfaces);
++  const evidence = normalizeEvidence(rawEvidence);
++  const callSiteImpact = normalizeImpactSurfaces(evidence.callSiteImpact, 'evidence.callSiteImpact');
++  const dependencyImpact = normalizeImpactSurfaces(evidence.dependencyImpact, 'evidence.dependencyImpact');
++  const surfaces = normalizeChangedSurfaces([
++    ...changedSurfaces,
++    ...callSiteImpact.surfaces,
++    ...dependencyImpact.surfaces,
++  ]);
+   const selections = surfaces.map((surface) => ({
+     surface,
+     exact: ownerForExactSurface(manifest, surface),
+@@ -294,15 +356,69 @@ function selectValidation({ manifest, changedSurfaces }) {
+     requiredGates.push('G0', 'G1', 'G3', 'G6');
+   }
+ 
++  const receipts = receiptState(evidence);
++  const reasons = [];
++  if (status !== 'exact') reasons.push(status === 'repository-baseline'
++    ? 'unowned_or_empty_change_surface'
++    : 'ambiguous_package_surface');
++  const governedRisk = risks.some((risk) => risk.severity === 'S0' || risk.non_quarantinable);
++  if (governedRisk) reasons.push('non_quarantinable_or_S0_risk');
++  for (const [field, reason] of GOVERNED_EVIDENCE_FLAGS) {
++    if (evidence[field] === true) reasons.push(reason);
++  }
++  const derivedReasons = derivedGovernedReasons(surfaces);
++  reasons.push(...derivedReasons);
++  if (evidence.coverageComplete !== true) reasons.push('coverage_incomplete');
++  if (!callSiteImpact.provided) reasons.push('call_site_impact_unavailable');
++  if (!dependencyImpact.provided) reasons.push('dependency_impact_unavailable');
++  if (receipts.status === 'STALE') reasons.push('exact_sha_receipt_stale');
++
++  const requiresGoverned = status !== 'exact' || governedRisk
++    || GOVERNED_EVIDENCE_FLAGS.some(([field]) => evidence[field] === true)
++    || derivedReasons.length > 0
++    || evidence.coverageComplete === false || receipts.status === 'STALE';
++  let validationClass = 'autonomous';
++  if (requiresGoverned) validationClass = 'governed';
++  else if (risks.some((risk) => risk.severity === 'S1')) validationClass = 'reviewed';
++  if (validationClass === 'governed') targetedPassAllowed = false;
++
++  const allTests = uniqueSorted(manifest.owners.flatMap((owner) => owner.canonical_test_ids));
++  const ownerTests = uniqueSorted(owners.flatMap((owner) => owner.canonical_test_ids));
++  const selectedTests = validationClass === 'governed' ? allTests : ownerTests;
++  const selectedTestSet = new Set(selectedTests);
++  const allPlatforms = uniqueSorted(manifest.owners.flatMap((owner) => owner.platform_runtime_additions));
++  const selectedPlatforms = validationClass === 'governed'
++    ? allPlatforms
++    : uniqueSorted(owners.flatMap((owner) => owner.platform_runtime_additions));
++  if (reasons.length === 0) reasons.push(validationClass === 'autonomous'
++    ? 'exact_low_risk_surface'
++    : 'exact_reviewed_risk_surface');
++
+   const selectedLanes = uniqueSorted(lanes);
+   const selectedGates = uniqueSorted(requiredGates);
++  const executionLanes = validationClass === 'governed'
++    ? uniqueSorted([...selectedLanes, manifest.unknown_owner_fallback.lane])
++    : selectedLanes;
++  const executionGates = validationClass === 'governed'
++    ? uniqueSorted([...selectedGates, ...manifest.unknown_owner_fallback.required_gates])
++    : selectedGates;
+ 
+   return {
+     schema_id: 'forge.validation.selection.v1',
+     manifest_revision: manifest.revision,
+     manifest_digest: manifest.manifest_hash,
+     status,
++    validation_class: validationClass,
+     targeted_pass_allowed: targetedPassAllowed,
++    full_suite_required: validationClass === 'governed',
++    confidence: status === 'exact'
++      && receipts.status !== 'STALE'
++      && ((callSiteImpact.provided && dependencyImpact.provided && evidence.coverageComplete === true)
++        || receipts.status === 'AVAILABLE')
++      && (validationClass !== 'governed' || receipts.status === 'AVAILABLE')
++      ? 'HIGH'
++      : 'LOW',
++    reasons: uniqueSorted(reasons),
+     changed_surfaces: surfaces,
+     unowned_surfaces: unowned,
+     matched_selectors: selections.filter((selection) => selection.exact).map((selection) => ({
+@@ -322,12 +438,29 @@ function selectValidation({ manifest, changedSurfaces }) {
+       platform_runtime_additions: uniqueSorted(owner.platform_runtime_additions),
+     })),
+     risk_ids: uniqueSorted(risks.map((risk) => risk.id)),
+-    required_gates: selectedGates,
++    risk_coverage: risks.map((risk) => ({
++      id: risk.id,
++      severity: risk.severity,
++      non_quarantinable: risk.non_quarantinable,
++    })).sort((left, right) => compareText(left.id, right.id)),
++    required_gates: executionGates,
+     lanes: selectedLanes,
++    execution_lanes: executionLanes,
+     dependent_routes: uniqueSorted(owners.flatMap((owner) => owner.dependent_routes)),
+     platform_runtime_additions: uniqueSorted(owners.flatMap((owner) => owner.platform_runtime_additions)),
++    platforms: selectedPlatforms,
+     test_ids: uniqueSorted(owners.flatMap((owner) => owner.canonical_test_ids)),
+-    commands: resolveCommands(manifest, selectedGates, selectedLanes),
++    selected_tests: selectedTests,
++    excluded_tests: allTests.filter((testId) => !selectedTestSet.has(testId)),
++    evidence_inputs: {
++      changed_packages: uniqueSorted(owners.map((owner) => owner.package)),
++      dependent_routes: uniqueSorted(owners.flatMap((owner) => owner.dependent_routes)),
++      call_site_impact: callSiteImpact.surfaces,
++      dependency_impact: dependencyImpact.surfaces,
++      coverage_complete: evidence.coverageComplete ?? null,
++      exact_sha_receipts: receipts,
++    },
++    commands: resolveCommands(manifest, executionGates, executionLanes),
+   };
+ }
+ 
+diff --git a/scripts/test.js b/scripts/test.js
+index 0570524d..c7a7c791 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -62,6 +62,11 @@ const KNOWN_TARGETABLE_FILES = new Set([
+   'lib/kernel/schema.js',
+   'lib/kernel/migrations.js',
+   'lib/kernel/sqlite-driver.js',
++  'lib/capabilities/delivery.js',
++  'lib/capabilities/executor.js',
++  'lib/commands/capabilities.js',
++  'lib/health/doctor-manifest.js',
++  'lib/health/doctor-runner.js',
+   'lib/commands/shepherd.js',
+   'lib/commands/github.js',
+   'lib/github-context.js',
+diff --git a/test/capabilities/delivery.test.js b/test/capabilities/delivery.test.js
+new file mode 100644
+index 00000000..90ccdd9d
+--- /dev/null
++++ b/test/capabilities/delivery.test.js
+@@ -0,0 +1,241 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++
++const {
++  createHarnessDeliveryAdapter,
++  projectDeliveryTiers,
++} = require('../../lib/capabilities/delivery');
++
++function probeResult(available = []) {
++  return {
++    harness_id: 'codex',
++    result_hash: 'a'.repeat(64),
++    capabilities: [
++      'bounded_background_tasks',
++      'human_notification',
++      'initiating_agent_delivery',
++      'native_streaming_monitor',
++      'wake_resume',
++    ].map((id) => ({
++      id,
++      available: available.includes(id),
++      status: available.includes(id) ? 'AVAILABLE' : 'UNAVAILABLE',
++      reason: available.includes(id) ? 'PROBED_SUPPORTED' : 'PROBED_UNSUPPORTED',
++    })),
++  };
++}
++
++describe('capability-negotiated harness delivery', () => {
++  test('projects every tier and a bounded freedom envelope without overstating support', () => {
++    const tiers = projectDeliveryTiers(
++      probeResult(['initiating_agent_delivery', 'native_streaming_monitor']),
++      { T0: () => {}, T1: () => {}, T2: () => {} },
++    );
++
++    expect(tiers.map(({ id, available }) => [id, available])).toEqual([
++      ['T0', true],
++      ['T1', true],
++      ['T2', true],
++      ['T3', false],
++      ['T4', false],
++    ]);
++    for (const tier of tiers) {
++      expect(['deterministic', 'bounded-adaptive', 'agentic']).toContain(tier.freedom_envelope.mode);
++      expect(tier.freedom_envelope.allowed_actions.length).toBeGreaterThan(0);
++      expect(tier.freedom_envelope.forbidden_actions.length).toBeGreaterThan(0);
++      expect(tier.freedom_envelope.decision_points.length).toBeGreaterThan(0);
++      expect(tier.freedom_envelope.budgets).toEqual(expect.objectContaining({
++        time_ms: expect.any(Number),
++        token_count: expect.any(Number),
++        action_count: expect.any(Number),
++      }));
++      expect(Array.isArray(tier.freedom_envelope.approval_requirements)).toBe(true);
++      expect(tier.freedom_envelope.rollback_strategy).toBe('degrade_to_T0');
++      expect(tier.freedom_envelope.evidence_requirements).toContain('delivery_receipt');
++      expect(tier.freedom_envelope.escalation_conditions.length).toBeGreaterThan(0);
++    }
++  });
++
++  test('does not advertise durable pull without a registered durable handler', () => {
++    const tiers = projectDeliveryTiers(probeResult(['initiating_agent_delivery']));
++
++    expect(tiers.every((tier) => tier.available === false)).toBe(true);
++    expect(tiers.find(({ id }) => id === 'T0').reason).toBe('ADAPTER_UNAVAILABLE');
++  });
++
++  test('does not advertise native delivery without a registered durable handler', () => {
++    const tiers = projectDeliveryTiers(
++      probeResult(['initiating_agent_delivery']),
++      { T1: () => {} },
++    );
++
++    expect(tiers.find(({ id }) => id === 'T1')).toEqual(expect.objectContaining({
++      available: false,
++      status: 'UNAVAILABLE',
++      reason: 'DURABLE_HANDLER_UNAVAILABLE',
++    }));
++  });
++
++  test('does not claim T4 human notification from background-task delivery alone', () => {
++    const tiers = projectDeliveryTiers(probeResult([
++      'bounded_background_tasks',
++      'initiating_agent_delivery',
++    ]));
++
++    expect(tiers.find(({ id }) => id === 'T4')).toEqual(expect.objectContaining({
++      available: false,
++      status: 'UNAVAILABLE',
++    }));
++  });
++
++  test('persists through T0 before native delivery and degrades to the highest proven handler', async () => {
++    const calls = [];
++    const adapter = createHarnessDeliveryAdapter({
++      probeResult: probeResult(['initiating_agent_delivery']),
++      handlers: {
++        T0: async () => { calls.push('T0'); return { cursor: 7 }; },
++        T1: async () => { calls.push('T1'); return { acknowledged: true }; },
++        T2: async () => { calls.push('T2'); return { acknowledged: true }; },
++      },
++    });
++
++    const result = await adapter.deliver({ event_id: 'event-1' }, 'agent-1', { preferredTier: 'T2' });
++
++    expect(calls).toEqual(['T0', 'T1']);
++    expect(result).toEqual({
++      harness_id: 'codex',
++      tier: 'T1',
++      degraded_from: 'T2',
++      persistence: { cursor: 7 },
++      delivery: { acknowledged: true },
++    });
++  });
++
++  test('never invokes a native adapter when durable T0 persistence fails', async () => {
++    let nativeCalled = false;
++    const adapter = createHarnessDeliveryAdapter({
++      probeResult: probeResult(['initiating_agent_delivery', 'native_streaming_monitor']),
++      handlers: {
++        T0: async () => { throw new Error('store unavailable'); },
++        T2: async () => { nativeCalled = true; },
++      },
++    });
++
++    await expect(adapter.deliver({ event_id: 'event-1' }, 'agent-1')).rejects.toThrow('store unavailable');
++    expect(nativeCalled).toBe(false);
++  });
++
++  test('rejects an invalid delivery budget before invoking a handler', () => {
++    let called = false;
++
++    for (const timeoutMs of [0, -1, 1.5, 5001, Infinity]) {
++      expect(() => createHarnessDeliveryAdapter({
++        probeResult: probeResult(),
++        timeoutMs,
++        handlers: { T0: () => { called = true; } },
++      })).toThrow('timeoutMs must be an integer between 1 and 5000');
++    }
++    expect(called).toBe(false);
++  });
++
++  test('aborts timed-out durable persistence and never invokes native delivery', async () => {
++    let durableSignal;
++    let nativeCalled = false;
++    const adapter = createHarnessDeliveryAdapter({
++      probeResult: probeResult(['initiating_agent_delivery']),
++      timeoutMs: 10,
++      handlers: {
++        T0: async (_event, _target, { signal }) => {
++          durableSignal = signal;
++          await new Promise(() => {});
++        },
++        T1: async () => { nativeCalled = true; },
++      },
++    });
++
++    let error;
++    try {
++      await adapter.deliver({ event_id: 'event-1' }, 'agent-1', { preferredTier: 'T1' });
++    } catch (caught) {
++      error = caught;
++    }
++
++    expect(error).toEqual(expect.objectContaining({
++      code: 'DELIVERY_TIMEOUT',
++      evidence: expect.objectContaining({
++        status: 'INCOMPLETE',
++        tier: 'T0',
++        timeout_ms: expect.any(Number),
++        abort_requested: true,
++      }),
++    }));
++    expect(error.evidence.timeout_ms).toBeGreaterThan(0);
++    expect(error.evidence.timeout_ms).toBeLessThanOrEqual(10);
++    expect(durableSignal).toBeInstanceOf(AbortSignal);
++    expect(durableSignal.aborted).toBe(true);
++    expect(nativeCalled).toBe(false);
++  });
++
++  test('bounds native delivery within the total budget and preserves its durable receipt', async () => {
++    let nativeSignal;
++    const persistence = { cursor: 9 };
++    const adapter = createHarnessDeliveryAdapter({
++      probeResult: probeResult(['initiating_agent_delivery']),
++      timeoutMs: 10,
++      handlers: {
++        T0: async () => persistence,
++        T1: async (_event, _target, { signal }) => {
++          nativeSignal = signal;
++          await new Promise(() => {});
++        },
++      },
++    });
++
++    let error;
++    try {
++      await adapter.deliver({ event_id: 'event-1' }, 'agent-1', { preferredTier: 'T1' });
++    } catch (caught) {
++      error = caught;
++    }
++
++    expect(error).toEqual(expect.objectContaining({
++      code: 'DELIVERY_TIMEOUT',
++      evidence: expect.objectContaining({
++        status: 'INCOMPLETE',
++        tier: 'T1',
++        persistence,
++      }),
++    }));
++    expect(nativeSignal).toBeInstanceOf(AbortSignal);
++    expect(nativeSignal.aborted).toBe(true);
++  });
++
++  test('persists T0 then skips unapproved T4 for the highest eligible tier', async () => {
++    const calls = [];
++    const adapter = createHarnessDeliveryAdapter({
++      probeResult: probeResult(['human_notification', 'initiating_agent_delivery']),
++      handlers: {
++        T0: async () => { calls.push('T0'); return { cursor: 4 }; },
++        T1: async () => { calls.push('T1'); return { acknowledged: 'agent' }; },
++        T4: async () => { calls.push('T4'); return { acknowledged: true }; },
++      },
++    });
++
++    const degraded = await adapter.deliver({ event_id: 'event-1' }, 'human-1');
++    expect(calls).toEqual(['T0', 'T1']);
++    expect(degraded).toEqual({
++      harness_id: 'codex',
++      tier: 'T1',
++      degraded_from: 'T4',
++      persistence: { cursor: 4 },
++      delivery: { acknowledged: 'agent' },
++    });
++
++    const result = await adapter.deliver({ event_id: 'event-1' }, 'human-1', {
++      approvals: ['configured_human_notification_consent'],
++    });
++    expect(calls).toEqual(['T0', 'T1', 'T0', 'T4']);
++    expect(result.tier).toBe('T4');
++  });
++});
+diff --git a/test/capabilities/executor.test.js b/test/capabilities/executor.test.js
+new file mode 100644
+index 00000000..5a6229b9
+--- /dev/null
++++ b/test/capabilities/executor.test.js
+@@ -0,0 +1,60 @@
++'use strict';
++
++const { afterEach, describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { executeHarnessProbe } = require('../../lib/capabilities/executor');
++
++const tempDirs = [];
++
++function makeExecutable(output) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-capability-executor-'));
++  tempDirs.push(root);
++  if (process.platform === 'win32') {
++    const executable = path.join(root, 'forge-probe.cmd');
++    fs.writeFileSync(executable, `@echo off\r\necho ${output}\r\n`);
++    return { root, executable };
++  }
++  const executable = path.join(root, 'forge-probe');
++  fs.writeFileSync(executable, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, { mode: 0o755 });
++  return { root, executable };
++}
++
++function request() {
++  return {
++    command: 'forge-probe',
++    args: ['--version'],
++    maxOutputBytes: 1024,
++    timeoutMs: 1000,
++  };
++}
++
++afterEach(() => {
++  while (tempDirs.length > 0) fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
++});
++
++describe('default harness probe executor', () => {
++  test('executes the resolved file without a shell string and binds identity to file contents', async () => {
++    const { root, executable } = makeExecutable('forge-probe 1.0.0');
++    const first = await executeHarnessProbe(request(), { env: { PATH: root } });
++    expect(first.exitCode).toBe(0);
++    expect(first.stdout).toContain('forge-probe 1.0.0');
++    expect(first.executableIdentity).toMatch(/^[0-9a-f]{64}$/);
++
++    if (process.platform === 'win32') {
++      fs.writeFileSync(executable, '@echo off\r\necho forge-probe 1.0.1\r\n');
++    } else {
++      fs.writeFileSync(executable, "#!/bin/sh\nprintf '%s\\n' 'forge-probe 1.0.1'\n", { mode: 0o755 });
++    }
++    const second = await executeHarnessProbe(request(), { env: { PATH: root } });
++    expect(second.exitCode).toBe(0);
++    expect(second.executableIdentity).not.toBe(first.executableIdentity);
++  });
++
++  test('reports an absent executable without starting a process', async () => {
++    const result = await executeHarnessProbe(request(), { env: { PATH: '' } });
++    expect(result).toEqual({ exitCode: null, stdout: '', stderr: '', errorCode: 'ENOENT' });
++  });
++});
+diff --git a/test/capabilities/probes.test.js b/test/capabilities/probes.test.js
+index 7864e40b..d32a8c25 100644
+--- a/test/capabilities/probes.test.js
++++ b/test/capabilities/probes.test.js
+@@ -23,6 +23,35 @@ test('version-bound harness probe returns one executable receipt per capability'
+   assert.equal(result.status, 'PASS');
+   assert.equal(result.executable.version, '0.147.0');
+   assert.deepEqual(result.capabilities.map((capability) => capability.id), [...CAPABILITY_IDS].sort());
++  assert.ok(result.capabilities.every((capability) => capability.available === false));
++  assert.ok(result.capabilities.every((capability) => capability.surface_available === true));
++});
++
++test('help surface discovery does not claim semantic delivery behavior', async () => {
++  const surfaceOnly = await probeHarness({ harness: 'codex', execute: successfulExecutor() });
++  assert.ok(surfaceOnly.capabilities.every((capability) => capability.status === 'UNAVAILABLE'));
++  assert.ok(surfaceOnly.capabilities.every((capability) => capability.reason === 'BEHAVIOR_UNVERIFIED'));
++
++  const behaviorVerified = await probeHarness({
++    harness: 'codex',
++    execute: successfulExecutor({ behaviorVerified: true }),
++  });
++  assert.ok(behaviorVerified.capabilities.every((capability) => capability.status === 'AVAILABLE'));
++  assert.ok(behaviorVerified.capabilities.every((capability) => capability.reason === 'PROBED_SUPPORTED'));
++});
++
++test('installed Claude version suffix remains a version receipt, not a name assumption', async () => {
++  const execute = successfulExecutor();
++  const result = await probeHarness({
++    harness: 'claude',
++    execute: async (request) => request.kind === 'version'
++      ? { ...await execute(request), stdout: '2.1.267 (Claude Code)' }
++      : execute(request),
++    observedAt: '2026-09-12T00:00:00.000Z',
++  });
++
++  assert.equal(result.status, 'PASS');
++  assert.equal(result.executable.version, '2.1.267');
+ });
+ 
+ test('probe defaults and exact maximum boundaries remain bounded', async () => {
+diff --git a/test/capability/fixtures.js b/test/capability/fixtures.js
+index 01541bd1..c069f178 100644
+--- a/test/capability/fixtures.js
++++ b/test/capability/fixtures.js
+@@ -15,10 +15,10 @@ const VERSIONS = Object.freeze({
+ });
+ 
+ const SUPPORT_OUTPUT = Object.freeze({
+-  claude: '--output-format stream-json --remote --resume --cancel session delete',
+-  codex: '--json output-schema task resume cancel delete event initiating agent',
+-  cursor: '--json background resume cancel sessions delete follow-up initiating agent',
+-  hermes: 'monitor stream cron task resume pause remove sessions delete origin deliver',
++  claude: '--output-format stream-json --remote --resume --cancel session delete notification',
++  codex: '--json output-schema task resume cancel delete event initiating agent notification',
++  cursor: '--json background resume cancel sessions delete follow-up initiating agent notification',
++  hermes: 'monitor stream cron task resume pause remove sessions delete origin deliver notification',
+ });
+ 
+ function successfulExecutor(overrides = {}) {
+diff --git a/test/capability/harness-probes.test.js b/test/capability/harness-probes.test.js
+index 8f45f256..36358170 100644
+--- a/test/capability/harness-probes.test.js
++++ b/test/capability/harness-probes.test.js
+@@ -24,7 +24,7 @@ test('every supported harness uses bounded executable behavior probes', async ()
+   const results = await probeAllHarnesses({
+     execute: async (request) => {
+       requests.push(request);
+-      return successfulExecutor()(request);
++      return successfulExecutor({ behaviorVerified: true })(request);
+     },
+     timeoutMs: 250,
+     maxOutputBytes: 2048,
+@@ -204,7 +204,7 @@ test('result hashes are deterministic and exclude observation time', async () =>
+ 
+   assert.notEqual(first.observed_at, second.observed_at);
+   assert.equal(first.result_hash, second.result_hash);
+-  assert.equal(first.result_hash, '4fb765aca9e3e5ad1c3a9ca36d17783942e64e2731a0494b16c691eecc8a0c8e');
++  assert.equal(first.result_hash, '9de6a47b82c4aa899d52f729a99f1d30026341515ea9c977b28ecb2f7e1aa6d0');
+   assert.deepEqual(getHarnessProbeSpec('hermes').capabilities.map((item) => item.id), CAPABILITY_IDS);
+ });
+ 
+diff --git a/test/commands/capabilities.test.js b/test/commands/capabilities.test.js
+new file mode 100644
+index 00000000..1082ff9b
+--- /dev/null
++++ b/test/commands/capabilities.test.js
+@@ -0,0 +1,88 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++
++const capabilities = require('../../lib/commands/capabilities');
++const { successfulExecutor } = require('../capability/fixtures');
++
++describe('capabilities command', () => {
++  test('reports installed products and probed harness behavior without activating products', async () => {
++    const resolved = [];
++    let activations = 0;
++    const result = await capabilities.handler(['--json'], {}, '/fixture', {
++      execute: successfulExecutor(),
++      observedAt: '2026-08-11T00:00:00.000Z',
++      kernelBuilder: async () => {
++        activations += 1;
++        throw new Error('capabilities inspection must not open durable storage');
++      },
++      createMonitorStore() {
++        activations += 1;
++        throw new Error('capabilities inspection must not activate Memory');
++      },
++      resolveProduct(product) {
++        resolved.push(product);
++        return product === 'memory';
++      },
++    });
++
++    expect(result.success).toBe(true);
++    const report = JSON.parse(result.output);
++    expect(report.schema).toBe('forge.capabilities.v1');
++    expect(report.products).toEqual([
++      { id: 'flow', available: false, status: 'UNAVAILABLE', reason: 'FORGE_FLOW_UNAVAILABLE' },
++      { id: 'memory', available: true, status: 'AVAILABLE', reason: 'PACKAGE_RESOLVED' },
++    ]);
++    expect(report.harnesses.map((item) => item.harness_id)).toEqual([
++      'claude', 'codex', 'cursor', 'hermes',
++    ]);
++    expect(report.harnesses.every((item) => item.status === 'PASS')).toBe(true);
++    expect(report.harnesses.every((item) => item.delivery_tiers.length === 5)).toBe(true);
++    expect(report.harnesses.every((item) => (
++      item.delivery_tiers.every((tier) => tier.available === false)
++    ))).toBe(true);
++    expect(report.harnesses.every((item) => (
++      item.delivery_tiers.find((tier) => tier.id === 'T0').reason === 'ADAPTER_UNAVAILABLE'
++    ))).toBe(true);
++    expect(report.harnesses.every((item) => (
++      item.capabilities.every((capability) => capability.available === false)
++    ))).toBe(true);
++    expect(report.harnesses.every((item) => (
++      item.capabilities.every((capability) => capability.surface_available === true)
++    ))).toBe(true);
++    expect(report.harnesses.every((item) => (
++      item.capabilities.every((capability) => capability.freedom_envelope)
++    ))).toBe(true);
++    expect(resolved).toEqual(['flow', 'memory']);
++    expect(activations).toBe(0);
++  });
++
++  test('advertises only tiers backed by injected durable and native handlers', async () => {
++    const result = await capabilities.handler(['--json'], {}, '/fixture', {
++      execute: successfulExecutor({ behaviorVerified: true }),
++      resolveProduct: () => true,
++      deliveryHandlers: {
++        codex: { T0: async () => ({}), T1: async () => ({}) },
++      },
++    });
++
++    const report = JSON.parse(result.output);
++    const codex = report.harnesses.find((item) => item.harness_id === 'codex');
++    expect(codex.delivery_tiers.filter((tier) => tier.available).map((tier) => tier.id)).toEqual(['T0', 'T1']);
++    expect(report.harnesses.filter((item) => item.harness_id !== 'codex').every((item) => (
++      item.delivery_tiers.every((tier) => tier.available === false)
++    ))).toBe(true);
++  });
++
++  test('rejects unsupported arguments instead of guessing a route', async () => {
++    const result = await capabilities.handler(['--yaml'], {}, '/fixture', {
++      execute: successfulExecutor(),
++      resolveProduct: () => false,
++    });
++
++    expect(result).toEqual({
++      success: false,
++      error: 'Usage: forge capabilities --json',
++    });
++  });
++});
+diff --git a/test/commands/doctor-health.test.js b/test/commands/doctor-health.test.js
+index 1c2bbe47..5e516700 100644
+--- a/test/commands/doctor-health.test.js
++++ b/test/commands/doctor-health.test.js
+@@ -55,6 +55,14 @@ describe('forge doctor health report contract', () => {
+       expect(check.evidence).toBeDefined();
+       expect(typeof check.remediation).toBe('string');
+     }
++    expect(report.checks.find(check => check.id === 'filesystem-class')).toEqual(expect.objectContaining({
++      ok: true,
++      databasePath: expect.stringContaining('kernel.sqlite'),
++      class: 'local-ok',
++      riskTier: 'safe',
++      signal: 'none',
++      overrideActive: false,
++    }));
+   });
+ 
+   test('provider/network checks run only under explicit integrations scope', async () => {
+@@ -181,6 +189,20 @@ describe('forge doctor health report contract', () => {
+     expect(JSON.stringify(unavailable)).not.toContain('bob@example.com');
+   });
+ 
++  test('default Doctor keeps the filesystem-derived legacy exit when Flow is unavailable', async () => {
++    const root = makeProjectRoot('default-flow-unavailable');
++    const report = await doctor.runDoctorReport(root, localDeps(root, {
++      loadFlow: () => { throw new Error('missing Flow'); },
++    }));
++
++    expect(report.status).toBe('PASS');
++    expect(report.ok).toBe(true);
++    expect(report.checks.find(check => check.id === 'flow-runtime')).toEqual(expect.objectContaining({
++      status: 'INCOMPLETE',
++      evidence: { reason: 'flow-runtime-unavailable', runtimeState: 'unavailable' },
++    }));
++  });
++
+   test('local filesystem fixtures pass on Windows, macOS, and Linux', async () => {
+     for (const platform of ['win32', 'darwin', 'linux']) {
+       const root = makeProjectRoot(platform);
+diff --git a/test/commands/preflight.test.js b/test/commands/preflight.test.js
+index 6cfc4934..d2389a4a 100644
+--- a/test/commands/preflight.test.js
++++ b/test/commands/preflight.test.js
+@@ -5,6 +5,22 @@ const { describe, test, expect } = require('bun:test');
+ const preflight = require('../../lib/commands/preflight');
+ const { buildGates } = require('../../lib/preflight/gates');
+ 
++function completeSelection(overrides = {}) {
++  return {
++    schema_id: 'forge.validation.selection.v1',
++    validation_class: 'autonomous',
++    selected_tests: [],
++    excluded_tests: [],
++    reasons: [],
++    risk_coverage: [],
++    platforms: [],
++    confidence: 'HIGH',
++    full_suite_required: false,
++    commands: [],
++    ...overrides,
++  };
++}
++
+ describe('forge preflight command — contract', () => {
+   test('exports a valid registry command interface', () => {
+     expect(preflight.name).toBe('preflight');
+@@ -53,6 +69,151 @@ describe('forge preflight command — contract', () => {
+     expect(res.results[3].inputFingerprint).toBe(inputFingerprint);
+   });
+ 
++  test('projects changed files through the versioned risk selector', async () => {
++    let selectionInput;
++    const selection = completeSelection({
++      confidence: 'LOW',
++      full_suite_required: true,
++    });
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangedFiles: () => ['lib/capabilities/probes.js'],
++      riskManifestExists: () => true,
++      loadRiskManifest: () => ({ schema_id: 'forge.validation.risk-manifest.v1' }),
++      selectValidation: (input) => {
++        selectionInput = input;
++        return selection;
++      },
++      validationEvidence: { currentHead: 'a'.repeat(40) },
++      buildGates: () => [{ name: 'g', run: async () => ({ ok: true, summary: 'ok' }) }],
++    });
++
++    expect(selectionInput.changedSurfaces).toEqual([
++      { kind: 'path', value: 'lib/capabilities/probes.js' },
++    ]);
++    expect(selectionInput.evidence).toEqual({ currentHead: 'a'.repeat(40) });
++    expect(res.validationSelection).toBe(selection);
++    expect(res.confidence).toBe('LOW');
++    expect(res.success).toBe(false);
++    expect(res.selectionIncomplete).toBe(true);
++  });
++
++  test('fails closed when the project risk manifest cannot be selected', async () => {
++    let built = false;
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangedFiles: () => ['lib/a.js'],
++      riskManifestExists: () => true,
++      loadRiskManifest: () => { throw new Error('manifest hash mismatch'); },
++      buildGates: () => { built = true; return []; },
++    });
++
++    expect(res.success).toBe(false);
++    expect(res.selectionUnresolved).toBe(true);
++    expect(res.confidence).toBe('LOW');
++    expect(res.reason).toContain('manifest hash mismatch');
++    expect(built).toBe(false);
++  });
++
++  test('binds a valid full-suite receipt to the selected exact head', async () => {
++    let evidence;
++    const head = 'b'.repeat(40);
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangedFiles: () => ['lib/commands/preflight.js'],
++      riskManifestExists: () => true,
++      loadRiskManifest: () => ({}),
++      verifyValidationReceipt: () => ({ valid: true, head }),
++      selectValidation: (input) => {
++        evidence = input.evidence;
++        return completeSelection({ validation_class: 'reviewed' });
++      },
++      buildGates: () => [{ name: 'g', run: async () => ({ ok: true, summary: 'ok' }) }],
++    });
++
++    expect(evidence).toEqual({
++      currentHead: head,
++      exactShaReceipts: [{ head, status: 'PASS' }],
++    });
++    expect(res.confidence).toBe('HIGH');
++  });
++
++  test('feeds impact evidence and selected tests into the existing affected-test gate', async () => {
++    const head = 'c'.repeat(40);
++    let selectionInput;
++    let selectedTests;
++    const selection = completeSelection({
++      selected_tests: ['test/commands/capabilities.test.js'],
++      excluded_tests: ['test/kernel/broker.test.js'],
++      reasons: ['exact_low_risk_surface'],
++      risk_coverage: [{ id: 'facade-routing', severity: 'S2', non_quarantinable: false }],
++      platforms: ['windows-shell'],
++    });
++
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangedFiles: () => ['lib/commands/capabilities.js'],
++      riskManifestExists: () => true,
++      loadRiskManifest: () => ({}),
++      validationEvidence: {
++        callSiteImpact: [],
++        dependencyImpact: [],
++        coverageComplete: true,
++      },
++      verifyValidationReceipt: () => ({ valid: true, head }),
++      selectValidation: (input) => {
++        selectionInput = input;
++        return selection;
++      },
++      buildGates: (options) => buildGates({
++        ...options,
++        deps: {
++          eslint: () => ({ ok: true }),
++          structural: () => ({ ok: true }),
++          sonar: () => ({ ok: true }),
++          affected: (_changedFiles, tests) => {
++            selectedTests = tests;
++            return { ok: true };
++          },
++        },
++      }),
++    });
++
++    expect(selectionInput.evidence).toEqual({
++      callSiteImpact: [],
++      dependencyImpact: [],
++      coverageComplete: true,
++      currentHead: head,
++      exactShaReceipts: [{ head, status: 'PASS' }],
++    });
++    expect(selectedTests).toEqual(['test/commands/capabilities.test.js']);
++    expect(res.success).toBe(true);
++  });
++
++  test('fails closed before building gates when validation selection is malformed', async () => {
++    let built = false;
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangedFiles: () => ['lib/commands/capabilities.js'],
++      riskManifestExists: () => true,
++      loadRiskManifest: () => ({}),
++      selectValidation: () => ({
++        schema_id: 'forge.validation.selection.v1',
++        validation_class: 'autonomous',
++        selected_tests: 'test/commands/capabilities.test.js',
++        confidence: 'HIGH',
++        full_suite_required: false,
++      }),
++      buildGates: () => { built = true; return []; },
++    });
++
++    expect(res.success).toBe(false);
++    expect(res.selectionUnresolved).toBe(true);
++    expect(res.confidence).toBe('LOW');
++    expect(res.reason).toMatch(/selected_tests/i);
++    expect(built).toBe(false);
++  });
++
+   test('--all flag forces whole-tree scope through to buildGates', async () => {
+     let received;
+     await preflight.handler([], { '--all': true }, '/x', {
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index 55ed17cc..45431df1 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -293,6 +293,23 @@ describe('forge test command', () => {
+ 		});
+ 
+ 		test.each([
++			['lib/capabilities/delivery.js', [
++				'test/capabilities/delivery.test.js',
++			]],
++			['lib/capabilities/executor.js', [
++				'test/capabilities/executor.test.js',
++			]],
++			['lib/commands/capabilities.js', [
++				'test/commands/capabilities.test.js',
++			]],
++			['lib/health/doctor-manifest.js', [
++				'test/commands/doctor-health.test.js',
++				'test/health/doctor-manifest.test.js',
++			]],
++			['lib/health/doctor-runner.js', [
++				'test/commands/doctor-health.test.js',
++				'test/health/doctor-runner.test.js',
++			]],
+ 			['lib/commands/shepherd.js', [
+ 				'test/commands/shepherd.test.js',
+ 				'test/pr-monitor/arm-on-push.test.js',
+@@ -343,7 +360,7 @@ describe('forge test command', () => {
+ 				'test/pr-monitor/monitor-owner-signal.test.js',
+ 				'test/pr-monitor/monitor.test.js',
+ 			]],
+-		])('maps %s to all direct owner-authority tests', (source, targets) => {
++		])('maps %s to all direct tests', (source, targets) => {
+ 			const existingPaths = targets.map(target => `/fake/root/${target}`);
+ 			const affected = testCommand.getAffectedTestFiles(
+ 				'/fake/root',
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index c627fafe..f2c0278f 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -15,7 +15,42 @@ const EXACT_HEAD_CONTEXT = {
+   expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40), cleanTree: true,
+ };
+ 
++function deterministicPass() {
++  return {
++    success: true,
++    results: [
++      { name: 'lint', ok: true, summary: 'clean' },
++      { name: 'sonar (cognitive-complexity=15)', ok: true, summary: 'clean' },
++      { name: 'affected-tests', ok: true, summary: 'passed' },
++    ],
++  };
++}
++
+ describe('bounded local review preflight', () => {
++  test('fails closed when deterministic providers claim success without gate evidence', async () => {
++    const result = await runLocalReviewPreflight(EXACT_HEAD_CONTEXT, {
++      probeCodeRabbit: async () => ({ available: true }),
++      runCodeRabbit: async () => ({ ok: true, summary: 'clean', findings: [] }),
++      runDeterministic: async () => ({ success: true }),
++    });
++
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
++    expect(result.providers.deterministic).toMatchObject({
++      status: 'INCOMPLETE', ok: false, confidence: 'LOW',
++    });
++  });
++
++  test('fails closed when deterministic gate evidence declares low confidence', async () => {
++    const result = await runLocalReviewPreflight(EXACT_HEAD_CONTEXT, {
++      probeCodeRabbit: async () => ({ available: true }),
++      runCodeRabbit: async () => ({ ok: true, summary: 'clean', findings: [] }),
++      runDeterministic: async () => ({ ...deterministicPass(), confidence: 'LOW' }),
++    });
++
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
++    expect(result.providers.deterministic).toMatchObject({ status: 'INCOMPLETE', confidence: 'LOW' });
++  });
++
+   test('resolves the target ref to one exact commit', async () => {
+     const calls = [];
+     const sha = await defaultResolveBaseCommit({
+@@ -117,7 +152,7 @@ describe('bounded local review preflight', () => {
+       },
+       runDeterministic: async context => {
+         seen.push(['deterministic', context.baseCommit]);
+-        return { success: true, results: [] };
++        return deterministicPass();
+       },
+     });
+ 
+@@ -138,7 +173,7 @@ describe('bounded local review preflight', () => {
+         expect(context.baseCommit).toBeUndefined();
+         return { ok: true, summary: 'clean', findings: [] };
+       },
+-      runDeterministic: async () => ({ success: true, results: [] }),
++      runDeterministic: async () => deterministicPass(),
+     });
+ 
+     expect(result.status).toBe('PASS');
+@@ -165,7 +200,7 @@ describe('bounded local review preflight', () => {
+     }, {
+       probeCodeRabbit: async () => { calls += 1; return { available: true }; },
+       runCodeRabbit: async () => ({ ok: true, summary: 'clean', findings: [] }),
+-      runDeterministic: async () => { calls += 1; return { success: true, results: [] }; },
++      runDeterministic: async () => { calls += 1; return deterministicPass(); },
+     });
+ 
+     expect(result.status).toBe('PASS');
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index c4a15496..ae3ce22b 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -297,6 +297,23 @@ describe('scripts/test pre-push runner', () => {
+   });
+ 
+   test.each([
++    ['lib/capabilities/delivery.js', [
++      'test/capabilities/delivery.test.js',
++    ]],
++    ['lib/capabilities/executor.js', [
++      'test/capabilities/executor.test.js',
++    ]],
++    ['lib/commands/capabilities.js', [
++      'test/commands/capabilities.test.js',
++    ]],
++    ['lib/health/doctor-manifest.js', [
++      'test/commands/doctor-health.test.js',
++      'test/health/doctor-manifest.test.js',
++    ]],
++    ['lib/health/doctor-runner.js', [
++      'test/commands/doctor-health.test.js',
++      'test/health/doctor-runner.test.js',
++    ]],
+     ['lib/commands/shepherd.js', [
+       'test/commands/github-route-matrix.test.js',
+       'test/commands/shepherd.test.js',
+@@ -347,7 +364,7 @@ describe('scripts/test pre-push runner', () => {
+       'test/pr-monitor/monitor-owner-signal.test.js',
+       'test/pr-monitor/monitor.test.js',
+     ]],
+-  ])('classifyPushTests targets the owner-authority suites for %s', (source, targets) => {
++  ])('classifyPushTests targets the configured suites for %s', (source, targets) => {
+     const plan = classifyPushTests(repoRoot, makeExecFileSync({
+       changedFiles: `${source}\n`,
+     }));
+diff --git a/test/structural/pr2-root-integration.test.js b/test/structural/pr2-root-integration.test.js
+index 8d789407..a2f66455 100644
+--- a/test/structural/pr2-root-integration.test.js
++++ b/test/structural/pr2-root-integration.test.js
+@@ -70,7 +70,7 @@ describe('PR2 root package integration', () => {
+       product: 'flow', lane: 'flow-package', route: 'flow-memory-contract',
+       command: 'validation.command.flow-package', testPath: 'packages/flow',
+     },
+-  ])('$path selects its product lane without repository fallback', (expected) => {
++  ])('$path selects its product impact lane and governed full validation', (expected) => {
+     const manifest = loadRiskManifest(RISK_MANIFEST_PATH);
+     const selected = selectValidation({
+       manifest,
+@@ -78,10 +78,13 @@ describe('PR2 root package integration', () => {
+     });
+ 
+     expect(selected.status).toBe('exact');
+-    expect(selected.targeted_pass_allowed).toBe(true);
++    expect(selected.targeted_pass_allowed).toBe(false);
++    expect(selected.validation_class).toBe('governed');
++    expect(selected.full_suite_required).toBe(true);
+     expect(selected.owner_ids).toEqual([expected.owner]);
+     expect(selected.owner_selections[0].product).toBe(expected.product);
+     expect(selected.lanes).toEqual([expected.lane]);
++    expect(selected.execution_lanes).toContain('repository-baseline');
+     expect(selected.dependent_routes).toEqual([expected.route]);
+     expect(selected.commands.find((command) => command.id === expected.command)?.argv)
+       .toContain(expected.testPath);
+diff --git a/test/validation/risk-manifest.test.js b/test/validation/risk-manifest.test.js
+index 60fea66f..2f03f46d 100644
+--- a/test/validation/risk-manifest.test.js
++++ b/test/validation/risk-manifest.test.js
+@@ -35,7 +35,7 @@ describe('risk-owned validation manifest', () => {
+     });
+ 
+     expect(selected.status).toBe('exact');
+-    expect(selected.targeted_pass_allowed).toBe(true);
++    expect(selected.targeted_pass_allowed).toBe(false);
+     expect(selected.manifest_digest).toBe(manifest.manifest_hash);
+     expect(selected.owner_ids).toEqual(['kernel-authority', 'validation-control']);
+     expect(selected.matched_selectors).toEqual([
+@@ -50,7 +50,7 @@ describe('risk-owned validation manifest', () => {
+         selector: { kind: 'path', prefix: 'lib/validation/' },
+       },
+     ]);
+-    expect(selected.required_gates).toEqual(['G0', 'G1', 'G4']);
++    expect(selected.required_gates).toEqual(['G0', 'G1', 'G3', 'G4', 'G6']);
+     expect(selected.test_ids).toEqual([
+       'test/kernel/**/*.test.js',
+       'test/validation/risk-manifest-generator.test.js',
+@@ -60,6 +60,146 @@ describe('risk-owned validation manifest', () => {
+       'lib/kernel/broker.js',
+       'lib/validation/risk-manifest.js',
+     ]);
++    expect(selected.validation_class).toBe('governed');
++    expect(selected.full_suite_required).toBe(true);
++    expect(selected.execution_lanes).toContain('repository-baseline');
++    expect(selected.commands.map((command) => command.id)).toContain('validation.command.repository-baseline');
++    expect(selected.selected_tests.length).toBeGreaterThan(0);
++    expect(selected.excluded_tests).toEqual([]);
++    expect(selected.reasons.length).toBeGreaterThan(0);
++    expect(selected.risk_coverage).toEqual(expect.arrayContaining([
++      expect.objectContaining({ id: 'authority-integrity', severity: 'S0' }),
++    ]));
++    expect(selected.confidence).toBe('LOW');
++    expect(selected.evidence_inputs.exact_sha_receipts.status).toBe('UNAVAILABLE');
++  });
++
++  test('classifies lower-risk exact changes as reviewed or autonomous and high-impact evidence as governed', () => {
++    const original = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
++    const facadeRisk = original.risks.find((risk) => risk.id === 'facade-routing');
++    facadeRisk.severity = 'S2';
++    original.manifest_hash = hashManifest(original);
++    const manifest = loadRiskManifest(original);
++
++    const autonomous = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/commands/capabilities.js' }],
++      evidence: { callSiteImpact: [], dependencyImpact: [], coverageComplete: true },
++    });
++    expect(autonomous.validation_class).toBe('autonomous');
++    expect(autonomous.full_suite_required).toBe(false);
++    expect(autonomous.excluded_tests.length).toBeGreaterThan(0);
++
++    const governed = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/commands/capabilities.js' }],
++      evidence: {
++        callSiteImpact: [], dependencyImpact: [], coverageComplete: true, publicContractChanged: true,
++      },
++    });
++    expect(governed.validation_class).toBe('governed');
++    expect(governed.full_suite_required).toBe(true);
++    expect(governed.reasons).toContain('public_contract_changed');
++  });
++
++  test('uses call-site and dependency impact surfaces and fails closed when impact coverage is unknown', () => {
++    const original = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
++    const facadeRisk = original.risks.find((risk) => risk.id === 'facade-routing');
++    facadeRisk.severity = 'S2';
++    original.manifest_hash = hashManifest(original);
++    const manifest = loadRiskManifest(original);
++
++    const impacted = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/commands/capabilities.js' }],
++      evidence: {
++        callSiteImpact: [{ kind: 'path', value: 'packages/flow/index.js' }],
++        dependencyImpact: [{ kind: 'path', value: 'packages/contracts/index.js' }],
++        coverageComplete: true,
++      },
++    });
++    expect(impacted.owner_ids).toEqual(['contracts', 'facade-cli', 'workflow-runtime']);
++    expect(impacted.changed_surfaces.map((surface) => surface.value)).toEqual([
++      'lib/commands/capabilities.js',
++      'packages/contracts/index.js',
++      'packages/flow/index.js',
++    ]);
++    expect(impacted.evidence_inputs.call_site_impact).toEqual([
++      { kind: 'path', value: 'packages/flow/index.js' },
++    ]);
++
++    const unknown = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/commands/capabilities.js' }],
++    });
++    expect(unknown.validation_class).toBe('autonomous');
++    expect(unknown.confidence).toBe('LOW');
++    expect(unknown.reasons).toEqual(expect.arrayContaining([
++      'call_site_impact_unavailable',
++      'coverage_incomplete',
++      'dependency_impact_unavailable',
++    ]));
++  });
++
++  test('forces every governed change class to full validation and rejects stale exact-head receipts', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    for (const [field, reason] of [
++      ['authorityBoundaryChanged', 'authority_boundary_changed'],
++      ['irreversibleChange', 'irreversible_change'],
++      ['migrationChanged', 'migration_changed'],
++      ['releaseChanged', 'release_changed'],
++      ['securityBoundaryChanged', 'security_boundary_changed'],
++    ]) {
++      const selected = selectValidation({
++        manifest,
++        changedSurfaces: [{ kind: 'path', value: 'lib/commands/capabilities.js' }],
++        evidence: { [field]: true },
++      });
++      expect(selected.validation_class).toBe('governed');
++      expect(selected.full_suite_required).toBe(true);
++      expect(selected.reasons).toContain(reason);
++    }
++
++    const stale = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/commands/capabilities.js' }],
++      evidence: {
++        currentHead: 'a'.repeat(40),
++        exactShaReceipts: [{ head: 'b'.repeat(40), status: 'PASS' }],
++      },
++    });
++    expect(stale.validation_class).toBe('governed');
++    expect(stale.confidence).toBe('LOW');
++    expect(stale.reasons).toContain('exact_sha_receipt_stale');
++
++    const exact = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/kernel/broker.js' }],
++      evidence: {
++        currentHead: 'a'.repeat(40),
++        exactShaReceipts: [{ head: 'a'.repeat(40), status: 'PASS' }],
++      },
++    });
++    expect(exact.validation_class).toBe('governed');
++    expect(exact.confidence).toBe('HIGH');
++    expect(exact.evidence_inputs.exact_sha_receipts.status).toBe('AVAILABLE');
++  });
++
++  test('derives governed validation for release and migration paths without caller hints', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    for (const [changedPath, reason] of [
++      ['lib/commands/release.js', 'release_changed'],
++      ['lib/commands/migrate.js', 'migration_changed'],
++      ['.github/workflows/publish.yml', 'release_changed'],
++    ]) {
++      const selected = selectValidation({
++        manifest,
++        changedSurfaces: [{ kind: 'path', value: changedPath }],
++      });
++      expect(selected.validation_class).toBe('governed');
++      expect(selected.full_suite_required).toBe(true);
++      expect(selected.reasons).toContain(reason);
++    }
+   });
+ 
+   test('uses package, contract, and platform baselines when package is known but surface is ambiguous', () => {
+@@ -188,8 +328,11 @@ describe('risk-owned validation manifest', () => {
+       'validation.command.g0-static',
+       'validation.command.g1-manifest-check',
+       'validation.command.g1-selector',
++      'validation.command.g3-contract',
+       'validation.command.g4-authority',
++      'validation.command.g6-platform',
+       'validation.command.kernel-package',
++      'validation.command.repository-baseline',
+     ]);
+   });
+ 
+-- 
+2.51.0.windows.1
+

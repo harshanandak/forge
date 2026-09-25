@@ -1,0 +1,137 @@
+From 5ed350b41a6c532f615ce4174c094af5b0a96eb0 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 17:44:21 +0530
+Subject: [PATCH] fix: require merge-side proof for protected deletions
+
+A staged deletion of a protected path was exempted whenever the trusted
+merge side simply had no such entry. For a path that only ever existed on
+HEAD, the upstream side is absent too, so a manual `git rm` during a merge
+exempted itself as a carry-over.
+
+Absent/absent now only counts when the merge side genuinely removed the
+path: it must be present at `merge-base(HEAD, side)` and absent at the
+side. Unresolvable merge bases and failed probes fail closed.
+---
+ scripts/protected-state-check.js      | 37 +++++++++++++++----
+ test/protected-state-surfaces.test.js | 52 +++++++++++++++++++++++++++
+ 2 files changed, 83 insertions(+), 6 deletions(-)
+
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 8aebc72b..84d013c6 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -154,6 +154,19 @@ function resolveCommit(revision) {
+ 	}
+ }
+ 
++// Best common ancestor of two commits, or null when there is none (unrelated
++// histories) or the query fails. Used to tell "the merge side deleted this path"
++// apart from "this path never existed on the merge side".
++function resolveMergeBase(left, right) {
++	let base;
++	try {
++		base = gitCapture(['merge-base', left, right]).split(LINE_SPLIT)[0].trim();
++	} catch {
++		return null;
++	}
++	return isValidGitObjectId(base) ? base : null;
++}
++
+ // Git prints the mode but not the type for index entries; derive it so index and
+ // tree entries normalise to the same shape.
+ function objectTypeForMode(mode) {
+@@ -333,12 +346,24 @@ function createMergeExemption() {
+ 	return file => {
+ 		const staged = stagedEntry(file);
+ 		if (staged === null) return false;
+-		// Git just reported this path as staged, so an absent index entry is a
+-		// contradiction (a broken or misinterpreted probe), not evidence of
+-		// equality. Treat it as unknown and refuse the exemption. The one honest
+-		// absence is a staged deletion, where absent === absent is the real answer
+-		// and a merged deletion must still pass.
+-		if (staged === ABSENT_ENTRY && !deletedFiles.has(file)) return false;
++		if (staged === ABSENT_ENTRY) {
++			// Git just reported this path as staged, so an absent index entry is only
++			// honest for a staged deletion; otherwise the probe contradicts git and
++			// the answer is unknown.
++			if (!deletedFiles.has(file)) return false;
++			// Absent on a trusted side is not proof that side deleted anything — a
++			// path that only ever existed on HEAD is absent upstream too, so a manual
++			// `git rm` during a merge would otherwise exempt itself. Demand that the
++			// merge side actually removed it: present at the merge base, gone at the
++			// side. Fail closed when the base or either probe is unavailable.
++			return merge.trustedSides.some(side => {
++				if (revisionEntry(side, file) !== ABSENT_ENTRY) return false;
++				const base = resolveMergeBase(merge.head, side);
++				if (!base) return false;
++				const baseEntry = revisionEntry(base, file);
++				return baseEntry !== null && baseEntry !== ABSENT_ENTRY;
++			});
++		}
+ 		return trustedRevisions.some(revision => {
+ 			const entry = revisionEntry(revision, file);
+ 			return entry !== null && entry === staged;
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 270537f4..9082d0b8 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -750,4 +750,56 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+ 	}, 60_000);
++
++	test('blocks a manual deletion of a HEAD-only protected path during an upstream merge', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			const featureOnly = '.github/workflows/feature-only.yml';
++			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
++			// Exists only on the branch being committed onto; the upstream never had it.
++			writeRepoFile(work, featureOnly, 'name: feature-only\n');
++			runGit(work, ['add', featureOnly]);
++			runGit(work, ['commit', '--quiet', '-m', 'feature-only workflow']);
++			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
++			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++			runGit(work, ['add', 'lib/safe.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'upstream change']);
++			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			runGit(work, ['checkout', '--quiet', 'feature']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
++			// The merge left the path alone; this deletion is the committer's own edit.
++			runGit(work, ['rm', '--quiet', featureOnly]);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(featureOnly);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
++	test('blocks a staged protected deletion when the merge base cannot be resolved', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			// An unrelated-history upstream: absent there, but no merge base can prove
++			// the side ever deleted anything.
++			runGit(work, ['checkout', '--quiet', '--orphan', 'orphan']);
++			runGit(work, ['rm', '-r', '-f', '--quiet', '.']);
++			writeRepoFile(work, 'lib/other.js', 'module.exports = 3;\n');
++			runGit(work, ['add', 'lib/other.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'unrelated root']);
++			runGit(work, ['push', '--quiet', '--force', 'origin', 'orphan:master']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			runGit(work, ['checkout', '--quiet', '-b', 'feature', 'master']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', '--allow-unrelated-histories', 'orphan']);
++			runGit(work, ['rm', '--quiet', WORKFLOW]);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
+ });
+-- 
+2.51.0.windows.1
+

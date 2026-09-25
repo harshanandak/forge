@@ -1,0 +1,300 @@
+From 7bbbda76e4139b3aa087220a93c3c892bf52aaf6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 11:17:33 +0530
+Subject: [PATCH] fix(onboarding): graceful Windows setup + one-step setup/init
+
+FIX 1 (048c1e6d): ensureWorkflowShellPolicy no longer hard-throws when Git
+Bash is absent on Windows. It now prints install guidance (git-scm.com) and
+returns a degraded policy so core setup finishes in reduced-capability mode;
+behavior is unchanged when Git Bash is present.
+
+FIX 2 (ac0b38c7): setup now runs `forge init` (standard profile,
+non-interactive) at completion when .forge/config.yaml is absent, via a new
+finalizeWorkflowConfig helper that reuses init's real handler. Falls back to
+the printed guidance on failure. `forge init` still works standalone.
+
+Also: QUICKSTART clarifies slash-skills (/plan,/dev,/validate,/ship,/review,
+/verify) vs typeable `forge` CLI verbs, and documents one-step setup +
+Windows degrade. Adds tests for both paths.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ QUICKSTART.md                | 27 ++++++++++++
+ lib/commands/setup.js        | 85 ++++++++++++++++++++++++++++++------
+ test/setup-hardening.test.js | 74 +++++++++++++++++++++++++++++++
+ 3 files changed, 173 insertions(+), 13 deletions(-)
+
+diff --git a/QUICKSTART.md b/QUICKSTART.md
+index d38ae7f9..639795bf 100644
+--- a/QUICKSTART.md
++++ b/QUICKSTART.md
+@@ -69,6 +69,14 @@ bunx forge setup --agents claude,cursor
+ 
+ Use `--agents`, not `--agent`.
+ 
++`forge setup` is one-step onboarding: if `.forge/config.yaml` does not exist yet,
++it runs `forge init` for you at the end (standard profile) so you finish with a
++working workflow config. Re-run `forge init --profile <minimal|standard|full>
++--force` to change it. On Windows without Git Bash, setup no longer aborts — it
++prints install guidance (https://git-scm.com/download/win) and continues in a
++reduced-capability mode where the shell-script-backed helper steps are unavailable
++until you install Git Bash and re-run `forge setup`.
++
+ ## 4. Inspect Local State
+ 
+ ```bash
+@@ -121,6 +129,25 @@ The agent workflow stages are documented in `AGENTS.md` and the installed agent
+ 
+ These are the 6 agent workflow stages. Pre-merge is not a stage or a `/premerge` command — it is a documentation-and-handoff gate embedded in the `/ship` and `/review` stages. A composable `research` skill runs as a phase of `/plan` or standalone. Do not assume every stage is a standalone `forge <stage>` CLI command. For example, `/review` and `/verify` are agent-stage workflows, not current `forge review` or `forge verify` commands.
+ 
++### Agent slash-skills vs. typeable `forge` verbs
++
++`/plan`, `/dev`, `/validate`, `/ship`, `/review`, and `/verify` are **agent
++slash-skills** — you invoke them by asking your AI agent to run that stage (they
++resolve to the installed skill files under the agent's skills directory). They are
++**not** all mirrored by a `forge <verb>` CLI command you type in a terminal.
++
++What you type in a terminal are **`forge` CLI verbs**, for example:
++
++```text
++forge init | setup | status | board | ready | show | claim | close
++forge worktree | validate | test | push | sync | clean | prime | gate
++```
++
++Overlap is deliberate but partial: `/validate` the stage and `forge validate` the
++CLI verb both exist, whereas `/plan`, `/dev`, `/review`, and `/verify` have **no**
++`forge plan|dev|review|verify` terminal command — they are agent stages only. Run
++`forge --help` for the authoritative list of typeable verbs.
++
+ The workflow template is core to Forge. It is also designed to become more configurable as runtime graph, stage-skill, adapter, and extension surfaces ship. See [Workflow templates](docs/guides/WORKFLOW_TEMPLATES.md) and [Skills and command projections](docs/reference/SKILLS.md).
+ 
+ ## 8. First Useful Loop
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 5edd84c8..33cc2ced 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -337,6 +337,37 @@ function printForgeInitNextStep() {
+   console.log('');
+ }
+ 
++/**
++ * One-step onboarding (kernel issue ac0b38c7): a fresh `forge setup` used to end
++ * by telling the user to ALSO run `forge init`. Instead, run init's real handler
++ * here (standard profile, non-interactive) so setup finishes with a working
++ * `.forge/config.yaml` in one command. No-op when config already exists; on any
++ * init failure fall back to the printed `forge init` guidance so setup never
++ * hard-fails. `forge init` stays fully usable standalone. Inject `runInit` for
++ * tests.
++ */
++async function finalizeWorkflowConfig(options = {}) {
++  const configPath = path.join(projectRoot, '.forge', 'config.yaml');
++  if (fs.existsSync(configPath)) {
++    return;
++  }
++  const runInit = options.runInit || ((root) => initCommand.handler(['--yes'], {}, root));
++  try {
++    const result = await runInit(projectRoot);
++    if (!result || result.success === false) {
++      printForgeInitNextStep();
++      return;
++    }
++    console.log('');
++    console.log('✓ Workflow configured: .forge/config.yaml (standard profile)');
++    console.log('  Change it anytime: forge init --profile <minimal|standard|full> --force');
++    console.log('');
++  } catch (err) {
++    console.warn(`Warning: automatic workflow init skipped: ${err.message}`);
++    printForgeInitNextStep();
++  }
++}
++
+ /**
+  * Guard against silent data loss when a non-interactive setup path overwrites
+  * an existing AGENTS.md that predates Forge's USER/FORGE merge markers. Old
+@@ -628,13 +659,40 @@ function resolveWorkflowShellPolicy(selectedAgents, options = {}) {
+   };
+ }
+ 
++/**
++ * Print install guidance when Git Bash is absent on Windows. Kept separate so
++ * the graceful-degrade branch in ensureWorkflowShellPolicy stays trivial.
++ */
++function printGitBashGuidance(shellPolicy) {
++  console.log('');
++  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
++  console.log('⚠  Git Bash not found — continuing in reduced-capability mode');
++  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
++  console.log('');
++  console.log(`  ${shellPolicy.message || 'Git Bash is required on Windows for helper-backed flows.'}`);
++  console.log('');
++  console.log('  Core setup will finish. The shell scripts behind some /plan, /ship,');
++  console.log('  and /review helper steps are UNAVAILABLE until Git Bash is installed.');
++  console.log('  Agent slash-skills and typeable `forge` CLI verbs keep working.');
++  console.log('');
++  console.log('  Install Git Bash: https://git-scm.com/download/win');
++  console.log('  Then re-run `forge setup` to re-enable helper-backed flows.');
++  console.log('');
++}
++
+ function ensureWorkflowShellPolicy(selectedAgents, options = {}) {
+   const shellPolicy = resolveWorkflowShellPolicy(selectedAgents, options);
+ 
+-  if (shellPolicy.required && shellPolicy.platform === 'win32' && !shellPolicy.available) {
+-    throw new Error(
+-      shellPolicy.message || 'Git Bash is required on Windows for Forge workflow helper scripts.'
+-    );
++  const gitBashMissing = shellPolicy.required
++    && shellPolicy.platform === 'win32'
++    && !shellPolicy.available;
++
++  if (gitBashMissing) {
++    // Graceful degrade (kernel issue 048c1e6d): a Windows newcomer without Git
++    // Bash must not be dead on arrival. Print install guidance and continue in a
++    // reduced-capability mode instead of hard-throwing and aborting all of setup.
++    printGitBashGuidance(shellPolicy);
++    return { ...shellPolicy, available: false, degraded: true };
+   }
+ 
+   return shellPolicy;
+@@ -2566,8 +2624,8 @@ async function _interactiveSetup() {
+   // =============================================
+   displaySetupSummary(selectedAgents);
+ 
+-  // First-run completeness: point at `forge init` when config is still absent (5bdc91d3).
+-  printForgeInitNextStep();
++  // One-step onboarding: run `forge init` when config is still absent (ac0b38c7).
++  await finalizeWorkflowConfig();
+ }
+ 
+ // Parse CLI flags
+@@ -3297,8 +3355,8 @@ async function quickSetup(selectedAgents, skipExternal) {
+   console.log('');
+   console.log(renderSetupSummary(actionLog, selectedAgents, VERBOSE_MODE, { status: getSetupSummaryStatus() }));
+   printSetupNotes();
+-  // First-run completeness: point at `forge init` when config is still absent (5bdc91d3).
+-  printForgeInitNextStep();
++  // One-step onboarding: run `forge init` when config is still absent (ac0b38c7).
++  await finalizeWorkflowConfig();
+   console.log('');
+ }
+ 
+@@ -3596,9 +3654,9 @@ async function interactiveSetupWithFlags(flags) {
+   // Display final summary (delegated to helper)
+   displaySetupSummary(selectedAgents);
+ 
+-  // First-run is only complete once workflow config exists — nudge `forge init`
+-  // when it does not (this path never writes .forge/config.yaml). (5bdc91d3)
+-  printForgeInitNextStep();
++  // One-step onboarding: this path never writes .forge/config.yaml itself, so
++  // run `forge init` when the config is still absent (ac0b38c7).
++  await finalizeWorkflowConfig();
+ }
+ 
+ // Main
+@@ -3822,8 +3880,8 @@ async function executeSetup(config) {
+   console.log('');
+   console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE, { status: getSetupSummaryStatus() }));
+   printSetupNotes();
+-  // First-run completeness: point at `forge init` when config is still absent (5bdc91d3).
+-  printForgeInitNextStep();
++  // One-step onboarding: run `forge init` when config is still absent (ac0b38c7).
++  await finalizeWorkflowConfig();
+   console.log('');
+ }
+ 
+@@ -4224,6 +4282,7 @@ module.exports = {
+   setupCoreDocs,
+   displaySetupSummary,
+   printForgeInitNextStep,
++  finalizeWorkflowConfig,
+   backupMarkerlessAgentsMd,
+   setupAgent,
+   quickSetup,
+diff --git a/test/setup-hardening.test.js b/test/setup-hardening.test.js
+index c3963b21..73ea39b4 100644
+--- a/test/setup-hardening.test.js
++++ b/test/setup-hardening.test.js
+@@ -125,6 +125,80 @@ describe('printForgeInitNextStep completes first-run guidance', () => {
+   });
+ });
+ 
++/** Async variant of withCapturedRoot for handlers that return a promise. */
++async function withCapturedRootAsync(root, callback) {
++  const originalLog = console.log;
++  const originalWarn = console.warn;
++  const { projectRoot: previousRoot } = setupCommand._getState();
++  const lines = [];
++  console.log = (...parts) => lines.push(parts.join(' '));
++  console.warn = (...parts) => lines.push(parts.join(' '));
++  try {
++    if (root) setupCommand._setState({ projectRoot: root });
++    const result = await callback();
++    return { result, output: lines.join('\n') };
++  } finally {
++    console.log = originalLog;
++    console.warn = originalWarn;
++    setupCommand._setState({ projectRoot: previousRoot });
++  }
++}
++
++describe('ensureWorkflowShellPolicy degrades gracefully when Git Bash is absent (048c1e6d)', () => {
++  test('Windows-without-Git-Bash does not throw; prints install guidance and continues degraded', () => {
++    const { result, output } = withCapturedRoot(null, () =>
++      setupCommand.ensureWorkflowShellPolicy(['claude'], {
++        platform: 'win32',
++        candidates: [],
++        _exists: () => false,
++      }));
++    expect(result.available).toBe(false);
++    expect(result.degraded).toBe(true);
++    expect(output).toContain('https://git-scm.com/download/win');
++    expect(output).toContain('reduced-capability');
++  });
++
++  test('does not degrade or print when the shell runtime is available', () => {
++    const { result, output } = withCapturedRoot(null, () =>
++      setupCommand.ensureWorkflowShellPolicy(['claude'], { platform: 'linux' }));
++    expect(result.available).toBe(true);
++    expect(result.degraded).toBeUndefined();
++    expect(output).toBe('');
++  });
++});
++
++describe('finalizeWorkflowConfig runs init as part of setup (ac0b38c7)', () => {
++  test('no-op when .forge/config.yaml already exists — init is not invoked', async () => {
++    const root = makeTempDir();
++    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++    fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), 'workflow: {}\n', 'utf8');
++    let called = false;
++    const { output } = await withCapturedRootAsync(root, () =>
++      setupCommand.finalizeWorkflowConfig({ runInit: () => { called = true; return { success: true }; } }));
++    expect(called).toBe(false);
++    expect(output).toBe('');
++  });
++
++  test('invokes init and confirms when config is absent', async () => {
++    const root = makeTempDir();
++    let receivedRoot = null;
++    const { output } = await withCapturedRootAsync(root, () =>
++      setupCommand.finalizeWorkflowConfig({
++        runInit: (r) => { receivedRoot = r; return { success: true }; },
++      }));
++    expect(receivedRoot).toBe(root);
++    expect(output).toContain('Workflow configured');
++    expect(output).toContain('.forge/config.yaml');
++  });
++
++  test('falls back to forge init guidance when init reports failure', async () => {
++    const root = makeTempDir();
++    const { output } = await withCapturedRootAsync(root, () =>
++      setupCommand.finalizeWorkflowConfig({ runInit: () => ({ success: false }) }));
++    expect(output).toContain('forge init');
++  });
++});
++
+ describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
+   test('backs up a markerless AGENTS.md before overwrite', () => {
+     const root = makeTempDir();
+-- 
+2.51.0.windows.1
+

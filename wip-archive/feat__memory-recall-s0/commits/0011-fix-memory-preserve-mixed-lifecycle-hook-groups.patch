@@ -1,0 +1,77 @@
+From ea8044c1220b294ba2c123856205ea4d22fbf421 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 18:06:44 +0530
+Subject: [PATCH] fix(memory): preserve mixed lifecycle hook groups
+
+---
+ lib/hook-renderer.js          | 10 +++++++++-
+ test/commands/upgrade.test.js | 25 +++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index b1956005..84061691 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -447,6 +447,14 @@ function isForgeClaudeGroup(group) {
+   return hooks.some(h => isForgeCommand(h?.command));
+ }
+ 
++function withoutForgeCommands(group) {
++  const hooks = Array.isArray(group?.hooks) ? group.hooks : [];
++  const userHooks = hooks.filter(hook => !isForgeCommand(hook?.command));
++  if (userHooks.length === hooks.length) return group;
++  if (userHooks.length === 0) return null;
++  return { ...group, hooks: userHooks };
++}
++
+ function isForgeCursorEntry(entry) {
+   return isForgeCommand(entry?.command);
+ }
+@@ -491,7 +499,7 @@ function mergeClaudeSettings(existingText, contract) {
+   const rendered = renderClaudeHooks(contract);
+   for (const [event, forgeGroups] of Object.entries(rendered)) {
+     const existingGroups = Array.isArray(obj.hooks[event]) ? obj.hooks[event] : [];
+-    const userGroups = existingGroups.filter(group => !isForgeClaudeGroup(group));
++    const userGroups = existingGroups.map(withoutForgeCommands).filter(Boolean);
+     obj.hooks[event] = [...userGroups, ...forgeGroups];
+   }
+   return JSON.stringify(obj, null, 2) + '\n';
+diff --git a/test/commands/upgrade.test.js b/test/commands/upgrade.test.js
+index d505b721..73bbb9f1 100644
+--- a/test/commands/upgrade.test.js
++++ b/test/commands/upgrade.test.js
+@@ -137,6 +137,31 @@ describe('forge upgrade command', () => {
+       .toContain('node user-notify.js');
+   });
+ 
++  test('self-heal preserves user commands sharing a stale Forge group', async () => {
++    const root = makeRepo();
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++    const settings = JSON.parse(mergeClaudeSettings('', FORGE_HOOK_CONTRACT));
++    const promptGroup = settings.hooks.UserPromptSubmit[0];
++    promptGroup.hooks.push(structuredClone(promptGroup.hooks[0]));
++    promptGroup.hooks.push({ type: 'command', command: 'node user-prompt-audit.js' });
++    settings.hooks.UserPromptSubmit.push({
++      hooks: [{ type: 'command', command: 'node user-separate-audit.js' }],
++    });
++    fs.writeFileSync(settingsPath, JSON.stringify(settings));
++
++    await upgradeCommand.handler(['--self-heal'], {}, root);
++
++    const repaired = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
++    const promptCommands = repaired.hooks.UserPromptSubmit
++      .flatMap(group => group.hooks.map(hook => hook.command));
++    expect(promptCommands).toContain('node user-prompt-audit.js');
++    expect(promptCommands).toContain('node user-separate-audit.js');
++    for (const action of ['inbox-pickup', 'shepherd-events', 'memory-recall']) {
++      expect(promptCommands.filter(command => command.includes(`hooks ${action}`))).toHaveLength(1);
++    }
++  });
++
+   test('self-heal backs up malformed Claude settings without overwriting them', async () => {
+     const root = makeRepo();
+     const settingsPath = path.join(root, '.claude', 'settings.json');
+-- 
+2.51.0.windows.1
+

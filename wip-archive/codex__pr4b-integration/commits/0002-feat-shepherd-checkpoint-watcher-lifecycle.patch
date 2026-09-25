@@ -1,0 +1,381 @@
+From 962f969e51686450f3796706236a7edd0262f5e3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 18:45:18 +0530
+Subject: [PATCH] feat(shepherd): checkpoint watcher lifecycle
+
+---
+ lib/pr-monitor/reconcile-executor.js       | 164 ++++++++++++++++++---
+ test/pr-monitor/reconcile-executor.test.js |  88 ++++++++++-
+ 2 files changed, 230 insertions(+), 22 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 5b4ca536..d0a244b6 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -33,6 +33,7 @@
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { spawn } = require('node:child_process');
++const { createProcessState, reduceProcessLifecycle } = require('../../packages/flow');
+ 
+ const shepherdLease = require('./shepherd-lease');
+ const journal = require('./journal');
+@@ -45,6 +46,8 @@ const { STALE_MS } = shepherdLease;
+ const CANONICAL_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+ const GH_COMMAND_TIMEOUT_MS = 30_000;
+ const LINKAGE_FIELDS = ['issue_id', 'worktree_id', 'journal_ptr'];
++const MAX_ACTIONS_PER_PASS = 128;
++const MAX_PROCESS_EVENTS = 8;
+ 
+ function normalizeRepository(value) {
+ 	return typeof value === 'string' && CANONICAL_REPOSITORY.test(value.trim())
+@@ -110,6 +113,79 @@ function normalizeWatcher(entry) {
+ 		repo: entry.repo ?? null,
+ 		pid: entry.pid ?? null,
+ 		startedAt: entry.startedAt ?? null,
++		...(entry.lifecycle ? { lifecycle: structuredClone(entry.lifecycle) } : {}),
++	};
++}
++
++function processIdentity(entry) {
++	return `watcher:${entry.repo ?? 'unknown'}:${entry.pr}:${entry.pid}`;
++}
++
++function lifecycleOptions(entry) {
++	return {
++		processId: processIdentity(entry),
++		clock: () => 0,
++		graceMs: 30_000,
++		maxAttempts: 1,
++		maxElapsedMs: 86_400_000,
++		maxEvents: MAX_PROCESS_EVENTS,
++		maxHistory: MAX_PROCESS_EVENTS,
++	};
++}
++
++function replayLifecycle(entry, now) {
++	const options = lifecycleOptions(entry);
++	const persisted = entry.lifecycle;
++	const events = persisted?.events || [{
++		id: `${options.processId}:start`,
++		type: 'start',
++		at: Number.isFinite(Date.parse(entry.startedAt)) ? Date.parse(entry.startedAt) : now,
++	}];
++	if (persisted && persisted.processId !== options.processId) {
++		const error = new Error('Watcher lifecycle identity conflicts with watcher identity');
++		error.code = 'IDENTITY_CONFLICT';
++		throw error;
++	}
++	if (!Array.isArray(events) || events.length < 1 || events.length > MAX_PROCESS_EVENTS) {
++		const error = new Error('Watcher lifecycle checkpoint is incomplete or exceeds its bound');
++		error.code = 'LIFECYCLE_INCOMPLETE';
++		throw error;
++	}
++	let state = createProcessState(options, 0);
++	for (const event of events) {
++		state = reduceProcessLifecycle(state, event, { ...options, now: event.at }).state;
++	}
++	if (persisted?.state && JSON.stringify(persisted.state) !== JSON.stringify(state)) {
++		const error = new Error('Watcher lifecycle checkpoint conflicts with replayed state');
++		error.code = 'IDENTITY_CONFLICT';
++		throw error;
++	}
++	entry.lifecycle = { processId: options.processId, events: structuredClone(events), state };
++	return entry;
++}
++
++function checkpointLifecycle(entry, event, s) {
++	const options = lifecycleOptions(entry);
++	const transition = reduceProcessLifecycle(entry.lifecycle.state, event, { ...options, now: event.at });
++	entry.lifecycle = {
++		processId: options.processId,
++		events: [...entry.lifecycle.events, structuredClone(event)],
++		state: transition.state,
++	};
++	if (s.persistLifecycleCheckpoint(s.watchers) === false) {
++		const error = new Error('Watcher lifecycle checkpoint persistence failed');
++		error.code = 'PROVIDER_UNAVAILABLE';
++		throw error;
++	}
++	s.onLifecycleCheckpoint(structuredClone(entry.lifecycle));
++}
++
++function lifecycleEvent(entry, type, at, extra = {}) {
++	return {
++		id: `${entry.lifecycle.processId}:${entry.lifecycle.events.length}:${type}`,
++		type,
++		at,
++		...extra,
+ 	};
+ }
+ 
+@@ -352,8 +428,14 @@ function verifiedKill(entry, ctx) {
+  */
+ const ACTION_HANDLERS = {
+ 	startWatcher(action, s) {
+-		const startedAt = new Date(s.now()).toISOString();
++		const startedAtMs = s.now();
++		const startedAt = new Date(startedAtMs).toISOString();
+ 		const repo = action.pr.repo ?? s.repo ?? null;
++		if (s.persistLifecycleCheckpoint(s.watchers) === false) {
++			const error = new Error('Watcher lifecycle checkpoint persistence failed');
++			error.code = 'PROVIDER_UNAVAILABLE';
++			throw error;
++		}
+ 		const res = s.spawnWatcher({
+ 			prNumber: action.pr.number, cwd: s.projectRoot, gitCommonDir: s.gitCommonDir,
+ 		});
+@@ -363,22 +445,48 @@ const ACTION_HANDLERS = {
+ 		// failed. Do NOT record a {pid:null} entry: gatherObserved never counts it live, so
+ 		// each interval would re-emit startWatcher and append another null entry forever.
+ 		if (pid == null) return;
+-		const entry = { pr: action.pr.number, repo, pid, startedAt };
++		const entry = replayLifecycle({ pr: action.pr.number, repo, pid, startedAt }, startedAtMs);
+ 		s.watchers.push(entry);
++		if (s.persistLifecycleCheckpoint(s.watchers) === false) {
++			const error = new Error('Watcher lifecycle checkpoint persistence failed');
++			error.code = 'PROVIDER_UNAVAILABLE';
++			throw error;
++		}
++		s.onLifecycleCheckpoint(structuredClone(entry.lifecycle));
+ 		s.writeClaim(entry);
+ 	},
+ 	stopWatcher(action, s) {
+ 		for (const entry of s.watchers.filter((w) => w.pr === action.pr.number)) {
+-			verifiedKill(entry, s.ctx);
++			const at = s.now();
++			if (entry.lifecycle.state.phase === 'RUNNING') {
++				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-requested', at), s);
++				verifiedKill(entry, s.ctx);
++				continue;
++			}
++			const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
++			if (isAlive(entry.pid)) continue;
++			if (entry.lifecycle.state.phase !== 'CANCEL_REQUESTED') continue;
++			checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-acknowledged', at), s);
++			checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
+ 			s.removeClaim(entry); // clear the start-time marker so a reused PID can't match it later
+ 		}
+-		s.watchers = s.watchers.filter((w) => w.pr !== action.pr.number);
++		s.watchers = s.watchers.filter((w) => w.pr !== action.pr.number || !w.lifecycle.state.terminal);
+ 	},
+ 	reapOrphan(action, s) {
+ 		const entry = s.watchers.find((w) => w.pid === action.pid && w.startedAt === action.startedAt);
+-		verifiedKill(entry, s.ctx);
+-		if (entry) s.removeClaim(entry);
+-		s.watchers = s.watchers.filter((w) => !(w.pid === action.pid && w.startedAt === action.startedAt));
++		if (!entry) return;
++		const at = s.now();
++		if (entry.lifecycle.state.phase === 'RUNNING') {
++			checkpointLifecycle(entry, lifecycleEvent(entry, 'orphan-detected', at), s);
++			verifiedKill(entry, s.ctx);
++			return;
++		}
++		const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
++		if (isAlive(entry.pid) || entry.lifecycle.state.phase !== 'ORPHANED') return;
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'termination-acknowledged', at), s);
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
++		s.removeClaim(entry);
++		s.watchers = s.watchers.filter((w) => w !== entry);
+ 	},
+ 	async upsertPrRow(action, s) {
+ 		try {
+@@ -409,6 +517,15 @@ const ACTION_HANDLERS = {
+  * `updateWatchers`. `ctx.watchers` seeds the current set (from observed state).
+  */
+ async function execute(actions, ctx = {}) {
++	if (!Array.isArray(actions) || actions.length > MAX_ACTIONS_PER_PASS) {
++		const error = new Error(`Reconcile action set must contain at most ${MAX_ACTIONS_PER_PASS} actions`);
++		error.code = 'ACTION_BOUND_EXCEEDED';
++		throw error;
++	}
++	const now = ctx.now || (() => Date.now());
++	const watchers = Array.isArray(ctx.watchers)
++		? ctx.watchers.map(normalizeWatcher).map(entry => replayLifecycle(entry, now()))
++		: [];
+ 	const s = {
+ 		broker: ctx.broker || null, // live kernel handle threaded by the daemon; never the module namespace
+ 		spawnWatcher: ctx.spawnWatcher || startPrWatcherDetached,
+@@ -416,11 +533,13 @@ async function execute(actions, ctx = {}) {
+ 			|| ((e) => writeClaimMarker(ctx.projectRoot, e.repo, e.pr, e.startedAt, ctx.gitCommonDir)),
+ 		removeClaim: ctx.removeClaim
+ 			|| ((e) => removeClaimMarker(ctx.projectRoot, e.repo, e.pr, ctx.gitCommonDir)),
+-		now: ctx.now || (() => Date.now()),
++		now,
++		onLifecycleCheckpoint: ctx.onLifecycleCheckpoint || (() => {}),
++		persistLifecycleCheckpoint: ctx.persistLifecycleCheckpoint || (() => true),
+ 		repo: ctx.repo,
+ 		projectRoot: ctx.projectRoot,
+ 		gitCommonDir: ctx.gitCommonDir,
+-		watchers: Array.isArray(ctx.watchers) ? ctx.watchers.map(normalizeWatcher) : [],
++		watchers,
+ 		ctx, // verifiedKill reads isAlive/readClaim/kill/projectRoot off the original ctx
+ 	};
+ 
+@@ -463,16 +582,27 @@ async function convergeOnce(projectRoot, opts = {}) {
+ 	const seedWatchers = observed.lease && Array.isArray(observed.lease.watchers)
+ 		? observed.lease.watchers
+ 		: (opts.watchers || []);
+-	const watchers = await execute(actions, {
+-		...opts,
+-		projectRoot,
+-		gitCommonDir,
+-		watchers: seedWatchers,
+-		now,
+-	});
++	const updateWatchers = opts.updateWatchers || shepherdLease.updateWatchers;
++	let watchers;
++	try {
++		watchers = await execute(actions, {
++			...opts,
++			projectRoot,
++			gitCommonDir,
++			watchers: seedWatchers,
++			now,
++			persistLifecycleCheckpoint: opts.persistLifecycleCheckpoint || (opts.token
++				? current => updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token })
++				: undefined),
++		});
++	} catch (error) {
++		if (opts.token && error?.code === 'PROVIDER_UNAVAILABLE') {
++			return { actions: [], watchers: seedWatchers, desiredCount: desired.openPrs.length, leaseLost: true };
++		}
++		throw error;
++	}
+ 
+ 	let leaseLost = false;
+-	const updateWatchers = opts.updateWatchers || shepherdLease.updateWatchers;
+ 	if (opts.token) {
+ 		try {
+ 			// updateWatchers returns false when the lock is gone or owned by a DIFFERENT
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 5b05ea5d..e776ca54 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -37,6 +37,77 @@ test('claim markers share one path across worktrees with the same common dir', (
+ });
+ 
+ describe('execute — watcher lifecycle', () => {
++	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
++		const first = await executor.execute(
++			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
++				spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
++			},
++		);
++		expect(first[0].lifecycle.state).toMatchObject({ phase: 'RUNNING', attempts: 1 });
++
++		const restarted = await executor.execute([], {
++			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000, watchers: first,
++		});
++		expect(restarted).toEqual(first);
++	});
++
++	test('fails closed before process mutation when a persisted lifecycle checkpoint conflicts', async () => {
++		let killed = false;
++		await expect(executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
++				watchers: [{
++					pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z',
++					lifecycle: { processId: 'watcher:forge:5:999', events: [{ id: 'bad', type: 'exit', at: 1000, code: 0 }] },
++				}],
++				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => { killed = true; },
++			},
++		)).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
++		expect(killed).toBe(false);
++	});
++
++	test('records cancellation acknowledgement and terminal reap before cleanup', async () => {
++		const checkpoints = [];
++		const cancelling = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
++				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
++				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => {},
++				removeClaim: () => {}, onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
++			},
++		);
++		expect(cancelling[0].lifecycle.state.phase).toBe('CANCEL_REQUESTED');
++		const watchers = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2001,
++				watchers: cancelling, isAlive: () => false, removeClaim: () => {},
++				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
++			},
++		);
++		expect(watchers).toEqual([]);
++		expect(checkpoints.at(-1).state).toMatchObject({
++			phase: 'TERMINAL', status: 'CANCELLED', terminationAcknowledged: true, childReaped: true,
++		});
++	});
++
++	test('provider loss fails closed before terminating a watcher', async () => {
++		let killed = false;
++		await expect(executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
++				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
++				persistLifecycleCheckpoint: () => false,
++				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z', kill: () => { killed = true; },
++			},
++		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++		expect(killed).toBe(false);
++	});
+ 	test('startWatcher spawns a watcher and records a {pr,repo,pid,startedAt} entry + start-time marker', async () => {
+ 		const spawned = [];
+ 		const claims = [];
+@@ -54,7 +125,7 @@ describe('execute — watcher lifecycle', () => {
+ 		expect(spawned).toHaveLength(1);
+ 		expect(spawned[0].prNumber).toBe(42);
+ 		expect(watchers).toHaveLength(1);
+-		expect(watchers[0]).toEqual({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
++		expect(watchers[0]).toMatchObject({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
+ 		expect(claims).toHaveLength(1);
+ 		expect(claims[0].startedAt).toBe('2026-07-20T00:00:00.000Z');
+ 	});
+@@ -353,16 +424,23 @@ describe('runDaemon — singleton lease lifecycle', () => {
+ describe('watcher marker cleanup + superseded-daemon stop', () => {
+ 	test('stopWatcher/reapOrphan remove the start-time marker (a reused PID cannot match a stale one)', async () => {
+ 		const removed = [];
+-		await executor.execute(
++		const cancelling = await executor.execute(
+ 			[{ type: 'stopWatcher', pr: { number: 5 } }],
+ 			{
+-				projectRoot: '/repo',
++				projectRoot: '/repo', now: () => 1000,
+ 				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: 't1' }],
+ 				isAlive: () => true, readClaim: () => 't1', kill: () => {},
+ 				removeClaim: (e) => removed.push(e),
+ 				broker: {},
+ 			},
+ 		);
++		await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', watchers: cancelling, now: () => 2000,
++				isAlive: () => false, removeClaim: (e) => removed.push(e), broker: {},
++			},
++		);
+ 		expect(removed).toHaveLength(1);
+ 		expect(removed[0].pr).toBe(5);
+ 	});
+@@ -1156,8 +1234,8 @@ describe('finding 9 — execute dispatches every action type via the handler map
+ 		expect(retires).toHaveLength(1);
+ 		expect(kills.slice().sort()).toEqual([300, 900]);
+ 		expect(watchers.some((w) => w.pr === 1)).toBe(true);
+-		expect(watchers.some((w) => w.pr === 3)).toBe(false);   // stopped
+-		expect(watchers.some((w) => w.pid === 900)).toBe(false); // reaped
++		expect(watchers.find((w) => w.pr === 3).lifecycle.state.phase).toBe('CANCEL_REQUESTED');
++		expect(watchers.find((w) => w.pid === 900).lifecycle.state.phase).toBe('ORPHANED');
+ 	});
+ });
+ 
+-- 
+2.51.0.windows.1
+

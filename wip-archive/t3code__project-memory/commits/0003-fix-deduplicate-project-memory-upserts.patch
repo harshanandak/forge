@@ -1,0 +1,94 @@
+From b28478440c04013c711d28a0f1962d6908151994 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 27 Apr 2026 00:24:58 +0530
+Subject: [PATCH] fix: deduplicate project memory upserts
+
+---
+ lib/project-memory.js       |  7 +++---
+ test/project-memory.test.js | 48 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+), 3 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index d6401bfb..86544557 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -171,13 +171,14 @@ function write(projectRoot, entry, options = {}) {
+   });
+ 
+   const existingIndex = entries.findIndex((candidate) => candidate.key === normalized.key);
++  const nextEntries = entries.filter((candidate) => candidate.key !== normalized.key);
+   if (existingIndex === -1) {
+-    entries.push(normalized);
++    nextEntries.push(normalized);
+   } else {
+-    entries[existingIndex] = normalized;
++    nextEntries.splice(existingIndex, 0, normalized);
+   }
+ 
+-  writeEntries(projectRoot, entries, options);
++  writeEntries(projectRoot, nextEntries, options);
+   return toApiEntry(normalized);
+ }
+ 
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index d4b92256..78b100d2 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -84,6 +84,54 @@ describe('project memory', () => {
+     });
+   });
+ 
++  test('deduplicates all existing records for a key during upsert', () => {
++    const root = tempRoot();
++    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
++    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
++    fs.writeFileSync(memoryFile, [
++      JSON.stringify({
++        key: 'decision.duplicate',
++        value: 'stale manual merge copy',
++        'source-agent': 'Claude',
++        timestamp: '2026-04-26T00:00:00.000Z',
++        tags: ['stale'],
++      }),
++      JSON.stringify({
++        key: 'decision.keep',
++        value: 'unrelated entry',
++        'source-agent': 'Cursor',
++        timestamp: '2026-04-26T00:01:00.000Z',
++        tags: ['keep'],
++      }),
++      JSON.stringify({
++        key: 'decision.duplicate',
++        value: 'second stale manual merge copy',
++        'source-agent': 'Codex',
++        timestamp: '2026-04-26T00:02:00.000Z',
++        tags: ['stale'],
++      }),
++    ].join('\n') + '\n', 'utf8');
++
++    projectMemory.write(root, {
++      key: 'decision.duplicate',
++      value: 'current value',
++      sourceAgent: 'OpenCode',
++      timestamp: '2026-04-26T00:03:00.000Z',
++      tags: ['current'],
++    });
++
++    expect(projectMemory.list(root).map((entry) => entry.key)).toEqual([
++      'decision.duplicate',
++      'decision.keep',
++    ]);
++    expect(projectMemory.search(root, 'stale')).toEqual([]);
++    expect(projectMemory.read(root, 'decision.duplicate')).toMatchObject({
++      value: 'current value',
++      sourceAgent: 'OpenCode',
++      tags: ['current'],
++    });
++  });
++
+   test('searches keys, string values, source agents, and tags case-insensitively', () => {
+     const root = tempRoot();
+ 
+-- 
+2.51.0.windows.1
+

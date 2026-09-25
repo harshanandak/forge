@@ -1,0 +1,44 @@
+From 5ee6013a2555c2b85c236ae6fa4f2e5214136236 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 13:48:40 +0530
+Subject: [PATCH] =?UTF-8?q?test(plan):=20await=20callback=20in=20withRepo?=
+ =?UTF-8?q?=20=E2=80=94=20fix=20teardown=20race=20(CodeRabbit)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+withRepo returned the callback promise from inside try, so the finally
+restored CWD and rmSync'd the temp repo before the async body finished —
+racing git ops against a deleted dir. Await the callback first.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/commands/plan-link-issue.test.js | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/test/commands/plan-link-issue.test.js b/test/commands/plan-link-issue.test.js
+index e529a326..77c8852c 100644
+--- a/test/commands/plan-link-issue.test.js
++++ b/test/commands/plan-link-issue.test.js
+@@ -33,13 +33,16 @@ function makeRepoWithResearch(slug, title) {
+   return repo;
+ }
+ 
+-function withRepo(repo, fn) {
++async function withRepo(repo, fn) {
+   const prevCwd = process.cwd();
+   const prevEnv = process.env.FORGE_ISSUE_BACKEND;
+   delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
+   process.chdir(repo);
+   try {
+-    return fn();
++    // AWAIT the callback: otherwise the finally below restores CWD and deletes
++    // the temp repo while the async body is still running (teardown race — git
++    // then fails "cannot change to <deleted dir>").
++    await fn();
+   } finally {
+     process.chdir(prevCwd);
+     if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
+-- 
+2.51.0.windows.1
+

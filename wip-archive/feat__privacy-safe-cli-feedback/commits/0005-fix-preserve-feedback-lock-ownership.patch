@@ -1,0 +1,164 @@
+From 3da201a5b00829ff4cde40adc8cb265939bb0ba6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 18:36:22 +0530
+Subject: [PATCH] fix: preserve feedback lock ownership
+
+---
+ lib/feedback.js       | 29 ++++++++++++++++-----
+ test/feedback.test.js | 60 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 82 insertions(+), 7 deletions(-)
+
+diff --git a/lib/feedback.js b/lib/feedback.js
+index 097474e3..323856a2 100644
+--- a/lib/feedback.js
++++ b/lib/feedback.js
+@@ -18,7 +18,7 @@ const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
+ const OPAQUE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+ const DEFAULT_FETCH_TIMEOUT_MS = 5000;
+ const DEFAULT_LOCK_STALE_MS = 30000;
+-const DEFAULT_LOCK_ATTEMPTS = 500;
++const DEFAULT_LOCK_ATTEMPTS = 100;
+ const DEFAULT_LOCK_WAIT_MS = 10;
+ const LOCK_CONTENTION_CODES = new Set(['EEXIST', 'EACCES', 'EPERM', 'EBUSY']);
+ 
+@@ -173,7 +173,9 @@ function lockIsStale(io, file, staleMs) {
+   } catch {
+     owner = null;
+   }
+-  if (owner?.pid && !processIsAlive(owner.pid)) return true;
++  if (Number.isInteger(owner?.pid)) {
++    return !processIsAlive(owner.pid);
++  }
+   try {
+     return Date.now() - io.statSync(file).mtimeMs > staleMs;
+   } catch {
+@@ -181,25 +183,38 @@ function lockIsStale(io, file, staleMs) {
+   }
+ }
+ 
++function releaseFeedbackLock(io, lock) {
++  let owner;
++  try {
++    owner = JSON.parse(io.readFileSync(lock.file, 'utf8'));
++  } catch {
++    return;
++  }
++  if (owner?.owner_token !== lock.ownerToken) return;
++  try { io.unlinkSync(lock.file); } catch { /* already removed after ownership check */ }
++}
++
+ function acquireFeedbackLock(options = {}) {
+   const io = options.fs || fs;
+   const file = feedbackLockPath(options);
+   const staleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
+   const attempts = options.lockAttempts ?? DEFAULT_LOCK_ATTEMPTS;
+   const waitMs = options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS;
++  const ownerToken = crypto.randomUUID();
++  const lock = { file, ownerToken };
+   io.mkdirSync(path.dirname(file), { recursive: true });
+ 
+   for (let attempt = 0; attempt < attempts; attempt += 1) {
+     let handle;
+     try {
+       handle = io.openSync(file, 'wx', 0o600);
+-      io.writeSync(handle, JSON.stringify({ pid: process.pid, created_at: Date.now() }));
++      io.writeSync(handle, JSON.stringify({ pid: process.pid, owner_token: ownerToken }));
+       io.closeSync(handle);
+-      return file;
++      return lock;
+     } catch (error) {
+       if (handle !== undefined) {
+         try { io.closeSync(handle); } catch { /* already closed */ }
+-        try { io.unlinkSync(file); } catch { /* incomplete acquire */ }
++        releaseFeedbackLock(io, lock);
+       }
+       if (!LOCK_CONTENTION_CODES.has(error?.code)) throw error;
+       if (lockIsStale(io, file, staleMs)) {
+@@ -214,11 +229,11 @@ function acquireFeedbackLock(options = {}) {
+ 
+ function withFeedbackStateLock(options, mutate) {
+   const io = options.fs || fs;
+-  const file = acquireFeedbackLock(options);
++  const lock = acquireFeedbackLock(options);
+   try {
+     return mutate();
+   } finally {
+-    try { io.unlinkSync(file); } catch { /* already reclaimed after a crash boundary */ }
++    releaseFeedbackLock(io, lock);
+   }
+ }
+ 
+diff --git a/test/feedback.test.js b/test/feedback.test.js
+index 8db8b9eb..3cc34d55 100644
+--- a/test/feedback.test.js
++++ b/test/feedback.test.js
+@@ -537,6 +537,66 @@ describe('privacy-safe feedback core', () => {
+     expect(fs.existsSync(lock)).toBe(false);
+   });
+ 
++  test('reclaims an old lock with invalid ownership metadata', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    fs.writeFileSync(lock, '{');
++    const old = new Date(Date.now() - 60000);
++    fs.utimesSync(lock, old, old);
++
++    const result = await captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      lockStaleMs: 10,
++    });
++
++    expect(result.captured).toBe(true);
++    expect(fs.existsSync(lock)).toBe(false);
++  });
++
++  test('does not reclaim an old lock while its recorded PID is alive', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    const ownerToken = '11111111-1111-4111-8111-111111111111';
++    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, owner_token: ownerToken }));
++    const old = new Date(Date.now() - 60000);
++    fs.utimesSync(lock, old, old);
++
++    await expect(captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      lockStaleMs: 10,
++      lockAttempts: 1,
++    })).rejects.toThrow('Feedback state is busy');
++    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).owner_token).toBe(ownerToken);
++  });
++
++  test('release leaves a successor lock intact when the owner token changed', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    const successorToken = '22222222-2222-4222-8222-222222222222';
++    const successorFs = {
++      ...fs,
++      renameSync(from, to) {
++        fs.renameSync(from, to);
++        fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, owner_token: successorToken }));
++      },
++    };
++
++    const result = await captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      fs: successorFs,
++    });
++
++    expect(result.captured).toBe(true);
++    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).owner_token).toBe(successorToken);
++    fs.unlinkSync(lock);
++  });
++
+   test('corrupt or unreadable state fails closed and preserves original bytes', async () => {
+     for (const raw of ['{"consent":"disabled"', '[]']) {
+       const homeDir = tempHome();
+-- 
+2.51.0.windows.1
+

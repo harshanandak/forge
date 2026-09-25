@@ -1,0 +1,25 @@
+From d6be75387ea49ebd8ef84331e09e22ffd5c8805b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 14:06:14 +0530
+Subject: [PATCH] fix: neutral wording for foreign-key refusal
+
+---
+ lib/kernel/sqlite-driver.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index d52a5abe..4dd2d96d 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2852,7 +2852,7 @@ function assertWatchOwnerSchema(runtime, db) {
+ 		throw watchOwnerStoreError('AUTHORITY_UNAVAILABLE', 'Watcher authority schema does not match the Kernel migration');
+ 	}
+ 	if (hasForbiddenWatchOwnerForeignKeys(runtime, db)) {
+-		throw watchOwnerStoreError('AUTHORITY_UNAVAILABLE', 'Watcher authority rows are referenced by an inbound foreign key cascade');
++		throw watchOwnerStoreError('AUTHORITY_UNAVAILABLE', 'Watcher authority tables participate in a forbidden foreign key relationship');
+ 	}
+ }
+ 
+-- 
+2.51.0.windows.1
+

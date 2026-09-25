@@ -1,0 +1,41 @@
+From f1cae967759caedfd4cb95729c697df2d2f54f8a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 9 Sep 2026 00:26:09 +0530
+Subject: [PATCH] docs: record foreground route review evidence
+
+---
+ docs/work/2026-09-08-github-account-context/decisions.md | 7 +++++++
+ docs/work/2026-09-08-github-account-context/tasks.md     | 2 +-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-09-08-github-account-context/decisions.md b/docs/work/2026-09-08-github-account-context/decisions.md
+index 99139807..ed492705 100644
+--- a/docs/work/2026-09-08-github-account-context/decisions.md
++++ b/docs/work/2026-09-08-github-account-context/decisions.md
+@@ -40,3 +40,10 @@
+ - An independent Astra read-only pass traced Tasks 2-5 through the live execution graph at `10e5ef4193f91bf2b22ff13f4bf4adcdccebce37`.
+ - It found and the task map corrected: pre-write account preparation, top-level parser capture of child flags, missing skill-coverage ownership, mixed-purpose team credential leakage, and over-broad background worker inheritance.
+ - The corrections preserve the approved product contract while reducing token propagation: child workers resolve clone-local context themselves and only actual `gh` processes receive selected credentials.
++
++## Task 4 review evidence
++
++- The first intentionally failing foreground-route test run was incompletely isolated and reached native read-only Team verification and potentially Ship readiness/fetch. No PR creation or merge succeeded; read-only verification found unchanged HEAD/reflog, no clone binding, and no contemporaneous shared-config write. Every later route test used fail-before-native or fully injected subprocess seams.
++- Independent spec and quality reviews found and corrected two boundary bugs before Task 4 exit: mixed-purpose Team Bash inherited ambient GitHub variables, and whole-argv global-flag stripping removed Team's documented `claim <id> --force` option.
++- At the reviewed Task 4 head (`2c362fddb846d2cd835352b3bdbb91b8702f6a70`), Team removes ambient GitHub variables case-insensitively, normalizes Forge routing flags through one shared path, and preserves Team-owned flags verbatim.
++- The fresh pinned-Bun 1.3.12 route proof completed with 398 pass, 4 existing skips, and 0 failures across 17 files; targeted lint, Bash syntax, manifest drift, embedded assets, Windows background spawns, and diff checks passed. Both independent reviewers returned PASS.
+diff --git a/docs/work/2026-09-08-github-account-context/tasks.md b/docs/work/2026-09-08-github-account-context/tasks.md
+index 2aac4972..4cd24a96 100644
+--- a/docs/work/2026-09-08-github-account-context/tasks.md
++++ b/docs/work/2026-09-08-github-account-context/tasks.md
+@@ -41,7 +41,7 @@
+ 
+ ### Task 4: Foreground GitHub route matrix
+ 
+-**Owns:** `lib/commands/pr.js`, `lib/commands/ship.js`, `lib/commands/merge.js`, `lib/commands/shepherd.js`, `lib/commands/team.js`, `lib/commands/clean.js`, new secret-free `GH_CMD` bridge under `scripts/`, `test/commands/github-route-matrix.test.js`
++**Owns:** `lib/commands/pr.js`, `lib/commands/ship.js`, `lib/commands/merge.js`, `lib/commands/shepherd.js`, `lib/commands/team.js`, `lib/commands/clean.js`, new secret-free `GH_CMD` bridge under `scripts/`, `test/commands/github-route-matrix.test.js`, `test/commands/ship.test.js`, and the targeted-test maps in `lib/commands/test.js`, `scripts/test.js`, and `test/scripts/test-runner.test.js`
+ 
+ 1. Write failing routing tests for standalone and `pr` facade commands, clean's split Git/gh runner, and team predicates.
+ 2. Mark `ship`, `merge`, and `shepherd`; mark `pr ship|merge|shepherd` but not `preflight`/help.
+-- 
+2.51.0.windows.1
+

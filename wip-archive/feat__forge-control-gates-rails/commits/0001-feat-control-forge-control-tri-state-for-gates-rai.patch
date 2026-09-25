@@ -1,0 +1,989 @@
+From 29b300b347573674a4da27860c0369af0e9f6ccf Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 12:11:55 +0530
+Subject: [PATCH] feat(control): forge control tri-state for gates/rails +
+ guarantee matrix + locus badges (B6)
+
+Adds the control-plane guarantee matrix and an honesty-enforcing control
+surface so the cockpit never sells enforcement Forge cannot deliver.
+
+- docs/reference/control-plane-guarantees.md: the contract badges read from --
+  state (mandatory/optional/permission) x enforcement-locus (run-time-deny gate|
+  rail|permission vs render-time presence-only for mcp/rules/skills).
+- lib/control-plane.js: pure taxonomy (classify surface, derive state, locus,
+  badge, plan write-intent). Single source of truth for the matrix.
+- forge control <id> <state>: tri-state ONLY for gate.*/rail.*, reusing the ONE
+  resolver-enforced field workflow.gates.<id>.enabled (no fake parallel key).
+  REFUSES mcp/rules/skills + permission-on-non-human + optional-on-locked with a
+  guarantee-matrix pointer. forge control status renders the all-surface read.
+- forge options gates: decorated with enforcement-locus badges (724356ea).
+
+Reuses the existing gate/rail toggle mechanism so setting a state is genuinely
+honored at run time (asserted via getResolvedRuntimeGraph). Deferred by design:
+control for advisory surfaces (mcp/rules/skills) has no run-time deny path.
+
+Issues: 7dc59af2 (controls + forge control), 724356ea (all-surface read + badges)
+Epic: 363954dd
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/reference/control-plane-guarantees.md |  95 ++++++++++
+ lib/commands/_manifest.js                  |   1 +
+ lib/commands/control.js                    | 133 +++++++++++++
+ lib/commands/options.js                    |  16 +-
+ lib/control-plane.js                       | 206 +++++++++++++++++++++
+ test/commands/control.test.js              | 170 +++++++++++++++++
+ test/commands/options-locus-badge.test.js  |  56 ++++++
+ test/control-plane.test.js                 | 190 +++++++++++++++++++
+ 8 files changed, 865 insertions(+), 2 deletions(-)
+ create mode 100644 docs/reference/control-plane-guarantees.md
+ create mode 100644 lib/commands/control.js
+ create mode 100644 lib/control-plane.js
+ create mode 100644 test/commands/control.test.js
+ create mode 100644 test/commands/options-locus-badge.test.js
+ create mode 100644 test/control-plane.test.js
+
+diff --git a/docs/reference/control-plane-guarantees.md b/docs/reference/control-plane-guarantees.md
+new file mode 100644
+index 00000000..27380698
+--- /dev/null
++++ b/docs/reference/control-plane-guarantees.md
+@@ -0,0 +1,95 @@
++# Control-plane guarantees — what each control state actually enforces
++
++Status: beta (B6). Issues: `7dc59af2` (controls config + `forge control`),
++`724356ea` (all-surface read + enforcement-locus badges). Epic: `363954dd`.
++
++This document is the **contract** the cockpit badges and the `forge control`
++command read from. It states, honestly and per surface, what a control state
++*actually* guarantees at run time — so the UI never sells enforcement Forge
++cannot deliver.
++
++## Why this doc exists — the mis-sell it prevents
++
++The cockpit uses a **tri-state control vocabulary** (`mandatory` / `optional` /
++`permission`). That vocabulary is only *meaningful* where Forge can actually
++**deny at run time**. On gates and rails it can: a stage transition or the
++resolver refuses to proceed. On MCP servers, rules, and skills it cannot —
++"mandatory" there would mean nothing more than *the file is present*, decided at
++render time, never enforced. Shipping tri-state uniformly across all surfaces
++would promise enforcement that does not exist. This matrix draws that line.
++
++## The two axes
++
++- **State** (author intent): `mandatory` · `optional` · `permission`.
++- **Enforcement-locus** (what actually happens, and *when*):
++  - `run-time-deny (gate)` — a stage transition is blocked until evidence exists.
++  - `run-time-deny (rail)` — the resolver refuses to run with the rail off.
++  - `run-time-deny (permission)` — blocked until a **human approval event** is
++    recorded on the issue (`forge gate approve`).
++  - `render-time presence-only` — the item is written into harness config or
++    discovered by precedence; nothing denies at run time. **Advisory.**
++
++## The matrix — state × surface × what it guarantees
++
++| Surface | Example ids | Controllable by `forge control`? | State it takes | Enforcement-locus | Guarantee |
++|---|---|---|---|---|---|
++| **Stage gate** | `gate.plan-exit`, `gate.dev-exit`, `gate.validate-exit`, `gate.ship-entry`, `gate.issue_verify` | **Yes** | `mandatory` / `optional` | `run-time-deny (gate)` | `mandatory`: the stage cannot advance until the gate's evidence exists (`enforce-stage.js`; `validate`/`preflight` fail-closed). `optional`: gate is off — no denial. |
++| **Human gate** | `gate.intent`, `gate.plan-approval`, `gate.merge` | **Yes** | `permission` / `optional` | `run-time-deny (permission)` | `permission`: blocked until a durable `gate.approved` kernel **event** exists (`forge gate approve <issue> <gate>`; `forge gate check` exits non-zero without it). `optional`: no approval required. |
++| **L1 rail** | `rail.kernel_tracking` (unlocked); other rails (locked) | **Yes** (unlocked only) | `mandatory` / `optional` | `run-time-deny (rail)` | `mandatory`: resolver enforces the rail (locked rails are *permanently* mandatory and cannot be lowered). `optional`: rail off (unlocked rails only). |
++| **MCP server** | `mcp.*` | **No — refused** | — | `render-time presence-only` | Rendered into harness MCP config. Presence advises the agent a tool exists; Forge does **not** deny at run time. Not enforceable. |
++| **Rule** | `rule.*` (`rules/*.md`) | **No — refused** | — | `render-time presence-only` | Injected as agent guidance. No run-time deny. Advisory. |
++| **Skill** | `skill.*` | **No — refused** | — | `render-time presence-only` | Discovered by precedence (`.skills/` > `skills/` > packaged). Presence, not enforcement. Advisory. |
++
++## How the tri-state maps onto Forge's real primitives (single source of truth)
++
++Forge's enforced surface is one field: **`workflow.gates.<id>.enabled`** in
++`.forge/config.yaml` — the field the resolver (`applyEnabledConfig` in
++`lib/core/runtime-graph.js`) already consumes, shared by gates and unlocked
++rails (their id namespaces `gate.*` / `rail.*` are disjoint). `forge control`
++reuses exactly this field — it does **not** add a parallel `controls:` key,
++because a key the resolver never reads would itself be fake enforcement (the very
++mis-sell this doc exists to prevent). The tri-state is the *vocabulary*; `enabled`
++is the *truth*. State is therefore **derived**, never stored twice:
++
++| State | Written config | Applies to |
++|---|---|---|
++| `mandatory` | `workflow.gates.<id>.enabled = true` | stage gates, rails |
++| `optional` | `workflow.gates.<id>.enabled = false` | unlocked gates & rails |
++| `permission` | `workflow.gates.<id>.enabled = true` | human gates only (enforced via approval event) |
++
++Read-back derives the label from `(enabled, locked, isHumanGate)`:
++- human gate + enabled → `permission`; human gate + disabled → `optional`.
++- non-human gate/rail + enabled → `mandatory`; + disabled → `optional`.
++- `locked` primitives are always `mandatory` and render a `LOCKED` badge (cannot be lowered).
++
++## What `forge control` refuses, and why
++
++- **`permission` on a non-human gate or rail** — refused: approval events only
++  gate the three human gates; elsewhere `permission` has no enforcement path.
++- **`optional` on a `locked` primitive** — refused: mirrors
++  `Cannot disable locked gate` in `forge gate`.
++- **Any `mcp.*` / `rule.*` / `skill.*` id** — refused with:
++  *"<id> is presence-only, not enforceable — Forge has no run-time deny for this
++  surface. See docs/reference/control-plane-guarantees.md."* These are read-only
++  in the cockpit; their badge is `PRESENT (advisory)`, never `ENFORCED`.
++
++## Badge vocabulary (what the read view / dashboard renders)
++
++Driven entirely by the enforcement-locus column above — never by author intent:
++
++- `ENFORCED (gate)` — run-time-deny (gate).
++- `ENFORCED (rail)` — run-time-deny (rail).
++- `PERMISSION (human approval)` — run-time-deny (permission).
++- `PRESENT (advisory)` — render-time presence-only (mcp/rules/skills).
++- `LOCKED` — a `mandatory`/`enforced` item that cannot be lowered.
++
++A surface's badge reflects **where and whether** it is enforced, so the UI can
++never imply enforcement it lacks.
++
++## Deferred (out of B6 scope)
++
++- **Control for advisory surfaces** (mcp/rules/skills). Deferred deliberately:
++  making these "mandatory" requires a run-time deny path that does not exist.
++  Until it does, they stay read-only + `PRESENT (advisory)`.
++- **Live/SSE updates** — a separate stubbed issue; the read view is a
++  point-in-time snapshot.
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index 6d531e03..f0c3d4b6 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -32,6 +32,7 @@ const commands = [
+   { file: "clean.js", module: require("./clean") },
+   { file: "close.js", module: require("./close") },
+   { file: "comment.js", module: require("./comment") },
++  { file: "control.js", module: require("./control") },
+   { file: "create.js", module: require("./create") },
+   { file: "dev.js", module: require("./dev") },
+   { file: "doc-gate.js", module: require("./doc-gate") },
+diff --git a/lib/commands/control.js b/lib/commands/control.js
+new file mode 100644
+index 00000000..39a31526
+--- /dev/null
++++ b/lib/commands/control.js
+@@ -0,0 +1,133 @@
++'use strict';
++
++/**
++ * `forge control <gate-id|rail-id> <mandatory|optional|permission>`
++ * `forge control status [--json]`
++ *
++ * Tri-state control for the surfaces Forge can actually DENY at run time —
++ * gates and rails. It is a thin, honesty-enforcing front-end over the SAME
++ * resolver-consumed field `forge gate` writes (`workflow.gates.<id>.enabled`):
++ * there is deliberately NO parallel `controls:` key, because a key the resolver
++ * never reads would be fake enforcement — the exact mis-sell the guarantee
++ * matrix exists to prevent. The tri-state is the vocabulary; `enabled` is the
++ * truth (state is derived at read time).
++ *
++ * For MCP servers / rules / skills it REFUSES with a clear "presence-only, not
++ * enforceable" message pointing at docs/reference/control-plane-guarantees.md,
++ * rather than pretend a control it cannot honor.
++ *
++ * `status` renders the all-surface read view with enforcement-locus badges
++ * (724356ea) so the UI never implies enforcement a surface lacks.
++ */
++
++const path = require('node:path');
++const { setConfigOverride } = require('../config-writer');
++const { getDefaultRuntimeGraph, getResolvedRuntimeGraph } = require('../core/runtime-graph');
++const {
++  classifySurface,
++  isControllable,
++  describeControl,
++  planControl,
++  GUARANTEE_DOC,
++} = require('../control-plane');
++
++function usage() {
++  return [
++    'Usage: forge control <gate-id|rail-id> <mandatory|optional|permission>',
++    '       forge control status [--json]',
++    '',
++    `Tri-state control for gates & rails (run-time deny). MCP/rules/skills are`,
++    `presence-only and refused — see ${GUARANTEE_DOC}.`,
++  ].join('\n');
++}
++
++// The known toggleable set is gates PLUS unlocked rails — exactly the surface
++// `forge gate` governs. Combined lookup because gate.* / rail.* namespaces are
++// disjoint. Used to validate an id BEFORE writing (never mid-run).
++function knownPrimitive(id) {
++  const graph = getDefaultRuntimeGraph();
++  return [...graph.gates, ...graph.rails].find(primitive => primitive.id === id);
++}
++
++function resolvedControls(projectRoot) {
++  const graph = getResolvedRuntimeGraph({ projectRoot });
++  return [...graph.gates, ...graph.rails].map(describeControl);
++}
++
++function renderStatus(records) {
++  const lines = ['Control plane — enforcement-locus per surface:', ''];
++  for (const rec of records) {
++    const state = rec.state ? ` [${rec.state}]` : '';
++    lines.push(`- ${rec.id}${state}  ${rec.badge}  (${rec.locus})`);
++  }
++  lines.push('');
++  lines.push(`MCP servers, rules, and skills are presence-only (advisory) and not`);
++  lines.push(`controllable here. See ${GUARANTEE_DOC}.`);
++  return `${lines.join('\n')}\n`;
++}
++
++function statusCommand(projectRoot, json) {
++  const records = resolvedControls(projectRoot);
++  if (json) {
++    return { success: true, output: `${JSON.stringify({ items: records }, null, 2)}\n` };
++  }
++  return { success: true, output: renderStatus(records) };
++}
++
++function setCommand(id, state, projectRoot) {
++  // Advisory surfaces (and unknown namespaces) are refused up front with the
++  // guarantee-matrix pointer — nothing is written.
++  if (!isControllable(id)) {
++    const plan = planControl({ id }, state);
++    return { success: false, error: plan.error };
++  }
++
++  // Validate the id is a real primitive BEFORE writing (mirrors `forge gate`).
++  const primitive = knownPrimitive(id);
++  if (!primitive) {
++    return {
++      success: false,
++      error: `Unknown ${classifySurface(id)} '${id}'. Run 'forge control status' to list controllable surfaces.`,
++    };
++  }
++
++  const plan = planControl({ id, locked: primitive.locked === true }, state);
++  if (!plan.ok) {
++    return { success: false, error: plan.error };
++  }
++
++  const { configPath } = setConfigOverride(
++    projectRoot,
++    ['workflow', 'gates', id, 'enabled'],
++    plan.enabled,
++  );
++  const where = path.relative(projectRoot, configPath) || configPath;
++  return {
++    success: true,
++    output: `set '${id}' to ${state} (workflow.gates.${id}.enabled=${plan.enabled}) in ${where}`,
++  };
++}
++
++async function handler(args, flags = {}, projectRoot = process.cwd()) {
++  const [first, second] = args;
++
++  if (first === 'status') {
++    return statusCommand(projectRoot, flags.json === true || args.includes('--json'));
++  }
++
++  if (!first) {
++    return { success: false, error: usage() };
++  }
++  if (!second) {
++    return { success: false, error: `Missing state.\n${usage()}` };
++  }
++
++  return setCommand(first, second, projectRoot);
++}
++
++module.exports = {
++  name: 'control',
++  description: 'Set tri-state control (mandatory/optional/permission) for a gate or rail',
++  usage: usage(),
++  handler,
++};
+diff --git a/lib/commands/options.js b/lib/commands/options.js
+index 05ec3515..7be27e85 100644
+--- a/lib/commands/options.js
++++ b/lib/commands/options.js
+@@ -5,6 +5,7 @@ const {
+   getResolvedRuntimeGraph,
+   lintRuntimeGraphConfig,
+ } = require('../core/runtime-graph');
++const { describeControl } = require('../control-plane');
+ 
+ const COLLECTIONS = {
+   stages: { key: 'phases', label: 'Stages' },
+@@ -35,7 +36,9 @@ function summarizeItem(item) {
+   if (item.role) return summarizeRole(item);
+   const state = item.enabled === false ? 'disabled' : 'enabled';
+   const locked = item.locked ? ', locked' : '';
+-  return `${item.id} (${state}${locked}) - ${item.label ?? item.kind ?? item.command ?? 'graph primitive'}`;
++  const label = item.label ?? item.kind ?? item.command ?? 'graph primitive';
++  const badge = item.badge ? `  [${item.badge}]` : '';
++  return `${item.id} (${state}${locked}) - ${label}${badge}`;
+ }
+ 
+ function renderCollection(label, items) {
+@@ -168,9 +171,18 @@ function resolveGraphResult(projectRoot, json) {
+   }
+ }
+ 
++// Gates carry enforcement-locus badges (724356ea): decorate each with the
++// honest surface/state/locus/badge from the guarantee matrix so the read view
++// never implies enforcement a surface lacks (human gates read PERMISSION,
++// ordinary gates read ENFORCED).
++function decorateWithLocus(subcommand, items) {
++  if (subcommand !== 'gates') return items;
++  return items.map(item => ({ ...item, ...describeControl(item) }));
++}
++
+ function collectionCommand(graph, subcommand, json) {
+   const { key, label } = COLLECTIONS[subcommand];
+-  const items = graph[key];
++  const items = decorateWithLocus(subcommand, graph[key]);
+   return {
+     success: true,
+     output: json ? jsonOutput({ kind: subcommand, items }) : renderCollection(label, items),
+diff --git a/lib/control-plane.js b/lib/control-plane.js
+new file mode 100644
+index 00000000..035715da
+--- /dev/null
++++ b/lib/control-plane.js
+@@ -0,0 +1,206 @@
++'use strict';
++
++/**
++ * @module control-plane
++ *
++ * The single source of truth for the **control-plane guarantee matrix**
++ * (docs/reference/control-plane-guarantees.md): it classifies each control
++ * surface, names its enforcement-locus, derives the tri-state label, renders the
++ * honest read badge, and resolves a `forge control` write-intent into the ONE
++ * resolver-enforced field — `workflow.gates.<id>.enabled`.
++ *
++ * Why this module exists: the cockpit uses a tri-state vocabulary
++ * (`mandatory` / `optional` / `permission`), but that vocabulary is only
++ * meaningful where Forge can actually DENY at run time — on gates and rails. On
++ * MCP servers, rules, and skills there is no run-time deny; "mandatory" there
++ * would mean nothing more than *the file is present*. This module draws that
++ * line so the UI and the `forge control` command never sell enforcement Forge
++ * cannot deliver. Pure + dependency-free so it is trivially testable and shared
++ * by the command, `forge options`, and any dashboard snapshot.
++ */
++
++/** The closed set of human gates — satisfied by a `gate.approved` kernel EVENT. */
++const HUMAN_GATE_IDS = new Set(['gate.intent', 'gate.plan-approval', 'gate.merge']);
++
++const CONTROLLABLE_SURFACES = new Set(['gate', 'human-gate', 'rail']);
++
++const GUARANTEE_DOC = 'docs/reference/control-plane-guarantees.md';
++
++const VALID_STATES = new Set(['mandatory', 'optional', 'permission']);
++
++/**
++ * Classify a control id into its surface. The id namespaces are disjoint, so a
++ * prefix match is unambiguous; the three human gates are singled out because
++ * their enforcement-locus (a human approval event) differs from ordinary gates.
++ *
++ * @param {string} id
++ * @returns {'gate'|'human-gate'|'rail'|'mcp'|'rule'|'skill'|'unknown'}
++ */
++function classifySurface(id) {
++  if (typeof id !== 'string') return 'unknown';
++  if (HUMAN_GATE_IDS.has(id)) return 'human-gate';
++  if (id.startsWith('gate.')) return 'gate';
++  if (id.startsWith('rail.')) return 'rail';
++  if (id.startsWith('mcp.')) return 'mcp';
++  if (id.startsWith('rule.')) return 'rule';
++  if (id.startsWith('skill.')) return 'skill';
++  return 'unknown';
++}
++
++/** True only for surfaces Forge can deny at run time (gates + rails). */
++function isControllable(id) {
++  return CONTROLLABLE_SURFACES.has(classifySurface(id));
++}
++
++/**
++ * The honest enforcement-locus for a surface kind — WHERE and WHETHER Forge
++ * actually enforces it. Advisory surfaces resolve to render-time presence-only.
++ */
++function enforcementLocus(surface) {
++  switch (surface) {
++    case 'gate':
++      return 'run-time-deny (gate)';
++    case 'rail':
++      return 'run-time-deny (rail)';
++    case 'human-gate':
++      return 'run-time-deny (permission)';
++    default:
++      // mcp / rule / skill / unknown — no run-time deny.
++      return 'render-time presence-only';
++  }
++}
++
++/**
++ * Derive the tri-state label from the resolver-enforced fields, so state is
++ * never stored twice (single source of truth = `enabled`).
++ *
++ * @param {{id: string, enabled?: boolean}} primitive
++ * @returns {'mandatory'|'optional'|'permission'|null} null for advisory surfaces.
++ */
++function deriveState(primitive) {
++  const surface = classifySurface(primitive.id);
++  if (!CONTROLLABLE_SURFACES.has(surface)) return null;
++  const enabled = primitive.enabled !== false;
++  if (surface === 'human-gate') return enabled ? 'permission' : 'optional';
++  return enabled ? 'mandatory' : 'optional';
++}
++
++/**
++ * The read-view badge: reflects the enforcement-locus AND the current state, so
++ * the UI can never imply enforcement a surface lacks. A `locked` primitive
++ * appends a `LOCKED` marker (it cannot be lowered).
++ *
++ * @param {{id: string, enabled?: boolean, locked?: boolean}} primitive
++ * @returns {string}
++ */
++function badgeFor(primitive) {
++  const surface = classifySurface(primitive.id);
++  if (!CONTROLLABLE_SURFACES.has(surface)) return 'PRESENT (advisory)';
++
++  const enabled = primitive.enabled !== false;
++  let badge;
++  if (!enabled) {
++    badge = 'OFF (optional)';
++  } else if (surface === 'human-gate') {
++    badge = 'PERMISSION (human approval)';
++  } else if (surface === 'rail') {
++    badge = 'ENFORCED (rail)';
++  } else {
++    badge = 'ENFORCED (gate)';
++  }
++  return primitive.locked === true ? `${badge} · LOCKED` : badge;
++}
++
++/**
++ * The full read record for a primitive — everything a read view / badge needs.
++ *
++ * @param {{id: string, enabled?: boolean, locked?: boolean}} primitive
++ */
++function describeControl(primitive) {
++  const surface = classifySurface(primitive.id);
++  return {
++    id: primitive.id,
++    surface,
++    controllable: CONTROLLABLE_SURFACES.has(surface),
++    state: deriveState(primitive),
++    locus: enforcementLocus(surface),
++    badge: badgeFor(primitive),
++    locked: primitive.locked === true,
++  };
++}
++
++/**
++ * Resolve a `forge control <id> <state>` write-intent into the enabled boolean
++ * for `workflow.gates.<id>.enabled` — or an honest refusal. This is the guard
++ * that keeps the tri-state vocabulary from over-promising:
++ *
++ *  - advisory surfaces (mcp/rule/skill/unknown) → refused (presence-only).
++ *  - `permission` is valid ONLY for human gates; elsewhere it has no path.
++ *  - `mandatory` on a human gate → refused, directed to `permission`.
++ *  - `optional` on a `locked` primitive → refused (cannot be lowered).
++ *
++ * @param {{id: string, locked?: boolean}} primitive
++ * @param {string} state - requested tri-state
++ * @returns {{ok: true, enabled: boolean}|{ok: false, error: string}}
++ */
++function planControl(primitive, state) {
++  const surface = classifySurface(primitive.id);
++
++  if (!CONTROLLABLE_SURFACES.has(surface)) {
++    return {
++      ok: false,
++      error: `${primitive.id} is presence-only, not enforceable — Forge has no `
++        + `run-time deny for this surface. It stays read-only in the cockpit `
++        + `(badge PRESENT (advisory)). See ${GUARANTEE_DOC}.`,
++    };
++  }
++
++  if (!VALID_STATES.has(state)) {
++    return {
++      ok: false,
++      error: `Unknown state '${state}'. Use one of: mandatory, optional, permission.`,
++    };
++  }
++
++  const isHuman = surface === 'human-gate';
++
++  if (state === 'permission' && !isHuman) {
++    return {
++      ok: false,
++      error: `'permission' applies only to a human gate `
++        + `(${[...HUMAN_GATE_IDS].join(', ')}); ${primitive.id} enforces evidence, `
++        + `not approval. Use 'mandatory' or 'optional'. See ${GUARANTEE_DOC}.`,
++    };
++  }
++
++  if (state === 'mandatory' && isHuman) {
++    return {
++      ok: false,
++      error: `${primitive.id} is a human gate — it blocks until a human approval `
++        + `event, so use 'permission' (not 'mandatory'). See ${GUARANTEE_DOC}.`,
++    };
++  }
++
++  if (state === 'optional' && primitive.locked === true) {
++    return {
++      ok: false,
++      error: `Cannot lower locked ${surface} '${primitive.id}' to optional.`,
++    };
++  }
++
++  // mandatory / permission → enabled; optional → disabled. Written to the ONE
++  // field the resolver honors, so enforcement is genuine.
++  return { ok: true, enabled: state !== 'optional' };
++}
++
++module.exports = {
++  HUMAN_GATE_IDS,
++  GUARANTEE_DOC,
++  classifySurface,
++  isControllable,
++  enforcementLocus,
++  deriveState,
++  badgeFor,
++  describeControl,
++  planControl,
++};
+diff --git a/test/commands/control.test.js b/test/commands/control.test.js
+new file mode 100644
+index 00000000..433dadb4
+--- /dev/null
++++ b/test/commands/control.test.js
+@@ -0,0 +1,170 @@
++'use strict';
++
++/**
++ * `forge control` — tri-state control ONLY for gates/rails (B6 / 7dc59af2).
++ *
++ * The command reuses the exact resolver-enforced surface
++ * (`workflow.gates.<id>.enabled`) that `forge gate` writes, so setting a state is
++ * genuinely honored at run time (asserted via getResolvedRuntimeGraph). It
++ * REFUSES mcp/rules/skills with the guarantee-matrix message rather than pretend
++ * enforcement it cannot deliver. `status` renders the all-surface read with
++ * enforcement-locus badges.
++ */
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const YAML = require('yaml');
++
++const controlCommand = require('../../lib/commands/control');
++const { getResolvedRuntimeGraph } = require('../../lib/core/runtime-graph');
++
++const tempRoots = [];
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-control-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++function readConfig(root) {
++  return YAML.parse(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8'));
++}
++
++function configPath(root) {
++  return path.join(root, '.forge', 'config.yaml');
++}
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('forge control — set tri-state on gates/rails (reuses workflow.gates.<id>.enabled)', () => {
++  test('optional on a gate writes enabled=false AND the resolver honors it', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['gate.plan-exit', 'optional'], {}, root);
++    expect(result.success).toBe(true);
++    expect(readConfig(root).workflow.gates['gate.plan-exit'].enabled).toBe(false);
++
++    const gate = getResolvedRuntimeGraph({ projectRoot: root })
++      .gates.find(g => g.id === 'gate.plan-exit');
++    expect(gate.enabled).toBe(false);
++  });
++
++  test('mandatory flips a gate back to enabled=true', async () => {
++    const root = makeProject();
++    await controlCommand.handler(['gate.plan-exit', 'optional'], {}, root);
++    await controlCommand.handler(['gate.plan-exit', 'mandatory'], {}, root);
++    const gate = getResolvedRuntimeGraph({ projectRoot: root })
++      .gates.find(g => g.id === 'gate.plan-exit');
++    expect(gate.enabled).toBe(true);
++  });
++
++  test('permission on a human gate writes enabled=true', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['gate.merge', 'permission'], {}, root);
++    expect(result.success).toBe(true);
++    expect(readConfig(root).workflow.gates['gate.merge'].enabled).toBe(true);
++  });
++
++  test('optional on rail.kernel_tracking flips the resolved rail off', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['rail.kernel_tracking', 'optional'], {}, root);
++    expect(result.success).toBe(true);
++    const rail = getResolvedRuntimeGraph({ projectRoot: root })
++      .rails.find(r => r.id === 'rail.kernel_tracking');
++    expect(rail.enabled).toBe(false);
++  });
++});
++
++describe('forge control — honest refusals (nothing written)', () => {
++  test('mcp/rules/skills are refused with the guarantee-matrix pointer', async () => {
++    const root = makeProject();
++    for (const id of ['mcp.context7', 'rule.tdd', 'skill.plan']) {
++      const result = await controlCommand.handler([id, 'mandatory'], {}, root);
++      expect(result.success).toBe(false);
++      expect(result.error).toMatch(/presence-only/i);
++      expect(result.error).toMatch(/not enforceable/i);
++      expect(result.error).toMatch(/control-plane-guarantees\.md/);
++    }
++    // Nothing was written for any advisory surface.
++    expect(fs.existsSync(configPath(root))).toBe(false);
++  });
++
++  test('permission on a non-human gate is refused', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['gate.plan-exit', 'permission'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/human gate/i);
++    expect(fs.existsSync(configPath(root))).toBe(false);
++  });
++
++  test('an unknown gate id is refused at write time (nothing written)', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['gate.does-not-exist', 'mandatory'], {}, root);
++    expect(result.success).toBe(false);
++    expect(fs.existsSync(configPath(root))).toBe(false);
++  });
++
++  test('an invalid state value is refused', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['gate.plan-exit', 'sometimes'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/mandatory|optional|permission/);
++    expect(fs.existsSync(configPath(root))).toBe(false);
++  });
++
++  test('missing arguments show usage', async () => {
++    const root = makeProject();
++    expect((await controlCommand.handler([], {}, root)).success).toBe(false);
++    expect((await controlCommand.handler(['gate.plan-exit'], {}, root)).success).toBe(false);
++  });
++});
++
++describe('forge control status — all-surface read with enforcement-locus badges', () => {
++  test('--json lists every controllable surface with badge + locus + state', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['status', '--json'], {}, root);
++    expect(result.success).toBe(true);
++    const parsed = JSON.parse(result.output);
++    const items = parsed.items ?? parsed;
++
++    const planExit = items.find(i => i.id === 'gate.plan-exit');
++    expect(planExit).toMatchObject({
++      surface: 'gate',
++      controllable: true,
++      badge: 'ENFORCED (gate)',
++      locus: 'run-time-deny (gate)',
++      state: 'mandatory',
++    });
++
++    const merge = items.find(i => i.id === 'gate.merge');
++    expect(merge).toMatchObject({
++      surface: 'human-gate',
++      badge: 'PERMISSION (human approval)',
++      locus: 'run-time-deny (permission)',
++    });
++  });
++
++  test('status reflects a control change', async () => {
++    const root = makeProject();
++    await controlCommand.handler(['gate.plan-exit', 'optional'], {}, root);
++    const result = await controlCommand.handler(['status', '--json'], {}, root);
++    const items = JSON.parse(result.output).items;
++    const planExit = items.find(i => i.id === 'gate.plan-exit');
++    expect(planExit.state).toBe('optional');
++    expect(planExit.badge).toBe('OFF (optional)');
++  });
++
++  test('human-readable status names the guarantee-matrix doc', async () => {
++    const root = makeProject();
++    const result = await controlCommand.handler(['status'], {}, root);
++    expect(result.success).toBe(true);
++    expect(result.output).toMatch(/control-plane-guarantees\.md/);
++  });
++});
+diff --git a/test/commands/options-locus-badge.test.js b/test/commands/options-locus-badge.test.js
+new file mode 100644
+index 00000000..1e31fadb
+--- /dev/null
++++ b/test/commands/options-locus-badge.test.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++/**
++ * `forge options gates` carries enforcement-locus badges (B6 / 724356ea).
++ *
++ * The all-surface read view must never imply enforcement a surface lacks, so
++ * each gate item is decorated with the honest locus + badge derived from the
++ * guarantee matrix (lib/control-plane.js). Human gates read PERMISSION, ordinary
++ * gates read ENFORCED, and the badge string appears in the human render too.
++ */
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const optionsCommand = require('../../lib/commands/options');
++
++const tempRoots = [];
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-options-badge-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++afterEach(() => {
++  for (const root of tempRoots.splice(0)) {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++describe('forge options gates — enforcement-locus badges', () => {
++  test('--json decorates each gate with badge, locus, and surface', async () => {
++    const root = makeProject();
++    const result = await optionsCommand.handler(['gates', '--json'], {}, root);
++    const items = JSON.parse(result.output).items;
++
++    const planExit = items.find(g => g.id === 'gate.plan-exit');
++    expect(planExit.badge).toBe('ENFORCED (gate)');
++    expect(planExit.locus).toBe('run-time-deny (gate)');
++    expect(planExit.surface).toBe('gate');
++
++    const merge = items.find(g => g.id === 'gate.merge');
++    expect(merge.badge).toBe('PERMISSION (human approval)');
++    expect(merge.surface).toBe('human-gate');
++  });
++
++  test('human render includes the badge string', async () => {
++    const root = makeProject();
++    const result = await optionsCommand.handler(['gates'], {}, root);
++    expect(result.output).toMatch(/ENFORCED \(gate\)/);
++    expect(result.output).toMatch(/PERMISSION \(human approval\)/);
++  });
++});
+diff --git a/test/control-plane.test.js b/test/control-plane.test.js
+new file mode 100644
+index 00000000..8e209947
+--- /dev/null
++++ b/test/control-plane.test.js
+@@ -0,0 +1,190 @@
++'use strict';
++
++/**
++ * Unit tests for the control-plane taxonomy (B6 / 7dc59af2 + 724356ea).
++ *
++ * The module is the single source of truth for the guarantee matrix at
++ * docs/reference/control-plane-guarantees.md: it classifies each surface,
++ * derives the tri-state label, names the enforcement-locus, renders the read
++ * badge, and resolves a `forge control` write-intent into the ONE
++ * resolver-enforced field (workflow.gates.<id>.enabled) — refusing surfaces
++ * Forge cannot actually deny at run time.
++ */
++
++const { describe, test, expect } = require('bun:test');
++
++const {
++  HUMAN_GATE_IDS,
++  classifySurface,
++  isControllable,
++  enforcementLocus,
++  badgeFor,
++  deriveState,
++  describeControl,
++  planControl,
++} = require('../lib/control-plane');
++
++describe('classifySurface', () => {
++  test('human gates are distinguished from ordinary gates', () => {
++    expect(classifySurface('gate.intent')).toBe('human-gate');
++    expect(classifySurface('gate.plan-approval')).toBe('human-gate');
++    expect(classifySurface('gate.merge')).toBe('human-gate');
++  });
++
++  test('ordinary stage gates + issue_verify are gates', () => {
++    expect(classifySurface('gate.plan-exit')).toBe('gate');
++    expect(classifySurface('gate.issue_verify')).toBe('gate');
++  });
++
++  test('rails, mcp, rules, skills, and unknowns', () => {
++    expect(classifySurface('rail.kernel_tracking')).toBe('rail');
++    expect(classifySurface('mcp.context7')).toBe('mcp');
++    expect(classifySurface('rule.tdd')).toBe('rule');
++    expect(classifySurface('skill.plan')).toBe('skill');
++    expect(classifySurface('nonsense')).toBe('unknown');
++  });
++
++  test('HUMAN_GATE_IDS is the closed human-gate set', () => {
++    expect([...HUMAN_GATE_IDS].sort()).toEqual(
++      ['gate.intent', 'gate.merge', 'gate.plan-approval'],
++    );
++  });
++});
++
++describe('isControllable — only gates/rails have a real run-time deny', () => {
++  test('gates and rails are controllable', () => {
++    expect(isControllable('gate.plan-exit')).toBe(true);
++    expect(isControllable('gate.merge')).toBe(true);
++    expect(isControllable('rail.kernel_tracking')).toBe(true);
++  });
++  test('mcp/rules/skills/unknown are NOT controllable (presence-only)', () => {
++    expect(isControllable('mcp.context7')).toBe(false);
++    expect(isControllable('rule.tdd')).toBe(false);
++    expect(isControllable('skill.plan')).toBe(false);
++    expect(isControllable('nonsense')).toBe(false);
++  });
++});
++
++describe('enforcementLocus', () => {
++  test('maps each surface to its honest locus string', () => {
++    expect(enforcementLocus('gate')).toBe('run-time-deny (gate)');
++    expect(enforcementLocus('rail')).toBe('run-time-deny (rail)');
++    expect(enforcementLocus('human-gate')).toBe('run-time-deny (permission)');
++    expect(enforcementLocus('mcp')).toBe('render-time presence-only');
++    expect(enforcementLocus('rule')).toBe('render-time presence-only');
++    expect(enforcementLocus('skill')).toBe('render-time presence-only');
++  });
++});
++
++describe('deriveState — label read back from (enabled, locked, surface)', () => {
++  test('non-human gate/rail', () => {
++    expect(deriveState({ id: 'gate.plan-exit', enabled: true })).toBe('mandatory');
++    expect(deriveState({ id: 'gate.plan-exit', enabled: false })).toBe('optional');
++    expect(deriveState({ id: 'rail.kernel_tracking', enabled: true })).toBe('mandatory');
++  });
++  test('human gate', () => {
++    expect(deriveState({ id: 'gate.merge', enabled: true })).toBe('permission');
++    expect(deriveState({ id: 'gate.merge', enabled: false })).toBe('optional');
++  });
++  test('advisory surfaces have no state', () => {
++    expect(deriveState({ id: 'mcp.context7', enabled: true })).toBe(null);
++  });
++});
++
++describe('badgeFor — the read-view badge reflects locus + current state', () => {
++  test('enabled gate/rail render ENFORCED', () => {
++    expect(badgeFor({ id: 'gate.plan-exit', enabled: true })).toBe('ENFORCED (gate)');
++    expect(badgeFor({ id: 'rail.kernel_tracking', enabled: true })).toBe('ENFORCED (rail)');
++  });
++  test('enabled human gate renders PERMISSION', () => {
++    expect(badgeFor({ id: 'gate.merge', enabled: true })).toBe('PERMISSION (human approval)');
++  });
++  test('disabled controllable renders OFF', () => {
++    expect(badgeFor({ id: 'gate.plan-exit', enabled: false })).toBe('OFF (optional)');
++    expect(badgeFor({ id: 'gate.merge', enabled: false })).toBe('OFF (optional)');
++  });
++  test('advisory surfaces render PRESENT (advisory)', () => {
++    expect(badgeFor({ id: 'mcp.context7', enabled: true })).toBe('PRESENT (advisory)');
++    expect(badgeFor({ id: 'skill.plan' })).toBe('PRESENT (advisory)');
++  });
++  test('locked adds a LOCKED marker', () => {
++    expect(badgeFor({ id: 'rail.locked_example', enabled: true, locked: true }))
++      .toBe('ENFORCED (rail) · LOCKED');
++  });
++});
++
++describe('describeControl — the full read record for a primitive', () => {
++  test('shapes a gate record', () => {
++    const rec = describeControl({ id: 'gate.plan-exit', enabled: true, locked: false });
++    expect(rec).toMatchObject({
++      id: 'gate.plan-exit',
++      surface: 'gate',
++      controllable: true,
++      state: 'mandatory',
++      locus: 'run-time-deny (gate)',
++      badge: 'ENFORCED (gate)',
++      locked: false,
++    });
++  });
++  test('shapes an advisory record with no state and controllable=false', () => {
++    const rec = describeControl({ id: 'mcp.context7', enabled: true });
++    expect(rec.surface).toBe('mcp');
++    expect(rec.controllable).toBe(false);
++    expect(rec.state).toBe(null);
++    expect(rec.badge).toBe('PRESENT (advisory)');
++  });
++});
++
++describe('planControl — resolve a tri-state write-intent to enabled, honestly', () => {
++  test('mandatory on a gate/rail -> enabled=true', () => {
++    expect(planControl({ id: 'gate.plan-exit', locked: false }, 'mandatory'))
++      .toMatchObject({ ok: true, enabled: true });
++    expect(planControl({ id: 'rail.kernel_tracking', locked: false }, 'mandatory'))
++      .toMatchObject({ ok: true, enabled: true });
++  });
++
++  test('optional on an unlocked controllable -> enabled=false', () => {
++    expect(planControl({ id: 'gate.plan-exit', locked: false }, 'optional'))
++      .toMatchObject({ ok: true, enabled: false });
++  });
++
++  test('permission on a human gate -> enabled=true', () => {
++    expect(planControl({ id: 'gate.merge', locked: false }, 'permission'))
++      .toMatchObject({ ok: true, enabled: true });
++  });
++
++  test('permission on a NON-human gate/rail is refused', () => {
++    const r = planControl({ id: 'gate.plan-exit', locked: false }, 'permission');
++    expect(r.ok).toBe(false);
++    expect(r.error).toMatch(/permission/i);
++    expect(r.error).toMatch(/human gate/i);
++  });
++
++  test('mandatory on a human gate is refused (directs to permission)', () => {
++    const r = planControl({ id: 'gate.merge', locked: false }, 'mandatory');
++    expect(r.ok).toBe(false);
++    expect(r.error).toMatch(/permission/i);
++  });
++
++  test('optional on a LOCKED primitive is refused', () => {
++    const r = planControl({ id: 'rail.kernel_tracking', locked: true }, 'optional');
++    expect(r.ok).toBe(false);
++    expect(r.error).toMatch(/locked/i);
++  });
++
++  test('any advisory surface is refused with the guarantee-matrix pointer', () => {
++    for (const id of ['mcp.context7', 'rule.tdd', 'skill.plan']) {
++      const r = planControl({ id }, 'mandatory');
++      expect(r.ok).toBe(false);
++      expect(r.error).toMatch(/presence-only/i);
++      expect(r.error).toMatch(/not enforceable/i);
++      expect(r.error).toMatch(/control-plane-guarantees\.md/);
++    }
++  });
++
++  test('an unknown tri-state value is refused', () => {
++    const r = planControl({ id: 'gate.plan-exit', locked: false }, 'sometimes');
++    expect(r.ok).toBe(false);
++    expect(r.error).toMatch(/mandatory|optional|permission/);
++  });
++});
+-- 
+2.51.0.windows.1
+

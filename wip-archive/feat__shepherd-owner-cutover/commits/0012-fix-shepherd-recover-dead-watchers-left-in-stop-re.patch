@@ -1,0 +1,169 @@
+From 92a104c96733a89e7e17b6d47cd4d850805a0529 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 19:12:50 +0530
+Subject: [PATCH] fix(shepherd): recover dead watchers left in stop_requested
+
+A nonterminal watcher that exits after requestStop() lands but before
+releaseNonterminal() succeeds leaves a dead stop_requested row. reconcile.js
+emits recoverWatcher for it, but recoverDeadWatcher() accepted only running
+rows, so every daemon pass rejected the transition and the open PR stayed
+permanently unwatched. Accept stop_requested at the authority boundary, the
+postcondition validator, and the SQLite transaction: same pid-dead-or-proven-
+reused gate, same fresh-starting-row postconditions.
+---
+ lib/kernel/sqlite-driver.js                 |  5 ++-
+ lib/pr-monitor/watch-owner.js               |  8 +++-
+ test/kernel/watch-owner-transaction.test.js | 13 ++++--
+ test/pr-monitor/watch-owner.test.js         | 49 +++++++++++++++++++--
+ 4 files changed, 66 insertions(+), 9 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 0a4b9cc3..b9332f88 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3334,7 +3334,10 @@ function applyWatchOwnerOperation(runtime, databasePath, options, operation, raw
+ 			row = { ...startingWatchOwnerRow(input), legacy_evidence_hash: current.legacy_evidence_hash };
+ 			break;
+ 		case 'recoverDeadWatcher':
+-			mismatch = watchOwnerMismatch(current, input, 'running');
++			// `stop_requested` is a nonterminal watcher-owned phase exactly like
++			// `running`; a dead watcher in either state recovers into a fresh
++			// `starting` row.
++			mismatch = watchOwnerMismatch(current, input, ['running', 'stop_requested']);
+ 			if (mismatch) return watchOwnerResult(false, false, mismatch, current);
+ 			if (current.watcher_pid !== input.watcherPid) return watchOwnerResult(false, false, 'pid_mismatch', current);
+ 			row = { ...startingWatchOwnerRow(input), legacy_evidence_hash: current.legacy_evidence_hash };
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index e2a3a8e4..7847527a 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -439,7 +439,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 	}
+ 	case 'watchOwnerRecoverDeadWatcher': {
+ 		const prior = input.expectedSnapshot;
+-		if (!prior || prior.phase !== 'running') return false;
++		if (!prior || !['running', 'stop_requested'].includes(prior.phase)) return false;
+ 		return validOwnerSuccess(result, record, 'recovered', {
+ 			controllerPid: input.controllerPid,
+ 			legacyEvidenceHash: prior.legacy_evidence_hash,
+@@ -1015,7 +1015,11 @@ async function recoverDeadWatcher(ctx, input, opts = {}) {
+ 	if (!value || !positivePid(watcherPid) || !positivePid(recoveryControllerPid)) return invalid('invalid_pid');
+ 	const captured = captureAuthoritySnapshot(identity, boundOpts);
+ 	if (!captured.ok) return invalid(captured.reason);
+-	if (!captured.snapshot || captured.snapshot.phase !== 'running'
++	// A watcher that exited after `requestStop()` but before `releaseNonterminal()`
++	// landed leaves a dead `stop_requested` row. That row is as recoverable as a dead
++	// `running` one — same generation, same watcher PID, same postconditions — so
++	// refusing it would strand the PR unwatched forever.
++	if (!captured.snapshot || !['running', 'stop_requested'].includes(captured.snapshot.phase)
+ 		|| captured.snapshot.generation !== value.generation
+ 		|| captured.snapshot.watcher_pid !== Number(watcherPid)) {
+ 		return invalid('generation_mismatch');
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 5f3a0c9c..77f303dd 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -169,7 +169,7 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(rows[0].generation).toBe(results.find(result => result.ok && result.changed).record.generation);
+ 	}, 20_000);
+ 
+-	test('direct recovery preserves a watcher after cooperative stop is requested', () => {
++	test('direct recovery accepts a dead watcher after cooperative stop is requested', () => {
+ 		const repo = 'acme/forge';
+ 		const pr = 76;
+ 		const controllerPid = 976;
+@@ -188,8 +188,15 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 			now: '2026-08-19T08:00:03.000Z', expectedSnapshot: before,
+ 		});
+ 
+-		expect(result).toEqual({ ok: false, changed: false, reason: 'phase_mismatch', row: before });
+-		expect(driver.watchOwnerRead({ repo, pr }).row).toEqual(before);
++		// A watcher that exits after requestStop() lands but before releaseNonterminal()
++		// succeeds leaves exactly this row. It recovers into a fresh starting row like
++		// any other dead nonterminal watcher; refusing it strands the PR unwatched.
++		expect(result).toMatchObject({
++			ok: true, changed: true, reason: 'recovered',
++			row: { phase: 'starting', controller_pid: 2_976, watcher_pid: null, heartbeat_at: null },
++		});
++		expect(result.row.generation).not.toBe(before.generation);
++		expect(driver.watchOwnerRead({ repo, pr }).row).toEqual(result.row);
+ 	});
+ 
+ 	test('N-process legacy starting import converges on one provenance row', async () => {
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index b2f6d3d4..745aeda2 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -712,6 +712,46 @@ describe('watch owner SQLite authority', () => {
+ 		expect(recovered).toMatchObject({ ok: true, record: { phase: 'starting', controllerPid: 109 } });
+ 	});
+ 
++	test('recovers a dead watcher left in stop_requested by a failed release', async () => {
++		const ctx = { repo: 'acme/forge', pr: 59 };
++		const base = { driver, now: LATER };
++		const start = await owner.reserveStarting(ctx, { controllerPid: 112, startedAt: NOW }, base);
++		await owner.bindRunning(ctx, {
++			generation: start.record.generation, controllerPid: 112, pid: 212, updatedAt: LATER,
++		}, base);
++		// requestStop() lands, releaseNonterminal() never does (the watcher dies first),
++		// so the durable row is a dead `stop_requested` one.
++		const stopped = await owner.requestStop(ctx, {
++			generation: start.record.generation, pid: 212, updatedAt: LATER,
++		}, base);
++		expect(stopped).toMatchObject({ ok: true, record: { phase: 'stop_requested' } });
++
++		const recovered = await owner.recoverDeadWatcher(ctx, {
++			generation: start.record.generation, pid: 212, recoveryControllerPid: 113,
++			providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
++		}, { ...base, isPidAlive: () => false, verifyProviderEvidence: async () => true });
++		expect(recovered).toMatchObject({
++			ok: true, changed: true, reason: 'recovered',
++			record: { phase: 'starting', controllerPid: 113, watcherPid: null },
++		});
++		expect(recovered.record.generation).not.toBe(start.record.generation);
++
++		// A LIVE watcher PID still blocks recovery of a stop_requested row.
++		const live = { repo: 'acme/forge', pr: 60 };
++		const liveStart = await owner.reserveStarting(live, { controllerPid: 114, startedAt: NOW }, base);
++		await owner.bindRunning(live, {
++			generation: liveStart.record.generation, controllerPid: 114, pid: 214, updatedAt: LATER,
++		}, base);
++		await owner.requestStop(live, {
++			generation: liveStart.record.generation, pid: 214, updatedAt: LATER,
++		}, base);
++		expect(await owner.recoverDeadWatcher(live, {
++			generation: liveStart.record.generation, pid: 214, recoveryControllerPid: 115,
++			providerEvidence: { state: 'OPEN' }, updatedAt: NEXT,
++		}, { ...base, isPidAlive: () => true, verifyProviderEvidence: async () => true }))
++			.toMatchObject({ ok: false, changed: false, reason: 'pid_live' });
++	});
++
+ 	test('recovers a starting row whose controller PID was reused, and fails closed without that proof', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 58 };
+ 		const base = { driver, now: LATER };
+@@ -3042,7 +3082,7 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(recoveryAttempts).toBe(0);
+ 	});
+ 
+-	test('does not recover a watcher after cooperative stop is requested', async () => {
++	test('recovers a dead watcher after cooperative stop is requested', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 989 };
+ 		const running = await seedLifecycle(ctx, 'running');
+ 		const stopped = await owner.requestStop(ctx, {
+@@ -3063,8 +3103,11 @@ describe('watch owner successful-result postcondition validation', () => {
+ 			},
+ 		}));
+ 
+-		expect(result).toEqual({ ok: false, changed: false, reason: 'generation_mismatch', record: null });
+-		expect(recoveryAttempts).toBe(0);
++		// The dead watcher IS recoverable from `stop_requested` (a failed
++		// releaseNonterminal leaves exactly this row), so the transaction is reached;
++		// the adapter's row-less success envelope is what fails the postcondition.
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++		expect(recoveryAttempts).toBe(1);
+ 		expect(await owner.readOwner(ctx, authorityOpts())).toMatchObject({
+ 			ok: true, record: { phase: 'stop_requested', generation: stopped.record.generation },
+ 		});
+-- 
+2.51.0.windows.1
+

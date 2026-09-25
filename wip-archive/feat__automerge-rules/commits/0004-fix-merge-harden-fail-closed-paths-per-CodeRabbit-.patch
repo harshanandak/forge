@@ -1,0 +1,109 @@
+From f813a9485e410896a83d072c4f841042ad6f456a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 17:47:54 +0530
+Subject: [PATCH] fix(merge): harden fail-closed paths per CodeRabbit #289
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- fetchUnresolvedThreadCount: guard reviewThreads(first:100) truncation via
+  pageInfo.hasNextPage → return undefined (threads_resolved fails closed) when >100.
+- handler: wrap loadConfig in try/catch so a malformed .forge/config.yaml refuses
+  to merge (fail-closed) instead of throwing past the contract.
+- settle_min/idle_min (+ nothing else changed): reject a missing/empty numeric arg
+  explicitly — Number('')/Number(null) coerce to 0 (finite), which silently meant
+  "0 minutes required". Now missing → unmet; also reject negative.
+- TOCTOU: re-apply the terminal-state (state===OPEN) guard on the fresh re-fetch,
+  so a PR merged/closed between fetches is never merged again.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/commands/merge.js | 28 ++++++++++++++++++++++++----
+ lib/merge-rules.js    |  6 ++++--
+ 2 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index f34e36eb..132d6bf1 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -70,12 +70,15 @@ function fetchUnresolvedThreadCount(gh, pr) {
+     const name = repo && repo.name;
+     if (!owner || !name) return undefined;
+     const query = 'query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n)'
+-      + '{pullRequest(number:$pr){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}';
++      + '{pullRequest(number:$pr){reviewThreads(first:100){pageInfo{hasNextPage}nodes{isResolved isOutdated}}}}}';
+     const out = gh(['api', 'graphql', '-f', `query=${query}`,
+       '-F', `o=${owner}`, '-F', `n=${name}`, '-F', `pr=${Number(pr)}`]);
+     const data = JSON.parse(out || '{}');
+-    const nodes = (((data.data || {}).repository || {}).pullRequest || {}).reviewThreads;
+-    const list = (nodes && nodes.nodes) || [];
++    const threads = (((data.data || {}).repository || {}).pullRequest || {}).reviewThreads;
++    // >100 threads → the returned page is truncated and the count unreliable;
++    // return undefined so threads_resolved fails closed rather than trusting it.
++    if (threads && threads.pageInfo && threads.pageInfo.hasNextPage) return undefined;
++    const list = (threads && threads.nodes) || [];
+     return list.filter((t) => t && t.isResolved === false && t.isOutdated === false).length;
+   } catch (_err) {
+     return undefined;
+@@ -183,7 +186,16 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   const loadConfig = deps.loadConfig || loadRawConfig;
+-  const config = loadConfig(root) || {};
++  let config;
++  try {
++    config = loadConfig(root) || {};
++  } catch (err) {
++    // A malformed .forge/config.yaml must NOT crash the command — fail closed:
++    // refuse to auto-merge and report, rather than throwing past the contract.
++    const reason = `Could not read merge config (${err.message}) — refusing to auto-merge (fail-closed).`;
++    process.stdout.write(`${reason}\n`);
++    return { success: false, merged: false, error: reason };
++  }
+   const auto = (config.merge && config.merge.auto) || {};
+   const enabled = auto.enabled === true;
+   const rules = Array.isArray(auto.rules) ? auto.rules : [];
+@@ -246,6 +258,14 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   } catch (err) {
+     return { success: false, merged: false, error: `Failed to re-fetch PR context before merge: ${err.message}` };
+   }
++  // Re-apply the terminal-state guard on the FRESH context: the PR may have been
++  // merged or closed between the first fetch and now. Never merge a terminal PR.
++  const freshState = freshContext && freshContext.state ? String(freshContext.state).toUpperCase() : '';
++  if (freshState && freshState !== 'OPEN') {
++    const reason = `PR #${pr} became ${freshState} (not OPEN) before merge — nothing to merge. No action taken.`;
++    process.stdout.write(`${reason}\n`);
++    return { success: true, merged: false, enabled: true, state: freshState, reason };
++  }
+   const recheck = evaluateMergeRules(freshContext, rules);
+   if (!recheck.allowed) {
+     process.stdout.write(`Auto-merge ABORTED for PR #${pr} — state changed since first check; ${recheck.unmet.length} rule(s) now unmet:\n`);
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index 09985bae..8fbdcf4c 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -231,8 +231,9 @@ function minApprovals(ctx, arg) {
+ }
+ 
+ function settleMin(ctx, arg) {
++  if (arg === null || arg === undefined || arg === '') return fail('settle_min requires a numeric minute argument (missing → fail-closed).');
+   const need = Number(arg);
+-  if (!Number.isFinite(need)) return fail('settle_min requires a numeric minute argument.');
++  if (!Number.isFinite(need) || need < 0) return fail('settle_min requires a non-negative numeric minute argument.');
+   const nowMs = toMs(ctx.now);
+   if (Number.isNaN(nowMs)) return fail('current time (now) is missing/unparseable (fail-closed).');
+   const lc = lastComment(ctx);
+@@ -244,8 +245,9 @@ function settleMin(ctx, arg) {
+ }
+ 
+ function idleMin(ctx, arg) {
++  if (arg === null || arg === undefined || arg === '') return fail('idle_min requires a numeric minute argument (missing → fail-closed).');
+   const need = Number(arg);
+-  if (!Number.isFinite(need)) return fail('idle_min requires a numeric minute argument.');
++  if (!Number.isFinite(need) || need < 0) return fail('idle_min requires a non-negative numeric minute argument.');
+   const nowMs = toMs(ctx.now);
+   if (Number.isNaN(nowMs)) return fail('current time (now) is missing/unparseable (fail-closed).');
+   const activityMs = toMs(ctx.lastActivityAt);
+-- 
+2.51.0.windows.1
+

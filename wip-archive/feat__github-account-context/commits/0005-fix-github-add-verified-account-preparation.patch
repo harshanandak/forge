@@ -1,0 +1,115 @@
+From a14073cecf6f48fbfbbe4ffff89309e0eb030c8f Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 22:04:48 +0530
+Subject: [PATCH] fix(github): add verified account preparation
+
+---
+ lib/github-context.js       | 22 ++++++++++++++-------
+ test/github-context.test.js | 38 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 53 insertions(+), 7 deletions(-)
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+index 8fe62ef4..7acf0ff7 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -184,6 +184,19 @@ function resolveGithubLogin(token, baseEnv, options) {
+   }
+ }
+ 
++function prepareGithubAccount(_projectRoot, account, options = {}) {
++  if (!validateGithubLogin(account)) {
++    throw safeCommandFailure('INVALID_GITHUB_LOGIN', 'GitHub login must be 1-39 letters, numbers, or internal hyphens.');
++  }
++  const baseEnv = { ...(options.baseEnv || options.env || process.env) };
++  const token = retrieveGithubToken(account, { ...options, baseEnv });
++  const login = resolveGithubLogin(token, baseEnv, options);
++  if (login.toLowerCase() !== account.toLowerCase()) {
++    throw safeCommandFailure('GITHUB_ACCOUNT_MISMATCH', `GitHub account mismatch: expected ${account}, received ${login}.`);
++  }
++  return createPublicContext(publicStatus('ready', account, login), token, baseEnv, options);
++}
++
+ function publicStatus(state, account, login) {
+   return Object.freeze({ state, account: account || null, login: login || null });
+ }
+@@ -253,19 +266,14 @@ function createGithubContext(projectRoot, options = {}) {
+   if (!validateGithubLogin(account)) {
+     throw safeCommandFailure('INVALID_GITHUB_LOGIN', 'The clone-local github.account value is not a valid GitHub login.');
+   }
+-
+-  const token = retrieveGithubToken(account, { ...options, baseEnv });
+-  const login = resolveGithubLogin(token, baseEnv, options);
+-  if (login.toLowerCase() !== account.toLowerCase()) {
+-    throw safeCommandFailure('GITHUB_ACCOUNT_MISMATCH', `GitHub account mismatch: expected ${account}, received ${login}.`);
+-  }
+-  return createPublicContext(publicStatus('ready', account, login), token, baseEnv, options);
++  return prepareGithubAccount(projectRoot, account, { ...options, baseEnv });
+ }
+ 
+ module.exports = {
+   ACCOUNT_KEY,
+   GithubContextError,
+   createGithubContext,
++  prepareGithubAccount,
+   prepareGithubContext: createGithubContext,
+   readGithubAccount,
+   resolveGithubLogin,
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index c41cebc6..a28f9da9 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
+ 
+ const {
+   createGithubContext,
++  prepareGithubAccount,
+   prepareGithubContext,
+   readGithubAccount,
+   unsetGithubAccount,
+@@ -87,6 +88,43 @@ describe('github context', () => {
+     expect(JSON.stringify(context)).not.toContain('token-canary');
+   });
+ 
++  test('prepares a supplied account without reading or writing Git config', () => {
++    const calls = [];
++    const context = prepareGithubAccount('/repo', 'Work-Login', {
++      runner: fakeRunner(calls, { account: 'unused', liveLogin: 'work-login', token: 'token-canary' }),
++      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
++    });
++
++    expect(context.status).toEqual({ state: 'ready', account: 'Work-Login', login: 'work-login' });
++    expect(calls).toHaveLength(2);
++    expect(calls.every((call) => call.command !== 'git')).toBe(true);
++    expect(calls[0]).toMatchObject({
++      command: 'gh',
++      args: ['auth', 'token', '--hostname', 'github.com', '--user', 'Work-Login'],
++    });
++  });
++
++  test('validates a supplied account before any subprocess', () => {
++    const calls = [];
++    expect(() => prepareGithubAccount('/repo', 'bad value', { runner: fakeRunner(calls) })).toThrow(/login|account/i);
++    expect(calls).toHaveLength(0);
++  });
++
++  test('keeps supplied-account mismatch failures secret-clean', () => {
++    const calls = [];
++    let failure;
++    try {
++      prepareGithubAccount('/repo', 'octo', {
++        runner: fakeRunner(calls, { account: 'unused', liveLogin: 'other', token: 'token-canary' }),
++      });
++    } catch (error) {
++      failure = error;
++    }
++    expect(failure).toMatchObject({ code: 'GITHUB_ACCOUNT_MISMATCH' });
++    expect(failure.message).not.toContain('token-canary');
++    expect(calls.every((call) => call.command !== 'git')).toBe(true);
++  });
++
+   test('private child helpers use selected variables without exposing the token in public values', () => {
+     const calls = [];
+     const context = prepareGithubContext('/repo', {
+-- 
+2.51.0.windows.1
+

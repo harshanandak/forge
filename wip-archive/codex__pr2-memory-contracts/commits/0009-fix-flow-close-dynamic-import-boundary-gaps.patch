@@ -1,0 +1,174 @@
+From c327e2ba66feefbd83d01a737d3230f357b92526 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:53:23 +0530
+Subject: [PATCH] fix(flow): close dynamic import boundary gaps
+
+---
+ packages/flow/index.js                        |  6 +-
+ packages/flow/index.test.js                   |  4 +-
+ .../product-package-boundaries.test.js        | 78 +++++++++++++------
+ 3 files changed, 61 insertions(+), 27 deletions(-)
+
+diff --git a/packages/flow/index.js b/packages/flow/index.js
+index 579b80db..95eb9bb6 100644
+--- a/packages/flow/index.js
++++ b/packages/flow/index.js
+@@ -1,6 +1,6 @@
+ "use strict";
+ 
+-const { computeContentHash, validateContract } = require("@forge/memory-contracts");
++const { computeContentHash, validateContractStructure } = require("@forge/memory-contracts");
+ 
+ function requiredString(options, name) {
+   const value = options[name];
+@@ -11,7 +11,7 @@ function requiredString(options, name) {
+ }
+ 
+ function createRunReceiptSkeleton(workPacket, options = {}) {
+-  const packetValidation = validateContract(workPacket);
++  const packetValidation = validateContractStructure(workPacket);
+   if (!packetValidation.ok || workPacket.schema_id !== "forge.memory.work-packet.v1") {
+     throw new TypeError("WorkPacket is invalid");
+   }
+@@ -57,7 +57,7 @@ function createRunReceiptSkeleton(workPacket, options = {}) {
+     extensions: {},
+   };
+   receipt.content_hash = computeContentHash(receipt);
+-  const receiptValidation = validateContract(receipt);
++  const receiptValidation = validateContractStructure(receipt);
+   if (!receiptValidation.ok) {
+     throw new TypeError("RunReceipt is invalid");
+   }
+diff --git a/packages/flow/index.test.js b/packages/flow/index.test.js
+index 0a8aec0e..9c38199b 100644
+--- a/packages/flow/index.test.js
++++ b/packages/flow/index.test.js
+@@ -3,7 +3,7 @@
+ const { describe, expect, mock, test } = require("bun:test");
+ const contracts = require("../memory-contracts");
+ mock.module("@forge/memory-contracts", () => contracts);
+-const { computeContentHash, validateContract } = contracts;
++const { computeContentHash, validateContractStructure } = contracts;
+ const { createRunReceiptSkeleton } = require(".");
+ 
+ function makeWorkPacket() {
+@@ -53,7 +53,7 @@ describe("Flow contract boundary", () => {
+       producerInstanceId: "flow-1",
+     });
+ 
+-    expect(validateContract(receipt).ok).toBe(true);
++    expect(validateContractStructure(receipt).ok).toBe(true);
+     expect(receipt.payload).toMatchObject({
+       packet_hash: packet.content_hash,
+       exact_head: packet.payload.target_head,
+diff --git a/test/structural/product-package-boundaries.test.js b/test/structural/product-package-boundaries.test.js
+index 6e1aa648..b169c861 100644
+--- a/test/structural/product-package-boundaries.test.js
++++ b/test/structural/product-package-boundaries.test.js
+@@ -21,36 +21,63 @@ function javascriptFiles(directory) {
+   });
+ }
+ 
+-function importsIn(source) {
+-  const imports = [];
+-  const pattern = /(?:require\s*\(|import\s*\()\s*["']([^"']+)["']|(?:import|export)\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']/g;
+-  for (const match of source.matchAll(pattern)) imports.push(match[1] || match[2]);
+-  return imports;
++function skipTrivia(source, start) {
++  let cursor = start;
++  while (cursor < source.length) {
++    if (/\s/.test(source[cursor])) {
++      cursor += 1;
++    } else if (source.startsWith("/*", cursor)) {
++      const end = source.indexOf("*/", cursor + 2);
++      cursor = end === -1 ? source.length : end + 2;
++    } else if (source.startsWith("//", cursor)) {
++      const end = source.indexOf("\n", cursor + 2);
++      cursor = end === -1 ? source.length : end + 1;
++    } else {
++      break;
++    }
++  }
++  return cursor;
+ }
+ 
+-function isStringLiteral(expression) {
+-  const quote = expression[0];
+-  if (quote !== "\"" && quote !== "'") return false;
+-  for (let index = 1; index < expression.length; index += 1) {
+-    if (expression[index] === "\\") {
+-      index += 1;
+-      continue;
++function readPlainString(source, start) {
++  const quote = source[start];
++  if (quote !== "\"" && quote !== "'") return null;
++  for (let cursor = start + 1; cursor < source.length; cursor += 1) {
++    if (source[cursor] === "\\") return null;
++    if (source[cursor] === quote) {
++      return { value: source.slice(start + 1, cursor), end: cursor + 1 };
+     }
+-    if (expression[index] === quote) {
+-      return expression.slice(index + 1).trim().length === 0;
++  }
++  return null;
++}
++
++function moduleCallsIn(source) {
++  const calls = [];
++  for (const match of source.matchAll(/\b(?:require|import)\b/g)) {
++    let cursor = skipTrivia(source, match.index + match[0].length);
++    if (source[cursor] !== "(") continue;
++    cursor = skipTrivia(source, cursor + 1);
++    const literal = readPlainString(source, cursor);
++    if (literal && source[skipTrivia(source, literal.end)] === ")") {
++      calls.push({ specifier: literal.value });
++      continue;
+     }
++    const end = source.indexOf(")", cursor);
++    const expression = source.slice(cursor, end === -1 ? source.length : end).trim();
++    calls.push({ expression: expression || "<empty>" });
+   }
+-  return false;
++  return calls;
++}
++
++function importsIn(source) {
++  const imports = moduleCallsIn(source).flatMap((call) => call.specifier ? [call.specifier] : []);
++  const pattern = /(?:import|export)\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']/g;
++  for (const match of source.matchAll(pattern)) imports.push(match[1]);
++  return imports;
+ }
+ 
+ function dynamicImportsIn(source) {
+-  const dynamic = [];
+-  const pattern = /\b(?:require|import)\s*\(([^)\r\n]*)\)/g;
+-  for (const match of source.matchAll(pattern)) {
+-    const expression = match[1].trim();
+-    if (!isStringLiteral(expression)) dynamic.push(expression || "<empty>");
+-  }
+-  return dynamic;
++  return moduleCallsIn(source).flatMap((call) => call.expression ? [call.expression] : []);
+ }
+ 
+ describe("product package boundaries", () => {
+@@ -58,10 +85,17 @@ describe("product package boundaries", () => {
+     ["require variable", "require(privateModule)"],
+     ["concatenated require", "require('@forge/memory-contracts/' + privatePath)"],
+     ["template dynamic import", "import(`@forge/${product}/private`)"],
++    ["multiline require variable", "require(\n  privateModule\n)"],
++    ["multiline template import", "import(\n  `@forge/${product}/private`\n)"],
+   ])("rejects a computed module specifier: %s", (_label, source) => {
+     expect(dynamicImportsIn(source)).not.toEqual([]);
+   });
+ 
++  test("inspects a literal require separated from its call by a comment", () => {
++    expect(importsIn("require /* package boundary */ ('@forge/memory/private')"))
++      .toContain("@forge/memory/private");
++  });
++
+   for (const packageName of PACKAGES) {
+     test(`${packageName} imports only its public allowed dependencies`, () => {
+       const packageRoot = path.join(ROOT, "packages", packageName);
+-- 
+2.51.0.windows.1
+

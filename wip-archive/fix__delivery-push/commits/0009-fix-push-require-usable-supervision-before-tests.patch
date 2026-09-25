@@ -1,0 +1,178 @@
+From 8d579bf1c42258cdb2e876e92d5185d5383d1abd Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 05:02:26 +0530
+Subject: [PATCH] fix(push): require usable supervision before tests
+
+---
+ .../2026-09-18-delivery-push/decisions.md     | 13 +++++
+ lib/commands/push.js                          | 12 ++++-
+ test/commands/push.test.js                    | 52 +++++++++++++++++--
+ test/pr-monitor/auto-trigger-wiring.test.js   |  3 +-
+ 4 files changed, 74 insertions(+), 6 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-push/decisions.md b/docs/work/2026-09-18-delivery-push/decisions.md
+index c53d4448..ce537ddc 100644
+--- a/docs/work/2026-09-18-delivery-push/decisions.md
++++ b/docs/work/2026-09-18-delivery-push/decisions.md
+@@ -106,3 +106,16 @@
+ **RED**: The real Bun issuer wrote a signed full proof without a runtime-identity seam, then the unchanged Node `scripts/check-forge-token.js` exited 1 for that proof (0 passed, 1 failed in 2.08 seconds).
+ **GREEN**: The same named regression passed after the push-only state correction (1 passed in 3.38 seconds). The three-file focused run passed 78 tests with 206 expectations and 0 failures in 18.18 seconds; it retained strict validation-receipt runtime rejection and push-proof rejection for changed HEAD, test runtime, runner, tracked or untracked state, branch, worktree, gates, signature, and owner identity.
+ **Compiled boundary**: An independent disposable compiled issuer captured a real clean Git state, wrote the proof, and invoked the unchanged Node checker while its owner process remained live. Compilation exited 0 in 586 ms; execution exited 0 in 2.393 seconds with Node status 0 and no spawn error, then consumed the proof. The reviewer made no repository edits.
++
++## Decision 9
++
++**Date**: 2026-09-20
++**Task**: Fail closed when push test supervision cannot publish its manifest
++**Gap**: The isolated process tree deliberately degrades to inert ownership methods when its initial manifest cannot be written, but push still spawned the test supervisor. A timeout could then kill only that supervisor and leave detached shards alive; installed signal handlers could also suppress default termination while waiting for an unsupervised child.
++**Score**: 0 / 14
++**Route**: PROCEED within the existing push-runner issue
++**Choice made**: Resolve the isolated child environment before installing signal handlers or spawning. Require a nonempty string process-tree marker, and abort with cleanup if environment publication fails or throws. Pass the captured environment unchanged to the existing supervised runner. This decision covers initial manifest publication; it does not claim that later manifest persistence failures are solved here.
++**Status**: RESOLVED IN SOURCE; CANONICAL RECHECK PENDING
++
++**RED**: With the old path, a missing marker completed the push and an `envFor` exception installed the signal handler before failing (0 passed, 2 failed). A truthy non-string marker was then shown to pass the first guard incorrectly (2 passed, 1 failed). The external full-mode auto-trigger fixture also failed its success assertion because its synthetic tree did not publish a marker.
++**GREEN**: Missing, non-string, and throwing marker cases all abort before handler installation, spawn, proof writing, or Git push (3 passed, 18 expectations). The corrected auto-trigger fixture passed its named full-mode case. The eight-file affected set passed 191 tests with 1,082 expectations and 0 failures in 19.59 seconds, including the real detached-descendant timeout, cancellation, proof, receipt, runner-selection, backing-issue, GitHub-route, and singleton-trigger coverage.
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index d3033736..40700f12 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -339,6 +339,16 @@ async function runSupervisedTestCommand({
+ 		allInstances: true,
+ 		reconcile: false,
+ 	});
++	let supervisedEnv = null;
++	try {
++		supervisedEnv = processTree.envFor(isolatedEnv);
++	} catch { /* handled by the fail-closed check below */ }
++	const supervisionMarker = supervisedEnv?.[MANIFEST_ENV];
++	if (typeof supervisionMarker !== 'string' || supervisionMarker.length === 0) {
++		log('Test supervision unavailable — push aborted.');
++		processTree.cleanup('SIGKILL');
++		return false;
++	}
+ 	let cancellationSignal = null;
+ 	const removeSignalHandlers = processTree.installSignalHandlers((signal) => {
+ 		cancellationSignal = signal;
+@@ -357,7 +367,7 @@ async function runSupervisedTestCommand({
+ 		const status = await runCommand(testCommand, testArgs, {
+ 			cwd: projectRoot,
+ 			detached: !isWindows,
+-			env: processTree.envFor(isolatedEnv),
++			env: supervisedEnv,
+ 			killSignal: TEST_RUN_KILL_SIGNAL,
+ 			processTree,
+ 			timeout: timeoutMs,
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index 9d65d179..7c829c04 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -25,7 +25,7 @@ const {
+ 	OBSERVED_FULL_SUITE_RUNTIME_MS,
+ 	resolveFullSuiteTimeoutMs,
+ } = require('../../scripts/test.js');
+-const { createProcessTree } = require('../../scripts/process-tree');
++const { MANIFEST_ENV, createProcessTree } = require('../../scripts/process-tree');
+ 
+ const FORGE_MANIFEST = JSON.stringify({
+ 	name: 'forge-workflow',
+@@ -56,7 +56,7 @@ async function waitForProcessExit(pid, timeoutMs = 5000) {
+ function fakeProcessTree() {
+ 	return {
+ 		cleanup: () => ({ killed: [] }),
+-		envFor: env => env,
++		envFor: env => ({ ...env, [MANIFEST_ENV]: 'injected-process-tree.json' }),
+ 		installSignalHandlers: () => () => {},
+ 		registerChild: () => true,
+ 		reserveChild: () => ({ id: 'injected-test' }),
+@@ -243,6 +243,50 @@ describe('Forge Push Command', () => {
+ 	});
+ 
+ 	describe('Full mode (no --quick)', () => {
++		test.each([
++			['omits the manifest marker', env => env],
++			['returns a non-string manifest marker', env => ({ ...env, [MANIFEST_ENV]: true })],
++			['throws while exposing the manifest', () => { throw new Error('manifest unavailable'); }],
++		])('fails before spawn or authorization when supervision %s', async (_case, envFor) => {
++			const execCalls = [];
++			const logs = [];
++			let signalHandlerInstalls = 0;
++			let spawnCalls = 0;
++			let tokenWrites = 0;
++			const deps = makeDeps({
++				execFileSync: (cmd, args) => {
++					execCalls.push({ cmd, args: [...args] });
++					return '';
++				},
++				createProcessTree: () => ({
++					...fakeProcessTree(),
++					envFor,
++					installSignalHandlers: () => {
++						signalHandlerInstalls += 1;
++						return () => {};
++					},
++				}),
++				spawn: () => {
++					spawnCalls += 1;
++					const child = new EventEmitter();
++					child.pid = 12345;
++					process.nextTick(() => child.emit('close', 0, null));
++					return child;
++				},
++				writeForgeToken: () => { tokenWrites += 1; },
++				log: message => logs.push(String(message)),
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(result).toMatchObject({ success: false, testsPassed: false, pushed: false });
++			expect(signalHandlerInstalls).toBe(0);
++			expect(spawnCalls).toBe(0);
++			expect(tokenWrites).toBe(0);
++			expect(execCalls.some(call => call.cmd === 'git' && call.args[0] === 'push')).toBe(false);
++			expect(logs.join('\n')).toContain('supervision unavailable');
++		});
++
+ 		test('reaps a timed-out runner and its detached descendant without touching an inherited outer tree', async () => {
+ 			const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-push-timeout-'));
+ 			const pidFile = path.join(tempDir, 'fixture-pids.json');
+@@ -371,7 +415,7 @@ describe('Forge Push Command', () => {
+ 			const spawnCalls = [];
+ 			const processTree = {
+ 				cleanup: () => ({ killed: [] }),
+-				envFor: env => env,
++				envFor: env => ({ ...env, [MANIFEST_ENV]: 'consumer-process-tree.json' }),
+ 				installSignalHandlers: () => () => {},
+ 				registerChild: () => true,
+ 				reserveChild: () => ({ id: 'consumer-test' }),
+@@ -416,7 +460,7 @@ describe('Forge Push Command', () => {
+ 					}
+ 					return { killed: [] };
+ 				},
+-				envFor: env => env,
++				envFor: env => ({ ...env, [MANIFEST_ENV]: 'cancelled-process-tree.json' }),
+ 				installSignalHandlers: handler => {
+ 					cancellationHandler = handler;
+ 					return () => { signalHandlersRemoved = true; };
+diff --git a/test/pr-monitor/auto-trigger-wiring.test.js b/test/pr-monitor/auto-trigger-wiring.test.js
+index 13b8e480..f105b855 100644
+--- a/test/pr-monitor/auto-trigger-wiring.test.js
++++ b/test/pr-monitor/auto-trigger-wiring.test.js
+@@ -8,6 +8,7 @@ const { describe, test, expect } = require('bun:test');
+ const hooks = require('../../lib/commands/hooks');
+ const push = require('../../lib/commands/push');
+ const { executeShip, maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
++const { MANIFEST_ENV } = require('../../scripts/process-tree');
+ 
+ function successfulPushDeps(fireAndForget) {
+ 	const spawn = () => {
+@@ -19,7 +20,7 @@ function successfulPushDeps(fireAndForget) {
+ 	};
+ 	const processTree = {
+ 		cleanup: () => ({ killed: [] }),
+-		envFor: env => env,
++		envFor: env => ({ ...env, [MANIFEST_ENV]: 'auto-trigger-process-tree.json' }),
+ 		installSignalHandlers: () => () => {},
+ 		registerChild: () => true,
+ 		reserveChild: () => ({ id: 'auto-trigger-fixture' }),
+-- 
+2.51.0.windows.1
+

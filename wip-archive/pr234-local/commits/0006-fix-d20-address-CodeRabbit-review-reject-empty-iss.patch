@@ -1,0 +1,154 @@
+From 8347ed166e98319abfc30f35015fda3d7825f839 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 13:14:43 +0530
+Subject: [PATCH] =?UTF-8?q?fix(d20):=20address=20CodeRabbit=20review=20?=
+ =?UTF-8?q?=E2=80=94=20reject=20empty=20--issue-backend,=20lint,=20multi-i?=
+ =?UTF-8?q?d=20e2e,=20doc=20path?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- _resolve-command-opts: --issue-backend space/equals form now rejects a
+  missing/empty value or a following flag (was silently swallowing the next
+  flag, e.g. `--issue-backend --reason=x`, and falling back to default backend)
+- _registry-opts.test: prefix unused handler params with _ (zero-warning lint)
+- kernel-issue-cli.test: seed + close two ids so the multi-id close test
+  actually exercises the batched fan-out branch
+- d20 design doc: correct selector module path to lib/commands/_resolve-command-opts.js
+  (default-backend line left as-is pending the kernel-default decision)
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../d20-step0-kernel-selector-design.md         |  7 ++++++-
+ lib/commands/_resolve-command-opts.js           | 16 +++++++++++++---
+ test/commands/_registry-opts.test.js            |  4 ++--
+ test/commands/_resolve-command-opts.test.js     | 17 +++++++++++++++++
+ test/e2e/kernel-issue-cli.test.js               |  8 ++++++--
+ 5 files changed, 44 insertions(+), 8 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/d20-step0-kernel-selector-design.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/d20-step0-kernel-selector-design.md
+index b2211cf4..bf1f91be 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/d20-step0-kernel-selector-design.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/d20-step0-kernel-selector-design.md
+@@ -46,7 +46,12 @@ The issue handlers (`_issue.js:246`, `:257`) declare a **4th `opts` parameter**
+ 
+ ### 2.1 Selector module (new owned file)
+ 
+-`lib/issue-backend-selector.js` — pure resolver, no I/O beyond reading a passed-in env/flags/config snapshot. Keeps the `bin/forge.js` edit minimal (the D19 coordination point).
++As landed, the selector splits across two files: the pure backend resolver
++`lib/issue-backend.js` (`resolveIssueBackend`) and the CLI dispatch glue
++`lib/commands/_resolve-command-opts.js` (strips the selector tokens, calls the
++resolver, and assembles the kernel deps). Neither does I/O beyond reading a
++passed-in env/flags/config snapshot, keeping the `bin/forge.js` edit minimal (the
++D19 coordination point).
+ 
+ ```
+ resolveIssueBackend({ flags, env, config }) -> {
+diff --git a/lib/commands/_resolve-command-opts.js b/lib/commands/_resolve-command-opts.js
+index 6748d7f5..2e4eac42 100644
+--- a/lib/commands/_resolve-command-opts.js
++++ b/lib/commands/_resolve-command-opts.js
+@@ -68,16 +68,26 @@ function stripSelectorTokens(rawArgs = []) {
+       continue;
+     }
+     if (token === ISSUE_BACKEND_FLAG) {
+-      // Space form: consume the following value token as the backend name.
++      // Space form: consume the following value token as the backend name. Only a
++      // non-flag token counts — a missing value or a following flag (e.g.
++      // `--issue-backend --reason=x`) must throw rather than silently swallow the
++      // next flag and fall back to the default backend.
+       const next = rawArgs[i + 1];
+-      if (typeof next === 'string') {
++      if (typeof next === 'string' && !next.startsWith('--')) {
+         flags.issueBackend = next;
+         i += 1;
++      } else {
++        throw new Error(`${ISSUE_BACKEND_FLAG} requires a value: kernel or beads.`);
+       }
+       continue;
+     }
+     if (typeof token === 'string' && token.startsWith(`${ISSUE_BACKEND_FLAG}=`)) {
+-      flags.issueBackend = token.slice(ISSUE_BACKEND_FLAG.length + 1);
++      // Equals form: reject an empty value (`--issue-backend=`) for the same reason.
++      const value = token.slice(ISSUE_BACKEND_FLAG.length + 1).trim();
++      if (!value) {
++        throw new Error(`${ISSUE_BACKEND_FLAG} requires a value: kernel or beads.`);
++      }
++      flags.issueBackend = value;
+       continue;
+     }
+     args.push(token);
+diff --git a/test/commands/_registry-opts.test.js b/test/commands/_registry-opts.test.js
+index 59d44b7d..d5f4c7c3 100644
+--- a/test/commands/_registry-opts.test.js
++++ b/test/commands/_registry-opts.test.js
+@@ -38,7 +38,7 @@ describe('executeCommand — opts/commandOpts threading (T2)', () => {
+     'passes an empty object as the 4th arg when no commandOpts supplied (backward-compat)',
+     async () => {
+       let received;
+-      const commands = registryWith(async (args, flags, projectRoot, opts) => {
++      const commands = registryWith(async (_args, _flags, _projectRoot, opts) => {
+         received = opts;
+         return { success: true };
+       });
+@@ -53,7 +53,7 @@ describe('executeCommand — opts/commandOpts threading (T2)', () => {
+   test(
+     'existing 3-arg handlers are unaffected (ignore the 4th arg)',
+     async () => {
+-      const commands = registryWith(async (args, flags, projectRoot) => ({
++      const commands = registryWith(async (args, _flags, projectRoot) => ({
+         success: true,
+         echo: `${args.join(',')}|${projectRoot}`,
+       }));
+diff --git a/test/commands/_resolve-command-opts.test.js b/test/commands/_resolve-command-opts.test.js
+index 9c61cfed..6dd6b3c5 100644
+--- a/test/commands/_resolve-command-opts.test.js
++++ b/test/commands/_resolve-command-opts.test.js
+@@ -33,6 +33,23 @@ describe('stripSelectorTokens — consume + remove --kernel / --issue-backend',
+     const { args } = stripSelectorTokens(['a', 'b', '--reason=Merged on master']);
+     expect(args).toEqual(['a', 'b', '--reason=Merged on master']);
+   });
++
++  test('throws when --issue-backend (space form) is followed by a flag, not a value', () => {
++    // Without the guard this would swallow `--reason=x` as the backend value and
++    // silently fall back to the default backend.
++    expect(() => stripSelectorTokens(['kap-10', '--issue-backend', '--reason=x']))
++      .toThrow(/--issue-backend requires a value/);
++  });
++
++  test('throws when --issue-backend (space form) has no following value', () => {
++    expect(() => stripSelectorTokens(['kap-10', '--issue-backend']))
++      .toThrow(/--issue-backend requires a value/);
++  });
++
++  test('throws when --issue-backend= (= form) value is empty', () => {
++    expect(() => stripSelectorTokens(['kap-10', '--issue-backend=']))
++      .toThrow(/--issue-backend requires a value/);
++  });
+ });
+ 
+ describe('resolveCommandOpts — issue commands', () => {
+diff --git a/test/e2e/kernel-issue-cli.test.js b/test/e2e/kernel-issue-cli.test.js
+index 16d79968..689f23cc 100644
+--- a/test/e2e/kernel-issue-cli.test.js
++++ b/test/e2e/kernel-issue-cli.test.js
+@@ -147,10 +147,14 @@ describe('kernel issue CLI — multi-id close E2E', () => {
+   test(
+     'exit code is 0 for the multi-id kernel close',
+     () => {
+-      runForge(repo, ['create', '--id', 'solo-1', '--title', 'Solo', '--kernel']);
++      runForge(repo, ['create', '--id', 'solo-1', '--title', 'Solo 1', '--kernel']);
++      runForge(repo, ['create', '--id', 'solo-2', '--title', 'Solo 2', '--kernel']);
+       // execFileSync throws on non-zero exit; reaching the assertion means exit 0.
+-      const output = runForge(repo, ['close', 'solo-1', '--reason=done', '--kernel']);
++      // Two leading ids exercises the batched (fan-out) close branch, not the
++      // single-id path.
++      const output = runForge(repo, ['close', 'solo-1', 'solo-2', '--reason=done', '--kernel']);
+       expect(output).toContain('solo-1');
++      expect(output).toContain('solo-2');
+     },
+     TIMEOUT,
+   );
+-- 
+2.51.0.windows.1
+

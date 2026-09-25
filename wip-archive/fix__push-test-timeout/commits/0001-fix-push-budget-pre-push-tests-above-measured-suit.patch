@@ -1,0 +1,386 @@
+From 42064b3950ec3fd622227f557d26bc7e0ca71361 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 13:05:27 +0530
+Subject: [PATCH] fix(push): budget pre-push tests above measured suite runtime
+
+`forge push` capped the package-level `test` script at a hardcoded
+120000 ms. The full local suite legitimately takes ~10 minutes on
+Windows, so the cap killed a healthy run mid-suite: spawnSync returned
+`status: null`, `status === 0` evaluated false, and the push aborted with
+no summary and no push at all.
+
+The run is now budgeted from `resolveFullSuiteTimeoutMs()` in
+scripts/test.js, and that shared default is raised from 10 to 25 minutes.
+The old default sat BELOW the measured healthy runtime (602.43s for 8038
+tests, Windows, pinned Bun 1.3.12, 2026-08-26), so it SIGKILLed passing
+suites in both consumers. The ceiling exists to catch an indefinite hang
+(issue 8aef79e8), not to bound normal runtime, so it now carries >2x
+headroom over the recorded measurement; FORGE_TEST_TIMEOUT_MS still
+overrides. Regressions assert the effective budget clears the measured
+runtime, so a future shave fails a test instead of a user's push.
+
+A test run terminated by a timeout, signal, or spawn error now reports
+what happened rather than failing silently.
+
+Issue: e26dbb91-0443-4e53-946e-a9941ec30ca3
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                     |   1 +
+ lib/commands/push.js             |  47 ++++++++++++--
+ scripts/test.js                  |  39 ++++++++----
+ test/commands/push.test.js       | 104 ++++++++++++++++++++++++++++++-
+ test/scripts/test-runner.test.js |  11 +++-
+ 5 files changed, 183 insertions(+), 19 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b8b6d3ee..6e7f8d44 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **`forge push` no longer kills a passing full test suite.** The pre-push test run is budgeted from the shared full-suite budget in `scripts/test.js` instead of a hardcoded 120s cap, and that shared budget is raised from 10 to 25 minutes — the previous default sat *below* the measured healthy runtime (602.43s for 8038 tests on Windows), so it SIGKILLed good runs. The ceiling now carries >2x headroom because it exists to catch an indefinite hang, not to bound normal runtime; `FORGE_TEST_TIMEOUT_MS` still overrides. A run terminated by a timeout, signal, or spawn error now reports what happened instead of failing with no summary. (issue `e26dbb91-0443-4e53-946e-a9941ec30ca3`)
+ - **The targeted PR lane's full-suite fallback now uses the lane-aware runner.** When the execution planner returns `mode=full`, the follow-up job runs `scripts/test-full-suite.js` instead of a raw `bun test test/`, so subprocess-heavy files get resource-lane separation and the worker budget the full matrix already had — closing the Windows-only spawn failures that hit only this lane.
+ - **Full-suite validation now respects the computed worker budget.** Resource-aware lanes share the reserved worker pool by default, and `forge validate` uses that runner when available, preventing mixed unit and subprocess shards from oversubscribing Windows runners. (PR #545, issue `8cb52d50-24ea-4c69-8579-b30a0f1ee467`)
+ - **Windows legacy-claim repair now preserves owner-only ACL guarantees without PowerShell transport stalls.** The operator-only repair path uses bounded, privacy-safe Windows security-descriptor verification, exact owner/DACL replacement, Unicode-safe targets, transaction-isolated async hardening, and fail-closed timeout cleanup. (#538, issue `eb2c56e8-5054-4542-8f02-3f9fe635fd2d`)
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 47a9a9d5..1c37d7ba 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -4,7 +4,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const forgeToken = require('../../scripts/check-forge-token');
+-const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../../scripts/test');
++const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE, resolveFullSuiteTimeoutMs } = require('../../scripts/test');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ 
+ const isWindows = process.platform === 'win32';
+@@ -191,6 +191,31 @@ function runLint(spawnFn, pkgManager, projectRoot) {
+ 	return lintResult.status === 0;
+ }
+ 
++/**
++ * Explain a test run that never produced an exit status.
++ *
++ * `spawnSync` reports `status: null` when the child was killed by a signal
++ * (timeout kill included) or never started at all. Without this the push
++ * aborted with no summary at all, which is indistinguishable from a genuine
++ * test failure.
++ *
++ * @param {Object} testResult - spawnSync result object
++ * @param {number} timeoutMs - Wall-clock budget applied to the run
++ * @param {function} log - Logger function
++ */
++function reportTestRunTermination(testResult, timeoutMs, log) {
++	if (testResult.error) {
++		log(`Test run could not complete: ${testResult.error.message}`);
++		return;
++	}
++	const signal = testResult.signal || 'unknown signal';
++	log(
++		`Test run timed out after ${Math.round(timeoutMs / 1000)}s `
++		+ `(killed by ${signal}) — push aborted.`,
++	);
++	log('Raise the budget with FORGE_TEST_TIMEOUT_MS if this machine is slower than the default.');
++}
++
+ /**
+  * Run tests unless in quick mode, logging warnings for first push.
+  * @param {function} spawnFn - spawnSync or mock
+@@ -199,9 +224,10 @@ function runLint(spawnFn, pkgManager, projectRoot) {
+  * @param {string} projectRoot - Absolute path to project root
+  * @param {boolean} quickMode - Whether to skip tests
+  * @param {function} log - Logger function
++ * @param {NodeJS.ProcessEnv} [env] - Environment used to resolve the test budget
+  * @returns {boolean|undefined} True if tests passed, undefined if skipped
+  */
+-function runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log) {
++function runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, env = process.env) {
+ 	if (quickMode) {
+ 		log('Tests skipped (--quick) — CI will run full suite on GitHub');
+ 		const branch = getCurrentBranch(execFn);
+@@ -211,12 +237,25 @@ function runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log) {
+ 		return undefined;
+ 	}
+ 
++	// `forge push` runs the package-level `test` script, i.e. the whole suite.
++	// Budget it from the shared full-suite budget in scripts/test.js — which is
++	// sized as ~2x the measured healthy full-suite runtime and overridable with
++	// FORGE_TEST_TIMEOUT_MS — instead of an arbitrary local cap: the old fixed
++	// 120s killed a healthy full run mid-suite and pushed nothing. Never
++	// reintroduce a local constant here; change the shared budget with a fresh
++	// measurement instead.
++	const timeoutMs = resolveFullSuiteTimeoutMs(env);
+ 	const testResult = spawnFn(pkgManager, ['run', 'test'], {
+ 		stdio: 'inherit',
+ 		shell: isWindows,
+ 		cwd: projectRoot,
+-		timeout: 120000,
++		timeout: timeoutMs,
++		killSignal: 'SIGKILL',
+ 	});
++	if (testResult.status === null || testResult.status === undefined) {
++		reportTestRunTermination(testResult, timeoutMs, log);
++		return false;
++	}
+ 	return testResult.status === 0;
+ }
+ 
+@@ -266,7 +305,7 @@ module.exports = {
+ 		}
+ 
+ 		// Step 3: Tests (skip in quick mode)
+-		const testsPassed = runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log);
++		const testsPassed = runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, deps?.env || process.env);
+ 		if (!quickMode && !testsPassed) {
+ 			return { success: false, quickMode, lintPassed: true, testsPassed: false, pushed: false };
+ 		}
+diff --git a/scripts/test.js b/scripts/test.js
+index 221c3870..18fdd4fb 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -92,14 +92,29 @@ const isWindows = process.platform === 'win32';
+ // wedged). Raise it with FORGE_TEST_TIMEOUT_MS for slow machines.
+ const DEFAULT_TEST_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+ 
+-// Wall-clock budget for the FULL-SUITE fallback lane (`scripts/test-full-suite.js`),
+-// which runs on package-level, unmapped, or zero-resolved changes. Unlike a
+-// targeted lane, a healthy full suite legitimately takes 5-10 min, so the 5-min
+-// fail-fast ceiling would kill a good-but-slow full run. Kept at 10 min to stay
+-// aligned with the local-validation budget (VALIDATION_COMMAND_TIMEOUT_MS = 600000
+-// in lib/commands/validate.js and its "long enough subprocess timeout for the
+-// full local suite" regression test). FORGE_TEST_TIMEOUT_MS still overrides.
+-const DEFAULT_FULL_SUITE_TIMEOUT_MS = 10 * 60 * 1000;
++// Measured wall-clock runtime of a HEALTHY, fully passing full suite on a
++// developer Windows machine with pinned Bun 1.3.12 (2026-08-26):
++//
++//   8005 pass, 32 skip, 1 todo, 0 fail — 8038 tests across 594 files [602.43s]
++//
++// Any full-suite budget must clear this by a wide margin. Treat it as a floor to
++// measure against, never as the budget itself.
++const OBSERVED_FULL_SUITE_RUNTIME_MS = 602_430;
++
++// Wall-clock budget for the FULL-SUITE lane (`scripts/test-full-suite.js` and the
++// package-level `test` script run by `forge push`), used on package-level,
++// unmapped, or zero-resolved changes.
++//
++// This ceiling exists to catch an INDEFINITE HANG (issue 8aef79e8: a synchronous
++// git/bash spawn wedged during git mid-push state, observed ~50 min), not to
++// bound normal runtime. So it is sized as ~2x the measured healthy runtime above,
++// not fitted to it. The previous 10-min value was BELOW the 602.43s measurement,
++// so it SIGKILLed passing suites — `forge push` died mid-suite with no summary
++// and never pushed. 25 min is the next round number clearing 2x the measurement
++// (1_204_860 ms). Do not shave this back toward the observed runtime; if a
++// slower machine needs more, raise FORGE_TEST_TIMEOUT_MS (which still overrides)
++// and re-measure before changing this default.
++const DEFAULT_FULL_SUITE_TIMEOUT_MS = 25 * 60 * 1000;
+ 
+ // Conventional shell exit code for a command terminated by a timeout.
+ const TIMEOUT_EXIT_CODE = 124;
+@@ -142,9 +157,10 @@ function resolveCommandTimeoutMs(env = process.env) {
+ }
+ 
+ /**
+- * Resolves the wall-clock budget for the full-suite fallback lane. An explicit
++ * Resolves the wall-clock budget for the full-suite lane. An explicit
+  * FORGE_TEST_TIMEOUT_MS override wins; otherwise it uses the larger,
+- * validation-aligned budget so a healthy-but-slow full run is not failed fast.
++ * measurement-derived budget (~2x OBSERVED_FULL_SUITE_RUNTIME_MS) so a healthy
++ * full run is never failed fast.
+  *
+  * @param {NodeJS.ProcessEnv} [env=process.env] Environment to read the override from.
+  * @returns {number} Timeout in milliseconds (defaults to DEFAULT_FULL_SUITE_TIMEOUT_MS).
+@@ -513,7 +529,7 @@ async function runTestExecutionPlan(plan, deps = {}) {
+   const label = deps.label || 'tests';
+   const timeout = resolveCommandTimeoutMs(env);
+   const laneOptions = { env: childEnv, killSignal: 'SIGKILL', timeout, processTree };
+-  // The full-suite fallback gets a larger, validation-aligned budget so a
++  // The full-suite fallback gets the larger, measurement-derived budget so a
+   // healthy-but-slow full run is not failed fast by the targeted-lane ceiling.
+   const fullSuiteOptions = {
+     env: childEnv,
+@@ -615,6 +631,7 @@ module.exports = {
+   ALWAYS_RUN_RISK_TEST_TARGETS,
+   DEFAULT_FULL_SUITE_TIMEOUT_MS,
+   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
++  OBSERVED_FULL_SUITE_RUNTIME_MS,
+   QUICK_LANE_ENV_VAR,
+   QUICK_LANE_VALUE,
+   buildTestExecutionPlan,
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index ffbac658..41af0815 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -12,7 +12,12 @@ const { describe, test, expect } = require('bun:test');
+ 
+ // We will require push.js once it exists — for now these tests should RED
+ const pushModule = require('../../lib/commands/push.js');
+-const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../../scripts/test.js');
++const {
++	QUICK_LANE_ENV_VAR,
++	QUICK_LANE_VALUE,
++	OBSERVED_FULL_SUITE_RUNTIME_MS,
++	resolveFullSuiteTimeoutMs,
++} = require('../../scripts/test.js');
+ 
+ describe('Forge Push Command', () => {
+ 	describe('Module exports', () => {
+@@ -199,7 +204,7 @@ describe('Forge Push Command', () => {
+ 			expect(result.pushed).toBe(false);
+ 		});
+ 
+-		test('should run tests with 120s timeout', async () => {
++		test('should not cap the full suite with a hardcoded 120s timeout', async () => {
+ 			let testOpts = null;
+ 			const deps = makeDeps({
+ 				spawnSync: (_cmd, args, opts) => {
+@@ -213,7 +218,99 @@ describe('Forge Push Command', () => {
+ 			await pushModule.handler([], {}, '/fake/project', deps);
+ 
+ 			expect(testOpts).toBeTruthy();
+-			expect(testOpts.timeout).toBe(120000);
++			expect(testOpts.timeout).not.toBe(120000);
++		});
++
++		test('should budget the test run from the shared full-suite budget', async () => {
++			let testOpts = null;
++			const deps = makeDeps({
++				spawnSync: (_cmd, args, opts) => {
++					if (args.includes('test')) {
++						testOpts = opts;
++					}
++					return { status: 0 };
++				},
++			});
++
++			await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(testOpts.timeout).toBe(resolveFullSuiteTimeoutMs(process.env));
++			expect(testOpts.killSignal).toBe('SIGKILL');
++		});
++
++		test('should budget the push test run well above the measured full-suite runtime', async () => {
++			let testOpts = null;
++			const deps = makeDeps({
++				spawnSync: (_cmd, args, opts) => {
++					if (args.includes('test')) {
++						testOpts = opts;
++					}
++					return { status: 0 };
++				},
++			});
++
++			await pushModule.handler([], {}, '/fake/project', deps);
++
++			// A budget at or near the observed runtime SIGKILLs a passing suite:
++			// that is the bug this guards. Require real headroom, not a tight fit.
++			expect(testOpts.timeout).toBeGreaterThanOrEqual(OBSERVED_FULL_SUITE_RUNTIME_MS * 2);
++		});
++
++		test('should honor FORGE_TEST_TIMEOUT_MS for the push test run', async () => {
++			let testOpts = null;
++			const deps = makeDeps({
++				spawnSync: (_cmd, args, opts) => {
++					if (args.includes('test')) {
++						testOpts = opts;
++					}
++					return { status: 0 };
++				},
++				env: { ...process.env, FORGE_TEST_TIMEOUT_MS: '1234567' },
++			});
++
++			await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(testOpts.timeout).toBe(1234567);
++		});
++
++		test('should report a timeout explicitly when the test run is killed', async () => {
++			const logs = [];
++			const deps = makeDeps({
++				spawnSync: (_cmd, args, _opts) => {
++					if (args.includes('test')) {
++						return { status: null, signal: 'SIGKILL' };
++					}
++					return { status: 0 };
++				},
++				log: msg => logs.push(String(msg)),
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(result.testsPassed).toBe(false);
++			expect(result.pushed).toBe(false);
++			const joined = logs.join('\n');
++			expect(joined).toContain('timed out');
++			expect(joined).toContain('SIGKILL');
++			expect(joined).toContain('FORGE_TEST_TIMEOUT_MS');
++		});
++
++		test('should report the spawn error when the test runner cannot start', async () => {
++			const logs = [];
++			const deps = makeDeps({
++				spawnSync: (_cmd, args, _opts) => {
++					if (args.includes('test')) {
++						return { status: null, signal: null, error: new Error('spawn ENOENT') };
++					}
++					return { status: 0 };
++				},
++				log: msg => logs.push(String(msg)),
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(result.testsPassed).toBe(false);
++			expect(logs.join('\n')).toContain('spawn ENOENT');
+ 		});
+ 	});
+ 
+@@ -493,5 +590,6 @@ function makeDeps(overrides = {}) {
+ 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+ 		log: overrides.log || (() => {}),
+ 		writeForgeToken: overrides.writeForgeToken || (() => {}),
++		...(overrides.env ? { env: overrides.env } : {}),
+ 	};
+ }
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index b5c2c37d..18a83b02 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -7,6 +7,7 @@ const path = require('node:path');
+ const {
+   ALWAYS_RUN_RISK_TEST_TARGETS,
+   DEFAULT_FULL_SUITE_TIMEOUT_MS,
++  OBSERVED_FULL_SUITE_RUNTIME_MS,
+   DEFAULT_TEST_COMMAND_TIMEOUT_MS,
+   QUICK_LANE_ENV_VAR,
+   QUICK_LANE_VALUE,
+@@ -751,7 +752,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(fullSuiteCall.options.killSignal).toBeUndefined();
+   });
+ 
+-  test('resolveFullSuiteTimeoutMs defaults to the validation-aligned budget and honors valid overrides', () => {
++  test('resolveFullSuiteTimeoutMs defaults to the measured-headroom budget and honors valid overrides', () => {
+     expect(resolveFullSuiteTimeoutMs({})).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+     expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: 'nonsense' })).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+     expect(resolveFullSuiteTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '-1' })).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+@@ -760,6 +761,14 @@ describe('scripts/test pre-push runner', () => {
+     expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+   });
+ 
++  test('the full-suite budget keeps real headroom over the measured full-suite runtime', () => {
++    // The ceiling exists to catch an indefinite hang, NOT to bound normal
++    // runtime. A budget at or near the observed runtime kills healthy runs.
++    expect(OBSERVED_FULL_SUITE_RUNTIME_MS).toBeGreaterThan(0);
++    expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThanOrEqual(OBSERVED_FULL_SUITE_RUNTIME_MS * 2);
++    expect(resolveFullSuiteTimeoutMs({})).toBeGreaterThan(OBSERVED_FULL_SUITE_RUNTIME_MS);
++  });
++
+   test('a lane that times out fails fast with a non-zero status instead of hanging', async () => {
+     const timedOutSpawnSync = () => ({
+       error: Object.assign(new Error('spawnSync bun ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+-- 
+2.51.0.windows.1
+

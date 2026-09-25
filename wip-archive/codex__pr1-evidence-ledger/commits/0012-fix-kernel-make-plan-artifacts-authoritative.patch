@@ -1,0 +1,559 @@
+From 4e1c59bc98520866a51250543c72ed5c5de080db Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 15:10:20 +0530
+Subject: [PATCH] fix(kernel): make plan artifacts authoritative
+
+---
+ lib/commands/plan.js                 |  32 ++++-
+ lib/kernel/sqlite-driver.js          |  70 ++++++++++
+ lib/workflow/enforce-stage.js        |  45 +++++++
+ lib/workflow/plan-authority.js       | 187 +++++++++++++++++++++++++++
+ test/workflow/plan-authority.test.js | 123 ++++++++++++++++++
+ 5 files changed, 455 insertions(+), 2 deletions(-)
+ create mode 100644 lib/workflow/plan-authority.js
+ create mode 100644 test/workflow/plan-authority.test.js
+
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index 2e905cf1..1e45ce82 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -13,6 +13,10 @@ const path = require('node:path');
+ const { execFileSync } = require('node:child_process');
+ const { resolveIssueBackend } = require('../issue-backend');
+ const { runIssueOperation } = require('../forge-issues');
++const {
++	findPlanWorkFolder,
++	reconcilePlanAuthority,
++} = require('../workflow/plan-authority');
+ 
+ // Constants for security
+ // Note: cwd is resolved at call-time via getExecOptions() to avoid stale require-time snapshots
+@@ -483,7 +487,7 @@ async function registerBranchIssueLinkage(options, branch, issueId) {
+ 				branch,
+ 				actor: null,
+ 				issue_id: issueId,
+-				work_folder: null,
++				work_folder: options.workFolder || null,
+ 				registered_at: new Date().toISOString(),
+ 				state: 'active',
+ 			});
+@@ -976,11 +980,35 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 			};
+ 		}
+ 
++		const workFolder = options.workFolder || findPlanWorkFolder(options.projectRoot || process.cwd(), featureSlug);
++
+ 		// F1: persist the branch->issue linkage so a plan-created branch resolves
+ 		// to its issue for kernel-authoritative stage state (dev/validate/ship).
+ 		// Kernel-only, best-effort.
+ 		if (issueBackend === 'kernel') {
+-			await registerBranchIssueLinkage({ ...options, issueBackend }, branch.branchName, issue.issueId);
++			await registerBranchIssueLinkage({ ...options, issueBackend, workFolder }, branch.branchName, issue.issueId);
++			await withPlanDriver(options, driver => {
++				if (!driver || typeof driver.loadPlanSnapshot !== 'function') return null;
++				let existing;
++				try {
++					existing = driver.loadPlanSnapshot({ issue_id: issue.issueId }, {});
++				} catch {
++					// Injectable issue runners used by embedding callers may not persist into
++					// this driver's store. With no repository artifacts there is nothing to
++					// reconcile; preserve that legacy embedding contract.
++					if (!workFolder) return null;
++					throw new Error(`Issue ${issue.issueId} is not available for plan authority persistence`);
++				}
++				if (!existing && !workFolder) return null;
++				return reconcilePlanAuthority({
++					driver,
++					issueId: issue.issueId,
++					projectRoot: options.projectRoot || process.cwd(),
++					workFolder,
++					mode: 'plan',
++					repairCommand: `forge plan ${JSON.stringify(featureName)} --issue ${issue.issueId}`,
++				});
++			});
+ 		}
+ 
+ 		// Build result summary
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 67559175..28a696ac 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1434,6 +1434,70 @@ function recordStageTransitionRow(runtime, db, input) {
+ 	}
+ }
+ 
++const PLAN_SNAPSHOT_METADATA_KEY = 'forge.plan.v1';
++
++function parseIssueMetadataObject(metadata) {
++	if (metadata == null || metadata === '') return {};
++	const parsed = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
++	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
++		throw new Error('issue metadata must be a JSON object');
++	}
++	return parsed;
++}
++
++function loadPlanSnapshotRow(runtime, db, issueId) {
++	const issue = loadKernelEntityRow(runtime, db, 'issue', issueId);
++	if (!issue) throw new Error(`Issue ${issueId} not found in the kernel`);
++	return parseIssueMetadataObject(issue.metadata)[PLAN_SNAPSHOT_METADATA_KEY] || null;
++}
++
++// Persist the plan snapshot and the plan->dev transition as one authority write.
++// The issue metadata column already exists, so this adds no schema or migration.
++// A normal issue.update event is appended in the same transaction so revision/CAS
++// history remains truthful rather than mutating the issue projection out-of-band.
++function recordPlanSnapshotTransitionRow(runtime, db, input) {
++	const issueId = input && input.issue_id;
++	const snapshot = input && input.snapshot;
++	if (!issueId || !snapshot) {
++		throw new Error('recordPlanSnapshotTransition requires issue_id and snapshot');
++	}
++	const now = input.now || new Date().toISOString();
++	execSql(runtime, db, 'BEGIN IMMEDIATE;');
++	try {
++		const issue = loadKernelEntityRow(runtime, db, 'issue', issueId);
++		if (!issue) throw new Error(`Issue ${issueId} not found in the kernel`);
++		const metadata = parseIssueMetadataObject(issue.metadata);
++		metadata[PLAN_SNAPSHOT_METADATA_KEY] = snapshot;
++		const event = {
++			id: randomUUID(),
++			entity_type: 'issue',
++			entity_id: issueId,
++			event_type: 'issue.update',
++			idempotency_key: `plan.snapshot:${issueId}:${snapshot.digest}`,
++			expected_revision: Number(issue.entity_revision ?? 0),
++			actor: input.actor || 'forge-plan',
++			origin: 'local',
++			payload: { metadata: JSON.stringify(metadata) },
++			created_at: now,
++		};
++		insertKernelEventRow(runtime, db, event);
++		applyAcceptedIssueEvent(runtime, db, event, {});
++		const transition = {
++			from: recordStageRunRow(runtime, db, { issue_id: issueId, stage: 'plan', action: 'complete', now }),
++			to: recordStageRunRow(runtime, db, { issue_id: issueId, stage: 'dev', action: 'start', now }),
++		};
++		execSql(runtime, db, 'COMMIT;');
++		return transition;
++	} catch (error) {
++		try {
++			execSql(runtime, db, 'ROLLBACK;');
++		} catch {
++			// Preserve the original failure.
++		}
++		throw error;
++	}
++}
++
+ function listStageRunRows(runtime, db, issueId) {
+ 	if (!issueId) return [];
+ 	// Deterministic order: started_at first, then rowid (the implicit INSERT sequence)
+@@ -2622,6 +2686,12 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		recordStageTransition(input, config = {}) {
+ 			return recordStageTransitionRow(runtime, getDatabase(config), input);
+ 		},
++		recordPlanSnapshotTransition(input, config = {}) {
++			return recordPlanSnapshotTransitionRow(runtime, getDatabase(config), input);
++		},
++		loadPlanSnapshot(filter = {}, config = {}) {
++			return loadPlanSnapshotRow(runtime, getDatabase(config), filter.issue_id);
++		},
+ 		listStageRuns(filter = {}, config = {}) {
+ 			return listStageRunRows(runtime, getDatabase(config), filter.issue_id);
+ 		},
+diff --git a/lib/workflow/enforce-stage.js b/lib/workflow/enforce-stage.js
+index 56c09789..fd8882d8 100644
+--- a/lib/workflow/enforce-stage.js
++++ b/lib/workflow/enforce-stage.js
+@@ -10,6 +10,11 @@ const {
+   readWorkflowState,
+ } = require('./state');
+ const { loadState, WORKFLOW_STATE_FILENAME } = require('./state-manager');
++const {
++  findPlanWorkFolder,
++  readPlanSnapshot,
++  reconcilePlanAuthority,
++} = require('./plan-authority');
+ 
+ const STATELESS_ENTRY_STAGES = new Set(['plan', 'dev', 'validate', 'verify']);
+ 
+@@ -204,6 +209,42 @@ async function resolveKernelContext({ kernelDriver, activeIssueId, branch, proje
+   return { driver, issueId };
+ }
+ 
++function linkedWorkFolder(driver, issueId, branch) {
++  if (!driver || typeof driver.listWorktrees !== 'function') return null;
++  try {
++    const row = (driver.listWorktrees() || []).find((entry) => entry?.issue_id === issueId
++      && (!branch || entry.branch === branch) && (entry.state === 'active' || entry.state == null));
++    return row?.work_folder || null;
++  } catch {
++    return null;
++  }
++}
++
++function planRepairCommand(branch, issueId) {
++  const slug = String(branch || 'feature').replace(/^[^/]+\//, '');
++  return `forge plan ${JSON.stringify(slug.split('-').filter(Boolean).join(' '))} --issue ${issueId}`;
++}
++
++function enforcePlanAuthorityForDev({ driver, issueId, projectRoot, branch }) {
++  if (!driver || typeof driver.loadPlanSnapshot !== 'function') return;
++  const snapshot = readPlanSnapshot(driver, issueId);
++  const slug = String(branch || '').replace(/^[^/]+\//, '');
++  const workFolder = linkedWorkFolder(driver, issueId, branch)
++    || (!snapshot ? findPlanWorkFolder(projectRoot, slug) : null);
++  // Pre-0.1.0 issues without either a snapshot or a linked repository folder are
++  // intentionally unmanaged for compatibility. Once either side exists, the
++  // authority contract is strict and all missing/drift cases fail closed.
++  if (!snapshot && !workFolder) return;
++  reconcilePlanAuthority({
++    driver,
++    issueId,
++    projectRoot,
++    workFolder,
++    mode: 'dev',
++    repairCommand: planRepairCommand(branch, issueId),
++  });
++}
++
+ function getOverrideInput(flags = {}) {
+   if (Object.hasOwn(flags, 'overrideStage')) {
+     return flags.overrideStage;
+@@ -410,6 +451,10 @@ async function enforceStageEntry({
+     : { driver: null, issueId: null };
+   const kernelActive = Boolean(kernelEnabled && driver && issueId);
+ 
++  if (kernelActive && stageId === 'dev') {
++    enforcePlanAuthorityForDev({ driver, issueId, projectRoot, branch: branch || detectBranchName(projectRoot) });
++  }
++
+   // On an allowed entry, record the stage as started (active) AND return a
+   // recordCompletion() the command runner calls after the handler SUCCEEDS — so
+   // a stage only counts as 'done' when its command actually passed (the ship
+diff --git a/lib/workflow/plan-authority.js b/lib/workflow/plan-authority.js
+new file mode 100644
+index 00000000..32464eb7
+--- /dev/null
++++ b/lib/workflow/plan-authority.js
+@@ -0,0 +1,187 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { createHash, randomUUID } = require('node:crypto');
++
++const SCHEMA = 'forge.plan.v1';
++const ARTIFACT_FILES = Object.freeze(['plan.md', 'tasks.md']);
++
++function sha256(content) {
++  return createHash('sha256').update(content, 'utf8').digest('hex');
++}
++
++function readUtf8(absolutePath) {
++  try {
++    return new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(absolutePath));
++  } catch (error) {
++    throw new Error(`Plan artifact must be valid UTF-8: ${absolutePath} (${error.message})`);
++  }
++}
++
++function normalizeRelativePath(projectRoot, candidate) {
++  const absolute = path.resolve(projectRoot, candidate);
++  const relative = path.relative(projectRoot, absolute);
++  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
++    throw new Error('Plan artifact paths must stay inside the project root');
++  }
++  return relative.split(path.sep).join('/');
++}
++
++function artifactPath(projectRoot, relativePath) {
++  return path.join(projectRoot, ...relativePath.split('/'));
++}
++
++function snapshotDigest(artifacts) {
++  const canonical = JSON.stringify(artifacts.map(({ path: artifact, sha256: digest }) => ({ path: artifact, sha256: digest })));
++  return sha256(canonical);
++}
++
++function createSnapshot({ projectRoot, workFolder }) {
++  const folder = normalizeRelativePath(projectRoot, workFolder);
++  const artifacts = ARTIFACT_FILES.map((filename) => {
++    const relativePath = `${folder}/${filename}`;
++    const absolutePath = artifactPath(projectRoot, relativePath);
++    if (!fs.existsSync(absolutePath)) return null;
++    const content = readUtf8(absolutePath);
++    return { path: relativePath, content, sha256: sha256(content) };
++  });
++  if (artifacts.some((entry) => entry === null)) return null;
++  return { schema: SCHEMA, digest: snapshotDigest(artifacts), artifacts };
++}
++
++function findPlanWorkFolder(projectRoot, featureSlug) {
++  if (!projectRoot || !featureSlug) return null;
++  const workRoot = path.join(projectRoot, 'docs', 'work');
++  if (!fs.existsSync(workRoot)) return null;
++  const suffix = `-${featureSlug}`;
++  const matches = fs.readdirSync(workRoot, { withFileTypes: true })
++    .filter((entry) => entry.isDirectory() && (entry.name === featureSlug || entry.name.endsWith(suffix)))
++    .map((entry) => `docs/work/${entry.name}`)
++    .filter((folder) => ARTIFACT_FILES.every((filename) => fs.existsSync(artifactPath(projectRoot, `${folder}/${filename}`))))
++    .sort();
++  return matches.length === 1 ? matches[0] : null;
++}
++
++function validateSnapshot(snapshot) {
++  if (!snapshot || snapshot.schema !== SCHEMA || !Array.isArray(snapshot.artifacts)) {
++    throw new Error('Kernel plan snapshot is invalid');
++  }
++  if (snapshot.artifacts.length !== ARTIFACT_FILES.length) {
++    throw new Error('Kernel plan snapshot is invalid');
++  }
++  const expectedNames = new Set(ARTIFACT_FILES);
++  const observedNames = new Set();
++  for (const artifact of snapshot.artifacts) {
++    if (!artifact || typeof artifact.path !== 'string' || typeof artifact.content !== 'string'
++      || sha256(artifact.content) !== artifact.sha256) {
++      throw new Error('Kernel plan snapshot is invalid');
++    }
++    const filename = path.posix.basename(artifact.path);
++    if (!expectedNames.has(filename) || observedNames.has(filename)) {
++      throw new Error('Kernel plan snapshot is invalid');
++    }
++    observedNames.add(filename);
++  }
++  if (snapshot.digest !== snapshotDigest(snapshot.artifacts)) {
++    throw new Error('Kernel plan snapshot is invalid');
++  }
++  return snapshot;
++}
++
++function readPlanSnapshot(driver, issueId) {
++  if (!driver || typeof driver.loadPlanSnapshot !== 'function') return null;
++  const snapshot = driver.loadPlanSnapshot({ issue_id: issueId }, {});
++  return snapshot ? validateSnapshot(snapshot) : null;
++}
++
++function inspectArtifacts(projectRoot, snapshot) {
++  const missing = [];
++  const drifted = [];
++  for (const artifact of snapshot.artifacts) {
++    const relative = normalizeRelativePath(projectRoot, artifact.path);
++    const absolute = artifactPath(projectRoot, relative);
++    if (!fs.existsSync(absolute)) {
++      missing.push({ ...artifact, absolute });
++      continue;
++    }
++    const content = readUtf8(absolute);
++    if (sha256(content) !== artifact.sha256) drifted.push(artifact.path);
++  }
++  return { missing, drifted };
++}
++
++function materializeMissing(missing) {
++  const staged = [];
++  const created = [];
++  try {
++    for (const artifact of missing) {
++      fs.mkdirSync(path.dirname(artifact.absolute), { recursive: true });
++      const temporary = `${artifact.absolute}.forge-${randomUUID()}.tmp`;
++      fs.writeFileSync(temporary, artifact.content, { encoding: 'utf8', flag: 'wx' });
++      staged.push({ temporary, destination: artifact.absolute });
++    }
++    for (const entry of staged) {
++      // link is create-only (fails EEXIST), unlike rename which may overwrite a
++      // file another process materialized after our drift check.
++      fs.linkSync(entry.temporary, entry.destination);
++      fs.rmSync(entry.temporary, { force: true });
++      created.push(entry.destination);
++    }
++  } catch (error) {
++    for (const entry of staged) {
++      if (fs.existsSync(entry.temporary)) fs.rmSync(entry.temporary, { force: true });
++    }
++    for (const destination of created) {
++      if (fs.existsSync(destination)) fs.rmSync(destination, { force: true });
++    }
++    throw error;
++  }
++}
++
++function guidance(message, repairCommand) {
++  return `${message} ${repairCommand}`;
++}
++
++function reconcilePlanAuthority({
++  driver,
++  issueId,
++  projectRoot,
++  workFolder,
++  mode = 'dev',
++  repairCommand = `forge plan "<feature>" --issue ${issueId}`,
++} = {}) {
++  if (!driver || !issueId || !projectRoot) {
++    throw new Error('Plan authority requires a Kernel driver, issue id, and project root');
++  }
++  const existing = readPlanSnapshot(driver, issueId);
++  if (!existing) {
++    const snapshot = workFolder ? createSnapshot({ projectRoot, workFolder }) : null;
++    if (!snapshot) {
++      throw new Error(guidance('Plan authority is missing. Create plan.md and tasks.md, then run:', repairCommand));
++    }
++    if (typeof driver.recordPlanSnapshotTransition !== 'function') {
++      throw new Error('Kernel driver cannot persist plan authority');
++    }
++    driver.recordPlanSnapshotTransition({ issue_id: issueId, snapshot }, {});
++    return { status: 'captured', snapshot };
++  }
++
++  const { missing, drifted } = inspectArtifacts(projectRoot, existing);
++  if (drifted.length > 0) {
++    throw new Error(guidance('Plan artifacts drifted from Kernel authority. Reconcile the files, then run:', repairCommand));
++  }
++  if (missing.length > 0) {
++    materializeMissing(missing);
++    return { status: 'materialized', snapshot: existing };
++  }
++  return { status: mode === 'plan' ? 'reconciled' : 'verified', snapshot: existing };
++}
++
++module.exports = {
++  SCHEMA,
++  createSnapshot,
++  findPlanWorkFolder,
++  readPlanSnapshot,
++  reconcilePlanAuthority,
++};
+diff --git a/test/workflow/plan-authority.test.js b/test/workflow/plan-authority.test.js
+new file mode 100644
+index 00000000..85e72053
+--- /dev/null
++++ b/test/workflow/plan-authority.test.js
+@@ -0,0 +1,123 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  reconcilePlanAuthority,
++  readPlanSnapshot,
++} = require('../../lib/workflow/plan-authority');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++
++const ISSUE_ID = 'plan-authority-issue';
++const WORK_FOLDER = 'docs/work/2026-08-09-plan-authority';
++const REPAIR = 'forge plan "plan authority" --issue plan-authority-issue';
++
++describe('Kernel plan authority', () => {
++  let root;
++  let driver;
++  let broker;
++
++  beforeEach(async () => {
++    root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-plan-authority-'));
++    const dbPath = path.join(root, 'kernel.sqlite');
++    driver = createBuiltinSQLiteDriver({ databasePath: dbPath });
++    broker = createLocalBroker({
++      projectRoot: root,
++      databasePath: dbPath,
++      driver,
++      execFileSync: () => path.join(root, '.git'),
++    });
++    await broker.initialize();
++    await broker.runIssueOperation(
++      'create',
++      ['--id', ISSUE_ID, '--title', 'plan authority', '--type', 'bug', '--acceptance', 'materialize plan'],
++      { actor: 'test', now: '2026-08-09T00:00:00.000Z' },
++    );
++  });
++
++  afterEach(() => {
++    if (driver) driver.close();
++    if (root) fs.rmSync(root, { recursive: true, force: true });
++  });
++
++  function writeArtifacts(plan = '# Plan\n', tasks = '# Tasks\n') {
++    const folder = path.join(root, WORK_FOLDER);
++    fs.mkdirSync(folder, { recursive: true });
++    fs.writeFileSync(path.join(folder, 'plan.md'), plan, 'utf8');
++    fs.writeFileSync(path.join(folder, 'tasks.md'), tasks, 'utf8');
++  }
++
++  test('fresh plan atomically persists a versioned snapshot and plan-to-dev transition', () => {
++    writeArtifacts('# Plan\nFresh\n', '# Tasks\n- One\n');
++
++    const result = reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, workFolder: WORK_FOLDER, mode: 'plan', repairCommand: REPAIR,
++    });
++
++    expect(result.status).toBe('captured');
++    const snapshot = readPlanSnapshot(driver, ISSUE_ID);
++    expect(snapshot.schema).toBe('forge.plan.v1');
++    expect(snapshot.artifacts.map((entry) => entry.path)).toEqual([
++      `${WORK_FOLDER}/plan.md`,
++      `${WORK_FOLDER}/tasks.md`,
++    ]);
++    expect(snapshot.artifacts[0].content).toBe('# Plan\nFresh\n');
++    expect(snapshot.artifacts[0].sha256).toHaveLength(64);
++    expect(driver.getCurrentStage({ issue_id: ISSUE_ID }, {}).stage).toBe('dev');
++  });
++
++  test('resumed session verifies the authoritative snapshot without rewriting files', () => {
++    writeArtifacts();
++    reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, workFolder: WORK_FOLDER, mode: 'plan', repairCommand: REPAIR,
++    });
++    const before = fs.statSync(path.join(root, WORK_FOLDER, 'plan.md')).mtimeMs;
++
++    const result = reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, mode: 'dev', repairCommand: REPAIR,
++    });
++
++    expect(result.status).toBe('verified');
++    expect(fs.statSync(path.join(root, WORK_FOLDER, 'plan.md')).mtimeMs).toBe(before);
++  });
++
++  test('Kernel-only state deterministically materializes both missing artifacts', () => {
++    writeArtifacts('# Plan\nKernel\n', '# Tasks\n- Restore\n');
++    reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, workFolder: WORK_FOLDER, mode: 'plan', repairCommand: REPAIR,
++    });
++    fs.rmSync(path.join(root, WORK_FOLDER), { recursive: true, force: true });
++
++    const result = reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, mode: 'dev', repairCommand: REPAIR,
++    });
++
++    expect(result.status).toBe('materialized');
++    expect(fs.readFileSync(path.join(root, WORK_FOLDER, 'plan.md'), 'utf8')).toBe('# Plan\nKernel\n');
++    expect(fs.readFileSync(path.join(root, WORK_FOLDER, 'tasks.md'), 'utf8')).toBe('# Tasks\n- Restore\n');
++  });
++
++  test('drift fails closed, preserves divergent bytes, and gives one repair path', () => {
++    writeArtifacts();
++    reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, workFolder: WORK_FOLDER, mode: 'plan', repairCommand: REPAIR,
++    });
++    const planPath = path.join(root, WORK_FOLDER, 'plan.md');
++    fs.writeFileSync(planPath, '# Diverged\n', 'utf8');
++
++    expect(() => reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, mode: 'dev', repairCommand: REPAIR,
++    })).toThrow(`Plan artifacts drifted from Kernel authority. Reconcile the files, then run: ${REPAIR}`);
++    expect(fs.readFileSync(planPath, 'utf8')).toBe('# Diverged\n');
++  });
++
++  test('noninteractive execution fails early when neither Kernel nor repository has a plan', () => {
++    expect(() => reconcilePlanAuthority({
++      driver, issueId: ISSUE_ID, projectRoot: root, workFolder: WORK_FOLDER, mode: 'dev', repairCommand: REPAIR,
++    })).toThrow(`Plan authority is missing. Create plan.md and tasks.md, then run: ${REPAIR}`);
++  });
++});
+-- 
+2.51.0.windows.1
+

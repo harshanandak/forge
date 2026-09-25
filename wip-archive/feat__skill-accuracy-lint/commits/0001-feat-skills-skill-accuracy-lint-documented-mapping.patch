@@ -1,0 +1,405 @@
+From 499c742b553e1ea7700638ecb522a019ff0c739f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 18:49:42 +0530
+Subject: [PATCH] =?UTF-8?q?feat(skills):=20skill-accuracy=20lint=20?=
+ =?UTF-8?q?=E2=80=94=20documented=20mappings=20+=20router=20precision?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Enforces two static dimensions in the ~30s targeted lane, closing the defect
+classes that took 10 review rounds on the batch-1 skills PR:
+- DOCUMENTATION (auditCommandDocumentation): every non-exempt coverage.json
+  command must be documented in its owning skill body (name-equality or a
+  word-boundary token), else it's a hollow mapping. Fixed the one real gap:
+  status now documents 'forge prime'.
+- ROUTER PRECISION (auditRouterPrecision): every should_trigger:false fixture
+  must NOT route to its own skill — the negative complement to routerReachability.
+  Added adversarial fixtures for the exact collisions we hit (SonarCloud gate
+  status -> not gates; PR-from-worktree -> not worktree).
+
+Both are pure/injectable + unit-tested with synthetic skills. Registered in
+SKILL_TEST_TARGETS so skill edits run it. Deferred dimensions (need a
+prerequisite): flag reachability (07c3daf6 parseFlags unification — a naive
+check is ~45 false positives across passthrough/self-parse paths), full
+command-name routability (7920f747), functional smoke (execution harness).
+
+Closes 7ee6de45. .agents mirror synced by hook.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/gates/evals/evals.json      |   4 +
+ .agents/skills/status/SKILL.md             |   2 +
+ .agents/skills/status/evals/scorecard.json |   6 +-
+ .agents/skills/worktree/evals/evals.json   |   4 +
+ lib/commands/test.js                       |   1 +
+ lib/skill-eval.js                          |  66 +++++++++++
+ skills/gates/evals/evals.json              |   4 +
+ skills/status/SKILL.md                     |   2 +
+ skills/status/evals/scorecard.json         |   6 +-
+ skills/worktree/evals/evals.json           |   4 +
+ test/skill-accuracy.test.js                | 130 +++++++++++++++++++++
+ 11 files changed, 223 insertions(+), 6 deletions(-)
+ create mode 100644 test/skill-accuracy.test.js
+
+diff --git a/.agents/skills/gates/evals/evals.json b/.agents/skills/gates/evals/evals.json
+index 8176c4eb..aa025f30 100644
+--- a/.agents/skills/gates/evals/evals.json
++++ b/.agents/skills/gates/evals/evals.json
+@@ -34,5 +34,9 @@
+   {
+     "query": "Run the tests and lint before I push.",
+     "should_trigger": false
++  },
++  {
++    "query": "SonarCloud gate status for this PR",
++    "should_trigger": false
+   }
+ ]
+diff --git a/.agents/skills/status/SKILL.md b/.agents/skills/status/SKILL.md
+index b2ff5707..8d8d7df0 100644
+--- a/.agents/skills/status/SKILL.md
++++ b/.agents/skills/status/SKILL.md
+@@ -45,6 +45,8 @@ This command dynamically computes and displays all issues ranked by composite sc
+ 
+ For full context on any issue: `forge show <id>`
+ 
++For the full workflow contract and command reference at session start, run `forge prime`.
++
+ ### Step 1b: Reconcile stale in-progress issues
+ 
+ Check if any in-progress issues were already merged but not closed (can happen if `/verify` was skipped or backup was restored from stale snapshot):
+diff --git a/.agents/skills/status/evals/scorecard.json b/.agents/skills/status/evals/scorecard.json
+index 5eb1b444..d04466dd 100644
+--- a/.agents/skills/status/evals/scorecard.json
++++ b/.agents/skills/status/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 954,
+-      "body_lines": 88,
+-      "score": 45
++      "body_lines": 90,
++      "score": 44
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 64
++  "composite": 63
+ }
+diff --git a/.agents/skills/worktree/evals/evals.json b/.agents/skills/worktree/evals/evals.json
+index 7a230569..b75cac84 100644
+--- a/.agents/skills/worktree/evals/evals.json
++++ b/.agents/skills/worktree/evals/evals.json
+@@ -34,5 +34,9 @@
+   {
+     "query": "Watch my PR and tell me why it isn't merging.",
+     "should_trigger": false
++  },
++  {
++    "query": "Open a pull request from the worktree for this feature.",
++    "should_trigger": false
+   }
+ ]
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 5ffea77b..f37a0c09 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -47,6 +47,7 @@ const SKILL_TEST_TARGETS = Object.freeze([
+ 	'test/skills-structure.test.js',
+ 	'test/skill-coverage.test.js',
+ 	'test/skill-eval.test.js',
++	'test/skill-accuracy.test.js',
+ 	'test/skill-dispatch-parity.test.js',
+ 	'test/using-forge.test.js',
+ 	'test/structural/skills-sync-drift.test.js',
+diff --git a/lib/skill-eval.js b/lib/skill-eval.js
+index aab29761..e4e07221 100644
+--- a/lib/skill-eval.js
++++ b/lib/skill-eval.js
+@@ -616,6 +616,70 @@ function evaluateGate(scorecards, options = {}) {
+   return { passed: failures.length === 0, failures, warnings };
+ }
+ 
++/** Escape a string for literal use inside a RegExp. */
++function escapeRegExp(s) {
++  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++}
++
++/**
++ * Skill-accuracy lint, Dimension A — DOCUMENTATION coverage. For every command that
++ * coverage.json maps to a skill (string value; `{exempt}` objects are skipped), the
++ * command must be documented in that skill's SKILL.md body. "Documented" = the command
++ * IS the skill's own name (a self-titled skill documents its command implicitly), OR the
++ * command token appears (word-boundary) in the body. A miss is a HOLLOW mapping — the
++ * coverage gate passes but an agent routed to the skill is never taught the command
++ * (the exact defect that recurred on the batch-1 skills PR, e.g. orphans -> issue-basics).
++ *
++ * @param {{skillsDir:string, coverage:object}} args
++ * @returns {Array<{command:string, skill:string, reason:string}>} empty when clean.
++ */
++function auditCommandDocumentation({ skillsDir, coverage }) {
++  const map = (coverage && (coverage.commands || coverage)) || {};
++  const violations = [];
++  for (const [command, skill] of Object.entries(map)) {
++    if (typeof skill !== 'string') continue; // exempt entry ({ exempt: reason })
++    if (command === skill) continue; // self-titled skill documents its own command
++    const file = path.join(skillsDir, skill, 'SKILL.md');
++    if (!fs.existsSync(file)) {
++      violations.push({ command, skill, reason: 'owning skill SKILL.md is missing' });
++      continue;
++    }
++    const body = stripBom(fs.readFileSync(file, 'utf8'));
++    const re = new RegExp(`(^|[^a-z0-9-])${escapeRegExp(command)}([^a-z0-9-]|$)`, 'm');
++    if (!re.test(body)) {
++      violations.push({ command, skill, reason: 'command not referenced in the owning skill body' });
++    }
++  }
++  return violations;
++}
++
++/**
++ * Skill-accuracy lint, Dimension B — ROUTER PRECISION. Every fixture a skill DISCLAIMS
++ * (should_trigger:false in its evals.json) must NOT be selected by the deterministic
++ * router for that skill. A hit means one of the skill's curated keywords over-matches a
++ * case it says it does not handle (e.g. the bare `gate status` cue capturing "SonarCloud
++ * gate status"). This is the negative complement to `routerReachability` (which only
++ * checks positive should_trigger recall).
++ *
++ * @param {{skillsDir:string, catalog:Array, route?:function}} args route defaults to routeSkill.
++ * @returns {Array<{skill:string, query:string, routedTo:string}>} empty when clean.
++ */
++function auditRouterPrecision({ skillsDir, catalog, route }) {
++  const routeFn = typeof route === 'function' ? route : (q, opts) => routeSkill(q, opts);
++  const violations = [];
++  for (const name of listSkillNames(skillsDir)) {
++    const state = loadFixtures(skillsDir, name);
++    if (state.status !== 'valid') continue;
++    for (const f of state.fixtures) {
++      if (f && f.should_trigger === false && typeof f.query === 'string') {
++        const best = routeFn(f.query, { catalog }).best;
++        if (best === name) violations.push({ skill: name, query: f.query, routedTo: best });
++      }
++    }
++  }
++  return violations;
++}
++
+ module.exports = {
+   DESC_CAP,
+   BODY_CAP,
+@@ -630,6 +694,8 @@ module.exports = {
+   composite,
+   behavioralPlaceholders,
+   routerReachability,
++  auditCommandDocumentation,
++  auditRouterPrecision,
+   parseSkillSource,
+   loadFixtures,
+   buildScorecard,
+diff --git a/skills/gates/evals/evals.json b/skills/gates/evals/evals.json
+index 8176c4eb..aa025f30 100644
+--- a/skills/gates/evals/evals.json
++++ b/skills/gates/evals/evals.json
+@@ -34,5 +34,9 @@
+   {
+     "query": "Run the tests and lint before I push.",
+     "should_trigger": false
++  },
++  {
++    "query": "SonarCloud gate status for this PR",
++    "should_trigger": false
+   }
+ ]
+diff --git a/skills/status/SKILL.md b/skills/status/SKILL.md
+index b2ff5707..8d8d7df0 100644
+--- a/skills/status/SKILL.md
++++ b/skills/status/SKILL.md
+@@ -45,6 +45,8 @@ This command dynamically computes and displays all issues ranked by composite sc
+ 
+ For full context on any issue: `forge show <id>`
+ 
++For the full workflow contract and command reference at session start, run `forge prime`.
++
+ ### Step 1b: Reconcile stale in-progress issues
+ 
+ Check if any in-progress issues were already merged but not closed (can happen if `/verify` was skipped or backup was restored from stale snapshot):
+diff --git a/skills/status/evals/scorecard.json b/skills/status/evals/scorecard.json
+index 5eb1b444..d04466dd 100644
+--- a/skills/status/evals/scorecard.json
++++ b/skills/status/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 954,
+-      "body_lines": 88,
+-      "score": 45
++      "body_lines": 90,
++      "score": 44
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 64
++  "composite": 63
+ }
+diff --git a/skills/worktree/evals/evals.json b/skills/worktree/evals/evals.json
+index 7a230569..b75cac84 100644
+--- a/skills/worktree/evals/evals.json
++++ b/skills/worktree/evals/evals.json
+@@ -34,5 +34,9 @@
+   {
+     "query": "Watch my PR and tell me why it isn't merging.",
+     "should_trigger": false
++  },
++  {
++    "query": "Open a pull request from the worktree for this feature.",
++    "should_trigger": false
+   }
+ ]
+diff --git a/test/skill-accuracy.test.js b/test/skill-accuracy.test.js
+new file mode 100644
+index 00000000..42b6e285
+--- /dev/null
++++ b/test/skill-accuracy.test.js
+@@ -0,0 +1,130 @@
++'use strict';
++
++// Skill-accuracy lint (targeted lane). Enforces two dimensions that adversarial
++// review repeatedly flagged one instance at a time on the batch-1 skills PR:
++//   A. DOCUMENTATION — a command that coverage.json maps to a skill must actually
++//      be documented in that skill's SKILL.md body (else the mapping is hollow:
++//      the coverage gate passes but an agent routed there is not taught the command).
++//   B. ROUTER PRECISION — a fixture a skill declares it should NOT trigger on
++//      (should_trigger:false) must NOT be selected by the deterministic router
++//      for that skill (else a keyword over-matches, e.g. "SonarCloud gate status").
++// Both are STATIC (no command execution), so they run in the ~30s targeted lane.
++//
++// Not yet enforced here (need a prerequisite, tracked separately):
++//   - flag reachability (the CLI has many parse paths — passthrough, per-command
++//     allowlists, self-parsing handlers — so a naive check is ~45 false positives;
++//     needs the parseFlags unification in 07c3daf6);
++//   - full command-name routability (needs deterministic coverage-driven routing,
++//     7920f747);
++//   - functional smoke (display commands emit output) — needs an execution harness.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  auditCommandDocumentation,
++  auditRouterPrecision,
++  loadCoverageMap,
++  resolveSkillsDir,
++} = require('../lib/skill-eval');
++const { loadSkillCatalog } = require('../lib/using-forge');
++
++const ROOT = path.join(__dirname, '..');
++const skillsDir = resolveSkillsDir(ROOT);
++
++// ---------------------------------------------------------------------------
++// Integration: the real shipped skills must satisfy both dimensions.
++// ---------------------------------------------------------------------------
++describe('skill accuracy — shipped skills', () => {
++  test('every non-exempt mapped command is documented in its owning skill body', () => {
++    const coverage = loadCoverageMap(skillsDir);
++    expect(coverage).toBeTruthy();
++    const violations = auditCommandDocumentation({ skillsDir, coverage });
++    // A non-empty list means a coverage mapping is hollow: fix by documenting the
++    // command in the owning skill body, or revert it to exempt with a reason.
++    expect(violations).toEqual([]);
++  });
++
++  test('no should_trigger:false fixture routes to its own skill', () => {
++    const catalog = loadSkillCatalog(skillsDir);
++    const violations = auditRouterPrecision({ skillsDir, catalog });
++    // A non-empty list means a keyword over-matches a case the skill disclaims:
++    // narrow the keyword (or add a more specific competing cue).
++    expect(violations).toEqual([]);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Unit: synthetic skills dir so the detectors are proven, not just asserted-empty.
++// ---------------------------------------------------------------------------
++describe('auditCommandDocumentation — detector', () => {
++  let dir;
++  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skacc-')); });
++  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
++
++  function writeSkill(name, body) {
++    fs.mkdirSync(path.join(dir, name), { recursive: true });
++    fs.writeFileSync(path.join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\n${body}\n`);
++  }
++
++  test('flags a hollow mapping (command absent from the owning skill body)', () => {
++    writeSkill('issue-basics', 'Create and close issues here. `forge issue create`.');
++    const coverage = { commands: { orphans: 'issue-basics' } };
++    const v = auditCommandDocumentation({ skillsDir: dir, coverage });
++    expect(v.map(x => x.command)).toContain('orphans');
++  });
++
++  test('passes when the command IS documented in the body', () => {
++    writeSkill('issue-basics', 'Find `forge issue orphans` (dangling deps).');
++    const coverage = { commands: { orphans: 'issue-basics' } };
++    expect(auditCommandDocumentation({ skillsDir: dir, coverage })).toEqual([]);
++  });
++
++  test('a self-titled skill documents its own command implicitly', () => {
++    writeSkill('plan', 'This skill designs a feature.'); // no literal "forge plan"
++    const coverage = { commands: { plan: 'plan' } };
++    expect(auditCommandDocumentation({ skillsDir: dir, coverage })).toEqual([]);
++  });
++
++  test('exempt entries (object values) are skipped', () => {
++    writeSkill('issue-basics', 'issues here');
++    const coverage = { commands: { orphans: { exempt: 'pending' } } };
++    expect(auditCommandDocumentation({ skillsDir: dir, coverage })).toEqual([]);
++  });
++});
++
++describe('auditRouterPrecision — detector', () => {
++  let dir;
++  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skacc-')); });
++  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
++
++  function writeSkillWithFixtures(name, fixtures) {
++    fs.mkdirSync(path.join(dir, name, 'evals'), { recursive: true });
++    fs.writeFileSync(path.join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: x\n---\nbody\n`);
++    fs.writeFileSync(path.join(dir, name, 'evals', 'evals.json'), JSON.stringify(fixtures));
++  }
++
++  test('flags a should_trigger:false fixture that the router routes to the skill', () => {
++    writeSkillWithFixtures('gates', [
++      { query: 'disable the gate', should_trigger: true },
++      { query: 'status', should_trigger: false },
++    ]);
++    const catalog = [{ name: 'gates', description: '' }];
++    // Inject a router that (wrongly) routes the disclaimed 'status' query to gates.
++    const route = (q) => ({ best: q === 'status' ? 'gates' : 'other' });
++    const v = auditRouterPrecision({ skillsDir: dir, catalog, route });
++    expect(v.map(x => x.query)).toContain('status');
++  });
++
++  test('passes when disclaimed fixtures route elsewhere', () => {
++    writeSkillWithFixtures('gates', [
++      { query: 'disable the gate', should_trigger: true },
++      { query: 'open a pull request', should_trigger: false },
++    ]);
++    const catalog = [{ name: 'gates', description: '' }];
++    const route = (q) => ({ best: q === 'open a pull request' ? 'ship' : 'gates' });
++    expect(auditRouterPrecision({ skillsDir: dir, catalog, route })).toEqual([]);
++  });
++});
+-- 
+2.51.0.windows.1
+

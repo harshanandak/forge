@@ -1,0 +1,120 @@
+From 4edb8c9d520abfb837b1d47934dff223b370d807 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 16:14:32 +0530
+Subject: [PATCH] fix(skills): document only wired flags (drop dead
+ --reason/--json/--no-master-sync)
+
+Round-5 (Codex): the skills documented CLI flags that silently no-op. Verified
+via full dispatch trace: bin/forge.js parseFlags() has a fixed allowlist and
+drops unknown flags (else{i++}), and the registry passes that object to handlers
+(bin/forge.js:4122). So gate.js flags.reason/flags.json and clean.js
+flags['--no-master-sync'] are never populated.
+- gates/SKILL.md: drop --reason from approve/reject and --json from status
+- worktree/SKILL.md: drop 'forge clean --no-master-sync'
+- kept forms verified wired: worktree create --issue/--branch/--base/--work-folder
+  (worktree.js self-parses), forge control status --json (control.js args
+  fallback), --dry-run/--force (in allowlist)
+- CLI parsing gap filed as 07c3daf6; re-add these flags once it lands
+- regen worktree scorecard; .agents synced by hook
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/gates/SKILL.md                | 6 +++---
+ .agents/skills/worktree/SKILL.md             | 1 -
+ .agents/skills/worktree/evals/scorecard.json | 4 ++--
+ skills/gates/SKILL.md                        | 6 +++---
+ skills/worktree/SKILL.md                     | 1 -
+ skills/worktree/evals/scorecard.json         | 4 ++--
+ 6 files changed, 10 insertions(+), 12 deletions(-)
+
+diff --git a/.agents/skills/gates/SKILL.md b/.agents/skills/gates/SKILL.md
+index 152ddd20..a462747d 100644
+--- a/.agents/skills/gates/SKILL.md
++++ b/.agents/skills/gates/SKILL.md
+@@ -49,9 +49,9 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
+ ## Human-gate approval events
+ 
+ ```bash
+-forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
+-forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
+-forge gate status  <issue-id> [--json]                      # list recorded events for that issue (resume-safe)
++forge gate approve <issue-id> <gate-id>                     # record a durable gate.approved event
++forge gate reject  <issue-id> <gate-id>                     # record gate.rejected
++forge gate status  <issue-id>                               # list recorded events for that issue (resume-safe)
+ forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
+ ```
+ 
+diff --git a/.agents/skills/worktree/SKILL.md b/.agents/skills/worktree/SKILL.md
+index 968f22a7..f3999297 100644
+--- a/.agents/skills/worktree/SKILL.md
++++ b/.agents/skills/worktree/SKILL.md
+@@ -69,7 +69,6 @@ forge worktree remove <slug>     # git worktree remove for that slug
+ ```bash
+ forge clean                      # remove worktrees whose branches merged; FF the default branch
+ forge clean --dry-run            # show what would be removed, change nothing
+-forge clean --no-master-sync     # skip fast-forwarding the default-branch checkout
+ ```
+ 
+ `forge clean` is **squash-aware** — it detects branches that merged via squash, not just fast-forward merges.
+diff --git a/.agents/skills/worktree/evals/scorecard.json b/.agents/skills/worktree/evals/scorecard.json
+index 8c3e4af7..981a39b4 100644
+--- a/.agents/skills/worktree/evals/scorecard.json
++++ b/.agents/skills/worktree/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 1013,
+-      "body_lines": 71,
+-      "score": 43
++      "body_lines": 70,
++      "score": 44
+     },
+     "caps": {
+       "desc_within": true,
+diff --git a/skills/gates/SKILL.md b/skills/gates/SKILL.md
+index 152ddd20..a462747d 100644
+--- a/skills/gates/SKILL.md
++++ b/skills/gates/SKILL.md
+@@ -49,9 +49,9 @@ The `gate.*` and `rail.*` id namespaces are disjoint, so `forge gate enable|disa
+ ## Human-gate approval events
+ 
+ ```bash
+-forge gate approve <issue-id> <gate-id> [--reason <text>]   # record a durable gate.approved event
+-forge gate reject  <issue-id> <gate-id> [--reason <text>]   # record gate.rejected
+-forge gate status  <issue-id> [--json]                      # list recorded events for that issue (resume-safe)
++forge gate approve <issue-id> <gate-id>                     # record a durable gate.approved event
++forge gate reject  <issue-id> <gate-id>                     # record gate.rejected
++forge gate status  <issue-id>                               # list recorded events for that issue (resume-safe)
+ forge gate check   <issue-id> <gate-id>                     # exit 0 iff gate DISABLED or an approval exists on that issue
+ ```
+ 
+diff --git a/skills/worktree/SKILL.md b/skills/worktree/SKILL.md
+index 968f22a7..f3999297 100644
+--- a/skills/worktree/SKILL.md
++++ b/skills/worktree/SKILL.md
+@@ -69,7 +69,6 @@ forge worktree remove <slug>     # git worktree remove for that slug
+ ```bash
+ forge clean                      # remove worktrees whose branches merged; FF the default branch
+ forge clean --dry-run            # show what would be removed, change nothing
+-forge clean --no-master-sync     # skip fast-forwarding the default-branch checkout
+ ```
+ 
+ `forge clean` is **squash-aware** — it detects branches that merged via squash, not just fast-forward merges.
+diff --git a/skills/worktree/evals/scorecard.json b/skills/worktree/evals/scorecard.json
+index 8c3e4af7..981a39b4 100644
+--- a/skills/worktree/evals/scorecard.json
++++ b/skills/worktree/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 1013,
+-      "body_lines": 71,
+-      "score": 43
++      "body_lines": 70,
++      "score": 44
+     },
+     "caps": {
+       "desc_within": true,
+-- 
+2.51.0.windows.1
+

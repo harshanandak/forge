@@ -1,0 +1,1006 @@
+From 8bdc55b3a5c5a45a17a2b85da1679decebc6bd1b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 9 Sep 2026 00:48:22 +0530
+Subject: [PATCH] feat(github): isolate account context across indirect routes
+
+Route monitor workers through public CLI re-entry without selected credentials.
+
+Keep snapshot and evaluation credentials private to GitHub calls.
+
+Preserve optional unbound behavior and hidden Windows launch semantics.
+
+Task 5 TDD: initial matrix 7 pass/20 fail; final focused checks 384 pass/0 fail.
+
+Parent-approved shared-boundary scope decisions: 3.
+---
+ lib/commands/push.js                          |   4 +-
+ lib/commands/serve.js                         |  35 +-
+ lib/commands/skill.js                         |   8 +
+ lib/commands/test.js                          |   8 +
+ lib/pr-monitor/reconcile-executor.js          |  24 +-
+ lib/pr-monitor/watch-lifecycle.js             |  38 +-
+ scripts/lib/behavioral-eval-runtime.js        |   5 +-
+ scripts/test.js                               |   6 +
+ test/commands/github-indirect-routes.test.js  | 331 ++++++++++++++++++
+ test/commands/push.test.js                    |   4 +
+ test/commands/skill.test.js                   |   2 +
+ test/hooks-session-start.test.js              |   2 +-
+ test/pr-monitor/reconcile-executor.test.js    |   2 +
+ test/pr-monitor/watch-lifecycle.test.js       |   5 +-
+ test/pr-monitor/watch-owner-cutover.test.js   |   3 +-
+ .../watch-owner-launch-contention.test.js     |   3 +-
+ .../watch-owner-launch-gate.test.js           |   3 +-
+ test/scripts/test-runner.test.js              |   2 +
+ web/dashboard/generate-snapshot.mjs           |  54 ++-
+ 19 files changed, 490 insertions(+), 49 deletions(-)
+ create mode 100644 test/commands/github-indirect-routes.test.js
+
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index f90b4c36..3b4584ab 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -127,8 +127,8 @@ function maybeTriggerShepherdAfterPush({
+ 	try {
+ 		trigger({ projectRoot });
+ 		return { armed: true };
+-	} catch (err) {
+-		return { armed: false, reason: err.message };
++	} catch {
++		return { armed: false, reason: 'shepherd-launch-failed' };
+ 	}
+ }
+ 
+diff --git a/lib/commands/serve.js b/lib/commands/serve.js
+index 00445e42..2dbb5e9c 100644
+--- a/lib/commands/serve.js
++++ b/lib/commands/serve.js
+@@ -31,6 +31,7 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ const crypto = require('node:crypto');
+ const { spawn } = require('node:child_process');
++const { githubWorkerEnvironment } = require('../pr-monitor/watch-lifecycle');
+ 
+ // Shared-machine hardening (single-instance lock, owner-only perms + audit,
+ // hash-chained mutation journal). No dependency on serve.js, so a top-level
+@@ -237,12 +238,21 @@ async function routeMutation(verb, args, projectRoot, deps = {}) {
+ // Snapshot (GET /data.json) — regenerate on demand, debounced.
+ // ---------------------------------------------------------------------------
+ 
+-function defaultGenerate(projectRoot, dashboardDir) {
++function defaultGenerate(projectRoot, dashboardDir, deps = {}) {
+   return new Promise((resolve, reject) => {
+     const script = path.join(dashboardDir, 'generate-snapshot.mjs');
+-    const child = spawn(process.execPath, [script], { cwd: projectRoot, stdio: 'ignore', windowsHide: true });
++    const env = githubWorkerEnvironment(projectRoot, deps);
++    let child;
++    try {
++      child = (deps.spawn || spawn)(process.execPath, [script], {
++        cwd: projectRoot, stdio: 'ignore', windowsHide: true, ...(env ? { env } : {}),
++      });
++    } catch {
++      reject(new Error('snapshot generation failed'));
++      return;
++    }
+     const timer = setTimeout(() => { child.kill(); reject(new Error('snapshot generation timed out')); }, GEN_TIMEOUT_MS);
+-    child.on('error', (err) => { clearTimeout(timer); reject(err); });
++    child.on('error', () => { clearTimeout(timer); reject(new Error('snapshot generation failed')); });
+     child.on('exit', (code) => {
+       clearTimeout(timer);
+       if (code === 0) resolve();
+@@ -409,7 +419,7 @@ function buildContext(projectRoot, dashboardDir, token, deps = {}) {
+       buffer: null,
+       lastGen: 0,
+       inFlight: null,
+-      generate: deps.generate || defaultGenerate,
++      generate: deps.generate || ((root, dir) => defaultGenerate(root, dir, deps)),
+     },
+   };
+ }
+@@ -438,13 +448,16 @@ function browserOpener() {
+   return { file: '/usr/bin/xdg-open', args: [] };
+ }
+ 
+-function openBrowser(url) {
++function openBrowser(url, projectRoot = process.cwd(), deps = {}) {
+   try {
+     const { file, args } = browserOpener();
++    const env = githubWorkerEnvironment(projectRoot, deps);
+     // windowsHide keeps this detached opener from flashing a console window on
+     // Windows (Node defaults windowsHide to false); background/detached spawns
+     // must stay silent (issue 931e7924).
+-    const child = spawn(file, [...args, url], { detached: true, stdio: 'ignore', windowsHide: true });
++    const child = (deps.spawn || spawn)(file, [...args, url], {
++      detached: true, stdio: 'ignore', windowsHide: true, ...(env ? { env } : {}),
++    });
+     // spawn() failures (e.g. the opener binary is missing) surface ASYNChronously
+     // as an 'error' event, NOT via the try/catch — an unhandled one would crash
+     // `forge serve`. Opening a browser is best-effort; swallow it (URL is printed).
+@@ -480,7 +493,7 @@ function announceServe(server, token, options, resolve) {
+     `\nforge serve — interactive dashboard (loopback only)\n  ${url}\n`
+     + '  Token dies with this process. Press Ctrl-C to stop.\n\n',
+   );
+-  if (options.open) openBrowser(url);
++  if (options.open) openBrowser(url, options.projectRoot, options.deps);
+   installServeShutdown(server, resolve, options.onClose);
+ }
+ 
+@@ -535,7 +548,7 @@ function verifyJournalAtStartup(projectRoot, warn = (m) => process.stderr.write(
+   return result;
+ }
+ 
+-async function handler(args, flags = {}, projectRoot = process.cwd(), _opts = {}) {
++async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {}) {
+   const { port, open } = parseServeArgs(args, flags);
+   const dashboardDir = path.join(projectRoot, 'web', 'dashboard');
+   if (!fs.existsSync(path.join(dashboardDir, 'index.html'))) {
+@@ -558,10 +571,12 @@ async function handler(args, flags = {}, projectRoot = process.cwd(), _opts = {}
+   verifyJournalAtStartup(projectRoot);
+ 
+   const token = mintToken();
+-  const ctx = buildContext(projectRoot, dashboardDir, token);
++  const ctx = buildContext(projectRoot, dashboardDir, token, opts);
+   const server = createServeServer(ctx);
+   return startListening(server, port, token, {
+     open,
++    projectRoot,
++    deps: opts,
+     onClose: () => security.releaseLock(projectRoot),
+   });
+ }
+@@ -575,6 +590,8 @@ module.exports = {
+   routeMutation,
+   parseServeArgs,
+   buildContext,
++  defaultGenerate,
++  openBrowser,
+   createServeServer,
+   verifyToken,
+   isLoopbackRequest,
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+index 89adcb8d..f2ac8034 100644
+--- a/lib/commands/skill.js
++++ b/lib/commands/skill.js
+@@ -23,6 +23,7 @@ const { runBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-r
+ const { resolveBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-runtime');
+ const { loadPromotionEvidence } = require('../../scripts/lib/promotion-evidence-loader');
+ const { scorePromotion } = require('../../scripts/lib/promotion-scorecard');
++const { createGithubContext } = require('../github-context');
+ 
+ const BEHAVIORAL_TIERS = Object.freeze([30, 100, 300]);
+ const BEHAVIORAL_TIER_VALUES = new Set(BEHAVIORAL_TIERS.map(String));
+@@ -158,12 +159,19 @@ async function handleFullEval(rest, flags, projectRoot, opts) {
+   let behavioralOptions = opts.behavioralOptions || {};
+   if (!opts.runBehavioralEvaluation || opts.resolveBehavioralEvaluation) {
+     const resolver = opts.resolveBehavioralEvaluation || resolveBehavioralEvaluation;
++    let githubContext;
++    try {
++      githubContext = (opts.prepareGithubContext || createGithubContext)(projectRoot);
++    } catch {
++      return { success: false, error: 'Unable to prepare GitHub account context. Run forge github status for guidance.' };
++    }
+     const resolved = await resolver({
+       projectRoot,
+       skillName: name,
+       skillPath: path.join(ctx.skillsDir, name, 'SKILL.md'),
+       tier,
+       env: opts.env || process.env,
++      ...(githubContext.bound ? { deps: { runGh: githubContext.runGh } } : {}),
+     });
+     if (!resolved.ok) return formatResult(scoreResult(resolved.result));
+     behavioralOptions = { ...resolved.options, ...behavioralOptions };
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 64866732..91a1fbda 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -93,6 +93,12 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'lib/commands/team.js': ['test/commands/team.test.js', 'test/commands/github-route-matrix.test.js'],
+ 	'lib/commands/clean.js': ['test/commands/clean.test.js', 'test/commands/github-route-matrix.test.js'],
+ 	'scripts/github-context-bridge.sh': ['test/commands/github-route-matrix.test.js'],
++	'lib/commands/push.js': ['test/commands/push.test.js', 'test/commands/github-indirect-routes.test.js'],
++	'lib/commands/hooks.js': ['test/commands/hooks.test.js', 'test/hooks-session-start.test.js', 'test/commands/github-indirect-routes.test.js'],
++	'lib/commands/serve.js': ['test/commands/serve.test.js', 'test/commands/github-indirect-routes.test.js'],
++	'lib/commands/skill.js': ['test/commands/skill.test.js', 'test/commands/github-indirect-routes.test.js'],
++	'scripts/lib/behavioral-eval-runtime.js': ['test/eval/behavioral-eval-runtime.test.js', 'test/commands/github-indirect-routes.test.js'],
++	'web/dashboard/generate-snapshot.mjs': ['test/commands/github-indirect-routes.test.js'],
+ 	// The shared SQLite driver has more consumers than a bounded direct list can
+ 	// safely represent; its empty mapping deliberately selects the full-suite lane.
+ 	'lib/kernel/sqlite-driver.js': [],
+@@ -105,6 +111,7 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/pr-monitor/reconcile-owner-authority.test.js',
+ 	],
+ 	'lib/pr-monitor/reconcile-executor.js': [
++		'test/commands/github-indirect-routes.test.js',
+ 		'test/pr-monitor/auto-trigger-containment.test.js',
+ 		'test/pr-monitor/reconcile-executor-owner-authority.test.js',
+ 		'test/pr-monitor/reconcile-executor.test.js',
+@@ -118,6 +125,7 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/pr-monitor/watch.test.js',
+ 	],
+ 	'lib/pr-monitor/watch-lifecycle.js': [
++		'test/commands/github-indirect-routes.test.js',
+ 		'test/pr-monitor/watch-lifecycle.test.js',
+ 		'test/pr-monitor/watch-owner-launch-contention.test.js',
+ 		'test/pr-monitor/watch-owner-launch-gate.test.js',
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 47adb517..7b8c4a07 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -17,7 +17,7 @@ const shepherdLease = require('./shepherd-lease');
+ const watchOwner = require('./watch-owner');
+ const { reconcile: defaultReconcile } = require('./reconcile');
+ const { tick: defaultTick } = require('./reconcile-tick');
+-const { startPrWatcherDetached, forgeBin } = require('./watch-lifecycle');
++const { startPrWatcherDetached, forgeArgs, githubWorkerEnvironment } = require('./watch-lifecycle');
+ const { privacySafeIdentity } = require('./flow-monitor');
+ const { processIdentityAlive, defaultPidStartedAt } = require('./process-identity');
+ const brokerMod = require('../kernel/broker');
+@@ -1214,21 +1214,31 @@ async function runDaemon(projectRoot, opts = {}) {
+ function launchDaemon(ctx = {}) {
+ 	const commonRoot = path.basename(ctx.gitCommonDir || '').toLowerCase() === '.git'
+ 		? path.dirname(ctx.gitCommonDir) : ctx.projectRoot;
++	let argv;
++	let environment;
++	try {
++		argv = forgeArgs(['shepherd', 'daemon'], ctx);
++		const env = githubWorkerEnvironment(commonRoot, ctx);
++		environment = env ? { env } : {};
++	} catch {
++		recordDaemonDiagnostic(ctx, ctx.gitCommonDir, 'launch-failed');
++		return { launched: false };
++	}
+ 	if (ctx.harness?.hasBgShell && typeof ctx.harness.runBgShell === 'function') {
+ 		try {
+-			ctx.harness.runBgShell([process.execPath, forgeBin(), 'shepherd', 'daemon'], { cwd: commonRoot });
++			ctx.harness.runBgShell([process.execPath, ...argv], { cwd: commonRoot, ...environment });
+ 			return { launched: true, via: 'bg-shell' };
+ 		} catch { /* detached fallback */ }
+ 	}
+ 	try {
+-		const child = (ctx.spawnProcess || spawn)(process.execPath, [forgeBin(), 'shepherd', 'daemon'], {
+-			cwd: commonRoot, detached: true, stdio: 'ignore', windowsHide: true,
++		const child = (ctx.spawnProcess || spawn)(process.execPath, argv, {
++			cwd: commonRoot, detached: true, stdio: 'ignore', windowsHide: true, ...environment,
+ 		});
+-		child?.on?.('error', error => recordDaemonDiagnostic(ctx, ctx.gitCommonDir, 'launch-failed', error));
++		child?.on?.('error', () => recordDaemonDiagnostic(ctx, ctx.gitCommonDir, 'launch-failed'));
+ 		child?.unref?.();
+ 		return { launched: true, via: 'detached', pid: child?.pid ?? null };
+-	} catch (error) {
+-		recordDaemonDiagnostic(ctx, ctx.gitCommonDir, 'launch-failed', error);
++	} catch {
++		recordDaemonDiagnostic(ctx, ctx.gitCommonDir, 'launch-failed');
+ 		return { launched: false };
+ 	}
+ }
+diff --git a/lib/pr-monitor/watch-lifecycle.js b/lib/pr-monitor/watch-lifecycle.js
+index 9f794d5a..df990856 100644
+--- a/lib/pr-monitor/watch-lifecycle.js
++++ b/lib/pr-monitor/watch-lifecycle.js
+@@ -20,6 +20,8 @@ const path = require('node:path');
+ const { spawn, execFileSync } = require('node:child_process');
+ 
+ const watchOwner = require('./watch-owner');
++const { isCompiledBinary } = require('../package-root');
++const { readGithubAccount } = require('../github-context');
+ 
+ const CANONICAL_REPOSITORY = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
+ 
+@@ -38,6 +40,27 @@ function forgeBin() {
+   return path.join(__dirname, '..', '..', 'bin', 'forge.js');
+ }
+ 
++function forgeArgs(args, opts = {}) {
++  return (opts.isCompiledBinary || isCompiledBinary)() ? [...args] : [forgeBin(), ...args];
++}
++
++// Workers resolve their own account after re-entry. Preserve native unbound environments.
++function githubWorkerEnvironment(projectRoot, opts = {}) {
++  let bound;
++  try {
++    bound = opts.githubContext ? opts.githubContext.bound
++      : Boolean((opts.readGithubAccount || readGithubAccount)(projectRoot));
++  } catch {
++    throw new Error('Unable to read the worker GitHub account binding.');
++  }
++  if (!bound) return opts.env;
++  const env = { ...(opts.env || process.env) };
++  for (const key of Object.keys(env)) {
++    if (['gh_token', 'github_token', 'gh_host'].includes(key.toLowerCase())) delete env[key];
++  }
++  return env;
++}
++
+ /**
+  * Parse a canonical `owner/repository` from an origin URL. Production launchers
+  * supply the provider-resolved base repository; this remains a bounded utility
+@@ -88,6 +111,7 @@ async function startPrWatcherDetached(opts = {}) {
+       return { started: false, reason: 'migration-gate-incomplete' };
+     }
+ 
++    const env = githubWorkerEnvironment(cwd, opts);
+     const identity = { repo: repository, pr };
+     if (opts.reservation != null) {
+       reservation = opts.reservation;
+@@ -130,14 +154,14 @@ async function startPrWatcherDetached(opts = {}) {
+ 
+     const child = spawnFn(
+       process.execPath,
+-      [
+-        forgeBin(), 'shepherd', 'watch', String(pr),
++      forgeArgs([
++        'shepherd', 'watch', String(pr),
+         '--repo', repository,
+         '--generation', reservation.record.generation,
+         '--controller-pid', String(controllerPid),
+         '--started-at', reservation.record.startedAt,
+-      ],
+-      { cwd, detached: true, stdio: 'ignore', windowsHide: true },
++      ], opts),
++      { cwd, detached: true, stdio: 'ignore', windowsHide: true, ...(env ? { env } : {}) },
+     );
+     // spawn can emit an ASYNC 'error' (ENOENT/EACCES) AFTER returning; with no
+     // listener that becomes an unhandled exception that could crash ship. A no-op
+@@ -166,7 +190,7 @@ async function startPrWatcherDetached(opts = {}) {
+       startedAt: reservation.record.startedAt,
+       repository,
+     };
+-  } catch (err) {
++  } catch {
+     // Lifecycle auto-start must never fail ship — degrade to "not started".
+     if (reservation?.record && CANONICAL_REPOSITORY.test(repository)) {
+       try {
+@@ -175,7 +199,7 @@ async function startPrWatcherDetached(opts = {}) {
+         }, opts.ownerOptions || {});
+       } catch { /* a stale starting row is recoverable by the daemon */ }
+     }
+-    return { started: false, reason: err.message };
++    return { started: false, reason: 'watcher-launch-failed' };
+   }
+ }
+ 
+@@ -184,4 +208,6 @@ module.exports = {
+   launchGateComplete,
+   defaultResolveSlug,
+   forgeBin,
++  forgeArgs,
++  githubWorkerEnvironment,
+ };
+diff --git a/scripts/lib/behavioral-eval-runtime.js b/scripts/lib/behavioral-eval-runtime.js
+index dbdd9eff..af8492e2 100644
+--- a/scripts/lib/behavioral-eval-runtime.js
++++ b/scripts/lib/behavioral-eval-runtime.js
+@@ -156,6 +156,7 @@ function createPrAdapter(projectRoot, execFile = execFileSync) {
+ }
+ 
+ async function resolveAttribution(projectRoot, head, env, deps = {}) {
++  const prExec = deps.runGh ? (_command, args, options) => deps.runGh(args, options) : deps.execFileSync;
+   const branch = resolveBranch(projectRoot, deps.execFileSync);
+   const requestedIssueId = env.FORGE_EVAL_ISSUE_ID;
+   if (requestedIssueId && !UUID.test(String(requestedIssueId))) {
+@@ -172,11 +173,11 @@ async function resolveAttribution(projectRoot, head, env, deps = {}) {
+   }
+   const pr = explicitPr
+     ? Number(env.FORGE_EVAL_PR)
+-    : resolvePrFromGh(projectRoot, deps.execFileSync);
++    : resolvePrFromGh(projectRoot, prExec);
+   if (!pr) throw new Error('attribution.pr_unavailable');
+   let state;
+   try {
+-    const adapter = deps.prAdapter || createPrAdapter(projectRoot, deps.execFileSync);
++    const adapter = deps.prAdapter || createPrAdapter(projectRoot, prExec);
+     state = await adapter.readState(pr);
+   } catch {
+     throw new Error('attribution.pr_unavailable');
+diff --git a/scripts/test.js b/scripts/test.js
+index 59a86316..285c39d4 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -71,6 +71,12 @@ const KNOWN_TARGETABLE_FILES = new Set([
+   'lib/commands/team.js',
+   'lib/commands/clean.js',
+   'scripts/github-context-bridge.sh',
++  'lib/commands/push.js',
++  'lib/commands/hooks.js',
++  'lib/commands/serve.js',
++  'lib/commands/skill.js',
++  'scripts/lib/behavioral-eval-runtime.js',
++  'web/dashboard/generate-snapshot.mjs',
+   'lib/pr-monitor/watch-owner.js',
+   'lib/pr-monitor/reconcile.js',
+   'lib/pr-monitor/reconcile-executor.js',
+diff --git a/test/commands/github-indirect-routes.test.js b/test/commands/github-indirect-routes.test.js
+new file mode 100644
+index 00000000..8a9d4833
+--- /dev/null
++++ b/test/commands/github-indirect-routes.test.js
+@@ -0,0 +1,331 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach, spyOn, mock } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { pathToFileURL } = require('node:url');
++const { EventEmitter } = require('node:events');
++const { isDeepStrictEqual } = require('node:util');
++const { prepareGithubAccount } = require('../../lib/github-context');
++const { executeCommand } = require('../../lib/commands/_registry');
++const { getTestCandidatesForChangedFile } = require('../../lib/commands/test');
++const { classifyPushTests, ALWAYS_RUN_RISK_TEST_TARGETS } = require('../../scripts/test');
++const lifecycle = require('../../lib/pr-monitor/watch-lifecycle');
++const reconcile = require('../../lib/pr-monitor/reconcile-executor');
++const push = require('../../lib/commands/push');
++const hooks = require('../../lib/commands/hooks');
++const serve = require('../../lib/commands/serve');
++const skill = require('../../lib/commands/skill');
++const runtime = require('../../scripts/lib/behavioral-eval-runtime');
++
++const ROOT = path.resolve(__dirname, '../..');
++const CANARY = 'test-only-indirect-account-canary';
++const HEAD = 'a'.repeat(40);
++const ISSUE = '198bec40-0d65-42a8-b2c2-c682f44fdb22';
++const SUITE = 'test/commands/github-indirect-routes.test.js';
++const ambient = Object.freeze({ GH_TOKEN: CANARY, github_token: CANARY, Gh_Host: CANARY, RETAINED: 'yes' });
++let originalEnv;
++beforeEach(() => {
++  originalEnv = { ...process.env };
++  spyOn(process, 'exit').mockImplementation(() => { throw new Error('Unexpected process exit'); });
++});
++afterEach(() => {
++  expect(isDeepStrictEqual({ ...process.env }, originalEnv)).toBe(true);
++  mock.restore();
++});
++function clean(value) { expect(JSON.stringify(value).includes(CANARY)).toBe(false); }
++function child() {
++  const value = new EventEmitter();
++  value.pid = 4242;
++  value.unref = () => { value.unreferenced = true; };
++  value.kill = () => { throw new Error('Unexpected kill'); };
++  return value;
++}
++function selected(reply = () => '{}') {
++  const calls = [];
++  const context = prepareGithubAccount(ROOT, 'work', { baseEnv: { RETAINED: 'yes' }, runner: (cmd, args, options) => {
++    expect(cmd).toBe('gh');
++    if (args[0] === 'auth') return CANARY;
++    expect(options.env.GH_TOKEN === CANARY && options.env.GITHUB_TOKEN === CANARY).toBe(true);
++    if (args[0] === 'api' && args.includes('user')) return 'work';
++    calls.push(args);
++    return reply(args);
++  } });
++  return { context, calls };
++}
++function watcherOptions(overrides = {}) {
++  return {
++    prNumber: 7, repository: 'owner/repo', cwd: ROOT,
++    readGithubAccount: () => 'work', env: ambient,
++    owner: {
++      readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }),
++      reserveStarting: async () => ({ ok: true, record: { generation: 'generation-7', startedAt: '2026-09-08T00:00:00.000Z' } }),
++      abortStarting: async () => ({ ok: true }),
++    },
++    ...overrides,
++  };
++}
++
++describe('indirect GitHub account boundaries', () => {
++  test.each([push, hooks, serve, skill])('%s has no global GitHub guard', mod => {
++    expect(mod.githubAuth).toBeUndefined();
++  });
++
++  test.each([false, true])('daemon re-enters public source/compiled CLI without ambient credentials (%s)', compiled => {
++    let call; let reads = 0;
++    const worker = child();
++    const result = reconcile.launchDaemon({
++      projectRoot: path.join(ROOT, '.worktrees', 'temporary'), gitCommonDir: path.join(ROOT, '.git'),
++      env: ambient, readGithubAccount: () => { reads++; return 'work'; }, isCompiledBinary: () => compiled,
++      spawnProcess: (...values) => { call = values; return worker; }, writeDaemonDiagnostic: () => {},
++    });
++    expect(result.launched).toBe(true);
++    expect(reads).toBe(1);
++    expect(call[0]).toBe(process.execPath);
++    expect(call[1]).toEqual([...(compiled ? [] : [lifecycle.forgeBin()]), 'shepherd', 'daemon']);
++    expect(call[2]).toEqual({ cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true, env: { RETAINED: 'yes' } });
++    expect(worker.unreferenced).toBe(true);
++    clean(call);
++  });
++
++  test('background-shell launch uses the same clean environment and CLI entry', () => {
++    let call;
++    const result = reconcile.launchDaemon({ projectRoot: ROOT, env: ambient,
++      readGithubAccount: () => 'work', isCompiledBinary: () => true,
++      harness: { hasBgShell: true, runBgShell: (...args) => { call = args; } },
++      spawnProcess: () => { throw new Error('Unexpected detached fallback'); },
++    });
++    expect(result.via).toBe('bg-shell');
++    expect(call).toEqual([[process.execPath, 'shepherd', 'daemon'], { cwd: ROOT, env: { RETAINED: 'yes' } }]);
++  });
++
++  test.each([false, true])('watcher re-enters the public CLI with unchanged owner argv (%s)', async compiled => {
++    let call; let reads = 0;
++    const worker = child();
++    const result = await lifecycle.startPrWatcherDetached(watcherOptions({
++      isCompiledBinary: () => compiled, readGithubAccount: () => { reads++; return 'work'; },
++      spawn: (...values) => { call = values; return worker; },
++    }));
++    expect(result.started).toBe(true);
++    expect(reads).toBe(1);
++    expect(call[1]).toEqual([...(compiled ? [] : [lifecycle.forgeBin()]), 'shepherd', 'watch', '7',
++      '--repo', 'owner/repo', '--generation', 'generation-7', '--controller-pid', String(process.pid), '--started-at', '2026-09-08T00:00:00.000Z']);
++    expect(call[2]).toEqual({ cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true, env: { RETAINED: 'yes' } });
++    expect(worker.unreferenced).toBe(true);
++    clean(result); clean(call);
++  });
++
++  test('unbound watcher and daemon preserve native ambient environment', async () => {
++    const captured = [];
++    await lifecycle.startPrWatcherDetached(watcherOptions({ readGithubAccount: () => null,
++      spawn: (_cmd, _args, opts) => { captured.push(opts); return child(); },
++    }));
++    reconcile.launchDaemon({ projectRoot: ROOT, env: ambient, readGithubAccount: () => null,
++      spawnProcess: (_cmd, _args, opts) => { captured.push(opts); return child(); },
++    });
++    expect(captured).toHaveLength(2);
++    expect(captured.every(opts => opts.env === ambient)).toBe(true);
++  });
++
++  test('binding read failures prevent worker launch without exposing diagnostics', async () => {
++    let launches = 0;
++    const diagnostics = [];
++    const readGithubAccount = () => { throw new Error(CANARY); };
++    const spawn = () => { launches++; return child(); };
++    const watcher = await lifecycle.startPrWatcherDetached(watcherOptions({ readGithubAccount, spawn }));
++    const daemon = reconcile.launchDaemon({ projectRoot: ROOT, readGithubAccount, spawnProcess: spawn,
++      writeDaemonDiagnostic: (_root, entry) => diagnostics.push(entry),
++    });
++    expect(watcher.started).toBe(false); expect(daemon.launched).toBe(false);
++    expect(launches).toBe(0);
++    clean({ watcher, daemon, diagnostics });
++  });
++
++  test('spawn errors and async launch diagnostics are credential-clean', async () => {
++    const diagnostics = [];
++    const worker = child();
++    reconcile.launchDaemon({ projectRoot: ROOT, readGithubAccount: () => 'work', env: ambient,
++      spawnProcess: () => worker, writeDaemonDiagnostic: (_root, entry) => diagnostics.push(entry),
++    });
++    worker.emit('error', new Error(CANARY));
++    const result = await lifecycle.startPrWatcherDetached(watcherOptions({ spawn: () => { throw new Error(CANARY); } }));
++    expect(result.started).toBe(false);
++    clean({ result, diagnostics });
++    clean(push._internal.maybeTriggerShepherdAfterPush({ projectRoot: ROOT, fireAndForget: () => { throw new Error(CANARY); } }));
++  });
++
++  test('push and session-start hand workers project metadata, never private context', async () => {
++    const triggers = [];
++    const result = await push.handler([], { quick: true }, ROOT, {
++      execFileSync: (cmd, args, opts) => { clean(opts || {}); return args[0] === 'branch' ? 'test' : ROOT; },
++      spawnSync: (_cmd, _args, opts) => { clean(opts); return { status: 0 }; },
++      existsSync: () => false, writeForgeToken: () => {}, log: () => {},
++      _ensureBackingIssue: async () => null, _kernelDriver: {}, _kernelBroker: {},
++      githubContext: selected().context, fireAndForget: opts => triggers.push(opts),
++    });
++    expect(result.success).toBe(true);
++    await hooks.handler(['session-start'], {}, ROOT, {
++      loadDispatchText: () => '', fetchNotes: () => [], fetchIssues: () => [], fetchInbox: () => [],
++      githubContext: selected().context, fireAndForget: opts => triggers.push(opts),
++    });
++    expect(triggers).toEqual([{ projectRoot: ROOT }, { projectRoot: ROOT }]);
++  });
++
++  test('local hook operations do not prepare account context or wake monitors', async () => {
++    let preparations = 0; let triggers = 0;
++    const result = await executeCommand(new Map([['hooks', hooks]]), 'hooks', ['shepherd-events'], {}, ROOT, {
++      skipEnsureHome: true, prepareGithubContext: () => { preparations++; throw new Error(CANARY); },
++      commandOpts: { collectDigest: () => ({ text: '' }), fireAndForget: () => { triggers++; } },
++    });
++    expect(result.success).toBe(true);
++    expect({ preparations, triggers }).toEqual({ preparations: 0, triggers: 0 });
++  });
++
++  test('serve launches a clean snapshot worker and unchanged browser command', async () => {
++    expect(typeof serve.defaultGenerate).toBe('function');
++    expect(typeof serve.openBrowser).toBe('function');
++    const calls = [];
++    const spawn = (...args) => {
++      calls.push(args); const worker = child();
++      process.nextTick(() => worker.emit('exit', 0));
++      return worker;
++    };
++    const opts = { spawn, env: ambient, readGithubAccount: () => 'work' };
++    await serve.defaultGenerate(ROOT, path.join(ROOT, 'web', 'dashboard'), opts);
++    serve.openBrowser('http://127.0.0.1:8730/', ROOT, opts);
++    expect(calls).toHaveLength(2);
++    expect(calls[0][1]).toEqual([path.join(ROOT, 'web', 'dashboard', 'generate-snapshot.mjs')]);
++    expect(calls[0][2]).toEqual({ cwd: ROOT, stdio: 'ignore', windowsHide: true, env: { RETAINED: 'yes' } });
++    expect(calls[1][1].at(-1)).toBe('http://127.0.0.1:8730/');
++    expect(calls[1][1]).not.toContain('github');
++    expect(calls[1][2]).toEqual({ detached: true, stdio: 'ignore', windowsHide: true, env: { RETAINED: 'yes' } });
++    clean(calls);
++  });
++
++  test.each([true, false])('snapshot prepares once and scopes only gh (%s)', async bound => {
++    const file = path.join(ROOT, 'web', 'dashboard', 'generate-snapshot.mjs');
++    // Refuse to import the old executable-only script: it would run native providers.
++    expect(fs.readFileSync(file, 'utf8')).toContain('export function createSnapshotRunner');
++    const { createSnapshotRunner } = await import(pathToFileURL(file).href);
++    const { context, calls } = selected(() => '[]');
++    let preparations = 0; const native = [];
++    const run = createSnapshotRunner(ROOT, {
++      env: ambient, prepareGithubContext: root => { expect(root).toBe(ROOT); preparations++; return bound ? context : { bound: false }; },
++      execFileSync: (cmd, args, opts) => { native.push({ cmd, args, opts }); return '[]'; },
++    });
++    run('gh', ['pr', 'list']); run('gh', ['pr', 'view']);
++    run('git', ['status']); run(process.execPath, ['forge.js', 'status']);
++    expect(preparations).toBe(1);
++    expect(calls).toHaveLength(bound ? 2 : 0);
++    expect(native.map(call => call.cmd)).toEqual(bound ? ['git', process.execPath] : ['gh', 'gh', 'git', process.execPath]);
++    if (bound) clean(native);
++    else expect(native.every(call => call.opts.env === ambient)).toBe(true);
++  });
++
++  test('serve rejects synchronous worker failures with a safe diagnostic', async () => {
++    await expect(serve.defaultGenerate(ROOT, ROOT, {
++      readGithubAccount: () => 'work', env: ambient,
++      spawn: () => { throw new Error(CANARY); },
++    })).rejects.toThrow('snapshot generation failed');
++  });
++
++  test('snapshot generation keeps failed GitHub diagnostics and artifacts clean', async () => {
++    const { generateSnapshot } = await import(pathToFileURL(path.join(ROOT, 'web/dashboard/generate-snapshot.mjs')).href);
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-account-snapshot-'));
++    const messages = []; const native = [];
++    spyOn(console, 'log').mockImplementation((...args) => messages.push(args));
++    spyOn(console, 'warn').mockImplementation((...args) => messages.push(args));
++    let preparations = 0;
++    const { context, calls } = selected(() => { throw new Error(CANARY); });
++    try {
++      const snapshot = generateSnapshot({ projectRoot: root, outputDir: root, env: ambient,
++        prepareGithubContext: () => { preparations++; return context; },
++        execFileSync: (cmd, args, opts) => {
++          native.push({ cmd, args, opts });
++          expect(cmd === 'git' || cmd === process.execPath).toBe(true);
++          return cmd === 'git' ? '' : '{}';
++        },
++      });
++      expect(preparations).toBe(1);
++      expect(calls).toHaveLength(2);
++      expect(snapshot.ops.prs).toEqual([]);
++      expect(fs.readdirSync(root).sort()).toEqual(['data.json', 'docs.js', 'docs.json', 'snapshot.js']);
++      clean({ native, messages, snapshot });
++      for (const file of fs.readdirSync(root)) clean(fs.readFileSync(path.join(root, file), 'utf8'));
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('full eval hands a private GitHub runner only to PR attribution', async () => {
++    const { context } = selected();
++    let preparations = 0; let resolverCalls = 0;
++    const env = Object.freeze({ RETAINED: 'yes' });
++    const result = await skill.handler(['eval', 'dev', '--full', '--tier', '30'], {}, ROOT, {
++      env, prepareGithubContext: () => { preparations++; return context; },
++      resolveBehavioralEvaluation: async options => {
++        resolverCalls++;
++        expect(options.env).toBe(env);
++        expect(typeof options.deps.runGh).toBe('function');
++        options.deps.runGh(['pr', 'view']);
++        return { ok: true, options: {} };
++      },
++      runBehavioralEvaluation: async options => {
++        expect(options.githubContext).toBeUndefined(); expect(options.runGh).toBeUndefined();
++        clean(options);
++        return { status: 'PASS', findings: [], completedRuns: 360, expectedRuns: 360 };
++      },
++    });
++    expect(result.success).toBe(true);
++    expect({ preparations, resolverCalls }).toEqual({ preparations: 1, resolverCalls: 1 });
++  });
++
++  test('full eval account failure prevents resolver and harness without raw output', async () => {
++    let calls = 0;
++    const result = await skill.handler(['eval', 'dev', '--full', '--tier', '30'], {}, ROOT, {
++      prepareGithubContext: () => { throw new Error(CANARY); },
++      resolveBehavioralEvaluation: async () => { calls++; return { ok: false, result: { status: 'INCOMPLETE', findings: [] } }; },
++      runBehavioralEvaluation: async () => { calls++; },
++    });
++    expect(result.success).toBe(false); expect(calls).toBe(0); clean(result);
++  });
++
++  test('static skill routing never prepares account context', async () => {
++    let calls = 0;
++    const result = await skill.handler(['for', 'implement a planned task'], {}, ROOT, {
++      prepareGithubContext: () => { calls++; throw new Error(CANARY); },
++    });
++    expect(result.success).toBe(true); expect(calls).toBe(0);
++  });
++
++  test('attribution splits Git from selected PR resolution and adapter reads', async () => {
++    const { context, calls } = selected(args => args.includes('number')
++      ? '{"number":7}' : JSON.stringify({ state: 'OPEN', isDraft: false, headRefOid: HEAD, reviewDecision: '', statusCheckRollup: [] }));
++    const result = await runtime._internal.resolveAttribution(ROOT, HEAD, {}, {
++      runGh: context.runGh,
++      execFileSync: (cmd, _args, opts) => { expect(cmd).toBe('git'); clean(opts); return 'test-branch'; },
++      kernelDriver: {
++        listWorktrees: () => [{ branch: 'test-branch', issue_id: ISSUE, state: 'active' }],
++        loadKernelEntity: async () => ({ id: ISSUE, status: 'in_progress' }),
++      },
++    });
++    expect(result).toEqual({ issueId: ISSUE, pr: 7 });
++    expect(calls.length).toBeGreaterThanOrEqual(2);
++  });
++
++  test.each([
++    ['lib/commands/push.js', ['test/commands/push.test.js']],
++    ['lib/commands/hooks.js', ['test/commands/hooks.test.js', 'test/hooks-session-start.test.js']],
++    ['lib/commands/serve.js', ['test/commands/serve.test.js']],
++    ['lib/commands/skill.js', ['test/commands/skill.test.js']],
++    ['scripts/lib/behavioral-eval-runtime.js', ['test/eval/behavioral-eval-runtime.test.js']],
++    ['web/dashboard/generate-snapshot.mjs', []],
++  ])('%s selects existing coverage and the indirect route matrix', (source, existing) => {
++    const expected = [...existing, SUITE];
++    expect(getTestCandidatesForChangedFile(source)).toEqual(expected);
++    const plan = classifyPushTests(ROOT, (_cmd, args) => args[0] === 'diff' ? source : 'origin/master');
++    expect(plan.mode).toBe('targeted');
++    expect(plan.testTargets).toEqual([...expected.sort((a, b) => a.localeCompare(b)), ...ALWAYS_RUN_RISK_TEST_TARGETS]);
++  });
++});
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index 4d837950..8cf1b5f2 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -695,6 +695,10 @@ function makeDeps(overrides = {}) {
+ 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+ 		log: overrides.log || (() => {}),
+ 		writeForgeToken: overrides.writeForgeToken || (() => {}),
++		fireAndForget: () => {},
++		_ensureBackingIssue: async () => null,
++		_kernelDriver: {},
++		_kernelBroker: {},
+ 		...(overrides.env ? { env: overrides.env } : {}),
+ 	};
+ }
+diff --git a/test/commands/skill.test.js b/test/commands/skill.test.js
+index addef90e..786b16ac 100644
+--- a/test/commands/skill.test.js
++++ b/test/commands/skill.test.js
+@@ -259,6 +259,7 @@ describe('forge skill eval', () => {
+         {},
+         root,
+         {
++          prepareGithubContext: () => ({ bound: false }),
+           resolveBehavioralEvaluation: async () => ({
+             ok: true,
+             options: {
+@@ -321,6 +322,7 @@ describe('forge skill eval', () => {
+         {},
+         repoRoot,
+         {
++          prepareGithubContext: () => ({ bound: false }),
+           resolveBehavioralEvaluation: async () => ({ ok: true, options: {} }),
+           runBehavioralEvaluation: async () => ({
+             status: 'PASS', tier, expectedRuns: tier * 12, completedRuns: tier * 12,
+diff --git a/test/hooks-session-start.test.js b/test/hooks-session-start.test.js
+index df71b128..231745c6 100644
+--- a/test/hooks-session-start.test.js
++++ b/test/hooks-session-start.test.js
+@@ -10,7 +10,7 @@ const NOTES = [{ note: 'Kernel is the single source of truth', timestamp: '2026-
+ const READY = [{ id: 'r1', title: 'Wire auto-file rail' }];
+ 
+ function run(args, opts) {
+-  return hooks.handler(args, {}, '/root', { fireAndForget: () => {}, ...opts });
++  return hooks.handler(args, {}, '/root', { fireAndForget: () => {}, fetchInbox: () => [], ...opts });
+ }
+ 
+ describe('forge hooks session-start (context hook — memory push)', () => {
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 5f1e5915..d0848918 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -519,6 +519,7 @@ describe('daemon dispatch and diagnostics', () => {
+ 		let unref = false;
+ 		const result = launchDaemon({
+ 			projectRoot: '/repo/worktree', gitCommonDir: '/repo/.git',
++			readGithubAccount: () => null,
+ 			spawnProcess: (bin, args, options) => {
+ 				spawnCall = { bin, args, options };
+ 				return { pid: 99, on: () => {}, unref: () => { unref = true; } };
+@@ -534,6 +535,7 @@ describe('daemon dispatch and diagnostics', () => {
+ 		let call;
+ 		const result = launchDaemon({
+ 			projectRoot: '/repo/worktree', gitCommonDir: '/repo/.git',
++			readGithubAccount: () => null,
+ 			harness: { hasBgShell: true, runBgShell: (args, options) => { call = { args, options }; } },
+ 		});
+ 		expect(result).toEqual({ launched: true, via: 'bg-shell' });
+diff --git a/test/pr-monitor/watch-lifecycle.test.js b/test/pr-monitor/watch-lifecycle.test.js
+index 09b00d92..1b8d41ef 100644
+--- a/test/pr-monitor/watch-lifecycle.test.js
++++ b/test/pr-monitor/watch-lifecycle.test.js
+@@ -3,7 +3,8 @@
+ const { describe, test, expect } = require('bun:test');
+ const { EventEmitter } = require('node:events');
+ 
+-const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
++const { startPrWatcherDetached: launchWatcher, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
++const startPrWatcherDetached = opts => launchWatcher({ readGithubAccount: () => null, ...opts });
+ const { maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
+ 
+ /** A fake detached child: records unref() and reports a pid. */
+@@ -119,7 +120,7 @@ describe('startPrWatcherDetached', () => {
+       spawn: () => { throw new Error('spawn EACCES'); },
+     });
+     expect(res.started).toBe(false);
+-    expect(res.reason).toMatch(/spawn EACCES/);
++    expect(res.reason).toBe('watcher-launch-failed');
+   });
+ 
+   test('returns not-started (no spawn) when no PR number is given', async () => {
+diff --git a/test/pr-monitor/watch-owner-cutover.test.js b/test/pr-monitor/watch-owner-cutover.test.js
+index 3033750e..54840fba 100644
+--- a/test/pr-monitor/watch-owner-cutover.test.js
++++ b/test/pr-monitor/watch-owner-cutover.test.js
+@@ -2,7 +2,8 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ 
+-const { startPrWatcherDetached } = require('../../lib/pr-monitor/watch-lifecycle');
++const { startPrWatcherDetached: launchWatcher } = require('../../lib/pr-monitor/watch-lifecycle');
++const startPrWatcherDetached = opts => launchWatcher({ readGithubAccount: () => null, ...opts });
+ const { watchLoop } = require('../../lib/pr-monitor/watch');
+ const shepherd = require('../../lib/commands/shepherd');
+ 
+diff --git a/test/pr-monitor/watch-owner-launch-contention.test.js b/test/pr-monitor/watch-owner-launch-contention.test.js
+index 34e315ea..1fee1a37 100644
+--- a/test/pr-monitor/watch-owner-launch-contention.test.js
++++ b/test/pr-monitor/watch-owner-launch-contention.test.js
+@@ -4,7 +4,8 @@ const { describe, test, expect } = require('bun:test');
+ 
+ const shepherd = require('../../lib/commands/shepherd');
+ const executor = require('../../lib/pr-monitor/reconcile-executor');
+-const { startPrWatcherDetached } = require('../../lib/pr-monitor/watch-lifecycle');
++const { startPrWatcherDetached: launchWatcher } = require('../../lib/pr-monitor/watch-lifecycle');
++const startPrWatcherDetached = opts => launchWatcher({ readGithubAccount: () => null, ...opts });
+ 
+ const REPOSITORY = 'acme/forge';
+ const PR = 42;
+diff --git a/test/pr-monitor/watch-owner-launch-gate.test.js b/test/pr-monitor/watch-owner-launch-gate.test.js
+index dbcbea4a..7acd5671 100644
+--- a/test/pr-monitor/watch-owner-launch-gate.test.js
++++ b/test/pr-monitor/watch-owner-launch-gate.test.js
+@@ -3,7 +3,8 @@
+ const { describe, test, expect } = require('bun:test');
+ 
+ const shepherd = require('../../lib/commands/shepherd');
+-const { startPrWatcherDetached } = require('../../lib/pr-monitor/watch-lifecycle');
++const { startPrWatcherDetached: launchWatcher } = require('../../lib/pr-monitor/watch-lifecycle');
++const startPrWatcherDetached = opts => launchWatcher({ readGithubAccount: () => null, ...opts });
+ 
+ const REPOSITORY = 'acme/forge';
+ const PR = 42;
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 23a07f56..4186aa7c 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -318,6 +318,7 @@ describe('scripts/test pre-push runner', () => {
+       'test/pr-monitor/reconcile.test.js',
+     ]],
+     ['lib/pr-monitor/reconcile-executor.js', [
++      'test/commands/github-indirect-routes.test.js',
+       'test/pr-monitor/auto-trigger-containment.test.js',
+       'test/pr-monitor/reconcile-daemon-owner-authority.test.js',
+       'test/pr-monitor/reconcile-executor-owner-authority.test.js',
+@@ -331,6 +332,7 @@ describe('scripts/test pre-push runner', () => {
+       'test/pr-monitor/watch.test.js',
+     ]],
+     ['lib/pr-monitor/watch-lifecycle.js', [
++      'test/commands/github-indirect-routes.test.js',
+       'test/pr-monitor/watch-lifecycle.test.js',
+       'test/pr-monitor/watch-owner-launch-contention.test.js',
+       'test/pr-monitor/watch-owner-launch-gate.test.js',
+diff --git a/web/dashboard/generate-snapshot.mjs b/web/dashboard/generate-snapshot.mjs
+index f91fc328..174373ed 100644
+--- a/web/dashboard/generate-snapshot.mjs
++++ b/web/dashboard/generate-snapshot.mjs
+@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
+ 
+ const HERE = dirname(fileURLToPath(import.meta.url));
+ const require = createRequire(import.meta.url);
++const { createGithubContext } = require('../../lib/github-context');
++const { githubWorkerEnvironment } = require('../../lib/pr-monitor/watch-lifecycle');
+ 
+ function findRepoRoot(start) {
+   let dir = start;
+@@ -31,22 +33,26 @@ function findRepoRoot(start) {
+   throw new Error('Could not locate bin/forge.js above ' + start);
+ }
+ 
+-const ROOT = findRepoRoot(HERE);
+-const FORGE = join(ROOT, 'bin', 'forge.js');
+-
+-function run(cmd, args, opts = {}) {
+-  return execFileSync(cmd, args, {
+-    cwd: ROOT,
+-    encoding: 'utf8',
+-    maxBuffer: 64 * 1024 * 1024,
+-    stdio: ['pipe', 'pipe', 'pipe'],
+-    ...opts,
+-  });
++export function createSnapshotRunner(projectRoot, deps = {}) {
++  let githubContext;
++  try {
++    githubContext = (deps.prepareGithubContext || createGithubContext)(projectRoot);
++  } catch {
++    throw new Error('Unable to prepare dashboard GitHub account context.');
++  }
++  const env = githubWorkerEnvironment(projectRoot, { ...deps, githubContext });
++  return (cmd, args, opts = {}) => {
++    const options = {
++      cwd: projectRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
++      stdio: ['pipe', 'pipe', 'pipe'], ...opts, ...(env ? { env } : {}),
++    };
++    if (cmd === 'gh' && githubContext.bound) return githubContext.runGh(args, options);
++    return (deps.execFileSync || execFileSync)(cmd, args, options);
++  };
+ }
+-function forge(args) { return JSON.parse(run(process.execPath, [FORGE, ...args])); }
+ function tryRun(fn, fallback, label) {
+   try { return fn(); }
+-  catch (err) { console.warn(`  ! ${label} failed: ${String(err.message).split('\n')[0]}`); return fallback; }
++  catch { console.warn(`  ! ${label} failed`); return fallback; }
+ }
+ 
+ const firstHeading = (md) => {
+@@ -56,6 +62,13 @@ const firstHeading = (md) => {
+ const titleFromSlug = (slug) =>
+   slug.replace(/^\d{4}-\d{2}-\d{2}-/, '').replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+ 
++export function generateSnapshot(options = {}) {
++const ROOT = options.projectRoot || findRepoRoot(HERE);
++const outputDir = options.outputDir || HERE;
++const FORGE = join(ROOT, 'bin', 'forge.js');
++const run = createSnapshotRunner(ROOT, options);
++function forge(args) { return JSON.parse(run(process.execPath, [FORGE, ...args])); }
++
+ console.log('Forge dashboard snapshot (v2)');
+ console.log('  repo:', ROOT);
+ 
+@@ -468,9 +481,9 @@ const snapshot = {
+ };
+ 
+ const json = JSON.stringify(snapshot);
+-writeFileSync(join(HERE, 'data.json'), JSON.stringify(snapshot, null, 2));
++writeFileSync(join(outputDir, 'data.json'), JSON.stringify(snapshot, null, 2));
+ writeFileSync(
+-  join(HERE, 'snapshot.js'),
++  join(outputDir, 'snapshot.js'),
+   `/* AUTO-GENERATED by generate-snapshot.mjs — do not edit by hand. */\n` +
+     `window.FORGE_SNAPSHOT = ${json};\n`,
+ );
+@@ -478,14 +491,21 @@ writeFileSync(
+ // snapshot; both load as globals so index.html still opens by double-click (file://).
+ const docsJson = JSON.stringify(docs);
+ writeFileSync(
+-  join(HERE, 'docs.js'),
++  join(outputDir, 'docs.js'),
+   `/* AUTO-GENERATED by generate-snapshot.mjs — do not edit by hand. */\n` +
+     `window.FORGE_DOCS = ${docsJson};\n`,
+ );
+ // Plain-JSON twin of docs.js so an in-page Refresh (over HTTP) can reload the baked
+ // markdown alongside data.json — without it, edited/new work-folder docs stay stale
+ // until a full page reload. (file:// still bootstraps from docs.js.)
+-writeFileSync(join(HERE, 'docs.json'), docsJson);
++writeFileSync(join(outputDir, 'docs.json'), docsJson);
+ 
+ console.log('  wrote: web/dashboard/snapshot.js + data.json + docs.js + docs.json');
+ console.log(`  done @ ${snapshot.generated_at}`);
++return snapshot;
++}
++
++if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
++  try { generateSnapshot(); }
++  catch { console.error('Dashboard snapshot generation failed.'); process.exitCode = 1; }
++}
+-- 
+2.51.0.windows.1
+

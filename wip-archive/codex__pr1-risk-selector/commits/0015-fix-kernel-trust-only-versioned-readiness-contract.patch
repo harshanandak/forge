@@ -1,0 +1,334 @@
+From baa2c97f5ca06c14d3bdbf6e37e0b5e40d8db1d7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 15:14:44 +0530
+Subject: [PATCH] fix(kernel): trust only versioned readiness contracts
+
+---
+ lib/forge-issues.js                           |   5 +
+ lib/kernel/readiness-model.js                 |  34 ++++--
+ test/forge-issues.test.js                     |  19 +++-
+ test/kernel/readiness-contract-policy.test.js | 106 ++++++++++++++----
+ 4 files changed, 128 insertions(+), 36 deletions(-)
+
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index cda90c40..ca156c42 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -210,6 +210,11 @@ function resolveIssueContractPolicy(projectRoot, deps = {}) {
+ 		workClasses: Array.isArray(configured.workClasses)
+ 			? configured.workClasses.filter(value => typeof value === 'string' && value.trim() !== '')
+ 			: [],
++		trustedAdopters: Array.isArray(configured.trustedAdopters)
++			? [...new Set(configured.trustedAdopters
++				.filter(value => typeof value === 'string' && value.trim() !== '')
++				.map(value => value.trim()))]
++			: [],
+ 	};
+ }
+ 
+diff --git a/lib/kernel/readiness-model.js b/lib/kernel/readiness-model.js
+index 9ad7d526..9430e9d8 100644
+--- a/lib/kernel/readiness-model.js
++++ b/lib/kernel/readiness-model.js
+@@ -22,6 +22,7 @@ const READINESS_REASONS = Object.freeze({
+ 	CONTRACT_INVALID: 'contract_invalid',
+ 	CONTRACT_MISMATCH: 'contract_mismatch',
+ 	CONTRACT_ADOPTION_REQUIRED: 'contract_adoption_required',
++	CONTRACT_ADOPTER_UNTRUSTED: 'contract_adopter_untrusted',
+ });
+ 
+ const READINESS_STATES = Object.freeze([
+@@ -155,14 +156,10 @@ function parseMetadata(issue) {
+ }
+ 
+ function getIssueContract(issue) {
+-	if (issue && issue.contract && typeof issue.contract === 'object' && !Array.isArray(issue.contract)) {
+-		return { contract: issue.contract, versioned: false };
+-	}
+ 	const metadata = parseMetadata(issue);
+ 	const contract = metadata['forge.contract'];
+ 	return {
+ 		contract: contract && typeof contract === 'object' && !Array.isArray(contract) ? contract : {},
+-		versioned: Boolean(contract),
+ 		metadata,
+ 	};
+ }
+@@ -181,7 +178,7 @@ function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+ 	const applicable = policy.enabled === true && workClasses.includes(issue.type);
+ 	if (!applicable) return { applicable: false, valid: true, reasons: [] };
+ 
+-	const { contract, versioned, metadata = parseMetadata(issue) } = getIssueContract(issue);
++	const { contract, metadata } = getIssueContract(issue);
+ 	const reasons = [];
+ 	if (!nonEmptyText(issue.body)) reasons.push({ code: READINESS_REASONS.CONTRACT_MISSING, field: 'purpose' });
+ 	if (!nonEmptyText(issue.acceptance_criteria)) {
+@@ -194,8 +191,13 @@ function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+ 	if (!nonEmptyText(contract.out_of_scope)) {
+ 		reasons.push({ code: READINESS_REASONS.CONTRACT_MISSING, field: 'out_of_scope' });
+ 	}
+-	if (versioned && contract.version !== 1) {
+-		reasons.push({ code: READINESS_REASONS.CONTRACT_INVALID, field: 'version', expected: 1 });
++	if (contract.version !== 1) {
++		reasons.push({
++			code: READINESS_REASONS.CONTRACT_INVALID,
++			field: 'version',
++			expected: 1,
++			actual: contract.version ?? null,
++		});
+ 	}
+ 
+ 	if (Array.isArray(contract.dependencies) && Array.isArray(context.dependencyIds)) {
+@@ -212,8 +214,20 @@ function evaluateIssueContract(issue = {}, policy = {}, context = {}) {
+ 	}
+ 
+ 	const origin = issue.origin ?? metadata.origin ?? metadata.source;
+-	if (['import', 'imported', 'fork', 'fork_pr'].includes(origin) && !nonEmptyText(contract.adopted_by)) {
+-		reasons.push({ code: READINESS_REASONS.CONTRACT_ADOPTION_REQUIRED });
++	if (['import', 'imported', 'fork', 'fork_pr'].includes(origin)) {
++		if (!nonEmptyText(contract.adopted_by)) {
++			reasons.push({ code: READINESS_REASONS.CONTRACT_ADOPTION_REQUIRED });
++		} else {
++			const trusted = typeof context.isTrustedAdopter === 'function'
++				? context.isTrustedAdopter(contract.adopted_by, issue)
++				: (Array.isArray(policy.trustedAdopters) && policy.trustedAdopters.includes(contract.adopted_by));
++			if (!trusted) {
++				reasons.push({
++					code: READINESS_REASONS.CONTRACT_ADOPTER_UNTRUSTED,
++					adopter: contract.adopted_by,
++				});
++			}
++		}
+ 	}
+ 
+ 	return { applicable: true, valid: reasons.length === 0, reasons };
+@@ -257,6 +271,7 @@ function deriveReadiness(issue = {}, context = {}) {
+ 	const blockedBy = [];
+ 	const contract = evaluateIssueContract(issue, context.contractPolicy, {
+ 		dependencyIds: context.dependencyIds,
++		isTrustedAdopter: context.isTrustedAdopter,
+ 	});
+ 	reasons.push(...contract.reasons);
+ 
+@@ -408,6 +423,7 @@ function buildReadinessIndex(input = {}) {
+ 			policyDisabled: policyDisabledIds.has(issue.id),
+ 			contractPolicy: input.contractPolicy,
+ 			dependencyIds: (dependencyStatusesByIssue.get(issue.id) || []).map(dependency => dependency.id),
++			isTrustedAdopter: input.isTrustedAdopter,
+ 		});
+ 	}
+ 
+diff --git a/test/forge-issues.test.js b/test/forge-issues.test.js
+index ee27528e..51034cf7 100644
+--- a/test/forge-issues.test.js
++++ b/test/forge-issues.test.js
+@@ -11,7 +11,11 @@ describe('forge issue service contract', () => {
+ 		const { resolveIssueContractPolicy } = require('../lib/forge-issues');
+ 		const loadConfig = ({ projectRoot }) => ({
+ 			config: projectRoot === '/configured'
+-				? { issues: { readiness: { contracts: { enabled: true, workClasses: ['task', 'bug'] } } } }
++				? { issues: { readiness: { contracts: {
++					enabled: true,
++					workClasses: ['task', 'bug'],
++					trustedAdopters: ['maintainer@example.test'],
++				} } } }
+ 				: {},
+ 			errors: [],
+ 		});
+@@ -19,6 +23,7 @@ describe('forge issue service contract', () => {
+ 		expect(resolveIssueContractPolicy('/configured', { loadRuntimeGraphConfig: loadConfig })).toEqual({
+ 			enabled: true,
+ 			workClasses: ['task', 'bug'],
++			trustedAdopters: ['maintainer@example.test'],
+ 		});
+ 		expect(resolveIssueContractPolicy('/legacy', { loadRuntimeGraphConfig: loadConfig })).toBeNull();
+ 	});
+@@ -334,12 +339,20 @@ describe('forge issue service contract', () => {
+ 				},
+ 			}),
+ 			loadRuntimeGraphConfig: () => ({
+-				config: { issues: { readiness: { contracts: { enabled: true, workClasses: ['task'] } } } },
++				config: { issues: { readiness: { contracts: {
++					enabled: true,
++					workClasses: ['task'],
++					trustedAdopters: ['maintainer@example.test'],
++				} } } },
+ 				errors: [],
+ 			}),
+ 		});
+ 
+-		expect(captured.contractPolicy).toEqual({ enabled: true, workClasses: ['task'] });
++		expect(captured.contractPolicy).toEqual({
++			enabled: true,
++			workClasses: ['task'],
++			trustedAdopters: ['maintainer@example.test'],
++		});
+ 	});
+ 
+   test('FORGE_LEASE_TTL_MS=0 opts out of expiry (null lease), omitting leaseTtlMs from context', async () => {
+diff --git a/test/kernel/readiness-contract-policy.test.js b/test/kernel/readiness-contract-policy.test.js
+index d672c6b6..a1b554ee 100644
+--- a/test/kernel/readiness-contract-policy.test.js
++++ b/test/kernel/readiness-contract-policy.test.js
+@@ -10,20 +10,30 @@ const {
+ const POLICY = Object.freeze({
+ 	enabled: true,
+ 	workClasses: ['task', 'bug'],
++	trustedAdopters: ['maintainer@example.test'],
+ });
+ 
+-function completeIssue(overrides = {}) {
++function contractMetadata(contractOverrides = {}, metadataOverrides = {}) {
++	return JSON.stringify({
++		'forge.contract': {
++			version: 1,
++			risk: 'authority',
++			dependencies: [],
++			out_of_scope: 'Do not prescribe implementation reasoning.',
++			...contractOverrides,
++		},
++		...metadataOverrides,
++	});
++}
++
++function completeIssue(overrides = {}, contractOverrides = {}, metadataOverrides = {}) {
+ 	return {
+ 		id: 'work-1',
+ 		type: 'task',
+ 		status: 'open',
+ 		body: 'Make readiness select only executable work.',
+ 		acceptance_criteria: 'Given a complete contract, the issue appears in ready output.',
+-		contract: {
+-			risk: 'authority',
+-			dependencies: [],
+-			out_of_scope: 'Do not prescribe implementation reasoning.',
+-		},
++		metadata: contractMetadata(contractOverrides, metadataOverrides),
+ 		...overrides,
+ 	};
+ }
+@@ -54,6 +64,7 @@ describe('issue-contract readiness policy', () => {
+ 			{ code: 'contract_missing', field: 'risk' },
+ 			{ code: 'contract_missing', field: 'dependencies' },
+ 			{ code: 'contract_missing', field: 'out_of_scope' },
++			{ code: 'contract_invalid', field: 'version', expected: 1, actual: null },
+ 		]);
+ 	});
+ 
+@@ -94,16 +105,16 @@ describe('issue-contract readiness policy', () => {
+ 	});
+ 
+ 	test('trusted maintainer adoption lets imported and fork work use an explicit contract', () => {
+-		for (const source of ['import', 'fork_pr']) {
+-			const result = evaluateIssueContract(completeIssue({
+-				origin: source,
+-				contract: {
++		for (const origin of ['import', 'fork_pr']) {
++			const result = evaluateIssueContract(completeIssue(
++				{},
++				{
+ 					risk: 'compatibility',
+-					dependencies: [],
+ 					out_of_scope: 'No upstream history rewrite.',
+ 					adopted_by: 'maintainer@example.test',
+ 				},
+-			}), POLICY);
++				{ origin },
++			), POLICY);
+ 
+ 			expect(result).toEqual({ applicable: true, valid: true, reasons: [] });
+ 		}
+@@ -111,24 +122,71 @@ describe('issue-contract readiness policy', () => {
+ 
+ 	test('imported and fork work never infer adoption from prose', () => {
+ 		for (const origin of ['import', 'fork_pr']) {
+-			const result = evaluateIssueContract(completeIssue({ origin }), POLICY);
++			const result = evaluateIssueContract(completeIssue({}, {}, { origin }), POLICY);
+ 			expect(result.valid).toBe(false);
+ 			expect(result.reasons).toContainEqual({ code: 'contract_adoption_required' });
+ 		}
+ 	});
+ 
+-	test('reads the versioned forge.contract object from existing metadata JSON', () => {
++	test('an untrusted adopter string cannot authorize imported or fork work', () => {
++		const issue = completeIssue(
++			{},
++			{ adopted_by: 'attacker@example.test' },
++			{ origin: 'import' },
++		);
++		const result = evaluateIssueContract(issue, POLICY);
++
++		expect(result.valid).toBe(false);
++		expect(result.reasons).toContainEqual({
++			code: 'contract_adopter_untrusted',
++			adopter: 'attacker@example.test',
++		});
++	});
++
++	test('an injected authority predicate can validate a trusted adopter', () => {
++		const issue = completeIssue(
++			{},
++			{ adopted_by: 'team-maintainer' },
++			{ origin: 'fork_pr' },
++		);
++		const result = evaluateIssueContract(
++			issue,
++			{ enabled: true, workClasses: ['task'] },
++			{ isTrustedAdopter: adopter => adopter === 'team-maintainer' },
++		);
++
++		expect(result).toEqual({ applicable: true, valid: true, reasons: [] });
++	});
++
++	test('top-level issue.contract cannot bypass versioned metadata authority', () => {
+ 		const issue = completeIssue({
+-			contract: undefined,
+-			metadata: JSON.stringify({
+-				'forge.contract': {
+-					version: 1,
+-					risk: 'authority',
+-					dependencies: [],
+-					out_of_scope: 'No model-specific prose rules.',
+-				},
+-			}),
++			metadata: null,
++			contract: {
++				version: 1,
++				risk: 'authority',
++				dependencies: [],
++				out_of_scope: 'Bypass attempt.',
++			},
++		});
++		const result = evaluateIssueContract(issue, POLICY);
++
++		expect(result.valid).toBe(false);
++		expect(result.reasons).toContainEqual({
++			code: 'contract_invalid', field: 'version', expected: 1, actual: null,
++		});
++		expect(result.reasons).toContainEqual({ code: 'contract_missing', field: 'risk' });
++	});
++
++	test('unknown metadata contract versions fail closed', () => {
++		const result = evaluateIssueContract(completeIssue({}, { version: 2 }), POLICY);
++		expect(result.valid).toBe(false);
++		expect(result.reasons).toContainEqual({
++			code: 'contract_invalid', field: 'version', expected: 1, actual: 2,
+ 		});
++	});
++
++	test('reads the versioned forge.contract object from existing metadata JSON', () => {
++		const issue = completeIssue({}, { out_of_scope: 'No model-specific prose rules.' });
+ 
+ 		expect(evaluateIssueContract(issue, POLICY)).toEqual({
+ 			applicable: true,
+@@ -139,7 +197,7 @@ describe('issue-contract readiness policy', () => {
+ 
+ 	test('declared dependencies must agree with authority edges', () => {
+ 		const result = evaluateIssueContract(
+-			completeIssue({ contract: { risk: 'authority', dependencies: [], out_of_scope: 'No extras.' } }),
++			completeIssue({}, { out_of_scope: 'No extras.' }),
+ 			POLICY,
+ 			{ dependencyIds: ['blocker'] },
+ 		);
+-- 
+2.51.0.windows.1
+

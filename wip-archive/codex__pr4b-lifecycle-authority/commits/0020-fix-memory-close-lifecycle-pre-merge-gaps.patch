@@ -1,0 +1,102 @@
+From be0ecba86b8d7f065caae0fcba7569085dc58b9a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 14:06:20 +0530
+Subject: [PATCH] fix(memory): close lifecycle pre-merge gaps
+
+---
+ packages/memory/src/pr-lifecycle-authority.js | 25 +++++++++++++++---
+ .../test/pr-lifecycle-authority.test.js       | 26 +++++++++++++++++++
+ 2 files changed, 48 insertions(+), 3 deletions(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 8eb7fb80..7fdbbb7c 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -698,7 +698,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
+     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
+     assertPacketLiveBindings(packet, live);
+     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
+-    assertReceiptEvidence(packet, receipt);
++    const phase = assertReceiptEvidence(packet, receipt);
+     if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
+       fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
+     }
+@@ -712,6 +712,21 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
+     traceLinkageRow(trace, linkage);
+     const durable = durableAcceptance(trace, packet, receipt);
+     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
++    else if (phase === 'opened') {
++      await callMethod(provider, 'recordPrLinkage', [{
++        phase: 'opened',
++        git_common_dir: target.git_common_dir,
++        repo: linkage.repository_id,
++        number: linkage.pr_number,
++        branch: target.branch,
++        url: target.url,
++        occurred_at: receipt.payload.ended_at ?? receipt.created_at,
++        work_packet: packet,
++        run_receipt: receipt,
++      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
++      const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
++      assertTraceLinkage(persistedTrace, linkage, packet, receipt);
++    }
+     return stableResult('accepted', packet, receipt, linkage);
+   }
+ 
+@@ -728,10 +743,14 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, timeoutMs = DEF
+     assertContract(receipt, RUN_RECEIPT_SCHEMA, { packetHash: packet.content_hash, workflowConfigRevision: packet.payload.workflow_config_revision, capabilityManifestDigest: packet.payload.capability_manifest_digest, exactHead: packet.payload.target_head });
+     const phase = assertReceiptEvidence(packet, receipt);
+     if (phase !== 'merged') fail('PR_LIFECYCLE_MUTATION_UNAUTHORIZED', 'merge requires completed pr.merged evidence');
++    if (receipt.provenance.actor_id !== packet.provenance.actor_id || receipt.provenance.actor_id !== live.ownership.actor_id) {
++      fail('PR_LIFECYCLE_OWNERSHIP_STALE', 'RunReceipt provenance actor does not match live ownership');
++    }
+     const linkage = deriveLinkage(packet, receipt, live.gates);
++    if (!Number.isInteger(linkage.pr_number) || linkage.pr_number <= 0) fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'accepted packet lacks authoritative PR linkage');
+     const trace = await readLifecycleTrace(provider, linkage, timeoutMs, packet.payload.target?.git_common_dir);
+-    // Compare durable packet/receipt content before linkage checks so a reused run id with
+-    // divergent content fails closed even when the incoming packet omitted a PR number.
++    // The authoritative PR number is validated before trace I/O; the trace then rejects
++    // semantic-identity, packet-hash, and run-id replay conflicts before any merge effect.
+     const durable = durableAcceptance(trace, packet, receipt);
+     if (durable) {
+       assertTraceLinkage(trace, linkage, packet, receipt);
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 05f9c464..6aeedabe 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -658,6 +658,32 @@ describe('public PR lifecycle authority', () => {
+     expect(writes).toBe(1);
+   });
+ 
++  test('persists opened receipt acceptance without recording a premature merge', async () => {
++    const phases = [];
++    const workPacket = packet({ payload: { allowed_mutations: ['pr.opened'] } });
++    const runReceipt = receipt(workPacket, { payload: {
++      mutations_attempted: ['pr.opened'], mutations_authorized: ['pr.opened'],
++    } });
++    const authority = createPrLifecycleAuthority({ provider: provider({
++      recordPrLinkage: async value => { phases.push(value.phase); return { ok: true }; },
++    }) });
++    await authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' });
++    expect(phases).toEqual(['opened']);
++  });
++
++  test('rejects missing PR number and wrong receipt provenance before merge side effects', async () => {
++    let merges = 0;
++    const missingNumber = packet({ payload: { target: { branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' } } });
++    const wrongActor = packet();
++    const wrongReceipt = receipt(wrongActor, { provenance: { source_kind: 'flow', actor_class: 'agent', actor_id: 'agent-2' } });
++    const authority = createPrLifecycleAuthority({ provider: provider({ mergePr: async () => { merges += 1; return { merged: true }; } }) });
++    await expect(authority.mergeWorkPacket({ packet: missingNumber, receipt: receipt(missingNumber), session_id: 'session-1' }))
++      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_UNAVAILABLE' });
++    await expect(authority.mergeWorkPacket({ packet: wrongActor, receipt: wrongReceipt, session_id: 'session-1' }))
++      .rejects.toMatchObject({ code: 'PR_LIFECYCLE_OWNERSHIP_STALE' });
++    expect(merges).toBe(0);
++  });
++
+   test('fails closed when terminal linkage cannot be written or proved after merge', async () => {
+     const workPacket = packet({ payload: {
+       target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git', url: 'https://example.test/pull/514' },
+-- 
+2.51.0.windows.1
+

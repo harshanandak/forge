@@ -1,0 +1,938 @@
+From 1da81fd619179106c4dadd58f6857865068e34c5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 22 Jul 2026 18:06:12 +0530
+Subject: [PATCH] =?UTF-8?q?refactor(dashboard):=20one=20kernel=20dashboard?=
+ =?UTF-8?q?=20=E2=80=94=20delete=20Beads=20board=20+=20bash=20team-dashboa?=
+ =?UTF-8?q?rd?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Slice A of the Beads-removal epic (9502879b; folds 454deef3). Consolidate to a
+single kernel-sourced dashboard: 'forge status' (CLI) + 'forge serve' (browser).
+- DELETE lib/commands/board.js — it read readBeadsSnapshot (.beads/issues.jsonl,
+  a legacy file) while falsely describing itself 'from kernel state'.
+- DELETE scripts/forge-team/lib/dashboard.sh + its wiring/tests (the duplicate
+  bash team-dashboard render) + drop it from setup.js WORKFLOW_RUNTIME_ASSETS.
+- lib/status/presenter.js: reword 'local Beads runtime state' -> 'kernel state';
+  remove now-dead formatBoard/buildBoardJson (only board.js used them).
+- skills/coverage.json: drop the board entry (command removed).
+Survivors verified: 'forge status' renders; 'forge board' -> unknown command.
+lint clean; status-command 34/0 (15s lane timeout); coverage gate 0 gaps.
+serve->dash rename + 'status --text' are the immediate next PR (separate concern).
+
+Plan: docs/work/2026-07-22-beads-removal/plan.md. Closes bcb5115c.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-22-beads-removal/plan.md    |  82 +++++
+ lib/commands/board.js                         |  64 ----
+ lib/commands/setup.js                         |   1 -
+ lib/status/presenter.js                       |  35 --
+ scripts/forge-team/index.sh                   |   5 -
+ scripts/forge-team/lib/dashboard.sh           | 316 ------------------
+ scripts/forge-team/tests/dashboard.test.sh    | 155 ---------
+ scripts/forge-team/tests/dispatcher.test.sh   |   2 +-
+ .../tests/workflow-integration.test.sh        |   1 -
+ skills/coverage.json                          |   1 -
+ test/commands/board.test.js                   | 102 ------
+ 11 files changed, 83 insertions(+), 681 deletions(-)
+ create mode 100644 docs/work/2026-07-22-beads-removal/plan.md
+ delete mode 100644 lib/commands/board.js
+ delete mode 100644 scripts/forge-team/lib/dashboard.sh
+ delete mode 100644 scripts/forge-team/tests/dashboard.test.sh
+ delete mode 100644 test/commands/board.test.js
+
+diff --git a/docs/work/2026-07-22-beads-removal/plan.md b/docs/work/2026-07-22-beads-removal/plan.md
+new file mode 100644
+index 00000000..46b4e448
+--- /dev/null
++++ b/docs/work/2026-07-22-beads-removal/plan.md
+@@ -0,0 +1,82 @@
++# Beads Live-Feature Removal Plan (keep only `forge migrate --from beads`)
++
++Repo: C:/Users/harsha_befach/Downloads/forge (master). Verified against source 2026-07-22.
++Supersedes D44's "Beads as compatibility projection" — recorded as new decision D45 (Slice E).
++
++## Global KEEP list (migration feature — never touch in removal slices)
++- `lib/commands/migrate.js` (+ its imports: `lib/migrate-dry-run.js`, `lib/adapters/beads-kernel-compat.js`, `lib/kernel/cli-broker-factory.js`)
++- `lib/beads-detect.js` (exports `detectBeadsJsonlSource`, `dirHasJsonl`) — powers migrate-offer + upgrade advisory
++- Kernel import machinery (all beads refs here are import-fidelity, KEEP): `lib/kernel/broker.js` (importIssues, beads body/close-reason mapping ~L517-566), `lib/kernel/sqlite-driver.js` (faithful import path L1682-1774, `beads.issue.closed` handling), `lib/kernel/migrations.js` (006 columns), `lib/kernel/schema.js` (beads-fidelity columns, `beads_refs_json`), `lib/kernel/evaluators.js` (`origin === 'beads_import'`), `lib/kernel/issue-command-contract.js`, `lib/kernel/issue-id-resolver.js` (legacy beads-id passthrough)
++- `lib/kernel/projection-jsonl-writer.js` — writes `.forge/kernel/` export snapshot; only uses `parseJsonl/stringifyJsonl` helpers from beads-kernel-compat (optional later hygiene: move helpers to a neutral `lib/jsonl.js`; NOT in this epic)
++- `lib/upgrade-safety.js` advisory (KEEP, but Slice B rewords L187-188: delete the "Prefer to stay on Beads? Set issueBackend: beads" escape-hatch text)
++- `lib/commands/init.js` offer-to-migrate; `lib/deprecated-sync-cleanup.js` + `lib/setup.js` `cleanupDeprecatedGithubBeadsSync`/shim (they DELETE stale sync files from user installs — that is removal tooling, keep)
++- `lib/reset.js` beads file entries (deletion lists = cleanup, keep)
++- `lib/issue-sync/legacy-link-bridge.js` (legacy beadsId mapping compat — keep; verify consumers before ever deleting)
++- `lib/memory/typed-api.js` / `lib/project-memory.js` `beadsRefs` field (persisted data-shape compat for imported memories — keep field, it's inert)
++- Tests that PROVE the end state — keep and keep green: `test/e2e/fresh-clone-no-beads.test.js`, `test/release/…`, `lib/release-readiness.js` no-beads gates (L166-182, L1339-1563 beads-backed-command detector = regression guard that must find ZERO)
++- Migration tests: `test/adapters/beads-kernel-compat.test.js`, `test/commands/migrate.test.js`, `test/migrate-dry-run.test.js`, `test/kernel/sqlite-driver-import.test.js`, `test/kernel/migrate-events-interactions.test.js`, `test/beads-detect.test.js`, `test/fixtures/beads-kernel-adapter/`, `test/fixtures/v2-corpus/repos/broken-beads-state/` (feeds upgrade advisory)
++
++Isolation rule: after Slice D, the only modules allowed to import beads-named modules are `lib/commands/migrate.js`, `lib/migrate-dry-run.js`, `lib/upgrade-safety.js`, `lib/commands/init.js`, `lib/kernel/*` (import path), `lib/deprecated-sync-cleanup.js`/`lib/setup.js`/`lib/reset.js` (cleanup). Add a small lint/test (extend `release-readiness.js` or a new `test/beads-isolation.test.js`) asserting no other `require` of `beads-*` modules — ships in Slice D.
++
++---
++
++## Slice A — One kernel-sourced dashboard (PR 1; folds issue 454deef3)
++Survivor: **`forge status`** (terminal personal board, kernel via `readStatusSnapshot`) + **`forge serve` hosting `web/dashboard/`** whose `generate-snapshot.mjs` already shells `forge issue list --json` / `status --json` (kernel-sourced — verified L46-68). No rewiring needed for serve.
++1. DELETE `lib/commands/board.js` (64 lines; reads `readBeadsSnapshot` L3/L36 while its description claims "from kernel state" — false today). Find + remove its registration (grep `require.*commands/board`/`'board'` in `bin/forge.js`; not in forge-cmd.js).
++2. DELETE `scripts/forge-team/lib/dashboard.sh` + `cmd_dashboard` wiring in the forge-team entry script + its bats/JS tests.
++3. `lib/status/presenter.js` L180: reword `Source: local Beads runtime state` → kernel wording (presenter stays — status uses it).
++4. Tests: DELETE `test/commands/board.test.js`; update any registry/enum tests that list `board` (`test/forge-cli-registry.test.js`, `test/commands-convention-ref.test.js`, `test/docs-consistency.test.js` — grep `board`).
++5. Docs: remove `forge board` from AGENTS.md command lists / docs; note "board → status / serve".
++Risk: LOW. Pure deletion + one string. Does NOT touch backend selection.
++
++## Slice B — Retire the beads issue *backend* (PR 2; the core)
++Kernel becomes the only backend; `beads` value anywhere → warn (or hard error at the flag) pointing at `forge migrate --from beads`.
++1. `lib/issue-backend.js`: `VALID_BACKENDS = new Set(['kernel'])`; resolveIssueBackend already warn+falls-back for invalid values — beads now takes that path with a tailored message ("the beads backend was removed; run `forge migrate --from beads`"). Keep module + exports (config/env readers still needed for the warning and upgrade-safety).
++2. `lib/commands/_resolve-command-opts.js` L104/L112: `--issue-backend beads` → hard error with migrate pointer; only `kernel` accepted.
++3. `lib/forge-issues.js`: delete `runBeadsOperation`, `BeadsIssueAdapter` import (L7), `isBeadsInitialized` import (L6), the four `BEADS_*_KERNEL_ONLY_ERROR` constants (L42-61) and beads error-message helpers (L151-167); kernel-only dispatch.
++4. DELETE `lib/adapters/beads-issue-adapter.js`.
++5. DELETE `lib/beads-nudge.js`; drop `maybeWarnUnmigratedBeads` from `lib/commands/_issue.js` L5 (the upgrade-safety advisory remains the single migrate nudge). Clean `_issue.js` beads branches/comments (L21, L109-110, L393-488).
++6. `lib/commands/claim.js` (L7-8 comments), `lib/commands/plan.js` (delete `createBeadsIssue` L266-318 + label helper beads arm L37 + header), `lib/commands/status.js` backend plumbing, `lib/commands/release.js` comments.
++7. `lib/runtime-health.js` L491-557: delete the bd-required-when-beads branch — bd is never a prerequisite; keep the "no bd required" messaging simplified. Keep `.beads/hooks` chain detection? NO — delete `beads->` hook-provider chase (L175-286, L219, L336) → lefthook-only.
++8. `lib/workflow/enforce-stage.js` L170/L373/L390: comments + bd-gate reference cleanup (behavior: kernel + file fallback only).
++9. `lib/upgrade-safety.js` L187-188 reword (drop opt-back-in instructions).
++10. `bin/forge-cmd.js` L75: `plan: 'Create branch + Beads + design doc'` → reword.
++Tests: rewrite/prune `test/issue-backend.test.js` (9), `test/forge-issues.test.js` (78 — beads cases become removed-backend error cases), `test/commands/_resolve-command-opts.test.js` (11), `test/commands/_issue.test.js`, DELETE `test/beads-issue-adapter.test.js`, `test/beads-nudge.test.js`, `test/commands/issue-path-beads-nudge.test.js`; update `test/runtime-health.test.js` (23), `test/workflow/enforce-stage*.test.js`, `test/commands/plan*.test.js` (35 across three files), `test/commands/status.test.js`, `test/e2e/kernel-default-cli.test.js`, `test/e2e/status-kernel-default.test.js`, `test/commands/issue-response-contract-parity.test.js`, `test/upgrade-safety.test.js` (38 — advisory copy), `test/sync-backend.test.js`.
++Risk: MEDIUM-HIGH (widest test surface). Optional split: B1 = issue-backend + forge-issues + adapter + nudge; B2 = command-layer/runtime-health/enforce-stage cleanup.
++
++## Slice C — Rewire remaining live `.beads` READERS to kernel (PR 3)
++1. `lib/status/snapshot.js`: delete beads branch (L157-176) + `readBeadsSnapshot` import; kernel-only `readStatusSnapshot`.
++2. `lib/status/beads-snapshot.js`: move `getDeveloperIdentity` (+ its git-config helpers) into `lib/status/snapshot.js` or new `lib/status/identity.js`; DELETE the rest of the file (`readIssues`, `readBeadsSnapshot`, stale/dep helpers already duplicated kernel-side).
++3. `lib/orientation.js` `findIssue` L688-691: replace `.beads/issues.jsonl` read with a kernel read — `runIssueOperation('show', [issueId], projectRoot, { issueBackend: 'kernel' })` from `lib/forge-issues.js` (envelope: `result.data.issue`); update source label L719 (`beads_compat`/`compatibility_projection` → `kernel`); L975 comment then becomes true.
++4. `lib/insights.js`: issues (L157, L338) → kernel `runIssueOperation('list')`; interactions (L112, L341) → kernel events. NOTE: `listKernelEvents(entityType, entityId)` (sqlite-driver L2311) is per-entity; insights needs a bulk read. Add a narrow additive driver+broker read `listRecentEvents({ sinceDays, limit })` over `kernel_events` (imported beads interactions land there — sqlite-driver L1774), or derive activity insights from issue `updated_at` only. Prefer the additive read; keep the confidence-caveat strings but reword sources (`.beads/...` → `kernel_events`). Update ISSUE_REFS/`beadsRefs` output key (L317) — keep key name for output-shape compat, note it.
++5. `lib/workflow/state-manager.js`: `readBeadsIssue`/`readWorkflowStateFromBeads`/`loadStateFromBeads` (L101-170) — verify how readBeadsIssue fetches (if it shells `forge issue show --json` it is ALREADY kernel-backed by default): rename to `readIssueWorkflowState`/source `'issue'`, drop beads naming; update `lib/commands/status.js` L21/L147-160 (`analyzeBeads` → `analyzeIssue`) and callers.
++6. `lib/commands/insights.js` L64 compatibility note reword.
++Tests: `test/status/snapshot.test.js`, `test/insights.test.js` (12), `test/commands/insights.test.js`, `test/orientation.test.js` + `test/orientation-prime-live-state.test.js`, `test/workflow/state-manager.test.js` (25), `test/workflow/state.test.js`, remainder of `test/status-command.test.js` (53). Fixtures that seed `.beads/issues.jsonl` for these suites must seed the kernel store instead (use the kernel test harness other e2e tests use).
++Risk: MEDIUM. The only slice adding a kernel API (`listRecentEvents`) — keep it read-only + additive.
++
++## Slice D — Init/setup/sync + CI surface removal (PR 4)
++1. `bin/forge.js`: remove `beadsSetupLib` require (L85), `scaffoldBeadsSync` (L86), `--sync`/`SYNC_ENABLED` (L116, L2354), beads status prints (L2199-2205), `checkForBeads` (L2838-2868), `isBeadsInitialized` wrapper (L2872), `migrateExistingBeadsLocalState` (L2876), `initializeBeads` (L2888-2947), `promptBeadsSetup` (L3009+), `hasBeads/beadsInstallType` context keys (L709-711), `/verify` text (L432). Init flow keeps ONLY the beads-detect → "run `forge migrate --from beads`" offer.
++2. DELETE `lib/beads-setup.js`, `lib/beads-sync-scaffold.js` (FIRST move `detectDefaultBranch` to a neutral module — `lib/commands/worktree.js` L6 imports it), `lib/pat-setup.js` (BEADS_SYNC_TOKEN flow), `scripts/github-beads-sync/` + `scripts/github-beads-sync.config.json`, `scripts/beads-context.sh`, `scripts/beads-context.test.js`, `scripts/beads-migrate-to-dolt.sh`, `scripts/beads-upgrade-smoke.sh`.
++3. `lib/commands/setup.js`: drop `scaffoldBeadsSync` (L58), `requireBeadsCli` (L222-259), `scripts/beads-context.sh` entry (L177), `hasBeads` (L804). `lib/setup.js` cleanup shim STAYS.
++4. `lib/forge-context.js` syncEnabled doc, `lib/plugin-catalog.js` beads entry (L94-101) DELETE, `lib/harness-capability-matrix.js` beads row (L16, L160, L315) → kernel wording, `lib/agents-config.js` generated guidance (L113-216) → kernel wording (**generated_harness protected surface: commit with `FORGE_PROTECTED_STATE_ALLOWED_SURFACES=generated_harness`, never hand-copy `.agents`**), `lib/core/runtime-graph.js` L537 `primary: 'beads'` → `kernel`, `lib/patch-intent.js`/`lib/commands/validate.js` `.beads` entries (keep if they only shield legacy dirs — reword), `lib/protected-state-surfaces.js` beads_state surface → keep as legacy-dir protection but reword hint, `lib/audit-evidence.js` `sourceOfTruth: 'beads'` → kernel, `lib/commands/test.js` `checkBeadsConnectivity`/`BEADS_SKIP_TESTS` (L29-88, L287) DELETE.
++5. CI: `.github/workflows/test.yml` — delete `beads-integration` job (L445-482) and fix `needs: [full-matrix, coverage, e2e, beads-integration]` (L551) → `[full-matrix, coverage, e2e]`; `.github/workflows/behavioral-test.md` mention. Update `test/ci-workflow.test.js` L96-100 + L114 (this IS the CI-contract test asserting those substrings — change test + workflow in the SAME PR). The kernel conflict-substring contract (`lib/kernel/conflict-signal.js`, d4ce47bb) is untouched by this epic — verify no gitattributes merge-driver for `.beads/*.jsonl` is asserted (`test/gitattributes.test.js` has 2 beads refs — prune if the union-driver entry is removed).
++6. Add the beads-isolation guard test (see Global KEEP).
++Tests to DELETE: `test/beads-setup.test.js` (134), `test/beads-init-wrapper.test.js`, `test/beads-sync-scaffold.test.js`, `test/beads-sync-detect.test.js`, `test/scripts/github-beads-sync/**` (12 files), `test/pat-setup.test.js`, `test/setup-github-sync.test.js` (34), `test/toolchain-bd-version.test.js`, `test/is-bd-available.test.js`, `test/scripts/beads-upgrade-smoke.test.js`, `test/beads-migrate-to-dolt.test.js`, `test/beads-context-transition.test.js`, `test/beads-context-validate.test.js`. Tests to PRUNE: `test/commands/setup-no-auto-migrate.test.js`, `test/commands/runtime-no-auto-migrate.test.js` (keep — they assert migrate is never auto-run), `test/cross-platform-install.test.js` (16), `test/integration/package-distribution.test.js` + `test/package-distribution.test.js` (files manifests), `test/commands/test.test.js` (18), `test/setup-hardening.test.js`, `test/setup-runtime-flags.test.js`, `test/commands/worktree.test.js` (detectDefaultBranch import move), `test/deprecated-sync-cleanup.test.js` KEEP (cleanup stays).
++Risk: MEDIUM (big file count, but almost all deletion; CI job removal is the one thing to verify on a real run). Check `package.json` `files`/scripts for beads entries.
++
++## Slice E — D44 supersession + docs (PR 5)
++1. `docs/work/2026-04-28-skeleton-pivot/locked-decisions.md`: append **D45 — Beads live-feature retirement** (Date 2026-07-22; ACTIVE; "Kernel is the sole issue/workflow/run authority. All live Beads surfaces — backend opt-out, board, sync scaffold, setup, nudges, snapshot readers — are removed. The ONLY Beads surface is `forge migrate --from beads` (+ detect/advisory). Supersedes D44's 'Beads remaining a compatibility projection' clause."). Amend D44 section: status note `REVISED-BY-D45` (projection clause retired; kernel-authority reset stands). Update header L3-4 (`D43 added) -> 2026-05-29 (D44 added) -> 2026-07-22 (D45 added`; `D1-D45 tracked`) and L7 narrative.
++2. `AGENTS.md`: L118 delete the BEADS_GITHUB_SYNC pointer; L120 rewrite: "The Forge Kernel is the sole issue-state authority. Beads exists only as an inbound migration path (`forge migrate --from beads`). **Direction (D45)** …"; L234 ledger blurb → "D1-D45 … D45 retires Beads as a live feature"; L235 keep historical note. Same protected-surface commit env var as Slice D.
++3. `docs/guides/BEADS_GITHUB_SYNC.md` → delete (or one-paragraph tombstone pointing at kernel/server sync direction per `lib/setup.js` message); sweep `docs/` for beads guides (`grep -rl beads docs/ | head`), mark historical work-folder docs untouched.
++4. Update `test/docs-consistency.test.js` (17), `test/kernel/beads-compat-docs.test.js` (3), `test/agents-md-convention.test.js`, `test/docs-command.test.js`, `test/protected-state-docs.test.js`, skills that mention beads (`test/skill-accuracy.test.js`, `test/forge-skills-pack.test.js`, `test/skills/stage-skills.test.js` — regenerate via harness sync, don't hand-edit `.agents`).
++5. `lib/using-forge.js` L188 keywords: KEEP migrate keywords (they route users to the migration skill).
++Risk: LOW mechanically; the drift gates (.agents mirror sync + docs-consistency) are the thing to satisfy.
++
++## Sequencing rationale
++A first: bounded, already-tracked (454deef3), zero backend coupling. B before C: C's snapshot/orientation rewires assume single-backend resolution and delete the readers B's plumbing referenced. D after B/C: setup/CI removal is safe only once nothing live requires bd. E last: docs describe the shipped end state (though AGENTS.md interim notes may ride along earlier slices if a gate demands).
++
++## Verification per slice
++- `bun test` full suite locally + CI matrix (local green ≠ matrix green — gate on `gh pr checks`).
++- After D: run `test/e2e/fresh-clone-no-beads.test.js` and `release-readiness` gates — they are the acceptance proof.
++- After each slice: `grep -rn "beads" lib bin scripts --include=*.js | grep -v -E "migrate|beads-kernel-compat|beads-detect|deprecated-sync|upgrade-safety|kernel/"` should shrink toward zero.
++- Migration regression: run `forge migrate --from beads --dry-run` against `test/fixtures/beads-kernel-adapter/issues.jsonl` after EVERY slice.
+diff --git a/lib/commands/board.js b/lib/commands/board.js
+deleted file mode 100644
+index 49a0c592..00000000
+--- a/lib/commands/board.js
++++ /dev/null
+@@ -1,64 +0,0 @@
+-'use strict';
+-
+-const { readBeadsSnapshot } = require('../status/beads-snapshot');
+-const { buildBoardJson, formatBoard } = require('../status/presenter');
+-const { detectRepoContext } = require('./status');
+-
+-function hasJsonFlag(args = [], flags = {}) {
+-	return flags.json === true || flags['--json'] === true || args.includes('--json');
+-}
+-
+-function getFlagValue(args, dashedName, camelName) {
+-	const inlineDashed = args.find(arg => typeof arg === 'string' && arg.startsWith(`${dashedName}=`));
+-	if (inlineDashed) {
+-		return inlineDashed.slice(dashedName.length + 1);
+-	}
+-	const inlineCamel = args.find(arg => typeof arg === 'string' && arg.startsWith(`${camelName}=`));
+-	if (inlineCamel) {
+-		return inlineCamel.slice(camelName.length + 1);
+-	}
+-	const dashedIndex = args.indexOf(dashedName);
+-	if (dashedIndex !== -1 && dashedIndex + 1 < args.length) {
+-		const candidate = args[dashedIndex + 1];
+-		return typeof candidate === 'string' && candidate.startsWith('--') ? null : candidate;
+-	}
+-	const camelIndex = args.indexOf(camelName);
+-	if (camelIndex !== -1 && camelIndex + 1 < args.length) {
+-		const candidate = args[camelIndex + 1];
+-		return typeof candidate === 'string' && candidate.startsWith('--') ? null : candidate;
+-	}
+-	return null;
+-}
+-
+-async function handler(args = [], flags = {}, projectRoot = process.cwd()) {
+-	const firstDefined = (...values) => values.find(value => value !== undefined && value !== null);
+-	const context = detectRepoContext(projectRoot);
+-	const snapshot = readBeadsSnapshot(projectRoot, {
+-		now: firstDefined(flags.now, flags['--now'], getFlagValue(args, '--now', '--now')),
+-		staleAfterDays: firstDefined(
+-			flags.staleAfterDays,
+-			flags['--stale-after-days'],
+-			flags['--staleAfterDays'],
+-			getFlagValue(args, '--stale-after-days', '--staleAfterDays')
+-		),
+-	});
+-	const payload = { context, snapshot };
+-	const output = hasJsonFlag(args, flags)
+-		? JSON.stringify(buildBoardJson(payload), null, 2)
+-		: formatBoard(payload);
+-
+-	return {
+-		success: true,
+-		context,
+-		snapshot,
+-		output,
+-	};
+-}
+-
+-module.exports = {
+-	name: 'board',
+-	description: 'Show a local team runtime board from kernel state',
+-	handler,
+-	getFlagValue,
+-	hasJsonFlag,
+-};
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 0785fbae..03d990ce 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -188,7 +188,6 @@ const WORKFLOW_RUNTIME_ASSETS = Object.freeze([
+   'scripts/forge-team/index.sh',
+   'scripts/forge-team/lib/agent-prompt.sh',
+   'scripts/forge-team/lib/claim.sh',
+-  'scripts/forge-team/lib/dashboard.sh',
+   'scripts/forge-team/lib/epic.sh',
+   'scripts/forge-team/lib/hooks.sh',
+   'scripts/forge-team/lib/identity.sh',
+diff --git a/lib/status/presenter.js b/lib/status/presenter.js
+index 58b71886..da15ef2e 100644
+--- a/lib/status/presenter.js
++++ b/lib/status/presenter.js
+@@ -173,43 +173,8 @@ function buildPersonalStatusJson({ context, snapshot, workflowResult = null }) {
+ 	};
+ }
+ 
+-function formatBoard({ context, snapshot }) {
+-	return [
+-		'',
+-		'Team Runtime Board',
+-		`Source: local Beads runtime state`,
+-		`Branch: ${context.branch}`,
+-		`Working tree: ${context.workingTree.summary}`,
+-		'',
+-		...buildSection('Active', (snapshot.active || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Ready', (snapshot.ready || []).map(issue => formatIssue(issue)), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Blocked', (snapshot.blocked || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Stale', (snapshot.stale || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Parked', (snapshot.parked || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Recent Completions', (snapshot.recentCompleted || []).map(issue => formatIssue(issue)), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Limits', snapshot.limits || []),
+-	].join('\n');
+-}
+-
+-function buildBoardJson({ context, snapshot }) {
+-	return {
+-		context,
+-		board: {
+-			active: (snapshot.active || []).map(toIssueSummary),
+-			ready: (snapshot.ready || []).map(toIssueSummary),
+-			blocked: (snapshot.blocked || []).map(toIssueSummary),
+-			stale: (snapshot.stale || []).map(toIssueSummary),
+-			parked: (snapshot.parked || []).map(toIssueSummary),
+-			recentCompleted: (snapshot.recentCompleted || []).map(toIssueSummary),
+-		},
+-		limits: snapshot.limits || [],
+-	};
+-}
+-
+ module.exports = {
+-	buildBoardJson,
+ 	buildPersonalStatusJson,
+-	formatBoard,
+ 	formatRunNextLines,
+ 	formatZeroArgStatus,
+ 	toIssueSummary,
+diff --git a/scripts/forge-team/index.sh b/scripts/forge-team/index.sh
+index 4de0fece..6b6e36c3 100644
+--- a/scripts/forge-team/index.sh
++++ b/scripts/forge-team/index.sh
+@@ -4,7 +4,6 @@
+ # Subcommands:
+ #   workload    Show team workload by developer
+ #   epic        Epic progress rollup
+-#   dashboard   Team health dashboard
+ #   add         Add developer to team map
+ #   verify      Check 1:1 Beads<>GitHub enforcement
+ #   sync        Manual GitHub<>Beads sync
+@@ -22,7 +21,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ [[ -f "$SCRIPT_DIR/lib/identity.sh" ]] && source "$SCRIPT_DIR/lib/identity.sh"
+ [[ -f "$SCRIPT_DIR/lib/workload.sh" ]] && source "$SCRIPT_DIR/lib/workload.sh"
+ [[ -f "$SCRIPT_DIR/lib/epic.sh" ]] && source "$SCRIPT_DIR/lib/epic.sh"
+-[[ -f "$SCRIPT_DIR/lib/dashboard.sh" ]] && source "$SCRIPT_DIR/lib/dashboard.sh"
+ [[ -f "$SCRIPT_DIR/lib/hooks.sh" ]] && source "$SCRIPT_DIR/lib/hooks.sh"
+ [[ -f "$SCRIPT_DIR/lib/verify.sh" ]] && source "$SCRIPT_DIR/lib/verify.sh"
+ [[ -f "$SCRIPT_DIR/lib/claim.sh" ]] && source "$SCRIPT_DIR/lib/claim.sh"
+@@ -34,7 +32,6 @@ FORGE_SCRIPTS="$(cd "$SCRIPT_DIR/.." && pwd)"
+ # ── Stub implementations ──
+ # cmd_workload provided by lib/workload.sh
+ # cmd_epic provided by lib/epic.sh
+-# cmd_dashboard provided by lib/dashboard.sh
+ cmd_add() { auto_detect_identity "$@"; }
+ # cmd_verify provided by lib/verify.sh
+ cmd_sync() { forge_team_sync "$@"; }
+@@ -47,7 +44,6 @@ Usage: forge team <subcommand> [args...]
+ Subcommands:
+   workload [--developer=<user>] [--me]  Show team workload
+   epic <issue-id>                        Epic progress rollup
+-  dashboard                              Team health dashboard
+   add [--github=<user>]                  Add developer to team map
+   verify                                 Check 1:1 Beads<>GitHub sync
+   sync                                   Manual GitHub<>Beads sync
+@@ -69,7 +65,6 @@ main() {
+   case "$subcommand" in
+     workload)   cmd_workload "$@" ;;
+     epic)       cmd_epic "$@" ;;
+-    dashboard)  cmd_dashboard "$@" ;;
+     add)        cmd_add "$@" ;;
+     verify)     cmd_verify "$@" ;;
+     sync)       cmd_sync "$@" ;;
+diff --git a/scripts/forge-team/lib/dashboard.sh b/scripts/forge-team/lib/dashboard.sh
+deleted file mode 100644
+index 0fb1d1db..00000000
+--- a/scripts/forge-team/lib/dashboard.sh
++++ /dev/null
+@@ -1,316 +0,0 @@
+-#!/usr/bin/env bash
+-# dashboard.sh — Team health dashboard for forge-team.
+-#
+-# Provides cmd_dashboard [--format=json] which aggregates team issue data
+-# from the Forge issue backend and displays per-developer stats, stale
+-# assignments, and blocked issues.
+-
+-# ── Dependencies ─────────────────────────────────────────────────────────
+-# FORGE_CMD — path to forge binary (default: forge)
+-FORGE_CMD="${FORGE_CMD:-forge}"
+-
+-# FORGE_NOW — override current epoch for testing (default: real time)
+-_now() {
+-  if [[ -n "${FORGE_NOW:-}" ]]; then
+-    echo "$FORGE_NOW"
+-  else
+-    date +%s
+-  fi
+-}
+-
+-# Convert ISO8601 timestamp to epoch seconds
+-_iso_to_epoch() {
+-  local ts="$1"
+-  # Remove trailing Z and replace T with space for date parsing
+-  local clean="${ts%Z}"
+-  clean="${clean//T/ }"
+-  # Use date -d for GNU date (Linux/Git Bash)
+-  if date -d "$clean UTC" +%s 2>/dev/null; then
+-    return
+-  fi
+-  # Fallback: manual parse YYYY-MM-DD HH:MM:SS
+-  # This handles the common case in Git Bash on Windows
+-  local year month day hour min sec
+-  IFS='-: ' read -r year month day hour min sec <<< "$clean"
+-  # Use python if available
+-  if command -v python3 &>/dev/null; then
+-    python3 -c "import calendar,datetime; print(int(calendar.timegm(datetime.datetime($year,$month,$day,$hour,$min,$sec).timetuple())))"
+-  elif command -v python &>/dev/null; then
+-    python -c "import calendar,datetime; print(int(calendar.timegm(datetime.datetime($year,$month,$day,$hour,$min,$sec).timetuple())))"
+-  else
+-    # Last resort: approximate with GNU date
+-    echo 0
+-  fi
+-}
+-
+-# ── Data Collection ──────────────────────────────────────────────────────
+-
+-# _forge_active_issues_json — Merged JSON array of open + in_progress issues.
+-# The Kernel list filter does not accept comma-joined statuses, so query each
+-# status separately and concatenate the issue arrays.
+-_forge_active_issues_json() {
+-  local open_json inprog_json
+-  open_json="$("$FORGE_CMD" issue list --status=open --json 2>/dev/null)" || open_json=""
+-  inprog_json="$("$FORGE_CMD" issue list --status=in_progress --json 2>/dev/null)" || inprog_json=""
+-  jq -n \
+-    --argjson a "${open_json:-null}" \
+-    --argjson b "${inprog_json:-null}" \
+-    '(((($a.data.issues) // []) + (($b.data.issues) // [])))' 2>/dev/null || echo "[]"
+-}
+-
+-# _issue_detail_lines <issues-json>
+-# Emit one tab-delimited (jq @tsv) line per issue:
+-#   id<TAB>title<TAB>STATUS<TAB>owner<TAB>updated_iso<TAB>blocked_by
+-# @tsv escapes any tab/newline/CR inside fields (issue titles are user-controlled
+-# and may contain '|', tabs, or newlines), so parsing stays field-aligned.
+-# STATUS is the upper-cased Kernel status; owner is assignee/claimed_by.
+-# A Kernel issue's `.dependencies` lists the issues it BLOCKS (outgoing edges),
+-# so blocked_by is computed by reverse scan: the issues (within this active set)
+-# whose `.dependencies` include this issue.
+-_issue_detail_lines() {
+-  printf '%s' "$1" | jq -r '
+-    . as $all
+-    | $all[]
+-    | . as $x
+-    | [ $x.id,
+-        ($x.title // ""),
+-        (($x.status // "open") | ascii_upcase),
+-        ($x.assignee // $x.claimed_by // ""),
+-        (($x.updated_at // "") | sub("\\.[0-9]+Z$"; "Z")),
+-        ( [ $all[]
+-            | select( (.dependencies // [])
+-                | map(if type == "object" then (.id // .to // "") else . end)
+-                | any(. == $x.id) )
+-            | .id ]
+-          | join(",") )
+-      ]
+-    | @tsv' | tr -d '\r'
+-}
+-
+-# ── Dashboard Command ────────────────────────────────────────────────────
+-
+-cmd_dashboard() {
+-  local format="text"
+-
+-  # Parse args
+-  local arg
+-  for arg in "$@"; do
+-    case "$arg" in
+-      --format=json) format="json" ;;
+-      --format=*) echo "Error: unsupported format '${arg#--format=}'" >&2; return 1 ;;
+-    esac
+-  done
+-
+-  # 1. Get all open/in_progress issues as a merged JSON array
+-  local issues_json
+-  issues_json="$(_forge_active_issues_json)"
+-
+-  # Check for empty
+-  local active_count
+-  active_count="$(printf '%s' "$issues_json" | jq 'length' 2>/dev/null || echo 0)"
+-  if [[ "$active_count" -eq 0 ]]; then
+-    if [[ "$format" == "json" ]]; then
+-      echo '{"developers":{},"total":0,"stale":[],"blocked":[],"message":"No active issues — team is clear"}'
+-    else
+-      echo "No active issues — team is clear"
+-    fi
+-    return 0
+-  fi
+-
+-  # 2. Build per-issue detail lines: id|title|STATUS|owner|updated_iso|blocked_by
+-  local issues=()
+-  while IFS= read -r entry; do
+-    [[ -z "$entry" ]] && continue
+-    issues+=("$entry")
+-  done <<< "$(_issue_detail_lines "$issues_json")"
+-
+-  # 3. Collect details for each issue
+-  local now_epoch
+-  now_epoch="$(_now)"
+-  local stale_threshold=172800  # 48h in seconds
+-
+-  # Associative arrays for per-developer aggregation
+-  declare -A dev_open dev_inprogress dev_blocked dev_stale
+-
+-  # Lists for stale and blocked sections
+-  local stale_entries=()
+-  local blocked_entries=()
+-  local total_open=0 total_inprogress=0 total_blocked=0 total_stale=0
+-
+-  for entry in "${issues[@]}"; do
+-    IFS=$'\t' read -r _id _title _status _owner _updated_iso _blocked_by <<< "$entry"
+-
+-    local _updated_epoch=0
+-    if [[ -n "$_updated_iso" ]]; then
+-      _updated_epoch="$(_iso_to_epoch "$_updated_iso")"
+-    fi
+-
+-    # Default owner if empty
+-    [[ -z "$_owner" ]] && _owner="unassigned"
+-
+-    # Initialize developer counters
+-    [[ -z "${dev_open[$_owner]:-}" ]] && dev_open[$_owner]=0
+-    [[ -z "${dev_inprogress[$_owner]:-}" ]] && dev_inprogress[$_owner]=0
+-    [[ -z "${dev_blocked[$_owner]:-}" ]] && dev_blocked[$_owner]=0
+-    [[ -z "${dev_stale[$_owner]:-}" ]] && dev_stale[$_owner]=0
+-
+-    # Count by status
+-    case "$_status" in
+-      OPEN)
+-        dev_open[$_owner]=$(( ${dev_open[$_owner]} + 1 ))
+-        total_open=$((total_open + 1))
+-        ;;
+-      IN_PROGRESS)
+-        dev_inprogress[$_owner]=$(( ${dev_inprogress[$_owner]} + 1 ))
+-        total_inprogress=$((total_inprogress + 1))
+-        ;;
+-      BLOCKED)
+-        dev_blocked[$_owner]=$(( ${dev_blocked[$_owner]} + 1 ))
+-        total_blocked=$((total_blocked + 1))
+-        ;;
+-    esac
+-
+-    # Check for blocked (has DEPENDS ON with open deps)
+-    if [[ -n "$_blocked_by" ]]; then
+-      dev_blocked[$_owner]=$(( ${dev_blocked[$_owner]} + 1 ))
+-      total_blocked=$((total_blocked + 1))
+-      blocked_entries+=("$_id"$'\t'"$_owner"$'\t'"$_title"$'\t'"$_blocked_by")
+-    fi
+-
+-    # Check for stale (>48h since last update)
+-    if [[ "$_updated_epoch" -gt 0 ]]; then
+-      local age=$(( now_epoch - _updated_epoch ))
+-      if [[ $age -gt $stale_threshold ]]; then
+-        local hours=$(( age / 3600 ))
+-        dev_stale[$_owner]=$(( ${dev_stale[$_owner]} + 1 ))
+-        total_stale=$((total_stale + 1))
+-        stale_entries+=("$_id"$'\t'"$_owner"$'\t'"$_title"$'\t'"${hours}h since last update")
+-      fi
+-    fi
+-  done
+-
+-  local total_issues=${#issues[@]}
+-
+-  # 4. Output
+-  if [[ "$format" == "json" ]]; then
+-    _dashboard_json "$total_issues"
+-  else
+-    _dashboard_text "$total_issues"
+-  fi
+-}
+-
+-# ── Text Output ──────────────────────────────────────────────────────────
+-
+-_dashboard_text() {
+-  local total_issues="$1"
+-
+-  echo "Team Dashboard"
+-  echo "══════════════"
+-  echo ""
+-
+-  # Header
+-  printf "%-16s %4s  %11s  %7s  %5s\n" "Developer" "Open" "In Progress" "Blocked" "Stale"
+-
+-  # Get sorted list of developers
+-  local devs=()
+-  local dev
+-  for dev in "${!dev_open[@]}"; do
+-    devs+=("$dev")
+-  done
+-  # Sort developers
+-  IFS=$'\n' devs=($(sort <<< "${devs[*]}")); unset IFS
+-
+-  for dev in "${devs[@]}"; do
+-    printf "%-16s %4d  %11d  %7d  %5d\n" \
+-      "$dev" \
+-      "${dev_open[$dev]:-0}" \
+-      "${dev_inprogress[$dev]:-0}" \
+-      "${dev_blocked[$dev]:-0}" \
+-      "${dev_stale[$dev]:-0}"
+-  done
+-
+-  echo ""
+-
+-  # Build total summary parts
+-  local parts=()
+-  [[ $total_inprogress -gt 0 ]] && parts+=("$total_inprogress in progress")
+-  [[ $total_blocked -gt 0 ]] && parts+=("$total_blocked blocked")
+-  [[ $total_stale -gt 0 ]] && parts+=("$total_stale stale")
+-  [[ $total_open -gt 0 ]] && parts+=("$total_open open")
+-
+-  local summary=""
+-  if [[ ${#parts[@]} -gt 0 ]]; then
+-    summary=" ($(IFS=', '; echo "${parts[*]}"))"
+-  fi
+-  echo "Total: $total_issues issues${summary}"
+-
+-  # Stale section
+-  if [[ ${#stale_entries[@]} -gt 0 ]]; then
+-    echo ""
+-    echo "Stale assignments (>48h):"
+-    local entry
+-    for entry in "${stale_entries[@]}"; do
+-      IFS=$'\t' read -r _id _owner _title _age <<< "$entry"
+-      echo "  ⚠ $_id [$_owner] — $_title ($_age)"
+-    done
+-  fi
+-
+-  # Blocked section
+-  if [[ ${#blocked_entries[@]} -gt 0 ]]; then
+-    echo ""
+-    echo "Blocked issues:"
+-    local entry
+-    for entry in "${blocked_entries[@]}"; do
+-      IFS=$'\t' read -r _id _owner _title _deps <<< "$entry"
+-      echo "  ⚠ $_id [$_owner] — $_title (blocked by $_deps)"
+-    done
+-  fi
+-}
+-
+-# ── JSON Output ──────────────────────────────────────────────────────────
+-
+-_dashboard_json() {
+-  local total_issues="$1"
+-
+-  # Build developers JSON
+-  local dev_json="{"
+-  local first=1
+-  local devs=()
+-  local dev
+-  for dev in "${!dev_open[@]}"; do
+-    devs+=("$dev")
+-  done
+-  IFS=$'\n' devs=($(sort <<< "${devs[*]}")); unset IFS
+-
+-  for dev in "${devs[@]}"; do
+-    [[ $first -eq 0 ]] && dev_json+=","
+-    first=0
+-    dev_json+="\"$dev\":{\"open\":${dev_open[$dev]:-0},\"in_progress\":${dev_inprogress[$dev]:-0},\"blocked\":${dev_blocked[$dev]:-0},\"stale\":${dev_stale[$dev]:-0}}"
+-  done
+-  dev_json+="}"
+-
+-  # Build stale JSON array
+-  local stale_json="["
+-  first=1
+-  local entry
+-  for entry in "${stale_entries[@]}"; do
+-    [[ $first -eq 0 ]] && stale_json+=","
+-    first=0
+-    IFS=$'\t' read -r _id _owner _title _age <<< "$entry"
+-    stale_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg age "$_age" '{id:$id,owner:$owner,title:$title,age:$age}')"
+-  done
+-  stale_json+="]"
+-
+-  # Build blocked JSON array
+-  local blocked_json="["
+-  first=1
+-  for entry in "${blocked_entries[@]}"; do
+-    [[ $first -eq 0 ]] && blocked_json+=","
+-    first=0
+-    IFS=$'\t' read -r _id _owner _title _deps <<< "$entry"
+-    blocked_json+="$(jq -n -c --arg id "$_id" --arg owner "$_owner" --arg title "$_title" --arg deps "$_deps" '{id:$id,owner:$owner,title:$title,blocked_by:$deps}')"
+-  done
+-  blocked_json+="]"
+-
+-  echo "{\"developers\":$dev_json,\"total\":$total_issues,\"in_progress\":$total_inprogress,\"blocked\":$total_blocked,\"stale\":$total_stale,\"stale_entries\":$stale_json,\"blocked_entries\":$blocked_json}"
+-}
+diff --git a/scripts/forge-team/tests/dashboard.test.sh b/scripts/forge-team/tests/dashboard.test.sh
+deleted file mode 100644
+index 2082d66a..00000000
+--- a/scripts/forge-team/tests/dashboard.test.sh
++++ /dev/null
+@@ -1,155 +0,0 @@
+-#!/usr/bin/env bash
+-set -euo pipefail
+-
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+-
+-# ── Setup temp dir for test isolation ────────────────────────────────────
+-TEST_TMP="$(mktemp -d)"
+-trap 'rm -rf "$TEST_TMP"' EXIT
+-
+-# ── Create mock forge ─────────────────────────────────────────────────────
+-# Emits Kernel-shaped JSON ({"data":{"issues":[...]}}) for `issue list`.
+-mock_dir="$(mktemp -d)"
+-
+-cat > "$mock_dir/forge" << 'MOCK'
+-#!/usr/bin/env bash
+-args="$*"
+-emit() { printf '{"data":{"issues":%s}}\n' "$1"; }
+-
+-# forge-aaa BLOCKS forge-ccc (kernel: blocker carries the dependency edge), so
+-# forge-ccc is the blocked one — its blocked_by resolves to forge-aaa via reverse scan.
+-aaa='{"id":"forge-aaa","title":"Feature A","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T10:00:00Z","dependencies":["forge-ccc"]}'
+-bbb='{"id":"forge-bbb","title":"Feature B","status":"open","assignee":"devtwo","updated_at":"2026-03-24T10:00:00Z","dependencies":[]}'
+-ccc='{"id":"forge-ccc","title":"Feature C","status":"in_progress","assignee":"devone","updated_at":"2026-03-27T09:00:00Z","dependencies":[]}'
+-
+-if [[ "$args" == *"issue list"* ]]; then
+-  if [[ -n "${FORGE_MOCK_EMPTY:-}" ]]; then
+-    emit "[]"
+-  elif [[ -n "${FORGE_MOCK_SINGLE:-}" ]]; then
+-    if [[ "$args" == *"--status=in_progress"* ]]; then emit "[$aaa]"; else emit "[]"; fi
+-  else
+-    if [[ "$args" == *"--status=open"* ]]; then emit "[$bbb]"
+-    elif [[ "$args" == *"--status=in_progress"* ]]; then emit "[$aaa,$ccc]"
+-    else emit "[]"; fi
+-  fi
+-  exit 0
+-fi
+-exit 0
+-MOCK
+-chmod +x "$mock_dir/forge"
+-
+-export FORGE_CMD="$mock_dir/forge"
+-
+-# Source the library under test
+-source "$SCRIPT_DIR/lib/dashboard.sh"
+-
+-PASS=0
+-FAIL=0
+-
+-assert_eq() {
+-  local label="$1" expected="$2" actual="$3"
+-  if [[ "$actual" == "$expected" ]]; then
+-    PASS=$((PASS + 1)); echo "  PASS: $label"
+-  else
+-    FAIL=$((FAIL + 1)); echo "  FAIL: $label (expected '$expected', got '$actual')"
+-  fi
+-}
+-
+-assert_contains() {
+-  local label="$1" expected="$2" actual="$3"
+-  if [[ "$actual" == *"$expected"* ]]; then
+-    PASS=$((PASS + 1)); echo "  PASS: $label"
+-  else
+-    FAIL=$((FAIL + 1)); echo "  FAIL: $label (expected to contain '$expected', got '$actual')"
+-  fi
+-}
+-
+-assert_not_contains() {
+-  local label="$1" unexpected="$2" actual="$3"
+-  if [[ "$actual" != *"$unexpected"* ]]; then
+-    PASS=$((PASS + 1)); echo "  PASS: $label"
+-  else
+-    FAIL=$((FAIL + 1)); echo "  FAIL: $label (expected NOT to contain '$unexpected')"
+-  fi
+-}
+-
+-assert_exit() {
+-  local label="$1" expected="$2" actual="$3"
+-  if [[ "$actual" -eq "$expected" ]]; then
+-    PASS=$((PASS + 1)); echo "  PASS: $label"
+-  else
+-    FAIL=$((FAIL + 1)); echo "  FAIL: $label (expected exit $expected, got $actual)"
+-  fi
+-}
+-
+-# ── Test 1: Full dashboard with multiple developers ──────────────────────
+-echo "── Test 1: Full dashboard with multiple developers ──"
+-
+-# Override _now to a fixed time: 2026-03-27T12:00:00Z = 1774836000
+-export FORGE_NOW=1774836000
+-
+-rc=0
+-output="$(cmd_dashboard 2>&1)" || rc=$?
+-assert_exit "dashboard exits 0" 0 "$rc"
+-assert_contains "shows Team Dashboard header" "Team Dashboard" "$output"
+-assert_contains "shows devone stats" "devone" "$output"
+-assert_contains "shows devtwo stats" "devtwo" "$output"
+-assert_contains "shows total summary" "Total:" "$output"
+-
+-# ── Test 2: Stale issue flagged (forge-bbb >48h old) ────────────────────
+-echo ""
+-echo "── Test 2: Stale issue flagged ──"
+-
+-# forge-bbb updated 2026-03-24T10:00:00Z, now is 2026-03-27T12:00:00Z => ~74h
+-assert_contains "stale section shown" "Stale assignments" "$output"
+-assert_contains "forge-bbb flagged as stale" "forge-bbb" "$output"
+-assert_contains "stale issue shows devtwo" "devtwo" "$output"
+-
+-# ── Test 3: Blocked issue detected (forge-ccc depends on forge-aaa) ─────
+-echo ""
+-echo "── Test 3: Blocked issue detected ──"
+-
+-assert_contains "blocked section shown" "Blocked issues" "$output"
+-assert_contains "forge-ccc flagged as blocked" "forge-ccc" "$output"
+-assert_contains "blocked shows dependency" "forge-aaa" "$output"
+-
+-# ── Test 4: No issues → "No active issues" ──────────────────────────────
+-echo ""
+-echo "── Test 4: No issues → clear message ──"
+-
+-export FORGE_MOCK_EMPTY=1
+-rc=0
+-output_empty="$(cmd_dashboard 2>&1)" || rc=$?
+-assert_exit "empty dashboard exits 0" 0 "$rc"
+-assert_contains "shows no active issues" "No active issues" "$output_empty"
+-unset FORGE_MOCK_EMPTY
+-
+-# ── Test 5: Single developer → works correctly ──────────────────────────
+-echo ""
+-echo "── Test 5: Single developer ──"
+-
+-export FORGE_MOCK_SINGLE=1
+-rc=0
+-output_single="$(cmd_dashboard 2>&1)" || rc=$?
+-assert_exit "single dev dashboard exits 0" 0 "$rc"
+-assert_contains "shows devone" "devone" "$output_single"
+-assert_not_contains "no devtwo in single mode" "devtwo" "$output_single"
+-unset FORGE_MOCK_SINGLE
+-
+-# ── Test 6: --format=json → valid JSON ──────────────────────────────────
+-echo ""
+-echo "── Test 6: --format=json → valid JSON ──"
+-
+-rc=0
+-output_json="$(cmd_dashboard --format=json 2>&1)" || rc=$?
+-assert_exit "json format exits 0" 0 "$rc"
+-# Check it starts with { and contains expected keys
+-assert_contains "json has developers key" "developers" "$output_json"
+-assert_contains "json has total key" "total" "$output_json"
+-assert_contains "json has stale key" "stale" "$output_json"
+-assert_contains "json has blocked key" "blocked" "$output_json"
+-
+-# ── Results ──────────────────────────────────────────────────────────────
+-echo ""
+-echo "Results: $PASS passed, $FAIL failed"
+-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+diff --git a/scripts/forge-team/tests/dispatcher.test.sh b/scripts/forge-team/tests/dispatcher.test.sh
+index 30e5c912..027c02cc 100644
+--- a/scripts/forge-team/tests/dispatcher.test.sh
++++ b/scripts/forge-team/tests/dispatcher.test.sh
+@@ -60,7 +60,7 @@ assert_output_contains "unknown subcommand shows error" "unknown subcommand" bas
+ # Test 4: Each stub subcommand is reachable (exits 0)
+ echo ""
+ echo "-- stub subcommands reachable --"
+-for cmd in workload epic dashboard add verify sync claim; do
++for cmd in workload epic add verify sync claim; do
+   assert_exit "$cmd exits 0" 0 bash "$DISPATCHER" "$cmd"
+   assert_output_contains "$cmd outputs stub message" "not implemented" bash "$DISPATCHER" "$cmd"
+ done
+diff --git a/scripts/forge-team/tests/workflow-integration.test.sh b/scripts/forge-team/tests/workflow-integration.test.sh
+index 947e66a1..5ef7a8c2 100644
+--- a/scripts/forge-team/tests/workflow-integration.test.sh
++++ b/scripts/forge-team/tests/workflow-integration.test.sh
+@@ -17,7 +17,6 @@ assert_contains_file() {
+ echo "── /status integration ──"
+ STATUS="$SCRIPT_DIR/.claude/commands/status.md"
+ assert_contains_file "status calls workload --me" "forge-team.*workload.*--me" "$STATUS"
+-assert_contains_file "status calls dashboard" "forge-team.*dashboard" "$STATUS"
+ 
+ echo ""
+ echo "── /plan integration ──"
+diff --git a/skills/coverage.json b/skills/coverage.json
+index 755f72c1..54f4624a 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -53,7 +53,6 @@
+     "migrate": "portability",
+     "sync": { "exempt": "cloud-native external-platform sync (ADR-0004); a local no-op with no value until a server backend is configured — skill deferred (issue 666f4b4c)" },
+ 
+-    "board": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
+     "inbox": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
+     "serve": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
+     "team": { "exempt": "team skill pending (plan §3.2 B: new `team` skill)" },
+diff --git a/test/commands/board.test.js b/test/commands/board.test.js
+deleted file mode 100644
+index 39e366b2..00000000
+--- a/test/commands/board.test.js
++++ /dev/null
+@@ -1,102 +0,0 @@
+-const { describe, test, expect } = require('bun:test');
+-const { execFileSync } = require('node:child_process');
+-const fs = require('node:fs');
+-const os = require('node:os');
+-const path = require('node:path');
+-
+-const boardCommand = require('../../lib/commands/board.js');
+-
+-function createTempBeadsRepo(entries) {
+-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-board-'));
+-  const beadsDir = path.join(repoRoot, '.beads');
+-  fs.mkdirSync(beadsDir, { recursive: true });
+-  fs.writeFileSync(
+-    path.join(beadsDir, 'issues.jsonl'),
+-    `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`,
+-    'utf8'
+-  );
+-  execFileSync('git', ['init'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+-  execFileSync('git', ['config', 'user.email', 'harshanandak@users.noreply.github.com'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+-  execFileSync('git', ['config', 'user.name', 'Harsha Nanda'], { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+-  return repoRoot;
+-}
+-
+-describe('forge board command', () => {
+-  test('renders active, ready, blocked, stale, and completed columns', async () => {
+-    const repoRoot = createTempBeadsRepo([
+-      { id: 'forge-active', title: 'Active issue', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-04-01T08:00:00Z' },
+-      { id: 'forge-ready', title: 'Ready issue', status: 'open', dependency_count: 0, updated_at: '2026-05-18T08:00:00Z' },
+-      { id: 'forge-blocked', title: 'Blocked issue', status: 'open', dependency_count: 1, updated_at: '2026-05-17T08:00:00Z' },
+-      { id: 'forge-done', title: 'Done issue', status: 'closed', updated_at: '2026-05-16T08:00:00Z' },
+-    ]);
+-
+-    const result = await boardCommand.handler([], {
+-      now: new Date('2026-05-18T08:00:00Z'),
+-      staleAfterDays: 14,
+-    }, repoRoot);
+-
+-    expect(result.output).toContain('Team Runtime Board');
+-    for (const section of ['Active', 'Ready', 'Blocked', 'Stale', 'Recent Completions']) {
+-      expect(result.output).toContain(section);
+-    }
+-    expect(result.output).toContain('forge-active');
+-    expect(result.output).toContain('forge-ready');
+-    expect(result.output).toContain('forge-blocked');
+-    expect(result.output).toContain('forge-done');
+-  });
+-
+-  test('returns JSON board state', async () => {
+-    const repoRoot = createTempBeadsRepo([
+-      { id: 'forge-active', title: 'Active issue', status: 'in_progress', updated_at: '2026-05-18T08:00:00Z' },
+-    ]);
+-
+-    const result = await boardCommand.handler(['--json'], {}, repoRoot);
+-    const parsed = JSON.parse(result.output);
+-
+-    expect(parsed.board.active.map(issue => issue.id)).toEqual(['forge-active']);
+-    expect(parsed.board.ready).toEqual([]);
+-    expect(parsed.limits.join('\n')).toContain('local Beads');
+-  });
+-
+-  test('accepts runtime option flags from CLI-style args', async () => {
+-    const repoRoot = createTempBeadsRepo([
+-      { id: 'forge-stale', title: 'Stale issue', status: 'open', updated_at: '2026-04-01T08:00:00Z' },
+-    ]);
+-
+-    const result = await boardCommand.handler([
+-      '--json',
+-      '--now=2026-05-18T08:00:00Z',
+-      '--stale-after-days',
+-      '14',
+-    ], {}, repoRoot);
+-    const parsed = JSON.parse(result.output);
+-
+-    expect(parsed.board.stale.map(issue => issue.id)).toEqual(['forge-stale']);
+-  });
+-
+-  test('runtime option parsing avoids adjacent flags and preserves zero values', async () => {
+-    expect(boardCommand.getFlagValue(['--now', '--json'], '--now', '--now')).toBeNull();
+-    expect(boardCommand.getFlagValue(['--stale-after-days', '0'], '--stale-after-days', '--staleAfterDays')).toBe('0');
+-
+-    const repoRoot = createTempBeadsRepo([
+-      { id: 'forge-stale-now', title: 'Stale now', status: 'open', updated_at: '2026-05-18T07:59:59Z' },
+-    ]);
+-
+-    const result = await boardCommand.handler(['--json'], {
+-      now: '2026-05-18T08:00:00Z',
+-      staleAfterDays: 0,
+-    }, repoRoot);
+-    const parsed = JSON.parse(result.output);
+-
+-    expect(parsed.board.stale.map(issue => issue.id)).toEqual(['forge-stale-now']);
+-  });
+-
+-  test('renders explicit empty columns when no issues exist', async () => {
+-    const repoRoot = createTempBeadsRepo([]);
+-
+-    const result = await boardCommand.handler([], {}, repoRoot);
+-
+-    expect(result.output).toContain('Team Runtime Board');
+-    expect(result.output).toContain('none');
+-  });
+-});
+-- 
+2.51.0.windows.1
+

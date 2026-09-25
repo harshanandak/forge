@@ -1,0 +1,129 @@
+From 92a60e654550c617d95347af8383182a796ae120 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 18:31:56 +0530
+Subject: [PATCH] fix(kernel): align empty-string session handling +
+ idempotent-retry test (d71a824b)
+
+Verify-panel tightenings on the C1 session-id claim-identity fix:
+- broker.js + sqlite-driver.js: shared trim-truthy session normalization so an
+  empty/whitespace session-id is session-LESS at BOTH the claim-key write and the
+  owns() read (closes the asymmetry where '' was "present" at write, "absent" at read).
+- test: add same-actor+same-session idempotent-retry (one key -> ok:true replay,
+  one active lease, no conflict) + empty-string session symmetry test. 5 pass.
+
+Residual owns()-after-reclaim (56b080c9) and ':' delimiter hardening (bd3ea7c9)
+tracked as separate follow-ups.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/kernel/broker.js                       |  8 +++-
+ lib/kernel/sqlite-driver.js                | 12 ++---
+ test/kernel/claim-session-identity.test.js | 52 ++++++++++++++++++++++
+ 3 files changed, 66 insertions(+), 6 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 9f92c0b2..34ee4020 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -615,7 +615,13 @@ function buildClaimMutationEvent(operation, flags, actor, origin, context, args
+ 	const issueId = typeof flags.issue === 'string' ? flags.issue : firstPositionalArg(args);
+ 	const claimId = context.claimId || randomUUID();
+ 	const eventType = ISSUE_MUTATION_EVENT_TYPES[operation];
+-	const sessionId = context.sessionId ?? null;
++	// Treat an empty/whitespace-only session-id as session-LESS: it must never append to
++	// the idempotency key and never be stored as a non-null session_id. This uses the
++	// SAME trim-truthy emptiness test as the owns() read (lib/kernel/sqlite-driver.js), so
++	// '' can never count as "present" at the write site and "absent" at the read site.
++	const sessionId = typeof context.sessionId === 'string' && context.sessionId.trim() !== ''
++		? context.sessionId
++		: null;
+ 	const idempotencyKey = context.idempotencyKey
+ 		|| (sessionId
+ 			? `${eventType}:${issueId}:${actor}:${sessionId}`
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 00c36788..b0137152 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -527,11 +527,13 @@ function runIssueReadOperation(runtime, db, operation, args, context) {
+ 		// OWNED for a lease only one of them holds. When BOTH the caller and the live
+ 		// lease carry a session-id they must match; if either side is session-less (a
+ 		// no-env caller, or a pre-session claim) we fall back to actor-only ownership so
+-		// historical behavior is preserved byte-for-byte.
+-		const contextSession = typeof context.sessionId === 'string' && context.sessionId
+-			? context.sessionId
+-			: null;
+-		const claimSession = claim ? (claim.session_id ?? null) : null;
++		// historical behavior is preserved byte-for-byte. An empty/whitespace-only
++		// session-id counts as session-LESS on BOTH sides — the SAME trim-truthy test the
++		// claim-key write uses (buildClaimMutationEvent in lib/kernel/broker.js) — so ''
++		// can never count as "present" here and "absent" there.
++		const normalizeSession = value => (typeof value === 'string' && value.trim() !== '' ? value : null);
++		const contextSession = normalizeSession(context.sessionId);
++		const claimSession = claim ? normalizeSession(claim.session_id) : null;
+ 		const sessionMismatch = contextSession !== null
+ 			&& claimSession !== null
+ 			&& contextSession !== claimSession;
+diff --git a/test/kernel/claim-session-identity.test.js b/test/kernel/claim-session-identity.test.js
+index b4d12d18..af679a3d 100644
+--- a/test/kernel/claim-session-identity.test.js
++++ b/test/kernel/claim-session-identity.test.js
+@@ -106,4 +106,56 @@ describe('claim session identity — same actor, different sessions (d71a824b)',
+     expect(owns.data.owned).toBe(true);
+     expect(owns.data.claimed_by).toBe('forge-a');
+   });
++
++  test('same actor + same session claiming the SAME issue twice: idempotent duplicate replay — one lease, no conflict', async () => {
++    // The central POSITIVE guarantee: identical (actor, session) on the same issue
++    // yields an IDENTICAL idempotency key, so the retry replays as a duplicate (ok:true)
++    // rather than minting a second lease or tripping claim_conflict. This guards against
++    // a regression that changed the key format for same-session retries (which would
++    // otherwise stay green — the distinct-sessions test alone would not catch it).
++    await createIssue('sess-4', 'Retry');
++
++    const first = await claim('sess-4', 'alice', 'sess-A', now);
++    const second = await claim('sess-4', 'alice', 'sess-A', '2026-06-20T00:00:01.000Z');
++
++    expect(first.ok).toBe(true);
++    expect(second.ok).toBe(true);
++    // ok:true means NOT a claim conflict (a conflict is ok:false with an error).
++    expect(second.error).toBeUndefined();
++
++    // Exactly ONE active lease exists — the retry did not create a second.
++    const stats = await driver.issueOperation('stats', [], { now }, config);
++    expect(stats.data.active_claims).toBe(1);
++
++    // And the single session still holds it.
++    const owns = await driver.issueOperation(
++      'owns', ['sess-4'], { now, actor: 'alice', sessionId: 'sess-A' }, config,
++    );
++    expect(owns.data.owned).toBe(true);
++  });
++
++  test('empty-string session-id is treated as session-LESS symmetrically (key + owns)', async () => {
++    // '' must behave identically at the write site (no trailing ':' appended to the key,
++    // session_id stored null) and the owns read (actor-only fallback), never as "present"
++    // at one and "absent" at the other.
++    await createIssue('sess-5', 'Blank');
++
++    // Claim with an EMPTY session, then re-claim with an actual session-less caller: both
++    // resolve to the SAME `claim.create:sess-5:alice` key, so the second is a duplicate
++    // replay (ok:true) — proving '' did not append to the key.
++    const empty = await claim('sess-5', 'alice', '', now);
++    const sessionless = await claim('sess-5', 'alice', undefined, '2026-06-20T00:00:01.000Z');
++    expect(empty.ok).toBe(true);
++    expect(sessionless.ok).toBe(true);
++
++    const stats = await driver.issueOperation('stats', [], { now }, config);
++    expect(stats.data.active_claims).toBe(1);
++
++    // owns with an empty session falls back to actor-only ownership (stored session is null).
++    const owns = await driver.issueOperation(
++      'owns', ['sess-5'], { now, actor: 'alice', sessionId: '' }, config,
++    );
++    expect(owns.data.owned).toBe(true);
++    expect(owns.data.claimed_by).toBe('alice');
++  });
+ });
+-- 
+2.51.0.windows.1
+

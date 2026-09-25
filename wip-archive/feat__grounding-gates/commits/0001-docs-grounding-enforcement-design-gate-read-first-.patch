@@ -1,0 +1,325 @@
+From bd8eeb4745b312fce98c26b4231b0a091749ee65 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 17:16:20 +0530
+Subject: [PATCH] docs: grounding-enforcement design (gate.read_first +
+ gate.cite, wrap-not-separate)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Design for epic 6ef96e92 — fail-closed documented-grounding gates.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../design.md                                 | 299 ++++++++++++++++++
+ 1 file changed, 299 insertions(+)
+ create mode 100644 docs/work/2026-07-16-grounding-enforcement/design.md
+
+diff --git a/docs/work/2026-07-16-grounding-enforcement/design.md b/docs/work/2026-07-16-grounding-enforcement/design.md
+new file mode 100644
+index 00000000..ba7b818c
+--- /dev/null
++++ b/docs/work/2026-07-16-grounding-enforcement/design.md
+@@ -0,0 +1,299 @@
++# Grounding Enforcement — fail-closed gates for documented-grounding
++
++**Epic:** 6ef96e92-848e-4360-9c81-456b6b151e51 (`[epic] Force documented-grounding`)
++**Status:** Design (no implementation). 2026-07-16.
++**Author:** design architect (Fable), for team-lead review.
++
++---
++
++## 1. Problem (grounded in the epic, not re-derived)
++
++Epic 6ef96e92 records: agents (including the orchestrator) work from **parametric
++recall / re-derivation** instead of the documented source — the shepherd design was
++re-derived 4x instead of reading epic c2d398e5; a hallucinated WebSearch summary was
++trusted over the real docs. Retrieval infra exists (48d67c91 SessionStart memory
++injection — DONE; `forge recap`/`orient` — DONE; 33d6dce9 attention-following
++PreToolUse:Read injection — OPEN) but **nothing forces grounding**. Nudges
++demonstrably fail; the owner requires fail-closed enforcement.
++
++This is issue fd4c03b3 (the enforcement-wiring gap) applied to grounding. fd4c03b3's
++finding, quoted: *"the 4 stage-exit gates have ZERO runtime consumers; rails'
++enabled flag is read only by gate.js id-lookup maps (no refusal); gate.issue_verify
++is warn-only... toggling these controls changes NOTHING at runtime."* Real
++enforcement today lives in exactly three hardcoded places: the lefthook TDD
++pre-commit hook, fail-closed validate/preflight, and enforce-stage
++(`lib/workflow/enforce-stage.js`).
++
++### What the substrate actually provides (verified, cited)
++
++| Primitive | Where | What it gives us |
++|---|---|---|
++| Gate registry | `lib/core/runtime-graph.js:399-414` | `gate.issue_verify` precedent: a **phase-less gate guarding a command boundary**, default-ON, UNLOCKED, toggled via `forge gate disable gate.issue_verify` through `workflow.gates.<id>.enabled` (`runtime-graph.js:628-637` routes gate.* and rail.* through one combined lookup). |
++| Gate consultation | `lib/commands/_issue.js:140-170` | `isIssueVerifyEnabled()` resolves the graph and reads `gate.enabled` before acting — the exact wiring pattern to copy. (It is warn-only today; ours will deny.) |
++| Durable per-issue state | `lib/gate-events.js:1-40` | Human gates are kernel EVENTS (`gate.approved`/`gate.rejected`): pure append via `insertKernelEvent`/`listKernelEvents`, idempotent, resume-safe, **not** part of the issue-revision CAS. Our "this issue was read" state is the same shape. |
++| Bounded issue context | `lib/commands/recap.js` | `forge recap <issue>` renders the deterministic, budget-capped orientation envelope (`buildIssueRecap`, `--budget N`). This IS the load-the-doc action. |
++| Hook capability matrix | `lib/hook-renderer.js:13-28, 80-85, 356-361` | **Claude**: PreToolUse can DENY (Write/Edit + Bash matchers exist today); SessionStart can inject. **Cursor**: only `before*` events can deny (`beforeShellExecution`); `afterFileEdit` is observational; NO session-start surface. **Codex/Hermes**: hooks live in GLOBAL home config — project setup MUST NOT write them (renderers exist for a global-config follow-up; Hermes `pre_tool_call` CAN deny). Never fake parity. |
++| Memory push | `lib/hook-renderer.js:120-127` (`memory-inject` intent) + `forge hooks session-start` | 48d67c91 shipped: Claude-only SessionStart digest, fail-open, routed to the resolved `FORGE_CLI`. |
++| Stage enforcement | `lib/workflow/enforce-stage.js` | The one real stage chokepoint (stage-order + kernel completion). Read-first slots in here for stage entry. |
++
++### External precedent (researched, fetched from source)
++
++- **Pieter van Ginkel, "Grounding: cite or don't claim"** (fetched and indexed, not
++  a search summary): every code fact in an artifact carries the `file:line` it was
++  read from **or is flagged unverified**; a grounding pass is a **gate** — *"A brief
++  without a matching grounding_check.md section is not frozen"* — with per-claim
++  verdicts `confirmed / corrected / not applicable`. Honest limit acknowledged
++  there too: *"'I believe X but have not verified' is acceptable because the
++  evidence status is explicit"*; grounding *"catches a wrong read, not the wrong
++  question."* Source: https://medium.com/@pvginkel/my-ai-workflow-part-5-grounding-cite-or-dont-claim-8ee3f438ce49
++- **NVIDIA NeMo Guardrails fact-checking output rail**: RAG answers are checked for
++  entailment against retrieved evidence (self-check LLM or AlignScore) and the rail
++  can refuse the answer — the "LLM-judge groundedness" tier we defer to a later
++  phase. Source: https://docs.nvidia.com/nemo/guardrails/latest/configure-rails/guardrail-catalog/fact-checking.html
++- **Anthropic Citations API** (cited by pvginkel): document-grounded answers carry
++  machine-attached citations — same discipline, platform-level.
++
++The deterministic/fail-closed part of every one of these systems is **presence +
++resolvability of evidence**, not truth of the claim. Truth-checking is an LLM-judge
++add-on. We phase accordingly.
++
++---
++
++## 2. Names
++
++Owner rejected "orient-gate". Per the simple-names convention (short, sayable):
++
++- **Feature name / umbrella:** **grounding** — `rail.grounding` (key `grounding`),
++  UNLOCKED, default-ON: the one-switch master toggle
++  (`forge gate disable rail.grounding` kills both checks; same surface as
++  `rail.kernel_tracking`, `runtime-graph.js:448-455`).
++- **Gate A:** **`gate.read_first`** — "read first". Acting on an issue requires
++  having read it. (Improves on "load-first": *read* is what you tell the agent to
++  do; the block message says `forge recap <id>`.)
++- **Gate B:** **`gate.cite`** — "cite". Shipped artifacts must cite their sources.
++  (One word; the doctrine is pvginkel's "cite or don't claim".)
++
++Both gates: phase-less, default-ON, UNLOCKED — the exact `gate.issue_verify` shape.
++Effective-enabled = `rail.grounding.enabled && gate.<x>.enabled`.
++
++---
++
++## 3. Architecture: WRAP, not a separate surface
++
++**Decision: wrap.** The kernel + memory + code are the SOURCE; enforcement is two
++gates in the existing runtime-graph registry, consulted at existing CLI
++chokepoints; state is kernel events. **No new storage surface, no new command
++namespace.** This validates team-lead's lean, for three grounded reasons:
++
++1. **The source surfaces already exist and are unified.** `forge recap/show`
++   (issue context), `forge recall` + the SessionStart digest (memory, 48d67c91
++   DONE), and the code itself. 25362344 (DONE) just consolidated memory under one
++   surface on the principle "ONE SURFACE, MANY RENDERINGS" — a parallel grounding
++   store would immediately violate it.
++2. **The enforcement primitive already exists and has a wired precedent.**
++   `gate.issue_verify` proves the full loop: registered in DEFAULT_GRAPH →
++   toggleable via `forge gate` → consulted at a command boundary
++   (`_issue.js:isIssueVerifyEnabled`). fd4c03b3's whole point is that gates must
++   gain runtime consumers — adding grounding as a separate mechanism would WIDEN
++   the declared-vs-enforced gap this epic exists to close. Grounding becomes the
++   first gates that **deny**, i.e. the first real payment on fd4c03b3.
++3. **The state primitive already exists.** `gate-events.js` appends durable,
++   idempotent, resume-safe events to an issue's stream outside the CAS. "This
++   issue's context was loaded" (`context.loaded`) is structurally identical to
++   `gate.approved`.
++
++New code is limited to: event emission in read commands, deny checks at
++chokepoints, a citation scanner, a fetch ledger, and one CI check.
++
++---
++
++## 4. Gate A — `gate.read_first` (read-before-act)
++
++### "Oriented" state: a `context.loaded` kernel event
++
++`forge recap <id>`, `forge show <id>`, and `forge orient` append a
++`context.loaded` event to the issue's event stream on successful render (pure
++append via `insertKernelEvent`, gate-events pattern) with payload
++`{ actor, session, cmd, budget, ts }`. Durable, queryable, survives compaction —
++exactly why gate-events chose kernel events over skill prose.
++
++**Session scoping (two tiers, honest):**
++- **Tier 1 (Claude):** the SessionStart hook (48d67c91 infra) stashes the harness
++  `session_id` to `.forge/runtime/session.json`; CLI reads it and stamps events;
++  the deny check requires a `context.loaded` event from the CURRENT session.
++- **Tier 2 (agent-agnostic floor):** no session id available → freshness window
++  (default 24h, `workflow.gates.gate.read_first.window`). A stale-but-loaded issue
++  re-blocks the next day; one `forge recap` clears it.
++
++### What blocks (all CLI-side ⇒ fail-closed on EVERY harness)
++
++The deny lives in the **CLI chokepoints**, not primarily in hooks — that is what
++makes it agent-agnostic. Any harness that acts on an issue does so through `forge`:
++
++| Chokepoint | Check |
++|---|---|
++| `forge claim <id>` | `context.loaded` for `<id>` this session/window |
++| Stage entry via `enforce-stage` (plan/dev on an issue) | same |
++| `forge worktree create` (issue-linked form) | same |
++| `forge merge` / ship-entry | same, for the PR's linked issue — co-designed with fd4c03b3(b)'s merge-chokepoint work |
++
++**Block message contract** (exit ≠ 0, remedy is one copy-pastable command):
++
++```
++✗ gate.read_first: issue 6ef96e92 has not been read this session.
++  Run:  forge recap 6ef96e92
++  Then retry. (Override: forge gate disable gate.read_first — logged.)
++```
++
++The remedy command's OUTPUT is the orientation envelope itself — satisfying the
++gate and loading the context are the same act. That is the design's core trick:
++the cheapest path through the gate is the correct behavior.
++
++### Hook layer (secondary tripwire, honest per capability matrix)
++
++Actions that bypass the CLI (raw `git merge`, `gh pr merge`):
++- **Claude:** existing `Bash` PreToolUse matcher (hook-renderer already routes Bash
++  through the adapter for tdd-gate) gains a merge-command pattern → hard DENY.
++- **Cursor:** `beforeShellExecution` → hard DENY (same adapter).
++- **Codex/Hermes:** project setup cannot write their global hook configs
++  (`hook-renderer.js:356-361`) → **no project-level tripwire; documented gap**,
++  covered by the CI backstop below. Never fake parity.
++
++### CI backstop (harness-independent hard floor)
++
++A CI check on the PR: linked issue has a `context.loaded` event from the PR's
++author/actor + the `gate.cite` artifact check (below). CI blocks merge regardless
++of harness — mechanism-based, fail-closed everywhere, closing the Codex/Hermes gap
++at the only chokepoint every path shares.
++
++---
++
++## 5. Gate B — `gate.cite` (cite-your-source)
++
++Deterministic, **artifact-scoped** (plan docs, PR bodies, stage-exit comments) —
++never free-prose-scoped. Two severity classes:
++
++### BLOCKS (deterministic absence/invalidity — near-zero false positives)
++
++| Artifact | Chokepoint | Requirement |
++|---|---|---|
++| PR body | `forge push` / `forge ship` | ≥1 **resolvable** citation: kernel issue id (resolves via broker), `file:line` (file exists, line in range), or fetched URL (in fetch ledger). Issue-id reference is already an AGENTS.md convention — this makes it checked. |
++| Plan/design doc | plan stage exit (enforce-stage + existing `lib/doc-gate/` infra) | a `## Sources` section with ≥1 resolvable citation. |
++| Build brief (subagent dispatch file) | where dispatch goes through forge | same as plan doc. |
++
++Citation classes and validation:
++- `issue:<uuid-or-short-id>` → broker lookup must resolve.
++- `path/to/file.js:123` → file exists in repo, line ≤ length.
++- `https://…` → must appear in the **fetch ledger** (below) to count as a fetched
++  source. A URL absent from the ledger (e.g. lifted from a search summary) is
++  **not a valid citation** where the ledger exists.
++
++### WARNS (heuristic — never blocks, avoids false-positive hell)
++
++- Ungrounded-assertion lint over the artifact: `I recall`, `I believe`, `from
++  memory`, `typically`, `as of my knowledge`, current-behavior claims ("the system
++  does X today") with no citation in the same paragraph → warning listing each,
++  requiring either a citation or an explicit `unverified:` marker (pvginkel:
++  explicit evidence status is acceptable; silent upgrade to fact is not).
++- URL citations on harnesses with no ledger → warn ("cannot verify fetched").
++
++### Fetch ledger (fetched ≠ searched)
++
++`.forge/runtime/fetch-ledger.jsonl`, appended by a PostToolUse hook on
++WebFetch/ctx_fetch (Claude; Cursor `afterFileEdit`-era equivalents where they
++exist). Records `{ url, ts, session }`. This is what makes "tool/API facts must
++cite a FETCHED doc, not a search summary" *checkable* instead of aspirational.
++Where no ledger exists (Codex/Hermes), URL-class citations degrade to warn —
++honest, and the issue-id / file:line classes still hard-block.
++
++### What `gate.cite` does NOT claim to do (v1)
++
++It verifies citations **exist and resolve**, not that they **support the claim**.
++Claim-support checking is the LLM-judge tier (pvginkel's grounding pass verdicts;
++NeMo's self-check rail) — optional Phase 5, never the fail-closed core.
++
++---
++
++## 6. The honest limit — enforceable acceptance criteria
++
++We cannot force a model to believe the doc over its weights. We CAN force, and
++must verify:
++
++1. **Load happens:** acting on an unread issue exits non-zero at every CLI
++   chokepoint, with the remedy command in the message. *Verify adversarially:*
++   scripted sequence `forge claim X` (no recap) → MUST fail; `forge recap X &&
++   forge claim X` → MUST pass; same for stage entry and merge. These are the
++   Phase-1 tests, written as red tests first.
++2. **Claims name sources:** citation-less PR body / plan doc blocks at
++   push/stage-exit; each block names what is missing. *Verify:* fixture artifacts
++   with zero/dangling/valid citations → block/block/pass.
++3. **Contradiction surfaces before action:** the recap output is IN context at act
++   time (the gate's remedy = the injection), so a recall-vs-doc conflict is at
++   least visible. 33d6dce9 (attention-following injection) strengthens this to
++   "arrives with attention"; it is the complement, not part of the gate.
++4. **Gaming is bounded and logged:** `forge recap X > /dev/null` satisfies the
++   letter — accepted residual (on Claude the recap still enters the transcript;
++   and gaming now requires a deliberate act, which is precisely the difference
++   between a slip and a choice). Citing a real-but-irrelevant source passes v1 —
++   deferred to the judge tier. Disabling the gates is allowed, deliberate, and
++   config-visible (`forge gate disable`, logged like rail.kernel_tracking opt-out).
++5. **Regression guard for THE incidents:** a test encoding the shepherd-4x shape
++   (stage entry on an epic with a filed design → blocked until recap) and the
++   web-summary shape (PR citing a URL never fetched → warn/block per ledger
++   availability).
++
++**Would this have prevented this session's failures?** Shepherd-4x: yes — dev
++stage entry on the epic blocks until `forge recap c2d398e5`, which injects the
++filed design. Hallucinated search summary: yes on Claude — the URL never entered
++the fetch ledger, so citing it blocks; the block message says to fetch the real
++doc.
++
++---
++
++## 7. Adversarial critique (evaluator loop, round 2 — what changed)
++
++- *"Agents could bypass the CLI entirely."* → Moved the primary deny INTO the CLI
++  (all harnesses) + added the **CI backstop** as the harness-independent floor;
++  hooks demoted to tripwires. (Initial draft over-relied on hooks, which the
++  capability matrix shows cannot block on Codex/Hermes project-scoped.)
++- *"Annoyance: re-reading constantly."* → Only 4 chokepoint commands check;
++  satisfying costs one command whose output you need anyway; 24h freshness window;
++  master off-switch. Hotfix flow: `dev → validate → ship` still passes through
++  claim/ship once each — two cheap checks, and `forge gate disable rail.grounding`
++  exists for genuine emergencies (logged).
++- *"Phrase-lint false positives."* → Demoted ALL heuristics to warn; blocks are
++  only deterministic absence/resolvability checks.
++- *"Recap-to-/dev/null gaming."* → Accepted + documented residual; the design
++  optimizes the honest path to also be the shortest path.
++- *"Does a 24h window defeat 'this session'?"* → Tier-1 session scoping where the
++  harness provides a session id; window is the honest agnostic floor, and it
++  still forces a fresh read after context loss — the actual failure mode.
++
++---
++
++## 8. Phased build plan (smallest fail-closed slice first)
++
++| Phase | Slice | Builds on |
++|---|---|---|
++| **P1** | Register `rail.grounding` + `gate.read_first` + `gate.cite` in DEFAULT_GRAPH (declared, honest-labeled). Emit `context.loaded` from recap/show/orient. **Hard-block `forge claim`** on gate.read_first. Adversarial tests (§6.1). | gate.issue_verify pattern; gate-events append |
++| **P2** | Extend read_first deny to enforce-stage entry + merge/ship-entry chokepoint. Session stash via SessionStart hook (Tier-1 scoping). | 48d67c91 hook infra; fd4c03b3(b) merge chokepoint |
++| **P3** | `gate.cite` v1: citation scanner (`lib/grounding/cite.js`), block `forge push/ship` on citation-less PR body; plan-doc `## Sources` via doc-gate; phrase-lint warns. | doc-gate infra |
++| **P4** | Fetch ledger + fetched-vs-searched URL distinction (Claude PostToolUse); Bash/beforeShellExecution merge tripwires (Claude/Cursor); **CI backstop check**. | hook-renderer contract v1.1 pattern |
++| **P5** *(optional)* | LLM grounding-pass judge: per-claim confirmed/corrected verdicts on plan docs (pvginkel grounding_check; NeMo self-check analogue). | 33d6dce9; verify-lens pattern |
++
++Every phase: default-ON, unlocked, `forge gate disable`-able, tests-first,
++capability-matrix-honest (block where the harness can block, warn+CI elsewhere).
++
++---
++
++## 9. Sources
++
++- Epic 6ef96e92-848e-4360-9c81-456b6b151e51; issues fd4c03b3, 48d67c91, 33d6dce9,
++  0093a02a, 25362344 (kernel, read via `forge issue show` 2026-07-16).
++- `lib/core/runtime-graph.js:399-455, 628-637`; `lib/commands/_issue.js:140-170`;
++  `lib/gate-events.js:1-40`; `lib/hook-renderer.js:13-28, 80-85, 101-129, 356-361`;
++  `lib/commands/recap.js`; `lib/workflow/enforce-stage.js`.
++- pvginkel, *Grounding: cite or don't claim* (fetched 2026-07-16):
++  https://medium.com/@pvginkel/my-ai-workflow-part-5-grounding-cite-or-dont-claim-8ee3f438ce49
++- NeMo Guardrails fact-checking rail:
++  https://docs.nvidia.com/nemo/guardrails/latest/configure-rails/guardrail-catalog/fact-checking.html
+-- 
+2.51.0.windows.1
+

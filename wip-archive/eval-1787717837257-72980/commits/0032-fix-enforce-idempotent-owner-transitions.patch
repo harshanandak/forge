@@ -1,0 +1,94 @@
+From 0e4a5078a56e3618b57888910193f75097b3c331 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 00:48:56 +0530
+Subject: [PATCH] fix: enforce idempotent owner transitions
+
+---
+ lib/pr-monitor/watch-owner.js       |  8 +++++++-
+ test/pr-monitor/watch-owner.test.js | 23 +++++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 71a6736f..ed0345b1 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -300,7 +300,10 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			&& (record != null || result.reason === 'absent');
+ 	}
+ 	if (result.reason === 'idempotent'
+-		&& !matchesOwnerSnapshot(record, input.expectedSnapshot)) return false;
++		&& (!matchesOwnerSnapshot(record, input.expectedSnapshot)
++			|| [record.updatedAt, record.heartbeatAt]
++				.filter(Boolean)
++				.some(timestamp => timestamp > input.now))) return false;
+ 	switch (method) {
+ 	case 'watchOwnerReserveStarting':
+ 		return validOwnerSuccess(result, record, 'acquired', {
+@@ -347,6 +350,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 	case 'watchOwnerRequestStop': {
+ 		const prior = input.expectedSnapshot;
+ 		if (!prior || !['running', 'stop_requested'].includes(prior.phase)) return false;
++		if ((prior.phase === 'stop_requested') !== (result.reason === 'idempotent')) return false;
+ 		return validOwnerSuccess(result, record, 'stop_requested', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+@@ -355,6 +359,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 	case 'watchOwnerRecordTerminal': {
+ 		const prior = input.expectedSnapshot;
+ 		if (!prior || !['running', 'stop_requested', 'terminal_pending'].includes(prior.phase)) return false;
++		if ((prior.phase === 'terminal_pending') !== (result.reason === 'idempotent')) return false;
+ 		return validOwnerSuccess(result, record, 'terminal_pending', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 			terminalReceiptId: input.terminalReceiptId,
+@@ -364,6 +369,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 	case 'watchOwnerCompleteTerminal': {
+ 		const prior = input.expectedSnapshot;
+ 		if (!prior || !['terminal_pending', 'complete'].includes(prior.phase)) return false;
++		if ((prior.phase === 'complete') !== (result.reason === 'idempotent')) return false;
+ 		return validOwnerSuccess(result, record, 'complete', {
+ 			generation: input.generation, watcherPid: null,
+ 			terminalReceiptId: input.terminalReceiptId,
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 9e761b88..d8ee13d8 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2164,6 +2164,14 @@ describe('watch owner successful-result postcondition validation', () => {
+ 			if (spec.replay) {
+ 				const replayed = await spec.act(happyCtx, prior, authorityOpts());
+ 				expect(replayed).toEqual({ ok: true, changed: false, reason: 'idempotent', record: happy.record });
++				const changedReplayDriver = {
++					...driver,
++					[spec.driverMethod]: () => ({
++						ok: true, changed: true, reason: spec.expect.reason, row: toSnakeRow(happy.record),
++					}),
++				};
++				const changedReplay = await spec.act(happyCtx, prior, authorityOpts(changedReplayDriver));
++				expect(changedReplay).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 			}
+ 
+ 			if (spec.forbidIdempotent) {
+@@ -3021,6 +3029,21 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 	});
+ 
++	test('rejects idempotent owner results submitted before retained owner timestamps', async () => {
++		const ctx = { repo: 'acme/forge', pr: 991 };
++		const stopped = await seedLifecycle(ctx, 'stop_requested');
++		const result = await owner.requestStop(ctx, {
++			generation: stopped.generation, pid: WATCHER_PID, updatedAt: NOW,
++		}, authorityOpts({
++			...driver,
++			watchOwnerRequestStop: () => ({
++				ok: true, changed: false, reason: 'idempotent', row: toSnakeRow(stopped.record),
++			}),
++		}));
++
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
+ 	test('binds nonterminal release to a captured stopped owner', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 986 };
+ 		let releaseAttempts = 0;
+-- 
+2.51.0.windows.1
+

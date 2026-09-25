@@ -1,0 +1,122 @@
+From e8ac9dfa51a80c8e78b85c4daa3a2cb0ddf66df1 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 15:59:09 +0530
+Subject: [PATCH] fix: bind validation receipt runtimes
+
+---
+ lib/commands/validate.js        |  1 +
+ lib/validation-receipt.js       | 16 +++++++++++-----
+ test/validation-receipt.test.js | 30 +++++++++++++++++++++++++++++-
+ 3 files changed, 41 insertions(+), 6 deletions(-)
+
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index a25a860b..3ee0b5a8 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -300,6 +300,7 @@ async function runTypeCheck() {
+ 		return {
+ 			success: true,
+ 			skipped: true,
++			notConfigured: true,
+ 			duration: Date.now() - startTime,
+ 			message: 'TypeScript not configured (no tsconfig.json)',
+ 		};
+diff --git a/lib/validation-receipt.js b/lib/validation-receipt.js
+index f444cfac..4e6ac192 100644
+--- a/lib/validation-receipt.js
++++ b/lib/validation-receipt.js
+@@ -39,11 +39,7 @@ function runtimeIdentity(deps = {}) {
+ 		|| [process.platform, process.arch, process.versions.node, process.versions.bun || 'node'].join(':');
+ }
+ 
+-function testRuntimeIdentity(projectRoot, deps = {}) {
+-	if (deps.testRuntimeIdentity) return deps.testRuntimeIdentity;
+-	const env = deps.env || process.env;
+-	const command = env.BUN_EXE || 'bun';
+-	const run = deps.runtimeExecFileSync || execFileSync;
++function commandIdentity(command, projectRoot, env, run) {
+ 	const version = run(command, ['--version'], {
+ 		cwd: projectRoot,
+ 		encoding: 'utf8',
+@@ -60,6 +56,15 @@ function testRuntimeIdentity(projectRoot, deps = {}) {
+ 	return `${process.platform === 'win32' ? located.toLowerCase() : located}:${version}`;
+ }
+ 
++function testRuntimeIdentity(projectRoot, deps = {}) {
++	if (deps.testRuntimeIdentity) return deps.testRuntimeIdentity;
++	const env = deps.env || process.env;
++	const run = deps.runtimeExecFileSync || execFileSync;
++	return [env.BUN_EXE || 'bun', 'node']
++		.map(command => commandIdentity(command, projectRoot, env, run))
++		.join('|');
++}
++
+ function captureState(projectRoot, deps = {}) {
+ 	const root = resolveGitRoot(projectRoot, deps);
+ 	return {
+@@ -88,6 +93,7 @@ function validationIsComplete(result) {
+ 	return result?.success === true
+ 		&& checks.conflictMarkers?.success === true
+ 		&& checks.typeCheck?.success === true
++		&& (checks.typeCheck.skipped !== true || checks.typeCheck.notConfigured === true)
+ 		&& checks.lint?.success === true && checks.lint?.skipped !== true
+ 		&& checks.security?.success === true && checks.security?.skipped !== true
+ 		&& tests.success === true && tests.skipped !== true
+diff --git a/test/validation-receipt.test.js b/test/validation-receipt.test.js
+index 6e752854..e3703a1e 100644
+--- a/test/validation-receipt.test.js
++++ b/test/validation-receipt.test.js
+@@ -31,7 +31,7 @@ function fullPass() {
+ 		success: true,
+ 		checks: {
+ 			conflictMarkers: { success: true },
+-			typeCheck: { success: true, skipped: true },
++			typeCheck: { success: true, skipped: true, notConfigured: true },
+ 			lint: { success: true },
+ 			security: { success: true },
+ 			tests: { success: true, fullSuite: true, testsFound: true, total: 12, failed: 0 },
+@@ -40,6 +40,30 @@ function fullPass() {
+ }
+ 
+ describe('validation receipt', () => {
++	test('binds receipts to both Bun and Node test runtimes', () => {
++		const repo = createRepo();
++		const located = command => process.platform === 'win32' ? `C:\\tools\\${command}.exe` : `/tools/${command}`;
++		const runtimeExecFileSync = (command, args) => {
++			if (args[0] === '--version') return command === 'node' ? '22.1.0\n' : '1.4.2\n';
++			return `${located(args[0])}\n`;
++		};
++		try {
++			const first = beginValidation(repo.root, { homeDir: repo.homeDir, runtimeIdentity: 'forge-runtime', runtimeExecFileSync, env: {} });
++			const changedNode = beginValidation(repo.root, {
++				homeDir: repo.homeDir,
++				runtimeIdentity: 'forge-runtime',
++				env: {},
++				runtimeExecFileSync(command, args) {
++					if (args[0] === '--version') return command === 'node' ? '24.0.0\n' : '1.4.2\n';
++					return `${located(args[0])}\n`;
++				},
++			});
++			expect(first.testRuntime).not.toBe(changedNode.testRuntime);
++		} finally {
++			fs.rmSync(repo.root, { recursive: true, force: true });
++		}
++	});
++
+ 	test('accepts an immediate complete validation for the unchanged exact head', () => {
+ 		const { root, homeDir } = createRepo();
+ 		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
+@@ -92,6 +116,10 @@ describe('validation receipt', () => {
+ 			incomplete.checks.tests.testsFound = false;
+ 			expect(completeValidation(repo.root, snapshot, incomplete, deps)).toBe(false);
+ 			expect(verifyValidationReceipt(repo.root, deps).valid).toBe(false);
++
++			const missingTypeScript = fullPass();
++			missingTypeScript.checks.typeCheck = { success: true, skipped: true };
++			expect(completeValidation(repo.root, beginValidation(repo.root, deps), missingTypeScript, deps)).toBe(false);
+ 		} finally {
+ 			fs.rmSync(repo.root, { recursive: true, force: true });
+ 		}
+-- 
+2.51.0.windows.1
+

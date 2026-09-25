@@ -1,0 +1,1354 @@
+From d3a25a4c33aaaf40ee41b0f8fb049ae2e94fe54e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 12:23:40 +0530
+Subject: [PATCH] chore(beads): purge dead beads-bootstrap/health-check runtime
+ wiring
+
+lib/beads-bootstrap.js and lib/beads-health-check.js had zero live
+callers: their only consumer was bin/forge.js's inline `command ===
+'setup'` legacy implementation, which the lib/commands/ registry
+dispatcher intercepts and returns from first (bin/forge.js:1771-1774),
+making that inline block dead code on every current CLI invocation.
+
+Delete both files and their tests, and drop bin/forge.js's require of
+beads-health-check (needed so removing the file doesn't crash module
+load) plus the dead health-check block inside initializeBeads(). Fix
+the package-distribution test's required-lib-modules list to match.
+
+Left in place (live, in-scope, or protected):
+- lib/beads-setup.js: isBeadsInitialized() is used by the explicit
+  --issue-backend beads opt-in passthrough (lib/forge-issues.js).
+- lib/adapters/beads-kernel-compat.js: the migrator's Beads<->Kernel
+  mapping layer, live-used by lib/commands/migrate.js (a different,
+  protected agent's file) and lib/kernel/broker.js /
+  projection-jsonl-writer.js.
+- lib/orientation.js, lib/insights.js, lib/status/beads-snapshot.js:
+  read-only .beads/*.jsonl compat projections that already return []
+  when the file is absent -- no shell-out, no stderr noise.
+- lib/commands/validate.js, lib/patch-intent.js,
+  lib/protected-state-surfaces.js: '.beads' only appears as a
+  directory-exclusion/protection-path literal, not a live dependency.
+
+Strengthened test/e2e/fresh-clone-no-beads.test.js: switched the forge()
+runner from execFileSync to spawnSync so stderr is captured on the
+success path too, added a `forge status --json` call, and asserted no
+captured stderr matches /beads/i -- proving the kernel-primary/no-.beads/
+acceptance criterion holds for stderr noise, not just bd/dolt shell-outs.
+
+Refs: 726fc438 (beads runtime purge), 8e38896c (stderr noise)
+---
+ bin/forge.js                                  |  13 -
+ lib/beads-bootstrap.js                        | 240 ----------
+ lib/beads-health-check.js                     | 188 --------
+ test/beads-bootstrap.test.js                  | 438 ------------------
+ test/beads-health-check.test.js               | 294 ------------
+ test/e2e/fresh-clone-no-beads.test.js         |  40 +-
+ test/integration/package-distribution.test.js |   1 -
+ 7 files changed, 27 insertions(+), 1187 deletions(-)
+ delete mode 100644 lib/beads-bootstrap.js
+ delete mode 100644 lib/beads-health-check.js
+ delete mode 100644 test/beads-bootstrap.test.js
+ delete mode 100644 test/beads-health-check.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index 45e6c150..bc8d082a 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -72,7 +72,6 @@ const projectDiscovery = require('../lib/project-discovery');
+ // Load lib modules for symlink, beads, and PAT setup
+ const { createSymlinkOrCopy: libCreateSymlinkOrCopy } = require('../lib/symlink-utils');
+ const beadsSetupLib = require('../lib/beads-setup');
+-const { beadsHealthCheck } = require('../lib/beads-health-check');
+ const { scaffoldBeadsSync } = require('../lib/beads-sync-scaffold');
+ 
+ // Load incremental setup modules
+@@ -2918,18 +2917,6 @@ function initializeBeads(installType) {
+     }
+     console.log('  ✓ Beads initialized');
+ 
+-    // Run post-init health check (non-fatal)
+-    try {
+-      const health = beadsHealthCheck(projectRoot);
+-      if (health.healthy) {
+-        console.log('  ✓ Beads health check passed');
+-      } else {
+-        console.log(`  ⚠ Beads health check failed at ${health.failedStep}: ${health.error}`);
+-      }
+-    } catch (_healthErr) {
+-      // Health check is best-effort — don't block setup
+-    }
+-
+     return true;
+   } catch (err) {
+     console.log('  ⚠ Failed to initialize Beads:', err.message);
+diff --git a/lib/beads-bootstrap.js b/lib/beads-bootstrap.js
+deleted file mode 100644
+index 7993f349..00000000
+--- a/lib/beads-bootstrap.js
++++ /dev/null
+@@ -1,240 +0,0 @@
+-'use strict';
+-
+-const { execFileSync } = require('node:child_process');
+-const fs = require('node:fs');
+-const path = require('node:path');
+-const { safeBeadsInit } = require('./beads-setup');
+-
+-// Same class of risk as ba388d01 / #356's Kernel broker fix: an unbounded
+-// `git rev-parse --git-common-dir` spawn can hang on Windows/Node. Bound it so
+-// it fails fast (ETIMEDOUT) instead of wedging worktree bootstrap forever.
+-const GIT_COMMON_DIR_TIMEOUT_MS = 30000;
+-
+-function isIgnorableFsError(error) {
+-  return ['EACCES', 'ENOENT', 'ENOTDIR', 'EPERM'].includes(error?.code);
+-}
+-
+-function hasBackupJsonl(backupDir, fsApi) {
+-  try {
+-    return fsApi.readdirSync(backupDir).some((entry) => entry.endsWith('.jsonl'));
+-  } catch (err) {
+-    if (isIgnorableFsError(err)) {
+-      return false;
+-    }
+-    throw err;
+-  }
+-}
+-
+-function resolveMainWorktree(projectRoot, exec, deps = {}) {
+-  const warn = deps.warn || ((message) => console.warn(message));
+-
+-  try {
+-    const commonDir = exec('git', ['rev-parse', '--git-common-dir'], {
+-      cwd: projectRoot,
+-      encoding: 'utf8',
+-      stdio: 'pipe',
+-      timeout: GIT_COMMON_DIR_TIMEOUT_MS,
+-    }).trim();
+-
+-    if (!commonDir) {
+-      warn(`[forge] git rev-parse --git-common-dir returned an empty path for ${projectRoot}; `
+-        + `falling back to ${projectRoot}`);
+-      return projectRoot;
+-    }
+-
+-    return path.resolve(projectRoot, commonDir, '..');
+-  } catch (err) {
+-    // A timed-out (ETIMEDOUT), missing-git (ENOENT), or otherwise-failing spawn
+-    // MUST NOT crash worktree bootstrap. Degrade gracefully to treating
+-    // projectRoot as its own main worktree — correct for the common
+-    // non-worktree case, and a working fallback beats a hard failure.
+-    warn(`[forge] git rev-parse --git-common-dir failed (${err.code || err.message}); `
+-      + `falling back to ${projectRoot}`);
+-    return projectRoot;
+-  }
+-}
+-
+-function isRecoverableBeadsError(error) {
+-  const message = error?.message ?? String(error ?? '');
+-  return (
+-    /database(?:\s+[^\s]+)?\s+not found/i.test(message) ||
+-    message.includes('failed to open database') ||
+-    message.includes('no beads configuration found')
+-  );
+-}
+-
+-function readMetadataDatabaseName(projectRoot, fsApi) {
+-  const metadataPath = path.resolve(projectRoot, '.beads', 'metadata.json');
+-  if (!fsApi.existsSync(metadataPath)) {
+-    return null;
+-  }
+-
+-  try {
+-    const metadata = JSON.parse(fsApi.readFileSync(metadataPath, 'utf8'));
+-    if (typeof metadata.dolt_database === 'string' && metadata.dolt_database.trim()) {
+-      return metadata.dolt_database.trim();
+-    }
+-  } catch (err) {
+-    if (err instanceof SyntaxError || isIgnorableFsError(err)) {
+-      return null;
+-    }
+-    throw err;
+-  }
+-
+-  return null;
+-}
+-
+-function stageExistingBeadsDest(beadsDest, fsApi) {
+-  if (!fsApi.existsSync(beadsDest)) {
+-    return null;
+-  }
+-
+-  const stagedDest = `${beadsDest}.bootstrap-backup`;
+-  if (fsApi.existsSync(stagedDest) && typeof fsApi.rmSync === 'function') {
+-    fsApi.rmSync(stagedDest, { recursive: true, force: true });
+-  }
+-
+-  if (typeof fsApi.renameSync === 'function') {
+-    fsApi.renameSync(beadsDest, stagedDest);
+-    return stagedDest;
+-  }
+-
+-  if (typeof fsApi.rmSync === 'function') {
+-    fsApi.rmSync(beadsDest, { recursive: true, force: true });
+-  }
+-
+-  return null;
+-}
+-
+-function restoreStagedBeadsDest(beadsDest, stagedDest, fsApi) {
+-  if (!stagedDest || fsApi.existsSync(beadsDest) || typeof fsApi.renameSync !== 'function') {
+-    return;
+-  }
+-
+-  fsApi.renameSync(stagedDest, beadsDest);
+-}
+-
+-function cleanupStagedBeadsDest(stagedDest, fsApi) {
+-  if (!stagedDest || !fsApi.existsSync(stagedDest) || typeof fsApi.rmSync !== 'function') {
+-    return;
+-  }
+-
+-  fsApi.rmSync(stagedDest, { recursive: true, force: true });
+-}
+-
+-function tryLinkBeadsSource(beadsSource, beadsDest, platform, fsApi) {
+-  if (!fsApi.existsSync(beadsSource)) {
+-    return false;
+-  }
+-
+-  const stagedDest = stageExistingBeadsDest(beadsDest, fsApi);
+-
+-  try {
+-    if (platform === 'win32') {
+-      fsApi.symlinkSync(beadsSource, beadsDest, 'junction');
+-    } else {
+-      fsApi.symlinkSync(beadsSource, beadsDest);
+-    }
+-
+-    cleanupStagedBeadsDest(stagedDest, fsApi);
+-    return true;
+-  } catch (symlinkErr) {
+-    restoreStagedBeadsDest(beadsDest, stagedDest, fsApi);
+-    if (symlinkErr.code !== 'EPERM') {
+-      throw symlinkErr;
+-    }
+-    return false;
+-  }
+-}
+-
+-function buildInitArgs(mainProjectRoot, projectRoot, fsApi) {
+-  const metadataDatabaseName = readMetadataDatabaseName(mainProjectRoot, fsApi)
+-    || readMetadataDatabaseName(projectRoot, fsApi);
+-  const initArgs = ['init', '--force'];
+-  if (metadataDatabaseName) {
+-    initArgs.push('--database', metadataDatabaseName);
+-  }
+-
+-  return initArgs;
+-}
+-
+-function runFreshInit(projectRoot, mainProjectRoot, beadsSource, initArgs, exec, runSafeBeadsInit, fsApi) {
+-  const safeInitResult = runSafeBeadsInit(projectRoot, {
+-    prefix: path.basename(mainProjectRoot),
+-    execBdInit: (root) => {
+-      exec('bd', initArgs, { cwd: root, stdio: 'pipe' });
+-    }
+-  });
+-
+-  if (!safeInitResult.success) {
+-    const initMessage = safeInitResult.errors?.[0]
+-      || safeInitResult.warnings?.[0]
+-      || 'unknown safeBeadsInit failure';
+-    return {
+-      success: false,
+-      strategy: 'fresh-init-failed',
+-      warning: `Beads bootstrap fresh init failed: ${initMessage}. Recovery hint: run bd doctor --fix from the worktree or check that bd is installed and reachable on PATH.`
+-    };
+-  }
+-
+-  if (safeInitResult.skipped) {
+-    return {
+-      success: true,
+-      strategy: 'existing-state',
+-      warning: 'Beads bootstrap reused existing initialized state'
+-    };
+-  }
+-
+-  const backupDir = path.resolve(beadsSource, 'backup');
+-  if (hasBackupJsonl(backupDir, fsApi)) {
+-    try {
+-      exec('bd', ['backup', 'restore', backupDir], { cwd: projectRoot, stdio: 'pipe' });
+-      return {
+-        success: true,
+-        strategy: 'backup-restore',
+-        warning: 'Beads bootstrap restored from backup'
+-      };
+-    } catch (restoreErr) {
+-      return {
+-        success: true,
+-        strategy: 'fresh-init',
+-        warning: `Beads bootstrap initialized fresh after backup restore failed: ${restoreErr.message}`
+-      };
+-    }
+-  }
+-
+-  return {
+-    success: true,
+-    strategy: 'fresh-init',
+-    warning: 'Beads bootstrap initialized fresh (no backup found)'
+-  };
+-}
+-
+-function bootstrapBeads(projectRoot, options = {}) {
+-  const exec = options._exec || execFileSync;
+-  const fsApi = options._fs || fs;
+-  const platform = options._platform || process.platform;
+-  const runSafeBeadsInit = options._safeBeadsInit || safeBeadsInit;
+-  const mainProjectRoot = options.mainProjectRoot
+-    || resolveMainWorktree(projectRoot, exec, { warn: options._warn });
+-  const beadsSource = path.resolve(mainProjectRoot, '.beads');
+-  const beadsDest = path.resolve(projectRoot, '.beads');
+-
+-  if (beadsSource === beadsDest) {
+-    return { success: true, strategy: 'in-place', warning: null };
+-  }
+-
+-  if (tryLinkBeadsSource(beadsSource, beadsDest, platform, fsApi)) {
+-    return { success: true, strategy: 'linked', warning: null };
+-  }
+-
+-  const initArgs = buildInitArgs(mainProjectRoot, projectRoot, fsApi);
+-  return runFreshInit(projectRoot, mainProjectRoot, beadsSource, initArgs, exec, runSafeBeadsInit, fsApi);
+-}
+-
+-module.exports = {
+-  bootstrapBeads,
+-  hasBackupJsonl,
+-  isRecoverableBeadsError,
+-  resolveMainWorktree,
+-};
+diff --git a/lib/beads-health-check.js b/lib/beads-health-check.js
+deleted file mode 100644
+index f395f821..00000000
+--- a/lib/beads-health-check.js
++++ /dev/null
+@@ -1,188 +0,0 @@
+-/**
+- * Beads health check smoke test.
+- *
+- * After Beads init, runs a quick create/close/sync/cleanup cycle to verify
+- * the installation is functional.
+- *
+- * @module beads-health-check
+- */
+-
+-const { execFileSync } = require('node:child_process');
+-const fs = require('node:fs');
+-const path = require('node:path');
+-const { bootstrapBeads, isRecoverableBeadsError } = require('./beads-bootstrap');
+-
+-/**
+- * @typedef {Object} HealthCheckResult
+- * @property {boolean} healthy - Whether Beads is operational
+- * @property {string|null} failedStep - Which step failed: 'create'|'close'|'sync'|'cleanup', or null
+- * @property {string|null} error - Error message if unhealthy, null otherwise
+- * @property {string} [warning] - Non-fatal warning message (e.g. sync or cleanup issues)
+- */
+-
+-/**
+- * Parse the issue ID from `bd create` stdout.
+- *
+- * Expects output like "Created issue: forge-xxxx".
+- *
+- * @param {string} output - stdout from `bd create`
+- * @returns {string|null} The issue ID, or null if not found
+- */
+-function parseIssueId(output) {
+-  const match = /Created\s+issue:\s*([\w-]+)/i.exec(output);
+-  return match ? match[1].trim() : null;
+-}
+-
+-/**
+- * Remove a test issue from the JSONL file by its ID.
+- * Silently ignores errors (file missing, locked, malformed lines).
+- *
+- * @param {string} jsonlPath - Absolute path to the issues.jsonl file
+- * @param {string|null} issueId - The issue ID to remove
+- */
+-function cleanupTestIssue(jsonlPath, issueId) {
+-  if (!issueId) return;
+-  const raw = fs.readFileSync(jsonlPath, 'utf8');
+-  const lines = raw.split('\n').filter(Boolean);
+-  const filtered = lines.filter((line) => {
+-    try { return JSON.parse(line).id !== issueId; } catch (_e) { /* Expected: malformed JSONL line — keep it as-is */ return true; }
+-  });
+-  fs.writeFileSync(jsonlPath, filtered.length > 0 ? filtered.join('\n') + '\n' : '');
+-}
+-
+-function appendWarning(existingWarning, nextWarning) {
+-  return existingWarning ? `${existingWarning}; ${nextWarning}` : nextWarning;
+-}
+-
+-function createHealthCheckIssue(exec, execOpts) {
+-  return exec('bd', [
+-    'create',
+-    '--title=Setup verification',
+-    '--type=task',
+-    '--priority=4'
+-  ], execOpts);
+-}
+-
+-function createIssueWithRecovery(projectRoot, exec, execOpts, bootstrap) {
+-  try {
+-    return { output: createHealthCheckIssue(exec, execOpts), warning: null };
+-  } catch (createErr) {
+-    if (!isRecoverableBeadsError(createErr)) {
+-      throw createErr;
+-    }
+-
+-    const bootstrapResult = bootstrap(projectRoot);
+-    if (!bootstrapResult?.success) {
+-      const extra = bootstrapResult?.warning ? `; ${bootstrapResult.warning}` : '';
+-      return {
+-        error: `${createErr.message}${extra}`
+-      };
+-    }
+-
+-    const bootstrapWarning = bootstrapResult.warning
+-      ? `bootstrap warning: ${bootstrapResult.warning}`
+-      : `bootstrap warning: recovered via ${bootstrapResult.strategy}`;
+-
+-    return {
+-      output: createHealthCheckIssue(exec, execOpts),
+-      warning: bootstrapWarning
+-    };
+-  }
+-}
+-
+-/**
+- * Run a Beads health check smoke test.
+- *
+- * Creates a temporary issue, closes it, syncs, then cleans up the JSONL file.
+- * Uses dependency injection for the exec function to support testing.
+- *
+- * @param {string} projectRoot - Absolute path to the project root
+- * @param {Object} [options={}] - Options
+- * @param {Function} [options._exec] - Injectable exec function (defaults to execFileSync)
+- * @returns {HealthCheckResult}
+- */
+-function beadsHealthCheck(projectRoot, options = {}) {
+-  const exec = options._exec || execFileSync;
+-  const bootstrap = options._bootstrap || ((root) => bootstrapBeads(root, { _exec: exec }));
+-  const execOpts = { cwd: projectRoot, encoding: 'utf8' };
+-
+-  /** @type {string|undefined} */
+-  let warning;
+-
+-  // Step a: Create a test issue
+-  /** @type {string|null} */
+-  let issueId;
+-  try {
+-    const createResult = createIssueWithRecovery(projectRoot, exec, execOpts, bootstrap);
+-    if (createResult.error) {
+-      return {
+-        healthy: false,
+-        failedStep: 'create',
+-        error: createResult.error
+-      };
+-    }
+-
+-    warning = createResult.warning || warning;
+-
+-    issueId = parseIssueId(createResult.output);
+-    if (!issueId) {
+-      return {
+-        healthy: false,
+-        failedStep: 'create',
+-        error: 'Could not parse issue ID from bd create output'
+-      };
+-    }
+-  } catch (err) {
+-    return {
+-      healthy: false,
+-      failedStep: 'create',
+-      error: err.message
+-    };
+-  }
+-
+-  // Step b: Close the test issue
+-  try {
+-    exec('bd', [
+-      'close',
+-      issueId,
+-      '--reason=Setup smoke test'
+-    ], execOpts);
+-  } catch (err) {
+-    // Best-effort cleanup: remove the test issue from JSONL so it doesn't leak
+-    try {
+-      cleanupTestIssue(path.join(projectRoot, '.beads', 'issues.jsonl'), issueId);
+-    } catch (_cleanupErr) {
+-      // Expected: JSONL cleanup may fail if file is locked or missing — nothing more we can do
+-    }
+-    return {
+-      healthy: false,
+-      failedStep: 'close',
+-      error: err.message
+-    };
+-  }
+-
+-  // Step c: Sync (may fail without a remote -- that's OK)
+-  try {
+-    exec('bd', ['sync'], execOpts);
+-  } catch (syncErr) {
+-    // Sync failure is non-fatal (no remote configured is common)
+-    warning = appendWarning(warning, `bd sync warning: ${syncErr.message}`);
+-  }
+-
+-  // Step d: Remove the test issue from JSONL
+-  try {
+-    cleanupTestIssue(path.join(projectRoot, '.beads', 'issues.jsonl'), issueId);
+-  } catch (cleanupErr) {
+-    // Cleanup failure is non-fatal
+-    warning = appendWarning(warning, `cleanup warning: ${cleanupErr.message}`);
+-  }
+-
+-  return {
+-    healthy: true,
+-    failedStep: null,
+-    error: null,
+-    ...(warning ? { warning } : {})
+-  };
+-}
+-
+-module.exports = { beadsHealthCheck, parseIssueId };
+diff --git a/test/beads-bootstrap.test.js b/test/beads-bootstrap.test.js
+deleted file mode 100644
+index e4fb6f0d..00000000
+--- a/test/beads-bootstrap.test.js
++++ /dev/null
+@@ -1,438 +0,0 @@
+-'use strict';
+-
+-const path = require('node:path');
+-const { describe, test, expect } = require('bun:test');
+-const { bootstrapBeads, isRecoverableBeadsError, resolveMainWorktree } = require('../lib/beads-bootstrap');
+-
+-function createMockSafeBeadsInit() {
+-  return (root, options) => {
+-    try {
+-      options.execBdInit(root);
+-      return { success: true, skipped: false, warnings: [], errors: [] };
+-    } catch (error) {
+-      return { success: false, skipped: false, warnings: [], errors: [error.message] };
+-    }
+-  };
+-}
+-
+-describe('bootstrapBeads', () => {
+-  test('returns a warning instead of throwing when EPERM fallback cannot run bd init', () => {
+-    const calls = [];
+-    const mockExec = (cmd, args, _opts) => {
+-      calls.push({ cmd, args });
+-      if (cmd === 'bd' && args[0] === 'init') {
+-        throw new Error('spawn bd ENOENT');
+-      }
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        return '.git';
+-      }
+-      return '';
+-    };
+-    const mockFs = {
+-      existsSync: (targetPath) => targetPath === path.resolve('/main', '.beads'),
+-      rmSync: () => {},
+-      symlinkSync: () => {
+-        const err = new Error('Operation not permitted');
+-        err.code = 'EPERM';
+-        throw err;
+-      },
+-    };
+-
+-    const result = bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      mainProjectRoot: '/main',
+-      _safeBeadsInit: createMockSafeBeadsInit(),
+-    });
+-
+-    expect(result).toEqual({
+-      success: false,
+-      strategy: 'fresh-init-failed',
+-      warning: 'Beads bootstrap fresh init failed: spawn bd ENOENT. Recovery hint: run bd doctor --fix from the worktree or check that bd is installed and reachable on PATH.'
+-    });
+-    expect(calls).toContainEqual({
+-      cmd: 'bd',
+-      args: ['init', '--force']
+-    });
+-  });
+-
+-  test('passes metadata-derived database name to bd init during EPERM fallback', () => {
+-    const calls = [];
+-    let safeInitCall;
+-    const mockExec = (cmd, args) => {
+-      calls.push({ cmd, args });
+-      if (cmd === 'bd' && args[0] === 'init') {
+-        return '';
+-      }
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        return '.git';
+-      }
+-      throw new Error(`unexpected exec ${cmd}`);
+-    };
+-    const mockFs = {
+-      existsSync: (targetPath) => {
+-        return [
+-          path.resolve('/main', '.beads'),
+-          path.resolve('/main', '.beads', 'metadata.json')
+-        ].includes(targetPath);
+-      },
+-      readFileSync: (targetPath) => {
+-        if (targetPath === path.resolve('/main', '.beads', 'metadata.json')) {
+-          return JSON.stringify({ dolt_database: 'forge-shared-db' });
+-        }
+-        throw new Error(`unexpected read ${targetPath}`);
+-      },
+-      readdirSync: () => [],
+-      rmSync: () => {},
+-      symlinkSync: () => {
+-        const err = new Error('Operation not permitted');
+-        err.code = 'EPERM';
+-        throw err;
+-      },
+-    };
+-
+-    const result = bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      mainProjectRoot: '/main',
+-      _safeBeadsInit: (root, options) => {
+-        safeInitCall = { root, options };
+-        options.execBdInit(root);
+-        return { success: true, skipped: false, warnings: [], errors: [] };
+-      }
+-    });
+-
+-    expect(result).toEqual({
+-      success: true,
+-      strategy: 'fresh-init',
+-      warning: 'Beads bootstrap initialized fresh (no backup found)'
+-    });
+-    expect(safeInitCall.root).toBe('/worktree');
+-    expect(calls).toContainEqual({
+-      cmd: 'bd',
+-      args: ['init', '--force', '--database', 'forge-shared-db']
+-    });
+-  });
+-
+-  test('resolves absolute git common dir to the main worktree root for external worktrees', () => {
+-    const symlinkCalls = [];
+-    const mockExec = (cmd, args) => {
+-      if (cmd === 'git' && args[0] === 'rev-parse' && args[1] === '--git-common-dir') {
+-        return '/main/repo/.git';
+-      }
+-      throw new Error(`unexpected exec ${cmd} ${args.join(' ')}`);
+-    };
+-    const mockFs = {
+-      existsSync: (targetPath) => targetPath === path.resolve('/main/repo', '.beads'),
+-      symlinkSync: (fromPath, toPath) => {
+-        symlinkCalls.push({ fromPath, toPath });
+-      },
+-    };
+-
+-    const result = bootstrapBeads('/external/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-    });
+-
+-    expect(result).toEqual({ success: true, strategy: 'linked', warning: null });
+-    expect(symlinkCalls).toEqual([{
+-      fromPath: path.resolve('/main/repo', '.beads'),
+-      toPath: path.resolve('/external/worktree', '.beads')
+-    }]);
+-  });
+-
+-  test('does not treat metadata.database backend field as the recovery database name', () => {
+-    const calls = [];
+-    const mockExec = (cmd, args) => {
+-      calls.push({ cmd, args });
+-      if (cmd === 'bd' && args[0] === 'init') {
+-        return '';
+-      }
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        return '.git';
+-      }
+-      throw new Error(`unexpected exec ${cmd}`);
+-    };
+-    const mockFs = {
+-      existsSync: (targetPath) => {
+-        return [
+-          path.resolve('/main', '.beads'),
+-          path.resolve('/main', '.beads', 'metadata.json')
+-        ].includes(targetPath);
+-      },
+-      readFileSync: (targetPath) => {
+-        if (targetPath === path.resolve('/main', '.beads', 'metadata.json')) {
+-          return JSON.stringify({ database: 'dolt' });
+-        }
+-        throw new Error(`unexpected read ${targetPath}`);
+-      },
+-      readdirSync: () => [],
+-      rmSync: () => {},
+-      symlinkSync: () => {
+-        const err = new Error('Operation not permitted');
+-        err.code = 'EPERM';
+-        throw err;
+-      },
+-    };
+-
+-    const result = bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      mainProjectRoot: '/main',
+-      _safeBeadsInit: (root, options) => {
+-        options.execBdInit(root);
+-        return { success: true, skipped: false, warnings: [], errors: [] };
+-      }
+-    });
+-
+-    expect(result).toEqual({
+-      success: true,
+-      strategy: 'fresh-init',
+-      warning: 'Beads bootstrap initialized fresh (no backup found)'
+-    });
+-    expect(calls).toContainEqual({
+-      cmd: 'bd',
+-      args: ['init', '--force']
+-    });
+-    expect(calls).not.toContainEqual({
+-      cmd: 'bd',
+-      args: ['init', '--force', '--database', 'dolt']
+-    });
+-  });
+-
+-  test('restores an existing .beads directory when symlink bootstrap fails with a non-EPERM error', () => {
+-    const calls = [];
+-    const renames = [];
+-    const removed = [];
+-    const backupPath = path.resolve('/worktree', '.beads.bootstrap-backup');
+-    const mockExec = (cmd, args) => {
+-      calls.push({ cmd, args });
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        return '.git';
+-      }
+-      throw new Error(`unexpected exec ${cmd}`);
+-    };
+-    const existing = new Set([
+-      path.resolve('/main', '.beads'),
+-      path.resolve('/worktree', '.beads'),
+-    ]);
+-    const mockFs = {
+-      existsSync: (targetPath) => existing.has(targetPath),
+-      renameSync: (fromPath, toPath) => {
+-        renames.push([fromPath, toPath]);
+-        existing.delete(fromPath);
+-        existing.add(toPath);
+-      },
+-      rmSync: (targetPath) => {
+-        removed.push(targetPath);
+-        existing.delete(targetPath);
+-      },
+-      symlinkSync: () => {
+-        const err = new Error('Read-only filesystem');
+-        err.code = 'EROFS';
+-        throw err;
+-      },
+-    };
+-
+-    expect(() => bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      mainProjectRoot: '/main',
+-    })).toThrow('Read-only filesystem');
+-
+-    expect(renames).toEqual([
+-      [path.resolve('/worktree', '.beads'), backupPath],
+-      [backupPath, path.resolve('/worktree', '.beads')]
+-    ]);
+-    expect(removed).toEqual([]);
+-    expect(existing.has(path.resolve('/worktree', '.beads'))).toBe(true);
+-    expect(calls).toEqual([]);
+-  });
+-
+-  test('clears a stale bootstrap-backup directory before staging the current .beads state', () => {
+-    const calls = [];
+-    const renames = [];
+-    const removed = [];
+-    const backupPath = path.resolve('/worktree', '.beads.bootstrap-backup');
+-    const mockExec = (cmd, args) => {
+-      calls.push({ cmd, args });
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        return '.git';
+-      }
+-      throw new Error(`unexpected exec ${cmd}`);
+-    };
+-    const existing = new Set([
+-      path.resolve('/main', '.beads'),
+-      path.resolve('/worktree', '.beads'),
+-      backupPath,
+-    ]);
+-    const mockFs = {
+-      existsSync: (targetPath) => existing.has(targetPath),
+-      renameSync: (fromPath, toPath) => {
+-        renames.push([fromPath, toPath]);
+-        existing.delete(fromPath);
+-        existing.add(toPath);
+-      },
+-      rmSync: (targetPath) => {
+-        removed.push(targetPath);
+-        existing.delete(targetPath);
+-      },
+-      symlinkSync: () => {
+-        const err = new Error('Operation not permitted');
+-        err.code = 'EPERM';
+-        throw err;
+-      },
+-      readdirSync: () => [],
+-    };
+-
+-    const result = bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      mainProjectRoot: '/main',
+-      _safeBeadsInit: () => ({ success: true, skipped: true, warnings: [], errors: [] })
+-    });
+-
+-    expect(result).toEqual({
+-      success: true,
+-      strategy: 'existing-state',
+-      warning: 'Beads bootstrap reused existing initialized state'
+-    });
+-    expect(removed).toEqual([backupPath]);
+-    expect(renames).toEqual([
+-      [path.resolve('/worktree', '.beads'), backupPath],
+-      [backupPath, path.resolve('/worktree', '.beads')]
+-    ]);
+-    expect(calls).toEqual([]);
+-  });
+-
+-  test('skips backup restore when safeBeadsInit reports existing initialized state', () => {
+-    const calls = [];
+-    const mockExec = (cmd, args) => {
+-      calls.push({ cmd, args });
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        return '.git';
+-      }
+-      if (cmd === 'bd' && args[0] === 'backup' && args[1] === 'restore') {
+-        throw new Error('backup restore should not run');
+-      }
+-      return '';
+-    };
+-    const mockFs = {
+-      existsSync: (targetPath) => {
+-        return [
+-          path.resolve('/main', '.beads'),
+-          path.resolve('/worktree', '.beads')
+-        ].includes(targetPath);
+-      },
+-      renameSync: () => {},
+-      rmSync: () => {},
+-      symlinkSync: () => {
+-        const err = new Error('Operation not permitted');
+-        err.code = 'EPERM';
+-        throw err;
+-      },
+-      readdirSync: () => ['issues.jsonl'],
+-    };
+-
+-    const result = bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      mainProjectRoot: '/main',
+-      _safeBeadsInit: () => ({ success: true, skipped: true, warnings: [], errors: [] })
+-    });
+-
+-    expect(result).toEqual({
+-      success: true,
+-      strategy: 'existing-state',
+-      warning: 'Beads bootstrap reused existing initialized state'
+-    });
+-    expect(calls).not.toContainEqual({
+-      cmd: 'bd',
+-      args: ['backup', 'restore', path.resolve('/main', '.beads', 'backup')]
+-    });
+-  });
+-});
+-
+-describe('resolveMainWorktree', () => {
+-  test('degrades gracefully to projectRoot when the git spawn times out', () => {
+-    const warnCalls = [];
+-    const timeoutError = new Error('spawnSync git ETIMEDOUT');
+-    timeoutError.code = 'ETIMEDOUT';
+-    const throwingExec = () => {
+-      throw timeoutError;
+-    };
+-
+-    const result = resolveMainWorktree('/worktree', throwingExec, {
+-      warn: (message) => warnCalls.push(message),
+-    });
+-
+-    expect(result).toBe('/worktree');
+-    expect(warnCalls).toHaveLength(1);
+-    expect(warnCalls[0]).toContain('ETIMEDOUT');
+-  });
+-
+-  test('degrades gracefully to projectRoot on empty git output', () => {
+-    const warnCalls = [];
+-    const emptyExec = () => '';
+-
+-    const result = resolveMainWorktree('/worktree', emptyExec, {
+-      warn: (message) => warnCalls.push(message),
+-    });
+-
+-    expect(result).toBe('/worktree');
+-    expect(warnCalls).toHaveLength(1);
+-  });
+-
+-  test('bounds the git spawn with a timeout option', () => {
+-    let seenOptions;
+-    const fakeExec = (_cmd, _args, options) => {
+-      seenOptions = options;
+-      return '.git';
+-    };
+-
+-    resolveMainWorktree('/worktree', fakeExec);
+-
+-    expect(typeof seenOptions.timeout).toBe('number');
+-    expect(seenOptions.timeout).toBeGreaterThan(0);
+-  });
+-
+-  test('bootstrapBeads falls back instead of throwing when git rev-parse times out', () => {
+-    const warnCalls = [];
+-    const timeoutError = new Error('spawnSync git ETIMEDOUT');
+-    timeoutError.code = 'ETIMEDOUT';
+-    const mockExec = (cmd, args) => {
+-      if (cmd === 'git' && args[0] === 'rev-parse') {
+-        throw timeoutError;
+-      }
+-      throw new Error(`unexpected exec ${cmd}`);
+-    };
+-    const mockFs = {
+-      // mainProjectRoot falls back to projectRoot itself, so beadsSource === beadsDest
+-      existsSync: () => false,
+-    };
+-
+-    const result = bootstrapBeads('/worktree', {
+-      _exec: mockExec,
+-      _fs: mockFs,
+-      _platform: 'linux',
+-      _warn: (message) => warnCalls.push(message),
+-    });
+-
+-    expect(result).toEqual({ success: true, strategy: 'in-place', warning: null });
+-    expect(warnCalls).toHaveLength(1);
+-    expect(warnCalls[0]).toContain('ETIMEDOUT');
+-  });
+-});
+-
+-describe('isRecoverableBeadsError', () => {
+-  test('matches missing database errors for metadata-driven database prefixes', () => {
+-    expect(isRecoverableBeadsError(new Error('database forge-shared-db not found'))).toBe(true);
+-  });
+-});
+diff --git a/test/beads-health-check.test.js b/test/beads-health-check.test.js
+deleted file mode 100644
+index 8eca559d..00000000
+--- a/test/beads-health-check.test.js
++++ /dev/null
+@@ -1,294 +0,0 @@
+-const { describe, test, expect } = require('bun:test');
+-const path = require('path');
+-const fs = require('fs');
+-const os = require('os');
+-
+-const { beadsHealthCheck } = require('../lib/beads-health-check');
+-
+-/**
+- * Helper: create a mock _exec function.
+- * @param {Object} overrides - Keys are 'create'|'close'|'sync', values are
+- *   { output: string } or { error: Error } to control behavior per step.
+- * @returns {Function} Mock exec function compatible with execFileSync signature.
+- */
+-function createMockExec(overrides = {}) {
+-  return function mockExec(cmd, args, _opts) {
+-    const subcommand = args[0]; // 'create', 'close', 'sync'
+-
+-    if (subcommand === 'create') {
+-      if (overrides.create && overrides.create.error) {
+-        throw overrides.create.error;
+-      }
+-      return overrides.create?.output ?? 'Created issue: forge-0001\n';
+-    }
+-
+-    if (subcommand === 'close') {
+-      if (overrides.close && overrides.close.error) {
+-        throw overrides.close.error;
+-      }
+-      return overrides.close?.output ?? 'Closed issue: forge-0001\n';
+-    }
+-
+-    if (subcommand === 'sync') {
+-      if (overrides.sync && overrides.sync.error) {
+-        throw overrides.sync.error;
+-      }
+-      return overrides.sync?.output ?? 'Synced 1 issue\n';
+-    }
+-
+-    return '';
+-  };
+-}
+-
+-describe('beadsHealthCheck', () => {
+-  /** @type {string} */
+-  let tmpDir;
+-
+-  // Create a fresh temp dir with a .beads/issues.jsonl for each test
+-  function setupTmpDir(issueLines = []) {
+-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-health-'));
+-    const beadsDir = path.join(tmpDir, '.beads');
+-    fs.mkdirSync(beadsDir, { recursive: true });
+-    const jsonlPath = path.join(beadsDir, 'issues.jsonl');
+-    fs.writeFileSync(jsonlPath, issueLines.join('\n') + (issueLines.length ? '\n' : ''));
+-    return tmpDir;
+-  }
+-
+-  test('full successful flow returns healthy=true', () => {
+-    const projectRoot = setupTmpDir([
+-      JSON.stringify({ id: 'forge-0001', title: 'Setup verification', status: 'open' }),
+-      JSON.stringify({ id: 'forge-0002', title: 'Real issue', status: 'open' })
+-    ]);
+-
+-    const mockExec = createMockExec({
+-      create: { output: 'Created issue: forge-0001\n' },
+-      close: { output: 'Closed issue: forge-0001\n' },
+-      sync: { output: 'Synced 1 issue\n' }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(true);
+-    expect(result.failedStep).toBeNull();
+-    expect(result.error).toBeNull();
+-
+-    // Verify cleanup: the test issue line should be removed, real issue kept
+-    const jsonlPath = path.join(projectRoot, '.beads', 'issues.jsonl');
+-    const remaining = fs.readFileSync(jsonlPath, 'utf8').trim();
+-    const lines = remaining.split('\n').filter(Boolean);
+-    expect(lines).toHaveLength(1);
+-    expect(JSON.parse(lines[0]).id).toBe('forge-0002');
+-  });
+-
+-  test('bd create fails returns failedStep=create, healthy=false', () => {
+-    const projectRoot = setupTmpDir();
+-
+-    const mockExec = createMockExec({
+-      create: { error: new Error('bd: command not found') }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(false);
+-    expect(result.failedStep).toBe('create');
+-    expect(result.error).toBe('bd: command not found');
+-  });
+-
+-  test('bd close fails returns failedStep=close, healthy=false', () => {
+-    const projectRoot = setupTmpDir([
+-      JSON.stringify({ id: 'forge-0001', title: 'Setup verification', status: 'open' })
+-    ]);
+-
+-    const mockExec = createMockExec({
+-      create: { output: 'Created issue: forge-0001\n' },
+-      close: { error: new Error('Failed to close issue') }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(false);
+-    expect(result.failedStep).toBe('close');
+-    expect(result.error).toBe('Failed to close issue');
+-  });
+-
+-  test('bd sync fails still returns healthy=true (warning only)', () => {
+-    const projectRoot = setupTmpDir([
+-      JSON.stringify({ id: 'forge-0001', title: 'Setup verification', status: 'open' })
+-    ]);
+-
+-    const mockExec = createMockExec({
+-      create: { output: 'Created issue: forge-0001\n' },
+-      close: { output: 'Closed issue: forge-0001\n' },
+-      sync: { error: new Error('fatal: no remote configured') }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(true);
+-    expect(result.failedStep).toBeNull();
+-    expect(result.warning).toContain('sync');
+-  });
+-
+-  test('preserves bootstrap warning when sync also fails after recovery', () => {
+-    const projectRoot = setupTmpDir([
+-      JSON.stringify({ id: 'forge-0001', title: 'Setup verification', status: 'open' })
+-    ]);
+-    let createAttempts = 0;
+-
+-    const mockExec = (cmd, args, _opts) => {
+-      const subcommand = args[0];
+-      if (subcommand === 'create') {
+-        createAttempts += 1;
+-        if (createAttempts === 1) {
+-          throw new Error('database forge-shared-db not found');
+-        }
+-        return 'Created issue: forge-0001\n';
+-      }
+-      if (subcommand === 'close') {
+-        return 'Closed issue: forge-0001\n';
+-      }
+-      if (subcommand === 'sync') {
+-        throw new Error('fatal: no remote configured');
+-      }
+-      return '';
+-    };
+-
+-    const result = beadsHealthCheck(projectRoot, {
+-      _exec: mockExec,
+-      _bootstrap: () => ({
+-        success: true,
+-        strategy: 'fresh-init',
+-        warning: 'Beads bootstrap initialized fresh (no backup found)'
+-      })
+-    });
+-
+-    expect(result.healthy).toBe(true);
+-    expect(result.failedStep).toBeNull();
+-    expect(result.warning).toContain('bootstrap warning: Beads bootstrap initialized fresh');
+-    expect(result.warning).toContain('bd sync warning: fatal: no remote configured');
+-  });
+-
+-  test('cleanup removes only the test issue line from JSONL', () => {
+-    const issueLines = [
+-      JSON.stringify({ id: 'forge-0042', title: 'Setup verification', status: 'open' }),
+-      JSON.stringify({ id: 'forge-0099', title: 'Real bug', status: 'open' }),
+-      JSON.stringify({ id: 'forge-0100', title: 'Another real issue', status: 'in_progress' })
+-    ];
+-    const projectRoot = setupTmpDir(issueLines);
+-
+-    const mockExec = createMockExec({
+-      create: { output: 'Created issue: forge-0042\n' },
+-      close: { output: 'Closed issue: forge-0042\n' },
+-      sync: { output: 'Synced\n' }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(true);
+-
+-    // Verify the JSONL file
+-    const jsonlPath = path.join(projectRoot, '.beads', 'issues.jsonl');
+-    const remaining = fs.readFileSync(jsonlPath, 'utf8').trim();
+-    const lines = remaining.split('\n').filter(Boolean);
+-    expect(lines).toHaveLength(2);
+-
+-    const ids = lines.map(l => JSON.parse(l).id);
+-    expect(ids).toContain('forge-0099');
+-    expect(ids).toContain('forge-0100');
+-    expect(ids).not.toContain('forge-0042');
+-  });
+-
+-  test('cleanup failure still returns healthy=true with warning', () => {
+-    // Use a projectRoot that does NOT have a .beads dir, so cleanup will fail
+-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-health-noclean-'));
+-
+-    const mockExec = createMockExec({
+-      create: { output: 'Created issue: forge-0001\n' },
+-      close: { output: 'Closed issue: forge-0001\n' },
+-      sync: { output: 'Synced\n' }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(true);
+-    expect(result.failedStep).toBeNull();
+-    // Should have a warning about cleanup
+-    expect(result.warning).toBeDefined();
+-  });
+-
+-  test('parses issue ID from various bd create output formats', () => {
+-    const projectRoot = setupTmpDir([
+-      JSON.stringify({ id: 'forge-abc1', title: 'Setup verification', status: 'open' })
+-    ]);
+-
+-    // Test with different output format
+-    const mockExec = createMockExec({
+-      create: { output: '  Created issue: forge-abc1  \n' },
+-      close: { output: 'Closed issue: forge-abc1\n' },
+-      sync: { output: 'Synced\n' }
+-    });
+-
+-    const result = beadsHealthCheck(projectRoot, { _exec: mockExec });
+-
+-    expect(result.healthy).toBe(true);
+-    expect(result.failedStep).toBeNull();
+-  });
+-
+-  test('retries create after bootstrap when beads database is missing', () => {
+-    const projectRoot = setupTmpDir([
+-      JSON.stringify({ id: 'forge-0002', title: 'Real issue', status: 'open' })
+-    ]);
+-    let createAttempts = 0;
+-    let bootstrapCalls = 0;
+-    const mockExec = (cmd, args, _opts) => {
+-      const subcommand = args[0];
+-      if (subcommand === 'create') {
+-        createAttempts += 1;
+-        if (createAttempts === 1) {
+-          throw new Error('database forge not found');
+-        }
+-        return 'Created issue: forge-0001\n';
+-      }
+-      if (subcommand === 'close') return 'Closed issue: forge-0001\n';
+-      if (subcommand === 'sync') return 'Synced\n';
+-      return '';
+-    };
+-
+-    const result = beadsHealthCheck(projectRoot, {
+-      _exec: mockExec,
+-      _bootstrap: (root) => {
+-        bootstrapCalls += 1;
+-        expect(root).toBe(projectRoot);
+-        return { success: true, strategy: 'linked', warning: null };
+-      }
+-    });
+-
+-    expect(result.healthy).toBe(true);
+-    expect(createAttempts).toBe(2);
+-    expect(bootstrapCalls).toBe(1);
+-    expect(result.warning).toContain('bootstrap');
+-  });
+-
+-  test('returns create failure when bootstrap cannot repair missing beads database', () => {
+-    const projectRoot = setupTmpDir();
+-    let bootstrapCalls = 0;
+-    const result = beadsHealthCheck(projectRoot, {
+-      _exec: createMockExec({
+-        create: { error: new Error('database forge not found') }
+-      }),
+-      _bootstrap: () => {
+-        bootstrapCalls += 1;
+-        return {
+-          success: false,
+-          warning: 'initialized fresh but verification failed'
+-        };
+-      }
+-    });
+-
+-    expect(result.healthy).toBe(false);
+-    expect(result.failedStep).toBe('create');
+-    expect(result.error).toContain('database forge not found');
+-    expect(result.error).toContain('initialized fresh');
+-    expect(bootstrapCalls).toBe(1);
+-  });
+-});
+diff --git a/test/e2e/fresh-clone-no-beads.test.js b/test/e2e/fresh-clone-no-beads.test.js
+index da021f1c..028f4964 100644
+--- a/test/e2e/fresh-clone-no-beads.test.js
++++ b/test/e2e/fresh-clone-no-beads.test.js
+@@ -16,7 +16,7 @@
+ //      command), so an empty `bdInvocations` is hard proof forge stayed off Beads.
+ 
+ const { describe, test, expect, setDefaultTimeout } = require('bun:test');
+-const { execFileSync } = require('node:child_process');
++const { execFileSync, spawnSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+@@ -116,25 +116,33 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
+         env[pathKey] = noBeadsBinDir + path.delimiter + (env[pathKey] || '');
+ 
+         // forge runner bound to the cloned CLI, the clone cwd, and the no-beads PATH.
++        // Collects every command's stderr so step 5 can assert none of it ever
++        // mentions Beads (the "Beads-not-initialized" noise this suite guards
++        // against, per issue 8e38896c: a kernel-primary repo with no .beads/
++        // dir must run the runtime commands clean, not just avoid shelling out).
+         const cloneForgeBin = path.join(freshCloneDir, 'bin', 'forge.js');
++        const capturedStderr = [];
+         const forge = (args) => {
+-          try {
+-            return execFileSync('node', [cloneForgeBin, ...args], {
+-              cwd: freshCloneDir,
+-              env,
+-              encoding: 'utf8',
+-              stdio: ['ignore', 'pipe', 'pipe'],
+-            });
+-          } catch (error) {
+-            const stdout = error.stdout ? error.stdout.toString() : '';
+-            const stderr = error.stderr ? error.stderr.toString() : '';
+-            throw new Error(`forge ${args.join(' ')} failed (exit ${error.status}):\n${stdout}\n${stderr}`);
++          // spawnSync (not execFileSync) so stderr is captured on the success
++          // path too — a command can exit 0 while still warning on stderr.
++          const proc = spawnSync('node', [cloneForgeBin, ...args], {
++            cwd: freshCloneDir,
++            env,
++            encoding: 'utf8',
++          });
++          const stdout = proc.stdout || '';
++          const stderr = proc.stderr || '';
++          capturedStderr.push(stderr);
++          if (proc.status !== 0) {
++            throw new Error(`forge ${args.join(' ')} failed (exit ${proc.status}):\n${stdout}\n${stderr}`);
+           }
++          return stdout;
+         };
+ 
+         // 3) Drive the full lifecycle in the fresh clone (each must exit 0 —
+-        //    execFileSync throws on non-zero, which `forge` rethrows with stderr).
++        //    `forge` throws on a non-zero exit, with stderr in the message).
+         forge(['prime']); // initialize/prime the kernel-backed session orientation
++        forge(['status', '--json']); // kernel-backed status snapshot
+ 
+         const ready = JSON.parse(forge(['issue', 'ready', '--json']));
+         expect(Array.isArray(ready.data.issues)).toBe(true); // empty on a fresh clone is fine
+@@ -154,6 +162,12 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
+           ? fs.readFileSync(bdInvocationsLog, 'utf8').split('\n').filter(line => line.trim().length > 0)
+           : [];
+         expect(bdInvocations).toEqual([]);
++
++        // 5) Prove none of the above printed Beads-not-initialized noise on
++        //    stderr — the runtime purge target, distinct from "never shelled
++        //    out" (a silent fs.existsSync probe could still warn on stderr).
++        const beadsNoise = capturedStderr.join('\n');
++        expect(beadsNoise).not.toMatch(/beads/i);
+       } finally {
+         rmrfWithRetry(workspace);
+       }
+diff --git a/test/integration/package-distribution.test.js b/test/integration/package-distribution.test.js
+index fe19fed2..388b3ac9 100644
+--- a/test/integration/package-distribution.test.js
++++ b/test/integration/package-distribution.test.js
+@@ -128,7 +128,6 @@ describe('comprehensive package distribution (npm pack --dry-run)', () => {
+       'lib/lefthook-check.js',
+       'lib/husky-migration.js',
+       'lib/beads-setup.js',
+-      'lib/beads-health-check.js',
+       'lib/beads-sync-scaffold.js',
+       'lib/pat-setup.js',
+     ];
+-- 
+2.51.0.windows.1
+

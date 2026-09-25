@@ -1,0 +1,212 @@
+From f4863ff5c56bf92c5f647cd7a3d51d0fbca33809 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 13:58:35 +0530
+Subject: [PATCH] refactor(lefthook-wiring): cut cognitive complexity of
+ resolveGitHooksDir + installNativeGitHooks
+
+Address CodeRabbit/SonarCloud Major maintainability findings on the new module.
+Behavior is unchanged (all lefthook-wiring behavioral tests still pass; native-fallback
+e2e still installs sentinel hooks and verifies enforcement active).
+
+- resolveGitHooksDir: extract the linked-worktree branch into resolveWorktreeHooksDir +
+  resolveWorktreeCommonDir, so the top function is a flat dir/file/else dispatch.
+- installNativeGitHooks: extract per-hook logic into writeNativeHook +
+  shouldPreserveExistingHook + backupHookOnce; the loop is now a single call per hook.
+- Add tests locking the symlink/directory security guard of forgeShouldWriteLefthookConfig
+  (returns false for a symlinked or directory lefthook.yml).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/lefthook-wiring.js       | 123 +++++++++++++++++++++--------------
+ test/lefthook-wiring.test.js |  24 +++++++
+ 2 files changed, 97 insertions(+), 50 deletions(-)
+
+diff --git a/lib/lefthook-wiring.js b/lib/lefthook-wiring.js
+index 0dfb47c2..19857bdb 100644
+--- a/lib/lefthook-wiring.js
++++ b/lib/lefthook-wiring.js
+@@ -108,30 +108,41 @@ function resolveGitHooksDir(projectRoot) {
+     return path.join(gitPath, 'hooks');
+   }
+   if (stat.isFile()) {
+-    let content;
+-    try {
+-      content = fs.readFileSync(gitPath, 'utf8');
+-    } catch {
+-      return null;
+-    }
+-    const match = content.match(/gitdir:\s*(.+)/);
+-    if (!match) return null;
+-    let gitdir = match[1].trim();
+-    if (!path.isAbsolute(gitdir)) gitdir = path.resolve(projectRoot, gitdir);
+-    // A linked worktree's hooks are the common repo's hooks. Follow commondir.
+-    const commonDirFile = path.join(gitdir, 'commondir');
++    return resolveWorktreeHooksDir(gitPath, projectRoot);
++  }
++  return null;
++}
++
++// A linked worktree's `.git` is a file containing `gitdir: <path>`. Its hooks live in
++// the common repo's hooks dir (resolved via the worktree's `commondir` file). Returns
++// null when the pointer file is unreadable or malformed.
++function resolveWorktreeHooksDir(gitFile, projectRoot) {
++  let content;
++  try {
++    content = fs.readFileSync(gitFile, 'utf8');
++  } catch {
++    return null;
++  }
++  const match = content.match(/gitdir:\s*(.+)/);
++  if (!match) return null;
++  const rawGitdir = match[1].trim();
++  const gitdir = path.isAbsolute(rawGitdir) ? rawGitdir : path.resolve(projectRoot, rawGitdir);
++  return path.join(resolveWorktreeCommonDir(gitdir), 'hooks');
++}
++
++// Follow the worktree's `commondir` pointer to the common git dir; fall back to the
++// per-worktree gitdir when it is absent or unreadable.
++function resolveWorktreeCommonDir(gitdir) {
++  const commonDirFile = path.join(gitdir, 'commondir');
++  try {
+     if (fs.existsSync(commonDirFile)) {
+-      try {
+-        const rel = fs.readFileSync(commonDirFile, 'utf8').trim();
+-        const common = path.isAbsolute(rel) ? rel : path.resolve(gitdir, rel);
+-        return path.join(common, 'hooks');
+-      } catch {
+-        // fall through to the per-worktree hooks dir
+-      }
++      const rel = fs.readFileSync(commonDirFile, 'utf8').trim();
++      return path.isAbsolute(rel) ? rel : path.resolve(gitdir, rel);
+     }
+-    return path.join(gitdir, 'hooks');
++  } catch {
++    // fall through to the per-worktree gitdir
+   }
+-  return null;
++  return gitdir;
+ }
+ 
+ const NATIVE_HOOK_BODIES = {
+@@ -179,35 +190,8 @@ function installNativeGitHooks(projectRoot) {
+   const written = [];
+   const skipped = [];
+   for (const [name, body] of Object.entries(NATIVE_HOOK_BODIES)) {
+-    const dest = path.join(hooksDir, name);
+-    if (fs.existsSync(dest)) {
+-      let existing;
+-      try {
+-        existing = fs.readFileSync(dest, 'utf8');
+-      } catch {
+-        existing = '';
+-      }
+-      const forgeManaged = existing.includes(FORGE_NATIVE_HOOK_SENTINEL);
+-      const lefthookManaged = existing.includes('lefthook');
+-      if (!forgeManaged && !lefthookManaged) {
+-        // Preserve a real user / third-party hook — back it up once, then skip.
+-        const backup = `${dest}.forge-backup`;
+-        try {
+-          if (!fs.existsSync(backup)) fs.copyFileSync(dest, backup);
+-        } catch {
+-          // Best-effort backup; still refuse to overwrite below.
+-        }
+-        skipped.push(name);
+-        continue;
+-      }
+-    }
+-    fs.writeFileSync(dest, body, 'utf8');
+-    try {
+-      fs.chmodSync(dest, 0o755); // NOSONAR — hooks must be executable
+-    } catch {
+-      // Windows filesystems ignore the mode bits — non-fatal.
+-    }
+-    written.push(name);
++    const outcome = writeNativeHook(path.join(hooksDir, name), body);
++    (outcome === 'written' ? written : skipped).push(name);
+   }
+ 
+   return {
+@@ -219,6 +203,45 @@ function installNativeGitHooks(projectRoot) {
+   };
+ }
+ 
++// Write a single native hook, preserving a pre-existing non-Forge/non-lefthook hook
++// (backed up once, left in place). Returns 'written' or 'skipped'.
++function writeNativeHook(dest, body) {
++  if (shouldPreserveExistingHook(dest)) {
++    backupHookOnce(dest);
++    return 'skipped';
++  }
++  fs.writeFileSync(dest, body, 'utf8');
++  try {
++    fs.chmodSync(dest, 0o755); // NOSONAR — hooks must be executable
++  } catch {
++    // Windows filesystems ignore the mode bits — non-fatal.
++  }
++  return 'written';
++}
++
++// A hook is ours to overwrite when it is missing, Forge-managed, or lefthook-managed.
++// Anything else is the user's / a third party's and must be preserved.
++function shouldPreserveExistingHook(dest) {
++  if (!fs.existsSync(dest)) return false;
++  let existing;
++  try {
++    existing = fs.readFileSync(dest, 'utf8');
++  } catch {
++    existing = '';
++  }
++  return !existing.includes(FORGE_NATIVE_HOOK_SENTINEL) && !existing.includes('lefthook');
++}
++
++// Back up a hook to `<hook>.forge-backup` once (never clobber an existing backup).
++function backupHookOnce(dest) {
++  const backup = `${dest}.forge-backup`;
++  try {
++    if (!fs.existsSync(backup)) fs.copyFileSync(dest, backup);
++  } catch {
++    // Best-effort backup; the caller still refuses to overwrite the original.
++  }
++}
++
+ /**
+  * Report — honestly — whether git hooks are actually active for the project, so
+  * `forge setup` can fail LOUDLY instead of silently no-op'ing. A hook counts as
+diff --git a/test/lefthook-wiring.test.js b/test/lefthook-wiring.test.js
+index 6d7d43af..b9749025 100644
+--- a/test/lefthook-wiring.test.js
++++ b/test/lefthook-wiring.test.js
+@@ -71,6 +71,30 @@ describe('forgeShouldWriteLefthookConfig', () => {
+     fs.writeFileSync(file, 'pre-commit:\n  commands:\n    mine:\n      run: make check\n');
+     expect(forgeShouldWriteLefthookConfig(file)).toBe(false);
+   });
++
++  test('refuses to write through a symlinked lefthook.yml (no escape outside the project)', () => {
++    // Security guard (lib/lefthook-wiring.js): readFileSync/writeFileSync follow symlinks,
++    // so a checked-out lefthook.yml -> ../outside could let setup create/overwrite a file
++    // outside the repo. A symlink target — even a fully-commented stub — must return false.
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-symlink-'));
++    const outside = path.join(tmp, 'outside.yml');
++    fs.writeFileSync(outside, '# fully commented stub\n');
++    const link = path.join(tmp, 'lefthook.yml');
++    try {
++      fs.symlinkSync(outside, link);
++    } catch {
++      // Symlink creation needs privileges on Windows — skip when unavailable.
++      return;
++    }
++    expect(forgeShouldWriteLefthookConfig(link)).toBe(false);
++  });
++
++  test('refuses to write when lefthook.yml is a directory (non-regular file)', () => {
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-dir-'));
++    const asDir = path.join(tmp, 'lefthook.yml');
++    fs.mkdirSync(asDir);
++    expect(forgeShouldWriteLefthookConfig(asDir)).toBe(false);
++  });
+ });
+ 
+ describe('resolveGitHooksDir', () => {
+-- 
+2.51.0.windows.1
+

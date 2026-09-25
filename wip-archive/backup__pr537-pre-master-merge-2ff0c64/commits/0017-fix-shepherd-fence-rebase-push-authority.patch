@@ -1,0 +1,225 @@
+From 24d7f7529e561cc32c179aa733b27406d6c49569 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:59:08 +0530
+Subject: [PATCH] fix(shepherd): fence rebase push authority
+
+---
+ lib/commands/merge.js                      |  2 +-
+ lib/commands/shepherd.js                   |  7 +--
+ lib/pr-monitor/reconcile-executor.js       |  9 +++-
+ lib/pr-monitor/shepherd-lease.js           | 18 +++++---
+ test/commands/shepherd.test.js             | 51 +++++++++++++++++++++-
+ test/pr-monitor/reconcile-executor.test.js |  4 +-
+ test/pr-monitor/shepherd-lease.test.js     |  4 +-
+ 7 files changed, 79 insertions(+), 16 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index a9624b41..cf230758 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -525,7 +525,7 @@ async function defaultPersistMergeDecision({ decision, pr, expectedHead, reposit
+       built = { broker: deps.kernelBroker, driver: deps.kernelDriver };
+     }
+     if (typeof built?.broker?.recordPrMergeAuthority !== 'function') {
+-      throw new Error('Kernel merge authority provider is unavailable.');
++      throw new TypeError('Kernel merge authority provider is unavailable.');
+     }
+     const result = await built.broker.recordPrMergeAuthority({
+       phase: 'merged',
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index cf9a1e08..c9b3f1da 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -68,12 +68,13 @@ function repositoryFromRemoteUrl(url) {
+   return match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
+ }
+ 
+-function findRepositoryRemote(git, repository) {
++function findRepositoryRemote(git, repository, { push = false } = {}) {
+   if (!repository) return null;
+   const remotes = git('git', ['remote']).split(/\s+/).filter(Boolean);
+   return remotes.find((remote) => {
+     try {
+-      return repositoryFromRemoteUrl(git('git', ['remote', 'get-url', remote])) === repository;
++      const args = ['remote', 'get-url', ...(push ? ['--push'] : []), remote];
++      return repositoryFromRemoteUrl(git('git', args)) === repository;
+     } catch {
+       return false;
+     }
+@@ -116,7 +117,7 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+   try {
+     if (baseRepository) {
+       baseRemote = findRepositoryRemote(git, baseRepository);
+-      pushRemote = findRepositoryRemote(git, headRepository);
++      pushRemote = findRepositoryRemote(git, headRepository, { push: true });
+     } else {
+       baseRemote = git('git', ['remote']).split(/\s+/).find(Boolean);
+       pushRemote = baseRemote;
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 7c953f8f..251b3222 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -653,7 +653,14 @@ async function execute(actions, ctx = {}) {
+ function checkpointWriter(opts, updateWatchers, projectRoot, gitCommonDir) {
+ 	if (opts.persistLifecycleCheckpoint) return opts.persistLifecycleCheckpoint;
+ 	if (!opts.token) return undefined;
+-	return current => updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token });
++	return current => {
++		try {
++			return updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token });
++		} catch (error) {
++			if (error?.code === shepherdLease.WATCHER_CHECKPOINT_CAPACITY_EXCEEDED) return true;
++			throw error;
++		}
++	};
+ }
+ 
+ async function executeConvergedActions(actions, seedWatchers, projectRoot, gitCommonDir, now, opts, updateWatchers) {
+diff --git a/lib/pr-monitor/shepherd-lease.js b/lib/pr-monitor/shepherd-lease.js
+index 78c08b76..088924d4 100644
+--- a/lib/pr-monitor/shepherd-lease.js
++++ b/lib/pr-monitor/shepherd-lease.js
+@@ -42,8 +42,8 @@ const { resolveGitCommonDir } = require('../kernel/broker');
+ const STALE_MS = 90000;
+ const LOCK_FILE_MODE = 0o600;
+ const MAX_WATCHER_PAYLOAD_BYTES = 1024 * 1024;
+-const WATCHER_UPDATE_CAPACITY_EXCEEDED = 'capacity-exceeded';
+-const WATCHER_UPDATE_INVALID_PAYLOAD = 'invalid-payload';
++const WATCHER_CHECKPOINT_CAPACITY_EXCEEDED = 'WATCHER_CHECKPOINT_CAPACITY_EXCEEDED';
++const WATCHER_CHECKPOINT_INVALID_PAYLOAD = 'WATCHER_CHECKPOINT_INVALID_PAYLOAD';
+ 
+ /**
+  * Resolve the shared lock path. `gitCommonDir` may be injected (tests, or a
+@@ -220,9 +220,15 @@ function updateWatchers(projectRoot, prNumbers, { gitCommonDir, token, pid = pro
+   try {
+     watcherBytes = Buffer.byteLength(JSON.stringify(watchers), 'utf8');
+   } catch {
+-    return WATCHER_UPDATE_INVALID_PAYLOAD;
++    const error = new TypeError('Watcher checkpoint payload is not serializable');
++    error.code = WATCHER_CHECKPOINT_INVALID_PAYLOAD;
++    throw error;
++  }
++  if (watcherBytes > MAX_WATCHER_PAYLOAD_BYTES) {
++    const error = new RangeError('Watcher checkpoint payload exceeds the lock-file capacity');
++    error.code = WATCHER_CHECKPOINT_CAPACITY_EXCEEDED;
++    throw error;
+   }
+-  if (watcherBytes > MAX_WATCHER_PAYLOAD_BYTES) return WATCHER_UPDATE_CAPACITY_EXCEEDED;
+   held.watchers = watchers;
+   writeLock(file, held);
+   return true;
+@@ -252,8 +258,8 @@ function owns(projectRoot, { gitCommonDir, token, pid = process.pid } = {}) {
+ module.exports = {
+   STALE_MS,
+   MAX_WATCHER_PAYLOAD_BYTES,
+-  WATCHER_UPDATE_CAPACITY_EXCEEDED,
+-  WATCHER_UPDATE_INVALID_PAYLOAD,
++  WATCHER_CHECKPOINT_CAPACITY_EXCEEDED,
++  WATCHER_CHECKPOINT_INVALID_PAYLOAD,
+   lockFilePath,
+   pidAlive,
+   ownsLock,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index e4c9c0e1..07b1398d 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -91,10 +91,11 @@ describe('shepherd command handler', () => {
+     };
+     const git = (_cmd, args) => {
+       if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
+-      if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'fork') {
++      const remote = args[2] === '--push' ? args[3] : args[2];
++      if (args[0] === 'remote' && args[1] === 'get-url' && remote === 'fork') {
+         return 'git@github.com:contributor/widget.git\n';
+       }
+-      if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
++      if (args[0] === 'remote' && args[1] === 'get-url' && remote === 'upstream') {
+         return 'https://github.com/acme/widget.git\n';
+       }
+       return '';
+@@ -113,6 +114,52 @@ describe('shepherd command handler', () => {
+     expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
+   });
+ 
++  test('defaultBuildContext requires the head repository to match the push URL', async () => {
++    const gh = (_cmd, args) => args.includes('pr')
++      ? JSON.stringify({
++        baseRefName: 'master', headRefName: 'feature/safe-rebase', headRefOid: 'a'.repeat(40),
++        headRepository: { name: 'widget' }, headRepositoryOwner: { login: 'contributor' },
++        url: 'https://github.com/acme/widget/pull/42',
++      })
++      : JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++    const git = (_cmd, args) => {
++      if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
++      const push = args[2] === '--push';
++      const remote = push ? args[3] : args[2];
++      if (remote === 'upstream') return 'https://github.com/acme/widget.git\n';
++      if (remote === 'fork') return push
++        ? 'git@github.com:attacker/other.git\n'
++        : 'git@github.com:contributor/widget.git\n';
++      return '';
++    };
++
++    const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
++    expect(ctx.pushRemote).toBeNull();
++  });
++
++  test('defaultBuildContext accepts a head repository that matches only the push URL', async () => {
++    const gh = (_cmd, args) => args.includes('pr')
++      ? JSON.stringify({
++        baseRefName: 'master', headRefName: 'feature/safe-rebase', headRefOid: 'a'.repeat(40),
++        headRepository: { name: 'widget' }, headRepositoryOwner: { login: 'contributor' },
++        url: 'https://github.com/acme/widget/pull/42',
++      })
++      : JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++    const git = (_cmd, args) => {
++      if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
++      const push = args[2] === '--push';
++      const remote = push ? args[3] : args[2];
++      if (remote === 'upstream') return 'https://github.com/acme/widget.git\n';
++      if (remote === 'fork') return push
++        ? 'git@github.com:contributor/widget.git\n'
++        : 'git@github.com:mirror/widget.git\n';
++      return '';
++    };
++
++    const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
++    expect(ctx.pushRemote).toBe('fork');
++  });
++
+   test('defaultBuildContext permits fork PR observation without a contributor remote', async () => {
+     const gh = (_cmd, args) => {
+       if (args.includes('pr') && args.includes('view')) {
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 642abc00..ccc87ec0 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -687,7 +687,9 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
+ 			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
+ 			spawnWatcher: () => ({ pid: 1 }),
+ 			writeClaim: () => {},
+-			updateWatchers: () => 'capacity-exceeded',
++			updateWatchers: () => {
++				throw Object.assign(new RangeError('too large'), { code: 'WATCHER_CHECKPOINT_CAPACITY_EXCEEDED' });
++			},
+ 		});
+ 		expect(conv.leaseLost).toBe(false);
+ 		expect(conv.watchers).toHaveLength(1);
+diff --git a/test/pr-monitor/shepherd-lease.test.js b/test/pr-monitor/shepherd-lease.test.js
+index 030ed292..04bd6788 100644
+--- a/test/pr-monitor/shepherd-lease.test.js
++++ b/test/pr-monitor/shepherd-lease.test.js
+@@ -139,8 +139,8 @@ describe('shepherd-lease', () => {
+     expect(lease.updateWatchers(null, [7], opts({ token: held.token }))).toBe(true);
+     const oversized = [{ lifecycle: 'x'.repeat(lease.MAX_WATCHER_PAYLOAD_BYTES) }];
+ 
+-    expect(lease.updateWatchers(null, oversized, opts({ token: held.token })))
+-      .toBe('capacity-exceeded');
++    expect(() => lease.updateWatchers(null, oversized, opts({ token: held.token })))
++      .toThrow(expect.objectContaining({ code: 'WATCHER_CHECKPOINT_CAPACITY_EXCEEDED' }));
+     expect(readHolder().watchers).toEqual([7]);
+   });
+ 
+-- 
+2.51.0.windows.1
+

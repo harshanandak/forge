@@ -1,0 +1,49 @@
+From cb0d8c2c54c0f9d69fdcbbbfa1f05a94891c0755 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 13:46:47 +0530
+Subject: [PATCH] chore(skills): regenerate worktree scorecard after clean
+ safety docs
+
+The scorecard freshness gate (test/skill-eval.test.js) recomputes each card from
+the SKILL.md source, so documenting what `forge clean` will never reap requires
+regenerating the canonical card and its .agents mirror.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/worktree/evals/scorecard.json | 4 ++--
+ skills/worktree/evals/scorecard.json         | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/.agents/skills/worktree/evals/scorecard.json b/.agents/skills/worktree/evals/scorecard.json
+index 981a39b4..866a44a2 100644
+--- a/.agents/skills/worktree/evals/scorecard.json
++++ b/.agents/skills/worktree/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 1013,
+-      "body_lines": 70,
+-      "score": 44
++      "body_lines": 75,
++      "score": 43
+     },
+     "caps": {
+       "desc_within": true,
+diff --git a/skills/worktree/evals/scorecard.json b/skills/worktree/evals/scorecard.json
+index 981a39b4..866a44a2 100644
+--- a/skills/worktree/evals/scorecard.json
++++ b/skills/worktree/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 1013,
+-      "body_lines": 70,
+-      "score": 44
++      "body_lines": 75,
++      "score": 43
+     },
+     "caps": {
+       "desc_within": true,
+-- 
+2.51.0.windows.1
+

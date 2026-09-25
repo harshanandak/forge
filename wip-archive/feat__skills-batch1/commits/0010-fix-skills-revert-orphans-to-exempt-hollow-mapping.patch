@@ -1,0 +1,56 @@
+From 278485941faa469dc0ffc611d4d03de3fd3ec226 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 16:43:08 +0530
+Subject: [PATCH] fix(skills): revert orphans to exempt (hollow mapping; full
+ ownership deferred)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Applying a 3-part completeness test (mapped / command-routable / documented in
+the owning skill body) to every exempt->mapped conversion in this PR:
+- clean->worktree, gate/control/doc-gate->gates: PASS all three (documented in
+  the new skills' bodies) — kept.
+- orphans->issue-basics: FAILS dimension 3 — issue-basics body has no orphan/
+  dangling guidance, so the mapping was a hollow claim. Reverted to its pre-PR
+  exempt state and removed the orphans router cues. Full ownership (route + body
+  doc) tracked in issue e1e33cf8.
+
+Claiming only what is complete; exempt-with-reason is an honest state. This
+collapses the partially-fulfilled-contract surface the review kept probing.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/using-forge.js   | 2 +-
+ skills/coverage.json | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index 77ff8e06..05771dc8 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -177,7 +177,7 @@ const INTENT_RULES = Object.freeze([
+   { skill: 'verify', weight: 3, keywords: ['post-merge', 'after merge', 'verify health', 'health check', 'ci on main', 'close the issue after merge'] },
+   { skill: 'triage-ready', weight: 3, keywords: ['what should i work on', 'what to work on', 'next ready', 'ready queue', 'pick the next', 'what is ready', 'rank the'] },
+   { skill: 'status', weight: 3, keywords: ['where am i', 'current stage', 'what stage', 'stale work', 'status', 'active work', 'whats going on'] },
+-  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue', 'orphan issues', 'orphaned issues', 'dangling dependencies', 'dangling deps', 'forge orphans', 'forge issue orphans'] },
++  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue'] },
+   { skill: 'memory', weight: 2, keywords: ['remember', 'recall', 'remember that', 'recall the', 'save a note', 'persist a note', 'note the decision', 'jot down', 'remind me'] },
+   { skill: 'claim-safety', weight: 2, keywords: ['claim an issue', 'claim the issue', 'prove ownership', 'own the lease', 'lease'] },
+   { skill: 'smith', weight: 2, keywords: ['end to end', 'end-to-end', 'drive one issue', 'plan to merged', 'whole issue', 'from plan to pr'] },
+diff --git a/skills/coverage.json b/skills/coverage.json
+index 99adefb0..2f2ca956 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -30,7 +30,7 @@
+ 
+     "worktree": "worktree",
+     "clean": "worktree",
+-    "orphans": "issue-basics",
++    "orphans": { "exempt": "full ownership (command-name routing + `forge issue orphans` guidance in the issue-basics body) pending — issue e1e33cf8; issue-basics does not yet document it, so mapping now would be a hollow claim" },
+     "rollback": "rollback",
+     "review": "review",
+     "verify": "verify",
+-- 
+2.51.0.windows.1
+

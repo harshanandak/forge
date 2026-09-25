@@ -1,0 +1,99 @@
+From 23bf9aa8d25a180bc88eb426667771d1edc03b6f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 19:25:02 +0530
+Subject: [PATCH] fix(kernel): backfill FTS index by table-existence, not
+ count(*)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BLOCKER: count(*) on an external-content FTS5 table returns the CONTENT row
+count, not the indexed-doc count, so the old 'indexedCount < memoryCount'
+guard never fired -> rows written before the FTS index existed (a DB upgraded
+from before this feature, or insights-written kernel_memories rows) were
+invisible to recall <query>. The memory path uses the lazy ensureMemorySchema,
+not broker.initialize's unconditional rebuild, so this was the live path.
+
+Detect staleness by FTS table existence (sqlite_master) and rebuild once when
+newly created. Adds the missing upgrade-backfill test (seeds rows with the FTS
+absent, asserts searchMemoriesRanked finds them) — the trigger path had it
+covered, the backfill branch had zero coverage.
+
+Issue: 9c8060f8-f4ec-47f4-b923-5e247c5bcdfd
+---
+ lib/kernel/sqlite-driver.js              | 20 ++++++++++++++------
+ test/kernel/sqlite-driver-memory.test.js | 24 ++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+), 6 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 53fb9a48..424fe1a2 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1795,17 +1795,25 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		}
+ 		// FTS5 recall index (migration 008): create the virtual table + sync triggers
+ 		// idempotently so a synchronous memory write stays indexed without a prior
+-		// broker.initialize(). Rebuild ONLY when the index is behind the table (first
+-		// upgrade of a DB that already holds rows, e.g. insights-written memories) — so
+-		// steady-state process starts pay two cheap COUNT(*)s, not a full reindex.
++		// broker.initialize(). When the index is NEWLY created, rebuild once to backfill any
++		// rows written before it existed (a DB upgraded from before this feature, or rows the
++		// insights engine wrote straight to kernel_memories) — the sync triggers keep it
++		// current thereafter, so steady-state process starts skip the reindex.
++		//
++		// Staleness is detected by TABLE EXISTENCE (sqlite_master), never by count(*): on an
++		// external-content FTS5 table `count(*)` returns the CONTENT row count, not the
++		// indexed-doc count, so it can never reveal an un-backfilled index.
+ 		const ftsDdl = memoryFtsDdl();
++		const ftsExisted = Number(queryOne(
++			runtime,
++			database,
++			"SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'kernel_memories_fts'",
++		).count) > 0;
+ 		execSql(runtime, database, ftsDdl.create);
+ 		for (const trigger of ftsDdl.triggers) {
+ 			execSql(runtime, database, trigger);
+ 		}
+-		const memoryCount = Number(queryOne(runtime, database, 'SELECT count(*) AS count FROM kernel_memories').count) || 0;
+-		const indexedCount = Number(queryOne(runtime, database, 'SELECT count(*) AS count FROM kernel_memories_fts').count) || 0;
+-		if (indexedCount < memoryCount) {
++		if (!ftsExisted) {
+ 			execSql(runtime, database, ftsDdl.rebuild);
+ 		}
+ 		memorySchemaEnsured = true;
+diff --git a/test/kernel/sqlite-driver-memory.test.js b/test/kernel/sqlite-driver-memory.test.js
+index 91fb12fa..37d30689 100644
+--- a/test/kernel/sqlite-driver-memory.test.js
++++ b/test/kernel/sqlite-driver-memory.test.js
+@@ -192,4 +192,28 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
+ 		driver.recordMemory({ key: 'b', value: '2', sourceAgent: 'Codex', tags: [] });
+ 		expect(driver.countMemories()).toBe(2);
+ 	});
++
++	test('backfills the FTS index for rows written before it existed (upgrade path)', async () => {
++		const driver = makeDriver();
++		// Simulate a pre-FTS DB: create kernel_memories (migration 005) and insert rows
++		// DIRECTLY, with NO FTS table/triggers yet — exactly a DB upgraded from before this
++		// feature, or one whose rows were written by the insights engine. These rows never
++		// pass through the live AFTER-INSERT trigger.
++		const { buildMemoryProjectionMigration } = require('../../lib/kernel/migrations');
++		for (const statement of buildMemoryProjectionMigration().apply) {
++			await driver.exec(statement);
++		}
++		await driver.exec(
++			"INSERT INTO kernel_memories (key, value_json, source_agent, tags_json, created_at, updated_at) "
++			+ "VALUES ('pre1', '\"auth bug in login\"', 'forge insights', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
++		);
++		await driver.exec(
++			"INSERT INTO kernel_memories (key, value_json, source_agent, tags_json, created_at, updated_at) "
++			+ "VALUES ('pre2', '\"unrelated note\"', 'forge insights', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
++		);
++
++		// The first memory read triggers ensureMemorySchema, which must CREATE and BACKFILL
++		// the index — otherwise these pre-existing rows are invisible to FTS recall.
++		expect(driver.searchMemoriesRanked('auth', 10).map(entry => entry.key)).toEqual(['pre1']);
++	});
+ });
+-- 
+2.51.0.windows.1
+

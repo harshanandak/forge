@@ -1,0 +1,188 @@
+From 6bcf06676d529eb9f2081279715ab1433c15cec4 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 04:01:49 +0530
+Subject: [PATCH] fix: preserve review evidence snapshots
+
+---
+ lib/commands/test.js                        |  9 +++--
+ lib/kernel/sqlite-driver.js                 |  4 +--
+ scripts/test.js                             |  5 ++-
+ test/commands/test.test.js                  | 14 +++++---
+ test/kernel/watch-owner-transaction.test.js | 38 +++++++++++++++++++++
+ test/scripts/test-runner.test.js            | 10 ++++--
+ 6 files changed, 69 insertions(+), 11 deletions(-)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 0385714d..bffc328e 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -229,7 +229,9 @@ function getChangedFiles(execFileSync, options = {}) {
+  * @returns {string[]} Array of test file paths (e.g. ['test/foo.test.js'])
+  */
+ function getAffectedTestFiles(projectRoot, execFileSync, fs = defaultFs, options = {}) {
+-	const changedFiles = getChangedFiles(execFileSync, options);
++	const changedFiles = Array.isArray(options.changedFiles)
++		? options.changedFiles
++		: getChangedFiles(execFileSync, options);
+ 	const testFiles = new Set();
+ 	for (const file of changedFiles) {
+ 		for (const candidate of getTestCandidatesForChangedFile(file)) {
+@@ -396,7 +398,10 @@ module.exports = {
+ 				sinceUpstream: flags.sinceUpstream || flags['--since-upstream'],
+ 			};
+ 			const changedFiles = getChangedFiles(execFileSync, diffOptions);
+-			const affectedTests = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
++			const affectedTests = getAffectedTestFiles(projectRoot, execFileSync, fs, {
++				...diffOptions,
++				changedFiles,
++			});
+ 			if (!changedFiles.some(isFullSuiteRequiredFile) && affectedTests.length > 0) {
+ 				testArgs = ['run', 'test', ...affectedTests];
+ 			}
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 67512553..0a4b9cc3 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3185,10 +3185,10 @@ function validWatchOwnerMutationInput(operation, input) {
+ 
+ function captureWatchOwnerMutationInput(input) {
+ 	try {
+-		const enumerableFields = new Set(Object.keys(input));
++		const ownFields = new Set(Object.getOwnPropertyNames(input));
+ 		const prepared = {};
+ 		for (const field of WATCH_OWNER_MUTATION_FIELDS) {
+-			if (enumerableFields.has(field)) prepared[field] = input[field];
++			if (ownFields.has(field)) prepared[field] = input[field];
+ 		}
+ 		return prepared;
+ 	} catch {
+diff --git a/scripts/test.js b/scripts/test.js
+index 33fcf9c2..585fc1ae 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -278,7 +278,10 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
+     sinceUpstream: options.sinceUpstream !== false,
+   };
+   const changedFiles = getChangedFiles(execFileSync, diffOptions);
+-  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
++  const affectedTestTargets = getAffectedTestFiles(projectRoot, execFileSync, fs, {
++    ...diffOptions,
++    changedFiles,
++  });
+ 
+   let runFullSuite = false;
+   let runTestEnv = false;
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index 147f5084..421b1122 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -318,16 +318,22 @@ describe('forge test command', () => {
+ 
+ 		test('runs the full suite when a shared authority file changes with a mapped test', async () => {
+ 			const spawnSpy = makeSpawnSync();
++			let diffCalls = 0;
++			const execFileSync = makeExecFileSync({
++				mergeBaseOutput: 'abc123',
++				gitDiffOutput: 'lib/kernel/sqlite-driver.js\ntest/commands/test.test.js\n',
++			});
+ 			await testCommand.handler([], { affected: true }, '/fake/root', {
+ 				fs: makeFsStub({ existingPaths: ['/fake/root/test/commands/test.test.js'] }),
+-				execFileSync: makeExecFileSync({
+-					mergeBaseOutput: 'abc123',
+-					gitDiffOutput: 'lib/kernel/sqlite-driver.js\ntest/commands/test.test.js\n',
+-				}),
++				execFileSync: (command, args, options) => {
++					if (command === 'git' && args[0] === 'diff') diffCalls += 1;
++					return execFileSync(command, args, options);
++				},
+ 				spawnSync: spawnSpy,
+ 			});
+ 
+ 			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
++			expect(diffCalls).toBe(1);
+ 		});
+ 
+ 		test('maps upgrade safety support files to targeted tests', async () => {
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index bba141e2..5f3a0c9c 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -736,6 +736,44 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
+ 	});
+ 
++	test('preserves a non-enumerable stale owner snapshot for destructive release CAS', () => {
++		const starting = driver.watchOwnerReserveStarting({
++			repo: 'acme/forge', pr: 119, controllerPid: 7_119, now: NOW,
++		});
++		const running = driver.watchOwnerBindRunning({
++			repo: 'acme/forge', pr: 119, generation: starting.row.generation,
++			controllerPid: 7_119, watcherPid: 8_119, now: LATER,
++		});
++		const stopped = driver.watchOwnerRequestStop({
++			repo: 'acme/forge', pr: 119, generation: running.row.generation,
++			watcherPid: 8_119, now: LATER,
++		});
++		const input = {
++			repo: 'acme/forge', pr: 119, generation: stopped.row.generation, watcherPid: 8_119,
++		};
++		Object.defineProperty(input, 'expectedSnapshot', { value: running.row, enumerable: false });
++
++		expect(driver.watchOwnerReleaseNonterminal(input))
++			.toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 119 }))
++			.toMatchObject({ ok: true, row: stopped.row });
++	});
++
++	test('preserves a non-enumerable stale gate snapshot for legacy import CAS', () => {
++		const published = driver.watchGatePublishQuarantine({ now: NOW });
++		driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER });
++		const input = {
++			repo: 'acme/forge', pr: 120, now: LATER, controllerPid: 7_120,
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH, expectedSnapshot: null,
++		};
++		Object.defineProperty(input, 'expectedGate', { value: published.gate, enumerable: false });
++
++		expect(driver.watchOwnerImportLegacyStarting(input))
++			.toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(driver.watchOwnerRead({ repo: 'acme/forge', pr: 120 }))
++			.toMatchObject({ ok: true, changed: false, reason: 'absent', row: null });
++	});
++
+ 	test('uses one prepared identity for evidence checks and deletion', async () => {
+ 		const starting = driver.watchOwnerReserveStarting({
+ 			repo: 'acme/forge', pr: 116, controllerPid: 7_116, now: NOW,
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index ef8ad56a..ff1a7a90 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -280,18 +280,24 @@ describe('scripts/test pre-push runner', () => {
+   });
+ 
+   test('classifyPushTests forces the full suite when a shared driver and mapped consumer change together', () => {
+-    const plan = classifyPushTests(repoRoot, makeExecFileSync({
++    let diffCalls = 0;
++    const execFileSync = makeExecFileSync({
+       changedFiles: [
+         'lib/kernel/sqlite-driver.js',
+         'test/kernel/watch-owner-transaction.test.js',
+       ].join('\n'),
+-    }));
++    });
++    const plan = classifyPushTests(repoRoot, (command, args, options) => {
++      if (command === 'git' && args[0] === 'diff') diffCalls += 1;
++      return execFileSync(command, args, options);
++    });
+ 
+     expect(plan.hasUnmappedFiles).toBe(false);
+     expect(plan.testTargets).toContain('test/kernel/watch-owner-transaction.test.js');
+     expect(plan.runFullSuite).toBe(true);
+     expect(plan.mode).toBe('full');
+     expect(plan.reason).toBe('shared authority changes require full unit coverage');
++    expect(diffCalls).toBe(1);
+   });
+ 
+   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
+-- 
+2.51.0.windows.1
+

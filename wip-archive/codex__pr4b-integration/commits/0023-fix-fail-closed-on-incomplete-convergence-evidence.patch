@@ -1,0 +1,518 @@
+From 41cef1e010e4b8d808ab399ae318383f64aa22d0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 04:47:48 +0530
+Subject: [PATCH] fix: fail closed on incomplete convergence evidence
+
+---
+ lib/commands/merge.js                         |  4 +-
+ lib/commands/shepherd.js                      | 24 +++++--
+ lib/pr-monitor/flow-monitor.js                | 21 ++++--
+ lib/pr-monitor/reconcile-executor.js          |  7 ++
+ lib/pr-monitor/review-preflight.js            | 14 ++--
+ lib/pr-monitor/watch.js                       |  8 +++
+ ...merge-authority-review-regressions.test.js | 21 ++++++
+ test/commands/shepherd.test.js                | 64 +++++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js          | 35 ++++++++++
+ test/pr-monitor/reconcile-executor.test.js    |  5 ++
+ test/pr-monitor/review-preflight.test.js      |  9 +--
+ test/pr-monitor/watch.test.js                 | 15 +++++
+ 12 files changed, 206 insertions(+), 21 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 48639666..6f0e828f 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -334,7 +334,9 @@ async function defaultVerifyPrIssueBinding({
+       branch: row.branch || null,
+       url: row.url || null,
+       gitCommonDir: row.git_common_dir || built.gitCommonDir,
+-      error: bound ? null : 'Kernel PR row is not open or is linked to a different issue.',
++      error: bound ? null : (allowRetired
++        ? 'Kernel PR row is linked to a different issue.'
++        : 'Kernel PR row is not open or is linked to a different issue.'),
+       ...(terminalEvidence ? { terminalEvidence } : {}),
+     };
+   } catch (err) {
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 7512583c..12755b12 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -264,8 +264,11 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+           subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
+           close: async () => kernel.kernelBroker?.close?.(),
+         };
+-      } catch {
++      } catch (error) {
+         try { await kernel?.kernelBroker?.close?.(); } catch { /* fallback must remain available */ }
++        if (deps.forceAuthority) {
++          return { error: `Durable monitor authority is unavailable: ${error.message}` };
++        }
+         authority = {};
+       }
+     }
+@@ -276,6 +279,9 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+       pr, adapter: deps.adapter, self: deps.self, runGh: deps.runGh, gatherPull: deps.gatherPull,
+     });
+   }
++  if (deps.forceAuthority && !authority.store) {
++    return { error: 'Durable monitor authority is unavailable.' };
++  }
+   return { dir, gather, enrich, ...authority };
+ }
+ 
+@@ -496,13 +502,16 @@ async function collectConvergenceEvidence({ args, pr, projectRoot, context, adap
+       ...built,
+       since: parseSince(args),
+       now: deps.now,
+-      watcherRunning: deps.watcherRunning,
++      watcherRunning: () => false,
+     });
+     const current = await adapter.readState(pr);
+     const exactHead = typeof current?.headSha === 'string' && /^[0-9a-f]{40}$/i.test(current.headSha)
+       ? current.headSha.toLowerCase()
+       : null;
+-    if (!exactHead || exactHead !== context.headSha) {
++    const expectedHead = typeof context.headSha === 'string' && /^[0-9a-f]{40}$/i.test(context.headSha)
++      ? context.headSha.toLowerCase()
++      : null;
++    if (!exactHead || exactHead !== expectedHead) {
+       throw new Error('PR head changed after the shepherd pass; rerun convergence on the current head');
+     }
+     return {
+@@ -668,8 +677,10 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     };
+   }
+ 
++  const normalizedPreflightHead = typeof preflightHead === 'string' ? preflightHead.toLowerCase() : null;
++  const normalizedResultHead = typeof result.expectedHead === 'string' ? result.expectedHead.toLowerCase() : null;
+   if (localPreflight.blocking !== true && result.state === 'MERGE_READY'
+-    && preflightHead && result.expectedHead && result.expectedHead !== preflightHead) {
++    && normalizedPreflightHead && normalizedResultHead && normalizedResultHead !== normalizedPreflightHead) {
+     return {
+       success: false,
+       state: 'INCOMPLETE',
+@@ -698,7 +709,10 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       ...confirmation,
+       actions: [...(result.actions || []), ...(confirmation.actions || [])],
+     };
+-    if (confirmedResult.state === 'MERGE_READY' && confirmedResult.expectedHead !== evidence.exactHead) {
++    const confirmedHead = typeof confirmedResult.expectedHead === 'string'
++      ? confirmedResult.expectedHead.toLowerCase()
++      : null;
++    if (confirmedResult.state === 'MERGE_READY' && confirmedHead !== evidence.exactHead) {
+       return {
+         success: false,
+         state: 'INCOMPLETE',
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 7822dc72..d00764e0 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -19,12 +19,13 @@ const DELIVERY_TARGET = 'legacy-journal';
+ const SNAPSHOT_TEXT_LIMIT = 64;
+ const SNAPSHOT_OBJECT_KEY_LIMIT = 24;
+ const JOB_URL_LIMIT = 2048;
++const MAX_REOPEN_DEPTH = 8;
+ const SNAPSHOT_FORMAT = 'digest-v1';
+ const SNAPSHOT_EVIDENCE_KEYS = new Set(['checks', 'threads', 'reviews', 'comments', 'degraded']);
+ 
+ class FlowMonitorError extends Error {
+-  constructor(code, message) {
+-    super(message);
++  constructor(code, message, options) {
++    super(message, options);
+     this.name = 'FlowMonitorError';
+     this.code = code;
+   }
+@@ -212,7 +213,14 @@ function bridgeStore(store) {
+     async getEvent(eventId, config) {
+       const row = await store.getEvent(eventId, config);
+       if (!row) return row;
+-      const event = typeof row.envelope_json === 'string' ? JSON.parse(row.envelope_json) : row;
++      let event = row;
++      if (typeof row.envelope_json === 'string') {
++        try {
++          event = JSON.parse(row.envelope_json);
++        } catch {
++          throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is malformed');
++        }
++      }
+       return row.monitor_id ? row : persistenceRow(event);
+     },
+     readEventTail: (...args) => store.readEventTail(...args),
+@@ -437,7 +445,7 @@ async function finalizePass(ctx, bridge, spec, {
+   };
+ }
+ 
+-async function runFlowMonitorPass(ctx) {
++async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const now = ctx.now || defaultNow;
+   const durableEvents = await readAuthority(ctx);
+   const subjectRevision = ctx.subjectRevision || ctx.subjectId;
+@@ -459,11 +467,14 @@ async function runFlowMonitorPass(ctx) {
+     const monitorId = reopenedMonitorId(ctx.monitorId, replay.terminalReceiptId);
+     const reopenedHistory = await readAuthority({ ...ctx, monitorId });
+     if (lifecycle !== 'OPEN' && reopenedHistory.length === 0) return replay;
++    if (reopenDepth >= MAX_REOPEN_DEPTH) {
++      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Reopened monitor lifecycle exceeds its restart bound');
++    }
+     return runFlowMonitorPass({
+       ...ctx,
+       monitorId,
+       gather: async () => gathered,
+-    });
++    }, reopenDepth + 1);
+   }
+ 
+   const bridge = createMonitorDurabilityBridge({
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 529a9130..589f18ba 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -549,6 +549,13 @@ async function execute(actions, ctx = {}) {
+ 		throw error;
+ 	}
+ 	const boundedActions = actions.slice(0, MAX_ACTIONS_PER_PASS);
++	if (actions.length > boundedActions.length && typeof ctx.recordDiagnostic === 'function') {
++		try {
++			ctx.recordDiagnostic({
++				kind: 'actions-truncated', requested: actions.length, processed: boundedActions.length,
++			});
++		} catch { /* diagnostics must never affect convergence */ }
++	}
+ 	const now = ctx.now || (() => Date.now());
+ 	const watchers = Array.isArray(ctx.watchers)
+ 		? ctx.watchers.map(normalizeWatcher).map(entry => replayLifecycle(entry, now()))
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index a91cdd6d..7626700f 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -71,7 +71,7 @@ async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync)
+       event.codegenInstructions || event.message || 'CodeRabbit finding',
+     ).slice(0, MAX_FINDING_CHARS));
+     if (!clean && findings.length === 0) {
+-      let detail = `CodeRabbit reported ${terminal.findings || errorEvents.length} finding(s)`;
++      let detail = `CodeRabbit reported ${terminal?.findings || errorEvents.length} finding(s)`;
+       if (malformed || !terminalValid) {
+         detail = 'CodeRabbit agent output was malformed or incomplete';
+       }
+@@ -131,7 +131,7 @@ function notApplicableResult(context) {
+     : (exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable');
+   return {
+     status: 'INCOMPLETE',
+-    blocking: dirtyCheckout,
++    blocking: true,
+     providers: {
+       coderabbit: providerResult(
+         'NOT_APPLICABLE',
+@@ -140,7 +140,7 @@ function notApplicableResult(context) {
+       ),
+       deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
+     },
+-    findings: dirtyCheckout ? [{ provider: 'local-preflight', detail: summary }] : [],
++    findings: [{ provider: 'local-preflight', detail: summary }],
+   };
+ }
+ 
+@@ -192,10 +192,12 @@ async function runLocalReviewPreflight(context, deps = {}) {
+     });
+   }
+ 
+-  const blocking = !deterministicOk || coderabbit.status === 'FAIL';
++  const failed = !deterministicOk || coderabbit.status === 'FAIL';
++  const incomplete = coderabbit.status === 'UNAVAILABLE';
++  const blocking = failed || incomplete;
+   let status = 'PASS';
+-  if (blocking) status = 'FAIL';
+-  else if (coderabbit.status === 'UNAVAILABLE') status = 'INCOMPLETE';
++  if (failed) status = 'FAIL';
++  else if (incomplete) status = 'INCOMPLETE';
+   return {
+     status,
+     blocking,
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index 313138b2..381c3575 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -163,6 +163,14 @@ async function runWatchPass(state, ctx, emit) {
+     return { terminal: true };
+   }
+   const { failures, terminal, others } = partition(events);
++  if (terminalReceiptId) {
++    for (const failure of state.pending.values()) emit(failure);
++    state.pending = new Map();
++    for (const event of others) emit(event);
++    for (const failure of failures.values()) emit(failure);
++    for (const event of terminal) emit(event);
++    return { terminal: true };
++  }
+   const contra = contradictions(events);
+   const heldNames = new Set(state.pending.keys());
+ 
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 916ae363..3557a8b3 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -622,6 +622,27 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(result.terminalEvidence.receiptId).toMatch(/^[0-9a-f-]{36}$/);
+   });
+ 
++  test('retired binding errors report a wrong issue without claiming the row must be open', async () => {
++    const result = await mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context({ state: 'MERGED' }),
++      allowRetired: true,
++      buildBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: { readTrace: async () => ({ pull_requests: [{
++          repo: 'acme/forge', number: 42, issue_id: 'wrong-issue', state: 'closed', iterations: [],
++        }] }) },
++        driver: { close() {} },
++      }),
++    });
++
++    expect(result.bound).toBe(false);
++    expect(result.error).toMatch(/different issue/i);
++    expect(result.error).not.toMatch(/not open/i);
++  });
++
+   test('merge recovery rejects a malformed expected head before matching terminal trace evidence', async () => {
+     const result = await mergeCmd.defaultVerifyPrIssueBinding({
+       issueId: ISSUE,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 24c5c343..99fae85e 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -181,6 +181,55 @@ describe('shepherd command handler', () => {
+     expect(out.handoff).toBeUndefined();
+   });
+ 
++  test('forces an authoritative inline monitor pass even when a watcher is active', async () => {
++    const head = 'a'.repeat(40);
++    let observedWatcherRunning;
++    const evidence = await shepherdCmd.collectConvergenceEvidence({
++      args: ['7'], pr: '7', projectRoot: process.cwd(),
++      context: { pr: '7', owner: 'o', repo: 'r', headSha: head },
++      adapter: { readState: async () => ({ headSha: head }) },
++      deps: {
++        dir: 'journal-dir', gather: async () => ({}), store: {},
++        monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
++        watcherRunning: () => true,
++        pollEvents: async input => {
++          observedWatcherRunning = input.watcherRunning(input.dir);
++          return { events: [], overflow: false, receiptIds: [], ranPass: !observedWatcherRunning };
++        },
++      },
++    });
++
++    expect(observedWatcherRunning).toBe(false);
++    expect(evidence.exactHead).toBe(head);
++  });
++
++  test('compares exact heads case-insensitively at evidence and handoff fences', async () => {
++    const lowerHead = 'abcdef0123456789abcdef0123456789abcdef01';
++    const upperHead = lowerHead.toUpperCase();
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: upperHead }),
++      collectConvergenceEvidence: shepherdCmd.collectConvergenceEvidence,
++      pollEvents: async () => ({ events: [], overflow: false, receiptIds: [], ranPass: true }),
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: upperHead, localHead: upperHead,
++      }),
++      adapter: {
++        id: 'test', kind: 'pr-state', name: 'test',
++        readState: async () => ({ headSha: lowerHead }),
++        readRequiredChecks: async () => [], readComments: async () => [],
++        readDivergence: async () => ({}), detectConflicts: async () => false,
++        rerunFailedChecks: async () => {}, replyToThread: async () => {},
++      },
++      store: {}, monitorId: 'pr:o/r:7', ownerRunId: 'run-7', packetId: 'packet-7', subjectId: 'o/r#7',
++      git: () => '',
++    });
++
++    expect(out).toMatchObject({ success: true, state: 'MERGE_READY' });
++    expect(out.handoff.command).toContain(`--expect-head ${lowerHead}`);
++  });
++
+   test('fails closed when a merge-ready pass moved beyond the locally reviewed head', async () => {
+     const oldHead = 'a'.repeat(40);
+     const newHead = 'b'.repeat(40);
+@@ -307,6 +356,21 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(built.dir).toBeString();
+   });
+ 
++  test('fails closed when forced Memory authority initialization fails', async () => {
++    const built = await shepherdCmd.buildMonitorContext('7', root, {
++      forceAuthority: true,
++      buildContext: async () => ({
++        pr: '7', owner: 'acme', repo: 'forge', base: 'master', baseRef: 'origin/master',
++      }),
++      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
++      resolveGitCommonDir: () => path.join(root, '.git'),
++      buildKernelDeps: async () => { throw new Error('kernel unavailable'); },
++    });
++
++    expect(built.error).toMatch(/durable monitor authority.*unavailable/i);
++    expect(built.store).toBeUndefined();
++  });
++
+   test('hashes an oversized root monitor identity within the public Memory bound', async () => {
+     const owner = 'o'.repeat(70);
+     const repo = 'r'.repeat(70);
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index b2a7c057..c6316537 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -177,6 +177,30 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(deliveries).toBe(0);
+   });
+ 
++  test('preserves the provider root cause when durable history is unavailable', async () => {
++    const store = durableStore();
++    const cause = new Error('socket closed');
++    store.readEventTail = async () => { throw cause; };
++
++    try {
++      await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
++      throw new Error('expected durable history failure');
++    } catch (error) {
++      expect(error).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', cause });
++    }
++  });
++
++  test('maps malformed getEvent persistence JSON to incomplete durable history', async () => {
++    const store = durableStore();
++    store.getEvent = async () => ({ envelope_json: '{broken-json' });
++    store.events.push({
++      payload: { monitor_id: 'pr:owner/forge:42', event_id: 'a'.repeat(64), sequence: 1 },
++    });
++
++    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
++      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++  });
++
+   test('bounds high-cardinality snapshots before Flow validation and durable persistence', async () => {
+     const store = durableStore();
+     const large = snapshot({
+@@ -419,6 +443,17 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
+   });
+ 
++  test('fails closed when reopened lifecycle depth exceeds the bounded chain', async () => {
++    const store = durableStore();
++    let next = snapshot({ state: 'CLOSED' });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ state: 'OPEN' });
++
++    await expect(runFlowMonitorPass(ctx, 8))
++      .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++  });
++
+   test('preserves raw display fields while routing observations through a reopened lifecycle', async () => {
+     const store = durableStore();
+     let next = snapshot({ state: 'CLOSED', checks: [] });
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 74d351f5..5d891675 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -42,14 +42,19 @@ describe('execute — watcher lifecycle', () => {
+ 	});
+ 	test('processes oversized action sets in bounded resumable batches', async () => {
+ 		let writes = 0;
++		const diagnostics = [];
+ 		const actions = Array.from({ length: 130 }, (_, index) => ({
+ 			type: 'upsertPrRow', row: { number: index + 1 },
+ 		}));
+ 		await executor.execute(actions, {
+ 			broker: { upsertPr: async () => { writes += 1; return true; } },
+ 			watchers: [],
++			recordDiagnostic: entry => diagnostics.push(entry),
+ 		});
+ 		expect(writes).toBe(128);
++		expect(diagnostics).toContainEqual(expect.objectContaining({
++			kind: 'actions-truncated', requested: 130, processed: 128,
++		}));
+ 	});
+ 	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
+ 		const first = await executor.execute(
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+index b617912e..18cb9798 100644
+--- a/test/pr-monitor/review-preflight.test.js
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -35,6 +35,7 @@ describe('bounded local review preflight', () => {
+     for (const output of ['', 'No issues found', JSON.stringify({ type: 'status', phase: 'reviewing' })]) {
+       const result = await defaultRunCodeRabbit({ projectRoot: '/repo', base: 'master' }, () => output);
+       expect(result.ok).toBe(false);
++      if (output === '') expect(result.findings).toEqual(['CodeRabbit agent output was malformed or incomplete']);
+     }
+   });
+ 
+@@ -92,7 +93,7 @@ describe('bounded local review preflight', () => {
+       runDeterministic: async () => { calls += 1; },
+     });
+ 
+-    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: false });
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
+     expect(result.providers.coderabbit.status).toBe('NOT_APPLICABLE');
+     expect(calls).toBe(0);
+   });
+@@ -106,7 +107,7 @@ describe('bounded local review preflight', () => {
+       runDeterministic: async () => { calls += 1; },
+     });
+ 
+-    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: false });
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: true });
+     expect(result.providers.coderabbit).toMatchObject({
+       status: 'NOT_APPLICABLE', summary: 'PR head is unavailable',
+     });
+@@ -138,7 +139,7 @@ describe('bounded local review preflight', () => {
+     });
+ 
+     expect(result.status).toBe('INCOMPLETE');
+-    expect(result.blocking).toBe(false);
++    expect(result.blocking).toBe(true);
+     expect(result.providers.coderabbit).toMatchObject({ status: 'UNAVAILABLE', ok: false });
+   });
+ 
+@@ -168,7 +169,7 @@ describe('bounded local review preflight', () => {
+     });
+ 
+     expect(result.status).toBe('INCOMPLETE');
+-    expect(result.blocking).toBe(false);
++    expect(result.blocking).toBe(true);
+     expect(result.providers.coderabbit).toMatchObject({ status: 'UNAVAILABLE', ok: false });
+   });
+ });
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index bb7692b7..261fdec2 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -55,6 +55,21 @@ describe('watchLoop', () => {
+     expect(emitted).toEqual([failure]);
+     expect(state.pending.size).toBe(0);
+   });
++  test('stops on a terminal receipt even when replay also returns events', async () => {
++    const held = { type: T.CHECK_FAILED, key: 'held', data: { name: 'held' } };
++    const current = { type: T.CHECK_FAILED, key: 'current', data: { name: 'current' } };
++    const terminal = { type: T.PR_MERGED, key: 'merged', data: {} };
++    const state = { pending: new Map([['held', held]]) };
++    const emitted = [];
++
++    const result = await runWatchPass(state, {
++      runMonitorPass: async () => ({ events: [current, terminal], terminalReceiptId: 'receipt-terminal' }),
++    }, event => emitted.push(event));
++
++    expect(result).toEqual({ terminal: true });
++    expect(emitted).toEqual([held, current, terminal]);
++    expect(state.pending.size).toBe(0);
++  });
+   test('streams a confirmed check.failed as an emitted event on change', async () => {
+     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
+     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
+-- 
+2.51.0.windows.1
+

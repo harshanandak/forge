@@ -1,0 +1,58 @@
+From 61124b5edffc76b27fe374dd5b9d0315d15563c3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 16:47:09 +0530
+Subject: [PATCH] fix(skills): align plan description order with the
+ worktree-first hard-gate (CodeRabbit #294)
+
+The description read brainstorm -> then worktree setup, but /plan's HARD-GATE creates
+the isolated worktree BEFORE asking any questions. Reworded to "sets up an isolated
+worktree up front, then runs brainstorming ... and produces a TDD task list" so the
+stated order matches the actual gate.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/plan/SKILL.md | 8 ++++----
+ skills/plan/SKILL.md        | 8 ++++----
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/.codex/skills/plan/SKILL.md b/.codex/skills/plan/SKILL.md
+index 6eb606e3..f42c3619 100644
+--- a/.codex/skills/plan/SKILL.md
++++ b/.codex/skills/plan/SKILL.md
+@@ -1,10 +1,10 @@
+ ---
+ name: plan
+ description: >
+-  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Runs
+-  one-question-at-a-time brainstorming for design intent, commits a design doc, does
+-  technical/OWASP/DRY + codebase research, then sets up the branch, worktree, and a TDD task
+-  list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
++  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Sets up an
++  isolated worktree up front, then runs one-question-at-a-time brainstorming for design
++  intent, commits a design doc, does technical/OWASP/DRY + codebase research, and produces a
++  TDD task list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
+   build", "write a design doc", "break this into tasks", or "set up a worktree and task list
+   before coding". Reach for this even when the ask sounds like only design or only scoping —
+   plan owns intent → research → task-list setup as one stage. NOT for driving a feature to a
+diff --git a/skills/plan/SKILL.md b/skills/plan/SKILL.md
+index 6eb606e3..f42c3619 100644
+--- a/skills/plan/SKILL.md
++++ b/skills/plan/SKILL.md
+@@ -1,10 +1,10 @@
+ ---
+ name: plan
+ description: >
+-  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Runs
+-  one-question-at-a-time brainstorming for design intent, commits a design doc, does
+-  technical/OWASP/DRY + codebase research, then sets up the branch, worktree, and a TDD task
+-  list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
++  Forge PLAN stage — first stop when starting a NEW or unscoped feature. Sets up an
++  isolated worktree up front, then runs one-question-at-a-time brainstorming for design
++  intent, commits a design doc, does technical/OWASP/DRY + codebase research, and produces a
++  TDD task list for /dev. Trigger on "let's plan X", "scope a new feature", "brainstorm before we
+   build", "write a design doc", "break this into tasks", or "set up a worktree and task list
+   before coding". Reach for this even when the ask sounds like only design or only scoping —
+   plan owns intent → research → task-list setup as one stage. NOT for driving a feature to a
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,528 @@
+From e66136175ea449a53409e0fc304718f799139c50 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 13:56:16 +0530
+Subject: [PATCH] fix(kernel): harden claim reconciliation
+
+---
+ lib/commands/clean.js                |  42 ++++++++++
+ lib/kernel/claim-reconciler.js       | 105 ++++++++++++++++++++++-
+ lib/kernel/sqlite-driver.js          |  25 ++++++
+ scripts/process-tree.js              |   3 +
+ test/commands/clean.test.js          |  84 +++++++++++++++++++
+ test/kernel/claim-reconciler.test.js | 119 ++++++++++++++++++++++++---
+ 6 files changed, 363 insertions(+), 15 deletions(-)
+
+diff --git a/lib/commands/clean.js b/lib/commands/clean.js
+index bc0f09a9..b53aabde 100644
+--- a/lib/commands/clean.js
++++ b/lib/commands/clean.js
+@@ -617,6 +617,42 @@ function createIssueCloser(projectRoot, runFile, opts) {
+   };
+ }
+ 
++async function reconcileDeadClaims(projectRoot, runFile, opts = {}) {
++  try {
++    if (typeof opts._reconcileClaims === 'function') {
++      return await opts._reconcileClaims({ projectRoot });
++    }
++
++    let driver = opts._kernelDriver;
++    let owned = false;
++    if (!driver) {
++      if (!tryRun(runFile, 'git', ['-C', projectRoot, 'rev-parse', '--git-common-dir'])) {
++        return { examined: 0, released: [] };
++      }
++      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++      const deps = await buildMigratedKernelIssueDeps({ projectRoot });
++      driver = deps.kernelDriver;
++      owned = true;
++    }
++    if (!driver) return { examined: 0, released: [] };
++
++    try {
++      const { reconcileKernelClaims } = require('../kernel/claim-reconciler');
++      return await reconcileKernelClaims({
++        driver,
++        fsApi: opts._fs || fs,
++        manifestDir: opts._manifestDir,
++        isProcessAlive: opts._isProcessAlive,
++        getProcessIdentity: opts._getProcessIdentity,
++      });
++    } finally {
++      if (owned && typeof driver.close === 'function') driver.close();
++    }
++  } catch (_e) { /* best-effort: unverifiable authority never aborts clean */ // NOSONAR S2486
++    return { examined: 0, released: [] };
++  }
++}
++
+ /**
+  * Main handler for the clean command.
+  * @param {string[]} _args - Positional arguments (unused)
+@@ -703,6 +739,11 @@ async function handler(_args, flags, projectRoot, opts = {}) {
+   }
+   const { cleaned, active, survivors, dirty, closedIssues } = scan;
+ 
++  // Claim repair is an explicit clean-lifecycle maintenance action. Run after
++  // worktree removal so a newly-missing linked checkout can be observed, while
++  // dry-run remains mutation-free. Evidence gaps and Kernel failures fail closed.
++  if (!dryRun) await reconcileDeadClaims(projectRoot, runFile, opts);
++
+   // Post-merge master auto-update (default-on; skipped in dry-run).
+   let masterSync = null;
+   if (masterSyncEnabled && !dryRun) {
+@@ -739,6 +780,7 @@ module.exports = {
+     getGhMergedPrs,
+     prEvidenceFor,
+     createIssueCloser,
++    reconcileDeadClaims,
+     isSquashMerged,
+     hasMergedPrEvidence,
+     isUnstartedBranch,
+diff --git a/lib/kernel/claim-reconciler.js b/lib/kernel/claim-reconciler.js
+index 241b33c3..40d682ab 100644
+--- a/lib/kernel/claim-reconciler.js
++++ b/lib/kernel/claim-reconciler.js
+@@ -1,6 +1,13 @@
+ 'use strict';
+ 
+-const PROCESS_MANIFEST_VERSION = 1;
++const fs = require('node:fs');
++const path = require('node:path');
++const {
++	DEFAULT_MANIFEST_DIR,
++	defaultGetProcessIdentity,
++	isValidManifest,
++	readProcessManifest,
++} = require('../../scripts/process-tree');
+ 
+ function nonEmptyString(value) {
+ 	return typeof value === 'string' && value.trim().length > 0 ? value : null;
+@@ -15,7 +22,7 @@ function verifiedManifestForClaim(claim, manifest) {
+ 	const worktreeId = nonEmptyString(claim?.worktree_id);
+ 	if (!nonEmptyString(claim?.id) || !nonEmptyString(claim?.issue_id) || !sessionId || !worktreeId) return null;
+ 	if (claim.state != null && claim.state !== 'active') return null;
+-	if (!manifest || manifest.version !== PROCESS_MANIFEST_VERSION || manifest.token !== sessionId) return null;
++	if (!isValidManifest(manifest) || manifest.token !== sessionId) return null;
+ 
+ 	const owner = manifest.owner;
+ 	const pid = positivePid(owner?.pid);
+@@ -28,6 +35,64 @@ function verifiedManifestForClaim(claim, manifest) {
+ 	return { sessionId, worktreeId, pid, identity, startedAt };
+ }
+ 
++function defaultIsProcessAlive(pid) {
++	try {
++		process.kill(pid, 0);
++		return true;
++	} catch (error) {
++		return error?.code === 'EPERM';
++	}
++}
++
++function createManifestReader(options = {}) {
++	const fsApi = options.fsApi || fs;
++	const processApi = options.processApi || process;
++	const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
++	return async (sessionId) => {
++		let entries;
++		try {
++			entries = fsApi.readdirSync(manifestDir, { withFileTypes: true });
++		} catch {
++			return null;
++		}
++		const matches = [];
++		for (const entry of entries) {
++			const name = typeof entry === 'string' ? entry : entry?.name;
++			if (!name || !name.endsWith('.json')) continue;
++			if (typeof entry !== 'string' && entry.isFile && !entry.isFile()) continue;
++			const manifest = readProcessManifest(path.join(manifestDir, name), fsApi, processApi);
++			if (manifest?.token === sessionId) matches.push(manifest);
++		}
++		return matches.length === 1 ? matches[0] : null;
++	};
++}
++
++function createWorktreeInspector(driver, fsApi = fs) {
++	return async (worktreeId, claim) => {
++		let rows;
++		try {
++			rows = await driver.listWorktrees({});
++		} catch {
++			return null;
++		}
++		const linked = (Array.isArray(rows) ? rows : []).filter(row => row
++			&& row.issue_id === claim.issue_id
++			&& row.state === 'active'
++			&& (row.id === worktreeId || path.basename(row.path || '') === worktreeId));
++		if (linked.length !== 1 || !nonEmptyString(linked[0].path)) return null;
++		try {
++			if (typeof fsApi.lstatSync === 'function') {
++				fsApi.lstatSync(linked[0].path);
++				return true;
++			}
++			return fsApi.existsSync(linked[0].path) ? true : false;
++		} catch (error) {
++			if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
++			return null;
++		}
++	};
++}
++
+ async function reconcileClaims(options = {}) {
+ 	const claims = Array.isArray(options.claims) ? options.claims : [];
+ 	const readManifest = options.readManifest;
+@@ -108,7 +173,43 @@ async function reconcileClaims(options = {}) {
+ 	return { examined: claims.length, released };
+ }
+ 
++async function reconcileKernelClaims(options = {}) {
++	const driver = options.driver;
++	if (!driver || typeof driver.listWorktrees !== 'function'
++		|| typeof driver.releaseExactClaim !== 'function') {
++		return { examined: 0, released: [] };
++	}
++
++	let claims;
++	try {
++		if (typeof driver.listActiveClaims === 'function') {
++			claims = await driver.listActiveClaims();
++		} else {
++			const response = await driver.issueOperation('claims', [], options.context || {}, options.config || {});
++			claims = response?.data?.claims;
++		}
++	} catch {
++		return { examined: 0, released: [] };
++	}
++
++	return reconcileClaims({
++		claims,
++		readManifest: options.readManifest || createManifestReader(options),
++		worktreeExists: options.worktreeExists || createWorktreeInspector(driver, options.fsApi || fs),
++		isProcessAlive: options.isProcessAlive || defaultIsProcessAlive,
++		getProcessIdentity: options.getProcessIdentity || (pid => defaultGetProcessIdentity(pid, options)),
++		releaseClaim: async (claim, evidence) => {
++			const released = await driver.releaseExactClaim(claim, evidence, options.config || {});
++			if (released && typeof options.onEvidence === 'function') options.onEvidence(evidence);
++			return released;
++		},
++	});
++}
++
+ module.exports = {
++	createManifestReader,
++	createWorktreeInspector,
+ 	reconcileClaims,
++	reconcileKernelClaims,
+ 	verifiedManifestForClaim,
+ };
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index bd8000e5..79a3f33f 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1107,6 +1107,25 @@ function updateKernelClaimStateRow(runtime, db, claimId, state) {
+ 	return { id: claimId, state };
+ }
+ 
++function listActiveKernelClaimRows(runtime, db) {
++	return safeAll(runtime, db, "SELECT * FROM kernel_claims WHERE state = 'active' ORDER BY claimed_at ASC, issue_id ASC");
++}
++
++// Reconciliation must never release whichever lease happens to occupy an issue's
++// active slot after its evidence was gathered. Bind every ownership discriminator
++// from the observed row so a concurrent replacement makes this a zero-row no-op.
++function releaseExactKernelClaimRow(runtime, db, claim) {
++	const result = runParams(
++		runtime,
++		db,
++		`UPDATE kernel_claims SET state = 'released'
++		 WHERE id = ? AND issue_id = ? AND actor IS ? AND session_id IS ?
++			AND worktree_id IS ? AND state = 'active'`,
++		[claim.id, claim.issue_id, claim.actor ?? null, claim.session_id ?? null, claim.worktree_id ?? null],
++	);
++	return Number(result?.changes || 0) === 1;
++}
++
+ // --- Worktree-linkage primitives (P0 kernel linkage backbone). The kernel_worktrees
+ // table is a plain authority registry (NOT event-sourced): `forge worktree create`
+ // writes a row here so the kernel records issue → worktree → work-folder, and
+@@ -2504,6 +2523,12 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		async updateKernelClaimState(claimId, state, _context = {}, config = {}) {
+ 			return updateKernelClaimStateRow(runtime, getDatabase(config), claimId, state);
+ 		},
++		async listActiveClaims(_context = {}, config = {}) {
++			return listActiveKernelClaimRows(runtime, getDatabase(config));
++		},
++		async releaseExactClaim(claim, _evidence = {}, config = {}) {
++			return releaseExactKernelClaimRow(runtime, getDatabase(config), claim);
++		},
+ 		// commitGuardedAccept invokes this (typeof-guarded) INSIDE its BEGIN IMMEDIATE
+ 		// transaction to apply an accepted issue event to the authority tables. The
+ 		// returned summary ({id, revision, comment_id?}) flows back through
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index f6e91d1a..61357298 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -749,11 +749,14 @@ function reconcileProcessManifests(options = {}) {
+ }
+ 
+ module.exports = {
++  DEFAULT_MANIFEST_DIR,
+   INSTANCE_ENV,
+   MANIFEST_ENV,
+   MANIFEST_VERSION,
+   TOKEN_ENV,
+   createProcessTree,
++  defaultGetProcessIdentity,
++  isValidManifest,
+   readProcessManifest,
+   reapProcessManifest,
+   reconcileProcessManifests,
+diff --git a/test/commands/clean.test.js b/test/commands/clean.test.js
+index ad38b06e..a12d7b45 100644
+--- a/test/commands/clean.test.js
++++ b/test/commands/clean.test.js
+@@ -1,5 +1,7 @@
+ 'use strict';
+ 
++const fs = require('node:fs');
++const os = require('node:os');
+ const path = require('node:path');
+ const { describe, test, expect } = require('bun:test');
+ 
+@@ -947,6 +949,88 @@ describe('forge clean — close linked issues on merge', () => {
+     expect(result.closedIssues).toEqual([]);
+   });
+ 
++  test('runs claim reconciliation once as best-effort lifecycle maintenance', async () => {
++    const mod = require('../../lib/commands/clean');
++    let reconciliations = 0;
++
++    const result = await mod.handler([], {}, ROOT, {
++      _exec: () => Buffer.from(''),
++      _fs: { existsSync: () => false },
++      _syncMaster: noopSync,
++      _reconcileClaims: async () => {
++        reconciliations += 1;
++        throw new Error('unverifiable marker');
++      },
++    });
++
++    expect(result.success).toBe(true);
++    expect(reconciliations).toBe(1);
++  });
++
++  test('clean lifecycle invokes manifest-backed exact claim reconciliation', async () => {
++    const mod = require('../../lib/commands/clean');
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-clean-claim-'));
++    const manifestDir = path.join(root, 'manifests');
++    fs.mkdirSync(manifestDir);
++    const claim = {
++      id: 'claim-clean', issue_id: 'issue-clean', actor: 'actor-clean', state: 'active',
++      session_id: 'session-clean', worktree_id: 'worktree-clean',
++    };
++    fs.writeFileSync(path.join(manifestDir, 'run-clean.json'), JSON.stringify({
++      version: 1,
++      token: claim.session_id,
++      owner: { pid: 5100, identity: 'process-start-5100', startedAt: '2026-08-09T00:00:00.000Z' },
++      children: [],
++    }));
++    let mutations = 0;
++    const driver = {
++      listActiveClaims: () => claim.state === 'active' ? [claim] : [],
++      listWorktrees: () => [{
++        id: claim.worktree_id,
++        issue_id: claim.issue_id,
++        path: path.join(root, 'missing-worktree'),
++        state: 'active',
++      }],
++      releaseExactClaim: (candidate) => {
++        if (candidate.id !== claim.id || claim.state !== 'active') return false;
++        claim.state = 'released';
++        mutations += 1;
++        return true;
++      },
++    };
++
++    try {
++      const result = await mod.handler([], {}, root, {
++        _exec: () => Buffer.from(''),
++        _fs: fs,
++        _syncMaster: noopSync,
++        _kernelDriver: driver,
++        _manifestDir: manifestDir,
++        _isProcessAlive: () => false,
++      });
++
++      expect(result.success).toBe(true);
++      expect(claim.state).toBe('released');
++      expect(mutations).toBe(1);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('dry-run never reconciles claims', async () => {
++    const mod = require('../../lib/commands/clean');
++    let reconciliations = 0;
++
++    await mod.handler([], { '--dry-run': true }, ROOT, {
++      _exec: () => Buffer.from(''),
++      _fs: { existsSync: () => false },
++      _syncMaster: noopSync,
++      _reconcileClaims: async () => { reconciliations += 1; },
++    });
++
++    expect(reconciliations).toBe(0);
++  });
++
+   test('an unlinked branch is reported as nothing closed', async () => {
+     const mod = require('../../lib/commands/clean');
+     const result = await mod.handler([], {}, ROOT, {
+diff --git a/test/kernel/claim-reconciler.test.js b/test/kernel/claim-reconciler.test.js
+index 7180101b..e4fdde26 100644
+--- a/test/kernel/claim-reconciler.test.js
++++ b/test/kernel/claim-reconciler.test.js
+@@ -1,8 +1,18 @@
+ 'use strict';
+ 
+-const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
+ 
+-const { reconcileClaims } = require('../../lib/kernel/claim-reconciler');
++const { reconcileClaims, reconcileKernelClaims } = require('../../lib/kernel/claim-reconciler');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++const tempDirs = [];
++
++afterEach(() => {
++	while (tempDirs.length > 0) fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
++});
+ 
+ function claim(id, overrides = {}) {
+ 	return {
+@@ -70,24 +80,107 @@ describe('kernel claim reconciler', () => {
+ 		expect(result).toEqual({ examined: 6, released: [eligible.id] });
+ 	});
+ 
+-	test('is idempotent when the release reports that the claim is already inactive', async () => {
+-		const candidate = claim('once');
+-		let calls = 0;
+-		const options = {
++	test('fails closed when a process manifest contains a malformed child entry', async () => {
++		const candidate = claim('malformed-child');
++		const released = [];
++
++		const result = await reconcileClaims({
+ 			claims: [candidate],
+-			readManifest: () => manifestFor(candidate),
++			readManifest: () => manifestFor(candidate, { children: [{}] }),
+ 			worktreeExists: () => false,
+ 			isProcessAlive: () => false,
+ 			getProcessIdentity: () => null,
+-			releaseClaim: async () => {
+-				calls += 1;
+-				return calls === 1;
++			releaseClaim: async (exactClaim) => released.push(exactClaim),
++		});
++
++		expect(result).toEqual({ examined: 1, released: [] });
++		expect(released).toEqual([]);
++	});
++
++	test('production adapter conditionally releases one exact claim once with stable manifest evidence', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-reconcile-'));
++		tempDirs.push(root);
++		const manifestDir = path.join(root, 'manifests');
++		const liveWorktreePath = path.join(root, 'live-worktree');
++		fs.mkdirSync(manifestDir);
++		fs.mkdirSync(liveWorktreePath);
++
++		const eligible = claim('eligible-stateful');
++		const unrelated = claim('unrelated-stateful');
++		for (const candidate of [eligible, unrelated]) {
++			fs.writeFileSync(
++				path.join(manifestDir, `run-${candidate.id}.json`),
++				JSON.stringify(manifestFor(candidate)),
++				'utf8',
++			);
++		}
++
++		const state = [eligible, unrelated];
++		const evidence = [];
++		let mutations = 0;
++		const driver = {
++			async issueOperation(operation) {
++				expect(operation).toBe('claims');
++				return { data: { claims: state.filter(candidate => candidate.state === 'active') } };
++			},
++			listWorktrees() {
++				return [
++					{ id: eligible.worktree_id, issue_id: eligible.issue_id, path: path.join(root, 'missing-worktree'), state: 'active' },
++					{ id: unrelated.worktree_id, issue_id: unrelated.issue_id, path: liveWorktreePath, state: 'active' },
++				];
++			},
++			async releaseExactClaim(candidate, receipt) {
++				const stored = state.find(row => row.id === candidate.id
++					&& row.issue_id === candidate.issue_id
++					&& row.session_id === candidate.session_id
++					&& row.worktree_id === candidate.worktree_id
++					&& row.state === 'active');
++				if (!stored) return false;
++				stored.state = 'released';
++				mutations += 1;
++				evidence.push(receipt);
++				return true;
+ 			},
+ 		};
++		const options = { driver, manifestDir, isProcessAlive: () => false };
++
++		expect(await reconcileKernelClaims(options)).toEqual({ examined: 2, released: [eligible.id] });
++		const stableEvidence = JSON.stringify(evidence[0]);
++		expect(Object.isFrozen(evidence[0])).toBe(true);
++		expect(eligible.state).toBe('released');
++		expect(unrelated.state).toBe('active');
++		expect(mutations).toBe(1);
++
++		expect(await reconcileKernelClaims(options)).toEqual({ examined: 1, released: [] });
++		expect(mutations).toBe(1);
++		expect(JSON.stringify(evidence[0])).toBe(stableEvidence);
++	});
++
++	test('SQLite exact release rejects stale ownership evidence and mutates once', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-exact-sqlite-'));
++		tempDirs.push(root);
++		const driver = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
++		await driver.exec(`
++			CREATE TABLE kernel_claims (
++				id TEXT PRIMARY KEY, issue_id TEXT, actor TEXT, state TEXT,
++				session_id TEXT, worktree_id TEXT, claimed_at TEXT, expires_at TEXT
++			);
++			INSERT INTO kernel_claims VALUES (
++				'claim-exact', 'issue-exact', 'actor-exact', 'active',
++				'session-exact', 'worktree-exact', '2026-08-09T00:00:00.000Z', NULL
++			);
++		`);
++		const exact = {
++			id: 'claim-exact', issue_id: 'issue-exact', actor: 'actor-exact',
++			session_id: 'session-exact', worktree_id: 'worktree-exact',
++		};
+ 
+-		expect(await reconcileClaims(options)).toEqual({ examined: 1, released: [candidate.id] });
+-		expect(await reconcileClaims(options)).toEqual({ examined: 1, released: [] });
+-		expect(calls).toBe(2);
++		expect(await driver.releaseExactClaim({ ...exact, session_id: 'stale-session' })).toBe(false);
++		expect((await driver.listActiveClaims()).map(row => row.id)).toEqual(['claim-exact']);
++		expect(await driver.releaseExactClaim(exact)).toBe(true);
++		expect(await driver.releaseExactClaim(exact)).toBe(false);
++		expect(await driver.listActiveClaims()).toEqual([]);
++		driver.close();
+ 	});
+ 
+ 	test('fails closed for incomplete claims and dependency errors', async () => {
+-- 
+2.51.0.windows.1
+

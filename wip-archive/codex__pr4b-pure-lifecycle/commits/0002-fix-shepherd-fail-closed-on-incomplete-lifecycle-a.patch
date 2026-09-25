@@ -1,0 +1,169 @@
+From 4fe4e2eb9097bc00fad201fa9d2ff0adb50229f4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:25:04 +0530
+Subject: [PATCH] fix(shepherd): fail closed on incomplete lifecycle authority
+
+---
+ lib/pr-monitor/auto-actions.js       |  29 +++++++++++++++++++++++++++
+ lib/pr-monitor/events.js             | Bin 5592 -> 5697 bytes
+ lib/pr-monitor/reconcile.js          | Bin 10651 -> 10961 bytes
+ test/pr-monitor/auto-actions.test.js |  28 ++++++++++++++++++++++++++
+ test/pr-monitor/events.test.js       |  12 +++++++++++
+ test/pr-monitor/reconcile.test.js    |  14 +++++++++++++
+ 6 files changed, 83 insertions(+)
+
+diff --git a/lib/pr-monitor/auto-actions.js b/lib/pr-monitor/auto-actions.js
+index 236ea944..52ecca35 100644
+--- a/lib/pr-monitor/auto-actions.js
++++ b/lib/pr-monitor/auto-actions.js
+@@ -198,6 +198,31 @@ function normalizeActionHistory(history) {
+   return { ok: true, byKey };
+ }
+ 
++function validateAutoActionAuthority(payload) {
++  if (!payload?.evidence || !Array.isArray(payload.evidence.unreadable)
++    || typeof payload.evidence.tornRead !== 'boolean') {
++    return { ok: false, reason: 'verdict evidence is incomplete' };
++  }
++  if (payload.draft !== false) {
++    return { ok: false, reason: 'non-draft authority is incomplete' };
++  }
++
++  const failuresByName = new Map();
++  for (const failure of Array.isArray(payload.failures) ? payload.failures : []) {
++    if (!failure || typeof failure.name !== 'string' || !failure.name) continue;
++    const evidence = {
++      conclusion: String(failure.conclusion || '').toUpperCase(),
++      url: failure.jobUrl || failure.detailsUrl || null,
++    };
++    const prior = failuresByName.get(failure.name);
++    if (prior && (prior.conclusion !== evidence.conclusion || prior.url !== evidence.url)) {
++      return { ok: false, conflict: true, reason: `required check evidence conflicts for ${failure.name}` };
++    }
++    if (!prior) failuresByName.set(failure.name, evidence);
++  }
++  return { ok: true };
++}
++
+ /** Select a deterministic, per-head, bounded action/retry batch. */
+ function decideBoundedAutoActions(payload, opts = {}) {
+   const closed = (status, reason) => ({ status, reason, actions: [] });
+@@ -208,6 +233,10 @@ function decideBoundedAutoActions(payload, opts = {}) {
+   if (opts.expectedRevision != null && opts.expectedRevision !== subjectRevision) {
+     return closed(AUTO_ACTION_STATUS.STALE, 'payload head does not match expected revision');
+   }
++  const authority = validateAutoActionAuthority(payload);
++  if (!authority.ok) {
++    return closed(authority.conflict ? AUTO_ACTION_STATUS.CONFLICT : AUTO_ACTION_STATUS.INCOMPLETE, authority.reason);
++  }
+   const maxActions = boundedPolicyValue(opts.maxActions, 1, MAX_AUTO_ACTIONS);
+   const maxAttempts = boundedPolicyValue(opts.maxAttempts, 2, MAX_AUTO_ATTEMPTS);
+   if (maxActions == null || maxAttempts == null) {
+diff --git a/lib/pr-monitor/events.js b/lib/pr-monitor/events.js
+index 5fccdf486d980eaecdf461da74e89b5dcf49ad99..9f9415de47c8f4c81174e3ebf5f27c54682dbc67 100644
+GIT binary patch
+delta 264
+zcmcbieNbmZonU=VYKcNYQEFLcerd5=W?p(~Q9)5=UWqlAf&xe?FSVisO}M0}QlT0s
+zt$;46V5^XZFhK*PRTE^60yYbPib2*|fb3PUwN=O~&B;-)hfr21=D=JBHmg=4Ik6-;
+xL!o-IuZYIv1Y!TpRf6G+hM8#!8ZdQ8&Q(wZnT+ZMO|au9`-!M;{v`a25daIcU1<OS
+
+delta 148
+zcmX@8b3=PWo#5sTLcxs5IjJQInJKAxC7H>IIo4bXKu}UtsZb4ODIla2Y!%Wn^U_m`
+z3W_rGN;C?JQp+;)ON%uXY;93x@=_~GG$97nDkLYCBxg+47txs<E95Vxpim1oHZx5@
+NLlJK2W<3#MCIELZFG>Ia
+
+diff --git a/lib/pr-monitor/reconcile.js b/lib/pr-monitor/reconcile.js
+index 6f93fdc917ef9f9186467256bbe2bf9ffc25f847..9061f0c48600fa2363f90686602e507a96b8e424 100644
+GIT binary patch
+delta 167
+zcmbOod@*!G9*?=Ae^ORza*19+QGQ8&No7H*UPfZEe|cU&QGP*cQAwp<a$-)7Mt)Lp
+zYEfBgijIPMPHJLts`})4+)|SZggIEj+{u=rGLzGJ#EcYeZ58rLb8-~a)D$#8rsbz8
+p!1U^Yl`4RgsON(%Rp;X5oE*q4J$aXez~uSdlBfo5PUkU^1pr~TH+TR5
+
+delta 16
+YcmcZ@Iy-nn9?#_WJp7wC^UBEr06<y>iU0rr
+
+diff --git a/test/pr-monitor/auto-actions.test.js b/test/pr-monitor/auto-actions.test.js
+index 12f57e80..67f6c342 100644
+--- a/test/pr-monitor/auto-actions.test.js
++++ b/test/pr-monitor/auto-actions.test.js
+@@ -287,4 +287,32 @@ describe('decideBoundedAutoActions - idempotency and retry bounds', () => {
+       failures: [{ name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' }],
+     }))).toMatchObject({ status: AUTO_ACTION_STATUS.CONFLICT, actions: [] });
+   });
++
++  test('missing evidence or draft authority is incomplete and consumes no action', () => {
++    for (const payload of [
++      flakyPayload({ evidence: undefined }),
++      flakyPayload({ draft: undefined }),
++      flakyPayload({ draft: true }),
++    ]) {
++      expect(decideBoundedAutoActions(payload)).toMatchObject({
++        status: AUTO_ACTION_STATUS.INCOMPLETE,
++        actions: [],
++      });
++    }
++  });
++
++  test('conflicting duplicate required-check evidence conflicts instead of first-wins rerun', () => {
++    const payload = flakyPayload({
++      requiredChecks: { failing: ['one'] },
++      failures: [
++        { name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' },
++        { name: 'one', conclusion: 'TIMED_OUT', jobUrl: 'https://github.com/o/r/actions/runs/22/job/2' },
++      ],
++    });
++
++    expect(decideBoundedAutoActions(payload)).toMatchObject({
++      status: AUTO_ACTION_STATUS.CONFLICT,
++      actions: [],
++    });
++  });
+ });
+diff --git a/test/pr-monitor/events.test.js b/test/pr-monitor/events.test.js
+index 0d2347b5..4833a025 100644
+--- a/test/pr-monitor/events.test.js
++++ b/test/pr-monitor/events.test.js
+@@ -87,4 +87,16 @@ describe('events - deterministic transition authority', () => {
+       reason: 'newer complete transition',
+     });
+   });
++
++  test('cyclic or otherwise noncanonical initial transitions fail closed', () => {
++    const cyclic = state(0);
++    cyclic.self = cyclic;
++
++    for (const next of [cyclic, { ...state(0), value: 1n }]) {
++      expect(decideTransition(null, next)).toMatchObject({
++        status: TRANSITION_STATUS.INCOMPLETE,
++        changed: false,
++      });
++    }
++  });
+ });
+diff --git a/test/pr-monitor/reconcile.test.js b/test/pr-monitor/reconcile.test.js
+index 52c56503..d282d9fb 100644
+--- a/test/pr-monitor/reconcile.test.js
++++ b/test/pr-monitor/reconcile.test.js
+@@ -235,4 +235,18 @@ describe('decideLifecycle() - fail-closed lifecycle authority', () => {
+ 			actions: [],
+ 		});
+ 	});
++
++	test('a present lease without watchers or missing lease evidence fails closed before adoption', () => {
++		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
++		for (const observed of [
++			{ lease: {}, leaseFresh: true, prRows: [], liveWatcherPids: [] },
++			{ leaseFresh: true, prRows: [], liveWatcherPids: [] },
++		]) {
++			expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
++				status: LIFECYCLE_STATUS.INCOMPLETE,
++				actions: [],
++			});
++			expect(reconcile(desired, observed, NOW)).toEqual({ actions: [] });
++		}
++	});
+ });
+-- 
+2.51.0.windows.1
+

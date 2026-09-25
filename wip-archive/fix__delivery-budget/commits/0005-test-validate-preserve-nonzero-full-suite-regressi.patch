@@ -1,0 +1,53 @@
+From 9faf94c6118e42201cb90209872830e39d742dab Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 16:08:56 +0530
+Subject: [PATCH] test(validate): preserve nonzero full-suite regression
+
+---
+ test/commands/validate.test.js | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index e02bf7e6..d865f94b 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -1034,6 +1034,36 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			}
+ 		});
+ 
++		test('keeps a non-zero full-suite exit failed when the aggregate reports zero failures', async () => {
++			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-exit-'));
++			try {
++				fs.mkdirSync(path.join(rootDir, 'scripts'));
++				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
++				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
++					name: 'forge-workflow',
++					bin: { forge: 'bin/forge.js' },
++					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
++				}));
++				const exec = () => {
++					const error = new Error('full suite exited 1');
++					error.stdout = 'Full suite aggregate: status=FAIL tests=10 assertions=12 passed=10 failed=0 errors=0 skipped=0';
++					throw error;
++				};
++
++				const result = await runAllTests(exec, rootDir);
++				expect(result).toMatchObject({
++					success: false,
++					testsFound: true,
++					fullSuite: true,
++					passed: 10,
++					failed: 1,
++					total: 10,
++				});
++			} finally {
++				fs.rmSync(rootDir, { recursive: true, force: true });
++			}
++		});
++
+ 		test('parses the final full-suite aggregate before Bun shard summaries', () => {
+ 			const result = parseTestCounts([
+ 				'99 pass',
+-- 
+2.51.0.windows.1
+

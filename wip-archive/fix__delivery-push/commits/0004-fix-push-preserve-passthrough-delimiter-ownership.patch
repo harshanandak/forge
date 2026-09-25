@@ -1,0 +1,116 @@
+From 7bb64afc7010ba8eb2e0b1935077e7947e3ee822 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 01:48:04 +0530
+Subject: [PATCH] fix(push): preserve passthrough delimiter ownership
+
+---
+ .../2026-09-18-delivery-push/decisions.md     | 13 +++++++
+ lib/commands/push.js                          | 12 +++++-
+ test/commands/push.test.js                    | 37 +++++++++++++++++++
+ 3 files changed, 60 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-push/decisions.md b/docs/work/2026-09-18-delivery-push/decisions.md
+index 4504f7a1..0b4b0c5f 100644
+--- a/docs/work/2026-09-18-delivery-push/decisions.md
++++ b/docs/work/2026-09-18-delivery-push/decisions.md
+@@ -30,6 +30,19 @@
+ **Choice made**: Leave all three hook calls unchanged. A full proof signs exactly branch protection, lint, and tests; a quick proof signs exactly branch protection and lint and also requires the existing quick child lane. Any other shape runs ordinary hooks.
+ **Status**: RESOLVED
+ 
++## Decision 4
++
++**Date**: 2026-09-20
++**Task**: Preserve Git argument ownership across the push delimiter
++**Gap**: The refreshed handler removed every argument before the first `--`, and the global flag parser still reported a literal `--quick` after that delimiter as a Forge flag.
++**Score**: 0 / 14
++**Route**: PROCEED after root quality review
++**Choice made**: Consume only the first delimiter in place. Preserve the relative order of arguments on both sides, recognize and remove Forge's `--quick` or `-q` only before the boundary, and leave every post-boundary argument Git-owned. Calls without a delimiter retain the existing parsed-flag behavior.
++**Status**: RESOLVED
++
++**RED**: The two injected handler cases failed as expected: `origin` disappeared from `['origin', '--', 'feat/slug']`, and post-boundary `--quick` incorrectly produced `quickMode: true` (0 passed, 2 failed, 606 ms).
++**GREEN**: `bun test --timeout 15000 test/commands/push.test.js` passed 55 tests, failed 0, with 125 expectations in 736 ms.
++
+ ## Refresh and focused validation evidence
+ 
+ **Date**: 2026-09-20
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 1d36b413..5222c829 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -382,7 +382,12 @@ module.exports = {
+ 		const beginPushProof = deps?.beginPushProof || validationReceipt._pushProof.begin;
+ 		const verifyReceipt = deps?.verifyValidationReceipt || verifyValidationReceipt;
+ 
+-		const quickMode = !!(flags && (flags['--quick'] || flags.quick));
++		const delimiterIndex = args.indexOf('--');
++		const forgeArgs = delimiterIndex === -1 ? args : args.slice(0, delimiterIndex);
++		const gitArgsAfterDelimiter = delimiterIndex === -1 ? [] : args.slice(delimiterIndex + 1);
++		const quickMode = delimiterIndex === -1
++			? !!(flags && (flags['--quick'] || flags.quick))
++			: forgeArgs.some(arg => arg === '--quick' || arg === '-q');
+ 		const pkgManager = detectPackageManager(projectRoot, existsFn);
+ 		const worktreeRoot = resolveGitToplevel(execFn, projectRoot);
+ 		const gateEnv = buildGateEnv(deps?.env || process.env);
+@@ -440,7 +445,10 @@ module.exports = {
+ 		}
+ 
+ 		// Step 5: git push with passthrough args
+-		const gitArgs = args.slice(args.indexOf('--') + 1).filter(a => a !== '--quick');
++		const gitArgs = [
++			...forgeArgs.filter(arg => arg !== '--quick' && arg !== '-q'),
++			...gitArgsAfterDelimiter,
++		];
+ 		let pushFailed = false;
+ 		try {
+ 			execFn('git', ['push', ...gitArgs], {
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index a24a88c6..b17ca741 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -582,6 +582,43 @@ describe('Forge Push Command', () => {
+ 			]);
+ 		});
+ 
++		test('preserves Git-owned arguments on both sides of the first Forge delimiter', async () => {
++			const execCalls = [];
++			const deps = makeDeps({
++				execFileSync: (cmd, args) => {
++					execCalls.push({ cmd, args: [...args] });
++					return '';
++				},
++			});
++
++			await pushModule.handler(['origin', '--', 'feat/slug'], {}, '/fake/project', deps);
++
++			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
++			expect(pushCall.args).toEqual(['push', 'origin', 'feat/slug']);
++		});
++
++		test('keeps --quick after the delimiter Git-owned', async () => {
++			const execCalls = [];
++			const deps = makeDeps({
++				execFileSync: (cmd, args, opts) => {
++					execCalls.push({ cmd, args: [...args], opts });
++					return '';
++				},
++			});
++
++			const result = await pushModule.handler(
++				['origin', '--', '--quick', 'feat/slug'],
++				{ quick: true },
++				'/fake/project',
++				deps,
++			);
++
++			const pushCall = execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push');
++			expect(result.quickMode).toBe(false);
++			expect(pushCall.args).toEqual(['push', 'origin', '--quick', 'feat/slug']);
++			expect(pushCall.opts.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
++		});
++
+ 		test('preserves a later Git delimiter after consuming the Forge delimiter', async () => {
+ 			const execCalls = [];
+ 			const deps = makeDeps({
+-- 
+2.51.0.windows.1
+

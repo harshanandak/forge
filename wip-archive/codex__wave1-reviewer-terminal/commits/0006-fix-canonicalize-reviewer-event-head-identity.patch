@@ -1,0 +1,28 @@
+From de80a92cf6d3c60f3dff00420023ea246fc31d75 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 16:21:56 +0530
+Subject: [PATCH] fix: canonicalize reviewer event head identity
+
+---
+ lib/reviewer-ledger.js | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/reviewer-ledger.js b/lib/reviewer-ledger.js
+index 46508054..f14a94fd 100644
+--- a/lib/reviewer-ledger.js
++++ b/lib/reviewer-ledger.js
+@@ -254,9 +254,9 @@ function recordReviewEvent(ledger, event) {
+     eventHead = asSha(event.headSha);
+     if (eventHead !== out.headSha) throw new Error('review event belongs to a different exact head.');
+   }
+-  const identity = reviewEventIdentity(event, classification, eventHead, at);
++  const identity = reviewEventIdentity(event, classification, eventHead || out.headSha, at);
+   if (out.events.some((seen) => {
+-    const seenIdentity = seen.identity || reviewEventIdentity(seen, seen.classification, seen.headSha || null, seen.at);
++    const seenIdentity = seen.identity || reviewEventIdentity(seen, seen.classification, seen.headSha || out.headSha, seen.at);
+     return seenIdentity === identity;
+   })) return out;
+   const recorded = { id: eventId, identity, classification, at };
+-- 
+2.51.0.windows.1
+

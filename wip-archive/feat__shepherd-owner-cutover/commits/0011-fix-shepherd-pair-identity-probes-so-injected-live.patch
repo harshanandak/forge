@@ -1,0 +1,227 @@
+From b0b4eca524f57d66542081a1852c8c2917e02fcd Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 16:36:29 +0530
+Subject: [PATCH] fix(shepherd): pair identity probes so injected liveness
+ cannot borrow /proc
+
+An identity proof needs both halves to describe the same process. Callers that
+answer liveness themselves (tests, cached legacy evidence) answer for PIDs the
+built-in /proc probe knows nothing about, but processIdentityAlive fell back to
+that probe anyway. On Linux it then read an unrelated real process's start time,
+called the fabricated PID reused, and flipped watcherAlive/controllerAlive false;
+on Windows the probe returns null so nothing changed. That is the Linux-only CI
+failure on 918123f2.
+
+Pair the probes at the wiring layer: ownerOptions hands out defaultPidStartedAt
+only alongside the default liveness check, cached legacy evidence carries no
+start-time probe, and the helper never falls back to the built-in probe. Without
+a start-time counterpart identity is simply unprovable, so a live PID stays alive
+exactly as before.
+
+Also normalize the marker: epoch-ms numbers and numeric strings are accepted
+instead of becoming NaN and silently losing the proof, and a supplied but
+unparsable marker resolves to unknown rather than a lucky alive.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/process-identity.js            | 39 +++++++++++++++----
+ lib/pr-monitor/reconcile-executor.js          | 18 +++++++--
+ test/pr-monitor/process-identity.test.js      | 23 ++++++++++-
+ ...reconcile-executor-owner-authority.test.js | 22 +++++++++++
+ 4 files changed, 91 insertions(+), 11 deletions(-)
+
+diff --git a/lib/pr-monitor/process-identity.js b/lib/pr-monitor/process-identity.js
+index f0917c8f..94d962c5 100644
+--- a/lib/pr-monitor/process-identity.js
++++ b/lib/pr-monitor/process-identity.js
+@@ -46,6 +46,23 @@ function defaultPidStartedAt(pid) {
+ 	}
+ }
+ 
++/**
++ * Normalize an identity marker to epoch ms.
++ *
++ * @param {string|number|null|undefined} value ISO timestamp, epoch ms, or numeric string
++ * @returns {number|null|typeof NaN} epoch ms, null when no marker was supplied, NaN when unparsable
++ */
++function markerMs(value) {
++	if (value == null) return null;
++	if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
++	if (typeof value !== 'string') return NaN;
++	const trimmed = value.trim();
++	if (trimmed === '') return NaN;
++	if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
++	const parsed = Date.parse(trimmed);
++	return Number.isFinite(parsed) ? parsed : NaN;
++}
++
+ /**
+  * Classify a PID against the identity marker its owner wrote.
+  *
+@@ -56,10 +73,14 @@ function defaultPidStartedAt(pid) {
+  * - `unknown`: liveness itself could not be established (non-boolean probe answer
+  *   or an unusable PID). Callers decide how to fail; this is never "reused".
+  *
+- * A missing marker or an unavailable start-time probe (today: every non-Linux
+- * platform) yields `alive`, keeping behaviour exactly as it was before identity
+- * verification existed. `isPidAlive` rejections propagate to the caller, matching
+- * the previous bare probes.
++ * Identity needs BOTH halves from the same source: a caller that injects
++ * `isPidAlive` for fabricated PIDs must inject `pidStartedAt` too, or there is
++ * nothing honest to compare and the answer is `alive`. A missing marker or an
++ * unavailable start-time probe (today: every non-Linux platform) is `alive` for
++ * the same reason, keeping behaviour exactly as it was before identity
++ * verification existed. A supplied but unparsable marker is `unknown`, never a
++ * silent `alive`. `isPidAlive` rejections propagate to the caller, matching the
++ * previous bare probes.
+  *
+  * @param {{pid: number, startedAt: string|number|null, isPidAlive: Function,
+  *   pidStartedAt?: Function}} input
+@@ -72,11 +93,15 @@ async function processIdentityAlive({ pid, startedAt, isPidAlive, pidStartedAt }
+ 	const alive = await isPidAlive(numericPid);
+ 	if (alive === false) return 'dead';
+ 	if (alive !== true) return 'unknown';
+-	const marker = Date.parse(startedAt);
+-	if (!Number.isFinite(marker)) return 'alive';
++	// Never fall back to the built-in probe here: only the caller knows whether its
++	// liveness answer and a start-time probe describe the same process.
++	if (typeof pidStartedAt !== 'function') return 'alive';
++	const marker = markerMs(startedAt);
++	if (marker === null) return 'alive';
++	if (!Number.isFinite(marker)) return 'unknown';
+ 	let observed;
+ 	try {
+-		observed = await (pidStartedAt || defaultPidStartedAt)(numericPid);
++		observed = await pidStartedAt(numericPid);
+ 	} catch {
+ 		return 'alive';
+ 	}
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index b9688339..c7eaf2a5 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -138,12 +138,21 @@ async function gatherDesired(gitCommonDir, opts = {}) {
+ }
+ 
+ function ownerOptions(ctx) {
++	const isPidAlive = ctx.ownerOptions?.isPidAlive || ctx.isAlive || shepherdLease.pidAlive;
++	// Both halves of an identity proof must describe the same process. A caller that
++	// supplies its own liveness answer (tests, cached legacy evidence) is answering for
++	// PIDs the built-in /proc probe knows nothing about, so pairing that answer with the
++	// built-in probe would compare a fabricated PID's liveness against a real process's
++	// start time and "prove" reuse. The built-in probe travels with the built-in
++	// liveness check only; otherwise identity stays unprovable.
++	const pidStartedAt = ctx.ownerOptions?.pidStartedAt || ctx.pidStartedAt
++		|| (isPidAlive === shepherdLease.pidAlive ? defaultPidStartedAt : null);
+ 	return {
+ 		...(ctx.ownerOptions || {}),
+ 		...(ctx.driver ? { driver: ctx.driver } : {}),
+ 		...(ctx.databaseConfig ? { databaseConfig: ctx.databaseConfig } : {}),
+-		isPidAlive: ctx.ownerOptions?.isPidAlive || ctx.isAlive || shepherdLease.pidAlive,
+-		pidStartedAt: ctx.ownerOptions?.pidStartedAt || ctx.pidStartedAt || defaultPidStartedAt,
++		isPidAlive,
++		pidStartedAt,
+ 		verifyProviderEvidence: ctx.ownerOptions?.verifyProviderEvidence
+ 			|| (async (evidence, expected) => expected.states.includes(String(evidence?.state || '').toLowerCase())),
+ 		verifyTerminalReceipt: ctx.ownerOptions?.verifyTerminalReceipt
+@@ -722,7 +731,7 @@ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 				pid,
+ 				startedAt: entry.startedAt,
+ 				isPidAlive: options.isPidAlive,
+-				pidStartedAt: options.pidStartedAt || opts.pidStartedAt,
++				pidStartedAt: options.pidStartedAt,
+ 			});
+ 		} catch { identityState = 'unknown'; }
+ 		if (identityState === 'alive') pidState = true;
+@@ -787,6 +796,9 @@ function cachedLegacyEvidenceOptions(options, evidence) {
+ 	return {
+ 		...options,
+ 		isPidAlive: async pid => (pid === evidence.pid ? evidence.pidState : null),
++		// Cached liveness has no start-time counterpart; identity was already settled
++		// while the evidence was collected.
++		pidStartedAt: null,
+ 		verifyProviderEvidence: async (providerEvidence, expected) => evidence.providerVerified
+ 			&& sameIdentity(expected)
+ 			&& String(providerEvidence?.state || '').toLowerCase() === evidence.providerState
+diff --git a/test/pr-monitor/process-identity.test.js b/test/pr-monitor/process-identity.test.js
+index d2e0db47..6f56f9f6 100644
+--- a/test/pr-monitor/process-identity.test.js
++++ b/test/pr-monitor/process-identity.test.js
+@@ -33,12 +33,33 @@ describe('process identity', () => {
+ 		expect(await probe({ pidStartedAt: async () => marker - 60_000 })).toBe('alive');
+ 	});
+ 
++	test('accepts epoch-ms and numeric-string markers, not just ISO timestamps', async () => {
++		const marker = Date.parse(MARKER);
++		const late = async () => marker + PID_START_SKEW_MS + 1;
++		expect(await probe({ startedAt: marker, pidStartedAt: late })).toBe('reused');
++		expect(await probe({ startedAt: String(marker), pidStartedAt: late })).toBe('reused');
++		expect(await probe({ startedAt: marker, pidStartedAt: async () => marker })).toBe('alive');
++	});
++
+ 	test('keeps a live PID alive when identity cannot be established', async () => {
+ 		// Every non-Linux platform answers null today; behaviour must not change there.
+ 		expect(await probe({ pidStartedAt: async () => null })).toBe('alive');
+ 		expect(await probe({ pidStartedAt: async () => { throw new Error('unavailable'); } })).toBe('alive');
+ 		expect(await probe({ startedAt: null })).toBe('alive');
+-		expect(await probe({ startedAt: 'not-a-timestamp' })).toBe('alive');
++	});
++
++	test('never pairs an injected liveness answer with the built-in start-time probe', async () => {
++		// A caller answering liveness for fabricated PIDs has no start-time counterpart.
++		// Falling back to the built-in /proc probe would compare that fabricated PID's
++		// liveness against a real process's start time and "prove" reuse on Linux.
++		expect(await probe({ pidStartedAt: undefined })).toBe('alive');
++		expect(await probe({ pidStartedAt: null, startedAt: 'not-a-timestamp' })).toBe('alive');
++	});
++
++	test('refuses to guess from an unparsable marker rather than defaulting to alive', async () => {
++		expect(await probe({ startedAt: 'not-a-timestamp' })).toBe('unknown');
++		expect(await probe({ startedAt: Number.NaN })).toBe('unknown');
++		expect(await probe({ startedAt: {} })).toBe('unknown');
+ 	});
+ 
+ 	test('reports unknown when liveness itself is unavailable, never reused', async () => {
+diff --git a/test/pr-monitor/reconcile-executor-owner-authority.test.js b/test/pr-monitor/reconcile-executor-owner-authority.test.js
+index f22a21fc..d596548a 100644
+--- a/test/pr-monitor/reconcile-executor-owner-authority.test.js
++++ b/test/pr-monitor/reconcile-executor-owner-authority.test.js
+@@ -7,6 +7,7 @@ const {
+ 	convergeOnce,
+ } = require('../../lib/pr-monitor/reconcile-executor');
+ const { decideLifecycle } = require('../../lib/pr-monitor/reconcile');
++const { defaultPidStartedAt } = require('../../lib/pr-monitor/process-identity');
+ 
+ const NOW = '2026-08-19T00:00:00.000Z';
+ const PR = { repo: 'acme/project', number: 7, branch: 'topic', headSha: 'abc' };
+@@ -83,6 +84,27 @@ describe('reconcile executor owner-row authority', () => {
+ 		expect(result.migrationGate).toMatchObject({ state: 'complete' });
+ 	});
+ 
++	test('never pairs an injected liveness probe with the built-in start-time probe', async () => {
++		// Fabricated PIDs have no real process behind them. Handing the built-in /proc
++		// probe to an injected liveness answer read an unrelated live process's start
++		// time and "proved" reuse on Linux, while Windows (null probe) saw nothing.
++		const seen = [];
++		const authority = {
++			enumerateOwners: async (_ctx, options) => {
++				seen.push(options.pidStartedAt);
++				return { ok: true, records: [] };
++			},
++			readMigrationGate: async () => ({ ok: true, gate: { state: 'complete', snapshot_hash: 'a'.repeat(64) } }),
++		};
++		const broker = { listOpenPrs: async () => [] };
++		await gatherObserved('/repo/.git', null, { broker, authority, isAlive: () => true });
++		expect(seen).toEqual([null]);
++
++		// The built-in pair still travels together for the real daemon.
++		await gatherObserved('/repo/.git', null, { broker, authority });
++		expect(seen[1]).toBe(defaultPidStartedAt);
++	});
++
+ 	test('treats a reused watcher PID as dead and carries the reuse proof into recovery', async () => {
+ 		const gather = pidStartedAt => gatherObserved('/repo/.git', null, {
+ 			broker: { listOpenPrs: async () => [] },
+-- 
+2.51.0.windows.1
+

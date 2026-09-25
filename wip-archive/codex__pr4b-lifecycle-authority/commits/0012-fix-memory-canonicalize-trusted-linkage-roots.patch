@@ -1,0 +1,46 @@
+From d26deed52ab07b9e882e074af4c273f619a91107 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 11:43:52 +0530
+Subject: [PATCH] fix(memory): canonicalize trusted linkage roots
+
+---
+ packages/memory/src/pr-lifecycle-authority.js       | 4 +++-
+ packages/memory/test/pr-lifecycle-authority.test.js | 5 +++++
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 210ee62e..f53913b2 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -51,9 +51,11 @@ function isCanonicalGitCommonDir(value) {
+     return code < 0x20 || code === 0x7f;
+   })) return false;
+   const segments = normalized.split('/');
++  const segmentStart = /^[A-Za-z]:$/.test(segments[0]) || segments[0] === '' ? 1 : 0;
++  if (segments.slice(segmentStart).some(segment => segment.length === 0 || segment.trim() !== segment)) return false;
+   if (segments.some(segment => segment === '.' || segment === '..' || containsSecret(segment))) return false;
+   if (segments.at(-1)?.toLowerCase() !== '.git') return false;
+-  const posixHome = segments[0] === '' && ['users', 'home'].includes(segments[1]?.toLowerCase()) && segments.length >= 5;
++  const posixHome = segments[0] === '' && ['Users', 'home'].includes(segments[1]) && segments.length >= 5;
+   const windowsHome = /^[a-z]:$/i.test(segments[0]) && segments[1]?.toLowerCase() === 'users' && segments.length >= 5;
+   return normalized === '/repo/.git' || posixHome || windowsHome;
+ }
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index a7b83ed8..2c98e480 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -286,6 +286,11 @@ describe('public PR lifecycle authority', () => {
+       'C:\\Users\\alice\\..\\repo\\.git',
+       '/home/alice/%2e%2e/repo/.git',
+       '/home/sk-live_1234567890123456/repo/.git',
++      '/home/alice//repo/.git',
++      '/home//repo/.git',
++      'C:/Users//repo/.git',
++      '/home/alice /repo/.git',
++      '/HOME/alice/repo/.git',
+     ]) {
+       let writes = 0;
+       const authority = createPrLifecycleAuthority({
+-- 
+2.51.0.windows.1
+

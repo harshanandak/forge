@@ -1,0 +1,52 @@
+From ad2d048bcc3618fa2bd3326e4d06d99fe6712a05 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 11 Jul 2026 13:29:15 +0530
+Subject: [PATCH] fix(kernel): deterministic stage_runs ordering (started_at,
+ rowid)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CI caught a flaky `forge stage --list` test the local --quick run missed:
+listStageRuns ordered by started_at ALONE, so when two runs are minted in
+the same millisecond (fast tests / the real CLI's wall-clock now) the
+tie-break was undefined and differed across cells/OS/Node.
+
+Add rowid (the implicit INSERT sequence) as a stable secondary sort key —
+ORDER BY started_at ASC, rowid ASC — giving intuitive insertion order for a
+history list. The random-UUID `id` would not reflect insertion order, so it
+is unsuitable as the tie-break. loadCurrentStageRunRow reduces over this now
+deterministic list, so its active/completed selection is stable too.
+
+Verified stable across 5 consecutive runs of test/commands/stage.test.js +
+test/kernel/stage-runs.test.js; eslint --max-warnings 0 clean.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/kernel/sqlite-driver.js | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index fb2b50c8..0a50c9d6 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1250,10 +1250,15 @@ function recordStageRunRow(runtime, db, input) {
+ 
+ function listStageRunRows(runtime, db, issueId) {
+ 	if (!issueId) return [];
++	// Deterministic order: started_at first, then rowid (the implicit INSERT sequence)
++	// as a STABLE tie-break. Fast callers can mint two runs in the same millisecond, so
++	// ordering by started_at alone leaves ties undefined (differs local vs CI vs OS).
++	// rowid gives intuitive insertion order for a history list; the random-UUID `id`
++	// would not reflect insertion order, so it is unsuitable as the tie-break.
+ 	return safeAll(
+ 		runtime,
+ 		db,
+-		'SELECT * FROM kernel_stage_runs WHERE issue_id = ? ORDER BY started_at ASC, id ASC',
++		'SELECT * FROM kernel_stage_runs WHERE issue_id = ? ORDER BY started_at ASC, rowid ASC',
+ 		[issueId],
+ 	);
+ }
+-- 
+2.51.0.windows.1
+

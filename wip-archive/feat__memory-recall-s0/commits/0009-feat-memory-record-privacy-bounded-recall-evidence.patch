@@ -1,0 +1,560 @@
+From ccc4dd2d11d5fe301de2951f2bbfa76c979a4ec0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 17:57:22 +0530
+Subject: [PATCH] feat(memory): record privacy-bounded recall evidence
+
+---
+ lib/commands/hooks.js             |  90 +++++++++--
+ lib/memory-recall-events.js       | 107 +++++++++++++
+ test/hooks-memory-recall.test.js  |   1 +
+ test/memory-recall-events.test.js | 257 ++++++++++++++++++++++++++++++
+ 4 files changed, 444 insertions(+), 11 deletions(-)
+ create mode 100644 lib/memory-recall-events.js
+ create mode 100644 test/memory-recall-events.test.js
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 97ebddd1..976197e8 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -36,6 +36,7 @@ const { collectDigest } = require('../pr-monitor/digest');
+ const { loadDispatchText } = require('../using-forge');
+ const projectMemory = require('../project-memory');
+ const { parseHookInput, selectInjection, meaningfulTokens, DEFAULT_TOKEN_BUDGET, DEFAULT_SCORE_FLOOR } = require('../memory-recall');
++const { recordMemoryRecallEvent } = require('../memory-recall-events');
+ const { fenceUntrusted } = require('../untrusted-content');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+@@ -392,17 +393,28 @@ function handleShepherdEvents(rest, projectRoot, opts = {}) {
+  * @returns {{ success: boolean, output: string }}
+  */
+ async function runMemoryRecall(rest, projectRoot, opts = {}) {
++  const observation = opts.observation || {};
+   try {
+     const harness = parseHarness(rest);
++    observation.harness = harness;
+     const capability = userPromptSubmitCapability(harness);
+-    if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
++    if (!capability.rendered) {
++      observation.outcome = 'unsupported';
++      return { success: true, output: '', reason: capability.reason };
++    }
+ 
+     const railEnabled = opts.railEnabled || memoryRecallRailEnabled;
+-    if (!railEnabled(projectRoot)) return { success: true, output: '' };
++    if (!railEnabled(projectRoot)) {
++      observation.outcome = 'filtered';
++      return { success: true, output: '' };
++    }
+ 
+     const readInput = opts.readInput || readHookStdin;
+     const { prompt, sessionId } = parseHookInput(readInput());
+-    if (!prompt) return { success: true, output: '' };
++    if (!prompt) {
++      observation.outcome = 'filtered';
++      return { success: true, output: '' };
++    }
+ 
+     const search = opts.search
+       || ((root, query, limit, options) => projectMemory.searchRankedScored(root, query, limit, options));
+@@ -415,13 +427,18 @@ async function runMemoryRecall(rest, projectRoot, opts = {}) {
+     // to a token-AND match was the 0-recall bug (kernel issue f71784d3).
+     const tokens = meaningfulTokens(prompt);
+     const excludeKeys = await loadSeen(projectRoot, sessionId) || [];
+-      const hits = await search(
++    const hits = await search(
+       projectRoot,
+       tokens.join(' '),
+       MEMORY_RECALL_CANDIDATES,
+-        { excludeKeys: excludeKeys.slice(0, 256) },
+-      ) || [];
+-      if (opts.deadline?.expired) return { success: true, output: '', reason: 'timeout' };
++      { excludeKeys: excludeKeys.slice(0, 256) },
++    ) || [];
++    observation.candidateCount = hits.length;
++    observation.eligibleCount = hits.length;
++    if (opts.deadline?.expired) {
++      observation.outcome = 'timeout';
++      return { success: true, output: '', reason: 'timeout' };
++    }
+     const scoreFloor = typeof opts.scoreFloor === 'number' ? opts.scoreFloor : DEFAULT_SCORE_FLOOR;
+     const { lines, injectedKeys } = selectInjection({
+       query: prompt,
+@@ -450,7 +467,10 @@ async function runMemoryRecall(rest, projectRoot, opts = {}) {
+       } catch { /* best-effort: shadow logging never affects the hook result */ }
+     }
+ 
+-    if (!lines.length) return { success: true, output: '' };
++    if (!lines.length) {
++      observation.outcome = hits.length ? 'filtered' : 'empty';
++      return { success: true, output: '' };
++    }
+ 
+     if (opts.deadline?.expired) return { success: true, output: '', reason: 'timeout' };
+     try {
+@@ -458,24 +478,72 @@ async function runMemoryRecall(rest, projectRoot, opts = {}) {
+       if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+     } catch { /* dedupe persistence never suppresses an injection */ }
+     const fenced = lines.map(line => fenceUntrusted(line, { source: 'memory' })).join('\n');
++    const selected = hits.filter(hit => injectedKeys.includes(hit.memory_id || hit.key));
++    observation.outcome = 'selected';
++    observation.selectedIds = injectedKeys;
++    observation.sourceMix = selected.reduce((mix, hit) => {
++      const sourceAgent = hit.provenance?.source_agent || hit.sourceAgent || 'unknown';
++      mix[sourceAgent] = (mix[sourceAgent] || 0) + 1;
++      return mix;
++    }, {});
++    observation.trustMix = selected.reduce((mix, hit) => {
++      const trust = hit.trust_status || 'unknown';
++      mix[trust] = (mix[trust] || 0) + 1;
++      return mix;
++    }, {});
++    observation.tokenEstimate = Math.ceil(fenced.length / 4);
+     return { success: true, output: formatUserPromptSubmit(harness, fenced) };
+   } catch {
+     // Fail-open: a context hook must never break a prompt.
++    observation.outcome = 'error';
+     return { success: true, output: '' };
+   }
+ }
+ 
+ async function handleMemoryRecall(rest, projectRoot, opts = {}) {
+   const harness = parseHarness(rest);
++  const startedAt = Date.now();
++  const observation = { harness };
++  const record = result => {
++    const outcome = result.reason === 'timeout'
++      ? 'timeout'
++      : (observation.outcome || (result.output ? 'selected' : 'empty'));
++    const eventObservation = {
++      ...observation,
++      outcome,
++      harness,
++      elapsedMs: Date.now() - startedAt,
++    };
++    const write = () => {
++      try {
++        const pending = (opts.recordRecallEvent || recordMemoryRecallEvent)(
++          projectRoot,
++          eventObservation
++        );
++        if (pending && typeof pending.catch === 'function') pending.catch(() => {});
++      } catch {
++        // Operational evidence is best-effort and must never delay or suppress a prompt.
++      }
++    };
++    // The real SQLite event append is deliberately off the prompt's critical path. Injected
++    // recorders stay synchronous so focused tests can inspect the exact observation.
++    if (opts.recordRecallEvent) write();
++    else setTimeout(write, 0);
++    return result;
++  };
+   const capability = userPromptSubmitCapability(harness);
+-  if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
++  if (!capability.rendered) {
++    observation.outcome = 'unsupported';
++    return record({ success: true, output: '', reason: capability.reason });
++  }
+   const deadline = { expired: false };
+-  return withinDeadline(
+-    () => runMemoryRecall(rest, projectRoot, { ...opts, deadline }),
++  const result = await withinDeadline(
++    () => runMemoryRecall(rest, projectRoot, { ...opts, deadline, observation }),
+     { success: true, output: '', reason: 'timeout' },
+     opts.promptRecallDeadlineMs || PROMPT_RECALL_DEADLINE_MS,
+     () => { deadline.expired = true; },
+   );
++  return record(result);
+ }
+ 
+ /**
+diff --git a/lib/memory-recall-events.js b/lib/memory-recall-events.js
+new file mode 100644
+index 00000000..55453c4a
+--- /dev/null
++++ b/lib/memory-recall-events.js
+@@ -0,0 +1,107 @@
++'use strict';
++
++const { randomUUID } = require('node:crypto');
++
++const { resolveKernelDatabasePath } = require('./kernel/cli-broker-factory');
++const { createBuiltinSQLiteDriver } = require('./kernel/sqlite-driver');
++const projectMemory = require('./project-memory');
++
++const EVENT_TYPE = 'memory.recall.observed';
++const OUTCOMES = new Set(['selected', 'empty', 'filtered', 'unsupported', 'timeout', 'error']);
++const MAX_COUNT = 1_000_000;
++const MAX_SELECTED_IDS = 20;
++const MAX_MIX_KEYS = 10;
++
++function boundedInteger(value) {
++  if (!Number.isFinite(value)) return 0;
++  return Math.min(MAX_COUNT, Math.max(0, Math.trunc(value)));
++}
++
++function boundedString(value, maxLength) {
++  return String(value ?? '').slice(0, maxLength);
++}
++
++function boundedMix(mix) {
++  if (!mix || typeof mix !== 'object' || Array.isArray(mix)) return {};
++  return Object.fromEntries(
++    Object.entries(mix)
++      .slice(0, MAX_MIX_KEYS)
++      .map(([label, count]) => [boundedString(label, 64), boundedInteger(count)])
++      .filter(([label, count]) => label && count > 0)
++  );
++}
++
++function buildRecallEventPayload(observation = {}) {
++  const selectedIds = Array.isArray(observation.selectedIds)
++    ? observation.selectedIds
++      .slice(0, MAX_SELECTED_IDS)
++      .map(id => boundedString(id, 128))
++      .filter(Boolean)
++    : [];
++  return {
++    outcome: OUTCOMES.has(observation.outcome) ? observation.outcome : 'error',
++    counts: {
++      candidates: boundedInteger(observation.candidateCount),
++      eligible: boundedInteger(observation.eligibleCount),
++      selected: selectedIds.length,
++    },
++    selected_ids: selectedIds,
++    source_mix: boundedMix(observation.sourceMix),
++    trust_mix: boundedMix(observation.trustMix),
++    token_estimate: boundedInteger(observation.tokenEstimate),
++    elapsed_ms: boundedInteger(observation.elapsedMs),
++    harness: boundedString(observation.harness || 'unknown', 32),
++  };
++}
++
++async function recordMemoryRecallEvent(projectRoot, observation = {}, options = {}) {
++  let store = options.store;
++  let ownsStore = false;
++  try {
++    const projectId = options.projectId || projectMemory.resolveProjectId(projectRoot, options);
++    if (!store) {
++      store = createBuiltinSQLiteDriver({
++        databasePath: resolveKernelDatabasePath({
++          projectRoot,
++          gitCommonDir: options.gitCommonDir,
++          databasePath: options.databasePath,
++        }),
++      });
++      ownsStore = true;
++    }
++    const id = (options.randomUUID || randomUUID)();
++    const createdAt = options.now || new Date().toISOString();
++    await store.insertKernelEvent({
++      id,
++      entity_type: 'project',
++      entity_id: projectId,
++      event_type: EVENT_TYPE,
++      idempotency_key: id,
++      expected_revision: 0,
++      actor: 'forge',
++      origin: 'hook',
++      payload: buildRecallEventPayload(observation),
++      created_at: createdAt,
++    });
++    return { recorded: true, eventId: id };
++  } catch (error) {
++    return {
++      recorded: false,
++      reason: error && error.message ? error.message : 'telemetry unavailable',
++    };
++  } finally {
++    if (ownsStore && store && typeof store.close === 'function') {
++      try {
++        store.close();
++      } catch {
++        // Best-effort evidence must never block recall.
++      }
++    }
++  }
++}
++
++module.exports = {
++  EVENT_TYPE,
++  buildRecallEventPayload,
++  recordMemoryRecallEvent,
++};
+diff --git a/test/hooks-memory-recall.test.js b/test/hooks-memory-recall.test.js
+index e96a71a1..63661124 100644
+--- a/test/hooks-memory-recall.test.js
++++ b/test/hooks-memory-recall.test.js
+@@ -21,6 +21,7 @@ function baseOpts(extra = {}) {
+     loadSeen: () => [],
+     saveSeen: () => {},
+     appendShadow: () => {},
++    recordRecallEvent: () => {},
+     scoreFloor: -1.0,
+     ...extra,
+   };
+diff --git a/test/memory-recall-events.test.js b/test/memory-recall-events.test.js
+new file mode 100644
+index 00000000..01a98133
+--- /dev/null
++++ b/test/memory-recall-events.test.js
+@@ -0,0 +1,257 @@
++'use strict';
++
++const { afterEach, describe, expect, test } = require('bun:test');
++const path = require('node:path');
++
++const {
++  buildRecallEventPayload,
++  recordMemoryRecallEvent,
++} = require('../lib/memory-recall-events');
++const hooks = require('../lib/commands/hooks');
++const projectMemory = require('../lib/project-memory');
++const { createLocalBroker } = require('../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../lib/kernel/sqlite-driver');
++const { resolveKernelDatabasePath } = require('../lib/kernel/cli-broker-factory');
++const { createKernelProjectRoots } = require('./helpers/kernel-project-root');
++
++const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-recall-events-');
++
++afterEach(() => {
++  projectMemory.closeAll();
++  cleanup();
++});
++
++describe('memory.recall.observed events', () => {
++  test.each(['selected', 'empty', 'filtered', 'unsupported', 'timeout', 'error'])(
++    'persists the bounded %s outcome through the real non-projecting event seam',
++    async outcome => {
++      const projectRoot = makeProjectRoot();
++      const databasePath = resolveKernelDatabasePath({ projectRoot });
++      const driver = createBuiltinSQLiteDriver({ databasePath });
++      const broker = createLocalBroker({
++        projectRoot,
++        databasePath,
++        driver,
++        execFileSync: () => path.join(projectRoot, '.git'),
++      });
++      await broker.initialize();
++
++      const result = await recordMemoryRecallEvent(projectRoot, {
++        outcome,
++        candidateCount: 3,
++        eligibleCount: 2,
++        selectedIds: ['memory-1'],
++        sourceMix: { 'forge remember': 1 },
++        trustMix: { confirmed: 1 },
++        tokenEstimate: 42,
++        elapsedMs: 17,
++        harness: 'claude',
++      }, {
++        now: '2026-07-30T12:00:00.000Z',
++        randomUUID: () => `event-${outcome}`,
++        store: driver,
++      });
++
++      expect(result.recorded).toBe(true);
++      const rows = await driver.listKernelEvents(
++        'project',
++        projectMemory.resolveProjectId(projectRoot)
++      );
++      const outbox = await driver.listProjectionOutbox();
++
++      const event = rows.find(row => row.id === `event-${outcome}`);
++      expect(event.event_type).toBe('memory.recall.observed');
++      expect(JSON.parse(event.payload_json)).toMatchObject({
++        outcome,
++        selected_ids: ['memory-1'],
++        counts: { candidates: 3, eligible: 2, selected: 1 },
++        source_mix: { 'forge remember': 1 },
++        trust_mix: { confirmed: 1 },
++        token_estimate: 42,
++        elapsed_ms: 17,
++        harness: 'claude',
++      });
++      expect(outbox).toEqual([]);
++      driver.close();
++    }
++  );
++
++  test('serializes no query, prompt, memory body, snippet, fingerprint, key, or salt', () => {
++    const payload = buildRecallEventPayload({
++      outcome: 'selected',
++      candidateCount: 1,
++      eligibleCount: 1,
++      selectedIds: ['memory-private'],
++      sourceMix: { imported: 1 },
++      trustMix: { suggested: 1 },
++      tokenEstimate: 10,
++      elapsedMs: 2,
++      harness: 'claude',
++      prompt: 'meaningful secret search terms',
++      query: 'private query',
++      memoryBody: 'private memory body',
++      snippet: 'private snippet',
++      fingerprint: 'query-fingerprint',
++      key: 'secret-key',
++      salt: 'secret-salt',
++    });
++    const serialized = JSON.stringify(payload);
++
++    for (const forbidden of [
++      'meaningful secret search terms',
++      'private query',
++      'private memory body',
++      'private snippet',
++      'query-fingerprint',
++      'secret-key',
++      'secret-salt',
++    ]) {
++      expect(serialized).not.toContain(forbidden);
++    }
++  });
++
++  test('bounds identifiers, aggregate labels, counts, and numeric evidence', () => {
++    const payload = buildRecallEventPayload({
++      outcome: 'selected',
++      candidateCount: -10,
++      eligibleCount: Number.MAX_SAFE_INTEGER,
++      selectedIds: Array.from({ length: 40 }, (_value, index) => `id-${index}-${'x'.repeat(200)}`),
++      sourceMix: Object.fromEntries(
++        Array.from({ length: 20 }, (_value, index) => [`source-${index}-${'x'.repeat(80)}`, 1])
++      ),
++      trustMix: { confirmed: 999999999, suggested: -1, unknown: 3 },
++      tokenEstimate: Number.POSITIVE_INFINITY,
++      elapsedMs: 999999999,
++      harness: 'claude-with-an-unreasonably-long-name',
++    });
++
++    expect(payload.selected_ids).toHaveLength(20);
++    expect(payload.selected_ids.every(id => id.length <= 128)).toBe(true);
++    expect(Object.keys(payload.source_mix)).toHaveLength(10);
++    expect(Object.keys(payload.source_mix).every(label => label.length <= 64)).toBe(true);
++    expect(payload.counts.candidates).toBe(0);
++    expect(payload.counts.eligible).toBe(1_000_000);
++    expect(payload.trust_mix).toEqual({ confirmed: 1_000_000, unknown: 3 });
++    expect(payload.token_estimate).toBe(0);
++    expect(payload.elapsed_ms).toBe(1_000_000);
++    expect(payload.harness.length).toBeLessThanOrEqual(32);
++  });
++
++  test('telemetry failure is best-effort and never blocks recall', async () => {
++    const result = await recordMemoryRecallEvent('/project', {
++      outcome: 'error',
++      harness: 'claude',
++    }, {
++      projectId: '/project/.git',
++      store: {
++        insertKernelEvent: async () => {
++          throw new Error('kernel unavailable');
++        },
++      },
++    });
++
++    expect(result).toEqual({ recorded: false, reason: 'kernel unavailable' });
++  });
++
++  test('the prompt hook reports selected ids and aggregate mix without prompt content', async () => {
++    const observations = [];
++    const result = await hooks.handler(
++      ['memory-recall', '--harness', 'claude'],
++      {},
++      '/repo',
++      {
++        railEnabled: () => true,
++        readInput: () => JSON.stringify({
++          session_id: 'session-1',
++          prompt: 'private auth refresh prompt',
++        }),
++        search: () => [{
++          memory_id: 'memory-1',
++          content: 'Auth refresh uses the shared helper.',
++          trust_status: 'confirmed',
++          provenance: { source_agent: 'forge remember' },
++          score: -3,
++        }],
++        loadSeen: () => [],
++        saveSeen: () => {},
++        appendShadow: () => {},
++        scoreFloor: -1,
++        recordRecallEvent: (_root, observation) => observations.push(observation),
++      }
++    );
++
++    expect(result.output).toContain('Auth refresh uses the shared helper.');
++    expect(observations).toHaveLength(1);
++    expect(observations[0]).toMatchObject({
++      outcome: 'selected',
++      candidateCount: 1,
++      eligibleCount: 1,
++      selectedIds: ['memory-1'],
++      sourceMix: { 'forge remember': 1 },
++      trustMix: { confirmed: 1 },
++      harness: 'claude',
++    });
++    expect(JSON.stringify(buildRecallEventPayload(observations[0])))
++      .not.toContain('private auth refresh prompt');
++  });
++
++  test.each([
++    ['empty', { search: () => [] }],
++    ['filtered', { railEnabled: () => false }],
++    ['unsupported', { harness: 'codex' }],
++    ['timeout', { search: () => new Promise(() => {}), promptRecallDeadlineMs: 10 }],
++    ['error', { search: () => { throw new Error('kernel unavailable'); } }],
++  ])('the prompt hook reports the %s outcome', async (outcome, overrides) => {
++    const observations = [];
++    const harness = overrides.harness || 'claude';
++    await hooks.handler(
++      ['memory-recall', '--harness', harness],
++      {},
++      '/repo',
++      {
++        railEnabled: () => true,
++        readInput: () => JSON.stringify({
++          session_id: 'session-1',
++          prompt: 'auth refresh failure',
++        }),
++        search: () => [],
++        loadSeen: () => [],
++        saveSeen: () => {},
++        appendShadow: () => {},
++        recordRecallEvent: (_root, observation) => observations.push(observation),
++        ...overrides,
++      }
++    );
++
++    expect(observations).toHaveLength(1);
++    expect(observations[0].outcome).toBe(outcome);
++  });
++
++  test('a rejecting event recorder never suppresses selected memory', async () => {
++    const result = await hooks.handler(
++      ['memory-recall', '--harness', 'claude'],
++      {},
++      '/repo',
++      {
++        railEnabled: () => true,
++        readInput: () => JSON.stringify({
++          session_id: 'session-1',
++          prompt: 'auth refresh failure',
++        }),
++        search: () => [{
++          memory_id: 'memory-1',
++          content: 'Selected memory remains available.',
++          trust_status: 'confirmed',
++          score: -3,
++        }],
++        loadSeen: () => [],
++        saveSeen: () => {},
++        appendShadow: () => {},
++        scoreFloor: -1,
++        recordRecallEvent: () => Promise.reject(new Error('telemetry unavailable')),
++      }
++    );
++
++    expect(result.output).toContain('Selected memory remains available.');
++  });
++});
+-- 
+2.51.0.windows.1
+

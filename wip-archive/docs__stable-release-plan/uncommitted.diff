@@ -1,0 +1,26 @@
+diff --git a/.gitignore b/.gitignore
+index dd68452b..05501206 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -54,9 +54,10 @@ test-results/*
+ *.tmp
+ *.temp
+ 
+-# Claude Code local settings
++# Claude Code local settings and Hookify guardrails
+ .claude/settings.json
+ .claude/settings.local.json
++.claude/*.local.md
+ 
+ # Skills (local, populated by skills.sh or skills CLI — not committed)
+ .skills/
+diff --git a/docs/work/2026-07-28-stable-release/decisions.md b/docs/work/2026-07-28-stable-release/decisions.md
+index bf075a80..6430ca5e 100644
+--- a/docs/work/2026-07-28-stable-release/decisions.md
++++ b/docs/work/2026-07-28-stable-release/decisions.md
+@@ -12,3 +12,5 @@
+ 8. **The existing OIDC release workflow remains the publication authority.** The release tag must match `package.json`; readiness, package inspection, tests, and provenance publishing must pass before npm receives `latest`.
+ 9. **Building Forge must continuously improve Forge.** Every issue records both delivery evidence and process friction. Repeated friction becomes a canonical Kernel issue and a substrate-level improvement; the stable program dogfoods Forge rather than maintaining a separate orchestration process around it.
+ 10. **Operate at a four-PR-per-three-hour merge cadence.** Four isolated lanes fill one cycle with ready, non-colliding work. CI, review settlement, current-head verification, and cleanup happen inside the cycle rather than as a later batch. The cadence is a throughput target, never permission to weaken a gate or mislabel a deterministic failure as flaky.
++11. **Shepherd attachment is automatic.** An active open or draft PR must acquire contained Shepherd monitoring without an agent remembering to start it. Direct `gh pr view` remains available for instantaneous detail during the refresh gap, but it cannot replace Shepherd as lifecycle owner.
++12. **Use Codex for bounded fan-out.** Cost- and context-heavy independent implementation, test, log, and triage slots may run through the installed Codex plugin in isolated worktrees. The main session retains merge-train ownership, taste-critical review, dependency decisions, and final current-head verification.

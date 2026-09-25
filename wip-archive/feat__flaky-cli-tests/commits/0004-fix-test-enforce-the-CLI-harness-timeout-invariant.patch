@@ -1,0 +1,251 @@
+From b28028c006aaee764d94fce526ebcbca16d7b10e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 17:53:49 +0530
+Subject: [PATCH] fix(test): enforce the CLI harness timeout invariant and stop
+ temp-dir leaks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Addresses four review findings on #460.
+
+The inner spawn timeout (30s) only bounds anything if the case outlives it,
+but the shard runners invoke bun with --timeout 15000 (test-ci-shard.js:183)
+and 30000 (test-full-suite.js:117), and options-command.test.js never called
+setDefaultTimeout. The harness now raises the case timeout at import and
+throws if the two constants ever invert, so the ordering is structural rather
+than something each suite must remember.
+
+Also: collapse PATH to a single key (an ambient Windows 'Path' plus an
+override 'PATH' both survived the object spread, so PATH overrides could be
+silently ignored), name the git-init timeout constant, and drain
+makeProject() roots in afterAll — they leaked a temp dir per call.
+
+Kernel issue 15587fd6
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ test/helpers/cli-subprocess.js      | 55 ++++++++++++++++++++-
+ test/helpers/cli-subprocess.test.js | 77 +++++++++++++++++++++++++++++
+ test/options-command.test.js        | 13 ++++-
+ 3 files changed, 142 insertions(+), 3 deletions(-)
+ create mode 100644 test/helpers/cli-subprocess.test.js
+
+diff --git a/test/helpers/cli-subprocess.js b/test/helpers/cli-subprocess.js
+index 1265af95..b7673831 100644
+--- a/test/helpers/cli-subprocess.js
++++ b/test/helpers/cli-subprocess.js
+@@ -20,6 +20,7 @@
+  */
+ 
+ const { execFileSync } = require('node:child_process');
++const { setDefaultTimeout } = require('bun:test');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+@@ -35,6 +36,25 @@ const FORGE_BIN = path.join(__dirname, '..', '..', 'bin', 'forge.js');
+ const CLI_TIMEOUT_MS = 30_000;
+ const CASE_TIMEOUT_MS = 45_000;
+ 
++// Sandbox setup shells out to git; bound it well under the spawn budget so a
++// wedged `git init` reports as itself rather than eating the CLI's time.
++const GIT_INIT_TIMEOUT_MS = 10_000;
++
++// The inner spawn limit is only meaningful if the case outlives it — otherwise
++// bun kills the case first and the diagnostic thrown below never runs. Suites
++// invoke bun with --timeout 15000 (scripts/test-ci-shard.js) or 30000
++// (scripts/test-full-suite.js), both <= CLI_TIMEOUT_MS, so raising the case
++// timeout is not optional bookkeeping a suite can forget. Doing it here at
++// import time makes the invariant structural: importing this harness IS opting
++// into the matching case budget.
++if (CLI_TIMEOUT_MS >= CASE_TIMEOUT_MS) {
++  throw new Error(
++    `cli-subprocess: inner CLI timeout (${CLI_TIMEOUT_MS}ms) must be strictly `
++    + `lower than the case timeout (${CASE_TIMEOUT_MS}ms)`
++  );
++}
++setDefaultTimeout(CASE_TIMEOUT_MS);
++
+ /**
+  * Build the base child environment: the ambient env minus anything that would
+  * silently repoint the CLI at state this test does not own. `INIT_CWD` is the
+@@ -52,6 +72,35 @@ function baseEnv() {
+   return env;
+ }
+ 
++/**
++ * Merge the child environment, collapsing PATH to exactly one key.
++ *
++ * Windows resolves environment names case-insensitively, but a JS object does
++ * not: spreading `process.env` yields `Path`, so an override that sets `PATH`
++ * leaves BOTH keys in the object and which one the child actually reads is
++ * platform-dependent. Callers overriding PATH (to hide a binary, or to plant a
++ * fake one) would silently get the real ambient PATH instead.
++ *
++ * @param {string} cwd - Sandbox directory, also used as INIT_CWD
++ * @param {Record<string, string>} envOverrides - Caller overrides, applied last
++ * @returns {Record<string, string>} Merged env with a single PATH key
++ */
++function mergeEnv(cwd, envOverrides) {
++  const merged = { ...baseEnv(), INIT_CWD: cwd, ...envOverrides };
++
++  const isPathKey = (key) => /^path$/i.test(key);
++  const pathKeys = Object.keys(merged).filter(isPathKey);
++  if (pathKeys.length > 0) {
++    // An explicit override wins over whatever casing the ambient env used.
++    const overrideKey = Object.keys(envOverrides).find(isPathKey);
++    const value = overrideKey === undefined ? merged[pathKeys[0]] : envOverrides[overrideKey];
++    for (const key of pathKeys) delete merged[key];
++    merged[process.platform === 'win32' ? 'Path' : 'PATH'] = value;
++  }
++
++  return merged;
++}
++
+ /**
+  * Per-suite factory of private CLI sandboxes. Each sandbox is a throwaway git
+  * repo containing only `AGENTS.md` (which satisfies the first-run check in
+@@ -73,7 +122,7 @@ function createCliSandboxes(prefix) {
+     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+     dirs.push(dir);
+     fs.writeFileSync(path.join(dir, 'AGENTS.md'), '# Test project\n', 'utf8');
+-    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: 10_000 });
++    execFileSync('git', ['init', '-q'], { cwd: dir, timeout: GIT_INIT_TIMEOUT_MS });
+     return dir;
+   }
+ 
+@@ -106,7 +155,7 @@ function runForgeIn(cwd, cliArgs, { env: envOverrides = {}, timeoutMs = CLI_TIME
+       encoding: 'utf8',
+       timeout: timeoutMs,
+       cwd,
+-      env: { ...baseEnv(), INIT_CWD: cwd, ...envOverrides },
++      env: mergeEnv(cwd, envOverrides),
+     });
+     return { stdout, stderr: '', status: 0 };
+   } catch (err) {
+@@ -128,8 +177,10 @@ function runForgeIn(cwd, cliArgs, { env: envOverrides = {}, timeoutMs = CLI_TIME
+ module.exports = {
+   CASE_TIMEOUT_MS,
+   CLI_TIMEOUT_MS,
++  GIT_INIT_TIMEOUT_MS,
+   FORGE_BIN,
+   baseEnv,
+   createCliSandboxes,
++  mergeEnv,
+   runForgeIn,
+ };
+diff --git a/test/helpers/cli-subprocess.test.js b/test/helpers/cli-subprocess.test.js
+new file mode 100644
+index 00000000..155274c3
+--- /dev/null
++++ b/test/helpers/cli-subprocess.test.js
+@@ -0,0 +1,77 @@
++/**
++ * Tests for the CLI subprocess isolation harness.
++ *
++ * These guard the two properties the harness exists to provide: a child that
++ * inherits nothing ambient, and timeouts ordered so a slow spawn reports as a
++ * spawn timeout rather than a generic dead test case.
++ */
++
++const { describe, test, expect } = require('bun:test');
++
++const {
++  CASE_TIMEOUT_MS,
++  CLI_TIMEOUT_MS,
++  GIT_INIT_TIMEOUT_MS,
++  baseEnv,
++  mergeEnv,
++} = require('./cli-subprocess');
++
++const pathKeysOf = (env) => Object.keys(env).filter((key) => /^path$/i.test(key));
++
++describe('cli-subprocess timeout budget', () => {
++  test('the inner CLI timeout is strictly lower than the case timeout', () => {
++    // If these invert, bun kills the case before execFileSync's own limit fires
++    // and the harness's diagnostic throw never runs.
++    expect(CLI_TIMEOUT_MS).toBeLessThan(CASE_TIMEOUT_MS);
++  });
++
++  test('the case timeout exceeds the timeouts the shard runners pass to bun', () => {
++    // scripts/test-ci-shard.js passes 15000; scripts/test-full-suite.js passes 30000.
++    expect(CASE_TIMEOUT_MS).toBeGreaterThan(30_000);
++  });
++
++  test('git sandbox setup is bounded well under the CLI spawn budget', () => {
++    expect(GIT_INIT_TIMEOUT_MS).toBeLessThan(CLI_TIMEOUT_MS);
++  });
++});
++
++describe('cli-subprocess baseEnv', () => {
++  test('drops INIT_CWD so no ambient value repoints the child', () => {
++    expect(baseEnv()).not.toHaveProperty('INIT_CWD');
++  });
++
++  test('drops every FORGE_* key', () => {
++    const forgeKeys = Object.keys(baseEnv()).filter((key) => key.startsWith('FORGE_'));
++    expect(forgeKeys).toEqual([]);
++  });
++});
++
++describe('cli-subprocess mergeEnv', () => {
++  test('points INIT_CWD at the sandbox', () => {
++    expect(mergeEnv('/sandbox', {}).INIT_CWD).toBe('/sandbox');
++  });
++
++  test('collapses PATH to exactly one key', () => {
++    // Windows resolves env names case-insensitively; a JS object does not. An
++    // ambient `Path` plus an override `PATH` would otherwise both survive.
++    expect(pathKeysOf(mergeEnv('/sandbox', { PATH: '/planted' }))).toHaveLength(1);
++  });
++
++  test('an explicit PATH override wins over the ambient value', () => {
++    const merged = mergeEnv('/sandbox', { PATH: '/planted' });
++    expect(merged[pathKeysOf(merged)[0]]).toBe('/planted');
++  });
++
++  test('an empty PATH override is honoured rather than falling back to ambient', () => {
++    // Suites empty PATH to prove a command does not shell out to a backend.
++    const merged = mergeEnv('/sandbox', { PATH: '', Path: '' });
++    expect(pathKeysOf(merged)).toHaveLength(1);
++    expect(merged[pathKeysOf(merged)[0]]).toBe('');
++  });
++
++  test('keeps a single ambient PATH when the caller overrides nothing', () => {
++    const merged = mergeEnv('/sandbox', {});
++    expect(pathKeysOf(merged)).toHaveLength(1);
++    expect(merged[pathKeysOf(merged)[0]]).toBe(process.env.PATH);
++  });
++});
+diff --git a/test/options-command.test.js b/test/options-command.test.js
+index efb9d81e..61de20f6 100644
+--- a/test/options-command.test.js
++++ b/test/options-command.test.js
+@@ -6,12 +6,23 @@ const { afterAll, describe, expect, test } = require('bun:test');
+ const optionsCommand = require('../lib/commands/options');
+ const explainCommand = require('../lib/commands/explain');
+ const { createCliSandboxes, runForgeIn } = require('./helpers/cli-subprocess');
++const { rmrfWithRetry } = require('./helpers/kernel-project-root');
+ 
+ const sandboxes = createCliSandboxes('forge-options-cli-');
+-afterAll(() => sandboxes.cleanup());
++// makeProject() roots are tracked alongside the CLI sandboxes so both are drained;
++// untracked, they leaked a temp dir per call on every run.
++const projectRoots = [];
++
++afterAll(() => {
++  sandboxes.cleanup();
++  while (projectRoots.length > 0) {
++    rmrfWithRetry(projectRoots.pop());
++  }
++});
+ 
+ function makeProject(configBody) {
+   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-options-'));
++  projectRoots.push(root);
+   fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
+   if (configBody !== null) {
+     fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), configBody);
+-- 
+2.51.0.windows.1
+

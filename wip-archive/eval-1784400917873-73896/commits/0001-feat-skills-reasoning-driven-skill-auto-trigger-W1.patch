@@ -1,0 +1,1280 @@
+From 2a0ff070d544ad81c90b1d66979359af2f1e3194 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 18 Jul 2026 12:56:25 +0530
+Subject: [PATCH] feat(skills): reasoning-driven skill auto-trigger (W1)
+
+W1 makes Forge skills auto-trigger as a reasoning-driven SYSTEM (the owner's #1
+complaint), not just harness description-matching. Four pieces:
+
+1. NEW skills/using-forge/SKILL.md dispatch skill: 1%-rule, announce-before-acting,
+   anti-rationalization red-flags table, subagent escape hatch, intent-to-skill
+   routing table. Syncs to .agents/skills.
+2. SessionStart injection: lib/commands/hooks.js injects the using-forge dispatch
+   bootstrap FIRST (before the memory digest), the Superpowers mechanism; fail-open.
+   The bash activation front-door (plugin/hooks/session-start) also names it.
+3. forge prime live-state: prime leads with a bounded (<=20-line) block: stage,
+   claimed issue(s), ready count, enabled gates/rails, and ONE adoption nudge.
+   Best-effort, non-throwing, guards the non-repo path. Existing output unchanged.
+4. NEW forge skill noun: forge skill for "<situation>" deterministic router with
+   --json; reasoning fallback for harnesses without a SessionStart hook.
+
+Naming/unification: EXTENDED forge prime (no forge orient dup); router under a NEW
+forge skill noun, not a top-level forge which. Agent-agnostic: skill syncs to every
+mirror and the CLI router works on any harness.
+
+Kernel issues: using-forge-dispatch-skill-7c72c14b, forge-which-situation-deterministic-e606ea4e.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/using-forge/SKILL.md       | 103 ++++++++++
+ docs/reference/COMMANDS.md                |   4 +-
+ lib/commands/_manifest.js                 |   1 +
+ lib/commands/hooks.js                     |  29 ++-
+ lib/commands/prime.js                     |   9 +-
+ lib/commands/skill.js                     |  87 ++++++++
+ lib/orientation.js                        | 139 ++++++++++++-
+ lib/using-forge.js                        | 232 ++++++++++++++++++++++
+ plugin/hooks/session-start                |   2 +-
+ skills/using-forge/SKILL.md               | 103 ++++++++++
+ test/hooks-session-start.test.js          |  48 +++++
+ test/orientation-prime-live-state.test.js | 119 +++++++++++
+ test/skills/using-forge-skill.test.js     |  56 ++++++
+ test/using-forge-router.test.js           | 118 +++++++++++
+ 14 files changed, 1037 insertions(+), 13 deletions(-)
+ create mode 100644 .agents/skills/using-forge/SKILL.md
+ create mode 100644 lib/commands/skill.js
+ create mode 100644 lib/using-forge.js
+ create mode 100644 skills/using-forge/SKILL.md
+ create mode 100644 test/orientation-prime-live-state.test.js
+ create mode 100644 test/skills/using-forge-skill.test.js
+ create mode 100644 test/using-forge-router.test.js
+
+diff --git a/.agents/skills/using-forge/SKILL.md b/.agents/skills/using-forge/SKILL.md
+new file mode 100644
+index 00000000..8408170d
+--- /dev/null
++++ b/.agents/skills/using-forge/SKILL.md
+@@ -0,0 +1,103 @@
++---
++name: using-forge
++description: >
++  Forge dispatch skill: the session bootstrap that makes Forge's skills auto-trigger as a
++  reasoning-driven SYSTEM. Reach for this FIRST, before ANY response (including clarifying
++  questions, codebase exploration, or file reads), whenever there is even a 1% chance a Forge
++  skill applies. Carries the 1%-rule, the announce-before-acting rule, an anti-rationalization
++  red-flags table, a subagent escape hatch, and an intent-to-skill routing table: add/build/scope
++  a feature to plan; implement an existing task to dev; fix a failing test or bug to dev (debug
++  first); type-check/lint/tests to validate; push and open a PR to ship; address PR/review
++  feedback to review; post-merge health to verify; what to work on to triage-ready; where am I /
++  current stage to status; create/close/search an issue to issue-basics; drive one issue
++  end-to-end to smith; monitor a PR to shepherd. Run `forge skill for "<situation>"` for a
++  deterministic fallback. NOT itself a stage; the kernel skill is the fuller umbrella index
++  once oriented.
++allowed-tools: Read, Bash(forge:*)
++---
++
++<SUBAGENT-STOP>
++If you were dispatched as a subagent to execute one specific task, ignore this skill and do
++the task you were given. This dispatch rule is for the top-level session, not for a scoped
++subagent — otherwise every subagent would re-enter routing instead of working.
++</SUBAGENT-STOP>
++
++<EXTREMELY-IMPORTANT>
++If you think there is even a 1% chance a Forge skill applies to what you are doing, you MUST
++invoke that skill BEFORE any response or action.
++
++IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
++
++This is not negotiable. You cannot rationalize your way out of it.
++</EXTREMELY-IMPORTANT>
++
++## The rule
++
++**Invoke the relevant or requested Forge skill BEFORE any response or action** — including
++clarifying questions, exploring the codebase, or checking files. If it turns out wrong for the
++situation, you don't have to follow it — but you check first.
++
++Then **announce** `Using [skill] to [purpose]` and follow the skill exactly. If it has a
++checklist or HARD-GATE, create one todo per item.
++
++When unsure WHICH skill fits, either consult the routing table below or run
++`forge skill for "<what you are about to do>"` for a deterministic best-fit answer.
++
++## Intent → skill routing table
++
++Process skills set the approach first; then the stage/implementation skill carries it out.
++
++| When the situation is… | Start with |
++|------------------------|-----------|
++| "Add / build / scope a new feature", "let's build X" | `plan` |
++| Implement a task that a plan already defined | `dev` |
++| "Fix this bug" / a failing test / unexpected behavior | `superpowers:systematic-debugging`, then `dev` |
++| Run type-check, lint, security, or tests | `validate` |
++| Push the branch and open a PR | `ship` |
++| Address PR / review-agent feedback (CodeRabbit, Greptile, CI) | `review` |
++| Post-merge health check, close issues | `verify` |
++| "What should I work on?" — rank the ready queue | `triage-ready` |
++| "Where am I?" / current stage / stale or active work | `status` |
++| Create / update / close / search / comment on ONE issue | `issue-basics` |
++| Claim an issue and PROVE the lease before mutating | `claim-safety` |
++| Drive one issue plan→merged-PR under human gates | `smith` |
++| Monitor / shepherd a PR's CI + checks (never merges) | `shepherd` |
++| Deep, multi-source web research | `research` / `parallel-deep-research` |
++| "How does Forge fit together?" / which verb for X | `kernel` |
++| Safe revert / undo a merged change | `rollback` |
++
++If two skills seem to apply, run the process skill first (`plan`, `systematic-debugging`), then
++the doing skill. `kernel` is the umbrella index — use it to orient, not to do the work.
++
++## Red flags — these thoughts mean STOP, you are rationalizing
++
++| Thought | Reality |
++|---------|---------|
++| "This is just a simple question" | Questions are tasks. Check for a skill. |
++| "I need more context first" | The skill check comes BEFORE clarifying questions. |
++| "Let me explore the codebase first" | Skills tell you HOW to explore. Check first. |
++| "I can check git/files quickly" | Files lack conversation context. Check for a skill. |
++| "This doesn't need a formal stage" | If a skill exists, use it. |
++| "I remember what that skill says" | Skills evolve. Read the current version. |
++| "The skill is overkill here" | Simple things become complex. Use it. |
++| "I'll just do this one thing first" | Check BEFORE doing anything. |
++| "It's obviously a plan/dev/ship" | Then invoking it costs nothing. Invoke it. |
++
++## Subagent escape hatch
++
++You do NOT have to hold every skill in your own context. When a task is independent and
++bounded, dispatch a subagent with the specific skill and a self-contained brief, and keep only
++its conclusion. Parallelize independent tasks (see `superpowers:dispatching-parallel-agents`).
++Reviewers/verifiers that find nothing must say so and name what they inspected.
++
++## Agent-agnostic
++
++This skill syncs to every harness mirror (`.agents/`, `.claude/`, `.codex/`, `.cursor/`,
++`.hermes/`), and the same routing guidance is reachable via `forge skill for "<situation>"` on
++any harness — never branch on harness identity. On Claude the SessionStart hook injects this
++text automatically; elsewhere, AGENTS.md points here and the CLI router is the fallback.
++
++## User instructions win
++
++CLAUDE.md / AGENTS.md and direct user requests take precedence over skills, which in turn
++override default behavior. Skip a skill only when your human partner explicitly tells you to.
+diff --git a/docs/reference/COMMANDS.md b/docs/reference/COMMANDS.md
+index b2eeb48f..27332f1a 100644
+--- a/docs/reference/COMMANDS.md
++++ b/docs/reference/COMMANDS.md
+@@ -59,6 +59,7 @@ forge orient [--budget N] [--json]
+ forge recap <issue> [--budget N] [--json]
+ forge recall [query] [--limit N] [--all] [--json]
+ forge remember <note> [--tag <label>]... [--json]
++forge skill for "<situation>" [--json]
+ ```
+ 
+ - `forge plan` creates the implementation plan, kernel issue, and feature branch/worktree from a researched feature description; it prints the created issue id, branch name, and the suggested next command.
+@@ -66,7 +67,8 @@ forge remember <note> [--tag <label>]... [--json]
+ - `forge validate` runs the validation orchestration pipeline (conflict markers, type check, lint, security, tests) with no arguments — see also `bun run check` under Validation And Packaging.
+ - `forge ship` creates the pull request from validated feature work (wraps `gh pr create`); `--dry-run` previews without creating a PR.
+ - `forge status` is the one-glance orientation command: where you are, what to run next, and your active work; `--full` also shows blocked/stale/recently-completed issues.
+-- `forge prime` emits the bounded session-entry orientation envelope agents read at the start of a session.
++- `forge prime` emits the bounded session-entry orientation envelope agents read at the start of a session; it now leads with a bounded (<=20-line) **live-state** block — current stage, claimed issue(s), ready-work count, enabled gates/rails, and one progressive-adoption nudge — collected best-effort (never blocks, honest fallbacks) before the deterministic orientation.
++- `forge skill for "<situation>"` is the deterministic intent-to-skill router: it reads the canonical skill catalog and prints the best-fit Forge skill(s) plus why, as the reasoning fallback for harnesses without a SessionStart hook that auto-injects the `using-forge` dispatch skill. `--json` emits the machine-readable routing result. The `forge skill` noun is structured so later waves can add `forge skill eval` / `forge skill scores`.
+ - `forge orient` emits bounded project orientation from deterministic source files (broader than `prime`, still token-budgeted via `--budget`).
+ - `forge recap <issue>` is the issue-scoped counterpart to `forge orient`/`forge prime` — it summarizes a single issue from the same deterministic file assembly instead of the whole project. Requires an issue id; running it with no id (or `--help`) prints usage only.
+ - `forge recall` retrieves project-memory notes from the kernel-backed memory store; omit `query` to list recent notes.
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index c93ca997..3663c45e 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -73,6 +73,7 @@ const commands = [
+   { file: "shepherd.js", module: require("./shepherd") },
+   { file: "ship.js", module: require("./ship") },
+   { file: "show.js", module: require("./show") },
++  { file: "skill.js", module: require("./skill") },
+   { file: "stage.js", module: require("./stage") },
+   { file: "stale.js", module: require("./stale") },
+   { file: "status.js", module: require("./status") },
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 5da98015..fb392c63 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -31,6 +31,7 @@ const { sessionStartCapability, userPromptSubmitCapability, sessionEndCapability
+ const { collectDigestData, buildMemoryDigest, defaultFetchIssues, defaultFetchNotes } = require('../memory-digest');
+ const { collectInbox, buildInboxNudge } = require('../inbox');
+ const { collectDigest } = require('../pr-monitor/digest');
++const { loadDispatchText } = require('../using-forge');
+ 
+ function usage() {
+   return 'Usage: forge hooks install --global [--harness codex|hermes|all] [--dry-run]\n'
+@@ -115,17 +116,29 @@ function formatSessionStart(harness, text) {
+  * @returns {Promise<{ success: boolean, output: string }>}
+  */
+ async function handleSessionStart(rest, projectRoot, opts = {}) {
++  const harness = parseHarness(rest);
++  if (!sessionStartCapability(harness).rendered) return { success: true, output: '' };
++
++  // The using-forge dispatch bootstrap is injected FIRST so Forge skills auto-trigger from turn
++  // one (the Superpowers mechanism): a reasoning-driven system, not just harness description
++  // matching. It is a deterministic file read that survives a kernel outage. The memory digest
++  // (remembered notes + top open issues) is appended when present. Either alone is enough to
++  // inject; a total blank yields '' (the harness injects nothing). FAIL-OPEN throughout.
++  let dispatch = '';
++  try {
++    dispatch = (opts.loadDispatchText || loadDispatchText)(projectRoot) || '';
++  } catch { /* keep '' — a missing dispatch skill must not break session start */ }
++
++  let digestText = '';
+   try {
+-    const harness = parseHarness(rest);
+-    if (!sessionStartCapability(harness).rendered) return { success: true, output: '' };
+     const data = await collectDigestData(projectRoot, opts);
+     const digest = buildMemoryDigest(data, opts);
+-    if (digest.empty) return { success: true, output: '' };
+-    return { success: true, output: formatSessionStart(harness, digest.text) };
+-  } catch {
+-    // Fail-open: a context hook must never break a session.
+-    return { success: true, output: '' };
+-  }
++    if (!digest.empty) digestText = digest.text;
++  } catch { /* fail-open: a kernel outage must not suppress the dispatch bootstrap */ }
++
++  const combined = [dispatch, digestText].filter(Boolean).join('\n\n');
++  if (!combined) return { success: true, output: '' };
++  return { success: true, output: formatSessionStart(harness, combined) };
+ }
+ 
+ /** Wrap a digest into a harness-native UserPromptSubmit payload, or '' when unsupported. */
+diff --git a/lib/commands/prime.js b/lib/commands/prime.js
+index 1954b210..f4b19022 100644
+--- a/lib/commands/prime.js
++++ b/lib/commands/prime.js
+@@ -2,6 +2,7 @@
+ 
+ const {
+   buildPrime,
++  collectPrimeLiveState,
+   runOrientationCommand,
+ } = require('../orientation');
+ 
+@@ -9,5 +10,11 @@ module.exports = {
+   name: 'prime',
+   description: 'Emit session-entry bounded orientation for agents',
+   usage: 'Usage: forge prime [--budget N] [--json]',
+-  handler: (args, _flags, projectRoot) => runOrientationCommand(buildPrime, args, projectRoot),
++  // Async: prime leads with LIVE state (stage / claims / ready / gates / one adoption nudge),
++  // which needs a best-effort (non-throwing) kernel read before the synchronous build assembles
++  // it into the bounded orientation. All existing prime output/flags are unchanged.
++  handler: async (args, _flags, projectRoot) => {
++    const liveState = await collectPrimeLiveState(projectRoot);
++    return runOrientationCommand(buildPrime, args, projectRoot, { liveState });
++  },
+ };
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+new file mode 100644
+index 00000000..6e606ab4
+--- /dev/null
++++ b/lib/commands/skill.js
+@@ -0,0 +1,87 @@
++'use strict';
++
++/**
++ * Forge Skill Command -- the unified "forge skill <verb>" noun.
++ *
++ * "forge skill for <situation>" is a DETERMINISTIC intent-to-skill router: it reads the canonical
++ * skill catalog (skills/*\/SKILL.md frontmatter) and prints the best-fit Forge skill(s) plus WHY,
++ * as the reasoning fallback for harnesses without a SessionStart hook that can auto-inject the
++ * using-forge dispatch skill. It NEVER opens the kernel and NEVER throws.
++ *
++ * The noun is structured so later waves can add sibling verbs (forge skill eval, forge skill
++ * scores) without a new top-level command -- the owner's command-surface rule: unify related
++ * commands under one self-explanatory noun instead of scattering verbs.
++ *
++ * @module commands/skill
++ */
++
++const { routeSkill, loadSkillCatalog } = require('../using-forge');
++
++const USAGE = 'Usage: forge skill for "<situation>" [--json]';
++
++/** Extract the situation text (all non-flag args after the verb) and json flag. */
++function parseForArgs(rest, flags) {
++  const positional = rest.filter(a => typeof a === 'string' && !a.startsWith('--'));
++  const json = flags.json === true || flags['--json'] === true || rest.includes('--json');
++  return { situation: positional.join(' ').trim(), json };
++}
++
++/** Render the human-readable routing answer. */
++function formatRouting(result) {
++  const lines = ['Best skill for: "' + result.situation + '"', ''];
++  if (result.unknown) {
++    lines.push(
++      'No confident match. This may not need a Forge skill -- or describe it more concretely.',
++      'Fallbacks: `forge ready` for what to work on, or the kernel skill to see the whole surface.',
++    );
++    return lines.join('\n');
++  }
++  const [top, ...rest] = result.matches;
++  lines.push(
++    '-> ' + top.name + '  (' + top.why + ')',
++    '  Announce: "Using ' + top.name + ' to ..." then follow the skill.',
++  );
++  if (rest.length > 0) {
++    lines.push('', 'Also consider:');
++    for (const m of rest) lines.push('  - ' + m.name + '  (' + m.why + ')');
++  }
++  return lines.join('\n');
++}
++
++/** "forge skill for <situation>" -- deterministic router. */
++function handleFor(rest, flags, projectRoot) {
++  const { situation, json } = parseForArgs(rest, flags);
++  if (!situation) {
++    return { success: false, error: 'Missing situation.\n' + USAGE };
++  }
++  const catalog = loadSkillCatalog(projectRoot);
++  const result = routeSkill(situation, { catalog });
++  if (json) {
++    return { success: true, result, output: JSON.stringify(result, null, 2) + '\n' };
++  }
++  return { success: true, result, output: formatRouting(result) };
++}
++
++module.exports = {
++  name: 'skill',
++  description: 'Route a situation to the best-fit Forge skill (forge skill for "<situation>")',
++  usage: USAGE + '\n       (future: forge skill eval | forge skill scores)',
++  flags: {
++    '--json': 'Emit the machine-readable routing result',
++  },
++  handler: (args, flags = {}, projectRoot = process.cwd()) => {
++    const verb = args[0];
++    if (verb === 'for') {
++      return handleFor(args.slice(1), flags, projectRoot);
++    }
++    if (!verb) {
++      return { success: false, error: 'Missing verb.\n' + USAGE };
++    }
++    return {
++      success: false,
++      error: "Unknown verb '" + verb + "'. Supported: for.\n" + USAGE,
++    };
++  },
++  // Exposed for unit tests; not part of the CLI surface.
++  _internal: { parseForArgs, formatRouting, handleFor },
++};
+diff --git a/lib/orientation.js b/lib/orientation.js
+index a1b34bd5..05c2880e 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -761,9 +761,14 @@ function buildIssueRecap(projectRoot, issueId, options = {}) {
+ 
+ function buildPrime(projectRoot, options = {}) {
+   const { project, sections } = buildOrientationSections(projectRoot, options);
++  // Prime is the session-entry command, so it leads with LIVE state (stage / claims / ready /
++  // gates / one adoption nudge) when the caller supplied it — collected async by the command
++  // handler and injected here so buildPrime itself stays pure and synchronous.
++  const extraSections = [buildPrimeKeyCommandsSection()];
++  if (options.liveState) extraSections.unshift(buildPrimeLiveStateSection(options.liveState));
+   const orientation = assembleOrientationResult(
+     project,
+-    [...sections, buildPrimeKeyCommandsSection()],
++    [...sections, ...extraSections],
+     options
+   );
+   return {
+@@ -774,6 +779,7 @@ function buildPrime(projectRoot, options = {}) {
+     token_budget: orientation.token_budget,
+     orientation,
+     sources: orientation.sources,
++    ...(options.liveState ? { live_state: options.liveState } : {}),
+     next_commands: [
+       'forge orient --json',
+       'forge status --json',
+@@ -782,6 +788,130 @@ function buildPrime(projectRoot, options = {}) {
+   };
+ }
+ 
++// Cap on claimed issues rendered in the prime live-state block — a bounded nudge, not a dump.
++const LIVE_STATE_CLAIM_LIMIT = 3;
++const LIVE_STATE_GATE_LIMIT = 6;
++
++/**
++ * Render the prime LIVE-state block: current stage, claimed issue(s), ready count, enabled
++ * gates/rails, and ONE progressive-adoption nudge. PURE and bounded — the output is always
++ * ≤ ~10 lines (well under the 20-line cap), with honest fallbacks for every missing field so
++ * a repo with no kernel data still renders a coherent block.
++ *
++ * @param {object} [liveState]
++ * @returns {string}
++ */
++function formatPrimeLiveState(liveState = {}) {
++  const stage = liveState.stage;
++  const claimed = Array.isArray(liveState.claimed) ? liveState.claimed : [];
++  const readyCount = Number.isFinite(liveState.readyCount) ? liveState.readyCount : 0;
++  const gates = Array.isArray(liveState.gates) ? liveState.gates : [];
++
++  const lines = [];
++  lines.push(`Stage: ${stage && stage.id ? `${stage.id}${stage.name ? ` — ${stage.name}` : ''}` : 'not recorded'}`);
++  if (claimed.length === 0) {
++    lines.push('Claimed: none');
++  } else {
++    for (const issue of claimed.slice(0, LIVE_STATE_CLAIM_LIMIT)) {
++      lines.push(`Claimed: ${issue.id}${issue.title ? ` ${issue.title}` : ''}`);
++    }
++    if (claimed.length > LIVE_STATE_CLAIM_LIMIT) {
++      lines.push(`Claimed: …and ${claimed.length - LIVE_STATE_CLAIM_LIMIT} more`);
++    }
++  }
++  lines.push(readyCount > 0 ? `Ready: ${readyCount} issue${readyCount === 1 ? '' : 's'} waiting (forge ready)` : 'Ready: none');
++  lines.push(gates.length > 0
++    ? `Gates on: ${gates.slice(0, LIVE_STATE_GATE_LIMIT).join(', ')}${gates.length > LIVE_STATE_GATE_LIMIT ? ', …' : ''}`
++    : 'Gates on: defaults');
++  if (liveState.nudge) lines.push(`Next: ${liveState.nudge}`);
++  return lines.join('\n');
++}
++
++function buildPrimeLiveStateSection(liveState) {
++  return buildSection({
++    id: 'live_state',
++    title: 'Live State',
++    content: formatPrimeLiveState(liveState),
++    sources: [source('kernel.live_state', 'kernel_read_model', 'live_session_state', 'live_state')],
++    priority: 1,
++    preserve: true,
++  });
++}
++
++/** Deterministic, single-line progressive-adoption nudge (at-most-one) for prime live-state. */
++function buildAdoptionNudge({ claimed = [], readyCount = 0, topReady = null } = {}) {
++  if (claimed.length > 0) return `Resume with forge recap ${claimed[0].id} for full context.`;
++  if (readyCount > 0 && topReady && topReady.id) return `Claim work: forge claim ${topReady.id}, then plan or dev.`;
++  return 'No active or ready work — forge plan "<feature>" to start, or forge ready to check.';
++}
++
++/**
++ * Best-effort LIVE-state collector for prime. Async + NON-THROWING: any failure (no kernel, no
++ * git, locked DB) degrades each field to an honest fallback rather than crashing the command.
++ * A caller/test may inject `options.liveState` to bypass all reads.
++ *
++ * @param {string} projectRoot
++ * @param {object} [options] - `{ liveState, env }` (all injectable).
++ * @returns {Promise<{stage: object|null, claimed: object[], readyCount: number, gates: string[], nudge: string}>}
++ */
++async function collectPrimeLiveState(projectRoot, options = {}) {
++  if (options.liveState) return options.liveState;
++  const env = options.env || process.env;
++
++  // No reachable git repo -> no shared kernel. Skip the kernel-backed reads entirely (mirrors the
++  // memory-section guard): touching the issue store here would fall back to creating a DB handle
++  // under a non-repo path and strand it, breaking Windows temp cleanup (rmSync EBUSY).
++  if (!fs.existsSync(path.join(projectRoot, '.git'))) {
++    return { stage: null, claimed: [], readyCount: 0, gates: readEnabledGates(projectRoot), nudge: buildAdoptionNudge({}) };
++  }
++
++  let snapshot = { activeAssigned: [], ready: [] };
++  try {
++    const { readStatusSnapshot } = require('./status/snapshot');
++    snapshot = (await readStatusSnapshot(projectRoot, { env })) || snapshot;
++  } catch { /* honest fallback: empty snapshot */ }
++
++  const claimed = (Array.isArray(snapshot.activeAssigned) ? snapshot.activeAssigned : [])
++    .map(issue => ({ id: issue.id, title: issue.title || null }));
++  const readyList = Array.isArray(snapshot.ready) ? snapshot.ready : [];
++  const readyCount = readyList.length;
++
++  let stage = null;
++  try {
++    const status = require('./commands/status');
++    const issueId = claimed[0] ? claimed[0].id : null;
++    const { workflowState } = status.resolveWorkflowState({ projectRoot, issueId });
++    if (workflowState && workflowState.currentStage) {
++      stage = { id: workflowState.currentStage, name: status.buildAuthoritativeStatus(workflowState).stageName };
++    }
++  } catch { /* stage stays null */ }
++
++  return {
++    stage,
++    claimed,
++    readyCount,
++    gates: readEnabledGates(projectRoot),
++    nudge: buildAdoptionNudge({ claimed, readyCount, topReady: readyList[0] || null }),
++  };
++}
++
++/**
++ * Read the enabled gate/rail ids from the resolved runtime graph (config-file backed, no kernel
++ * DB — safe on a non-repo path). Never throws; returns [] on any failure.
++ * @param {string} projectRoot
++ * @returns {string[]}
++ */
++function readEnabledGates(projectRoot) {
++  try {
++    const { getResolvedRuntimeGraph } = require('./core/runtime-graph');
++    const graph = getResolvedRuntimeGraph({ projectRoot }) || {};
++    const primitives = [...(graph.rails || []), ...(graph.gates || [])];
++    return primitives.filter(p => p && p.enabled !== false).map(p => p.id).filter(Boolean);
++  } catch {
++    return [];
++  }
++}
++
+ function formatOrientationText(result) {
+   const lines = [
+     orientationTitle(result.kind),
+@@ -834,9 +964,10 @@ function readOption(args, name, fallback) {
+   return fallback;
+ }
+ 
+-function runOrientationCommand(build, args, projectRoot) {
++function runOrientationCommand(build, args, projectRoot, extraOptions = {}) {
+   const result = build(projectRoot, {
+     budgetTokens: readOption(args, '--budget', undefined),
++    ...extraOptions,
+   });
+   return {
+     success: true,
+@@ -848,12 +979,16 @@ module.exports = {
+   DEFAULT_BUDGET_TOKENS,
+   applyBudget,
+   buildSection,
++  buildAdoptionNudge,
+   buildIssueRecap,
+   buildMemorySection,
+   buildOrientation,
+   buildOrientationSections,
+   buildPrime,
++  buildPrimeLiveStateSection,
++  collectPrimeLiveState,
+   discoverWorkFolder,
++  formatPrimeLiveState,
+   estimateTokens,
+   formatOrientationText,
+   normalizeBudgetTokens,
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+new file mode 100644
+index 00000000..dc00344d
+--- /dev/null
++++ b/lib/using-forge.js
+@@ -0,0 +1,232 @@
++'use strict';
++
++/**
++ * using-forge dispatch: shared helpers for Forge's reasoning-driven skill auto-trigger.
++ *
++ * Two consumers share this module:
++ *  - the SessionStart context hook (lib/commands/hooks.js), which injects the using-forge
++ *    dispatch bootstrap text so an agent auto-triggers skills from turn one (the Superpowers
++ *    mechanism), and
++ *  - the "forge skill for" router (lib/commands/skill.js), the DETERMINISTIC intent-to-skill
++ *    fallback for harnesses without a SessionStart hook.
++ *
++ * Everything here is deterministic and file-based (reads the canonical skills/ frontmatter); it
++ * NEVER opens the kernel and NEVER throws -- a missing skills dir degrades to empty results.
++ *
++ * @module using-forge
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const DISPATCH_SKILL = 'using-forge';
++
++/** Strip a leading UTF-8 BOM (U+FEFF) without embedding the char literally in source. */
++function stripBom(value) {
++  const s = String(value);
++  return s.charCodeAt(0) === 0xFEFF ? s.slice(1) : s;
++}
++
++/**
++ * Read the using-forge SKILL.md body (everything AFTER the frontmatter). This is the dispatch
++ * bootstrap text the SessionStart hook injects. Returns empty string when the file is
++ * absent/unreadable so injection fails open.
++ * @param {string} projectRoot
++ * @returns {string}
++ */
++function loadDispatchText(projectRoot) {
++  const raw = readSkillFile(projectRoot, DISPATCH_SKILL);
++  if (!raw) return '';
++  return stripFrontmatter(raw).trim();
++}
++
++/** Read a canonical skill's SKILL.md text, or null when absent. */
++function readSkillFile(projectRoot, name) {
++  try {
++    const filePath = path.join(projectRoot, 'skills', name, 'SKILL.md');
++    if (!fs.existsSync(filePath)) return null;
++    return fs.readFileSync(filePath, 'utf8');
++  } catch {
++    return null;
++  }
++}
++
++/** Remove a leading YAML frontmatter block (--- ... ---), returning the body. */
++function stripFrontmatter(raw) {
++  const text = stripBom(String(raw));
++  if (!text.startsWith('---')) return text;
++  const end = text.indexOf('\n---', 3);
++  if (end === -1) return text;
++  const afterClose = text.indexOf('\n', end + 1);
++  return afterClose === -1 ? '' : text.slice(afterClose + 1);
++}
++
++/** Parse the name and (flattened) description from a SKILL.md frontmatter block. */
++function parseFrontmatter(raw) {
++  const text = stripBom(String(raw));
++  if (!text.startsWith('---')) return { name: null, description: '' };
++  const end = text.indexOf('\n---', 3);
++  const block = end === -1 ? text.slice(3) : text.slice(3, end);
++  const lines = block.split(/\r?\n/);
++
++  let name = null;
++  const descParts = [];
++  let inDescription = false;
++
++  for (const line of lines) {
++    const nameMatch = /^name:\s*(.+)\s*$/.exec(line);
++    if (nameMatch && !inDescription) {
++      name = nameMatch[1].trim().replace(/^['"]|['"]$/g, '');
++      continue;
++    }
++    const descMatch = /^description:\s*(.*)$/.exec(line);
++    if (descMatch && !inDescription) {
++      inDescription = true;
++      const inline = descMatch[1].trim();
++      // A folded/literal block scalar has its text on the following indented lines.
++      if (inline && inline !== '>' && inline !== '|' && inline !== '>-' && inline !== '|-') {
++        descParts.push(inline.replace(/^['"]|['"]$/g, ''));
++      }
++      continue;
++    }
++    if (inDescription) {
++      // The description block continues while lines are indented, ends at a new top-level key.
++      if (/^\s+\S/.test(line)) {
++        descParts.push(line.trim());
++      } else if (line.trim() !== '') {
++        inDescription = false;
++      }
++    }
++  }
++
++  return { name, description: descParts.join(' ').replace(/\s+/g, ' ').trim() };
++}
++
++/**
++ * Load the canonical Forge skill catalog: name + description for every skills/*\/SKILL.md.
++ * Sorted by name for determinism. Never throws -- an absent dir yields an empty array.
++ * @param {string} projectRoot
++ * @returns {{name: string, description: string}[]}
++ */
++function loadSkillCatalog(projectRoot) {
++  const skillsDir = path.join(projectRoot, 'skills');
++  let entries;
++  try {
++    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
++  } catch {
++    return [];
++  }
++  const catalog = [];
++  for (const entry of entries) {
++    if (!entry.isDirectory()) continue;
++    const raw = readSkillFile(projectRoot, entry.name);
++    if (!raw) continue;
++    const fm = parseFrontmatter(raw);
++    catalog.push({ name: fm.name || entry.name, description: fm.description || '' });
++  }
++  catalog.sort((a, b) => a.name.localeCompare(b.name));
++  return catalog;
++}
++
++// Curated intent-to-skill rules: the deterministic backbone of the router. Each rule scores when
++// a situation contains one of its keyword phrases; weight lets a strong signal outrank an
++// incidental token. Keywords match as normalized substrings, so a multi-word phrase matches only
++// when adjacent. This is the reasoning fallback for harnesses that cannot auto-load the skill.
++const INTENT_RULES = Object.freeze([
++  { skill: 'plan', weight: 3, keywords: ['add a feature', 'add feature', 'new feature', 'build a', 'build the', 'scope', 'design a', 'design intent', 'brainstorm', 'plan ', 'break this into tasks', 'task list'] },
++  { skill: 'dev', weight: 3, keywords: ['fix a failing test', 'failing test', 'fix a bug', 'fix the bug', 'fix this bug', 'debug', 'implement', 'write the code', 'red-green', 'tdd', 'unexpected behavior', 'broken'] },
++  { skill: 'validate', weight: 3, keywords: ['run tests', 'run the tests', 'lint', 'type check', 'typecheck', 'type-check', 'validate', 'security scan', 'run checks', 'all checks'] },
++  { skill: 'ship', weight: 3, keywords: ['open a pr', 'open pr', 'create a pr', 'create pr', 'raise a pr', 'push the branch', 'push branch', 'ship it', 'make a pull request', 'pull request'] },
++  { skill: 'review', weight: 3, keywords: ['review feedback', 'address feedback', 'pr feedback', 'coderabbit', 'greptile', 'review comment', 'resolve threads', 'address the review'] },
++  { skill: 'verify', weight: 3, keywords: ['post-merge', 'after merge', 'verify health', 'health check', 'ci on main', 'close the issue after merge'] },
++  { skill: 'triage-ready', weight: 3, keywords: ['what should i work on', 'what to work on', 'next ready', 'ready queue', 'pick the next', 'what is ready', 'rank the'] },
++  { skill: 'status', weight: 3, keywords: ['where am i', 'current stage', 'what stage', 'stale work', 'status', 'active work', 'whats going on'] },
++  { skill: 'issue-basics', weight: 2, keywords: ['create an issue', 'close an issue', 'update an issue', 'search issues', 'comment on an issue', 'file an issue', 'new issue'] },
++  { skill: 'claim-safety', weight: 2, keywords: ['claim an issue', 'claim the issue', 'prove ownership', 'own the lease', 'lease'] },
++  { skill: 'smith', weight: 2, keywords: ['end to end', 'end-to-end', 'drive one issue', 'plan to merged', 'whole issue', 'from plan to pr'] },
++  { skill: 'shepherd', weight: 2, keywords: ['monitor a pr', 'shepherd', 'watch the pr', 'ci status', 'poll the pr', 'pr checks'] },
++  { skill: 'research', weight: 2, keywords: ['research', 'best practices', 'investigate the landscape', 'deep research', 'compare libraries'] },
++  { skill: 'rollback', weight: 2, keywords: ['revert', 'roll back', 'rollback', 'undo the merge', 'undo a change'] },
++  { skill: 'kernel', weight: 1, keywords: ['how does forge', 'which command', 'which skill', 'how is forge set up', 'new here', 'orient'] },
++]);
++
++/** Normalize a situation string for matching: lowercase, collapse whitespace, strip punctuation. */
++function normalizeSituation(situation) {
++  return String(situation || '')
++    .toLowerCase()
++    .replace(/[^a-z0-9\s-]/g, ' ')
++    .replace(/\s+/g, ' ')
++    .trim();
++}
++
++/**
++ * Deterministically route a natural-language situation to the best-fit Forge skill(s).
++ *
++ * Scoring: curated INTENT_RULES keyword hits (weighted) PLUS a light token-overlap bonus against
++ * each skill's own description (so a skill whose description literally mentions the situation's
++ * words still ranks even without a curated rule). Ties break by skill name for determinism.
++ *
++ * @param {string} situation
++ * @param {object} [options]
++ * @param {{name: string, description: string}[]} [options.catalog] - skill catalog (injectable).
++ * @param {number} [options.limit=3] - max matches to return.
++ * @returns {{ situation: string, matches: {name: string, score: number, why: string}[], best: string|null, unknown: boolean }}
++ */
++function routeSkill(situation, options = {}) {
++  const catalog = options.catalog || [];
++  const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 3;
++  const norm = normalizeSituation(situation);
++  const known = new Set(catalog.map(s => s.name));
++
++  const scores = new Map(); // skill -> { score, reasons:Set }
++  const bump = (skill, amount, reason) => {
++    if (!scores.has(skill)) scores.set(skill, { score: 0, reasons: new Set() });
++    const entry = scores.get(skill);
++    entry.score += amount;
++    if (reason) entry.reasons.add(reason);
++  };
++
++  if (norm) {
++    // 1) Curated intent rules (only for skills that actually exist in the catalog).
++    for (const rule of INTENT_RULES) {
++      if (known.size > 0 && !known.has(rule.skill)) continue;
++      for (const kw of rule.keywords) {
++        if (norm.includes(kw)) bump(rule.skill, rule.weight, 'matches "' + kw.trim() + '"');
++      }
++    }
++    // 2) Description token-overlap bonus (fractional so it never outranks a curated hit).
++    const tokens = norm.split(' ').filter(t => t.length >= 4);
++    for (const skill of catalog) {
++      const desc = normalizeSituation(skill.description);
++      let overlap = 0;
++      for (const token of new Set(tokens)) {
++        if (desc.includes(token)) overlap += 1;
++      }
++      if (overlap > 0) bump(skill.name, Math.min(overlap * 0.25, 1), 'described intent');
++    }
++  }
++
++  const matches = [...scores.entries()]
++    .filter(([, v]) => v.score > 0)
++    .map(([name, v]) => ({ name, score: Math.round(v.score * 100) / 100, why: [...v.reasons].join('; ') }))
++    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
++    .slice(0, limit);
++
++  return {
++    situation: String(situation || ''),
++    matches,
++    best: matches.length > 0 ? matches[0].name : null,
++    unknown: matches.length === 0,
++  };
++}
++
++module.exports = {
++  DISPATCH_SKILL,
++  INTENT_RULES,
++  loadDispatchText,
++  loadSkillCatalog,
++  parseFrontmatter,
++  stripFrontmatter,
++  normalizeSituation,
++  routeSkill,
++};
+diff --git a/plugin/hooks/session-start b/plugin/hooks/session-start
+index 111eab22..02edb4c4 100755
+--- a/plugin/hooks/session-start
++++ b/plugin/hooks/session-start
+@@ -13,7 +13,7 @@ if [ -d ".forge" ]; then
+   forge_state="active in this project (.forge/ present)"
+ fi
+ 
+-nudge="Forge is ${forge_state}. To begin, invoke the \`forge:activation\` skill (it orients on the project first, then offers a bare-minimum setup — never forced), or run a \`forge\` verb (e.g. \`forge status\`, \`forge ready\`). Read-only verbs create nothing; the first mutating verb lazily initializes a gates-disabled \`.forge/\` skeleton."
++nudge="Forge is ${forge_state}. To begin, invoke the \`forge:activation\` skill (it orients on the project first, then offers a bare-minimum setup — never forced), or run a \`forge\` verb (e.g. \`forge status\`, \`forge ready\`). Read-only verbs create nothing; the first mutating verb lazily initializes a gates-disabled \`.forge/\` skeleton. In an active Forge project, the \`using-forge\` dispatch skill is the reasoning-driven router: before ANY response, if there is even a 1% chance a Forge skill applies, invoke it — or run \`forge skill for \"<situation>\"\` to find the best-fit skill."
+ 
+ # Escape for JSON embedding (single C-level pass each; matches superpowers).
+ escape_for_json() {
+diff --git a/skills/using-forge/SKILL.md b/skills/using-forge/SKILL.md
+new file mode 100644
+index 00000000..8408170d
+--- /dev/null
++++ b/skills/using-forge/SKILL.md
+@@ -0,0 +1,103 @@
++---
++name: using-forge
++description: >
++  Forge dispatch skill: the session bootstrap that makes Forge's skills auto-trigger as a
++  reasoning-driven SYSTEM. Reach for this FIRST, before ANY response (including clarifying
++  questions, codebase exploration, or file reads), whenever there is even a 1% chance a Forge
++  skill applies. Carries the 1%-rule, the announce-before-acting rule, an anti-rationalization
++  red-flags table, a subagent escape hatch, and an intent-to-skill routing table: add/build/scope
++  a feature to plan; implement an existing task to dev; fix a failing test or bug to dev (debug
++  first); type-check/lint/tests to validate; push and open a PR to ship; address PR/review
++  feedback to review; post-merge health to verify; what to work on to triage-ready; where am I /
++  current stage to status; create/close/search an issue to issue-basics; drive one issue
++  end-to-end to smith; monitor a PR to shepherd. Run `forge skill for "<situation>"` for a
++  deterministic fallback. NOT itself a stage; the kernel skill is the fuller umbrella index
++  once oriented.
++allowed-tools: Read, Bash(forge:*)
++---
++
++<SUBAGENT-STOP>
++If you were dispatched as a subagent to execute one specific task, ignore this skill and do
++the task you were given. This dispatch rule is for the top-level session, not for a scoped
++subagent — otherwise every subagent would re-enter routing instead of working.
++</SUBAGENT-STOP>
++
++<EXTREMELY-IMPORTANT>
++If you think there is even a 1% chance a Forge skill applies to what you are doing, you MUST
++invoke that skill BEFORE any response or action.
++
++IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
++
++This is not negotiable. You cannot rationalize your way out of it.
++</EXTREMELY-IMPORTANT>
++
++## The rule
++
++**Invoke the relevant or requested Forge skill BEFORE any response or action** — including
++clarifying questions, exploring the codebase, or checking files. If it turns out wrong for the
++situation, you don't have to follow it — but you check first.
++
++Then **announce** `Using [skill] to [purpose]` and follow the skill exactly. If it has a
++checklist or HARD-GATE, create one todo per item.
++
++When unsure WHICH skill fits, either consult the routing table below or run
++`forge skill for "<what you are about to do>"` for a deterministic best-fit answer.
++
++## Intent → skill routing table
++
++Process skills set the approach first; then the stage/implementation skill carries it out.
++
++| When the situation is… | Start with |
++|------------------------|-----------|
++| "Add / build / scope a new feature", "let's build X" | `plan` |
++| Implement a task that a plan already defined | `dev` |
++| "Fix this bug" / a failing test / unexpected behavior | `superpowers:systematic-debugging`, then `dev` |
++| Run type-check, lint, security, or tests | `validate` |
++| Push the branch and open a PR | `ship` |
++| Address PR / review-agent feedback (CodeRabbit, Greptile, CI) | `review` |
++| Post-merge health check, close issues | `verify` |
++| "What should I work on?" — rank the ready queue | `triage-ready` |
++| "Where am I?" / current stage / stale or active work | `status` |
++| Create / update / close / search / comment on ONE issue | `issue-basics` |
++| Claim an issue and PROVE the lease before mutating | `claim-safety` |
++| Drive one issue plan→merged-PR under human gates | `smith` |
++| Monitor / shepherd a PR's CI + checks (never merges) | `shepherd` |
++| Deep, multi-source web research | `research` / `parallel-deep-research` |
++| "How does Forge fit together?" / which verb for X | `kernel` |
++| Safe revert / undo a merged change | `rollback` |
++
++If two skills seem to apply, run the process skill first (`plan`, `systematic-debugging`), then
++the doing skill. `kernel` is the umbrella index — use it to orient, not to do the work.
++
++## Red flags — these thoughts mean STOP, you are rationalizing
++
++| Thought | Reality |
++|---------|---------|
++| "This is just a simple question" | Questions are tasks. Check for a skill. |
++| "I need more context first" | The skill check comes BEFORE clarifying questions. |
++| "Let me explore the codebase first" | Skills tell you HOW to explore. Check first. |
++| "I can check git/files quickly" | Files lack conversation context. Check for a skill. |
++| "This doesn't need a formal stage" | If a skill exists, use it. |
++| "I remember what that skill says" | Skills evolve. Read the current version. |
++| "The skill is overkill here" | Simple things become complex. Use it. |
++| "I'll just do this one thing first" | Check BEFORE doing anything. |
++| "It's obviously a plan/dev/ship" | Then invoking it costs nothing. Invoke it. |
++
++## Subagent escape hatch
++
++You do NOT have to hold every skill in your own context. When a task is independent and
++bounded, dispatch a subagent with the specific skill and a self-contained brief, and keep only
++its conclusion. Parallelize independent tasks (see `superpowers:dispatching-parallel-agents`).
++Reviewers/verifiers that find nothing must say so and name what they inspected.
++
++## Agent-agnostic
++
++This skill syncs to every harness mirror (`.agents/`, `.claude/`, `.codex/`, `.cursor/`,
++`.hermes/`), and the same routing guidance is reachable via `forge skill for "<situation>"` on
++any harness — never branch on harness identity. On Claude the SessionStart hook injects this
++text automatically; elsewhere, AGENTS.md points here and the CLI router is the fallback.
++
++## User instructions win
++
++CLAUDE.md / AGENTS.md and direct user requests take precedence over skills, which in turn
++override default behavior. Skip a skill only when your human partner explicitly tells you to.
+diff --git a/test/hooks-session-start.test.js b/test/hooks-session-start.test.js
+index 737904ad..2e40dfb3 100644
+--- a/test/hooks-session-start.test.js
++++ b/test/hooks-session-start.test.js
+@@ -58,3 +58,51 @@ describe('forge hooks session-start (context hook — memory push)', () => {
+     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
+   });
+ });
++
++describe('forge hooks session-start (using-forge dispatch injection)', () => {
++  const DISPATCH = 'Using [skill] to [purpose] — Forge dispatch bootstrap.';
++
++  test('injects the using-forge dispatch text ahead of the memory digest', async () => {
++    const res = await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => DISPATCH,
++      fetchNotes: () => NOTES,
++      fetchIssues: (_root, kind) => (kind === 'ready' ? READY : []),
++    });
++    expect(res.success).toBe(true);
++    const ctx = JSON.parse(res.output).hookSpecificOutput.additionalContext;
++    expect(ctx).toContain(DISPATCH);
++    expect(ctx).toContain('Kernel is the single source of truth');
++    // Dispatch bootstrap is injected FIRST (before the digest).
++    expect(ctx.indexOf(DISPATCH)).toBeLessThan(ctx.indexOf('Kernel is the single source of truth'));
++  });
++
++  test('dispatch bootstrap injects even when the memory digest is empty', async () => {
++    const res = await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => DISPATCH,
++      fetchNotes: () => [],
++      fetchIssues: () => [],
++    });
++    const ctx = JSON.parse(res.output).hookSpecificOutput.additionalContext;
++    expect(ctx).toContain(DISPATCH);
++  });
++
++  test('dispatch bootstrap survives a throwing digest fetcher (fail-open)', async () => {
++    const res = await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => DISPATCH,
++      fetchNotes: () => { throw new Error('kernel down'); },
++      fetchIssues: () => { throw new Error('issue store down'); },
++    });
++    expect(res.success).toBe(true);
++    const ctx = JSON.parse(res.output).hookSpecificOutput.additionalContext;
++    expect(ctx).toContain(DISPATCH);
++  });
++
++  test('unsupported harness never injects the dispatch bootstrap', async () => {
++    const res = await run(['session-start', '--harness', 'cursor'], {
++      loadDispatchText: () => DISPATCH,
++      fetchNotes: () => NOTES,
++      fetchIssues: () => READY,
++    });
++    expect(res.output).toBe('');
++  });
++});
+diff --git a/test/orientation-prime-live-state.test.js b/test/orientation-prime-live-state.test.js
+new file mode 100644
+index 00000000..f03c5f2e
+--- /dev/null
++++ b/test/orientation-prime-live-state.test.js
+@@ -0,0 +1,119 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  buildPrime,
++  formatPrimeLiveState,
++  buildAdoptionNudge,
++  collectPrimeLiveState,
++  formatOrientationText,
++} = require('../lib/orientation');
++
++// An empty temp dir keeps the prime build deterministic (no real project files / kernel reads),
++// so the tests exercise only the injected live-state path.
++function tmpRoot() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-prime-'));
++}
++
++const SAMPLE = {
++  stage: { id: 'dev', name: 'Development' },
++  claimed: [{ id: 'abc123', title: 'Wire the router' }],
++  readyCount: 4,
++  gates: ['rail.tdd_intent', 'rail.kernel_tracking'],
++  nudge: 'Resume with forge recap abc123 for full context.',
++};
++
++describe('formatPrimeLiveState (pure)', () => {
++  test('renders all five fields', () => {
++    const text = formatPrimeLiveState(SAMPLE);
++    expect(text).toContain('Stage: dev — Development');
++    expect(text).toContain('Claimed: abc123 Wire the router');
++    expect(text).toContain('Ready: 4 issues waiting');
++    expect(text).toContain('Gates on: rail.tdd_intent, rail.kernel_tracking');
++    expect(text).toContain('Next: Resume with forge recap abc123');
++  });
++
++  test('stays well under the 20-line cap', () => {
++    const text = formatPrimeLiveState(SAMPLE);
++    expect(text.split('\n').length).toBeLessThanOrEqual(20);
++  });
++
++  test('honest fallbacks when nothing is known', () => {
++    const text = formatPrimeLiveState({});
++    expect(text).toContain('Stage: not recorded');
++    expect(text).toContain('Claimed: none');
++    expect(text).toContain('Ready: none');
++    expect(text).toContain('Gates on: defaults');
++  });
++
++  test('caps claimed issues to keep the block bounded', () => {
++    const many = Array.from({ length: 6 }, (_, i) => ({ id: 'i' + i, title: 't' + i }));
++    const text = formatPrimeLiveState({ claimed: many });
++    expect(text).toContain('…and 3 more');
++    expect(text.split('\n').length).toBeLessThanOrEqual(20);
++  });
++});
++
++describe('buildAdoptionNudge (at-most-one line)', () => {
++  test('resume when work is claimed', () => {
++    expect(buildAdoptionNudge({ claimed: [{ id: 'x1' }] })).toContain('forge recap x1');
++  });
++  test('claim when ready work exists but nothing claimed', () => {
++    expect(buildAdoptionNudge({ claimed: [], readyCount: 2, topReady: { id: 'r1' } })).toContain('forge claim r1');
++  });
++  test('start-fresh when nothing claimed or ready', () => {
++    expect(buildAdoptionNudge({ claimed: [], readyCount: 0 })).toContain('forge plan');
++  });
++});
++
++describe('buildPrime live-state section', () => {
++  test('injected live state renders as a Live State section', () => {
++    const root = tmpRoot();
++    try {
++      const result = buildPrime(root, { liveState: SAMPLE });
++      const section = result.orientation.sections.find(s => s.id === 'live_state');
++      expect(section).toBeTruthy();
++      expect(section.title).toBe('Live State');
++      expect(section.content).toContain('Stage: dev — Development');
++      expect(result.live_state).toEqual(SAMPLE);
++
++      const text = formatOrientationText(result);
++      expect(text).toContain('## Live State');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
++  test('existing prime output is unchanged when no live state is supplied', () => {
++    const root = tmpRoot();
++    try {
++      const result = buildPrime(root, {});
++      expect(result.kind).toBe('prime');
++      expect(result.orientation.sections.find(s => s.id === 'live_state')).toBeUndefined();
++      expect(result.live_state).toBeUndefined();
++      // Key-commands section (existing behavior) is still present.
++      expect(result.orientation.sections.find(s => s.id === 'key_commands')).toBeTruthy();
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
++
++describe('collectPrimeLiveState', () => {
++  test('returns an injected live state verbatim (no kernel read)', async () => {
++    const state = await collectPrimeLiveState('/nonexistent', { liveState: SAMPLE });
++    expect(state).toEqual(SAMPLE);
++  });
++
++  test('never throws on a non-project path and yields honest fallbacks', async () => {
++    const state = await collectPrimeLiveState(path.join(os.tmpdir(), 'forge-no-such-' + Date.now()));
++    expect(Array.isArray(state.claimed)).toBe(true);
++    expect(typeof state.readyCount).toBe('number');
++    expect(Array.isArray(state.gates)).toBe(true);
++    expect(typeof state.nudge).toBe('string');
++  });
++});
+diff --git a/test/skills/using-forge-skill.test.js b/test/skills/using-forge-skill.test.js
+new file mode 100644
+index 00000000..6ea76aa3
+--- /dev/null
++++ b/test/skills/using-forge-skill.test.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const { parseFrontmatter, stripFrontmatter } = require('../../lib/using-forge');
++const { checkSkillsSync } = require('../../lib/skills-sync');
++
++const repoRoot = path.resolve(__dirname, '../..');
++const skillPath = path.join(repoRoot, 'skills', 'using-forge', 'SKILL.md');
++
++// Caps mirror the skill-authoring contract: the harness only sees the description until the
++// skill is invoked, so it must carry all triggering info within the 1024-char frontmatter cap;
++// the body stays well under the 500-line ceiling.
++const DESCRIPTION_CAP = 1024;
++const BODY_LINE_CAP = 500;
++
++describe('using-forge dispatch skill', () => {
++  test('SKILL.md exists', () => {
++    expect(fs.existsSync(skillPath)).toBe(true);
++  });
++
++  test('frontmatter name is using-forge and description is within the cap', () => {
++    const raw = fs.readFileSync(skillPath, 'utf8');
++    const fm = parseFrontmatter(raw);
++    expect(fm.name).toBe('using-forge');
++    expect(fm.description.length).toBeGreaterThan(0);
++    expect(fm.description.length).toBeLessThanOrEqual(DESCRIPTION_CAP);
++  });
++
++  test('description carries trigger phrases and negative disambiguation', () => {
++    const raw = fs.readFileSync(skillPath, 'utf8');
++    const desc = parseFrontmatter(raw).description.toLowerCase();
++    // trigger intent phrases
++    expect(desc).toContain('before any response');
++    expect(desc).toContain('1%');
++    // negative disambiguation (what it is NOT)
++    expect(desc).toContain('not itself a stage');
++  });
++
++  test('body is under the line cap and carries the dispatch essentials', () => {
++    const raw = fs.readFileSync(skillPath, 'utf8');
++    const body = stripFrontmatter(raw);
++    expect(body.split(/\r?\n/).length).toBeLessThanOrEqual(BODY_LINE_CAP);
++    expect(body).toContain('Red flags');
++    expect(body).toContain('routing table');
++    expect(body).toContain('Subagent escape hatch');
++  });
++
++  test('skills-sync reports no drift for the committed mirrors', () => {
++    const result = checkSkillsSync({ repoRoot });
++    const usingForgeDrift = result.drift.filter(d => d.skill === 'using-forge');
++    expect(usingForgeDrift).toEqual([]);
++  });
++});
+diff --git a/test/using-forge-router.test.js b/test/using-forge-router.test.js
+new file mode 100644
+index 00000000..29f3b97d
+--- /dev/null
++++ b/test/using-forge-router.test.js
+@@ -0,0 +1,118 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const path = require('node:path');
++
++const { routeSkill, loadSkillCatalog, parseFrontmatter } = require('../lib/using-forge');
++const skillCommand = require('../lib/commands/skill');
++
++const repoRoot = path.resolve(__dirname, '..');
++const catalog = loadSkillCatalog(repoRoot);
++
++describe('using-forge router (forge skill for)', () => {
++  test('the canonical catalog loads and covers Forge stage skills', () => {
++    const names = catalog.map(s => s.name);
++    expect(catalog.length).toBeGreaterThan(0);
++    for (const expected of ['plan', 'dev', 'validate', 'ship', 'review', 'verify']) {
++      expect(names).toContain(expected);
++    }
++  });
++
++  test.each([
++    ['add a feature', 'plan'],
++    ['scope a new feature', 'plan'],
++    ['fix a failing test', 'dev'],
++    ['implement the parser task', 'dev'],
++    ['run the tests and lint', 'validate'],
++    ['open a PR', 'ship'],
++    ['push the branch and open a pull request', 'ship'],
++    ['address PR feedback from coderabbit', 'review'],
++    ['post-merge health check', 'verify'],
++    ['what should I work on next', 'triage-ready'],
++    ['where am I in the workflow', 'status'],
++  ])('routes %j to %j', (situation, expected) => {
++    const result = routeSkill(situation, { catalog });
++    expect(result.best).toBe(expected);
++    expect(result.unknown).toBe(false);
++    expect(result.matches[0].why).toBeTruthy();
++  });
++
++  test('an unknown / non-actionable situation degrades gracefully', () => {
++    const result = routeSkill('xyzzy plugh nonsense', { catalog });
++    expect(result.best).toBeNull();
++    expect(result.unknown).toBe(true);
++    expect(result.matches).toEqual([]);
++  });
++
++  test('empty situation is safe and returns unknown', () => {
++    const result = routeSkill('', { catalog });
++    expect(result.unknown).toBe(true);
++    expect(result.best).toBeNull();
++  });
++
++  test('routing is deterministic (same input, same output)', () => {
++    const a = routeSkill('open a PR', { catalog });
++    const b = routeSkill('open a PR', { catalog });
++    expect(a).toEqual(b);
++  });
++});
++
++describe('forge skill command', () => {
++  test('forge skill for "<situation>" --json returns a machine-readable result', () => {
++    const res = skillCommand.handler(['for', 'open a PR', '--json'], {}, repoRoot);
++    expect(res.success).toBe(true);
++    const parsed = JSON.parse(res.output);
++    expect(parsed.best).toBe('ship');
++    expect(parsed.unknown).toBe(false);
++    expect(Array.isArray(parsed.matches)).toBe(true);
++  });
++
++  test('text mode names the best skill and the announce line', () => {
++    const res = skillCommand.handler(['for', 'add a feature'], {}, repoRoot);
++    expect(res.success).toBe(true);
++    expect(res.output).toContain('plan');
++    expect(res.output).toContain('Announce:');
++  });
++
++  test('multi-word unquoted situation is joined from positional args', () => {
++    const res = skillCommand.handler(['for', 'run', 'the', 'tests', '--json'], {}, repoRoot);
++    const parsed = JSON.parse(res.output);
++    expect(parsed.best).toBe('validate');
++  });
++
++  test('missing situation errors with usage', () => {
++    const res = skillCommand.handler(['for'], {}, repoRoot);
++    expect(res.success).toBe(false);
++    expect(res.error).toContain('Usage: forge skill for');
++  });
++
++  test('unknown verb errors and lists supported verbs', () => {
++    const res = skillCommand.handler(['bogus'], {}, repoRoot);
++    expect(res.success).toBe(false);
++    expect(res.error).toContain('Supported: for');
++  });
++
++  test('exports the standard command interface', () => {
++    expect(skillCommand.name).toBe('skill');
++    expect(typeof skillCommand.description).toBe('string');
++    expect(typeof skillCommand.handler).toBe('function');
++  });
++});
++
++describe('parseFrontmatter', () => {
++  test('extracts name and flattens a folded description block', () => {
++    const raw = [
++      '---',
++      'name: demo',
++      'description: >',
++      '  first line',
++      '  second line',
++      'allowed-tools: Read',
++      '---',
++      '# body',
++    ].join('\n');
++    const fm = parseFrontmatter(raw);
++    expect(fm.name).toBe('demo');
++    expect(fm.description).toBe('first line second line');
++  });
++});
+-- 
+2.51.0.windows.1
+

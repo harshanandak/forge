@@ -1,0 +1,743 @@
+From 65d2eeea8315942fcc324b4f3dd4dd98c1a072ad Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 11 Jul 2026 13:06:36 +0530
+Subject: [PATCH] feat(kernel): populate stage_runs so workflow phase is real
+ (f61601ab)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The kernel_stage_runs table existed in schema.js but nothing wrote to it,
+so the dashboard/`show` guessed workflow phase from status+claim — a
+claimed-open issue with a merged PR still showed "dev". This wires the
+table with a direct-registry capability (mirroring the worktree registry).
+
+Kernel (lib/kernel/sqlite-driver.js):
+- recordStageRun({issue_id, stage, action:start|complete, substage?, now?}):
+  idempotent per (issue_id, stage). start opens an active row; complete
+  stamps completed_at + status=done on the same row (creating it if the
+  stage was never explicitly started).
+- listStageRuns({issue_id}) ordered by started_at.
+- getCurrentStage({issue_id}): latest ACTIVE run, else latest COMPLETED,
+  else null.
+- `show` now returns current_stage + current_stage_status from stage_runs
+  so consumers read the real phase instead of guessing.
+
+CLI (lib/commands/stage.js): `forge stage <id> <stage> --start|--complete`,
+plus `--current` / `--list` reads and `--json`. Resolves issue-id prefixes.
+Stage vocabulary validated against lib/workflow/stages.js (STAGE_IDS).
+
+Deferred to follow-up 5a5ba3a6: auto-wiring each stage command
+(/plan /dev /validate /ship /review /verify) to call this, and the
+dashboard consuming current_stage. Supersedes the a2279f65 "missing field"
+framing — the table already existed, it was just unpopulated.
+
+Tests: test/kernel/stage-runs.test.js (record start/complete, idempotency,
+active>completed resolution, show integration) + test/commands/stage.test.js
+(verb start/complete/current/list, validation, json, prefix resolution).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/stage.js          | 192 +++++++++++++++++++++++++++++++++
+ lib/kernel/sqlite-driver.js    | 166 ++++++++++++++++++++++++++++
+ test/commands/stage.test.js    | 124 +++++++++++++++++++++
+ test/kernel/stage-runs.test.js | 164 ++++++++++++++++++++++++++++
+ 4 files changed, 646 insertions(+)
+ create mode 100644 lib/commands/stage.js
+ create mode 100644 test/commands/stage.test.js
+ create mode 100644 test/kernel/stage-runs.test.js
+
+diff --git a/lib/commands/stage.js b/lib/commands/stage.js
+new file mode 100644
+index 00000000..0006c4c7
+--- /dev/null
++++ b/lib/commands/stage.js
+@@ -0,0 +1,192 @@
++'use strict';
++
++/**
++ * Forge Stage Command (f61601ab)
++ *
++ * Records the REAL workflow phase of an issue into the kernel_stage_runs table so
++ * the phase is queryable — instead of being guessed from status+claim (a
++ * claimed-open issue with a merged PR would otherwise still show "dev"). Mirrors
++ * the worktree-linkage registry: direct kernel writes, idempotent per
++ * (issue_id, stage).
++ *
++ *   forge stage <issue-id> <stage> --start       Open a stage (status=active)
++ *   forge stage <issue-id> <stage> --complete    Close a stage (status=done)
++ *   forge stage <issue-id> --current             Print the current stage
++ *   forge stage <issue-id> --list                Print the full stage history
++ *
++ * `<stage>` is one of the canonical workflow stages (plan|dev|validate|ship|review|verify).
++ * Read the current stage back on `forge show <id>` (data.current_stage).
++ *
++ * @module commands/stage
++ */
++
++const { STAGE_IDS, normalizeStageId } = require('../workflow/stages');
++const { resolveIssueId } = require('../kernel/issue-id-resolver');
++
++const STAGE_FLAGS = ['--start', '--complete', '--list', '--current', '--json'];
++const VALUE_FLAGS = ['--substage'];
++const USAGE = 'Usage: forge stage <issue-id> <stage> --start|--complete   (reads: --current | --list)';
++
++/**
++ * Parse the stage command's own flags out of the raw args (the global flag parser
++ * only recognizes an allowlist, so — like `worktree` — this command extracts its
++ * own). Returns { positional, opts } or { error }.
++ */
++function parseStageArgs(args = []) {
++  const positional = [];
++  const opts = { start: false, complete: false, list: false, current: false, json: false, substage: null };
++
++  for (let i = 0; i < args.length; i += 1) {
++    const arg = args[i];
++    if (typeof arg !== 'string') continue;
++
++    const valueFlag = VALUE_FLAGS.find(flag => arg === flag || arg.startsWith(`${flag}=`));
++    if (valueFlag) {
++      let value;
++      if (arg.startsWith(`${valueFlag}=`)) {
++        value = arg.slice(`${valueFlag}=`.length);
++      } else {
++        value = args[i + 1];
++        i += 1;
++      }
++      if (!value || value.startsWith('--')) {
++        return { error: `Missing value for ${valueFlag}. ${USAGE}` };
++      }
++      opts.substage = value;
++      continue;
++    }
++
++    if (STAGE_FLAGS.includes(arg)) {
++      opts[arg.slice(2)] = true;
++      continue;
++    }
++
++    if (arg.startsWith('--')) {
++      return { error: `Unknown flag: ${arg}. ${USAGE}` };
++    }
++
++    positional.push(arg);
++  }
++
++  return { positional, opts };
++}
++
++async function resolveDriver(projectRoot, opts) {
++  if (opts._kernelDriver) return opts._kernelDriver;
++  const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++  return (await buildMigratedKernelIssueDeps({ projectRoot })).kernelDriver;
++}
++
++function render(opts, data, humanLines) {
++  if (opts.json || process.env.FORGE_JSON === '1') {
++    return { success: true, output: JSON.stringify(data, null, 2) };
++  }
++  return { success: true, output: humanLines.join('\n'), ...data };
++}
++
++module.exports = {
++  name: 'stage',
++  description: 'Record or read an issue\'s real workflow stage (stage_runs)',
++  usage: USAGE,
++  flags: {
++    '--start': 'Open a stage run (status=active)',
++    '--complete': 'Complete a stage run (status=done)',
++    '--substage': 'Optional substage label to record',
++    '--current': 'Print the current stage (latest active, else latest completed)',
++    '--list': 'Print the full stage-run history for the issue',
++    '--json': 'Emit machine-readable JSON',
++  },
++
++  /**
++   * @param {string[]} args - Positional + flag args after `stage`
++   * @param {object} _flags - Global parsed flags (unused; this command parses its own)
++   * @param {string} projectRoot - Project root path
++   * @param {object} [opts] - DI options (may inject `_kernelDriver`)
++   * @returns {Promise<object>}
++   */
++  handler: async (args, _flags, projectRoot, opts = {}) => {
++    const parsed = parseStageArgs(args);
++    if (parsed.error) {
++      return { success: false, error: parsed.error };
++    }
++    const { positional, opts: stageOpts } = parsed;
++
++    const issueRef = positional[0];
++    if (!issueRef) {
++      return { success: false, error: `Missing issue id. ${USAGE}` };
++    }
++
++    let driver;
++    try {
++      driver = await resolveDriver(projectRoot, opts);
++    } catch (error) {
++      return { success: false, error: `Kernel unavailable: ${error.message}` };
++    }
++
++    // Resolve prefixes / display handles to a full issue id (same resolver the
++    // issue commands use), so `forge stage 1a2b3c4d dev --start` works.
++    const resolution = await resolveIssueId(
++      issueRef,
++      (needle, limit) => driver.findIssueIdsByPrefix(needle, limit, {}, {}),
++    );
++    if (resolution.error) {
++      return { success: false, error: resolution.error };
++    }
++    const issueId = resolution.id;
++
++    // Read paths -----------------------------------------------------------
++    if (stageOpts.current) {
++      const current = driver.getCurrentStage({ issue_id: issueId }, {});
++      const data = {
++        issue_id: issueId,
++        current_stage: current ? current.stage : null,
++        current_stage_status: current ? current.status : null,
++      };
++      const human = current
++        ? `${issueId}: ${current.stage} (${current.status})`
++        : `${issueId}: no stage recorded`;
++      return render(stageOpts, data, [human]);
++    }
++
++    if (stageOpts.list) {
++      const runs = driver.listStageRuns({ issue_id: issueId }, {});
++      const data = { issue_id: issueId, stage_runs: runs };
++      const human = runs.length === 0
++        ? [`${issueId}: no stage runs`]
++        : runs.map(run => `  ${run.stage.padEnd(9)} ${run.status.padEnd(7)} started ${run.started_at}${run.completed_at ? ` → completed ${run.completed_at}` : ''}`);
++      return render(stageOpts, data, [`${issueId} stage history:`, ...human]);
++    }
++
++    // Write paths ----------------------------------------------------------
++    const stage = normalizeStageId(positional[1]);
++    if (!stage) {
++      return {
++        success: false,
++        error: `Invalid or missing stage "${positional[1] ?? ''}". Expected one of: ${STAGE_IDS.join(', ')}. ${USAGE}`,
++      };
++    }
++
++    if (stageOpts.start && stageOpts.complete) {
++      return { success: false, error: `Pass only one of --start or --complete. ${USAGE}` };
++    }
++    const action = stageOpts.complete ? 'complete' : 'start';
++
++    let row;
++    try {
++      row = driver.recordStageRun(
++        { issue_id: issueId, stage, action, substage: stageOpts.substage || null },
++        {},
++      );
++    } catch (error) {
++      // A FOREIGN KEY failure means the issue id does not exist in the kernel.
++      if (/FOREIGN KEY/i.test(String(error.message))) {
++        return { success: false, error: `Issue ${issueId} not found in the kernel.` };
++      }
++      return { success: false, error: `Failed to record stage: ${error.message}` };
++    }
++
++    const data = { issue_id: issueId, action, stage_run: row };
++    const verb = action === 'complete' ? 'completed' : 'started';
++    return render(stageOpts, data, [`${issueId}: ${verb} stage ${stage} (${row.status})`]);
++  },
++};
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 6323479e..fb2b50c8 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -493,8 +493,14 @@ function runIssueReadOperation(runtime, db, operation, args, context) {
+ 			actor: comment.actor,
+ 			created_at: comment.created_at,
+ 		}));
++		// f61601ab: surface the REAL workflow phase from kernel_stage_runs (latest
++		// active, else latest completed) so consumers read the phase instead of
++		// guessing from status+claim. Null when no stage runs exist.
++		const currentStageRow = loadCurrentStageRunRow(runtime, db, id);
+ 		return okIssueResponse('issue.show', {
+ 			...rowToIssueSummary(rows[0], index.readinessById[id], claimedById[id], dependenciesById[id], dependentsById[id]),
++			current_stage: currentStageRow ? currentStageRow.stage : null,
++			current_stage_status: currentStageRow ? currentStageRow.status : null,
+ 			comments,
+ 		});
+ 	}
+@@ -1120,6 +1126,153 @@ function listWorktreeRows(runtime, db, filter = {}) {
+ 	return safeAll(runtime, db, 'SELECT * FROM kernel_worktrees ORDER BY registered_at DESC');
+ }
+ 
++// --- Stage-run registry (f61601ab). kernel_stage_runs records the REAL workflow
++// phase per issue so the dashboard/`show` read the phase instead of guessing it
++// from status+claim (a claimed-open issue with a merged PR would otherwise still
++// show "dev"). Like kernel_worktrees this is a plain authority registry written
++// DIRECTLY (not event-sourced): a stage row is keyed by (issue_id, stage) and the
++// write is idempotent per that pair — re-starting a stage UPDATEs in place instead
++// of duplicating. `start` opens an active row (started_at, completed_at NULL);
++// `complete` stamps completed_at + status='done' on that same row.
++const KERNEL_STAGE_RUN_COLUMNS = Object.freeze([
++	'id',
++	'issue_id',
++	'stage',
++	'substage',
++	'status',
++	'started_at',
++	'completed_at',
++	'evidence_id',
++]);
++
++function loadStageRunRow(runtime, db, issueId, stage) {
++	if (!issueId || !stage) return null;
++	const rows = safeAll(
++		runtime,
++		db,
++		'SELECT * FROM kernel_stage_runs WHERE issue_id = ? AND stage = ? ORDER BY started_at DESC LIMIT 1',
++		[issueId, stage],
++	);
++	return rows[0] || null;
++}
++
++// Idempotent per (issue_id, stage). action 'start' opens/keeps an active row;
++// action 'complete' stamps completed_at + status='done' (creating the row first
++// if the stage was never explicitly started, so a bare `complete` still records
++// that the stage ran).
++function recordStageRunRow(runtime, db, input) {
++	const stage = input.stage;
++	if (!input.issue_id || !stage) {
++		throw new Error('recordStageRun requires issue_id and stage');
++	}
++	const action = input.action || 'start';
++	if (action !== 'start' && action !== 'complete') {
++		throw new Error(`recordStageRun: unknown action "${action}" (expected start|complete)`);
++	}
++	const now = input.now || new Date().toISOString();
++	const existing = loadStageRunRow(runtime, db, input.issue_id, stage);
++
++	if (action === 'start') {
++		if (existing) {
++			// Re-start is idempotent: keep the id + original started_at, ensure the row
++			// is active again (supports a rework loop re-opening a completed stage).
++			const row = {
++				...existing,
++				substage: input.substage ?? existing.substage ?? null,
++				status: 'active',
++				completed_at: null,
++				evidence_id: input.evidence_id ?? existing.evidence_id ?? null,
++			};
++			runParams(
++				runtime,
++				db,
++				'UPDATE kernel_stage_runs SET substage = ?, status = ?, completed_at = ?, evidence_id = ? WHERE id = ?',
++				[row.substage, row.status, row.completed_at, row.evidence_id, row.id],
++			);
++			return row;
++		}
++		const row = {
++			id: input.id || randomUUID(),
++			issue_id: input.issue_id,
++			stage,
++			substage: input.substage ?? null,
++			status: 'active',
++			started_at: input.started_at || now,
++			completed_at: null,
++			evidence_id: input.evidence_id ?? null,
++		};
++		const placeholders = KERNEL_STAGE_RUN_COLUMNS.map(() => '?').join(', ');
++		runParams(
++			runtime,
++			db,
++			`INSERT INTO kernel_stage_runs (${KERNEL_STAGE_RUN_COLUMNS.join(', ')}) VALUES (${placeholders})`,
++			KERNEL_STAGE_RUN_COLUMNS.map(column => row[column]),
++		);
++		return row;
++	}
++
++	// action === 'complete'
++	if (existing) {
++		const row = {
++			...existing,
++			substage: input.substage ?? existing.substage ?? null,
++			status: 'done',
++			completed_at: now,
++			evidence_id: input.evidence_id ?? existing.evidence_id ?? null,
++		};
++		runParams(
++			runtime,
++			db,
++			'UPDATE kernel_stage_runs SET substage = ?, status = ?, completed_at = ?, evidence_id = ? WHERE id = ?',
++			[row.substage, row.status, row.completed_at, row.evidence_id, row.id],
++		);
++		return row;
++	}
++	const row = {
++		id: input.id || randomUUID(),
++		issue_id: input.issue_id,
++		stage,
++		substage: input.substage ?? null,
++		status: 'done',
++		started_at: input.started_at || now,
++		completed_at: now,
++		evidence_id: input.evidence_id ?? null,
++	};
++	const placeholders = KERNEL_STAGE_RUN_COLUMNS.map(() => '?').join(', ');
++	runParams(
++		runtime,
++		db,
++		`INSERT INTO kernel_stage_runs (${KERNEL_STAGE_RUN_COLUMNS.join(', ')}) VALUES (${placeholders})`,
++		KERNEL_STAGE_RUN_COLUMNS.map(column => row[column]),
++	);
++	return row;
++}
++
++function listStageRunRows(runtime, db, issueId) {
++	if (!issueId) return [];
++	return safeAll(
++		runtime,
++		db,
++		'SELECT * FROM kernel_stage_runs WHERE issue_id = ? ORDER BY started_at ASC, id ASC',
++		[issueId],
++	);
++}
++
++// Current stage = latest ACTIVE run (completed_at IS NULL) by started_at; when none
++// is active, the latest COMPLETED run by completed_at. Returns null when the issue
++// has no stage runs (caller falls back to the status+claim heuristic).
++function loadCurrentStageRunRow(runtime, db, issueId) {
++	const rows = listStageRunRows(runtime, db, issueId);
++	if (rows.length === 0) return null;
++	const active = rows.filter(row => !row.completed_at);
++	if (active.length > 0) {
++		return active.reduce((latest, row) => (String(row.started_at) >= String(latest.started_at) ? row : latest));
++	}
++	return rows.reduce((latest, row) => (
++		String(row.completed_at || row.started_at) >= String(latest.completed_at || latest.started_at) ? row : latest
++	));
++}
++
+ // Columns the issue upsert may set from an accepted event payload. id/title are
+ // required for a create; the rest are optional and only overwritten when present.
+ const ISSUE_MUTABLE_COLUMNS = Object.freeze([
+@@ -2012,6 +2165,19 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		listWorktrees(filter = {}, config = {}) {
+ 			return listWorktreeRows(runtime, getDatabase(config), filter);
+ 		},
++		// --- Stage-run registry (f61601ab). Direct writes like the worktree registry
++		// (bypass the guarded event path), synchronous so a CLI verb / orientation read
++		// can use them without a prior async broker.initialize(). Idempotent per
++		// (issue_id, stage). getCurrentStage powers the real workflow-phase read.
++		recordStageRun(input, config = {}) {
++			return recordStageRunRow(runtime, getDatabase(config), input);
++		},
++		listStageRuns(filter = {}, config = {}) {
++			return listStageRunRows(runtime, getDatabase(config), filter.issue_id);
++		},
++		getCurrentStage(filter = {}, config = {}) {
++			return loadCurrentStageRunRow(runtime, getDatabase(config), filter.issue_id);
++		},
+ 		recordMemory(entry, config = {}) {
+ 			const database = getDatabase(config);
+ 			ensureMemorySchema(database);
+diff --git a/test/commands/stage.test.js b/test/commands/stage.test.js
+new file mode 100644
+index 00000000..f9a78b44
+--- /dev/null
++++ b/test/commands/stage.test.js
+@@ -0,0 +1,124 @@
++'use strict';
++
++// f61601ab: `forge stage <issue-id> <stage> --start|--complete` writes real
++// stage_runs rows, and `--current` / `--list` read them back. The SQLite driver is
++// REAL (migrated over a temp DB) and the issue is created through the broker so the
++// FK resolves; the command is exercised via its exported handler with the driver
++// injected (opts._kernelDriver), so no git repo is spawned.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const stage = require('../../lib/commands/stage');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++const TIMEOUT = 15000;
++
++describe('forge stage command (f61601ab)', () => {
++	let tmpDir;
++	let driver;
++	let broker;
++	let projectRoot;
++	const issueId = 'forge-stage-cmd-1';
++
++	async function run(args) {
++		return stage.handler(args, {}, projectRoot, { _kernelDriver: driver });
++	}
++
++	beforeEach(async () => {
++		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stage-cmd-'));
++		projectRoot = tmpDir;
++		const dbPath = path.join(tmpDir, 'kernel.sqlite');
++		// Bake the databasePath into the driver — mirrors the real CLI driver from
++		// buildMigratedKernelIssueDeps, so the command's config-less calls resolve.
++		driver = createBuiltinSQLiteDriver({ databasePath: dbPath });
++		broker = createLocalBroker({
++			projectRoot: tmpDir,
++			execFileSync: () => path.join(tmpDir, '.git'),
++			databasePath: dbPath,
++			driver,
++		});
++		await broker.initialize();
++		await broker.runIssueOperation(
++			'create',
++			['--id', issueId, '--title', 'Stage subject', '--type', 'task'],
++			{ now: '2026-07-11T00:00:00.000Z', actor: 'tester' },
++		);
++	});
++
++	afterEach(() => {
++		if (driver) driver.close();
++		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
++	});
++
++	test('--start records an active stage run', async () => {
++		const result = await run([issueId, 'dev', '--start']);
++		expect(result.success).toBe(true);
++		expect(result.stage_run.stage).toBe('dev');
++		expect(result.stage_run.status).toBe('active');
++
++		const current = driver.getCurrentStage({ issue_id: issueId }, {});
++		expect(current.stage).toBe('dev');
++	}, TIMEOUT);
++
++	test('--complete marks the stage done on the same row', async () => {
++		await run([issueId, 'dev', '--start']);
++		const result = await run([issueId, 'dev', '--complete']);
++		expect(result.success).toBe(true);
++		expect(result.stage_run.status).toBe('done');
++		expect(driver.listStageRuns({ issue_id: issueId }, {}).length).toBe(1);
++	}, TIMEOUT);
++
++	test('--current prints the latest active stage', async () => {
++		await run([issueId, 'dev', '--start']);
++		await run([issueId, 'dev', '--complete']);
++		await run([issueId, 'ship', '--start']);
++		const result = await run([issueId, '--current']);
++		expect(result.success).toBe(true);
++		expect(result.current_stage).toBe('ship');
++		expect(result.current_stage_status).toBe('active');
++	}, TIMEOUT);
++
++	test('--list returns the full ordered history', async () => {
++		await run([issueId, 'dev', '--start']);
++		await run([issueId, 'ship', '--start']);
++		const result = await run([issueId, '--list']);
++		expect(result.success).toBe(true);
++		expect(result.stage_runs.map(r => r.stage)).toEqual(['dev', 'ship']);
++	}, TIMEOUT);
++
++	test('rejects an unknown stage id', async () => {
++		const result = await run([issueId, 'bogus', '--start']);
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('Invalid or missing stage');
++	}, TIMEOUT);
++
++	test('errors when no issue id is given', async () => {
++		const result = await run(['--current']);
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('Missing issue id');
++	}, TIMEOUT);
++
++	test('--json emits machine-readable output', async () => {
++		const result = await run([issueId, 'dev', '--start', '--json']);
++		expect(result.success).toBe(true);
++		const parsed = JSON.parse(result.output);
++		expect(parsed.stage_run.stage).toBe('dev');
++		expect(parsed.action).toBe('start');
++	}, TIMEOUT);
++
++	test('resolves an 8-char UUID prefix to the full issue id', async () => {
++		const uuid = require('node:crypto').randomUUID();
++		await broker.runIssueOperation(
++			'create',
++			['--id', uuid, '--title', 'UUID subject', '--type', 'task'],
++			{ now: '2026-07-11T00:00:00.000Z', actor: 'tester' },
++		);
++		const result = await run([uuid.slice(0, 8), 'dev', '--start']);
++		expect(result.success).toBe(true);
++		expect(result.stage_run.issue_id).toBe(uuid);
++	}, TIMEOUT);
++});
+diff --git a/test/kernel/stage-runs.test.js b/test/kernel/stage-runs.test.js
+new file mode 100644
+index 00000000..3583f6a7
+--- /dev/null
++++ b/test/kernel/stage-runs.test.js
+@@ -0,0 +1,164 @@
++'use strict';
++
++// f61601ab: populate the stage_runs table so workflow phase is REAL (queryable),
++// not guessed from status+claim. The kernel_stage_runs table already existed in
++// schema.js but nothing wrote to it. These tests drive the direct-registry driver
++// methods (recordStageRun / getCurrentStage / listStageRuns) — mirroring the
++// worktree-linkage registry — plus the current-stage field merged into `show`.
++//
++// The SQLite driver is REAL (migrated over a temp DB) and the issue is created
++// through the broker so the stage_runs.issue_id FK resolves to a real issue row.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++const TIMEOUT = 15000;
++
++describe('Kernel stage_runs registry (f61601ab)', () => {
++	let tmpDir;
++	let driver;
++	let broker;
++	let config;
++	const issueId = 'forge-stage-1';
++
++	async function createIssue(id = issueId) {
++		return broker.runIssueOperation(
++			'create',
++			['--id', id, '--title', 'Stage subject', '--type', 'task'],
++			{ now: '2026-07-11T00:00:00.000Z', actor: 'tester' },
++		);
++	}
++
++	beforeEach(async () => {
++		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kdrv-stage-'));
++		const dbPath = path.join(tmpDir, 'kernel.sqlite');
++		config = { databasePath: dbPath };
++		driver = createBuiltinSQLiteDriver({});
++		broker = createLocalBroker({
++			projectRoot: tmpDir,
++			execFileSync: () => path.join(tmpDir, '.git'),
++			databasePath: dbPath,
++			driver,
++		});
++		await broker.initialize();
++		await createIssue();
++	});
++
++	afterEach(() => {
++		if (driver) driver.close();
++		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
++	});
++
++	test('recordStageRun start inserts an active row with started_at and no completed_at', () => {
++		const row = driver.recordStageRun(
++			{ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' },
++			config,
++		);
++		expect(row.issue_id).toBe(issueId);
++		expect(row.stage).toBe('dev');
++		expect(row.status).toBe('active');
++		expect(row.started_at).toBe('2026-07-11T01:00:00.000Z');
++		expect(row.completed_at).toBeNull();
++		expect(typeof row.id).toBe('string');
++	}, TIMEOUT);
++
++	test('recordStageRun complete sets completed_at and status=done on the same row', () => {
++		const started = driver.recordStageRun(
++			{ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' },
++			config,
++		);
++		const completed = driver.recordStageRun(
++			{ issue_id: issueId, stage: 'dev', action: 'complete', now: '2026-07-11T02:00:00.000Z' },
++			config,
++		);
++		expect(completed.id).toBe(started.id); // same row, no duplicate
++		expect(completed.status).toBe('done');
++		expect(completed.completed_at).toBe('2026-07-11T02:00:00.000Z');
++		expect(completed.started_at).toBe('2026-07-11T01:00:00.000Z');
++
++		const all = driver.listStageRuns({ issue_id: issueId }, config);
++		expect(all.length).toBe(1);
++	}, TIMEOUT);
++
++	test('start is idempotent per (issue_id, stage): repeat keeps one row + original started_at', () => {
++		const first = driver.recordStageRun(
++			{ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' },
++			config,
++		);
++		const second = driver.recordStageRun(
++			{ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T09:00:00.000Z' },
++			config,
++		);
++		expect(second.id).toBe(first.id);
++		expect(second.started_at).toBe('2026-07-11T01:00:00.000Z'); // unchanged
++		expect(second.status).toBe('active');
++		expect(driver.listStageRuns({ issue_id: issueId }, config).length).toBe(1);
++	}, TIMEOUT);
++
++	test('complete without a prior start creates a completed row', () => {
++		const row = driver.recordStageRun(
++			{ issue_id: issueId, stage: 'ship', action: 'complete', now: '2026-07-11T03:00:00.000Z' },
++			config,
++		);
++		expect(row.status).toBe('done');
++		expect(row.completed_at).toBe('2026-07-11T03:00:00.000Z');
++		expect(row.started_at).toBe('2026-07-11T03:00:00.000Z');
++		expect(driver.listStageRuns({ issue_id: issueId }, config).length).toBe(1);
++	}, TIMEOUT);
++
++	test('getCurrentStage prefers the latest ACTIVE stage over a completed one', () => {
++		// dev completed at 02:00, validate started (active) at 01:30 — active wins.
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start', now: '2026-07-11T01:30:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'complete', now: '2026-07-11T02:00:00.000Z' }, config);
++
++		const current = driver.getCurrentStage({ issue_id: issueId }, config);
++		expect(current.stage).toBe('validate');
++		expect(current.status).toBe('active');
++	}, TIMEOUT);
++
++	test('getCurrentStage falls back to the latest COMPLETED stage when none active', () => {
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'complete', now: '2026-07-11T02:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'ship', action: 'start', now: '2026-07-11T03:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'ship', action: 'complete', now: '2026-07-11T04:00:00.000Z' }, config);
++
++		const current = driver.getCurrentStage({ issue_id: issueId }, config);
++		expect(current.stage).toBe('ship'); // latest completed
++		expect(current.status).toBe('done');
++	}, TIMEOUT);
++
++	test('getCurrentStage returns null when no stage runs exist', () => {
++		expect(driver.getCurrentStage({ issue_id: issueId }, config)).toBeNull();
++	}, TIMEOUT);
++
++	test('listStageRuns returns rows ordered by started_at ascending', () => {
++		driver.recordStageRun({ issue_id: issueId, stage: 'ship', action: 'start', now: '2026-07-11T03:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' }, config);
++		const rows = driver.listStageRuns({ issue_id: issueId }, config);
++		expect(rows.map(r => r.stage)).toEqual(['dev', 'ship']);
++	}, TIMEOUT);
++
++	test('show attaches current_stage + current_stage_status from stage_runs', async () => {
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'start', now: '2026-07-11T01:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'dev', action: 'complete', now: '2026-07-11T02:00:00.000Z' }, config);
++		driver.recordStageRun({ issue_id: issueId, stage: 'review', action: 'start', now: '2026-07-11T03:00:00.000Z' }, config);
++
++		const shown = await driver.issueOperation('show', [issueId], {}, config);
++		expect(shown.ok).toBe(true);
++		expect(shown.data.current_stage).toBe('review');
++		expect(shown.data.current_stage_status).toBe('active');
++	}, TIMEOUT);
++
++	test('show reports null current_stage when no stage runs recorded', async () => {
++		const shown = await driver.issueOperation('show', [issueId], {}, config);
++		expect(shown.ok).toBe(true);
++		expect(shown.data.current_stage).toBeNull();
++		expect(shown.data.current_stage_status).toBeNull();
++	}, TIMEOUT);
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,84 @@
+From 0d6ee922547cdde7948844c5e72f8510705c6341 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 14:46:05 +0530
+Subject: [PATCH] fix: canonicalize protected write containment
+
+---
+ lib/protected-state-surfaces.js       | 12 ++++++++----
+ test/protected-state-surfaces.test.js | 15 +++++++++++++++
+ 2 files changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/lib/protected-state-surfaces.js b/lib/protected-state-surfaces.js
+index a5e325eb..e382e82c 100644
+--- a/lib/protected-state-surfaces.js
++++ b/lib/protected-state-surfaces.js
+@@ -173,8 +173,12 @@ function nearestExistingPath(candidate) {
+ 	return current;
+ }
+ 
++function realpathNearestExistingPath(candidate) {
++	return fs.realpathSync(nearestExistingPath(candidate));
++}
++
+ function assertNoAncestorSymlinkEscape(root, target) {
+-	const realRoot = fs.realpathSync(root);
++	const realRoot = realpathNearestExistingPath(root);
+ 	const existing = nearestExistingPath(path.dirname(target));
+ 	const existingStat = lstatIfPresent(existing);
+ 	if (existing !== root && existingStat?.isSymbolicLink()) {
+@@ -186,7 +190,7 @@ function assertNoAncestorSymlinkEscape(root, target) {
+ 		};
+ 	}
+ 
+-	const realExisting = fs.realpathSync(existing);
++	const realExisting = realpathNearestExistingPath(existing);
+ 	if (!pathStaysInsideRoot(realRoot, realExisting)) {
+ 		return {
+ 			allowed: false,
+@@ -200,8 +204,8 @@ function assertNoAncestorSymlinkEscape(root, target) {
+ 
+ function assertNoSymlinkEscape(root, target) {
+ 	const parent = path.dirname(target);
+-	const realRoot = fs.realpathSync(root);
+-	const existingParent = fs.existsSync(parent) ? fs.realpathSync(parent) : parent;
++	const realRoot = realpathNearestExistingPath(root);
++	const existingParent = realpathNearestExistingPath(parent);
+ 	if (!pathStaysInsideRoot(realRoot, existingParent)) {
+ 		return {
+ 			allowed: false,
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index e399a0c2..08e59c81 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -8,6 +8,7 @@ const {
+ 	PROTECTED_SURFACES,
+ 	PROTECTED_STATE_AUDIT_LOG,
+ 	PROTECTED_STATE_AUDIT_MAX_RECORDS,
++	assertNoSymlinkEscape,
+ 	classifyProtectedPath,
+ 	assertProtectedWriteAllowed,
+ 	writeProtectedFile,
+@@ -115,6 +116,20 @@ describe('protected state surfaces', () => {
+ 		}
+ 	});
+ 
++	test('allows a missing parent beneath an aliased project root', () => {
++		const root = createTempDir();
++		const canonicalRoot = path.join(root, 'canonical-root');
++		const realpathSync = fs.realpathSync;
++		try {
++			fs.realpathSync = candidate => (candidate === root ? canonicalRoot : realpathSync(candidate));
++
++			expect(assertNoSymlinkEscape(root, path.join(root, '.claude', 'settings.json'))).toBeNull();
++		} finally {
++			fs.realpathSync = realpathSync;
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
+ 	test('blocks symlink targets before writing protected files', () => {
+ 		if (process.platform === 'win32') {
+ 			return;
+-- 
+2.51.0.windows.1
+

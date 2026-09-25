@@ -1,0 +1,425 @@
+From 0091281e1ae735f6605677d377aa30b618fd5541 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 03:47:27 +0530
+Subject: [PATCH] fix(eval): harden behavioral review paths
+
+---
+ lib/commands/skill.js                     | 42 ++++++++++++++-----
+ scripts/lib/behavioral-eval-runtime.js    | 48 +++++++++++++++++----
+ scripts/lib/eval-evidence.js              |  3 ++
+ scripts/lib/eval-runner.js                | 50 ++++++++++++++++++----
+ test/commands/skill.test.js               |  2 +-
+ test/e2e/skill-eval-cli.test.js           |  6 ++-
+ test/eval/behavioral-eval-runtime.test.js | 51 ++++++++++++++++++++++-
+ test/eval/eval-evidence.test.js           | 20 +++++++++
+ 8 files changed, 193 insertions(+), 29 deletions(-)
+
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+index dadda30d..89adcb8d 100644
+--- a/lib/commands/skill.js
++++ b/lib/commands/skill.js
+@@ -24,9 +24,13 @@ const { resolveBehavioralEvaluation } = require('../../scripts/lib/behavioral-ev
+ const { loadPromotionEvidence } = require('../../scripts/lib/promotion-evidence-loader');
+ const { scorePromotion } = require('../../scripts/lib/promotion-scorecard');
+ 
++const BEHAVIORAL_TIERS = Object.freeze([30, 100, 300]);
++const BEHAVIORAL_TIER_VALUES = new Set(BEHAVIORAL_TIERS.map(String));
++const BEHAVIORAL_TIER_USAGE = BEHAVIORAL_TIERS.join('|');
++
+ const USAGE = 'Usage: forge skill for "<situation>" [--json]\n' +
+   '       forge skill eval [name] --static [--json]\n' +
+-  '       forge skill eval <name> --full --tier 30|100|300 [--json]\n' +
++  `       forge skill eval <name> --full --tier ${BEHAVIORAL_TIER_USAGE} [--json]\n` +
+   '       forge skill scores [--json]\n' +
+   '       forge skill coverage [--json]';
+ 
+@@ -97,14 +101,29 @@ function hasFlag(rest, flags, name) {
+     rest.includes(`--${name}`) || rest.some(arg => typeof arg === 'string' && arg.startsWith(`--${name}=`));
+ }
+ 
++function positionalArgs(rest, valueFlags = []) {
++  const positional = [];
++  for (let index = 0; index < rest.length; index += 1) {
++    const arg = rest[index];
++    if (typeof arg !== 'string') continue;
++    if (!arg.startsWith('--')) {
++      positional.push(arg);
++      continue;
++    }
++    const flagName = arg.slice(2).split('=', 1)[0];
++    if (valueFlags.includes(flagName) && !arg.includes('=')) index += 1;
++  }
++  return positional;
++}
++
+ async function handleFullEval(rest, flags, projectRoot, opts) {
+   const json = hasFlag(rest, flags, 'json');
+-  const name = typeof rest[0] === 'string' && !rest[0].startsWith('--') ? rest[0] : undefined;
+-  if (!name) return { success: false, error: 'Behavioral evaluation requires a skill name.\n' + USAGE };
+   const tierValue = readFlagValue(rest, flags, 'tier');
++  const name = positionalArgs(rest, ['tier'])[0];
++  if (!name) return { success: false, error: 'Behavioral evaluation requires a skill name.\n' + USAGE };
+   const tier = Number(tierValue);
+-  if (!['30', '100', '300'].includes(String(tierValue))) {
+-    return { success: false, error: 'Behavioral evaluation requires --tier 30|100|300.\n' + USAGE };
++  if (!BEHAVIORAL_TIER_VALUES.has(String(tierValue))) {
++    return { success: false, error: `Behavioral evaluation requires --tier ${BEHAVIORAL_TIER_USAGE}.\n` + USAGE };
+   }
+ 
+   const ctx = skillEval.resolveSkillsContext(projectRoot);
+@@ -119,7 +138,7 @@ async function handleFullEval(rest, flags, projectRoot, opts) {
+     return { ...result, scorecard };
+   };
+   const formatResult = (result) => {
+-    const successfulScore = tier === 30 || result.scorecard.status === 'PASS';
++    const successfulScore = tier === BEHAVIORAL_TIERS[0] || result.scorecard.status === 'PASS';
+     const success = result.status === 'PASS' && successfulScore;
+     let error;
+     if (!success) {
+@@ -331,12 +350,13 @@ module.exports = {
+     '--json': 'Emit the machine-readable result',
+     '--static': 'Score only the deterministic static tier',
+     '--full': 'Run the controlled behavioral evaluation tier',
+-    '--tier': 'Behavioral corpus tier: 30, 100, or 300',
++    '--tier': `Behavioral corpus tier: ${BEHAVIORAL_TIER_USAGE}`,
+   },
+-  // flags is the LAST declared param so its `= {}` default is trailing (SonarCloud S1788). The
+-  // registry still passes (args, flags, projectRoot, opts) — the router reads the canonical catalog
+-  // from the package root; eval/scores read the canonical skills/ source dir.
+-  handler: (args, flags = {}, projectRoot, opts = {}) => {
++  // The registry passes (args, flags, projectRoot, opts). Only the trailing `opts` carries a
++  // default so SonarCloud S1788 stays satisfied; `flags` is normalized in the body. The router
++  // reads the canonical catalog from the package root; eval/scores read the canonical skills dir.
++  handler: (args, rawFlags, projectRoot, opts = {}) => {
++    const flags = rawFlags || {};
+     const verb = args[0];
+     if (verb === 'for') {
+       return handleFor(args.slice(1), flags);
+diff --git a/scripts/lib/behavioral-eval-runtime.js b/scripts/lib/behavioral-eval-runtime.js
+index 55057f90..dbdd9eff 100644
+--- a/scripts/lib/behavioral-eval-runtime.js
++++ b/scripts/lib/behavioral-eval-runtime.js
+@@ -20,6 +20,23 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
+ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
+ const EFFORTS = new Set(['low', 'medium', 'high', 'max']);
++const RUNTIME_REASON_CODES = new Set([
++  'runtime.invalid',
++  'runtime.unavailable',
++  'runtime.config_invalid',
++  'runtime.output_missing',
++  'runtime.output_unparseable',
++  'runtime.execution_failed',
++  'runtime.usage_unparseable',
++  'runtime.token_budget_exceeded',
++  'models.invalid',
++  'effort.invalid',
++  'budget.invalid',
++  'binding.head_invalid',
++  'attribution.issue_unavailable',
++  'attribution.pr_mismatch',
++  'attribution.pr_unavailable',
++]);
+ const RUNTIME_CONTROLS = Object.freeze({
+   customizationIsolation: 'safe-mode',
+   sessionPersistence: false,
+@@ -35,7 +52,12 @@ function runtimeCommand(env) {
+   const value = env.FORGE_EVAL_RUNTIME;
+   if (!value) return ['claude'];
+   if (value.trim().startsWith('[')) {
+-    const parsed = JSON.parse(value);
++    let parsed;
++    try {
++      parsed = JSON.parse(value);
++    } catch {
++      throw new Error('runtime.invalid');
++    }
+     if (!Array.isArray(parsed) || parsed.length === 0
+       || parsed.some((item) => typeof item !== 'string' || item.length === 0)) {
+       throw new Error('runtime.invalid');
+@@ -215,12 +237,22 @@ function probeRuntime(command, spawn = spawnSync) {
+ }
+ 
+ function parseJsonResult(stdout) {
+-  const transcript = parseTranscript(stdout);
+-  const lastText = [...transcript.messages].reverse().find((message) => message.text)?.text;
+-  const raw = typeof transcript.result === 'string' ? transcript.result : lastText;
++  let raw;
++  try {
++    const transcript = parseTranscript(stdout);
++    const lastText = [...transcript.messages].reverse().find((message) => message.text)?.text;
++    raw = typeof transcript.result === 'string' ? transcript.result : lastText;
++  } catch {
++    throw new Error('runtime.output_unparseable');
++  }
+   if (typeof raw !== 'string') throw new Error('runtime.output_missing');
+   const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(raw);
+-  const parsed = JSON.parse(fenced ? fenced[1] : raw);
++  let parsed;
++  try {
++    parsed = JSON.parse(fenced ? fenced[1] : raw);
++  } catch {
++    throw new Error('runtime.output_unparseable');
++  }
+   return parsed && typeof parsed === 'object' && Object.hasOwn(parsed, 'observation')
+     ? parsed.observation
+     : parsed;
+@@ -404,10 +436,12 @@ async function resolveBehavioralEvaluation({ projectRoot, skillName, skillPath,
+       },
+     };
+   } catch (error) {
++    const candidate = typeof error?.message === 'string' ? error.message : '';
++    const reason = RUNTIME_REASON_CODES.has(candidate) ? candidate : 'runtime.config_invalid';
+     return {
+       ok: false,
+       result: incompleteResult({
+-        tier, arms, binding, issueId, pr, reason: error?.message || 'runtime.config_invalid',
++        tier, arms, binding, issueId, pr, reason,
+       }),
+     };
+   }
+@@ -417,6 +451,6 @@ module.exports = {
+   resolveBehavioralEvaluation,
+   _internal: {
+     buildConfig, buildPrompt, buildRuntimeArgv, countTokens, createExecutor, parseEffort,
+-    parseJsonResult, parseModels, resolveAttribution, runtimeCommand,
++    parseJsonResult, parseModels, resolveAttribution, runtimeCommand, RUNTIME_REASON_CODES,
+   },
+ };
+diff --git a/scripts/lib/eval-evidence.js b/scripts/lib/eval-evidence.js
+index 222533b1..36baf4e9 100644
+--- a/scripts/lib/eval-evidence.js
++++ b/scripts/lib/eval-evidence.js
+@@ -305,6 +305,9 @@ async function appendEvalEvidence(projectRoot, envelope, options = {}) {
+     } catch (error) {
+       if (!isIdempotencyRace(error)) throw error;
+       const winner = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
++      if (!winner) {
++        return { ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE', actor };
++      }
+       return replay(winner);
+     }
+   } finally {
+diff --git a/scripts/lib/eval-runner.js b/scripts/lib/eval-runner.js
+index fbe11d2d..0e4eed12 100644
+--- a/scripts/lib/eval-runner.js
++++ b/scripts/lib/eval-runner.js
+@@ -13,6 +13,9 @@ const fs = require('fs');
+ const { execFileSync, execSync, spawn } = require('node:child_process');
+ 
+ const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
++const DEFAULT_COMMAND_TIMEOUT_MS = 120000;
++const TERMINATION_GRACE_MS = 5000;
++const FORCE_KILL_SETTLE_MS = 1000;
+ 
+ // ── active worktree tracking (cleanup on crash) ─────────────────────
+ // Tracks active eval worktrees so we can clean up on process exit/crash.
+@@ -258,7 +261,14 @@ async function resetWorktree(worktreePath) {
+  * @param {object} [envOverride] — additional subprocess environment entries
+  * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
+  */
+-async function executeCommand(_command, prompt, worktreePath, timeout = 120000, cmdOverride, envOverride = {}) {
++async function executeCommand(
++  _command,
++  prompt,
++  worktreePath,
++  timeout = DEFAULT_COMMAND_TIMEOUT_MS,
++  cmdOverride,
++  envOverride = {},
++) {
+   // Build the command to run
+   const cmd = cmdOverride || [
+     'claude',
+@@ -293,18 +303,42 @@ async function executeCommand(_command, prompt, worktreePath, timeout = 120000,
+   proc.stderr.on('data', (chunk) => { stderr += chunk; });
+ 
+   const exitCode = await new Promise((resolve) => {
+-    const timeoutId = setTimeout(() => {
++    let settled = false;
++    let timeoutId;
++    let terminationTimer;
++    let forceKillTimer;
++
++    const clearTimers = () => {
++      clearTimeout(timeoutId);
++      clearTimeout(terminationTimer);
++      clearTimeout(forceKillTimer);
++    };
++
++    const settle = (code) => {
++      if (settled) return;
++      settled = true;
++      clearTimers();
++      resolve(code ?? 1);
++    };
++
++    const onTimeout = () => {
+       timedOut = true;
+-      proc.kill();
+-    }, timeout);
++      try { proc.kill('SIGTERM'); } catch (_error) { /* already exited */ }
++      terminationTimer = setTimeout(() => {
++        try { proc.kill('SIGKILL'); } catch (_error) { /* already exited */ }
++        // A misbehaving child must not hold the evaluation forever even if no
++        // close event is delivered after the forced termination.
++        forceKillTimer = setTimeout(() => settle(1), FORCE_KILL_SETTLE_MS);
++      }, TERMINATION_GRACE_MS);
++    };
++
++    timeoutId = setTimeout(onTimeout, timeout);
+     proc.once('error', (error) => {
+-      clearTimeout(timeoutId);
+       stderr += error.message;
+-      resolve(1);
++      settle(1);
+     });
+     proc.once('close', (code) => {
+-      clearTimeout(timeoutId);
+-      resolve(code ?? 1);
++      settle(code);
+     });
+   });
+ 
+diff --git a/test/commands/skill.test.js b/test/commands/skill.test.js
+index dde0949d..addef90e 100644
+--- a/test/commands/skill.test.js
++++ b/test/commands/skill.test.js
+@@ -255,7 +255,7 @@ describe('forge skill eval', () => {
+       fs.writeFileSync(path.join(sdir, 'SKILL.md'), '---\nname: demo\ndescription: behavioral demo skill\n---\nbody\n');
+ 
+       const res = await skillCommand.handler(
+-        ['eval', 'demo', '--full', '--tier', '30', '--json'],
++        ['eval', '--full', '--tier', '30', 'demo', '--json'],
+         {},
+         root,
+         {
+diff --git a/test/e2e/skill-eval-cli.test.js b/test/e2e/skill-eval-cli.test.js
+index 05f9afb0..d3ceb92d 100644
+--- a/test/e2e/skill-eval-cli.test.js
++++ b/test/e2e/skill-eval-cli.test.js
+@@ -22,10 +22,13 @@ describe('forge skill eval behavioral CLI', () => {
+         ['init', '-q'],
+         ['config', 'user.email', 'eval@example.test'],
+         ['config', 'user.name', 'Eval Test'],
++        ['config', 'commit.gpgsign', 'false'],
++        ['config', 'tag.gpgsign', 'false'],
++        ['config', 'core.hooksPath', ''],
+         ['add', '.'],
+         ['commit', '-qm', 'fixture'],
+       ]) {
+-        const git = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
++        const git = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 20000 });
+         expect(git.status).toBe(0);
+       }
+       const result = spawnSync(process.execPath, [
+@@ -33,6 +36,7 @@ describe('forge skill eval behavioral CLI', () => {
+       ], {
+         cwd: root,
+         encoding: 'utf8',
++        timeout: 20000,
+         env: {
+           ...process.env,
+           FORGE_EVAL_RUNTIME: 'forge-eval-runtime-does-not-exist',
+diff --git a/test/eval/behavioral-eval-runtime.test.js b/test/eval/behavioral-eval-runtime.test.js
+index 53e09260..ec57efde 100644
+--- a/test/eval/behavioral-eval-runtime.test.js
++++ b/test/eval/behavioral-eval-runtime.test.js
+@@ -5,7 +5,7 @@ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ 
+-const { _internal } = require('../../scripts/lib/behavioral-eval-runtime');
++const { _internal, resolveBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-runtime');
+ const { loadTier } = require('../../scripts/lib/immutable-eval-corpus');
+ 
+ describe('behavioral eval production runtime', () => {
+@@ -114,6 +114,55 @@ describe('behavioral eval production runtime', () => {
+     ]);
+   });
+ 
++  test('normalizes malformed runtime configuration to a stable reason code', () => {
++    expect(() => _internal.runtimeCommand({ FORGE_EVAL_RUNTIME: '[not-json' }))
++      .toThrow('runtime.invalid');
++  });
++
++  test('normalizes malformed runtime output without retaining parser text', () => {
++    expect(() => _internal.parseJsonResult('{"result":"/private/path"}'))
++      .toThrow('runtime.output_missing');
++    expect(() => _internal.parseJsonResult(JSON.stringify({ type: 'result', result: 'not-json' })))
++      .toThrow('runtime.output_unparseable');
++  });
++
++  test('does not persist filesystem details from resolver failures', async () => {
++    const issueId = '198bec40-0d65-42a8-b2c2-c682f44fdb22';
++    const head = 'a'.repeat(40);
++    const branch = 'codex/eval-runtime-test';
++    const deps = {
++      execFileSync: (command, args) => {
++        if (command !== 'git') throw new Error('unexpected command');
++        if (args[0] === 'rev-parse') return `${head}\n`;
++        return `${branch}\n`;
++      },
++      kernelDriver: {
++        listWorktrees: () => [{ branch, issue_id: issueId, state: 'active' }],
++        loadKernelEntity: async (type, id) => (
++          type === 'issue' && id === issueId ? { id, status: 'in_progress' } : null
++        ),
++      },
++      prAdapter: { readState: async () => ({ state: 'OPEN', headSha: head }) },
++    };
++    const missingPath = path.join(os.tmpdir(), 'private-eval-skill', 'SKILL.md');
++    const resolved = await resolveBehavioralEvaluation({
++      projectRoot: '/repo',
++      skillName: 'dev',
++      skillPath: missingPath,
++      tier: 30,
++      env: {
++        FORGE_EVAL_ISSUE_ID: issueId,
++        FORGE_EVAL_PR: '500',
++        FORGE_EVAL_PR_HEAD: head,
++      },
++      deps,
++    });
++
++    expect(resolved.ok).toBe(false);
++    expect(resolved.result.findings[0].failures).toEqual(['runtime.config_invalid']);
++    expect(JSON.stringify(resolved.result)).not.toContain(missingPath);
++  });
++
+   test('executes the existing stream-json command shape without persisting raw runtime output', async () => {
+     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-behavioral-runtime-'));
+     const runtimePath = path.join(root, 'runtime.js');
+diff --git a/test/eval/eval-evidence.test.js b/test/eval/eval-evidence.test.js
+index 104ffad5..86ad5027 100644
+--- a/test/eval/eval-evidence.test.js
++++ b/test/eval/eval-evidence.test.js
+@@ -216,6 +216,26 @@ describe('eval evidence', () => {
+     expect(events.filter((event) => event.event_type === 'eval.evidence.recorded')).toHaveLength(1);
+   });
+ 
++  test('returns an explicit incomplete conflict when an idempotency winner is not visible', async () => {
++    const kernel = await freshKernel();
++    const envelope = createEvalEvidence(validCase());
++    const base = deps(kernel);
++    const racingDriver = Object.create(base.kernelDriver);
++    racingDriver.loadKernelEventByIdempotencyKey = async () => null;
++    racingDriver.insertKernelEvent = async () => {
++      throw new Error('UNIQUE constraint failed: idempotency_key');
++    };
++
++    const result = await appendEvalEvidence('/unused', envelope, {
++      deps: { ...base, kernelDriver: racingDriver },
++      env: { FORGE_ACTOR: 'eval-test' },
++    });
++
++    expect(result).toMatchObject({
++      ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE', actor: 'eval-test',
++    });
++  });
++
+   test('persists canonical stable envelope bytes regardless of input key order', async () => {
+     const kernel = await freshKernel();
+     const envelope = createEvalEvidence(validCase());
+-- 
+2.51.0.windows.1
+

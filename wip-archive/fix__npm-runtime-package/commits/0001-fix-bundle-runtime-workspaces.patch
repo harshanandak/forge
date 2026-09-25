@@ -1,0 +1,408 @@
+From c1c76c6549901c387c6d9d593b77d456a4a98c78 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 14:22:24 +0530
+Subject: [PATCH] fix: bundle runtime workspaces
+
+---
+ CHANGELOG.md                                  |  6 ++++
+ bun.lock                                      |  3 ++
+ docs/guides/MIGRATION.md                      |  6 ++--
+ docs/reference/RELEASE.md                     |  6 ++--
+ .../decisions.md                              |  3 ++
+ .../2026-09-11-npm-runtime-package/plan.md    | 33 +++++++++++++++++
+ .../2026-09-11-npm-runtime-package/tasks.md   |  8 +++++
+ lib/commands/merge.js                         |  4 +--
+ lib/commands/shepherd.js                      |  2 +-
+ lib/kernel/migrations.js                      |  2 +-
+ lib/kernel/sqlite-driver.js                   |  2 +-
+ lib/memory/router.js                          |  2 +-
+ lib/memory/usage-evidence.js                  |  2 +-
+ lib/pr-monitor/flow-monitor.js                |  4 +--
+ lib/pr-monitor/reconcile-executor.js          |  2 +-
+ lib/project-memory.js                         |  2 +-
+ package.json                                  | 10 +++++-
+ .../standalone-package-smoke.test.js          | 36 ++++++++++++++++++-
+ test/structural/pr2-root-integration.test.js  |  2 +-
+ 19 files changed, 115 insertions(+), 20 deletions(-)
+ create mode 100644 docs/work/2026-09-11-npm-runtime-package/decisions.md
+ create mode 100644 docs/work/2026-09-11-npm-runtime-package/plan.md
+ create mode 100644 docs/work/2026-09-11-npm-runtime-package/tasks.md
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 988e6486..2cc30a95 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
+ 
++## [0.1.0-beta.7] - 2026-09-11
++
++### Fixed
++
++- **The npm package now includes every internal runtime workspace.** Root runtime imports use the `@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` package boundaries, and npm bundles those unpublished workspaces into `forge-workflow`. A fresh packed install now runs `forge --version` and `forge setup --quick --yes`, preventing the `MODULE_NOT_FOUND` failure in v0.1.0-beta.6. (issue `95372af8-da00-42e0-af64-0111ddab3405`)
++
+ ## [0.1.0-beta.6] - 2026-09-11
+ 
+ ### Added
+diff --git a/bun.lock b/bun.lock
+index dbe26d86..8cb180cd 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -6,6 +6,9 @@
+       "name": "forge-workflow",
+       "dependencies": {
+         "@babel/parser": "^8.0.0",
++        "@forge/flow": "0.1.0-beta.6",
++        "@forge/memory": "0.1.0-beta.6",
++        "@forge/memory-contracts": "0.1.0-beta.6",
+         "cross-spawn": "^7.0.6",
+         "fastest-levenshtein": "^1.0.16",
+         "yaml": "^2.8.3",
+diff --git a/docs/guides/MIGRATION.md b/docs/guides/MIGRATION.md
+index 61669768..6df3d57a 100644
+--- a/docs/guides/MIGRATION.md
++++ b/docs/guides/MIGRATION.md
+@@ -1,6 +1,6 @@
+ # Migration Guide
+ 
+-Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.1.0-beta.6 public framing.
++Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.1.0-beta.7 public framing.
+ 
+ ## What Changed
+ 
+@@ -39,8 +39,8 @@ forge setup --agents claude,cursor
+ 
+ ## Version Labels
+ 
+-- `0.1.0-beta.6` is the current prerelease package version.
+-- `0.1.0-beta.5` is the previous prerelease package version.
++- `0.1.0-beta.7` is the current prerelease package version.
++- `0.1.0-beta.6` is the previous prerelease package version, but its npm tarball omits required runtime workspaces; upgrade directly to beta.7.
+ - Internal labels such as `0.0.19` or `v3` describe roadmap slices or historical codenames. Do not present them as current package versions.
+ 
+ ## Safe Upgrade Path
+diff --git a/docs/reference/RELEASE.md b/docs/reference/RELEASE.md
+index aa2ecda5..825516c7 100644
+--- a/docs/reference/RELEASE.md
++++ b/docs/reference/RELEASE.md
+@@ -2,9 +2,9 @@
+ 
+ This page documents release readiness. Package publishing still requires the explicit publish step after merge.
+ 
+-## v0.1.0-beta.6 Boundary
++## v0.1.0-beta.7 Boundary
+ 
+-v0.1.0-beta.6 is the current prerelease boundary. The release branch declares `0.1.0-beta.6`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
++v0.1.0-beta.7 is the current prerelease boundary. The release branch declares `0.1.0-beta.7`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
+ 
+ Keep these release steps explicit:
+ 
+@@ -43,7 +43,7 @@ Release notes should include:
+ - adapter compatibility
+ - DeepWiki refresh checklist
+ 
+-The v0.1.0-beta.6 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
++The v0.1.0-beta.7 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
+ 
+ ## Rollback
+ 
+diff --git a/docs/work/2026-09-11-npm-runtime-package/decisions.md b/docs/work/2026-09-11-npm-runtime-package/decisions.md
+new file mode 100644
+index 00000000..d4c72099
+--- /dev/null
++++ b/docs/work/2026-09-11-npm-runtime-package/decisions.md
+@@ -0,0 +1,3 @@
++# Decisions
++
++No unresolved specification gaps.
+diff --git a/docs/work/2026-09-11-npm-runtime-package/plan.md b/docs/work/2026-09-11-npm-runtime-package/plan.md
+new file mode 100644
+index 00000000..78a0e369
+--- /dev/null
++++ b/docs/work/2026-09-11-npm-runtime-package/plan.md
+@@ -0,0 +1,33 @@
++# npm Runtime Package Hotfix
++
++## Problem
++
++`forge-workflow@0.1.0-beta.6` installs from npm but the CLI exits with
++`MODULE_NOT_FOUND` because root runtime modules import unpublished workspaces by
++repository-relative paths and the root tarball omits those workspaces.
++
++## Decision
++
++Use npm's existing bundled-dependency mechanism. Root runtime code imports
++`@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` by package name;
++the root manifest declares and bundles those workspaces. This preserves their
++package boundaries without publishing separate scoped packages.
++
++## Scope
++
++- Add a packed-root fresh-install regression that runs the CLI and quick setup.
++- Replace repository-relative runtime workspace imports with package imports.
++- Bundle the three internal runtime workspaces in the root npm package.
++- Advance the immutable correction to `0.1.0-beta.7`.
++
++## Constraints
++
++- No external dependency changes.
++- Do not overwrite or unpublish beta.6.
++- Keep npm `latest` unchanged.
++- Tag and publish only after exact-head CI and manual merge.
++
++## Rollback
++
++Before publication, delete the beta.7 draft release and tag. After npm
++publication, publish a later beta; npm versions are immutable.
+diff --git a/docs/work/2026-09-11-npm-runtime-package/tasks.md b/docs/work/2026-09-11-npm-runtime-package/tasks.md
+new file mode 100644
+index 00000000..839a8759
+--- /dev/null
++++ b/docs/work/2026-09-11-npm-runtime-package/tasks.md
+@@ -0,0 +1,8 @@
++# Tasks
++
++1. Add a red regression that packs and installs the root package, runs
++   `forge --version`, and runs `forge setup --quick --yes` in a fresh Git repo.
++2. Route root runtime imports through the internal package names and bundle the
++   three workspaces with npm's native bundled-dependency support.
++3. Advance release metadata to beta.7 and run focused, package, security, and
++   full validation before shipping one hotfix PR.
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 2bbd8b09..d5cc7a8c 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -47,7 +47,7 @@ const { runIssueOperation } = require('../forge-issues');
+ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+ const { stripGlobalFlags } = require('../global-flags');
+ const gateCommand = require('./gate');
+-const { computeContentHash, validateContractStructure } = require('../../packages/memory-contracts');
++const { computeContentHash, validateContractStructure } = require('@forge/memory-contracts');
+ 
+ const FULL_HEAD_SHA = /^[0-9a-f]{40}$/i;
+ const FORGE_ISSUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+@@ -560,7 +560,7 @@ async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedH
+       built = { broker: deps.kernelBroker, driver: deps.kernelDriver };
+     }
+     if (!built?.broker) throw new Error('Kernel lifecycle provider is unavailable.');
+-    const { createMemoryAuthorityProvider } = require('../../packages/memory');
++    const { createMemoryAuthorityProvider } = require('@forge/memory');
+     const provider = createMemoryAuthorityProvider({ broker: built.broker });
+     await provider.recordPrLinkage({
+       phase: 'merged',
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 0d5e873c..be16a087 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -313,7 +313,7 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+       const buildKernelDeps = deps.buildKernelDeps
+         || require('../kernel/cli-broker-factory').buildMigratedKernelIssueDeps;
+       const createMonitorStore = deps.createMonitorStore
+-        || require('../../packages/memory').createMonitorStore;
++        || require('@forge/memory').createMonitorStore;
+       let kernel;
+       try {
+         kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
+diff --git a/lib/kernel/migrations.js b/lib/kernel/migrations.js
+index fa9ec8e4..7f61b994 100644
+--- a/lib/kernel/migrations.js
++++ b/lib/kernel/migrations.js
+@@ -1,5 +1,5 @@
+ const { getKernelSchema, validateKernelSchema } = require('./schema');
+-const { USAGE_EVIDENCE_MIGRATION } = require('../../packages/memory');
++const { USAGE_EVIDENCE_MIGRATION } = require('@forge/memory');
+ 
+ function assertIdentifier(identifier, label) {
+ 	if (!/^[a-z][a-z0-9_]*$/.test(identifier)) {
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 98820355..f7fb1571 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -30,7 +30,7 @@ const {
+ const { CONFLICT_SIGNAL, classifyConflictSignal } = require('./conflict-signal');
+ const { normalizeRecallHit } = require('../memory-recall');
+ const { getPackageRoot } = require('../package-root');
+-const { appendUsageEvidence, rebuildUsageProjection } = require('../../packages/memory');
++const { appendUsageEvidence, rebuildUsageProjection } = require('@forge/memory');
+ 
+ const BUILTIN_SQLITE_RUNTIME_ORDER = Object.freeze(['bun:sqlite', 'node:sqlite']);
+ let probeCounter = 0;
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index dfc409e4..4298ec80 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -32,7 +32,7 @@ const projectMemory = require('../project-memory');
+ const {
+   assertBackend,
+   createMemoryBackendRegistry,
+-} = require('../../packages/memory');
++} = require('@forge/memory');
+ 
+ /** Supported PUBLIC backends, default first. */
+ const MEMORY_BACKENDS = ['local', 'graphiti'];
+diff --git a/lib/memory/usage-evidence.js b/lib/memory/usage-evidence.js
+index 7b8c93af..ae1b8449 100644
+--- a/lib/memory/usage-evidence.js
++++ b/lib/memory/usage-evidence.js
+@@ -1,4 +1,4 @@
+ 'use strict';
+ 
+ // Compatibility shim: the durable usage contract belongs to @forge/memory.
+-module.exports = require('../../packages/memory');
++module.exports = require('@forge/memory');
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 44959dde..dbabf298 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -3,7 +3,7 @@
+ const crypto = require('node:crypto');
+ const zlib = require('node:zlib');
+ 
+-const { computeContentHash, validateContractStructure } = require('../../packages/memory-contracts');
++const { computeContentHash, validateContractStructure } = require('@forge/memory-contracts');
+ const {
+   MonitorRuntimeError,
+   createMonitorDurabilityBridge,
+@@ -11,7 +11,7 @@ const {
+   createMonitorState,
+   reduceMonitor,
+   reduceMonitorBatch,
+-} = require('../../packages/flow');
++} = require('@forge/flow');
+ const { diffSnapshots } = require('./differ');
+ const { EVENT_TYPES: T, makeEvent } = require('./events');
+ const { finalizeRecords, MAX_EVENT_DELTAS } = require('./monitor');
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 7b8c4a07..d12d49c3 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -1081,7 +1081,7 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 
+ async function defaultBuildBroker({ projectRoot, gitCommonDir }) {
+ 	const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+-	const { createMonitorStore } = require('../../packages/memory');
++	const { createMonitorStore } = require('@forge/memory');
+ 	const deps = await buildMigratedKernelIssueDeps({ projectRoot, gitCommonDir });
+ 	const store = createMonitorStore(deps.kernelDriver);
+ 	return {
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index f1f9b547..f643b8a6 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -8,7 +8,7 @@ const { resolveKernelDatabasePath } = require('./kernel/cli-broker-factory');
+ const { resolveGitCommonDir } = require('./kernel/broker');
+ const { createBuiltinSQLiteDriver } = require('./kernel/sqlite-driver');
+ const { normalizeRecallHit } = require('./memory-recall');
+-const { createUsageEvidenceStore } = require('../packages/memory');
++const { createUsageEvidenceStore } = require('@forge/memory');
+ 
+ // Project memory is a Forge read model persisted in the kernel store (kernel_memories),
+ // written DIRECTLY rather than through the issue CAS/guarded-event path. The store seam
+diff --git a/package.json b/package.json
+index 9f21b9ea..a0d6bd73 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "forge-workflow",
+-  "version": "0.1.0-beta.6",
++  "version": "0.1.0-beta.7",
+   "packageManager": "bun@1.4.2",
+   "description": "Local runtime control plane for AI-assisted engineering workflows, gates, evidence, and all AI agents",
+   "bin": {
+@@ -116,11 +116,19 @@
+     ".mcp.json.example"
+   ],
+   "dependencies": {
++    "@forge/flow": "0.1.0-beta.6",
++    "@forge/memory": "0.1.0-beta.6",
++    "@forge/memory-contracts": "0.1.0-beta.6",
+     "@babel/parser": "^8.0.0",
+     "cross-spawn": "^7.0.6",
+     "fastest-levenshtein": "^1.0.16",
+     "yaml": "^2.8.3"
+   },
++  "bundledDependencies": [
++    "@forge/flow",
++    "@forge/memory",
++    "@forge/memory-contracts"
++  ],
+   "overrides": {
+     "eslint": "^10.0.2",
+     "fast-uri": "^3.1.4",
+diff --git a/test/integration/standalone-package-smoke.test.js b/test/integration/standalone-package-smoke.test.js
+index acac3fdd..06158481 100644
+--- a/test/integration/standalone-package-smoke.test.js
++++ b/test/integration/standalone-package-smoke.test.js
+@@ -20,7 +20,7 @@ function npm(args, cwd, invocation) {
+ }
+ 
+ function pack(packageDirectory, destination, invocation) {
+-  const result = npm(["pack", "--json", "--pack-destination", destination], packageDirectory, invocation);
++  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
+   expect(result.status, result.stderr).toBe(0);
+   return path.join(destination, JSON.parse(result.stdout)[0].filename);
+ }
+@@ -52,11 +52,45 @@ function resolveNpmInvocation(platformNode) {
+   throw new Error("Could not resolve npm-cli.js beside the platform Node.js installation");
+ }
+ 
++function runInstalledForge(packageRoot, args, cwd) {
++  const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
++  if (process.platform !== "win32") return spawnSync(shim, args, { cwd, encoding: "utf8" });
++  const command = `""${shim}" ${args.join(" ")}"`;
++  return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
++    cwd,
++    encoding: "utf8",
++    windowsVerbatimArguments: true,
++  });
++}
++
+ afterEach(() => {
+   for (const directory of created.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+ });
+ 
+ describe("standalone product packages", () => {
++  test("packs and installs the root CLI with its runtime workspaces", () => {
++    const platformNode = resolvePlatformNode();
++    const npmInvocation = resolveNpmInvocation(platformNode);
++    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge root-"));
++    created.push(temporary);
++    fs.writeFileSync(path.join(temporary, "package.json"), JSON.stringify({ private: true }));
++    const rootTarball = pack(ROOT, temporary, npmInvocation);
++
++    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation);
++    expect(install.status, install.stderr).toBe(0);
++
++    const version = runInstalledForge(temporary, ["--version"], temporary);
++    expect(version.status, version.stderr).toBe(0);
++    expect(version.stdout).toContain("Forge v");
++
++    const project = path.join(temporary, "project");
++    fs.mkdirSync(project);
++    const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
++    expect(init.status, init.stderr).toBe(0);
++    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project);
++    expect(setup.status, setup.stderr).toBe(0);
++  }, 60000);
++
+   test("packs and installs Flow with public Memory contracts in a fresh package", () => {
+     const platformNode = resolvePlatformNode();
+     const npmInvocation = resolveNpmInvocation(platformNode);
+diff --git a/test/structural/pr2-root-integration.test.js b/test/structural/pr2-root-integration.test.js
+index 86fc48de..950683d8 100644
+--- a/test/structural/pr2-root-integration.test.js
++++ b/test/structural/pr2-root-integration.test.js
+@@ -22,7 +22,7 @@ function workspaceBlock(lock, workspacePath) {
+ 
+ describe('PR2 root package integration', () => {
+   test('resolves all three prerelease packages through the existing workspace contract', () => {
+-    expect(rootPackage.version).toBe('0.1.0-beta.6');
++    expect(rootPackage.version).toBe('0.1.0-beta.7');
+     expect(rootPackage.workspaces).toContain('packages/*');
+ 
+     const lock = fs.readFileSync(LOCK_PATH, 'utf8');
+-- 
+2.51.0.windows.1
+

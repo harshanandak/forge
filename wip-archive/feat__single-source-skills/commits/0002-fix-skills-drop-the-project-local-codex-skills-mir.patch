@@ -1,0 +1,102 @@
+From 0f60fd496089a19ae006d28b10d6c216a8a92482 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 11 Jul 2026 11:11:03 +0530
+Subject: [PATCH] fix(skills): drop the project-local .codex/skills mirror so
+ single-source holds
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The syntactic merge of master into #342 surfaced a contradiction: #342 added a
+setup block that generated a project-local `.codex/skills` mirror, but the
+long-standing invariant in test/setup-runtime-flags.test.js (identical on master
+and this branch) asserts `forge setup` must NOT create `.codex/skills` — Codex
+stage skills install GLOBALLY into $CODEX_HOME/skills and its repo-scope
+discovery path is `.agents/skills`. A `.codex/skills` copy feeds nothing at
+runtime.
+
+- lib/commands/setup.js: remove the .codex/skills generation block in
+  createCodexSkills; setup now only writes .agents/skills (repo discovery) and
+  $CODEX_HOME/skills (global install), keeping skills/ the single committed
+  source. Fixes test/setup-runtime-flags.test.js:251.
+- test/commands/status-smart.test.js: the "codex skill copy" case read a
+  committed `.codex/skills/status/SKILL.md` that is gitignored and never
+  committed under single-source (passed locally on a leftover mirror, failed in
+  CI's fresh checkout). Re-point it at the canonical skills/status/SKILL.md that
+  Codex is installed from verbatim; drop the now-unused existsSync import.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/setup.js              | 23 +++++++----------------
+ test/commands/status-smart.test.js | 16 +++++++++-------
+ 2 files changed, 16 insertions(+), 23 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index e5f19a30..bd37a5be 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -1755,22 +1755,13 @@ function createCodexSkills() {
+     console.log(`  Warning: could not generate repo-local Codex skills in ${CODEX_REPO_SKILLS_DIR} (${error.message})`);
+   }
+ 
+-  // Generated `.codex/skills` mirror: like `.claude/skills` / `.cursor/skills`,
+-  // this is a gitignored, setup-generated copy of the canonical skills/ source
+-  // (raw canonical — the $CODEX_HOME stage adapter is injected only for the GLOBAL
+-  // install below). Keeping it populated holds the skills-sync drift gate in parity
+-  // across every harness surface.
+-  try {
+-    const { written } = populateAgentSkills({
+-      sourceRoot: packageDir,
+-      targetSkillsDir: path.join(projectRoot, '.codex', 'skills'),
+-      clean: false,
+-    });
+-    console.log(`  Created: ${written.length} skills in .codex/skills/`);
+-  } catch (error) {
+-    addSetupNote(`Codex skills mirror generation failed for .codex/skills: ${error.message}`);
+-    console.log(`  Warning: could not generate .codex/skills mirror (${error.message})`);
+-  }
++  // Codex is NOT given a project-local `.codex/skills` mirror. Its repo-scope
++  // discovery path is `.agents/skills` (generated above), and its stage skills
++  // install GLOBALLY into `$CODEX_HOME/skills` (below). A `.codex/skills` copy
++  // would feed nothing at runtime, so setup deliberately never creates one —
++  // this keeps skills/ the single committed source (#342). See the long-standing
++  // invariant in test/setup-runtime-flags.test.js ("setup installs Codex stage
++  // skills into CODEX_HOME/skills/<stage>/SKILL.md").
+ 
+   if (installPlan.length === 0) {
+     CODEX_SETUP_REPORT.status = 'partial';
+diff --git a/test/commands/status-smart.test.js b/test/commands/status-smart.test.js
+index 6191fb5d..d16f2cbf 100644
+--- a/test/commands/status-smart.test.js
++++ b/test/commands/status-smart.test.js
+@@ -1,5 +1,5 @@
+ const { describe, it, expect } = require("bun:test");
+-const { readFileSync, existsSync } = require("node:fs");
++const { readFileSync } = require("node:fs");
+ const { join } = require("node:path");
+ 
+ const ROOT = join(__dirname, "../..");
+@@ -26,12 +26,14 @@ describe("/status command - smart-status integration", () => {
+     expect(content).toContain("git log");
+   });
+ 
+-  it("codex skill copy also references smart-status.sh", () => {
+-    // .cursor/commands/ was removed in A0d; check codex skill (generated from canonical)
+-    const codexPath = join(ROOT, ".codex", "skills/status/SKILL.md");
+-    expect(existsSync(codexPath)).toBe(true);
+-    const codexContent = readFileSync(codexPath, "utf-8");
+-    expect(codexContent).toContain("bash scripts/smart-status.sh");
++  it("codex installs from the canonical skill, which references smart-status.sh", () => {
++    // #342 single-source: skills/ is the ONLY committed skill source. The
++    // per-agent `.codex/skills` mirror is not committed (it is gitignored, and
++    // Codex stage skills install globally into $CODEX_HOME/skills at `forge
++    // setup`). Codex is installed from the canonical skills/status/SKILL.md
++    // verbatim, so that is where smart-status.sh must live — asserting on an
++    // ephemeral generated mirror would be environment-dependent and flaky.
++    expect(content).toContain("bash scripts/smart-status.sh");
+   });
+ 
+   it("does not instruct users to pass --workflow-state or --issue-id for status discovery", () => {
+-- 
+2.51.0.windows.1
+

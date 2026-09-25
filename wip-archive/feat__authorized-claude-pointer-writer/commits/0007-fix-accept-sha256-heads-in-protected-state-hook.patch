@@ -1,0 +1,50 @@
+From 24bf29073900215a5795295c095795dcb0eba835 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 15:06:07 +0530
+Subject: [PATCH] fix: accept sha256 heads in protected-state hook
+
+---
+ lib/protected-state-authority.js | 1 +
+ scripts/protected-state-check.js | 7 +++++--
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index a9967138..ad86caef 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -694,6 +694,7 @@ module.exports = {
+ 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
+ 	PROTECTED_STATE_WRITE_COMPLETED,
+ 	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
++	isValidGitObjectId,
+ 	resolveWorktreeScope,
+ 	authorizationEntityId,
+ 	parseAuthorizationEvent,
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 573ea81b..bf24066d 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -5,7 +5,10 @@ const {
+ 	assertProtectedWriteAllowed,
+ 	recordProtectedStateAuditEvent,
+ } = require('../lib/protected-state-surfaces');
+-const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
++const {
++	authorizeAndConsumeProtectedStateWrites,
++	isValidGitObjectId,
++} = require('../lib/protected-state-authority');
+ const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
+ const realStagedFiles = new Set();
+ const deletedFiles = new Set();
+@@ -96,7 +99,7 @@ function getCurrentHead() {
+ 			encoding: 'utf8',
+ 			stdio: ['ignore', 'pipe', 'pipe'],
+ 		}).trim();
+-		return /^[0-9a-f]{40}$/.test(head) ? head : null;
++		return isValidGitObjectId(head) ? head : null;
+ 	} catch {
+ 		return null;
+ 	}
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,226 @@
+From 1f0b2b9ba12ff98200b3ec317bc72367156e313a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 00:14:34 +0530
+Subject: [PATCH] fix(doctor): classify diagnostic reasons
+
+---
+ lib/commands/doctor.js              | 20 ++++++++++----------
+ lib/health/doctor-runner.js         | 22 +++++++++++++++++++---
+ test/commands/doctor-health.test.js | 27 +++++++++++++++++++++++++--
+ test/health/doctor-runner.test.js   | 21 +++++++++++++++++++++
+ 4 files changed, 75 insertions(+), 15 deletions(-)
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index d42c1287..ba5ee138 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -254,10 +254,10 @@ function runFlowCheck(deps) {
+ 			evidence: { runtimeState: 'public-adapter-ready', adapter: 'createWorkPacketExecutor' },
+ 			remediation: '',
+ 		};
+-	} catch (error) {
++	} catch {
+ 		return {
+ 			status: 'INCOMPLETE',
+-			evidence: { runtimeState: 'unavailable', reason: error?.message || String(error) },
++			evidence: { runtimeState: 'unavailable', reason: 'flow-runtime-unavailable' },
+ 			remediation: 'Install or repair the Flow runtime and its public dependencies.',
+ 		};
+ 	}
+@@ -282,18 +282,18 @@ function validateProviderResult(value) {
+ 			data[key] = descriptor.value;
+ 		}
+ 		if (data.notApplicable === true && keys.every(key => ['notApplicable', 'reason'].includes(key))) {
+-			return { valid: true, state: 'not-applicable', reason: data.reason };
++			return { valid: true, state: 'not-applicable' };
+ 		}
+ 		if (data.supported === false && keys.every(key => ['supported', 'reason'].includes(key))) {
+-			return { valid: true, state: 'unsupported', reason: data.reason };
++			return { valid: true, state: 'unsupported' };
+ 		}
+ 		if (data.available === false && data.failed === undefined && data.notApplicable === undefined
+ 			&& (data.supported === undefined || data.supported === true)) {
+-			return { valid: true, state: 'unavailable', reason: data.reason };
++			return { valid: true, state: 'unavailable' };
+ 		}
+ 		if (data.failed === true && data.notApplicable === undefined && data.supported !== false
+ 			&& data.available !== false) {
+-			return { valid: true, state: 'failed', reason: data.reason };
++			return { valid: true, state: 'failed' };
+ 		}
+ 		if (data.supported === true && data.available === true && data.failed === false
+ 			&& data.notApplicable === undefined) {
+@@ -309,7 +309,7 @@ async function runProviderCheck(deps, signal) {
+ 	if (typeof deps.providerProbe !== 'function') {
+ 		return {
+ 			status: 'INCOMPLETE',
+-			evidence: { providerState: 'unsupported', reason: 'no safe provider probe adapter' },
++			evidence: { providerState: 'unsupported', reason: 'provider-probe-unsupported' },
+ 			remediation: 'Install or configure a supported provider adapter, then re-run with --scope integrations.',
+ 		};
+ 	}
+@@ -328,21 +328,21 @@ async function runProviderCheck(deps, signal) {
+ 	if (validation.state === 'unsupported') {
+ 		return {
+ 			status: 'INCOMPLETE',
+-			evidence: { providerState: 'unsupported', reason: validation.reason || 'unsupported' },
++			evidence: { providerState: 'unsupported', reason: 'provider-unsupported' },
+ 			remediation: 'Use a provider version with a side-effect-free probe adapter.',
+ 		};
+ 	}
+ 	if (validation.state === 'unavailable') {
+ 		return {
+ 			status: 'INCOMPLETE',
+-			evidence: { providerState: 'unavailable', reason: validation.reason || 'unavailable' },
++			evidence: { providerState: 'unavailable', reason: 'provider-unavailable' },
+ 			remediation: 'Check provider availability and credentials outside Doctor, then retry explicitly.',
+ 		};
+ 	}
+ 	if (validation.state === 'failed') {
+ 		return {
+ 			status: 'FAIL',
+-			evidence: { providerState: 'failed', reason: validation.reason || 'probe failed' },
++			evidence: { providerState: 'failed', reason: 'provider-probe-failed' },
+ 			remediation: 'Repair the provider integration and retry the explicit check.',
+ 		};
+ 	}
+diff --git a/lib/health/doctor-runner.js b/lib/health/doctor-runner.js
+index 6073079e..cd9f6f13 100644
+--- a/lib/health/doctor-runner.js
++++ b/lib/health/doctor-runner.js
+@@ -21,6 +21,18 @@ const USER_PATH_PATTERNS = [
+   /\/(?:Users|home)\/[^/\s]+(?:\/[^\s"']*)?/g,
+ ];
+ const SENSITIVE_KEY_PATTERN = /(?:api[_-]?key|authorization|credential|password|prompt|secret|token)/i;
++const SAFE_REASON_CODES = new Set([
++  'check-error',
++  'check-returned-no-evidence',
++  'flow-runtime-unavailable',
++  'global-deadline',
++  'provider-probe-failed',
++  'provider-probe-unsupported',
++  'provider-unavailable',
++  'provider-unsupported',
++  'timeout',
++  'unclassified-reason',
++]);
+ 
+ function redactString(value) {
+   let redacted = String(value).slice(0, 500);
+@@ -39,7 +51,11 @@ function sanitize(value, depth = 0) {
+ 	const output = {};
+ 	for (const key of Object.keys(value).sort().slice(0, 30)) {
+ 		const safeKey = redactString(key);
+-		output[safeKey] = SENSITIVE_KEY_PATTERN.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
++		if (/^reason$/i.test(key)) {
++			output[safeKey] = SAFE_REASON_CODES.has(value[key]) ? value[key] : 'unclassified-reason';
++		} else {
++			output[safeKey] = SENSITIVE_KEY_PATTERN.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
++		}
+ 	}
+   return output;
+ }
+@@ -118,10 +134,10 @@ async function runOne(definition, context, options, startedAt) {
+       timeoutReason,
+       options,
+     );
+-  } catch (error) {
++  } catch {
+     raw = {
+       status: 'INCOMPLETE',
+-      evidence: { reason: 'check-error', message: error?.message || String(error) },
++      evidence: { reason: 'check-error' },
+       remediation: 'Resolve the local diagnostic error and re-run this check.',
+     };
+   }
+diff --git a/test/commands/doctor-health.test.js b/test/commands/doctor-health.test.js
+index 33ed4dbd..1c2bbe47 100644
+--- a/test/commands/doctor-health.test.js
++++ b/test/commands/doctor-health.test.js
+@@ -64,19 +64,29 @@ describe('forge doctor health report contract', () => {
+ 
+     const explicit = await doctor.runDoctorReport(root, localDeps(root, {
+       scopes: ['integrations'],
+-      providerProbe: async () => ({ supported: false, reason: 'no safe adapter' }),
++      providerProbe: async () => ({
++        supported: false,
++        reason: 'customer jane@example.com prompt: use the internal adapter',
++      }),
+     }));
+     expect(explicit.status).toBe('INCOMPLETE');
+     expect(explicit.checks).toHaveLength(1);
+     expect(explicit.checks[0].id).toBe('integrations-provider');
+     expect(explicit.checks[0].evidence.providerState).toBe('unsupported');
++    expect(explicit.checks[0].evidence.reason).toBe('provider-unsupported');
++    expect(JSON.stringify(explicit)).not.toContain('jane@example.com');
+ 
+     const unavailable = await doctor.runDoctorReport(root, localDeps(root, {
+       scopes: ['integrations'],
+-      providerProbe: async () => ({ available: false, reason: 'offline' }),
++      providerProbe: async () => ({
++        available: false,
++        reason: 'tenant alice@example.com prompt unavailable in private region',
++      }),
+     }));
+     expect(unavailable.status).toBe('INCOMPLETE');
+     expect(unavailable.checks[0].evidence.providerState).toBe('unavailable');
++    expect(unavailable.checks[0].evidence.reason).toBe('provider-unavailable');
++    expect(JSON.stringify(unavailable)).not.toContain('alice@example.com');
+ 
+     const timeout = await doctor.runDoctorReport(root, localDeps(root, {
+       scopes: ['integrations'],
+@@ -156,6 +166,19 @@ describe('forge doctor health report contract', () => {
+     expect(adapterConstructed).toBe(true);
+     expect(probed.status).toBe('PASS');
+     expect(probed.checks[0].evidence.runtimeState).toBe('public-adapter-ready');
++
++    const privateText = 'customer bob@example.com prompt failed during runtime load';
++    const unavailable = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['flow'],
++      loadFlow: () => { throw new Error(privateText); },
++    }));
++    expect(unavailable.status).toBe('INCOMPLETE');
++    expect(unavailable.checks[0].evidence).toEqual({
++      reason: 'flow-runtime-unavailable',
++      runtimeState: 'unavailable',
++    });
++    expect(JSON.stringify(unavailable)).not.toContain(privateText);
++    expect(JSON.stringify(unavailable)).not.toContain('bob@example.com');
+   });
+ 
+   test('local filesystem fixtures pass on Windows, macOS, and Linux', async () => {
+diff --git a/test/health/doctor-runner.test.js b/test/health/doctor-runner.test.js
+index 344dd8d0..a7050c9a 100644
+--- a/test/health/doctor-runner.test.js
++++ b/test/health/doctor-runner.test.js
+@@ -68,6 +68,27 @@ describe('Doctor health runner', () => {
+     expect(serialized).toContain('<redacted-path>');
+   });
+ 
++  test('classifies arbitrary reason and exception text without exposing customer input', async () => {
++    const privateText = 'customer jane@example.com prompt: summarize acquisition target';
++    const checks = [
++      definition('raw-reason', 'core', ['doctor'], async () => ({
++        status: 'INCOMPLETE',
++        evidence: { reason: privateText },
++      })),
++      definition('thrown-error', 'core', ['status'], async () => {
++        throw new Error(privateText);
++      }),
++    ];
++    const result = await runHealthChecks(checks, {}, { now: () => 100 });
++    const rawReason = result.checks.find(check => check.id === 'raw-reason');
++    const thrownError = result.checks.find(check => check.id === 'thrown-error');
++
++    expect(rawReason.evidence.reason).toBe('unclassified-reason');
++    expect(thrownError.evidence).toEqual({ reason: 'check-error' });
++    expect(JSON.stringify(result)).not.toContain(privateText);
++    expect(JSON.stringify(result)).not.toContain('jane@example.com');
++  });
++
+   test('maps per-check timeout to INCOMPLETE without hanging', async () => {
+     const checks = [definition('slow-provider', 'integrations', ['adapter'], () => new Promise(() => {}), 5)];
+     const result = await runHealthChecks(checks, {}, {
+-- 
+2.51.0.windows.1
+

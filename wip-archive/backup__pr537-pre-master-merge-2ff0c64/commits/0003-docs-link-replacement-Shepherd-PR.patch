@@ -1,0 +1,25 @@
+From d476f56d53e124328db7d15b38d57e57561528ef Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 17:23:55 +0530
+Subject: [PATCH] docs: link replacement Shepherd PR
+
+---
+ CHANGELOG.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 34b61d4f..f0fc4158 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Added
+ 
+-- **Bounded Shepherd convergence and guarded merge handoff.** Shepherd now resumes PR monitoring from public Flow/Memory checkpoints, adopts and reaps watchers, consolidates exact-head local review evidence, segments oversized recovery manifests, and records one terminal receipt only after the human-authorized guarded merge succeeds. Repeated immutable history validation is cached by exact serialized bytes without weakening corruption checks. (replaces PR #531, issue `1eddb71d-f630-4584-9816-30bb3db16b8f`)
++- **Bounded Shepherd convergence and guarded merge handoff.** Shepherd now resumes PR monitoring from public Flow/Memory checkpoints, adopts and reaps watchers, consolidates exact-head local review evidence, segments oversized recovery manifests, and records one terminal receipt only after the human-authorized guarded merge succeeds. Repeated immutable history validation is cached by exact serialized bytes without weakening corruption checks. (#537, replaces #531, issue `1eddb71d-f630-4584-9816-30bb3db16b8f`)
+ - **Public receipt-bound PR lifecycle authority.** `@forge/memory` now issues exact-head WorkPackets, authenticates RunReceipts, durably links exact `pr.opened` evidence through public Kernel provider seams, requires and rechecks live session-bound ownership and authoritative readiness, preserves Kernel ready order, and fails closed on replay conflicts, stale evidence, unsafe paths, provider loss, and unbounded operations. External merge and terminal `pr.merged` linkage remain owned by the guarded Forge merge path; canonical LeaseReceipt epochs remain explicitly deferred for 0.1. (issue `c2a3c655-ade2-4156-a8dc-e6b4ee2827ad`)
+ - **Human-gated legacy claim repair.** Adds a fixed-time, privacy-safe claim preflight, separately restored SQLite backup proof, and exact-digest `BEGIN IMMEDIATE` repair with terminal precedence, null-expiry preservation, CAS drift rejection, idempotent receipts, and interruption rollback. The operator-only script is never run at startup. (PR #528, issue `0fd8b8c1-686c-4808-8d99-f9ed5b9571de`)
+ - **Memory recall and session-attention stabilization.** Typed recall now filters before limits, superseded notes hide by default but remain recoverable, Claude read-attention injects only fenced path-matched notes, and session-summary reminders remain current and idempotent. (#504, issue `0874844f-9c0c-449a-994e-a804fe3fc3a5`)
+-- 
+2.51.0.windows.1
+

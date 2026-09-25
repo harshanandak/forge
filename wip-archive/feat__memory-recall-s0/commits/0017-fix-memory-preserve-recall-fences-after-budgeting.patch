@@ -1,0 +1,114 @@
+From 14a22f3b6b8af4a10e9448c5a61a0d36f200d10e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 13:36:06 +0530
+Subject: [PATCH] fix(memory): preserve recall fences after budgeting
+
+---
+ lib/commands/recall.js       | 37 +++++++++++++++++++-----------------
+ test/commands/recall.test.js | 21 ++++++++++++++++++++
+ 2 files changed, 41 insertions(+), 17 deletions(-)
+
+diff --git a/lib/commands/recall.js b/lib/commands/recall.js
+index 3b95d78e..c6e190ad 100644
+--- a/lib/commands/recall.js
++++ b/lib/commands/recall.js
+@@ -100,10 +100,9 @@ function formatEntry(entry) {
+   // Machine/insights records are LABELED with their source so they are never mistaken for a
+   // plain human note; human `remember` notes render clean.
+   const marker = entry.machine && entry.sourceAgent ? `(${entry.sourceAgent}) ` : '';
+-  // Stored note text is UNTRUSTED (a planted memory could carry injected directives),
+-  // so the human/agent-facing render is provenance-fenced. The `--json` path above
+-  // keeps the raw note so programmatic consumers/parsers are unaffected.
+-  const note = fenceUntrusted(entry.note, { source: 'memory' });
++  // Stored note text is untrusted. Fence it after budgeting so a truncation cannot
++  // sever the close marker; the `--json` path above keeps the raw note unchanged.
++  const note = String(entry.note == null ? '' : entry.note);
+   return `- ${label}${marker}${typeMarker}${note}${tagSuffix}`;
+ }
+ 
+@@ -148,19 +147,6 @@ async function handler(args, flags, projectRoot) {
+     return { success: true, output: reason };
+   }
+ 
+-  const noun = scope === 'all' && !query ? 'stored memory record(s)' : 'remembered note(s)';
+-  let header;
+-  if (query) {
+-    // BM25 returns at most `limit`; when full, signal it is the TOP-N, not the whole set.
+-    header = capped
+-      ? `Top ${notes.length} note(s) matching "${query}" (raise --limit for more):`
+-      : `${notes.length} note(s) matching "${query}":`;
+-  } else if (capped) {
+-    // Never a bare full dump: show the newest N and the true total.
+-    header = `Showing ${notes.length} of ${total} ${noun} (newest first):`;
+-  } else {
+-    header = `${total} ${noun}:`;
+-  }
+   const sections = notes
+     .map((entry, index) => {
+       const content = formatEntry(entry);
+@@ -182,6 +168,23 @@ async function handler(args, flags, projectRoot) {
+     .filter(Boolean);
+   const budgeted = applyBudget(sections, RECALL_CONTENT_BUDGET).sections
+     .filter(section => section.content);
++  for (const section of budgeted) {
++    section.content = fenceUntrusted(section.content, { source: 'memory' });
++  }
++  const rendered = budgeted.length;
++  const noun = scope === 'all' && !query ? 'stored memory record(s)' : 'remembered note(s)';
++  let header;
++  if (query) {
++    // BM25 returns at most `limit`; when full, signal it is the TOP-N, not the whole set.
++    header = capped || rendered < notes.length
++      ? `Top ${rendered} note(s) matching "${query}" (raise --limit for more):`
++      : `${rendered} note(s) matching "${query}":`;
++  } else if (capped || rendered < notes.length) {
++    // Never a bare full dump: show the rendered count and the true total.
++    header = `Showing ${rendered} of ${total} ${noun} (newest first):`;
++  } else {
++    header = `${rendered} ${noun}:`;
++  }
+   const confirmed = budgeted.filter(section => section.data.trust === 'confirmed');
+   const suggested = budgeted.filter(section => section.data.trust === 'suggested');
+   const groups = [
+diff --git a/test/commands/recall.test.js b/test/commands/recall.test.js
+index 96e0e10b..773d0dfa 100644
+--- a/test/commands/recall.test.js
++++ b/test/commands/recall.test.js
+@@ -5,6 +5,7 @@ const { afterEach, describe, test, expect } = require('bun:test');
+ const recall = require('../../lib/commands/recall');
+ const remember = require('../../lib/commands/remember');
+ const projectMemory = require('../../lib/project-memory');
++const { OPEN, CLOSE } = require('../../lib/untrusted-content');
+ const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
+ 
+ // recall reads the kernel store, whose default path resolves from the git common dir — so
+@@ -144,6 +145,26 @@ describe('forge recall command', () => {
+     expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
+   });
+ 
++  test('fences budgeted notes after truncation and reports only rendered entries', async () => {
++    const projectRoot = makeProjectRoot();
++    for (let index = 0; index < 3; index += 1) {
++      projectMemory.write(projectRoot, {
++        key: `budgeted-${index}`,
++        value: `note ${index} ${'x'.repeat(2400)}`,
++        sourceAgent: 'forge remember',
++        tags: [],
++        timestamp: `2026-07-${30 - index}T00:00:00.000Z`,
++      });
++    }
++
++    const result = await recall.handler([], {}, projectRoot);
++
++    expect(result.output).toContain('Showing 2 of 3 remembered note(s) (newest first):');
++    expect((result.output.match(new RegExp(OPEN, 'g')) || [])).toHaveLength(4);
++    expect((result.output.match(new RegExp(CLOSE, 'g')) || [])).toHaveLength(4);
++    expect((result.output.match(/END UNTRUSTED/g) || [])).toHaveLength(2);
++  });
++
+   test('finds a note by its tag (tags are indexed for recall)', async () => {
+     const projectRoot = makeProjectRoot();
+     await remember.handler(['rotate the signing key', '--tag', 'security'], {}, projectRoot);
+-- 
+2.51.0.windows.1
+

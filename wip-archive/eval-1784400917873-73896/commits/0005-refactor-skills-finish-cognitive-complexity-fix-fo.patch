@@ -1,0 +1,113 @@
+From 6b734661e369ad05d7309fc1fb3e4bee23d324f9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 18 Jul 2026 16:56:43 +0530
+Subject: [PATCH] =?UTF-8?q?refactor(skills):=20finish=20cognitive-complexi?=
+ =?UTF-8?q?ty=20fix=20=E2=80=94=20formatPrimeLiveState=20+=20regex=20(W1)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Completes CodeRabbit/SonarCloud finding #5: my earlier fix refactored the two
+using-forge.js functions but not the third named site.
+
+- orientation.js formatPrimeLiveState: extracted formatStageLine /
+  formatClaimedLines / formatReadyLine / formatGatesLine so the function just
+  assembles the lines (cognitive complexity well under the 15 gate). Identical output.
+- using-forge.js applyFrontmatterLine: simplified /^name:\s*(.+)\s*$/ to
+  /^name:\s*(.+)$/ — the trailing \s* after .+ backtracks super-linearly
+  (SonarCloud); the capture is trimmed anyway, so behavior is unchanged.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/orientation.js | 54 +++++++++++++++++++++++++++++++---------------
+ lib/using-forge.js |  4 +++-
+ 2 files changed, 40 insertions(+), 18 deletions(-)
+
+diff --git a/lib/orientation.js b/lib/orientation.js
+index c8472e9e..001e3fa1 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -801,28 +801,48 @@ const LIVE_STATE_GATE_LIMIT = 6;
+  * @param {object} [liveState]
+  * @returns {string}
+  */
++/** One-line "Stage: <id> — <name>" (or "not recorded"). */
++function formatStageLine(stage) {
++  if (!stage || !stage.id) return 'Stage: not recorded';
++  return `Stage: ${stage.id}${stage.name ? ` — ${stage.name}` : ''}`;
++}
++
++/** Bounded "Claimed:" lines (capped, with an "…and N more" tail), or a single "none". */
++function formatClaimedLines(claimed) {
++  if (claimed.length === 0) return ['Claimed: none'];
++  const lines = claimed
++    .slice(0, LIVE_STATE_CLAIM_LIMIT)
++    .map(issue => `Claimed: ${issue.id}${issue.title ? ` ${issue.title}` : ''}`);
++  if (claimed.length > LIVE_STATE_CLAIM_LIMIT) {
++    lines.push(`Claimed: …and ${claimed.length - LIVE_STATE_CLAIM_LIMIT} more`);
++  }
++  return lines;
++}
++
++/** One-line "Ready: N issue(s) waiting" (or "none"). */
++function formatReadyLine(readyCount) {
++  if (readyCount <= 0) return 'Ready: none';
++  return `Ready: ${readyCount} issue${readyCount === 1 ? '' : 's'} waiting (forge ready)`;
++}
++
++/** One-line "Gates on: <capped list>" (or "defaults"). */
++function formatGatesLine(gates) {
++  if (gates.length === 0) return 'Gates on: defaults';
++  const shown = gates.slice(0, LIVE_STATE_GATE_LIMIT).join(', ');
++  return `Gates on: ${shown}${gates.length > LIVE_STATE_GATE_LIMIT ? ', …' : ''}`;
++}
++
+ function formatPrimeLiveState(liveState = {}) {
+-  const stage = liveState.stage;
+   const claimed = Array.isArray(liveState.claimed) ? liveState.claimed : [];
+   const readyCount = Number.isFinite(liveState.readyCount) ? liveState.readyCount : 0;
+   const gates = Array.isArray(liveState.gates) ? liveState.gates : [];
+ 
+-  const lines = [];
+-  lines.push(`Stage: ${stage && stage.id ? `${stage.id}${stage.name ? ` — ${stage.name}` : ''}` : 'not recorded'}`);
+-  if (claimed.length === 0) {
+-    lines.push('Claimed: none');
+-  } else {
+-    for (const issue of claimed.slice(0, LIVE_STATE_CLAIM_LIMIT)) {
+-      lines.push(`Claimed: ${issue.id}${issue.title ? ` ${issue.title}` : ''}`);
+-    }
+-    if (claimed.length > LIVE_STATE_CLAIM_LIMIT) {
+-      lines.push(`Claimed: …and ${claimed.length - LIVE_STATE_CLAIM_LIMIT} more`);
+-    }
+-  }
+-  lines.push(readyCount > 0 ? `Ready: ${readyCount} issue${readyCount === 1 ? '' : 's'} waiting (forge ready)` : 'Ready: none');
+-  lines.push(gates.length > 0
+-    ? `Gates on: ${gates.slice(0, LIVE_STATE_GATE_LIMIT).join(', ')}${gates.length > LIVE_STATE_GATE_LIMIT ? ', …' : ''}`
+-    : 'Gates on: defaults');
++  const lines = [
++    formatStageLine(liveState.stage),
++    ...formatClaimedLines(claimed),
++    formatReadyLine(readyCount),
++    formatGatesLine(gates),
++  ];
+   if (liveState.nudge) lines.push(`Next: ${liveState.nudge}`);
+   return lines.join('\n');
+ }
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index 77de7f57..8e8f4b92 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -105,7 +105,9 @@ function applyFrontmatterLine(state, line) {
+     }
+     return;
+   }
+-  const nameMatch = /^name:\s*(.+)\s*$/.exec(line);
++  // `(.+)$` (not `(.+)\s*$`): the trailing `\s*` after `.+` backtracks super-linearly
++  // (SonarCloud); the captured value is trimmed below, so dropping it is behavior-identical.
++  const nameMatch = /^name:\s*(.+)$/.exec(line);
+   if (nameMatch) {
+     state.name = unquote(nameMatch[1].trim());
+     return;
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,169 @@
+From 547c2e53b50a194523b03336a7cb1e330bff79b2 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 14:53:16 +0530
+Subject: [PATCH] fix: validate authority facade results
+
+---
+ lib/pr-monitor/watch-owner.js       | 49 +++++++++++++++++++++++++---
+ test/pr-monitor/watch-owner.test.js | 50 ++++++++++++++++++++++++++++-
+ 2 files changed, 93 insertions(+), 6 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index e1a9e2a0..0fb4b3b6 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -22,6 +22,7 @@ const CONFLICT_CODES = new Set([
+ 	'legacy_snapshot_changed',
+ 	'legacy_owner_conflict',
+ ]);
++const GATE_STATES = new Set(['quarantined', 'conflict', 'complete']);
+ 
+ const MUTATION_INPUT_FIELDS = [
+ 	'generation', 'controllerPid', 'pid', 'recoveryControllerPid',
+@@ -167,6 +168,33 @@ function validateRecord(record) {
+ 		? null : 'invalid_blocked_pid';
+ }
+ 
++function copyMigrationGate(gate) {
++	try {
++		if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return null;
++		const copy = {
++			singleton: gate.singleton,
++			state: gate.state,
++			snapshot_hash: gate.snapshot_hash,
++			conflict_code: gate.conflict_code,
++			updated_at: gate.updated_at,
++		};
++		if (copy.singleton !== 1 || !GATE_STATES.has(copy.state)
++			|| !canonicalTimestamp(copy.updated_at)) return null;
++		if (copy.state === 'quarantined') {
++			if (copy.snapshot_hash != null && !validHash(copy.snapshot_hash)) return null;
++			if (copy.conflict_code != null) return null;
++		} else {
++			if (!validHash(copy.snapshot_hash)) return null;
++			if (copy.state === 'complete'
++				? copy.conflict_code != null
++				: !CONFLICT_CODES.has(copy.conflict_code)) return null;
++		}
++		return copy;
++	} catch {
++		return null;
++	}
++}
++
+ function envelope(ok, changed, reason, record = null) {
+ 	return { ok, changed, reason, record };
+ }
+@@ -317,8 +345,16 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 	}
+ 	try {
+ 		const result = operation(boundOpts.databaseConfig || {});
+-		return { ok: result.ok, changed: false, reason: result.reason,
+-			records: result.rows.map(fromSqliteOwnerRow) };
++		if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.rows)) {
++			return { ok: false, changed: false, reason: 'corrupt', records: [] };
++		}
++		const records = [];
++		for (const row of result.rows) {
++			const record = fromSqliteOwnerRow(row);
++			if (validateRecord(record)) return { ok: false, changed: false, reason: 'corrupt', records: [] };
++			records.push(record);
++		}
++		return { ok: result.ok, changed: false, reason: result.reason, records };
+ 	} catch (error) {
+ 		return { ok: false, changed: false,
+ 			reason: error?.code === 'AUTHORITY_UNAVAILABLE' ? 'authority_unavailable' : 'store_error', records: [] };
+@@ -621,9 +657,12 @@ function invokeGate(method, input, opts) {
+ 	if (typeof operation !== 'function') return { ok: false, changed: false, reason: 'authority_unavailable', gate: null };
+ 	try {
+ 		const result = operation(input, opts.databaseConfig || {});
+-		return result && typeof result.then === 'function'
+-			? { ok: false, changed: false, reason: 'invalid_operation', gate: null }
+-			: result;
++		if (result && typeof result.then === 'function') return invalidGate('invalid_operation');
++		if (!result || typeof result !== 'object' || Array.isArray(result)) return invalidGate('corrupt');
++		if (result.ok === true && result.gate == null) return invalidGate('corrupt');
++		if (result.gate == null) return result;
++		const gate = copyMigrationGate(result.gate);
++		return gate ? { ...result, gate } : invalidGate('corrupt');
+ 	} catch (error) {
+ 		return { ok: false, changed: false,
+ 			reason: error?.code === 'AUTHORITY_UNAVAILABLE' ? 'authority_unavailable' : 'store_error', gate: null };
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 2ed2edd4..257779fc 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -78,6 +78,22 @@ describe('watch owner SQLite authority', () => {
+ 		})).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 	});
+ 
++	test('fails closed without exposing malformed rows from an injected list driver', async () => {
++		const validRow = {
++			repo: 'acme/forge', pr: 81, version: 1, generation: 'generation-81', phase: 'starting',
++			controller_pid: 281, watcher_pid: null, started_at: NOW, updated_at: NOW,
++			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
++		};
++		const malformedRow = { ...validRow, pr: '82' };
++		const result = await owner.enumerateOwners(null, {
++			driver: {
++				watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: [validRow, malformedRow] }),
++			},
++		});
++
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
++	});
++
+ 	test('freezes a copied authority snapshot across awaited receipt verification', async () => {
+ 		const retainedRow = {
+ 			repo: 'acme/forge', pr: 68, version: 1, generation: 'generation-68', phase: 'running',
+@@ -193,7 +209,10 @@ describe('watch owner SQLite authority', () => {
+ 					calls.push({ method: 'watchGateRead', input, config });
+ 					return {
+ 						ok: true, changed: false, reason: 'read',
+-						gate: { state: 'quarantined', snapshot_hash: HASH, conflict_code: null },
++						gate: {
++							singleton: 1, state: 'quarantined', snapshot_hash: HASH,
++							conflict_code: null, updated_at: NOW,
++						},
+ 					};
+ 				},
+ 			};
+@@ -1001,6 +1020,35 @@ describe('watch owner SQLite authority', () => {
+ 			.toEqual({ ok: false, changed: false, reason: 'authority_unavailable', gate: null });
+ 	});
+ 
++	test('copies a successful injected migration gate before exposing it', async () => {
++		const gate = {
++			singleton: 1, state: 'quarantined', snapshot_hash: HASH,
++			conflict_code: null, updated_at: NOW,
++		};
++		const result = await owner.readMigrationGate({}, {
++			driver: {
++				watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate }),
++			},
++		});
++
++		expect(result).toEqual({ ok: true, changed: false, reason: 'read', gate });
++		expect(result.gate).not.toBe(gate);
++		gate.state = 'complete';
++		expect(result.gate.state).toBe('quarantined');
++	});
++
++	test('fails closed for a malformed successful injected migration gate', async () => {
++		const malformedGate = {
++			singleton: 1, state: 'unknown', snapshot_hash: HASH,
++			conflict_code: null, updated_at: NOW,
++		};
++		expect(await owner.readMigrationGate({}, {
++			driver: {
++				watchGateRead: () => ({ ok: true, changed: false, reason: 'read', gate: malformedGate }),
++			},
++		})).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
++	});
++
+ 	test('returns gate-shaped envelopes for every gate input validation failure', async () => {
+ 		expect(await owner.publishMigrationQuarantine({ updatedAt: INVALID_TIMESTAMP }, { driver }))
+ 			.toEqual({ ok: false, changed: false, reason: 'invalid_input', gate: null });
+-- 
+2.51.0.windows.1
+

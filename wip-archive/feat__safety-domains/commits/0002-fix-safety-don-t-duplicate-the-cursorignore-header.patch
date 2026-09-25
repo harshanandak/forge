@@ -1,0 +1,64 @@
+From e70eacc2b30dcb13a973ce08cc42815954638a4e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 20:09:59 +0530
+Subject: [PATCH] fix(safety): don't duplicate the .cursorignore header on
+ re-runs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mergeCursorIgnore re-pushed CURSORIGNORE_HEADER whenever any default was
+missing, even if the header was already present — so a future defaults
+addition would duplicate the header. Only add the header when absent; test
+locks the missing-default-with-header-present case (CodeRabbit).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/safety-config-renderer.js       |  7 ++++++-
+ test/safety-config-renderer.test.js | 14 ++++++++++++++
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/lib/safety-config-renderer.js b/lib/safety-config-renderer.js
+index 7e00cc8a..63ebf1c7 100644
+--- a/lib/safety-config-renderer.js
++++ b/lib/safety-config-renderer.js
+@@ -202,7 +202,12 @@ function mergeCursorIgnore(existingText) {
+   if (base) {
+     lines.push(base, '');
+   }
+-  lines.push(...CURSORIGNORE_HEADER, ...missing);
++  // Only add the Forge header block if it isn't already present — otherwise a later
++  // re-run (once CURSORIGNORE_DEFAULTS gains a new entry) would duplicate the header.
++  if (!text.includes(CURSORIGNORE_HEADER[0])) {
++    lines.push(...CURSORIGNORE_HEADER);
++  }
++  lines.push(...missing);
+   return lines.join('\n') + '\n';
+ }
+ 
+diff --git a/test/safety-config-renderer.test.js b/test/safety-config-renderer.test.js
+index bb409319..4aedad6b 100644
+--- a/test/safety-config-renderer.test.js
++++ b/test/safety-config-renderer.test.js
+@@ -136,4 +136,18 @@ describe('safety renderer — .cursorignore defaults', () => {
+     const twice = mergeCursorIgnore(once);
+     expect(twice).toBe(once);
+   });
++
++  test('does NOT duplicate the header when re-adding a missing default', () => {
++    // Simulate the file a future CURSORIGNORE_DEFAULTS addition creates: header
++    // already present, but one default missing. The header must not be re-added.
++    const full = mergeCursorIgnore('');
++    const headerLine = full.split('\n').find(l => l.startsWith('#'));
++    const removed = CURSORIGNORE_DEFAULTS[CURSORIGNORE_DEFAULTS.length - 1];
++    const stale = full.split('\n').filter(l => l.trim() !== removed).join('\n');
++    const merged = mergeCursorIgnore(stale);
++    // the missing default is re-added ...
++    expect(merged.split('\n').map(l => l.trim())).toContain(removed);
++    // ... but the header block appears exactly once (no duplicate).
++    expect(merged.split('\n').filter(l => l === headerLine).length).toBe(1);
++  });
+ });
+-- 
+2.51.0.windows.1
+

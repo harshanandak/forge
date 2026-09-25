@@ -1,0 +1,77 @@
+From ff92f3c774c602a09f2fa7b5599e3f74855fba8f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 16:17:31 +0530
+Subject: [PATCH] fix(eval): harden scorecard inputs
+
+---
+ scripts/lib/promotion-scorecard.js    |  4 ++--
+ test/eval/promotion-scorecard.test.js | 17 ++++++++++++++++-
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/lib/promotion-scorecard.js b/scripts/lib/promotion-scorecard.js
+index 207ca62a..a24a000a 100644
+--- a/scripts/lib/promotion-scorecard.js
++++ b/scripts/lib/promotion-scorecard.js
+@@ -12,11 +12,11 @@ function round(value) {
+ }
+ 
+ function wilsonInterval(successes, total) {
+-  if (total === 0) return null;
+   if (!Number.isInteger(successes) || !Number.isInteger(total)
+     || successes < 0 || total < 0 || successes > total) {
+     throw new Error('Wilson counts must be valid non-negative integers');
+   }
++  if (total === 0) return null;
+   const rate = successes / total;
+   const zSquared = Z_95 ** 2;
+   const denominator = 1 + zSquared / total;
+@@ -116,7 +116,7 @@ function passStats(pairs, armName) {
+ }
+ 
+ function absoluteStats(testPairs, models) {
+-  const byModel = {};
++  const byModel = Object.create(null);
+   for (const model of models) {
+     const modelPairs = testPairs.filter((pair) => pair.model === model);
+     byModel[model] = {
+diff --git a/test/eval/promotion-scorecard.test.js b/test/eval/promotion-scorecard.test.js
+index a308f45f..3e4924ec 100644
+--- a/test/eval/promotion-scorecard.test.js
++++ b/test/eval/promotion-scorecard.test.js
+@@ -18,10 +18,11 @@ function arm(status, latencyMs, tokens, hardFailure = false) {
+ function completePairs(tier, options = {}) {
+   const pairs = [];
+   const devCount = tier * 0.6;
++  const models = options.models ?? MODELS;
+   for (let index = 0; index < tier; index += 1) {
+     const split = index < devCount ? 'DEV' : 'TEST';
+     const risk = ['low', 'medium', 'high'][index % 3];
+-    for (const model of MODELS) {
++    for (const model of models) {
+       for (const trialIndex of TRIALS) {
+         const currentStatus = split === 'TEST' && (index - devCount) % 5 === 0 ? 'FAIL' : 'PASS';
+         pairs.push({
+@@ -46,6 +47,20 @@ describe('promotion scorecard', () => {
+       upper: expect.closeTo(0.5961684696, 9),
+     });
+     expect(wilsonInterval(0, 0)).toBeNull();
++    expect(() => wilsonInterval(-1, 0)).toThrow(/valid non-negative integers/i);
++    expect(() => wilsonInterval(1, 0)).toThrow(/valid non-negative integers/i);
++  });
++
++  test('serializes hostile model identifiers as own score fields', () => {
++    const score = scorePromotion({
++      tier: 100,
++      pairs: completePairs(100, { models: ['__proto__', 'safe-model'] }),
++    });
++    expect(Object.hasOwn(score.absolute.byModel, '__proto__')).toBe(true);
++    expect(Object.hasOwn(score.absolute.byModel, 'safe-model')).toBe(true);
++
++    const serialized = JSON.parse(JSON.stringify(score.absolute.byModel));
++    expect(Object.keys(serialized).sort()).toEqual(['__proto__', 'safe-model']);
+   });
+ 
+   test('keeps the 30-case tier instrumentation-only even with complete winning evidence', () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,178 @@
+From 5371c930fd94a8b35302d23b0447859201b0b625 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 27 Apr 2026 00:57:30 +0530
+Subject: [PATCH] fix: harden memory path and lock recovery
+
+---
+ lib/project-memory.js       | 77 ++++++++++++++++++++++++++++++++++---
+ test/project-memory.test.js | 42 ++++++++++++++++++++
+ 2 files changed, 113 insertions(+), 6 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index d166d9fa..b7c9e2fc 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -4,22 +4,52 @@ const path = require('node:path');
+ const DEFAULT_MEMORY_FILE = path.join('.forge', 'memory', 'entries.jsonl');
+ const DEFAULT_LOCK_TIMEOUT_MS = 5000;
+ const DEFAULT_LOCK_RETRY_MS = 10;
++const DEFAULT_STALE_LOCK_MS = 30000;
++
++function assertInsideProjectRoot(root, targetPath) {
++  const relative = path.relative(root, targetPath);
++  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
++    throw new Error('project memory filePath must stay within projectRoot');
++  }
++}
++
++function nearestExistingPath(targetPath) {
++  let current = targetPath;
++  while (!fs.existsSync(current)) {
++    const next = path.dirname(current);
++    if (next === current) break;
++    current = next;
++  }
++
++  return current;
++}
++
++function assertRealPathInsideProjectRoot(root, targetPath) {
++  const realRoot = fs.realpathSync.native(root);
++  const existingPath = nearestExistingPath(path.dirname(targetPath));
++  const realExistingPath = fs.realpathSync.native(existingPath);
++
++  if (realExistingPath === realRoot) {
++    return;
++  }
++
++  assertInsideProjectRoot(realRoot, realExistingPath);
++}
+ 
+ function memoryPath(projectRoot, options = {}) {
+   const root = path.resolve(projectRoot);
+   if (!options.filePath) {
+-    return path.join(root, DEFAULT_MEMORY_FILE);
++    const defaultPath = path.join(root, DEFAULT_MEMORY_FILE);
++    assertRealPathInsideProjectRoot(root, defaultPath);
++    return defaultPath;
+   }
+ 
+   const candidate = path.isAbsolute(options.filePath)
+     ? options.filePath
+     : path.join(root, options.filePath);
+   const resolved = path.resolve(candidate);
+-  const relative = path.relative(root, resolved);
+-
+-  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+-    throw new Error('project memory filePath must stay within projectRoot');
+-  }
++  assertInsideProjectRoot(root, resolved);
++  assertRealPathInsideProjectRoot(root, resolved);
+ 
+   return resolved;
+ }
+@@ -28,6 +58,40 @@ function sleep(ms) {
+   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+ }
+ 
++function isProcessAlive(pid) {
++  if (!Number.isInteger(pid) || pid <= 0) return false;
++
++  try {
++    process.kill(pid, 0);
++    return true;
++  } catch (err) {
++    return err.code === 'EPERM';
++  }
++}
++
++function readLock(lockPath) {
++  try {
++    return JSON.parse(fs.readFileSync(lockPath, 'utf8'));
++  } catch (_err) {
++    return null;
++  }
++}
++
++function removeStaleLock(lockPath, options = {}) {
++  const lock = readLock(lockPath);
++  const staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
++  const createdAt = lock?.createdAt ? Date.parse(lock.createdAt) : NaN;
++  const isOld = Number.isNaN(createdAt) || Date.now() - createdAt >= staleLockMs;
++  const ownerAlive = isProcessAlive(lock?.pid);
++
++  if (!ownerAlive && isOld) {
++    fs.rmSync(lockPath, { force: true });
++    return true;
++  }
++
++  return false;
++}
++
+ function acquireLock(filePath, options = {}) {
+   const lockPath = `${filePath}.lock`;
+   const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+@@ -52,6 +116,7 @@ function acquireLock(filePath, options = {}) {
+       if (err.code !== 'EEXIST' || Date.now() - startedAt >= timeoutMs) {
+         throw err;
+       }
++      removeStaleLock(lockPath, options);
+       sleep(retryMs);
+     }
+   }
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index 1d98678e..0870aa43 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -230,6 +230,48 @@ describe('project memory', () => {
+     })).toThrow('projectRoot');
+   });
+ 
++  test('rejects memory paths that traverse symlinks outside the project root', () => {
++    if (process.platform === 'win32') {
++      return;
++    }
++
++    const root = tempRoot();
++    const outside = tempRoot();
++    fs.symlinkSync(outside, path.join(root, '.forge'), 'dir');
++
++    expect(() => projectMemory.write(root, {
++      key: 'policy.symlink-escape',
++      value: 'must stay in repo',
++      sourceAgent: 'Codex',
++      tags: [],
++    })).toThrow('projectRoot');
++  });
++
++  test('recovers stale lockfiles owned by dead processes', () => {
++    const root = tempRoot();
++    const memoryFile = path.join(root, '.forge', 'memory', 'entries.jsonl');
++    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
++    fs.writeFileSync(`${memoryFile}.lock`, JSON.stringify({
++      pid: 99999999,
++      createdAt: '2026-04-26T00:00:00.000Z',
++    }), 'utf8');
++
++    projectMemory.write(root, {
++      key: 'policy.stale-lock',
++      value: 'recovered',
++      sourceAgent: 'Codex',
++      tags: [],
++    }, {
++      lockTimeoutMs: 250,
++      lockRetryMs: 5,
++    });
++
++    expect(projectMemory.read(root, 'policy.stale-lock')).toMatchObject({
++      value: 'recovered',
++    });
++    expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
++  });
++
+   test('serializes concurrent writers without losing entries', () => {
+     const root = tempRoot();
+     const worker = `
+-- 
+2.51.0.windows.1
+

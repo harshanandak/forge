@@ -1,0 +1,38 @@
+From b14fc352dbaedfe92e4a061f02e1bdec0e07e75e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 12:09:32 +0530
+Subject: [PATCH] fix(ci): shorten tone_instructions under CodeRabbit's
+ 250-character cap
+
+At 388 characters the value failed schema validation, so the whole reviewer
+config was being ignored. Now 236.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .coderabbit.yaml | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/.coderabbit.yaml b/.coderabbit.yaml
+index 507b0e5d..b0bdf6ac 100644
+--- a/.coderabbit.yaml
++++ b/.coderabbit.yaml
+@@ -2,12 +2,11 @@
+ #
+ # Pre-user shipping regime (decided 2026-08-16): review feedback is advisory
+ # except secrets, injection, and a broken build — and it never expands the PR.
++# Keep under 250 characters — CodeRabbit's schema rejects anything longer.
+ tone_instructions: >-
+-  Forge has one user and ships fast. Only flag what is always wrong: leaked
+-  secrets or credentials, injection and auth holes, and changes that break the
+-  build or documented behaviour. Style, naming, micro-performance and nits are
+-  optional suggestions — say so plainly. Never propose widening the scope of
+-  the pull request; if something else needs doing, say it belongs in a
++  Block only on leaked secrets, injection, auth holes, and breaks to the build
++  or documented behaviour. Style, naming, micro-performance and nits are
++  optional suggestions; say so. Never widen the PR — send extra work to a
+   follow-up issue.
+ reviews:
+   profile: chill
+-- 
+2.51.0.windows.1
+

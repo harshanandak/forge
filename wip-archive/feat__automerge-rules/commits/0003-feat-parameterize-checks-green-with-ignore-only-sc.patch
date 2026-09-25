@@ -1,0 +1,206 @@
+From adf8cc43f48e3bd839c2fd36650637969523ce37 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 17:40:24 +0530
+Subject: [PATCH] feat: parameterize checks_green with ignore/only scoping
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+checks_green now accepts { ignore: [...] } (exempt named checks; every
+other must be green) or { only: [...] } (require only the named checks,
+present AND green). Both together, or a non-array ignore/only, is
+malformed → fail-closed. Bare/ignore:[] keep the strict all-green
+default. Exact name match. required_only stays a documented follow-up.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md             |  2 +-
+ lib/commands/merge.js    |  4 ++-
+ lib/merge-rules.js       | 63 ++++++++++++++++++++++++++++++++++++++--
+ test/merge-rules.test.js | 48 ++++++++++++++++++++++++++++++
+ 4 files changed, 112 insertions(+), 5 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index d813a2f4..9b7aefd2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -17,7 +17,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ - **Onboarding now auto-migrates Beads → Kernel and self-installs git hooks.** `forge setup` (quick, `--yes`, and interactive agent paths) and `forge init` now detect an existing jsonl-backed `.beads` store and **auto-import** its issues, comments, and dependencies into the Kernel — reusing the idempotent `forge migrate --from beads` spine, reading the committed jsonl sidecars directly (no external issue-tracker CLI required, so it works even when the legacy SQL backend is offline) and surfacing the same honest field-gap report. A fresh `forge init` also now installs git hooks, so `forge validate`/`plan` are no longer immediately blocked by `HOOKS_NOT_ACTIVE` — closing the init → hooks catch-22. Both steps are idempotent and degrade to a warning rather than aborting onboarding.
+ - `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fields with no dedicated Kernel column are folded into the issue `metadata` blob instead of being dropped: beads `owner` → `assignee` (falling back after an explicit assignee, else `metadata.beads_owner`), plus `metadata.beads_external_ref` (linked GitHub issue/run) and `metadata.beads_started_at`; `design`/`assignee` land on their Kernel columns. The loader also tolerates a split `.beads` layout (events under `.beads/backup/`, interactions at `.beads/interactions.jsonl`) so neither sidecar is silently half-read. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. The **only remaining reported gap is `dependencies.created_by`** (the Kernel dependency row has no creator column); beads-internal/derived fields such as `content_hash` are intentionally not carried (not user data).
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+-- **Opt-in conditional auto-merge rules engine (default OFF).** A new pure evaluator `lib/merge-rules.js` — `evaluateMergeRules(prContext, rules) → { allowed, unmet }` — decides whether a PR may merge by ANDing a list of composable, config-driven rules over an already-fetched PR context (no network in the evaluator). Built-in rule types: `checks_green`, `threads_resolved`, `not_behind`, `no_conflicts`, `not_draft`, `min_approvals:N`, `settle_min:N` (quiet since the last comment), `idle_min:N` (quiet since the last activity), `last_comment_by:X`, `approved_by:[..]`, `not_commented_by:[..]`, composed with `any_of:[..]` groups and a `not:` wrapper; an unknown or malformed rule, or unreadable context, is surfaced as unmet (fail-closed). A thin `forge merge --auto <pr>` command reads the opt-in `merge.auto` section of `.forge/config.yaml` (`{ enabled: false, rules: [...] }`), fetches the PR context via `gh` behind an injectable seam, and merges **only** when `enabled === true` **and** every rule passes — printing the unmet rules and doing nothing otherwise. Two safety layers wrap the decision: a pre-flight guard that no-ops on an already merged/closed PR (idempotent re-runs), and a TOCTOU live re-check that re-fetches and re-evaluates immediately before merging so a since-changed PR is never merged from a stale snapshot. Absent config or `enabled` not true is a strict no-op, so the test-enforced never-auto-merge-by-default invariant is preserved; it merely promotes the proven `settle-merge.sh` baseline to a native capability. Documented follow-ups (not built): the bring-your-own custom-predicate seam (`forge add`), an opt-in `auto_update` executor (update-branch when behind → wait CI → re-check → merge), required-checks scoping for `checks_green` (read the branch-protection required set), a configurable merge `method` (squash/merge/rebase), and post-merge branch deletion.
++- **Opt-in conditional auto-merge rules engine (default OFF).** A new pure evaluator `lib/merge-rules.js` — `evaluateMergeRules(prContext, rules) → { allowed, unmet }` — decides whether a PR may merge by ANDing a list of composable, config-driven rules over an already-fetched PR context (no network in the evaluator). Built-in rule types: `checks_green`, `threads_resolved`, `not_behind`, `no_conflicts`, `not_draft`, `min_approvals:N`, `settle_min:N` (quiet since the last comment), `idle_min:N` (quiet since the last activity), `last_comment_by:X`, `approved_by:[..]`, `not_commented_by:[..]`, composed with `any_of:[..]` groups and a `not:` wrapper; an unknown or malformed rule, or unreadable context, is surfaced as unmet (fail-closed). `checks_green` is bare (all checks must be green) or scoped — `{ checks_green: { ignore: [...] } }` exempts the named checks, `{ checks_green: { only: [...] } }` requires only the named checks (both together is malformed → fail-closed). A thin `forge merge --auto <pr>` command reads the opt-in `merge.auto` section of `.forge/config.yaml` (`{ enabled: false, rules: [...] }`), fetches the PR context via `gh` behind an injectable seam, and merges **only** when `enabled === true` **and** every rule passes — printing the unmet rules and doing nothing otherwise. Two safety layers wrap the decision: a pre-flight guard that no-ops on an already merged/closed PR (idempotent re-runs), and a TOCTOU live re-check that re-fetches and re-evaluates immediately before merging so a since-changed PR is never merged from a stale snapshot. Absent config or `enabled` not true is a strict no-op, so the test-enforced never-auto-merge-by-default invariant is preserved; it merely promotes the proven `settle-merge.sh` baseline to a native capability. Documented follow-ups (not built): the bring-your-own custom-predicate seam (`forge add`), an opt-in `auto_update` executor (update-branch when behind → wait CI → re-check → merge), required-checks scoping for `checks_green` (read the branch-protection required set), a configurable merge `method` (squash/merge/rebase), and post-merge branch deletion.
+ 
+ ### Changed
+ 
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 4e24e762..f34e36eb 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -11,7 +11,9 @@
+  *     auto:
+  *       enabled: true           # default false / absent → strict NO-OP
+  *       rules:                  # ALL must pass (see lib/merge-rules.js)
+- *         - checks_green
++ *         - checks_green        # or scope it, e.g. for a docs-only task that
++ *                               # may take a coverage dip:
++ *                               #   - checks_green: { ignore: ["Coverage"] }
+  *         - threads_resolved
+  *         - no_conflicts        # recommended: never merge a conflicting branch
+  *         - not_behind
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index 6a1c38c3..09985bae 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -37,6 +37,9 @@
+  *   checks_green | threads_resolved | not_behind | no_conflicts | not_draft |
+  *   min_approvals:N | settle_min:N | idle_min:N | last_comment_by:X |
+  *   approved_by:[..] | not_commented_by:[..]
++ * `checks_green` is bare (ALL checks must be green) or scoped:
++ *   { checks_green: { ignore: ["Coverage"] } }  exempt the named checks
++ *   { checks_green: { only: ["build"] } }        require ONLY the named checks
+  * Composition wrappers:
+  *   { any_of: [rule, ...] }  passes if ANY member passes
+  *   { not: rule }            passes if the inner rule FAILS
+@@ -116,14 +119,68 @@ const fail = (reason) => ({ ok: false, reason });
+ 
+ // --- Built-in rule predicates. Each returns { ok } or { ok:false, reason }. ---
+ 
+-function checksGreen(ctx) {
++function checkName(check) {
++  return String((check && check.name) || '');
++}
++
++/**
++ * `checks_green` — every CI check must be SUCCESS. Optionally scoped:
++ *   - bare string / no arg → ALL checks must be green (strict default).
++ *   - { ignore: ["A","B"] } → the named checks are EXEMPT; every OTHER check
++ *     must be green. `ignore: []` is identical to the bare form.
++ *   - { only: ["A"] }       → ONLY the named checks must be green (present AND
++ *     SUCCESS); all others are ignored.
++ * `ignore` + `only` together is malformed → fail-closed. Exact name match.
++ * (`required_only` — scope to the branch-protection required set — is a
++ * documented follow-up, not built here.)
++ */
++function checksGreen(ctx, arg) {
++  let ignore = [];
++  let only = null;
++
++  if (arg !== undefined && arg !== null) {
++    if (typeof arg !== 'object' || Array.isArray(arg)) {
++      return fail('checks_green argument must be an object with `ignore` or `only` (fail-closed).');
++    }
++    const hasIgnore = arg.ignore !== undefined;
++    const hasOnly = arg.only !== undefined;
++    if (hasIgnore && hasOnly) {
++      return fail('checks_green cannot combine `ignore` and `only` — choose one (malformed, fail-closed).');
++    }
++    if (hasIgnore) {
++      if (!Array.isArray(arg.ignore)) return fail('checks_green `ignore` must be an array of check names (fail-closed).');
++      ignore = arg.ignore.map(String);
++    }
++    if (hasOnly) {
++      if (!Array.isArray(arg.only)) return fail('checks_green `only` must be an array of check names (fail-closed).');
++      if (arg.only.length === 0) return fail('checks_green `only` names no checks (fail-closed).');
++      only = arg.only.map(String);
++    }
++  }
++
+   if (ctx.requiredChecksKnown !== true) {
+     return fail('required-check set is not known to be readable — cannot confirm green (fail-closed).');
+   }
+   if (!Array.isArray(ctx.checks)) {
+     return fail('check results are missing from the PR context (fail-closed).');
+   }
+-  const notGreen = ctx.checks.filter((c) => !isCheckGreen(c));
++
++  if (only) {
++    // Only the named checks matter — each must be PRESENT and green.
++    const byName = new Map(ctx.checks.map((c) => [checkName(c), c]));
++    const problems = only.map((name) => {
++      const check = byName.get(name);
++      if (!check) return `${name} (missing)`;
++      if (!isCheckGreen(check)) return `${name} (${check.conclusion || 'not green'})`;
++      return null;
++    }).filter(Boolean);
++    if (problems.length > 0) return fail(`required check(s) not green: ${problems.join(', ')}.`);
++    return pass();
++  }
++
++  // Default / ignore: every check EXCEPT the exempt ones must be green.
++  const exempt = new Set(ignore);
++  const notGreen = ctx.checks.filter((c) => !exempt.has(checkName(c)) && !isCheckGreen(c));
+   if (notGreen.length > 0) {
+     const names = notGreen.map((c) => (c && c.name) || '?').join(', ');
+     return fail(`${notGreen.length} check(s) not green: ${names}.`);
+@@ -247,7 +304,7 @@ function notWrapper(ctx, arg) {
+ }
+ 
+ const PREDICATES = {
+-  checks_green: (ctx) => checksGreen(ctx),
++  checks_green: (ctx, arg) => checksGreen(ctx, arg),
+   threads_resolved: (ctx) => threadsResolved(ctx),
+   not_behind: (ctx) => notBehind(ctx),
+   no_conflicts: (ctx) => noConflicts(ctx),
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index 3164d932..7ac15c85 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -114,6 +114,54 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
+   });
+ 
++  test('checks_green { ignore } exempts a named failing check but still blocks on OTHER failures', () => {
++    const oneBadIgnored = greenContext({
++      checks: [
++        { name: 'coverage', conclusion: 'FAILURE' },
++        { name: 'ci', conclusion: 'SUCCESS' },
++      ],
++    });
++    // coverage is exempt; every other check (ci) is green → allowed.
++    expect(evaluateMergeRules(oneBadIgnored, [{ checks_green: { ignore: ['coverage'] } }]).allowed).toBe(true);
++
++    const anotherAlsoBad = greenContext({
++      checks: [
++        { name: 'coverage', conclusion: 'FAILURE' },
++        { name: 'ci', conclusion: 'FAILURE' },
++      ],
++    });
++    // coverage exempt, but ci (not exempt) still fails → unmet.
++    expect(evaluateMergeRules(anotherAlsoBad, [{ checks_green: { ignore: ['coverage'] } }]).allowed).toBe(false);
++  });
++
++  test('checks_green { ignore: [] } behaves like bare checks_green (strict)', () => {
++    expect(evaluateMergeRules(greenContext(), [{ checks_green: { ignore: [] } }]).allowed).toBe(true);
++    const bad = greenContext({ checks: [{ name: 'ci', conclusion: 'FAILURE' }] });
++    expect(evaluateMergeRules(bad, [{ checks_green: { ignore: [] } }]).allowed).toBe(false);
++  });
++
++  test('checks_green { only } requires ONLY the listed checks to be SUCCESS', () => {
++    const ctx = greenContext({
++      checks: [
++        { name: 'ci', conclusion: 'SUCCESS' },
++        { name: 'coverage', conclusion: 'FAILURE' },
++      ],
++    });
++    // only ci matters; coverage failure is ignored → allowed.
++    expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['ci'] } }]).allowed).toBe(true);
++    // only coverage matters; it fails → unmet.
++    expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['coverage'] } }]).allowed).toBe(false);
++    // a named check that is missing → unmet (must be present AND green).
++    expect(evaluateMergeRules(ctx, [{ checks_green: { only: ['nonexistent'] } }]).allowed).toBe(false);
++  });
++
++  test('checks_green with BOTH ignore and only is malformed → fail-closed', () => {
++    const { allowed, unmet } = evaluateMergeRules(greenContext(), [{ checks_green: { ignore: ['a'], only: ['b'] } }]);
++    expect(allowed).toBe(false);
++    expect(unmet[0].rule).toContain('checks_green');
++    expect(unmet[0].reason).toMatch(/ignore.*only|only.*ignore|combine|malformed|both/i);
++  });
++
+   test('threads_resolved fails with open threads (number OR array form)', () => {
+     expect(evaluateMergeRules(greenContext({ unresolvedThreads: 2 }), ['threads_resolved']).allowed).toBe(false);
+     expect(evaluateMergeRules(greenContext({ unresolvedThreads: [{}, {}] }), ['threads_resolved']).allowed).toBe(false);
+-- 
+2.51.0.windows.1
+

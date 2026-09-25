@@ -1,0 +1,333 @@
+diff --git a/bun.lock b/bun.lock
+index 768d44d4..59594da5 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -30,6 +30,21 @@
+         "lefthook",
+       ],
+     },
++    "packages/flow": {
++      "name": "@forge/flow",
++      "version": "0.1.0-beta.6",
++      "dependencies": {
++        "@forge/memory-contracts": "0.1.0-beta.6",
++      },
++    },
++    "packages/memory": {
++      "name": "@forge/memory",
++      "version": "0.1.0-beta.6",
++    },
++    "packages/memory-contracts": {
++      "name": "@forge/memory-contracts",
++      "version": "0.1.0-beta.6",
++    },
+     "packages/skills": {
+       "name": "@forge/skills",
+       "version": "1.0.0",
+@@ -173,6 +188,12 @@
+ 
+     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.6.0", "", { "dependencies": { "@eslint/core": "^1.1.0", "levn": "^0.4.1" } }, "sha512-bIZEUzOI1jkhviX2cp5vNyXQc6olzb2ohewQubuYlMXZ2Q/XjBO0x0XhGPvc9fjSIiUN0vw+0hq53BJ4eQSJKQ=="],
+ 
++    "@forge/flow": ["@forge/flow@workspace:packages/flow"],
++
++    "@forge/memory": ["@forge/memory@workspace:packages/memory"],
++
++    "@forge/memory-contracts": ["@forge/memory-contracts@workspace:packages/memory-contracts"],
++
+     "@forge/skills": ["@forge/skills@workspace:packages/skills"],
+ 
+     "@humanfs/core": ["@humanfs/core@0.19.1", "", {}, "sha512-5DyQ4+1JEUzejeK1JGICcideyfUbGixgS9jNgex5nqkW+cY7WZhxBigmieN5Qnw9ZosSNVC9KQKyb+GUaGyKUA=="],
+diff --git a/test/structural/pr2-root-integration.test.js b/test/structural/pr2-root-integration.test.js
+new file mode 100644
+index 00000000..0e4fd891
+--- /dev/null
++++ b/test/structural/pr2-root-integration.test.js
+@@ -0,0 +1,78 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const { loadRiskManifest, selectValidation } = require('../../lib/validation/risk-manifest');
++
++const ROOT = path.resolve(__dirname, '../..');
++const LOCK_PATH = path.join(ROOT, 'bun.lock');
++const RISK_MANIFEST_PATH = path.join(ROOT, 'validation', 'risk-manifest.v1.json');
++const rootPackage = require('../../package.json');
++
++function workspaceBlock(lock, workspacePath) {
++  const marker = `    "${workspacePath}": {`;
++  const start = lock.indexOf(marker);
++  if (start === -1) throw new Error(`bun.lock is missing workspace ${workspacePath}`);
++  const end = lock.indexOf('\n    },', start);
++  if (end === -1) throw new Error(`bun.lock workspace ${workspacePath} is malformed`);
++  return lock.slice(start, end);
++}
++
++describe('PR2 root package integration', () => {
++  test('resolves all three prerelease packages through the existing workspace contract', () => {
++    expect(rootPackage.version).toBe('0.1.0-beta.5');
++    expect(rootPackage.workspaces).toContain('packages/*');
++
++    const lock = fs.readFileSync(LOCK_PATH, 'utf8');
++    const expected = [
++      ['packages/memory-contracts', '@forge/memory-contracts'],
++      ['packages/memory', '@forge/memory'],
++      ['packages/flow', '@forge/flow'],
++    ];
++    for (const [workspacePath, packageName] of expected) {
++      const block = workspaceBlock(lock, workspacePath);
++      expect(block).toContain(`"name": "${packageName}"`);
++      expect(block).toContain('"version": "0.1.0-beta.6"');
++    }
++
++    expect(workspaceBlock(lock, 'packages/flow')).toContain(
++      '"@forge/memory-contracts": "0.1.0-beta.6"',
++    );
++    expect(lock).toContain('"@forge/memory-contracts@workspace:packages/memory-contracts"');
++  });
++
++  test.each([
++    {
++      path: 'packages/memory-contracts/src/contracts.js', owner: 'memory-contracts',
++      product: 'memory', lane: 'contract-baseline', route: 'flow-memory-contract',
++      command: 'validation.command.contract-baseline', testPath: 'packages/memory-contracts',
++    },
++    {
++      path: 'packages/memory/src/backend-registry.js', owner: 'memory-foundation',
++      product: 'memory', lane: 'memory-package', route: 'memory-contract',
++      command: 'validation.command.memory-package', testPath: 'packages/memory',
++    },
++    {
++      path: 'packages/flow/index.js', owner: 'workflow-runtime',
++      product: 'flow', lane: 'flow-package', route: 'flow-memory-contract',
++      command: 'validation.command.flow-package', testPath: 'packages/flow',
++    },
++  ])('$path selects its product lane without repository fallback', (expected) => {
++    const manifest = loadRiskManifest(RISK_MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: expected.path }],
++    });
++
++    expect(selected.status).toBe('exact');
++    expect(selected.targeted_pass_allowed).toBe(true);
++    expect(selected.owner_ids).toEqual([expected.owner]);
++    expect(selected.owner_selections[0].product).toBe(expected.product);
++    expect(selected.lanes).toEqual([expected.lane]);
++    expect(selected.dependent_routes).toEqual([expected.route]);
++    expect(selected.commands.find((command) => command.id === expected.command)?.argv)
++      .toContain(expected.testPath);
++  });
++});
+diff --git a/test/validation/risk-manifest-generator.test.js b/test/validation/risk-manifest-generator.test.js
+index 3a0dcd85..8be2b23c 100644
+--- a/test/validation/risk-manifest-generator.test.js
++++ b/test/validation/risk-manifest-generator.test.js
+@@ -25,6 +25,7 @@ describe('risk manifest generator', () => {
+     expect(generated.owners.map((owner) => owner.id)).toEqual([
+       'facade-cli',
+       'kernel-authority',
++      'memory-contracts',
+       'memory-foundation',
+       'validation-control',
+       'workflow-runtime',
+diff --git a/validation/risk-manifest.source.yaml b/validation/risk-manifest.source.yaml
+index 04de3fef..4931af52 100644
+--- a/validation/risk-manifest.source.yaml
++++ b/validation/risk-manifest.source.yaml
+@@ -7,13 +7,13 @@ commands:
+     argv: [test, --timeout, "15000", test/integration]
+   - id: validation.command.contract-baseline
+     executable: bun
+-    argv: [test, --timeout, "15000", test/integration]
++    argv: [test, --timeout, "15000", test/integration, packages/memory-contracts]
+   - id: validation.command.facade-package
+     executable: bun
+     argv: [test, --timeout, "15000", test/commands]
+   - id: validation.command.flow-package
+     executable: bun
+-    argv: [test, --timeout, "15000", test/workflow]
++    argv: [test, --timeout, "15000", test/workflow, packages/flow]
+   - id: validation.command.g0-static
+     executable: bun
+     argv: [x, eslint, ., --max-warnings, "0"]
+@@ -43,7 +43,7 @@ commands:
+     argv: [test, --timeout, "15000", test/kernel]
+   - id: validation.command.memory-package
+     executable: bun
+-    argv: [test, --timeout, "15000", test/memory]
++    argv: [test, --timeout, "15000", test/memory, packages/memory]
+   - id: validation.command.repository-baseline
+     executable: bun
+     argv: [run, test:full:parallel]
+@@ -125,15 +125,27 @@ owners:
+   - id: memory-foundation
+     product: memory
+     package: forge-memory
+-    package_roots: [lib/memory]
++    package_roots: [lib/memory, packages/memory]
+     selectors:
+       - { kind: path, prefix: "lib/memory/" }
++      - { kind: path, prefix: "packages/memory/" }
+       - { kind: schema, prefix: "forge.memory." }
+     risk_ids: [memory-data-integrity, contract-compatibility]
+     canonical_test_ids: ["test/memory/**/*.test.js"]
+     dependent_routes: [memory-contract]
+     platform_runtime_additions: [windows-sqlite, linux-sqlite]
+     lanes: [memory-package]
++  - id: memory-contracts
++    product: memory
++    package: "@forge/memory-contracts"
++    package_roots: [packages/memory-contracts]
++    selectors:
++      - { kind: path, prefix: "packages/memory-contracts/" }
++    risk_ids: [contract-compatibility]
++    canonical_test_ids: ["packages/memory-contracts/**/*.test.js"]
++    dependent_routes: [flow-memory-contract]
++    platform_runtime_additions: []
++    lanes: [contract-baseline]
+   - id: validation-control
+     product: memory
+     package: forge-validation
+@@ -151,9 +163,10 @@ owners:
+   - id: workflow-runtime
+     product: flow
+     package: forge-flow
+-    package_roots: [lib/workflow]
++    package_roots: [lib/workflow, packages/flow]
+     selectors:
+       - { kind: path, prefix: "lib/workflow/" }
++      - { kind: path, prefix: "packages/flow/" }
+       - { kind: schema, prefix: "forge.flow." }
+     risk_ids: [monitor-cleanup, contract-compatibility]
+     canonical_test_ids: ["test/workflow/**/*.test.js"]
+diff --git a/validation/risk-manifest.v1.json b/validation/risk-manifest.v1.json
+index fdb09c59..410b936c 100644
+--- a/validation/risk-manifest.v1.json
++++ b/validation/risk-manifest.v1.json
+@@ -15,7 +15,8 @@
+         "test",
+         "--timeout",
+         "15000",
+-        "test/integration"
++        "test/integration",
++        "packages/memory-contracts"
+       ],
+       "executable": "bun",
+       "id": "validation.command.contract-baseline"
+@@ -35,7 +36,8 @@
+         "test",
+         "--timeout",
+         "15000",
+-        "test/workflow"
++        "test/workflow",
++        "packages/flow"
+       ],
+       "executable": "bun",
+       "id": "validation.command.flow-package"
+@@ -135,7 +137,8 @@
+         "test",
+         "--timeout",
+         "15000",
+-        "test/memory"
++        "test/memory",
++        "packages/memory"
+       ],
+       "executable": "bun",
+       "id": "validation.command.memory-package"
+@@ -256,7 +259,7 @@
+       "id": "validation-selector"
+     }
+   ],
+-  "manifest_hash": "sha256:d7b0d384d2e3636e37d6544f79aaf881ef63850acb20439e1d8a5cf80ab300b6",
++  "manifest_hash": "sha256:2b6215dfab4bb2071f0d2c7d5ac29dc6ef9c582292b52fe5fd81a26425b4fc2b",
+   "owners": [
+     {
+       "canonical_test_ids": [
+@@ -330,6 +333,33 @@
+         }
+       ]
+     },
++    {
++      "canonical_test_ids": [
++        "packages/memory-contracts/**/*.test.js"
++      ],
++      "dependent_routes": [
++        "flow-memory-contract"
++      ],
++      "id": "memory-contracts",
++      "lanes": [
++        "contract-baseline"
++      ],
++      "package": "@forge/memory-contracts",
++      "package_roots": [
++        "packages/memory-contracts"
++      ],
++      "platform_runtime_additions": [],
++      "product": "memory",
++      "risk_ids": [
++        "contract-compatibility"
++      ],
++      "selectors": [
++        {
++          "kind": "path",
++          "prefix": "packages/memory-contracts/"
++        }
++      ]
++    },
+     {
+       "canonical_test_ids": [
+         "test/memory/**/*.test.js"
+@@ -343,7 +373,8 @@
+       ],
+       "package": "forge-memory",
+       "package_roots": [
+-        "lib/memory"
++        "lib/memory",
++        "packages/memory"
+       ],
+       "platform_runtime_additions": [
+         "linux-sqlite",
+@@ -359,6 +390,10 @@
+           "kind": "path",
+           "prefix": "lib/memory/"
+         },
++        {
++          "kind": "path",
++          "prefix": "packages/memory/"
++        },
+         {
+           "kind": "schema",
+           "prefix": "forge.memory."
+@@ -421,7 +456,8 @@
+       ],
+       "package": "forge-flow",
+       "package_roots": [
+-        "lib/workflow"
++        "lib/workflow",
++        "packages/flow"
+       ],
+       "platform_runtime_additions": [
+         "linux-process",
+@@ -438,6 +474,10 @@
+           "kind": "path",
+           "prefix": "lib/workflow/"
+         },
++        {
++          "kind": "path",
++          "prefix": "packages/flow/"
++        },
+         {
+           "kind": "schema",
+           "prefix": "forge.flow."
+@@ -509,7 +549,7 @@
+     }
+   ],
+   "schema_id": "forge.validation.risk-manifest.v1",
+-  "source_hash": "sha256:c8bc469125e76a562d62218e25bbfa60bb4541190c9012b22421bcb3f5d87d96",
++  "source_hash": "sha256:10a09065ae6d640b7369fd109cd1ee27ac2e10ca47274642d9b6b9cfd77ee177",
+   "unknown_owner_fallback": {
+     "lane": "repository-baseline",
+     "required_gates": [

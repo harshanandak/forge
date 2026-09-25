@@ -1,0 +1,236 @@
+From e873f7843eeb238b28206b972fd5a313cbf6c489 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 14:37:36 +0530
+Subject: [PATCH] fix(plan): F4c conflict guard consults the kernel registry in
+ the real CLI (CodeRabbit)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`plan` is not an issue command, so resolveCommandOpts supplies no driver — the
+F4c split-state guard (currentBranchIssue) therefore only saw an INJECTED driver
+and fell back to the branch-name UUID. A plan-created slug branch (feat/<slug>,
+no UUID) registry-linked to issue A could still accept `plan --issue B`.
+
+Add withPlanDriver(options, fn): use an injected driver when present, else build
+a throwaway migrated driver and CLOSE it (no leaked handle). Route both the F4c
+conflict READ (currentBranchIssueFromDriver via listWorktrees) and the F1
+linkage WRITE through it, so the registry is consulted even when the CLI passes
+no driver. Test: linking a different issue onto a registry-linked NON-UUID branch
+is now rejected.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/plan.js                  | 96 ++++++++++++++++-----------
+ test/commands/plan-link-issue.test.js | 51 ++++++++++++++
+ 2 files changed, 107 insertions(+), 40 deletions(-)
+
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index ae3321dc..5f190672 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -478,13 +478,42 @@ function injectedPlanDriver(options = {}) {
+ }
+ 
+ /**
+- * Which issue the CURRENT branch is already bound to (an injected kernel
+- * linkage row first, then a UUID encoded in the branch name), or null. Uses only
+- * an injected driver — a read never spins up (and leaks) a kernel handle.
++ * Run `fn(driver)` with a kernel driver: an injected one (tests / commandOpts)
++ * when present, otherwise a throwaway migrated driver built from the project
++ * root and CLOSED afterwards, so it never leaves an open DB handle (which would
++ * lock the dir on Windows). `plan` is NOT an issue command, so
++ * `resolveCommandOpts` gives it no driver — building here is what lets the
++ * branch->issue registry be consulted in the real CLI (both the F4c conflict
++ * read and the F1 linkage write). `fn(null)` when the kernel is unavailable.
+  * @private
+  */
+-function currentBranchIssue(options, currentBranch) {
+-	const driver = injectedPlanDriver(options);
++async function withPlanDriver(options, fn) {
++	const injected = injectedPlanDriver(options);
++	if (injected) {
++		return fn(injected);
++	}
++
++	let driver;
++	try {
++		const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++		const deps = await buildMigratedKernelIssueDeps({ projectRoot: options.projectRoot || process.cwd() });
++		driver = deps.kernelDriver || null;
++	} catch {
++		return fn(null);
++	}
++	try {
++		return fn(driver);
++	} finally {
++		if (driver && typeof driver.close === 'function') driver.close();
++	}
++}
++
++/**
++ * Which issue the CURRENT branch is already bound to: the kernel worktree
++ * registry (authoritative) first, then a UUID encoded in the branch name.
++ * @private
++ */
++function currentBranchIssueFromDriver(driver, currentBranch) {
+ 	if (driver && typeof driver.listWorktrees === 'function') {
+ 		try {
+ 			const rows = driver.listWorktrees() || [];
+@@ -500,14 +529,16 @@ function currentBranchIssue(options, currentBranch) {
+ 
+ /**
+  * Refuse to link issue B onto a branch already bound to issue A (F4c): otherwise
+- * plan would link B while stage read/writes flow to A (split state).
+- * @returns {string|null} an error message when there is a conflict.
++ * plan would link B while stage read/writes flow to A (split state). Consults the
++ * kernel worktree registry (via a built driver when the CLI supplies none) so a
++ * plan-created slug branch — whose name lacks a UUID — is still caught.
++ * @returns {Promise<string|null>} an error message when there is a conflict.
+  * @private
+  */
+-function detectBranchIssueConflict(options, explicitIssueId) {
++async function detectBranchIssueConflict(options, explicitIssueId) {
+ 	const current = getCurrentBranch();
+ 	if (isDefaultBranch(current)) return null;
+-	const boundIssue = currentBranchIssue(options, current);
++	const boundIssue = await withPlanDriver(options, driver => currentBranchIssueFromDriver(driver, current));
+ 	if (boundIssue && boundIssue !== explicitIssueId) {
+ 		return `Current branch ${current} is already bound to issue ${boundIssue}; refusing to link ${explicitIssueId} (split state). Switch branches or link the matching issue.`;
+ 	}
+@@ -521,39 +552,24 @@ function detectBranchIssueConflict(options, explicitIssueId) {
+  */
+ async function registerBranchIssueLinkage(options, branch, issueId) {
+ 	if (!branch || !issueId) return;
+-	// Prefer an injected driver (real CLI passes one via commandOpts; tests inject
+-	// theirs). Only build a throwaway driver when none is available, and CLOSE it
+-	// so it never leaves an open DB handle (which locks the dir on Windows).
+-	let driver = injectedPlanDriver(options);
+-	let built = false;
+-	if (!driver) {
++	const cwd = options.projectRoot || process.cwd();
++	await withPlanDriver(options, driver => {
++		if (!driver || typeof driver.registerWorktree !== 'function') return;
+ 		try {
+-			const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+-			const deps = await buildMigratedKernelIssueDeps({ projectRoot: options.projectRoot || process.cwd() });
+-			driver = deps.kernelDriver || null;
+-			built = true;
++			driver.registerWorktree({
++				git_common_dir: getGitCommonDir(cwd) || cwd,
++				path: cwd,
++				branch,
++				actor: null,
++				issue_id: issueId,
++				work_folder: null,
++				registered_at: new Date().toISOString(),
++				state: 'active',
++			});
+ 		} catch {
+-			return;
++			// best-effort: linkage failure must not fail plan
+ 		}
+-	}
+-	if (!driver || typeof driver.registerWorktree !== 'function') return;
+-	const cwd = options.projectRoot || process.cwd();
+-	try {
+-		driver.registerWorktree({
+-			git_common_dir: getGitCommonDir(cwd) || cwd,
+-			path: cwd,
+-			branch,
+-			actor: null,
+-			issue_id: issueId,
+-			work_folder: null,
+-			registered_at: new Date().toISOString(),
+-			state: 'active',
+-		});
+-	} catch {
+-		// best-effort: linkage failure must not fail plan
+-	} finally {
+-		if (built && typeof driver.close === 'function') driver.close();
+-	}
++	});
+ }
+ 
+ /**
+@@ -1002,7 +1018,7 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 
+ 		// F4c: never link issue B onto a branch already bound to issue A.
+ 		if (explicitIssueId) {
+-			const conflict = detectBranchIssueConflict({ ...options, issueBackend }, explicitIssueId);
++			const conflict = await detectBranchIssueConflict({ ...options, issueBackend }, explicitIssueId);
+ 			if (conflict) {
+ 				return { success: false, error: conflict };
+ 			}
+diff --git a/test/commands/plan-link-issue.test.js b/test/commands/plan-link-issue.test.js
+index 77c8852c..846cd833 100644
+--- a/test/commands/plan-link-issue.test.js
++++ b/test/commands/plan-link-issue.test.js
+@@ -12,6 +12,8 @@ const nodePath = require('node:path');
+ const { execFileSync: nodeExecFileSync } = require('node:child_process');
+ 
+ const { executePlan, handler } = require('../../lib/commands/plan.js');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+ 
+ const GIT_ENV = {
+   ...process.env,
+@@ -135,6 +137,55 @@ describe('B4: plan --issue links an existing issue instead of forking a new one'
+     });
+   });
+ 
++  test('F4c: rejects linking a different issue on a registry-linked NON-UUID branch', async () => {
++    // The branch name has no UUID, so ONLY the kernel worktree registry (not the
++    // branch-name fallback) can catch the conflict — this is the plan-created
++    // slug-branch case CodeRabbit flagged.
++    const repo = makeRepoWithResearch('registry-conflict', 'Registry Conflict');
++    const issueA = 'kernel-issue-a';
++    const issueB = 'kernel-issue-b';
++    const branch = 'feat/plain-slug';
++    nodeExecFileSync('git', ['checkout', '-q', '-b', branch], { cwd: repo });
++
++    const dbPath = nodePath.join(repo, 'kernel.sqlite');
++    const driver = createBuiltinSQLiteDriver({ databasePath: dbPath });
++    const broker = createLocalBroker({
++      projectRoot: repo,
++      execFileSync: () => nodePath.join(repo, '.git'),
++      databasePath: dbPath,
++      driver,
++    });
++    await broker.initialize();
++    // Link the current (non-UUID) branch to issue A in the kernel registry.
++    driver.registerWorktree({
++      path: repo,
++      git_common_dir: nodePath.join(repo, '.git'),
++      branch,
++      actor: null,
++      issue_id: issueA,
++      work_folder: null,
++      registered_at: '2026-07-14T00:00:00.000Z',
++      state: 'active',
++    });
++
++    await withRepo(repo, async () => {
++      try {
++        const result = await executePlan('registry conflict', {
++          projectRoot: repo,
++          issue: issueB,
++          driver, // consulted by currentBranchIssueFromDriver via listWorktrees
++          runIssueOperation: async () => ({ ok: true, data: { id: issueB } }),
++        });
++        expect(result.success).toBe(false);
++        expect(result.error).toMatch(/already bound to issue/i);
++        expect(result.error).toContain(issueA);
++      } finally {
++        // Close before withRepo's rmSync so the DB handle is released first.
++        driver.close();
++      }
++    });
++  });
++
+   test('handler parses --issue and reports the linked id (no fork)', async () => {
+     const repo = makeRepoWithResearch('handler-link', 'Handler Link');
+     const existingId = 'kernel-handler-link-1';
+-- 
+2.51.0.windows.1
+

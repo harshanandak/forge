@@ -1,0 +1,27 @@
+From c709dc98c7e543761c8147ec048cf5e72ddd7928 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 19:39:18 +0530
+Subject: [PATCH] test(skills): assert invocation validation explicitly
+
+---
+ test/skills/context-cost.test.js | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/test/skills/context-cost.test.js b/test/skills/context-cost.test.js
+index d20812d0..ea56bc05 100644
+--- a/test/skills/context-cost.test.js
++++ b/test/skills/context-cost.test.js
+@@ -65,7 +65,9 @@ describe('skill context cost', () => {
+   });
+ 
+   test('every skill has an effective model or user invocation', () => {
+-    for (const skill of skills) assertValidInvocation(skill);
++    expect(() => {
++      for (const skill of skills) assertValidInvocation(skill);
++    }).not.toThrow();
+   });
+ 
+   test('only explicit-use workflow skills are user-invoked', () => {
+-- 
+2.51.0.windows.1
+

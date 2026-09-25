@@ -1,0 +1,188 @@
+From e7ac205b1bd9802f7badefdc7e351fba85f8ca77 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 17:55:36 +0530
+Subject: [PATCH] fix(memory): close lifecycle deadline and repair gaps
+
+---
+ lib/commands/hooks.js            |  6 +++++-
+ lib/hook-renderer.js             | 32 +++++++++++++++++++++++++++++++-
+ lib/upgrade-safety.js            |  4 ++--
+ test/commands/upgrade.test.js    | 16 ++++++++++++++++
+ test/hooks-memory-recall.test.js | 16 ++++++++++++++++
+ 5 files changed, 70 insertions(+), 4 deletions(-)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 23a265e8..97ebddd1 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -452,7 +452,11 @@ async function runMemoryRecall(rest, projectRoot, opts = {}) {
+ 
+     if (!lines.length) return { success: true, output: '' };
+ 
+-    await saveSeen(projectRoot, sessionId, injectedKeys);
++    if (opts.deadline?.expired) return { success: true, output: '', reason: 'timeout' };
++    try {
++      const pending = saveSeen(projectRoot, sessionId, injectedKeys);
++      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
++    } catch { /* dedupe persistence never suppresses an injection */ }
+     const fenced = lines.map(line => fenceUntrusted(line, { source: 'memory' })).join('\n');
+     return { success: true, output: formatUserPromptSubmit(harness, fenced) };
+   } catch {
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index 84a4d3c0..2f456326 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -451,6 +451,15 @@ function isForgeCursorEntry(entry) {
+   return isForgeCommand(entry?.command);
+ }
+ 
++function groupContains(actual, expected) {
++  if ((actual?.matcher || '') !== (expected?.matcher || '')) return false;
++  const actualHooks = Array.isArray(actual?.hooks) ? actual.hooks : [];
++  const expectedHooks = Array.isArray(expected?.hooks) ? expected.hooks : [];
++  return expectedHooks.every(expectedHook =>
++    actualHooks.some(actualHook =>
++      actualHook?.type === expectedHook?.type && actualHook?.command === expectedHook?.command));
++}
++
+ function parseJsonConfig(existingText) {
+   if (!existingText || !existingText.trim()) return {};
+   let obj;
+@@ -485,6 +494,26 @@ function mergeClaudeSettings(existingText, contract) {
+   return JSON.stringify(obj, null, 2) + '\n';
+ }
+ 
++function hasForgeClaudeHooks(existingText, contract) {
++  const obj = parseJsonConfig(existingText);
++  const hooks = obj.hooks && typeof obj.hooks === 'object' && !Array.isArray(obj.hooks)
++    ? obj.hooks
++    : {};
++  return Object.entries(renderClaudeHooks(contract)).every(([event, expectedGroups]) => {
++    const actualGroups = Array.isArray(hooks[event]) ? hooks[event] : [];
++    return expectedGroups.every(expected => actualGroups.some(actual => groupContains(actual, expected)));
++  });
++}
++
++function backupHookConfig(filePath) {
++  const source = fs.readFileSync(filePath);
++  for (let suffix = 0; ; suffix += 1) {
++    const candidate = `${filePath}.bak${suffix ? `.${suffix}` : ''}`;
++    if (!fs.existsSync(candidate)) return backupFile(filePath);
++    if (source.equals(fs.readFileSync(candidate))) return candidate;
++  }
++}
++
+ /**
+  * Merge Forge's hooks into an existing `.cursor/hooks.json` string.
+  * Forces `version: 1`, preserves all non-Forge events and the user's own entries;
+@@ -546,7 +575,7 @@ function renderHookConfig({ harness, targetRoot, contract = FORGE_HOOK_CONTRACT
+     merged = merge(existing, contract);
+   } catch (err) {
+     if (err instanceof HookConfigParseError && existed) {
+-      const backup = backupFile(filePath);
++      const backup = backupHookConfig(filePath);
+       return { file: filePath, existed, skipped: true, wrote: false, backup };
+     }
+     throw err;
+@@ -578,6 +607,7 @@ module.exports = {
+   renderCodexHooksToml,
+   renderHermesHooksYaml,
+   mergeClaudeSettings,
++  hasForgeClaudeHooks,
+   mergeCursorHooks,
+   renderHookConfig,
+ };
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index fef9c5fb..f3676691 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -10,8 +10,8 @@ const { readConfigBackend, resolveIssueBackend } = require('./issue-backend');
+ const { detectBeadsJsonlSource } = require('./beads-detect');
+ const {
+   FORGE_HOOK_CONTRACT,
++  hasForgeClaudeHooks,
+   HookConfigParseError,
+-  mergeClaudeSettings,
+   renderHookConfig,
+ } = require('./hook-renderer');
+ 
+@@ -64,7 +64,7 @@ function buildSelfHealCandidates(projectRoot) {
+   const claudeSettings = path.join(projectRoot, '.claude', 'settings.json');
+   const existing = fs.existsSync(claudeSettings) ? fs.readFileSync(claudeSettings, 'utf8') : '';
+   try {
+-    if (mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT) !== existing) {
++    if (!hasForgeClaudeHooks(existing, FORGE_HOOK_CONTRACT)) {
+       candidates.push({
+         id: 'claude-hooks',
+         path: '.claude/settings.json',
+diff --git a/test/commands/upgrade.test.js b/test/commands/upgrade.test.js
+index a0801dce..f655e902 100644
+--- a/test/commands/upgrade.test.js
++++ b/test/commands/upgrade.test.js
+@@ -5,6 +5,7 @@ const path = require('node:path');
+ 
+ const addCommand = require('../../lib/commands/add');
+ const upgradeCommand = require('../../lib/commands/upgrade');
++const { FORGE_HOOK_CONTRACT, mergeClaudeSettings } = require('../../lib/hook-renderer');
+ 
+ const tempRoots = [];
+ 
+@@ -97,6 +98,18 @@ describe('forge upgrade command', () => {
+     }
+   });
+ 
++  test('self-heal leaves semantically complete compact Claude settings unchanged', async () => {
++    const root = makeRepo();
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++    const compact = JSON.stringify(JSON.parse(mergeClaudeSettings('', FORGE_HOOK_CONTRACT)));
++    fs.writeFileSync(settingsPath, compact);
++
++    await upgradeCommand.handler(['--self-heal'], {}, root);
++
++    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(compact);
++  });
++
+   test('self-heal backs up malformed Claude settings without overwriting them', async () => {
+     const root = makeRepo();
+     const settingsPath = path.join(root, '.claude', 'settings.json');
+@@ -109,6 +122,9 @@ describe('forge upgrade command', () => {
+     expect(result.success).toBe(true);
+     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(malformed);
+     expect(fs.existsSync(`${settingsPath}.bak`)).toBe(true);
++
++    await upgradeCommand.handler(['--self-heal'], {}, root);
++    expect(fs.existsSync(`${settingsPath}.bak.1`)).toBe(false);
+   });
+ 
+   test('honors parsed kebab-case dry-run flags', async () => {
+diff --git a/test/hooks-memory-recall.test.js b/test/hooks-memory-recall.test.js
+index 438bf3cf..e96a71a1 100644
+--- a/test/hooks-memory-recall.test.js
++++ b/test/hooks-memory-recall.test.js
+@@ -127,6 +127,22 @@ describe('forge hooks memory-recall', () => {
+     expect(saved).toBe(false);
+   });
+ 
++  test('does not await seen persistence after the injection decision', async () => {
++    let saveStarted = false;
++    const startedAt = Date.now();
++    const res = await run(baseOpts({
++      saveSeen: () => {
++        saveStarted = true;
++        return new Promise(() => {});
++      },
++      promptRecallDeadlineMs: 25,
++    }));
++    expect(Date.now() - startedAt).toBeLessThan(150);
++    expect(saveStarted).toBe(true);
++    expect(res.reason).toBeUndefined();
++    expect(JSON.parse(res.output).hookSpecificOutput.additionalContext).toContain('clock skew');
++  });
++
+   test('fail-open: a throwing search never breaks the prompt', async () => {
+     const res = await run(baseOpts({ search: () => { throw new Error('kernel down'); } }));
+     expect(res).toEqual({ success: true, output: '' });
+-- 
+2.51.0.windows.1
+

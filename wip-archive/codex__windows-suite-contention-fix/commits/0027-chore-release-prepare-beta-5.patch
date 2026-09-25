@@ -1,0 +1,38 @@
+From 518932e6aaca8bb58b6a81ebf339517dd6be28de Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 02:36:55 +0530
+Subject: [PATCH] chore(release): prepare beta.5
+
+---
+ CHANGELOG.md | 2 +-
+ package.json | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 950ea6b8..63b64754 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ > **Note**: `/check` was renamed to `/validate` and `/merge` was renamed to `/premerge` in v0.0.3. Historical entries below may use the old names.
+ 
+-## [Unreleased]
++## [0.1.0-beta.5] - 2026-08-09
+ 
+ ### Added
+ 
+diff --git a/package.json b/package.json
+index a7d5d654..6f3f1123 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "forge-workflow",
+-  "version": "0.1.0-beta.4",
++  "version": "0.1.0-beta.5",
+   "description": "Local runtime control plane for AI-assisted engineering workflows, gates, evidence, and all AI agents",
+   "bin": {
+     "forge": "bin/forge.js",
+-- 
+2.51.0.windows.1
+

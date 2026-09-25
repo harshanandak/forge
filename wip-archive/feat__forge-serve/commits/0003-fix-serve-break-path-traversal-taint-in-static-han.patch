@@ -1,0 +1,118 @@
+From 22c628ddf0d347363b9add69cd04a75ea45efafa Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 18:07:01 +0530
+Subject: [PATCH] fix(serve): break path-traversal taint in static handler
+ (CodeQL HIGH)
+
+Harden resolveStaticPath so every fs access in serveStatic derives from a
+validated-contained path, never the raw request URL:
+- decode query/fragment-stripped path in try/catch (malformed % -> null)
+- reject NUL bytes
+- resolve root first, then join a guaranteed-relative '.' + path so
+  path.resolve can never treat user input as absolute and discard the root
+- containment check on the exact value returned to the fs calls
+
+Adds traversal tests: dot-dot, %2e%2e%2f, absolute escape, NUL byte,
+malformed %, legit nested asset, and root /.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/serve.js       | 35 +++++++++++++++++++++++++++++------
+ test/commands/serve.test.js | 32 ++++++++++++++++++++++++++++++--
+ 2 files changed, 59 insertions(+), 8 deletions(-)
+
+diff --git a/lib/commands/serve.js b/lib/commands/serve.js
+index 9ade1e7a..8aa549d7 100644
+--- a/lib/commands/serve.js
++++ b/lib/commands/serve.js
+@@ -272,13 +272,36 @@ async function getSnapshot(ctx) {
+ // Static host
+ // ---------------------------------------------------------------------------
+ 
++// Map a raw request URL to a SAFE absolute path inside `dashboardDir`, or null
++// if it would escape (path traversal) or is malformed. This is the ONLY place a
++// user-controlled URL is turned into a filesystem path — every fs access must go
++// through the value it returns. The pattern (decode -> strip query/hash -> reject
++// null bytes -> resolve a GUARANTEED-RELATIVE `'.' + path` under a pre-resolved
++// root -> containment check on that same resolved value) is what breaks the taint
++// flow both for real attackers and for static analysis (CodeQL).
+ function resolveStaticPath(dashboardDir, urlPath) {
+-  const clean = decodeURIComponent(urlPath.split('?')[0]);
+-  const rel = clean === '/' ? 'index.html' : clean.replace(/^\/+/, '');
+-  const abs = path.resolve(dashboardDir, rel);
+-  // Traversal guard: the resolved path must stay inside the dashboard dir.
+-  if (abs !== dashboardDir && !abs.startsWith(dashboardDir + path.sep)) return null;
+-  return abs;
++  let clean;
++  try {
++    // Drop query (?) and fragment (#), then percent-decode. A malformed escape
++    // (e.g. a lone '%') throws — treat that as "not found".
++    clean = decodeURIComponent(String(urlPath).split('?')[0].split('#')[0]);
++  } catch {
++    return null;
++  }
++  // Reject NUL bytes outright (can truncate paths at the syscall boundary).
++  if (clean.indexOf('\0') !== -1) return null;
++  // Normalize to a single leading slash so the join below is always relative.
++  const normalized = '/' + clean.replace(/^\/+/, '');
++  const rel = normalized === '/' ? '/index.html' : normalized;
++  // Resolve the root FIRST, then join a guaranteed-relative path ('.' + rel).
++  // Prefixing with '.' means path.resolve can never treat `rel` as absolute and
++  // discard the root, so the result is always rooted at `root`.
++  const root = path.resolve(dashboardDir);
++  const resolved = path.resolve(root, '.' + rel);
++  // Containment check on the EXACT value that will reach the fs calls. If it does
++  // not stay within root, refuse (path traversal).
++  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
++  return resolved;
+ }
+ 
+ function serveStatic(res, dashboardDir, urlPath) {
+diff --git a/test/commands/serve.test.js b/test/commands/serve.test.js
+index 1226a4cf..f7d8d304 100644
+--- a/test/commands/serve.test.js
++++ b/test/commands/serve.test.js
+@@ -81,10 +81,38 @@ describe('isLoopbackRequest', () => {
+ });
+ 
+ describe('resolveStaticPath', () => {
+-  test('maps / to index.html and blocks traversal', () => {
+-    const dir = path.resolve('/tmp/dash');
++  const dir = path.resolve('/tmp/dash');
++
++  test('maps / to index.html', () => {
+     expect(serve.resolveStaticPath(dir, '/')).toBe(path.join(dir, 'index.html'));
++  });
++
++  test('serves a legit nested asset inside the dashboard dir', () => {
++    expect(serve.resolveStaticPath(dir, '/assets/app.js')).toBe(path.join(dir, 'assets', 'app.js'));
++    // Query and fragment are stripped before resolution.
++    expect(serve.resolveStaticPath(dir, '/assets/app.js?v=2#top')).toBe(path.join(dir, 'assets', 'app.js'));
++  });
++
++  test('blocks dot-dot traversal', () => {
+     expect(serve.resolveStaticPath(dir, '/../../etc/passwd')).toBeNull();
++    expect(serve.resolveStaticPath(dir, '/assets/../../../../etc/passwd')).toBeNull();
++  });
++
++  test('blocks percent-encoded traversal (%2e%2e%2f)', () => {
++    expect(serve.resolveStaticPath(dir, '/%2e%2e%2f%2e%2e%2fetc/passwd')).toBeNull();
++    expect(serve.resolveStaticPath(dir, '/..%2f..%2fetc%2fpasswd')).toBeNull();
++  });
++
++  test('blocks absolute-path escape', () => {
++    // A leading extra slash / absolute-looking path must not discard the root.
++    const out = serve.resolveStaticPath(dir, '/etc/passwd');
++    expect(out).toBe(path.join(dir, 'etc', 'passwd'));
++    expect(out.startsWith(dir + path.sep)).toBe(true);
++  });
++
++  test('rejects NUL bytes and malformed percent-encoding', () => {
++    expect(serve.resolveStaticPath(dir, '/index.html%00.js')).toBeNull();
++    expect(serve.resolveStaticPath(dir, '/%')).toBeNull();
+   });
+ });
+ 
+-- 
+2.51.0.windows.1
+

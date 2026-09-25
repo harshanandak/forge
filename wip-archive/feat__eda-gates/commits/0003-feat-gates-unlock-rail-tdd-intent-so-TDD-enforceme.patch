@@ -1,0 +1,201 @@
+From e3bc2bf110e1d0627e93c7f4640f98eeef80d3df Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 00:48:23 +0530
+Subject: [PATCH] feat(gates): unlock rail.tdd_intent so TDD enforcement is
+ honestly toggleable (refs eda6d866)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Completes the config-honest enforcement fix: the TDD pre-commit gate now has a
+real OFF switch, so `init --profile minimal` = no active enforcement end to end.
+
+- runtime-graph.js: reclassify rail.tdd_intent from a LOCKED L1 floor to a
+  default-ON toggleable rail (like rail.kernel_tracking). applyRailConfig now
+  honors each rail's `locked` flag instead of rejecting every rail disable, so
+  the top-level `rails:` surface accepts disabling unlocked rails while locked
+  L1 rails (secret_scan, branch_protection, ...) stay a non-negotiable floor.
+- adoption-profiles.js: `minimal` profile disables rail.tdd_intent via the same
+  workflow.gates toggle surface `forge gate disable` uses; standard/full keep it
+  ON. Bumped ADOPTION_VERSION 0.0.15 -> 0.0.16.
+- AGENTS.md: document TDD as a strong default that can be turned off
+  (`forge gate disable rail.tdd_intent`), honestly following config.
+- Tests: locked-rail rejection repointed to a still-locked rail (secret_scan);
+  new coverage that tdd_intent disables via both config surfaces and that
+  minimal→disabled while standard/full→enabled.
+
+Acceptance verified E2E: disabled→hook allows, enabled→blocks, minimal→disabled,
+standard/full→enabled, post-setup `forge gate disable`→takes effect immediately.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ AGENTS.md                         |  1 +
+ lib/adoption-profiles.js          | 15 ++++++++++++---
+ lib/core/runtime-graph.js         | 10 +++++++---
+ test/adoption-profiles.test.js    | 14 +++++++++++++-
+ test/runtime-graph-config.test.js | 24 +++++++++++++++++++++++-
+ 5 files changed, 56 insertions(+), 8 deletions(-)
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 5d4eb30d..644ca268 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -150,6 +150,7 @@ This project uses the **Professional Git Workflow** with Lefthook for automated
+ - Blocks commits if source code modified without test files
+ - Offers guided recovery (add tests now, skip with tech debt tracking, emergency override)
+ - No AI decision required - automatic validation
++- **Strong default, not a hard floor.** The TDD gate is the default-ON `rail.tdd_intent` rail; turn it off with `forge gate disable rail.tdd_intent` (the `minimal` adoption profile ships it off). The installed hooks read the resolved config at run time, so a disabled rail makes them genuinely inert — enforcement honestly follows your config.
+ 
+ **Pre-push hook validates tests:**
+ - Branch protection: blocks direct push to `main`/`master`
+diff --git a/lib/adoption-profiles.js b/lib/adoption-profiles.js
+index 7d500e77..d06f28b8 100644
+--- a/lib/adoption-profiles.js
++++ b/lib/adoption-profiles.js
+@@ -1,6 +1,6 @@
+ const YAML = require('yaml');
+ 
+-const ADOPTION_VERSION = '0.0.15';
++const ADOPTION_VERSION = '0.0.16';
+ const RUNTIME_ANCESTRY = 'forge.runtimeGraph.currentCommandFlow@0.0.17';
+ const WORKFLOW_PHASES = Object.freeze(['plan', 'dev', 'validate', 'ship']);
+ const WORKFLOW_GATES = Object.freeze(['gate.plan-exit', 'gate.dev-exit', 'gate.validate-exit', 'gate.ship-entry']);
+@@ -32,12 +32,18 @@ function harnessAdapter(targets) {
+   };
+ }
+ 
+-function adoptionConfig({ gatesEnabled, issueEnabled, harnessTargets, protectedPaths, rails }) {
++function adoptionConfig({ gatesEnabled, issueEnabled, harnessTargets, protectedPaths, rails, disabledRails = [] }) {
++  // Disabled rails are written through the same `workflow.gates.<rail-id>.enabled`
++  // toggle surface `forge gate disable` uses, so the resolver + the installed hooks
++  // read one consistent signal. Only unlocked rails (e.g. rail.tdd_intent) may appear.
++  const railGateOverrides = Object.fromEntries(
++    disabledRails.map(railId => [railId, { enabled: false }]),
++  );
+   return {
+     ...(rails ? { rails } : {}),
+     workflow: {
+       phases: enabledEntries(WORKFLOW_PHASES),
+-      gates: enabledEntries(WORKFLOW_GATES, gatesEnabled),
++      gates: { ...enabledEntries(WORKFLOW_GATES, gatesEnabled), ...railGateOverrides },
+     },
+     adapters: {
+       issue: issueAdapter(issueEnabled),
+@@ -55,6 +61,9 @@ const PROFILE_CONFIGS = Object.freeze({
+       issueEnabled: false,
+       harnessTargets: [],
+       protectedPaths: ['.forge/config.yaml'],
++      // Minimal = no active enforcement: the TDD pre-commit rail is off (it is a
++      // strong default, not a hard floor), so `init --minimal` installs inert hooks.
++      disabledRails: ['rail.tdd_intent'],
+     }),
+   },
+   standard: {
+diff --git a/lib/core/runtime-graph.js b/lib/core/runtime-graph.js
+index ec4aaa03..16db7827 100644
+--- a/lib/core/runtime-graph.js
++++ b/lib/core/runtime-graph.js
+@@ -446,7 +446,7 @@ const RESOLVED_RUNTIME_GRAPH = {
+   // may opt out via `forge gate disable rail.kernel_tracking`, consumed by the
+   // resolver's rail-aware gate loop over workflow.gates.<id>.enabled).
+   rails: [
+-    { key: 'tdd_intent', label: 'TDD intent evidence', description: 'Source changes require test intent and TDD evidence.' },
++    { key: 'tdd_intent', label: 'TDD intent evidence', description: 'Source changes require test intent and TDD evidence. Strong default (ON), but not a hard floor — disable with `forge gate disable rail.tdd_intent`.', locked: false },
+     { key: 'secret_scan', label: 'Secret scan', description: 'Validation must not knowingly ship secrets.' },
+     { key: 'branch_protection', label: 'Branch protection', description: 'Ship through reviewed branches instead of direct protected-branch edits.' },
+     { key: 'signed_commits', label: 'Signed commits', description: 'Preserve commit provenance requirements where configured.' },
+@@ -605,14 +605,18 @@ function applyRailConfig(graph, config, errors) {
+     if (!enabled.valid) {
+       continue;
+     }
+-    if (enabled.value === false) {
++    if (enabled.value === false && rail.locked === true) {
++      // Locked L1 rails remain a non-negotiable floor; only unlocked rails
++      // (e.g. tdd_intent, kernel_tracking) may be disabled via config.
+       errors.push({
+         code: 'LOCKED_L1_RAIL_DISABLED',
+         message: `Cannot disable locked L1 rail '${key}'.`,
+       });
+       continue;
+     }
+-    if (options && Object.keys(options).length > 0) {
++    if (enabled.present) {
++      markConfigured(rail, { enabled: enabled.value });
++    } else if (options && Object.keys(options).length > 0) {
+       rail.configSource = CONFIG_SOURCE;
+     }
+   }
+diff --git a/test/adoption-profiles.test.js b/test/adoption-profiles.test.js
+index 30744dea..5e5f31d3 100644
+--- a/test/adoption-profiles.test.js
++++ b/test/adoption-profiles.test.js
+@@ -38,7 +38,7 @@ describe('adoption profiles', () => {
+     expect(new Set(configs.map(config => JSON.stringify(config))).size).toBe(3);
+     for (const config of configs) {
+       expect(config.template.kind).toBe('forge.adoptionTemplate');
+-      expect(config.template.version).toBe('0.0.15');
++      expect(config.template.version).toBe('0.0.16');
+       expect(config.template.ancestry).toContain('forge.runtimeGraph.currentCommandFlow@0.0.17');
+     }
+   });
+@@ -58,4 +58,16 @@ describe('adoption profiles', () => {
+   test('unknown profiles fail with the available profile list', () => {
+     expect(() => buildAdoptionConfig('custom')).toThrow('minimal, standard, full');
+   });
++
++  test('minimal disables the tdd_intent rail; standard/full keep it enabled', () => {
++    const { getResolvedRuntimeGraph } = require('../lib/core/runtime-graph');
++    const tddEnabled = (profile) => {
++      const root = makeProject(renderAdoptionConfigYaml(profile));
++      const graph = getResolvedRuntimeGraph({ projectRoot: root });
++      return graph.rails.find(rail => rail.id === 'rail.tdd_intent').enabled;
++    };
++    expect(tddEnabled('minimal')).toBe(false);
++    expect(tddEnabled('standard')).toBe(true);
++    expect(tddEnabled('full')).toBe(true);
++  });
+ });
+diff --git a/test/runtime-graph-config.test.js b/test/runtime-graph-config.test.js
+index 4cdd35ef..f8514fd6 100644
+--- a/test/runtime-graph-config.test.js
++++ b/test/runtime-graph-config.test.js
+@@ -69,13 +69,35 @@ adapters:
+   test('rejects config that disables a locked L1 rail', () => {
+     const projectRoot = makeProject(`
+ rails:
+-  tdd_intent:
++  secret_scan:
+     enabled: false
+ `);
+ 
+     expect(() => getResolvedRuntimeGraph({ projectRoot })).toThrow('locked L1 rail');
+   });
+ 
++  test('allows disabling the unlocked tdd_intent rail (strong default, not a floor)', () => {
++    // rail.tdd_intent was reclassified from a locked L1 floor to a default-ON
++    // toggleable rail (issue eda6d866) so progressive setup can honestly turn
++    // TDD enforcement off. Both config surfaces must accept the disable.
++    const viaRails = makeProject(`
++rails:
++  tdd_intent:
++    enabled: false
++`);
++    const railGraph = getResolvedRuntimeGraph({ projectRoot: viaRails });
++    expect(railGraph.rails.find(rail => rail.id === 'rail.tdd_intent').enabled).toBe(false);
++
++    const viaGates = makeProject(`
++workflow:
++  gates:
++    "rail.tdd_intent":
++      enabled: false
++`);
++    const gateGraph = getResolvedRuntimeGraph({ projectRoot: viaGates });
++    expect(gateGraph.rails.find(rail => rail.id === 'rail.tdd_intent').enabled).toBe(false);
++  });
++
+   test('reports malformed YAML and unknown primitive IDs during config lint', () => {
+     const malformedRoot = makeProject('workflow: [');
+     const unknownRoot = makeProject(`
+-- 
+2.51.0.windows.1
+

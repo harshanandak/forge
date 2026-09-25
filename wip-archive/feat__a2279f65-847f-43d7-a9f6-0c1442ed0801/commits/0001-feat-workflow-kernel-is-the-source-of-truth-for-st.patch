@@ -1,0 +1,864 @@
+From 3abca11cae618480250fdc24aeb1c360df41457f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 12:27:28 +0530
+Subject: [PATCH] feat(workflow): kernel is the source of truth for stage
+ state; plan --issue links (B1+B4)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+B1 — make `ship` reachable from a pure-CLI plan->dev->validate->ship flow.
+Previously plan/dev/validate were stateless (STATELESS_ENTRY_STAGES) and never
+wrote the `.forge-state.json` that ship's enforcement demanded, so any non-Claude
+agent hit an unreachable wall at ship ("requires authoritative workflow state").
+
+enforceStageEntry now, at the single stage chokepoint:
+- WRITE (reliable): records stage entry into the kernel (`stage_runs` via
+  driver.recordStageRun) for the active issue, resolved from the worktree
+  branch->issue linkage or a UUID-encoded branch name. Best-effort but never
+  silent — a failed write warns to stderr.
+- READ (tolerant): when no inline/file state exists, synthesizes authoritative
+  workflow state from the kernel's recorded current stage (getCurrentStage),
+  which is what makes ship reachable with no .forge-state.json. Synthesis uses
+  the full-ladder `critical` path (superset) so no canonical stage is rejected.
+- `.forge-state.json` remains an OPTIONAL cache; the kernel is the authority.
+- Fail-closed preserved: ship still hard-blocks when the kernel has nothing
+  durable recorded.
+
+The real CLI opts in via autoResolveKernel:true at both bin/forge.js call sites;
+with neither a driver nor the flag, the kernel path is inert (legacy behavior),
+so existing enforce-stage unit tests are unchanged.
+
+B4 — `forge plan --issue <id>` links the EXISTING issue (claim-first flow)
+instead of creating a duplicate issue + forking a second branch. Verifies the
+issue via `issue show`, reuses the current feature branch, warns on collision.
+`dev` is already bd-free (no bd call sites; the missing-Beads hard-stop was the
+health gate, already advisory-only for the kernel backend) — locked with a
+regression test.
+
+Repro (fixed): a non-Claude agent running plan->dev->validate all green then
+`ship` no longer dead-ends; ship reads stage from the kernel and proceeds.
+
+Tests: test/workflow/enforce-stage-kernel.test.js (7),
+test/commands/plan-link-issue.test.js (3). All affected suites green.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                               |   5 +
+ lib/commands/plan.js                       | 156 ++++++++++++++--
+ lib/workflow/enforce-stage.js              | 202 ++++++++++++++++++++-
+ test/commands/plan-link-issue.test.js      | 121 ++++++++++++
+ test/workflow/enforce-stage-kernel.test.js | 191 +++++++++++++++++++
+ 5 files changed, 657 insertions(+), 18 deletions(-)
+ create mode 100644 test/commands/plan-link-issue.test.js
+ create mode 100644 test/workflow/enforce-stage-kernel.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index dacc46b8..cf64a2b9 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4030,6 +4030,10 @@ async function main() {
+             args: context.args,
+             flags: context.flags,
+             projectRoot: context.projectRoot,
++            // Kernel is the source of truth for workflow stage state: resolve the
++            // active worktree's issue and persist/read currentStage in the kernel
++            // so `ship` is reachable from a pure-CLI plan->dev->validate flow.
++            autoResolveKernel: true,
+           }),
+         }
+       );
+@@ -4066,6 +4070,7 @@ async function main() {
+         args: args.slice(1),
+         flags,
+         projectRoot,
++        autoResolveKernel: true,
+       });
+     } catch (err) {
+       console.error(`Error running '${command}':`, err.message);
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index 59fd9989..529a142f 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -349,6 +349,117 @@ function createBeadsIssue(featureName, researchPath, scope) {
+  * @param {Function} [options.runIssueOperation] - Injectable runner (tests)
+  * @returns {Promise<{success: boolean, issueId?: string, description?: string, error?: string}>}
+  */
++const PLAN_ISSUE_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
++
++/**
++ * Parse plan's own args: extract a `--issue <id>` / `--issue=<id>` selector and
++ * return the remaining positional feature name. The global flag parser only
++ * recognizes an allowlist, so — like `stage`/`worktree` — plan extracts its own.
++ *
++ * @param {string[]} args
++ * @returns {{ featureName: string|undefined, issueId: string|null }}
++ * @private
++ */
++function parsePlanArgs(args = []) {
++	let issueId = null;
++	const positional = [];
++	for (let i = 0; i < args.length; i += 1) {
++		const arg = args[i];
++		if (arg === '--issue') {
++			issueId = i + 1 < args.length ? args[i + 1] : null;
++			i += 1;
++			continue;
++		}
++		if (typeof arg === 'string' && arg.startsWith('--issue=')) {
++			issueId = arg.slice('--issue='.length);
++			continue;
++		}
++		positional.push(arg);
++	}
++	return { featureName: positional[0], issueId };
++}
++
++/**
++ * Link an EXISTING issue instead of creating a new one (B4). Verifies the issue
++ * exists via `issue show` so `plan --issue <id>` links the claim-first flow's
++ * issue rather than forking a duplicate.
++ *
++ * @param {string} issueId
++ * @param {object} [options]
++ * @returns {Promise<{success: boolean, issueId?: string, error?: string}>}
++ * @private
++ */
++async function linkExistingIssue(issueId, options = {}) {
++	if (!issueId || typeof issueId !== 'string') {
++		return { success: false, error: 'An issue id is required to link an existing issue' };
++	}
++
++	const run = options.runIssueOperation || runIssueOperation;
++	const projectRoot = options.projectRoot || process.cwd();
++	const issueBackend = options.issueBackend || 'kernel';
++
++	try {
++		const result = await run(
++			'show',
++			[issueId],
++			projectRoot,
++			{
++				issueBackend,
++				useKernelBroker: issueBackend !== 'beads',
++				kernelBroker: options.kernelBroker,
++			},
++		);
++
++		if (!result || result.ok === false || result.success === false) {
++			const message = result?.error || 'issue not found';
++			return { success: false, error: `Issue ${issueId} not found: ${message}` };
++		}
++
++		const resolvedId = result?.data?.id ?? result?.issueId ?? result?.id ?? issueId;
++		return { success: true, issueId: resolvedId };
++	} catch (error) {
++		return { success: false, error: `Failed to look up issue ${issueId}: ${error.message}` };
++	}
++}
++
++/**
++ * Read the current git branch (empty string when detached / not a repo).
++ * @private
++ */
++function getCurrentBranch() {
++	try {
++		return execFileSync('git', ['branch', '--show-current'], { ...getExecOptions(), stdio: 'pipe' }).trim();  // NOSONAR S4036 - hardcoded CLI command, developer tool context
++	} catch (_error) {
++		return '';
++	}
++}
++
++function isDefaultBranch(name) {
++	return name === '' || name === 'main' || name === 'master';
++}
++
++/**
++ * When linking an existing issue, reuse the current feature branch instead of
++ * forking a second branch (B4). Only creates a fresh `feat/<slug>` branch when
++ * still sitting on a default branch.
++ *
++ * @param {string} featureSlug
++ * @param {string} explicitIssueId
++ * @returns {{success: boolean, branchName?: string, reused?: boolean, warning?: string, error?: string}}
++ * @private
++ */
++function reuseOrCreateFeatureBranch(featureSlug, explicitIssueId) {
++	const current = getCurrentBranch();
++	if (!isDefaultBranch(current)) {
++		const encoded = PLAN_ISSUE_UUID_RE.exec(current);
++		const warning = encoded && explicitIssueId && encoded[0] !== explicitIssueId
++			? `Current branch ${current} appears to belong to issue ${encoded[0]}, not ${explicitIssueId}.`
++			: undefined;
++		return { success: true, branchName: current, reused: true, warning };
++	}
++	return createFeatureBranch(featureSlug);
++}
++
+ async function createKernelIssue(featureName, researchPath, scope, options = {}) {
+ 	if (!featureName || !researchPath) {
+ 		return {
+@@ -769,20 +880,30 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 		// Step 2: Detect scope (tactical vs strategic)
+ 		const scope = detectScope(research.content);
+ 
+-		// Step 3: Create the tracking issue via the active backend. Kernel (default)
+-		// routes through the kernel broker (no bd); beads preserves the bd path.
+-		const issue = issueBackend === 'kernel'
+-			? await createKernelIssue(featureName, research.path, scope.type, options)
+-			: createBeadsIssue(featureName, research.path, scope.type);
++		// Step 3: Resolve the tracking issue. `--issue <id>` LINKS an existing issue
++		// (claim-first flow) instead of creating a duplicate (B4). Otherwise create
++		// via the active backend — kernel (default) routes through the kernel broker
++		// (no bd); beads preserves the bd path.
++		const explicitIssueId = options.issue || options.issueId || null;
++		const issue = explicitIssueId
++			? await linkExistingIssue(explicitIssueId, { ...options, issueBackend })
++			: (issueBackend === 'kernel'
++				? await createKernelIssue(featureName, research.path, scope.type, options)
++				: createBeadsIssue(featureName, research.path, scope.type));
+ 		if (!issue.success) {
+ 			return {
+ 				success: false,
+-				error: `Failed to create issue: ${issue.error}`,
++				error: explicitIssueId
++					? `Failed to link issue: ${issue.error}`
++					: `Failed to create issue: ${issue.error}`,
+ 			};
+ 		}
+ 
+-		// Step 4: Create feature branch
+-		const branch = createFeatureBranch(featureSlug);
++		// Step 4: Resolve the feature branch. When linking, reuse the current
++		// feature branch instead of forking a second branch (B4).
++		const branch = explicitIssueId
++			? reuseOrCreateFeatureBranch(featureSlug, explicitIssueId)
++			: createFeatureBranch(featureSlug);
+ 		if (!branch.success) {
+ 			return {
+ 				success: false,
+@@ -800,10 +921,16 @@ async function executePlan(featureName, options = {}) { // NOSONAR S3776
+ 			// NOT imply the Beads backend — on the kernel path it holds the kernel id.
+ 			beadsIssueId: issue.issueId,
+ 			branchName: branch.branchName,
+-			summary: `Plan created for ${featureName} (${scope.type} scope)`,
++			linked: Boolean(explicitIssueId),
++			summary: explicitIssueId
++				? `Plan linked to existing issue ${issue.issueId} (${scope.type} scope)`
++				: `Plan created for ${featureName} (${scope.type} scope)`,
+ 			// Strategic path: /propose not yet implemented — falls through to /dev until it is
+ 			nextCommand: '/dev',
+ 		};
++		if (branch.warning) {
++			result.warnings = [branch.warning];
++		}
+ 
+ 		return result;
+ 	} catch (error) {
+@@ -818,14 +945,21 @@ module.exports = {
+ 	name: 'plan',
+ 	description: 'Create implementation plan from researched feature context',
+ 	handler: async (args, _flags, projectRoot, opts = {}) => {
+-		const result = await executePlan(args[0], { ...opts, projectRoot });
++		const { featureName, issueId } = parsePlanArgs(args);
++		const result = await executePlan(featureName, {
++			...opts,
++			projectRoot,
++			issue: issueId ?? opts.issue ?? opts.issueId,
++		});
+ 		if (!result.success) {
+ 			return result;
+ 		}
+ 
+-		const lines = [`Plan created: ${result.summary || result.branchName || args[0]}`];
++		const header = result.linked ? 'Plan linked' : 'Plan created';
++		const lines = [`${header}: ${result.summary || result.branchName || featureName}`];
+ 		if (result.issueId) lines.push(`${issueBackendLabel(result.issueBackend)}: ${result.issueId}`);
+ 		if (result.branchName) lines.push(`Branch: ${result.branchName}`);
++		for (const warning of result.warnings || []) lines.push(`Warning: ${warning}`);
+ 		if (result.nextCommand) lines.push(`Next: ${result.nextCommand}`);
+ 
+ 		return {
+diff --git a/lib/workflow/enforce-stage.js b/lib/workflow/enforce-stage.js
+index 2747c8df..68fc553e 100644
+--- a/lib/workflow/enforce-stage.js
++++ b/lib/workflow/enforce-stage.js
+@@ -13,6 +13,131 @@ const { loadState, WORKFLOW_STATE_FILENAME } = require('./state-manager');
+ 
+ const STATELESS_ENTRY_STAGES = new Set(['plan', 'dev', 'validate', 'verify']);
+ 
++const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
++
++// Classification used when synthesizing workflow state purely from the kernel's
++// recorded stage. `critical` is the full-ladder path
++// (plan->dev->validate->ship->review->verify) — a superset of every other
++// classification's path — so no canonical stage the kernel could hold is ever
++// rejected as "not valid for this workflow". The synthesized classification is
++// never persisted; it only drives the allowed-transition computation for this
++// single enforcement check.
++const KERNEL_SYNTHESIS_CLASSIFICATION = 'critical';
++
++function defaultStageWarn(message) {
++  if (process.env.FORGE_JSON === '1') {
++    return; // keep machine-readable stdout consumers clean
++  }
++  process.stderr.write(`${message}\n`);
++}
++
++// Resolve the kernel issue that THIS worktree/branch is working on, so stage
++// state can be read and written kernel-authoritatively without an explicit
++// issue argument on `forge ship`. Prefers the branch->issue linkage registry;
++// falls back to a UUID encoded in the branch name (e.g. feat/<uuid>).
++function resolveActiveIssueId(driver, branch) {
++  if (!driver || !branch) {
++    return null;
++  }
++
++  try {
++    if (typeof driver.listWorktrees === 'function') {
++      const rows = driver.listWorktrees() || [];
++      const match = rows.find(row => row && row.branch === branch && row.issue_id);
++      if (match) {
++        return match.issue_id;
++      }
++    }
++  } catch (_error) {
++    // Fall through to branch-name parsing.
++  }
++
++  const encoded = UUID_RE.exec(String(branch));
++  return encoded ? encoded[0] : null;
++}
++
++// Read the kernel's recorded current stage for an issue and synthesize an
++// authoritative workflow-state object from it. Returns null when the kernel
++// holds nothing durable for the issue (fail-closed: the caller then falls back
++// to the stateless-entry rules or a hard block).
++function synthesizeWorkflowStateFromKernel(driver, issueId) {
++  if (!driver || !issueId || typeof driver.getCurrentStage !== 'function') {
++    return null;
++  }
++
++  let current;
++  try {
++    current = driver.getCurrentStage({ issue_id: issueId }, {});
++  } catch (_error) {
++    return null;
++  }
++  if (!current || !current.stage) {
++    return null;
++  }
++
++  try {
++    return readWorkflowState(JSON.stringify({
++      currentStage: current.stage,
++      completedStages: [],
++      skippedStages: [],
++      workflowDecisions: {
++        classification: KERNEL_SYNTHESIS_CLASSIFICATION,
++        reason: 'kernel-stage-state',
++        userOverride: false,
++        overrides: [],
++      },
++      parallelTracks: [],
++    }));
++  } catch (_error) {
++    return null;
++  }
++}
++
++// Reliable write at the single stage chokepoint: record that we are ENTERING
++// stageId for the active issue. Idempotent per (issue_id, stage). Best-effort
++// but never silent — a failure warns to stderr so a dropped write leaves a
++// trace, while ship's read stays tolerant of whatever IS durably recorded.
++function recordStageEntry(driver, issueId, stageId, warn = defaultStageWarn) {
++  if (!driver || !issueId || !stageId || typeof driver.recordStageRun !== 'function') {
++    return false;
++  }
++
++  try {
++    driver.recordStageRun({ issue_id: issueId, stage: stageId, action: 'start' }, {});
++    return true;
++  } catch (error) {
++    warn(`[forge] could not record stage '${stageId}' for ${issueId} in the kernel: ${error.message}`);
++    return false;
++  }
++}
++
++// Lazily build a kernel driver from the project root (the real CLI path).
++// Best-effort: returns null when the kernel is unavailable so the caller
++// degrades to legacy file/beads state instead of crashing a stage command.
++async function buildKernelDriver(projectRoot) {
++  if (!projectRoot) {
++    return null;
++  }
++
++  try {
++    const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++    const deps = await buildMigratedKernelIssueDeps({ projectRoot });
++    return deps.kernelDriver || null;
++  } catch (_error) {
++    return null;
++  }
++}
++
++function detectBranchName(projectRoot) {
++  try {
++    const { detectWorktree } = require('../detect-worktree');
++    const info = detectWorktree(projectRoot || process.cwd());
++    return info && info.branch ? info.branch : null;
++  } catch (_error) {
++    return null;
++  }
++}
++
+ function getOverrideInput(flags = {}) {
+   if (Object.hasOwn(flags, 'overrideStage')) {
+     return flags.overrideStage;
+@@ -104,7 +229,25 @@ function formatDiagnostics(diagnostics = []) {
+     .join('; ');
+ }
+ 
+-async function enforceStageEntry({ commandName, args = [], flags = {}, projectRoot, workflowState, health, repairRuntime, checkHealth } = {}) {
++async function enforceStageEntry({
++  commandName,
++  args = [],
++  flags = {},
++  projectRoot,
++  workflowState,
++  health,
++  repairRuntime,
++  checkHealth,
++  // B1 — kernel stage-state authority. Injectable for tests; the real CLI sets
++  // autoResolveKernel:true so the driver + active issue are resolved from the
++  // worktree. When neither a driver nor autoResolveKernel is provided, the
++  // kernel path is inert and behavior matches the legacy file/beads state.
++  kernelDriver,
++  activeIssueId,
++  branch,
++  autoResolveKernel = false,
++  warn = defaultStageWarn,
++} = {}) {
+   const stageId = normalizeStageId(commandName);
+   if (!stageId) {
+     return { allowed: true };
+@@ -142,10 +285,52 @@ async function enforceStageEntry({ commandName, args = [], flags = {}, projectRo
+   }
+ 
+   const stateInput = resolveWorkflowStateInput(workflowState, flags, args, projectRoot);
+-  const currentState = readWorkflowStateInput(stateInput);
++  const stateInlineProvided = Boolean(
++    workflowState
++    || flags.workflowState
++    || flags['--workflow-state']
++    || getCliFlagValue('--workflow-state', args)
++  );
++
++  // Kernel stage-state authority is active when a driver is injected (tests) or
++  // the caller opts in (real CLI via autoResolveKernel). An inline/flag state
++  // disables it: the caller is explicitly driving state, so no kernel read or
++  // write side effects should occur.
++  const kernelEnabled = !stateInlineProvided && (Boolean(kernelDriver) || autoResolveKernel === true);
++  let driver = kernelDriver || null;
++  let issueId = activeIssueId || null;
++  if (kernelEnabled) {
++    if (!driver) {
++      driver = await buildKernelDriver(projectRoot);
++    }
++    if (driver && !issueId) {
++      issueId = resolveActiveIssueId(driver, branch || detectBranchName(projectRoot));
++    }
++  }
++
++  // Reliable write at the chokepoint: once a stage is allowed, record that the
++  // CLI entered it so the kernel always reflects the real workflow phase.
++  const finish = (result) => {
++    if (kernelEnabled && driver && issueId) {
++      recordStageEntry(driver, issueId, stageId, warn);
++    }
++    return result;
++  };
++
++  let currentState = readWorkflowStateInput(stateInput);
++
++  // Tolerant read: with no inline/file state, synthesize authoritative state
++  // from what the kernel durably holds (stage_runs, which the chokepoint write
++  // and the comment-driven stage-transition recorder both populate). This is
++  // what makes `ship` reachable from a pure-CLI plan->dev->validate progression
++  // that never wrote a .forge-state.json.
++  if (!currentState && kernelEnabled && driver && issueId) {
++    currentState = synthesizeWorkflowStateFromKernel(driver, issueId);
++  }
++
+   if (!currentState) {
+     if (STATELESS_ENTRY_STAGES.has(stageId)) {
+-      return { allowed: true, stage: stageId, workflowState: null };
++      return finish({ allowed: true, stage: stageId, workflowState: null });
+     }
+ 
+     throw new Error(
+@@ -157,12 +342,12 @@ async function enforceStageEntry({ commandName, args = [], flags = {}, projectRo
+   const currentStage = currentState.currentStage;
+   const classification = currentState.workflowDecisions?.classification;
+   if (!currentStage || !classification || stageId === currentStage) {
+-    return { allowed: true, stage: stageId, workflowState: currentState };
++    return finish({ allowed: true, stage: stageId, workflowState: currentState });
+   }
+ 
+   const allowedTransitions = getAllowedTransitionsForWorkflowState(currentState);
+   if (allowedTransitions.includes(stageId)) {
+-    return { allowed: true, stage: stageId, workflowState: currentState };
++    return finish({ allowed: true, stage: stageId, workflowState: currentState });
+   }
+ 
+   const override = parseOverride(flags, args);
+@@ -179,12 +364,12 @@ async function enforceStageEntry({ commandName, args = [], flags = {}, projectRo
+     );
+   }
+ 
+-  return {
++  return finish({
+     allowed: true,
+     stage: stageId,
+     workflowState: currentState,
+     override,
+-  };
++  });
+ }
+ 
+ module.exports = {
+@@ -193,4 +378,7 @@ module.exports = {
+   parseOverride,
+   resolveWorkflowStateInput,
+   readWorkflowStateFile,
++  resolveActiveIssueId,
++  synthesizeWorkflowStateFromKernel,
++  recordStageEntry,
+ };
+diff --git a/test/commands/plan-link-issue.test.js b/test/commands/plan-link-issue.test.js
+new file mode 100644
+index 00000000..7362941c
+--- /dev/null
++++ b/test/commands/plan-link-issue.test.js
+@@ -0,0 +1,121 @@
++'use strict';
++
++// B4 — `forge plan --issue <id>` links the EXISTING kernel issue instead of
++// creating a duplicate issue (and forking a second branch). Regression guard
++// for the live-eval finding where `plan` after `issue create` + `claim`
++// silently created a SECOND issue + branch.
++
++const { describe, test, expect } = require('bun:test');
++const nodeFs = require('node:fs');
++const nodeOs = require('node:os');
++const nodePath = require('node:path');
++const { execFileSync: nodeExecFileSync } = require('node:child_process');
++
++const { executePlan, handler } = require('../../lib/commands/plan.js');
++
++const GIT_ENV = {
++  ...process.env,
++  GIT_AUTHOR_NAME: 'test',
++  GIT_AUTHOR_EMAIL: 'test@example.com',
++  GIT_COMMITTER_NAME: 'test',
++  GIT_COMMITTER_EMAIL: 'test@example.com',
++};
++
++function makeRepoWithResearch(slug, title) {
++  const repo = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-plan-link-'));
++  nodeExecFileSync('git', ['init', '-q'], { cwd: repo });
++  nodeExecFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo, env: GIT_ENV });
++  nodeFs.mkdirSync(nodePath.join(repo, 'docs', 'research'), { recursive: true });
++  nodeFs.writeFileSync(
++    nodePath.join(repo, 'docs', 'research', `${slug}.md`),
++    `# ${title}\n\n**Timeline**: 2 hours\n**Strategic/Tactical**: Tactical\n`,
++  );
++  return repo;
++}
++
++function withRepo(repo, fn) {
++  const prevCwd = process.cwd();
++  const prevEnv = process.env.FORGE_ISSUE_BACKEND;
++  delete process.env.FORGE_ISSUE_BACKEND; // no signal → resolver defaults to kernel
++  process.chdir(repo);
++  try {
++    return fn();
++  } finally {
++    process.chdir(prevCwd);
++    if (prevEnv === undefined) delete process.env.FORGE_ISSUE_BACKEND;
++    else process.env.FORGE_ISSUE_BACKEND = prevEnv;
++    nodeFs.rmSync(repo, { recursive: true, force: true });
++  }
++}
++
++describe('B4: plan --issue links an existing issue instead of forking a new one', () => {
++  test('executePlan with an issue id links (never calls create)', async () => {
++    const repo = makeRepoWithResearch('link-demo', 'Link Demo');
++    const existingId = 'kernel-existing-123';
++    const ops = [];
++    const fakeRun = async (operation) => {
++      ops.push(operation);
++      if (operation === 'show') {
++        return { ok: true, command: 'issue.show', data: { id: existingId }, next_commands: [] };
++      }
++      return { ok: true, command: `issue.${operation}`, data: { id: 'FORKED-SHOULD-NOT-HAPPEN' }, next_commands: [] };
++    };
++
++    await withRepo(repo, async () => {
++      const result = await executePlan('link demo', {
++        projectRoot: repo,
++        issue: existingId,
++        runIssueOperation: fakeRun,
++      });
++
++      expect(result.success).toBe(true);
++      expect(result.linked).toBe(true);
++      expect(result.issueId).toBe(existingId);
++      // The whole point: no duplicate issue was created.
++      expect(ops).not.toContain('create');
++    });
++  });
++
++  test('executePlan fails clearly when the linked issue does not exist', async () => {
++    const repo = makeRepoWithResearch('missing-demo', 'Missing Demo');
++    const fakeRun = async (operation) => {
++      if (operation === 'show') return { ok: false, error: 'issue not found' };
++      return { ok: true, data: { id: 'should-not-create' } };
++    };
++
++    await withRepo(repo, async () => {
++      const result = await executePlan('missing demo', {
++        projectRoot: repo,
++        issue: 'nope-does-not-exist',
++        runIssueOperation: fakeRun,
++      });
++
++      expect(result.success).toBe(false);
++      expect(result.error).toMatch(/not found|does not exist|no such issue/i);
++    });
++  });
++
++  test('handler parses --issue and reports the linked id (no fork)', async () => {
++    const repo = makeRepoWithResearch('handler-link', 'Handler Link');
++    const existingId = 'kernel-handler-link-1';
++    const ops = [];
++    const fakeRun = async (operation) => {
++      ops.push(operation);
++      if (operation === 'show') {
++        return { ok: true, command: 'issue.show', data: { id: existingId }, next_commands: [] };
++      }
++      return { ok: true, data: { id: 'FORKED' } };
++    };
++
++    await withRepo(repo, async () => {
++      const result = await handler(['handler link', '--issue', existingId], {}, repo, {
++        runIssueOperation: fakeRun,
++      });
++
++      expect(result.success).toBe(true);
++      expect(result.issueId).toBe(existingId);
++      expect(ops).not.toContain('create');
++      expect(result.output).toMatch(/link/i);
++    });
++  });
++});
+diff --git a/test/workflow/enforce-stage-kernel.test.js b/test/workflow/enforce-stage-kernel.test.js
+new file mode 100644
+index 00000000..e01b8214
+--- /dev/null
++++ b/test/workflow/enforce-stage-kernel.test.js
+@@ -0,0 +1,191 @@
++'use strict';
++
++// B1 — kernel is the source of truth for workflow stage state.
++//
++// These tests prove the #1 beta blocker is fixed: a pure-CLI
++// plan -> dev -> validate -> ship progression reaches `ship` WITHOUT any
++// Claude slash-command layer ever writing `.forge-state.json`. The kernel
++// `stage_runs` registry (written at the enforcement chokepoint) is the only
++// durable state, and `ship`'s enforcement reads it back and synthesizes
++// authoritative workflow state.
++//
++// The driver is injected (kernelDriver) so no git repo or bd is required.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { enforceStageEntry } = require('../../lib/workflow/enforce-stage');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++const TIMEOUT = 15000;
++
++// A runtime-health fixture that never hard-stops, so these tests isolate the
++// workflow-state logic (health prerequisites are covered elsewhere).
++const HEALTHY = { healthy: true, hardStop: false, diagnostics: [] };
++
++describe('B1: enforceStageEntry uses the kernel as stage-state authority', () => {
++  let tmpDir;
++  let driver;
++  let broker;
++  let projectRoot;
++  const issueId = 'forge-b1-kernel-1';
++
++  beforeEach(async () => {
++    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'enforce-kernel-'));
++    projectRoot = tmpDir;
++    const dbPath = path.join(tmpDir, 'kernel.sqlite');
++    driver = createBuiltinSQLiteDriver({ databasePath: dbPath });
++    broker = createLocalBroker({
++      projectRoot: tmpDir,
++      execFileSync: () => path.join(tmpDir, '.git'),
++      databasePath: dbPath,
++      driver,
++    });
++    await broker.initialize();
++    await broker.runIssueOperation(
++      'create',
++      ['--id', issueId, '--title', 'B1 kernel stage authority', '--type', 'task'],
++      { now: '2026-07-14T00:00:00.000Z', actor: 'tester' },
++    );
++  });
++
++  afterEach(() => {
++    if (driver) driver.close();
++    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
++  });
++
++  test('ship is REACHABLE from kernel stage state with no .forge-state.json', async () => {
++    // Simulate what plan/dev/validate wrote at the chokepoint: the kernel now
++    // records the current stage as `validate`. No .forge-state.json exists.
++    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
++    expect(fs.existsSync(path.join(projectRoot, '.forge-state.json'))).toBe(false);
++
++    const result = await enforceStageEntry({
++      commandName: 'ship',
++      projectRoot,
++      kernelDriver: driver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    });
++
++    expect(result.allowed).toBe(true);
++    expect(result.stage).toBe('ship');
++  }, TIMEOUT);
++
++  test('entering a stage RECORDS it into the kernel (reliable write at the chokepoint)', async () => {
++    const result = await enforceStageEntry({
++      commandName: 'validate',
++      projectRoot,
++      kernelDriver: driver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    });
++    expect(result.allowed).toBe(true);
++
++    const current = driver.getCurrentStage({ issue_id: issueId }, {});
++    expect(current).toBeTruthy();
++    expect(current.stage).toBe('validate');
++  }, TIMEOUT);
++
++  test('full pure-CLI loop plan->dev->validate->ship reaches ship via kernel only', async () => {
++    for (const stage of ['plan', 'dev', 'validate']) {
++      const step = await enforceStageEntry({
++        commandName: stage,
++        projectRoot,
++        kernelDriver: driver,
++        activeIssueId: issueId,
++        health: HEALTHY,
++      });
++      expect(step.allowed).toBe(true);
++    }
++
++    // The kernel — not a .forge-state.json file — carries the progression.
++    expect(fs.existsSync(path.join(projectRoot, '.forge-state.json'))).toBe(false);
++    expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('validate');
++
++    const ship = await enforceStageEntry({
++      commandName: 'ship',
++      projectRoot,
++      kernelDriver: driver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    });
++    expect(ship.allowed).toBe(true);
++    expect(ship.stage).toBe('ship');
++    expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('ship');
++  }, TIMEOUT);
++
++  test('resolves the active issue from the branch->issue worktree linkage (no explicit id)', async () => {
++    const branch = 'feat/some-named-branch';
++    driver.registerWorktree({
++      path: projectRoot,
++      git_common_dir: path.join(projectRoot, '.git'),
++      branch,
++      issue_id: issueId,
++      actor: 'tester',
++      registered_at: '2026-07-14T00:00:00.000Z',
++      state: 'active',
++    });
++    driver.recordStageRun({ issue_id: issueId, stage: 'validate', action: 'start' }, {});
++
++    const result = await enforceStageEntry({
++      commandName: 'ship',
++      projectRoot,
++      kernelDriver: driver,
++      branch, // resolver maps branch -> issue via the linkage registry
++      health: HEALTHY,
++    });
++    expect(result.allowed).toBe(true);
++  }, TIMEOUT);
++
++  test('resolves the active issue when the branch name encodes a UUID', async () => {
++    const uuidIssue = '11111111-2222-4333-8444-555566667777';
++    await broker.runIssueOperation(
++      'create',
++      ['--id', uuidIssue, '--title', 'uuid-encoded branch issue', '--type', 'task'],
++      { now: '2026-07-14T00:00:00.000Z', actor: 'tester' },
++    );
++    driver.recordStageRun({ issue_id: uuidIssue, stage: 'validate', action: 'start' }, {});
++
++    const result = await enforceStageEntry({
++      commandName: 'ship',
++      projectRoot,
++      kernelDriver: driver,
++      branch: `feat/${uuidIssue}`,
++      health: HEALTHY,
++    });
++    expect(result.allowed).toBe(true);
++  }, TIMEOUT);
++
++  test('B4: dev runs kernel-primary with no Beads DB present (does not dead-end)', async () => {
++    // The tmp project has only a kernel DB — no .beads/ directory at all.
++    expect(fs.existsSync(path.join(projectRoot, '.beads'))).toBe(false);
++
++    const result = await enforceStageEntry({
++      commandName: 'dev',
++      projectRoot,
++      kernelDriver: driver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    });
++
++    expect(result.allowed).toBe(true);
++    expect(result.stage).toBe('dev');
++    expect(driver.getCurrentStage({ issue_id: issueId }, {}).stage).toBe('dev');
++  }, TIMEOUT);
++
++  test('still hard-blocks ship when the kernel has NO recorded stage (fail-closed)', async () => {
++    // No stage recorded, no .forge-state.json, no inline state → nothing durable
++    // says we progressed, so ship must not silently pass.
++    await expect(enforceStageEntry({
++      commandName: 'ship',
++      projectRoot,
++      kernelDriver: driver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    })).rejects.toThrow(/authoritative workflow state/i);
++  }, TIMEOUT);
++});
+-- 
+2.51.0.windows.1
+

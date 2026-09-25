@@ -1,0 +1,1026 @@
+diff --git a/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md b/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+index f4a420b6..b72cb83f 100644
+--- a/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
++++ b/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+@@ -25,4 +25,8 @@
+ - [x] Detect and repair monitor self-lock during the live probe: validate the complete renderer grammar for every verdict so a valid non-clean sticky is informational, while unrecognized middle/appended text remains actionable.
+ - [x] Re-probe remote head `587ff5a83df4d7b422444bb7843134b3cf526164`: patched gather is `CLEAN-MERGEABLE` with no invalid metadata, bot comments, stale reviews, unresolved threads, or unreadable inputs.
+ - [x] Run the final affected aggregate: 255 tests / 660 expectations passed across every changed test and all pull/monitor consumers; targeted ESLint and `git diff --check` passed. Exact output retained externally.
++- [x] Reconcile exact-SHA review of `7a22b751`: `REQUEST_CHANGES`; no prior approval transfers.
++- [x] Retain focused RED evidence: 7 failures across exact-head fixtures, Forge-monitor section coherence, bot-alias supersession, and stable status-comment evidence.
++- [x] Remediate complete provider grammars, canonical bot identity, stable blocker IDs, strict adapter evidence, and exact-head fixtures.
++- [x] Validate the amended affected scope: 242 tests / 640 expectations across 10 files; targeted ESLint, 5/5 syntax checks, and `git diff --check` passed.
+ - [ ] Amend once and obtain fresh exact-SHA review before push.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 0cf473cd..6d3d0764 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -25,6 +25,10 @@
+ 
+ const { execFileSync } = require('node:child_process');
+ 
++const GITHUB_ACTOR_TYPENAMES = new Set([
++  'Bot', 'EnterpriseUserAccount', 'Mannequin', 'Organization', 'User',
++]);
++
+ // NOTE: `reviewThreads` is NOT a valid `gh pr view --json` field — requesting it
+ // makes `gh` exit non-zero ("Unknown JSON field"), which crashed readState on every
+ // real PR. Review threads are read separately via GraphQL in readComments().
+@@ -337,20 +341,20 @@ class PrStateAdapter {
+     // would declare "complete" on partial data and the monitor would skip work.
+     const threads = this._fetchAllReviewThreads({ owner, repo, pr });
+     return threads.map((t) => {
+-      const allComments = (t.comments && t.comments.nodes) || [];
++      const allComments = t.comments.nodes;
+       return {
+-        threadId: t.id || '',
++        threadId: t.id,
+         path: t.path || null,
+         line: typeof t.line === 'number' ? t.line : null,
+-        isResolved: !!t.isResolved,
+-        isOutdated: !!t.isOutdated,
+-        comments: allComments.map(c => ({
+-          author: (c.author && c.author.login) || '',
+-          body: c.body || '',
+-          // REST comment id (needed to REPLY to the thread). `fullDatabaseId` is
+-          // the string-encoded integer id; null when GitHub omits it.
+-          commentId: c.fullDatabaseId ? String(c.fullDatabaseId) : null,
+-        })),
++        isResolved: t.isResolved,
++        isOutdated: t.isOutdated,
++        comments: allComments.map((c) => {
++          const commentId = c.fullDatabaseId ? String(c.fullDatabaseId) : '';
++          const author = String(c.author?.login || '');
++          if (!commentId) throw new Error(`Review thread ${t.id} comment is missing stable database id`);
++          if (!author) throw new Error(`Review thread ${t.id} comment ${commentId} is missing author identity`);
++          return { author, body: c.body || '', commentId };
++        }),
+       };
+     });
+   }
+@@ -370,11 +374,15 @@ class PrStateAdapter {
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviewThreads,
+       (t) => {
+-        // A thread whose first comment page is truncated → fetch the rest.
+-        if (t.comments?.pageInfo?.hasNextPage) {
+-          t.comments = { nodes: this._fetchAllThreadComments(t.id, t.comments) };
++        if (typeof t.id !== 'string' || !t.id
++            || typeof t.isResolved !== 'boolean' || typeof t.isOutdated !== 'boolean') {
++          throw new Error('Malformed review-thread node identity or lifecycle fields');
+         }
+-        return t;
++        const comments = this._validateGraphqlConnection(t.comments, `Review thread ${t.id} comments`);
++        const nodes = comments.pageInfo.hasNextPage
++          ? this._fetchAllThreadComments(t.id, comments)
++          : comments.nodes;
++        return { ...t, comments: { nodes } };
+       },
+     );
+   }
+@@ -396,7 +404,36 @@ class PrStateAdapter {
+       '-F', `o=${owner}`, '-F', `n=${repo}`, '-F', `pr=${pr}`,
+     ];
+     if (after) args.push('-f', `after=${after}`);
+-    return JSON.parse(this._gh('gh', args) || '{}');
++    return this._parseGraphqlResponse(this._gh('gh', args));
++  }
++
++  /** Parse one GraphQL response and reject partial or malformed error envelopes. */
++  _parseGraphqlResponse(raw) {
++    const parsed = JSON.parse(raw || '{}');
++    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
++      throw new Error('Malformed GraphQL response envelope');
++    }
++    if (Object.prototype.hasOwnProperty.call(parsed, 'errors')
++        && (!Array.isArray(parsed.errors) || parsed.errors.length > 0)) {
++      throw new Error('GraphQL response contained errors');
++    }
++    return parsed;
++  }
++
++  /** Validate a GraphQL connection before any node can enter verdict evidence. */
++  _validateGraphqlConnection(conn, label = 'GraphQL connection') {
++    if (!conn || typeof conn !== 'object' || Array.isArray(conn)
++        || !Array.isArray(conn.nodes)
++        || !conn.pageInfo || typeof conn.pageInfo !== 'object'
++        || Array.isArray(conn.pageInfo)
++        || typeof conn.pageInfo.hasNextPage !== 'boolean') {
++      throw new Error(`${label}: expected nodes[] and pageInfo.hasNextPage`);
++    }
++    if (conn.pageInfo.hasNextPage
++        && (typeof conn.pageInfo.endCursor !== 'string' || !conn.pageInfo.endCursor)) {
++      throw new Error(`${label}: next page has no endCursor`);
++    }
++    return conn;
+   }
+ 
+   /**
+@@ -417,23 +454,17 @@ class PrStateAdapter {
+     let guard = 0;
+     const MAX_PAGES = 1000;
+     do {
+-      const conn = runPage(after);
+-      if (!conn || typeof conn !== 'object' || !Array.isArray(conn.nodes)
+-          || !conn.pageInfo || typeof conn.pageInfo !== 'object'
+-          || typeof conn.pageInfo.hasNextPage !== 'boolean') {
+-        throw new Error('Malformed GraphQL connection: expected nodes[] and pageInfo.hasNextPage');
+-      }
++      const previous = after;
++      const conn = this._validateGraphqlConnection(runPage(after));
+       for (const node of conn.nodes) {
+-        if (!node || typeof node !== 'object') throw new Error('Malformed GraphQL connection node');
++        if (!node || typeof node !== 'object' || Array.isArray(node)) {
++          throw new Error('Malformed GraphQL connection node');
++        }
+         all.push(mapNode(node));
+       }
+-      if (conn.pageInfo.hasNextPage) {
+-        if (typeof conn.pageInfo.endCursor !== 'string' || !conn.pageInfo.endCursor) {
+-          throw new Error('Malformed GraphQL connection: next page has no endCursor');
+-        }
+-        after = conn.pageInfo.endCursor;
+-      } else {
+-        after = null;
++      after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
++      if (after && after === previous) {
++        throw new Error('Malformed GraphQL connection: cursor did not advance');
+       }
+       guard += 1;
+     } while (after && guard < MAX_PAGES);
+@@ -451,21 +482,35 @@ class PrStateAdapter {
+    */
+   _fetchAllThreadComments(threadId, initial) {
+     const query = 'query($id:ID!,$after:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{login} body}}}}}';
+-    const acc = [...((initial && initial.nodes) || [])];
+-    let after = initial && initial.pageInfo && initial.pageInfo.hasNextPage ? initial.pageInfo.endCursor : null;
++    const first = this._validateGraphqlConnection(initial, `Review thread ${threadId} comments`);
++    const acc = [...first.nodes];
++    let after = first.pageInfo.hasNextPage ? first.pageInfo.endCursor : null;
+     let guard = 0;
+     const MAX_PAGES = 1000;
+     while (after && guard < MAX_PAGES) {
++      const previous = after;
+       const raw = this._gh('gh', [
+         'api', 'graphql', '-f', `query=${query}`,
+         '-f', `id=${threadId}`, '-f', `after=${after}`,
+       ]);
+-      const data = JSON.parse(raw || '{}');
+-      const conn = data.data && data.data.node && data.data.node.comments;
+-      acc.push(...((conn && conn.nodes) || []));
+-      after = conn && conn.pageInfo && conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
++      const data = this._parseGraphqlResponse(raw);
++      const conn = this._validateGraphqlConnection(
++        data.data?.node?.comments,
++        `Review thread ${threadId} comments`,
++      );
++      for (const node of conn.nodes) {
++        if (!node || typeof node !== 'object' || Array.isArray(node)) {
++          throw new Error(`Review thread ${threadId} has malformed comment node`);
++        }
++        acc.push(node);
++      }
++      after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
++      if (after && after === previous) {
++        throw new Error(`Review thread ${threadId} comment cursor did not advance`);
++      }
+       guard += 1;
+     }
++    if (after) throw new Error(`Review thread ${threadId} comments exceeded ${MAX_PAGES} pages`);
+     return acc;
+   }
+ 
+@@ -490,15 +535,18 @@ class PrStateAdapter {
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.comments,
+       (c) => {
+-        const id = c.fullDatabaseId ? String(c.fullDatabaseId) : `${c.author?.login || ''}:${c.createdAt || ''}`;
+-        if (!c.author?.login) throw new Error(`Issue comment ${id || '(unknown)'} is missing author identity`);
++        const id = c.fullDatabaseId ? String(c.fullDatabaseId) : '';
++        if (!id) throw new Error('Issue comment is missing stable database id');
++        if (!c.author?.login) throw new Error(`Issue comment ${id} is missing author identity`);
++        if (!GITHUB_ACTOR_TYPENAMES.has(String(c.author?.__typename || ''))) {
++          throw new Error(`Issue comment ${id} has missing or malformed actor type`);
++        }
+         return {
+           // `id` is the stable REST comment id — the PR monitor keys `comment.posted`
+-          // on it so a re-read never re-emits an already-seen comment. Falls back to
+-          // author+createdAt when GitHub omits it.
++          // on it so a re-read never re-emits an already-seen comment.
+           id,
+           author: c.author.login,
+-          authorTypename: c.author.__typename || '',
++          authorTypename: c.author.__typename,
+           body: c.body || '',
+           createdAt: c.createdAt || '',
+           updatedAt: c.updatedAt || c.createdAt || '',
+@@ -525,12 +573,16 @@ class PrStateAdapter {
+         ?.data?.repository?.pullRequest?.reviews,
+       (r) => {
+         const rawAuthor = String(r.author?.login || '').toLowerCase();
+-        const id = r.id ? String(r.id) : null;
+-        if (!rawAuthor) throw new Error(`Review ${id || '(unknown)'} is missing author identity`);
++        const id = r.id ? String(r.id) : '';
++        if (!id) throw new Error('Review is missing stable GraphQL id');
++        if (!rawAuthor) throw new Error(`Review ${id} is missing author identity`);
++        if (!GITHUB_ACTOR_TYPENAMES.has(String(r.author?.__typename || ''))) {
++          throw new Error(`Review ${id} has missing or malformed actor type`);
++        }
+         return {
+-          ...(id ? { id } : {}),
++          id,
+           author: rawAuthor.replace(/\[bot\]$/, ''),
+-          authorTypename: r.author?.__typename || '',
++          authorTypename: r.author.__typename,
+           state: String(r.state || '').toUpperCase(),
+           submittedAt: r.submittedAt || null,
+           commitOid: r.commit?.oid || null,
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index d33353a4..7653ea19 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -213,6 +213,12 @@ function issueCommentLogin(comment) {
+   return String(comment.author?.login || comment.author || '').toLowerCase();
+ }
+ 
++/** Canonical provider identity: GitHub may expose the same App with/without the
++ * presentation-only `[bot]` suffix across GraphQL surfaces. */
++function canonicalLogin(login) {
++  return String(login || '').toLowerCase().replace(/\[bot\]$/, '');
++}
++
+ /** Drop the trailing `[bot]` suffix for a readable bot name in the blocker text. */
+ function prettyBotName(login) {
+   return String(login || '').replace(/\[bot\]$/i, '');
+@@ -244,26 +250,33 @@ function botFailureSummary(body) {
+  *
+  * @param {Array<{author:(object|string),body:string,createdAt?:string,updatedAt?:string}>} comments
+  * @param {{ cap?: number }} [opts]
+- * @returns {Array<{ type: 'bot-status', detail: string }>}
++ * @returns {Array<{ type: 'bot-status', id: string, detail: string }>}
+  */
+ function buildBotStatusBlockers(comments, opts = {}) {
+   const cap = opts.cap || DEFAULT_MAX_THREADS;
+   const latestByBot = new Map();
+   for (const c of (Array.isArray(comments) ? comments : [])) {
+-    const login = issueCommentLogin(c);
+-    if (!STATUS_BOT_LOGINS.has(login)) continue;
++    const rawLogin = issueCommentLogin(c);
++    if (!STATUS_BOT_LOGINS.has(rawLogin)) continue;
++    const login = canonicalLogin(rawLogin);
+     const ts = commentActivityTime(c) ?? 0;
+     const prev = latestByBot.get(login);
+     // `>=` so a same-timestamp (or timestamp-less) tie keeps the LATER array
+     // entry — GitHub returns issue comments oldest-first.
+-    if (!prev || ts >= prev.ts) latestByBot.set(login, { ts, login, body: String(c.body || '') });
++    if (!prev || ts >= prev.ts) {
++      latestByBot.set(login, {
++        ts, login, body: String(c.body || ''),
++        id: metadataEvidenceId(c, 'status-comment', latestByBot.size),
++      });
++    }
+   }
+   const out = [];
+-  for (const { login, body } of latestByBot.values()) {
++  for (const { id, login, body } of latestByBot.values()) {
+     const summary = botFailureSummary(body);
+     if (!summary) continue; // latest comment is healthy → superseded, not actionable
+     out.push({
+       type: 'bot-status',
++      id,
+       detail: `${prettyBotName(login)} reports a failing status: ${summary}`,
+     });
+     if (out.length >= cap) break;
+@@ -748,6 +761,9 @@ function summarize({ state, failureCount, threadCount, blockers = [] }) {
+ 
+ const CODERABBIT_LOGINS = new Set(['coderabbitai', 'coderabbitai[bot]']);
+ const QODO_REVIEW_LOGINS = new Set(['qodo-code-review', 'qodo-code-review[bot]']);
++const GITHUB_ACTOR_TYPENAMES = new Set([
++  'Bot', 'EnterpriseUserAccount', 'Mannequin', 'Organization', 'User',
++]);
+ 
+ /** Full exact heads only; abbreviated or non-hex tokens cannot clear a review. */
+ function isFullHeadOid(headOid) {
+@@ -774,50 +790,51 @@ function hasExplicitActionableFinding(body) {
+ }
+ 
+ /** CodeRabbit edits its review-command acknowledgement into this terminal
+- * envelope. Match framing as well as the completion phrase, and reject any
+- * appended/embedded finding signal. */
++ * envelope. Every meaningful line is consumed in order; any provider drift or
++ * inserted text therefore remains actionable. */
+ function isCodeRabbitCompletion(comment) {
+   const login = String(comment?.author || '').toLowerCase();
+-  const body = String(comment?.body || '').trim();
++  const lines = providerLines(comment?.body);
+   return CODERABBIT_LOGINS.has(login)
+-    && body.startsWith('<!-- This is an auto-generated reply by CodeRabbit -->')
+-    && /<!-- CodeRabbit review command invocation: [^\r\n]+ -->/i.test(body)
+-    && /<summary>✅ Action performed<\/summary>/i.test(body)
+-    && /\bReview finished\./i.test(body)
+-    && /CodeRabbit is an incremental review system/i.test(body)
+-    && body.endsWith('</details>')
+-    && !hasExplicitActionableFinding(body);
+-}
+-
+-/** CodeRabbit's generated review summary is lifecycle evidence only when its
+- * complete summary envelope reports zero actionable comments for the full exact
+- * current head. Unknown provider-format changes fail closed. */
++    && lines.length === 7
++    && lines[0] === '<!-- This is an auto-generated reply by CodeRabbit -->'
++    && /^<!-- CodeRabbit review command invocation: [^<>\r\n]{1,200} -->$/.test(lines[1])
++    && lines[2] === '<details>'
++    && lines[3] === '<summary>✅ Action performed</summary>'
++    && lines[4] === 'Review finished.'
++    && lines[5] === '> Note: CodeRabbit is an incremental review system.'
++    && lines[6] === '</details>';
++}
++
++/** CodeRabbit's generated review summary is lifecycle evidence only when every
++ * meaningful line matches the exact clean grammar and one structurally bounded
++ * full-head marker occupies its provider-defined line. */
+ function isCodeRabbitCleanReviewSummary(comment, headOid) {
+   const login = String(comment?.author || '').toLowerCase();
+-  const body = String(comment?.body || '').trim();
++  const lines = providerLines(comment?.body);
+   return CODERABBIT_LOGINS.has(login)
+     && isFullHeadOid(headOid)
+-    && body.includes(String(headOid))
+-    && body.startsWith('<!-- This is an auto-generated comment: summarize by coderabbit.ai -->')
+-    && /No actionable comments were generated in the recent review\./i.test(body)
+-    && body.endsWith('<!-- tips_end -->')
+-    && !hasExplicitActionableFinding(body);
++    && lines.length === 4
++    && lines[0] === '<!-- This is an auto-generated comment: summarize by coderabbit.ai -->'
++    && lines[1] === 'No actionable comments were generated in the recent review. 🎉'
++    && lines[2] === `Reviewing through ${headOid}.`
++    && lines[3] === '<!-- tips_end -->';
+ }
+ 
+-/** Qodo refreshes one top-level review summary in place. A clean refresh must
+- * carry the complete provider envelope, zero active counts, and the full exact
+- * head in its generated commit URL. Resolved historical detail is allowed. */
+-function isQodoCleanReviewSummary(comment, headOid) {
++/** Qodo's clean refresh must match one exact four-line grammar. The commit marker
++ * is bound to the selected repository and full current head; duplicate markers,
++ * inserted history, and unknown content fail closed. */
++function isQodoCleanReviewSummary(comment, headOid, owner, repo) {
+   const login = String(comment?.author || '').toLowerCase();
+-  const body = String(comment?.body || '').trim();
+-  if (!QODO_REVIEW_LOGINS.has(login) || !isFullHeadOid(headOid)) return false;
+-  const commitMarker = new RegExp(`<!-- https://github\\.com/[^\\s]+/commit/${headOid} -->`, 'i');
+-  return body.startsWith('<h3>Code Review by Qodo</h3>')
+-    && /Bugs\s*\(0\)/i.test(body)
+-    && /Rule violations\s*\(0\)/i.test(body)
+-    && commitMarker.test(body)
+-    && /<a href="https:\/\/www\.qodo\.ai"><img[^>]+alt="Qodo Logo"><\/a>$/i.test(body)
+-    && !hasExplicitActionableFinding(body);
++  const lines = providerLines(comment?.body);
++  if (!QODO_REVIEW_LOGINS.has(login) || !isFullHeadOid(headOid)
++      || !/^[A-Za-z0-9_.-]+$/.test(String(owner || ''))
++      || !/^[A-Za-z0-9_.-]+$/.test(String(repo || ''))) return false;
++  return lines.length === 4
++    && lines[0] === '<h3>Code Review by Qodo</h3>'
++    && lines[1] === '<code>🐞 Bugs (0)</code> <code>📘 Rule violations (0)</code>'
++    && lines[2] === `<!-- https://github.com/${owner}/${repo}/commit/${headOid} -->`
++    && /^<a href="https:\/\/www\.qodo\.ai"><img [^>\r\n]+ alt="Qodo Logo"><\/a>$/.test(lines[3]);
+ }
+ 
+ /** Normalize a provider body to meaningful lines while preserving every non-empty
+@@ -872,18 +889,22 @@ function isForgeMonitorEnvelope(body) {
+     '🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.',
+   ]);
+   let i = 0;
+-  if (lines[i++] !== '<!-- forge-pr-monitor -->'
+-      || lines[i++] !== '## 🔭 Forge PR Monitor'
+-      || !headlines.has(lines[i++])) return false;
++  const marker = lines[i++];
++  const title = lines[i++];
++  const headline = lines[i++];
++  if (marker !== '<!-- forge-pr-monitor -->'
++      || title !== '## 🔭 Forge PR Monitor'
++      || !headlines.has(headline)) return false;
+   if (/^> Unreadable signal\(s\): /.test(lines[i] || '')) {
+     if (!/^> Unreadable signal\(s\): `[^`\r\n]+`(?:, `[^`\r\n]+`)*\.$/.test(lines[i++])) return false;
+   }
+   if (lines[i++] !== '_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._') return false;
+ 
++  let cleanThreads = false;
+   if (lines[i] === '### Review threads') {
+     i += 1;
+     const threadSummary = lines[i++] || '';
+-    const cleanThreads = threadSummary === '✅ No unresolved review threads.';
++    cleanThreads = threadSummary === '✅ No unresolved review threads.';
+     const unreadThreads = /^⚠️ Review threads were \*\*unreadable\*\* this pass \(`[^`\r\n]{1,500}`\) — not treated as zero\. Re-run once the read recovers\.$/.test(threadSummary);
+     if (!cleanThreads && !unreadThreads) return false;
+   } else if (/^### Unresolved review threads \([1-9]\d*\)$/.test(lines[i] || '')) {
+@@ -909,10 +930,13 @@ function isForgeMonitorEnvelope(body) {
+   const checkBullet = /^- (?:❌ \*\*Failing|⏳ \*\*Pending) \([1-9]\d*\):\*\* `[^`\r\n]+`(?:, `[^`\r\n]+`)*$/;
+   if (!cleanChecks && !unreadChecks && !checkBullet.test(checkSummary)) return false;
+   if (checkBullet.test(checkSummary) && checkBullet.test(lines[i] || '')) i += 1;
+-  if (/^> Branch is \*\*[1-9]\d*\*\* commit\(s\) behind base\.$/.test(lines[i] || '')) i += 1;
++  const behind = /^> Branch is \*\*[1-9]\d*\*\* commit\(s\) behind base\.$/.test(lines[i] || '');
++  if (behind) i += 1;
+   if (lines[i++] !== '---') return false;
+   const footer = (lines[i++] || '').match(/^<sub>Updated (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) · surface-only monitor · labels state, never merges, never resolves threads\.<\/sub>$/);
+-  return i === lines.length && Boolean(footer && parseTime(footer[1]) !== null);
++  const cleanHeadline = headline === '🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.';
++  const coherentClean = !cleanHeadline || (cleanThreads && cleanChecks && !behind);
++  return coherentClean && i === lines.length && Boolean(footer && parseTime(footer[1]) !== null);
+ }
+ 
+ /** Recognized status/deploy bodies are safe to omit from the direct-review path:
+@@ -952,15 +976,15 @@ function isBotAuthor(comment) {
+ /** A bot's direct PR comment is ACTIONABLE unless it is the shepherd itself or
+  * one recognized, complete lifecycle/status envelope. Humans block through
+  * threads/reviews rather than direct-comment classification. */
+-function isActionableBotComment(comment, self, headOid) {
+-  const login = String(comment?.author || '').toLowerCase();
+-  if (!login || login === String(self || '').toLowerCase()) return false;
++function isActionableBotComment(comment, self, headOid, owner, repo) {
++  const login = canonicalLogin(comment?.author);
++  if (!login || login === canonicalLogin(self)) return false;
+   if (!isBotAuthor(comment)) return false;
+   if (isRecognizedStatusEnvelope(comment)) return false;
+   if (isRecognizedGitHubActionsEnvelope(comment)) return false;
+   if (isCodeRabbitCompletion(comment)) return false;
+   if (isCodeRabbitCleanReviewSummary(comment, headOid)) return false;
+-  if (isQodoCleanReviewSummary(comment, headOid)) return false;
++  if (isQodoCleanReviewSummary(comment, headOid, owner, repo)) return false;
+   return true;
+ }
+ 
+@@ -999,7 +1023,8 @@ function invalidIssueCommentMetadata(comments) {
+     const createdAt = parseTime(comment?.createdAt);
+     const hasUpdatedAt = comment?.updatedAt != null && String(comment.updatedAt).length > 0;
+     const updatedAt = hasUpdatedAt ? parseTime(comment.updatedAt) : createdAt;
+-    if (!issueCommentLogin(comment) || createdAt === null || updatedAt === null) {
++    if (!issueCommentLogin(comment) || !GITHUB_ACTOR_TYPENAMES.has(String(comment?.authorTypename || ''))
++        || createdAt === null || updatedAt === null) {
+       invalid.push(metadataEvidenceId(comment, 'comment', index));
+     }
+   });
+@@ -1012,7 +1037,8 @@ function invalidReviewMetadata(reviews) {
+   reviews.forEach((review, index) => {
+     const author = String(review?.author?.login || review?.author || '').toLowerCase();
+     const invalidCommit = isBotAuthor(review) && !isFullHeadOid(review?.commitOid);
+-    if (!author || parseTime(review?.submittedAt) === null || invalidCommit) {
++    if (!author || !GITHUB_ACTOR_TYPENAMES.has(String(review?.authorTypename || ''))
++        || parseTime(review?.submittedAt) === null || invalidCommit) {
+       invalid.push(metadataEvidenceId(review, 'review', index));
+     }
+   });
+@@ -1050,11 +1076,12 @@ function buildVerdictContext(input) {
+     mergeStateStatus, mergeable, reviewDecision,
+     requiredClass = {}, behind = 0, conflicts = null,
+     unresolvedThreadCount = 0,
+-    botStatusBlockerCount = 0,
++    botStatusBlockerCount = 0, botStatusBlockers = [],
+     botDirectComments = [],
+     reviews = [],
+     headPushTimeMs = null, headPushKnown = false,
+     issueComments = [],
++    owner, repo,
+     now = Date.now(), settleWindowMs = DEFAULT_SETTLE_WINDOW_MS,
+     unreadable = [],
+   } = input || {};
+@@ -1063,6 +1090,8 @@ function buildVerdictContext(input) {
+   const rc = requiredClass || {};
+   const reviewList = Array.isArray(reviews) ? reviews : [];
+   const commentList = Array.isArray(issueComments) ? issueComments : [];
++  const botStatusList = Array.isArray(botStatusBlockers) ? botStatusBlockers : [];
++  const effectiveBotStatusBlockerCount = botStatusList.length || botStatusBlockerCount;
+   const unreadableSources = Array.isArray(unreadable) ? [...unreadable] : ['unreadable:not-an-array'];
+   const invalidIssueComments = invalidIssueCommentMetadata(issueComments);
+   const invalidReviews = invalidReviewMetadata(reviews);
+@@ -1079,7 +1108,8 @@ function buildVerdictContext(input) {
+     missingRequired: rc.missing || [],
+     skippedRequired: rc.skipped || [],
+     pendingRequired: rc.pending || [],
+-    botStatusBlockerCount,
++    botStatusBlockerCount: effectiveBotStatusBlockerCount,
++    botStatusComments: botStatusList.map((item) => item?.id).filter(Boolean),
+     conflict: false,
+     behind,
+     unresolvedThreadCount,
+@@ -1092,8 +1122,9 @@ function buildVerdictContext(input) {
+   return {
+     headOidStart, headOidEnd, mss, mergeable, reviewDecision,
+     requiredClass: rc, behind, conflicts,
+-    unresolvedThreadCount, botStatusBlockerCount, botDirectComments,
++    unresolvedThreadCount, botStatusBlockerCount: effectiveBotStatusBlockerCount, botDirectComments,
+     reviews: reviewList, headPushTimeMs, headPushKnown, issueComments: commentList,
++    owner, repo,
+     now, settleWindowMs, evidence,
+   };
+ }
+@@ -1105,13 +1136,18 @@ function buildVerdictContext(input) {
+ /** Rank 1: UNKNOWN (fail-closed) — unreadable input/required set, missing head
+  * oid, or a torn read (head moved during the gather). */
+ function rankUnknown(v) {
+-  const torn = Boolean(v.headOidStart) && Boolean(v.headOidEnd) && v.headOidStart !== v.headOidEnd;
++  const validStart = isFullHeadOid(v.headOidStart);
++  const validEnd = isFullHeadOid(v.headOidEnd);
++  const torn = validStart && validEnd && v.headOidStart !== v.headOidEnd;
+   v.evidence.tornRead = torn;
+   if (v.requiredClass.unreadable && !v.evidence.unreadable.includes('requiredChecks')) {
+     v.evidence.unreadable.push('requiredChecks');
+   }
+-  if (!v.headOidStart && !v.evidence.unreadable.includes('headOid')) {
+-    v.evidence.unreadable.push('headOid');
++  if (!validStart && !v.evidence.unreadable.includes('headOidStart')) {
++    v.evidence.unreadable.push('headOidStart');
++  }
++  if (!validEnd && !v.evidence.unreadable.includes('headOidEnd')) {
++    v.evidence.unreadable.push('headOidEnd');
+   }
+   return (v.evidence.unreadable.length > 0 || torn) ? 'UNKNOWN' : null;
+ }
+@@ -1180,7 +1216,7 @@ function hasExactHeadCommentRefresh(v, review) {
+     const commentLogin = issueCommentLogin(comment).replace(/\[bot\]$/, '');
+     const refreshedAt = commentActivityTime(comment);
+     return isBotAuthor(comment)
+-      && isQodoCleanReviewSummary(comment, v.headOidStart)
++      && isQodoCleanReviewSummary(comment, v.headOidStart, v.owner, v.repo)
+       && commentLogin === reviewLogin
+       && refreshedAt !== null
+       && refreshedAt > v.headPushTimeMs;
+@@ -1500,7 +1536,7 @@ async function gatherPrSnapshot(ctx) {
+   // filtered) and an AUTHOR-AGNOSTIC unresolved-thread count — both independent
+   // of the display fix-list so the verdict never drops an unknown-bot signal.
+   const botDirectComments = (Array.isArray(issueComments) ? issueComments : [])
+-    .filter((c) => isActionableBotComment(c, self, state.headSha));
++    .filter((c) => isActionableBotComment(c, self, state.headSha, owner, repo));
+   const unresolvedThreadCount = countUnresolvedThreads(threads);
+ 
+   const { verdict, evidence } = computeVerdict({
+@@ -1514,11 +1550,14 @@ async function gatherPrSnapshot(ctx) {
+     conflicts,
+     unresolvedThreadCount,
+     botStatusBlockerCount: botStatusBlockers.length,
++    botStatusBlockers,
+     botDirectComments,
+     reviews,
+     headPushTimeMs,
+     headPushKnown,
+     issueComments,
++    owner,
++    repo,
+     self,
+     now: ctx.now,
+     settleWindowMs: ctx.settleWindowMs,
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index fe6e53ae..e21b05a3 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -418,9 +418,10 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+       111: '2026-07-10T12:00:01.2Z (fail) widget > renders\n2026-07-10T12:00:02.3Z error: boom',
+       222: '2026-07-11T09:30:41.9Z (fail) widget > renders\n2026-07-11T09:30:42.0Z error: boom',
+     };
++    const headSha = 'a'.repeat(40);
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
++      async readState() { return { headSha, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+       async readRequiredChecks() { return overrides.required || ['test (ubuntu, 20)', 'test (windows, 20)']; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() {
+@@ -913,7 +914,7 @@ describe('legacyStateFor (terminal lifecycle wins over the verdict projection)',
+ // or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
+ // pr-verdict label falsely reads `behind` on a PR GitHub considers up-to-date.
+ describe('BEHIND verdict reconciles with mergeStateStatus (5291f2d2)', () => {
+-  const settled = { headOidStart: 'h', headOidEnd: 'h' };
++  const settled = { headOidStart: 'a'.repeat(40), headOidEnd: 'a'.repeat(40) };
+ 
+   test('behind-count>0 but mss=UNSTABLE (the #402 case) is NOT BEHIND', () => {
+     const { verdict } = computeVerdict({ mergeStateStatus: 'UNSTABLE', behind: 25, ...settled });
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index b1748902..1921bc9e 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -7,6 +7,8 @@ const path = require('node:path');
+ const { PrStateAdapter, PR_VIEW_FIELDS } = require('../lib/adapters/pr-state-adapter');
+ const { validatePrStateAdapter } = require('../lib/pr-state-validator');
+ 
++const FULL_HEAD = '0123456789abcdef0123456789abcdef01234567';
++
+ /**
+  * Build a fake command runner whose behaviour is keyed off the first token of
+  * the argv. Records every invocation in `calls` for assertions.
+@@ -311,7 +313,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+-          comments: { nodes: [{ author: { login: 'coderabbitai' }, body: 'nit' }] },
++          comments: {
++            pageInfo: { hasNextPage: false, endCursor: null },
++            nodes: [{ fullDatabaseId: '101', author: { login: 'coderabbitai' }, body: 'nit' }],
++          },
+         },
+       ] } } } },
+     });
+@@ -334,7 +339,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+-          comments: { nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
++          comments: {
++            pageInfo: { hasNextPage: false, endCursor: null },
++            nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }],
++          },
+         },
+       ] } } } },
+     });
+@@ -351,7 +359,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
+   test('readComments coerces a missing line to null', async () => {
+     const graphqlJson = JSON.stringify({
+       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+-        { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { nodes: [] } },
++        {
++          id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null,
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
++        },
+       ] } } } },
+     });
+     const { run } = makeRunner([['api graphql', graphqlJson]]);
+@@ -367,7 +378,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: true, endCursor: 'C1' },
+         nodes: [{
+           id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
+-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'bot' }, body: 'a1' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '201', author: { login: 'bot' }, body: 'a1' }] },
+         }],
+       } } } },
+     });
+@@ -377,13 +388,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: 'C1' },
+         nodes: [{
+           id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
+-          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ author: { login: 'bot' }, body: 'b1' }] },
++          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '202', author: { login: 'bot' }, body: 'b1' }] },
+         }],
+       } } } },
+     });
+     // Remaining comments of thread B, fetched by node id.
+     const innerCommentsPage = JSON.stringify({
+-      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'human' }, body: 'b2' }] } } },
++      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '203', author: { login: 'human' }, body: 'b2' }] } } },
+     });
+     // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
+     const { run, calls } = makeRunner([
+@@ -465,8 +476,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         nodes: [
+           // With fullDatabaseId → the stable REST id is used as the monitor key.
+           { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
+-          // Without fullDatabaseId → falls back to `${author}:${createdAt}`.
+-          { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
++          { fullDatabaseId: '1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
+         ],
+       } } } },
+     });
+@@ -476,7 +486,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(comments).toHaveLength(2);
+     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
+     expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' });
+-    expect(comments[1].id).toBe('a-human:2026-07-12T11:00:00Z');
++    expect(comments[1].id).toBe('1000');
+     expect(comments[1].authorTypename).toBe('User');
+     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+   });
+@@ -487,9 +497,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+           // Oldest→newest: coderabbitai's second review supersedes its first.
+-          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
+-          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
+-          { author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
++          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
++          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
++          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+         ],
+       } } } },
+     });
+@@ -500,7 +510,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     // Latest-per-author: coderabbitai collapses to its newer (second) review.
+     expect(reviews).toHaveLength(2);
+     const cr = reviews.find((r) => r.author === 'coderabbitai');
+-    expect(cr).toEqual({ author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
++    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
+     const alice = reviews.find((r) => r.author === 'alice');
+     expect(alice.commitOid).toBe('head-sha');
+     expect(alice.authorTypename).toBe('User');
+@@ -519,12 +529,12 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       if (call === 1) {
+         return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+           pageInfo: { hasNextPage: true, endCursor: 'CUR' },
+-          nodes: [{ author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
++          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+         } } } } });
+       }
+       return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+         pageInfo: { hasNextPage: false, endCursor: null },
+-        nodes: [{ author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
++        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+       } } } } });
+     };
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+@@ -568,6 +578,68 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       .readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/REVIEW-NO-AUTHOR/);
+   });
+ 
++  test('GraphQL errors reject otherwise-valid top-level and nested connection data', async () => {
++    const partialReviews = makeRunner([['reviews(first', JSON.stringify({
++      errors: [{ message: 'partial review result' }],
++      data: { repository: { pullRequest: { reviews: {
++        pageInfo: { hasNextPage: false, endCursor: null }, nodes: [],
++      } } } },
++    })]]);
++    await expect(new PrStateAdapter({ gh: partialReviews.run, git: partialReviews.run })
++      .readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/GraphQL|error/i);
++
++    const outer = JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
++      pageInfo: { hasNextPage: false, endCursor: null },
++      nodes: [{
++        id: 'T1', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
++        comments: {
++          pageInfo: { hasNextPage: true, endCursor: 'INNER-1' },
++          nodes: [{ fullDatabaseId: '1', author: { login: 'bot' }, body: 'first' }],
++        },
++      }],
++    } } } } });
++    const inner = JSON.stringify({
++      errors: [{ message: 'partial nested result' }],
++      data: { node: { comments: {
++        pageInfo: { hasNextPage: false, endCursor: null },
++        nodes: [{ fullDatabaseId: '2', author: { login: 'human' }, body: 'second' }],
++      } } },
++    });
++    const nested = makeRunner([['id=T1', inner], ['reviewThreads', outer]]);
++    await expect(new PrStateAdapter({ gh: nested.run, git: nested.run })
++      .readComments({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/GraphQL|error/i);
++  });
++
++  test('issue comments and reviews require stable ids plus explicit actor type', async () => {
++    const missingIssueId = makeRunner([['comments(first', JSON.stringify({ data: { repository: { pullRequest: { comments: {
++      pageInfo: { hasNextPage: false, endCursor: null },
++      nodes: [{ author: { __typename: 'Bot', login: 'bot' }, body: '', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:00:00Z' }],
++    } } } } })]]);
++    await expect(new PrStateAdapter({ gh: missingIssueId.run, git: missingIssueId.run })
++      .readIssueComments({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/stable|id/i);
++
++    const missingIssueType = makeRunner([['comments(first', JSON.stringify({ data: { repository: { pullRequest: { comments: {
++      pageInfo: { hasNextPage: false, endCursor: null },
++      nodes: [{ fullDatabaseId: '11', author: { login: 'bot' }, body: '', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:00:00Z' }],
++    } } } } })]]);
++    await expect(new PrStateAdapter({ gh: missingIssueType.run, git: missingIssueType.run })
++      .readIssueComments({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/actor|type/i);
++
++    const missingReviewId = makeRunner([['reviews(first', JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++      pageInfo: { hasNextPage: false, endCursor: null },
++      nodes: [{ author: { __typename: 'Bot', login: 'bot' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: FULL_HEAD } }],
++    } } } } })]]);
++    await expect(new PrStateAdapter({ gh: missingReviewId.run, git: missingReviewId.run })
++      .readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/stable|id/i);
++
++    const missingReviewType = makeRunner([['reviews(first', JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++      pageInfo: { hasNextPage: false, endCursor: null },
++      nodes: [{ id: 'R1', author: { login: 'bot' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: FULL_HEAD } }],
++    } } } } })]]);
++    await expect(new PrStateAdapter({ gh: missingReviewType.run, git: missingReviewType.run })
++      .readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/actor|type/i);
++  });
++
+   test('readHeadCommitTime parses the head commit committedDate to epoch ms', async () => {
+     const iso = '2026-07-12T10:00:00Z';
+     const { run, calls } = makeRunner([['.commits[-1].committedDate', iso]]);
+diff --git a/test/shepherd-merge-safety.test.js b/test/shepherd-merge-safety.test.js
+index 727f5f27..d8947379 100644
+--- a/test/shepherd-merge-safety.test.js
++++ b/test/shepherd-merge-safety.test.js
+@@ -81,6 +81,17 @@ describe('computeVerdict precedence (fail-closed, never false-clean)', () => {
+   test('torn read (head moved) → UNKNOWN', () => {
+     expect(computeVerdict({ ...cleanBase, headOidEnd: 'moved' }).verdict).toBe('UNKNOWN');
+   });
++  test('missing or malformed start/end head evidence → UNKNOWN', () => {
++    const cases = [
++      { headOidStart: null, headOidEnd: HEAD },
++      { headOidStart: HEAD, headOidEnd: null },
++      { headOidStart: 'short', headOidEnd: HEAD },
++      { headOidStart: HEAD, headOidEnd: `${HEAD}00` },
++    ];
++    for (const item of cases) {
++      expect(computeVerdict({ ...cleanBase, ...item }).verdict).toBe('UNKNOWN');
++    }
++  });
+   test('unknown head-push time → not CLEAN (fail-closed)', () => {
+     expect(computeVerdict({ ...cleanBase, headPushKnown: false, headPushTimeMs: null }).verdict).not.toBe('CLEAN-MERGEABLE');
+   });
+@@ -164,7 +175,7 @@ describe('computeVerdict precedence (fail-closed, never false-clean)', () => {
+       mergeStateStatus: 'BLOCKED',
+       headPushTimeMs: NOW - 300 * 1000, headPushKnown: true,
+       botDirectComments: [{ author: 'coderabbitai', createdAt: new Date(NOW - 200 * 1000).toISOString(), commentId: 'IC1' }],
+-      issueComments: [{ author: 'me-bot', createdAt: new Date(NOW - 50 * 1000).toISOString() }],
++      issueComments: [{ author: 'me-bot', authorTypename: 'User', createdAt: new Date(NOW - 50 * 1000).toISOString() }],
+     });
+     expect(out.verdict).toBe('BLOCKED-THREADS');
+     expect(out.evidence.botComments).toContain('IC1');
+@@ -280,7 +291,7 @@ async function gather(spec) {
+   const adapter = makeAdapter(spec);
+   return gatherPullSignal({
+     pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
+-    adapter, runGh: () => '', self: 'shepherd-bot', now: NOW,
++    adapter, runGh: () => '', self: spec.self || 'shepherd-bot', now: NOW,
+   });
+ }
+ 
+@@ -325,7 +336,10 @@ describe('gatherPullSignal verdict integration', () => {
+   test('(F6) settled PR with a PASSING Sonar quality-gate comment → CLEAN-MERGEABLE', async () => {
+     const payload = await gather({
+       mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
+-      issueComments: [{ author: 'sonarqubecloud', body: 'Quality Gate passed', createdAt: new Date(SETTLED).toISOString() }],
++      issueComments: [{
++        author: 'sonarqubecloud', authorTypename: 'Bot', body: sonarCleanSummary(),
++        createdAt: new Date(SETTLED).toISOString(),
++      }],
+     });
+     expect(payload.verdict).toBe('CLEAN-MERGEABLE');
+   });
+@@ -404,7 +418,10 @@ describe('gatherPullSignal verdict integration', () => {
+ 
+   // (e) torn read — head oid moves across the gather.
+   test('(e) head oid changes across gather → not CLEAN (UNKNOWN)', async () => {
+-    const payload = await gather({ headSha: (n) => `sha-${n}`, mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi });
++    const payload = await gather({
++      headSha: (n) => (n === 1 ? HEAD : STALE_HEAD),
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++    });
+     expect(payload.verdict).not.toBe('CLEAN-MERGEABLE');
+     expect(payload.verdict).toBe('UNKNOWN');
+     expect(payload.evidence.tornRead).toBe(true);
+@@ -672,6 +689,73 @@ describe('agnostic classification (no hardcoded bot names, fail-closed)', () =>
+     expect(contradictory.evidence.botComments).toContain('MONITOR-APPEND');
+   });
+ 
++  test('clean Forge monitor headline rejects contradictory thread, check, or behind sections', async () => {
++    const monitor = forgeCleanMonitorSummary();
++    const cases = [
++      monitor.replace(
++        '### Review threads\n✅ No unresolved review threads.',
++        '### Unresolved review threads (1)\n- **reviewer** — 1\n- `lib/a.js:1`',
++      ),
++      monitor.replace(
++        '✅ No failing or pending checks.',
++        '- ❌ **Failing (1):** `ci`',
++      ),
++      monitor.replace('\n---\n', '\n> Branch is **1** commit(s) behind base.\n---\n'),
++    ];
++    for (const [index, body] of cases.entries()) {
++      const id = `MONITOR-CONTRADICTION-${index}`;
++      const payload = await gather({
++        mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++        issueComments: [{
++          id, author: 'github-actions', authorTypename: 'Bot', body,
++          createdAt: new Date(SETTLED + 1000).toISOString(),
++        }],
++      });
++      expect(payload.verdict).toBe('BLOCKED-THREADS');
++      expect(payload.evidence.botComments).toContain(id);
++    }
++  });
++
++  test('bot aliases share one status and self identity while evidence retains stable ids', async () => {
++    const oldFailure = new Date(SETTLED + 1000).toISOString();
++    const newerSuccess = new Date(SETTLED + 2000).toISOString();
++    const superseded = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [
++        {
++          id: 'SONAR-FAIL', author: 'sonarqubecloud', authorTypename: 'Bot',
++          body: 'Quality Gate failed', createdAt: oldFailure,
++        },
++        {
++          id: 'SONAR-SUCCESS', author: 'sonarqubecloud[bot]', authorTypename: 'Bot',
++          body: sonarCleanSummary(), createdAt: newerSuccess,
++        },
++      ],
++    });
++    expect(superseded.verdict).toBe('CLEAN-MERGEABLE');
++
++    const selfSuppressed = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'SELF-ALIAS', author: 'shepherd[bot]', authorTypename: 'Bot', body: 'status surface',
++        createdAt: oldFailure,
++      }],
++      self: 'shepherd',
++    });
++    expect(selfSuppressed.verdict).toBe('CLEAN-MERGEABLE');
++    expect(selfSuppressed.evidence.botComments).toHaveLength(0);
++
++    const failure = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'STATUS-FAIL', author: 'sonarqubecloud[bot]', authorTypename: 'Bot',
++        body: 'Quality Gate failed', createdAt: oldFailure,
++      }],
++    });
++    expect(failure.verdict).toBe('BLOCKED-CHECKS');
++    expect(failure.evidence.botStatusComments).toContain('STATUS-FAIL');
++  });
++
+   test('CodeRabbit completion reply with appended finding remains blocking', async () => {
+     const payload = await gather({
+       mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
+@@ -743,6 +827,92 @@ describe('agnostic classification (no hardcoded bot names, fail-closed)', () =>
+     }
+   });
+ 
++  test('provider clean envelopes consume an exact grammar and unique bounded head marker', async () => {
++    const cases = [
++      {
++        id: 'CR-UNKNOWN-LINE', author: 'coderabbitai[bot]',
++        body: coderabbitCleanSummary(FULL_HEAD).replace(
++          '<!-- tips_end -->',
++          'Concern: unsafe merge path.\n<!-- tips_end -->',
++        ),
++      },
++      {
++        id: 'CR-EMBEDDED-HEAD', author: 'coderabbitai[bot]',
++        body: coderabbitCleanSummary(FULL_HEAD).replace(
++          `Reviewing through ${FULL_HEAD}.`,
++          `Reviewing through 0${FULL_HEAD}f.`,
++        ),
++      },
++      {
++        id: 'CR-DUPLICATE-HEAD', author: 'coderabbitai[bot]',
++        body: coderabbitCleanSummary(FULL_HEAD).replace(
++          '<!-- tips_end -->',
++          `Reviewing through ${FULL_HEAD}.\n<!-- tips_end -->`,
++        ),
++      },
++      {
++        id: 'QODO-UNKNOWN-LINE', author: 'qodo-code-review',
++        body: qodoCleanSummary(FULL_HEAD).replace(
++          '<!-- https://github.com/o/r/commit/',
++          'Concern: unsafe merge path.\n<!-- https://github.com/o/r/commit/',
++        ),
++      },
++      {
++        id: 'QODO-CONTRADICTORY-COUNTS', author: 'qodo-code-review',
++        body: qodoCleanSummary(FULL_HEAD).replace(
++          '<!-- https://github.com/o/r/commit/',
++          '<code>🐞 Bugs (1)</code>\n<!-- https://github.com/o/r/commit/',
++        ),
++      },
++      {
++        id: 'QODO-WRONG-REPOSITORY', author: 'qodo-code-review',
++        body: qodoCleanSummary(FULL_HEAD).replace('github.com/o/r/commit/', 'github.com/other/repo/commit/'),
++      },
++      {
++        id: 'QODO-DUPLICATE-MARKER', author: 'qodo-code-review',
++        body: qodoCleanSummary(FULL_HEAD).replace(
++          '<a href="https://www.qodo.ai">',
++          `<!-- https://github.com/o/r/commit/${FULL_HEAD} -->\n<a href="https://www.qodo.ai">`,
++        ),
++      },
++    ];
++
++    for (const item of cases) {
++      const payload = await gather({
++        headSha: FULL_HEAD,
++        mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++        issueComments: [{
++          ...item, authorTypename: 'Bot', createdAt: new Date(SETTLED + 1000).toISOString(),
++        }],
++      });
++      expect(payload.verdict).toBe('BLOCKED-THREADS');
++      expect(payload.evidence.botComments).toContain(item.id);
++    }
++  });
++
++  test('malformed Qodo clean summary cannot discharge a stale review', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      reviews: [{
++        id: 'STALE-QODO-REVIEW', author: 'qodo-code-review', authorTypename: 'Bot',
++        state: 'COMMENTED', submittedAt: new Date(SETTLED - 1000).toISOString(), commitOid: STALE_HEAD,
++      }],
++      issueComments: [{
++        id: 'MALFORMED-QODO-REFRESH', author: 'qodo-code-review', authorTypename: 'Bot',
++        body: qodoCleanSummary(FULL_HEAD).replace(
++          '<!-- https://github.com/o/r/commit/',
++          '<code>🐞 Bugs (1)</code>\n<!-- https://github.com/o/r/commit/',
++        ),
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('MALFORMED-QODO-REFRESH');
++  });
++
+   // A failing quality-gate COMMENT from a status bot (via buildBotStatusBlockers)
+   // blocks under CHECKS, not threads.
+   test('failing bot-status quality-gate comment → BLOCKED-CHECKS (not THREADS)', async () => {

@@ -1,0 +1,192 @@
+From 94596788115894c88b9bd423abfade5c2a34a642 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 16:35:45 +0530
+Subject: [PATCH] feat(skills): mark explicit invocation skills
+
+---
+ .agents/skills/review/SKILL.md   | 15 ++++-----------
+ .agents/skills/rollback/SKILL.md | 15 ++++-----------
+ .agents/skills/ship/SKILL.md     | 16 ++++------------
+ skills/review/SKILL.md           | 15 ++++-----------
+ skills/rollback/SKILL.md         | 15 ++++-----------
+ skills/ship/SKILL.md             | 16 ++++------------
+ test/skills/context-cost.test.js |  5 +++++
+ 7 files changed, 29 insertions(+), 68 deletions(-)
+
+diff --git a/.agents/skills/review/SKILL.md b/.agents/skills/review/SKILL.md
+index af49dd95..2f53e04a 100644
+--- a/.agents/skills/review/SKILL.md
++++ b/.agents/skills/review/SKILL.md
+@@ -1,17 +1,10 @@
+ ---
+ name: review
++invocation: user
+ description: >
+-  Forge REVIEW stage — drives an already-open PR to all-green by resolving EVERY piece of
+-  feedback: failing GitHub Actions / CI checks, Greptile and CodeRabbit inline comments and
+-  summaries, and the SonarCloud quality gate. It fixes the code, replies to each thread and
+-  marks it resolved until checks pass, then runs the pre-merge doc gate and hands the PR off
+-  for MANUAL merge — never runs `gh pr merge`. Use whenever a PR has review feedback or red
+-  checks: "address the review comments on PR #123", "the bots flagged issues / Greptile score
+-  is low", "fix the failing checks and resolve the threads", "CodeRabbit and SonarCloud left
+-  comments", "get my PR merge-ready". This MUTATING feedback-resolution stage is distinct from
+-  shepherd (only WATCHES an open PR, changes nothing), verify (POST-merge CI health check +
+-  closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
+-  type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
++  Drive an already-open PR's feedback and failing checks to all-green, resolve every thread,
++  run the pre-merge doc gate, then stop for manual merge. Use only when the user asks to
++  address PR feedback or checks; never merges or substitutes for Shepherd monitoring.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ next: verify
+ terminal: false
+diff --git a/.agents/skills/rollback/SKILL.md b/.agents/skills/rollback/SKILL.md
+index c4b24eac..24030623 100644
+--- a/.agents/skills/rollback/SKILL.md
++++ b/.agents/skills/rollback/SKILL.md
+@@ -1,17 +1,10 @@
+ ---
+ name: rollback
++invocation: user
+ description: >
+-  Safely revert or undo a change that is already committed or shipped, using non-destructive
+-  `git revert` (never `reset --hard`, `push --force`, or `clean`). Drives the interactive
+-  `bunx forge rollback` menu: undo the last commit, revert a commit by hash, revert a merged
+-  PR (git revert -m 1), restore individual files to a prior version, revert a commit range, or
+-  dry-run/preview first. Use when the user says roll back, revert, undo, back out, or restore
+-  — e.g. "undo the last commit", "undo that change, the approach was wrong", "back out PR
+-  #123", "revert the merge commit", "restore src/auth.js to before my last commit", or when a
+-  shipped/merged change broke something and must be pulled back. Do NOT use for: replying to
+-  or fixing PR review feedback (review), monitoring an open PR's checks toward merge
+-  (shepherd), the post-merge CI health check on master (verify), pushing a branch or opening a
+-  PR (ship), or ordinary issue status/field edits (issue-basics).
++  Safely undo committed or shipped changes with non-destructive git revert or restore. Use
++  only when the user explicitly asks to roll back, revert, undo, back out, or restore; never
++  reset hard, force-push, or substitute for PR review, monitoring, or issue status work.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ terminal: true
+ ---
+diff --git a/.agents/skills/ship/SKILL.md b/.agents/skills/ship/SKILL.md
+index e0336d75..2352a19b 100644
+--- a/.agents/skills/ship/SKILL.md
++++ b/.agents/skills/ship/SKILL.md
+@@ -1,18 +1,10 @@
+ ---
+ name: ship
++invocation: user
+ description: >
+-  Forge SHIP stage: push the validated feature branch and open a PR populated from the
+-  project's OWN PR template (design-doc link, Forge issue IDs, real test/commit data), then
+-  hand off for MANUAL merge; never merges or auto-merges. Use once /validate passes and you
+-  want a PR on the board. Triggers: "ship it", "ship this branch", "open the PR", "push and
+-  open a PR", "gh pr create", "checks passed, now cut the PR". Runs branch-freshness +
+-  parallel-PR merge-sim checks, force-with-lease push, records the ship->review handoff, then
+-  stops. One stage only; not for: the whole plan->dev->validate->ship->review pipeline or
+-  drive-to-done (smith); type-check/lint/tests/security first (validate); addressing PR
+-  comments or resolving Greptile/SonarCloud/CodeRabbit threads on an existing PR (review);
+-  babysitting an open PR toward merge (shepherd); post-merge CI health check + closing issues
+-  (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
+-  not the skill.
++  Push a validated feature branch and open its PR from the project's template, then stop for
++  manual merge. Use only when the user asks to ship or open the PR after validation; never
++  merges, auto-merges, reviews an existing PR, or replaces end-to-end Smith.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ next: review
+ terminal: false
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index af49dd95..2f53e04a 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -1,17 +1,10 @@
+ ---
+ name: review
++invocation: user
+ description: >
+-  Forge REVIEW stage — drives an already-open PR to all-green by resolving EVERY piece of
+-  feedback: failing GitHub Actions / CI checks, Greptile and CodeRabbit inline comments and
+-  summaries, and the SonarCloud quality gate. It fixes the code, replies to each thread and
+-  marks it resolved until checks pass, then runs the pre-merge doc gate and hands the PR off
+-  for MANUAL merge — never runs `gh pr merge`. Use whenever a PR has review feedback or red
+-  checks: "address the review comments on PR #123", "the bots flagged issues / Greptile score
+-  is low", "fix the failing checks and resolve the threads", "CodeRabbit and SonarCloud left
+-  comments", "get my PR merge-ready". This MUTATING feedback-resolution stage is distinct from
+-  shepherd (only WATCHES an open PR, changes nothing), verify (POST-merge CI health check +
+-  closing issues), ship (pushes the branch + opens the PR), validate (PRE-PR local
+-  type/lint/test/security), and sonarcloud / sonarcloud-analysis (only QUERY SonarCloud data).
++  Drive an already-open PR's feedback and failing checks to all-green, resolve every thread,
++  run the pre-merge doc gate, then stop for manual merge. Use only when the user asks to
++  address PR feedback or checks; never merges or substitutes for Shepherd monitoring.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ next: verify
+ terminal: false
+diff --git a/skills/rollback/SKILL.md b/skills/rollback/SKILL.md
+index c4b24eac..24030623 100644
+--- a/skills/rollback/SKILL.md
++++ b/skills/rollback/SKILL.md
+@@ -1,17 +1,10 @@
+ ---
+ name: rollback
++invocation: user
+ description: >
+-  Safely revert or undo a change that is already committed or shipped, using non-destructive
+-  `git revert` (never `reset --hard`, `push --force`, or `clean`). Drives the interactive
+-  `bunx forge rollback` menu: undo the last commit, revert a commit by hash, revert a merged
+-  PR (git revert -m 1), restore individual files to a prior version, revert a commit range, or
+-  dry-run/preview first. Use when the user says roll back, revert, undo, back out, or restore
+-  — e.g. "undo the last commit", "undo that change, the approach was wrong", "back out PR
+-  #123", "revert the merge commit", "restore src/auth.js to before my last commit", or when a
+-  shipped/merged change broke something and must be pulled back. Do NOT use for: replying to
+-  or fixing PR review feedback (review), monitoring an open PR's checks toward merge
+-  (shepherd), the post-merge CI health check on master (verify), pushing a branch or opening a
+-  PR (ship), or ordinary issue status/field edits (issue-basics).
++  Safely undo committed or shipped changes with non-destructive git revert or restore. Use
++  only when the user explicitly asks to roll back, revert, undo, back out, or restore; never
++  reset hard, force-push, or substitute for PR review, monitoring, or issue status work.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ terminal: true
+ ---
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index e0336d75..2352a19b 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -1,18 +1,10 @@
+ ---
+ name: ship
++invocation: user
+ description: >
+-  Forge SHIP stage: push the validated feature branch and open a PR populated from the
+-  project's OWN PR template (design-doc link, Forge issue IDs, real test/commit data), then
+-  hand off for MANUAL merge; never merges or auto-merges. Use once /validate passes and you
+-  want a PR on the board. Triggers: "ship it", "ship this branch", "open the PR", "push and
+-  open a PR", "gh pr create", "checks passed, now cut the PR". Runs branch-freshness +
+-  parallel-PR merge-sim checks, force-with-lease push, records the ship->review handoff, then
+-  stops. One stage only; not for: the whole plan->dev->validate->ship->review pipeline or
+-  drive-to-done (smith); type-check/lint/tests/security first (validate); addressing PR
+-  comments or resolving Greptile/SonarCloud/CodeRabbit threads on an existing PR (review);
+-  babysitting an open PR toward merge (shepherd); post-merge CI health check + closing issues
+-  (verify); reverting an already-shipped change (rollback). If the PR already exists, this is
+-  not the skill.
++  Push a validated feature branch and open its PR from the project's template, then stop for
++  manual merge. Use only when the user asks to ship or open the PR after validation; never
++  merges, auto-merges, reviews an existing PR, or replaces end-to-end Smith.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ next: review
+ terminal: false
+diff --git a/test/skills/context-cost.test.js b/test/skills/context-cost.test.js
+index 5bf23fd1..3f0e2b44 100644
+--- a/test/skills/context-cost.test.js
++++ b/test/skills/context-cost.test.js
+@@ -68,6 +68,11 @@ describe('skill context cost', () => {
+     for (const skill of skills) assertValidInvocation(skill);
+   });
+ 
++  test('only explicit-use workflow skills are user-invoked', () => {
++    expect(skills.filter((skill) => skill.invocation === 'user').map((skill) => skill.name))
++      .toEqual(['review', 'rollback', 'ship']);
++  });
++
+   test('invalid invocation fails visibly', () => {
+     expect(() => assertValidInvocation({ name: 'invalid', invocation: 'automatic' }))
+       .toThrow('invalid invocation');
+-- 
+2.51.0.windows.1
+

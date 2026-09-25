@@ -1,0 +1,808 @@
+From 4672529154c35e38813e6420022df4330a452d94 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 23:17:56 +0530
+Subject: [PATCH] feat(doctor): add manifest-driven health diagnostics
+
+---
+ lib/commands/doctor.js              | 249 +++++++++++++++++++++++++++-
+ lib/health/doctor-manifest.js       |  97 +++++++++++
+ lib/health/doctor-runner.js         | 143 ++++++++++++++++
+ test/commands/doctor-health.test.js | 118 +++++++++++++
+ test/health/doctor-manifest.test.js |  23 +++
+ test/health/doctor-runner.test.js   |  52 ++++++
+ 6 files changed, 673 insertions(+), 9 deletions(-)
+ create mode 100644 lib/health/doctor-manifest.js
+ create mode 100644 lib/health/doctor-runner.js
+ create mode 100644 test/commands/doctor-health.test.js
+ create mode 100644 test/health/doctor-manifest.test.js
+ create mode 100644 test/health/doctor-runner.test.js
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index d33f3bf1..fced8cf2 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+-// D19 — `forge doctor`: reports the filesystem class of the kernel DB path.
++// `forge doctor` is the bounded, read-only local Health surface. The original
++// D19 filesystem check remains an enforcing diagnostic inside this wider report.
+ //
+ // Auto-discovered + routed by lib/commands/_registry.js (no bin/forge.js edit).
+ // JSON-first, mirrors orient/recap. It is a REPORTER, not the enforcer — the
+@@ -8,9 +9,16 @@
+ // the gate guards (via buildLocalBrokerConfig, which does no I/O) and reports
+ // whether that path is safe, WITHOUT creating any file.
+ 
++const fs = require('node:fs');
++const path = require('node:path');
+ const { buildLocalBrokerConfig } = require('../kernel/broker');
+ const { classifyFilesystem, isUnsafeFsOverrideActive, REMEDIATION } = require('../kernel/fs-class');
+ const memoryRouter = require('../memory/router');
++const {
++	validateCoverageParity,
++	affectedFamilies,
++} = require('../health/doctor-manifest');
++const { SCOPES, runHealthChecks } = require('../health/doctor-runner');
+ 
+ const SCHEMA_VERSION = 1;
+ 
+@@ -96,7 +104,7 @@ function buildMemoryCheck(projectRoot, env) {
+  * @param {string} projectRoot
+  * @param {object} deps - { classifyFilesystem?, env?, gitCommonDir?, execFileSync? }
+  */
+-function buildDoctorReport(projectRoot, deps = {}) {
++function buildFilesystemCheck(projectRoot, deps = {}) {
+ 	const env = deps.env || process.env;
+ 	const classify = deps.classifyFilesystem || classifyFilesystem;
+ 
+@@ -116,7 +124,7 @@ function buildDoctorReport(projectRoot, deps = {}) {
+ 		? (REMEDIATION[classification.remediationKey] || REMEDIATION.unknown)
+ 		: null;
+ 
+-	const check = {
++	return {
+ 		id: 'filesystem-class',
+ 		ok: checkOk,
+ 		databasePath,
+@@ -126,8 +134,12 @@ function buildDoctorReport(projectRoot, deps = {}) {
+ 		remediation,
+ 		overrideActive,
+ 	};
++}
+ 
+-	const memoryCheck = buildMemoryCheck(projectRoot, env);
++function buildDoctorReport(projectRoot, deps = {}) {
++	const check = buildFilesystemCheck(projectRoot, deps);
++
++	const memoryCheck = buildMemoryCheck(projectRoot, deps.env || process.env);
+ 
+ 	return {
+ 		command: 'doctor',
+@@ -139,6 +151,185 @@ function buildDoctorReport(projectRoot, deps = {}) {
+ 	};
+ }
+ 
++function packageFile(...parts) {
++	return path.resolve(__dirname, '..', '..', ...parts);
++}
++
++function buildHealthCheckDefinitions(projectRoot, deps = {}) {
++	return [
++		{
++			id: 'manifest-coverage', version: 1, owner: 'forge.facade', scope: 'core', default: true,
++			affectedCommandFamilies: validateCoverageParity().canonicalFamilies,
++			run: async () => {
++				const parity = validateCoverageParity();
++				return {
++					status: parity.valid ? 'PASS' : 'FAIL',
++					evidence: {
++						canonicalFamilyCount: parity.canonicalFamilies.length,
++						missing: parity.missing,
++						stale: parity.stale,
++						malformed: parity.malformed,
++					},
++					remediation: parity.valid ? '' : 'Add one Health disposition for every missing canonical command family.',
++				};
++			},
++		},
++		{
++			id: 'filesystem-class', version: 1, owner: 'forge.memory', scope: 'core', default: true,
++			affectedCommandFamilies: affectedFamilies('filesystem-class'),
++			run: async () => {
++				const check = buildFilesystemCheck(projectRoot, deps);
++				let status = 'PASS';
++				if (check.riskTier === 'warn' || check.overrideActive) status = 'WARN';
++				if (!check.ok) status = 'FAIL';
++				return {
++					status,
++					evidence: {
++						class: check.class,
++						riskTier: check.riskTier,
++						signal: check.signal,
++						overrideActive: check.overrideActive,
++						platform: deps.platform || process.platform,
++					},
++					remediation: check.remediation || '',
++				};
++			},
++		},
++		{
++			id: 'memory-backend', version: 1, owner: 'forge.memory', scope: 'memory', default: true,
++			affectedCommandFamilies: affectedFamilies('memory-backend'),
++			run: async () => {
++				const check = buildMemoryCheck(projectRoot, deps.env || process.env);
++				return {
++					status: check.ok ? 'PASS' : 'WARN',
++					evidence: { backend: check.backend, detail: check.detail },
++					remediation: check.ok ? '' : 'Repair the selected local memory backend configuration, then re-run Doctor.',
++				};
++			},
++		},
++		{
++			id: 'flow-runtime', version: 1, owner: 'forge.flow', scope: 'flow', default: true,
++			affectedCommandFamilies: affectedFamilies('flow-runtime'),
++			run: async () => {
++				const present = fs.existsSync(packageFile('packages', 'flow', 'package.json'));
++				return {
++					status: present ? 'PASS' : 'INCOMPLETE',
++					evidence: { packagePresent: present },
++					remediation: present ? '' : 'Install a Forge distribution containing the Flow package.',
++				};
++			},
++		},
++		{
++			id: 'integrations-provider', version: 1, owner: 'forge.integrations', scope: 'integrations', default: false,
++			network: true,
++			affectedCommandFamilies: affectedFamilies('integrations-provider'),
++			run: async () => runProviderCheck(deps),
++		},
++		{
++			id: 'release-tooling', version: 1, owner: 'forge.release', scope: 'release', default: true,
++			affectedCommandFamilies: affectedFamilies('release-tooling'),
++			run: async () => {
++				const packageJson = require('../../package.json');
++				const requiredBins = ['forge', 'forge-preflight', 'forge-workflow'];
++				const missingBins = requiredBins.filter(bin => typeof packageJson.bin?.[bin] !== 'string');
++				return {
++					status: missingBins.length === 0 ? 'PASS' : 'FAIL',
++					evidence: { requiredBins, missingBins },
++					remediation: missingBins.length === 0 ? '' : 'Restore the supported Forge compatibility binaries.',
++				};
++			},
++		},
++	];
++}
++
++async function runProviderCheck(deps) {
++	if (typeof deps.providerProbe !== 'function') {
++		return {
++			status: 'INCOMPLETE',
++			evidence: { providerState: 'unsupported', reason: 'no safe provider probe adapter' },
++			remediation: 'Install or configure a supported provider adapter, then re-run with --scope integrations.',
++		};
++	}
++	const probe = await deps.providerProbe();
++	if (probe?.notApplicable) {
++		return { status: 'PASS', evidence: { providerState: 'not-applicable' }, remediation: '' };
++	}
++	if (probe?.supported === false) {
++		return {
++			status: 'INCOMPLETE',
++			evidence: { providerState: 'unsupported', reason: probe.reason || 'unsupported' },
++			remediation: 'Use a provider version with a side-effect-free probe adapter.',
++		};
++	}
++	if (probe?.available === false) {
++		return {
++			status: 'WARN',
++			evidence: { providerState: 'unavailable', reason: probe.reason || 'unavailable' },
++			remediation: 'Check provider availability and credentials outside Doctor, then retry explicitly.',
++		};
++	}
++	if (probe?.failed) {
++		return {
++			status: 'FAIL',
++			evidence: { providerState: 'failed', reason: probe.reason || 'probe failed' },
++			remediation: 'Repair the provider integration and retry the explicit check.',
++		};
++	}
++	return { status: 'PASS', evidence: { providerState: 'available' }, remediation: '' };
++}
++
++function selectHealthChecks(definitions, deps = {}) {
++	const requestedScopes = Array.isArray(deps.scopes) ? deps.scopes : [];
++	if (deps.check) return definitions.filter(check => check.id === deps.check);
++	if (requestedScopes.length > 0) {
++		const selected = new Set(requestedScopes);
++		return definitions.filter(check => selected.has(check.scope));
++	}
++	if (deps.healthChecks) return definitions;
++	return definitions.filter(check => check.default);
++}
++
++async function runDoctorReport(projectRoot, deps = {}) {
++	const definitions = deps.healthChecks || buildHealthCheckDefinitions(projectRoot, deps);
++	const selected = selectHealthChecks(definitions, deps);
++	const execution = await runHealthChecks(selected, { projectRoot }, deps);
++	const status = execution.status;
++	return {
++		schema: 'forge.doctor.v1',
++		schemaVersion: SCHEMA_VERSION,
++		command: 'doctor',
++		status,
++		ok: status === 'PASS' || status === 'WARN',
++		scopes: SCOPES.filter(scope => selected.some(check => check.scope === scope)),
++		durationMs: execution.durationMs,
++		checks: execution.checks,
++	};
++}
++
++function parseSelectors(args = []) {
++	const selectors = { scopes: [], check: null, json: false };
++	for (let index = 0; index < args.length; index += 1) {
++		const arg = args[index];
++		if (arg === '--json') {
++			selectors.json = true;
++			continue;
++		}
++		if (arg === '--scope' || arg.startsWith('--scope=')) {
++			const value = arg.startsWith('--scope=') ? arg.slice('--scope='.length) : args[++index];
++			if (!SCOPES.includes(value)) return { error: `Invalid doctor scope: ${value || '<missing>'}` };
++			selectors.scopes.push(value);
++			continue;
++		}
++		if (arg === '--check' || arg.startsWith('--check=')) {
++			const value = arg.startsWith('--check=') ? arg.slice('--check='.length) : args[++index];
++			if (!value) return { error: 'Unknown doctor check: <missing>' };
++			selectors.check = value;
++		}
++	}
++	selectors.scopes = [...new Set(selectors.scopes)];
++	return selectors;
++}
++
+ function formatCheckLine(check) {
+ 	if (check.id === 'memory-backend') {
+ 		return `${check.ok ? '✓' : '!'} ${check.detail}`;
+@@ -155,6 +346,18 @@ function formatCheckLine(check) {
+ }
+ 
+ function formatReportText(report) {
++	if (report.schema === 'forge.doctor.v1') {
++		const symbols = { PASS: '✓', WARN: '!', FAIL: '✗', INCOMPLETE: '?' };
++		const lines = report.checks.map(check => {
++			const refuse = check.evidence?.riskTier === 'refuse' ? ' REFUSE' : '';
++			return `${symbols[check.status]} [${check.status}] ${check.id} (${check.scope})${refuse} — ${JSON.stringify(check.evidence)}`;
++		});
++		for (const check of report.checks) {
++			if (check.remediation) lines.push(`  remediation: ${check.remediation}`);
++		}
++		lines.push('', `doctor: ${report.status}`);
++		return `${lines.join('\n')}\n`;
++	}
+ 	const lines = report.checks.map(formatCheckLine);
+ 	for (const check of report.checks) {
+ 		if (check.remediation) {
+@@ -166,22 +369,50 @@ function formatReportText(report) {
+ }
+ 
+ async function handler(args, _flags, projectRoot, deps = {}) {
+-	const report = buildDoctorReport(projectRoot, deps);
+-	const output = (args || []).includes('--json')
++	const selectors = parseSelectors(args || []);
++	if (selectors.error) return { success: false, error: selectors.error };
++	const definitions = deps.healthChecks || buildHealthCheckDefinitions(projectRoot, deps);
++	if (selectors.check && !definitions.some(check => check.id === selectors.check)) {
++		return { success: false, error: `Unknown doctor check: ${selectors.check}` };
++	}
++	const selectedDefinition = selectors.check
++		? definitions.find(check => check.id === selectors.check)
++		: null;
++	if (selectedDefinition?.network && !selectors.scopes.includes('integrations')) {
++		return { success: false, error: `Doctor check ${selectors.check} requires --scope integrations.` };
++	}
++	if (selectors.check && selectors.scopes.length > 0) {
++		if (!selectors.scopes.includes(selectedDefinition.scope)) {
++			return { success: false, error: `Doctor check ${selectors.check} is not in the selected scope.` };
++		}
++	}
++	const report = await runDoctorReport(projectRoot, {
++		...deps,
++		scopes: selectors.scopes,
++		check: selectors.check,
++	});
++	const output = selectors.json
+ 		? `${JSON.stringify(report, null, 2)}\n`
+ 		: formatReportText(report);
+ 
+ 	const result = { success: report.ok, output };
+ 	if (!report.ok) {
+-		result.error = `forge doctor found a refuse-class filesystem for the kernel database (${report.checks[0].class}).`;
++		result.error = `forge doctor completed with ${report.status}.`;
+ 	}
+ 	return result;
+ }
+ 
+ module.exports = {
+ 	name: 'doctor',
+-	description: 'Report the filesystem class of the kernel database path (cloud/network/local)',
+-	usage: 'Usage: forge doctor [--json]',
++	description: 'Run bounded local diagnostics (status is orientation; verify is post-merge; dashboard /health is liveness)',
++	usage: 'Usage: forge doctor [--scope <core|memory|flow|integrations|release>] [--check <id>] [--json]',
++	flags: {
++		'--scope <scope>': 'Run one diagnostic scope; provider/network probes require explicit integrations scope',
++		'--check <id>': 'Run one stable Health check id',
++		'--json': 'Emit the versioned forge.doctor.v1 report',
++	},
+ 	handler,
+ 	buildDoctorReport,
++	runDoctorReport,
++	validateCoverageParity,
+ };
+diff --git a/lib/health/doctor-manifest.js b/lib/health/doctor-manifest.js
+new file mode 100644
+index 00000000..b38a736a
+--- /dev/null
++++ b/lib/health/doctor-manifest.js
+@@ -0,0 +1,97 @@
++'use strict';
++
++// Health coverage is intentionally separate from the generated command manifest:
++// the command manifest remains the routing source of truth, while this exhaustive
++// ledger makes any new canonical family fail Doctor parity until it receives a
++// check, a shared dependency check, or a reviewed not-applicable rationale.
++const HEALTH_COVERAGE = Object.freeze({
++  adapter: { checkId: 'integrations-provider' },
++  add: { sharedDependencyCheck: 'filesystem-class' },
++  audit: { sharedDependencyCheck: 'manifest-coverage' },
++  clean: { sharedDependencyCheck: 'filesystem-class' },
++  comment: { sharedDependencyCheck: 'filesystem-class' },
++  control: { sharedDependencyCheck: 'flow-runtime' },
++  dev: { sharedDependencyCheck: 'flow-runtime' },
++  doctor: { notApplicableReason: 'Doctor is the Health orchestrator; recursively diagnosing itself is unsafe.' },
++  explain: { sharedDependencyCheck: 'manifest-coverage' },
++  export: { sharedDependencyCheck: 'filesystem-class' },
++  gate: { sharedDependencyCheck: 'filesystem-class' },
++  hooks: { sharedDependencyCheck: 'filesystem-class' },
++  inbox: { sharedDependencyCheck: 'filesystem-class' },
++  init: { sharedDependencyCheck: 'filesystem-class' },
++  issue: { sharedDependencyCheck: 'filesystem-class' },
++  memory: { checkId: 'memory-backend' },
++  migrate: { sharedDependencyCheck: 'filesystem-class' },
++  new: { sharedDependencyCheck: 'filesystem-class' },
++  options: { sharedDependencyCheck: 'manifest-coverage' },
++  orient: { sharedDependencyCheck: 'filesystem-class' },
++  patch: { sharedDependencyCheck: 'filesystem-class' },
++  plan: { sharedDependencyCheck: 'flow-runtime' },
++  pr: { sharedDependencyCheck: 'release-tooling' },
++  prime: { sharedDependencyCheck: 'filesystem-class' },
++  push: { sharedDependencyCheck: 'flow-runtime' },
++  recap: { sharedDependencyCheck: 'filesystem-class' },
++  recommend: { sharedDependencyCheck: 'manifest-coverage' },
++  release: { checkId: 'release-tooling' },
++  role: { sharedDependencyCheck: 'filesystem-class' },
++  serve: { notApplicableReason: 'Dashboard GET /health owns server liveness; Doctor does not duplicate it.' },
++  setup: { sharedDependencyCheck: 'filesystem-class' },
++  skill: { sharedDependencyCheck: 'flow-runtime' },
++  stage: { sharedDependencyCheck: 'flow-runtime' },
++  status: { notApplicableReason: 'Status is orientation, not diagnostics; Doctor retains the Health boundary.' },
++  sync: { sharedDependencyCheck: 'filesystem-class' },
++  team: { sharedDependencyCheck: 'filesystem-class' },
++  test: { sharedDependencyCheck: 'flow-runtime' },
++  upgrade: { sharedDependencyCheck: 'release-tooling' },
++  validate: { sharedDependencyCheck: 'flow-runtime' },
++  worktree: { sharedDependencyCheck: 'filesystem-class' },
++});
++
++function canonicalCommandFamilies() {
++  // Lazy requires avoid a cycle while the generated manifest is loading doctor.js.
++  const manifest = require('../commands/_manifest');
++  const { isAlias } = require('../commands/_aliases');
++  return manifest.commands
++    .map(entry => entry.module.name)
++    .filter(name => !isAlias(name))
++    .sort();
++}
++
++function hasOneDisposition(disposition) {
++  if (!disposition || typeof disposition !== 'object') return false;
++  const populated = ['checkId', 'sharedDependencyCheck', 'notApplicableReason']
++    .filter(key => typeof disposition[key] === 'string' && disposition[key].trim().length > 0);
++  return populated.length === 1;
++}
++
++function validateCoverageParity(options = {}) {
++  const canonicalFamilies = [...(options.canonicalFamilies || canonicalCommandFamilies())].sort();
++  const coverage = options.coverage || HEALTH_COVERAGE;
++  const declared = Object.keys(coverage).sort();
++  const canonical = new Set(canonicalFamilies);
++  const missing = canonicalFamilies.filter(family => !Object.hasOwn(coverage, family));
++  const stale = declared.filter(family => !canonical.has(family));
++  const malformed = declared.filter(family => !hasOneDisposition(coverage[family]));
++  return {
++    valid: missing.length === 0 && stale.length === 0 && malformed.length === 0,
++    canonicalFamilies,
++    missing,
++    stale,
++    malformed,
++  };
++}
++
++function affectedFamilies(checkId, coverage = HEALTH_COVERAGE) {
++  return Object.entries(coverage)
++    .filter(([, disposition]) => disposition.checkId === checkId
++      || disposition.sharedDependencyCheck === checkId)
++    .map(([family]) => family)
++    .sort();
++}
++
++module.exports = {
++  HEALTH_COVERAGE,
++  canonicalCommandFamilies,
++  validateCoverageParity,
++  affectedFamilies,
++};
+diff --git a/lib/health/doctor-runner.js b/lib/health/doctor-runner.js
+new file mode 100644
+index 00000000..635d05e2
+--- /dev/null
++++ b/lib/health/doctor-runner.js
+@@ -0,0 +1,143 @@
++'use strict';
++
++const SCOPES = Object.freeze(['core', 'memory', 'flow', 'integrations', 'release']);
++const STATUS_WEIGHT = Object.freeze({ PASS: 0, WARN: 1, INCOMPLETE: 2, FAIL: 3 });
++const DEFAULT_PER_CHECK_TIMEOUT_MS = 1000;
++const DEFAULT_GLOBAL_TIMEOUT_MS = 4000;
++const DEFAULT_CONCURRENCY = 4;
++
++const SECRET_PATTERNS = [
++  /gh[pousr]_[A-Za-z0-9]{20,}/g,
++  /sk_(?:live|test)_[A-Za-z0-9]{16,}/g,
++  /sk-[A-Za-z0-9]{16,}/g,
++  /AKIA[0-9A-Z]{16}/g,
++  /\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi,
++];
++const USER_PATH_PATTERNS = [
++  /\b[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/g,
++  /\/(?:Users|home)\/[^/\s]+(?:\/[^\s"']*)?/g,
++];
++
++function redactString(value) {
++  let redacted = String(value).slice(0, 500);
++  for (const pattern of SECRET_PATTERNS) redacted = redacted.replace(pattern, '<redacted>');
++  for (const pattern of USER_PATH_PATTERNS) redacted = redacted.replace(pattern, '<redacted-path>');
++  return redacted;
++}
++
++function sanitize(value, depth = 0) {
++  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
++  if (typeof value === 'string') return redactString(value);
++  if (depth >= 4) return '<bounded>';
++  if (Array.isArray(value)) return value.slice(0, 20).map(item => sanitize(item, depth + 1));
++  if (typeof value !== 'object') return redactString(value);
++
++	const output = {};
++	for (const key of Object.keys(value).sort().slice(0, 30)) {
++		output[key] = /prompt/i.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
++	}
++  return output;
++}
++
++function timeoutResult(reason) {
++  return {
++    status: 'INCOMPLETE',
++    evidence: { reason },
++    remediation: 'Re-run this check explicitly after the unavailable dependency or deadline is resolved.',
++  };
++}
++
++async function runWithTimeout(run, timeoutMs) {
++  let timer;
++  try {
++    return await Promise.race([
++      Promise.resolve().then(run),
++      new Promise(resolve => {
++        timer = setTimeout(() => resolve(timeoutResult('timeout')), timeoutMs);
++      }),
++    ]);
++  } finally {
++    if (timer) clearTimeout(timer);
++  }
++}
++
++function normalizeResult(definition, raw, durationMs) {
++  const status = Object.hasOwn(STATUS_WEIGHT, raw?.status) ? raw.status : 'INCOMPLETE';
++  return {
++    id: definition.id,
++    version: definition.version,
++    owner: definition.owner,
++    scope: definition.scope,
++    affectedCommandFamilies: [...(definition.affectedCommandFamilies || [])].sort(),
++    status,
++    durationMs: Math.max(0, Number(durationMs) || 0),
++    evidence: sanitize(raw?.evidence || { reason: 'check-returned-no-evidence' }),
++    remediation: redactString(raw?.remediation || ''),
++  };
++}
++
++async function runOne(definition, context, options, startedAt) {
++  const now = options.now || Date.now;
++  const globalTimeoutMs = options.globalTimeoutMs || DEFAULT_GLOBAL_TIMEOUT_MS;
++  const elapsed = Math.max(0, now() - startedAt);
++  const remaining = Math.max(1, globalTimeoutMs - elapsed);
++  const timeoutMs = Math.max(1, Math.min(
++    definition.timeoutMs || options.perCheckTimeoutMs || DEFAULT_PER_CHECK_TIMEOUT_MS,
++    remaining,
++  ));
++  const checkStarted = now();
++  let raw;
++  try {
++    raw = await runWithTimeout(() => definition.run(context), timeoutMs);
++  } catch (error) {
++    raw = {
++      status: 'INCOMPLETE',
++      evidence: { reason: 'check-error', message: error?.message || String(error) },
++      remediation: 'Resolve the local diagnostic error and re-run this check.',
++    };
++  }
++  return normalizeResult(definition, raw, now() - checkStarted);
++}
++
++function overallStatus(checks) {
++  return checks.reduce((current, check) => (
++    STATUS_WEIGHT[check.status] > STATUS_WEIGHT[current] ? check.status : current
++  ), 'PASS');
++}
++
++async function runHealthChecks(definitions, context = {}, options = {}) {
++  const now = options.now || Date.now;
++  const startedAt = now();
++  const results = new Array(definitions.length);
++  let nextIndex = 0;
++  const concurrency = Math.max(1, Math.min(
++    Number(options.concurrency) || DEFAULT_CONCURRENCY,
++    definitions.length || 1,
++  ));
++
++  async function worker() {
++    while (nextIndex < definitions.length) {
++      const index = nextIndex;
++      nextIndex += 1;
++      results[index] = await runOne(definitions[index], context, options, startedAt);
++    }
++  }
++
++  await Promise.all(Array.from({ length: concurrency }, () => worker()));
++  const scopeOrder = new Map(SCOPES.map((scope, index) => [scope, index]));
++  results.sort((left, right) => (
++    scopeOrder.get(left.scope) - scopeOrder.get(right.scope) || left.id.localeCompare(right.id)
++  ));
++  return {
++    checks: results,
++    status: overallStatus(results),
++    durationMs: Math.max(0, now() - startedAt),
++  };
++}
++
++module.exports = {
++  SCOPES,
++  runHealthChecks,
++  redactString,
++  sanitize,
++};
+diff --git a/test/commands/doctor-health.test.js b/test/commands/doctor-health.test.js
+new file mode 100644
+index 00000000..c4f69e89
+--- /dev/null
++++ b/test/commands/doctor-health.test.js
+@@ -0,0 +1,118 @@
++'use strict';
++
++const { afterEach, describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const doctor = require('../../lib/commands/doctor');
++
++const tempDirs = [];
++
++function makeProjectRoot(label) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), `forge-doctor-health-${label}-`));
++  tempDirs.push(root);
++  return root;
++}
++
++function localDeps(projectRoot, extra = {}) {
++  return {
++    env: {},
++    gitCommonDir: path.join(projectRoot, '.git'),
++    classifyFilesystem: () => ({
++      class: 'local-ok', riskTier: 'safe', signal: 'none', remediationKey: 'local-ok',
++    }),
++    now: () => 100,
++    ...extra,
++  };
++}
++
++afterEach(() => {
++  while (tempDirs.length > 0) {
++    fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
++  }
++});
++
++describe('forge doctor health report contract', () => {
++  test('returns a versioned PASS report with stable per-check fields', async () => {
++    const root = makeProjectRoot('schema');
++    const report = await doctor.runDoctorReport(root, localDeps(root));
++
++    expect(report.schema).toBe('forge.doctor.v1');
++    expect(report.schemaVersion).toBe(1);
++    expect(report.command).toBe('doctor');
++    expect(report.status).toBe('PASS');
++    expect(report.ok).toBe(true);
++    expect(report.checks.length).toBeGreaterThan(0);
++    for (const check of report.checks) {
++      expect(typeof check.id).toBe('string');
++      expect(check.version).toBe(1);
++      expect(typeof check.owner).toBe('string');
++      expect(['core', 'memory', 'flow', 'integrations', 'release']).toContain(check.scope);
++      expect(Array.isArray(check.affectedCommandFamilies)).toBe(true);
++      expect(['PASS', 'WARN', 'FAIL', 'INCOMPLETE']).toContain(check.status);
++      expect(typeof check.durationMs).toBe('number');
++      expect(check.evidence).toBeDefined();
++      expect(typeof check.remediation).toBe('string');
++    }
++  });
++
++  test('provider/network checks run only under explicit integrations scope', async () => {
++    const root = makeProjectRoot('provider');
++    const defaultReport = await doctor.runDoctorReport(root, localDeps(root));
++    expect(defaultReport.checks.some(check => check.scope === 'integrations')).toBe(false);
++
++    const explicit = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['integrations'],
++      providerProbe: async () => ({ supported: false, reason: 'no safe adapter' }),
++    }));
++    expect(explicit.status).toBe('INCOMPLETE');
++    expect(explicit.checks).toHaveLength(1);
++    expect(explicit.checks[0].id).toBe('integrations-provider');
++    expect(explicit.checks[0].evidence.providerState).toBe('unsupported');
++  });
++
++  test('local filesystem fixtures pass on Windows, macOS, and Linux', async () => {
++    for (const platform of ['win32', 'darwin', 'linux']) {
++      const root = makeProjectRoot(platform);
++      const report = await doctor.runDoctorReport(root, localDeps(root, {
++        platform,
++        scopes: ['core'],
++      }));
++      const filesystem = report.checks.find(check => check.id === 'filesystem-class');
++      expect(filesystem.status).toBe('PASS');
++      expect(filesystem.evidence.platform).toBe(platform);
++    }
++  });
++});
++
++describe('forge doctor selectors and side effects', () => {
++  test('rejects invalid scope and check selectors before running checks', async () => {
++    const root = makeProjectRoot('selectors');
++    const badScope = await doctor.handler(['--scope', 'remote'], {}, root, localDeps(root));
++    expect(badScope.success).toBe(false);
++    expect(badScope.error).toContain('Invalid doctor scope');
++
++    const badCheck = await doctor.handler(['--check=missing-check'], {}, root, localDeps(root));
++    expect(badCheck.success).toBe(false);
++    expect(badCheck.error).toContain('Unknown doctor check');
++
++    const implicitProvider = await doctor.handler(
++      ['--check', 'integrations-provider'], {}, root, localDeps(root),
++    );
++    expect(implicitProvider.success).toBe(false);
++    expect(implicitProvider.error).toContain('requires --scope integrations');
++  });
++
++  test('default execution creates no project or authority files', async () => {
++    const root = makeProjectRoot('no-side-effects');
++    const before = fs.readdirSync(root);
++    const result = await doctor.handler(['--json'], {}, root, localDeps(root));
++    const after = fs.readdirSync(root);
++
++    expect(result.success).toBe(true);
++    expect(before).toEqual([]);
++    expect(after).toEqual([]);
++    expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
++  });
++});
+diff --git a/test/health/doctor-manifest.test.js b/test/health/doctor-manifest.test.js
+new file mode 100644
+index 00000000..4f56e5da
+--- /dev/null
++++ b/test/health/doctor-manifest.test.js
+@@ -0,0 +1,23 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { validateCoverageParity } = require('../../lib/health/doctor-manifest');
++
++describe('Doctor health manifest', () => {
++  test('exhaustively covers every canonical non-alias command family', () => {
++    const parity = validateCoverageParity();
++    expect(parity.valid).toBe(true);
++    expect(parity.missing).toEqual([]);
++    expect(parity.stale).toEqual([]);
++    expect(parity.canonicalFamilies.length).toBeGreaterThan(0);
++    expect(parity.canonicalFamilies).toEqual([...parity.canonicalFamilies].sort());
++  });
++
++  test('fails parity when a canonical command family has no disposition', () => {
++    const parity = validateCoverageParity({
++      canonicalFamilies: ['doctor', 'future-command'],
++    });
++    expect(parity.valid).toBe(false);
++    expect(parity.missing).toEqual(['future-command']);
++  });
++});
+diff --git a/test/health/doctor-runner.test.js b/test/health/doctor-runner.test.js
+new file mode 100644
+index 00000000..d0b777d9
+--- /dev/null
++++ b/test/health/doctor-runner.test.js
+@@ -0,0 +1,52 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { runHealthChecks } = require('../../lib/health/doctor-runner');
++
++function definition(id, scope, affectedCommandFamilies, run, timeoutMs) {
++  return { id, version: 1, owner: 'forge.test', scope, affectedCommandFamilies, run, timeoutMs };
++}
++
++describe('Doctor health runner', () => {
++  test('uses deterministic scope/id and affected-family ordering', async () => {
++    const checks = [
++      definition('z-release', 'release', ['zeta', 'alpha'], async () => ({ status: 'PASS', evidence: { ready: true } })),
++      definition('b-core', 'core', ['doctor'], async () => ({ status: 'PASS', evidence: { ready: true } })),
++      definition('a-core', 'core', ['status'], async () => ({ status: 'PASS', evidence: { ready: true } })),
++    ];
++    const result = await runHealthChecks(checks, {}, { now: () => 100 });
++    expect(result.checks.map(check => check.id)).toEqual(['a-core', 'b-core', 'z-release']);
++    expect(result.checks[2].affectedCommandFamilies).toEqual(['alpha', 'zeta']);
++  });
++
++  test('redacts secrets, prompts, and user-home paths before serialization', async () => {
++    const checks = [definition('redaction', 'core', ['doctor'], async () => ({
++      status: 'WARN',
++      evidence: {
++        token: 'ghp_abcdefghijklmnopqrstuvwxyz123456',
++        path: String.raw`C:\Users\alice\private\config.json`,
++        rawPrompt: 'do the private thing with customer data',
++      },
++      remediation: 'Remove token=super-secret-value from C:\\Users\\alice\\private\\config.json',
++    }))];
++    const result = await runHealthChecks(checks, {}, { now: () => 100 });
++    const serialized = JSON.stringify(result);
++    expect(serialized).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz123456');
++    expect(serialized).not.toContain('super-secret-value');
++    expect(serialized).not.toContain('C:\\\\Users\\\\alice');
++    expect(serialized).not.toContain('do the private thing with customer data');
++    expect(serialized).toContain('<redacted>');
++    expect(serialized).toContain('<redacted-path>');
++  });
++
++  test('maps per-check timeout to INCOMPLETE without hanging', async () => {
++    const checks = [definition('slow-provider', 'integrations', ['adapter'], () => new Promise(() => {}), 5)];
++    const result = await runHealthChecks(checks, {}, {
++      perCheckTimeoutMs: 5,
++      globalTimeoutMs: 20,
++    });
++    expect(result.status).toBe('INCOMPLETE');
++    expect(result.checks[0].status).toBe('INCOMPLETE');
++    expect(result.checks[0].evidence.reason).toBe('timeout');
++  });
++});
+-- 
+2.51.0.windows.1
+

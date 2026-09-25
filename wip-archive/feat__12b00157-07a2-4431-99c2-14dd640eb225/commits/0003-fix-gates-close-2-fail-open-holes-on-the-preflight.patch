@@ -1,0 +1,206 @@
+From 9a5f2ee074521e4f12f14406bb97ece9937762df Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 13:57:02 +0530
+Subject: [PATCH] fix(gates): close 2 fail-open holes on the preflight remedy
+ path (R1/R2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adversarial review of B2 found two PRE-EXISTING fail-open gates that sit
+on the exact remedy path the B2 fix steers users toward:
+
+R1 — runAffectedTests wrapped the test resolver in try/catch and turned
+ANY resolver error into targets=[] => "no affected tests (fast lane)" =>
+PASS. A resolver ERROR now fails the gate (fail-closed), distinct from a
+genuine zero-affected-tests result which still fast-lanes.
+
+R2 — under --all, lint scanned the whole tree but sonar received
+changedFiles=[] => vacuous "no changed JS files" PASS, and affected-tests
+was likewise unscoped. Since the B2 remedy text points fresh-repo users to
+--all, that steered them into a mode with 2 vacuous gates. Now: runSonar
+gains a whole-tree mode (files === null, mirrors runEslint) and buildGates
+scopes sonar to the whole tree under --all; affected-tests is marked an
+explicit SKIP under --all (running the full suite defeats preflight's
+purpose and hangs on Windows — CI runs it), never a vacuous PASS.
+
+Tests: resolver error fails the affected gate; genuine empty still passes;
+--all scopes sonar to whole tree and skips affected (not vacuous green).
+
+Kernel: 12b00157-07a2-4431-99c2-14dd640eb225
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/preflight/gates.js       | 42 ++++++++++++++------
+ test/preflight/gates.test.js | 76 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 107 insertions(+), 11 deletions(-)
+
+diff --git a/lib/preflight/gates.js b/lib/preflight/gates.js
+index f8f4cf18..b827e67e 100644
+--- a/lib/preflight/gates.js
++++ b/lib/preflight/gates.js
+@@ -121,12 +121,15 @@ function runStructural({ projectRoot, spawn = spawnSync, fs = nodeFs } = {}) {
+ }
+ 
+ /**
+- * Gate 3 — SonarCloud parity via eslint-plugin-sonarjs on changed files only,
+- * using an isolated flat config (cognitive-complexity pinned to 15 + the parity
+- * rules) so it never merges with the repo's main eslint config.
++ * Gate 3 — SonarCloud parity via eslint-plugin-sonarjs, using an isolated flat
++ * config (cognitive-complexity pinned to 15 + the parity rules) so it never
++ * merges with the repo's main eslint config.
++ * `files === null` means "scan everything" (whole-tree `--all` mode) — mirrors
++ * runEslint so `--all` never leaves sonar as a vacuous "no changed files" pass.
+  */
+ function runSonar(files, { projectRoot, spawn = spawnSync } = {}) {
+-  const targets = lintableFiles(files);
++  const scanAll = files === null;
++  const targets = scanAll ? ['.'] : lintableFiles(files);
+   if (targets.length === 0) {
+     return { ok: true, summary: 'no changed JS files' };
+   }
+@@ -138,7 +141,7 @@ function runSonar(files, { projectRoot, spawn = spawnSync } = {}) {
+   );
+   return statusSummary(
+     result,
+-    `sonarjs clean (${targets.length} file(s))`,
++    scanAll ? 'sonarjs clean (whole tree)' : `sonarjs clean (${targets.length} file(s))`,
+     'sonarjs parity violations (e.g. cognitive-complexity > 15)',
+   );
+ }
+@@ -159,8 +162,11 @@ function runAffectedTests({
+   let targets;
+   try {
+     targets = resolver() || [];
+-  } catch (_err) {
+-    targets = [];
++  } catch (err) {
++    // A resolver ERROR must NOT masquerade as "no affected tests" (green).
++    // We could not determine what to run, so fail closed — never a vacuous pass.
++    const reason = err && err.message ? err.message : String(err);
++    return { ok: false, summary: `affected-test resolution failed — fail-closed (${reason})` };
+   }
+   if (targets.length === 0) {
+     return { ok: true, summary: 'no affected tests resolved (fast lane)' };
+@@ -194,13 +200,27 @@ function buildGates({ projectRoot, changedFiles = [], runAll = false, deps = {}
+   const sonar = deps.sonar || ((files) => runSonar(files, { projectRoot }));
+   const affected = deps.affected || (() => runAffectedTests({ projectRoot, changedFiles }));
+ 
+-  const lintTargets = runAll ? null : changedFiles;
++  // Under --all, scope BOTH lint and sonar to the whole tree (null). Otherwise
++  // sonar would receive changedFiles=[] and report a vacuous "no changed files"
++  // pass while lint scanned everything — a fail-open hole on the remedy path.
++  const scanTargets = runAll ? null : changedFiles;
++
++  // Affected-tests maps from the change set, which is empty under --all. Running
++  // the WHOLE suite here defeats preflight's fast purpose (and hangs on Windows),
++  // so mark it explicitly not-run — never a vacuous green. CI runs the full suite.
++  const affectedGate = runAll
++    ? async () => ({
++      ok: true,
++      skipped: true,
++      summary: 'whole-tree mode (--all): affected-test mapping N/A — run the full suite (CI does)',
++    })
++    : async () => affected();
+ 
+   return [
+-    { name: 'lint', run: async () => eslint(lintTargets) },
++    { name: 'lint', run: async () => eslint(scanTargets) },
+     { name: 'drift/registry/mirror', run: async () => structural() },
+-    { name: 'sonar (cognitive-complexity=15)', run: async () => sonar(changedFiles) },
+-    { name: 'affected-tests', run: async () => affected() },
++    { name: 'sonar (cognitive-complexity=15)', run: async () => sonar(scanTargets) },
++    { name: 'affected-tests', run: affectedGate },
+   ];
+ }
+ 
+diff --git a/test/preflight/gates.test.js b/test/preflight/gates.test.js
+index 3f213107..d7e55c7c 100644
+--- a/test/preflight/gates.test.js
++++ b/test/preflight/gates.test.js
+@@ -135,6 +135,82 @@ describe('runAffectedTests — real runner (injected)', () => {
+   });
+ });
+ 
++// R1 (B2 follow-up): a resolver ERROR must fail the affected-tests gate, not
++// silently become "no affected tests" (a green gate that checked nothing).
++describe('runAffectedTests — resolver error fails closed (R1)', () => {
++  const { runAffectedTests } = require('../../lib/preflight/gates');
++
++  test('resolver throws => gate FAILs (never a fast-lane pass)', () => {
++    let spawned = false;
++    const res = runAffectedTests({
++      projectRoot: '/x',
++      spawn: () => { spawned = true; return { status: 0 }; },
++      resolveTests: () => { throw new Error('git diff exploded'); },
++    });
++    expect(res.ok).toBe(false);
++    expect(res.summary).toMatch(/fail-closed|resolution failed/i);
++    expect(spawned).toBe(false);
++  });
++
++  test('genuine zero affected tests => fast-lane pass (distinct from error)', () => {
++    const res = runAffectedTests({
++      projectRoot: '/x',
++      spawn: () => ({ status: 0 }),
++      resolveTests: () => [],
++    });
++    expect(res.ok).toBe(true);
++    expect(res.summary).toMatch(/fast lane/i);
++  });
++});
++
++// R2 (B2 follow-up): under --all the remedy mode must not leave sonar/affected
++// as vacuous green gates.
++describe('buildGates --all — no vacuous green gates (R2)', () => {
++  const { runSonar } = require('../../lib/preflight/gates');
++
++  test('sonar is scoped to the whole tree (null), not an empty changed-files list', async () => {
++    const seen = [];
++    const gates = buildGates({
++      projectRoot: '/x',
++      changedFiles: [],
++      runAll: true,
++      deps: {
++        eslint: () => ({ ok: true }),
++        structural: () => ({ ok: true }),
++        sonar: (files) => { seen.push(files); return { ok: true }; },
++        affected: () => ({ ok: true, summary: 'should-not-be-called' }),
++      },
++    });
++    await gates[2].run(); // sonar gate
++    expect(seen[0]).toBeNull();
++  });
++
++  test('affected-tests is explicitly SKIPPED under --all, never a vacuous PASS', async () => {
++    let affectedCalled = false;
++    const gates = buildGates({
++      projectRoot: '/x',
++      changedFiles: [],
++      runAll: true,
++      deps: {
++        eslint: () => ({ ok: true }),
++        structural: () => ({ ok: true }),
++        sonar: () => ({ ok: true }),
++        affected: () => { affectedCalled = true; return { ok: true }; },
++      },
++    });
++    const out = await gates[3].run(); // affected-tests gate
++    expect(out.skipped).toBe(true);
++    expect(affectedCalled).toBe(false);
++    expect(out.summary).toMatch(/--all|full suite/i);
++  });
++
++  test('runSonar(null) scans the whole tree (spawns eslint on ".")', () => {
++    let args;
++    runSonar(null, { projectRoot: '/x', spawn: (_cmd, a) => { args = a; return { status: 0 }; } });
++    expect(args[args.length - 1]).toBe('.');
++  });
++});
++
+ // B2 (N1): the structural gate must not run Forge's OWN internal test paths in a
+ // consumer repo that can never satisfy them.
+ describe('runStructural — consumer-context exclusion (B2)', () => {
+-- 
+2.51.0.windows.1
+

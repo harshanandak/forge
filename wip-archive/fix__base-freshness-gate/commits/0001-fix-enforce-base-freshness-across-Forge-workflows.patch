@@ -1,0 +1,3300 @@
+From 97736a9deeeca1d27c05de8361b0111fecdff45b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 17:11:44 +0530
+Subject: [PATCH] fix: enforce base freshness across Forge workflows
+
+---
+ .agents/skills/dev/SKILL.md                   |   1 +
+ .agents/skills/ship/SKILL.md                  |  16 +-
+ .agents/skills/validate/SKILL.md              |  51 ++---
+ .forge/hooks/check-base-freshness.js          |  14 ++
+ bin/forge-cmd.js                              |   6 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lefthook.yml                                  |   7 +
+ lib/base-freshness-check.js                   |  55 +++++
+ lib/base-freshness.js                         | 156 +++++++++++++
+ lib/commands/dev.js                           |   8 +-
+ lib/commands/push.js                          |  17 ++
+ lib/commands/setup.js                         |  71 +++++-
+ lib/commands/ship.js                          | 166 +++-----------
+ lib/commands/test.js                          |   7 +
+ lib/commands/validate.js                      |  40 +++-
+ lib/freshness-token.js                        |  59 ++++-
+ lib/lefthook-wiring.js                        | 141 +++++++++++-
+ lib/package-root.js                           |   4 +
+ lib/protected-state-authority.js              | 147 +++++++++++-
+ lib/workflow-hook-sync.js                     | 131 +++++++++++
+ scripts/base-freshness-check.js               |   7 +
+ scripts/sync-workflow-hooks.js                |  18 ++
+ scripts/test.js                               |   7 +
+ skills/dev/SKILL.md                           |   1 +
+ skills/ship/SKILL.md                          |  16 +-
+ skills/validate/SKILL.md                      |  51 ++---
+ test/base-freshness-check.test.js             |  32 +++
+ test/base-freshness.test.js                   | 215 ++++++++++++++++++
+ test/commands/dev.test.js                     |  16 +-
+ test/commands/lefthook-user-config.test.js    |   8 +
+ test/commands/push.test.js                    |  54 +++++
+ test/commands/ship.test.js                    | 187 ++++++++++-----
+ test/commands/test.test.js                    |  20 ++
+ test/commands/validate.test.js                |  72 ++++++
+ test/cross-platform-install.test.js           |  11 +
+ test/embedded-assets-drift.test.js            |   5 +
+ test/freshness-token.test.js                  |  41 ++++
+ test/lefthook-wiring.test.js                  | 114 ++++++++++
+ test/package-distribution.test.js             |  14 ++
+ test/protected-state-authority.test.js        | 123 ++++++++++
+ test/scripts/test-runner.test.js              |  21 ++
+ test/setup-hook-verdict.test.js               |   8 +
+ test/setup-native-fallback-wiring.test.js     |  47 ++++
+ test/workflow-hook-sync.test.js               |  26 +++
+ 44 files changed, 1899 insertions(+), 314 deletions(-)
+ create mode 100644 .forge/hooks/check-base-freshness.js
+ create mode 100644 lib/base-freshness-check.js
+ create mode 100644 lib/base-freshness.js
+ create mode 100644 lib/workflow-hook-sync.js
+ create mode 100644 scripts/base-freshness-check.js
+ create mode 100644 scripts/sync-workflow-hooks.js
+ create mode 100644 test/base-freshness-check.test.js
+ create mode 100644 test/base-freshness.test.js
+ create mode 100644 test/workflow-hook-sync.test.js
+
+diff --git a/.agents/skills/dev/SKILL.md b/.agents/skills/dev/SKILL.md
+index e79ac0ea..9ae402e6 100644
+--- a/.agents/skills/dev/SKILL.md
++++ b/.agents/skills/dev/SKILL.md
+@@ -71,6 +71,7 @@ Format for each entry:
+ ```
+ <HARD-GATE: /dev start>
+ Do NOT write any code until ALL confirmed:
++0. `forge dev` fetched the selected remote's live default branch, reported `behind=0`, and found no tracked/index dirt or unresolved conflicts. Untracked files are preserved. Any uncertainty stops dev; update or rebase manually because Forge does not reconcile the worktree.
+ 1. git branch --show-current output is NOT main or master
+ 2. git worktree list shows the worktree path for this feature
+ 3. Task list file confirmed to exist (use Read tool — do not assume)
+diff --git a/.agents/skills/ship/SKILL.md b/.agents/skills/ship/SKILL.md
+index 2352a19b..40499174 100644
+--- a/.agents/skills/ship/SKILL.md
++++ b/.agents/skills/ship/SKILL.md
+@@ -43,20 +43,16 @@ Ensure all four validation checks completed successfully with fresh output in th
+ 
+ ### Step 2: Freshness Check — Is Branch Still Current?
+ 
+-Even though /validate rebased onto the base branch, time may have passed since then (user reviewed design doc, took a break, etc.). This lightweight check catches staleness before pushing.
++Time may have passed since `/validate`. Ship re-discovers the selected remote's live default branch, fetches it, and requires both `behind=0` and validation evidence bound to the exact feature HEAD and fetched base SHA.
+ 
+ ```bash
+-BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+-if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
+-git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify freshness"; exit 1; }
+-BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
++forge ship <feature-slug> "<title>"
+ ```
+ 
+-- If `BEHIND > 0`: **STOP**. Print: "$BASE has advanced since /validate ($BEHIND new commits). Run /validate again to rebase and re-check."
+-- If `BEHIND = 0`: Continue to push.
+-- If fetch fails: the `|| { ...; exit 1; }` guard catches this — **STOP**. Do NOT push without confirming freshness.
++- If the remote/default branch cannot be verified, `behind > 0`, the feature HEAD changed, or the fetched base SHA differs from validation: stop and run `/validate` again after manually updating the branch.
++- When the exact validation evidence still matches: continue to push.
+ 
+-This is NOT a full rebase — just a check. The rebase happens in /validate where the full test suite runs afterward.
++Ship does not reconcile the branch automatically; dirty work and conflicts remain untouched.
+ 
+ ### Parallel PR coordination (soft block)
+ 
+@@ -98,7 +94,7 @@ Do not mark the Forge issue done during `/ship`. Completion happens only after m
+ 
+ ### Step 4: Push Branch
+ 
+-Use `--force-with-lease` because `/validate` may have rebased the branch, rewriting history. This is safe: it only forces the push if the remote branch hasn't been updated by someone else since the last fetch.
++Use `--force-with-lease` only when the branch was manually rebased or rewritten. The lease prevents overwriting a remote branch that advanced since the last fetch.
+ 
+ ```bash
+ git push --force-with-lease -u origin <branch-name>
+diff --git a/.agents/skills/validate/SKILL.md b/.agents/skills/validate/SKILL.md
+index bc164a09..df4a721d 100644
+--- a/.agents/skills/validate/SKILL.md
++++ b/.agents/skills/validate/SKILL.md
+@@ -1,8 +1,8 @@
+ ---
+ name: validate
+ description: >
+-  Forge VALIDATE stage — the pre-pull-request quality gate. Rebases the branch onto the
+-  current base branch, then runs type-checking, linting, code review, an OWASP Top 10 security
++  Forge VALIDATE stage — the pre-pull-request quality gate. Fetches the selected remote's live
++  default branch, refuses a stale base, then runs type-checking, linting, code review, an OWASP Top 10 security
+   review plus dependency scan, and the full test suite, demanding fresh passing output in THIS
+   session before anything ships. Reach for this whenever a branch is code-complete and someone
+   says: validate my changes, run the quality gates, run the pre-PR checks, type-check and lint
+@@ -18,7 +18,7 @@ terminal: false
+ ---
+ 
+ > **Note:** Three things share the "validate" name in Forge:
+-> - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
++> - `/validate` (this command): default-template validation command — requires a freshly fetched base, then runs type/lint/test/security checks
+ > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
+ > - `bun run check` (scripts/validate.js): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
+ 
+@@ -36,49 +36,24 @@ This skill validates all code before creating a pull request.
+ /validate
+ ```
+ 
+-Or use the validation script (checks only — no rebase):
++Or use the validation script (checks only — no base-freshness evidence):
+ 
+ ```bash
+-bun run check    # Runs lint/test/security checks only. Does NOT rebase onto the base branch.
+-                 # Use /validate for the full workflow (rebase + checks).
++bun run check    # Runs lint/test/security checks only.
++                 # Use /validate for the enforced freshness gate + checks.
+ ```
+ 
+ ```
+-<HARD-GATE: /validate entry — rebase onto latest base branch>
++<HARD-GATE: /validate entry — verify the live default branch>
+ Before running ANY validation checks:
+ 
+-0. Resolve the base branch dynamically (do NOT hardcode master or main):
+-   BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+-   if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
++1. Prefer `upstream` when configured; otherwise use `origin`.
++2. Read that remote's live HEAD, then fetch the exact advertised default branch.
++3. Require a named feature branch and `behind=0`. Any discovery, fetch, SHA, or comparison failure blocks validation.
++4. If behind, update or rebase manually and resolve conflicts yourself, then rerun `/validate`.
++5. Invalidate prior validation evidence before checks. After every check passes, record the feature HEAD and fetched base remote, branch, and SHA.
+ 
+-   This handles repos using main, master, or any other default branch.
+-   Falls back to "master" when HEAD is unresolved (detached remote, empty repo).
+-
+-1. Fetch latest base branch:
+-   git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
+-
+-   The `|| { ...; exit 1; }` guard ensures fetch failures are never silently skipped.
+-
+-2. Check if branch is behind:
+-   BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
+-
+-3. If BEHIND > 0:
+-   a. Run: git rebase origin/"$BASE" || REBASE_FAILED=1
+-   b. If rebase succeeds (REBASE_FAILED unset): print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
+-   c. If rebase fails (REBASE_FAILED=1 — conflicts or any other error):
+-      - Capture conflicting files BEFORE aborting: git diff --name-only --diff-filter=U
+-      - Run: git rebase --abort
+-      - Print the captured conflicting file list
+-      - Print: "✗ Rebase conflict — resolve manually, then re-run /validate"
+-      - STOP. Do NOT proceed to any validation checks.
+-
+-4. If BEHIND = 0:
+-   Print "✓ Branch is up-to-date with $BASE" and continue.
+-
+-Rationale: Without this step, validation checks run against stale code that doesn't
+-include recent base branch changes. Integration issues are only caught after the PR is
+-created, wasting CI cycles and review time. Rebasing here ensures /validate results
+-reflect the true state of what will be merged.
++Forge never rebases, merges, resets, stashes, or resolves conflicts in this gate. A later base advance or rewritten feature HEAD invalidates the evidence and requires `/validate` again.
+ </HARD-GATE>
+ ```
+ 
+diff --git a/.forge/hooks/check-base-freshness.js b/.forge/hooks/check-base-freshness.js
+new file mode 100644
+index 00000000..7707eacb
+--- /dev/null
++++ b/.forge/hooks/check-base-freshness.js
+@@ -0,0 +1,14 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const installedImplementation = path.resolve(__dirname, '..', 'lib', 'base-freshness-check.js');
++const sourceImplementation = path.resolve(__dirname, '..', '..', 'lib', 'base-freshness-check.js');
++const implementation = require(fs.existsSync(installedImplementation)
++	? installedImplementation
++	: sourceImplementation);
++
++module.exports = implementation;
++
++if (require.main === module) process.exitCode = implementation.main();
+diff --git a/bin/forge-cmd.js b/bin/forge-cmd.js
+index 2207c72a..f3d2ec3c 100644
+--- a/bin/forge-cmd.js
++++ b/bin/forge-cmd.js
+@@ -358,7 +358,7 @@ async function main() { // NOSONAR S3776
+ 				console.error(`✗ Invalid phase '${positionalArgs[1]}'. Valid phases: red, green, refactor`);
+ 				process.exit(1);
+ 			}
+-			result = await HANDLERS.dev.executeDev(featureName, { phase });
++			result = await HANDLERS.dev.handler([featureName, ...(phase ? [phase] : [])], {}, process.cwd());
+ 			if (result.success) {
+ 				console.log(`✓ TDD Phase: ${result.phase || result.detectedPhase}`);
+ 				if (result.guidance) console.log('\n' + result.guidance);
+@@ -369,7 +369,7 @@ async function main() { // NOSONAR S3776
+ 
+ 		} else if (command === 'validate' || command === 'check') {
+ 			if (command === 'check') console.warn('⚠ "forge check" is deprecated — use "forge validate"');
+-			result = await HANDLERS.validate.executeValidate();
++			result = await HANDLERS.validate.handler([], {}, process.cwd());
+ 			if (result.success) {
+ 				console.log(`✓ ${result.summary}`);
+ 			} else {
+@@ -382,7 +382,7 @@ async function main() { // NOSONAR S3776
+ 			const featureSlug = positionalArgs[0];
+ 			const title = positionalArgs[1];
+ 			const dryRun = args.includes('--dry-run');
+-			result = await HANDLERS.ship.executeShip({ featureSlug, title, dryRun });
++			result = await HANDLERS.ship.handler([featureSlug, title], { '--dry-run': dryRun }, process.cwd());
+ 			if (result.success) {
+ 				console.log(`✓ ${result.message}`);
+ 				if (result.prUrl) console.log(`  PR: ${result.prUrl}`);
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 096e100a..14c54e2f 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -24,7 +24,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/status.js (2)
+   - lines: 368 (bd), 427 (bd)
+ - [ ] lib/commands/validate.js (1)
+-  - lines: 26 (.beads)
++  - lines: 28 (.beads)
+ 
+ ## runtime
+ 
+diff --git a/lefthook.yml b/lefthook.yml
+index c599abc7..13355288 100644
+--- a/lefthook.yml
++++ b/lefthook.yml
+@@ -41,6 +41,13 @@ pre-commit:
+ 
+ pre-push:
+   commands:
++    # Re-fetch the live default branch immediately before every push. This is
++    # intentionally not skipped by the forge-push nonce: the base may advance
++    # while lint/tests run, which must invalidate prior validation evidence.
++    base-freshness:
++      run: node scripts/base-freshness-check.js
++      use_stdin: true
++      tags: freshness
+     # 1. Block direct push to main/master (dual-layer protection)
+     # Uses Node.js for cross-platform compatibility (Windows, macOS, Linux)
+     branch-protection:
+diff --git a/lib/base-freshness-check.js b/lib/base-freshness-check.js
+new file mode 100644
+index 00000000..08ab473e
+--- /dev/null
++++ b/lib/base-freshness-check.js
+@@ -0,0 +1,55 @@
++'use strict';
++
++const fs = require('node:fs');
++const { verifyBaseFreshness } = require('./base-freshness');
++const { readFreshnessToken, isStale } = require('./freshness-token');
++
++function parseUpdates(input = '') {
++	return input.split(/\r?\n/).filter(Boolean).map(line => {
++		const [localRef, localSha, remoteRef, remoteSha] = line.trim().split(/\s+/);
++		return { localRef, localSha, remoteRef, remoteSha };
++	}).filter(update => update.localRef && update.localSha);
++}
++
++function run(projectRoot = process.cwd(), deps = {}, input = '') {
++	const verify = deps.verifyBaseFreshness || verifyBaseFreshness;
++	const readToken = deps.readFreshnessToken || readFreshnessToken;
++	const stale = deps.isFreshnessStale || isStale;
++	const token = readToken(projectRoot);
++	const updates = parseUpdates(input).filter(update => !/^0+$/.test(update.localSha));
++	const targets = updates.length > 0 ? updates : [{}];
++	let freshness;
++	for (const update of targets) {
++		const branchName = update.localRef?.startsWith('refs/heads/')
++			? update.localRef.slice('refs/heads/'.length)
++			: undefined;
++		freshness = verify({
++			cwd: projectRoot,
++			exec: deps.execFileSync,
++			...(update.localSha ? { headRef: update.localSha } : {}),
++			...(branchName ? { branchName } : {}),
++		});
++		if (!freshness.success) return freshness;
++		if (stale(token, projectRoot, freshness)) {
++			return {
++				...freshness,
++				success: false,
++				error: `Validation is stale for ${freshness.baseRef} (${freshness.baseSha}); run forge validate again before pushing.`,
++			};
++		}
++	}
++	return { ...freshness, checkedRefs: targets.length };
++}
++
++function main(projectRoot = process.cwd(), deps = {}) {
++	const input = process.stdin.isTTY ? '' : fs.readFileSync(0, 'utf8');
++	const result = run(projectRoot, deps, input);
++	if (!result.success) {
++		console.error(`Base freshness check failed: ${result.error}`);
++		return 1;
++	}
++	console.log(`Base freshness verified: ${result.baseRef} (${result.baseSha})`);
++	return 0;
++}
++
++module.exports = { main, parseUpdates, run };
+diff --git a/lib/base-freshness.js b/lib/base-freshness.js
+new file mode 100644
+index 00000000..6c833024
+--- /dev/null
++++ b/lib/base-freshness.js
+@@ -0,0 +1,156 @@
++'use strict';
++
++const { execFileSync } = require('node:child_process');
++
++function gitOptions(cwd) {
++	return { encoding: 'utf8', cwd, timeout: 120000, stdio: 'pipe' };
++}
++
++function gitText(exec, args, cwd) {
++	return String(exec('git', args, gitOptions(cwd))).trim();
++}
++
++function resolveBaseRemote(exec = execFileSync, cwd = process.cwd()) {
++	for (const candidate of ['upstream', 'origin']) {
++		try {
++			gitText(exec, ['remote', 'get-url', candidate], cwd);
++			return candidate;
++		} catch (_error) {
++			// Probe the next remote.
++		}
++	}
++	throw new Error('No upstream or origin remote is configured');
++}
++
++function resolveBaseBranch(exec = execFileSync, cwd = process.cwd(), remoteName = resolveBaseRemote(exec, cwd)) {
++	const output = gitText(exec, ['ls-remote', '--symref', remoteName, 'HEAD'], cwd);
++	const match = /^ref:\s+refs\/heads\/(.+)\s+HEAD$/m.exec(output);
++	if (!match?.[1]) {
++		throw new Error(`Remote '${remoteName}' did not advertise a default branch`);
++	}
++	return match[1];
++}
++
++function refreshBaseReference(exec = execFileSync, cwd = process.cwd(), remoteName, baseBranch) {
++	gitText(exec, [
++		'fetch', '--quiet', '--no-tags', remoteName,
++		`refs/heads/${baseBranch}:refs/remotes/${remoteName}/${baseBranch}`,
++	], cwd);
++}
++
++function failure(context, error, extra = {}) {
++	return { success: false, ...context, ...extra, error };
++}
++
++function discoverBase(options, exec, cwd) {
++	try {
++		const baseRemote = options.baseRemote || resolveBaseRemote(exec, cwd);
++		const baseBranch = options.baseBranch || resolveBaseBranch(exec, cwd, baseRemote);
++		return { baseRemote, baseBranch, baseRef: `${baseRemote}/${baseBranch}` };
++	} catch (error) {
++		return failure({}, `Unable to discover the tracked default branch. Git said: ${error.message}`);
++	}
++}
++
++function resolveBranchName(options, exec, cwd, context) {
++	try {
++		const branchName = options.branchName
++			|| gitText(exec, ['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
++		if (!branchName || branchName === 'HEAD') {
++			return failure({ ...context, branchName: branchName || 'HEAD' }, 'Current HEAD is detached. Check out a feature branch before continuing.');
++		}
++		return { ...context, branchName };
++	} catch (error) {
++		return failure(context, `Unable to resolve the current branch. Git said: ${error.message}`);
++	}
++}
++
++function refreshBase(exec, cwd, context) {
++	try {
++		refreshBaseReference(exec, cwd, context.baseRemote, context.baseBranch);
++		return context;
++	} catch (error) {
++		return failure(context, `Unable to refresh ${context.baseRef} before comparing branch readiness. Git said: ${error.message}`);
++	}
++}
++
++function resolveComparedCommits(exec, cwd, context, headRef) {
++	try {
++		return {
++			...context,
++			baseSha: gitText(exec, ['rev-parse', '--verify', `${context.baseRef}^{commit}`], cwd),
++			headSha: gitText(exec, ['rev-parse', '--verify', `${headRef}^{commit}`], cwd),
++		};
++	} catch (error) {
++		return failure(context, `Unable to resolve the fetched base or HEAD commit. Git said: ${error.message}`);
++	}
++}
++
++function resolveDivergence(exec, cwd, context, headRef) {
++	let counts;
++	try {
++		counts = gitText(exec, ['rev-list', '--left-right', '--count', `${context.baseRef}...${headRef}`], cwd);
++	} catch (error) {
++		return failure(context, `Unable to compare the current branch against ${context.baseRef}. Git said: ${error.message}`);
++	}
++	const match = /^(\d+)\s+(\d+)$/.exec(counts);
++	if (!match) return failure(context, `Unable to parse divergence from ${context.baseRef}: ${JSON.stringify(counts)}`);
++	return {
++		...context,
++		behind: Number.parseInt(match[1], 10),
++		ahead: Number.parseInt(match[2], 10),
++	};
++}
++
++function verifyCleanWorktree(exec, cwd, context) {
++	let conflictedFiles;
++	let status;
++	try {
++		conflictedFiles = gitText(exec, ['diff', '--name-only', '--diff-filter=U'], cwd).split(/\r?\n/).filter(Boolean);
++		status = gitText(exec, ['status', '--porcelain=v1', '--untracked-files=all'], cwd);
++	} catch (error) {
++		return failure(context, `Unable to verify whether the worktree is clean. Git said: ${error.message}`);
++	}
++	if (conflictedFiles.length > 0) {
++		return failure(context, `The working tree has unresolved conflicts: ${conflictedFiles.join(', ')}. Resolve them manually; Forge did not modify the worktree.`, { conflictedFiles });
++	}
++	const blockingStatus = status.split(/\r?\n/).filter(Boolean)
++		.filter(line => line !== '?? .forge/config.yaml');
++	return blockingStatus.length > 0
++		? failure(context, 'The working tree is dirty. Commit or stash it explicitly before beginning dev; Forge did not modify the worktree.')
++		: context;
++}
++
++/**
++ * Fetch and verify the selected remote's live default branch without changing
++ * the worktree. This function never rebases, merges, resets, checks out, or cleans.
++ */
++function verifyBaseFreshness(options = {}) {
++	const exec = options.exec || execFileSync;
++	const cwd = options.cwd || process.cwd();
++	const headRef = options.headRef || 'HEAD';
++	let context = discoverBase(options, exec, cwd);
++	if (context.success === false) return context;
++	context = resolveBranchName(options, exec, cwd, context);
++	if (context.success === false) return context;
++	context = refreshBase(exec, cwd, context);
++	if (context.success === false) return context;
++	context = resolveComparedCommits(exec, cwd, context, headRef);
++	if (context.success === false) return context;
++	context = resolveDivergence(exec, cwd, context, headRef);
++	if (context.success === false) return context;
++	if (options.requireClean) context = verifyCleanWorktree(exec, cwd, context);
++	if (context.success === false) return context;
++	if (context.behind > 0) {
++		return failure(context, `Current branch ${context.branchName} is ${context.behind} commit(s) behind ${context.baseRef}. Rebase manually, resolve conflicts yourself, then rerun the command.`);
++	}
++
++	return { success: true, ...context };
++}
++
++module.exports = {
++	resolveBaseRemote,
++	resolveBaseBranch,
++	refreshBaseReference,
++	verifyBaseFreshness,
++};
+diff --git a/lib/commands/dev.js b/lib/commands/dev.js
+index 0bc1ae1e..3031e0de 100644
+--- a/lib/commands/dev.js
++++ b/lib/commands/dev.js
+@@ -11,6 +11,7 @@
+ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { verifyBaseFreshness } = require('../base-freshness');
+ const { recordAndLabelSubagentAuditEvent } = require('../audit-evidence');
+ 
+ function getExecOptions() {
+@@ -694,7 +695,7 @@ function parseDevHandlerInput(rawArgs = [], rawFlags = {}) {
+ module.exports = {
+ 	name: 'dev',
+ 	description: 'Run the TDD development stage with phase guidance',
+-	handler: async (args, flags = {}) => {
++	handler: async (args, flags = {}, projectRoot = process.cwd(), deps = {}) => {
+ 		const parsed = parseDevHandlerInput(args, flags);
+ 		if (parsed.error) {
+ 			return {
+@@ -712,6 +713,10 @@ module.exports = {
+ 			};
+ 		}
+ 
++		const verify = deps.verifyBaseFreshness || verifyBaseFreshness;
++		const freshness = verify({ cwd: projectRoot, exec: deps.execFileSync, requireClean: true });
++		if (!freshness.success) return freshness;
++
+ 		const result = await executeDev(featureName, {
+ 			...(phase ? { phase } : {}),
+ 			audit: true,
+@@ -727,6 +732,7 @@ module.exports = {
+ 
+ 		return {
+ 			...result,
++			baseFreshness: freshness,
+ 			output: lines.join('\n'),
+ 		};
+ 	},
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 47a9a9d5..a3b2f40c 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -6,6 +6,8 @@ const path = require('node:path');
+ const forgeToken = require('../../scripts/check-forge-token');
+ const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../../scripts/test');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
++const { verifyBaseFreshness } = require('../base-freshness');
++const { readFreshnessToken, isStale } = require('../freshness-token');
+ 
+ const isWindows = process.platform === 'win32';
+ 
+@@ -247,6 +249,20 @@ module.exports = {
+ 
+ 		const quickMode = !!(flags && (flags['--quick'] || flags.quick));
+ 		const pkgManager = detectPackageManager(projectRoot, existsFn);
++		const verify = deps?.verifyBaseFreshness || verifyBaseFreshness;
++		const freshness = verify({ cwd: projectRoot, exec: execFn });
++		if (!freshness.success) {
++			log(`Base freshness check failed - push aborted. ${freshness.error}`);
++			return { success: false, quickMode, lintPassed: false, pushed: false, error: freshness.error };
++		}
++
++		const readValidation = deps?.readFreshnessToken || readFreshnessToken;
++		const stale = deps?.isFreshnessStale || isStale;
++		if (stale(readValidation(projectRoot), projectRoot, freshness)) {
++			const error = `Validation is stale for ${freshness.baseRef} (${freshness.baseSha}); run forge validate again before pushing.`;
++			log(error);
++			return { success: false, quickMode, lintPassed: false, pushed: false, error };
++		}
+ 
+ 		// Step 1: Branch protection
+ 		const branchOk = runBranchProtection(execFn, projectRoot, log);
+@@ -303,6 +319,7 @@ module.exports = {
+ 
+ 		return {
+ 			success: true,
++			checkedBaseSha: freshness.baseSha,
+ 			quickMode,
+ 			lintPassed: true,
+ 			...(quickMode ? {} : { testsPassed: true }),
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 534090d6..03f1c001 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -94,6 +94,8 @@ const { detectHusky, migrateHusky } = require('../husky-migration');
+ const {
+   issueGeneratedHarnessClaudeAuthorization,
+   completeGeneratedHarnessClaudeAuthorization,
++  issueSetupWorkflowAuthorization,
++  completeSetupWorkflowAuthorization,
+ } = require('../protected-state-authority');
+ 
+ // --- Module-level state (deferred from ForgeContext migration) ---
+@@ -722,6 +724,7 @@ async function repairRuntimeReadiness(selectedAgents = null, options = {}) {
+     }
+     if (options.installHooks !== false) {
+       installGitHooks();
++      await authorizeSetupWorkflowHooks(targetRoot);
+     }
+ 
+     return {
+@@ -2832,7 +2835,7 @@ async function handleHuskyMigration() {
+ // hooks pointing at an adapter that was never installed.
+ function installForgeHookScripts() {
+   const targetHooks = path.join(projectRoot, '.forge/hooks');
+-  for (const name of ['check-tdd.js', 'forge-native-hook.js']) {
++  for (const name of ['check-tdd.js', 'check-base-freshness.js', 'forge-native-hook.js']) {
+     const src = path.join(getPackageRoot(packageDir), '.forge/hooks', name);
+     if (!fs.existsSync(src)) continue;
+     if (!fs.existsSync(targetHooks)) fs.mkdirSync(targetHooks, { recursive: true });
+@@ -2846,6 +2849,55 @@ function installForgeHookScripts() {
+       }
+     }
+   }
++  const targetLib = path.join(projectRoot, '.forge/lib');
++  for (const name of ['base-freshness.js', 'base-freshness-check.js', 'freshness-token.js']) {
++    const src = path.join(getPackageRoot(packageDir), 'lib', name);
++    if (!fs.existsSync(src)) continue;
++    if (!fs.existsSync(targetLib)) fs.mkdirSync(targetLib, { recursive: true });
++    const dest = path.join(targetLib, name);
++    if (copyFile(src, dest)) console.log(`  ✓ Created .forge/lib/${name}`);
++  }
++}
++
++async function authorizeSetupWorkflowHooks(root = projectRoot) {
++  const sourceHead = resolveCurrentSourceHead(root);
++  if (!/^[0-9a-f]{40,64}$/.test(sourceHead)) return { success: false, reason: 'no-source-head' };
++  const actor = process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'unknown';
++  const authorized = [];
++  for (const relativePath of ['lefthook.yml', '.forge/hooks/check-base-freshness.js']) {
++    const target = path.join(root, relativePath);
++    if (!fs.existsSync(target)) continue;
++    const content = fs.readFileSync(target);
++    const authorization = await issueSetupWorkflowAuthorization(root, {
++      actor,
++      path: relativePath,
++      content,
++      sourceHead,
++      sourceCommand: 'forge setup',
++    });
++    const setupOwnsContent = relativePath === '.forge/hooks/check-base-freshness.js'
++      || content.equals(Buffer.from(FORGE_USER_LEFTHOOK_YML))
++      || content.equals(Buffer.from(FORGE_USER_LEFTHOOK_YML_NO_TDD));
++    if (!authorization.success) {
++      if (setupOwnsContent) {
++        throw new Error(`Could not authorize setup workflow ${relativePath}: ${authorization.error}`);
++      }
++      continue;
++    }
++    const completion = await completeSetupWorkflowAuthorization(root, {
++      actor,
++      path: relativePath,
++      content,
++      sourceHead,
++      sourceCommand: 'forge setup',
++      capabilityId: authorization.capabilityId,
++    });
++    if (!completion.success) {
++      throw new Error(`Could not complete setup workflow authorization for ${relativePath}: ${completion.error}`);
++    }
++    authorized.push(relativePath);
++  }
++  return { success: true, authorized, sourceHead };
+ }
+ 
+ // FORGE_USER_LEFTHOOK_YML and forgeShouldWriteLefthookConfig are the single source of
+@@ -2940,6 +2992,15 @@ function describeHookEnforcement(root = projectRoot) {
+ function buildHookVerdict(verdict, state, options = {}) {
+   const loud = options.loud === true;
+   const tddActive = !state || state.tddActive !== false;
++  if (!verdict.active && verdict.required === 'base-freshness') {
++    return {
++      message: loud
++        ? `\n  ERROR: BASE FRESHNESS ENFORCEMENT IS NOT ACTIVE\n    ${verdict.reason}.\n    Add the Forge pre-push freshness job or rerun forge setup after preserving your custom lefthook.yml.`
++        : `  WARNING: Base freshness enforcement is NOT active: ${verdict.reason}.`,
++      level: loud ? 'error' : 'warn',
++      exitFailure: loud,
++    };
++  }
+   if (verdict.active) {
+     if (tddActive) {
+       return {
+@@ -3586,6 +3647,7 @@ async function ensureGitHooksInstalled(targetRoot = projectRoot) {
+     autoInstallLefthook();
+     await handleHuskyMigration();
+     installGitHooks();
++    await authorizeSetupWorkflowHooks(targetRoot);
+     return { installed: true };
+   } finally {
+     projectRoot = previousRoot;
+@@ -3653,6 +3715,7 @@ async function quickSetup(selectedAgents, skipExternal, options = {}) {
+     console.log('Skipping git and harness hooks (--skills-only).');
+   } else {
+     installGitHooks({ loud: true });
++    await authorizeSetupWorkflowHooks();
+   }
+ 
+   // Configure external services with defaults (unless skipped)
+@@ -4113,6 +4176,10 @@ function dryRunSetup(agents, options = {}) { // NOSONAR — Extracted as-is from
+   if (options.skillsOnly !== true) {
+     addFileAction('lefthook.yml', 'Git hook configuration');
+     addFileAction('.forge/hooks/check-tdd.js', 'TDD enforcement hook');
++    addFileAction('.forge/hooks/check-base-freshness.js', 'Base freshness pre-push hook');
++    addFileAction('.forge/lib/base-freshness.js', 'Base freshness runtime');
++    addFileAction('.forge/lib/base-freshness-check.js', 'Base freshness hook implementation');
++    addFileAction('.forge/lib/freshness-token.js', 'Validation evidence runtime');
+     addFileAction('.forge/hooks/forge-native-hook.js', 'Native-hook enforcement adapter (Claude/Cursor)');
+   }
+ 
+@@ -4189,6 +4256,7 @@ async function executeSetup(config) {
+     console.log('Skipping git and harness hooks (--skills-only).');
+   } else {
+     installGitHooks({ loud: true });
++    await authorizeSetupWorkflowHooks();
+   }
+ 
+   // External services (unless skipped)
+@@ -4629,6 +4697,7 @@ module.exports = {
+   FORGE_USER_LEFTHOOK_YML,
+   applyExistingGateDeferral,
+   installGitHooks,
++  authorizeSetupWorkflowHooks,
+   setupClaudeMcpConfig,
+   setupCursorMcpConfig,
+   setupClaudePermissions,
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 44f21049..e2dd2388 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -14,6 +14,8 @@ const path = require('node:path');
+ 
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
++const { verifyBaseFreshness, resolveBaseRemote, resolveBaseBranch } = require('../base-freshness');
++const { readFreshnessToken, isStale } = require('../freshness-token');
+ 
+ const AUTO_SHEPHERD_RAIL = 'rail.auto_shepherd';
+ 
+@@ -61,130 +63,18 @@ function getGitExecOptions(cwd = process.cwd()) {
+ 	return { ...getExecOptions(), cwd };
+ }
+ 
+-function getQuietGitExecOptions(cwd = process.cwd()) {
+-	return { ...getGitExecOptions(cwd), stdio: 'pipe' };
+-}
+-
+-function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remoteName) {
+-	try {
+-		const symbolicRef = exec('git', ['symbolic-ref', `refs/remotes/${remoteName}/HEAD`], getQuietGitExecOptions(cwd)).trim();
+-		if (!symbolicRef) {
+-			return null;
+-		}
+-		exec('git', ['rev-parse', '--verify', symbolicRef], getQuietGitExecOptions(cwd));
+-		return symbolicRef;
+-	} catch (_error) {
+-		return null;
+-	}
+-}
+-
+-function remoteHasTrackingBase(exec = execFileSync, cwd = process.cwd(), remoteName) {
+-	if (resolveRemoteHeadTarget(exec, cwd, remoteName)) {
+-		return true;
+-	}
+-
+-	for (const candidate of ['main', 'master']) {
+-		try {
+-			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietGitExecOptions(cwd));
+-			return true;
+-		} catch (_error) {
+-			// Probe next candidate.
+-		}
+-	}
+-
+-	return false;
+-}
+-
+-function resolveBaseRemote(exec = execFileSync, cwd = process.cwd()) {
+-	for (const candidate of ['upstream', 'origin']) {
+-		try {
+-			exec('git', ['remote', 'get-url', candidate], getQuietGitExecOptions(cwd));
+-			if (remoteHasTrackingBase(exec, cwd, candidate)) {
+-				return candidate;
+-			}
+-		} catch (_error) {
+-			// Probe next candidate.
+-		}
+-	}
+-
+-	return 'origin';
+-}
+-
+-function resolveBaseBranch(exec = execFileSync, cwd = process.cwd(), remoteName = resolveBaseRemote(exec, cwd)) {
+-	const symbolicRef = resolveRemoteHeadTarget(exec, cwd, remoteName);
+-	if (symbolicRef) {
+-		const match = new RegExp(`^refs/remotes/${remoteName}/(.+)$`).exec(symbolicRef);
+-		if (match && match[1]) {
+-			return match[1];
+-		}
+-	}
+-
+-	for (const candidate of ['main', 'master']) {
+-		try {
+-			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietGitExecOptions(cwd));
+-			return candidate;
+-		} catch (_error) {
+-			// Probe next candidate.
+-		}
+-	}
+-
+-	return 'master';
+-}
+-
+-function refreshBaseReference(exec = execFileSync, cwd = process.cwd(), remoteName, baseBranch) {
+-	exec(
+-		'git',
+-		['fetch', '--quiet', '--no-tags', remoteName, `refs/heads/${baseBranch}:refs/remotes/${remoteName}/${baseBranch}`],
+-		getQuietGitExecOptions(cwd),
+-	);
+-}
+-
+ function getBranchReadiness(options = {}) {
+ 	const exec = options.exec || execFileSync;
+ 	const cwd = options.cwd || process.cwd();
+-	const baseRemote = options.baseRemote || resolveBaseRemote(exec, cwd);
+-	const baseBranch = options.baseBranch || resolveBaseBranch(exec, cwd, baseRemote);
+-	const baseRef = `${baseRemote}/${baseBranch}`;
+-	const branchName = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], getGitExecOptions(cwd)).trim();
+-
+-	if (!branchName || branchName === 'HEAD') {
+-		return {
+-			ready: false,
+-			branchName: branchName || 'HEAD',
+-			baseRemote,
+-			baseBranch,
+-			error: 'Current HEAD is detached. Check out a feature branch before running /ship.',
+-		};
+-	}
+-
+-	try {
+-		refreshBaseReference(exec, cwd, baseRemote, baseBranch);
+-	} catch (error) {
+-		return {
+-			ready: false,
+-			branchName,
+-			baseRemote,
+-			baseBranch,
+-			error: `Unable to refresh ${baseRef} before comparing branch readiness. Verify that remote '${baseRemote}' and branch '${baseBranch}' can be fetched. Git said: ${error.message}`,
+-		};
+-	}
+-
+-	let counts;
+-	try {
+-		counts = exec('git', ['rev-list', '--left-right', '--count', `${baseRef}...HEAD`], getGitExecOptions(cwd)).trim();
+-	} catch (error) {
+-		return {
+-			ready: false,
+-			branchName,
+-			baseRemote,
+-			baseBranch,
+-			error: `Unable to compare the current branch against ${baseRef}. Verify that remote '${baseRemote}' and branch '${baseBranch}' exist. Git said: ${error.message}`,
+-		};
+-	}
+-
+-	const [behindRaw = '0', aheadRaw = '0'] = counts.split(/\s+/);
+-	const behind = Number.parseInt(behindRaw, 10) || 0;
+-	const ahead = Number.parseInt(aheadRaw, 10) || 0;
++	const verify = options.verifyBaseFreshness || verifyBaseFreshness;
++	const freshness = verify({
++		cwd,
++		exec,
++		...(options.baseRemote ? { baseRemote: options.baseRemote } : {}),
++		...(options.baseBranch ? { baseBranch: options.baseBranch } : {}),
++	});
++	if (!freshness.success) return { ready: false, ...freshness };
++	const { baseRemote, baseBranch, baseRef, branchName, ahead, behind } = freshness;
+ 
+ 	let hasDiff = false;
+ 	try {
+@@ -221,11 +111,7 @@ function getBranchReadiness(options = {}) {
+ 
+ 	return {
+ 		ready: true,
+-		branchName,
+-		baseRemote,
+-		baseBranch,
+-		ahead,
+-		behind,
++		...freshness,
+ 	};
+ }
+ 
+@@ -456,7 +342,15 @@ function validatePRTitle(title) {
+ }
+ 
+ async function createPR(options) { // NOSONAR S3776
+-	const { title, body, dryRun = false, exec = execFileSync, cwd = process.cwd() } = options;
++	const {
++		title,
++		body,
++		dryRun = false,
++		exec = execFileSync,
++		cwd = process.cwd(),
++		readValidation = readFreshnessToken,
++		isValidationStale = isStale,
++	} = options;
+ 	const titleValidation = validatePRTitle(title);
+ 	if (!titleValidation.valid) return { success: false, error: titleValidation.error };
+ 	try {
+@@ -483,16 +377,23 @@ async function createPR(options) { // NOSONAR S3776
+ 		void error_;
+ 		return { success: false, error: 'No git remote configured. Add with: git remote add origin <url>' };
+ 	}
++	let readiness;
+ 	try {
+-		const readiness = getBranchReadiness({ exec, cwd });
++		readiness = getBranchReadiness({ exec, cwd });
+ 		if (!readiness.ready) {
+ 			return { success: false, error: readiness.error };
+ 		}
++		if (isValidationStale(readValidation(cwd), cwd, readiness)) {
++			return {
++				success: false,
++				error: `Validation is stale for ${readiness.baseRef} (${readiness.baseSha}); run forge validate again before shipping.`,
++			};
++		}
+ 	} catch (error) {
+ 		return { success: false, error: `Failed to verify branch readiness: ${error.message}` };
+ 	}
+ 	if (dryRun) {
+-		return { success: true, message: '[DRY RUN] Would create PR with title: ' + title, prUrl: 'https://github.com/owner/repo/pull/1' };
++		return { success: true, checkedBaseSha: readiness.baseSha, message: '[DRY RUN] Would create PR with title: ' + title, prUrl: 'https://github.com/owner/repo/pull/1' };
+ 	}
+ 	try {
+ 		const result = exec('gh', ['pr', 'create', '--title', title, '--body', body], getGitExecOptions(cwd));  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
+@@ -500,7 +401,7 @@ async function createPR(options) { // NOSONAR S3776
+ 		const prUrl = urlMatch ? urlMatch[0] : null;
+ 		const numberMatch = /\/pull\/(\d+)/.exec(result);
+ 		const prNumber = numberMatch ? Number.parseInt(numberMatch[1], 10) : null;
+-		return { success: true, prUrl, prNumber, output: result };
++		return { success: true, checkedBaseSha: readiness.baseSha, prUrl, prNumber, output: result };
+ 	} catch (error) {
+ 		// Check for timeout
+ 		if (error.killed && error.signal === 'SIGTERM') {
+@@ -558,7 +459,7 @@ async function executeShip(options) {
+ 	}
+ 
+ 	try {
+-		const researchPath = path.join(process.cwd(), 'docs', 'research', `${featureSlug}.md`);
++		const researchPath = path.join(projectRoot, 'docs', 'research', `${featureSlug}.md`);
+ 		let researchContent = null;
+ 		let decisions = [];
+ 		let testScenarios = [];
+@@ -585,11 +486,12 @@ async function executeShip(options) {
+ 			testScenarios,
+ 			coverage,
+ 		});
+-		const result = await createPr({ title, body: prBody, dryRun });
++		const result = await createPr({ title, body: prBody, dryRun, cwd: projectRoot });
+ 		if (!result.success) return result;
+ 		maybeTriggerShepherdAfterShip({ dryRun, projectRoot, fireAndForget: trigger });
+ 		return {
+ 			success: true,
++			checkedBaseSha: result.checkedBaseSha,
+ 			prUrl: result.prUrl,
+ 			prNumber: result.prNumber,
+ 			message: dryRun ? 'Dry run successful - PR body generated' : `Pull request created successfully: ${result.prUrl}`,
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index b6b35cfd..8509e5be 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -54,6 +54,13 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'lib/skill-eval.js': ['test/skill-eval.test.js', 'test/skill-accuracy.test.js'],
+ 	'lib/upgrade-safety.js': ['test/commands/upgrade.test.js'],
+ 	'scripts/test.js': ['test/scripts/test-runner.test.js'],
++	'scripts/base-freshness-check.js': ['test/base-freshness.test.js', 'test/freshness-token.test.js'],
++	'scripts/sync-workflow-hooks.js': ['test/protected-state-authority.test.js', 'test/base-freshness.test.js'],
++	'.forge/hooks/check-base-freshness.js': ['test/base-freshness.test.js', 'test/freshness-token.test.js'],
++	'lib/base-freshness.js': ['test/base-freshness.test.js'],
++	'lib/base-freshness-check.js': ['test/base-freshness-check.test.js', 'test/base-freshness.test.js', 'test/freshness-token.test.js'],
++	'lib/freshness-token.js': ['test/freshness-token.test.js', 'test/base-freshness.test.js'],
++	'lib/workflow-hook-sync.js': ['test/workflow-hook-sync.test.js', 'test/protected-state-authority.test.js', 'test/base-freshness.test.js'],
+ 	// `bun.lock` is deliberately absent: a dependency change can break anything,
+ 	// so it stays on the full-suite lane.
+ 	// lefthook.yml is the repository's hook wiring, so this must also cover the
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index cfe57492..24c05475 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -11,6 +11,8 @@
+ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { verifyBaseFreshness } = require('../base-freshness');
++const { writeFreshnessToken, clearFreshnessToken } = require('../freshness-token');
+ const { secureExecFileSync } = require('../shell-utils');
+ 
+ // Constants
+@@ -841,15 +843,47 @@ function executeDebugMode({ fixAttempts = 0, claim } = {}) {
+ module.exports = {
+ 	name: 'validate',
+ 	description: 'Run validation checks across type, lint, security, and tests',
+-	handler: async () => {
+-		const result = await executeValidate();
++	handler: async (_args, _flags, projectRoot = process.cwd(), deps = {}) => {
++		const clearToken = deps.clearFreshnessToken || clearFreshnessToken;
++		try {
++			clearToken(projectRoot);
++		} catch (error) {
++			return { success: false, summary: 'Checks failed: validationEvidence', error: `Unable to invalidate prior validation evidence: ${error.message}` };
++		}
++
++		const verify = deps.verifyBaseFreshness || verifyBaseFreshness;
++		const freshness = verify({ cwd: projectRoot, exec: deps.execFileSync });
++		if (!freshness.success) {
++			return {
++				...freshness,
++				checks: { baseFreshness: freshness },
++				failedChecks: ['baseFreshness'],
++				summary: `Checks failed: baseFreshness (${freshness.error})`,
++			};
++		}
++		const runValidation = deps.executeValidate || executeValidate;
++		const result = await runValidation({ rootDir: projectRoot });
+ 		if (!result.success) {
+ 			return result;
+ 		}
++		try {
++			const writeToken = deps.writeFreshnessToken || writeFreshnessToken;
++			writeToken(projectRoot, freshness);
++		} catch (error) {
++			return {
++				success: false,
++				checks: { ...result.checks, baseFreshness: freshness },
++				failedChecks: ['validationEvidence'],
++				summary: 'Checks failed: validationEvidence',
++				error: `Unable to record validation against ${freshness.baseSha}: ${error.message}`,
++			};
++		}
+ 
+ 		return {
+ 			...result,
+-			output: result.summary,
++			baseFreshness: freshness,
++			checkedBaseSha: freshness.baseSha,
++			output: `${result.summary}\nValidated base: ${freshness.baseRef} (${freshness.baseSha})`,
+ 		};
+ 	},
+ 	runTypeCheck,
+diff --git a/lib/freshness-token.js b/lib/freshness-token.js
+index 12fa68b7..1a5346be 100644
+--- a/lib/freshness-token.js
++++ b/lib/freshness-token.js
+@@ -1,8 +1,8 @@
+ /**
+  * Freshness Token — Validate/Ship stage freshness state
+  *
+- * Tracks whether `main` has moved forward since /validate ran,
+- * so /ship can warn if validation results are stale.
++ * Binds successful validation to its branch, HEAD, selected remote default
++ * branch, and freshly fetched base commit.
+  *
+  * Token file: `<projectRoot>/.forge-freshness` (ephemeral, gitignored)
+  *
+@@ -11,6 +11,7 @@
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const crypto = require('node:crypto');
+ const { execFileSync } = require('node:child_process');
+ 
+ const TOKEN_FILENAME = '.forge-freshness';
+@@ -74,25 +75,39 @@ function getMergeBase(projectRoot) {
+ /**
+  * Write a freshness token to `<projectRoot>/.forge-freshness`.
+  *
+- * Records the current branch, base commit (merge-base HEAD main),
+- * and a timestamp so /ship can detect if validation is stale.
++ * Records strict fetched-base evidence when provided. The legacy no-evidence
++ * form remains for callers that only need the merge-base token API.
+  *
+  * @param {string} projectRoot - Absolute path to the project root.
+  * @returns {{ timestamp: number, branch: string, baseCommit: string }} The written token.
+  * @throws {Error} If git merge-base fails (no common ancestor, detached HEAD, etc.)
+  */
+-function writeFreshnessToken(projectRoot) {
+-  const branch = getCurrentBranch(projectRoot);
+-  const baseCommit = getMergeBase(projectRoot);
++function writeFreshnessToken(projectRoot, freshness) {
++  const branch = freshness?.branchName || getCurrentBranch(projectRoot);
++  const baseCommit = freshness?.baseSha || getMergeBase(projectRoot);
+ 
+   const token = {
++    version: 1,
+     timestamp: Date.now(),
+     branch,
+-    baseCommit
++    baseCommit,
++    ...(freshness ? {
++      headCommit: freshness.headSha,
++      baseRemote: freshness.baseRemote,
++      baseBranch: freshness.baseBranch,
++      baseRef: freshness.baseRef
++    } : {})
+   };
+ 
+   const tokenPath = path.join(projectRoot, TOKEN_FILENAME);
+-  fs.writeFileSync(tokenPath, JSON.stringify(token, null, 2), 'utf8');
++  const tempPath = `${tokenPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
++  try {
++    fs.writeFileSync(tempPath, JSON.stringify(token, null, 2), { encoding: 'utf8', mode: 0o600 });
++    fs.renameSync(tempPath, tokenPath);
++  } catch (error) {
++    try { fs.unlinkSync(tempPath); } catch (_cleanupError) { /* best effort */ }
++    throw error;
++  }
+ 
+   return token;
+ }
+@@ -115,24 +130,43 @@ function readFreshnessToken(projectRoot) {
+   }
+ }
+ 
++function clearFreshnessToken(projectRoot) {
++  const tokenPath = path.join(projectRoot, TOKEN_FILENAME);
++  try {
++    fs.unlinkSync(tokenPath);
++  } catch (error) {
++    if (error.code !== 'ENOENT') throw error;
++  }
++}
++
+ /**
+  * Check if a freshness token is stale.
+  *
+  * A token is stale when:
+  * - It is null (missing or corrupted)
+- * - The current merge-base differs from the token's baseCommit
+- *   (meaning main has moved forward since validation)
++ * - Any strict fetched-base evidence differs from the validation evidence
++ * - With legacy callers, the current merge-base differs from baseCommit
+  * - git merge-base fails (can't verify freshness)
+  *
+  * @param {{ timestamp: number, branch: string, baseCommit: string } | null} token
+  * @param {string} projectRoot - Absolute path to the project root.
+  * @returns {boolean} True if validation results are stale and should be re-run.
+  */
+-function isStale(token, projectRoot) {
++function isStale(token, projectRoot, freshness) {
+   if (token === null) {
+     return true;
+   }
+ 
++  if (freshness) {
++    return token.version !== 1
++      || token.branch !== freshness.branchName
++      || token.headCommit !== freshness.headSha
++      || token.baseCommit !== freshness.baseSha
++      || token.baseRemote !== freshness.baseRemote
++      || token.baseBranch !== freshness.baseBranch
++      || token.baseRef !== freshness.baseRef;
++  }
++
+   try {
+     const currentBase = getMergeBase(projectRoot);
+     return currentBase !== token.baseCommit;
+@@ -144,5 +178,6 @@ function isStale(token, projectRoot) {
+ module.exports = {
+   writeFreshnessToken,
+   readFreshnessToken,
++  clearFreshnessToken,
+   isStale
+ };
+diff --git a/lib/lefthook-wiring.js b/lib/lefthook-wiring.js
+index 351122ef..d695d56b 100644
+--- a/lib/lefthook-wiring.js
++++ b/lib/lefthook-wiring.js
+@@ -25,6 +25,7 @@
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const YAML = require('yaml');
+ // Shared secure spawner: resolves the command to its absolute path (which/where.exe)
+ // before executing, so we never search a potentially-writable PATH for `git` (S4036).
+ const { secureExecFileSync } = require('./shell-utils');
+@@ -51,6 +52,9 @@ pre-commit:
+ 
+ pre-push:
+   commands:
++    forge-base-freshness:
++      run: node .forge/hooks/check-base-freshness.js
++      use_stdin: true
+     tests:
+       run: npm test --if-present
+ `;
+@@ -65,6 +69,9 @@ const FORGE_USER_LEFTHOOK_YML_NO_TDD = `# Forge git hooks — installed by \`for
+ 
+ pre-push:
+   commands:
++    forge-base-freshness:
++      run: node .forge/hooks/check-base-freshness.js
++      use_stdin: true
+     tests:
+       run: npm test --if-present
+ `;
+@@ -220,6 +227,7 @@ fi
+ ${FORGE_NATIVE_HOOK_SENTINEL}
+ # Fallback pre-push gate used when the lefthook binary is unavailable. Runs your test
+ # script before pushing (a no-op when the project has none).
++node ".forge/hooks/check-base-freshness.js" || exit 1
+ npm test --if-present || exit 1
+ `,
+ };
+@@ -284,6 +292,16 @@ function isLefthookGeneratedHook(content) {
+   return LEFTHOOK_GENERATED_MARKERS.some((marker) => content.includes(marker));
+ }
+ 
++function hookInvokesLefthook(content, hookName) {
++  const invocation = new RegExp(
++    `^(?:call_lefthook|(?:\\S*[\\\\/])?lefthook(?:\\.exe|\\.bat)?)\\s+run\\s+["']?${hookName}["']?(?:\\s|$)`
++  );
++  return content.split(/\r?\n/)
++    .map(line => line.trim())
++    .filter(line => line && !line.startsWith('#'))
++    .some(line => invocation.test(line));
++}
++
+ // Write a single native hook. A pre-existing hook that is not Forge's own is ALWAYS backed
+ // up to `<hook>.forge-backup` first (once), so a user's hook is never destroyed without a
+ // copy — whether we preserve it (skip) or overwrite a disposable lefthook-generated one.
+@@ -372,6 +390,117 @@ function gateScriptStatus(projectRoot) {
+   return { ok: true };
+ }
+ 
++function readableRuntimeStatus(projectRoot, relativePaths) {
++  for (const relativePath of relativePaths) {
++    const absolutePath = path.join(projectRoot, relativePath);
++    try {
++      const stat = fs.statSync(absolutePath);
++      if (!stat.isFile()) return { ok: false, reason: `base freshness runtime is not a regular file: ${relativePath}` };
++      fs.accessSync(absolutePath, fs.constants.R_OK);
++    } catch {
++      return { ok: false, reason: `base freshness runtime is missing or unreadable: ${relativePath}` };
++    }
++  }
++  return { ok: true };
++}
++
++function freshnessRuntimeStatus(projectRoot) {
++  return readableRuntimeStatus(projectRoot, [
++    path.join('.forge', 'hooks', 'check-base-freshness.js'),
++    path.join('.forge', 'lib', 'base-freshness.js'),
++    path.join('.forge', 'lib', 'base-freshness-check.js'),
++    path.join('.forge', 'lib', 'freshness-token.js'),
++  ]);
++}
++
++function repositoryFreshnessRuntimeStatus(projectRoot) {
++  return readableRuntimeStatus(projectRoot, [
++    path.join('scripts', 'base-freshness-check.js'),
++    path.join('lib', 'base-freshness.js'),
++    path.join('lib', 'base-freshness-check.js'),
++    path.join('lib', 'freshness-token.js'),
++  ]);
++}
++
++function freshnessRunTarget(run) {
++  if (typeof run !== 'string') return null;
++  const match = /^node(?:\.exe)?\s+["']?([^"'\s]+)["']?\s*$/.exec(run.trim());
++  const target = match?.[1]?.replaceAll('\\', '/');
++  if (target === '.forge/hooks/check-base-freshness.js') return 'installed';
++  if (target === 'scripts/base-freshness-check.js') return 'repository';
++  return null;
++}
++
++function lefthookFreshnessStatus(projectRoot) {
++  const configPath = path.join(projectRoot, 'lefthook.yml');
++  let config;
++  try {
++    config = YAML.parse(fs.readFileSync(configPath, 'utf8'));
++  } catch (error) {
++    return { ok: false, reason: `cannot verify lefthook pre-push base freshness: ${error.message}` };
++  }
++  const prePush = config?.['pre-push'];
++  const configuredJobs = [
++    ...(prePush?.commands && typeof prePush.commands === 'object' ? Object.values(prePush.commands) : []),
++    ...(Array.isArray(prePush?.jobs) ? prePush.jobs : []),
++  ];
++  const job = configuredJobs.find(command => freshnessRunTarget(command?.run));
++  if (!job || job.use_stdin !== true) {
++    return { ok: false, reason: 'pre-push base freshness job with use_stdin: true is missing from lefthook.yml' };
++  }
++  return freshnessRunTarget(job.run) === 'repository'
++    ? repositoryFreshnessRuntimeStatus(projectRoot)
++    : freshnessRuntimeStatus(projectRoot);
++}
++
++function lefthookPrePushStatus(hooksDir) {
++  const prePush = path.join(hooksDir, 'pre-push');
++  let body;
++  try {
++    body = fs.readFileSync(prePush, 'utf8');
++  } catch (error) {
++    return { ok: false, reason: `lefthook pre-push shim is missing or unreadable: ${error.message}` };
++  }
++  if (!hookInvokesLefthook(body, 'pre-push')) {
++    return { ok: false, reason: 'pre-push shim does not invoke lefthook' };
++  }
++  return { ok: true };
++}
++
++function nativeFreshnessStatus(projectRoot, hooksDir) {
++  const prePush = path.join(hooksDir, 'pre-push');
++  let body;
++  try {
++    body = fs.readFileSync(prePush, 'utf8');
++  } catch (error) {
++    return { ok: false, reason: `pre-push base freshness hook is missing or unreadable: ${error.message}` };
++  }
++  if (!body.includes('.forge/hooks/check-base-freshness.js')) {
++    return { ok: false, reason: 'pre-push hook does not invoke the base freshness gate' };
++  }
++  return freshnessRuntimeStatus(projectRoot);
++}
++
++function prePushFreshnessStatus(projectRoot, hooksDir) {
++  const prePush = path.join(hooksDir, 'pre-push');
++  let body;
++  try {
++    body = fs.readFileSync(prePush, 'utf8');
++  } catch (error) {
++    return { ok: false, method: 'none', reason: `pre-push base freshness hook is missing or unreadable: ${error.message}` };
++  }
++  if (body.includes(FORGE_NATIVE_HOOK_SENTINEL)
++    || body.includes('.forge/hooks/check-base-freshness.js')) {
++    return { ...nativeFreshnessStatus(projectRoot, hooksDir), method: 'native' };
++  }
++  if (hookInvokesLefthook(body, 'pre-push')) {
++    const shim = lefthookPrePushStatus(hooksDir);
++    if (!shim.ok) return { ...shim, method: 'lefthook' };
++    return { ...lefthookFreshnessStatus(projectRoot), method: 'lefthook' };
++  }
++  return { ok: false, method: 'unknown', reason: 'pre-push hook does not invoke the base freshness gate' };
++}
++
+ /**
+  * Report — honestly — whether git hooks are actually active for the project, so
+  * `forge setup` can fail LOUDLY instead of silently no-op'ing. A hook counts as
+@@ -386,6 +515,16 @@ function verifyHooksActive(projectRoot) {
+   if (!hooksDir) {
+     return { active: false, method: 'none', reason: 'not a git repository' };
+   }
++  const freshness = prePushFreshnessStatus(projectRoot, hooksDir);
++  if (!freshness.ok) {
++    return {
++      active: false,
++      method: freshness.method,
++      required: 'base-freshness',
++      reason: freshness.reason,
++      hook: path.join(hooksDir, 'pre-push'),
++    };
++  }
+   const preCommit = path.join(hooksDir, 'pre-commit');
+   if (!fs.existsSync(preCommit)) {
+     return { active: false, method: 'none', reason: 'no pre-commit hook installed' };
+@@ -411,7 +550,7 @@ function verifyHooksActive(projectRoot) {
+     }
+     return { active: true, method: 'native', hook: preCommit };
+   }
+-  if (body.includes('lefthook')) {
++  if (hookInvokesLefthook(body, 'pre-commit')) {
+     return { active: true, method: 'lefthook', hook: preCommit };
+   }
+   return {
+diff --git a/lib/package-root.js b/lib/package-root.js
+index 757cc40b..b8ddff97 100644
+--- a/lib/package-root.js
++++ b/lib/package-root.js
+@@ -70,6 +70,10 @@ const ASSET_ROOTS = Object.freeze([
+   'CODING_STANDARDS.md',
+   '.claude/scripts',
+   '.forge/hooks',
++  'lib/base-freshness.js',
++  'lib/base-freshness-check.js',
++  'lib/freshness-token.js',
++  'lib/workflow-hook-sync.js',
+   'scripts',
+ ]);
+ 
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 3ec6d997..25f94d56 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -18,12 +18,37 @@ const PROTECTED_STATE_AUTHORIZATION_ORIGIN = 'cli';
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+ const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
+ const CLAUDE_SETUP_SOURCE_COMMAND = 'forge setup';
++const SETUP_WORKFLOW_SOURCE_COMMAND = 'scripts/sync-workflow-hooks.js';
++
++function setupWorkflowWriter(pathname, sourceCommand = SETUP_WORKFLOW_SOURCE_COMMAND) {
++	if (![CLAUDE_SETUP_SOURCE_COMMAND, SETUP_WORKFLOW_SOURCE_COMMAND].includes(sourceCommand)) return null;
++	const operationPrefix = sourceCommand === CLAUDE_SETUP_SOURCE_COMMAND ? 'install' : 'sync';
++	if (pathname === 'lefthook.yml') {
++		return {
++			sourceCommand,
++			issueOperation: `${operationPrefix}_lefthook_config`,
++			completionOperation: `${operationPrefix}_lefthook_config_completed`,
++		};
++	}
++	if (pathname === '.forge/hooks/check-base-freshness.js') {
++		return {
++			sourceCommand,
++			issueOperation: `${operationPrefix}_base_freshness_hook`,
++			completionOperation: `${operationPrefix}_base_freshness_hook_completed`,
++		};
++	}
++	return null;
++}
+ 
+ function isValidGitObjectId(value) {
+ 	return typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+ }
+ 
+-function owningWriter(pathname, surface) {
++function owningWriter(pathname, surface, sourceCommand) {
++	if (surface === 'workflows') {
++		const setupWriter = setupWorkflowWriter(pathname, sourceCommand);
++		if (setupWriter) return setupWriter;
++	}
+ 	if (surface === 'workflows' && pathname === '.github/workflows/npm-publish.yml') {
+ 		return {
+ 			sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
+@@ -48,6 +73,37 @@ function owningWriter(pathname, surface) {
+ 	return null;
+ }
+ 
++function setupWorkflowContentMatches(projectRoot, params, options = {}) {
++	const normalizedPath = normalizeRepoPath(params.path);
++	const content = Buffer.from(params.content || '');
++	const {
++		BASE_FRESHNESS_HOOK_PATH,
++		LEFTHOOK_PATH,
++		renderBaseFreshnessHookEntrypoint,
++		renderRepositoryLefthook,
++	} = require('./workflow-hook-sync');
++	if (normalizedPath === BASE_FRESHNESS_HOOK_PATH) {
++		return content.equals(Buffer.from(renderBaseFreshnessHookEntrypoint()));
++	}
++	if (normalizedPath !== LEFTHOOK_PATH) return false;
++	const { FORGE_USER_LEFTHOOK_YML, FORGE_USER_LEFTHOOK_YML_NO_TDD } = require('./lefthook-wiring');
++	if (params.sourceCommand === CLAUDE_SETUP_SOURCE_COMMAND) {
++		return content.equals(Buffer.from(FORGE_USER_LEFTHOOK_YML))
++			|| content.equals(Buffer.from(FORGE_USER_LEFTHOOK_YML_NO_TDD));
++	}
++	const runGit = options.execFileSync || require('node:child_process').execFileSync;
++	try {
++		const baseContent = runGit('git', ['show', `${params.sourceHead}:lefthook.yml`], {
++			cwd: projectRoot,
++			encoding: 'utf8',
++			stdio: ['ignore', 'pipe', 'pipe'],
++		});
++		return content.equals(Buffer.from(renderRepositoryLefthook(baseContent)));
++	} catch {
++		return false;
++	}
++}
++
+ function resolveWorktreeScope(projectRoot, deps = {}) {
+ 	const resolved = path.resolve(projectRoot);
+ 	const realpath = deps.realpathSync || fs.realpathSync.native;
+@@ -141,7 +197,7 @@ function evaluateAuthorization(request, rows = []) {
+ 		return blockedDecision(request, 'Protected-state authority is ambiguous because multiple unconsumed authorizations exist; failing closed.');
+ 	}
+ 	const latest = active[0];
+-	const writer = owningWriter(latest.path, latest.surface);
++	const writer = owningWriter(latest.path, latest.surface, latest.sourceCommand);
+ 
+ 	const structurallyValid =
+ 		writer !== null &&
+@@ -633,6 +689,91 @@ async function completeGeneratedHarnessSkillAuthorization(projectRoot, params =
+ 	}
+ }
+ 
++async function issueSetupWorkflowAuthorization(projectRoot, params = {}, options = {}) {
++	const normalizedPath = normalizeRepoPath(params.path);
++	const sourceCommand = params.sourceCommand || SETUP_WORKFLOW_SOURCE_COMMAND;
++	const writer = setupWorkflowWriter(normalizedPath, sourceCommand);
++	if (!writer || !isValidGitObjectId(params.sourceHead)
++		|| !setupWorkflowContentMatches(projectRoot, { ...params, path: normalizedPath, sourceCommand }, options)) {
++		return {
++			success: false,
++			error: 'Setup workflow authorization requires exact command-generated bytes and a full source HEAD.',
++		};
++	}
++	return issueProtectedStateAuthorization(projectRoot, {
++		actor: params.actor,
++		surface: 'workflows',
++		path: normalizedPath,
++		content: params.content,
++		operation: writer.issueOperation,
++		viaForgeApi: true,
++		sourceCommand: writer.sourceCommand,
++		sourceHead: params.sourceHead,
++	}, options);
++}
++
++async function completeSetupWorkflowAuthorization(projectRoot, params = {}, options = {}) {
++	const normalizedPath = normalizeRepoPath(params.path);
++	const sourceCommand = params.sourceCommand || SETUP_WORKFLOW_SOURCE_COMMAND;
++	const writer = setupWorkflowWriter(normalizedPath, sourceCommand);
++	if (!writer || !isValidGitObjectId(params.sourceHead) || !params.capabilityId
++		|| !setupWorkflowContentMatches(projectRoot, { ...params, path: normalizedPath, sourceCommand }, options)) {
++		return {
++			success: false,
++			error: 'Setup workflow completion requires an exact active authorization and command-generated bytes.',
++		};
++	}
++	const actor = params.actor;
++	const contentHash = hashProtectedContent(params.content);
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
++	const entityId = authorizationEntityId(worktreeScope, normalizedPath);
++	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
++	try {
++		const rows = await kernel.driver.listKernelEvents(PROTECTED_STATE_ENTITY_TYPE, entityId, {}, kernel.config);
++		const { exactIssued, consumed } = findExactAuthorization(rows, params, {
++			actor,
++			entityId,
++			path: normalizedPath,
++			surface: 'workflows',
++			contentHash,
++			worktreeScope,
++			operation: writer.issueOperation,
++			writeIntent: 'update',
++			sourceCommand: writer.sourceCommand,
++		});
++		if (!exactIssued || consumed) {
++			return { success: false, error: 'Setup workflow completion does not match one active exact authorization.' };
++		}
++		const inserted = await kernel.driver.insertKernelEvent({
++			entity_type: PROTECTED_STATE_ENTITY_TYPE,
++			entity_id: entityId,
++			event_type: PROTECTED_STATE_WRITE_COMPLETED,
++			idempotency_key: `${PROTECTED_STATE_WRITE_COMPLETED}:${params.capabilityId}`,
++			expected_revision: 0,
++			actor,
++			origin: PROTECTED_STATE_AUTHORIZATION_ORIGIN,
++			payload: {
++				version: PROTECTED_STATE_AUTHORIZATION_VERSION,
++				capabilityId: params.capabilityId,
++				actor,
++				path: normalizedPath,
++				surface: 'workflows',
++				contentHash,
++				sourceHead: params.sourceHead,
++				worktreeScope,
++				writeIntent: 'update',
++				operation: writer.completionOperation,
++				viaForgeApi: true,
++				sourceCommand: writer.sourceCommand,
++			},
++			created_at: options.now || new Date().toISOString(),
++		}, {}, kernel.config);
++		return { success: true, capabilityId: params.capabilityId, event: parseAuthorizationEvent(inserted) };
++	} finally {
++		closeIfOwned(kernel);
++	}
++}
++
+ async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [], options = {}) {
+ 	if (requests.length === 0) return { success: true, decisions: [] };
+ 	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
+@@ -709,5 +850,7 @@ module.exports = {
+ 	completeGeneratedHarnessClaudeAuthorization,
+ 	issueGeneratedHarnessSkillAuthorization,
+ 	completeGeneratedHarnessSkillAuthorization,
++	issueSetupWorkflowAuthorization,
++	completeSetupWorkflowAuthorization,
+ 	authorizeAndConsumeProtectedStateWrites,
+ };
+diff --git a/lib/workflow-hook-sync.js b/lib/workflow-hook-sync.js
+new file mode 100644
+index 00000000..e0bf152b
+--- /dev/null
++++ b/lib/workflow-hook-sync.js
+@@ -0,0 +1,131 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { execFileSync } = require('node:child_process');
++const { writeProtectedFile } = require('./protected-state-surfaces');
++
++const SETUP_WORKFLOW_SOURCE_COMMAND = 'scripts/sync-workflow-hooks.js';
++const BASE_FRESHNESS_HOOK_PATH = '.forge/hooks/check-base-freshness.js';
++const LEFTHOOK_PATH = 'lefthook.yml';
++
++const BASE_FRESHNESS_JOB_LINES = [
++	'    # Re-fetch the live default branch immediately before every push. This is',
++	'    # intentionally not skipped by the forge-push nonce: the base may advance',
++	'    # while lint/tests run, which must invalidate prior validation evidence.',
++	'    base-freshness:',
++	'      run: node scripts/base-freshness-check.js',
++	'      use_stdin: true',
++	'      tags: freshness',
++	'',
++];
++
++function renderBaseFreshnessHookEntrypoint() {
++	return [
++		"'use strict';",
++		'',
++		"const fs = require('node:fs');",
++		"const path = require('node:path');",
++		'',
++		"const installedImplementation = path.resolve(__dirname, '..', 'lib', 'base-freshness-check.js');",
++		"const sourceImplementation = path.resolve(__dirname, '..', '..', 'lib', 'base-freshness-check.js');",
++		'const implementation = require(fs.existsSync(installedImplementation)',
++		'\t? installedImplementation',
++		'\t: sourceImplementation);',
++		'',
++		'module.exports = implementation;',
++		'',
++		'if (require.main === module) process.exitCode = implementation.main();',
++		'',
++	].join('\n');
++}
++
++function renderRepositoryLefthook(baseContent) {
++	const source = String(baseContent);
++	const newline = source.includes('\r\n') ? '\r\n' : '\n';
++	const normalized = source.replace(/\r\n/g, '\n');
++	const job = BASE_FRESHNESS_JOB_LINES.join('\n');
++	if (normalized.includes(job)) return source;
++	const marker = 'pre-push:\n  commands:\n';
++	if (!normalized.includes(marker)) {
++		throw new Error('lefthook.yml has no pre-push commands mapping for the base-freshness job');
++	}
++	return normalized.replace(marker, `${marker}${job}`).replace(/\n/g, newline);
++}
++
++function actorFromEnv(env = process.env) {
++	return env.FORGE_ACTOR || env.USER || env.USERNAME || 'unknown';
++}
++
++function readSourceHead(root, runGit) {
++	const sourceHead = runGit('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
++		cwd: root,
++		encoding: 'utf8',
++		stdio: ['ignore', 'pipe', 'pipe'],
++	}).trim();
++	if (!/^[0-9a-f]{40,64}$/.test(sourceHead)) throw new Error('source HEAD is not a full lowercase commit SHA');
++	return sourceHead;
++}
++
++function readHeadLefthook(root, sourceHead, runGit) {
++	return runGit('git', ['show', `${sourceHead}:${LEFTHOOK_PATH}`], {
++		cwd: root,
++		encoding: 'utf8',
++		stdio: ['ignore', 'pipe', 'pipe'],
++	});
++}
++
++async function syncWorkflowHooks(options = {}) {
++	const root = path.resolve(options.root || process.cwd());
++	const runGit = options.execFileSync || execFileSync;
++	const env = options.env || process.env;
++	const actor = actorFromEnv(env);
++	const sourceHead = options.sourceHead || readSourceHead(root, runGit);
++	const issueAuthorization = options.issueAuthorization
++		|| require('./protected-state-authority').issueSetupWorkflowAuthorization;
++	const completeAuthorization = options.completeAuthorization
++		|| require('./protected-state-authority').completeSetupWorkflowAuthorization;
++	const writeFile = options.writeProtectedFile || writeProtectedFile;
++	const files = [
++		{ path: LEFTHOOK_PATH, content: renderRepositoryLefthook(readHeadLefthook(root, sourceHead, runGit)) },
++		{ path: BASE_FRESHNESS_HOOK_PATH, content: renderBaseFreshnessHookEntrypoint() },
++	];
++
++	for (const file of files) {
++		const authorization = await issueAuthorization(root, { actor, sourceHead, ...file });
++		if (!authorization.success) throw new Error(`authorization failed for ${file.path}: ${authorization.error}`);
++		const target = path.join(root, file.path);
++		const expectedContent = fs.existsSync(target) ? fs.readFileSync(target) : null;
++		const written = writeFile(root, file.path, file.content, {
++			actor,
++			surface: 'workflows',
++			viaForgeApi: true,
++			operation: 'sync_workflow_hook',
++			expectedContent,
++		});
++		if (!written.allowed) throw new Error(`protected write failed for ${file.path}: ${written.reason}`);
++		const completion = await completeAuthorization(root, {
++			actor,
++			capabilityId: authorization.capabilityId,
++			sourceHead,
++			...file,
++		});
++		if (!completion.success) throw new Error(`completion failed for ${file.path}: ${completion.error}`);
++	}
++
++	runGit('git', ['add', '--', ...files.map(file => file.path)], {
++		cwd: root,
++		stdio: ['ignore', 'ignore', 'pipe'],
++	});
++	return { success: true, actor, sourceHead, files: files.map(file => file.path) };
++}
++
++module.exports = {
++	BASE_FRESHNESS_HOOK_PATH,
++	LEFTHOOK_PATH,
++	SETUP_WORKFLOW_SOURCE_COMMAND,
++	actorFromEnv,
++	renderBaseFreshnessHookEntrypoint,
++	renderRepositoryLefthook,
++	syncWorkflowHooks,
++};
+diff --git a/scripts/base-freshness-check.js b/scripts/base-freshness-check.js
+new file mode 100644
+index 00000000..7e28f82a
+--- /dev/null
++++ b/scripts/base-freshness-check.js
+@@ -0,0 +1,7 @@
++'use strict';
++
++const implementation = require('../lib/base-freshness-check');
++
++module.exports = implementation;
++
++if (require.main === module) process.exitCode = implementation.main();
+diff --git a/scripts/sync-workflow-hooks.js b/scripts/sync-workflow-hooks.js
+new file mode 100644
+index 00000000..07bd7f6b
+--- /dev/null
++++ b/scripts/sync-workflow-hooks.js
+@@ -0,0 +1,18 @@
++#!/usr/bin/env node
++'use strict';
++
++const { syncWorkflowHooks } = require('../lib/workflow-hook-sync');
++
++async function main() {
++	try {
++		const result = await syncWorkflowHooks();
++		console.log(`sync-workflow-hooks: authorized ${result.files.join(', ')}`);
++	} catch (error) {
++		console.error(`sync-workflow-hooks: failed — ${error.message}`);
++		process.exitCode = 1;
++	}
++}
++
++if (require.main === module) main();
++
++module.exports = { main };
+diff --git a/scripts/test.js b/scripts/test.js
+index c14b4a8c..99903f0d 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -54,6 +54,13 @@ const KNOWN_TARGETABLE_PREFIXES = [
+ // Individually mapped root files (see DIRECT_TEST_CANDIDATES in lib/commands/test.js).
+ const KNOWN_TARGETABLE_FILES = new Set([
+   'lefthook.yml',
++  '.forge/hooks/check-base-freshness.js',
++  'lib/base-freshness.js',
++  'lib/base-freshness-check.js',
++  'lib/freshness-token.js',
++  'lib/workflow-hook-sync.js',
++  'scripts/base-freshness-check.js',
++  'scripts/sync-workflow-hooks.js',
+   'eslint.config.js',
+   '.coderabbit.yaml',
+   'CODING_STANDARDS.md',
+diff --git a/skills/dev/SKILL.md b/skills/dev/SKILL.md
+index e79ac0ea..9ae402e6 100644
+--- a/skills/dev/SKILL.md
++++ b/skills/dev/SKILL.md
+@@ -71,6 +71,7 @@ Format for each entry:
+ ```
+ <HARD-GATE: /dev start>
+ Do NOT write any code until ALL confirmed:
++0. `forge dev` fetched the selected remote's live default branch, reported `behind=0`, and found no tracked/index dirt or unresolved conflicts. Untracked files are preserved. Any uncertainty stops dev; update or rebase manually because Forge does not reconcile the worktree.
+ 1. git branch --show-current output is NOT main or master
+ 2. git worktree list shows the worktree path for this feature
+ 3. Task list file confirmed to exist (use Read tool — do not assume)
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index 2352a19b..40499174 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -43,20 +43,16 @@ Ensure all four validation checks completed successfully with fresh output in th
+ 
+ ### Step 2: Freshness Check — Is Branch Still Current?
+ 
+-Even though /validate rebased onto the base branch, time may have passed since then (user reviewed design doc, took a break, etc.). This lightweight check catches staleness before pushing.
++Time may have passed since `/validate`. Ship re-discovers the selected remote's live default branch, fetches it, and requires both `behind=0` and validation evidence bound to the exact feature HEAD and fetched base SHA.
+ 
+ ```bash
+-BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+-if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
+-git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify freshness"; exit 1; }
+-BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
++forge ship <feature-slug> "<title>"
+ ```
+ 
+-- If `BEHIND > 0`: **STOP**. Print: "$BASE has advanced since /validate ($BEHIND new commits). Run /validate again to rebase and re-check."
+-- If `BEHIND = 0`: Continue to push.
+-- If fetch fails: the `|| { ...; exit 1; }` guard catches this — **STOP**. Do NOT push without confirming freshness.
++- If the remote/default branch cannot be verified, `behind > 0`, the feature HEAD changed, or the fetched base SHA differs from validation: stop and run `/validate` again after manually updating the branch.
++- When the exact validation evidence still matches: continue to push.
+ 
+-This is NOT a full rebase — just a check. The rebase happens in /validate where the full test suite runs afterward.
++Ship does not reconcile the branch automatically; dirty work and conflicts remain untouched.
+ 
+ ### Parallel PR coordination (soft block)
+ 
+@@ -98,7 +94,7 @@ Do not mark the Forge issue done during `/ship`. Completion happens only after m
+ 
+ ### Step 4: Push Branch
+ 
+-Use `--force-with-lease` because `/validate` may have rebased the branch, rewriting history. This is safe: it only forces the push if the remote branch hasn't been updated by someone else since the last fetch.
++Use `--force-with-lease` only when the branch was manually rebased or rewritten. The lease prevents overwriting a remote branch that advanced since the last fetch.
+ 
+ ```bash
+ git push --force-with-lease -u origin <branch-name>
+diff --git a/skills/validate/SKILL.md b/skills/validate/SKILL.md
+index bc164a09..df4a721d 100644
+--- a/skills/validate/SKILL.md
++++ b/skills/validate/SKILL.md
+@@ -1,8 +1,8 @@
+ ---
+ name: validate
+ description: >
+-  Forge VALIDATE stage — the pre-pull-request quality gate. Rebases the branch onto the
+-  current base branch, then runs type-checking, linting, code review, an OWASP Top 10 security
++  Forge VALIDATE stage — the pre-pull-request quality gate. Fetches the selected remote's live
++  default branch, refuses a stale base, then runs type-checking, linting, code review, an OWASP Top 10 security
+   review plus dependency scan, and the full test suite, demanding fresh passing output in THIS
+   session before anything ships. Reach for this whenever a branch is code-complete and someone
+   says: validate my changes, run the quality gates, run the pre-PR checks, type-check and lint
+@@ -18,7 +18,7 @@ terminal: false
+ ---
+ 
+ > **Note:** Three things share the "validate" name in Forge:
+-> - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
++> - `/validate` (this command): default-template validation command — requires a freshly fetched base, then runs type/lint/test/security checks
+ > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
+ > - `bun run check` (scripts/validate.js): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
+ 
+@@ -36,49 +36,24 @@ This skill validates all code before creating a pull request.
+ /validate
+ ```
+ 
+-Or use the validation script (checks only — no rebase):
++Or use the validation script (checks only — no base-freshness evidence):
+ 
+ ```bash
+-bun run check    # Runs lint/test/security checks only. Does NOT rebase onto the base branch.
+-                 # Use /validate for the full workflow (rebase + checks).
++bun run check    # Runs lint/test/security checks only.
++                 # Use /validate for the enforced freshness gate + checks.
+ ```
+ 
+ ```
+-<HARD-GATE: /validate entry — rebase onto latest base branch>
++<HARD-GATE: /validate entry — verify the live default branch>
+ Before running ANY validation checks:
+ 
+-0. Resolve the base branch dynamically (do NOT hardcode master or main):
+-   BASE=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | awk '{print $NF}')
+-   if [ -z "$BASE" ] || [ "$BASE" = "(unknown)" ]; then BASE="master"; fi
++1. Prefer `upstream` when configured; otherwise use `origin`.
++2. Read that remote's live HEAD, then fetch the exact advertised default branch.
++3. Require a named feature branch and `behind=0`. Any discovery, fetch, SHA, or comparison failure blocks validation.
++4. If behind, update or rebase manually and resolve conflicts yourself, then rerun `/validate`.
++5. Invalidate prior validation evidence before checks. After every check passes, record the feature HEAD and fetched base remote, branch, and SHA.
+ 
+-   This handles repos using main, master, or any other default branch.
+-   Falls back to "master" when HEAD is unresolved (detached remote, empty repo).
+-
+-1. Fetch latest base branch:
+-   git fetch origin "$BASE" || { echo "✗ Fetch failed — cannot verify branch freshness"; exit 1; }
+-
+-   The `|| { ...; exit 1; }` guard ensures fetch failures are never silently skipped.
+-
+-2. Check if branch is behind:
+-   BEHIND=$(git rev-list --count HEAD..origin/"$BASE")
+-
+-3. If BEHIND > 0:
+-   a. Run: git rebase origin/"$BASE" || REBASE_FAILED=1
+-   b. If rebase succeeds (REBASE_FAILED unset): print "✓ Rebased onto latest $BASE ($BEHIND commits integrated)"
+-   c. If rebase fails (REBASE_FAILED=1 — conflicts or any other error):
+-      - Capture conflicting files BEFORE aborting: git diff --name-only --diff-filter=U
+-      - Run: git rebase --abort
+-      - Print the captured conflicting file list
+-      - Print: "✗ Rebase conflict — resolve manually, then re-run /validate"
+-      - STOP. Do NOT proceed to any validation checks.
+-
+-4. If BEHIND = 0:
+-   Print "✓ Branch is up-to-date with $BASE" and continue.
+-
+-Rationale: Without this step, validation checks run against stale code that doesn't
+-include recent base branch changes. Integration issues are only caught after the PR is
+-created, wasting CI cycles and review time. Rebasing here ensures /validate results
+-reflect the true state of what will be merged.
++Forge never rebases, merges, resets, stashes, or resolves conflicts in this gate. A later base advance or rewritten feature HEAD invalidates the evidence and requires `/validate` again.
+ </HARD-GATE>
+ ```
+ 
+diff --git a/test/base-freshness-check.test.js b/test/base-freshness-check.test.js
+new file mode 100644
+index 00000000..20235506
+--- /dev/null
++++ b/test/base-freshness-check.test.js
+@@ -0,0 +1,32 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { parseUpdates, run } = require('../lib/base-freshness-check');
++
++describe('base freshness pre-push implementation', () => {
++	test('ignores deleted refs and verifies each pushed branch SHA', () => {
++		const calls = [];
++		const result = run('/repo', {
++			readFreshnessToken: () => ({ baseCommit: 'base-sha' }),
++			isFreshnessStale: () => false,
++			verifyBaseFreshness: options => {
++				calls.push(options);
++				return { success: true, baseRef: 'origin/main', baseSha: 'base-sha' };
++			},
++		}, [
++			'refs/heads/deleted 0000000000000000000000000000000000000000 refs/heads/deleted old-sha',
++			'refs/heads/feature new-sha refs/heads/feature old-sha',
++		].join('\n'));
++
++		expect(result.success).toBe(true);
++		expect(result.checkedRefs).toBe(1);
++		expect(calls).toHaveLength(1);
++		expect(calls[0]).toMatchObject({ branchName: 'feature', headRef: 'new-sha' });
++	});
++
++	test('parses only complete local ref updates', () => {
++		expect(parseUpdates('refs/heads/main abc remote\nincomplete\n')).toEqual([
++			{ localRef: 'refs/heads/main', localSha: 'abc', remoteRef: 'remote', remoteSha: undefined },
++		]);
++	});
++});
+diff --git a/test/base-freshness.test.js b/test/base-freshness.test.js
+new file mode 100644
+index 00000000..59ffa826
+--- /dev/null
++++ b/test/base-freshness.test.js
+@@ -0,0 +1,215 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const {
++	resolveBaseRemote,
++	resolveBaseBranch,
++	verifyBaseFreshness,
++} = require('../lib/base-freshness');
++const { isStale } = require('../lib/freshness-token');
++const canonicalCheck = require('../lib/base-freshness-check');
++const scriptCheck = require('../scripts/base-freshness-check');
++const installedHookCheck = require('../.forge/hooks/check-base-freshness');
++const { run: runPrePushFreshness } = canonicalCheck;
++
++function makeGit(overrides = {}) {
++	const calls = [];
++	const exec = (command, args) => {
++		calls.push([...args]);
++		expect(command).toBe('git');
++
++		if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
++			if (overrides.upstream) return 'https://example.test/base/repo.git\n';
++			throw new Error('no upstream');
++		}
++		if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
++			return 'https://example.test/fork/repo.git\n';
++		}
++		if (args[0] === 'ls-remote' && args[1] === '--symref') {
++			const remote = args[2];
++			return `ref: refs/heads/${overrides.baseBranch || 'trunk'}\tHEAD\n${remote}-sha\tHEAD\n`;
++		}
++		if (args[0] === 'rev-parse' && args[1] === '--verify') {
++			if (args[2].endsWith('^{commit}')) {
++				return args[2].startsWith('HEAD') ? 'head-sha\n' : `${overrides.baseSha || 'base-sha'}\n`;
++			}
++			return `${args[2]}\n`;
++		}
++		if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'feat/freshness\n';
++		if (args[0] === 'fetch') {
++			if (overrides.fetchError) throw new Error(overrides.fetchError);
++			return '';
++		}
++		if (args[0] === 'rev-list') return overrides.counts || '0\t2\n';
++		if (args[0] === 'diff' && args[1] === '--name-only') return overrides.conflicts || '';
++		if (args[0] === 'status') return overrides.status || '';
++		throw new Error(`Unexpected git command: ${args.join(' ')}`);
++	};
++	return { exec, calls };
++}
++
++describe('base freshness gate', () => {
++	test('discovers a non-master default branch and records the fetched base SHA', () => {
++		const git = makeGit({ baseBranch: 'release/2026' });
++		const result = verifyBaseFreshness({ exec: git.exec, cwd: '/repo' });
++
++		expect(result.success).toBe(true);
++		expect(result.baseRemote).toBe('origin');
++		expect(result.baseBranch).toBe('release/2026');
++		expect(result.baseRef).toBe('origin/release/2026');
++		expect(result.baseSha).toBe('base-sha');
++		expect(result.headSha).toBe('head-sha');
++		const fetchIndex = git.calls.findIndex(args => args[0] === 'fetch');
++		const countIndex = git.calls.findIndex(args => args[0] === 'rev-list');
++		expect(fetchIndex).toBeGreaterThanOrEqual(0);
++		expect(countIndex).toBeGreaterThan(fetchIndex);
++	});
++
++	test('prefers an upstream default branch for a fork', () => {
++		const git = makeGit({ upstream: true, baseBranch: 'main' });
++		expect(resolveBaseRemote(git.exec, '/repo')).toBe('upstream');
++		expect(resolveBaseBranch(git.exec, '/repo', 'upstream')).toBe('main');
++	});
++
++	test('fails closed when the selected remote cannot be fetched', () => {
++		const result = verifyBaseFreshness({
++			exec: makeGit({ fetchError: 'network unavailable' }).exec,
++			cwd: '/repo',
++		});
++
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('Unable to refresh origin/trunk');
++		expect(result.error).toContain('network unavailable');
++	});
++
++	test('refuses a behind branch without attempting a rebase', () => {
++		const git = makeGit({ counts: '3\t1\n' });
++		const result = verifyBaseFreshness({ exec: git.exec, cwd: '/repo' });
++
++		expect(result.success).toBe(false);
++		expect(result.behind).toBe(3);
++		expect(result.error).toContain('3 commit(s) behind origin/trunk');
++		expect(git.calls.some(args => args[0] === 'rebase' || args[0] === 'merge')).toBe(false);
++	});
++
++	test('preserves and refuses a dirty worktree at dev entry', () => {
++		const git = makeGit({ status: ' M lib/commands/dev.js\n' });
++		const result = verifyBaseFreshness({ exec: git.exec, cwd: '/repo', requireClean: true });
++
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('working tree is dirty');
++		expect(git.calls.some(args => args[0] === 'reset' || args[0] === 'checkout' || args[0] === 'clean')).toBe(false);
++	});
++
++	test('allows only the Forge-owned activation config as untracked runtime output', () => {
++		const git = makeGit({ status: '?? .forge/config.yaml\n' });
++		const result = verifyBaseFreshness({ exec: git.exec, cwd: '/repo', requireClean: true });
++
++		expect(result.success).toBe(true);
++		expect(git.calls).toContainEqual(['status', '--porcelain=v1', '--untracked-files=all']);
++	});
++
++	test('preserves and refuses arbitrary untracked worktree files', () => {
++		const git = makeGit({ status: '?? notes.txt\n' });
++		const result = verifyBaseFreshness({ exec: git.exec, cwd: '/repo', requireClean: true });
++
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('working tree is dirty');
++		expect(git.calls.some(args => args[0] === 'clean')).toBe(false);
++	});
++
++	test('refuses unresolved conflicts without modifying them', () => {
++		const git = makeGit({ conflicts: 'lib/commands/ship.js\n', status: 'UU lib/commands/ship.js\n' });
++		const result = verifyBaseFreshness({ exec: git.exec, cwd: '/repo', requireClean: true });
++
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('unresolved conflicts');
++		expect(result.conflictedFiles).toEqual(['lib/commands/ship.js']);
++		expect(git.calls.some(args => args[0] === 'rebase' || args[0] === 'merge')).toBe(false);
++	});
++
++	test('fails closed on malformed divergence output', () => {
++		const result = verifyBaseFreshness({
++			exec: makeGit({ counts: 'not-a-count\n' }).exec,
++			cwd: '/repo',
++		});
++
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('Unable to parse divergence');
++	});
++
++	test('invalidates validation evidence when the fetched base advances', () => {
++		const token = {
++			branch: 'feat/freshness',
++			headCommit: 'head-sha',
++			baseRemote: 'origin',
++			baseBranch: 'trunk',
++			baseCommit: 'old-base-sha',
++		};
++		const freshness = {
++			branchName: 'feat/freshness',
++			headSha: 'head-sha',
++			baseRemote: 'origin',
++			baseBranch: 'trunk',
++			baseSha: 'new-base-sha',
++		};
++
++		expect(isStale(token, '/repo', freshness)).toBe(true);
++	});
++
++	test('pre-push refuses an alternate local ref that was not validated', () => {
++		const token = {
++			version: 1,
++			branch: 'feat/current',
++			headCommit: 'current-sha',
++			baseRemote: 'origin',
++			baseBranch: 'trunk',
++			baseRef: 'origin/trunk',
++			baseCommit: 'base-sha',
++		};
++		const verify = options => ({
++			success: true,
++			branchName: options.branchName || 'feat/current',
++			headSha: options.headRef || 'current-sha',
++			baseRemote: 'origin',
++			baseBranch: 'trunk',
++			baseRef: 'origin/trunk',
++			baseSha: 'base-sha',
++			behind: 0,
++			ahead: 1,
++		});
++		const result = runPrePushFreshness('/repo', {
++			verifyBaseFreshness: verify,
++			readFreshnessToken: () => token,
++		}, 'refs/heads/alternate alternate-sha refs/heads/alternate remote-sha\n');
++
++		expect(result.success).toBe(false);
++		expect(result.error).toContain('Validation is stale');
++	});
++
++	test('compares an explicitly pushed SHA instead of the checked-out HEAD', () => {
++		const git = makeGit();
++		const result = verifyBaseFreshness({
++			exec: git.exec,
++			cwd: '/repo',
++			branchName: 'feat/alternate',
++			headRef: 'alternate-sha',
++		});
++
++		expect(result.success).toBe(true);
++		expect(git.calls).toContainEqual(['rev-parse', '--verify', 'alternate-sha^{commit}']);
++		expect(git.calls).toContainEqual(['rev-list', '--left-right', '--count', 'origin/trunk...alternate-sha']);
++		expect(git.calls).not.toContainEqual(['rev-parse', '--abbrev-ref', 'HEAD']);
++	});
++
++	test('keeps one canonical implementation behind both thin entrypoints', () => {
++		const root = path.join(__dirname, '..');
++		expect(scriptCheck.run).toBe(canonicalCheck.run);
++		expect(installedHookCheck.run).toBe(canonicalCheck.run);
++		expect(fs.readFileSync(path.join(root, '.forge', 'hooks', 'check-base-freshness.js'), 'utf8'))
++			.not.toBe(fs.readFileSync(path.join(root, 'scripts', 'base-freshness-check.js'), 'utf8'));
++	});
++});
+diff --git a/test/commands/dev.test.js b/test/commands/dev.test.js
+index 4e60ca44..a5dfe3da 100644
+--- a/test/commands/dev.test.js
++++ b/test/commands/dev.test.js
+@@ -194,6 +194,18 @@ describe('Dev Command - TDD Cycle Management', () => {
+ 	});
+ 
+ 	describe('Command execution', () => {
++		test('refuses to begin dev when the freshly fetched base gate fails', async () => {
++			const result = await handler(['freshness-feature', 'RED'], {}, '/repo', {
++				verifyBaseFreshness: () => ({
++					success: false,
++					error: 'Current branch is 2 commit(s) behind origin/main.',
++				}),
++			});
++
++			expect(result.success).toBe(false);
++			expect(result.error).toContain('behind origin/main');
++		});
++
+ 		test.skip('should execute full RED cycle', async () => {
+ 			const featureName = 'test-feature';
+ 
+@@ -283,7 +295,7 @@ describe('Dev Command - TDD Cycle Management', () => {
+ 
+ 			const result = await handler(['audit-feature', '--issue-id', 'forge-besw.20', 'RED'], {
+ 				auditOptions: recorder.auditOptions,
+-			});
++			}, '/repo', { verifyBaseFreshness: () => ({ success: true }) });
+ 
+ 			expect(result.success).toBe(true);
+ 			expect(result.phase).toBe('RED');
+@@ -296,7 +308,7 @@ describe('Dev Command - TDD Cycle Management', () => {
+ 
+ 			const result = await handler(['audit-feature', '--issue-id=forge-besw.20', 'RED'], {
+ 				auditOptions: recorder.auditOptions,
+-			});
++			}, '/repo', { verifyBaseFreshness: () => ({ success: true }) });
+ 
+ 			expect(result.success).toBe(true);
+ 			expect(result.phase).toBe('RED');
+diff --git a/test/commands/lefthook-user-config.test.js b/test/commands/lefthook-user-config.test.js
+index ff0fa014..5b7dbf99 100644
+--- a/test/commands/lefthook-user-config.test.js
++++ b/test/commands/lefthook-user-config.test.js
+@@ -92,8 +92,16 @@ describe('FORGE_USER_LEFTHOOK_YML', () => {
+ 
+   test('references only files a user project actually has — never repo-internal scripts/', () => {
+     expect(FORGE_USER_LEFTHOOK_YML).toContain('.forge/hooks/check-tdd.js');
++    expect(FORGE_USER_LEFTHOOK_YML).toContain('.forge/hooks/check-base-freshness.js');
+     // The repo's dev config referenced scripts/branch-protection.js, lint.js, test.js …
+     // which a user never gets; shipping those to users is the bug this guards against.
+     expect(FORGE_USER_LEFTHOOK_YML).not.toContain('scripts/');
+   });
++
++  test('runs base freshness before project tests', () => {
++    expect(FORGE_USER_LEFTHOOK_YML.indexOf('forge-base-freshness:'))
++      .toBeLessThan(FORGE_USER_LEFTHOOK_YML.indexOf('tests:'));
++    const freshnessJob = FORGE_USER_LEFTHOOK_YML.match(/forge-base-freshness:[\s\S]*?(?=\n {4}tests:)/)?.[0];
++    expect(freshnessJob).toContain('use_stdin: true');
++  });
+ });
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index ffbac658..7a0eb689 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -35,6 +35,41 @@ describe('Forge Push Command', () => {
+ 	});
+ 
+ 	describe('Branch protection', () => {
++		test('checks the fetched base before running any push quality gate', async () => {
++			const spawnCalls = [];
++			const deps = makeDeps({
++				verifyBaseFreshness: () => ({ success: false, error: 'remote unavailable' }),
++				spawnSync: (...args) => {
++					spawnCalls.push(args);
++					return { status: 0 };
++				},
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(result.success).toBe(false);
++			expect(result.pushed).toBe(false);
++			expect(result.error).toContain('remote unavailable');
++			expect(spawnCalls).toHaveLength(0);
++		});
++
++		test('refuses stale validation evidence before running any push quality gate', async () => {
++			const spawnCalls = [];
++			const deps = makeDeps({
++				isFreshnessStale: () => true,
++				spawnSync: (...args) => {
++					spawnCalls.push(args);
++					return { status: 0 };
++				},
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(result.success).toBe(false);
++			expect(result.error).toContain('run forge validate again');
++			expect(spawnCalls).toHaveLength(0);
++		});
++
+ 		test('should call branch-protection.js as subprocess via execFileSync', async () => {
+ 			const calls = [];
+ 			const deps = makeDeps({
+@@ -493,5 +528,24 @@ function makeDeps(overrides = {}) {
+ 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+ 		log: overrides.log || (() => {}),
+ 		writeForgeToken: overrides.writeForgeToken || (() => {}),
++		verifyBaseFreshness: overrides.verifyBaseFreshness || (() => ({
++			success: true,
++			branchName: 'feat/test',
++			baseRemote: 'origin',
++			baseBranch: 'main',
++			baseRef: 'origin/main',
++			baseSha: 'base-sha',
++			headSha: 'head-sha',
++			behind: 0,
++			ahead: 1,
++		})),
++		readFreshnessToken: overrides.readFreshnessToken || (() => ({
++			branch: 'feat/test',
++			baseRemote: 'origin',
++			baseBranch: 'main',
++			baseCommit: 'base-sha',
++			headCommit: 'head-sha',
++		})),
++		isFreshnessStale: overrides.isFreshnessStale || (() => false),
+ 	};
+ }
+diff --git a/test/commands/ship.test.js b/test/commands/ship.test.js
+index 4b5dae4f..7fe45fb5 100644
+--- a/test/commands/ship.test.js
++++ b/test/commands/ship.test.js
+@@ -245,76 +245,36 @@ No test scenarios section.`;
+ 			expect(probeOptions.every((options) => options && options.stdio === 'pipe')).toBe(true);
+ 		});
+ 
+-		test('should fall back to origin when upstream has no fetched tracking refs', () => {
++		test('should select configured upstream without trusting local tracking refs', () => {
+ 			const exec = (command, args) => {
+ 				expect(command).toBe('git');
+ 				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+ 					return 'https://github.com/base/repo.git\n';
+ 				}
+-				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+-					return 'https://github.com/fork/repo.git\n';
+-				}
+-				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+-					throw new Error('missing upstream HEAD');
+-				}
+-				if (args[0] === 'rev-parse' && args[2] === 'refs/remotes/upstream/main') {
+-					throw new Error('missing upstream main');
+-				}
+-				if (args[0] === 'rev-parse' && args[2] === 'refs/remotes/upstream/master') {
+-					throw new Error('missing upstream master');
+-				}
+-				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+-					return 'refs/remotes/origin/main\n';
+-				}
+ 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+ 			};
+ 
+-			expect(resolveBaseRemote(exec, process.cwd())).toBe('origin');
++			expect(resolveBaseRemote(exec, process.cwd())).toBe('upstream');
+ 		});
+ 
+-		test('should fall back to origin when upstream HEAD points to a missing ref', () => {
++		test('should not replace configured upstream because a local ref is stale', () => {
+ 			const exec = (command, args) => {
+ 				expect(command).toBe('git');
+ 				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
+ 					return 'https://github.com/base/repo.git\n';
+ 				}
+-				if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+-					return 'https://github.com/fork/repo.git\n';
+-				}
+-				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+-					return 'refs/remotes/upstream/trunk\n';
+-				}
+-				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/trunk') {
+-					throw new Error('missing upstream trunk');
+-				}
+-				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/main') {
+-					throw new Error('missing upstream main');
+-				}
+-				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/master') {
+-					throw new Error('missing upstream master');
+-				}
+-				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+-					return 'refs/remotes/origin/main\n';
+-				}
+-				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/origin/main') {
+-					return 'refs/remotes/origin/main\n';
+-				}
+ 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+ 			};
+ 
+-			expect(resolveBaseRemote(exec, process.cwd())).toBe('origin');
++			expect(resolveBaseRemote(exec, process.cwd())).toBe('upstream');
+ 		});
+ 
+-		test('should detect the default base branch from origin/HEAD', () => {
++		test('should discover the default branch from the live remote HEAD', () => {
+ 			const exec = (command, args) => {
+ 				expect(command).toBe('git');
+-				if (args[0] === 'symbolic-ref') {
+-					expect(args).toEqual(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+-					return 'refs/remotes/origin/main\n';
+-				}
+-				if (args[0] === 'rev-parse') {
+-					expect(args).toEqual(['rev-parse', '--verify', 'refs/remotes/origin/main']);
+-					return 'refs/remotes/origin/main\n';
++				if (args[0] === 'ls-remote') {
++					expect(args).toEqual(['ls-remote', '--symref', 'origin', 'HEAD']);
++					return 'ref: refs/heads/main\tHEAD\nbase-sha\tHEAD\n';
+ 				}
+ 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+ 			};
+@@ -322,22 +282,17 @@ No test scenarios section.`;
+ 			expect(resolveBaseBranch(exec, process.cwd(), 'origin')).toBe('main');
+ 		});
+ 
+-		test('should ignore a stale remote HEAD target and fall back to main', () => {
++		test('should use live remote HEAD instead of a stale local tracking HEAD', () => {
+ 			const exec = (command, args) => {
+ 				expect(command).toBe('git');
+-				if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/upstream/HEAD') {
+-					return 'refs/remotes/upstream/trunk\n';
+-				}
+-				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/trunk') {
+-					throw new Error('missing upstream trunk');
+-				}
+-				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/main') {
+-					return 'refs/remotes/upstream/main\n';
++				if (args[0] === 'ls-remote') {
++					expect(args).toEqual(['ls-remote', '--symref', 'upstream', 'HEAD']);
++					return 'ref: refs/heads/release/2026\tHEAD\nbase-sha\tHEAD\n';
+ 				}
+ 				throw new Error(`Unexpected git command: ${args.join(' ')}`);
+ 			};
+ 
+-			expect(resolveBaseBranch(exec, process.cwd(), 'upstream')).toBe('main');
++			expect(resolveBaseBranch(exec, process.cwd(), 'upstream')).toBe('release/2026');
+ 		});
+ 
+ 		test('should report when the current branch has no tree diff against the base branch', () => {
+@@ -352,9 +307,15 @@ No test scenarios section.`;
+ 				if (args[0] === 'symbolic-ref') {
+ 					return 'refs/remotes/upstream/master\n';
+ 				}
++				if (args[0] === 'ls-remote' && args[1] === '--symref') {
++					return 'ref: refs/heads/master\tHEAD\nbase-sha\tHEAD\n';
++				}
+ 				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/master') {
+ 					return 'refs/remotes/upstream/master\n';
+ 				}
++				if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) {
++					return args[2].startsWith('HEAD') ? 'head-sha\n' : 'base-sha\n';
++				}
+ 				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+ 					return 'feat/setup-hardening-codex-parity\n';
+ 				}
+@@ -377,7 +338,7 @@ No test scenarios section.`;
+ 			expect(result.error).toContain('not PR-ready');
+ 		});
+ 
+-		test('should refresh the selected base ref before readiness checks', () => {
++			test('should refresh the selected base ref before readiness checks', () => {
+ 			const execCalls = [];
+ 			const exec = (command, args) => {
+ 				expect(command).toBe('git');
+@@ -391,6 +352,9 @@ No test scenarios section.`;
+ 				if (args[0] === 'rev-list') {
+ 					return '0\t1\n';
+ 				}
++				if (args[0] === 'rev-parse' && args[1] === '--verify') {
++					return args[2].startsWith('HEAD') ? 'head-sha\n' : 'base-sha\n';
++				}
+ 				if (args[0] === 'diff') {
+ 					const error = new Error('diff detected');
+ 					error.status = 1;
+@@ -413,6 +377,29 @@ No test scenarios section.`;
+ 			expect(revListIndex).toBeGreaterThan(fetchIndex);
+ 		});
+ 
++		test('never reports a branch ready when it is behind the fetched base', () => {
++			const exec = (_command, args) => {
++				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'feat/behind\n';
++				if (args[0] === 'fetch') return '';
++				if (args[0] === 'rev-list') return '2\t4\n';
++				if (args[0] === 'rev-parse' && args[1] === '--verify') {
++					return args[2].startsWith('HEAD') ? 'head-sha\n' : 'base-sha\n';
++				}
++				throw new Error(`Unexpected git command: ${args.join(' ')}`);
++			};
++
++			const result = getBranchReadiness({
++				exec,
++				cwd: '/repo',
++				baseRemote: 'origin',
++				baseBranch: 'main',
++			});
++
++			expect(result.ready).toBe(false);
++			expect(result.behind).toBe(2);
++			expect(result.error).toContain('2 commit(s) behind origin/main');
++		});
++
+ 		test('should fail readiness when refreshing the base ref fails', () => {
+ 			const exec = (command, args) => {
+ 				expect(command).toBe('git');
+@@ -473,7 +460,63 @@ No test scenarios section.`;
+ 			expect(result.success === false || result.error).toBeTruthy();
+ 		});
+ 
+-		test('should refuse to create a PR when the branch has no diff against base', async () => {
++		test('refuses a PR when validation evidence no longer matches the fetched base', async () => {
++			const exec = (command, args) => {
++				if (command === 'gh' && args[0] === '--version') return 'gh version 2.81.0\n';
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') return '.git\n';
++				if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') return 'https://example.test/repo.git\n';
++				if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') throw new Error('no upstream');
++				if (command === 'git' && args[0] === 'ls-remote') return 'ref: refs/heads/main\tHEAD\nbase-sha\tHEAD\n';
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'feat/freshness\n';
++				if (command === 'git' && args[0] === 'fetch') return '';
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--verify') return args[2].startsWith('HEAD') ? 'head-sha\n' : 'base-sha\n';
++				if (command === 'git' && args[0] === 'rev-list') return '0\t1\n';
++				if (command === 'git' && args[0] === 'diff') { const error = new Error('diff'); error.status = 1; throw error; }
++				throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
++			};
++
++			const result = await createPR({
++				title: 'feat: enforce fresh validation evidence',
++				body: 'Test body',
++				dryRun: true,
++				exec,
++				readValidation: () => ({ baseCommit: 'old-base-sha' }),
++				isValidationStale: () => true,
++			});
++
++			expect(result.success).toBe(false);
++			expect(result.error).toContain('run forge validate again');
++		});
++
++		test('records the exact checked base SHA on a successful ship readiness check', async () => {
++			const exec = (command, args) => {
++				if (command === 'gh' && args[0] === '--version') return 'gh version 2.81.0\n';
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--git-dir') return '.git\n';
++				if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') return 'https://example.test/repo.git\n';
++				if (command === 'git' && args[0] === 'remote' && args[1] === 'get-url') throw new Error('no upstream');
++				if (command === 'git' && args[0] === 'ls-remote') return 'ref: refs/heads/main\tHEAD\nbase-sha\tHEAD\n';
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'feat/freshness\n';
++				if (command === 'git' && args[0] === 'fetch') return '';
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--verify') return args[2].startsWith('HEAD') ? 'head-sha\n' : 'base-sha\n';
++				if (command === 'git' && args[0] === 'rev-list') return '0\t1\n';
++				if (command === 'git' && args[0] === 'diff') { const error = new Error('diff'); error.status = 1; throw error; }
++				throw new Error(`Unexpected command: ${command} ${args.join(' ')}`);
++			};
++
++			const result = await createPR({
++				title: 'feat: record checked base SHA',
++				body: 'Test body',
++				dryRun: true,
++				exec,
++				readValidation: () => ({ version: 1 }),
++				isValidationStale: () => false,
++			});
++
++			expect(result.success).toBe(true);
++			expect(result.checkedBaseSha).toBe('base-sha');
++		});
++
++			test('should refuse to create a PR when the branch has no diff against base', async () => {
+ 			const exec = (command, args) => {
+ 				if (command === 'gh' && args[0] === '--version') {
+ 					return 'gh version 2.81.0\n';
+@@ -490,12 +533,18 @@ No test scenarios section.`;
+ 				if (command === 'git' && args[0] === 'symbolic-ref') {
+ 					return 'refs/remotes/upstream/master\n';
+ 				}
++				if (command === 'git' && args[0] === 'ls-remote' && args[1] === '--symref') {
++					return 'ref: refs/heads/master\tHEAD\nbase-sha\tHEAD\n';
++				}
+ 				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--verify' && args[2] === 'refs/remotes/upstream/master') {
+ 					return 'refs/remotes/upstream/master\n';
+ 				}
+ 				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+ 					return 'feat/setup-hardening-codex-parity\n';
+ 				}
++				if (command === 'git' && args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) {
++					return args[2].startsWith('HEAD') ? 'head-sha\n' : 'base-sha\n';
++				}
+ 				if (command === 'git' && args[0] === 'fetch' && args[3] === 'upstream') {
+ 					return '';
+ 				}
+@@ -574,6 +623,24 @@ No test scenarios section.`;
+ 				expect(result.prUrl || result.message).toBeTruthy();
+ 			}
+ 		});
++
++		test('preserves the checked base SHA through the full ship result', async () => {
++			const result = await executeShip({
++				featureSlug: 'test-feature',
++				title: 'feat: record checked base',
++				projectRoot: process.cwd(),
++				createPr: async () => ({
++					success: true,
++					checkedBaseSha: 'base-sha',
++					prUrl: 'https://example.test/pull/1',
++					prNumber: 1,
++				}),
++				fireAndForget: () => {},
++			});
++
++			expect(result.success).toBe(true);
++			expect(result.checkedBaseSha).toBe('base-sha');
++		});
+ 	});
+ 
+ 	describe('Error handling', () => {
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index 0fc6a5a6..91287a8c 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -599,6 +599,26 @@ describe('forge test --affected — resilient to git failure (bfaa6e2a semantics
+ // to the skill test suite. Without this they were "unmapped" → the pre-push hook
+ // fell back to the full ~1500-test suite for every skills-only PR.
+ describe('skill source → test mapping', () => {
++	test('maps every base-freshness source and workflow writer to focused regressions', () => {
++		const expected = new Map([
++			['scripts/base-freshness-check.js', 'test/base-freshness.test.js'],
++			['.forge/hooks/check-base-freshness.js', 'test/base-freshness.test.js'],
++			['lib/base-freshness.js', 'test/base-freshness.test.js'],
++			['lib/base-freshness-check.js', 'test/base-freshness-check.test.js'],
++			['lib/freshness-token.js', 'test/freshness-token.test.js'],
++			['lib/workflow-hook-sync.js', 'test/workflow-hook-sync.test.js'],
++			['scripts/sync-workflow-hooks.js', 'test/protected-state-authority.test.js'],
++		]);
++		for (const [source, regression] of expected) {
++			expect(testCommand.getTestCandidatesForChangedFile(source)).toContain(regression);
++		}
++	});
++
++	test('maps the installed base freshness hook to its real regression suite', () => {
++		expect(testCommand.getTestCandidatesForChangedFile('.forge/hooks/check-base-freshness.js'))
++			.toContain('test/base-freshness.test.js');
++	});
++
+ 	test('maps skills/ edits to the skill test suite', () => {
+ 		const candidates = testCommand.getTestCandidatesForChangedFile('skills/gates/SKILL.md');
+ 		expect(candidates).toContain('test/skill-coverage.test.js');
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 6dbda320..ceff4cd9 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -4,6 +4,7 @@ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ const {
++	handler: validateHandler,
+ 	runTypeCheck,
+ 	runLint,
+ 	runSecurityScan,
+@@ -16,6 +17,77 @@ const {
+ setDefaultTimeout(30000);
+ 
+ describe('Validate Command - Validation Orchestration', () => {
++	describe('base freshness enforcement', () => {
++		const freshness = {
++			success: true,
++			branchName: 'feat/freshness',
++			headSha: 'head-sha',
++			baseRemote: 'origin',
++			baseBranch: 'main',
++			baseRef: 'origin/main',
++			baseSha: 'base-sha',
++			behind: 0,
++			ahead: 1,
++		};
++
++		test('invalidates old validation evidence before a failing base check', async () => {
++			const events = [];
++			const result = await validateHandler([], {}, '/repo', {
++				clearFreshnessToken: () => events.push('clear'),
++				verifyBaseFreshness: () => {
++					events.push('verify');
++					return { success: false, error: 'remote unavailable' };
++				},
++				executeValidate: () => {
++					events.push('checks');
++					return { success: true, checks: {}, summary: 'pass' };
++				},
++			});
++
++			expect(result.success).toBe(false);
++			expect(result.failedChecks).toEqual(['baseFreshness']);
++			expect(events).toEqual(['clear', 'verify']);
++		});
++
++		test('records the exact fetched base only after every validation check passes', async () => {
++			const events = [];
++			let written;
++			const result = await validateHandler([], {}, '/repo', {
++				clearFreshnessToken: () => events.push('clear'),
++				verifyBaseFreshness: () => {
++					events.push('verify');
++					return freshness;
++				},
++				executeValidate: () => {
++					events.push('checks');
++					return { success: true, checks: {}, summary: 'All checks passed' };
++				},
++				writeFreshnessToken: (root, evidence) => {
++					events.push('write');
++					written = { root, evidence };
++				},
++			});
++
++			expect(result.success).toBe(true);
++			expect(result.checkedBaseSha).toBe('base-sha');
++			expect(written).toEqual({ root: '/repo', evidence: freshness });
++			expect(events).toEqual(['clear', 'verify', 'checks', 'write']);
++		});
++
++		test('does not mint evidence when checks fail', async () => {
++			let wrote = false;
++			const result = await validateHandler([], {}, '/repo', {
++				clearFreshnessToken: () => {},
++				verifyBaseFreshness: () => freshness,
++				executeValidate: () => ({ success: false, checks: {}, summary: 'failed' }),
++				writeFreshnessToken: () => { wrote = true; },
++			});
++
++			expect(result.success).toBe(false);
++			expect(wrote).toBe(false);
++		});
++	});
++
+ 	describe('Type checking', () => {
+ 		test.skip('should run type check successfully', async () => {
+ 			const result = await runTypeCheck();
+diff --git a/test/cross-platform-install.test.js b/test/cross-platform-install.test.js
+index 1f987c5b..891e12c4 100644
+--- a/test/cross-platform-install.test.js
++++ b/test/cross-platform-install.test.js
+@@ -114,6 +114,17 @@ describe('forge-0xb: lefthook.yml uses npx not bunx', () => {
+ // forge-cvr: pre-push hooks must not use bash-only syntax
+ // ─────────────────────────────────────────────────────────────────────────────
+ describe('forge-cvr: pre-push hooks cross-platform', () => {
++	test('pre-push runs the base freshness gate before other quality gates', () => {
++		const lefthook = fs.readFileSync(path.join(__dirname, '..', 'lefthook.yml'), 'utf8');
++		const freshnessIndex = lefthook.indexOf('base-freshness:');
++		const protectionIndex = lefthook.indexOf('branch-protection:');
++
++		expect(freshnessIndex).toBeGreaterThanOrEqual(0);
++		expect(protectionIndex).toBeGreaterThan(freshnessIndex);
++		expect(lefthook).toContain('node scripts/base-freshness-check.js');
++		expect(lefthook.slice(freshnessIndex, protectionIndex)).toContain('use_stdin: true');
++	});
++
+   test('lefthook.yml pre-push lint should not use bash if [ $? syntax', () => {
+     expect(!lefthookSource.includes('if [ $?')).toBeTruthy();
+   });
+diff --git a/test/embedded-assets-drift.test.js b/test/embedded-assets-drift.test.js
+index d0127ed9..90dc0698 100644
+--- a/test/embedded-assets-drift.test.js
++++ b/test/embedded-assets-drift.test.js
+@@ -72,7 +72,12 @@ test('every critical setup consumer source is in the embed set (guards a dropped
+ 
+   // Hook scripts installed by installForgeHookScripts.
+   expect(embed.has('.forge/hooks/check-tdd.js')).toBe(true);
++  expect(embed.has('.forge/hooks/check-base-freshness.js')).toBe(true);
+   expect(embed.has('.forge/hooks/forge-native-hook.js')).toBe(true);
++  expect(embed.has('lib/base-freshness.js')).toBe(true);
++  expect(embed.has('lib/base-freshness-check.js')).toBe(true);
++  expect(embed.has('lib/freshness-token.js')).toBe(true);
++  expect(embed.has('lib/workflow-hook-sync.js')).toBe(true);
+ 
+   // load-env.sh + the forge-team entry script (`forge team`).
+   expect(embed.has('.claude/scripts/load-env.sh')).toBe(true);
+diff --git a/test/freshness-token.test.js b/test/freshness-token.test.js
+index 5957f416..e929b5c4 100644
+--- a/test/freshness-token.test.js
++++ b/test/freshness-token.test.js
+@@ -8,6 +8,7 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+ const {
+   writeFreshnessToken,
+   readFreshnessToken,
++  clearFreshnessToken,
+   isStale
+ } = require('../lib/freshness-token');
+ 
+@@ -133,8 +134,48 @@ describe('freshness-token', () => {
+       const stale = isStale(null, repo.dir);
+       expect(stale).toBe(true);
+     });
++
++			test('strict evidence binds branch, rewritten HEAD, remote, default branch, and fetched base', () => {
++			const freshness = {
++				branchName: 'feat/test-feature',
++				headSha: 'head-sha',
++				baseRemote: 'upstream',
++				baseBranch: 'trunk',
++				baseRef: 'upstream/trunk',
++				baseSha: 'base-sha',
++			};
++			const token = writeFreshnessToken(repo.dir, freshness);
++
++			expect(isStale(token, repo.dir, freshness)).toBe(false);
++			for (const changed of [
++				{ branchName: 'feat/other' },
++				{ headSha: 'rewritten-head' },
++				{ baseRemote: 'origin', baseRef: 'origin/trunk' },
++				{ baseBranch: 'main', baseRef: 'upstream/main' },
++				{ baseSha: 'advanced-base' },
++			]) {
++					expect(isStale(token, repo.dir, { ...freshness, ...changed })).toBe(true);
++				}
++				const { version: _version, ...unversionedToken } = token;
++				expect(isStale(unversionedToken, repo.dir, freshness)).toBe(true);
++			});
+   });
+ 
++	describe('token lifecycle', () => {
++		test('clearFreshnessToken invalidates prior evidence and is idempotent', () => {
++			writeFreshnessToken(repo.dir);
++			clearFreshnessToken(repo.dir);
++			expect(readFreshnessToken(repo.dir)).toBeNull();
++			expect(() => clearFreshnessToken(repo.dir)).not.toThrow();
++		});
++
++		test('writes through an atomic rename without leaving temporary evidence', () => {
++			writeFreshnessToken(repo.dir);
++			const leftovers = fs.readdirSync(repo.dir).filter(name => name.startsWith('.forge-freshness.tmp-'));
++			expect(leftovers).toEqual([]);
++		});
++	});
++
+   describe('readFreshnessToken edge cases', () => {
+     test('returns null for missing token file', () => {
+       const result = readFreshnessToken(repo.dir);
+diff --git a/test/lefthook-wiring.test.js b/test/lefthook-wiring.test.js
+index fb857503..28f399c6 100644
+--- a/test/lefthook-wiring.test.js
++++ b/test/lefthook-wiring.test.js
+@@ -218,20 +218,46 @@ describe('verifyHooksActive (loud honesty — never silently no-op)', () => {
+     fs.writeFileSync(path.join(gateDir, 'check-tdd.js'), '#!/usr/bin/env node\nprocess.exit(0);\n');
+   }
+ 
++  function installFreshnessRuntime(root) {
++    const hookDir = path.join(root, '.forge', 'hooks');
++    const libDir = path.join(root, '.forge', 'lib');
++    fs.mkdirSync(hookDir, { recursive: true });
++    fs.mkdirSync(libDir, { recursive: true });
++    fs.writeFileSync(path.join(hookDir, 'check-base-freshness.js'), '#!/usr/bin/env node\nprocess.exit(0);\n');
++    fs.writeFileSync(path.join(libDir, 'base-freshness.js'), 'module.exports = {};\n');
++    fs.writeFileSync(path.join(libDir, 'base-freshness-check.js'), 'module.exports = {};\n');
++    fs.writeFileSync(path.join(libDir, 'freshness-token.js'), 'module.exports = {};\n');
++  }
++
+   test('reports active + native after installNativeGitHooks runs (with gate script present)', () => {
+     tmp = mkGitRepo();
+     installNativeGitHooks(tmp);
+     installGateScript(tmp);
++    installFreshnessRuntime(tmp);
+     const res = verifyHooksActive(tmp);
+     expect(res.active).toBe(true);
+     expect(res.method).toBe('native');
+   });
+ 
++  test('reports inactive when the canonical installed freshness implementation is missing', () => {
++    tmp = mkGitRepo();
++    installNativeGitHooks(tmp);
++    installGateScript(tmp);
++    installFreshnessRuntime(tmp);
++    fs.rmSync(path.join(tmp, '.forge', 'lib', 'base-freshness-check.js'));
++
++    const res = verifyHooksActive(tmp);
++    expect(res.active).toBe(false);
++    expect(res.required).toBe('base-freshness');
++    expect(res.reason).toContain('base-freshness-check.js');
++  });
++
+   // F5 (kernel d96af31a): the native hook body no-ops when its gate script is absent, so a
+   // present-but-inert hook must report NOT active (loud) — never a silent false pass.
+   test('reports NOT active when the native hook is present but its gate script is absent', () => {
+     tmp = mkGitRepo();
+     installNativeGitHooks(tmp); // writes .git/hooks/pre-commit, but NO .forge/hooks/check-tdd.js
++    installFreshnessRuntime(tmp);
+     const res = verifyHooksActive(tmp);
+     expect(res.active).toBe(false);
+     expect(res.reason).toMatch(/check-tdd\.js|gate script/i);
+@@ -241,8 +267,96 @@ describe('verifyHooksActive (loud honesty — never silently no-op)', () => {
+     const hooksDir = path.join(tmp, '.git', 'hooks');
+     fs.mkdirSync(hooksDir, { recursive: true });
+     fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\n# generated by lefthook\nlefthook run pre-commit\n');
++    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\n# generated by lefthook\nlefthook run pre-push\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), FORGE_USER_LEFTHOOK_YML);
++    installFreshnessRuntime(tmp);
+     const res = verifyHooksActive(tmp);
+     expect(res.active).toBe(true);
+     expect(res.method).toBe('lefthook');
+   });
++
++  test('reports inactive when the lefthook pre-push shim is missing', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), FORGE_USER_LEFTHOOK_YML);
++    installFreshnessRuntime(tmp);
++
++    const res = verifyHooksActive(tmp);
++
++    expect(res.active).toBe(false);
++    expect(res.required).toBe('base-freshness');
++    expect(res.reason).toContain('pre-push');
++  });
++
++  test('does not treat a comment-only pre-commit shim as lefthook-managed', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '# lefthook disabled\nexit 0\n');
++    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), FORGE_USER_LEFTHOOK_YML);
++    installFreshnessRuntime(tmp);
++
++    expect(verifyHooksActive(tmp).active).toBe(false);
++  });
++
++  test('does not treat a comment-only pre-push shim as invoking lefthook', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
++    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '# lefthook disabled\nexit 0\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), FORGE_USER_LEFTHOOK_YML);
++    installFreshnessRuntime(tmp);
++
++    const res = verifyHooksActive(tmp);
++    expect(res.active).toBe(false);
++    expect(res.required).toBe('base-freshness');
++  });
++
++  test('accepts the supported Lefthook jobs schema for base freshness', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
++    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), 'pre-push:\n  jobs:\n    - run: node .forge/hooks/check-base-freshness.js\n      use_stdin: true\n');
++    installFreshnessRuntime(tmp);
++
++    expect(verifyHooksActive(tmp).active).toBe(true);
++  });
++
++  test('accepts the self-hosted repository freshness script layout', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
++    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), 'pre-push:\n  commands:\n    freshness:\n      run: node scripts/base-freshness-check.js\n      use_stdin: true\n');
++    fs.mkdirSync(path.join(tmp, 'scripts'), { recursive: true });
++    fs.mkdirSync(path.join(tmp, 'lib'), { recursive: true });
++    fs.writeFileSync(path.join(tmp, 'scripts', 'base-freshness-check.js'), 'process.exit(0);\n');
++    fs.writeFileSync(path.join(tmp, 'lib', 'base-freshness.js'), 'module.exports = {};\n');
++    fs.writeFileSync(path.join(tmp, 'lib', 'base-freshness-check.js'), 'module.exports = {};\n');
++    fs.writeFileSync(path.join(tmp, 'lib', 'freshness-token.js'), 'module.exports = {};\n');
++
++    expect(verifyHooksActive(tmp).active).toBe(true);
++  });
++
++  test('reports inactive when an existing lefthook installation lacks base freshness', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\nlefthook run pre-commit\n');
++    fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\nlefthook run pre-push\n');
++    fs.writeFileSync(path.join(tmp, 'lefthook.yml'), 'pre-commit:\n  commands:\n    lint:\n      run: npm run lint\n');
++
++    const res = verifyHooksActive(tmp);
++
++    expect(res.active).toBe(false);
++    expect(res.required).toBe('base-freshness');
++    expect(res.reason).toContain('pre-push base freshness');
++  });
+ });
+diff --git a/test/package-distribution.test.js b/test/package-distribution.test.js
+index 9994db43..62185cd8 100644
+--- a/test/package-distribution.test.js
++++ b/test/package-distribution.test.js
+@@ -48,6 +48,8 @@ describe('package distribution (npm pack --dry-run)', () => {
+       'scripts/sync-utils.sh',
+       'scripts/file-index.sh',
+       'scripts/conflict-detect.sh',
++      'scripts/base-freshness-check.js',
++      'scripts/sync-workflow-hooks.js',
+     ];
+ 
+     for (const script of requiredScripts) {
+@@ -90,6 +92,18 @@ describe('package distribution (npm pack --dry-run)', () => {
+     });
+   });
+ 
++  describe('base freshness hook runtime', () => {
++    for (const file of [
++      '.forge/hooks/check-base-freshness.js',
++      'lib/base-freshness.js',
++      'lib/base-freshness-check.js',
++      'lib/freshness-token.js',
++      'lib/workflow-hook-sync.js',
++    ]) {
++      it(`includes ${file}`, () => expect(packFiles).toContain(file));
++    }
++  });
++
+   describe('excludes development/test artifacts', () => {
+     it('does NOT include test/ directory files', () => {
+       const testFiles = packFiles.filter((f) => f.startsWith('test/'));
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index 5b291431..448b93a5 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -7,10 +7,17 @@ const {
+ 	PROTECTED_STATE_AUTHORIZATION_ISSUED,
+ 	authorizationEntityId,
+ 	evaluateAuthorization,
++	authorizeAndConsumeProtectedStateWrites,
++	completeSetupWorkflowAuthorization,
+ 	issueGeneratedHarnessClaudeAuthorization,
+ 	issueGeneratedHarnessSkillAuthorization,
++	issueSetupWorkflowAuthorization,
+ 	resolveWorktreeScope,
+ } = require('../lib/protected-state-authority');
++const {
++	renderBaseFreshnessHookEntrypoint,
++	renderRepositoryLefthook,
++} = require('../lib/workflow-hook-sync');
+ 
+ const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
+ const SKILL_MIRROR_SOURCE_COMMAND = 'scripts/sync-agent-skills.js';
+@@ -108,6 +115,122 @@ function claudePointerEvent(eventType, capabilityId, overrides = {}) {
+ }
+ 
+ describe('protected-state Kernel authority', () => {
++	test('setup workflow authority issues, completes, and is consumed exactly once', async () => {
++		const rows = [];
++		const driver = {
++			listKernelEvents: async () => rows,
++			insertKernelEvent: async event => {
++				const row = { ...event, payload_json: JSON.stringify(event.payload) };
++				rows.push(row);
++				return row;
++			},
++		};
++		const deps = { kernelBroker: { config: {} }, kernelDriver: driver };
++		const content = renderBaseFreshnessHookEntrypoint();
++		const params = {
++			actor: 'forge-setup-workflow',
++			path: '.forge/hooks/check-base-freshness.js',
++			content,
++			sourceHead: TEST_HEAD,
++		};
++		const options = { deps, worktreeScope: 'scope-workflow' };
++
++		const issued = await issueSetupWorkflowAuthorization('/repo', params, options);
++		expect(issued.success).toBe(true);
++		const completed = await completeSetupWorkflowAuthorization('/repo', {
++			...params,
++			capabilityId: issued.capabilityId,
++		}, options);
++		expect(completed.success).toBe(true);
++		const request = {
++			...params,
++			surface: 'workflows',
++			operation: 'staged_edit',
++		};
++		const consumed = await authorizeAndConsumeProtectedStateWrites('/repo', [request], options);
++		expect(consumed.success).toBe(true);
++		expect(rows.filter(row => row.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)).toHaveLength(1);
++		const replay = await authorizeAndConsumeProtectedStateWrites('/repo', [request], options);
++		expect(replay.success).toBe(false);
++		expect(replay.decisions[0].reason).toContain('already consumed');
++	});
++
++	test('setup workflow authority rejects arbitrary protected workflow bytes', async () => {
++		const result = await issueSetupWorkflowAuthorization('/repo', {
++			actor: 'forge-setup-workflow',
++			path: '.forge/hooks/check-base-freshness.js',
++			content: 'arbitrary hook bytes\n',
++			sourceHead: TEST_HEAD,
++		});
++		expect(result.success).toBe(false);
++	});
++
++	test('forge setup records its own provenance for the installed hook bytes', async () => {
++		const rows = [];
++		const driver = {
++			listKernelEvents: async () => rows,
++			insertKernelEvent: async event => {
++				const row = { ...event, payload_json: JSON.stringify(event.payload) };
++				rows.push(row);
++				return row;
++			},
++		};
++		const params = {
++			actor: 'forge-setup',
++			path: '.forge/hooks/check-base-freshness.js',
++			content: renderBaseFreshnessHookEntrypoint(),
++			sourceCommand: 'forge setup',
++			sourceHead: TEST_HEAD,
++		};
++		const options = {
++			deps: { kernelBroker: { config: {} }, kernelDriver: driver },
++			worktreeScope: 'scope-setup',
++		};
++		const issued = await issueSetupWorkflowAuthorization('/repo', params, options);
++		expect(issued.success).toBe(true);
++		expect(issued.event.sourceCommand).toBe('forge setup');
++		expect((await completeSetupWorkflowAuthorization('/repo', {
++			...params,
++			capabilityId: issued.capabilityId,
++		}, options)).success).toBe(true);
++	});
++
++	test('lefthook workflow authority binds the exact source-HEAD transformation through consume', async () => {
++		const rows = [];
++		const driver = {
++			listKernelEvents: async () => rows,
++			insertKernelEvent: async event => {
++				const row = { ...event, payload_json: JSON.stringify(event.payload) };
++				rows.push(row);
++				return row;
++			},
++		};
++		const baseContent = 'pre-push:\n  commands:\n    tests:\n      run: npm test\n';
++		const params = {
++			actor: 'forge-setup-lefthook',
++			path: 'lefthook.yml',
++			content: renderRepositoryLefthook(baseContent),
++			sourceHead: TEST_HEAD,
++		};
++		const options = {
++			deps: { kernelBroker: { config: {} }, kernelDriver: driver },
++			execFileSync: () => baseContent,
++			worktreeScope: 'scope-lefthook',
++		};
++		const issued = await issueSetupWorkflowAuthorization('/repo', params, options);
++		expect(issued.success).toBe(true);
++		expect((await completeSetupWorkflowAuthorization('/repo', {
++			...params,
++			capabilityId: issued.capabilityId,
++		}, options)).success).toBe(true);
++		expect((await authorizeAndConsumeProtectedStateWrites('/repo', [{
++			...params,
++			surface: 'workflows',
++			operation: 'staged_edit',
++		}], options)).success).toBe(true);
++		expect(rows.filter(row => row.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)).toHaveLength(1);
++	});
++
+ 	test('canonicalizes filesystem aliases before binding a worktree scope', () => {
+ 		const aliased = resolveWorktreeScope('/var/folders/repo', {
+ 			realpathSync: () => '/private/var/folders/repo',
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 78e9f4e3..555741b3 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -98,6 +98,27 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.testTargets).toEqual(expect.arrayContaining(riskTargets));
+   });
+ 
++  test('base-freshness source paths stay targeted with their direct regressions', () => {
++    const plan = classifyPushTests(repoRoot, makeExecFileSync({
++      changedFiles: [
++        '.forge/hooks/check-base-freshness.js',
++        'lib/base-freshness.js',
++        'lib/base-freshness-check.js',
++        'lib/freshness-token.js',
++        'lib/workflow-hook-sync.js',
++        'scripts/base-freshness-check.js',
++        'scripts/sync-workflow-hooks.js',
++      ].join('\n'),
++    }));
++
++    expect(plan.hasUnmappedFiles).toBe(false);
++    expect(plan.mode).toBe('targeted');
++    expect(plan.testTargets).toContain('test/base-freshness.test.js');
++		expect(plan.testTargets).toContain('test/base-freshness-check.test.js');
++    expect(plan.testTargets).toContain('test/protected-state-authority.test.js');
++		expect(plan.testTargets).toContain('test/workflow-hook-sync.test.js');
++  });
++
+   test('classifyPushTests marks .claude/commands/ edits as unmapped — full suite (A0d: commands surface removed)', () => {
+     const plan = classifyPushTests(repoRoot, makeExecFileSync({
+       changedFiles: '.claude/commands/ship.md\n',
+diff --git a/test/setup-hook-verdict.test.js b/test/setup-hook-verdict.test.js
+index f0246c04..b1b59813 100644
+--- a/test/setup-hook-verdict.test.js
++++ b/test/setup-hook-verdict.test.js
+@@ -14,6 +14,7 @@ const ACTIVE = { active: true, method: 'native' };
+ const INERT = { active: false, method: 'none', reason: 'no pre-commit hook installed' };
+ const ENABLED = { tddActive: true };
+ const DISABLED = { tddActive: false };
++const STALE_PUSH = { active: false, method: 'lefthook', required: 'base-freshness', reason: 'pre-push base freshness job missing' };
+ 
+ describe('buildHookVerdict (honest reporting/exit layer)', () => {
+   test('hooks active + TDD enabled → "enforcement active", no failure exit', () => {
+@@ -52,4 +53,11 @@ describe('buildHookVerdict (honest reporting/exit layer)', () => {
+     expect(v.message).toContain('NOT active');
+     expect(v.exitFailure).toBe(false);
+   });
++
++  test('missing base freshness fails loud setup even when TDD is disabled', () => {
++    const v = setup.buildHookVerdict(STALE_PUSH, DISABLED, { loud: true });
++    expect(v.level).toBe('error');
++    expect(v.message).toContain('BASE FRESHNESS ENFORCEMENT IS NOT ACTIVE');
++    expect(v.exitFailure).toBe(true);
++  });
+ });
+diff --git a/test/setup-native-fallback-wiring.test.js b/test/setup-native-fallback-wiring.test.js
+index d0fb50b2..7781c1f5 100644
+--- a/test/setup-native-fallback-wiring.test.js
++++ b/test/setup-native-fallback-wiring.test.js
+@@ -64,6 +64,12 @@ describe('lib/commands/setup.js (LIVE path) delegates hook wiring to lib/lefthoo
+     expect(loudCalls.length).toBeGreaterThanOrEqual(2);
+   });
+ 
++  test('the setup handlers complete content-bound workflow authorization after hook installation', () => {
++    expect(SETUP_SRC).toContain('async function authorizeSetupWorkflowHooks');
++    const authorizationCalls = SETUP_SRC.match(/await authorizeSetupWorkflowHooks\(/g) || [];
++    expect(authorizationCalls.length).toBeGreaterThanOrEqual(4);
++  });
++
+   test('autoInstallLefthook refuses to install lefthook without a local package.json (22e33dbf)', () => {
+     const body = bodyOf(SETUP_SRC, 'function autoInstallLefthook()');
+     // Guards on projectRoot/package.json before the package-manager install so it never
+@@ -127,6 +133,36 @@ describe('forge setup — LIVE handler end-to-end (B3)', () => {
+     }
+   }, 120000);
+ 
++  test('(a2) TDD-disabled repo with preserved custom hooks fails when pre-push freshness is absent', () => {
++    if (!gitAvailable) return;
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-live-custom-no-freshness-'));
++    try {
++      gitInit(repo);
++      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# demo\n');
++      fs.mkdirSync(path.join(repo, '.forge'), { recursive: true });
++      fs.writeFileSync(path.join(repo, '.forge', 'config.yaml'), [
++        'workflow:',
++        '  gates:',
++        '    rail.tdd_intent:',
++        '      enabled: false',
++        '',
++      ].join('\n'));
++      const hooksDir = path.join(repo, '.git', 'hooks');
++      fs.mkdirSync(hooksDir, { recursive: true });
++      fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\necho custom user hook\n');
++      fs.writeFileSync(path.join(hooksDir, 'pre-push'), '#!/bin/sh\necho custom push hook\n');
++
++      const res = runForgeSetup(repo);
++      const out = (res.stdout || '') + (res.stderr || '');
++      expect(res.status).not.toBe(0);
++      expect(out).toContain('BASE FRESHNESS ENFORCEMENT IS NOT ACTIVE');
++      expect(fs.readFileSync(path.join(hooksDir, 'pre-commit'), 'utf8')).toContain('custom user hook');
++      expect(fs.readFileSync(path.join(hooksDir, 'pre-push'), 'utf8')).toContain('custom push hook');
++    } finally {
++      fs.rmSync(repo, { recursive: true, force: true });
++    }
++  }, 120000);
++
+   test('(b) bare repo (no package.json) → no pkg-mgr lefthook install, native hooks wired', () => {
+     if (!gitAvailable) return; // git required
+     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-live-bare-'));
+@@ -141,6 +177,17 @@ describe('forge setup — LIVE handler end-to-end (B3)', () => {
+       const preCommit = path.join(repo, '.git', 'hooks', 'pre-commit');
+       expect(fs.existsSync(preCommit)).toBe(true);
+       expect(fs.readFileSync(preCommit, 'utf8')).toContain(FORGE_NATIVE_HOOK_SENTINEL);
++      const prePush = path.join(repo, '.git', 'hooks', 'pre-push');
++      expect(fs.readFileSync(prePush, 'utf8')).toContain('.forge/hooks/check-base-freshness.js');
++      expect(fs.existsSync(path.join(repo, '.forge', 'hooks', 'check-base-freshness.js'))).toBe(true);
++      expect(fs.existsSync(path.join(repo, '.forge', 'lib', 'base-freshness.js'))).toBe(true);
++      expect(fs.existsSync(path.join(repo, '.forge', 'lib', 'base-freshness-check.js'))).toBe(true);
++      expect(fs.existsSync(path.join(repo, '.forge', 'lib', 'freshness-token.js'))).toBe(true);
++      const loadHook = spawnSync(process.execPath, ['-e', "require('./.forge/hooks/check-base-freshness.js')"], {
++        cwd: repo,
++        encoding: 'utf8',
++      });
++      expect(loadHook.status).toBe(0);
+ 
+       // No package-manager lefthook install happened: the install banner never printed
+       // and no package.json was fabricated in (or an ancestor of) the bare repo.
+diff --git a/test/workflow-hook-sync.test.js b/test/workflow-hook-sync.test.js
+new file mode 100644
+index 00000000..d1deb52d
+--- /dev/null
++++ b/test/workflow-hook-sync.test.js
+@@ -0,0 +1,26 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const {
++	renderBaseFreshnessHookEntrypoint,
++	renderRepositoryLefthook,
++} = require('../lib/workflow-hook-sync');
++
++describe('workflow hook sync rendering', () => {
++	test('adds the freshness job once and preserves CRLF input', () => {
++		const original = 'pre-push:\r\n  commands:\r\n    tests:\r\n      run: bun test\r\n';
++		const rendered = renderRepositoryLefthook(original);
++
++		expect(rendered).toContain('base-freshness:\r\n');
++		expect(rendered).not.toMatch(/(^|[^\r])\n/);
++		expect(renderRepositoryLefthook(rendered)).toBe(rendered);
++	});
++
++	test('renders a thin hook that prefers the installed implementation', () => {
++		const rendered = renderBaseFreshnessHookEntrypoint();
++
++		expect(rendered).toContain("'..', 'lib', 'base-freshness-check.js");
++		expect(rendered).toContain('module.exports = implementation;');
++		expect(rendered).not.toContain('function run(');
++	});
++});
+-- 
+2.51.0.windows.1
+

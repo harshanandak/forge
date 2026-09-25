@@ -1,0 +1,671 @@
+From 8dd11c14b66f94c7e3b335c4b057ba1ad89562e4 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 15:17:29 +0530
+Subject: [PATCH] perf: reuse validated test evidence
+
+---
+ CHANGELOG.md                                  |   7 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ .../decisions.md                              |   7 +
+ .../2026-09-11-validated-push-receipt/plan.md |  18 ++
+ .../tasks.md                                  |   9 +
+ lib/commands/push.js                          |  17 +-
+ lib/commands/validate.js                      |  13 +-
+ lib/validation-receipt.js                     | 184 ++++++++++++++++++
+ scripts/test.js                               |   2 +-
+ test/commands/push.test.js                    |  42 ++++
+ .../standalone-package-smoke.test.js          |  12 +-
+ test/scripts/test-runner.test.js              |   6 +-
+ test/validation-receipt.test.js               |  99 ++++++++++
+ 13 files changed, 405 insertions(+), 13 deletions(-)
+ create mode 100644 docs/work/2026-09-11-validated-push-receipt/decisions.md
+ create mode 100644 docs/work/2026-09-11-validated-push-receipt/plan.md
+ create mode 100644 docs/work/2026-09-11-validated-push-receipt/tasks.md
+ create mode 100644 lib/validation-receipt.js
+ create mode 100644 test/validation-receipt.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2cc30a95..4bd8cbad 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ## [0.1.0-beta.7] - 2026-09-11
+ 
++### Changed
++
++- **A clean full validation is reused by the next unchanged `forge push`.** Forge stores a one-hour, signed local receipt bound to the canonical worktree, exact HEAD, clean state, Forge and Bun runtimes, and complete nonzero gate results. Branch protection and lint still run; invalid or stale evidence falls back to the full suite, while raw Git pushes and CI remain independent.
++- **A local full suite no longer reruns its already-included E2E directory.** Targeted E2E execution is unchanged, while full validation avoids an exact duplicate. (issue `4aed2cc8-57eb-451b-bb3a-02bbdd93af49`)
++
+ ### Fixed
+ 
+-- **The npm package now includes every internal runtime workspace.** Root runtime imports use the `@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` package boundaries, and npm bundles those unpublished workspaces into `forge-workflow`. A fresh packed install now runs `forge --version` and `forge setup --quick --yes`, preventing the `MODULE_NOT_FOUND` failure in v0.1.0-beta.6. (issue `95372af8-da00-42e0-af64-0111ddab3405`)
++- **The npm package now includes every internal runtime workspace.** Root runtime imports use the `@forge/memory`, `@forge/memory-contracts`, and `@forge/flow` package boundaries, and npm bundles those unpublished workspaces into `forge-workflow`. The installed-package smoke accepts npm 10 lifecycle output before its JSON payload, so Node 22 verifies the same package correctly. A fresh packed install now runs `forge --version` and `forge setup --quick --yes`, preventing the `MODULE_NOT_FOUND` failure in v0.1.0-beta.6. (issue `95372af8-da00-42e0-af64-0111ddab3405`)
+ 
+ ## [0.1.0-beta.6] - 2026-09-11
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 1b64e1f0..3549a7ec 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -24,7 +24,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/status.js (2)
+   - lines: 368 (bd), 427 (bd)
+ - [ ] lib/commands/validate.js (1)
+-  - lines: 26 (.beads)
++  - lines: 27 (.beads)
+ 
+ ## runtime
+ 
+diff --git a/docs/work/2026-09-11-validated-push-receipt/decisions.md b/docs/work/2026-09-11-validated-push-receipt/decisions.md
+new file mode 100644
+index 00000000..d1919dd2
+--- /dev/null
++++ b/docs/work/2026-09-11-validated-push-receipt/decisions.md
+@@ -0,0 +1,7 @@
++# Decisions
++
++- Keep validation evidence separate from `.forge-freshness` and the broad pre-push hook nonce; neither is exact-HEAD test authority.
++- Use Node standard-library HMAC and atomic local files; add no dependency.
++- Store the signing key outside the checkout and the receipt in the worktree Git directory.
++- Optimize `forge push` only. Raw Git hooks and CI remain independent evidence paths.
++- Do not remove or weaken tests for speed; broader Windows sharding changes require profile evidence and a separate issue.
+diff --git a/docs/work/2026-09-11-validated-push-receipt/plan.md b/docs/work/2026-09-11-validated-push-receipt/plan.md
+new file mode 100644
+index 00000000..73f50dd9
+--- /dev/null
++++ b/docs/work/2026-09-11-validated-push-receipt/plan.md
+@@ -0,0 +1,18 @@
++# Validated push receipt
++
++## Problem
++
++`forge validate` and the following `forge push` both run the same full test suite. On Windows this repeats roughly twelve minutes of work without adding evidence when the commit and worktree are unchanged.
++
++## Contract
++
++- A complete successful full validation may write a short-lived, signed local receipt.
++- The receipt is bound to the canonical worktree, exact HEAD, clean worktree, runtime, and required gate results.
++- `forge push` always runs branch protection and lint. It may reuse the receipt only for the duplicate test step.
++- Missing, malformed, changed, expired, future-dated, or unverifiable evidence falls back to the full suite.
++- Targeted, skipped, zero-test, failed, or interrupted validation never produces reusable evidence.
++- `forge push --quick`, raw `git push`, GitHub CI, and team sync keep their existing behavior.
++
++## Verification
++
++Focused tests cover issuance, accepted reuse, rejection/fallback, tampering, expiry, changed HEAD/worktree, paths with spaces, and linked-worktree scope. The exact committed head then runs full validation once, followed by a normal `forge push` that proves branch/lint execution and test reuse.
+diff --git a/docs/work/2026-09-11-validated-push-receipt/tasks.md b/docs/work/2026-09-11-validated-push-receipt/tasks.md
+new file mode 100644
+index 00000000..4e932a7b
+--- /dev/null
++++ b/docs/work/2026-09-11-validated-push-receipt/tasks.md
+@@ -0,0 +1,9 @@
++# Tasks
++
++- [x] Add failing receipt and push-reuse tests.
++- [x] Implement the signed, per-worktree receipt with no dependency.
++- [x] Mint only after complete full validation.
++- [x] Reuse only the duplicate `forge push` test step.
++- [ ] Run focused checks, commit, full validate once, and prove normal push reuse.
++- [x] Remove the measured full-suite/E2E duplicate.
++- [x] File the protected CI-matrix duplicate for its Forge-owned workflow path.
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 3b4584ab..eaa5d6a4 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -6,6 +6,7 @@ const path = require('node:path');
+ const forgeToken = require('../../scripts/check-forge-token');
+ const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE, resolveFullSuiteTimeoutMs } = require('../../scripts/test');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
++const { verifyValidationReceipt } = require('../validation-receipt');
+ 
+ const isWindows = process.platform === 'win32';
+ 
+@@ -346,6 +347,7 @@ module.exports = {
+ 		const existsFn = deps?.existsSync || fs.existsSync;
+ 		const log = deps?.log || console.log;
+ 		const tokenWrite = deps?.writeForgeToken || forgeToken.write;
++		const verifyReceipt = deps?.verifyValidationReceipt || verifyValidationReceipt;
+ 
+ 		const quickMode = !!(flags && (flags['--quick'] || flags.quick));
+ 		const pkgManager = detectPackageManager(projectRoot, existsFn);
+@@ -368,9 +370,16 @@ module.exports = {
+ 		}
+ 
+ 		// Step 3: Tests (skip in quick mode)
+-		const testsPassed = runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, deps?.env || process.env);
++		const receipt = quickMode
++			? { valid: false }
++			: verifyReceipt(resolveGitToplevel(execFn, projectRoot));
++		const validationReused = receipt.valid === true;
++		if (validationReused) log(`Tests reused from full validation at ${receipt.head || 'current HEAD'}`);
++		const testsPassed = validationReused
++			? true
++			: runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, deps?.env || process.env);
+ 		if (!quickMode && !testsPassed) {
+-			return { success: false, quickMode, lintPassed: true, testsPassed: false, pushed: false };
++			return { success: false, quickMode, lintPassed: true, testsPassed: false, validationReused, pushed: false };
+ 		}
+ 
+ 		// Step 4: Write nonce token so lefthook skips pre-push hooks.
+@@ -392,7 +401,7 @@ module.exports = {
+ 				success: false,
+ 				quickMode,
+ 				lintPassed: true,
+-				...(quickMode ? {} : { testsPassed: true }),
++				...(quickMode ? {} : { testsPassed: true, validationReused }),
+ 				pushed: false,
+ 			};
+ 		}
+@@ -407,7 +416,7 @@ module.exports = {
+ 			success: true,
+ 			quickMode,
+ 			lintPassed: true,
+-			...(quickMode ? {} : { testsPassed: true }),
++			...(quickMode ? {} : { testsPassed: true, validationReused }),
+ 			pushed: true,
+ 		};
+ 	},
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index 96bb7c3a..a25a860b 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -12,6 +12,7 @@ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { secureExecFileSync } = require('../shell-utils');
++const validationReceipt = require('../validation-receipt');
+ 
+ // Constants
+ const CHECK_TYPES = {
+@@ -632,6 +633,7 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 				success: true,
+ 				skipped: true,
+ 				testsFound: false,
++				fullSuite: useFullSuite,
+ 				duration: Date.now() - startTime,
+ 				passed,
+ 				failed,
+@@ -643,6 +645,7 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 		return {
+ 			success,
+ 			testsFound: true,
++			fullSuite: useFullSuite,
+ 			duration: Date.now() - startTime,
+ 			passed,
+ 			failed,
+@@ -657,6 +660,7 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 		if (error.code === 'ETIMEDOUT' || (error.killed && error.signal === 'SIGTERM')) {
+ 			return {
+ 				success: false,
++				fullSuite: useFullSuite,
+ 				duration: Date.now() - startTime,
+ 				passed: 0,
+ 				failed: 0,
+@@ -671,6 +675,7 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 				success: true,
+ 				skipped: true,
+ 				testsFound: false,
++				fullSuite: useFullSuite,
+ 				duration: Date.now() - startTime,
+ 				passed: 0,
+ 				failed: 0,
+@@ -691,6 +696,7 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 		return {
+ 			success: false,
+ 			testsFound: counts.testsFound,
++			fullSuite: useFullSuite,
+ 			duration: Date.now() - startTime,
+ 			passed,
+ 			failed,
+@@ -724,6 +730,9 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+  */
+ async function executeValidate(options = {}) { // NOSONAR S3776
+ 	const { skip = [], continueOnError = true, rootDir = process.cwd() } = options || {};
++	const receiptApi = options?.validationReceipt || validationReceipt;
++	const validationSnapshot = receiptApi.beginValidation(rootDir);
++	const receiptSnapshot = skip.length === 0 ? validationSnapshot : null;
+ 
+ 	const checks = {};
+ 	const failedChecks = [];
+@@ -810,7 +819,9 @@ async function executeValidate(options = {}) { // NOSONAR S3776
+ 		}
+ 	}
+ 
+-	return buildResult(checks, failedChecks, errors, startTime);
++	const result = buildResult(checks, failedChecks, errors, startTime);
++	result.validationReceipt = receiptApi.completeValidation(rootDir, receiptSnapshot, result);
++	return result;
+ }
+ 
+ /**
+diff --git a/lib/validation-receipt.js b/lib/validation-receipt.js
+new file mode 100644
+index 00000000..f444cfac
+--- /dev/null
++++ b/lib/validation-receipt.js
+@@ -0,0 +1,184 @@
++'use strict';
++
++const crypto = require('node:crypto');
++const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { resolveWorktreeScope } = require('./protected-state-authority');
++
++const SCHEMA_VERSION = 1;
++const RECEIPT_TTL_MS = 60 * 60 * 1000;
++const FUTURE_SKEW_MS = 60 * 1000;
++const RUNNER_ID = 'forge-full-suite-v1';
++
++function git(projectRoot, args, deps = {}) {
++	return (deps.execFileSync || execFileSync)('git', args, {
++		cwd: projectRoot,
++		encoding: 'utf8',
++		stdio: ['ignore', 'pipe', 'pipe'],
++	}).trim();
++}
++
++function resolveGitRoot(projectRoot, deps = {}) {
++	return path.resolve(git(projectRoot, ['rev-parse', '--show-toplevel'], deps));
++}
++
++function resolveReceiptPath(projectRoot, deps = {}) {
++	const root = resolveGitRoot(projectRoot, deps);
++	const gitPath = git(root, ['rev-parse', '--git-path', 'forge/validation-receipt.json'], deps);
++	return path.resolve(root, gitPath);
++}
++
++function resolveKeyPath(deps = {}) {
++	return path.join(deps.homeDir || os.homedir(), '.forge', 'validation-receipt.key');
++}
++
++function runtimeIdentity(deps = {}) {
++	return deps.runtimeIdentity
++		|| [process.platform, process.arch, process.versions.node, process.versions.bun || 'node'].join(':');
++}
++
++function testRuntimeIdentity(projectRoot, deps = {}) {
++	if (deps.testRuntimeIdentity) return deps.testRuntimeIdentity;
++	const env = deps.env || process.env;
++	const command = env.BUN_EXE || 'bun';
++	const run = deps.runtimeExecFileSync || execFileSync;
++	const version = run(command, ['--version'], {
++		cwd: projectRoot,
++		encoding: 'utf8',
++		env,
++		stdio: ['ignore', 'pipe', 'pipe'],
++	}).trim();
++	const located = path.isAbsolute(command)
++		? fs.realpathSync.native(command)
++		: run(process.platform === 'win32' ? 'where.exe' : 'which', [command], {
++			encoding: 'utf8',
++			env,
++			stdio: ['ignore', 'pipe', 'pipe'],
++		}).trim().split(/\r?\n/)[0];
++	return `${process.platform === 'win32' ? located.toLowerCase() : located}:${version}`;
++}
++
++function captureState(projectRoot, deps = {}) {
++	const root = resolveGitRoot(projectRoot, deps);
++	return {
++		worktree: resolveWorktreeScope(root, deps),
++		head: git(root, ['rev-parse', 'HEAD'], deps),
++		clean: git(root, ['status', '--porcelain=v1', '--untracked-files=all'], deps) === '',
++		runtime: runtimeIdentity(deps),
++		testRuntime: testRuntimeIdentity(root, deps),
++		runner: RUNNER_ID,
++	};
++}
++
++function sameState(left, right) {
++	return left?.clean === true
++		&& right?.clean === true
++		&& left.worktree === right.worktree
++		&& left.head === right.head
++		&& left.runtime === right.runtime
++		&& left.testRuntime === right.testRuntime
++		&& left.runner === right.runner;
++}
++
++function validationIsComplete(result) {
++	const checks = result?.checks || {};
++	const tests = checks.tests || {};
++	return result?.success === true
++		&& checks.conflictMarkers?.success === true
++		&& checks.typeCheck?.success === true
++		&& checks.lint?.success === true && checks.lint?.skipped !== true
++		&& checks.security?.success === true && checks.security?.skipped !== true
++		&& tests.success === true && tests.skipped !== true
++		&& tests.fullSuite === true && tests.testsFound === true
++		&& tests.total > 0 && tests.failed === 0;
++}
++
++function readOrCreateKey(deps = {}) {
++	const keyPath = resolveKeyPath(deps);
++	fs.mkdirSync(path.dirname(keyPath), { recursive: true });
++	try {
++		fs.writeFileSync(keyPath, crypto.randomBytes(32), { flag: 'wx', mode: 0o600 });
++	} catch (error) {
++		if (error.code !== 'EEXIST') throw error;
++	}
++	return fs.readFileSync(keyPath);
++}
++
++function sign(payload, deps = {}) {
++	return crypto.createHmac('sha256', readOrCreateKey(deps))
++		.update(JSON.stringify(payload))
++		.digest('hex');
++}
++
++function signatureMatches(payload, signature, deps = {}) {
++	if (!/^[a-f0-9]{64}$/.test(signature || '')) return false;
++	const expected = Buffer.from(sign(payload, deps), 'hex');
++	const actual = Buffer.from(signature, 'hex');
++	return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
++}
++
++function writeAtomic(filePath, content) {
++	fs.mkdirSync(path.dirname(filePath), { recursive: true });
++	const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
++	try {
++		fs.writeFileSync(temporary, content, { flag: 'wx', mode: 0o600 });
++		fs.renameSync(temporary, filePath);
++	} finally {
++		fs.rmSync(temporary, { force: true });
++	}
++}
++
++function beginValidation(projectRoot, deps = {}) {
++	try {
++		fs.rmSync(resolveReceiptPath(projectRoot, deps), { force: true });
++		const state = captureState(projectRoot, deps);
++		return state.clean ? state : null;
++	} catch {
++		return null;
++	}
++}
++
++function completeValidation(projectRoot, snapshot, result, deps = {}) {
++	try {
++		if (!snapshot || !validationIsComplete(result)) return false;
++		const current = captureState(projectRoot, deps);
++		if (!sameState(snapshot, current)) return false;
++		const issuedAt = (deps.now || Date.now)();
++		const payload = {
++			schemaVersion: SCHEMA_VERSION,
++			...current,
++			issuedAt,
++			expiresAt: issuedAt + RECEIPT_TTL_MS,
++			gates: ['conflictMarkers', 'typeCheck', 'lint', 'security', 'tests'],
++		};
++		writeAtomic(resolveReceiptPath(projectRoot, deps), JSON.stringify({ payload, signature: sign(payload, deps) }));
++		return true;
++	} catch {
++		return false;
++	}
++}
++
++function verifyValidationReceipt(projectRoot, deps = {}) {
++	try {
++		const receipt = JSON.parse(fs.readFileSync(resolveReceiptPath(projectRoot, deps), 'utf8'));
++		if (receipt?.payload?.schemaVersion !== SCHEMA_VERSION) return { valid: false, reason: 'schema' };
++		if (!signatureMatches(receipt.payload, receipt.signature, deps)) return { valid: false, reason: 'signature' };
++		const now = (deps.now || Date.now)();
++		if (receipt.payload.issuedAt > now + FUTURE_SKEW_MS) return { valid: false, reason: 'future' };
++		if (receipt.payload.expiresAt < now) return { valid: false, reason: 'expired' };
++		if (!sameState(receipt.payload, captureState(projectRoot, deps))) return { valid: false, reason: 'state' };
++		return { valid: true, head: receipt.payload.head };
++	} catch {
++		return { valid: false, reason: 'missing-or-invalid' };
++	}
++}
++
++module.exports = {
++	beginValidation,
++	completeValidation,
++	resolveReceiptPath,
++	validationIsComplete,
++	verifyValidationReceipt,
++};
+diff --git a/scripts/test.js b/scripts/test.js
+index d8c8c044..0570524d 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -569,7 +569,7 @@ async function runTestExecutionPlan(plan, deps = {}) {
+       if (status !== 0) return status;
+     }
+ 
+-    if (plan.runE2E) {
++    if (!plan.runFullSuite && plan.runE2E) {
+       console.log('  Extra: running affected e2e tests');
+        const status = await runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawn);
+       if (signal) return signalExitCode(signal);
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index 8cf1b5f2..4f4130f0 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -165,6 +165,47 @@ describe('Forge Push Command', () => {
+ 	});
+ 
+ 	describe('Full mode (no --quick)', () => {
++		test('reuses exact-head validation only for tests while keeping branch protection and lint', async () => {
++			const spawnCalls = [];
++			const execCalls = [];
++			const deps = makeDeps({
++				verifyValidationReceipt: () => ({ valid: true }),
++				spawnSync: (cmd, args) => {
++					spawnCalls.push({ cmd, args: [...args] });
++					return { status: 0 };
++				},
++				execFileSync: (cmd, args) => {
++					execCalls.push({ cmd, args: [...args] });
++					if (cmd === 'git' && args.includes('--show-toplevel')) return 'C:/worktree path with spaces\n';
++					return '';
++				},
++			});
++
++			const result = await pushModule.handler([], {}, 'C:/wrong/init-cwd', deps);
++
++			expect(spawnCalls.some(call => call.args.includes('lint'))).toBe(true);
++			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(false);
++			expect(execCalls.some(call => call.args.some(arg => arg.includes('branch-protection.js')))).toBe(true);
++			expect(execCalls.some(call => call.args[0] === 'push')).toBe(true);
++			expect(result).toMatchObject({ success: true, testsPassed: true, validationReused: true });
++		});
++
++		test('falls back to the full suite when validation evidence is invalid', async () => {
++			const spawnCalls = [];
++			const deps = makeDeps({
++				verifyValidationReceipt: () => ({ valid: false, reason: 'head-changed' }),
++				spawnSync: (cmd, args) => {
++					spawnCalls.push({ cmd, args: [...args] });
++					return { status: 0 };
++				},
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(spawnCalls.some(call => call.args.includes('test'))).toBe(true);
++			expect(result.validationReused).toBe(false);
++		});
++
+ 		test('should run lint and tests in full mode', async () => {
+ 			const spawnCalls = [];
+ 			const deps = makeDeps({
+@@ -695,6 +736,7 @@ function makeDeps(overrides = {}) {
+ 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+ 		log: overrides.log || (() => {}),
+ 		writeForgeToken: overrides.writeForgeToken || (() => {}),
++		verifyValidationReceipt: overrides.verifyValidationReceipt || (() => ({ valid: false, reason: 'missing' })),
+ 		fireAndForget: () => {},
+ 		_ensureBackingIssue: async () => null,
+ 		_kernelDriver: {},
+diff --git a/test/integration/standalone-package-smoke.test.js b/test/integration/standalone-package-smoke.test.js
+index 06158481..3212f5e9 100644
+--- a/test/integration/standalone-package-smoke.test.js
++++ b/test/integration/standalone-package-smoke.test.js
+@@ -19,10 +19,16 @@ function npm(args, cwd, invocation) {
+   });
+ }
+ 
++function parsePackOutput(output) {
++  const jsonStart = String(output).search(/^\[/m);
++  if (jsonStart === -1) throw new SyntaxError("npm pack did not return a JSON payload");
++  return JSON.parse(output.slice(jsonStart));
++}
++
+ function pack(packageDirectory, destination, invocation) {
+   const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
+   expect(result.status, result.stderr).toBe(0);
+-  return path.join(destination, JSON.parse(result.stdout)[0].filename);
++  return path.join(destination, parsePackOutput(result.stdout)[0].filename);
+ }
+ 
+ function resolvePlatformNode() {
+@@ -68,6 +74,10 @@ afterEach(() => {
+ });
+ 
+ describe("standalone product packages", () => {
++  test("parses npm 10 JSON after package lifecycle output", () => {
++    expect(parsePackOutput('sync hooks: ok\n[{"filename":"forge.tgz"}]\n')[0].filename).toBe("forge.tgz");
++  });
++
+   test("packs and installs the root CLI with its runtime workspaces", () => {
+     const platformNode = resolvePlatformNode();
+     const npmInvocation = resolveNpmInvocation(platformNode);
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index d50584f5..c4a15496 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -660,7 +660,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', async () => {
++  test('runPrePushTests does not repeat e2e already covered by the full suite', async () => {
+     const spawnSync = makeSpawnSync(0);
+     const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+@@ -672,11 +672,9 @@ describe('scripts/test pre-push runner', () => {
+     });
+ 
+     expect(status).toBe(0);
+-    expect(spawnSync.calls).toHaveLength(2);
++    expect(spawnSync.calls).toHaveLength(1);
+     expect(spawnSync.calls[0].command).toBe('node');
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+-    expect(spawnSync.calls[1].command).toBe('bun');
+-    expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test/e2e/']);
+   });
+ 
+   test('runLocalValidationTests reuses the same targeted runner path', async () => {
+diff --git a/test/validation-receipt.test.js b/test/validation-receipt.test.js
+new file mode 100644
+index 00000000..6e752854
+--- /dev/null
++++ b/test/validation-receipt.test.js
+@@ -0,0 +1,99 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const {
++	beginValidation,
++	completeValidation,
++	resolveReceiptPath,
++	verifyValidationReceipt,
++} = require('../lib/validation-receipt');
++
++function createRepo() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge receipt path with spaces-'));
++	fs.writeFileSync(path.join(root, 'tracked.txt'), 'initial\n');
++	execFileSync('git', ['init', '-q'], { cwd: root });
++	const homeDir = path.join(root, '.git', 'forge-test-home');
++	fs.mkdirSync(homeDir);
++	execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: root });
++	execFileSync('git', ['config', 'user.email', 'receipt@example.test'], { cwd: root });
++	execFileSync('git', ['config', 'user.name', 'Receipt Test'], { cwd: root });
++	execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
++	execFileSync('git', ['commit', '-qm', 'initial'], { cwd: root });
++	return { root, homeDir };
++}
++
++function fullPass() {
++	return {
++		success: true,
++		checks: {
++			conflictMarkers: { success: true },
++			typeCheck: { success: true, skipped: true },
++			lint: { success: true },
++			security: { success: true },
++			tests: { success: true, fullSuite: true, testsFound: true, total: 12, failed: 0 },
++		},
++	};
++}
++
++describe('validation receipt', () => {
++	test('accepts an immediate complete validation for the unchanged exact head', () => {
++		const { root, homeDir } = createRepo();
++		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
++		try {
++			const snapshot = beginValidation(root, deps);
++			expect(snapshot).toBeTruthy();
++			expect(completeValidation(root, snapshot, fullPass(), deps)).toBe(true);
++			expect(verifyValidationReceipt(root, deps)).toMatchObject({ valid: true });
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
++	test('rejects changed state, tampering, expiry, and incomplete validation', () => {
++	const repo = createRepo();
++		const deps = { homeDir: repo.homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
++		const mint = () => completeValidation(repo.root, beginValidation(repo.root, deps), fullPass(), deps);
++		try {
++			expect(mint()).toBe(true);
++			expect(verifyValidationReceipt(repo.root, { ...deps, testRuntimeIdentity: 'bun-b' }).valid, 'changed test runtime').toBe(false);
++
++			expect(mint()).toBe(true);
++			fs.writeFileSync(path.join(repo.root, 'tracked.txt'), 'dirty\n');
++			expect(verifyValidationReceipt(repo.root, deps).valid, 'dirty worktree').toBe(false);
++			fs.writeFileSync(path.join(repo.root, 'tracked.txt'), 'initial\n');
++
++			expect(mint()).toBe(true);
++			fs.writeFileSync(path.join(repo.root, 'tracked.txt'), 'new head\n');
++			execFileSync('git', ['commit', '-am', 'changed', '-q'], { cwd: repo.root });
++			expect(verifyValidationReceipt(repo.root, deps).valid, 'changed head').toBe(false);
++
++			expect(mint()).toBe(true);
++			expect(verifyValidationReceipt(repo.root, { ...deps, now: () => Date.now() + (2 * 60 * 60 * 1000) }).valid, 'expired').toBe(false);
++			expect(verifyValidationReceipt(repo.root, { ...deps, now: () => Date.now() - (2 * 60 * 1000) }).valid, 'future dated').toBe(false);
++
++			expect(mint()).toBe(true);
++			const receiptPath = resolveReceiptPath(repo.root, deps);
++			const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
++			receipt.payload.head = '0'.repeat(40);
++			fs.writeFileSync(receiptPath, JSON.stringify(receipt));
++			expect(verifyValidationReceipt(repo.root, deps).valid, 'tampered').toBe(false);
++
++			expect(mint()).toBe(true);
++			beginValidation(repo.root, deps);
++			expect(verifyValidationReceipt(repo.root, deps).valid, 'later partial validation').toBe(false);
++
++			const snapshot = beginValidation(repo.root, deps);
++			const incomplete = fullPass();
++			incomplete.checks.tests.total = 0;
++			incomplete.checks.tests.testsFound = false;
++			expect(completeValidation(repo.root, snapshot, incomplete, deps)).toBe(false);
++			expect(verifyValidationReceipt(repo.root, deps).valid).toBe(false);
++		} finally {
++			fs.rmSync(repo.root, { recursive: true, force: true });
++		}
++	});
++});
+-- 
+2.51.0.windows.1
+

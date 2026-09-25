@@ -1,0 +1,1148 @@
+From 3274e04cf71c24c255360fc70007e4dbd4e9687c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 2 Aug 2026 13:53:27 +0530
+Subject: [PATCH] fix(merge): fail closed on incomplete authority evidence
+
+---
+ .../decisions.md                              |   6 +
+ .../tasks.md                                  |   5 +-
+ lib/adapters/pr-state-adapter.js              | 118 ++++++++++++------
+ lib/commands/merge.js                         |  66 ++++++++--
+ lib/forge-issues.js                           |   3 +-
+ lib/merge-rules.js                            |  12 +-
+ lib/pr-pull.js                                |  17 ++-
+ lib/pr-shepherd.js                            |   8 ++
+ ...merge-authority-review-regressions.test.js |  92 +++++++++++++-
+ test/commands/merge-authority.test.js         |  12 +-
+ test/commands/merge.test.js                   |   8 +-
+ test/forge-issues.test.js                     |  13 ++
+ test/merge-rules.test.js                      |  20 ++-
+ test/pr-pull.test.js                          |  52 ++++++--
+ test/pr-shepherd.test.js                      |  14 +++
+ test/pr-state-adapter.test.js                 |  91 +++++++++++---
+ 16 files changed, 436 insertions(+), 101 deletions(-)
+
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+index e214d1d5..520b9ea3 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -34,6 +34,12 @@ Kernel PR linkage accepts only positive safe integers or canonical positive-deci
+ 
+ Global CLI flags are stripped before guarded merge argument parsing. Both `forge merge --path ...` and `forge pr --path ... merge` reach the same authority path rather than failing with usage or interpreting a global flag as a merge selector.
+ 
++## Exact-SHA review convergence
++
++Candidate `7d02625888820f9afa83737cc30fbf1d20f955c5` is rejected. Required review lanes found missing mandatory settle, edited-comment freshness, malformed optional observation handling, shared nonterminal/success contradictions, incomplete head OIDs, protection-policy fallback, success-like optional conclusions, provider lifecycle defaults, non-canonical selectors, incomplete nested actor identity, and premature disposal of an injected Kernel broker. No review verdict for that SHA authorizes its replacement.
++
++The replacement enforces an unconditional minimum ten-minute quiet period using the newest creation/edit/submission timestamp. Check-run and status-context collections validate provider enums collection-wide; only terminal `SUCCESS` is green, while optional `NEUTRAL`, `SKIPPED`, unknown, missing, or contradictory evidence blocks mutation. Pull requires full 40-character head OIDs. Authoritative protection parse failure never falls back to rollup-derived authorization; rollup data remains diagnostic only and accepts only canonical positive-decimal PR selectors. Shared provider state carries an explicit readability signal so missing lifecycle fields or malformed rollup members produce `ESCALATE`/`UNKNOWN`, and nested thread authors require a valid GraphQL actor type. Injected Kernel brokers retain caller ownership for same-command grounding; only internally created brokers are disposed by the issue-operation layer.
++
+ ## Bounded residuals
+ 
+ GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+index 63a6bc03..d860a40a 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -24,7 +24,10 @@
+ - [x] Validate the expanded affected scope: 331 tests / 995 expectations across 18 files with zero failures; targeted ESLint, syntax checks, and `git diff --check` passed.
+ - [x] Reconcile exact-SHA review of `d33b65f4`: explicit `REQUEST_CHANGES`; do not push or install the rejected candidate.
+ - [x] Remediate leased thread repository propagation, frozen ownership actor identity, complete observation validation, conflicting app-qualified policy, strict rollup/shared GraphQL collections, SUCCESS-only green semantics, and deterministic cleanup of command-owned Kernel drivers.
+-- [x] Validate the final replacement tree: focused authority gate 76 tests / 270 expectations; final affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
++- [x] Validate candidate `7d02625888820f9afa83737cc30fbf1d20f955c5`: focused authority gate 76 tests / 270 expectations; affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
++- [x] Reconcile both exact-SHA review batches for `7d02625888820f9afa83737cc30fbf1d20f955c5`: required lanes returned `REQUEST_CHANGES`; reject the candidate and do not push or install it.
++- [x] Retain final convergence RED evidence for mandatory settle/edit freshness, malformed optional observations, shared SUCCESS-only semantics, full head OIDs, authoritative-protection no-fallback, provider lifecycle readability, canonical selectors, nested actor identity, and injected Kernel broker lifetime.
++- [x] Validate the replacement worktree: focused 232 tests / 772 expectations across 8 files; bounded 311 tests / 973 expectations across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+ - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+ - [ ] Push/open PR only after PASS.
+ - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index b0bad511..eba9ab08 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -28,6 +28,39 @@ const { execFileSync } = require('node:child_process');
+ const GITHUB_ACTOR_TYPENAMES = new Set([
+   'Bot', 'EnterpriseUserAccount', 'Mannequin', 'Organization', 'User',
+ ]);
++const FULL_HEAD_SHA = /^[0-9a-f]{40}$/i;
++const POSITIVE_PR_NUMBER = /^[1-9][0-9]*$/;
++const CHECK_RUN_STATUSES = new Set(['QUEUED', 'IN_PROGRESS', 'COMPLETED', 'WAITING', 'PENDING', 'REQUESTED']);
++const CHECK_RUN_CONCLUSIONS = new Set([
++  '', 'SUCCESS', 'FAILURE', 'NEUTRAL', 'CANCELLED', 'SKIPPED', 'TIMED_OUT',
++  'ACTION_REQUIRED', 'STALE', 'STARTUP_FAILURE',
++]);
++const STATUS_CONTEXT_STATES = new Set(['ERROR', 'EXPECTED', 'FAILURE', 'PENDING', 'SUCCESS']);
++
++function canonicalPrNumber(value) {
++  const raw = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
++  return typeof raw === 'string' && POSITIVE_PR_NUMBER.test(raw) ? Number(raw) : null;
++}
++
++function validRollupNode(check) {
++  if (!check || typeof check !== 'object' || Array.isArray(check)) return false;
++  if (check.__typename === 'CheckRun') {
++    const status = String(check.status || '').toUpperCase();
++    const conclusion = String(check.conclusion || '').toUpperCase();
++    return typeof check.name === 'string' && Boolean(check.name.trim())
++      && CHECK_RUN_STATUSES.has(status)
++      && Object.prototype.hasOwnProperty.call(check, 'conclusion')
++      && (check.conclusion === null || typeof check.conclusion === 'string')
++      && CHECK_RUN_CONCLUSIONS.has(conclusion)
++      && (status === 'COMPLETED' ? Boolean(conclusion) : !conclusion);
++  }
++  if (check.__typename === 'StatusContext') {
++    return typeof check.context === 'string' && Boolean(check.context.trim())
++      && typeof check.state === 'string'
++      && STATUS_CONTEXT_STATES.has(check.state.toUpperCase());
++  }
++  return false;
++}
+ 
+ // NOTE: `reviewThreads` is NOT a valid `gh pr view --json` field — requesting it
+ // makes `gh` exit non-zero ("Unknown JSON field"), which crashed readState on every
+@@ -92,6 +125,7 @@ class PrStateAdapter {
+     });
+     this._gh = options.gh || defaultRunner;
+     this._git = options.git || defaultRunner;
++    this.lastProtectionStatus = null;
+   }
+ 
+   /**
+@@ -103,32 +137,35 @@ class PrStateAdapter {
+   async readState(pr) {
+     const raw = this._gh('gh', ['pr', 'view', String(pr), '--json', PR_VIEW_FIELDS]);
+     const data = JSON.parse(raw || '{}');
+-    const rollup = Array.isArray(data.statusCheckRollup) ? data.statusCheckRollup : [];
++    const lifecycleReadable = typeof data.state === 'string'
++      && ['OPEN', 'MERGED', 'CLOSED'].includes(data.state.toUpperCase())
++      && typeof data.isDraft === 'boolean';
++    const rollupReadable = Array.isArray(data.statusCheckRollup)
++      && data.statusCheckRollup.every(validRollupNode);
++    const providerEvidenceReadable = lifecycleReadable && rollupReadable
++      && typeof data.headRefOid === 'string' && FULL_HEAD_SHA.test(data.headRefOid);
++    const rollup = rollupReadable ? data.statusCheckRollup : [];
+     return {
+-      headSha: data.headRefOid || '',
+-      state: String(data.state || 'OPEN').toUpperCase(),
++      headSha: typeof data.headRefOid === 'string' ? data.headRefOid : '',
++      state: lifecycleReadable ? data.state.toUpperCase() : 'UNKNOWN',
+       mergeable: data.mergeable || 'UNKNOWN',
+       mergeStateStatus: data.mergeStateStatus || 'UNKNOWN',
+-      // PR-level merge blockers (surfaced by the pull signal). `reviewDecision` is
+-      // '' when no review is required; normalized to null so consumers can treat
+-      // "not required" and "unknown" uniformly. `isDraft` blocks merge outright.
+       reviewDecision: data.reviewDecision || null,
+-      isDraft: Boolean(data.isDraft),
+-      // The rollup mixes two GraphQL types: a CheckRun (name/status/conclusion/
+-      // detailsUrl) and a legacy commit StatusContext (context/state/targetUrl —
+-      // Vercel/Netlify/other deploy+quality bots). Both are normalized into ONE
+-      // shape here so the failing/pending classification treats them identically;
+-      // `state` fills the conclusion slot for a StatusContext (SUCCESS/FAILURE/
+-      // ERROR/PENDING) and `targetUrl` fills the details link.
+-      checks: rollup.map((check) => ({
+-        name: check.name || check.context || '',
+-        status: check.status || check.state || '',
+-        conclusion: check.conclusion || check.state || '',
+-        databaseId: check.databaseId,
+-        detailsUrl: check.detailsUrl || check.targetUrl,
+-      })),
+-      // gh pr view cannot return review threads; the shepherd reads them via
+-      // readComments() (GraphQL). Kept for return-shape stability, always empty here.
++      isDraft: typeof data.isDraft === 'boolean' ? data.isDraft : null,
++      providerEvidenceReadable,
++      checks: rollup.map((check) => {
++        const statusContext = check.__typename === 'StatusContext';
++        const state = String(check.state || '').toUpperCase();
++        return {
++          name: check.name || check.context || '',
++          status: statusContext
++            ? (['SUCCESS', 'FAILURE', 'ERROR'].includes(state) ? 'COMPLETED' : 'IN_PROGRESS')
++            : String(check.status).toUpperCase(),
++          conclusion: statusContext ? state : String(check.conclusion || '').toUpperCase(),
++          databaseId: check.databaseId,
++          detailsUrl: check.detailsUrl || check.targetUrl,
++        };
++      }),
+       threads: [],
+     };
+   }
+@@ -173,13 +210,11 @@ class PrStateAdapter {
+   async readRequiredChecks({ owner, repo, base, pr }) {
+     const fromProtection = await this.readRequiredCheckPolicy({ owner, repo, base });
+     if (Array.isArray(fromProtection)) return [...new Set(fromProtection.map((entry) => entry.context))];
+-    // Protection unreadable (auth/scope/not-protected/unexpected shape) — fall back
+-    // to the rollup `isRequired` set the Actions token CAN read.
++    if (this.lastProtectionStatus !== 'unavailable') return null;
++    // Rollup `isRequired` is retained only as diagnostic evidence. It is not the
++    // authoritative policy and therefore cannot authorize merge readiness.
+     const fromRollup = this._readRollupRequired({ owner, repo, pr });
+-    if (Array.isArray(fromRollup)) {
+-      this.lastRequiredSource = 'rollup';
+-      return fromRollup;
+-    }
++    if (Array.isArray(fromRollup)) this.lastRequiredSource = 'rollup';
+     return null;
+   }
+ 
+@@ -193,6 +228,7 @@ class PrStateAdapter {
+    * @returns {string[] | null}
+    */
+   _readProtectionRequired({ owner, repo, base }) {
++    this.lastProtectionStatus = 'malformed';
+     const apiPath = `repos/${owner}/${repo}/branches/${encodeURIComponent(base)}/protection/required_status_checks`;
+     try {
+       const raw = this._gh('gh', ['api', apiPath]);
+@@ -231,17 +267,24 @@ class PrStateAdapter {
+         const checkNames = [...new Set(checks.map((entry) => entry.context))].sort();
+         if (contextNames.length !== checkNames.length
+           || contextNames.some((value, index) => value !== checkNames[index])) return null;
++        this.lastProtectionStatus = 'authoritative';
++        return checks;
++      }
++      if (contexts) {
++        this.lastProtectionStatus = 'authoritative';
++        return contexts.map((context) => ({ context, appId: null }));
++      }
++      if (checks) {
++        this.lastProtectionStatus = 'authoritative';
+         return checks;
+       }
+-      if (contexts) return contexts.map((context) => ({ context, appId: null }));
+-      if (checks) return checks;
+       // Unexpected/changed payload shape — treat as unreadable, not "no required
+       // checks", so merge readiness is never computed from bad data.
+       return null;
+     } catch (error) {
+       const auth = classifyAuthError(error);
+       if (auth) {
+-        // Unreadable protection (auth/scope/not-protected) — fall back to rollup.
++        this.lastProtectionStatus = 'unavailable';
+         return null;
+       }
+       throw error;
+@@ -259,8 +302,8 @@ class PrStateAdapter {
+    * @returns {string[] | null}
+    */
+   _readRollupRequired({ owner, repo, pr }) {
+-    const prNum = Number.parseInt(String(pr), 10);
+-    if (!Number.isInteger(prNum) || prNum <= 0) return null;
++    const prNum = canonicalPrNumber(pr);
++    if (prNum === null) return null;
+     const query = [
+       'query($after:String){repository(owner:"', owner, '",name:"', repo, '"){',
+       'pullRequest(number:', prNum, '){headRef{target{... on Commit{statusCheckRollup{',
+@@ -390,10 +433,13 @@ class PrStateAdapter {
+         comments: allComments.map((c) => {
+           const commentId = c.fullDatabaseId ? String(c.fullDatabaseId) : '';
+           const author = String(c.author?.login || '');
++          const authorType = String(c.author?.__typename || '');
+           if (!commentId) throw new Error(`Review thread ${t.id} comment is missing stable database id`);
+-          if (!author) throw new Error(`Review thread ${t.id} comment ${commentId} is missing author identity`);
++          if (!author || !GITHUB_ACTOR_TYPENAMES.has(authorType)) {
++            throw new Error(`Review thread ${t.id} comment ${commentId} is missing valid author identity`);
++          }
+           if (typeof c.body !== 'string') throw new Error(`Review thread ${t.id} comment ${commentId} has malformed body`);
+-          return { author, body: c.body, commentId };
++          return { author, authorType, body: c.body, commentId };
+         }),
+       };
+     });
+@@ -409,7 +455,7 @@ class PrStateAdapter {
+    * @returns {object[]} raw thread nodes (comments.nodes carries the full chain)
+    */
+   _fetchAllReviewThreads({ owner, repo, pr }) {
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(first:100){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{login} body}}}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(first:100){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body}}}}}}}';
+     return this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviewThreads,
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 0cb71d76..8f190ce3 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -51,6 +51,12 @@ const FULL_HEAD_SHA = /^[0-9a-f]{40}$/i;
+ const FORGE_ISSUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+ const POSITIVE_PR_NUMBER = /^[1-9][0-9]*$/;
+ const REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
++const CHECK_RUN_STATUSES = new Set(['QUEUED', 'IN_PROGRESS', 'COMPLETED', 'WAITING', 'PENDING', 'REQUESTED']);
++const CHECK_RUN_CONCLUSIONS = new Set([
++  '', 'SUCCESS', 'FAILURE', 'NEUTRAL', 'CANCELLED', 'SKIPPED', 'TIMED_OUT',
++  'ACTION_REQUIRED', 'STALE', 'STARTUP_FAILURE',
++]);
++const STATUS_CONTEXT_STATES = new Set(['ERROR', 'EXPECTED', 'FAILURE', 'PENDING', 'SUCCESS']);
+ 
+ function normalizeFullHeadSha(value) {
+   return typeof value === 'string' && FULL_HEAD_SHA.test(value) ? value.toLowerCase() : null;
+@@ -233,6 +239,43 @@ function strictCheckSuccess(check) {
+   return hasConclusion || hasState;
+ }
+ 
++function malformedCheckObservation(check) {
++  if (!check || typeof check !== 'object') return true;
++  const name = check.name || check.context;
++  if (typeof name !== 'string' || !name.trim()) return true;
++  if (check.appId !== null && check.appId !== undefined
++    && (!Number.isInteger(check.appId) || check.appId <= 0)) return true;
++  const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
++  const hasConclusion = Object.prototype.hasOwnProperty.call(check, 'conclusion');
++  const hasState = Object.prototype.hasOwnProperty.call(check, 'state');
++  if (!hasStatus && !hasConclusion && !hasState) return true;
++  const status = String(check.status || '').toUpperCase();
++  const conclusion = String(check.conclusion || '').toUpperCase();
++  const state = String(check.state || '').toUpperCase();
++  if (hasStatus && (typeof check.status !== 'string' || !CHECK_RUN_STATUSES.has(status))) return true;
++  if (hasConclusion && check.conclusion !== null && typeof check.conclusion !== 'string') return true;
++  if (hasConclusion && !CHECK_RUN_CONCLUSIONS.has(conclusion)) return true;
++  if (hasState && (typeof check.state !== 'string' || !STATUS_CONTEXT_STATES.has(state))) return true;
++  if (hasStatus && !hasConclusion) return true;
++  if (hasStatus && status === 'COMPLETED' && !conclusion) return true;
++  if (hasStatus && status !== 'COMPLETED' && conclusion) return true;
++  return ['status', 'conclusion', 'state']
++    .some((key) => String(check[key] || '').toUpperCase() === 'UNREADABLE');
++}
++
++function mandatorySettleError(context) {
++  if (!context || !Array.isArray(context.comments)) return 'Mandatory settle evidence is unreadable.';
++  if (context.comments.length === 0) return null;
++  const nowMs = typeof context.now === 'number' ? context.now : Date.parse(context.now);
++  if (!Number.isFinite(nowMs)) return 'Mandatory settle clock is unreadable.';
++  const stamps = context.comments.map((comment) => Date.parse(comment && comment.at));
++  if (stamps.some((stamp) => Number.isNaN(stamp))) return 'Mandatory settle comment evidence is unreadable.';
++  const quietMs = nowMs - Math.max(...stamps);
++  return quietMs >= 10 * 60_000
++    ? null
++    : 'Mandatory 10-minute settle has not elapsed since the latest comment or edit.';
++}
++
+ function normalizeRequiredEntry(entry) {
+   if (typeof entry === 'string' && entry.trim()) return { context: entry, appId: null };
+   if (!entry || typeof entry.context !== 'string' || !entry.context.trim()) return null;
+@@ -258,14 +301,7 @@ function evaluateProtectedRequiredChecks(context) {
+   if ([...policyApps.values()].some((apps) => apps.size > 1)) {
+     return { allowed: false, reason: 'Protected required-check policy contains conflicting application identities.' };
+   }
+-  if (context.checks.some((check) => {
+-    if (!check || typeof check !== 'object') return true;
+-    const name = check.name || check.context;
+-    if (typeof name !== 'string' || !name.trim()) return true;
+-    if (check.appId !== null && check.appId !== undefined
+-      && (!Number.isInteger(check.appId) || check.appId <= 0)) return true;
+-    return ['status', 'conclusion', 'state'].some((key) => String(check[key] || '').toUpperCase() === 'UNREADABLE');
+-  })) {
++  if (context.checks.some(malformedCheckObservation)) {
+     return { allowed: false, reason: 'Check-run observation collection contains malformed entries.' };
+   }
+   const missing = [];
+@@ -300,6 +336,8 @@ function mandatoryContextError(context, expectedHead) {
+   if (context.isDraft !== false) return 'PR draft status is unreadable or the PR is still a draft.';
+   if (context.conflicting !== false) return 'PR conflict status is unreadable or conflicting.';
+   if (context.unresolvedThreads !== 0) return 'Review-thread state is unreadable or unresolved threads remain.';
++  const settleError = mandatorySettleError(context);
++  if (settleError) return settleError;
+   const protectedGate = evaluateProtectedRequiredChecks(context);
+   return protectedGate.allowed ? null : protectedGate.reason;
+ }
+@@ -375,10 +413,14 @@ function fetchCheckRunObservations(gh, { owner, repo, head }) {
+       const name = run && typeof run.name === 'string' && run.name.trim() ? run.name : null;
+       const appId = run && run.app && Number.isInteger(run.app.id) && run.app.id > 0 ? run.app.id : null;
+       const headSha = normalizeFullHeadSha(run && run.head_sha);
++      const status = String(run && run.status || '').toUpperCase();
++      const conclusion = String(run && run.conclusion || '').toUpperCase();
+       return !run || !Number.isInteger(run.id) || run.id <= 0 || !name || !appId || headSha !== head
+-        || typeof run.status !== 'string' || !run.status.trim()
++        || !CHECK_RUN_STATUSES.has(status)
+         || !Object.prototype.hasOwnProperty.call(run, 'conclusion')
+-        || (run.conclusion !== null && typeof run.conclusion !== 'string');
++        || (run.conclusion !== null && typeof run.conclusion !== 'string')
++        || !CHECK_RUN_CONCLUSIONS.has(conclusion)
++        || (status === 'COMPLETED' ? !conclusion : Boolean(conclusion));
+     })) return null;
+     return runs.map((run) => {
+       const name = run.name;
+@@ -413,7 +455,9 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   const comments = Array.isArray(view.comments)
+     ? view.comments.map((c) => ({
+       author: (c.author && c.author.login) || '',
+-      at: c.createdAt || c.submittedAt || '',
++      at: [c.createdAt, c.updatedAt, c.submittedAt]
++        .filter(Boolean)
++        .sort((left, right) => Date.parse(right) - Date.parse(left))[0] || '',
+     }))
+     : [];
+ 
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 610d2883..62750146 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -104,10 +104,11 @@ function createKernelIssueBackend(context = {}) {
+   const createBroker = deps.createKernelBroker
+     || ((brokerContext) => createDefaultKernelBroker(brokerContext, deps));
+ 
++  const ownsBroker = !deps.kernelBroker;
+   const broker = deps.kernelBroker || createBroker(context);
+   const managedBroker = withLazyKernelInit(broker);
+   const backend = new KernelIssueAdapter({ broker: managedBroker });
+-  if (typeof managedBroker?.close === 'function') {
++  if (ownsBroker && typeof managedBroker?.close === 'function') {
+     backend.dispose = () => managedBroker.close();
+   }
+   return backend;
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index e51c1aa1..cc71033e 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -54,7 +54,7 @@
+  * (squash | merge | rebase); and post-merge branch deletion.
+  */
+ 
+-const SUCCESS_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED', 'PASS', 'PASSED']);
++const SUCCESS_CONCLUSIONS = new Set(['SUCCESS']);
+ const MS_PER_MIN = 60_000;
+ 
+ /** Coerce an epoch-ms number, a Date, or an ISO string to epoch ms (NaN if unparseable). */
+@@ -85,11 +85,15 @@ function toAccountList(arg) {
+   return [String(arg).trim().toLowerCase()];
+ }
+ 
+-/** A CI check is green if its conclusion is a success-class conclusion. */
++/** A CI check is green only when it is terminal and explicitly successful. */
+ function isCheckGreen(check) {
+   if (!check || typeof check !== 'object') return false;
+-  const conclusion = String(check.conclusion ?? check.state ?? check.status ?? '').toUpperCase();
+-  return SUCCESS_CONCLUSIONS.has(conclusion);
++  if (Object.prototype.hasOwnProperty.call(check, 'state')
++    && !Object.prototype.hasOwnProperty.call(check, 'status')) {
++    return String(check.state || '').toUpperCase() === 'SUCCESS';
++  }
++  return String(check.status || '').toUpperCase() === 'COMPLETED'
++    && SUCCESS_CONCLUSIONS.has(String(check.conclusion || '').toUpperCase());
+ }
+ 
+ /** The most recent comment by timestamp; ties and unparseable stamps fall back to array order. */
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index 8bb49a57..94c33e52 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -43,6 +43,11 @@ const LOG_FETCH_MULTIPLIER = 3;
+ // re-review or a late reviewer comment inside the window means the PR is still
+ // in flight. Mirrors the merge-rules `settle_min` idea (default 10 minutes).
+ const DEFAULT_SETTLE_WINDOW_MS = 600000;
++const FULL_HEAD_SHA = /^[0-9a-f]{40}$/i;
++
++function normalizeHeadSha(value) {
++  return typeof value === 'string' && FULL_HEAD_SHA.test(value) ? value.toLowerCase() : null;
++}
+ 
+ /**
+  * Bot logins whose review threads ARE actionable fixes (their comments tell you
+@@ -1139,10 +1144,13 @@ async function gatherPrSnapshot(ctx) {
+ 
+   // readState is the one REQUIRED read — if it throws, the whole gather fails.
+   const state = await adapter.readState(pr);
++  const headOidStart = normalizeHeadSha(state.headSha);
++  if (!headOidStart) unreadable.push('headOid');
++  if (state.providerEvidenceReadable === false) unreadable.push('providerEvidence');
++
+   const requiredSet = await safeRead(
+     'requiredChecks',
+-    // `pr` lets the adapter fall back to the rollup `isRequired` set when branch
+-    // protection is unreadable (the Actions token can't read protection).
++    // `pr` is included for diagnostic rollup evidence when protection is unreadable.
+     () => adapter.readRequiredChecks({ owner, repo, base, pr }),
+     { degraded, fallback: null },
+   );
+@@ -1224,7 +1232,8 @@ async function gatherPrSnapshot(ctx) {
+   const headPushKnown = headPushTimeMs != null;
+   // Torn-read guard: re-read the head oid at the END of the gather.
+   const endState = await safeRead('headEnd', () => adapter.readState(pr), { degraded, unreadable });
+-  const headOidEnd = endState ? endState.headSha : state.headSha;
++  const headOidEnd = normalizeHeadSha(endState ? endState.headSha : state.headSha);
++  if (!headOidEnd && !unreadable.includes('headOid')) unreadable.push('headOid');
+ 
+   // Actionable NON-HUMAN direct comments (mechanism-detected, suppression-list
+   // filtered) and an AUTHOR-AGNOSTIC unresolved-thread count — both independent
+@@ -1234,7 +1243,7 @@ async function gatherPrSnapshot(ctx) {
+   const unresolvedThreadCount = countUnresolvedThreads(threads);
+ 
+   const { verdict, evidence } = computeVerdict({
+-    headOidStart: state.headSha,
++    headOidStart,
+     headOidEnd,
+     mergeStateStatus: state.mergeStateStatus,
+     mergeable: state.mergeable,
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index 3201fbbb..d3695cf0 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -75,6 +75,8 @@ function actionableComments(threads, _self) {
+ const SUCCESS_CONCLUSIONS = new Set(['SUCCESS']);
+ 
+ function isGreen(check) {
++  if (Object.prototype.hasOwnProperty.call(check || {}, 'status')
++    && String(check.status || '').toUpperCase() !== 'COMPLETED') return false;
+   const c = String(check.conclusion || '').toUpperCase();
+   return SUCCESS_CONCLUSIONS.has(c);
+ }
+@@ -402,6 +404,12 @@ async function runShepherdPass(ctx) {
+   // --- Lifecycle: a merged/closed PR is terminal. ---
+   const lifecycle = lifecycleOutcome(startState.state, actions);
+   if (lifecycle) return lifecycle;
++  if (startState.providerEvidenceReadable === false) {
++    return result('ESCALATE', {
++      actions,
++      reason: 'PR lifecycle, draft, head, or check-rollup evidence is malformed or incomplete.',
++    });
++  }
+ 
+   // --- Required-checks set (only matters for non-terminal PRs); this is where
+   // auth/scope fails fast. ---
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index eefe37df..1cfdfa41 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -8,6 +8,7 @@ const { PrStateAdapter } = require('../../lib/adapters/pr-state-adapter');
+ const HEAD = 'a'.repeat(40);
+ const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
+ const ENABLED = { merge: { auto: { enabled: true, rules: ['checks_green'] } } };
++const NOW = Date.parse('2026-08-01T12:00:00Z');
+ 
+ function args(pr = '42') {
+   return [pr, '--auto', '--expect-head', HEAD, '--issue', ISSUE];
+@@ -26,6 +27,8 @@ function context(overrides = {}) {
+     requiredChecks: [{ context: 'ci', appId: 123 }],
+     requiredCheckSource: 'protection',
+     requiredChecksKnown: true,
++    comments: [],
++    now: NOW,
+     ...overrides,
+   };
+ }
+@@ -42,7 +45,7 @@ function deps(overrides = {}) {
+   };
+ }
+ 
+-function makeGh(threadPayload) {
++function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
+   return (argv) => {
+     if (argv[0] === 'pr' && argv[1] === 'view') {
+       return JSON.stringify({
+@@ -57,6 +60,7 @@ function makeGh(threadPayload) {
+         reviews: [],
+         comments: [],
+         updatedAt: '2026-08-01T00:00:00Z',
++        ...viewOverrides,
+       });
+     }
+     if (argv[0] === 'repo' && argv[1] === 'view') {
+@@ -66,17 +70,15 @@ function makeGh(threadPayload) {
+       return JSON.stringify({ contexts: ['ci'], checks: [{ context: 'ci', app_id: 123 }] });
+     }
+     if (argv[0] === 'api' && argv.includes('--paginate') && argv.includes('--slurp')) {
+-      return JSON.stringify([{
+-        total_count: 1,
+-        check_runs: [{
++      const runs = checkRuns || [{
+           id: 7,
+           name: 'ci',
+           head_sha: HEAD,
+           status: 'completed',
+           conclusion: 'success',
+           app: { id: 123 },
+-        }],
+-      }]);
++        }];
++      return JSON.stringify([{ total_count: runs.length, check_runs: runs }]);
+     }
+     if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(threadPayload);
+     throw new Error(`unexpected gh call: ${argv.join(' ')}`);
+@@ -90,6 +92,84 @@ const validThreads = {
+ };
+ 
+ describe('merge authority — exact reviewer regressions', () => {
++  test('enforces the mandatory ten-minute settle even when config omits settle_min', async () => {
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({
++        comments: [{ author: 'reviewer', at: new Date(NOW - 60_000).toISOString() }],
++      }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++    expect(out.error || out.reason).toMatch(/settle|quiet|10.minute/i);
++  });
++
++  test('uses the later edited timestamp for settle evidence', async () => {
++    const editedAt = new Date(NOW - 60_000).toISOString();
++    const fetched = await mergeCmd.defaultFetchPrContext({
++      pr: '42',
++      now: NOW,
++      gh: makeGh(validThreads, {
++        comments: [{
++          author: { login: 'reviewer' },
++          createdAt: new Date(NOW - 30 * 60_000).toISOString(),
++          updatedAt: editedAt,
++        }],
++      }),
++    });
++    expect(fetched.comments[0].at).toBe(editedAt);
++  });
++
++  test('rejects a malformed optional StatusContext before protected evaluation', async () => {
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({
++        checks: [
++          { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', appId: 123 },
++          { name: 'optional-status', appId: null, state: '' },
++        ],
++      }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++    expect(out.error).toMatch(/observation|malformed/i);
++  });
++
++  test('default provider collection rejects unknown optional check-run enums', async () => {
++    const fetched = await mergeCmd.defaultFetchPrContext({
++      pr: '42',
++      now: NOW,
++      gh: makeGh(validThreads, {}, [
++        { id: 7, name: 'ci', head_sha: HEAD, status: 'completed', conclusion: 'success', app: { id: 123 } },
++        { id: 8, name: 'optional', head_sha: HEAD, status: 'garbage', conclusion: 'success', app: { id: 999 } },
++      ]),
++    });
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => fetched,
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++  });
++
++  test('optional NEUTRAL and SKIPPED checks block the mutation seam', async () => {
++    for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
++      let merges = 0;
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context({ checks: [
++          { name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++          { name: 'optional', appId: 999, status: 'COMPLETED', conclusion },
++        ] }),
++        mergePr: async () => { merges += 1; return { merged: true }; },
++      }));
++      expect(out.merged).toBe(false);
++      expect(merges).toBe(0);
++    }
++  });
++
+   test('requires a canonical positive-decimal PR number', () => {
+     for (const selector of ['-R=evil/other', '--repo=evil/other', '0', '-1', '1.5', 'https://github.com/acme/forge/pull/42', '', ' 42']) {
+       const parsed = mergeCmd.parseMergeArgs(args(selector));
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 03d7a9f6..b8738cf1 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -22,10 +22,12 @@ function context(overrides = {}) {
+     isDraft: false,
+     conflicting: false,
+     unresolvedThreads: 0,
+-    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
++    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+     requiredChecks: ['ci'],
+     requiredCheckSource: 'protection',
+     requiredChecksKnown: true,
++    comments: [],
++    now: Date.parse('2026-08-01T12:00:00Z'),
+     ...overrides,
+   };
+ }
+@@ -126,10 +128,10 @@ describe('merge command — mandatory release authority', () => {
+   test('blocks missing, pending, failed, and skipped required checks', async () => {
+     for (const checks of [
+       [],
+-      [{ name: 'ci', conclusion: 'IN_PROGRESS' }],
+-      [{ name: 'ci', conclusion: 'FAILURE' }],
+-      [{ name: 'ci', conclusion: 'SKIPPED' }],
+-      [{ name: 'ci', conclusion: 'NEUTRAL' }],
++      [{ name: 'ci', status: 'IN_PROGRESS', conclusion: null }],
++      [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }],
++      [{ name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' }],
++      [{ name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' }],
+     ]) {
+       let mergeCalls = 0;
+       const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 1a0496b0..536ec1d3 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -27,10 +27,12 @@ function authorizedContext(overrides = {}) {
+     isDraft: false,
+     conflicting: false,
+     unresolvedThreads: 0,
+-    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
++    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+     requiredChecks: ['ci'],
+     requiredCheckSource: 'protection',
+     requiredChecksKnown: true,
++    comments: [],
++    now: Date.parse('2026-08-01T12:00:00Z'),
+     ...overrides,
+   };
+ }
+@@ -91,12 +93,12 @@ describe('merge command — opt-in conditional auto-merge', () => {
+   });
+ 
+   test('does NOTHING (no merge) when a configured rule is unmet', async () => {
+-    const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:10'] } } });
++    const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:20'] } } });
+     let mergeCalled = false;
+     const out = await mergeCmd.handler(mergeArgs('9'), {}, root, {
+       ...AUTHORITY_DEPS,
+       fetchPrContext: async () => authorizedContext({
+-        comments: [{ author: 'x', at: '2026-07-04T11:58:00Z' }], // 2 min before `now`
++        comments: [{ author: 'x', at: '2026-07-04T11:49:00Z' }], // mandatory 10m passes; configured 20m fails
+         now: Date.parse('2026-07-04T12:00:00Z'),
+       }),
+       mergePr: async () => { mergeCalled = true; },
+diff --git a/test/forge-issues.test.js b/test/forge-issues.test.js
+index b9b610de..9b86b259 100644
+--- a/test/forge-issues.test.js
++++ b/test/forge-issues.test.js
+@@ -242,6 +242,19 @@ describe('forge issue service contract', () => {
+     }
+   });
+ 
++  test('does not close an injected Kernel broker needed by same-command grounding', async () => {
++    const { runIssueOperation } = require('../lib/forge-issues');
++    let closed = 0;
++    const broker = {
++      async runIssueOperation() { return { success: true, output: [] }; },
++      async close() { closed += 1; },
++    };
++    await expect(runIssueOperation('show', ['issue-1'], '/repo', { kernelBroker: broker }))
++      .resolves.toEqual({ success: true, output: [] });
++    expect(closed).toBe(0);
++    await expect(broker.runIssueOperation('show', ['issue-1'])).resolves.toEqual({ success: true, output: [] });
++  });
++
+   test('threads session_id, worktree_id, and lease TTL into the claim mutation context (kernel d71a824b)', async () => {
+     const { runIssueOperation } = require('../lib/forge-issues');
+     let captured;
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index 7ac15c85..988b25f9 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -14,8 +14,8 @@ const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
+ function greenContext(overrides = {}) {
+   return {
+     checks: [
+-      { name: 'ci', conclusion: 'SUCCESS' },
+-      { name: 'lint', conclusion: 'SUCCESS' },
++      { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+     ],
+     requiredChecksKnown: true,
+     unresolvedThreads: 0,
+@@ -114,11 +114,23 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+     expect(evaluateMergeRules(ctx, ['checks_green']).allowed).toBe(false);
+   });
+ 
++  test('checks_green requires COMPLETED plus SUCCESS and rejects success-like conclusions', () => {
++    for (const check of [
++      { name: 'ci', conclusion: 'SUCCESS' },
++      { name: 'ci', status: 'IN_PROGRESS', conclusion: 'SUCCESS' },
++      { name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' },
++      { name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' },
++      { name: 'ci', status: 'COMPLETED', conclusion: 'PASS' },
++    ]) {
++      expect(evaluateMergeRules(greenContext({ checks: [check] }), ['checks_green']).allowed).toBe(false);
++    }
++  });
++
+   test('checks_green { ignore } exempts a named failing check but still blocks on OTHER failures', () => {
+     const oneBadIgnored = greenContext({
+       checks: [
+         { name: 'coverage', conclusion: 'FAILURE' },
+-        { name: 'ci', conclusion: 'SUCCESS' },
++        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+       ],
+     });
+     // coverage is exempt; every other check (ci) is green → allowed.
+@@ -143,7 +155,7 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+   test('checks_green { only } requires ONLY the listed checks to be SUCCESS', () => {
+     const ctx = greenContext({
+       checks: [
+-        { name: 'ci', conclusion: 'SUCCESS' },
++        { name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' },
+         { name: 'coverage', conclusion: 'FAILURE' },
+       ],
+     });
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index 3d91a571..a960d0a3 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -1,5 +1,7 @@
+ 'use strict';
+ 
++const FULL_HEAD = 'a'.repeat(40);
++
+ const { describe, test, expect } = require('bun:test');
+ 
+ const {
+@@ -420,7 +422,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     };
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+       async readRequiredChecks() { return overrides.required || ['test (ubuntu, 20)', 'test (windows, 20)']; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() {
+@@ -472,7 +474,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+       id: 'fake', kind: 'pr-state',
+       async readState() {
+         return {
+-          headSha: 'pr-head-sha', state: 'OPEN', mergeable: 'MERGEABLE',
++          headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE',
+           mergeStateStatus: 'CLEAN', checks: [], threads: [],
+         };
+       },
+@@ -492,8 +494,8 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+       baseRef: 'origin/master', cwd: '/stable/root',
+       adapter, runGh: () => '', self: 'me',
+     });
+-    expect(reads.find((r) => r.method === 'divergence').headRef).toBe('pr-head-sha');
+-    expect(reads.find((r) => r.method === 'conflicts').headRef).toBe('pr-head-sha');
++    expect(reads.find((r) => r.method === 'divergence').headRef).toBe(FULL_HEAD);
++    expect(reads.find((r) => r.method === 'conflicts').headRef).toBe(FULL_HEAD);
+   });
+ 
+   test('an unavailable authoritative head fails closed instead of comparing checkout HEAD', async () => {
+@@ -523,6 +525,32 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     ]));
+   });
+ 
++  test('a malformed but stable head oid cannot produce a clean verdict', async () => {
++    const adapter = {
++      id: 'fake', kind: 'pr-state',
++      async readState() {
++        return {
++          headSha: 'short-head', state: 'OPEN', mergeable: 'MERGEABLE',
++          mergeStateStatus: 'CLEAN', checks: [], threads: [],
++        };
++      },
++      async readRequiredChecks() { return []; },
++      async readDivergence() { return { behind: 0, ahead: 1 }; },
++      async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
++      async readComments() { return []; },
++      async readIssueComments() { return []; },
++      async readReviews() { return []; },
++      async readHeadCommitTime() { return Date.parse('2026-08-01T11:30:00Z'); },
++    };
++    const payload = await gatherPullSignal({
++      pr: '464', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter, runGh: () => '', self: 'me', now: Date.parse('2026-08-01T12:00:00Z'),
++      settleWindowMs: 10 * 60_000,
++    });
++    expect(payload.verdict).toBe('UNKNOWN');
++    expect(payload.state).toBe('UNKNOWN');
++  });
++
+   test('only fetches logs for FAILED checks (never for green ones)', async () => {
+     const { adapter, runGh, runPass, ghCalls } = makeCtx();
+     await gatherPullSignal({
+@@ -543,7 +571,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     ];
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+       async readRequiredChecks() { return ['unit']; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() { return []; },
+@@ -607,7 +635,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     ];
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: null, isDraft: false, checks, threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: null, isDraft: false, checks, threads: [] }; },
+       async readRequiredChecks() { return ['CodeQL', 'Cross-OS Gate']; },
+       async readDivergence() { return { behind: 0, ahead: 2 }; },
+       async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
+@@ -630,7 +658,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+   test('behind base → a behind blocker with the commit count', async () => {
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', checks: [], threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND', checks: [], threads: [] }; },
+       async readRequiredChecks() { return []; },
+       async readDivergence() { return { behind: 5, ahead: 1 }; },
+       async readComments() { return []; },
+@@ -646,7 +674,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+   test('predicted merge conflicts → a conflict blocker listing the files', async () => {
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [], threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', checks: [], threads: [] }; },
+       async readRequiredChecks() { return []; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async detectConflicts() { return { supported: true, conflicted: true, files: ['lib/a.js', 'lib/b.js'] }; },
+@@ -667,7 +695,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     ];
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+       async readRequiredChecks() { return ['CodeQL', 'Cross-OS Gate']; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() { return []; },
+@@ -690,7 +718,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     ];
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
+       async readRequiredChecks() { return ['Vercel', 'unit']; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() { return []; },
+@@ -708,7 +736,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     // NOT a resolvable review thread — the thread path never sees it.
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks: [], threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks: [], threads: [] }; },
+       async readRequiredChecks() { return []; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() { return []; },
+@@ -729,7 +757,7 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+   test('a bot whose LATEST comment is a success does NOT surface (superseded)', async () => {
+     const adapter = {
+       id: 'fake', kind: 'pr-state',
+-      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: [], threads: [] }; },
++      async readState() { return { headSha: FULL_HEAD, state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: [], threads: [] }; },
+       async readRequiredChecks() { return []; },
+       async readDivergence() { return { behind: 0, ahead: 1 }; },
+       async readComments() { return []; },
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index a20a49e2..d617856c 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -28,6 +28,7 @@ function makeAdapter(spec = {}) {
+           mergeStateStatus: spec.mergeStateStatus || 'CLEAN',
+           checks: spec.checks || [],
+           threads: spec.threads || [],
++          providerEvidenceReadable: spec.providerEvidenceReadable,
+         };
+       },
+       async readRequiredChecks() {
+@@ -60,6 +61,19 @@ function makeAdapter(spec = {}) {
+ const BASE_CTX = { pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' };
+ 
+ describe('runShepherdPass — bounded pass state machine', () => {
++  test('IN_PROGRESS plus SUCCESS is not green', () => {
++    expect(isGreen({ status: 'IN_PROGRESS', conclusion: 'SUCCESS' })).toBe(false);
++  });
++
++  test('malformed provider evidence escalates before required-check evaluation', async () => {
++    const { adapter } = makeAdapter({
++      providerEvidenceReadable: false,
++      required: [],
++    });
++    const out = await runShepherdPass({ ...BASE_CTX, adapter });
++    expect(out.state).toBe('ESCALATE');
++  });
++
+   // 1
+   test('all required green + behind=0 → MERGE_READY, NO merge emitted', async () => {
+     const { adapter, actions } = makeAdapter({
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index d536ffca..093df440 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -29,12 +29,14 @@ function makeRunner(responses) {
+ }
+ 
+ const PR_VIEW_JSON = JSON.stringify({
+-  headRefOid: 'abc123',
++  headRefOid: 'a'.repeat(40),
++  state: 'OPEN',
++  isDraft: false,
+   mergeStateStatus: 'BLOCKED',
+   statusCheckRollup: [
+-    { name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
+-    { name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
+-    { name: 'optional-bench', status: 'COMPLETED', conclusion: 'FAILURE' },
++    { __typename: 'CheckRun', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
++    { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' },
++    { __typename: 'CheckRun', name: 'optional-bench', status: 'COMPLETED', conclusion: 'FAILURE' },
+   ],
+   reviewThreads: [],
+ });
+@@ -91,12 +93,27 @@ describe('PrStateAdapter', () => {
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+     const state = await adapter.readState('123');
+ 
+-    expect(state.headSha).toBe('abc123');
++    expect(state.headSha).toBe('a'.repeat(40));
++    expect(state.providerEvidenceReadable).toBe(true);
+     expect(state.mergeStateStatus).toBe('BLOCKED');
+     expect(state.checks).toHaveLength(3);
+     expect(state.checks.find((c) => c.name === 'lint').conclusion).toBe('FAILURE');
+   });
+ 
++  test('readState marks missing lifecycle fields and malformed optional rollup unreadable', async () => {
++    for (const payload of [
++      { headRefOid: 'a'.repeat(40), statusCheckRollup: [], isDraft: false },
++      {
++        headRefOid: 'a'.repeat(40), state: 'OPEN', isDraft: false,
++        statusCheckRollup: [{ __typename: 'CheckRun', name: 'optional' }],
++      },
++    ]) {
++      const { run } = makeRunner([['pr view', JSON.stringify(payload)]]);
++      const state = await new PrStateAdapter({ gh: run, git: run }).readState('123');
++      expect(state.providerEvidenceReadable).toBe(false);
++    }
++  });
++
+   test('readRequiredChecks calls the branch protection API and returns required contexts', async () => {
+     const { run, calls } = makeRunner([
+       ['protection/required_status_checks', REQUIRED_CHECKS_JSON],
+@@ -179,6 +196,20 @@ describe('PrStateAdapter', () => {
+     }
+   });
+ 
++  test('malformed protection cannot fall through to a valid rollup', async () => {
++    const { run } = makeRunner([
++      ['protection/required_status_checks', JSON.stringify({
++        contexts: ['ci'],
++        checks: [{ context: 'ci', app_id: 12 }, { context: 'ci', app_id: 13 }],
++      })],
++      ['api graphql', ROLLUP_REQUIRED_JSON],
++    ]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
++      .toBeNull();
++    expect(adapter.lastRequiredSource).toBeNull();
++  });
++
+   test('readRequiredCheckPolicy deduplicates exact duplicate identities', async () => {
+     const { run } = makeRunner([[
+       'protection/required_status_checks',
+@@ -231,7 +262,7 @@ describe('PrStateAdapter', () => {
+     expect(result).toBeNull(); // null = "cannot determine required set"
+   });
+ 
+-  test('readRequiredChecks falls back to rollup isRequired when protection is unreadable (403)', async () => {
++  test('rollup evidence remains diagnostic and cannot authorize when protection is unreadable', async () => {
+     // The real bug: the Actions GITHUB_TOKEN can NEVER read branch protection
+     // (admin scope), so protection 403s in CI and the required set was permanently
+     // null → verdict UNKNOWN. The rollup `isRequired` fallback is readable with the
+@@ -245,8 +276,7 @@ describe('PrStateAdapter', () => {
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+     const required = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' });
+ 
+-    // Only required contexts, deduped across matrix duplicates, from both node types.
+-    expect(required).toEqual(['unit', 'deploy/ok']);
++    expect(required).toBeNull();
+     expect(adapter.lastRequiredSource).toBe('rollup');
+   });
+ 
+@@ -307,10 +337,25 @@ describe('PrStateAdapter', () => {
+     ]);
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+     expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
+-      .toEqual(['unit', 'lint']);
++      .toBeNull();
+     expect(page).toBe(2);
+   });
+ 
++  test('rollup evidence rejects non-canonical PR selectors before GraphQL', async () => {
++    for (const pr of ['42e0', '042', '42.0', '-1', '0']) {
++      let graphqlCalls = 0;
++      const protectionError = new Error('403');
++      protectionError.stderr = 'HTTP 403: Resource not accessible by integration';
++      const { run } = makeRunner([
++        ['protection/required_status_checks', () => { throw protectionError; }],
++        ['api graphql', () => { graphqlCalls += 1; return ROLLUP_REQUIRED_JSON; }],
++      ]);
++      const adapter = new PrStateAdapter({ gh: run, git: run });
++      expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr })).toBeNull();
++      expect(graphqlCalls).toBe(0);
++    }
++  });
++
+   test('readRequiredChecks stamps requiredSource=protection when protection is readable', async () => {
+     const { run } = makeRunner([
+       ['protection/required_status_checks', REQUIRED_CHECKS_JSON],
+@@ -460,7 +505,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '1', author: { login: 'coderabbitai' }, body: 'nit' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '1', author: { __typename: 'Bot', login: 'coderabbitai' }, body: 'nit' }] },
+         },
+       ] } } } },
+     });
+@@ -483,7 +528,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '987654321', author: { __typename: 'Bot', login: 'coderabbitai' }, body: 'nit' }] },
+         },
+       ] } } } },
+     });
+@@ -495,6 +540,24 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     // the GraphQL query must actually request the comment database id
+     const q = calls.find((c) => c.args.join(' ').includes('graphql')).args.join(' ');
+     expect(q).toContain('fullDatabaseId');
++    expect(q).toContain('__typename');
++  });
++
++  test('readComments rejects nested authors without a complete actor type', async () => {
++    const graphqlJson = JSON.stringify({
++      data: { repository: { pullRequest: { reviewThreads: {
++        pageInfo: { hasNextPage: false, endCursor: null },
++        nodes: [{
++          id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
++            { fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' },
++          ] },
++        }],
++      } } } },
++    });
++    const { run } = makeRunner([['api graphql', graphqlJson]]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    await expect(adapter.readComments({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/author identity/i);
+   });
+ 
+   test('readComments coerces a missing line to null', async () => {
+@@ -516,7 +579,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: true, endCursor: 'C1' },
+         nodes: [{
+           id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
+-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '11', author: { login: 'bot' }, body: 'a1' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '11', author: { __typename: 'Bot', login: 'bot' }, body: 'a1' }] },
+         }],
+       } } } },
+     });
+@@ -526,13 +589,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: 'C1' },
+         nodes: [{
+           id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
+-          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '21', author: { login: 'bot' }, body: 'b1' }] },
++          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '21', author: { __typename: 'Bot', login: 'bot' }, body: 'b1' }] },
+         }],
+       } } } },
+     });
+     // Remaining comments of thread B, fetched by node id.
+     const innerCommentsPage = JSON.stringify({
+-      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '22', author: { login: 'human' }, body: 'b2' }] } } },
++      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '22', author: { __typename: 'User', login: 'human' }, body: 'b2' }] } } },
+     });
+     // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
+     const { run, calls } = makeRunner([
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,887 @@
+From 92bea078ce0c99049ccfec346d74c594bb759c3c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:11:56 +0530
+Subject: [PATCH] feat(review): normalize bounded review evidence
+
+---
+ lib/pr-monitor/gather.js               | 236 ++++++++++++++++++++-----
+ lib/pr-monitor/render-summary.js       | 115 +++++++++---
+ lib/review-adapter.js                  |  62 +++++++
+ test/pr-monitor-snapshot.test.js       |  21 +++
+ test/pr-monitor/gather.test.js         |  94 +++++++++-
+ test/pr-monitor/render-summary.test.js |  44 ++++-
+ test/review-adapter.test.js            |  20 +++
+ 7 files changed, 517 insertions(+), 75 deletions(-)
+
+diff --git a/lib/pr-monitor/gather.js b/lib/pr-monitor/gather.js
+index f86365fa..71bdeb2b 100644
+--- a/lib/pr-monitor/gather.js
++++ b/lib/pr-monitor/gather.js
+@@ -17,6 +17,16 @@
+ 
+ const { gatherPrSnapshot } = require('../pr-pull');
+ const { isFailed, isGreen } = require('../pr-shepherd');
++const { classifyReviewActor, normalizeEvidenceText } = require('../review-adapter');
++
++const SNAPSHOT_LIMITS = Object.freeze({
++  maxChecks: 100,
++  maxThreads: 100,
++  maxReviews: 100,
++  maxComments: 100,
++  maxDegraded: 32,
++  maxTextChars: 256,
++});
+ 
+ /** green | failed | pending — reuses the SAME predicates as the verdict core. */
+ function classifyCheck(check) {
+@@ -25,45 +35,155 @@ function classifyCheck(check) {
+   return 'pending';
+ }
+ 
+-function normalizeChecks(checks) {
+-  return (Array.isArray(checks) ? checks : []).map((c) => ({
+-    name: c.name || '',
+-    class: classifyCheck(c),
+-  }));
++function compareBy(field) {
++  return (left, right) => {
++    const a = String(left[field] ?? '');
++    const b = String(right[field] ?? '');
++    if (a < b) return -1;
++    if (a > b) return 1;
++    return 0;
++  };
++}
++
++function evidenceText(value) {
++  return normalizeEvidenceText(value, { maxChars: SNAPSHOT_LIMITS.maxTextChars });
++}
++
++function createEvidenceTracker(initialDegraded) {
++  const degraded = [];
++  const incompleteSurfaces = new Set();
++  const add = (surface, error) => {
++    const safeSurface = evidenceText(surface) || 'unknown';
++    const safeError = evidenceText(error) || 'evidence unavailable';
++    incompleteSurfaces.add(safeSurface);
++    if (!degraded.some((item) => item.surface === safeSurface && item.error === safeError)
++      && degraded.length < SNAPSHOT_LIMITS.maxDegraded) {
++      degraded.push({ surface: safeSurface, error: safeError });
++    }
++  };
++  if (!Array.isArray(initialDegraded)) {
++    add('degraded', 'degraded evidence is malformed');
++  } else {
++    for (const item of initialDegraded.slice(0, SNAPSHOT_LIMITS.maxDegraded)) {
++      if (!item || typeof item !== 'object' || Array.isArray(item)) {
++        add('degraded', 'degraded evidence item is malformed');
++      } else {
++        add(item.source || item.surface || 'unknown', item.error || 'evidence unavailable');
++      }
++    }
++    if (initialDegraded.length > SNAPSHOT_LIMITS.maxDegraded) {
++      add('degraded', 'degraded evidence exceeded item limit');
++    }
++  }
++  return { add, degraded, incompleteSurfaces };
++}
++
++function boundedNormalize(value, { surface, limit, normalize, tracker, sortField }) {
++  if (!Array.isArray(value)) {
++    tracker.add(surface, `${surface} evidence is missing or malformed`);
++    return [];
++  }
++  if (value.length > limit) tracker.add(surface, `${surface} evidence exceeded ${limit} item limit`);
++  const output = [];
++  for (const item of value.slice(0, limit)) {
++    try {
++      output.push(normalize(item));
++    } catch (_error) {
++      tracker.add(surface, `${surface} evidence item is malformed`);
++    }
++  }
++  return output.sort(compareBy(sortField));
++}
++
++function normalizeChecks(checks, tracker) {
++  return boundedNormalize(checks, {
++    surface: 'checks',
++    limit: SNAPSHOT_LIMITS.maxChecks,
++    tracker,
++    sortField: 'name',
++    normalize: (check) => {
++      if (!check || typeof check !== 'object' || Array.isArray(check)
++        || typeof check.name !== 'string' || !check.name.trim()
++        || (typeof check.status !== 'string' && typeof check.conclusion !== 'string')) {
++        throw new TypeError('malformed check');
++      }
++      return { name: evidenceText(check.name), class: classifyCheck(check) };
++    },
++  });
+ }
+ 
+-function normalizeThreads(threads) {
+-  return (Array.isArray(threads) ? threads : []).map((t) => ({
+-    threadId: t.threadId || '',
+-    isResolved: Boolean(t.isResolved),
+-    isOutdated: Boolean(t.isOutdated),
+-    commentCount: Array.isArray(t.comments) ? t.comments.length : 0,
+-    actionable: !t.isResolved && !t.isOutdated,
+-    path: t.path || null,
+-  }));
++function normalizeActor(value) {
++  const author = evidenceText(value.author);
++  const actorKind = classifyReviewActor(value);
++  if (!author || actorKind === 'unknown') throw new TypeError('malformed actor');
++  return { author, actorKind };
+ }
+ 
+-function normalizeReviews(reviews) {
+-  return (Array.isArray(reviews) ? reviews : []).map((r) => ({
+-    author: r.author || '',
+-    state: r.state || '',
+-    commitOid: r.commitOid || null,
+-    submittedAt: r.submittedAt || null,
+-  }));
++function normalizeThreads(threads, tracker) {
++  return boundedNormalize(threads, {
++    surface: 'threads',
++    limit: SNAPSHOT_LIMITS.maxThreads,
++    tracker,
++    sortField: 'threadId',
++    normalize: (thread) => {
++      if (!thread || typeof thread !== 'object' || Array.isArray(thread)
++        || typeof thread.threadId !== 'string' || !thread.threadId
++        || typeof thread.isResolved !== 'boolean'
++        || typeof thread.isOutdated !== 'boolean'
++        || !Array.isArray(thread.comments) || thread.comments.length === 0
++        || (thread.path !== null && thread.path !== undefined && typeof thread.path !== 'string')) {
++        throw new TypeError('malformed thread');
++      }
++      const actor = normalizeActor(thread.comments[0]);
++      return {
++        threadId: evidenceText(thread.threadId),
++        isResolved: thread.isResolved,
++        isOutdated: thread.isOutdated,
++        commentCount: thread.comments.length,
++        actionable: !thread.isResolved && !thread.isOutdated,
++        path: thread.path ? evidenceText(thread.path) : null,
++        ...actor,
++      };
++    },
++  });
+ }
+ 
+-function normalizeComments(comments) {
+-  return (Array.isArray(comments) ? comments : []).map((c) => ({
+-    id: c.id || `${c.author || ''}:${c.createdAt || ''}`,
+-    author: c.author || '',
+-  }));
++function normalizeReviews(reviews, tracker) {
++  return boundedNormalize(reviews, {
++    surface: 'reviews',
++    limit: SNAPSHOT_LIMITS.maxReviews,
++    tracker,
++    sortField: 'author',
++    normalize: (review) => {
++      if (!review || typeof review !== 'object' || Array.isArray(review)
++        || typeof review.state !== 'string' || !review.state) {
++        throw new TypeError('malformed review');
++      }
++      const actor = normalizeActor(review);
++      return {
++        ...actor,
++        state: evidenceText(review.state),
++        commitOid: review.commitOid == null ? null : evidenceText(review.commitOid),
++        submittedAt: review.submittedAt == null ? null : evidenceText(review.submittedAt),
++      };
++    },
++  });
+ }
+ 
+-function normalizeDegraded(degraded) {
+-  return (Array.isArray(degraded) ? degraded : []).map((d) => ({
+-    surface: d.source || d.surface || 'unknown',
+-    error: d.error || '',
+-  }));
++function normalizeComments(comments, tracker) {
++  return boundedNormalize(comments, {
++    surface: 'comments',
++    limit: SNAPSHOT_LIMITS.maxComments,
++    tracker,
++    sortField: 'id',
++    normalize: (comment) => {
++      if (!comment || typeof comment !== 'object' || Array.isArray(comment)
++        || typeof comment.id !== 'string' || !comment.id) {
++        throw new TypeError('malformed comment');
++      }
++      return { id: evidenceText(comment.id), ...normalizeActor(comment) };
++    },
++  });
+ }
+ 
+ /**
+@@ -84,21 +204,48 @@ function conflictBool(conflicts) {
+  * @returns {object}
+  */
+ function normalizeSnapshot(snap, ctx) {
+-  const state = snap.state || {};
++  const source = snap && typeof snap === 'object' && !Array.isArray(snap) ? snap : {};
++  const state = source.state && typeof source.state === 'object' && !Array.isArray(source.state)
++    ? source.state
++    : {};
++  const tracker = createEvidenceTracker(source.degraded ?? []);
++  if (state !== source.state) tracker.add('state', 'PR state evidence is missing or malformed');
++  for (const surface of (Array.isArray(source.unreadable) ? source.unreadable : [])) {
++    tracker.add(surface, 'provider read was incomplete');
++  }
++  const checks = normalizeChecks(state.checks, tracker);
++  const threads = normalizeThreads(source.threads, tracker);
++  const reviews = normalizeReviews(source.reviews, tracker);
++  const comments = normalizeComments(source.issueComments, tracker);
++  const behind = Number.isSafeInteger(source.behind) && source.behind >= 0 ? source.behind : 0;
++  if (behind !== source.behind && source.behind !== undefined) {
++    tracker.add('branch', 'branch divergence evidence is malformed');
++  }
++  const openThreadCount = threads.filter((thread) => thread.actionable).length;
++  const evidenceStatus = tracker.degraded.length === 0 ? 'COMPLETE' : 'INCOMPLETE';
++  const threadState = tracker.incompleteSurfaces.has('threads')
++    ? 'INCOMPLETE'
++    : (openThreadCount > 0 ? 'OPEN' : 'ZERO');
+   return {
+-    repo: ctx.repo,
+-    pr: String(ctx.pr),
+-    headSha: state.headSha || '',
++    repo: evidenceText(ctx?.repo),
++    pr: evidenceText(ctx?.pr),
++    headSha: evidenceText(state.headSha),
+     prState: String(state.state || 'OPEN').toUpperCase(),
+-    draft: Boolean(snap.draft),
+-    verdict: { state: snap.verdict || 'UNKNOWN', reason: null },
+-    checks: normalizeChecks(state.checks),
+-    threads: normalizeThreads(snap.threads),
+-    reviews: normalizeReviews(snap.reviews),
+-    comments: normalizeComments(snap.issueComments),
+-    behind: snap.behind || 0,
+-    conflicts: conflictBool(snap.conflicts),
+-    degraded: normalizeDegraded(snap.degraded),
++    draft: Boolean(source.draft),
++    verdict: {
++      state: evidenceStatus === 'COMPLETE' ? (source.verdict || 'UNKNOWN') : 'UNKNOWN',
++      reason: evidenceStatus === 'COMPLETE' ? null : 'review evidence incomplete',
++    },
++    evidenceStatus,
++    threadState,
++    openThreadCount,
++    checks,
++    threads,
++    reviews,
++    comments,
++    behind,
++    conflicts: conflictBool(source.conflicts),
++    degraded: tracker.degraded.sort(compareBy('surface')),
+   };
+ }
+ 
+@@ -117,6 +264,7 @@ async function gatherMonitorSnapshot(ctx) {
+ }
+ 
+ module.exports = {
++  SNAPSHOT_LIMITS,
+   gatherMonitorSnapshot,
+   normalizeSnapshot,
+   classifyCheck,
+diff --git a/lib/pr-monitor/render-summary.js b/lib/pr-monitor/render-summary.js
+index 132b6438..265549b0 100644
+--- a/lib/pr-monitor/render-summary.js
++++ b/lib/pr-monitor/render-summary.js
+@@ -1,5 +1,7 @@
+ 'use strict';
+ 
++const { normalizeEvidenceText } = require('../review-adapter');
++
+ /**
+  * PR-monitor Actions-summary renderer. It turns one read-only
+  * `gatherPrBundle` result (lib/pr-bundle.js) into deterministic Markdown for
+@@ -28,6 +30,13 @@ const VERDICT_HEADLINE = {
+   'CLEAN-MERGEABLE': '🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.',
+ };
+ 
++const MAX_SUMMARY_THREADS = 64;
++const MAX_SUMMARY_CHECKS = 20;
++const MAX_SUMMARY_AUTHORS = 12;
++const MAX_SUMMARY_TEXT_CHARS = 256;
++const MAX_SUMMARY_SIGNALS = 16;
++const MAX_SUMMARY_CHARS = 32768;
++
+ /** Render the one-line headline for a canonical verdict, failing closed. */
+ function verdictHeadline(verdict) {
+   return VERDICT_HEADLINE[String(verdict || '').toUpperCase()] || VERDICT_HEADLINE.UNKNOWN;
+@@ -42,7 +51,7 @@ function verdictHeadline(verdict) {
+  * one line per diagnostic.
+  */
+ function mdCode(value) {
+-  const text = String(value ?? '').replace(/[\r\n]+/g, ' ');
++  const text = normalizeEvidenceText(value, { maxChars: MAX_SUMMARY_TEXT_CHARS });
+   let longestRun = 0;
+   let currentRun = 0;
+   for (const character of text) {
+@@ -65,19 +74,25 @@ const MAX_THREADS_PER_AUTHOR = 8;
+ function groupByAuthor(comments) {
+   const byAuthor = new Map();
+   for (const comment of (Array.isArray(comments) ? comments : [])) {
+-    const author = String(comment.author || 'unknown');
++    const author = normalizeEvidenceText(comment.author || 'unknown', { maxChars: MAX_SUMMARY_TEXT_CHARS });
+     if (!byAuthor.has(author)) byAuthor.set(author, []);
+     byAuthor.get(author).push(comment);
+   }
+-  return [...byAuthor.entries()].sort(
+-    (a, b) => (b[1].length - a[1].length) || a[0].localeCompare(b[0]),
+-  );
++  return [...byAuthor.entries()].sort((a, b) => {
++    if (b[1].length !== a[1].length) return b[1].length - a[1].length;
++    if (a[0] < b[0]) return -1;
++    if (a[0] > b[0]) return 1;
++    return 0;
++  });
+ }
+ 
+ /** One-line locator for a thread: `path:line` when known, else its id. */
+ function threadLocator(thread) {
+-  if (thread.path) return thread.line != null ? `${thread.path}:${thread.line}` : thread.path;
+-  return thread.threadId || '(thread)';
++  if (thread.path) {
++    const path = normalizeEvidenceText(thread.path, { maxChars: MAX_SUMMARY_TEXT_CHARS });
++    return thread.line != null ? `${path}:${thread.line}` : path;
++  }
++  return normalizeEvidenceText(thread.threadId || '(thread)', { maxChars: MAX_SUMMARY_TEXT_CHARS });
+ }
+ 
+ /** Render unresolved review threads, preserving fail-closed availability. */
+@@ -89,22 +104,32 @@ function renderThreads(bundle, lines) {
+     lines.push('### Review threads');
+     lines.push(`⚠️ Review threads were **unreadable** this pass (${mdCode(why)}) — not treated as zero. Re-run once the read recovers.`);
+     lines.push('');
+-    return;
++    return 'INCOMPLETE';
++  }
++
++  if (!Array.isArray(bundle.unresolvedComments)
++    || bundle.unresolvedComments.slice(0, MAX_SUMMARY_THREADS)
++      .some((thread) => !thread || typeof thread !== 'object' || Array.isArray(thread))) {
++    lines.push('### Review threads');
++    lines.push('⚠️ Review thread evidence was **malformed** this pass — not treated as zero.');
++    lines.push('');
++    return 'INCOMPLETE';
+   }
+ 
+-  const comments = Array.isArray(bundle.unresolvedComments) ? bundle.unresolvedComments : [];
++  const comments = bundle.unresolvedComments;
+   if (comments.length === 0) {
+     lines.push('### Review threads');
+     lines.push('✅ No unresolved review threads.');
+     lines.push('');
+-    return;
++    return 'ZERO';
+   }
+ 
+-  const groups = groupByAuthor(comments);
++  const boundedComments = comments.slice(0, MAX_SUMMARY_THREADS);
++  const groups = groupByAuthor(boundedComments).slice(0, MAX_SUMMARY_AUTHORS);
+   lines.push(`### Unresolved review threads (${comments.length})`);
+   lines.push('');
+   for (const [author, threads] of groups) {
+-    lines.push(`- **${author}** — ${threads.length}`);
++    lines.push(`- **${mdCode(author)}** — ${threads.length}`);
+     for (const thread of threads.slice(0, MAX_THREADS_PER_AUTHOR)) {
+       lines.push(`  - ${mdCode(threadLocator(thread))}`);
+     }
+@@ -112,7 +137,15 @@ function renderThreads(bundle, lines) {
+       lines.push(`  - …and ${threads.length - MAX_THREADS_PER_AUTHOR} more`);
+     }
+   }
++  if (comments.length > boundedComments.length) {
++    lines.push(`- …and ${comments.length - boundedComments.length} more thread(s) omitted by the bounded summary`);
++  }
++  const representedThreads = groups.reduce((total, [, threads]) => total + threads.length, 0);
++  if (representedThreads < boundedComments.length) {
++    lines.push(`- …and ${boundedComments.length - representedThreads} thread(s) from additional authors`);
++  }
+   lines.push('');
++  return 'OPEN';
+ }
+ 
+ /** Render failing and pending checks, preserving fail-closed availability. */
+@@ -123,24 +156,41 @@ function renderChecks(bundle, lines) {
+     lines.push('### Checks');
+     lines.push('⚠️ Checks were **unreadable** this pass — not treated as green. Re-run once the read recovers.');
+     lines.push('');
+-    return;
++    return false;
+   }
+ 
+   const ci = bundle.ci || {};
+-  const failing = Array.isArray(ci.failing) ? ci.failing : [];
+-  const pending = Array.isArray(ci.pending) ? ci.pending : [];
++  if (!Array.isArray(ci.failing) || !Array.isArray(ci.pending)
++    || ci.failing.slice(0, MAX_SUMMARY_CHECKS)
++      .some((check) => !check || typeof check !== 'object' || Array.isArray(check))
++    || ci.pending.slice(0, MAX_SUMMARY_CHECKS)
++      .some((check) => !check || typeof check !== 'object' || Array.isArray(check))) {
++    lines.push('### Checks');
++    lines.push('⚠️ Check evidence was **malformed** this pass — not treated as green.');
++    lines.push('');
++    return false;
++  }
++  const failing = ci.failing;
++  const pending = ci.pending;
+   lines.push('### Checks');
+   if (failing.length === 0 && pending.length === 0) {
+     lines.push('✅ No failing or pending checks.');
+   } else {
+     if (failing.length > 0) {
+-      lines.push(`- ❌ **Failing (${failing.length}):** ${failing.map((check) => mdCode(check.name || '?')).join(', ')}`);
++      lines.push(`- ❌ **Failing (${failing.length}):** ${failing.slice(0, MAX_SUMMARY_CHECKS).map((check) => mdCode(check.name || '?')).join(', ')}`);
++      if (failing.length > MAX_SUMMARY_CHECKS) {
++        lines.push(`  - …and ${failing.length - MAX_SUMMARY_CHECKS} more failing check(s)`);
++      }
+     }
+     if (pending.length > 0) {
+-      lines.push(`- ⏳ **Pending (${pending.length}):** ${pending.map((check) => mdCode(check.name || '?')).join(', ')}`);
++      lines.push(`- ⏳ **Pending (${pending.length}):** ${pending.slice(0, MAX_SUMMARY_CHECKS).map((check) => mdCode(check.name || '?')).join(', ')}`);
++      if (pending.length > MAX_SUMMARY_CHECKS) {
++        lines.push(`  - …and ${pending.length - MAX_SUMMARY_CHECKS} more pending check(s)`);
++      }
+     }
+   }
+   lines.push('');
++  return true;
+ }
+ 
+ /**
+@@ -159,7 +209,9 @@ function renderSummary(bundle = {}, opts = {}) {
+   const lines = ['## 🔭 Forge PR Monitor', ''];
+   const verdict = String(opts.verdict || '').toUpperCase();
+   const isUnknown = verdict === 'UNKNOWN' || !VERDICT_HEADLINE[verdict];
+-  const unreadable = Array.isArray(opts.unreadable) ? opts.unreadable.filter(Boolean) : [];
++  const unreadable = Array.isArray(opts.unreadable)
++    ? opts.unreadable.filter(Boolean).slice(0, MAX_SUMMARY_SIGNALS)
++    : [];
+ 
+   lines.push(verdictHeadline(opts.verdict));
+   if (isUnknown && unreadable.length > 0) {
+@@ -170,8 +222,8 @@ function renderSummary(bundle = {}, opts = {}) {
+   lines.push('_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._');
+   lines.push('');
+ 
+-  renderThreads(bundle, lines);
+-  renderChecks(bundle, lines);
++  let threadState = renderThreads(bundle, lines);
++  const checksComplete = renderChecks(bundle, lines);
+ 
+   const branch = bundle.branch || {};
+   if ((branch.behind || 0) > 0) {
+@@ -184,10 +236,31 @@ function renderSummary(bundle = {}, opts = {}) {
+   lines.push(`Detailed JSON: ${mdCode(`forge shepherd ${pr} --pull --json`)}`);
+   lines.push(`_Updated ${now.toISOString()} · summary-only monitor · labels state, never merges, never resolves threads._`);
+ 
+-  return { body: lines.join('\n') };
++  let body = lines.join('\n');
++  let evidenceStatus = threadState === 'INCOMPLETE' || !checksComplete ? 'INCOMPLETE' : 'COMPLETE';
++  if (body.length > MAX_SUMMARY_CHARS) {
++    threadState = 'INCOMPLETE';
++    evidenceStatus = 'INCOMPLETE';
++    body = [
++      '## 🔭 Forge PR Monitor',
++      '',
++      verdictHeadline('UNKNOWN'),
++      '',
++      '⚠️ Summary evidence exceeded the bounded rendering limit; inspect the detailed JSON.',
++      '',
++      '_This monitor does not merge and never resolves review threads._',
++      '',
++      `Detailed JSON: ${mdCode(`forge shepherd ${pr} --pull --json`)}`,
++    ].join('\n');
++  }
++
++  return { body, evidenceStatus, threadState };
+ }
+ 
+ module.exports = {
++  MAX_SUMMARY_CHARS,
++  MAX_SUMMARY_CHECKS,
++  MAX_SUMMARY_THREADS,
+   renderSummary,
+   verdictHeadline,
+   groupByAuthor,
+diff --git a/lib/review-adapter.js b/lib/review-adapter.js
+index 42837443..46a0f844 100644
+--- a/lib/review-adapter.js
++++ b/lib/review-adapter.js
+@@ -8,6 +8,65 @@ const REQUIRED_REVIEW_ADAPTER_METHODS = [
+   'score',
+ ];
+ 
++const REVIEW_EVIDENCE_LIMITS = Object.freeze({
++  maxTextChars: 256,
++});
++
++const SECRET_PATTERNS = [
++  /\bBearer\s+\S+/gi,
++  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
++  /\b(?:sk_(?:live|test)_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,})\b/g,
++  /\b(?:api[_ -]?key|authorization|credential|password|private[_ -]?key|secret|token)\s*[:=]\s*\S{8,}/gi,
++];
++const PRIVATE_PATH_PATTERNS = [
++  /[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s]*)?/gi,
++  /\/(?:Users|home)\/[^/\s]+(?:\/[^\s]*)?/g,
++];
++
++function stripControlCharacters(value) {
++  let output = '';
++  for (const character of value) {
++    const code = character.charCodeAt(0);
++    const control = (code >= 0 && code <= 8)
++      || code === 11
++      || code === 12
++      || (code >= 14 && code <= 31)
++      || code === 127;
++    output += control ? ' ' : character;
++  }
++  return output;
++}
++
++function normalizeEvidenceText(value, options = {}) {
++  const requestedLimit = options.maxChars ?? REVIEW_EVIDENCE_LIMITS.maxTextChars;
++  const maxChars = Number.isInteger(requestedLimit) && requestedLimit > 0
++    ? requestedLimit
++    : REVIEW_EVIDENCE_LIMITS.maxTextChars;
++  let text = stripControlCharacters(String(value ?? ''))
++    .replace(/[\r\n\t]+/g, ' ');
++  for (const pattern of SECRET_PATTERNS) text = text.replace(pattern, '[REDACTED]');
++  for (const pattern of PRIVATE_PATH_PATTERNS) text = text.replace(pattern, '[REDACTED_PATH]');
++  text = text.replace(/\s+/g, ' ').trim();
++  return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - 1))}…`;
++}
++
++function classifyReviewActor(value) {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'unknown';
++  const typename = value.authorTypename
++    || value.authorType
++    || value.actorTypename
++    || value.actorType
++    || value.author?.__typename;
++  const actorKinds = {
++    Bot: 'bot',
++    User: 'user',
++    Organization: 'organization',
++    Mannequin: 'mannequin',
++    EnterpriseUserAccount: 'enterprise-user',
++  };
++  return actorKinds[typename] || 'unknown';
++}
++
+ class ReviewAdapter {
+   constructor(options = {}) {
+     this.id = options.id || 'review-adapter';
+@@ -62,7 +121,10 @@ function validateReviewAdapter(adapter) {
+ }
+ 
+ module.exports = {
++  REVIEW_EVIDENCE_LIMITS,
+   ReviewAdapter,
+   REQUIRED_REVIEW_ADAPTER_METHODS,
++  classifyReviewActor,
++  normalizeEvidenceText,
+   validateReviewAdapter,
+ };
+diff --git a/test/pr-monitor-snapshot.test.js b/test/pr-monitor-snapshot.test.js
+index 3eef2884..f82be3f2 100644
+--- a/test/pr-monitor-snapshot.test.js
++++ b/test/pr-monitor-snapshot.test.js
+@@ -3,6 +3,7 @@
+ const { describe, test, expect } = require('bun:test');
+ const { gatherPrSnapshot } = require('../lib/pr-pull');
+ const { isFailed } = require('../lib/pr-shepherd');
++const { normalizeSnapshot } = require('../lib/pr-monitor/gather');
+ 
+ /** A fake pr-state adapter that records the ORDER of its method calls. */
+ function recordingAdapter(order) {
+@@ -61,6 +62,26 @@ describe('gatherPrSnapshot — the shared monitor gather', () => {
+     expect(snap.degraded.some((d) => d.source === 'fetchBase')).toBe(true);
+     expect(snap.verdict).toBe('UNKNOWN');
+   });
++
++  test('normalizes provider actor mechanism without display-name inference', async () => {
++    const adapter = recordingAdapter([]);
++    adapter.readComments = () => [{
++      threadId: 't1', isResolved: false, isOutdated: false, path: 'lib/a.js',
++      comments: [{ author: 'ordinary-name', authorType: 'Bot', body: 'fix', commentId: '1' }],
++    }];
++    adapter.readReviews = () => [{
++      author: 'coderabbitai[bot]', authorTypename: 'User', state: 'COMMENTED',
++      commitOid: 'h1', submittedAt: 't1',
++    }];
++    const raw = await gatherPrSnapshot({
++      pr: '1', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter, self: 'forge-bot', now: 2000, settleWindowMs: 0,
++    });
++    const normalized = normalizeSnapshot(raw, { repo: 'r', pr: '1' });
++
++    expect(normalized.threads[0].actorKind).toBe('bot');
++    expect(normalized.reviews[0].actorKind).toBe('user');
++  });
+ });
+ 
+ describe('isFailed — STALE conclusion (A5)', () => {
+diff --git a/test/pr-monitor/gather.test.js b/test/pr-monitor/gather.test.js
+index 8215b5cf..c26f266f 100644
+--- a/test/pr-monitor/gather.test.js
++++ b/test/pr-monitor/gather.test.js
+@@ -2,7 +2,13 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ 
+-const { gatherMonitorSnapshot, normalizeSnapshot, classifyCheck, conflictBool } = require('../../lib/pr-monitor/gather');
++const {
++  SNAPSHOT_LIMITS,
++  gatherMonitorSnapshot,
++  normalizeSnapshot,
++  classifyCheck,
++  conflictBool,
++} = require('../../lib/pr-monitor/gather');
+ 
+ describe('gather — normalizeSnapshot mapping', () => {
+   test('classifyCheck reuses the verdict-core predicates', () => {
+@@ -24,9 +30,15 @@ describe('gather — normalizeSnapshot mapping', () => {
+       state: { headSha: 'h1', state: 'OPEN', checks: [{ name: 'ci', conclusion: 'FAILURE' }] },
+       draft: true,
+       verdict: 'BLOCKED-THREADS',
+-      threads: [{ threadId: 't1', isResolved: false, isOutdated: false, comments: [{}, {}] }],
+-      reviews: [{ author: 'coderabbitai', state: 'CHANGES_REQUESTED', commitOid: 'h1', submittedAt: 't' }],
+-      issueComments: [{ id: '9', author: 'sonarqubecloud', createdAt: 'x' }],
++      threads: [{
++        threadId: 't1', isResolved: false, isOutdated: false,
++        comments: [
++          { author: 'coderabbitai', authorType: 'Bot' },
++          { author: 'human-reviewer', authorType: 'User' },
++        ],
++      }],
++      reviews: [{ author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', commitOid: 'h1', submittedAt: 't' }],
++      issueComments: [{ id: '9', author: 'sonarqubecloud', authorTypename: 'Bot', createdAt: 'x' }],
+       behind: 2,
+       conflicts: { supported: true, conflicted: false },
+       degraded: [{ source: 'reviews', error: 'HTTP 403' }],
+@@ -34,13 +46,81 @@ describe('gather — normalizeSnapshot mapping', () => {
+     const s = normalizeSnapshot(raw, { repo: 'r', pr: '1' });
+     expect(s.headSha).toBe('h1');
+     expect(s.draft).toBe(true);
+-    expect(s.verdict.state).toBe('BLOCKED-THREADS');
++    expect(s.verdict.state).toBe('UNKNOWN');
+     expect(s.checks).toEqual([{ name: 'ci', class: 'failed' }]);
+-    expect(s.threads[0]).toMatchObject({ threadId: 't1', commentCount: 2, actionable: true });
+-    expect(s.comments).toEqual([{ id: '9', author: 'sonarqubecloud' }]);
++    expect(s.threads[0]).toMatchObject({ threadId: 't1', commentCount: 2, actionable: true, actorKind: 'bot' });
++    expect(s.reviews[0]).toMatchObject({ author: 'coderabbitai', actorKind: 'bot' });
++    expect(s.comments).toEqual([{ id: '9', author: 'sonarqubecloud', actorKind: 'bot' }]);
+     expect(s.behind).toBe(2);
+     expect(s.conflicts).toBe(false);
+     expect(s.degraded).toEqual([{ surface: 'reviews', error: 'HTTP 403' }]);
++    expect(s.evidenceStatus).toBe('INCOMPLETE');
++    expect(s.threadState).toBe('OPEN');
++    expect(s.openThreadCount).toBe(1);
++  });
++
++  test('distinguishes authoritative zero threads from open threads', () => {
++    const zero = normalizeSnapshot({
++      state: { headSha: 'h1', state: 'OPEN', checks: [] },
++      verdict: 'CLEAN-MERGEABLE', threads: [], reviews: [], issueComments: [], degraded: [],
++    }, { repo: 'r', pr: '1' });
++    expect(zero.evidenceStatus).toBe('COMPLETE');
++    expect(zero.threadState).toBe('ZERO');
++    expect(zero.openThreadCount).toBe(0);
++
++    const open = normalizeSnapshot({
++      state: { headSha: 'h1', state: 'OPEN', checks: [] },
++      verdict: 'BLOCKED-THREADS',
++      threads: [{
++        threadId: 't1', isResolved: false, isOutdated: false,
++        comments: [{ author: 'not-a-bot-name', authorType: 'Bot' }],
++      }],
++      reviews: [], issueComments: [], degraded: [],
++    }, { repo: 'r', pr: '1' });
++    expect(open.evidenceStatus).toBe('COMPLETE');
++    expect(open.threadState).toBe('OPEN');
++    expect(open.openThreadCount).toBe(1);
++    expect(open.threads[0].actorKind).toBe('bot');
++  });
++
++  test('malformed provider evidence fails closed instead of becoming zero', () => {
++    const s = normalizeSnapshot({
++      state: { headSha: 'h1', state: 'OPEN', checks: {} },
++      verdict: 'CLEAN-MERGEABLE',
++      threads: null,
++      reviews: [{ author: 'reviewer', state: 'APPROVED' }],
++      issueComments: 'not-an-array',
++      degraded: [],
++    }, { repo: 'r', pr: '1' });
++
++    expect(s.evidenceStatus).toBe('INCOMPLETE');
++    expect(s.threadState).toBe('INCOMPLETE');
++    expect(s.verdict.state).toBe('UNKNOWN');
++    expect(s.degraded.map((item) => item.surface)).toEqual(expect.arrayContaining([
++      'checks', 'threads', 'reviews', 'comments',
++    ]));
++  });
++
++  test('bounds and redacts normalized provider evidence deterministically', () => {
++    const secret = 'ghp_123456789012345678901234567890';
++    const checks = Array.from({ length: SNAPSHOT_LIMITS.maxChecks + 5 }, (_, index) => ({
++      name: `check-${index}-${secret}-C:\\Users\\alice\\private`,
++      conclusion: 'SUCCESS',
++      status: 'COMPLETED',
++    }));
++    const input = {
++      state: { headSha: 'h1', state: 'OPEN', checks },
++      verdict: 'CLEAN-MERGEABLE', threads: [], reviews: [], issueComments: [], degraded: [],
++    };
++    const s = normalizeSnapshot(input, { repo: 'r', pr: '1' });
++    const serialized = JSON.stringify(s);
++
++    expect(s.checks).toHaveLength(SNAPSHOT_LIMITS.maxChecks);
++    expect(s.evidenceStatus).toBe('INCOMPLETE');
++    expect(s.verdict.state).toBe('UNKNOWN');
++    expect(serialized).not.toContain(secret);
++    expect(serialized).not.toContain('alice');
++    expect(normalizeSnapshot(input, { repo: 'r', pr: '1' })).toEqual(s);
+   });
+ 
+   test('gatherMonitorSnapshot uses the injected snapshot source', async () => {
+diff --git a/test/pr-monitor/render-summary.test.js b/test/pr-monitor/render-summary.test.js
+index fc7bae37..d8e2367f 100644
+--- a/test/pr-monitor/render-summary.test.js
++++ b/test/pr-monitor/render-summary.test.js
+@@ -2,7 +2,12 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ 
+-const { renderSummary } = require('../../lib/pr-monitor/render-summary');
++const {
++  MAX_SUMMARY_CHARS,
++  MAX_SUMMARY_CHECKS,
++  MAX_SUMMARY_THREADS,
++  renderSummary,
++} = require('../../lib/pr-monitor/render-summary');
+ 
+ /**
+  * Build a minimal bundle in the exact shape gatherPrBundle emits
+@@ -30,7 +35,7 @@ const NOW = new Date('2026-07-15T10:00:00Z');
+ 
+ describe('renderSummary', () => {
+   test('renders a deterministic Actions summary without a sticky marker or comment API language', () => {
+-    const { body } = renderSummary(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
++    const { body, evidenceStatus, threadState } = renderSummary(makeBundle(), { now: NOW, verdict: 'CLEAN-MERGEABLE' });
+     expect(body).toContain('Forge PR Monitor');
+     expect(body).toContain('clean-mergeable');
+     expect(body).toContain('Updated 2026-07-15T10:00:00.000Z');
+@@ -38,6 +43,8 @@ describe('renderSummary', () => {
+     expect(body).not.toContain('<!-- forge-pr-monitor -->');
+     expect(body.toLowerCase()).not.toContain('sticky comment');
+     expect(body.toLowerCase()).toContain('does not merge');
++    expect(evidenceStatus).toBe('COMPLETE');
++    expect(threadState).toBe('ZERO');
+   });
+ 
+   test('an UNKNOWN verdict names which signal(s) were unreadable', () => {
+@@ -87,10 +94,12 @@ describe('renderSummary', () => {
+       unresolvedCommentsAvailable: false,
+       unresolvedCommentsError: 'GraphQL 502',
+     });
+-    const { body } = renderSummary(bundle, { now: NOW });
++    const { body, evidenceStatus, threadState } = renderSummary(bundle, { now: NOW });
+     expect(body.toLowerCase()).toContain('unreadable');
+     expect(body).toContain('GraphQL 502');
+     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
++    expect(evidenceStatus).toBe('INCOMPLETE');
++    expect(threadState).toBe('INCOMPLETE');
+   });
+ 
+   test('unread CI never renders a false clean check state', () => {
+@@ -123,6 +132,35 @@ describe('renderSummary', () => {
+     expect(a).toBe(b);
+   });
+ 
++  test('bounds and redacts hostile thread and check evidence', () => {
++    const secret = 'ghp_123456789012345678901234567890';
++    const unresolvedComments = Array.from({ length: MAX_SUMMARY_THREADS + 20 }, (_, index) => ({
++      author: `reviewer-${index}-${secret}`,
++      path: `C:\\Users\\alice\\private-${index}.js`,
++      line: index,
++      threadId: `thread-${index}`,
++      comments: [],
++    }));
++    const failing = Array.from({ length: MAX_SUMMARY_CHECKS + 20 }, (_, index) => ({
++      name: `check-${index}-${secret}`,
++    }));
++    const first = renderSummary(makeBundle({
++      unresolvedComments,
++      ci: { checks: [], failing, pending: [] },
++    }), { now: NOW, verdict: 'BLOCKED-THREADS' });
++    const second = renderSummary(makeBundle({
++      unresolvedComments,
++      ci: { checks: [], failing, pending: [] },
++    }), { now: NOW, verdict: 'BLOCKED-THREADS' });
++
++    expect(first.body.length).toBeLessThanOrEqual(MAX_SUMMARY_CHARS);
++    expect(first.body).not.toContain(secret);
++    expect(first.body).not.toContain('alice');
++    expect(first.body).toContain('more');
++    expect(first.threadState).toBe('OPEN');
++    expect(first).toEqual(second);
++  });
++
+   test('keeps untrusted thread locators and check names inside safe code fences', () => {
+     const { body } = renderSummary(makeBundle({
+       unresolvedComments: [
+diff --git a/test/review-adapter.test.js b/test/review-adapter.test.js
+index 91e3ce10..f3a29336 100644
+--- a/test/review-adapter.test.js
++++ b/test/review-adapter.test.js
+@@ -1,14 +1,34 @@
+ const { describe, test, expect } = require('bun:test');
+ 
+ const {
++  REVIEW_EVIDENCE_LIMITS,
+   ReviewAdapter,
+   REQUIRED_REVIEW_ADAPTER_METHODS,
++  classifyReviewActor,
++  normalizeEvidenceText,
+   validateReviewAdapter,
+ } = require('../lib/review-adapter');
+ const { GreptileReviewAdapter } = require('../lib/adapters/greptile-review-adapter');
+ const { matchThreadsToCommits } = require('../lib/greptile-match');
+ 
+ describe('ReviewAdapter SPI', () => {
++  test('classifies bots by provider mechanism rather than display name', () => {
++    expect(classifyReviewActor({ author: 'ordinary-name', authorTypename: 'Bot' })).toBe('bot');
++    expect(classifyReviewActor({ author: 'renovate[bot]', authorTypename: 'User' })).toBe('user');
++    expect(classifyReviewActor({ author: 'coderabbitai[bot]' })).toBe('unknown');
++  });
++
++  test('normalizes bounded privacy-safe evidence text', () => {
++    const secret = 'ghp_123456789012345678901234567890';
++    const normalized = normalizeEvidenceText(`failure ${secret} at C:\\Users\\alice\\private\nnext`, {
++      maxChars: REVIEW_EVIDENCE_LIMITS.maxTextChars,
++    });
++    expect(normalized).not.toContain(secret);
++    expect(normalized).not.toContain('alice');
++    expect(normalized).not.toContain('\n');
++    expect(normalized.length).toBeLessThanOrEqual(REVIEW_EVIDENCE_LIMITS.maxTextChars);
++  });
++
+   test('base adapter documents the required review lifecycle methods', () => {
+     expect(REQUIRED_REVIEW_ADAPTER_METHODS).toEqual([
+       'fetchThreads',
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,66 @@
+From eb62d5de97159ea7b97faeb0d4b8f47988db1630 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 11:36:45 +0530
+Subject: [PATCH] fix(memory): reject unsafe linkage paths
+
+---
+ packages/memory/src/pr-lifecycle-authority.js  | 13 ++++++++++---
+ .../memory/test/pr-lifecycle-authority.test.js | 18 ++++++++++++++++++
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 7db939a7..210ee62e 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -46,9 +46,16 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
+ function isCanonicalGitCommonDir(value) {
+   if (typeof value !== 'string' || value.length === 0 || value.length > 512) return false;
+   const normalized = value.replaceAll('\\', '/');
+-  return normalized === '/repo/.git'
+-    || /^\/(?:Users|home)\/[^/\s]+(?:\/[^/\s]+)+\/\.git$/i.test(normalized)
+-    || /^[A-Za-z]:\/Users\/[^/\s]+(?:\/[^/\s]+)+\/\.git$/i.test(normalized);
++  if (normalized.includes('%') || [...normalized].some(character => {
++    const code = character.charCodeAt(0);
++    return code < 0x20 || code === 0x7f;
++  })) return false;
++  const segments = normalized.split('/');
++  if (segments.some(segment => segment === '.' || segment === '..' || containsSecret(segment))) return false;
++  if (segments.at(-1)?.toLowerCase() !== '.git') return false;
++  const posixHome = segments[0] === '' && ['users', 'home'].includes(segments[1]?.toLowerCase()) && segments.length >= 5;
++  const windowsHome = /^[a-z]:$/i.test(segments[0]) && segments[1]?.toLowerCase() === 'users' && segments.length >= 5;
++  return normalized === '/repo/.git' || posixHome || windowsHome;
+ }
+ 
+ class PrLifecycleAuthorityError extends Error {
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 0a9a2ad6..a7b83ed8 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -280,6 +280,24 @@ describe('public PR lifecycle authority', () => {
+     })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
+   });
+ 
++  test('rejects traversal, encoded traversal, and secret-bearing trusted path segments before linkage', async () => {
++    for (const gitCommonDir of [
++      '/home/alice/../repo/.git',
++      'C:\\Users\\alice\\..\\repo\\.git',
++      '/home/alice/%2e%2e/repo/.git',
++      '/home/sk-live_1234567890123456/repo/.git',
++    ]) {
++      let writes = 0;
++      const authority = createPrLifecycleAuthority({
++        provider: provider({ recordPrLinkage: async () => { writes += 1; return { ok: true }; } }),
++      });
++      const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: gitCommonDir, url: 'https://example.test/pull/514' } } });
++      await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket) }))
++        .rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
++      expect(writes).toBe(0);
++    }
++  });
++
+   test('preserves stable input errors and rejects missing merge linkage URL before writing', async () => {
+     const stable = createPrLifecycleAuthority({ provider: provider() });
+     const invalid = { ...packet(), payload: { ...packet().payload, receipt_requirements: [] } };
+-- 
+2.51.0.windows.1
+

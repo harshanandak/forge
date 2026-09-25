@@ -1,0 +1,52 @@
+From 336dcda4ac926f729c891841cc444096d69f9b8e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 16:39:26 +0530
+Subject: [PATCH] fix(skills): remove status/triage-ready trigger collision
+ (review follow-up)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Holistic discrimination review flagged one real ambiguity: `status` listed "what
+should I pick up next" as a trigger, which is triage-ready's single-pick job — and
+status already disclaims that function. Dropped the phrase from status's trigger
+list; status still surfaces the ranked board, it just no longer triggers on the
+single-pick intent. All other clusters verified clean.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/status/SKILL.md | 3 +--
+ skills/status/SKILL.md        | 3 +--
+ 2 files changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/.codex/skills/status/SKILL.md b/.codex/skills/status/SKILL.md
+index 28569013..88606659 100644
+--- a/.codex/skills/status/SKILL.md
++++ b/.codex/skills/status/SKILL.md
+@@ -3,8 +3,7 @@ name: status
+ description: >
+   Report where the project stands and what work is in flight -- the Forge status snapshot.
+   Reach for this at session start or whenever the user says "/status", "where am I", "what's
+-  in progress", "catch me up", "resume work", "what changed recently", or "what should I pick
+-  up next". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
++  in progress", "catch me up", "resume work", or "what changed recently". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
+   composite score with conflict-risk flags, stale already-merged issues (which it closes), and
+   recent commits. Use it to ORIENT and decide the next move -- it reports state; it does not
+   plan, develop, or claim issues. Not for: routing to a stage skill or documenting the full
+diff --git a/skills/status/SKILL.md b/skills/status/SKILL.md
+index 28569013..88606659 100644
+--- a/skills/status/SKILL.md
++++ b/skills/status/SKILL.md
+@@ -3,8 +3,7 @@ name: status
+ description: >
+   Report where the project stands and what work is in flight -- the Forge status snapshot.
+   Reach for this at session start or whenever the user says "/status", "where am I", "what's
+-  in progress", "catch me up", "resume work", "what changed recently", or "what should I pick
+-  up next". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
++  in progress", "catch me up", "resume work", or "what changed recently". It surfaces the workflow stage, your active/claimed issues, all issues ranked by
+   composite score with conflict-risk flags, stale already-merged issues (which it closes), and
+   recent commits. Use it to ORIENT and decide the next move -- it reports state; it does not
+   plan, develop, or claim issues. Not for: routing to a stage skill or documenting the full
+-- 
+2.51.0.windows.1
+

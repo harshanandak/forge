@@ -1,0 +1,97 @@
+From 21f9328542e8a11b25622bcb10cf284e9ee62773 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 12 Sep 2026 15:35:22 +0530
+Subject: [PATCH] fix(docs): address archive review findings
+
+---
+ ...-09-12-initial-package-journey-baseline.md |  2 +-
+ .../README.md                                 |  6 ++---
+ ...parallel-public-agent-harness-research.txt | 22 +++++++++----------
+ 3 files changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/docs/work/2026-08-24-agent-harness-architecture/2026-09-12-initial-package-journey-baseline.md b/docs/work/2026-08-24-agent-harness-architecture/2026-09-12-initial-package-journey-baseline.md
+index b73ac9ec..9fb82759 100644
+--- a/docs/work/2026-08-24-agent-harness-architecture/2026-09-12-initial-package-journey-baseline.md
++++ b/docs/work/2026-08-24-agent-harness-architecture/2026-09-12-initial-package-journey-baseline.md
+@@ -4,7 +4,7 @@
+ 
+ **Evidence:** Rung 4 â€” package packing, isolated installation, probe execution, and focused tests were run.
+ 
+-**Baseline:** `7393dd9d82ae43cb128dc64d7ae7b4cab48c21f9`. The shared execution worktree later advanced, while the inspected Contracts, Memory, and Flow tree IDs remained byte-identical to baseline: `3ebf8846`, `accbe377`, and `d3b2bf96`.
++**Baseline:** `7393dd9d82ae43cb128dc64d7ae7b4cab48c21f9`. The shared execution worktree later advanced, while the inspected package trees remained byte-identical to baseline: Contracts `d3b2bf96`, Memory `3ebf8846`, and Flow `accbe377`.
+ **Verdict:** Memory journey `INCOMPLETE`; Flow journey `INCOMPLETE`; connected authorize-to-execute-to-receipt journey `NOT RUN`. The first two results identify missing supported product assembly at the package entry point. They do not demonstrate a regression in the injected dependency contracts, a connected-product failure, or a completed product acceptance journey.
+ 
+ ## Receipt
+diff --git a/docs/work/2026-08-24-agent-harness-architecture/README.md b/docs/work/2026-08-24-agent-harness-architecture/README.md
+index 55fc5dc0..881915f2 100644
+--- a/docs/work/2026-08-24-agent-harness-architecture/README.md
++++ b/docs/work/2026-08-24-agent-harness-architecture/README.md
+@@ -22,7 +22,7 @@ At capture time, the next integration task was **Facade, harness, and capability
+ | Record | Purpose | Status |
+ |---|---|---|
+ | [Original multi-harness architecture audit](research.md) | 570-line source-ledger, failure taxonomy, contract proposals, issue map, and 2026-08-30 decisions | Historical research; exact copy from commit `bc13377c53130908ce7008b992119e84bc1dad5f` |
+-| [Public portable-harness research](sources/2026-08-30-parallel-public-agent-harness-research.txt) | Primary-source external comparison of DeepSeek Harness, Cordis, skills, pstack, MCP, A2A, and lifecycle/security mechanisms | Historical public research input; stored as text because its bracketed citations are not Markdown reference definitions; line-ending normalization documented below |
++| [Public portable-harness research](sources/2026-08-30-parallel-public-agent-harness-research.txt) | Primary-source external comparison of DeepSeek Harness, Cordis, skills, pstack, MCP, A2A, and lifecycle/security mechanisms | Historical public research input; readable UTF-8 rendition with encoding and line-ending conversion documented below |
+ | [User-supplied architecture audit](2026-09-12-user-supplied-architecture-audit.md) | Control-plane, receipt, skill, adapter, Companion/Config, plugin, and delivery-wave analysis | Historical supplied analysis; proposals and stale-sensitive findings labeled |
+ | [User-supplied memory-provider audit](2026-09-12-user-supplied-memory-provider-audit.md) | FTS5 baseline, lifecycle, benchmark gates, and Graphify/Graphiti/OpenViking/Mem0/GraphRAG dispositions | Historical supplied analysis; no provider benchmark or selection |
+ | [Independent agent findings](2026-09-12-independent-agent-findings.md) | Standalone-product inspection, adapter-boundary inspection, and sequencing challenge | Rung 2 source findings plus conceptual challenge; no product acceptance run |
+@@ -34,10 +34,10 @@ Source-copy provenance:
+ | File | Original location or ref | SHA-256 |
+ |---|---|---|
+ | `research.md` | `origin/feat/agent-harness-architecture` at `bc13377c53130908ce7008b992119e84bc1dad5f` | `15381FDDDE1C5B7E09F8262FF09716C0FBFB5C3B361B7569726FAC41E0BB0DED` |
+-| `sources/2026-08-30-parallel-public-agent-harness-research.txt` | Completed Parallel public report, originally captured as `parallel-public-agent-harness-research.md`; [run](https://platform.parallel.ai/play/deep-research/trun_7e2acc90d798403e93b23a28b59c2c71) | Original CRLF source: `EDDFB02A95364A3599EDF0B2E1BB55A33DB3ACEED1B808346DFAA980FE51BEE6`; committed LF-normalized blob: `129BC11076BC93976BD05E5D354057A7228CD7AD063CD6D93CADEE89B19BD380` |
++| `sources/2026-08-30-parallel-public-agent-harness-research.txt` | Completed Parallel public report, originally captured as `parallel-public-agent-harness-research.md`; [run](https://platform.parallel.ai/play/deep-research/trun_7e2acc90d798403e93b23a28b59c2c71) | Original Windows-1252/CRLF source: `EDDFB02A95364A3599EDF0B2E1BB55A33DB3ACEED1B808346DFAA980FE51BEE6`; committed UTF-8/LF rendition: `C72746A7640998A8FECE3D0FC5CB53643FFD88FEDF0CE9B3C1A55722F8C2D197` |
+ | `2026-09-12-forge-future-synthesis.md` | `C:/tmp/forge-future-2026-09-12.md` | `B1E3D383496C5B6C0DB54DA019195D5C6DA9737A571BEF2E59BC57ED0EE77AB4` |
+ 
+-The public report's original source contained 235 CRLF line endings. Git normalized only those line endings in the committed blob; removing the carriage return before each line feed makes the two buffers equal. No text decoding or re-encoding was used, and the archive does not claim that those two byte streams have the same hash. The local paths identify capture provenance only. The repository copies above are the durable records. Raw private sessions, customer data, credentials, and untracked source-worktree state were not copied.
++The public report's original source used Windows-1252 and contained 235 CRLF line endings. The repository rendition explicitly decodes Windows-1252, normalizes line endings to LF, and encodes valid UTF-8. The original-source and committed-rendition hashes are both recorded; the archive does not claim that their byte streams are identical. The original bytes can be reconstructed exactly by decoding the committed rendition as UTF-8, converting each LF to CRLF, and encoding as Windows-1252; that reconstruction produces the recorded `EDDFB02A...1BEE6` hash. Bracketed numeric citations in that report refer to its trailing `## References` section; the earlier `## Primary-Source Bibliography` is a separate source ledger. The report remains `.txt` so its literal citation markers are not parsed as Markdown reference links. The local paths identify capture provenance only. The repository copies above are the durable records. Raw private sessions, customer data, credentials, and untracked source-worktree state were not copied.
+ 
+ ## Accepted, proposed, and experimental
+ 
+diff --git a/docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.txt b/docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.txt
+index 55e36ce5..05e07ff5 100644
+--- a/docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.txt
++++ b/docs/work/2026-08-24-agent-harness-architecture/sources/2026-08-30-parallel-public-agent-harness-research.txt
+@@ -205,28 +205,28 @@ Research status: The report answers the requested architectural questions from p
+ 
+ ## References
+ 
+-1. *cordis/packages/core/README.md at main · cordiverse/cordis · GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/README.md
++1. *cordis/packages/core/README.md at main Â· cordiverse/cordis Â· GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/README.md
+ 2. *Specification*. https://modelcontextprotocol.io/specification/2025-06-18
+-3. *skills/skills at main · mattpocock/skills · GitHub*. https://github.com/mattpocock/skills/tree/main/skills
+-4. *A2A/docs/specification.md at main · a2aproject/A2A*. https://github.com/a2aproject/A2A/blob/main/docs/specification.md
++3. *skills/skills at main Â· mattpocock/skills Â· GitHub*. https://github.com/mattpocock/skills/tree/main/skills
++4. *A2A/docs/specification.md at main Â· a2aproject/A2A*. https://github.com/a2aproject/A2A/blob/main/docs/specification.md
+ 5. *Specification*. https://modelcontextprotocol.io/specification
+ 6. *Specification*. https://agentskills.io/specification
+ 7. *Agent Skills Overview*. https://agentskills.io/home
+-8. *skills/README.md at main · mattpocock/skills · GitHub*. https://github.com/mattpocock/skills/blob/main/README.md
++8. *skills/README.md at main Â· mattpocock/skills Â· GitHub*. https://github.com/mattpocock/skills/blob/main/README.md
+ 9. *Agent Skills*. https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview
+ 10. [Extension Anatomy | Visual Studio Code Extension
+ API](https://code.visualstudio.com/api/get-started/extension-anatomy)
+ 11. [Extension Host | Visual Studio Code Extension
+ API](https://code.visualstudio.com/api/advanced-topics/extension-host)
+ 12. *A Programming Paradigm for Spatiotemporal Composability*. https://arxiv.org/pdf/2608.25512
+-13. *plugins/pstack at main · cursor/plugins · GitHub*. https://github.com/cursor/plugins/tree/main/pstack
+-14. *deepseek-harness/docs/architecture.md at master · deepseek-ai/deepseek-harness · GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md
+-15. *plugins/pstack/README.md at main · cursor/plugins · GitHub*. https://github.com/cursor/plugins/blob/main/pstack/README.md
+-16. *cordis/packages/core/src/context.ts at main · cordiverse/cordis · GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/src/context.ts
++13. *plugins/pstack at main Â· cursor/plugins Â· GitHub*. https://github.com/cursor/plugins/tree/main/pstack
++14. *deepseek-harness/docs/architecture.md at master Â· deepseek-ai/deepseek-harness Â· GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md
++15. *plugins/pstack/README.md at main Â· cursor/plugins Â· GitHub*. https://github.com/cursor/plugins/blob/main/pstack/README.md
++16. *cordis/packages/core/src/context.ts at main Â· cordiverse/cordis Â· GitHub*. https://github.com/cordiverse/cordis/blob/main/packages/core/src/context.ts
+ 17. *DeepSeek Harness Architecture | DeepSeek Harness*. https://deepseek-harness.github.io/deepseek-harness/en/reference
+-18. *plugins/pstack/.cursor-plugin/plugin.json at main · cursor/plugins · GitHub*. https://github.com/cursor/plugins/blob/main/pstack/.cursor-plugin/plugin.json
+-19. *deepseek-harness/packages/core/README.md at master · deepseek-ai/deepseek-harness · GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/README.md
+-20. *semantic-conventions-genai/README.md at main · open-telemetry/semantic-conventions-genai · GitHub*. http://github.com/open-telemetry/semantic-conventions-genai/blob/main/README.md
++18. *plugins/pstack/.cursor-plugin/plugin.json at main Â· cursor/plugins Â· GitHub*. https://github.com/cursor/plugins/blob/main/pstack/.cursor-plugin/plugin.json
++19. *deepseek-harness/packages/core/README.md at master Â· deepseek-ai/deepseek-harness Â· GitHub*. https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/README.md
++20. *semantic-conventions-genai/README.md at main Â· open-telemetry/semantic-conventions-genai Â· GitHub*. http://github.com/open-telemetry/semantic-conventions-genai/blob/main/README.md
+ 21. *Trust and safety*. https://code.visualstudio.com/docs/agents/concepts/trust-and-safety
+ 22. *Authorization*. https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
+ 23. *Plugins Reference | Cursor Docs*. http://cursor.com/docs/reference/plugins
+-- 
+2.51.0.windows.1
+

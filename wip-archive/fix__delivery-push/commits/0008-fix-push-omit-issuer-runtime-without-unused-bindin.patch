@@ -1,0 +1,26 @@
+From bcbf08d4c567c070b4a184200a2e7309f25c5463 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 04:56:14 +0530
+Subject: [PATCH] fix(push): omit issuer runtime without unused binding
+
+---
+ lib/validation-receipt.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/validation-receipt.js b/lib/validation-receipt.js
+index f7601e1b..d413e2a5 100644
+--- a/lib/validation-receipt.js
++++ b/lib/validation-receipt.js
+@@ -96,7 +96,8 @@ function sameState(left, right) {
+ function capturePushState(projectRoot, deps = {}) {
+ 	if (deps.capturePushState) return deps.capturePushState(projectRoot);
+ 	const root = resolveGitRoot(projectRoot, deps);
+-	const { runtime: _verifierRuntime, ...state } = captureState(root, deps);
++	const state = captureState(root, deps);
++	delete state.runtime;
+ 	return {
+ 		...state,
+ 		branch: git(root, ['symbolic-ref', '--quiet', 'HEAD'], deps),
+-- 
+2.51.0.windows.1
+

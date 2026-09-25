@@ -1,0 +1,479 @@
+From ef34a02d10f1bba86a75c4a4091f1ac56740b2f3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 12:08:24 +0530
+Subject: [PATCH] =?UTF-8?q?docs:=20cmd-surface=20design=20Rev=202=20?=
+ =?UTF-8?q?=E2=80=94=20cross-map=20to=20convention,=20drop=20env/ext,=20na?=
+ =?UTF-8?q?rrow=20config?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Owner rulings applied: env dropped (doctor/upgrade/migrate top-level), pr ship
+canonical, governing principle 'cross-map to how people normally use it'. ext
+also dissolves (new/add/audit conventionally bare; adapter/patch own nouns).
+config narrowed to options/role/explain. 6 phases (was 8).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../design.md                                 | 414 ++++++++----------
+ 1 file changed, 185 insertions(+), 229 deletions(-)
+
+diff --git a/docs/work/2026-07-16-command-surface-unification/design.md b/docs/work/2026-07-16-command-surface-unification/design.md
+index 4c742a46..41556121 100644
+--- a/docs/work/2026-07-16-command-surface-unification/design.md
++++ b/docs/work/2026-07-16-command-surface-unification/design.md
+@@ -1,266 +1,222 @@
+ # Command Surface Unification — Design
+ 
+ **Date:** 2026-07-16
+-**Status:** Proposal (design only — no renames implemented)
+-**Owner ask:** Extend the `forge memory` unification pattern across the whole CLI.
+-Cluster related operations under a small set of intuitive BASE commands (nouns)
+-with clear SUBCOMMANDS — like `gh pr create`, `git remote add`, `docker container ls`
+-— so the surface is *learnable*, not a flat sprawl of ~40+ top-level verbs.
+-"Making a unique base command for each doesn't make sense; we need a simple
+-surface and subcommands to map things properly."
++**Status:** Proposal — **Revision 2** (design only, no renames)
++**Owner ask:** Extend the `forge memory` unification pattern across the CLI —
++cluster related ops under a small set of intuitive BASE nouns with clear
++SUBCOMMANDS (like `gh pr create`, `git remote add`, `docker container ls`) so the
++surface is *learnable*, not a flat sprawl of ~40+ top-level verbs.
++
++**Rev 2 governing principle (owner ruling):** *cross-map to how people normally
++use each command.* Only group an operation under a noun when the noun genuinely
++aids discovery AND matches a real management-surface convention. Verbs that are
++conventionally STANDALONE across git / npm / cargo / gh / docker / brew stay
++top-level — forcing them under a noun fights muscle memory. Applying this strictly
++**dropped `env` and `ext`** and **narrowed `config`** vs Revision 1.
+ 
+ ---
+ 
+ ## 1. Current surface audit
+ 
+-`node bin/forge.js --help` + the command files under `lib/commands/*.js` yield
+-**57 registered top-level command files**. Registration is auto-discovery:
+-`lib/commands/_registry.js` scans the dir, validates `{ name, description, handler }`,
+-and a static `_manifest.js` provides the bundleable fast path.
+-
+-### Already grouped (noun + subcommand)
+-| Base | Subcommands |
+-|------|-------------|
+-| `issue` | create, update, claim, release, comment, close, show, list, ready, search, stats, blocked, stale, orphans, lint, children, owns, claims, dep |
+-| `worktree` | create, remove, list |
+-| `gate` | enable, disable, approve, reject, status, check |
+-| `release` | `<id>` (release claim) \| `check` (readiness) |
+-| `patch` | record, status |
+-| `adapter` | test, list, enable, disable |
+-| `new` | `<kind> <name>` (scaffold) |
+-| `team` | (coordination utilities) |
+-
+-### Flat top-level verbs (the sprawl)
+-`adapter, add, audit, blocked, board, claim, claims, clean, close, comment,
+-create, dev, doc-gate, doctor, explain, export, gate, hooks, init, insights,
+-issue, issues, lint, list, merge, migrate, new, options, orient, orphans,
+-patch, plan, preflight, prime, push, ready, recall, recap, recommend, release,
+-remember, role, setup, shepherd, ship, show, stage, stale, status, sync, team,
+-test, update, upgrade, validate, worktree`
+-
+-### The existing precedent (this is the model to generalise)
+-`bin/forge.js:2318` defines `ISSUE_ALIAS_COMMANDS` — a curated allowlist of bare
+-verbs (`create, update, claim, close, show, list, ready, blocked, stale,
+-orphans, lint, claims, issues`) that stay **registered + routable for
+-back-compat** but are **hidden from `forge --help`** so `forge issue` reads as
+-the single canonical surface (kernel issue `450c6e34`). `parseFlags()` skips
+-global flag parsing for these so flags pass through to the issue handler intact.
+-
+-**This is exactly the pattern to extend:** canonical noun group is the documented
+-form; a curated set of hot verbs *also* exist as top-level aliases; help shows the
+-noun, not the sprawl.
+-
+-### The `memory` reference pattern — reality check
+-There is **no `memory.js` command today**. `forge memory --help` falls through to
+-the generic help. `remember` and `recall` are two separate top-level files
+-(`remember.js`/`recall.js`) writing/reading the same kernel-backed store. So the
+-"memory unification" is *aspirational* — this design defines it and makes it the
+-template: introduce a `memory` base that owns `save`(remember)/`recall`/`insights`,
+-with `remember`/`recall` kept as top-level ergonomic aliases.
++`node bin/forge.js --help` + `lib/commands/*.js` = **57 registered top-level
++command files**. Registration is auto-discovery (`lib/commands/_registry.js`)
++with a bundleable static `_manifest.js`.
++
++**Already grouped (noun+sub):** `issue` (create/update/claim/release/comment/
++close/show/list/ready/search/stats/blocked/stale/orphans/lint/children/owns/
++claims/dep), `worktree` (create/remove/list), `gate` (enable/disable/approve/
++reject/status/check), `release` (`<id>` | check), `patch` (record/status),
++`adapter` (test/list/enable/disable), `new` (`<kind> <name>`), `team`.
++
++**The real precedent to generalise** (not "memory" — see below):
++`ISSUE_ALIAS_COMMANDS` at `bin/forge.js:2318` — a curated allowlist of bare verbs
++(`create, update, claim, close, show, list, ready, blocked, stale, orphans, lint,
++claims, issues`) that stay **registered + routable for back-compat** but are
++**hidden from `forge --help`** so `forge issue` reads as the one canonical surface
++(kernel issue `450c6e34`). `parseFlags()` skips global parsing for these so flags
++reach the handler intact. Canonical noun in help; bare verbs keep working.
++
++**"memory" reality check:** there is **no `memory.js` today** — `remember` and
++`recall` are separate top-level files over the same store; `forge memory --help`
++falls through to generic help. So "memory unification" is *aspirational*; this
++design defines it as the template.
+ 
+ ---
+ 
+-## 2. External CLI patterns (grounding the taxonomy)
+-
+-- **`gh` (GitHub CLI)** — strict `gh <noun> <verb>`: `gh pr create`, `gh issue list`,
+-  `gh repo clone`. Nouns are the primary organising axis; near-zero bare verbs.
+-  User-defined `gh alias set` covers personal ergonomics. *(cli.github.com/manual)*
+-- **`git`** — hybrid: hottest porcelain verbs are top-level (`git status`,
+-  `git commit`, `git push`, `git log`) while multi-op areas are noun-grouped
+-  (`git remote add`, `git stash push`, `git worktree add`, `git submodule update`).
+-  Proves a *curated* top-level verb set can coexist with noun groups.
+-- **`docker`** — migrated from flat verbs (`docker run`, `docker rm`, `docker pull`)
+-  to **management commands** (`docker container run`, `docker image pull`). Legacy
+-  top-level verbs are retained for back-compat and can be hidden via
+-  `DOCKER_HIDE_LEGACY_COMMANDS`, leaving only the noun groups. *(docs.docker.com/reference/cli/docker)*
+-  — This is the closest precedent to Forge's situation and to the existing
+-  `ISSUE_ALIAS_COMMANDS` mechanism.
+-- **`cargo`** — flat verbs (`cargo build/test/run/publish`) because the surface is
+-  small and single-domain. Lesson: don't nest when a domain is small and flat.
+-- **`kubectl`** — `<verb> <noun>` (`kubectl get pods`) — inverse axis, works because
+-  verbs are a tiny fixed set (get/apply/delete/describe). Forge's verbs are open-ended,
+-  so **noun-first (gh/docker model) fits better**.
+-
+-**Design takeaways:** (1) noun-first grouping for learnability; (2) a *curated
+-allowlist* of hot verbs stays top-level (git/docker precedent) — never nest the
+-daily hot path; (3) don't over-nest small single-domain areas; (4) grouping is a
+-help/organisation concern layered over a flat routable registry — back-compat is free.
++## 2. External CLI patterns (grounding, per-verb where it matters)
++
++- **`gh`** — strict `gh <noun> <verb>` (`gh pr create`, `gh issue list`); user
++  `gh alias set` for ergonomics. *(cli.github.com/manual)*
++- **`git`** — hybrid: hot porcelain verbs top-level (`git status/commit/push/log/
++  init`), multi-op areas noun-grouped (`git remote/stash/worktree/submodule/config`).
++- **`docker`** — migrated flat verbs → management nouns (`docker container run`);
++  **legacy top-level verbs retained** and hideable via `DOCKER_HIDE_LEGACY_COMMANDS`
++  — closest analog to Forge's `ISSUE_ALIAS_COMMANDS`. *(docs.docker.com/reference/cli/docker)*
++- **`cargo`** — `cargo new`, `cargo add`, `cargo build/test/publish` — flat because
++  single-domain. Scaffolding/deps are conventionally **bare** verbs.
++- **`npm`** — `npm init`, `npm install/add`, `npm audit`, `npm doctor`,
++  `npm config <get|set>` — bootstrap/audit/doctor **bare**; `config` is the one
++  management noun.
++- **`brew`** — `brew doctor`, `brew upgrade` — health/upgrade **bare**.
++
++**Takeaways:** (1) noun-first for genuine management surfaces; (2) curated bare
++hot/bootstrap verbs stay top-level (git/npm/cargo/docker precedent); (3) do NOT
++nest single conventional verbs (`init/new/add/audit/doctor/upgrade`) — muscle
++memory expects them bare; (4) grouping is a help/rendering layer over a flat
++routable registry, so back-compat is free.
+ 
+ ---
+ 
+-## 3. Proposed taxonomy — 8 base nouns + `team`, over a curated hot-verb layer
++## 3. Proposed taxonomy (Rev 2) — 8 base nouns over a curated bare-verb layer
+ 
+-Two tiers, exactly like git/docker:
+-
+-- **Tier A — top-level ergonomic verbs** (always work, *never gain keystrokes*):
+-  workflow stages + the daily hot path. Each is *also* reachable via its canonical
+-  noun where one exists (a documented alias, like `git status` ≡ nothing-nested but
+-  `docker pull` ≡ `docker image pull`).
++Two tiers, like git/docker:
++- **Tier A — top-level verbs** (always work, never gain keystrokes): workflow
++  stages + hot self-scoped verbs + **conventionally-standalone bootstrap/health/
++  scaffold verbs**. Each is *also* reachable via its canonical noun where one exists.
+ - **Tier B — canonical noun groups** (the learnable, documented surface). `--help`
+-  shows Tier B; Tier A hot verbs get a short "shortcuts" footer; the rest of the
+-  bare aliases are hidden (extends `ISSUE_ALIAS_COMMANDS`).
++  shows Tier B + a "Shortcuts" footer of visible Tier A; the long-tail aliases hide.
+ 
+ ### Base nouns
+ 
+-| Base | Owns (canonical subcommands) | Rationale |
+-|------|------------------------------|-----------|
+-| `issue` *(exists)* | create, update, claim, release, comment, close, show, list, ready, search, stats, blocked, stale, orphans, lint, children, owns, claims, dep, **stage**, **recap**, **export**, **sync** | Work-item lifecycle + per-issue reads. Fold in `comment/stage/recap` (per-issue) and `export/sync` (operate on the issue store). |
+-| `memory` *(new)* | **save** (=remember), **recall**, **insights** | Knowledge persistence. The reference pattern, realised. |
+-| `worktree` *(exists)* | create, remove, list, **clean** | Isolated workspaces. `clean` (remove merged worktrees + ff default) belongs here. |
+-| `gate` *(exists)* | enable, disable, approve, reject, status, check, **doc** (=doc-gate) | Workflow gates + approvals. `doc-gate` is literally a gate → `gate doc`. |
+-| `pr` *(new)* | **ship** (create PR), **preflight**, **shepherd**, **merge** | Everything that acts on a pull request. |
+-| `config` *(new)* | **init**, **setup**, **options**, **role**, **recommend**, **explain**, **hooks** | Configure the project + runtime + adoption profile. |
+-| `ext` *(new)* | **new**, **add**, **adapter**, **audit**, **patch** | Extend Forge: scaffolds, lockfile sources, review adapters, audit, patch intent. |
+-| `env` *(new)* | **doctor**, **upgrade**, **migrate** | Runtime health, lifecycle, migration. |
+-| `team` *(exists)* | coordination, **board** (team runtime board) | Multi-agent coordination. `board` is a team view. |
+-
+-### Full per-verb mapping
+-
+-| Current verb | Canonical form | Top-level alias kept? | Tier |
+-|--------------|----------------|-----------------------|------|
+-| plan | `plan` (stage) | canonical top-level | A (stage) |
+-| dev | `dev` (stage) | canonical top-level | A (stage) |
+-| validate | `validate` (stage) | canonical top-level | A (stage) |
+-| ship | `pr ship` | **yes** (`ship`) | A (stage) |
+-| review / verify | (skills, no command file) | canonical top-level | A (stage) |
+-| status | `status` | canonical top-level | A (hot) |
+-| test | `test` | canonical top-level | A (hot) |
+-| push | `push` | canonical top-level | A (hot) |
+-| ready | `issue ready` | **yes** (existing) | A (hot) |
+-| show | `issue show` | **yes** (existing) | A (hot) |
+-| claim | `issue claim` | **yes** (existing) | A (hot) |
+-| close | `issue close` | **yes** (existing) | A (hot) |
+-| create | `issue create` | yes (existing, hidden) | B-alias |
+-| update | `issue update` | yes (existing, hidden) | B-alias |
+-| comment | `issue comment` | yes (hidden) | B-alias |
+-| list | `issue list` | yes (existing, hidden) | B-alias |
+-| blocked/stale/orphans/lint/claims/issues | `issue <sub>` | yes (existing, hidden) | B-alias |
+-| stage | `issue stage` | yes (hidden) | B-alias |
+-| recap | `issue recap` | yes (hidden) | B-alias |
+-| export | `issue export` | yes (hidden) | B-alias |
+-| sync | `issue sync` | **yes** (hot) | A/alias |
+-| release | `issue release` (claim) | yes | B-alias |
+-| release check | `pr release-check` *(or stays `release check`)* | — | **open Q** |
+-| remember | `memory save` | **yes** (`remember`) | A (hot) |
+-| recall | `memory recall` | **yes** (`recall`) | A (hot) |
+-| insights | `memory insights` | optional | B-alias |
+-| orient | `orient` | canonical top-level | A (hot) |
+-| prime | `prime` | canonical top-level | A (hot) |
+-| board | `team board` | optional | B-alias |
+-| clean | `worktree clean` | **yes** (hot) | A/alias |
+-| preflight | `pr preflight` | yes | B-alias |
+-| shepherd | `pr shepherd` | yes | B-alias |
+-| merge | `pr merge` | yes | B-alias |
+-| doc-gate | `gate doc` | yes | B-alias |
+-| init | `config init` | yes | B-alias |
+-| setup | `config setup` | yes | B-alias |
+-| options | `config options` | optional | B-alias |
+-| role | `config role` | yes | B-alias |
+-| recommend | `config recommend` | optional | B-alias |
+-| explain | `config explain` | optional | B-alias |
+-| hooks | `config hooks` | yes | B-alias |
+-| new | `ext new` | yes | B-alias |
+-| add | `ext add` | yes | B-alias |
+-| adapter | `ext adapter` | canonical (exists) | B |
+-| audit | `ext audit` | yes | B-alias |
+-| patch | `ext patch` | yes | B-alias |
+-| doctor | `env doctor` | yes | B-alias |
+-| upgrade | `env upgrade` | yes | B-alias |
+-| migrate | `env migrate` | yes | B-alias |
+-
+-**Result:** `forge --help` collapses from ~40 visible verbs to **9 base nouns +
+-~15 hot shortcuts** — a learnable surface. Every one of the 57 verbs keeps working.
++| Base | Owns (canonical subcommands) | Convention it maps to |
++|------|------------------------------|-----------------------|
++| `issue` *(exists)* | create, update, claim, release, comment, close, show, list, ready, search, stats, blocked, stale, orphans, lint, children, owns, claims, dep, **stage**, **recap**, **export**, **sync** | `gh issue`, `bd` — work-item + issue-store surface |
++| `memory` *(new)* | **save** (=remember), **recall**, **insights** | the reference pattern, realised |
++| `pr` *(new)* | **ship** (create PR, canonical), **preflight**, **shepherd**, **merge** | `gh pr` |
++| `gate` *(exists)* | enable, disable, approve, reject, status, check, **doc** (=doc-gate) | project-specific gate surface |
++| `worktree` *(exists)* | create, remove, list, **clean** | `git worktree` |
++| `adapter` *(exists)* | test, list, enable, disable | pluggable-component surface — stays its OWN noun (NOT nested under a would-be `ext`, which would force 3-level `ext adapter test`) |
++| `patch` *(exists)* | record, status | already its own small noun surface |
++| `team` *(exists)* | coordination, **board** | multi-agent coordination |
++| `config` *(new, LEAN — provisional)* | **options**, **role**, **explain** | `git config` / `npm config` — read/inspect/bind `.forge/config.yaml`. **May be dropped if too thin** (see §7 Q1) |
++
++### Stays TOP-LEVEL by convention (Tier A)
++
++| Group | Verbs | Why bare (cross-map) |
++|-------|-------|----------------------|
++| Workflow stages | plan, dev, validate, **ship**, review, verify | bound 1:1 to `/plan…/verify` skills; `ship` is a visible alias of canonical `pr ship` |
++| Hot self-scoped | status, push, test | `git status`, `git push`; hot daily |
++| Bootstrap / scaffold | **init**, **setup**, **new**, **add**, **hooks** | `git/npm/cargo init`, `cargo new`, `cargo/npm add`, `lefthook/husky install` — always bare |
++| Health / lifecycle | **doctor**, **upgrade**, **migrate**, **audit** | `npm/brew doctor`, `npm/brew upgrade`, `<tool> migrate`, `npm/cargo audit` — always bare (**owner ruling 1**) |
++| Orientation / info | orient, prime, **recommend** | one-shot read verbs; `recommend` ≈ `brew doctor` advice |
++| Issue hot aliases *(existing)* | ready, show, claim, close | visible; canonical `issue <sub>` |
++| Visible noun-aliases | remember, recall, insights, sync, clean, board, export | visible shortcuts of memory/issue/worktree/team nouns |
++
++### Full per-verb mapping (deltas from Rev 1 in **bold**)
++
++| Verb | Canonical | Top-level alias | Note |
++|------|-----------|-----------------|------|
++| plan/dev/validate/review/verify | stage (top-level) | canonical | skills |
++| ship | **`pr ship`** | **yes (`ship`)** | **ruling 2: pr ship canonical** |
++| status/push/test | top-level | canonical | hot |
++| ready/show/claim/close | `issue <sub>` | yes (existing) | hot |
++| create/update/comment/list/blocked/stale/orphans/lint/claims/issues | `issue <sub>` | hidden | existing back-compat |
++| stage/recap/export/sync | `issue <sub>` | sync+export visible; stage/recap hidden | fold into issue |
++| release | `issue release` (claim) | yes | see §7 Q4 on `release check` |
++| remember/recall | `memory save`/`memory recall` | **yes (visible)** | reference pattern |
++| insights | `memory insights` | visible | |
++| preflight/shepherd/merge | `pr <sub>` | preflight visible; others hidden | |
++| doc-gate | `gate doc` | yes | |
++| clean | `worktree clean` | visible | |
++| board | `team board` | visible | |
++| options/role/explain | `config <sub>` | hidden | **config narrowed to these 3** |
++| **init** | **top-level** | — | **NOT `config init`** (git/npm/cargo init bare) |
++| **setup** | **top-level** | — | **NOT `config setup`** (X setup bare) |
++| **hooks** | **top-level** | — | **install-verb convention (lefthook/husky)** |
++| **recommend** | **top-level** | — | **informational, bare** |
++| **doctor/upgrade/migrate** | **top-level** | — | **ruling 1 — `env` DROPPED** |
++| **new/add/audit** | **top-level** | — | **`ext` DROPPED — cargo new / cargo add / npm audit are bare** |
++| **adapter** | **`adapter` (own noun)** | — | **not nested under `ext`** |
++| **patch** | **`patch` (own noun)** | — | **not nested under `ext`** |
++
++**Result:** `forge --help` shows **~8 base nouns + a curated bare-verb block**,
++instead of ~40 undifferentiated verbs — learnable, and every one of 57 verbs
++still works.
+ 
+ ---
+ 
+-## 4. Resolving the crux — hot-path ergonomics
+-
+-Hard rule: heavily-used single-word verbs (`ready, show, status, claim, push,
+-plan, dev, ship, test, remember, recall`) must NOT gain a keystroke.
++## 4. Resolving the crux — hot-path ergonomics (Rev 2)
+ 
+-Resolution — three roles per verb (git/docker precedent):
+-1. **Stays canonical top-level (no noun):** stages (`plan/dev/validate/ship/review/
+-   verify`) and self-scoped hot reads (`status/orient/prime/push/test`). Stages are
+-   bound 1:1 to `/plan`…`/verify` skills (AGENTS.md) — nesting them would break the
+-   skill/stage model. These have *no* noun form.
+-2. **Canonical is noun+sub, WITH a curated top-level alias:** `ready→issue ready`,
+-   `show→issue show`, `claim`, `close`, `remember→memory save`, `recall→memory
+-   recall`, `sync`, `clean`. Docs teach the noun; the bare verb keeps working and
+-   stays visible in a "shortcuts" help footer.
+-3. **Canonical is noun+sub, alias hidden (back-compat only):** the long tail
+-   (`create/update/comment/preflight/merge/doctor/init/...`). Works forever, absent
+-   from primary help — exactly today's `ISSUE_ALIAS_COMMANDS` treatment.
++Hard rule: heavily-used verbs never gain a keystroke. Three roles per verb:
++1. **Canonical top-level, no noun:** stages (plan/dev/validate/ship/review/verify),
++   hot self-scoped (status/push/test), and — new in Rev 2 — **all conventionally-
++   standalone bootstrap/health/scaffold verbs** (init/setup/new/add/audit/hooks/
++   doctor/upgrade/migrate/recommend). These have no noun form because convention
++   says they shouldn't.
++2. **Canonical noun+sub, VISIBLE top-level alias:** ready/show/claim/close, remember
++   (`memory save`), recall, insights, sync, clean, export, board, preflight. Docs
++   teach the noun; the bare verb stays and appears in the help "Shortcuts" footer.
++3. **Canonical noun+sub, alias hidden (back-compat only):** long tail (create/
++   update/comment/merge/shepherd/doc-gate/options/role/explain/stage/recap). Works
++   forever, absent from primary help — today's `ISSUE_ALIAS_COMMANDS` treatment.
+ 
+-The allowlist of *visible* hot verbs is a small curated constant (a superset of
+-`ISSUE_ALIAS_COMMANDS`), reviewed deliberately — not every verb graduates to a
+-visible shortcut.
++The visible-shortcut allowlist is a small curated constant (superset of
++`ISSUE_ALIAS_COMMANDS`), reviewed deliberately.
+ 
+ ---
+ 
+ ## 5. Backward-compatibility & deprecation strategy
+ 
+-Nothing breaks. Scripts, docs, AGENTS.md, CI, `.claude/commands/*` all keep working.
+-
+-1. **Generalise the alias mechanism.** Replace the single `ISSUE_ALIAS_COMMANDS`
+-   list with a declarative map in one place, e.g.
+-   `lib/commands/_aliases.js`: `{ alias → { canonical: 'memory save', visible: bool,
+-   deprecated: bool } }`. The router already routes flat names; grouping is a
+-   help/rendering layer + a dispatch table on the noun handlers.
+-2. **Noun handlers dispatch to existing files.** `memory.js` etc. are thin
+-   dispatchers (like `issue.js` → `_issue.js`) that route `save→remember.js`,
+-   `recall→recall.js`. No handler logic moves initially — lowest-risk.
+-3. **Deprecation is opt-in and quiet.** Aliases do NOT warn by default (avoids
+-   breaking scripted stdout). A `FORGE_DEPRECATION_WARNINGS=1` env (or
+-   `forge config options`) prints a one-line stderr hint: `forge doctor →
+-   forge env doctor`. Never on stdout, never blocking. No removal is planned —
+-   Docker still ships `docker pull` years later.
+-4. **Help output** groups by noun (Tier B) + a "Shortcuts" footer (visible Tier A)
+-   + hides the long-tail aliases — extends the existing `hidden`/`ISSUE_ALIAS`
+-   filtering in `bin/forge.js:2608`.
+-5. **Docs update approach:** AGENTS.md "Forge Issue Tracker" + push-workflow blocks
+-   updated to teach noun forms with the shortcut noted inline
+-   (`forge memory save <note>   # alias: forge remember`). A drift-checked command
+-   manifest (`scripts/gen-command-manifest.js`) gains an alias-map assertion so the
+-   help surface can't silently regress. `.claude/commands/*` slash commands (stages)
+-   are unaffected (stages stay top-level).
++Nothing breaks — scripts, docs, AGENTS.md, CI, `.claude/commands/*` keep working.
++
++1. **Generalise the alias mechanism** into one declarative `lib/commands/_aliases.js`
++   map: `{ alias → { canonical, visible, deprecated } }`. Router already routes flat
++   names; grouping is a help-rendering layer + a dispatch table on the noun handlers.
++2. **Noun handlers are thin dispatchers** (like `issue.js` → `_issue.js`): `memory.js`
++   routes `save→remember.js`, `recall→recall.js`; `pr.js` routes `ship→ship.js`, etc.
++   No handler logic moves initially — lowest-risk.
++3. **Deprecation opt-in and quiet.** Aliases do NOT warn by default (protects scripted
++   stdout). `FORGE_DEPRECATION_WARNINGS=1` prints a one-line **stderr** hint
++   (`forge doc-gate → forge gate doc`). Never on stdout, never blocking, no removal
++   planned (docker still ships `docker pull`).
++4. **Help output** groups by noun + "Shortcuts" footer + hides long-tail aliases —
++   extends the `hidden`/`ISSUE_ALIAS` filtering at `bin/forge.js:2608`.
++5. **Docs approach:** AGENTS.md teaches noun forms with the shortcut inline
++   (`forge memory save <note>   # alias: forge remember`). `scripts/gen-command-
++   manifest.js` gains an alias-map assertion so the help surface can't silently
++   regress. Slash-command stages unaffected (stages stay top-level).
+ 
+ ---
+ 
+-## 6. Phased plan (lowest-risk / highest-clarity first)
+-
+-- **Phase 0 — Alias infrastructure (enabler).** Extract `_aliases.js` declarative
+-  map + noun-grouped help renderer + optional stderr deprecation hint. No user-visible
+-  rename yet. Unblocks every later phase; pure refactor of existing mechanism.
+-- **Phase 1 — `memory`** (remember/recall/insights). Smallest, highest clarity, it's
+-  the owner's named reference pattern. Proves the template end-to-end.
+-- **Phase 2 — `config`** (init/setup/options/role/recommend/explain/hooks). High
+-  clarity, low hot-path pressure (setup verbs are infrequent).
+-- **Phase 3 — `ext`** (new/add/adapter/audit/patch). Extension authoring; niche users,
+-  safe to regroup.
+-- **Phase 4 — `env`** (doctor/upgrade/migrate) + fold `export`/`sync` into `issue`.
+-- **Phase 5 — `pr`** (ship/preflight/shepherd/merge) + `gate doc`. Touches hot verbs
+-  (`ship`) — do after the pattern is proven; `ship` keeps its top-level alias.
+-- **Phase 6 — `issue` completion + help regroup.** Fold `comment/stage/recap`; ship
+-  the final noun-grouped `forge --help`; land the manifest drift assertion.
+-- **Phase 7 — Docs/AGENTS.md sweep.** Teach noun forms + shortcuts across AGENTS.md,
+-  docs/reference/*, README; verify slash-command stages unaffected.
+-
+-Each phase is independently shippable and leaves the CLI fully working.
++## 6. Phased plan (Rev 2 — env & ext phases removed; config narrowed)
++
++- **Phase 0 — Alias infrastructure (enabler).** `_aliases.js` map + noun-grouped
++  help renderer + "Shortcuts" footer + optional stderr deprecation hint. No
++  user-visible rename. Pure refactor of the existing mechanism; unblocks all later phases.
++- **Phase 1 — `memory`** (save/recall/insights). Smallest, highest clarity, the
++  owner's named reference pattern; proves the template.
++- **Phase 2 — `pr`** (ship canonical + preflight/shepherd/merge) **+ `gate doc`**.
++  Touches hot verb `ship` (keeps visible alias) — do after the pattern is proven.
++- **Phase 3 — `config`** (options/role/explain) *[conditional — skip if owner drops
++  the noun in §7 Q1; then those 3 stay top-level and this phase disappears]*.
++- **Phase 4 — `issue` completion + help regroup.** Fold comment/stage/recap/export/
++  sync; ship the final noun-grouped `forge --help`; land the manifest drift assertion.
++- **Phase 5 — Docs/AGENTS.md sweep.** Teach noun forms + shortcuts; verify
++  slash-command stages unaffected.
++
++Each phase is independently shippable and leaves the CLI fully working. **Dropped
++vs Rev 1:** the `env` phase (doctor/upgrade/migrate now top-level) and the `ext`
++phase (new/add/audit top-level; adapter/patch remain their own nouns) — no work
++needed for those verbs; they simply stay top-level.
+ 
+ ---
+ 
+ ## 7. Open questions for the owner
+ 
+-1. **`release` overload.** `release <id>` (release a claim) vs `release check`
+-   (readiness gates) are two concepts. Split to `issue release` + `pr release-check`,
+-   or keep `release check` as-is? Recommend split.
+-2. **Base-noun names.** Are `env` and `ext` the right short nouns? Alternatives:
+-   `env`→`sys`/`maint`; `ext`→`plugin`. Owner's rule is SHORT + easy to say — `env`/`ext`
+-   are 3 letters but slightly technical.
+-3. **`pr` vs `ship` as the base.** Group PR ops under `pr` (matches `gh pr`), or keep
+-   `ship` the hero verb and nest the rest elsewhere? Recommend `pr` base + `ship` alias.
+-4. **Visible-shortcut allowlist.** Confirm the ~15 verbs that stay visible top-level
+-   (stages + status/push/test/ready/show/claim/close/remember/recall/orient/prime).
+-   Which, if any, should be demoted to hidden?
+-5. **Deprecation hints.** OK to ship stderr hints behind `FORGE_DEPRECATION_WARNINGS=1`
+-   (default off, never removed), or keep aliases entirely silent forever?
++1. **Is `config` worth keeping?** With init/setup/hooks/recommend ruled top-level,
++   `config` holds only options/role/explain (genuine `.forge/config.yaml` read/inspect/
++   bind — maps to `git config`/`npm config`). Keep the 3-member `config` noun for
++   discovery, or leave options/role/explain top-level and drop `config` entirely?
++   *(I lean KEEP — `config` is the noun a user instinctively tries; but it's thin.)*
++2. **`explain` placement.** `explain` inspects a runtime primitive (sibling of
++   `options`). Under `config` with `options`, or top-level as an info verb like
++   `orient`/`recommend`? *(Lean: with `config`, to keep the two inspectors together.)*
++3. **Confirm `ext` is dropped.** This overrides the earlier "good noun" hint: per the
++   principle, `new`/`add`/`audit` are conventionally bare (cargo new / cargo add /
++   npm audit) and `adapter`/`patch` are already their own nouns — so `ext` has no
++   unique members. Agree to drop, or keep an `ext` umbrella despite the convention?
++4. **`release` overload.** `release <id>` (release a claim) vs `release check`
++   (readiness). Split to `issue release` + `pr release-check`, or keep `release check`?
++   *(Lean: split.)*
++5. **Deprecation hints** behind `FORGE_DEPRECATION_WARNINGS=1` (default off, stderr,
++   never removed) — OK, or keep aliases fully silent forever?
+-- 
+2.51.0.windows.1
+

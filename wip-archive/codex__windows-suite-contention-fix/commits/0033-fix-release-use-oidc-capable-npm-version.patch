@@ -1,0 +1,53 @@
+From 2bd6f5cace739e92a029789e9fb15d515ed28d15 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 04:10:39 +0530
+Subject: [PATCH] fix(release): use oidc-capable npm version
+
+---
+ .github/workflows/npm-publish.yml | 2 +-
+ lib/npm-publish-workflow.js       | 2 +-
+ test/npm-publish-workflow.test.js | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/.github/workflows/npm-publish.yml b/.github/workflows/npm-publish.yml
+index 4d271359..33ea62c8 100644
+--- a/.github/workflows/npm-publish.yml
++++ b/.github/workflows/npm-publish.yml
+@@ -114,7 +114,7 @@ jobs:
+       - name: Verify package contents
+         run: npm pack --dry-run
+       - name: Ensure OIDC-capable npm
+-        run: npm install --global npm@10.9.3 && npm --version
++        run: npm install --global npm@11.5.1 && npm --version
+       - name: Publish to npm
+         shell: bash
+         run: |
+diff --git a/lib/npm-publish-workflow.js b/lib/npm-publish-workflow.js
+index 8f8a35b7..0bf82d7d 100644
+--- a/lib/npm-publish-workflow.js
++++ b/lib/npm-publish-workflow.js
+@@ -163,7 +163,7 @@ jobs:
+       - name: Verify package contents
+         run: npm pack --dry-run
+       - name: Ensure OIDC-capable npm
+-        run: npm install --global npm@10.9.3 && npm --version
++        run: npm install --global npm@11.5.1 && npm --version
+       - name: Publish to npm
+         shell: bash
+         run: |
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+index 930b5a93..7ec3a413 100644
+--- a/test/npm-publish-workflow.test.js
++++ b/test/npm-publish-workflow.test.js
+@@ -132,7 +132,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 		expect(publishJob).toContain('npm pack --dry-run');
+ 		expect(publishJob).toContain('npm publish --provenance --tag beta');
+ 		expect(publishJob).toContain('npm publish --provenance');
+-		expect(publishJob).toContain('npm install --global npm@10.9.3 && npm --version');
++		expect(publishJob).toContain('npm install --global npm@11.5.1 && npm --version');
+ 		expect(publishJob).not.toContain('npm@latest');
+ 	});
+ 
+-- 
+2.51.0.windows.1
+

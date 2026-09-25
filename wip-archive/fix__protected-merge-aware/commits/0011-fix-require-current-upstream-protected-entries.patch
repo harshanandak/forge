@@ -1,0 +1,163 @@
+From 860a18733c5290214fda6dd4972be5be1bb20dfe Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 13:07:07 +0530
+Subject: [PATCH] fix: require current upstream protected entries
+
+---
+ scripts/protected-state-check.js      | 23 ++++++-----
+ test/protected-state-surfaces.test.js | 57 +++++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+), 10 deletions(-)
+
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 92cf0f17..71070a6c 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -313,10 +313,10 @@ function canonicalUpstreamRef() {
+ // accidental and agent-authored protected edits and against merges from
+ // untrusted contributor remotes. It is NOT a security boundary against a local
+ // adversary — do not treat it as one.
+-function isCanonicalUpstreamAncestor(commit, canonicalRef) {
+-	if (!canonicalRef) return false;
++function isCanonicalUpstreamAncestor(commit, canonicalCommit) {
++	if (!canonicalCommit) return false;
+ 	try {
+-		execFileSync('git', ['merge-base', '--is-ancestor', commit, canonicalRef], {
++		execFileSync('git', ['merge-base', '--is-ancestor', commit, canonicalCommit], {
+ 			stdio: ['ignore', 'ignore', 'ignore'],
+ 		});
+ 		return true;
+@@ -328,7 +328,7 @@ function isCanonicalUpstreamAncestor(commit, canonicalRef) {
+ // A merge is in progress when the per-worktree MERGE_HEAD exists. `--git-path`
+ // resolves the correct (possibly linked-worktree) git dir. Returns null unless a
+ // merge is genuinely in progress and every recorded id resolves; `trustedSides`
+-// holds only those MERGE_HEAD commits contained in the canonical upstream ref.
++// holds only those MERGE_HEAD commits contained in the canonical upstream commit.
+ function readMergeProvenance() {
+ 	let mergeHeadPath;
+ 	try {
+@@ -356,9 +356,11 @@ function readMergeProvenance() {
+ 	const head = resolveCommit('HEAD');
+ 	if (!head) return null;
+ 	const canonicalRef = canonicalUpstreamRef();
++	const canonicalCommit = canonicalRef ? resolveCommit(canonicalRef) : null;
+ 	return {
+ 		head,
+-		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalRef)),
++		canonicalCommit,
++		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalCommit)),
+ 	};
+ }
+ 
+@@ -367,9 +369,9 @@ function readMergeProvenance() {
+ // trusted provenance:
+ //   - staged entry (mode + object) === the entry at HEAD: no net change versus the branch being
+ //     committed onto, so there is no provenance question at all; or
+-//   - staged entry === the entry on a MERGE_HEAD contained in the canonical
+-//     upstream ref: the bytes are already published on the line this repo
+-//     integrates into, where the same gate ran.
++//   - staged entry === both a MERGE_HEAD contained in the canonical upstream
++//     commit and that current canonical commit: the bytes are still published
++//     on the line this repo integrates into, where the same gate ran.
+ // A purely local merge side earns no exemption — otherwise anyone could smuggle a
+ // protected edit in on a local branch and merge it. The merge base is likewise not
+ // a permitted side: matching only the base means both sides were reverted, an edit.
+@@ -377,10 +379,11 @@ function readMergeProvenance() {
+ function createMergeExemption() {
+ 	const merge = readMergeProvenance();
+ 	if (!merge) return () => false;
+-	const trustedRevisions = [merge.head, ...merge.trustedSides];
+ 	return file => {
+ 		const staged = stagedEntry(file);
+ 		if (staged === null) return false;
++		if (staged !== ABSENT_ENTRY && staged === revisionEntry(merge.head, file)) return true;
++		if (!merge.canonicalCommit || staged !== revisionEntry(merge.canonicalCommit, file)) return false;
+ 		if (staged === ABSENT_ENTRY) {
+ 			// Git just reported this path as staged, so an absent index entry is only
+ 			// honest for a staged deletion; otherwise the probe contradicts git and
+@@ -399,7 +402,7 @@ function createMergeExemption() {
+ 				return baseEntry !== null && baseEntry !== ABSENT_ENTRY;
+ 			});
+ 		}
+-		return trustedRevisions.some(revision => {
++		return merge.trustedSides.some(revision => {
+ 			const entry = revisionEntry(revision, file);
+ 			return entry !== null && entry === staged;
+ 		});
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index ea15e37d..215b7a83 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -38,6 +38,12 @@ function runGit(root, args) {
+ 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
+ }
+ 
++function runGitCapture(root, args) {
++	const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
++	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
++	return result.stdout.trim();
++}
++
+ function stageLocalLockFixture(root, tampered = false) {
+ 	root = fs.realpathSync.native(root);
+ 	runGit(root, ['init', '--quiet']);
+@@ -625,6 +631,57 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		}
+ 	}, 60_000);
+ 
++	test('blocks protected content from an old upstream commit after the current upstream reverted it', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
++			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
++			writeRepoFile(work, WORKFLOW, 'name: stale-upstream\njobs: {}\n');
++			runGit(work, ['add', WORKFLOW]);
++			runGit(work, ['commit', '--quiet', '-m', 'change workflow']);
++			const staleUpstream = runGitCapture(work, ['rev-parse', 'HEAD']);
++			runGit(work, ['revert', '--quiet', '--no-edit', 'HEAD']);
++			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			runGit(work, ['checkout', '--quiet', 'feature']);
++			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++			runGit(work, ['add', 'lib/safe.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', staleUpstream]);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
++	test('blocks a deletion from an old upstream commit after the current upstream restored the path', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
++			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
++			runGit(work, ['rm', '--quiet', WORKFLOW]);
++			runGit(work, ['commit', '--quiet', '-m', 'delete workflow']);
++			const staleUpstream = runGitCapture(work, ['rev-parse', 'HEAD']);
++			runGit(work, ['revert', '--quiet', '--no-edit', 'HEAD']);
++			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			runGit(work, ['checkout', '--quiet', 'feature']);
++			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++			runGit(work, ['add', 'lib/safe.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', staleUpstream]);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
+ 	test('blocks a merge whose protected blob is only reachable from a hand-created remote-tracking ref', () => {
+ 		const root = createTempDir();
+ 		try {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,104 @@
+From 8fef4fa572728b5ba863a1a942cbc9c6ee857c59 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 18:24:41 +0530
+Subject: [PATCH] fix: reject enabled feedback without identity
+
+---
+ lib/feedback.js                |  1 +
+ test/commands/feedback.test.js | 29 +++++++++++++++++++++++++++++
+ test/feedback.test.js          | 31 +++++++++++++++++++++++++++++++
+ 3 files changed, 61 insertions(+)
+
+diff --git a/lib/feedback.js b/lib/feedback.js
+index 6a31e0ef..097474e3 100644
+--- a/lib/feedback.js
++++ b/lib/feedback.js
+@@ -104,6 +104,7 @@ function isReadableState(value) {
+     && typeof value === 'object'
+     && !Array.isArray(value)
+     && CONSENTS.has(value.consent)
++    && (value.consent !== 'enabled' || isOpaqueId(value.anonymous_source_id))
+     && value.drafts
+     && typeof value.drafts === 'object'
+     && !Array.isArray(value.drafts)
+diff --git a/test/commands/feedback.test.js b/test/commands/feedback.test.js
+index fcd3431e..1141acc4 100644
+--- a/test/commands/feedback.test.js
++++ b/test/commands/feedback.test.js
+@@ -142,4 +142,33 @@ describe('forge feedback command', () => {
+       expect(sent).toBe(0);
+     }
+   });
++
++  test('CLI refuses enabled state with an invalid anonymous identity without prompting or sending', async () => {
++    for (const anonymousSourceId of ['SECRET_DEVICE_ID', null, 'not-a-uuid']) {
++      const homeDir = tempHome();
++      await seed(homeDir);
++      const file = path.join(homeDir, 'state.json');
++      const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
++      persisted.consent = 'enabled';
++      persisted.anonymous_source_id = anonymousSourceId;
++      const original = JSON.stringify(persisted);
++      fs.writeFileSync(file, original);
++      let asked = 0;
++      let sent = 0;
++
++      await expect(feedbackCommand.handler([], {}, '.', {
++        homeDir,
++        isInteractive: true,
++        endpoint: 'https://feedback.forge.test/v1/reports',
++        question: async () => { asked += 1; return '1'; },
++        write: () => {},
++        fetch: async () => { sent += 1; return { ok: true, status: 202 }; },
++      })).rejects.toThrow('Feedback state is unreadable');
++
++      expect(asked).toBe(0);
++      expect(sent).toBe(0);
++      expect(fs.readFileSync(file, 'utf8')).toBe(original);
++    }
++  });
++
+ });
+diff --git a/test/feedback.test.js b/test/feedback.test.js
+index 6dd46f8e..8db8b9eb 100644
+--- a/test/feedback.test.js
++++ b/test/feedback.test.js
+@@ -580,4 +580,35 @@ describe('privacy-safe feedback core', () => {
+     expect(signal.aborted).toBe(true);
+     expect(loadFeedbackState({ homeDir }).drafts[captured.incidentFingerprint]).toBeDefined();
+   });
++
++  test('enabled state with an invalid anonymous identity fails closed without mutation or fetch', async () => {
++    const invalidIdentities = ['SECRET_DEVICE_ID', null, '00000000-0000-0000-0000-000000000000'];
++    for (const anonymousSourceId of invalidIdentities) {
++      const homeDir = tempHome();
++      const seeded = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++      const persisted = JSON.parse(fs.readFileSync(stateFile(homeDir), 'utf8'));
++      persisted.consent = 'enabled';
++      persisted.anonymous_source_id = anonymousSourceId;
++      const original = `${JSON.stringify(persisted, null, 2)}\n`;
++      fs.writeFileSync(stateFile(homeDir), original);
++      let sends = 0;
++      const options = {
++        homeDir,
++        endpoint: 'https://feedback.forge.test/v1/reports',
++        inputInteractive: true,
++        outputInteractive: true,
++        fetch: async () => { sends += 1; return { ok: true, status: 202 }; },
++      };
++
++      await expect(sendDraft(seeded.incidentFingerprint, options))
++        .rejects.toThrow('Feedback state is unreadable');
++      await expect(captureFailure(
++        { code: 'FORGE_INTERNAL_TIMEOUT', subsystem: 'workflow' },
++        { ...options, version: '1.7.0' },
++      )).rejects.toThrow('Feedback state is unreadable');
++      expect(sends).toBe(0);
++      expect(fs.readFileSync(stateFile(homeDir), 'utf8')).toBe(original);
++    }
++  });
++
+ });
+-- 
+2.51.0.windows.1
+

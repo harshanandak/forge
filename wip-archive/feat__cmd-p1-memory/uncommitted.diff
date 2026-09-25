@@ -1,0 +1,692 @@
+diff --git a/.husky/commit-msg b/.husky/commit-msg
+deleted file mode 100644
+index 70eed750..00000000
+--- a/.husky/commit-msg
++++ /dev/null
+@@ -1,72 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$LEFTHOOK_VERBOSE" = "1" -o "$LEFTHOOK_VERBOSE" = "true" ]; then
+-  set -x
+-fi
+-
+-if [ "$LEFTHOOK" = "0" ]; then
+-  exit 0
+-fi
+-
+-call_lefthook()
+-{
+-  if test -n "$LEFTHOOK_BIN"
+-  then
+-    "$LEFTHOOK_BIN" "$@"
+-  elif lefthook.exe -h >/dev/null 2>&1
+-  then
+-    lefthook.exe "$@"
+-  elif lefthook.bat -h >/dev/null 2>&1
+-  then
+-    lefthook.bat "$@"
+-  else
+-    dir="$(git rev-parse --show-toplevel)"
+-    osArch=$(uname | tr '[:upper:]' '[:lower:]')
+-    cpuArch=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')
+-    if test -f "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/lefthook/bin/index.js"
+-    then
+-      "$dir/node_modules/lefthook/bin/index.js" "$@"
+-    
+-    elif go tool lefthook -h >/dev/null 2>&1
+-    then
+-      go tool lefthook "$@"
+-    elif bundle exec lefthook -h >/dev/null 2>&1
+-    then
+-      bundle exec lefthook "$@"
+-    elif yarn lefthook -h >/dev/null 2>&1
+-    then
+-      yarn lefthook "$@"
+-    elif pnpm lefthook -h >/dev/null 2>&1
+-    then
+-      pnpm lefthook "$@"
+-    elif swift package lefthook >/dev/null 2>&1
+-    then
+-      swift package --build-path .build/lefthook --disable-sandbox lefthook "$@"
+-    elif command -v mint >/dev/null 2>&1
+-    then
+-      mint run csjones/lefthook-plugin "$@"
+-    elif uv run lefthook -h >/dev/null 2>&1
+-    then
+-      uv run lefthook "$@"
+-    elif mise exec -- lefthook -h >/dev/null 2>&1
+-    then
+-      mise exec -- lefthook "$@"
+-    elif devbox run lefthook -h >/dev/null 2>&1
+-    then
+-      devbox run lefthook "$@"
+-    else
+-      echo "Can't find lefthook in PATH"
+-    fi
+-  fi
+-}
+-
+-call_lefthook run "commit-msg" "$@"
+diff --git a/.husky/pre-commit b/.husky/pre-commit
+deleted file mode 100644
+index f7ce20a1..00000000
+--- a/.husky/pre-commit
++++ /dev/null
+@@ -1,73 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$LEFTHOOK_VERBOSE" = "1" -o "$LEFTHOOK_VERBOSE" = "true" ]; then
+-  set -x
+-fi
+-
+-if [ "$LEFTHOOK" = "0" ]; then
+-  exit 0
+-fi
+-
+-call_lefthook()
+-{
+-  if test -n "$LEFTHOOK_BIN"
+-  then
+-    "$LEFTHOOK_BIN" "$@"
+-  elif lefthook.exe -h >/dev/null 2>&1
+-  then
+-    lefthook.exe "$@"
+-  elif lefthook.bat -h >/dev/null 2>&1
+-  then
+-    lefthook.bat "$@"
+-  else
+-    dir="$(git rev-parse --show-toplevel)"
+-    osArch=$(uname | tr '[:upper:]' '[:lower:]')
+-    cpuArch=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')
+-    if test -f "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/lefthook/bin/index.js"
+-    then
+-      "$dir/node_modules/lefthook/bin/index.js" "$@"
+-    
+-    elif go tool lefthook -h >/dev/null 2>&1
+-    then
+-      go tool lefthook "$@"
+-    elif bundle exec lefthook -h >/dev/null 2>&1
+-    then
+-      bundle exec lefthook "$@"
+-    elif yarn lefthook -h >/dev/null 2>&1
+-    then
+-      yarn lefthook "$@"
+-    elif pnpm lefthook -h >/dev/null 2>&1
+-    then
+-      pnpm lefthook "$@"
+-    elif swift package lefthook >/dev/null 2>&1
+-    then
+-      swift package --build-path .build/lefthook --disable-sandbox lefthook "$@"
+-    elif command -v mint >/dev/null 2>&1
+-    then
+-      mint run csjones/lefthook-plugin "$@"
+-    elif uv run lefthook -h >/dev/null 2>&1
+-    then
+-      uv run lefthook "$@"
+-    elif mise exec -- lefthook -h >/dev/null 2>&1
+-    then
+-      mise exec -- lefthook "$@"
+-    elif devbox run lefthook -h >/dev/null 2>&1
+-    then
+-      devbox run lefthook "$@"
+-    else
+-      echo "Can't find lefthook in PATH"
+-      exit 1
+-    fi
+-  fi
+-}
+-
+-call_lefthook run "pre-commit" "$@"
+diff --git a/.husky/pre-push b/.husky/pre-push
+deleted file mode 100644
+index 5f83ea0a..00000000
+--- a/.husky/pre-push
++++ /dev/null
+@@ -1,72 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$LEFTHOOK_VERBOSE" = "1" -o "$LEFTHOOK_VERBOSE" = "true" ]; then
+-  set -x
+-fi
+-
+-if [ "$LEFTHOOK" = "0" ]; then
+-  exit 0
+-fi
+-
+-call_lefthook()
+-{
+-  if test -n "$LEFTHOOK_BIN"
+-  then
+-    "$LEFTHOOK_BIN" "$@"
+-  elif lefthook.exe -h >/dev/null 2>&1
+-  then
+-    lefthook.exe "$@"
+-  elif lefthook.bat -h >/dev/null 2>&1
+-  then
+-    lefthook.bat "$@"
+-  else
+-    dir="$(git rev-parse --show-toplevel)"
+-    osArch=$(uname | tr '[:upper:]' '[:lower:]')
+-    cpuArch=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')
+-    if test -f "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/lefthook/bin/index.js"
+-    then
+-      "$dir/node_modules/lefthook/bin/index.js" "$@"
+-    
+-    elif go tool lefthook -h >/dev/null 2>&1
+-    then
+-      go tool lefthook "$@"
+-    elif bundle exec lefthook -h >/dev/null 2>&1
+-    then
+-      bundle exec lefthook "$@"
+-    elif yarn lefthook -h >/dev/null 2>&1
+-    then
+-      yarn lefthook "$@"
+-    elif pnpm lefthook -h >/dev/null 2>&1
+-    then
+-      pnpm lefthook "$@"
+-    elif swift package lefthook >/dev/null 2>&1
+-    then
+-      swift package --build-path .build/lefthook --disable-sandbox lefthook "$@"
+-    elif command -v mint >/dev/null 2>&1
+-    then
+-      mint run csjones/lefthook-plugin "$@"
+-    elif uv run lefthook -h >/dev/null 2>&1
+-    then
+-      uv run lefthook "$@"
+-    elif mise exec -- lefthook -h >/dev/null 2>&1
+-    then
+-      mise exec -- lefthook "$@"
+-    elif devbox run lefthook -h >/dev/null 2>&1
+-    then
+-      devbox run lefthook "$@"
+-    else
+-      echo "Can't find lefthook in PATH"
+-    fi
+-  fi
+-}
+-
+-call_lefthook run "pre-push" "$@"
+diff --git a/.husky/prepare-commit-msg b/.husky/prepare-commit-msg
+deleted file mode 100644
+index 15b74679..00000000
+--- a/.husky/prepare-commit-msg
++++ /dev/null
+@@ -1,72 +0,0 @@
+-#!/bin/sh
+-
+-if [ "$LEFTHOOK_VERBOSE" = "1" -o "$LEFTHOOK_VERBOSE" = "true" ]; then
+-  set -x
+-fi
+-
+-if [ "$LEFTHOOK" = "0" ]; then
+-  exit 0
+-fi
+-
+-call_lefthook()
+-{
+-  if test -n "$LEFTHOOK_BIN"
+-  then
+-    "$LEFTHOOK_BIN" "$@"
+-  elif lefthook.exe -h >/dev/null 2>&1
+-  then
+-    lefthook.exe "$@"
+-  elif lefthook.bat -h >/dev/null 2>&1
+-  then
+-    lefthook.bat "$@"
+-  else
+-    dir="$(git rev-parse --show-toplevel)"
+-    osArch=$(uname | tr '[:upper:]' '[:lower:]')
+-    cpuArch=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')
+-    if test -f "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe"
+-    then
+-      "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook.exe" "$@"
+-    elif test -f "$dir/node_modules/lefthook/bin/index.js"
+-    then
+-      "$dir/node_modules/lefthook/bin/index.js" "$@"
+-    
+-    elif go tool lefthook -h >/dev/null 2>&1
+-    then
+-      go tool lefthook "$@"
+-    elif bundle exec lefthook -h >/dev/null 2>&1
+-    then
+-      bundle exec lefthook "$@"
+-    elif yarn lefthook -h >/dev/null 2>&1
+-    then
+-      yarn lefthook "$@"
+-    elif pnpm lefthook -h >/dev/null 2>&1
+-    then
+-      pnpm lefthook "$@"
+-    elif swift package lefthook >/dev/null 2>&1
+-    then
+-      swift package --build-path .build/lefthook --disable-sandbox lefthook "$@"
+-    elif command -v mint >/dev/null 2>&1
+-    then
+-      mint run csjones/lefthook-plugin "$@"
+-    elif uv run lefthook -h >/dev/null 2>&1
+-    then
+-      uv run lefthook "$@"
+-    elif mise exec -- lefthook -h >/dev/null 2>&1
+-    then
+-      mise exec -- lefthook "$@"
+-    elif devbox run lefthook -h >/dev/null 2>&1
+-    then
+-      devbox run lefthook "$@"
+-    else
+-      echo "Can't find lefthook in PATH"
+-    fi
+-  fi
+-}
+-
+-call_lefthook run "prepare-commit-msg" "$@"
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 943baf11..134773cb 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1,13 +1,364 @@
+-# Project Instructions
++<!-- This file is a copy of AGENTS.md. Keep in sync manually or use: bunx forge setup --symlink -->
++# Project Workflow Instructions
+ 
+-Forge uses **[AGENTS.md](AGENTS.md)** as the single source of truth for all agent
+-instructions: the workflow template, change classification, detailed stage
+-instructions, git hooks and push workflow, build/shell/MCP toolchain, issue
+-tracking, project learnings, and session completion. This file intentionally
+-holds no content of its own — it only loads AGENTS.md.
++## Default TDD-First Workflow Template
+ 
+-@AGENTS.md
++This project ships a **default TDD-first workflow template** with 6 workflow stages plus a composable **research** skill (a phase of `/plan` and usable standalone). In v3, these stages are one configurable composition over Forge runtime building blocks, not a product-wide mandatory ladder. Commands may be invoked as full stages or as smaller skill fragments when the active plan permits it. Pre-merge is an embedded gate in `/ship` and `/review` (not a numbered stage); `/status` and `/shepherd` are utilities (not stages).
+ 
+-> **IMPORTANT**: Read [AGENTS.md](AGENTS.md) using the Read tool at the start of
+-> every session to load the current Forge workflow contract. AGENTS.md is
+-> authoritative; do not duplicate its content here.
++| Stage | Command     | Purpose                                                   | Required For |
++|-------|-------------|-----------------------------------------------------------|--------------|
++| 1     | `/plan`     | Design intent → research → branch + worktree + task list | Critical, Standard, Refactor |
++| 2     | `/dev`      | Subagent-driven TDD per task (spec + quality review)     | All types    |
++| 3     | `/validate`    | Validate + 4-phase debug mode on failure                    | All types    |
++| 4     | `/ship`     | Create PR with documentation                             | All types    |
++| 5     | `/review`   | Address ALL PR feedback                                  | Critical, Standard |
++| 6     | `/verify`   | Post-merge health check (CI, deployments)                | All types    |
++
++**Pre-merge gate (not a numbered stage)**: Completing docs on the feature branch and handing off the PR for merge is a **task-type gate and checkpoint**, not a standalone workflow stage. The gate runs for Critical, Standard, and Refactor work and is embedded in the `/ship` and `/review` stages — finish the doc updates, confirm CI is green, then hand off the PR. Simple, Hotfix, and Docs work skip the gate.
++
++**Utility**: `/status` — Context check before starting work (not a numbered stage)
++
++**Utility**: `/shepherd <pr>` — Monitor-driven PR shepherd: one bounded pass that reads CI and check state, re-runs a flaky required check (Tier-A), or escalates, then hands off. It is a utility command, **not** a workflow stage, and does not sit between `/review` and the handoff. It **never merges** (the human merges in the GitHub UI) and **never resolves review threads** (that stays with `/review`). `--auto-rebase` is opt-in and default OFF. See [docs/reference/shepherd.md](docs/reference/shepherd.md).
++
++## Automatic Change Classification
++
++When the user requests work, **you MUST automatically classify** the change type:
++
++### Critical (Full default workflow template)
++**Triggers:** Security, authentication, payments, breaking changes, new architecture, data migrations
++**Example:** "Add OAuth login", "Migrate database schema", "Implement payment gateway"
++**Workflow:** plan → dev → validate → ship → review → verify (pre-merge gate before merge)
++
++### Standard (default workflow without post-merge verify)
++**Triggers:** Normal features, enhancements, new components
++**Example:** "Add user profile page", "Create notification system"
++**Workflow:** plan → dev → validate → ship → review (pre-merge gate before merge)
++
++### Simple (3-stage workflow, skip plan)
++**Triggers:** Bug fixes, UI tweaks, small changes, minor refactors
++**Example:** "Fix button color", "Update validation message", "Adjust padding"
++**Workflow:** dev → validate → ship
++
++### Hotfix (Emergency 3-stage workflow)
++**Triggers:** Production emergencies, critical bugs affecting users
++**Example:** "Production payment processing down", "Security vulnerability fix"
++**Workflow:** dev → validate → ship (immediate merge allowed)
++
++### Docs (Documentation-only workflow)
++**Triggers:** Documentation updates, README changes, comment improvements
++**Example:** "Update README", "Add API documentation"
++**Workflow:** verify → ship
++
++### Refactor (5-stage workflow for safe cleanup)
++**Triggers:** Code cleanup, performance optimization, technical debt reduction
++**Example:** "Refactor auth service", "Extract utility functions"
++**Workflow:** plan → dev → validate → ship (pre-merge gate before merge)
++
++## Enforcement Philosophy
++
++**Conversational, not blocking** - Offer solutions when prerequisites are missing:
++
++❌ **Don't:** "ERROR: Research required for critical features"
++✅ **Do:** "Before implementation, I should research OAuth best practices. I can:
++   1. Auto-research now with parallel-deep-research (~5 min)
++   2. Use your research if you have it
++   3. Skip (not recommended for security features)
++
++   What would you prefer?"
++
++**Create accountability for skips:**
++
++"Skipping tests creates technical debt. I'll:
++ ✓ Allow this commit
++ ✓ Create follow-up issue for tests
++ ✓ Document in commit message as [tech-debt]
++
++ Proceed?"
++
++**Dynamic commands — no hardcoded examples:**
++
++Command files (`.claude/commands/*.md` and agent equivalents) must never hardcode example output when a script generates that output dynamically. Reference the script and describe what it does — don't duplicate its output with fake data that becomes stale.
++
++## TDD Development (`/dev` Command)
++
++**Subagent-driven per-task implementation loop:**
++
++1. **Read task list** → Pre-made task list from `/plan` Phase 3 at `docs/work/YYYY-MM-DD-<slug>/tasks.md`
++2. **Dispatch implementer subagent per task** → Fresh context, complete task text, relevant design doc sections
++3. **TDD inside implementer** → RED-GREEN-REFACTOR enforced by HARD-GATE:
++   - RED: Write failing test first (must run test and show failing output)
++   - GREEN: Implement minimal code to pass (must show passing output)
++   - REFACTOR: Clean up while keeping tests green
++4. **Spec compliance review** → Spec reviewer checks every task before quality review
++5. **Code quality review** → Quality reviewer checks after spec compliance ✅
++6. **Decision gate** → 7-dimension impact scoring when spec gap found; score routes to PROCEED/SPEC-REVIEWER/BLOCKED
++
++**Example execution:**
++```
++/dev starts:
++  ✓ Read task list: docs/work/2026-02-26-stripe-billing/tasks.md (8 tasks)
++  ✓ Created decisions log: docs/work/2026-02-26-stripe-billing/decisions.md
++
++Task 1: Types and interfaces
++  ✓ Implementer: test written → failing → implementation → passing → committed
++  ✓ Spec review: ✅
++  ✓ Quality review: ✅
++  Decision gates: 0
++
++Task 2: Validation logic
++  ✓ Implementer: test written → failing → implementation → passing
++  ⚠️  Decision gate fired (score: 2/14 — PROCEED)
++     Gap: Error message format not specified in design doc
++     Choice: Use { code, message } object (conservative, documented)
++  ✓ Spec review: ✅
++  ✓ Quality review: ✅
++```
++
++## State Management (Single Source of Truth)
++
++> GitHub issue lifecycle may sync to Beads via CI -- see [docs/guides/BEADS_GITHUB_SYNC.md](docs/guides/BEADS_GITHUB_SYNC.md).
++
++**Current implementation**: The Forge Kernel is the default issue-state authority; issue commands read and write the kernel store unless Beads is explicitly selected (`--issue-backend beads`, `FORGE_ISSUE_BACKEND=beads`, or `issueBackend: beads` in `.forge/config.yaml`), where it serves as an import/export/projection compatibility layer. **Direction (D44)**: continue consolidating issue/workflow/run authority in the Kernel with Beads remaining a compatibility projection. New authority work must follow [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) and [docs/reference/FORGE_KERNEL_STORAGE_MODEL.md](docs/reference/FORGE_KERNEL_STORAGE_MODEL.md).
++
++```json
++{
++  "id": "9f2c41d7-3a8e-4b6f-9c21-5e7d0a184c3b",
++  "type": "critical",
++  "currentStage": "dev",
++  "completedStages": ["plan"],
++  "skippedStages": [],
++  "workflowDecisions": {
++    "classification": "critical",
++    "reason": "Payment processing, PCI compliance required",
++    "userOverride": false
++  },
++  "parallelTracks": [
++    {
++      "name": "API endpoints",
++      "agent": "backend-architect",
++      "status": "in_progress",
++      "tddPhase": "GREEN"
++    }
++  ]
++}
++```
++
++## Git Hooks & Push Workflow (Automatic Enforcement)
++
++This project uses the **Professional Git Workflow** with Lefthook for automated quality gates.
++
++**Pre-commit hook enforces TDD:**
++- Blocks commits if source code modified without test files
++- Offers guided recovery (add tests now, skip with tech debt tracking, emergency override)
++- No AI decision required - automatic validation
++- **Strong default, not a hard floor.** The TDD gate is the default-ON `rail.tdd_intent` rail; turn it off with `forge gate disable rail.tdd_intent` (the `minimal` adoption profile ships it off). The installed hooks read the resolved config at run time, so a disabled rail makes them genuinely inert — enforcement honestly follows your config.
++
++**Pre-push hook validates tests:**
++- Branch protection: blocks direct push to `main`/`master`
++- ESLint: blocks on errors and warnings (strict mode, `--max-warnings 0`)
++- All tests must pass before push
++- Can skip for hotfixes with documentation
++
++**Pull Request workflow:**
++- PR template auto-fills with a standardized format; the self-review checklist catches most bugs before review
++- Reference the issue id in the PR body (e.g. the Forge Kernel issue id); **all review comments must be resolved** before merge
++- Squash-only merging for a clean, linear history
++
++**⚠️ AI agents must NEVER use `LEFTHOOK=0`, `--no-verify`, or any hook bypass.** If a hook fails, fix the underlying issue. Only humans may bypass hooks in emergencies, documented in the PR description.
++
++**Preferred push workflow (AI agents and humans):**
++
++```bash
++forge push                    # Branch protection + lint + tests, then push
++forge push --quick            # Review-cycle: lint-only push (CI runs full suite)
++forge worktree create <slug>  # Create a worktree
++forge test                    # Run tests with correct timeouts
++forge sync                    # Sync issue data
++forge clean                   # Remove merged worktrees
++```
++
++## Build, Shell, and MCP
++
++**Package manager**: Bun (preferred for performance).
++
++```bash
++bun install      # Install dependencies
++bun run dev      # Start development
++bun run build    # Production build
++bun test         # Run tests
++```
++
++**GitHub CLI**: `gh auth login` for the PR workflow.
++
++### Shell Model
++
++| Platform | Shell used by Forge commands and scripts |
++| --- | --- |
++| Windows | Git Bash for helper-backed Forge stage flows |
++| macOS/Linux | Default login shell |
++
++On Windows, Forge runtime health enforces Git Bash for helper-backed stage flows. Native PowerShell is still used by some bootstrap paths, and WSL may be useful for adjacent development tasks. See [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md#shell-model).
++
++### MCP Servers (Optional)
++
++If your agent supports MCP, these enhance research:
++
++- **Context7** - up-to-date library documentation and API reference
++- **grep.app** - search 1M+ GitHub repos for real-world code examples
++
++See [.mcp.json.example](.mcp.json.example) for configuration (Claude Code: copy it to `.mcp.json`) and [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) for detailed setup.
++
++## Documentation Index (Context Pointers)
++
++**Detailed stage skill instructions** are located in:
++- [skills/status/SKILL.md](skills/status/SKILL.md) - How to check current context (utility)
++- [skills/plan/SKILL.md](skills/plan/SKILL.md) - How to plan features (3 phases: design intent + research + branch/worktree/tasks)
++- [skills/dev/SKILL.md](skills/dev/SKILL.md) - How to implement with subagent-driven TDD and decision gate
++- [skills/validate/SKILL.md](skills/validate/SKILL.md) - How to run validation (with HARD-GATE exit)
++- [skills/ship/SKILL.md](skills/ship/SKILL.md) - How to create PRs
++- [skills/review/SKILL.md](skills/review/SKILL.md) - How to address PR feedback (with HARD-GATE exit)
++- [skills/shepherd/SKILL.md](skills/shepherd/SKILL.md) - How to run a bounded PR monitor pass (utility; never merges, never resolves threads)
++- [skills/verify/SKILL.md](skills/verify/SKILL.md) - How to verify post-merge health
++
++**Planning documents** (created by `/plan`, consumed by `/dev`):
++- `docs/work/YYYY-MM-DD-<slug>/plan.md` - Design intent + technical research
++- `docs/work/YYYY-MM-DD-<slug>/tasks.md` - Task list with TDD steps
++- `docs/work/YYYY-MM-DD-<slug>/decisions.md` - Decisions log from /dev
++
++**Comprehensive workflow guide:**
++- This file (AGENTS.md) is the single source of truth for the complete workflow
++- [docs/reference/TOOLCHAIN.md](docs/reference/TOOLCHAIN.md) - Tool setup and configuration
++- [docs/reference/VALIDATION.md](docs/reference/VALIDATION.md) - Enforcement and validation details
++
++**Forge v3 / Kernel Plan (active design):**
++- [docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md](docs/work/2026-04-28-skeleton-pivot/forge-kernel-authority-control-plane.md) — canonical Forge Kernel authority reset plan for issue authority, local broker, team authority, adapters, storage, and gates
++- [docs/work/2026-04-28-skeleton-pivot/locked-decisions.md](docs/work/2026-04-28-skeleton-pivot/locked-decisions.md) — D1–D44 decisions ledger with rationale + tradeoffs + anti-decisions; D44 supersedes Beads-only authority portions of earlier decisions
++- [docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md](docs/work/2026-04-28-skeleton-pivot/v3-redesign-strategy.md) — historical v3 strategy and background; do not use its legacy default-substrate language over D44
++- See [docs/INDEX.md](docs/INDEX.md) for the full reading order across the v3 design folder
++
++**Load these files when you need detailed instructions for a specific stage.**
++
++## Descriptive Context Convention
++
++Every stage transition should carry structured context so the next stage (or a new session) can resume without re-reading the full design doc. This convention is **advisory** — warnings are informational, not blocking.
++
++### Required Fields at Each Stage Exit
++
++| Stage Exit | Summary | Decisions | Artifacts | Next |
++|------------|---------|-----------|-----------|------|
++| /plan      | Design approach chosen | Key trade-offs resolved | Design doc, task list paths | First dev task focus |
++| /dev       | Tasks completed, gate count | Spec gaps encountered | Changed files, test files | Validation priorities |
++| /validate  | All checks pass/fail summary | Failures diagnosed | Scripts/commands run | Ship readiness |
++| /ship      | PR created, checks pending | Template sections filled | PR URL, branch name | Review focus areas |
++| /review    | All feedback addressed | Comment resolutions | Fixed files, commit SHAs | Doc update needs |
++| pre-merge gate | Docs updated, CI green | N/A | Updated doc files | Merge instructions |
++
++### Recording Stage Context
++
++Record the stage-exit context as a kernel issue comment so the next stage (or a
++fresh session) can resume from the issue record itself:
++
++```bash
++forge issue comment <issue-id> "stage: dev -> validate
++summary: All 5 tasks done, 1 decision gate fired
++decisions: Used streaming parser over DOM for memory efficiency
++artifacts: lib/parser.js test/parser.test.js
++next: Run lint first — streaming approach may trigger no-await rule"
++```
++
++Check-after-write verification (`gate.issue_verify`, default-on) confirms the
++comment actually landed. Read context back with `forge show <issue-id>` (or
++`forge recap <issue-id>` for the bounded orientation envelope).
++
++### Field Definitions
++
++- **Summary**: 1-2 sentence recap of what was accomplished in this stage. Example: `--summary "All 5 tasks done, 1 decision gate fired"`
++- **Decisions**: Key choices made during this stage that affect downstream work. Example: `--decisions "Used streaming parser over DOM for memory efficiency"`
++- **Artifacts**: File paths or URLs produced by this stage. Example: `--artifacts "lib/parser.js test/parser.test.js docs/work/2026-03-26-parser/plan.md"`
++- **Next**: Guidance for the next stage on what to focus on. Example: `--next "Run lint first — streaming approach may trigger no-await rule"`
++
++### Enforcement Level
++
++This convention is **advisory only** — missing fields never block a stage
++transition. The goal is to build good habits, not to create friction.
++
++## Forge Issue Tracker
++
++This project uses the **Forge Kernel** for issue tracking. Run `forge prime` to see full workflow context and commands.
++
++### Quick Reference
++
++```bash
++forge ready           # Find available work
++forge show <id>       # View issue details
++forge claim <id>      # Claim work
++forge close <id>      # Complete work
++```
++
++**More commands worth knowing** (run `forge <command> --help` for full usage):
++
++```bash
++forge remember <note>          # Persist a project-memory note to a file-backed store
++forge recall [query]           # Retrieve project-memory notes back (the read half of remember)
++forge insights                 # Detect recurring evidence patterns, suggest conservative follow-ups
++forge upgrade                  # Preview and self-heal safe Forge upgrade readiness
++forge gate <verb> <gate-id>    # Toggle a workflow gate, or record/query human-gate approval events
++forge role <role> --use <skill> # Bind a role to a skill/ideology in .forge/config.yaml
++forge merge --auto <pr>        # Opt-in conditional auto-merge — merges only when configured rules pass (OFF by default)
++```
++
++### Rules
++
++- Use `forge` as the routine command surface for issue tracking and sync workflows — do NOT use TodoWrite, TaskCreate, or markdown TODO lists. Exception: `/plan` Phase 3 generates task lists at `docs/work/YYYY-MM-DD-<slug>/tasks.md` — these are approved artifacts consumed by `/dev`. New issue-authority work routes through the Forge Kernel design. Use `forge issue` subcommands (e.g. `forge issue dep`, `forge issue comment`) for operations beyond the shortcuts above. GitHub issues may be used for external/public tracking; CI may sync GitHub issue lifecycle to the issue store.
++- Run `forge prime` for detailed command reference and session close protocol
++- Use `forge remember` for persistent knowledge and `forge recall` to retrieve it back — do NOT use MEMORY.md files
++
++### Kernel Tracking (nothing discussed goes missing)
++
++**NON-NEGOTIABLE, default-on.** Anything raised in a session — a bug, an idea, a
++design decision, a follow-up, a TODO, a risk noticed in passing — MUST become a
++Forge Kernel issue **immediately** via `forge issue create`, before it can be
++forgotten. Triage it (set a type, link its epic/parent) so it is discoverable.
++When you defer scope, file the follow-up issue and reference it — never leave
++work unfiled. The Kernel is the single source of truth; do NOT substitute
++TodoWrite, markdown TODO lists, or memory notes for a filed issue.
++
++This policy is canonicalized in `rules/kernel-tracking.md` (rendered to every
++port: `.cursor/rules/kernel-tracking.mdc` for Cursor, this projection for
++Claude/Codex/Hermes) and governed by the default-on `rail.kernel_tracking`
++runtime rail. Turn it off only deliberately: `forge gate disable rail.kernel_tracking`.
++
++## Project Learnings
++
++- **Scope discipline**: Do ONLY what was explicitly asked. Answer a question → stop. Check something → stop. Never auto-continue to next steps or pending work unless told to.
++- **Stage names**: The validation stage command is `/validate` — renamed in PR #50; do not use the old name.
++- **Unused params**: Prefix with `_` (e.g., `_searchTerm`) — ESLint `no-unused-vars` enforced with `--max-warnings 0`.
++- **Pre-push test env**: `test-env/` fixture tests can fail during actual `git push` due to git mid-push state. Fix the root cause — never use `LEFTHOOK=0`.
++- **Skill sync**: Canonical skills live in `skills/<name>/SKILL.md`; per-agent copies are generated from them. `.agents/skills` (Codex's repo-local discovery path) is committed so a fresh clone gets discovery without `forge setup` — a pre-commit hook keeps it byte-identical to `skills/` and the drift gate enforces it. The other mirrors (`.claude/skills`, `.codex/skills`, `.cursor/skills`, `.hermes/skills`) are gitignored and regenerated at `forge setup`. Never hand-edit a generated mirror — edit the canonical `skills/` source.
++
++## Session Completion
++
++**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
++
++**MANDATORY WORKFLOW:**
++
++1. **File issues for remaining work** - Create issues for anything that needs follow-up
++2. **Run quality gates** (if code changed) - Tests, linters, builds
++3. **Update issue status** - Close finished work, update in-progress items
++4. **PUSH TO REMOTE** - This is MANDATORY:
++   ```bash
++    git pull --rebase
++    forge sync     # wraps the supported issue-store sync flow when the issue store is configured
++    git push
++    git status  # MUST show "up to date with origin"
++   ```
++5. **Clean up** - Clear stashes, prune remote branches
++6. **Verify** - All changes committed AND pushed
++7. **Hand off** - Provide context for next session
++
++**CRITICAL RULES:**
++- Work is NOT complete until `git push` succeeds
++- NEVER stop before pushing - that leaves work stranded locally
++- NEVER say "ready to push when you are" - YOU must push
++- If push fails, resolve and retry until it succeeds
++- After fixing review feedback, always push the changes and resolve the related GitHub review threads via the GraphQL API before considering the work complete

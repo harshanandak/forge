@@ -1,0 +1,563 @@
+From 2dbcf10f07f6afb3a95b6dd0ee13156a6373c2b3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 22:02:01 +0530
+Subject: [PATCH] feat(flow): add monitor durability bridge
+
+---
+ packages/flow/src/monitor-durability.js       | 211 ++++++++++++
+ packages/flow/test/monitor-durability.test.js | 325 ++++++++++++++++++
+ 2 files changed, 536 insertions(+)
+ create mode 100644 packages/flow/src/monitor-durability.js
+ create mode 100644 packages/flow/test/monitor-durability.test.js
+
+diff --git a/packages/flow/src/monitor-durability.js b/packages/flow/src/monitor-durability.js
+new file mode 100644
+index 00000000..44b206b8
+--- /dev/null
++++ b/packages/flow/src/monitor-durability.js
+@@ -0,0 +1,211 @@
++"use strict";
++
++const { types } = require("node:util");
++const {
++  canonicalize,
++  computeContentHash,
++} = require("@forge/memory-contracts");
++
++const MAX_EVENTS_PER_RECEIPT = 4096;
++const MAX_INPUT_BYTES = 1_048_576;
++const SHA256 = /^[0-9a-f]{64}$/;
++const TARGET = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
++
++class MonitorDurabilityError extends Error {
++  constructor(code, message, details = {}) {
++    super(message);
++    this.name = "MonitorDurabilityError";
++    this.code = code;
++    Object.assign(this, details);
++  }
++}
++
++function fail(code, message, details) {
++  throw new MonitorDurabilityError(code, message, details);
++}
++
++function ownValue(object, field) {
++  if (!object || typeof object !== "object" || types.isProxy(object)) {
++    fail("INVALID_CONFIGURATION", "Monitor durability configuration must be a plain object");
++  }
++  const descriptor = Object.getOwnPropertyDescriptor(object, field);
++  if (!descriptor || !Object.hasOwn(descriptor, "value")) {
++    fail("INVALID_CONFIGURATION", `Monitor durability configuration requires ${field}`);
++  }
++  return descriptor.value;
++}
++
++function assertMethod(object, field) {
++  const method = ownValue(object, field);
++  if (typeof method !== "function") {
++    fail("INVALID_CONFIGURATION", `Monitor store requires ${field}()`);
++  }
++  return method.bind(object);
++}
++
++function snapshotCanonical(value, label) {
++  try {
++    return JSON.parse(canonicalize(value, {
++      maxDepth: 64,
++      maxNodes: 100_000,
++      maxBytes: MAX_INPUT_BYTES,
++    }));
++  } catch {
++    fail("INPUT_INVALID", `${label} must be bounded canonical data`);
++  }
++}
++
++function assertEnvelope(value, schemaId) {
++  const snapshot = snapshotCanonical(value, schemaId);
++  const computedHash = snapshot && typeof snapshot === "object"
++    ? computeContentHash(snapshot)
++    : undefined;
++  if (
++    !snapshot ||
++    typeof snapshot !== "object" ||
++    snapshot.schema_id !== schemaId ||
++    !snapshot.payload ||
++    typeof snapshot.payload !== "object" ||
++    snapshot.content_hash !== computedHash
++  ) {
++    fail("INPUT_INVALID", `${schemaId} identity validation failed`, {
++      actualHash: snapshot?.content_hash,
++      computedHash,
++    });
++  }
++  return snapshot;
++}
++
++function assertTargets(value) {
++  const snapshot = snapshotCanonical(value, "deliveryTargets");
++  if (
++    !Array.isArray(snapshot) ||
++    snapshot.length === 0 ||
++    snapshot.length > 32 ||
++    snapshot.some((target) => (
++      typeof target !== "string" ||
++      target.length === 0 ||
++      target.length > 128 ||
++      !TARGET.test(target)
++    ))
++  ) {
++    fail("INVALID_CONFIGURATION", "deliveryTargets must contain 1-32 entries");
++  }
++  return Object.freeze([...new Set(snapshot)]);
++}
++
++function mapProviderFailure(error) {
++  const message = error instanceof Error ? error.message.toLowerCase() : "";
++  if (message.includes("conflict")) {
++    return new MonitorDurabilityError("IDENTITY_CONFLICT", "Monitor identity/content conflict");
++  }
++  if (message.includes("stale") && message.includes("cursor")) {
++    return new MonitorDurabilityError("STALE_CURSOR", "Monitor delivery cursor is stale");
++  }
++  return new MonitorDurabilityError("PROVIDER_UNAVAILABLE", "Monitor durability provider unavailable");
++}
++
++async function providerCall(operation) {
++  try {
++    return await operation();
++  } catch (error) {
++    if (error instanceof MonitorDurabilityError) throw error;
++    throw mapProviderFailure(error);
++  }
++}
++
++function assertRows(value, monitorId) {
++  const snapshot = snapshotCanonical(value, "monitor event history");
++  if (!Array.isArray(snapshot) || snapshot.length > MAX_EVENTS_PER_RECEIPT) {
++    fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is unavailable or exceeds its bound");
++  }
++  const rows = snapshot.map((row) => {
++    if (
++      !row ||
++      typeof row !== "object" ||
++      row.monitor_id !== monitorId ||
++      !Number.isSafeInteger(row.sequence) ||
++      row.sequence < 0 ||
++      typeof row.event_id !== "string" ||
++      !SHA256.test(row.content_hash)
++    ) {
++      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is incomplete");
++    }
++    return row;
++  });
++  for (let index = 0; index < rows.length; index += 1) {
++    if (rows[index].sequence !== index) {
++      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history has a sequence gap");
++    }
++  }
++  return rows;
++}
++
++function assertPassEvidence(receipt, rows) {
++  if (receipt.payload.terminal_state !== "PASS") return;
++  if (rows.length === 0 || rows.at(-1).sequence !== receipt.payload.last_sequence) {
++    fail("INCOMPLETE_TERMINAL_EVIDENCE", "PASS receipt does not cover durable monitor events");
++  }
++  const digest = computeContentHash({ evidence_hashes: rows.map((row) => row.content_hash) });
++  if (digest !== receipt.payload.evidence_digest) {
++    fail("INCOMPLETE_TERMINAL_EVIDENCE", "PASS receipt evidence digest is incomplete");
++  }
++}
++
++function createMonitorDurabilityBridge(options) {
++  const store = ownValue(options, "store");
++  const appendEvent = assertMethod(store, "appendEvent");
++  const recordDeliveryReceipt = assertMethod(store, "recordDeliveryReceipt");
++  const recordTerminalReceipt = assertMethod(store, "recordTerminalReceipt");
++  const listEvents = assertMethod(store, "listEvents");
++  const targets = assertTargets(ownValue(options, "deliveryTargets"));
++  const deliver = ownValue(options, "deliver");
++  if (typeof deliver !== "function") {
++    fail("INVALID_CONFIGURATION", "Monitor durability bridge requires deliver()");
++  }
++
++  return Object.freeze({
++    async persistEvent(event, config = {}) {
++      const safeEvent = assertEnvelope(event, "forge.memory.monitor-event.v1");
++      const safeConfig = snapshotCanonical(config, "monitor persistence config");
++      const persistence = await providerCall(() => appendEvent(safeEvent, targets, safeConfig));
++      try {
++        const delivery = await deliver(safeEvent, targets);
++        return Object.freeze({ persistence, delivery });
++      } catch {
++        fail("DELIVERY_FAILED", "Monitor delivery failed after durable persistence", {
++          persisted: true,
++          eventId: safeEvent.payload.event_id,
++        });
++      }
++    },
++
++    async acknowledgeDelivery(monitorId, receipt, config = {}) {
++      if (typeof monitorId !== "string" || monitorId.length === 0) {
++        fail("INPUT_INVALID", "monitorId is required for delivery acknowledgement");
++      }
++      const safeReceipt = assertEnvelope(receipt, "forge.memory.delivery-receipt.v1");
++      const safeConfig = snapshotCanonical(config, "monitor acknowledgement config");
++      if (!targets.includes(safeReceipt.payload.target)) {
++        fail("INPUT_INVALID", "Delivery receipt target is outside the monitor targets");
++      }
++      const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
++      const event = rows.find((row) => row.event_id === safeReceipt.payload.event_id);
++      if (!event) fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
++      const persistence = await providerCall(() => recordDeliveryReceipt(safeReceipt, safeConfig));
++      return Object.freeze({ persistence, sequence: event.sequence });
++    },
++
++    async recordTerminalReceipt(receipt, config = {}) {
++      const safeReceipt = assertEnvelope(receipt, "forge.memory.monitor-receipt.v1");
++      const safeConfig = snapshotCanonical(config, "monitor terminal config");
++      const monitorId = safeReceipt.payload.monitor_id;
++      const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
++      assertPassEvidence(safeReceipt, rows);
++      const persistence = await providerCall(() => recordTerminalReceipt(safeReceipt, safeConfig));
++      return Object.freeze({ persistence });
++    },
++  });
++}
++
++module.exports = { MonitorDurabilityError, createMonitorDurabilityBridge };
+diff --git a/packages/flow/test/monitor-durability.test.js b/packages/flow/test/monitor-durability.test.js
+new file mode 100644
+index 00000000..6856c7ee
+--- /dev/null
++++ b/packages/flow/test/monitor-durability.test.js
+@@ -0,0 +1,325 @@
++"use strict";
++
++const { beforeAll, describe, expect, mock, test } = require("bun:test");
++const contracts = require("../../memory-contracts");
++mock.module("@forge/memory-contracts", () => contracts);
++
++const {
++  canonicalize,
++  computeContentHash,
++} = contracts;
++
++let createMonitorStore;
++let MonitorDurabilityError;
++let createMonitorDurabilityBridge;
++
++beforeAll(() => {
++  ({ MonitorDurabilityError, createMonitorDurabilityBridge } = require("../src/monitor-durability.js"));
++  ({ createMonitorStore } = require("../../memory"));
++});
++
++const ZERO_HASH = '0'.repeat(64);
++const ONE_HASH = '1'.repeat(64);
++
++function envelope(schemaId, objectId, payload, createdAt = '2026-08-10T00:00:00.000Z') {
++  const base = {
++    schema_id: schemaId,
++    schema_version: 1,
++    object_id: objectId,
++    content_hash: ZERO_HASH,
++    created_at: createdAt,
++    producer: { product_id: "forge-flow", product_version: "0.1.0", instance_id: "test" },
++    capabilities_used: [],
++    provenance: { source_kind: "monitor", actor_class: "system", actor_id: "monitor-1" },
++    payload,
++    extensions: {},
++  };
++  return Object.freeze({
++    ...base,
++    content_hash: computeContentHash(base),
++  });
++}
++
++function monitorEvent(overrides = {}) {
++  const sequence = overrides.sequence ?? 0;
++  return envelope(
++    'forge.memory.monitor-event.v1',
++    overrides.objectId ?? `10000000-0000-4000-8000-${String(sequence + 1).padStart(12, "0")}`,
++    {
++      event_id: overrides.eventId ?? `event-${sequence}`,
++      monitor_id: overrides.monitorId ?? 'monitor-1',
++      sequence,
++      subject_revision: overrides.subjectRevision ?? "head-1",
++      type: overrides.eventType ?? "status",
++      actionability: overrides.actionability ?? "action_required",
++      observed_at: overrides.observedAt ?? `2026-08-10T00:00:0${sequence}.000Z`,
++      artifact_digest: overrides.artifactDigest ?? ONE_HASH,
++      bounded_payload: overrides.boundedPayload ?? { state: `value-${sequence}` },
++    },
++  );
++}
++
++function deliveryReceipt(event, overrides = {}) {
++  return envelope(
++    'forge.memory.delivery-receipt.v1',
++    overrides.objectId ?? `20000000-0000-4000-8000-${String(event.payload.sequence + 1).padStart(12, "0")}`,
++    {
++      event_id: event.payload.event_id,
++      target: overrides.targetId ?? "target-1",
++      transport_tier: "T1",
++      attempt: 1,
++      delivered_at: overrides.deliveredAt ?? '2026-08-10T00:01:00.000Z',
++      acknowledged: true,
++      outcome: "acknowledged",
++    },
++  );
++}
++
++function terminalReceipt(events, overrides = {}) {
++  const hashes = events.map((event) => event.content_hash);
++  return envelope(
++    'forge.memory.monitor-receipt.v1',
++    overrides.objectId ?? "30000000-0000-4000-8000-000000000001",
++    {
++      monitor_id: overrides.monitorId ?? 'monitor-1',
++      owner_run_id: "run-1",
++      terminal_state: overrides.terminalState ?? 'PASS',
++      last_sequence: overrides.lastSequence ?? events.at(-1)?.payload.sequence ?? 0,
++      evidence_digest:
++        overrides.evidenceDigest ?? computeContentHash({ evidence_hashes: hashes }),
++      terminal_reason: overrides.terminalReason ?? 'terminal evidence complete',
++      cancellation_acknowledged: overrides.cancellationAcknowledged ?? true,
++      process_cleanup: overrides.processCleanup ?? { outcome: "complete" },
++      lease_cleanup: overrides.leaseCleanup ?? { outcome: "complete" },
++    },
++  );
++}
++
++function createDurableDriver() {
++  const state = {
++    available: true,
++    events: new Map(),
++    identity: new Map(),
++    deliveryReceipts: new Map(),
++    cursors: new Map(),
++    terminals: new Map(),
++    log: [],
++  };
++
++  function requireAvailable() {
++    if (!state.available) throw new Error('monitor provider unavailable');
++  }
++
++  return {
++    state,
++    appendMonitorEvent(event, targets) {
++      requireAvailable();
++      const monitorKey = `${event.payload.monitor_id}:${event.payload.sequence}`;
++      const existingById = state.events.get(event.payload.event_id);
++      const existingByPosition = state.identity.get(monitorKey);
++      const existing = existingById ?? existingByPosition;
++      if (existing) {
++        if (
++          existing.event.content_hash !== event.content_hash ||
++          canonicalize(existing.targets) !== canonicalize(targets)
++        ) {
++          throw new Error('monitor event identity conflict');
++        }
++        return { eventId: event.payload.event_id, idempotent: true };
++      }
++
++      const record = { event, targets: [...targets] };
++      state.events.set(event.payload.event_id, record);
++      state.identity.set(monitorKey, record);
++      state.log.push(`persist:${event.payload.event_id}`);
++      return { eventId: event.payload.event_id, idempotent: false };
++    },
++    recordMonitorDeliveryReceipt(receipt) {
++      requireAvailable();
++      const event = state.events.get(receipt.payload.event_id)?.event;
++      if (!event) throw new Error('delivery receipt references unknown event');
++      const priorReceipt = state.deliveryReceipts.get(receipt.object_id);
++      if (priorReceipt) {
++        if (priorReceipt.content_hash !== receipt.content_hash) {
++          throw new Error('delivery receipt identity conflict');
++        }
++        return { receiptId: receipt.object_id, idempotent: true };
++      }
++
++      const cursorKey = `${event.payload.monitor_id}:${receipt.payload.target}`;
++      const cursor = state.cursors.get(cursorKey) ?? -1;
++      if (event.payload.sequence < cursor) throw new Error('stale delivery cursor');
++      state.deliveryReceipts.set(receipt.object_id, receipt);
++      state.cursors.set(cursorKey, Math.max(cursor, event.payload.sequence));
++      return { receiptId: receipt.object_id, idempotent: false };
++    },
++    recordMonitorTerminalReceipt(receipt) {
++      requireAvailable();
++      const prior = state.terminals.get(receipt.payload.monitor_id);
++      if (prior) {
++        if (prior.content_hash !== receipt.content_hash) {
++          throw new Error('terminal receipt identity conflict');
++        }
++        return { monitorId: receipt.payload.monitor_id, idempotent: true };
++      }
++      state.terminals.set(receipt.payload.monitor_id, receipt);
++      return { monitorId: receipt.payload.monitor_id, idempotent: false };
++    },
++    listMonitorEvents(monitorId) {
++      requireAvailable();
++      return [...state.events.values()]
++        .map(({ event }) => event)
++        .filter((event) => event.payload.monitor_id === monitorId)
++        .sort((left, right) => left.payload.sequence - right.payload.sequence)
++        .map((event) => ({
++          event_id: event.payload.event_id,
++          monitor_id: event.payload.monitor_id,
++          sequence: event.payload.sequence,
++          content_hash: event.content_hash,
++          envelope_json: canonicalize(event),
++          artifact_digest: event.payload.artifact_digest,
++          created_at: event.created_at,
++        }));
++    },
++  };
++}
++
++function bridge(driver, deliver = async () => undefined) {
++  return createMonitorDurabilityBridge({
++    store: createMonitorStore(driver),
++    deliveryTargets: ['target-1'],
++    deliver,
++  });
++}
++
++describe('monitor durability bridge', () => {
++  test('persists a validated event before delivery and retries safely after restart', async () => {
++    const driver = createDurableDriver();
++    const event = monitorEvent();
++    const deliver = mock(async (deliveredEvent) => {
++      expect(driver.state.events.has(deliveredEvent.payload.event_id)).toBe(true);
++      driver.state.log.push(`deliver:${deliveredEvent.payload.event_id}`);
++    });
++
++    const first = await bridge(driver, deliver).persistEvent(event);
++    const restarted = await bridge(driver, deliver).persistEvent(event);
++
++    expect(first.persistence.idempotent).toBe(false);
++    expect(restarted.persistence.idempotent).toBe(true);
++    expect(driver.state.log).toEqual(['persist:event-0', 'deliver:event-0', 'deliver:event-0']);
++    expect(deliver).toHaveBeenCalledTimes(2);
++  });
++
++  test('rejects event identity/content conflicts without delivering the conflicting event', async () => {
++    const driver = createDurableDriver();
++    const deliver = mock(async () => undefined);
++    await bridge(driver, deliver).persistEvent(monitorEvent());
++
++    const conflict = monitorEvent({ boundedPayload: { state: 'conflict' } });
++    await expect(bridge(driver, deliver).persistEvent(conflict)).rejects.toMatchObject({
++      name: 'MonitorDurabilityError',
++      code: 'IDENTITY_CONFLICT',
++    });
++    expect(deliver).toHaveBeenCalledTimes(1);
++  });
++
++  test('fails closed when the provider is unavailable and never attempts delivery', async () => {
++    const driver = createDurableDriver();
++    const deliver = mock(async () => undefined);
++    driver.state.available = false;
++
++    await expect(bridge(driver, deliver).persistEvent(monitorEvent())).rejects.toMatchObject({
++      name: 'MonitorDurabilityError',
++      code: 'PROVIDER_UNAVAILABLE',
++    });
++    expect(deliver).not.toHaveBeenCalled();
++    expect(driver.state.events.size).toBe(0);
++  });
++
++  test('reports delivery failure without hiding that the event is already durable', async () => {
++    const driver = createDurableDriver();
++    const deliver = mock(async () => {
++      throw new Error("delivery provider lost");
++    });
++
++    await expect(bridge(driver, deliver).persistEvent(monitorEvent())).rejects.toMatchObject({
++      code: "DELIVERY_FAILED",
++      persisted: true,
++      eventId: "event-0",
++    });
++    expect(driver.state.events.has("event-0")).toBe(true);
++  });
++
++  test('persists acknowledgements monotonically and rejects a stale cursor after restart', async () => {
++    const driver = createDurableDriver();
++    const firstEvent = monitorEvent({ sequence: 0 });
++    const secondEvent = monitorEvent({ sequence: 1 });
++    const firstBridge = bridge(driver);
++    await firstBridge.persistEvent(firstEvent);
++    await firstBridge.persistEvent(secondEvent);
++
++    const secondAck = deliveryReceipt(secondEvent);
++    const secondAckResult = await firstBridge.acknowledgeDelivery('monitor-1', secondAck);
++    const replayResult = await bridge(driver).acknowledgeDelivery('monitor-1', secondAck);
++    expect(secondAckResult.persistence.idempotent).toBe(false);
++    expect(replayResult.persistence.idempotent).toBe(true);
++    expect(driver.state.cursors.get('monitor-1:target-1')).toBe(1);
++
++    await expect(
++      bridge(driver).acknowledgeDelivery('monitor-1', deliveryReceipt(firstEvent)),
++    ).rejects.toMatchObject({ code: 'STALE_CURSOR' });
++    expect(driver.state.cursors.get('monitor-1:target-1')).toBe(1);
++  });
++
++  test('records one terminal receipt across restarts and rejects a conflicting terminal', async () => {
++    const driver = createDurableDriver();
++    const events = [monitorEvent({ sequence: 0 }), monitorEvent({ sequence: 1 })];
++    const firstBridge = bridge(driver);
++    for (const event of events) await firstBridge.persistEvent(event);
++    const receipt = terminalReceipt(events);
++
++    const first = await firstBridge.recordTerminalReceipt(receipt);
++    const replay = await bridge(driver).recordTerminalReceipt(receipt);
++    expect(first.persistence.idempotent).toBe(false);
++    expect(replay.persistence.idempotent).toBe(true);
++    expect(driver.state.terminals.size).toBe(1);
++
++    const conflict = terminalReceipt(events, { terminalReason: 'conflicting terminal result' });
++    await expect(bridge(driver).recordTerminalReceipt(conflict)).rejects.toMatchObject({
++      code: 'IDENTITY_CONFLICT',
++    });
++  });
++
++  test('rejects PASS with incomplete event evidence without consuming the terminal slot', async () => {
++    const driver = createDurableDriver();
++    const stored = monitorEvent();
++    await bridge(driver).persistEvent(stored);
++    const receipt = terminalReceipt([stored], { evidenceDigest: ZERO_HASH });
++
++    await expect(bridge(driver).recordTerminalReceipt(receipt)).rejects.toMatchObject({
++      code: 'INCOMPLETE_TERMINAL_EVIDENCE',
++    });
++    expect(driver.state.terminals.size).toBe(0);
++  });
++
++  test('rejects hostile accessor input without invoking it or reaching the provider', async () => {
++    const driver = createDurableDriver();
++    const valid = monitorEvent();
++    let getterCalls = 0;
++    const hostilePayload = { ...valid.payload };
++    Object.defineProperty(hostilePayload, 'bounded_payload', {
++      enumerable: true,
++      get() {
++        getterCalls += 1;
++        return { secret: true };
++      },
++    });
++    const hostile = { ...valid, payload: hostilePayload };
++
++    await expect(bridge(driver).persistEvent(hostile)).rejects.toBeInstanceOf(
++      MonitorDurabilityError,
++    );
++    expect(getterCalls).toBe(0);
++    expect(driver.state.log).toEqual([]);
++  });
++});
+-- 
+2.51.0.windows.1
+

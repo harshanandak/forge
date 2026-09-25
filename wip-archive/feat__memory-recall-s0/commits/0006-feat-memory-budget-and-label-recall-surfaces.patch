@@ -1,0 +1,418 @@
+From c01f410375347f304ae76616a186b1b9a5c65b92 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 17:32:32 +0530
+Subject: [PATCH] feat(memory): budget and label recall surfaces
+
+---
+ lib/commands/recall.js          | 51 ++++++++++++++++++++++++---
+ lib/memory-digest.js            | 62 +++++++++++++++++++++++++--------
+ lib/orientation.js              | 58 +++++++++++++++++++++++-------
+ test/commands/recall.test.js    | 37 ++++++++++++++++++++
+ test/memory-digest.test.js      | 33 ++++++++++++++++++
+ test/orientation-memory.test.js | 26 ++++++++++++++
+ 6 files changed, 234 insertions(+), 33 deletions(-)
+
+diff --git a/lib/commands/recall.js b/lib/commands/recall.js
+index 003aaa99..3b95d78e 100644
+--- a/lib/commands/recall.js
++++ b/lib/commands/recall.js
+@@ -3,8 +3,11 @@
+ const memoryRouter = require('../memory/router');
+ const { stripGlobalFlags } = require('../global-flags');
+ const { fenceUntrusted } = require('../untrusted-content');
++const { applyBudget, buildSection, estimateTokens } = require('../orientation');
++const { memoryTrustStatus } = require('../memory-recall');
+ 
+ const usage = 'Usage: forge recall [query] [--kind <type>] [--limit N] [--all] [--json]';
++const RECALL_CONTENT_BUDGET = 1100;
+ 
+ // Reserved tag prefix that `remember --kind` writes (kernel issue 8cc1db4d). A `--kind`
+ // filter keeps only notes carrying this tag; the prefix is stripped when surfacing the
+@@ -79,11 +82,19 @@ function withType(entry) {
+ 
+ function formatEntry(entry) {
+   const date = entry.timestamp ? entry.timestamp.slice(0, 10) : '';
+-  const prefix = date ? `${date}  ` : '';
++  const trust = memoryTrustStatus({
++    tags: entry.tags,
++    sourceAgent: entry.sourceAgent,
++    value: entry.machine ? {} : entry.note,
++  });
++  const sourceAgent = entry.sourceAgent || 'unknown';
++  const label = `[source=${sourceAgent} trust=${trust} updated=${date || 'unknown'}] `;
+   // The reserved `type:` tag renders as a leading `(kind)` marker, not as a raw tag, so the
+   // displayed tags stay the user's own labels.
+   const type = typeOf(entry);
+-  const userTags = (entry.tags || []).filter(t => !t.startsWith(TYPE_TAG_PREFIX));
++  const userTags = (entry.tags || []).filter(
++    t => !t.startsWith(TYPE_TAG_PREFIX) && !t.startsWith('trust:')
++  );
+   const tagSuffix = userTags.length > 0 ? ` [${userTags.join(', ')}]` : '';
+   const typeMarker = type ? `(${type}) ` : '';
+   // Machine/insights records are LABELED with their source so they are never mistaken for a
+@@ -93,7 +104,7 @@ function formatEntry(entry) {
+   // so the human/agent-facing render is provenance-fenced. The `--json` path above
+   // keeps the raw note so programmatic consumers/parsers are unaffected.
+   const note = fenceUntrusted(entry.note, { source: 'memory' });
+-  return `- ${prefix}${marker}${typeMarker}${note}${tagSuffix}`;
++  return `- ${label}${marker}${typeMarker}${note}${tagSuffix}`;
+ }
+ 
+ async function handler(args, flags, projectRoot) {
+@@ -150,10 +161,40 @@ async function handler(args, flags, projectRoot) {
+   } else {
+     header = `${total} ${noun}:`;
+   }
+-  const lines = notes.map(formatEntry);
++  const sections = notes
++    .map((entry, index) => {
++      const content = formatEntry(entry);
++      if (estimateTokens(content) > RECALL_CONTENT_BUDGET) return null;
++      const trust = memoryTrustStatus({
++        tags: entry.tags,
++        sourceAgent: entry.sourceAgent,
++        value: entry.machine ? {} : entry.note,
++      });
++      return buildSection({
++        id: `recall_${index}`,
++        title: '',
++        content,
++        priority: index,
++        preserve: false,
++        data: { trust },
++      });
++    })
++    .filter(Boolean);
++  const budgeted = applyBudget(sections, RECALL_CONTENT_BUDGET).sections
++    .filter(section => section.content);
++  const confirmed = budgeted.filter(section => section.data.trust === 'confirmed');
++  const suggested = budgeted.filter(section => section.data.trust === 'suggested');
++  const groups = [
++    confirmed.length ? ['Confirmed memory', confirmed] : null,
++    suggested.length ? ['Suggested memory — verify before relying', suggested] : null,
++  ].filter(Boolean);
++  const body = groups.flatMap(([title, entries]) => [
++    title,
++    ...entries.map(entry => entry.content),
++  ]);
+   return {
+     success: true,
+-    output: [header, ...lines].join('\n'),
++    output: [header, ...body].join('\n'),
+   };
+ }
+ 
+diff --git a/lib/memory-digest.js b/lib/memory-digest.js
+index 85c476d3..d8b4b29a 100644
+--- a/lib/memory-digest.js
++++ b/lib/memory-digest.js
+@@ -22,6 +22,7 @@
+ const { applyBudget, buildSection, estimateTokens } = require('./orientation');
+ const { fenceUntrusted } = require('./untrusted-content');
+ const { collectInbox, inboxSection } = require('./inbox');
++const { memoryTrustStatus } = require('./memory-recall');
+ 
+ const DEFAULT_DIGEST_BUDGET_TOKENS = 400;
+ const DEFAULT_NOTE_LIMIT = 5;
+@@ -103,7 +104,13 @@ async function collectDigestData(projectRoot, opts = {}) {
+ /** `- [date ]note` for a recall note. */
+ function formatNoteLine(note) {
+   const date = typeof note.timestamp === 'string' && note.timestamp ? `${note.timestamp.slice(0, 10)} ` : '';
+-  return `- ${date}${note.note}`;
++  const trust = memoryTrustStatus({
++    tags: note.tags,
++    sourceAgent: note.sourceAgent,
++    value: note.machine ? {} : note.note,
++  });
++  const sourceAgent = note.sourceAgent || 'unknown';
++  return `- [source=${sourceAgent} trust=${trust} updated=${date.trim() || 'unknown'}] ${note.note}`;
+ }
+ 
+ /** `- [label] title` for an issue row (title/id defensively resolved). */
+@@ -112,18 +119,39 @@ function formatIssueLine(label, issue) {
+   return `- [${label}] ${title}`;
+ }
+ 
+-/** Build the notes section, or null when there are no notes. */
+-function notesSection(notes) {
+-  if (!notes.length) return null;
+-  return buildSection({
+-    id: 'digest_notes',
+-    title: 'Remembered notes',
+-    content: notes.map(formatNoteLine).join('\n'),
+-    priority: 10,
+-    preserve: false,
+-    // Untrusted: a planted note is DATA, not instructions. Fenced after truncation.
+-    untrustedSource: 'memory',
+-  });
++/** Build separate confirmed/suggested note sections, skipping entries too large to fit. */
++function notesSections(notes, budgetTokens) {
++  const eligible = notes
++    .map(note => ({ note, line: formatNoteLine(note) }))
++    .filter(entry => estimateTokens(entry.line) <= budgetTokens);
++  const groups = [
++    { id: 'digest_notes', title: 'Confirmed memory', trust: 'confirmed', priority: 10 },
++    {
++      id: 'digest_suggested_memory',
++      title: 'Suggested memory — verify before relying',
++      trust: 'suggested',
++      priority: 11,
++    },
++  ];
++  return groups.map(group => {
++    const content = eligible
++      .filter(({ note }) => memoryTrustStatus({
++        tags: note.tags,
++        sourceAgent: note.sourceAgent,
++        value: note.machine ? {} : note.note,
++      }) === group.trust)
++      .map(entry => entry.line)
++      .join('\n');
++    if (!content) return null;
++    return buildSection({
++      id: group.id,
++      title: group.title,
++      content,
++      priority: group.priority,
++      preserve: false,
++      untrustedSource: 'memory',
++    });
++  }).filter(Boolean);
+ }
+ 
+ /**
+@@ -161,13 +189,17 @@ function buildMemoryDigest(data = {}, options = {}) {
+   const ready = Array.isArray(data.ready) ? data.ready : [];
+   const claimed = Array.isArray(data.claimed) ? data.claimed : [];
+   const inbox = Array.isArray(data.inbox) ? data.inbox : [];
++  const budgetTokens = options.budgetTokens || DEFAULT_DIGEST_BUDGET_TOKENS;
+ 
+   // Inbox (priority 5) is a THIRD section beside notes + issues; a fresh human directive
+   // outranks stale notes (10) and the agent's own issue list (20) under budget pressure.
+-  const sections = [inboxSection(inbox), notesSection(notes), issuesSection(ready, claimed)].filter(Boolean);
++  const sections = [
++    inboxSection(inbox),
++    ...notesSections(notes, budgetTokens),
++    issuesSection(ready, claimed),
++  ].filter(Boolean);
+   if (!sections.length) return { text: '', empty: true, tokens: 0 };
+ 
+-  const budgetTokens = options.budgetTokens || DEFAULT_DIGEST_BUDGET_TOKENS;
+   const budgeted = applyBudget(sections, budgetTokens);
+   const body = budgeted.sections
+     .filter(section => section.content)
+diff --git a/lib/orientation.js b/lib/orientation.js
+index ebe282fb..0653edd7 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -4,6 +4,7 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ const { fenceUntrusted } = require('./untrusted-content');
+ const { runIssueOperation: defaultRunIssueOperation } = require('./forge-issues');
++const { memoryTrustStatus } = require('./memory-recall');
+ 
+ const DEFAULT_BUDGET_TOKENS = 2000;
+ const MIN_BUDGET_TOKENS = 40;
+@@ -408,17 +409,43 @@ function buildMemorySection(projectRoot, options = {}) {
+     const result = memoryRouter.recall(projectRoot, { limit: MEMORY_SECTION_NOTE_LIMIT }, { store });
+     const notes = Array.isArray(result && result.notes) ? result.notes : [];
+     if (notes.length === 0) return [];
+-    return [buildSection({
+-      id: 'remembered_notes',
+-      title: 'Remembered Notes',
+-      content: notes.map(formatMemoryNote).join('\n'),
+-      sources: [source('kernel.remembered_notes', 'kernel_memory', 'project_memory', 'remembered_notes')],
+-      priority: 45,
+-      preserve: false,
+-      // Remembered notes are untrusted DATA (a planted note must not read as directives).
+-      // Raw here; the assembler fences it AFTER applyBudget truncation.
+-      untrustedSource: 'memory',
+-    })];
++    const groups = [
++      {
++        id: 'remembered_notes',
++        title: 'Confirmed Memory',
++        trust: 'confirmed',
++        priority: 45,
++      },
++      {
++        id: 'suggested_memory',
++        title: 'Suggested Memory — Verify Before Relying',
++        trust: 'suggested',
++        priority: 46,
++      },
++    ];
++    return groups.map(group => {
++      const content = notes
++        .filter(note => memoryTrustStatus({
++          tags: note.tags,
++          sourceAgent: note.sourceAgent,
++          value: note.machine ? {} : note.note,
++        }) === group.trust)
++        .map(formatMemoryNote)
++        .filter(line => estimateTokens(line) <= DEFAULT_BUDGET_TOKENS)
++        .join('\n');
++      if (!content) return null;
++      return buildSection({
++        id: group.id,
++        title: group.title,
++        content,
++        sources: [source('kernel.remembered_notes', 'kernel_memory', 'project_memory', group.id)],
++        priority: group.priority,
++        preserve: false,
++        // Remembered notes are untrusted DATA (a planted note must not read as directives).
++        // Raw here; the assembler fences it AFTER applyBudget truncation.
++        untrustedSource: 'memory',
++      });
++    }).filter(Boolean);
+   } catch {
+     return [];
+   } finally {
+@@ -452,8 +479,13 @@ function openMemoryStore(projectRoot) {
+ /** Render one recall note as a compact `- [date] text` line. */
+ function formatMemoryNote(note) {
+   const date = typeof note.timestamp === 'string' && note.timestamp ? note.timestamp.slice(0, 10) : '';
+-  const prefix = date ? `${date} ` : '';
+-  return `- ${prefix}${note.note}`;
++  const trust = memoryTrustStatus({
++    tags: note.tags,
++    sourceAgent: note.sourceAgent,
++    value: note.machine ? {} : note.note,
++  });
++  const sourceAgent = note.sourceAgent || 'unknown';
++  return `- [source=${sourceAgent} trust=${trust} updated=${date || 'unknown'}] ${note.note}`;
+ }
+ 
+ function buildQueueSections() {
+diff --git a/test/commands/recall.test.js b/test/commands/recall.test.js
+index c54ea2bb..96e0e10b 100644
+--- a/test/commands/recall.test.js
++++ b/test/commands/recall.test.js
+@@ -21,6 +21,43 @@ afterEach(() => {
+ });
+ 
+ describe('forge recall command', () => {
++  test('labels trust/source/update, separates suggestions, and skips an oversized note', async () => {
++    const projectRoot = makeProjectRoot();
++    projectMemory.write(projectRoot, {
++      key: 'small-confirmed',
++      value: 'small confirmed memory',
++      sourceAgent: 'forge remember',
++      tags: [],
++      timestamp: '2026-07-30T00:00:00.000Z',
++    });
++    projectMemory.write(projectRoot, {
++      key: 'small-suggested',
++      value: 'small suggested memory',
++      sourceAgent: 'forge remember (imported)',
++      tags: ['trust:suggested'],
++      timestamp: '2026-07-29T00:00:00.000Z',
++    });
++    projectMemory.write(projectRoot, {
++      key: 'oversized',
++      value: `oversized ${'x'.repeat(6000)}`,
++      sourceAgent: 'forge remember',
++      tags: [],
++      timestamp: '2026-07-31T00:00:00.000Z',
++    });
++
++    const result = await recall.handler([], {}, projectRoot);
++
++    expect(result.output).toContain('Confirmed memory');
++    expect(result.output).toContain('Suggested memory — verify before relying');
++    expect(result.output).toContain('source=forge remember');
++    expect(result.output).toContain('trust=confirmed');
++    expect(result.output).toContain('updated=2026-07-30');
++    expect(result.output).toContain('small confirmed memory');
++    expect(result.output).toContain('small suggested memory');
++    expect(result.output).not.toContain('oversized ');
++    expect(Math.ceil(result.output.length / 4)).toBeLessThanOrEqual(1200);
++  });
++
+   test('exports the registry command contract', () => {
+     expect(recall.name).toBe('recall');
+     expect(typeof recall.description).toBe('string');
+diff --git a/test/memory-digest.test.js b/test/memory-digest.test.js
+index e3e04492..e0dec19d 100644
+--- a/test/memory-digest.test.js
++++ b/test/memory-digest.test.js
+@@ -18,6 +18,39 @@ const READY = [{ id: 'r1', title: 'Wire auto-file rail' }];
+ const CLAIMED = [{ id: 'c1', title: 'Memory push hook' }];
+ 
+ describe('buildMemoryDigest (pure, bounded)', () => {
++  test('separates confirmed and suggested notes with labels and skips oversized entries', () => {
++    const notes = [
++      {
++        note: `oversized ${'x'.repeat(3000)}`,
++        sourceAgent: 'forge remember',
++        timestamp: '2026-07-31T00:00:00.000Z',
++        tags: [],
++      },
++      {
++        note: 'confirmed note',
++        sourceAgent: 'forge remember',
++        timestamp: '2026-07-30T00:00:00.000Z',
++        tags: [],
++      },
++      {
++        note: 'suggested note',
++        sourceAgent: 'forge remember (imported)',
++        timestamp: '2026-07-29T00:00:00.000Z',
++        tags: ['trust:suggested'],
++      },
++    ];
++
++    const { text, tokens } = buildMemoryDigest({ notes, ready: [], claimed: [] });
++
++    expect(text).toContain('Confirmed memory');
++    expect(text).toContain('Suggested memory — verify before relying');
++    expect(text).toContain('source=forge remember');
++    expect(text).toContain('trust=confirmed');
++    expect(text).toContain('updated=2026-07-30');
++    expect(text).not.toContain('oversized ');
++    expect(tokens).toBeLessThanOrEqual(400);
++  });
++
+   test('formats remembered notes + ready/claimed issues under a header', () => {
+     const { text, empty } = buildMemoryDigest({ notes: NOTES, ready: READY, claimed: CLAIMED });
+     expect(empty).toBe(false);
+diff --git a/test/orientation-memory.test.js b/test/orientation-memory.test.js
+index d298b119..9d02e33c 100644
+--- a/test/orientation-memory.test.js
++++ b/test/orientation-memory.test.js
+@@ -33,6 +33,32 @@ const NOTES = [
+ ];
+ 
+ describe('buildMemorySection (orientation MEMORY / remembered notes)', () => {
++  test('labels and separates confirmed from suggested memory', () => {
++    const root = tempRoot();
++    const entries = [
++      ...NOTES,
++      {
++        key: 'suggested',
++        value: 'Verify imported memory',
++        sourceAgent: 'forge remember (imported)',
++        timestamp: '2026-07-09T09:00:00.000Z',
++        tags: ['trust:suggested'],
++      },
++    ];
++
++    const sections = buildMemorySection(root, { store: fakeStore(entries) });
++
++    expect(sections.map(section => section.title)).toEqual([
++      'Confirmed Memory',
++      'Suggested Memory — Verify Before Relying',
++    ]);
++    expect(sections[0].content).toContain('source=forge remember');
++    expect(sections[0].content).toContain('trust=confirmed');
++    expect(sections[0].content).toContain('updated=2026-07-10');
++    expect(sections[1].content).toContain('Verify imported memory');
++    expect(sections[1].content).toContain('trust=suggested');
++  });
++
+   test('surfaces the newest remembered notes as a bounded section', () => {
+     const root = tempRoot();
+     const sections = buildMemorySection(root, { store: fakeStore(NOTES) });
+-- 
+2.51.0.windows.1
+

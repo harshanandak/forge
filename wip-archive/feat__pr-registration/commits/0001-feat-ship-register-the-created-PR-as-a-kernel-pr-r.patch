@@ -1,0 +1,592 @@
+From c2e8852cba7d9ec47819b66880a5d59014328210 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 18:29:07 +0530
+Subject: [PATCH] feat(ship): register the created PR as a kernel_pr row
+
+forge ship is the one moment the PR->worktree->issue link is derivable with
+zero user input, but nothing wrote kernel_pr, so reconcile (which only
+enriches existing rows) had nothing to enrich. Register via the broker's
+upsertPr, deriving issue_id/worktree_id from the current worktree's
+kernel_worktrees row. Key off projectRoot, not git rev-parse --show-toplevel,
+whose differing path form would hide the row from every consumer.
+
+Refs kernel issue c3952ba5
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/ship.js                |  17 +-
+ lib/pr-monitor/register-pr.js       | 149 ++++++++++++
+ test/pr-monitor/register-pr.test.js | 361 ++++++++++++++++++++++++++++
+ 3 files changed, 525 insertions(+), 2 deletions(-)
+ create mode 100644 lib/pr-monitor/register-pr.js
+ create mode 100644 test/pr-monitor/register-pr.test.js
+
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 42b4bf19..19206036 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -13,6 +13,7 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+ const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
++const { registerShippedPr } = require('../pr-monitor/register-pr');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ 
+ const AUTO_SHEPHERD_RAIL = 'rail.auto_shepherd';
+@@ -538,7 +539,15 @@ function maybeStartPrWatcher({ dryRun, prNumber, startWatcher, railEnabled = aut
+ }
+ 
+ async function executeShip(options) {
+-	const { featureSlug, title, dryRun = false, startWatcher = startPrWatcherDetached, railEnabled = autoShepherdRailEnabled } = options || {};
++	const {
++		featureSlug,
++		title,
++		dryRun = false,
++		startWatcher = startPrWatcherDetached,
++		railEnabled = autoShepherdRailEnabled,
++		createPr = createPR,
++		registerPr = registerShippedPr,
++	} = options || {};
+ 
+ 	// Validate feature slug
+ 	if (!featureSlug || typeof featureSlug !== 'string' || featureSlug.trim() === '') {
+@@ -588,9 +597,13 @@ async function executeShip(options) {
+ 			testScenarios,
+ 			coverage,
+ 		});
+-		const result = await createPR({ title, body: prBody, dryRun });
++		const result = await createPr({ title, body: prBody, dryRun });
+ 		if (!result.success) return result;
+ 		maybeStartPrWatcher({ dryRun, prNumber: result.prNumber, startWatcher, railEnabled });
++		// The PR now exists on GitHub — kernel bookkeeping can never take that away.
++		try {
++			await registerPr({ dryRun, prNumber: result.prNumber });
++		} catch { /* best-effort: a registration failure is never a ship failure */ }
+ 		return {
+ 			success: true,
+ 			prUrl: result.prUrl,
+diff --git a/lib/pr-monitor/register-pr.js b/lib/pr-monitor/register-pr.js
+new file mode 100644
+index 00000000..39158f39
+--- /dev/null
++++ b/lib/pr-monitor/register-pr.js
+@@ -0,0 +1,149 @@
++'use strict';
++
++/**
++ * Register a freshly-created PR in the kernel (kernel issue c3952ba5).
++ *
++ * `forge ship` is the one moment the PR -> worktree -> issue link is derivable
++ * with ZERO extra user input: the worktree already records the issue it serves
++ * (`kernel_worktrees.issue_id`, #370), and the PR number has just come back from
++ * `gh pr create`. Without a creator, `kernel_pr` stays empty and the reconciler —
++ * which only ENRICHES rows that already exist — has nothing to work with.
++ *
++ * The write goes through the broker's `upsertPr`, the same entry point the
++ * reconcile daemon uses, so idempotency comes from the existing
++ * (git_common_dir, repo, number) unique key rather than a second code path.
++ * verdict/verdict_source/verdict_at are deliberately left unset — a shipped PR
++ * has no verdict yet, and `upsertPr` invalidates stale ones on head advance.
++ *
++ * Everything here is best-effort: the PR already exists on GitHub by the time
++ * this runs, so a kernel that is missing, locked, or broken must degrade to a
++ * warning. This module never throws.
++ *
++ * @module pr-monitor/register-pr
++ */
++
++const { execFileSync } = require('node:child_process');
++
++const { resolveOwnedKernel, closeIfOwned } = require('../kernel/owned-kernel');
++const { resolveGitCommonDir } = require('../kernel/broker');
++const { defaultResolveSlug } = require('./watch-lifecycle');
++
++const GIT_TIMEOUT_MS = 5000;
++
++function git(exec, cwd, args) {
++	return String(exec('git', args, {
++		cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
++	})).trim();
++}
++
++/**
++ * Resolve which worktree row (and therefore which issue) this branch belongs to.
++ * Prefers the path-keyed row, but only when it still records THIS branch — a
++ * reused worktree path whose row names another branch is stale, not a link.
++ * Falls back to scanning live rows by branch. Never throws: an unresolvable link
++ * yields nulls, and a PR row with null links still beats no row at all.
++ *
++ * @param {object} driver - kernel driver (or a fake with the same surface).
++ * @param {{ worktreePath?: string, branch: string }} query
++ * @returns {{ worktreeId: string|null, issueId: string|null }}
++ */
++function resolveWorktreeLink(driver, { worktreePath, branch }) {
++	try {
++		if (worktreePath && typeof driver.getWorktreeLinkage === 'function') {
++			const row = driver.getWorktreeLinkage({ path: worktreePath });
++			if (row && row.branch === branch) {
++				return { worktreeId: row.id ?? null, issueId: row.issue_id ?? null };
++			}
++		}
++		if (typeof driver.listWorktrees === 'function') {
++			const rows = driver.listWorktrees() || [];
++			// Live rows only, matching findExistingLink: a superseded registration for a
++			// reused branch name is not the current link. A null state is legacy => live.
++			const match = rows.find(row => row && row.branch === branch
++				&& (row.state === 'active' || row.state == null));
++			if (match) return { worktreeId: match.id ?? null, issueId: match.issue_id ?? null };
++		}
++	} catch {
++		return { worktreeId: null, issueId: null };
++	}
++	return { worktreeId: null, issueId: null };
++}
++
++/**
++ * Register the PR just created by `forge ship` as a `kernel_pr` row.
++ *
++ * @param {object} options
++ * @param {string|number} [options.prNumber] - the created PR; absent => nothing to register.
++ * @param {boolean} [options.dryRun] - a dry run must touch no kernel.
++ * @param {string} [options.cwd] - project root the ship ran in; the key source for
++ *   git_common_dir AND the worktree-linkage path lookup (default process.cwd()).
++ * @param {Function} [options.exec] - git runner (test injection).
++ * @param {Function} [options.resolveSlug] - repo-slug resolver; defaults to the SAME
++ *   resolver the shepherd/watcher use, so registered rows key identically to retirePr.
++ * @param {Function} [options.resolveCommonDir] - git-common-dir resolver (test injection).
++ * @param {object} [options.kernel] - injected `{ kernelBroker, kernelDriver }`, or a
++ *   `{ kernelBuilder }` seam. An injected kernel is caller-owned and never closed here.
++ * @param {() => Date} [options.now] - clock injection.
++ * @param {Function} [options.warn] - warning sink (default stderr via console.warn).
++ * @returns {Promise<{registered: boolean, reason?: string, row?: object}>} never rejects.
++ */
++async function registerShippedPr(options = {}) {
++	const {
++		prNumber,
++		dryRun = false,
++		cwd = process.cwd(),
++		exec = execFileSync,
++		resolveSlug = defaultResolveSlug,
++		resolveCommonDir = resolveGitCommonDir,
++		kernel: kernelDeps = {},
++		now = () => new Date(),
++		warn = (message) => console.warn(message),
++	} = options;
++
++	if (dryRun || prNumber == null) return { registered: false, reason: 'skipped' };
++
++	let kernel = null;
++	try {
++		const branch = git(exec, cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
++		const headSha = git(exec, cwd, ['rev-parse', 'HEAD']);
++
++		const repo = resolveSlug({ cwd });
++		// Key off cwd, NOT `git rev-parse --show-toplevel`: git reports a different path
++		// FORM (slashes, and the long name where this resolver yields the Windows 8.3
++		// short one), and `forge worktree create` keys on projectRoot the same way. A row
++		// written under the other form is invisible to the reconciler.
++		const gitCommonDir = resolveCommonDir(cwd);
++		// repo and git_common_dir are NOT NULL and form the natural key with number;
++		// without them there is no row to write, only a constraint violation.
++		if (!repo || !gitCommonDir) {
++			return { registered: false, reason: 'repo or git-common-dir unresolvable' };
++		}
++
++		kernel = await resolveOwnedKernel(cwd, kernelDeps);
++		const link = resolveWorktreeLink(kernel.driver, { worktreePath: cwd, branch });
++
++		const row = {
++			git_common_dir: gitCommonDir,
++			repo,
++			number: Number(prNumber),
++			issue_id: link.issueId,
++			worktree_id: link.worktreeId,
++			branch,
++			head_sha: headSha || null,
++			state: 'open',
++			registered_at: now().toISOString(),
++		};
++		await kernel.broker.upsertPr(row);
++		return { registered: true, row };
++	} catch (error) {
++		warn(`[forge] could not register PR #${prNumber} in the kernel: ${error.message}`);
++		return { registered: false, reason: error.message };
++	} finally {
++		closeIfOwned(kernel);
++	}
++}
++
++module.exports = {
++	registerShippedPr,
++	resolveWorktreeLink,
++};
+diff --git a/test/pr-monitor/register-pr.test.js b/test/pr-monitor/register-pr.test.js
+new file mode 100644
+index 00000000..bbb711ed
+--- /dev/null
++++ b/test/pr-monitor/register-pr.test.js
+@@ -0,0 +1,361 @@
++'use strict';
++
++const { describe, test, expect, afterAll } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { registerShippedPr, resolveWorktreeLink } = require('../../lib/pr-monitor/register-pr');
++const { executeShip } = require('../../lib/commands/ship');
++
++// PR registration at creation time (kernel issue c3952ba5). `forge ship` is the
++// ONLY moment the PR<->worktree<->issue link is derivable with zero extra user
++// input: the worktree already knows its issue (kernel_worktrees.issue_id, #370).
++// These tests pin: the row is written on the (git_common_dir, repo, number)
++// natural key, the link is derived not asked for, and NOTHING here can fail a
++// ship whose PR already exists on GitHub.
++
++const tmpRoots = [];
++function tmpRoot() {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ship-pr-'));
++  tmpRoots.push(dir);
++  return dir;
++}
++
++afterAll(() => {
++  for (const dir of tmpRoots) {
++    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
++  }
++});
++
++function fakeKernel({ worktreeRow = null, worktrees = [], upsertError = null } = {}) {
++  const upserts = [];
++  const closes = [];
++  const driver = {
++    getWorktreeLinkage: () => worktreeRow,
++    listWorktrees: () => worktrees,
++    close: () => { closes.push(Date.now()); },
++  };
++  const broker = {
++    config: {},
++    upsertPr: async (row) => {
++      if (upsertError) throw upsertError;
++      upserts.push(row);
++      return { ok: true, id: 'pr-row-id' };
++    },
++  };
++  return {
++    upserts,
++    closes,
++    driver,
++    broker,
++    kernelBuilder: async () => ({ kernelBroker: broker, kernelDriver: driver }),
++  };
++}
++
++function fakeGit(root, { branch = 'feat/pr-registration', head = 'sha-head' } = {}) {
++  return (_bin, args) => {
++    const key = args.join(' ');
++    if (key === 'rev-parse --show-toplevel') return `${root}\n`;
++    if (key === 'rev-parse --abbrev-ref HEAD') return `${branch}\n`;
++    if (key === 'rev-parse HEAD') return `${head}\n`;
++    throw new Error(`unexpected git invocation: ${key}`);
++  };
++}
++
++function baseOptions(root, kernel, overrides = {}) {
++  return {
++    prNumber: 42,
++    cwd: root,
++    exec: fakeGit(root),
++    resolveSlug: () => 'forge',
++    resolveCommonDir: () => path.join(root, '.git'),
++    kernel,
++    now: () => new Date('2026-07-26T10:00:00.000Z'),
++    warn: () => {},
++    ...overrides,
++  };
++}
++
++describe('registerShippedPr — derives the PR<->issue link with zero user input', () => {
++  test('writes a kernel_pr row carrying the worktree row id AND its linked issue', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({
++      worktreeRow: { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9', state: 'active' },
++    });
++
++    const result = await registerShippedPr(baseOptions(root, kernel));
++
++    expect(result.registered).toBe(true);
++    expect(kernel.upserts).toHaveLength(1);
++    const row = kernel.upserts[0];
++    expect(row.worktree_id).toBe('wt-1');
++    expect(row.issue_id).toBe('issue-9');
++    expect(row.number).toBe(42);
++    expect(row.repo).toBe('forge');
++    expect(row.branch).toBe('feat/pr-registration');
++    expect(row.head_sha).toBe('sha-head');
++    expect(row.git_common_dir).toBe(path.join(root, '.git'));
++  });
++
++  test('registers state=open with registered_at, and leaves the verdict columns unset', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9' } });
++
++    await registerShippedPr(baseOptions(root, kernel));
++
++    const row = kernel.upserts[0];
++    expect(row.state).toBe('open');
++    expect(row.registered_at).toBe('2026-07-26T10:00:00.000Z');
++    expect(row.verdict ?? null).toBeNull();
++    expect(row.verdict_source ?? null).toBeNull();
++    expect(row.verdict_at ?? null).toBeNull();
++  });
++
++  test('a slug-only worktree (no linked issue) still registers the PR row, issue_id null', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: { id: 'wt-2', branch: 'feat/pr-registration', issue_id: null } });
++
++    const result = await registerShippedPr(baseOptions(root, kernel));
++
++    expect(result.registered).toBe(true);
++    expect(kernel.upserts[0].worktree_id).toBe('wt-2');
++    expect(kernel.upserts[0].issue_id).toBeNull();
++  });
++
++  test('an unregistered worktree still registers the PR row with both links null', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: null, worktrees: [] });
++
++    const result = await registerShippedPr(baseOptions(root, kernel));
++
++    expect(result.registered).toBe(true);
++    expect(kernel.upserts[0].worktree_id).toBeNull();
++    expect(kernel.upserts[0].issue_id).toBeNull();
++  });
++
++  test('re-shipping the same PR re-upserts the SAME natural key (idempotent, never a second key)', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9' } });
++
++    await registerShippedPr(baseOptions(root, kernel));
++    await registerShippedPr(baseOptions(root, kernel, { exec: fakeGit(root, { head: 'sha-newer' }) }));
++
++    expect(kernel.upserts).toHaveLength(2);
++    const keys = kernel.upserts.map(r => `${r.git_common_dir}|${r.repo}|${r.number}`);
++    expect(new Set(keys).size).toBe(1);
++    expect(kernel.upserts[1].head_sha).toBe('sha-newer');
++  });
++});
++
++describe('registerShippedPr — keys the row exactly as every other consumer does', () => {
++  // `git rev-parse --show-toplevel` reports a DIFFERENT path form than the canonical
++  // resolver (forward slashes, and the long name where the resolver yields the 8.3
++  // short one on Windows). Keying kernel_pr off that string writes a row the
++  // reconciler can never find, so the key must come from projectRoot — the same
++  // input `forge worktree create` feeds resolveGitCommonDir (worktree.js).
++  test('derives git_common_dir from projectRoot, not from the git toplevel string', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9' } });
++    const commonDirInputs = [];
++    const otherForm = `${root.replace(/\\/g, '/')}-DIFFERENT-FORM`;
++
++    await registerShippedPr(baseOptions(root, kernel, {
++      exec: (bin, args) => {
++        const key = args.join(' ');
++        if (key === 'rev-parse --show-toplevel') return `${otherForm}\n`;
++        if (key === 'rev-parse --abbrev-ref HEAD') return 'feat/pr-registration\n';
++        if (key === 'rev-parse HEAD') return 'sha-head\n';
++        throw new Error(`unexpected git invocation: ${key}`);
++      },
++      resolveCommonDir: (input) => { commonDirInputs.push(input); return path.join(root, '.git'); },
++    }));
++
++    expect(commonDirInputs).toEqual([root]);
++    expect(kernel.upserts[0].git_common_dir).toBe(path.join(root, '.git'));
++  });
++
++  test('looks the worktree link up by projectRoot, the path forge worktree create records', async () => {
++    const root = tmpRoot();
++    const lookups = [];
++    const kernel = fakeKernel();
++    kernel.driver.getWorktreeLinkage = (filter) => {
++      lookups.push(filter.path);
++      return { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9' };
++    };
++
++    await registerShippedPr(baseOptions(root, kernel));
++
++    expect(lookups).toEqual([root]);
++    expect(kernel.upserts[0].issue_id).toBe('issue-9');
++  });
++});
++
++describe('resolveWorktreeLink — path row wins, branch scan is the fallback', () => {
++  test('ignores a path-keyed row registered for a DIFFERENT branch', () => {
++    const driver = {
++      getWorktreeLinkage: () => ({ id: 'stale', branch: 'feat/other', issue_id: 'issue-stale' }),
++      listWorktrees: () => [{ id: 'wt-live', branch: 'feat/mine', issue_id: 'issue-live', state: 'active' }],
++    };
++
++    expect(resolveWorktreeLink(driver, { worktreePath: 'ignored', branch: 'feat/mine' }))
++      .toEqual({ worktreeId: 'wt-live', issueId: 'issue-live' });
++  });
++
++  test('skips superseded rows when scanning by branch', () => {
++    const driver = {
++      getWorktreeLinkage: () => null,
++      listWorktrees: () => [
++        { id: 'wt-old', branch: 'feat/mine', issue_id: 'issue-old', state: 'superseded' },
++        { id: 'wt-new', branch: 'feat/mine', issue_id: 'issue-new', state: 'active' },
++      ],
++    };
++
++    expect(resolveWorktreeLink(driver, { worktreePath: 'ignored', branch: 'feat/mine' }))
++      .toEqual({ worktreeId: 'wt-new', issueId: 'issue-new' });
++  });
++
++  test('a throwing driver degrades to no link rather than propagating', () => {
++    const driver = { getWorktreeLinkage: () => { throw new Error('db gone'); } };
++
++    expect(resolveWorktreeLink(driver, { worktreePath: 'ignored', branch: 'feat/mine' }))
++      .toEqual({ worktreeId: null, issueId: null });
++  });
++});
++
++describe('registerShippedPr — bookkeeping never touches, and never breaks, the ship', () => {
++  test('a dry run touches no kernel at all', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel();
++    let built = false;
++
++    const result = await registerShippedPr(baseOptions(root, kernel, {
++      dryRun: true,
++      kernel: { ...kernel, kernelBuilder: async () => { built = true; return { kernelBroker: kernel.broker, kernelDriver: kernel.driver }; } },
++    }));
++
++    expect(result.registered).toBe(false);
++    expect(built).toBe(false);
++    expect(kernel.upserts).toHaveLength(0);
++  });
++
++  test('a missing PR number touches no kernel at all', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel();
++
++    const result = await registerShippedPr(baseOptions(root, kernel, { prNumber: null }));
++
++    expect(result.registered).toBe(false);
++    expect(kernel.upserts).toHaveLength(0);
++  });
++
++  test('an unresolvable repo slug skips the write instead of writing a null-repo row', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel();
++
++    const result = await registerShippedPr(baseOptions(root, kernel, { resolveSlug: () => null }));
++
++    expect(result.registered).toBe(false);
++    expect(kernel.upserts).toHaveLength(0);
++  });
++
++  test('an unavailable kernel is reported, warned, and never thrown', async () => {
++    const root = tmpRoot();
++    const warnings = [];
++    const kernel = fakeKernel();
++
++    const result = await registerShippedPr(baseOptions(root, kernel, {
++      kernel: { kernelBuilder: async () => { throw new Error('kernel unavailable'); } },
++      warn: (message) => warnings.push(message),
++    }));
++
++    expect(result.registered).toBe(false);
++    expect(result.reason).toMatch(/kernel unavailable/);
++    expect(warnings.join('\n')).toMatch(/kernel unavailable/);
++  });
++
++  test('a failing upsert is non-fatal and still closes the driver it built', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ upsertError: new Error('disk full') });
++
++    const result = await registerShippedPr(baseOptions(root, kernel));
++
++    expect(result.registered).toBe(false);
++    expect(result.reason).toMatch(/disk full/);
++    expect(kernel.closes).toHaveLength(1);
++  });
++
++  test('closes a driver it built, on the success path too', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9' } });
++
++    await registerShippedPr(baseOptions(root, kernel));
++
++    expect(kernel.closes).toHaveLength(1);
++  });
++
++  test('NEVER closes an injected (caller-owned) kernel', async () => {
++    const root = tmpRoot();
++    const kernel = fakeKernel({ worktreeRow: { id: 'wt-1', branch: 'feat/pr-registration', issue_id: 'issue-9' } });
++
++    await registerShippedPr(baseOptions(root, kernel, {
++      kernel: { kernelBroker: kernel.broker, kernelDriver: kernel.driver },
++    }));
++
++    expect(kernel.upserts).toHaveLength(1);
++    expect(kernel.closes).toHaveLength(0);
++  });
++});
++
++describe('executeShip — a shipped PR survives any kernel failure', () => {
++  const createdPr = async () => ({ success: true, prUrl: 'https://github.com/o/r/pull/77', prNumber: 77 });
++
++  test('ship still SUCCEEDS when PR registration throws outright', async () => {
++    const result = await executeShip({
++      featureSlug: 'kernel-down-feature',
++      title: 'feat: ship survives a dead kernel',
++      createPr: createdPr,
++      startWatcher: () => ({ started: false }),
++      railEnabled: () => false,
++      registerPr: async () => { throw new Error('kernel exploded'); },
++    });
++
++    expect(result.success).toBe(true);
++    expect(result.prNumber).toBe(77);
++    expect(result.prUrl).toBe('https://github.com/o/r/pull/77');
++  });
++
++  test('registration runs for a real PR, carrying the created PR number', async () => {
++    const seen = [];
++    const result = await executeShip({
++      featureSlug: 'registered-feature',
++      title: 'feat: register the shipped pull request',
++      createPr: createdPr,
++      startWatcher: () => ({ started: false }),
++      railEnabled: () => false,
++      registerPr: async (opts) => { seen.push(opts); return { registered: true }; },
++    });
++
++    expect(result.success).toBe(true);
++    expect(seen).toHaveLength(1);
++    expect(seen[0].prNumber).toBe(77);
++    expect(seen[0].dryRun).toBe(false);
++  });
++
++  test('a dry run forwards dryRun so nothing is registered', async () => {
++    const seen = [];
++    const result = await executeShip({
++      featureSlug: 'dry-run-feature',
++      title: 'feat: dry run registers nothing',
++      dryRun: true,
++      createPr: async () => ({ success: true, message: '[DRY RUN]', prUrl: 'https://example.invalid/pull/1' }),
++      startWatcher: () => ({ started: false }),
++      railEnabled: () => false,
++      registerPr: async (opts) => { seen.push(opts); return { registered: false }; },
++    });
++
++    expect(result.success).toBe(true);
++    expect(seen).toHaveLength(1);
++    expect(seen[0].dryRun).toBe(true);
++  });
++});
+-- 
+2.51.0.windows.1
+

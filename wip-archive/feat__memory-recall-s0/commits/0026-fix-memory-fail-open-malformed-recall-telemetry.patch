@@ -1,0 +1,57 @@
+From 689c9cc419fa517dfdfdb5dbcf70899a7c1d6b28 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 14:23:21 +0530
+Subject: [PATCH] fix(memory): fail open malformed recall telemetry
+
+---
+ lib/memory-recall-events.js       |  2 +-
+ test/memory-recall-events.test.js | 10 ++++++++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/lib/memory-recall-events.js b/lib/memory-recall-events.js
+index 2abd7945..f6911734 100644
+--- a/lib/memory-recall-events.js
++++ b/lib/memory-recall-events.js
+@@ -75,10 +75,10 @@ async function recordMemoryRecallEvent(projectRoot, observation = {}, options =
+ }
+ 
+ async function recordMemoryRecallPayload(projectRoot, payload, options = {}) {
+-  const safePayload = normalizeRecallEventPayload(payload);
+   let store = options.store;
+   let ownsStore = false;
+   try {
++    const safePayload = normalizeRecallEventPayload(payload);
+     const projectId = options.projectId || projectMemory.resolveProjectId(projectRoot, options);
+     if (!store) {
+       store = createBuiltinSQLiteDriver({
+diff --git a/test/memory-recall-events.test.js b/test/memory-recall-events.test.js
+index 96fb626e..f8f6dba8 100644
+--- a/test/memory-recall-events.test.js
++++ b/test/memory-recall-events.test.js
+@@ -7,6 +7,7 @@ const {
+   buildRecallEventPayload,
+   launchMemoryRecallEvent,
+   recordMemoryRecallEvent,
++  recordMemoryRecallPayload,
+ } = require('../lib/memory-recall-events');
+ const hooks = require('../lib/commands/hooks');
+ const projectMemory = require('../lib/project-memory');
+@@ -180,6 +181,15 @@ describe('memory.recall.observed events', () => {
+     expect(result).toEqual({ recorded: false, reason: 'kernel unavailable' });
+   });
+ 
++  test.each([
++    ['null', null],
++    ['malformed', { get outcome() { throw new Error('malformed payload'); } }],
++  ])('direct %s payload failure is best-effort', async (_name, payload) => {
++    const result = await recordMemoryRecallPayload('/project', payload);
++
++    expect(result).toEqual({ recorded: false, reason: expect.any(String) });
++  });
++
+   test('the prompt hook reports selected ids and aggregate mix without prompt content', async () => {
+     const observations = [];
+     const result = await hooks.handler(
+-- 
+2.51.0.windows.1
+

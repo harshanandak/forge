@@ -1,0 +1,72 @@
+From 7fdc5c59209f08dd072b413825a5c7db7003b586 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 12:52:40 +0530
+Subject: [PATCH] fix: allow open pr binding replay
+
+---
+ lib/commands/merge.js                 |  1 +
+ test/commands/merge-authority.test.js | 36 +++++++++++++++++++++++++++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 9d4253bd..02999346 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -341,6 +341,7 @@ function terminalTraceIsIncomplete(gaps, row) {
+     if (gap === 'pull_requests:overflow') return true;
+     if (rowId && gap === `pull_requests:${rowId}:unlinked_issue`) return true;
+     if (!/^iterations:[^:]+:(?:missing|incomplete|overflow)$/.test(gap)) return false;
++    if (row?.state === 'open' && gap === `iterations:${rowId}:missing`) return false;
+     return !rowId || ['missing', 'incomplete', 'overflow']
+       .some(suffix => gap === `iterations:${rowId}:${suffix}`);
+   });
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 1a400e41..b28e0e12 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -378,6 +378,42 @@ describe('merge command — mandatory release authority', () => {
+     }
+   });
+ 
++  test('continues to exact-head provider evaluation for an authoritative open binding without terminal iterations', async () => {
++    let fetches = 0;
++    let merges = 0;
++    const openPr = {
++      id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open',
++      git_common_dir: '/repo/.git', iterations: [],
++    };
++    const injected = deps({
++      fetchPrContext: async () => { fetches += 1; return context(); },
++      mergePr: async ({ expectedHead }) => {
++        merges += 1;
++        expect(expectedHead).toBe(HEAD);
++        return { merged: true };
++      },
++      resolveLocalRepository: () => 'acme/forge',
++      buildPrBindingBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: {
++          readTrace: async () => ({
++            gaps: ['iterations:pr-1:missing'],
++            pull_requests: [openPr],
++          }),
++          listOpenPrs: async () => [openPr],
++        },
++        driver: { close() {} },
++      }),
++    });
++    delete injected.verifyPrIssueBinding;
++
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
++
++    expect(out).toMatchObject({ success: true, merged: true });
++    expect(fetches).toBe(2);
++    expect(merges).toBe(1);
++  });
++
+   test('does not treat missing retired rows as clean absence when trace gaps are unreadable', async () => {
+     for (const gaps of [
+       null,
+-- 
+2.51.0.windows.1
+

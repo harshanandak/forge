@@ -1,0 +1,32 @@
+From 3ec486efe62264e5144a8aa96ca4fda11a71ef1e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 14:15:46 +0530
+Subject: [PATCH] chore(d20): regenerate bd call-site kill-list for
+ orientation.js line shift
+
+The onboarding fix added a Key Commands section to lib/orientation.js, shifting
+its two .beads call-site references (549/579 -> 585/615). Regenerate the D20
+kill-list artifact against the rebased tree so `release check --target 0.1.0`
+stays at 0 blockers. Deterministic byproduct only; no call sites added/removed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                                   | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 9535a5c4..94d961b1 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -61,7 +61,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/migrate-dry-run.js (8)
+   - lines: 171 (.beads), 174 (.beads), 178 (.beads), 204 (.beads), 212 (.beads), 213 (.beads, dolt), 226 (.beads), 227 (dolt)
+ - [ ] lib/orientation.js (2)
+-  - lines: 549 (.beads), 579 (.beads)
++  - lines: 585 (.beads), 615 (.beads)
+ - [ ] lib/patch-intent.js (1)
+   - lines: 26 (.beads)
+ - [ ] lib/plugin-catalog.js (1)
+-- 
+2.51.0.windows.1
+

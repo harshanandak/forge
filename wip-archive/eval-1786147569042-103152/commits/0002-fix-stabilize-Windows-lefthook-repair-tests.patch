@@ -1,0 +1,74 @@
+From 252a9232f65f9644975a8fbd0eb6c244cbaa1f74 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 05:09:17 +0530
+Subject: [PATCH] fix: stabilize Windows lefthook repair tests
+
+---
+ lib/shell-utils.js                 |  2 +-
+ test/setup-lefthook-repair.test.js |  4 +++-
+ test/shell-utils.test.js           | 14 ++++++++++++++
+ 3 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/lib/shell-utils.js b/lib/shell-utils.js
+index 6efd3cd2..fcf9a3fb 100644
+--- a/lib/shell-utils.js
++++ b/lib/shell-utils.js
+@@ -105,7 +105,7 @@ function secureExecFileSync(command, args = [], options = {}) {
+       // metacharacters, so fold them into a single command line and pass no args array —
+       // identical execution through cmd.exe (npm.cmd/npx.cmd shims), no deprecation warning.
+       const commandLine = [command, ...args].join(' ');
+-      return _execFileSync(commandLine, [], { ...execOptions, shell: true });
++      return _execFileSync(commandLine, [], { env: process.env, ...execOptions, shell: true });
+     }
+     return _execFileSync(spec.file, args, execOptions);
+   }
+diff --git a/test/setup-lefthook-repair.test.js b/test/setup-lefthook-repair.test.js
+index 72e38bb2..762a2679 100644
+--- a/test/setup-lefthook-repair.test.js
++++ b/test/setup-lefthook-repair.test.js
+@@ -4,6 +4,7 @@ const path = require('node:path');
+ const { afterEach, describe, expect, setDefaultTimeout, test } = require('bun:test');
+ const setupCommand = require('../lib/commands/setup');
+ const { checkLefthookStatus } = require('../lib/lefthook-check');
++const { resolveShellRuntime } = require('../lib/runtime-health');
+ 
+ const tempDirs = [];
+ 
+@@ -23,7 +24,8 @@ function writeExecutable(filePath, content) {
+   if (process.platform === 'win32' && path.extname(filePath) === '') {
+     const base = path.basename(filePath);
+     const cmdPath = `${filePath}.cmd`;
+-    fs.writeFileSync(cmdPath, `@echo off\r\nbash \"%~dp0\\${base}\" %*\r\n`, { mode: 0o755 });
++    const bash = resolveShellRuntime().command;
++    fs.writeFileSync(cmdPath, `@echo off\r\n\"${bash}\" \"%~dp0\\${base}\" %*\r\n`, { mode: 0o755 });
+   }
+ }
+ 
+diff --git a/test/shell-utils.test.js b/test/shell-utils.test.js
+index 626e1997..3118e8b2 100644
+--- a/test/shell-utils.test.js
++++ b/test/shell-utils.test.js
+@@ -73,6 +73,20 @@ describe('secureExecFileSync', () => {
+       }]);
+     });
+ 
++    test('forwards the current environment to shell-resolved command shims', () => {
++      let childEnv;
++      secureExecFileSync('npm', ['install'], {
++        _platform: 'win32',
++        _spawnSync: () => ({ status: 0, stdout: 'C:\\tools\\npm.cmd\r\n' }),
++        _execFileSync: (_command, _args, options) => {
++          childEnv = options.env;
++          return '';
++        },
++      });
++
++      expect(childEnv?.PATH).toBe(process.env.PATH);
++    });
++
+     test('spawns a resolved .exe directly without a shell', () => {
+       const execCalls = [];
+       secureExecFileSync('bd', ['version'], {
+-- 
+2.51.0.windows.1
+

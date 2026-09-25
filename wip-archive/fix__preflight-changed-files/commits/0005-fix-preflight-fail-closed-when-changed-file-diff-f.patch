@@ -1,0 +1,79 @@
+From 6989b3a976d9599acad9738edb625a6e980d23ca Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 00:43:05 +0530
+Subject: [PATCH] fix(preflight): fail closed when changed-file diff fails
+
+---
+ lib/commands/preflight.js       | 13 +++++++++++--
+ test/commands/preflight.test.js | 24 ++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/preflight.js b/lib/commands/preflight.js
+index 1b227083..25226096 100644
+--- a/lib/commands/preflight.js
++++ b/lib/commands/preflight.js
+@@ -103,7 +103,16 @@ function resolveChangeSet(exec = execFileSync, { runAll = false } = {}) {
+   // Diff against the SAME base we just resolved. getChangedFiles() re-resolves
+   // its own diff ref (and can fall back to a different default branch), so use
+   // baseRef directly to keep the file list consistent with the resolved base.
+-  return { resolved: true, baseRef, changedFiles: changedFilesForBase(exec, baseRef) };
++  const changedFiles = changedFilesForBase(exec, baseRef);
++  if (changedFiles == null) {
++    return {
++      resolved: false,
++      baseRef,
++      changedFiles: [],
++      reason: `git diff failed or timed out for ${baseRef}`,
++    };
++  }
++  return { resolved: true, baseRef, changedFiles };
+ }
+ 
+ /** Files changed between the merge-base of HEAD and `baseRef` and HEAD. */
+@@ -111,7 +120,7 @@ function changedFilesForBase(exec, baseRef) {
+   const mergeBase = gitTryOut(exec, ['merge-base', 'HEAD', baseRef]);
+   const range = mergeBase ? `${mergeBase}...HEAD` : `${baseRef}...HEAD`;
+   const out = gitTryOut(exec, ['diff', '--name-only', range]);
+-  if (out == null) return [];
++  if (out == null) return null;
+   return out.split(/\r?\n/).filter(Boolean);
+ }
+ 
+diff --git a/test/commands/preflight.test.js b/test/commands/preflight.test.js
+index 2b55460d..7ac9576b 100644
+--- a/test/commands/preflight.test.js
++++ b/test/commands/preflight.test.js
+@@ -151,6 +151,30 @@ describe('resolveChangeSet — strict base detection (B2)', () => {
+     // The diff must use the merge-base of the resolved base, not a re-resolved ref.
+     expect(calls.some((c) => c.startsWith('diff --name-only abc123...HEAD'))).toBe(true);
+   });
++
++  test('git diff failure leaves the change set unresolved and preflight fails closed', async () => {
++    const exec = (_cmd, args) => {
++      const command = args.join(' ');
++      if (command.includes('origin/HEAD')) return 'main\n';
++      if (command.startsWith('merge-base HEAD main')) return 'abc123\n';
++      if (command.startsWith('diff --name-only abc123...HEAD')) {
++        throw new Error('git diff timed out');
++      }
++      throw new Error(`unexpected git: ${command}`);
++    };
++    const changeSet = resolveChangeSet(exec, {});
++    let built = false;
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangeSet: () => changeSet,
++      buildGates: () => { built = true; return []; },
++    });
++
++    expect(changeSet.resolved).toBe(false);
++    expect(changeSet.reason).toMatch(/git diff/i);
++    expect(res.success).toBe(false);
++    expect(built).toBe(false);
++  });
+ });
+ 
+ // 45a63715: a fully-pushed feature branch's own @{upstream} points AT HEAD, so
+-- 
+2.51.0.windows.1
+

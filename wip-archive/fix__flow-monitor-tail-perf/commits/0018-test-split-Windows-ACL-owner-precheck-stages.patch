@@ -1,0 +1,91 @@
+From 75b856d707582555c1a11a29bdc78c6d67e6e865 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 11:11:25 +0530
+Subject: [PATCH] test: split Windows ACL owner precheck stages
+
+---
+ lib/kernel/sqlite-driver.js             |  2 +-
+ lib/kernel/windows-private-acl.js       |  8 ++++---
+ test/kernel/windows-private-acl.test.js | 28 ++++++++++++++++++++++++-
+ 3 files changed, 33 insertions(+), 5 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index bad079f3..6007136d 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4560,7 +4560,7 @@ async function hardenBackupPermissionsBatch(filePaths, options = {}) {
+ }
+ 
+ const WINDOWS_PRIVATE_ACL_SCRIPT_PATH = path.join(__dirname, 'windows-private-acl.js');
+-const WINDOWS_PRIVATE_ACL_SCRIPT_SHA256 = '9ef98012f205c0f185a02d479b09982af491903b67217952b8f3a0beb0c4e4e7';
++const WINDOWS_PRIVATE_ACL_SCRIPT_SHA256 = '0ca95554cf90f8a6fa0e653a7caaccba9b85487aa9c4313a15e0f2bec3935054';
+ 
+ function resolveWindowsSystemExecutable(name, environment = process.env) {
+ 	const systemRoot = environment.SystemRoot;
+diff --git a/lib/kernel/windows-private-acl.js b/lib/kernel/windows-private-acl.js
+index 6b990f30..d14b98d9 100644
+--- a/lib/kernel/windows-private-acl.js
++++ b/lib/kernel/windows-private-acl.js
+@@ -177,10 +177,12 @@ function runWithDependencies(dependencies) {
+ 	for (i = 0; i < targets.length; i++) {
+ 		var beforeRaw = atStage(20, function () { return rawDescriptor(utility, targets[i].path); });
+ 		var beforeIid = atStage(21, function () { return iidDescriptor(utility, targets[i].path); });
+-		atStage(22, function () { invariant(beforeIid && beforeIid.Owner, 'precheck IID owner is absent'); });
+ 		owners.push(atStage(22, function () { return ownerSid(beforeRaw); }));
+-		iidOwners.push(String(beforeIid.Owner));
+-		atStage(22, function () { invariant(owners[i] === currentSid, 'precheck owner mismatch'); });
++		iidOwners.push(atStage(23, function () {
++			invariant(beforeIid && beforeIid.Owner, 'precheck IID owner is absent');
++			return String(beforeIid.Owner);
++		}));
++		atStage(24, function () { invariant(owners[i] === currentSid, 'precheck owner mismatch'); });
+ 	}
+ 
+ 	for (i = 0; i < targets.length; i++) {
+diff --git a/test/kernel/windows-private-acl.test.js b/test/kernel/windows-private-acl.test.js
+index b55db06a..8b5b0162 100644
+--- a/test/kernel/windows-private-acl.test.js
++++ b/test/kernel/windows-private-acl.test.js
+@@ -187,7 +187,7 @@ describe('Windows private ACL cscript verifier', () => {
+ 			const nonOwnerEvents = [];
+ 			const nonOwnerError = captureError(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents)));
+ 			expect(nonOwnerError.message).toContain('precheck owner mismatch');
+-			expect(nonOwnerError.forgeExitCode).toBe(22);
++			expect(nonOwnerError.forgeExitCode).toBe(24);
+ 			expect(nonOwnerEvents.some(([operation]) => operation === 'set')).toBe(false);
+ 
+ 			const racedStates = {
+@@ -209,4 +209,30 @@ describe('Windows private ACL cscript verifier', () => {
+ 			globalThis.VBArray = originalVBArray;
+ 		}
+ 	});
++
++	test('maps each owner precheck failure to a distinct privacy-safe exit code', () => {
++		const originalVBArray = globalThis.VBArray;
++		globalThis.VBArray = function (value) { this.toArray = () => value; };
++		try {
++			const rawStates = {
++				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes().slice(0, 24) },
++			};
++			const rawError = captureError(() => runWithDependencies(fakeDependencies(rawStates, [])));
++			expect(rawError.forgeExitCode).toBe(22);
++
++			const iidStates = {
++				'C:\\one': { iid: {}, isDirectory: false, raw: descriptorBytes() },
++			};
++			const iidError = captureError(() => runWithDependencies(fakeDependencies(iidStates, [])));
++			expect(iidError.forgeExitCode).toBe(23);
++
++			const ownerStates = {
++				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
++			};
++			const ownerError = captureError(() => runWithDependencies(fakeDependencies(ownerStates, [])));
++			expect(ownerError.forgeExitCode).toBe(24);
++		} finally {
++			globalThis.VBArray = originalVBArray;
++		}
++	});
+ });
+-- 
+2.51.0.windows.1
+

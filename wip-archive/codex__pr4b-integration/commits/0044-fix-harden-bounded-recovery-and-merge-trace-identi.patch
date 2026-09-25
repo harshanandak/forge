@@ -1,0 +1,431 @@
+From 70ea9eed17e23478e2ab08a6b426ac02ba3e88df Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 23:22:01 +0530
+Subject: [PATCH] fix: harden bounded recovery and merge trace identity
+
+---
+ lib/commands/merge.js                 |  77 +++++++++++++++-----
+ lib/pr-monitor/flow-monitor.js        |  34 ++++++---
+ test/commands/merge-authority.test.js | 101 ++++++++++++++++++++++++++
+ test/commands/merge.test.js           |   1 +
+ test/pr-monitor/flow-monitor.test.js  |  75 +++++++++++++++++++
+ 5 files changed, 262 insertions(+), 26 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index a7e51783..ae3f42ae 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -117,6 +117,29 @@ function normalizeRepository(value) {
+   return typeof value === 'string' && REPOSITORY_NAME.test(value) ? value.toLowerCase() : null;
+ }
+ 
++function defaultResolveLocalRepository({ projectRoot, git = execFileSync }) {
++  try {
++    const remote = git('git', ['remote', 'get-url', 'origin'], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      timeout: 3000,
++      stdio: ['pipe', 'pipe', 'pipe'],
++      windowsHide: true,
++    }).trim();
++    const scp = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(remote);
++    if (scp) return normalizeRepository(scp[1]);
++    const parsed = new URL(remote);
++    if (!['git:', 'http:', 'https:', 'ssh:'].includes(parsed.protocol)
++      || !parsed.hostname || parsed.password || parsed.search || parsed.hash
++      || (['http:', 'https:'].includes(parsed.protocol) && parsed.username)) return null;
++    const parts = parsed.pathname.split('/').filter(Boolean);
++    if (parts.length !== 2) return null;
++    return normalizeRepository(`${parts[0]}/${parts[1].replace(/\.git$/, '')}`);
++  } catch {
++    return null;
++  }
++}
++
+ function terminalEvidenceFromTrace(row, { issueId, repository, number, expectedHead }) {
+   const normalizedExpectedHead = normalizeFullHeadSha(expectedHead);
+   if (!normalizedExpectedHead || !Array.isArray(row?.iterations)) return { invalid: true };
+@@ -1064,28 +1087,47 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   let prContext; let prState = '';
+   let preProviderReplayFailure = null;
+   if (exactMergeIdentity) {
++    const resolveLocalRepository = deps.resolveLocalRepository || defaultResolveLocalRepository;
++    let localRepository;
+     try {
+-      const replay = await recoverMergedTerminal({
+-        pr,
+-        parsed,
+-        root,
+-        config: {},
+-        prContext: { number: Number(pr), headSha: parsed.expectedHead },
+-        ownershipActor,
+-        ownershipSessionId,
+-        deps,
+-        replayOnly: true,
+-      });
+-      if (replay.replayMissing !== true) {
+-        if (replay.success) return replay;
+-        preProviderReplayFailure = { ...replay, merged: false };
+-      }
+-    } catch (error) {
++      localRepository = normalizeRepository(await resolveLocalRepository({ projectRoot: root }));
++    } catch {
++      localRepository = null;
++    }
++    if (!localRepository) {
+       preProviderReplayFailure = {
+         success: false,
+         merged: false,
+-        error: `Merged PR terminal evidence replay failed: ${error.message}`,
++        error: 'Local repository identity is unavailable for terminal evidence replay.',
+       };
++    } else {
++      try {
++        const replay = await recoverMergedTerminal({
++          pr,
++          parsed,
++          root,
++          config: {},
++          prContext: {
++            number: Number(pr),
++            headSha: parsed.expectedHead,
++            repository: localRepository,
++          },
++          ownershipActor,
++          ownershipSessionId,
++          deps,
++          replayOnly: true,
++        });
++        if (replay.replayMissing !== true) {
++          if (replay.success) return replay;
++          preProviderReplayFailure = { ...replay, merged: false };
++        }
++      } catch (error) {
++        preProviderReplayFailure = {
++          success: false,
++          merged: false,
++          error: `Merged PR terminal evidence replay failed: ${error.message}`,
++        };
++      }
+     }
+   }
+ 
+@@ -1413,6 +1455,7 @@ module.exports = {
+   handler,
+   // Exported seams for testing / reuse.
+   defaultFetchPrContext,
++  defaultResolveLocalRepository,
+   defaultMergePr,
+   defaultPrepareMergeDecision,
+   defaultRecordMergeDecision,
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 8f2836c7..8c16e97c 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -961,15 +961,17 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+   let offset = 0;
+   while (offset < pendingEvents.length) {
+     const reference = pendingEvents[offset].payload.bounded_payload.batch_plan;
++    const startIndex = reference?.index;
+     if (!validBatchPlanReference(reference)
+-      || reference.start_sequence !== pendingEvents[offset].payload.sequence
+-      || reference.index !== 0) return false;
++      || !Number.isSafeInteger(startIndex) || startIndex < 0
++      || startIndex >= reference.segment_count
++      || reference.start_sequence + startIndex !== pendingEvents[offset].payload.sequence) return false;
+     const batches = [];
+     while (offset < pendingEvents.length) {
+       const event = pendingEvents[offset];
+       const candidate = event.payload.bounded_payload.batch_plan;
+       if (candidate?.id !== reference.id) break;
+-      const index = batches.length;
++      const index = startIndex + batches.length;
+       const pendingBatch = event.payload.bounded_payload.pending_batch;
+       const record = event.payload.bounded_payload.record;
+       const key = planRecordKey(reference.id, index);
+@@ -979,7 +981,8 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+         || candidate.segment_count !== reference.segment_count
+         || candidate.index !== index
+         || index >= reference.segment_count
+-        || candidate.committed === true
++        || candidate.committed !== undefined
++        || candidate.segment_index !== undefined
+         || event.payload.sequence !== reference.start_sequence + index
+         || event.payload.event_id !== monitorEventId(
+           ctx.monitorId,
+@@ -987,12 +990,14 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+           T.SNAPSHOT_CHECKPOINT,
+           key,
+         )
++        || event.payload.subject_revision !== subjectRevision
+         || event.payload.type !== T.SNAPSHOT_CHECKPOINT
+         || event.payload.bounded_payload.snapshot !== null
+         || event.payload.bounded_payload.checkpoint_complete !== false
+         || record?.type !== T.SNAPSHOT_CHECKPOINT
+         || record?.key !== boundIdentity(key)
+         || record?.seq !== event.payload.sequence
++        || event.payload.observed_at !== record?.ts
+         || typeof pendingBatch !== 'string') return false;
+       try {
+         batches.push(decodePendingBatch(pendingBatch, ctx, subjectRevision));
+@@ -1001,8 +1006,16 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+       }
+       offset += 1;
+     }
+-    if (batches.length < reference.segment_count) {
++    const complete = startIndex + batches.length === reference.segment_count;
++    if (!complete) {
+       if (batches.some(batch => batch.snapshot !== null)) return false;
++      if (startIndex > 0 && offset === pendingEvents.length) return false;
++      continue;
++    }
++    if (batches.slice(0, -1).some(batch => batch.snapshot !== null)
++      || batches.at(-1).snapshot === null) return false;
++    if (startIndex > 0) {
++      if (offset === pendingEvents.length) return false;
+       continue;
+     }
+     const planId = computeContentHash({
+@@ -1010,9 +1023,7 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+       subject_revision: subjectRevision,
+       segments: batches.map(batch => batch.encoded),
+     });
+-    if (planId !== reference.id
+-      || batches.slice(0, -1).some(batch => batch.snapshot !== null)
+-      || batches.at(-1).snapshot === null) return false;
++    if (planId !== reference.id) return false;
+   }
+   return true;
+ }
+@@ -1236,5 +1247,10 @@ module.exports = {
+   FlowMonitorError,
+   privacySafeIdentity,
+   runFlowMonitorPass,
+-  _internals: { appendPendingBatch, decodePrivateSafeBase64, encodePrivateSafeBase64 },
++  _internals: {
++    appendPendingBatch,
++    decodePrivateSafeBase64,
++    encodePrivateSafeBase64,
++    validOrphanedPrecommitPlan,
++  },
+ };
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index aa5abad1..9fe1dd1f 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -73,6 +73,36 @@ function deps(overrides = {}) {
+ }
+ 
+ describe('merge command — mandatory release authority', () => {
++  test('resolves the local repository from HTTPS and SSH origin URLs', () => {
++    for (const remote of [
++      'https://github.com/Acme/Forge.git',
++      'git@github.com:Acme/Forge.git',
++      'ssh://git@github.com/Acme/Forge.git',
++    ]) {
++      const calls = [];
++      expect(mergeCmd.defaultResolveLocalRepository({
++        projectRoot: '/repo',
++        git: (...args) => { calls.push(args); return remote; },
++      })).toBe('acme/forge');
++      expect(calls).toEqual([['git', ['remote', 'get-url', 'origin'], expect.objectContaining({ cwd: '/repo' })]]);
++    }
++    for (const remote of [
++      'C:/repo/Acme/Forge.git',
++      '/repo/Acme/Forge.git',
++      'file:///repo/Acme/Forge.git',
++      'ssh:/Acme/Forge.git',
++      'git:Acme/Forge.git',
++      'git@github.com/path:Acme/Forge.git',
++      'git@@github.com:Acme/Forge.git',
++      'Acme/Forge',
++    ]) {
++      expect(mergeCmd.defaultResolveLocalRepository({
++        projectRoot: '/repo',
++        git: () => remote,
++      })).toBeNull();
++    }
++  });
++
+   test('default merge-gate verification honors a disabled configured gate', async () => {
+     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-merge-gate-'));
+     try {
+@@ -302,6 +332,77 @@ describe('merge command — mandatory release authority', () => {
+     }
+   });
+ 
++  test('scopes provider-free terminal replay by the locally resolved repository', async () => {
++    let fetches = 0;
++    let traceTarget;
++    const terminal = {
++      type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE, issue_revision: 7,
++      head_sha: HEAD, work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
++    };
++    const injected = deps({
++      fetchPrContext: async () => { fetches += 1; return context(); },
++      resolveLocalRepository: () => 'acme/forge',
++      buildPrBindingBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: { readTrace: async (target) => {
++          traceTarget = target;
++          return { gaps: [], pull_requests: [{
++            id: 'current', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++            git_common_dir: '/repo/.git', iterations: [terminal],
++          }, {
++            id: 'renamed', repo: 'acme/old-forge', number: 42, issue_id: ISSUE, state: 'closed',
++            git_common_dir: '/repo/.git', iterations: [terminal],
++          }] };
++        } },
++        driver: { close() {} },
++      }),
++    });
++    delete injected.verifyPrIssueBinding;
++
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
++
++    expect(out).toMatchObject({ success: true, merged: true, recovered: true });
++    expect(traceTarget).toMatchObject({ repo: 'acme/forge', git_common_dir: '/repo/.git' });
++    expect(fetches).toBe(0);
++  });
++
++  test('fails closed before trace or provider I/O when the local repository is unreadable', async () => {
++    for (const resolveLocalRepository of [
++      () => null,
++      () => 'not-a-repository',
++      () => { throw new Error('origin unavailable'); },
++    ]) {
++      let fetches = 0;
++      let traceReads = 0;
++      const injected = deps({
++        fetchPrContext: async () => { fetches += 1; return context(); },
++        resolveLocalRepository,
++        buildPrBindingBroker: async () => ({
++          gitCommonDir: '/repo/.git',
++          broker: { readTrace: async () => {
++            traceReads += 1;
++            return { gaps: [], pull_requests: [{
++              repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
++              git_common_dir: '/repo/.git', iterations: [{
++                type: 'pr.merged', at: '2026-08-01T12:00:00.000Z', issue_id: ISSUE,
++                issue_revision: 7, head_sha: HEAD,
++                work_packet_hash: 'a'.repeat(64), run_receipt_hash: 'b'.repeat(64),
++              }],
++            }] };
++          } },
++          driver: { close() {} },
++        }),
++      });
++      delete injected.verifyPrIssueBinding;
++
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), injected);
++
++      expect(out).toMatchObject({ success: false, merged: false });
++      expect(traceReads).toBe(0);
++      expect(fetches).toBe(0);
++    }
++  });
++
+   test('replays existing terminal evidence after merge without rechecking expired gate authority', async () => {
+     let gateChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 43e6e7c8..5ee24feb 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -43,6 +43,7 @@ function authorizedContext(overrides = {}) {
+ 
+ const AUTHORITY_DEPS = {
+   env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
++  resolveLocalRepository: () => 'acme/forge',
+   verifyIssueOwnership: async () => ({
+     owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+   }),
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 0cab3c68..7fb0df51 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -512,6 +512,81 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(batches).toHaveLength(128);
+   });
+ 
++  test('supersedes a pre-commit plan truncated by its replacement at the bounded tail', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 128 }, (_, index) => ({
++      name: `check-${index}`,
++      class: 'green',
++    }));
++    let next = snapshot({ checks });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    let enrichedRecordCount = 0;
++    ctx.enrich = async records => {
++      enrichedRecordCount = records.length;
++      for (const [index, record] of records.entries()) {
++        record.repo = index === 0 ? 'owner/compact' : `owner/${index}-${Array.from(
++          { length: 160 },
++          (_value, salt) => crypto.createHash('sha256')
++            .update(`${index}:${salt}`)
++            .digest('base64url')
++            .replace(/[-_A]/g, '.'),
++        ).join('')}`;
++      }
++    };
++
++    const appendEvent = store.appendEvent.bind(store);
++    let markerFailures = 0;
++    store.appendEvent = async (...args) => {
++      if (args[0].payload.bounded_payload.batch_plan?.committed === true && markerFailures === 0) {
++        markerFailures += 1;
++        throw new Error('first commit marker interruption');
++      }
++      return appendEvent(...args);
++    };
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    expect(enrichedRecordCount).toBe(128);
++    const originalPlanId = store.events.at(-1).payload.bounded_payload.batch_plan.id;
++    expect(store.events.filter(event => (
++      event.payload.bounded_payload.batch_plan?.id === originalPlanId
++    ))).toHaveLength(127);
++
++    store.appendEvent = async (...args) => {
++      const reference = args[0].payload.bounded_payload.batch_plan;
++      if (reference?.id !== originalPlanId && reference?.index === 2) {
++        throw new Error('replacement pre-commit interruption');
++      }
++      return appendEvent(...args);
++    };
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    store.appendEvent = appendEvent;
++    const retainedPlans = store.events.slice(-128);
++    const truncatedOriginal = retainedPlans.filter(event => (
++      event.payload.bounded_payload.batch_plan?.id === originalPlanId
++    ));
++    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(1);
++    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(false);
++    expect(_internals.validOrphanedPrecommitPlan(ctx, retainedPlans, ctx.subjectId)).toBe(true);
++    for (const mutate of [
++      event => { event.payload.bounded_payload.batch_plan.committed = false; },
++      event => { event.payload.bounded_payload.batch_plan.segment_index = 1; },
++      event => { event.payload.subject_revision = 'foreign-subject'; },
++      event => { event.payload.observed_at = '2026-08-12T12:00:01.000Z'; },
++    ]) {
++      const malformed = structuredClone(retainedPlans);
++      mutate(malformed[0]);
++      malformed[0].content_hash = computeContentHash(malformed[0]);
++      expect(_internals.validOrphanedPrecommitPlan(ctx, malformed, ctx.subjectId)).toBe(false);
++    }
++
++    const resumed = await runFlowMonitorPass(ctx);
++
++    expect(resumed).toMatchObject({ changed: true, authority: 'memory' });
++    expect(resumed.events).toHaveLength(1);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
++  }, 60_000);
++
+   test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
+     const store = durableStore();
+     const checks = Array.from({ length: 128 }, (_, index) => ({
+-- 
+2.51.0.windows.1
+

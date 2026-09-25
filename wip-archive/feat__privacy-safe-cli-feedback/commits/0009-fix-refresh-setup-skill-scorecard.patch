@@ -1,0 +1,43 @@
+From 68f5ab930d846b389a8fae9da8f26c243b94ab5f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 19:56:21 +0530
+Subject: [PATCH] fix: refresh setup skill scorecard
+
+---
+ .agents/skills/setup/evals/scorecard.json | 4 ++--
+ skills/setup/evals/scorecard.json         | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/.agents/skills/setup/evals/scorecard.json b/.agents/skills/setup/evals/scorecard.json
+index d57adb66..3004fe5f 100644
+--- a/.agents/skills/setup/evals/scorecard.json
++++ b/.agents/skills/setup/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 1021,
+-      "body_lines": 74,
+-      "score": 43
++      "body_lines": 83,
++      "score": 42
+     },
+     "caps": {
+       "desc_within": true,
+diff --git a/skills/setup/evals/scorecard.json b/skills/setup/evals/scorecard.json
+index d57adb66..3004fe5f 100644
+--- a/skills/setup/evals/scorecard.json
++++ b/skills/setup/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 1021,
+-      "body_lines": 74,
+-      "score": 43
++      "body_lines": 83,
++      "score": 42
+     },
+     "caps": {
+       "desc_within": true,
+-- 
+2.51.0.windows.1
+

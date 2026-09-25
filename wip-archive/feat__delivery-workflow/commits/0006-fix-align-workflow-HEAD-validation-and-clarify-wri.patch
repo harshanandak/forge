@@ -1,0 +1,366 @@
+From fb69fa529a8c365e3f37d651f5617e62b9f3f661 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 00:07:46 +0530
+Subject: [PATCH] fix: align workflow HEAD validation and clarify writer
+ contracts
+
+---
+ .../2026-09-18-delivery-workflow/decisions.md | 10 +++
+ lib/bun-workflow-pins.js                      |  5 ++
+ lib/npm-publish-workflow.js                   | 10 +--
+ lib/protected-state-authority.js              | 13 ++++
+ lib/test-workflow.js                          | 78 ++++++++++++++-----
+ test/npm-publish-workflow.test.js             |  2 +-
+ test/test-workflow.test.js                    | 54 ++++++++++++-
+ 7 files changed, 145 insertions(+), 27 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-workflow/decisions.md b/docs/work/2026-09-18-delivery-workflow/decisions.md
+index 4f3af595..def58624 100644
+--- a/docs/work/2026-09-18-delivery-workflow/decisions.md
++++ b/docs/work/2026-09-18-delivery-workflow/decisions.md
+@@ -18,3 +18,13 @@
+ **Choice made**: Validate the staged template projection before the unchanged-version return, use the hook actor precedence in both writer entrypoints, and pass an immutable version/content binding that the test workflow writer checks after fresh staged-state resolution and before authority or writes.
+ **Evidence**: Actual hook regression reproduced the template-only bypass; sanitized-environment authority consumption reproduced the actor mismatch; injected package drift reproduced a mixed-version batch before the immutable binding was enforced.
+ **Status**: RESOLVED
++
++## Decision 3
++**Date**: 2026-09-19
++**Task**: PR #567 SHA-256 and maintainability review
++**Gap**: The shared workflow HEAD gate accepted only SHA-1 even though protected-state authority accepts SHA-1 and SHA-256, while static analysis flagged escaped regular-expression strings, nested templates, writer complexity, and missing public contract documentation.
++**Score**: 3/14
++**Route**: PROCEED
++**Choice made**: Reuse the authority object-ID predicate in the shared workflow gate, preserve exact Git-entry matching with `String.raw`, extract immutable preflight comparison from the writer, and document the writer, authority, batch, and staged-validation contracts and their failure boundaries. Keep completion distinct from later commit-hook consumption. Address useful contract documentation rather than adding boilerplate to test callbacks for the review bot's aggregate coverage percentage.
++**Evidence**: A real SHA-256 Git repository failed before the fix and then generated through production authorization and completion functions with an injected event store. The five focused caller suites passed 101 tests with 800 assertions, covering SHA-1/SHA-256, invalid/stale HEADs, and recovery without changing generated workflow bytes. Strict lint and independent source review passed; remote analysis remains a separate post-push check.
++**Status**: RESOLVED
+diff --git a/lib/bun-workflow-pins.js b/lib/bun-workflow-pins.js
+index 6baa0764..79f1cb66 100644
+--- a/lib/bun-workflow-pins.js
++++ b/lib/bun-workflow-pins.js
+@@ -377,6 +377,11 @@ async function applyWorkflowUpdate(projectRoot, update, context) {
+ 	return { success: true, result: { path: update.path, write, authorization, completion } };
+ }
+ 
++/**
++ * Runs the Bun-pin, npm, and test workflow writers as one recoverable batch bound to the preflight
++ * target and generated test bytes. On failure, earlier writes are restored only while their bytes
++ * still match this batch's output; concurrent changes are preserved and reported as unrecovered.
++ */
+ async function updateBunWorkflowPins(projectRoot, options = {}) {
+ 	const npmWorkflow = require('./npm-publish-workflow');
+ 	const testWorkflow = require('./test-workflow');
+diff --git a/lib/npm-publish-workflow.js b/lib/npm-publish-workflow.js
+index 3ec46aee..3723e9fa 100644
+--- a/lib/npm-publish-workflow.js
++++ b/lib/npm-publish-workflow.js
+@@ -12,11 +12,11 @@ const {
+ } = require('./protected-state-surfaces');
+ const {
+ 	completeNpmPublishWorkflowAuthorization,
++	isValidGitObjectId,
+ 	issueNpmPublishWorkflowAuthorization,
+ } = require('./protected-state-authority');
+ 
+ const NPM_PUBLISH_WORKFLOW_PATH = '.github/workflows/npm-publish.yml';
+-const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+ const BUN_VERSION = /^bun@(\d+\.\d+\.\d+)$/.exec(require('../package.json').packageManager)?.[1];
+ if (!BUN_VERSION) throw new Error('package.json must pin an exact stable Bun version.');
+ 
+@@ -64,8 +64,8 @@ function verifyExpectedHead(projectRoot, expectedHead, resolveHead = resolveCurr
+ 	if (!expectedHead) {
+ 		return { success: false, error: '--expect-head is required for protected workflow generation.' };
+ 	}
+-	if (!FULL_COMMIT_SHA.test(expectedHead)) {
+-		return { success: false, error: '--expect-head must be a full 40-character lowercase commit SHA.' };
++	if (!isValidGitObjectId(expectedHead)) {
++		return { success: false, error: '--expect-head must be a full 40- or 64-character lowercase commit SHA.' };
+ 	}
+ 
+ 	let currentHead;
+@@ -74,8 +74,8 @@ function verifyExpectedHead(projectRoot, expectedHead, resolveHead = resolveCurr
+ 	} catch (error) {
+ 		return { success: false, error: `Could not resolve current HEAD: ${error.message}` };
+ 	}
+-	if (!FULL_COMMIT_SHA.test(currentHead)) {
+-		return { success: false, error: 'Current HEAD did not resolve to a full 40-character lowercase commit SHA.' };
++	if (!isValidGitObjectId(currentHead)) {
++		return { success: false, error: 'Current HEAD did not resolve to a full 40- or 64-character lowercase commit SHA.' };
+ 	}
+ 	if (currentHead !== expectedHead) {
+ 		return {
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 4433af1a..9bebd8ba 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -474,6 +474,10 @@ function resolveCurrentTestWorkflowTarget(projectRoot, params, requireWritten =
+ 	return { success: true, update };
+ }
+ 
++/**
++ * Authorizes the canonical test workflow derived from the current staged package and template.
++ * The target and exact generated bytes are resolved again before the capability is inserted.
++ */
+ async function issueTestWorkflowAuthorization(projectRoot, params = {}, options = {}) {
+ 	if (!isValidGitObjectId(params.sourceHead)) {
+ 		return { success: false, error: 'Protected test workflow authorization requires a full 40- or 64-character lowercase source HEAD.' };
+@@ -702,6 +706,10 @@ async function completeBunWorkflowAuthorization(projectRoot, params = {}, option
+ 	}
+ }
+ 
++/**
++ * Completes only an active capability that matches the canonical target and exact written bytes.
++ * The staged target and generated file are rechecked before the completion event is inserted.
++ */
+ async function completeTestWorkflowAuthorization(projectRoot, params = {}, options = {}) {
+ 	if (!isValidGitObjectId(params.sourceHead) || !params.capabilityId) {
+ 		return { success: false, error: 'Protected test workflow completion requires a capability id and full 40- or 64-character source HEAD.' };
+@@ -1075,6 +1083,11 @@ function validateBunDecisionTargets(projectRoot, decisions) {
+ 	}
+ }
+ 
++/**
++ * Validates the complete staged Bun workflow projection, including canonical test workflow output
++ * when the pin is unchanged. Repositories with neither source nor staged template retain the legacy
++ * path; bootstrap must add the template and output together, and established deletion is incomplete.
++ */
+ function validateCompleteBunPinBatch(projectRoot, options = {}) {
+ 	if (options.sourceHead === null) return { success: true };
+ 	let sourceHead;
+diff --git a/lib/test-workflow.js b/lib/test-workflow.js
+index 3212b998..c1a87d68 100644
+--- a/lib/test-workflow.js
++++ b/lib/test-workflow.js
+@@ -26,6 +26,15 @@ const TEST_WORKFLOW_TEMPLATE_PATH = 'lib/workflow-templates/test.yml';
+ const BUN_VERSION_TOKEN = '__BUN_VERSION__';
+ const BUN_VERSION_TOKEN_COUNT = 8;
+ 
++/**
++ * Renders the canonical test workflow as exact bytes for one stable Bun version.
++ * The template must contain exactly eight version tokens so every substitution is deterministic.
++ *
++ * @param {Buffer|string} template canonical workflow template bytes
++ * @param {string} bunVersion exact stable Bun version
++ * @returns {Buffer} rendered workflow bytes
++ * @throws {Error} when the version is not exact or the template token count is not eight
++ */
+ function renderTestWorkflow(template, bunVersion) {
+ 	if (!/^\d+\.\d+\.\d+$/.test(bunVersion)) {
+ 		throw new Error('Test workflow requires an exact stable Bun version.');
+@@ -49,12 +58,13 @@ function readGitFile(projectRoot, revision, filePath, execGit = secureExecFileSy
+ 	const entry = execGit('git', indexed
+ 		? ['ls-files', '--stage', '--', filePath]
+ 		: ['ls-tree', revision, '--', filePath], options).trim();
+-	const suffix = filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++	const suffix = filePath.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+ 	const expected = indexed
+-		? new RegExp(`^100(?:644|755) [0-9a-f]+ 0\\t${suffix}$`)
+-		: new RegExp(`^100(?:644|755) blob [0-9a-f]+\\t${suffix}$`);
++		? new RegExp(String.raw`^100(?:644|755) [0-9a-f]+ 0\t${suffix}$`)
++		: new RegExp(String.raw`^100(?:644|755) blob [0-9a-f]+\t${suffix}$`);
+ 	if (!expected.test(entry)) {
+-		throw new Error(`${filePath} is not one regular file ${indexed ? 'in the Git index' : `at ${revision}`}.`);
++		const location = indexed ? 'in the Git index' : `at ${revision}`;
++		throw new Error(`${filePath} is not one regular file ${location}.`);
+ 	}
+ 	return Buffer.from(execGit('git', ['show', `${revision}${indexed ? '' : ':'}${filePath}`], {
+ 		...options,
+@@ -63,18 +73,29 @@ function readGitFile(projectRoot, revision, filePath, execGit = secureExecFileSy
+ }
+ 
+ function projectionObjectId(raw, filePath, indexed, sourceHead) {
+-	const suffix = filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++	const suffix = filePath.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+ 	const matching = raw.trim().split(/\r?\n/).filter(line => line.endsWith(`\t${filePath}`));
+ 	if (matching.length === 0) return null;
+ 	const pattern = indexed
+-		? new RegExp(`^100(?:644|755) ([0-9a-f]+) 0\\t${suffix}$`)
+-		: new RegExp(`^100(?:644|755) blob ([0-9a-f]+)\\t${suffix}$`);
++		? new RegExp(String.raw`^100(?:644|755) ([0-9a-f]+) 0\t${suffix}$`)
++		: new RegExp(String.raw`^100(?:644|755) blob ([0-9a-f]+)\t${suffix}$`);
+ 	if (matching.length !== 1 || !pattern.test(matching[0])) {
+-		throw new Error(`${filePath} is not one regular file ${indexed ? 'in the Git index' : `at ${sourceHead}`}.`);
++		const location = indexed ? 'in the Git index' : `at ${sourceHead}`;
++		throw new Error(`${filePath} is not one regular file ${location}.`);
+ 	}
+ 	return pattern.exec(matching[0])[1];
+ }
+ 
++/**
++ * Captures the committed package/template and stage-0 package/template/target by Git blob ID.
++ * A missing template remains null for legacy/bootstrap handling; nonregular or conflicted entries fail closed.
++ *
++ * @param {string} projectRoot repository root
++ * @param {string} sourceHead immutable source commit
++ * @param {Function} execGit Git execution seam
++ * @returns {{sourcePackage: Buffer, indexedPackage: Buffer, sourceTemplate: Buffer|null, indexedTemplate: Buffer|null, indexedWorkflow: Buffer|null}}
++ * @throws {Error} when required package blobs or present workflow entries are not one regular file
++ */
+ function readTestWorkflowProjection(projectRoot, sourceHead, execGit = secureExecFileSync) {
+ 	const options = {
+ 		cwd: projectRoot,
+@@ -134,6 +155,16 @@ function sameSnapshot(left, right) {
+ 		&& (!left?.existed || (Buffer.isBuffer(left.content) && left.content.equals(right.content)));
+ }
+ 
++/**
++ * Resolves one exact workflow update after checking HEAD, source baseline, index, and working-tree consistency.
++ * The result includes exact new bytes and the compare-and-swap snapshot used for recovery.
++ *
++ * @param {string} projectRoot repository root
++ * @param {string} sourceHead immutable source commit
++ * @param {object} options dependency seams and staged-state readers
++ * @returns {object} validated update, compare-and-swap snapshot, and exact output bytes
++ * @throws {Error} when the source baseline is noncanonical or staged/working bytes have drifted
++ */
+ function resolveTestWorkflowUpdate(projectRoot, sourceHead, options = {}) {
+ 	const currentHead = (options.resolveHead || resolveCurrentHead)(projectRoot, options.execGit);
+ 	if (currentHead !== sourceHead) {
+@@ -221,6 +252,25 @@ function attemptRecovery(snapshot, projectRoot, generatedContent, protectedWrite
+ 	}
+ }
+ 
++function matchesExpectedUpdate(expectedUpdate, update) {
++	if (!expectedUpdate) return true;
++	try {
++		return expectedUpdate.version === update.version
++			&& Buffer.from(expectedUpdate.content).equals(update.content);
++	} catch {
++		return false;
++	}
++}
++
++/**
++ * Generates test.yml by validating HEAD/preflight bindings, authorizing exact bytes, writing atomically,
++ * auditing, and recording completion. Audit or completion failures conditionally restore the prior snapshot.
++ *
++ * @param {string} projectRoot repository root
++ * @param {object} options expected HEAD, actor, staged-state seams, and protected writer dependencies
++ * @returns {Promise<object>} success evidence or a handled failure with recovery evidence when applicable
++ * @throws {Error} when snapshot inspection itself cannot read the target filesystem state
++ */
+ async function generateTestWorkflow(projectRoot, options = {}) {
+ 	const { verifyExpectedHead } = require('./npm-publish-workflow');
+ 	const head = verifyExpectedHead(projectRoot, options.expectedHead, options.resolveHead);
+@@ -235,16 +285,8 @@ async function generateTestWorkflow(projectRoot, options = {}) {
+ 	} catch (error) {
+ 		return { success: false, error: error.message };
+ 	}
+-	if (options.expectedUpdate) {
+-		let expectedContent;
+-		try {
+-			expectedContent = Buffer.from(options.expectedUpdate.content);
+-		} catch {
+-			return { success: false, error: `${TEST_WORKFLOW_PATH} changed after Bun pin batch preflight.` };
+-		}
+-		if (options.expectedUpdate.version !== update.version || !expectedContent.equals(update.content)) {
+-			return { success: false, error: `${TEST_WORKFLOW_PATH} changed after Bun pin batch preflight.` };
+-		}
++	if (!matchesExpectedUpdate(options.expectedUpdate, update)) {
++		return { success: false, error: `${TEST_WORKFLOW_PATH} changed after Bun pin batch preflight.` };
+ 	}
+ 
+ 	const env = options.env || process.env;
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+index 18030ac1..d569a089 100644
+--- a/test/npm-publish-workflow.test.js
++++ b/test/npm-publish-workflow.test.js
+@@ -301,7 +301,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 
+ 	test.each([
+ 		{ label: 'missing', expectedHead: undefined, resolvedHead: TEST_HEAD, error: '--expect-head is required' },
+-		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40-character lowercase commit SHA' },
++		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40- or 64-character lowercase commit SHA' },
+ 		{ label: 'mismatched', expectedHead: TEST_HEAD, resolvedHead: 'b'.repeat(40), error: 'does not match current HEAD' },
+ 	])('fails closed before writing for $label expected HEAD', async ({ expectedHead, resolvedHead, error }) => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-head-gate-'));
+diff --git a/test/test-workflow.test.js b/test/test-workflow.test.js
+index eda00284..ae089217 100644
+--- a/test/test-workflow.test.js
++++ b/test/test-workflow.test.js
+@@ -20,6 +20,7 @@ const {
+ 
+ const repoRoot = path.resolve(__dirname, '..');
+ const TEST_HEAD = 'a'.repeat(40);
++const SHA256_TEST_HEAD = 'a'.repeat(64);
+ 
+ function git(root, args) {
+ 	return spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+@@ -31,10 +32,11 @@ function write(root, filePath, content) {
+ 	fs.writeFileSync(fullPath, content);
+ }
+ 
+-function createFixture({ canonicalTarget = true } = {}) {
++function createFixture({ canonicalTarget = true, objectFormat = 'sha1' } = {}) {
+ 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-test-workflow-'));
+ 	const template = fs.readFileSync(path.join(repoRoot, TEST_WORKFLOW_TEMPLATE_PATH));
+-	expect(git(root, ['init']).status).toBe(0);
++	const initArgs = objectFormat === 'sha256' ? ['init', '--object-format=sha256'] : ['init'];
++	expect(git(root, initArgs).status).toBe(0);
+ 	expect(git(root, ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
+ 	expect(git(root, ['config', 'user.name', 'Forge Test']).status).toBe(0);
+ 	write(root, 'package.json', '{"packageManager":"bun@1.3.12"}\n');
+@@ -104,8 +106,11 @@ describe('canonical test workflow renderer', () => {
+ describe('Forge-owned test workflow writer', () => {
+ 	test.each([
+ 		{ label: 'missing', expectedHead: undefined, resolvedHead: TEST_HEAD, error: '--expect-head is required' },
+-		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40-character lowercase commit SHA' },
++		{ label: 'abbreviated', expectedHead: TEST_HEAD.slice(0, 12), resolvedHead: TEST_HEAD, error: 'full 40- or 64-character lowercase commit SHA' },
++		{ label: 'invalid length', expectedHead: 'a'.repeat(63), resolvedHead: SHA256_TEST_HEAD, error: 'full 40- or 64-character lowercase commit SHA' },
++		{ label: 'invalid current HEAD', expectedHead: SHA256_TEST_HEAD, resolvedHead: 'b'.repeat(63), error: 'Current HEAD did not resolve' },
+ 		{ label: 'mismatched', expectedHead: TEST_HEAD, resolvedHead: 'b'.repeat(40), error: 'does not match current HEAD' },
++		{ label: 'mismatched SHA-256', expectedHead: SHA256_TEST_HEAD, resolvedHead: 'b'.repeat(64), error: 'does not match current HEAD' },
+ 	])('fails closed before reading or writing for $label expected HEAD', async ({ expectedHead, resolvedHead, error }) => {
+ 		let authorityCalls = 0;
+ 		const result = await generateTestWorkflow('C:/repo', {
+@@ -148,6 +153,49 @@ describe('Forge-owned test workflow writer', () => {
+ 		}
+ 	});
+ 
++	test('generates from a real SHA-256 repository HEAD', async () => {
++		const { root, head } = createFixture({ objectFormat: 'sha256' });
++		const rows = [];
++		const kernelDeps = {
++			kernelBroker: { config: {} },
++			kernelDriver: {
++				listKernelEvents: async () => rows,
++				insertKernelEvent: async event => {
++					rows.push(event);
++					return event;
++				},
++			},
++		};
++		try {
++			expect(head).toMatch(/^[0-9a-f]{64}$/);
++			const result = await generateTestWorkflow(root, {
++				actor: 'sha256-workflow-writer',
++				expectedHead: head,
++				kernelDeps,
++				createCapabilityId: () => 'sha256-test-workflow-capability',
++				writeProtectedFile: writer,
++				removeProtectedFile: remover,
++				recordProtectedStateAuditEvent: () => ({ success: true }),
++			});
++
++			expect(result).toMatchObject({ success: true, sourceHead: head, bunVersion: '1.4.2' });
++			expect(result.authorization).toMatchObject({
++				success: true,
++				capabilityId: 'sha256-test-workflow-capability',
++				event: { sourceHead: head },
++			});
++			expect(result.completion).toMatchObject({
++				success: true,
++				capabilityId: 'sha256-test-workflow-capability',
++				event: { sourceHead: head },
++			});
++			expect(fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH)))
++				.toEqual(renderTestWorkflow(fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH)), '1.4.2'));
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 15_000);
++
+ 	test('selects the same actor precedence used by the protected-state hook', async () => {
+ 		const { root, head } = createFixture();
+ 		const cases = [
+-- 
+2.51.0.windows.1
+

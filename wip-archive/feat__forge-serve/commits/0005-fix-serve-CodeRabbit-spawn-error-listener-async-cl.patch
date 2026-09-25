@@ -1,0 +1,86 @@
+From cc133504ab39de98521a0006b6bb7672774b29d2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 18:55:07 +0530
+Subject: [PATCH] =?UTF-8?q?fix(serve):=20CodeRabbit=20=E2=80=94=20spawn=20?=
+ =?UTF-8?q?error=20listener,=20async=20clipboard,=20stale=20doc?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- openBrowser: attach child.on('error') — a failed spawn() (missing opener
+  binary) emits an ASYNC 'error' event the surrounding try/catch cannot catch,
+  which would crash `forge serve`. Best-effort; URL is always printed.
+- serveCopy: navigator.clipboard.writeText() rejects asynchronously (denied
+  permission, non-secure context, no user gesture). Route both async rejection
+  and any sync throw to the copy-failed message so success isn't reported before
+  the write settles.
+- design.md security model: /data.json is no longer unauthenticated — it is
+  gated by the same token fence as POST /api/mutation. Only /health and static
+  assets remain unauthenticated (loopback-only).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-13-forge-serve/design.md |  4 +++-
+ lib/commands/serve.js                      |  7 ++++++-
+ web/dashboard/app.js                       | 12 ++++++++++--
+ 3 files changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/docs/work/2026-07-13-forge-serve/design.md b/docs/work/2026-07-13-forge-serve/design.md
+index 81a33fbc..33959c52 100644
+--- a/docs/work/2026-07-13-forge-serve/design.md
++++ b/docs/work/2026-07-13-forge-serve/design.md
+@@ -69,7 +69,9 @@ Hooks / skills-as-controllable (`forge control`) are out of scope; only the exis
+   our fragment nor forge the token.
+ - **Host/Origin fence:** POST rejects any request whose `Host` is not `127.0.0.1`/`localhost`
+   or whose `Origin` (when present) is not our loopback origin → `403`.
+-- Reads (`/data.json`, `/health`, static) are unauthenticated but loopback-only.
++- `/health` and static assets are unauthenticated but loopback-only.
++- `/data.json` is gated by the SAME token fence as `POST /api/mutation` (loopback + constant-time
++  token compare), since the snapshot carries full issue/message data.
+ 
+ ## Dashboard write UI (`web/dashboard/app.js`)
+ 
+diff --git a/lib/commands/serve.js b/lib/commands/serve.js
+index 9fd0b93d..ca142dfa 100644
+--- a/lib/commands/serve.js
++++ b/lib/commands/serve.js
+@@ -423,7 +423,12 @@ function browserOpener() {
+ function openBrowser(url) {
+   try {
+     const { file, args } = browserOpener();
+-    spawn(file, [...args, url], { detached: true, stdio: 'ignore' }).unref();
++    const child = spawn(file, [...args, url], { detached: true, stdio: 'ignore' });
++    // spawn() failures (e.g. the opener binary is missing) surface ASYNChronously
++    // as an 'error' event, NOT via the try/catch — an unhandled one would crash
++    // `forge serve`. Opening a browser is best-effort; swallow it (URL is printed).
++    child.on('error', () => { /* best-effort; the URL is always printed */ });
++    child.unref();
+   } catch {
+     // Opening a browser is best-effort; the URL is always printed.
+   }
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index 5f4f4d55..34e04154 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -1536,8 +1536,16 @@ async function serveRun(kind) {
+ }
+ function serveCopy(kind) {
+   const spec = serveControlSpec(kind);
+-  try { navigator.clipboard.writeText(spec.cmd); serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'); }
+-  catch (_e) { serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'); }
++  // writeText() rejects ASYNChronously (denied permission, non-secure context, no
++  // user gesture); a sync try/catch would report success before the write settled.
++  // Route both async rejection and any sync throw to the copy-failed message.
++  try {
++    Promise.resolve(navigator.clipboard.writeText(spec.cmd))
++      .then(() => serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'))
++      .catch(() => serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'));
++  } catch (_e) {
++    serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err');
++  }
+ }
+ 
+ function serveTopButton(id, act, label) {
+-- 
+2.51.0.windows.1
+

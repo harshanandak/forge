@@ -1,0 +1,33 @@
+From 0ec87006191dc3017eedfba87624e781fa06c0d2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 05:51:55 +0530
+Subject: [PATCH] test(memory): make delivery timeout deterministic
+
+---
+ packages/memory/test/feedback-intake.test.js | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/packages/memory/test/feedback-intake.test.js b/packages/memory/test/feedback-intake.test.js
+index ae1509c5..ebcd0359 100644
+--- a/packages/memory/test/feedback-intake.test.js
++++ b/packages/memory/test/feedback-intake.test.js
+@@ -180,15 +180,13 @@ describe('structured feedback intake', () => {
+       deliveryTimeoutMs: 5,
+       deliverFeedback: async (_value, context) => {
+         signal = context.signal;
+-        await new Promise(resolve => setTimeout(resolve, 100));
++        await new Promise(() => {});
+       },
+     });
+ 
+     const value = report();
+-    const started = Date.now();
+     const result = await intake.submit(value, consentFor(value));
+ 
+-    expect(Date.now() - started).toBeLessThan(50);
+     expect(signal.aborted).toBe(true);
+     expect(result).toMatchObject({
+       status: 'accepted-local',
+-- 
+2.51.0.windows.1
+

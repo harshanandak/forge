@@ -1,0 +1,175 @@
+From cafbc1a772c0cf03690c087b767c5b9f8c01ea3a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 26 Apr 2026 23:44:09 +0530
+Subject: [PATCH] fix: resolve project memory review feedback
+
+---
+ lib/project-memory.js       | 80 +++++++++++++++++++++++--------------
+ test/project-memory.test.js | 30 ++++++++++++++
+ 2 files changed, 81 insertions(+), 29 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index aaf6c18f..d6401bfb 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -4,7 +4,13 @@ const path = require('node:path');
+ const DEFAULT_MEMORY_FILE = path.join('.forge', 'memory', 'entries.jsonl');
+ 
+ function memoryPath(projectRoot, options = {}) {
+-  return options.filePath || path.join(projectRoot, DEFAULT_MEMORY_FILE);
++  if (!options.filePath) {
++    return path.join(projectRoot, DEFAULT_MEMORY_FILE);
++  }
++
++  return path.isAbsolute(options.filePath)
++    ? options.filePath
++    : path.join(projectRoot, options.filePath);
+ }
+ 
+ function toApiEntry(entry) {
+@@ -43,57 +49,73 @@ function toDiskEntry(entry) {
+   return diskEntry;
+ }
+ 
+-function validateEntry(entry) {
++function assertEntryObject(entry) {
+   if (!entry || typeof entry !== 'object') {
+-    throw new Error('project memory entry must be an object');
++    throw new TypeError('project memory entry must be an object');
++  }
++}
++
++function assertRequiredString(value, fieldName) {
++  if (typeof value !== 'string' || value.trim() === '') {
++    throw new TypeError(`project memory entry ${fieldName} is required`);
++  }
++}
++
++function assertStringArray(value, fieldName) {
++  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
++    throw new TypeError(`project memory entry ${fieldName} must be an array of strings`);
+   }
++}
++
++function validateRequiredFields(entry) {
+   if (typeof entry.key !== 'string' || entry.key.trim() === '') {
+-    throw new Error('project memory entry key is required');
++    throw new TypeError('project memory entry key is required');
+   }
+-  if (!Object.prototype.hasOwnProperty.call(entry, 'value') || entry.value === undefined) {
+-    throw new Error('project memory entry value is required');
++  if (!Object.hasOwn(entry, 'value') || entry.value === undefined) {
++    throw new TypeError('project memory entry value is required');
+   }
+ 
+   const sourceAgent = entry.sourceAgent || entry['source-agent'];
+-  if (typeof sourceAgent !== 'string' || sourceAgent.trim() === '') {
+-    throw new Error('project memory entry sourceAgent is required');
+-  }
++  assertRequiredString(sourceAgent, 'sourceAgent');
++}
+ 
++function validateTimestamp(entry) {
+   if (entry.timestamp !== undefined) {
+     const parsed = Date.parse(entry.timestamp);
+     if (typeof entry.timestamp !== 'string' || Number.isNaN(parsed)) {
+-      throw new Error('project memory entry timestamp must be an ISO-compatible string');
+-    }
+-  }
+-
+-  if (entry.tags !== undefined) {
+-    if (!Array.isArray(entry.tags) || entry.tags.some((tag) => typeof tag !== 'string')) {
+-      throw new Error('project memory entry tags must be an array of strings');
++      throw new TypeError('project memory entry timestamp must be an ISO-compatible string');
+     }
+   }
++}
+ 
++function validateScope(entry) {
+   if (entry.scope !== undefined && (typeof entry.scope !== 'string' || entry.scope.trim() === '')) {
+-    throw new Error('project memory entry scope must be a non-empty string');
++    throw new TypeError('project memory entry scope must be a non-empty string');
+   }
++}
+ 
++function validateConfidence(entry) {
+   if (entry.confidence !== undefined) {
+     if (typeof entry.confidence !== 'number' || entry.confidence < 0 || entry.confidence > 1) {
+-      throw new Error('project memory entry confidence must be a number from 0 to 1');
+-    }
+-  }
+-
+-  if (entry.supersedes !== undefined) {
+-    if (!Array.isArray(entry.supersedes) || entry.supersedes.some((key) => typeof key !== 'string')) {
+-      throw new Error('project memory entry supersedes must be an array of strings');
++      throw new TypeError('project memory entry confidence must be a number from 0 to 1');
+     }
+   }
++}
+ 
++function validateOptionalArrays(entry) {
++  if (entry.tags !== undefined) assertStringArray(entry.tags, 'tags');
++  if (entry.supersedes !== undefined) assertStringArray(entry.supersedes, 'supersedes');
+   const beadsRefs = entry.beadsRefs || entry['beads-refs'];
+-  if (beadsRefs !== undefined) {
+-    if (!Array.isArray(beadsRefs) || beadsRefs.some((ref) => typeof ref !== 'string')) {
+-      throw new Error('project memory entry beadsRefs must be an array of strings');
+-    }
+-  }
++  if (beadsRefs !== undefined) assertStringArray(beadsRefs, 'beadsRefs');
++}
++
++function validateEntry(entry) {
++  assertEntryObject(entry);
++  validateRequiredFields(entry);
++  validateTimestamp(entry);
++  validateScope(entry);
++  validateConfidence(entry);
++  validateOptionalArrays(entry);
+ }
+ 
+ function readEntries(projectRoot, options = {}) {
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index f53f2496..d4b92256 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -128,6 +128,36 @@ describe('project memory', () => {
+     expect(projectMemory.search(root, 'agent-private')[0].key).toBe('decision.canonical-store');
+   });
+ 
++  test('resolves relative filePath overrides from the project root', () => {
++    const root = tempRoot();
++    const originalCwd = process.cwd();
++    const overridePath = path.join('.forge', 'memory', `${path.basename(root)}-custom.jsonl`);
++
++    try {
++      process.chdir(os.tmpdir());
++      projectMemory.write(root, {
++        key: 'decision.relative-override',
++        value: 'Relative override paths stay project-scoped.',
++        sourceAgent: 'Codex',
++        timestamp: '2026-04-26T00:00:00.000Z',
++        tags: ['paths'],
++      }, {
++        filePath: overridePath,
++      });
++    } finally {
++      process.chdir(originalCwd);
++    }
++
++    expect(fs.existsSync(path.join(root, overridePath))).toBe(true);
++    expect(fs.existsSync(path.join(os.tmpdir(), overridePath))).toBe(false);
++    expect(projectMemory.read(root, 'decision.relative-override', {
++      filePath: overridePath,
++    })).toMatchObject({
++      key: 'decision.relative-override',
++      sourceAgent: 'Codex',
++    });
++  });
++
+   test('validates required schema fields before writing', () => {
+     const root = tempRoot();
+ 
+-- 
+2.51.0.windows.1
+

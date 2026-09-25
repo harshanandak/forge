@@ -1,0 +1,4637 @@
+From 596306f9c566eb52248b611594cb17482939a5d1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 27 Jun 2026 13:43:15 +0530
+Subject: [PATCH] refactor(skills): move drift gate to skills sync; drop
+ sync-commands surface
+
+Regenerate .codex/skills (16) from canonical skills/ via lib/skills-sync;
+rewrite check-agents off sync-commands onto the skills drift check; delete
+scripts/sync-commands.js + lib/commands/commands-reset.js + their tests;
+repoint the pre-push test classifier + forge-team shell test to the skills
+drift test. PR-A0 cluster 1 (atomic drift-gate cutover).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/dev/SKILL.md                    |  14 +-
+ .codex/skills/hermes-forge/SKILL.md           | 182 ++++++
+ .codex/skills/kernel/SKILL.md                 | 125 ++++
+ .codex/skills/parallel-deep-research/SKILL.md | 108 ++++
+ .../parallel-deep-research/evals/README.md    |  27 +
+ .../parallel-deep-research/evals/evals.json   |  62 ++
+ .codex/skills/plan/SKILL.md                   |  29 +-
+ .codex/skills/premerge/SKILL.md               |  16 +-
+ .codex/skills/research/SKILL.md               |  10 +-
+ .codex/skills/review/SKILL.md                 |  10 +-
+ .codex/skills/rollback/SKILL.md               |  10 +-
+ .codex/skills/shepherd/SKILL.md               |   4 +-
+ .codex/skills/ship/SKILL.md                   |  26 +-
+ .codex/skills/sonarcloud-analysis/SKILL.md    | 171 +++++
+ .../sonarcloud-analysis/evals/README.md       |  27 +
+ .../sonarcloud-analysis/evals/evals.json      |  50 ++
+ .../references/api-reference.md               | 466 ++++++++++++++
+ .codex/skills/sonarcloud/SKILL.md             |   4 +-
+ .codex/skills/status/SKILL.md                 |  12 +-
+ .codex/skills/validate/SKILL.md               |  10 +-
+ .codex/skills/verify/SKILL.md                 |  20 +-
+ lib/commands/commands-reset.js                | 147 -----
+ lib/commands/test.js                          |   6 +-
+ scripts/check-agents.js                       | 166 +----
+ .../tests/workflow-integration.test.sh        |   8 +-
+ scripts/sync-commands.js                      | 534 ---------------
+ test/agent-gaps.test.js                       |  71 +-
+ test/command-sync-check.test.js               |  26 -
+ test/commands-reset.test.js                   |  59 --
+ test/commands/test.test.js                    |  14 +-
+ test/plugins/hermes-plugin.test.js            |   7 -
+ test/scripts/check-agents.test.js             | 559 ++++------------
+ test/scripts/sync-commands.test.js            | 606 ------------------
+ test/scripts/test-runner.test.js              |  16 +-
+ test/shepherd-acceptance.test.js              |  10 +-
+ test/shepherd-skill-sync.test.js              |  37 +-
+ test/structural/command-sync.test.js          |  50 --
+ test/structural/skills-sync-drift.test.js     |  36 ++
+ 38 files changed, 1583 insertions(+), 2152 deletions(-)
+ create mode 100644 .codex/skills/hermes-forge/SKILL.md
+ create mode 100644 .codex/skills/kernel/SKILL.md
+ create mode 100644 .codex/skills/parallel-deep-research/SKILL.md
+ create mode 100644 .codex/skills/parallel-deep-research/evals/README.md
+ create mode 100644 .codex/skills/parallel-deep-research/evals/evals.json
+ create mode 100644 .codex/skills/sonarcloud-analysis/SKILL.md
+ create mode 100644 .codex/skills/sonarcloud-analysis/evals/README.md
+ create mode 100644 .codex/skills/sonarcloud-analysis/evals/evals.json
+ create mode 100644 .codex/skills/sonarcloud-analysis/references/api-reference.md
+ delete mode 100644 lib/commands/commands-reset.js
+ delete mode 100644 scripts/sync-commands.js
+ delete mode 100644 test/command-sync-check.test.js
+ delete mode 100644 test/commands-reset.test.js
+ delete mode 100644 test/scripts/sync-commands.test.js
+ delete mode 100644 test/structural/command-sync.test.js
+ create mode 100644 test/structural/skills-sync-drift.test.js
+
+diff --git a/.codex/skills/dev/SKILL.md b/.codex/skills/dev/SKILL.md
+index b620e28a..fed5480b 100644
+--- a/.codex/skills/dev/SKILL.md
++++ b/.codex/skills/dev/SKILL.md
+@@ -1,12 +1,14 @@
+ ---
+-description: Subagent-driven TDD implementation per task from /plan task list
++name: dev
++description: Implements each task from the plan task list using a subagent-driven loop (implementer → spec-compliance reviewer → code-quality reviewer) with TDD and HARD-GATE enforcement. Use for the Forge dev stage when implementing planned tasks — triggers include /dev, dev stage, build the tasks, subagent TDD, implement task list.
++allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+ Implement each task from the /plan task list using a subagent-driven loop: implementer → spec compliance reviewer → code quality reviewer per task.
+ 
+ # Dev
+ 
+-This command reads the task list created by `/plan` and implements each task using a three-stage subagent loop. TDD is enforced inside each implementer subagent.
++This skill reads the task list created by `/plan` and implements each task using a three-stage subagent loop. TDD is enforced inside each implementer subagent.
+ 
+ ## Usage
+ 
+@@ -72,8 +74,8 @@ Before starting the per-task loop, check for cross-developer conflicts:
+ # Auto-sync to get latest team state (non-blocking)
+ forge sync || true
+ 
+-# Check for conflicts with the current beads issue
+-bash scripts/conflict-detect.sh --issue <beads-id>
++# Check for conflicts with the current Forge issue
++bash scripts/conflict-detect.sh --issue <forge-id>
+ ```
+ 
+ If exit code 2 (validation error): show error message, abort — do not show conflict prompt.
+@@ -82,7 +84,7 @@ If exit code 1 (conflicts found):
+ - Display the conflict output to the developer
+ - Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"
+ - If `n`: exit cleanly, no side effects
+-- If `y`: log override via `bd comments add <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
++- If `y`: log override via `forge comment <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Per-Task Loop
+ - Audit: record conflict override per OWASP A09
+ 
+ If exit code 0: proceed silently to Per-Task Loop.
+@@ -299,7 +301,7 @@ Document the gate count in the final commit message.
+ 
+ ## Dynamic Output
+ 
+-The completion summary is generated from the live task list, decisions log, Beads state, commits, and validation output at runtime. Do not copy a static example into this command file; run `/dev` to view the current task/status summary.
++The completion summary is generated from the live task list, decisions log, Beads state, commits, and validation output at runtime. Do not copy a static example into this skill file; run `/dev` to view the current task/status summary.
+ 
+ ## Integration with Workflow
+ 
+diff --git a/.codex/skills/hermes-forge/SKILL.md b/.codex/skills/hermes-forge/SKILL.md
+new file mode 100644
+index 00000000..a0403321
+--- /dev/null
++++ b/.codex/skills/hermes-forge/SKILL.md
+@@ -0,0 +1,182 @@
++---
++name: hermes-forge
++description: >
++  Consumption contract for the Hermes harness on a Forge project. Treat
++  `forge orient` and `forge recap` as the authoritative, token-bounded source
++  of project state, cite every surfaced fact by its provenance, honor the
++  deterministic truncation policy, and write evidence or decisions back ONLY
++  through Forge CLI commands. Hermes-native profile memory never leaks into
++  Forge Kernel state.
++compatibility: >
++  Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
++  path — like every Forge skill pack (e.g. parallel-deep-research,
++  sonarcloud-analysis) this is delivered by the unified Skills CLI; run
++  `skills sync` to install it into `.hermes/skills/hermes-forge/`. (`forge setup`
++  initializes the skills registry via `skills init` but does not sync packs to
++  agents.) Read-only orientation works anywhere; writeback requires a Forge
++  Kernel issue backend. CLI-only — no direct file or profile writes into Forge
++  state.
++metadata:
++  author: forge
++  version: "1.0.0"
++  roadmap: forge-2agy.9.7.x
++---
++
++# Hermes ⇄ Forge consumption contract
++
++Hermes is a *consumer* of Forge project state, not an owner of it. This skill
++defines how a Hermes session reads, cites, and writes back to a Forge project
++without ever becoming a second source of truth.
++
++The boundary between what Forge owns and what Hermes owns is specified in the
++Forge repo at `docs/reference/HERMES_INTEGRATION.md` (repo-relative path — this
++skill is synced to `.hermes/skills/hermes-forge/`, so relative links would not
++resolve from the installed location).
++
++## When to use
++
++- At the start of any Hermes session on a Forge repo (orientation).
++- Before acting on a specific issue (issue recap).
++- Whenever you need current project state — never reconstruct it from raw files.
++
++## Authority: orient / recap are the only state source
++
++The Forge Kernel is the single source of truth. Hermes obtains project state
++**exclusively** through two thin CLI wrappers and must not infer state by
++reading `.beads`-style stores, design files, or kernel internals directly:
++
++```bash
++forge orient --json                # bounded project orientation (envelope)
++forge orient --budget 4000 --json
++forge recap <issue-id> --json      # bounded per-issue recap (envelope)
++forge recap --json                 # legacy activity summary (NOT the envelope)
++```
++
++`forge orient` and `forge recap <issue-id>` emit the deterministic JSON envelope
++described below (assembly `deterministic-file-assembly-v1`). Parse the JSON; do
++not screen-scrape the human text form.
++
++> Note: bare `forge recap --json` (no issue id) returns the legacy activity
++> summary (`generatedAt`, `issueSummary`, `reviewOutcomes`, `recentIssues`,
++> `insights`) — it does **not** carry `schema_version`, `sections`,
++> `token_budget`, or `assembly`. For the envelope contract, use `forge orient`
++> or `forge recap <issue-id>`.
++
++### Envelope shape
++
++| Field | Meaning |
++| --- | --- |
++| `schema_version` | Contract version (currently `1`). Reject unknown majors. |
++| `kind` | `orientation`, `issue_recap`, or `prime`. |
++| `generated_at` | Assembly timestamp. |
++| `assembly` | `deterministic-file-assembly-v1` — same inputs ⇒ same output. |
++| `token_budget` | Budget accounting (see below). |
++| `sections[]` | Ordered content blocks, each independently cited. |
++| `sources[]` | Deduplicated provenance across all sections. |
++| `next_commands[]` | Suggested follow-up `forge` commands. Prefer these for navigation. |
++
++Each `sections[]` entry: `{ id, title, content, sources, truncated, estimated_tokens }`.
++
++## Token budget
++
++`forge orient` / `forge recap <issue-id>` are bounded so they fit a context
++window deterministically.
++
++- Default budget: **2000** estimated tokens. Minimum honored: **40**.
++- Estimation is approximate: `token_budget.approximate === true`,
++  `token_budget.chars_per_token === 4`.
++- `token_budget.requested` is what you asked for; `token_budget.used` is the
++  estimate actually emitted.
++- Raise the ceiling with `--budget N` when you need more depth; do not retry
++  blindly — request a specific larger budget.
++
++## Citation & provenance model
++
++Every fact Hermes surfaces to a user MUST be attributable. Each section carries
++`sources: [{ path, source_kind, authority, role }]`:
++
++- `path` — the file the content came from.
++- `source_kind` — the kind of artifact (e.g. design, decision, claim, queue).
++- `authority` — how authoritative the source is. Prefer higher-authority
++  sources when two sources conflict; surface the conflict rather than silently
++  picking one.
++- `role` — the role the source plays in the section.
++
++When Hermes states a project fact, cite at least the `path` and `authority` of
++the backing source. The top-level `sources[]` is the deduplicated set for the
++whole payload.
++
++## Truncation policy
++
++Truncation is deterministic, never random:
++
++- Non-preserved sections are allocated budget in ascending numeric `priority`
++  order (lower `priority` first); when the budget is exhausted, the
++  later/higher-`priority` sections are the ones trimmed. Preserved sections are
++  kept whole and trimmed only as a last resort if the payload is still over
++  budget. The authoritative per-section signal is each section's `truncated`
++  flag plus its `priority`/`estimated_tokens` — not the nominal
++  `token_budget.truncation_order` list, which is a static hint and may not match
++  the priority-driven trim order.
++- A trimmed section ends with the literal marker
++  `[truncated deterministically by token budget]` and has `truncated: true`.
++- `token_budget.truncated === true` means the payload as a whole was trimmed.
++
++Treat any `truncated` section as **incomplete**. Do not present a truncated
++section as exhaustive; if completeness matters, re-request with a higher
++`--budget` or recap the specific issue.
++
++## Writeback path: Hermes → Forge Kernel
++
++Evidence and decisions discovered during a Hermes session flow back into the
++Forge Kernel **only** through Forge CLI commands. Use the issue command surface
++documented in the Forge repo at
++`docs/reference/forge-kernel-issue-command-contract.md`:
++
++```bash
++forge comment <id> <body...>   # attach evidence, a decision, or a note to an issue
++forge update <id...> [flags]   # update issue state/fields
++forge create [title] [flags]   # open a new issue for follow-up work
++```
++
++> Note: `forge audit` is verify-only (`forge audit verify`) and does **not**
++> append evidence — record evidence as an issue comment via `forge comment`.
++
++These writes land in the Forge Kernel issue store, where they become part of the
++issue's durable history (view them via the issue itself, e.g. `forge show <id>`).
++Note the read/write asymmetry: the bounded `forge orient` / `forge recap`
++envelope is assembled from project docs, `docs/work` artifacts, and the issue
++summary — it surfaces issue/design/decision state but does **not** echo
++individual issue comments back. Do not assume evidence added via `forge comment`
++reappears verbatim in the next orient/recap payload; it lives in the issue
++history, reachable from the issue record.
++
++## No-profile-write guard (hard boundary)
++
++Hermes **MUST NOT write Hermes profile** state, conversation memory, or any
++Hermes-native artifact into Forge Kernel state — not into kernel storage, not
++into design/decision files, not into the issue backend. Hermes-native memory
++stays in Hermes' own store.
++
++- ✅ Read state via `forge orient` / `forge recap`.
++- ✅ Write evidence/decisions via `forge comment` / `forge update`.
++- ❌ Never persist Hermes profile/session memory into Forge Kernel state.
++- ❌ Never edit Forge state files directly to record Hermes-side context.
++
++If a piece of context only matters to Hermes, it belongs in Hermes-native
++memory. If it is a project fact, decision, or evidence item, write it through
++the Forge CLI so it becomes part of the shared, cited source of truth.
++
++## PR shepherd (external scheduler, not orientation)
++
++The PR shepherd runs **outside** Hermes. An external scheduler invokes
++`forge shepherd <pr>` as discrete bounded passes — each pass reads CI/check
++state, takes at most one idempotent action (re-run a flaky required check), or
++escalates, then exits. It **never merges** (the human merges in the GitHub UI)
++and **never resolves review threads**.
++
++Hermes does not run the shepherd and does not learn shepherd progress through
++`forge orient` (which is deterministic-source orientation with no live PR
++awareness). Shepherd progress is durable on the **PR itself** — its comments and
++labels. When a Hermes session needs PR/CI status, read the PR directly; do not
++expect `orient` to carry it.
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+new file mode 100644
+index 00000000..a0cb2758
+--- /dev/null
++++ b/.codex/skills/kernel/SKILL.md
+@@ -0,0 +1,125 @@
++---
++name: kernel
++description: >
++  Forge kernel surface — the umbrella index for working in a Forge project. Use
++  at the start of any session and whenever you need to orient: it routes to the
++  per-stage workflow skills (plan, dev, validate, ship, review, premerge, verify,
++  plus status, research, rollback, sonarcloud, shepherd) and documents the
++  day-to-day issue, board, and orientation verbs of the `forge` CLI. Trigger on
++  "what's the workflow", "what should I work on", "forge issues", "claim an
++  issue", "project status", "orient", or when deciding between Forge issues and
++  an ad-hoc TodoWrite list.
++allowed-tools: Read, Bash(forge:*)
++---
++
++# Forge kernel surface
++
++Forge is a TDD-first workflow harness. The agent-facing surface is **skills + the
++`forge` CLI** — there are no slash-command files. This umbrella skill is the
++entry point: it tells you which stage skill to use and which `forge` verb runs
++each day-to-day operation. Every skill is a thin guide over a real `forge`
++command; the CLI remains the implementation, the skills are the surface.
++
++## Stage skills (the TDD ladder)
++
++The default workflow is a configurable ladder of per-stage skills. Use the whole
++flow when it fits, or invoke an individual stage when the active plan permits a
++smaller path.
++
++| Stage | Skill | Purpose |
++|-------|-------|---------|
++| utility | `status` | Check current context, active work, recent completions |
++| 1 | `plan` | Design intent → research → branch + worktree + task list |
++| 2 | `dev` | Subagent-driven TDD per task (implementer → spec → quality review) |
++| 3 | `validate` | Type check, lint, code review, security, tests — all fresh output |
++| 4 | `ship` | Push branch and open the PR with design-doc reference |
++| 5 | `review` | Address ALL PR feedback (GitHub Actions, Greptile, SonarCloud) |
++| 6 | `premerge` | Complete docs on the feature branch, hand off PR to the user |
++| 7 | `verify` | Post-merge health check (CI on main, close issues) |
++
++Utility skills outside the linear ladder: `research` (deep web research),
++`rollback` (safe revert operations), `sonarcloud` (code-quality queries),
++`shepherd` (cross-harness PR monitoring).
++
++```
++status → plan → dev → validate → ship → review → premerge → verify
++```
++
++## Day-to-day verbs (the `forge` CLI)
++
++The kernel verbs are the operations you reach for inside any stage — find work,
++claim it, fix in place, query the board, orient. They are grouped in four
++families. Run them through Bash; never hand-edit the issue store.
++
++### A — Issue lifecycle (the core loop)
++
++| Need | Command |
++|------|---------|
++| Find ready work | `forge ready [--json]` |
++| Inspect an issue | `forge show <id> [--json]` |
++| List / filter issues | `forge list [--status …] [--json]` |
++| Create an issue | `forge create --title "…" --type <feature\|bug\|task>` |
++| Claim work (DB-enforced lease) | `forge claim <id>` |
++| Release a claim | `forge release <id>` |
++| Update fields | `forge update <id> --priority <n>` (etc.) |
++| Add a handoff comment | `forge comment <id> "…"` |
++| Close an issue | `forge close <id> --reason "…"` |
++| Dependencies | `forge issue dep add\|remove <id> <id>` |
++| Search / stats | `forge issue search "…"` · `forge issue stats` |
++| Blocked work | `forge blocked` |
++
++### B — Memory / knowledge (planned)
++
++`forge remember` / `forge recall` / `forge knowledge search` are roadmap items —
++they are **not on the CLI yet**. Do not invoke them; record durable decisions as
++issue comments (`forge comment`) until the memory verbs land.
++
++### C — Board / planning / admin
++
++| Need | Command |
++|------|---------|
++| Team board | `forge board [--json]` |
++| Export the issue projection | `forge export [--import]` |
++| Release-readiness gate | `forge release check --target <ref>` |
++| Sync team state | `forge sync` |
++
++### D — Orientation / session
++
++| Need | Command |
++|------|---------|
++| Prime a session | `forge prime [--json]` |
++| Full orientation | `forge orient [--json]` |
++| Recap an issue / context | `forge recap [<id>] [--json]` |
++
++## Forge issues vs. TodoWrite — decision table
++
++| Situation | Use |
++|-----------|-----|
++| Work spans sessions, has blockers, or needs recovery after compaction | **Forge issues** (`forge create`/`claim`/`close`) |
++| Cross-agent or cross-worktree coordination | **Forge issues** (DB-enforced leases) |
++| Durable decisions, design rationale, handoff notes | **Forge issue comments** |
++| Ephemeral, single-session checklist for the current task | **TodoWrite** |
++| Steps you will finish and discard within this turn | **TodoWrite** |
++
++When in doubt, prefer a Forge issue: it survives the session and is visible to
++the team. TodoWrite is for scratch tracking only.
++
++## Session protocol
++
++1. **Orient first.** Start with the `status` skill (or `forge prime` /
++   `forge orient`) — never reconstruct project state from raw files.
++2. **Claim before you build.** `forge claim <id>` takes the lease; one issue at a
++   time. `forge release <id>` if you abandon it.
++3. **Work the ladder.** `plan` → `dev` → `validate` → `ship` → `review` →
++   `premerge` → `verify`, skipping stages only when the plan allows.
++4. **Record evidence as you go.** Progress and decisions go to
++   `forge comment <id> "…"`, not to memory.
++5. **Hand off cleanly.** Close completed issues (`forge close <id> --reason …`)
++   and `forge sync` so the team sees the result.
++
++## Core principles
++
++- **TDD-first** — write tests before implementation (RED → GREEN → REFACTOR).
++- **Research-first** — understand before building; document decisions.
++- **Security built-in** — OWASP Top 10 analysis for every feature.
++- **Documentation progressive** — update at each stage, verify at the end.
+diff --git a/.codex/skills/parallel-deep-research/SKILL.md b/.codex/skills/parallel-deep-research/SKILL.md
+new file mode 100644
+index 00000000..64ceebe2
+--- /dev/null
++++ b/.codex/skills/parallel-deep-research/SKILL.md
+@@ -0,0 +1,108 @@
++---
++name: parallel-deep-research
++description: >
++  Produces comprehensive research reports that go far beyond what built-in web
++  search can achieve. Sends research tasks to Parallel AI's pro/ultra processors
++  which spend 3-25 minutes autonomously crawling, reading, and synthesizing dozens
++  of sources — returning structured reports with citations. Built-in WebSearch
++  can only run a few queries; this skill runs an entire research pipeline externally.
++  No binary install — requires PARALLEL_API_KEY in .env.local. ALWAYS use this
++  skill instead of doing multiple WebSearch calls when the user needs a comprehensive
++  report, market analysis, competitive landscape, industry deep-dive, strategic
++  recommendations, or multi-source synthesis. This is the RIGHT tool for any
++  research task that would require more than 3-4 web searches to answer properly.
++  Also trigger during /plan Phase 2 research and /research workflows.
++compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
++metadata:
++  author: harshanandak
++  version: "1.0.0"
++---
++
++# Parallel Deep Research
++
++Comprehensive research reports with multi-source synthesis. Use `pro` (3-9 min, $0.10) or `ultra` (5-25 min, $0.30) for deep analysis.
++
++> **CLI alternative (recommended)**: Install `parallel-cli` for official skill:
++> `npx skills add parallel-web/parallel-agent-skills --skill parallel-deep-research`
++
++## Setup
++
++```bash
++API_KEY=$(grep "^PARALLEL_API_KEY=" .env.local | cut -d= -f2)
++```
++
++## Create Research Task
++
++```bash
++curl -s -X POST "https://api.parallel.ai/v1/tasks/runs" \
++  -H "x-api-key: $API_KEY" \
++  -H "Content-Type: application/json" \
++  -d '{
++    "input": "Analyze the AI chatbot market. Include: size, growth, key players, trends, competitive threats",
++    "processor": "pro"
++  }'
++```
++
++Response: `{"run_id": "trun_abc123...", "status": "queued"}`
++
++## Get Result (polling)
++
++The result endpoint returns both status and output in one call. Poll until `status` is `completed`.
++
++```bash
++RUN_ID="trun_abc123..."
++MAX_POLLS=180  # 30 min max (180 × 10s)
++
++for i in $(seq 1 $MAX_POLLS); do
++  RESULT=$(curl -s "https://api.parallel.ai/v1/tasks/runs/$RUN_ID/result" \
++    -H "x-api-key: $API_KEY")
++
++  STATUS=$(echo "$RESULT" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
++
++  if [ "$STATUS" = "completed" ]; then
++    echo "$RESULT"
++    break
++  elif [ "$STATUS" = "failed" ]; then
++    echo "Task failed: $RESULT"
++    break
++  fi
++
++  echo "Poll $i/$MAX_POLLS — Status: $STATUS"
++  sleep 10
++done
++
++if [ "$i" = "$MAX_POLLS" ] && [ "$STATUS" != "completed" ] && [ "$STATUS" != "failed" ]; then
++  echo "Timeout: task did not complete within 30 minutes"
++fi
++```
++
++## Processors
++
++| Processor | Speed | Cost | Use For |
++|-----------|-------|------|---------|
++| pro | 3-9 min | $0.10/task | Market analysis, strategic reports |
++| ultra | 5-25 min | $0.30/task | Comprehensive deep research |
++
++## Example: Market Analysis
++
++```json
++{
++  "input": "Analyze the AI chip market in 2024. Include market size, growth rate, key players (NVIDIA, AMD, Intel), emerging competitors, and 2025 outlook.",
++  "processor": "pro"
++}
++```
++
++Result: Markdown report with citations.
++
++## When to Use
++
++- Market research and competitive analysis
++- Strategic reports requiring multiple sources
++- Research that needs synthesis across many documents
++- Any task that would need more than 3-4 web searches to answer properly
++
++For quick facts or single-source lookups, use built-in WebSearch instead.
++
++## Timeout
++
++Set polling timeout to 1800s (30 min) for ultra tasks. Pro tasks typically complete in 3-9 min.
+diff --git a/.codex/skills/parallel-deep-research/evals/README.md b/.codex/skills/parallel-deep-research/evals/README.md
+new file mode 100644
+index 00000000..c05b565c
+--- /dev/null
++++ b/.codex/skills/parallel-deep-research/evals/README.md
+@@ -0,0 +1,27 @@
++# Eval Sets
++
++These eval files use a flat JSON array format targeting `scripts/eval_win.py`:
++
++```json
++[{"query": "...", "should_trigger": true}]
++```
++
++This is **not** compatible with the skill-creator plugin's `run_loop.py` which expects:
++
++```json
++{"skill_name": "...", "evals": [{"id": "...", "prompt": "...", "should_trigger": true}]}
++```
++
++To convert for `run_loop.py`:
++
++```bash
++python3 -c "
++import json, pathlib, uuid
++data = json.loads(pathlib.Path('evals.json').read_text())
++out = {'skill_name': 'SKILL-NAME-HERE', 'evals': [
++    {'id': str(uuid.uuid4()), 'prompt': item['query'], 'should_trigger': item['should_trigger']}
++    for item in data
++]}
++print(json.dumps(out, indent=2))
++" > evals_skill_creator.json
++```
+diff --git a/.codex/skills/parallel-deep-research/evals/evals.json b/.codex/skills/parallel-deep-research/evals/evals.json
+new file mode 100644
+index 00000000..f633aabd
+--- /dev/null
++++ b/.codex/skills/parallel-deep-research/evals/evals.json
+@@ -0,0 +1,62 @@
++[
++  {
++    "query": "I need a comprehensive market analysis of the developer tools space — cover the top 20 players, their funding, market positioning, and where the industry is heading over the next 3-5 years. Include data from Gartner, Forrester, and any recent VC investment reports",
++    "should_trigger": true
++  },
++  {
++    "query": "Write a deep research report on the state of WebAssembly adoption in production — synthesize case studies from companies using WASM, performance benchmarks vs native code, ecosystem maturity analysis, and strategic recommendations for when to adopt it",
++    "should_trigger": true
++  },
++  {
++    "query": "Our CTO wants a competitive landscape analysis comparing Convex, Supabase, Firebase, and PlanetScale for our backend rewrite. Need comprehensive feature comparison, pricing analysis at our scale (50K DAU), community health metrics, and risk assessment for each",
++    "should_trigger": true
++  },
++  {
++    "query": "Create a strategic report on the AI code generation market — analyze GitHub Copilot, Cursor, Claude Code, and emerging competitors. Cover adoption rates, developer satisfaction surveys, enterprise pricing trends, and predictions for 2027",
++    "should_trigger": true
++  },
++  {
++    "query": "I'm doing /plan Phase 2 research — produce a comprehensive analysis of event-driven architecture patterns in microservices, covering Kafka vs RabbitMQ vs NATS, with production case studies, failure mode analysis, and recommendations for our 100K events/sec throughput requirement",
++    "should_trigger": true
++  },
++  {
++    "query": "Write an industry deep-dive into the observability market — compare Datadog, Grafana Cloud, and New Relic across features, pricing, scalability, and OpenTelemetry support. Include customer migration stories and TCO analysis for a 500-node cluster",
++    "should_trigger": true
++  },
++  {
++    "query": "Research and synthesize the current state of edge computing for real-time AI inference — cover hardware options, cloud provider edge offerings, latency benchmarks, and case studies from autonomous vehicles and IoT deployments",
++    "should_trigger": true
++  },
++  {
++    "query": "Quick search: what's the current price of Bitcoin and what were Anthropic's latest announcements?",
++    "should_trigger": false
++  },
++  {
++    "query": "Find the official migration guide URL for ESLint's new flat config format",
++    "should_trigger": false
++  },
++  {
++    "query": "Search for recent blog posts about Bun 2.0 features and release date",
++    "should_trigger": false
++  },
++  {
++    "query": "Go to https://stripe.com/docs/api and extract the authentication section with all the code examples",
++    "should_trigger": false
++  },
++  {
++    "query": "Scrape https://openai.com/pricing and extract the per-token costs for each model tier",
++    "should_trigger": false
++  },
++  {
++    "query": "Build a structured company profile for Databricks — return JSON with founding year, funding rounds, valuation, employee count, and tech stack",
++    "should_trigger": false
++  },
++  {
++    "query": "Fix the TypeScript compilation error in src/services/auth.ts — it's complaining about missing type for the session token",
++    "should_trigger": false
++  },
++  {
++    "query": "Add unit tests for the rate limiter middleware in src/middleware/rateLimit.ts",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/plan/SKILL.md b/.codex/skills/plan/SKILL.md
+index 28466339..e8020d1d 100644
+--- a/.codex/skills/plan/SKILL.md
++++ b/.codex/skills/plan/SKILL.md
+@@ -1,5 +1,12 @@
+ ---
+-description: Design intent → research → branch + worktree + task list
++name: plan
++description: >
++  Use for the Forge plan stage to capture design intent through
++  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
++  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
++  starting a new feature, planning or scoping work, writing a design doc, or preparing
++  a worktree and task list before development.
++allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+ Plan a feature from scratch: brainstorm design intent, research technical approach, then set up branch, worktree, and a complete task list ready for /dev.
+@@ -72,7 +79,7 @@ Before proceeding to Phase 1, check for cross-developer conflicts:
+ forge sync || true
+ 
+ # Check for conflicts with this issue's planned work area
+-bash scripts/conflict-detect.sh --issue <beads-id>
++bash scripts/conflict-detect.sh --issue <forge-id>
+ ```
+ 
+ If exit code 2 (validation error): show error message, abort — do not show conflict prompt.
+@@ -81,7 +88,7 @@ If exit code 1 (conflicts found):
+ - Display the conflict output to the developer
+ - Ask: "Other developers are working in overlapping areas. Proceed anyway? (y/n)"
+ - If `n`: exit cleanly, no side effects
+-- If `y`: log override via `bd comments add <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Phase 1
++- If `y`: log override via `forge comment <id> "Conflict override: proceeding despite overlap with <conflicting-issues>"`, then continue to Phase 1
+ - Audit: record conflict override per OWASP A09
+ 
+ If exit code 0: proceed silently to Phase 1.
+@@ -110,7 +117,7 @@ If merge conflicts or unmet dependencies are found:
+ - Display the findings to the developer
+ - Ask: "In-flight PRs have potential conflicts. Proceed with planning anyway? (y/n)"
+ - If `n`: exit cleanly, no side effects
+-- If `y`: log override via `bd comments add <id> "PR coordination override: proceeding despite in-flight conflicts"`, then continue to Phase 1
++- If `y`: log override via `forge comment <id> "PR coordination override: proceeding despite in-flight conflicts"`, then continue to Phase 1
+ 
+ ---
+ 
+@@ -135,11 +142,11 @@ If verify reports issues, address them before proceeding (the output will includ
+ Before exploring context or asking questions, check for potential conflicts with in-flight work:
+ 
+ ```bash
+-# If a Beads issue ID is known (e.g., from /status or bd ready):
+-bash scripts/dep-guard.sh check-ripple <beads-issue-id>
++# If a Beads issue ID is known (e.g., from /status or forge ready):
++bash scripts/dep-guard.sh check-ripple <forge-issue-id>
+ 
+ # If no issue exists yet (first-time plan):
+-bd list --status=open,in_progress
++forge list --status=open,in_progress
+ ```
+ 
+ Review the output. If overlaps are detected:
+@@ -166,7 +173,7 @@ When `check-ripple` detects overlapping issues AND contract metadata is availabl
+    - **CRITICAL**: Consumer is in an active in_progress issue's task list
+ 3. **When uncertain, default to HIGH** — conservative over permissive
+ 4. Recommend one action:
+-   - Add dependency (`bd dep add <source> <target>`)
++   - Add dependency (`forge issue dep add <source> <target>`)
+    - Coordinate with other issue's developer
+    - Scope down current feature to avoid overlap
+    - Proceed as-is (no real conflict)
+@@ -369,7 +376,7 @@ bash scripts/beads-context.sh stage-transition <id> research setup
+ The epic was created in the Entry HARD-GATE (Phase 1 entry). If this feature requires child issues (sub-tasks tracked separately), create them now and link to the epic:
+ 
+ ```bash
+-bd create --title="<sub-task-name>" --type=feature --parent=<epic-id>
++forge create --title="<sub-task-name>" --type=feature --parent=<epic-id>
+ ```
+ 
+ ### Step 2: Branch + worktree
+@@ -389,7 +396,7 @@ else
+ 
+   # Step 2c: Create a Beads-aware worktree rooted on master
+   git checkout master
+-  bd worktree create .worktrees/<slug> --branch feat/<slug>
++  forge worktree create .worktrees/<slug> --branch feat/<slug>
+   cd .worktrees/<slug>
+ fi
+ ```
+@@ -495,7 +502,7 @@ If the user approves a dependency mutation, apply it explicitly:
+ bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
+ ```
+ 
+-That approval step must validate with `bd dep cycles`, show `bd graph`, summarize `bd ready`, and persist the decision via `bd set-state` plus `bd comments`. Beads remains the canonical machine-readable decision record; the plan docs hold only the concise summary.
++That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge set-state` plus `forge comment`. Beads remains the canonical machine-readable decision record; the plan docs hold only the concise summary.
+ 
+ ### Step 6: User review
+ 
+diff --git a/.codex/skills/premerge/SKILL.md b/.codex/skills/premerge/SKILL.md
+index 6f9afd83..8c0a4d73 100644
+--- a/.codex/skills/premerge/SKILL.md
++++ b/.codex/skills/premerge/SKILL.md
+@@ -1,14 +1,22 @@
+ ---
+-description: Complete all doc updates on feature branch, then hand off PR to user for merge
++name: premerge
++description: >
++  Completes all documentation updates on the feature branch (CHANGELOG, README, API
++  reference, CLAUDE.md USER section, AGENTS.md), verifies CI is green, syncs the Forge
++  issue store, and hands the PR off to the user for manual merge in the GitHub UI; it
++  never runs the merge itself. Use for the Forge premerge stage when finalizing a PR
++  before merge, after /review, to make a PR merge-ready with code, tests, and docs in
++  one unit. Keywords: premerge, merge-readiness, doc updates, CHANGELOG, hand off PR.
++allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+ Prepare the pull request for merge by completing ALL documentation updates on the feature branch, then hand off to the user.
+ 
+ # Premerge
+ 
+-**The actual merge is always done by the user in the GitHub UI — never by this command.**
++**The actual merge is always done by the user in the GitHub UI — never by this skill.**
+ 
+-This command makes the PR 100% complete: code + tests + docs in one unit. After this, the user merges once and there are no follow-up doc PRs needed.
++This skill makes the PR 100% complete: code + tests + docs in one unit. After this, the user merges once and there are no follow-up doc PRs needed.
+ 
+ ## Usage
+ 
+@@ -16,7 +24,7 @@ This command makes the PR 100% complete: code + tests + docs in one unit. After
+ /premerge <pr-number>
+ ```
+ 
+-## What This Command Does
++## What This Skill Does
+ 
+ ### Step 1: Verify All CI Checks Pass
+ 
+diff --git a/.codex/skills/research/SKILL.md b/.codex/skills/research/SKILL.md
+index e84a441d..3a471da6 100644
+--- a/.codex/skills/research/SKILL.md
++++ b/.codex/skills/research/SKILL.md
+@@ -1,5 +1,11 @@
+ ---
+-description: Deep research with parallel-deep-research, document findings
++name: research
++description: >
++  Runs deep, parallel web and codebase research and documents findings in the design
++  doc. Use for the Forge research stage when gathering technical research, OWASP
++  analysis, and TDD scenarios before planning or development. Trigger keywords are
++  research, deep research, web search, OWASP, codebase exploration, technical research.
++allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+ 
+ > **Note**: `/research` is legacy support for the research capability used by planning workflows.
+@@ -14,7 +20,7 @@ description: Deep research with parallel-deep-research, document findings
+ 
+ # Research (Legacy Alias)
+ 
+-This command previously ran a standalone research phase. It is now embedded in `/plan` as Phase 2.
++This skill previously ran a standalone research phase. It is now embedded in `/plan` as Phase 2.
+ 
+ ## If you want to run just the research phase
+ 
+diff --git a/.codex/skills/review/SKILL.md b/.codex/skills/review/SKILL.md
+index 1d4694c3..93116ab6 100644
+--- a/.codex/skills/review/SKILL.md
++++ b/.codex/skills/review/SKILL.md
+@@ -1,12 +1,14 @@
+ ---
+-description: Address ALL PR issues (GitHub Actions, Greptile, SonarCloud, CI/CD)
++name: review
++description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or preparing a PR for premerge.
++allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+ Process ALL pull request issues including GitHub Actions failures, Greptile inline comments, SonarCloud analysis, and other CI/CD checks.
+ 
+ # Review
+ 
+-This command handles ALL issues that arise after creating a pull request.
++This skill handles ALL issues that arise after creating a pull request.
+ 
+ ## Usage
+ 
+@@ -14,7 +16,7 @@ This command handles ALL issues that arise after creating a pull request.
+ /review <pr-number>
+ ```
+ 
+-## What This Command Does
++## What This Skill Does
+ 
+ ### Step 1: Fetch Complete PR Status
+ ```bash
+@@ -247,7 +249,7 @@ gh pr comment <pr-number> --body "## Greptile Summary Response
+ Addressed all key recommendations:
+ - [Recommendation 1]: ✓ Fixed in commit <sha>
+ - [Recommendation 2]: ✓ Explained (see inline response)
+-- [Recommendation 3]: ⏭️ Out of scope for this PR (created issue bd-xxx)
++- [Recommendation 3]: ⏭️ Out of scope for this PR (created issue forge-xxx)
+ 
+ All critical and high-priority items resolved."
+ ```
+diff --git a/.codex/skills/rollback/SKILL.md b/.codex/skills/rollback/SKILL.md
+index a6a8cffd..ba52adfc 100644
+--- a/.codex/skills/rollback/SKILL.md
++++ b/.codex/skills/rollback/SKILL.md
+@@ -1,12 +1,14 @@
+ ---
+-description: Safely rollback changes with USER section preservation
++name: rollback
++description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use for the Forge rollback stage when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
++allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+ Comprehensive rollback system with multiple methods and automatic USER content preservation.
+ 
+ # Rollback
+ 
+-This command provides safe rollback operations with comprehensive validation and USER section preservation.
++This skill provides safe rollback operations with comprehensive validation and USER section preservation.
+ 
+ ## Usage
+ 
+@@ -343,7 +345,7 @@ bunx forge rollback
+ 
+ ## Beads Integration
+ 
+-If Beads is installed (`bun install -g @beads/bd`), rollback automatically updates issue tracking.
++If Beads is installed (`bunx forge setup`), rollback automatically updates issue tracking.
+ 
+ ### PR Rollback → Issue Status
+ 
+@@ -636,7 +638,7 @@ bunx forge rollback
+ # ✓ Beads: Issue #123 → status: reverted
+ # ✓ Rollback complete!
+ 
+-bd show 123
++forge show 123
+ # ID: 123
+ # Title: Add real-time updates
+ # Status: reverted
+diff --git a/.codex/skills/shepherd/SKILL.md b/.codex/skills/shepherd/SKILL.md
+index 69d6f1e3..e7a53103 100644
+--- a/.codex/skills/shepherd/SKILL.md
++++ b/.codex/skills/shepherd/SKILL.md
+@@ -1,5 +1,7 @@
+ ---
+-description: Monitor-driven PR shepherd — one bounded pass per invocation; never merges, never resolves review threads
++name: shepherd
++description: Runs one bounded monitor pass over a pull request — reads CI and check state, takes at most one idempotent action, then hands off; never merges and never resolves review threads. Use for the Forge shepherd stage when polling PR checks, re-running flaky required checks, posting status replies, or escalating merge-readiness after /review.
++allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+ Run one bounded monitor pass over a pull request: read CI and check state, take at most one idempotent action, then hand off. Never merges and never resolves review threads.
+diff --git a/.codex/skills/ship/SKILL.md b/.codex/skills/ship/SKILL.md
+index a579e4b1..2955455c 100644
+--- a/.codex/skills/ship/SKILL.md
++++ b/.codex/skills/ship/SKILL.md
+@@ -1,12 +1,18 @@
+ ---
+-description: Create PR with comprehensive documentation
++name: ship
++description: >
++  Pushes the validated branch and opens a pull request populated from the project's
++  PR template with full context and documentation links. Use for the Forge ship stage
++  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
++  gh pr create.
++allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+ Push code and create a pull request with full context and documentation links.
+ 
+ # Ship
+ 
+-This command creates a PR after validation passes.
++This skill creates a PR after validation passes.
+ 
+ ## Usage
+ 
+@@ -24,7 +30,7 @@ Do NOT create PR until:
+ </HARD-GATE>
+ ```
+ 
+-## What This Command Does
++## What This Skill Does
+ 
+ ### Step 1: Verify /validate Passed
+ Ensure all four validation checks completed successfully with fresh output in this session.
+@@ -65,7 +71,7 @@ If merge simulation finds conflicts:
+ - Display conflicted files
+ - Ask: "Merge conflicts detected with base branch. These PRs should merge first: [list]. Proceed with PR creation anyway? (y/n)"
+ - If `n`: exit cleanly
+-- If `y`: log override via `bd comments add <id> "Ship override: creating PR despite merge conflicts"`, then continue
++- If `y`: log override via `forge comment <id> "Ship override: creating PR despite merge conflicts"`, then continue
+ 
+ After PR creation completes:
+ ```bash
+@@ -117,7 +123,7 @@ If a PR template exists:
+ 2. **Fill in every section** with actual data from the current PR context:
+    - Replace HTML comments (`<!-- ... -->`) with real content
+    - Check applicable checkboxes (`- [x]`)
+-   - Fill in beads issue IDs (replace `beads-xxx` with actual ID)
++   - Fill in Forge issue IDs (replace `forge-xxx` with actual ID)
+    - Fill in test results, validation status, and other concrete data
+    - Reference the design doc: `docs/work/YYYY-MM-DD-<slug>/design.md`
+ 3. **Do NOT remove any sections** — fill them all, even if "N/A"
+@@ -135,7 +141,7 @@ If no PR template exists, use this minimal fallback:
+ [How it was tested, test results]
+ 
+ ## Beads
+-Closes beads-xxx
++Closes forge-xxx
+ 
+ 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+ ```
+@@ -148,9 +154,9 @@ gh pr create --title "<type>: <concise description>" --body "<populated-template
+ 
+ Rules for the PR body:
+ - **Use the project's template structure** — never substitute your own format
+-- **Fill in concrete data** — commit counts, test results, actual file paths, real beads IDs
++- **Fill in concrete data** — commit counts, test results, actual file paths, real Forge IDs
+ - **Check applicable checkboxes** — `[x]` for items that apply, `[ ]` for items that don't
+-- **Include "Closes beads-xxx"** in the Beads section (required for auto-close in /verify)
++- **Include "Closes forge-xxx"** in the Beads section (required for auto-close in /verify)
+ 
+ ### Step 6: Validate Context and Record Stage Transition
+ ```bash
+@@ -176,7 +182,7 @@ forge team verify 2>&1 || true
+ 
+ ## Output
+ 
+-`/ship` reports live validation status, branch freshness, Beads PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this command file.
++`/ship` reports live validation status, branch freshness, Beads PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
+ 
+ When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
+ 
+@@ -201,7 +207,7 @@ Manual/support surfaces:
+ 
+ - **Use the project's PR template**: Always read `.github/pull_request_template.md` (or equivalent) and populate it — never substitute your own format
+ - **Fill every section**: Even if "N/A" — empty/missing sections cause review friction
+-- **Include "Closes beads-xxx"**: Required for auto-close in /verify
++- **Include "Closes forge-xxx"**: Required for auto-close in /verify
+ - **Concrete data only**: Test counts, file paths, commit SHAs — not placeholder text
+ - **Poll briefly, then stop**: Check PR status for up to 60 seconds, then hand off if checks are still pending
+ - **NO auto-merge**: Always wait for /review phase
+diff --git a/.codex/skills/sonarcloud-analysis/SKILL.md b/.codex/skills/sonarcloud-analysis/SKILL.md
+new file mode 100644
+index 00000000..e70ced00
+--- /dev/null
++++ b/.codex/skills/sonarcloud-analysis/SKILL.md
+@@ -0,0 +1,171 @@
++---
++name: sonarcloud-analysis
++description: >
++  Pull issues, metrics, quality gates, and analysis data from SonarCloud. ALWAYS
++  use this skill when the user mentions SonarCloud, asks about code quality metrics,
++  wants to check PR quality gates, or needs to review security vulnerabilities and
++  technical debt from static analysis. Also trigger during /review workflow when
++  SonarCloud issues need addressing. Trigger on phrases like "SonarCloud",
++  "quality gate", "code quality metrics", "technical debt", "coverage report",
++  "static analysis issues", "security vulnerabilities from scan".
++category: Code Quality
++tags: [sonarcloud, code-quality, issues, metrics, security]
++context: fork
++tools: [Bash, WebFetch, Read, Grep, Glob]
++model: sonnet
++---
++
++<role>
++You are a SonarCloud code quality analyst with expertise in static analysis, security vulnerability assessment, and technical debt management. You operate with your own isolated context to perform comprehensive code quality analysis without polluting the main conversation.
++</role>
++
++<capabilities>
++- Query SonarCloud API for issues, metrics, and quality gates
++- Analyze code quality across branches and pull requests
++- Identify security vulnerabilities and hotspots
++- Track coverage, duplication, and technical debt
++- Generate health reports and trend analysis
++- Correlate SonarCloud findings with local codebase
++</capabilities>
++
++<constraints>
++- Always use environment variables: $SONARCLOUD_TOKEN, $SONARCLOUD_ORG, $SONARCLOUD_PROJECT
++- Load credentials from .env.local if environment variables are not set
++- Never expose tokens in output
++- Validate API responses before processing
++- Handle pagination for large result sets
++</constraints>
++
++<workflow>
++1. Load environment variables (check .env.local if needed: `source .env.local 2>/dev/null || true`)
++2. Verify credentials are available
++3. Determine the analysis scope (project, branch, PR)
++4. Query relevant endpoints
++5. Process and correlate results
++6. Return actionable summary to main context
++</workflow>
++
++# SonarCloud Integration
++
++**Base**: `https://sonarcloud.io/api` | **Auth**: `Bearer $SONARCLOUD_TOKEN`
++
++## Configuration
++
++**Environment Variables**: Required for authentication
++- `SONARCLOUD_TOKEN` - Generate at sonarcloud.io/account/security
++- `SONARCLOUD_ORG` - Your SonarCloud organization key
++- `SONARCLOUD_PROJECT` - Your project key
++
++**Option 1: Use .env.local** (Recommended)
++Add to your project's `.env.local`:
++```bash
++SONARCLOUD_TOKEN=your_token_here
++SONARCLOUD_ORG=your-org
++SONARCLOUD_PROJECT=your-project
++```
++
++Before querying, load environment variables:
++```bash
++# Load .env.local into current environment
++export $(grep -v '^#' .env.local | xargs)
++```
++
++**Option 2: Export directly**
++```bash
++export SONARCLOUD_TOKEN="your_token"
++export SONARCLOUD_ORG="your-org"
++export SONARCLOUD_PROJECT="your-project"
++
++# Common queries
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/issues/search?organization=$ORG&componentKeys=$PROJECT&resolved=false"
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/measures/component?component=$PROJECT&metricKeys=bugs,coverage"
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/qualitygates/project_status?projectKey=$PROJECT"
++```
++
++## Endpoints
++
++| Endpoint                        | Purpose                  | Key Params                               |
++| ------------------------------- | ------------------------ | ---------------------------------------- |
++| `/api/issues/search`            | Bugs, vulnerabilities    | `types`, `severities`, `branch`, `pullRequest` |
++| `/api/measures/component`       | Coverage, complexity     | `metricKeys`, `branch`, `pullRequest`    |
++| `/api/qualitygates/project_status` | Pass/fail status      | `projectKey`, `branch`, `pullRequest`    |
++| `/api/hotspots/search`          | Security hotspots        | `projectKey`, `status`                   |
++| `/api/projects/search`          | List projects            | `organization`, `q`                      |
++| `/api/project_analyses/search`  | Analysis history         | `project`, `from`, `to`                  |
++| `/api/measures/search_history`  | Metrics over time        | `component`, `metrics`, `from`           |
++| `/api/components/tree`          | Files with metrics       | `qualifiers=FIL`, `metricKeys`           |
++| `/api/duplications/show`        | Duplicate code blocks    | `key` (file key), `branch`               |
++| `/api/sources/raw`              | Raw source code          | `key` (file key), `branch`               |
++| `/api/sources/scm`              | SCM blame info           | `key`, `from`, `to`                      |
++| `/api/ce/activity`              | Background tasks         | `component`, `status`, `type`            |
++| `/api/qualityprofiles/search`   | Quality profiles         | `language`, `project`                    |
++| `/api/languages/list`           | Supported languages      | -                                        |
++| `/api/project_branches/list`    | Project branches         | `project`                                |
++| `/api/project_badges/measure`   | SVG badge                | `project`, `metric`, `branch`            |
++| `/api/rules/search`             | Coding rules             | `languages`, `severities`, `types`       |
++
++## Common Filters
++
++**Issues**: `types=BUG,VULNERABILITY,CODE_SMELL` | `severities=BLOCKER,CRITICAL,MAJOR` | `resolved=false` | `inNewCodePeriod=true`
++
++**Metrics**: `bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,sqale_rating,reliability_rating,security_rating`
++
++**New Code**: `new_bugs,new_vulnerabilities,new_coverage,new_duplicated_lines_density`
++
++## Workflows
++
++### Health Check
++
++```bash
++curl ... "/api/qualitygates/project_status?projectKey=$PROJECT"
++curl ... "/api/measures/component?component=$PROJECT&metricKeys=bugs,vulnerabilities,coverage,sqale_rating"
++curl ... "/api/issues/search?organization=$ORG&componentKeys=$PROJECT&resolved=false&facets=severities,types&ps=1"
++```
++
++### PR Analysis
++
++```bash
++curl ... "/api/qualitygates/project_status?projectKey=$PROJECT&pullRequest=123"
++curl ... "/api/issues/search?organization=$ORG&componentKeys=$PROJECT&pullRequest=123&resolved=false"
++curl ... "/api/measures/component?component=$PROJECT&pullRequest=123&metricKeys=new_bugs,new_coverage"
++```
++
++### Security Audit
++
++```bash
++curl ... "/api/issues/search?organization=$ORG&componentKeys=$PROJECT&types=VULNERABILITY&resolved=false"
++curl ... "/api/hotspots/search?projectKey=$PROJECT&status=TO_REVIEW"
++```
++
++### Duplication Analysis
++
++```bash
++# Get duplication metrics
++curl ... "/api/measures/component?component=$PROJECT&metricKeys=duplicated_lines,duplicated_lines_density,duplicated_blocks,duplicated_files"
++
++# Get files with most duplication
++curl ... "/api/components/tree?component=$PROJECT&qualifiers=FIL&metricKeys=duplicated_lines_density&s=metric&metricSort=duplicated_lines_density&asc=false&ps=20"
++
++# Get duplicate blocks for a specific file (requires file key from above)
++curl ... "/api/duplications/show?key=my-project:src/utils/helpers.ts"
++```
++
++## Response Processing
++
++```bash
++# Count by severity
++curl ... | jq '.issues | group_by(.severity) | map({severity: .[0].severity, count: length})'
++
++# Failed quality gate conditions
++curl ... | jq '.projectStatus.conditions | map(select(.status == "ERROR"))'
++
++# Metrics as key-value
++curl ... | jq '.component.measures | map({(.metric): .value}) | add'
++```
++
++## Detailed Reference
++
++For complete API parameters and response schemas, see [references/api-reference.md](references/api-reference.md).
+diff --git a/.codex/skills/sonarcloud-analysis/evals/README.md b/.codex/skills/sonarcloud-analysis/evals/README.md
+new file mode 100644
+index 00000000..c05b565c
+--- /dev/null
++++ b/.codex/skills/sonarcloud-analysis/evals/README.md
+@@ -0,0 +1,27 @@
++# Eval Sets
++
++These eval files use a flat JSON array format targeting `scripts/eval_win.py`:
++
++```json
++[{"query": "...", "should_trigger": true}]
++```
++
++This is **not** compatible with the skill-creator plugin's `run_loop.py` which expects:
++
++```json
++{"skill_name": "...", "evals": [{"id": "...", "prompt": "...", "should_trigger": true}]}
++```
++
++To convert for `run_loop.py`:
++
++```bash
++python3 -c "
++import json, pathlib, uuid
++data = json.loads(pathlib.Path('evals.json').read_text())
++out = {'skill_name': 'SKILL-NAME-HERE', 'evals': [
++    {'id': str(uuid.uuid4()), 'prompt': item['query'], 'should_trigger': item['should_trigger']}
++    for item in data
++]}
++print(json.dumps(out, indent=2))
++" > evals_skill_creator.json
++```
+diff --git a/.codex/skills/sonarcloud-analysis/evals/evals.json b/.codex/skills/sonarcloud-analysis/evals/evals.json
+new file mode 100644
+index 00000000..586cb41d
+--- /dev/null
++++ b/.codex/skills/sonarcloud-analysis/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "Check the SonarCloud quality gate status for our latest PR — I want to see if there are any blockers before we can merge, especially around security vulnerabilities and code coverage",
++    "should_trigger": true
++  },
++  {
++    "query": "Pull the SonarCloud analysis results for our project — show me all the critical and major security vulnerabilities found in the last scan, with file locations and remediation guidance",
++    "should_trigger": true
++  },
++  {
++    "query": "We're in /review and SonarCloud flagged some issues — get the full list of code smells, bugs, and vulnerabilities from the latest analysis so I can address them before the quality gate passes",
++    "should_trigger": true
++  },
++  {
++    "query": "What's our current technical debt ratio in SonarCloud? Show me the metrics dashboard — maintainability rating, reliability rating, security rating, and coverage percentage",
++    "should_trigger": true
++  },
++  {
++    "query": "The SonarCloud quality gate is failing on our PR — pull the specific issues that are blocking it and show me what needs to be fixed, sorted by severity",
++    "should_trigger": true
++  },
++  {
++    "query": "Get the SonarCloud code coverage report for our project — I want to see which modules have low coverage and identify the files that need more tests before our next release",
++    "should_trigger": true
++  },
++  {
++    "query": "Implement a new REST API endpoint for user profile management with CRUD operations, input validation, and proper error handling",
++    "should_trigger": false
++  },
++  {
++    "query": "Search for best practices around implementing OAuth2 PKCE flow in a Node.js application",
++    "should_trigger": false
++  },
++  {
++    "query": "Write a comprehensive market analysis of the DevSecOps tools landscape covering SAST, DAST, and SCA vendors",
++    "should_trigger": false
++  },
++  {
++    "query": "Scrape https://docs.sonarcloud.io and extract the full list of supported languages and analysis rules",
++    "should_trigger": false
++  },
++  {
++    "query": "Build a structured company profile for SonarSource — return JSON with founding year, funding, products, and competitive positioning",
++    "should_trigger": false
++  },
++  {
++    "query": "Add proper citations to docs/research/security-audit-findings.md following our project's citation standards",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/sonarcloud-analysis/references/api-reference.md b/.codex/skills/sonarcloud-analysis/references/api-reference.md
+new file mode 100644
+index 00000000..d700d667
+--- /dev/null
++++ b/.codex/skills/sonarcloud-analysis/references/api-reference.md
+@@ -0,0 +1,466 @@
++# SonarCloud API Reference
++
++Complete parameter and response documentation for all endpoints.
++
++## Issues (`/api/issues/search`)
++
++### Parameters
++
++| Parameter | Description | Values |
++| --------- | ----------- | ------ |
++| `organization` | Org key | Required |
++| `componentKeys` | Project key(s) | Comma-separated |
++| `types` | Issue types | `BUG`, `VULNERABILITY`, `CODE_SMELL`, `SECURITY_HOTSPOT` |
++| `severities` | Severity | `BLOCKER`, `CRITICAL`, `MAJOR`, `MINOR`, `INFO` |
++| `statuses` | Status | `OPEN`, `CONFIRMED`, `REOPENED`, `RESOLVED`, `CLOSED` |
++| `resolutions` | Resolution | `FALSE-POSITIVE`, `WONTFIX`, `FIXED`, `REMOVED` |
++| `resolved` | Filter | `true`, `false` |
++| `branch` | Branch name | String |
++| `pullRequest` | PR number | String |
++| `createdAfter` | Date filter | `YYYY-MM-DD` |
++| `createdBefore` | Date filter | `YYYY-MM-DD` |
++| `languages` | Languages | `java`, `typescript`, `python`, etc. |
++| `rules` | Rule keys | Comma-separated |
++| `tags` | Issue tags | Comma-separated |
++| `assignees` | Assigned users | Comma-separated |
++| `authors` | Code authors | Comma-separated |
++| `scopes` | Scope | `MAIN`, `TEST` |
++| `inNewCodePeriod` | New code only | `true`, `false` |
++| `facets` | Aggregations | `severities`, `types`, `rules`, `tags` |
++| `p` | Page number | Integer (1-based) |
++| `ps` | Page size | Integer (max 500) |
++| `s` | Sort field | `CREATION_DATE`, `UPDATE_DATE`, `SEVERITY` |
++| `asc` | Sort order | `true`, `false` |
++
++### Response
++
++```json
++{
++  "total": 150,
++  "paging": { "pageIndex": 1, "pageSize": 100, "total": 150 },
++  "issues": [{
++    "key": "AYx...",
++    "rule": "typescript:S1234",
++    "severity": "MAJOR",
++    "component": "my-project:src/file.ts",
++    "line": 42,
++    "message": "Remove this unused variable.",
++    "type": "CODE_SMELL",
++    "status": "OPEN",
++    "effort": "5min",
++    "tags": ["unused"],
++    "creationDate": "2024-01-15T10:30:00+0000"
++  }],
++  "facets": [{ "property": "severities", "values": [{ "val": "MAJOR", "count": 50 }] }]
++}
++```
++
++---
++
++## Metrics (`/api/measures/component`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `component` | Project key (required) |
++| `metricKeys` | Metrics (comma-separated) |
++| `branch` | Branch name |
++| `pullRequest` | PR number |
++| `additionalFields` | `metrics`, `periods` |
++
++### All Metric Keys
++
++| Category | Keys |
++| -------- | ---- |
++| Size | `ncloc`, `lines`, `statements`, `functions`, `classes`, `files` |
++| Complexity | `complexity`, `cognitive_complexity` |
++| Coverage | `coverage`, `line_coverage`, `branch_coverage`, `tests`, `test_success_density`, `uncovered_lines`, `uncovered_conditions` |
++| Duplication | `duplicated_lines`, `duplicated_lines_density`, `duplicated_blocks`, `duplicated_files` |
++| Issues | `bugs`, `vulnerabilities`, `code_smells`, `security_hotspots` |
++| Ratings | `sqale_rating`, `reliability_rating`, `security_rating`, `security_review_rating` (1=A to 5=E) |
++| Debt | `sqale_index` (minutes), `sqale_debt_ratio` (%) |
++| Quality Gate | `alert_status`, `quality_gate_details` |
++| New Code | `new_bugs`, `new_vulnerabilities`, `new_code_smells`, `new_coverage`, `new_duplicated_lines_density` |
++
++### Response
++
++```json
++{
++  "component": {
++    "key": "my-project",
++    "name": "My Project",
++    "measures": [
++      { "metric": "bugs", "value": "12" },
++      { "metric": "coverage", "value": "78.5" },
++      { "metric": "sqale_rating", "value": "2.0" }
++    ]
++  }
++}
++```
++
++---
++
++## Quality Gate (`/api/qualitygates/project_status`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `projectKey` | Project key (required) |
++| `branch` | Branch name |
++| `pullRequest` | PR number |
++
++### Response
++
++```json
++{
++  "projectStatus": {
++    "status": "ERROR",
++    "conditions": [{
++      "status": "ERROR",
++      "metricKey": "new_coverage",
++      "comparator": "LT",
++      "errorThreshold": "80",
++      "actualValue": "65.3"
++    }],
++    "ignoredConditions": false
++  }
++}
++```
++
++---
++
++## Security Hotspots (`/api/hotspots/search`)
++
++### Parameters
++
++| Parameter | Description | Values |
++| --------- | ----------- | ------ |
++| `projectKey` | Project key | Required |
++| `branch` | Branch name | String |
++| `pullRequest` | PR number | String |
++| `status` | Status | `TO_REVIEW`, `REVIEWED` |
++| `resolution` | Resolution | `FIXED`, `SAFE`, `ACKNOWLEDGED` |
++| `inNewCodePeriod` | New code | `true`, `false` |
++| `p` / `ps` | Pagination | Integer |
++
++### Response
++
++```json
++{
++  "paging": { "total": 5 },
++  "hotspots": [{
++    "key": "...",
++    "component": "my-project:src/auth.ts",
++    "securityCategory": "sql-injection",
++    "vulnerabilityProbability": "HIGH",
++    "status": "TO_REVIEW",
++    "message": "Make sure this SQL query is safe.",
++    "line": 42
++  }]
++}
++```
++
++---
++
++## Projects (`/api/projects/search`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `organization` | Org key |
++| `q` | Search query |
++| `qualifiers` | `TRK` (project), `APP` |
++| `p` / `ps` | Pagination |
++
++---
++
++## Analysis History (`/api/project_analyses/search`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `project` | Project key |
++| `branch` | Branch name |
++| `from` / `to` | Date range |
++| `p` / `ps` | Pagination |
++
++### Response
++
++```json
++{
++  "analyses": [{
++    "key": "AYx...",
++    "date": "2024-01-15T10:30:00+0000",
++    "projectVersion": "1.2.0",
++    "revision": "abc123def",
++    "events": [{ "category": "VERSION", "name": "1.2.0" }]
++  }]
++}
++```
++
++---
++
++## Metrics History (`/api/measures/search_history`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `component` | Project key |
++| `metrics` | Metric keys |
++| `from` / `to` | Date range (`YYYY-MM-DD`) |
++| `branch` | Branch name |
++| `p` / `ps` | Pagination |
++
++---
++
++## Component Tree (`/api/components/tree`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `component` | Project key |
++| `branch` | Branch name |
++| `qualifiers` | `FIL` (file), `DIR`, `UTS` (test) |
++| `metricKeys` | Metrics per component |
++| `strategy` | `children`, `leaves`, `all` |
++| `q` | Search query |
++| `s` / `asc` | Sort field / ascending |
++| `metricSort` | Metric to sort by |
++
++---
++
++## Duplications (`/api/duplications/show`)
++
++Get detailed duplicate code blocks for a specific file.
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `key` | File key (required) - format: `project-key:path/to/file.ts` |
++| `branch` | Branch name |
++| `pullRequest` | PR number |
++
++### Response
++
++```json
++{
++  "duplications": [
++    {
++      "blocks": [
++        {
++          "from": 1,
++          "size": 20,
++          "_ref": "1"
++        },
++        {
++          "from": 50,
++          "size": 20,
++          "_ref": "2"
++        }
++      ]
++    }
++  ],
++  "files": {
++    "1": {
++      "key": "my-project:src/utils/helpers.ts",
++      "name": "helpers.ts",
++      "projectName": "My Project"
++    },
++    "2": {
++      "key": "my-project:src/utils/common.ts",
++      "name": "common.ts",
++      "projectName": "My Project"
++    }
++  }
++}
++```
++
++### Workflow: Find All Duplicates
++
++```bash
++# 1. Get files with most duplication
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/components/tree?component=$PROJECT&qualifiers=FIL&metricKeys=duplicated_lines_density&s=metric&metricSort=duplicated_lines_density&asc=false&ps=20"
++
++# 2. For each file, get duplicate blocks
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/duplications/show?key=my-project:src/file.ts"
++```
++
++---
++
++## Rules (`/api/rules/search`)
++
++### Parameters
++
++| Parameter | Description |
++| --------- | ----------- |
++| `languages` | Filter by language |
++| `severities` | Filter by severity |
++| `types` | Filter by type |
++| `tags` | Filter by tags |
++| `q` | Search query |
++| `p` / `ps` | Pagination |
++
++---
++
++## Sources (`/api/sources/*`)
++
++### Raw Source Code (`/api/sources/raw`)
++
++| Parameter | Description |
++| --------- | ----------- |
++| `key` | File key (required) - format: `project:path/to/file.ts` |
++| `branch` | Branch name |
++
++```bash
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/sources/raw?key=my-project:src/utils/helpers.ts"
++```
++
++### SCM Blame (`/api/sources/scm`)
++
++| Parameter | Description |
++| --------- | ----------- |
++| `key` | File key (required) |
++| `from` | Start line |
++| `to` | End line |
++
++```bash
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/sources/scm?key=my-project:src/utils/helpers.ts"
++```
++
++**Response**: Returns author, date, and revision for each line.
++
++---
++
++## Compute Engine (`/api/ce/activity`)
++
++Get background task status (analysis jobs).
++
++| Parameter | Description |
++| --------- | ----------- |
++| `component` | Project key |
++| `status` | `SUCCESS`, `FAILED`, `CANCELED`, `PENDING`, `IN_PROGRESS` |
++| `type` | Task type (e.g., `REPORT`) |
++| `minSubmittedAt` | Filter by submission date |
++| `maxExecutedAt` | Filter by execution date |
++| `p` / `ps` | Pagination |
++
++```bash
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/ce/activity?component=my-project&status=FAILED"
++```
++
++---
++
++## Quality Profiles (`/api/qualityprofiles/search`)
++
++| Parameter | Description |
++| --------- | ----------- |
++| `language` | Filter by language |
++| `project` | Project key |
++| `qualityProfile` | Profile name |
++
++```bash
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/qualityprofiles/search?language=ts"
++```
++
++---
++
++## Languages (`/api/languages/list`)
++
++List all supported languages.
++
++```bash
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/languages/list"
++```
++
++**Response**: `{ "languages": [{ "key": "ts", "name": "TypeScript" }, ...] }`
++
++---
++
++## Branches (`/api/project_branches/list`)
++
++| Parameter | Description |
++| --------- | ----------- |
++| `project` | Project key (required) |
++
++```bash
++curl -H "Authorization: Bearer $TOKEN" \
++  "https://sonarcloud.io/api/project_branches/list?project=my-project"
++```
++
++**Response**: `{ "branches": [{ "name": "main", "isMain": true, "type": "LONG", "status": { "qualityGateStatus": "OK" } }] }`
++
++---
++
++## Badges (`/api/project_badges/*`)
++
++### Measure Badge (`/api/project_badges/measure`)
++
++| Parameter | Description |
++| --------- | ----------- |
++| `project` | Project key |
++| `metric` | `bugs`, `coverage`, `code_smells`, `vulnerabilities`, etc. |
++| `branch` | Branch name |
++
++Returns SVG badge image.
++
++```bash
++curl "https://sonarcloud.io/api/project_badges/measure?project=my-project&metric=coverage"
++```
++
++### Quality Gate Badge (`/api/project_badges/quality_gate`)
++
++| Parameter | Description |
++| --------- | ----------- |
++| `project` | Project key |
++| `branch` | Branch name |
++
++```bash
++curl "https://sonarcloud.io/api/project_badges/quality_gate?project=my-project"
++```
++
++---
++
++## Pagination Example
++
++```bash
++PAGE=1
++while true; do
++  R=$(curl -s -H "Authorization: Bearer $TOKEN" \
++    "https://sonarcloud.io/api/issues/search?organization=$ORG&componentKeys=$PROJECT&p=$PAGE&ps=500")
++  echo $R | jq '.issues[]'
++  [ $((PAGE * 500)) -ge $(echo $R | jq '.total') ] && break
++  PAGE=$((PAGE + 1))
++done
++```
++
++---
++
++## Error Codes
++
++| Code | Meaning | Fix |
++| ---- | ------- | --- |
++| 401 | Invalid token | Check `SONARCLOUD_TOKEN` |
++| 403 | No permission | Verify project access |
++| 404 | Not found | Check project/org key |
++| 400 | Bad request | Check parameter values |
++
++---
++
++## References
++
++- [SonarCloud Web API](https://sonarcloud.io/web_api)
++- [SonarCloud Docs](https://docs.sonarsource.com/sonarcloud/)
+diff --git a/.codex/skills/sonarcloud/SKILL.md b/.codex/skills/sonarcloud/SKILL.md
+index bc76cf51..a8dd4974 100644
+--- a/.codex/skills/sonarcloud/SKILL.md
++++ b/.codex/skills/sonarcloud/SKILL.md
+@@ -1,5 +1,7 @@
+ ---
+-description: Pull issues, metrics, quality gates, and analysis data from SonarCloud
++name: sonarcloud
++description: Pulls issues, metrics, quality gates, security hotspots, and analysis history from SonarCloud via its API. Use for the Forge sonarcloud stage when querying code quality data for a project, branch, or PR — triggers on sonarcloud, code quality, issues, metrics, quality gate, hotspots, coverage.
++allowed-tools: Bash, Read, Grep, Glob, WebFetch
+ ---
+ 
+ # SonarCloud Query Command
+diff --git a/.codex/skills/status/SKILL.md b/.codex/skills/status/SKILL.md
+index 26d8023f..85bb6611 100644
+--- a/.codex/skills/status/SKILL.md
++++ b/.codex/skills/status/SKILL.md
+@@ -1,12 +1,14 @@
+ ---
+-description: Check current stage and context
++name: status
++description: Checks the current Forge workflow stage and surfaces in-progress work, ranked ready issues, stale in-progress reconciliation, recent commits, and team context. Use for the Forge status stage when starting a session or deciding what to work on next. Triggers include status, current stage, what's in progress, where am I, and resume work.
++allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+ Check where you are in the project and what work is in progress.
+ 
+ # Status Check
+ 
+-This command helps you understand the current state of the project before starting new work.
++This skill helps you understand the current state of the project before starting new work.
+ 
+ ## Usage
+ 
+@@ -14,7 +16,7 @@ This command helps you understand the current state of the project before starti
+ /status
+ ```
+ 
+-## What This Command Does
++## What This Skill Does
+ 
+ ## Step 0: Sync team state
+ 
+@@ -30,7 +32,7 @@ bash scripts/smart-status.sh
+ ```
+ This command dynamically computes and displays all issues ranked by composite score (priority, dependency impact, type, staleness, epic proximity). Output includes active sessions, conflict risk annotations, and grouped categories. No manual querying needed.
+ 
+-For full context on any issue: `bd show <id>`
++For full context on any issue: `forge show <id>`
+ 
+ ### Step 1b: Reconcile stale in-progress issues
+ 
+@@ -47,7 +49,7 @@ fi
+ 
+ # For each in_progress issue, check if its PR was already merged
+ if [ -n "$DEFAULT_BRANCH" ]; then
+-  bd list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
++  forge list --status=in_progress --json 2>/dev/null | jq -r '.[].id' | while read id; do
+     # Search git log for the issue ID in commit messages (fixed-strings for literal match)
+     if git log --oneline --first-parent "$DEFAULT_BRANCH" --fixed-strings --grep="$id" | grep -q .; then
+       echo "STALE: $id -- found in git history, likely already merged"
+diff --git a/.codex/skills/validate/SKILL.md b/.codex/skills/validate/SKILL.md
+index 7c7668c1..7398897f 100644
+--- a/.codex/skills/validate/SKILL.md
++++ b/.codex/skills/validate/SKILL.md
+@@ -1,5 +1,7 @@
+ ---
+-description: Complete validation (type/lint/tests/security)
++name: validate
++description: Runs comprehensive pre-pull-request validation for the Forge validate stage — rebases onto the base branch, then runs type checking, linting, code review, security review (OWASP Top 10), and tests, requiring fresh passing output before shipping. Use for the Forge validate stage or when asked to validate changes, run quality gates, type-check, lint, security-scan, or run the full test suite before opening a PR.
++allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+ > **Note:** Three things share the "validate" name in Forge:
+@@ -11,7 +13,7 @@ Run comprehensive validation including type checking, linting, code review, secu
+ 
+ # Validate
+ 
+-This command validates all code before creating a pull request.
++This skill validates all code before creating a pull request.
+ 
+ ## Usage
+ 
+@@ -260,8 +262,8 @@ Ready for /ship
+   - validation.test.ts: Assertion failed
+   - auth.test.ts: Timeout exceeded
+ 
+-✓ Beads issue created: bd-k8m3 "Fix validation test"
+-✓ Current issue marked: Blocked by bd-k8m3
++✓ Beads issue created: forge-k8m3 "Fix validation test"
++✓ Current issue marked: Blocked by forge-k8m3
+ 
+ Fix issues then re-run /validate
+ ```
+diff --git a/.codex/skills/verify/SKILL.md b/.codex/skills/verify/SKILL.md
+index 65914c87..45cbd239 100644
+--- a/.codex/skills/verify/SKILL.md
++++ b/.codex/skills/verify/SKILL.md
+@@ -1,12 +1,14 @@
+ ---
+-description: Post-merge health check — confirm merge landed, CI is clean, deployments are up
++name: verify
++description: Post-merge health check for the Forge verify stage — confirms the merge landed on main, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
++allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+ Verify that the merge landed correctly and everything is running properly after merge.
+ 
+ # Verify
+ 
+-This command runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled in `/premerge`).
++This skill runs AFTER the user has merged the PR. It checks system health — not documentation (that was handled in `/premerge`).
+ 
+ ## Usage
+ 
+@@ -14,7 +16,7 @@ This command runs AFTER the user has merged the PR. It checks system health —
+ /verify
+ ```
+ 
+-## What This Command Does
++## What This Skill Does
+ 
+ ### Step 1: Switch to Main and Pull
+ 
+@@ -142,7 +144,7 @@ Branch: <branch-name> deleted ✓
+ **Never commit inline.** If something is wrong, create a tracking issue:
+ 
+ ```bash
+-bd create --title="Post-merge: <description of issue>" --type=bug --priority=1
++forge create --title="Post-merge: <description of issue>" --type=bug --priority=1
+ ```
+ 
+ ### Step 8: Close Beads Issues (if healthy)
+@@ -156,24 +158,24 @@ If everything is clean, close all Beads issues referenced in the merged PR.
+ PR_BODY=$(gh pr view <number> --json body --jq '.body')
+ PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
+ 
+-# Extract beads IDs from PR body (matches "Closes beads-xxx", "closes forge-xxx", etc.)
++# Extract beads IDs from PR body (matches "Closes forge-xxx", "closes forge-xxx", etc.)
+ # Patterns: "Closes <prefix>-<id>", "Fixes <prefix>-<id>", "Resolves <prefix>-<id>"
+ BEADS_IDS=$(echo "$PR_BODY" | grep -oiE '(closes|fixes|resolves):?\s+[a-z]+-[a-z0-9]+' | grep -oiE '[a-z]+-[a-z0-9]{3,6}$')
+ 
+ # Validate each ID exists in beads
+ VALID_IDS=""
+ for id in $BEADS_IDS; do
+-  if bd show "$id" >/dev/null 2>&1; then
++  if forge show "$id" >/dev/null 2>&1; then
+     VALID_IDS="$VALID_IDS $id"
+   fi
+ done
+ BEADS_IDS="$VALID_IDS"
+ 
+ # Also check branch name for beads ID — extract segment after last /
+-# then validate with bd show to avoid false matches like "pr-templa"
++# then validate with forge show to avoid false matches like "pr-templa"
+ BRANCH_SLUG=$(echo "$PR_BRANCH" | sed 's|.*/||')
+ BRANCH_ID=$(echo "$BRANCH_SLUG" | grep -oE '[a-z]+-[a-z0-9]{3,6}' | head -1)
+-if [ -n "$BRANCH_ID" ] && ! bd show "$BRANCH_ID" >/dev/null 2>&1; then
++if [ -n "$BRANCH_ID" ] && ! forge show "$BRANCH_ID" >/dev/null 2>&1; then
+   BRANCH_ID=""  # Not a valid beads ID — discard
+ fi
+ ```
+@@ -214,7 +216,7 @@ Do NOT declare /verify complete until:
+ 
+ ## Rules
+ 
+-- **Never commits code** — this command may update Beads issue state after post-merge health is verified
++- **Never commits code** — this skill may update Beads issue state after post-merge health is verified
+ - **Never creates PRs** — if fixes are needed, that's a new /dev cycle
+ - **Runs after user confirms merge** — not before
+ - **Reports honestly** — if CI is broken on main, say so clearly
+diff --git a/lib/commands/commands-reset.js b/lib/commands/commands-reset.js
+deleted file mode 100644
+index 77a3cf7e..00000000
+--- a/lib/commands/commands-reset.js
++++ /dev/null
+@@ -1,147 +0,0 @@
+-'use strict';
+-
+-/**
+- * @module commands-reset
+- *
+- * Reset agent command files to match the canonical source (commands/*.md or .claude/commands/*.md).
+- * Rebuilds adapted files via sync-commands and optionally writes them.
+- *
+- * Used by `forge commands reset [--dry-run] [--all] [command-name]`.
+- */
+-
+-const fs = require('node:fs');
+-const path = require('node:path');
+-const {
+-  syncCommands,
+-  contentHash,
+-  resolveCanonicalCommandsDir,
+-  writeSyncManifest,
+-} = require('../../scripts/sync-commands.js');
+-
+-function validateCommandName(commandName) {
+-  if (commandName && !/^[a-z0-9-]+$/.test(commandName)) {
+-    return [`Invalid command name: "${commandName}" - only lowercase letters, numbers, and hyphens allowed`];
+-  }
+-
+-  return [];
+-}
+-
+-function ensureCanonicalCommandExists(repoRoot, canonicalDir, commandName) {
+-  if (!commandName) {
+-    return [];
+-  }
+-
+-  if (fs.existsSync(path.join(canonicalDir, `${commandName}.md`))) {
+-    return [];
+-  }
+-
+-  const canonicalLabel = path.relative(repoRoot, canonicalDir).replaceAll('\\', '/');
+-  return [`Command not found: ${canonicalLabel}/${commandName}.md`];
+-}
+-
+-function filterPlannedEntries(entries, commandName, all) {
+-  if (commandName && all !== true) {
+-    return entries.filter(entry =>
+-      entry.filename.replaceAll('.prompt.md', '').replaceAll('.md', '') === commandName ||
+-      entry.dir.includes(`/${commandName}/`)
+-    );
+-  }
+-
+-  return entries;
+-}
+-
+-function recordEntryResult(entry, reset, skipped, dryRun) {
+-  const relativeFile = path.join(entry.dir, entry.filename);
+-
+-  if (dryRun) {
+-    if (fs.existsSync(entry.filePath)) {
+-      const existing = fs.readFileSync(entry.filePath, 'utf8');
+-      if (contentHash(existing) === contentHash(entry.content)) {
+-        skipped.push({ agent: entry.agent, file: relativeFile });
+-      } else {
+-        reset.push({ agent: entry.agent, file: relativeFile });
+-      }
+-    } else {
+-      reset.push({ agent: entry.agent, file: relativeFile });
+-    }
+-    return;
+-  }
+-
+-  const targetDir = path.dirname(entry.filePath);
+-  if (!fs.existsSync(targetDir)) {
+-    fs.mkdirSync(targetDir, { recursive: true });
+-  }
+-
+-  if (fs.existsSync(entry.filePath)) {
+-    const existing = fs.readFileSync(entry.filePath, 'utf8');
+-    if (contentHash(existing) === contentHash(entry.content)) {
+-      skipped.push({ agent: entry.agent, file: relativeFile });
+-      return;
+-    }
+-  }
+-
+-  fs.writeFileSync(entry.filePath, entry.content);
+-  reset.push({ agent: entry.agent, file: relativeFile });
+-}
+-
+-function resetCommands({ repoRoot, commandName, all, dryRun }) {
+-  const errors = [];
+-  const reset = [];
+-  const skipped = [];
+-
+-  errors.push(...validateCommandName(commandName));
+-  if (errors.length > 0) {
+-    return { reset, skipped, errors };
+-  }
+-
+-  const canonicalDir = resolveCanonicalCommandsDir(repoRoot);
+-  if (!canonicalDir) {
+-    errors.push('Canonical source directory not found: commands/ or .claude/commands/');
+-    return { reset, skipped, errors };
+-  }
+-
+-  errors.push(...ensureCanonicalCommandExists(repoRoot, canonicalDir, commandName));
+-  if (errors.length > 0) {
+-    return { reset, skipped, errors };
+-  }
+-
+-  const result = syncCommands({ dryRun: true, check: false, repoRoot, canonicalDir });
+-  if (!result.planned || result.planned.length === 0) {
+-    return { reset, skipped, errors };
+-  }
+-
+-  const entries = filterPlannedEntries(result.planned, commandName, all);
+-  for (const entry of entries) {
+-    recordEntryResult(entry, reset, skipped, dryRun);
+-  }
+-
+-  if (!dryRun) {
+-    // Refresh the manifest using the full expected sync set without rewriting
+-    // unrelated command files that were intentionally excluded from this reset.
+-    writeSyncManifest(repoRoot, result.planned);
+-  }
+-
+-  return { reset, skipped, errors };
+-}
+-
+-module.exports = {
+-  name: 'commands-reset',
+-  description: 'Reset generated agent command files to canonical content',
+-  handler: async (args, flags, repoRoot) => {
+-    const commandName = args.find(arg => !arg.startsWith('-'));
+-    const result = resetCommands({
+-      repoRoot,
+-      commandName,
+-      all: Boolean(flags.all),
+-      dryRun: Boolean(flags.dryRun),
+-    });
+-
+-    if (result.errors.length > 0) {
+-      return { success: false, error: result.errors.join('; ') };
+-    }
+-
+-    return { success: true, ...result };
+-  },
+-  resetCommands,
+-  resolveCanonicalCommandsDir,
+-};
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 6fcf668d..802fe4c7 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -217,8 +217,7 @@ function getTestCandidatesForChangedFile(file) {
+ 
+ 	if (file.startsWith('.claude/commands/') && file.endsWith('.md')) {
+ 		return [
+-			'test/command-sync-check.test.js',
+-			'test/structural/command-sync.test.js',
++			'test/structural/skills-sync-drift.test.js',
+ 		];
+ 	}
+ 
+@@ -227,9 +226,8 @@ function getTestCandidatesForChangedFile(file) {
+ 		|| file.startsWith('.codex/')) {
+ 		return [
+ 			'test/agent-gaps.test.js',
+-			'test/command-sync-check.test.js',
+ 			'test/scripts/check-agents.test.js',
+-			'test/structural/command-sync.test.js',
++			'test/structural/skills-sync-drift.test.js',
+ 		];
+ 	}
+ 
+diff --git a/scripts/check-agents.js b/scripts/check-agents.js
+index ecc7a96b..a0e77027 100644
+--- a/scripts/check-agents.js
++++ b/scripts/check-agents.js
+@@ -5,11 +5,12 @@
+  *
+  * CLI command that validates all agent configs are complete and in sync.
+  *
+- * 1. Runs syncCommands({ check: true }) to verify agent command files match canonical source
+- * 2. Reads lib/agents/*.plugin.json to verify each agent with capabilities.commands: true
+- *    has its command directory populated with expected files
+- * 3. Reports: missing files, out-of-sync files, stale files
+- * 4. Exits 0 if all clean, exits non-zero if issues found
++ * 1. Runs the skills drift check (lib/skills-sync) to verify generated agent
++ *    skill mirrors (e.g. .codex/skills) match the canonical root skills/ source.
++ * 2. Reads lib/agents/*.plugin.json to validate each plugin's schema/parity
++ *    (support metadata, rules/skills scaffold paths, deprecated-tier consistency).
++ * 3. Reports: skill drift, missing/stale skills, plugin parity errors.
++ * 4. Exits 0 if all clean, exits non-zero if issues found.
+  *
+  * Usage:
+  *   node scripts/check-agents.js
+@@ -18,46 +19,22 @@
+  *   checkAgents(repoRoot) -> { errors: string[], warnings: string[] }
+  */
+ 
+-const { syncCommands } = require('./sync-commands');
+-const { AGENT_ADAPTERS } = require('./sync-commands');
+ const path = require('path');
+ const fs = require('fs');
++const { checkSkillsSync } = require('../lib/skills-sync');
+ const { validatePluginSchema } = require('../lib/plugin-manager');
+ 
+-const SYNC_ADAPTER_BY_PLUGIN_ID = Object.freeze({
+-  claude: 'claude-code',
+-  codex: 'codex',
+-  cursor: 'cursor',
+-});
+-
+-function normalizeRelativeDir(dir) {
+-  if (!dir) return null;
+-  return String(dir).replace(/\\/g, '/').replace(/\/+$/, '');
+-}
+-
+-function getDeclaredCommandDir(plugin) {
+-  const dirs = plugin.directories || {};
+-  return dirs.commands || dirs.workflows || dirs.prompts || dirs.skills || null;
+-}
+-
+-function getExpectedCommandDir(plugin) {
+-  const adapterId = SYNC_ADAPTER_BY_PLUGIN_ID[plugin.id];
+-  if (!adapterId) {
+-    return null;
+-  }
+-
+-  const adapter = AGENT_ADAPTERS[adapterId];
+-  if (!adapter) {
+-    return null;
+-  }
+-
+-  if (plugin.id === 'codex') {
+-    return normalizeRelativeDir(plugin.directories?.skills || adapter.baseDir);
+-  }
+-
+-  return normalizeRelativeDir(adapter.baseDir);
+-}
+-
++/**
++ * Validate a single plugin's schema + capability/scaffold parity.
++ *
++ * Command-surface parity is intentionally NOT validated: Forge is skills-only
++ * (the .claude/commands/.cursor/commands/.codex/skills command surface was
++ * removed in PR-A0). The surviving checks cover support metadata, the rules and
++ * skills scaffold paths, and deprecated-tier consistency.
++ *
++ * @param {object} plugin
++ * @param {string[]} errors - mutated with any parity errors
++ */
+ function validatePluginParity(plugin, errors) {
+   const validation = validatePluginSchema(plugin);
+   if (!validation.valid) {
+@@ -73,25 +50,6 @@ function validatePluginParity(plugin, errors) {
+   const dirs = plugin.directories || {};
+   const supportStatus = plugin.support?.status;
+ 
+-  if (capabilities.commands) {
+-    const expectedDir = getExpectedCommandDir(plugin);
+-    const declaredDir = normalizeRelativeDir(getDeclaredCommandDir(plugin));
+-
+-    if (!expectedDir) {
+-      errors.push(
+-        `Plugin "${plugin.name}" (${plugin.id}) declares commands support but has no Forge sync adapter.`
+-      );
+-    } else if (!declaredDir) {
+-      errors.push(
+-        `Plugin "${plugin.name}" (${plugin.id}) declares commands support but has no command directory configured.`
+-      );
+-    } else if (declaredDir !== expectedDir) {
+-      errors.push(
+-        `Plugin "${plugin.name}" (${plugin.id}) command directory "${declaredDir}" does not match sync output "${expectedDir}".`
+-      );
+-    }
+-  }
+-
+   if (capabilities.rules && !dirs.rules) {
+     errors.push(
+       `Plugin "${plugin.name}" (${plugin.id}) declares rules capability but has no scaffold path configured.`
+@@ -131,47 +89,34 @@ function checkAgents(repoRoot) {
+   /** @type {string[]} */
+   const warnings = [];
+ 
+-  // ---- 1. Run sync check ----
+-  let syncResult;
++  // ---- 1. Skills drift check ----
++  let driftResult;
+   try {
+-    syncResult = syncCommands({ check: true, dryRun: false, repoRoot });
++    driftResult = checkSkillsSync({ repoRoot });
+   } catch (err) {
+-    errors.push(`Sync check failed: ${err.message}`);
++    errors.push(`Skills sync check failed: ${err.message}`);
+     return { errors, warnings };
+   }
+ 
+-  if (syncResult.empty) {
+-    errors.push('No command files found in .claude/commands/ — cannot verify sync.');
++  const canonicalSkillsDir = path.join(repoRoot, 'skills');
++  if (!fs.existsSync(canonicalSkillsDir)) {
++    errors.push('No canonical skills found in skills/ — cannot verify skill sync.');
+     return { errors, warnings };
+-  } else {
+-    if (syncResult.manifestMissing) {
+-      warnings.push(
+-        'Sync manifest (.forge/sync-manifest.json) not found — stale file detection skipped. ' +
+-        'Run "node scripts/sync-commands.js" to generate it.'
+-      );
+-    }
++  }
+ 
+-    if (syncResult.outOfSync && syncResult.outOfSync.length > 0) {
+-      for (const entry of syncResult.outOfSync) {
+-        const relPath = path.join(entry.dir, entry.filename);
+-        const exists = fs.existsSync(entry.filePath);
+-        const status = exists ? 'modified' : 'missing';
+-        errors.push(`Out of sync [${entry.agent}]: ${relPath} (${status})`);
+-      }
+-    }
++  if (driftResult.checkedAgents.length === 0) {
++    warnings.push(
++      'No generated agent skill directories found (e.g. .codex/skills) — skill drift check skipped. ' +
++      'Run "forge setup" or "skills sync" to populate them.'
++    );
++  }
+ 
+-    if (syncResult.staleFiles && syncResult.staleFiles.length > 0) {
+-      for (const filePath of syncResult.staleFiles) {
+-        const relPath = path.relative(repoRoot, filePath);
+-        errors.push(`Stale file (no longer generated, should be removed): ${relPath}`);
+-      }
+-    }
++  for (const d of driftResult.drift) {
++    errors.push(`Out of sync [${d.agent}]: ${d.skill}/${d.file} (${d.status})`);
+   }
+ 
+   // ---- 2. Validate plugin catalog ----
+   const pluginDir = path.join(repoRoot, 'lib', 'agents');
+-  /** @type {object[]} */
+-  const plugins = [];
+ 
+   if (!fs.existsSync(pluginDir)) {
+     warnings.push('No plugin directory found at lib/agents/ — plugin catalog validation skipped.');
+@@ -185,54 +130,11 @@ function checkAgents(repoRoot) {
+     for (const file of pluginFiles) {
+       try {
+         const plugin = JSON.parse(fs.readFileSync(path.join(pluginDir, file), 'utf8'));
+-        plugins.push(plugin);
+         validatePluginParity(plugin, errors);
+       } catch (_err) {
+         errors.push(`Failed to parse plugin file: lib/agents/${file}`);
+       }
+     }
+-
+-    // For each plugin with commands: true, verify its command directory has files
+-    for (const plugin of plugins) {
+-      if (!plugin.capabilities || !plugin.capabilities.commands) {
+-        continue;
+-      }
+-
+-      // Find the command directory from the plugin's directories config
+-      const dirs = plugin.directories || {};
+-      // Plugins use different keys: commands, workflows, prompts, skills
+-      const commandDir = dirs.commands || dirs.workflows || dirs.prompts;
+-
+-      if (!commandDir) {
+-        // Plugin declares commands: true but has no command directory configured
+-        // Codex is the only agent that uses skills as its command mechanism
+-        if (plugin.id === 'codex' && dirs.skills) {
+-          // Codex CLI: commands live in .codex/skills/<name>/SKILL.md — skip standard check
+-          continue;
+-        }
+-        warnings.push(
+-          `Plugin "${plugin.name}" (${plugin.id}) has commands: true but no command directory configured.`
+-        );
+-        continue;
+-      }
+-
+-      const absCmdDir = path.join(repoRoot, commandDir);
+-
+-      if (!fs.existsSync(absCmdDir)) {
+-        errors.push(
+-          `Plugin "${plugin.name}" (${plugin.id}) has commands: true but directory "${commandDir}" does not exist.`
+-        );
+-        continue;
+-      }
+-
+-      // Check the directory has at least one file
+-      const files = fs.readdirSync(absCmdDir).filter((f) => !f.startsWith('.'));
+-      if (files.length === 0) {
+-        errors.push(
+-          `Plugin "${plugin.name}" (${plugin.id}) has commands: true but directory "${commandDir}" is empty.`
+-        );
+-      }
+-    }
+   }
+ 
+   return { errors, warnings };
+diff --git a/scripts/forge-team/tests/workflow-integration.test.sh b/scripts/forge-team/tests/workflow-integration.test.sh
+index 0be4e9be..947e66a1 100644
+--- a/scripts/forge-team/tests/workflow-integration.test.sh
++++ b/scripts/forge-team/tests/workflow-integration.test.sh
+@@ -31,11 +31,11 @@ assert_contains_file "ship calls sync" "forge-team.*sync" "$SHIP"
+ assert_contains_file "ship calls verify" "forge-team.*verify" "$SHIP"
+ 
+ echo ""
+-echo "── Sync check ──"
+-if node "$SCRIPT_DIR/scripts/sync-commands.js" --check 2>&1 | grep -qi 'error\|drift\|mismatch'; then
+-  FAIL=$((FAIL + 1)); echo "  FAIL: sync drift detected"
++echo "── Skill sync check ──"
++if (cd "$SCRIPT_DIR" && node -e "const r=require('./lib/skills-sync').checkSkillsSync({repoRoot:process.cwd()}); process.exit(r.inSync?0:1)"); then
++  PASS=$((PASS + 1)); echo "  PASS: all agent skill dirs in sync"
+ else
+-  PASS=$((PASS + 1)); echo "  PASS: all agent dirs in sync"
++  FAIL=$((FAIL + 1)); echo "  FAIL: skill drift detected"
+ fi
+ 
+ echo ""
+diff --git a/scripts/sync-commands.js b/scripts/sync-commands.js
+deleted file mode 100644
+index 7ebf2054..00000000
+--- a/scripts/sync-commands.js
++++ /dev/null
+@@ -1,534 +0,0 @@
+-#!/usr/bin/env node
+-
+-/**
+- * @module sync-commands
+- *
+- * Utility for parsing and rebuilding YAML frontmatter in
+- * `.claude/commands/*.md` files.
+- *
+- * Exports:
+- *   parseFrontmatter(content) -> { frontmatter: object, body: string }
+- *   buildFile(frontmatter, body) -> string
+- */
+-
+-const YAML = require('yaml');
+-const fs = require('fs');
+-const path = require('path');
+-const crypto = require('crypto');
+-const { listCodexSkillEntries } = require('../lib/codex-skills');
+-
+-/**
+- * Parse YAML frontmatter from a markdown string.
+- *
+- * Frontmatter is the YAML block between two `---` markers at the very start
+- * of the file. If no valid frontmatter block is found, returns an empty object
+- * with the full content as the body.
+- *
+- * @param {string} content - The raw file content
+- * @returns {{ frontmatter: Record<string, unknown>, body: string }}
+- */
+-function parseFrontmatter(content) {
+-  content = content.replace(/^\uFEFF/, '');
+-
+-  // Frontmatter must start at the very beginning with ---
+-  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
+-    return { frontmatter: {}, body: content };
+-  }
+-
+-  // Find the closing --- marker (skip the opening one)
+-  const openLen = content.startsWith('---\r\n') ? 5 : 4; // '---\n' or '---\r\n'
+-  const closeIndex = content.indexOf('\n---\n', openLen - 1);
+-  const closeIndexCRLF = content.indexOf('\r\n---\r\n', openLen - 1);
+-
+-  let yamlStr;
+-  let bodyStart;
+-
+-  if (closeIndex === -1 && closeIndexCRLF === -1) {
+-    // Check for --- at end of file (no trailing newline after closing ---)
+-    const closeAtEnd = content.indexOf('\n---', openLen - 1);
+-    if (closeAtEnd !== -1 && closeAtEnd + 4 === content.length) {
+-      yamlStr = content.slice(openLen, closeAtEnd + 1);
+-      bodyStart = content.length;
+-    } else {
+-      // No closing --- found — no valid frontmatter
+-      return { frontmatter: {}, body: content };
+-    }
+-  } else if (closeIndex !== -1 && (closeIndexCRLF === -1 || closeIndex < closeIndexCRLF)) {
+-    // LF line endings
+-    yamlStr = content.slice(openLen, closeIndex + 1);
+-    bodyStart = closeIndex + 5; // skip '\n---\n'
+-  } else {
+-    // CRLF line endings
+-    yamlStr = content.slice(openLen, closeIndexCRLF + 2);
+-    bodyStart = closeIndexCRLF + 7; // skip '\r\n---\r\n'
+-  }
+-
+-  // Parse the YAML string
+-  const trimmed = yamlStr.trim();
+-  if (trimmed === '') {
+-    return { frontmatter: {}, body: content.slice(bodyStart).replace(/^\uFEFF/, '') };
+-  }
+-
+-  /** @type {Record<string, unknown>} */
+-  let frontmatter;
+-  try {
+-    frontmatter = YAML.parse(trimmed);
+-  } catch (_err) {
+-    // If YAML parsing fails, treat as no frontmatter
+-    return { frontmatter: {}, body: content };
+-  }
+-
+-  // YAML.parse can return null for empty docs or a scalar for non-object input
+-  if (frontmatter === null || typeof frontmatter !== 'object') {
+-    return { frontmatter: {}, body: content };
+-  }
+-
+-  return { frontmatter, body: content.slice(bodyStart).replace(/^\uFEFF/, '') };
+-}
+-
+-/**
+- * Build a file string from frontmatter and body.
+- *
+- * Produces output in the format:
+- * ```
+- * ---
+- * key: value
+- * ---
+- * body content
+- * ```
+- *
+- * @param {Record<string, unknown>} frontmatter - Key-value pairs for the YAML block
+- * @param {string} body - The markdown body content
+- * @returns {string} The reconstructed file content
+- */
+-function buildFile(frontmatter, body) {
+-  const keys = Object.keys(frontmatter);
+-
+-  let yamlBlock;
+-  if (keys.length === 0) {
+-    yamlBlock = '';
+-  } else {
+-    yamlBlock = YAML.stringify(frontmatter, {
+-      lineWidth: 0,       // Prevent line wrapping
+-      defaultKeyType: 'PLAIN',
+-      defaultStringType: 'PLAIN',
+-    }).trimEnd();
+-    yamlBlock += '\n';
+-  }
+-
+-  return `---\n${yamlBlock}---\n${body}`;
+-}
+-
+-// ---- Agent adapters -------------------------------------------------------------
+-
+-/**
+- * @typedef {Object} AgentAdapter
+- * @property {(commandName: string) => string} dir - Target directory path for a specific command
+- * @property {string} baseDir - Base output directory for this agent (no sentinel needed)
+- * @property {string} extension - File extension (e.g. '.md', '.prompt.md')
+- * @property {(fm: Record<string, unknown>, commandName: string) => Record<string, unknown>} transformFrontmatter
+- * @property {boolean} [skip] - If true, agent is canonical source (no sync needed)
+- */
+-
+-/**
+- * Strip all frontmatter — return empty object.
+- *
+- * @param {Record<string, unknown>} _fm
+- * @param {string} _commandName
+- * @returns {Record<string, unknown>}
+- */
+-function stripAllFrontmatter(_fm, _commandName) {
+-  return {};
+-}
+-
+-/**
+- * Keep only `description` from frontmatter.
+- *
+- * @param {Record<string, unknown>} fm
+- * @param {string} _commandName
+- * @returns {Record<string, unknown>}
+- */
+-function keepDescription(fm, _commandName) {
+-  /** @type {Record<string, unknown>} */
+-  const result = {};
+-  if (fm.description !== undefined) {
+-    result.description = fm.description;
+-  }
+-  return result;
+-}
+-
+-/**
+- * Agent adapter configuration for command sync.
+- *
+- * Each entry maps an agent slug to its target directory, file extension,
+- * and frontmatter transform function.
+- *
+- * @type {Record<string, AgentAdapter>}
+- */
+-const AGENT_ADAPTERS = {
+-  'claude-code': {
+-    dir: () => '.claude/commands/',
+-    baseDir: '.claude/commands/',
+-    extension: '.md',
+-    transformFrontmatter: (fm) => ({ ...fm }),
+-    skip: true,
+-  },
+-  cursor: {
+-    dir: () => '.cursor/commands/',
+-    baseDir: '.cursor/commands/',
+-    extension: '.md',
+-    transformFrontmatter: stripAllFrontmatter,
+-  },
+-  codex: {
+-    dir: (commandName) => `.codex/skills/${commandName}/`,
+-    baseDir: '.codex/skills/',
+-    extension: '.md',
+-    transformFrontmatter: keepDescription,
+-  },
+-};
+-
+-/**
+- * Adapt a command file for a specific agent.
+- *
+- * Applies the agent's frontmatter transform and returns the target
+- * filename, directory, and rebuilt file content.
+- *
+- * @param {string} agentName - Agent slug (e.g. 'cursor', 'claude-code')
+- * @param {Record<string, unknown>} frontmatter - Parsed frontmatter object
+- * @param {string} body - Markdown body content (after frontmatter)
+- * @param {string} commandName - Command name (e.g. 'plan', 'dev', 'status')
+- * @returns {{ content: string, filename: string, dir: string } | null}
+- *   null if the agent is skipped (canonical source)
+- * @throws {Error} If agentName is not a known agent
+- */
+-function adaptForAgent(agentName, frontmatter, body, commandName) {
+-  const adapter = AGENT_ADAPTERS[agentName];
+-  if (!adapter) {
+-    throw new Error(`Unknown agent: "${agentName}". Known agents: ${Object.keys(AGENT_ADAPTERS).join(', ')}`);
+-  }
+-
+-  if (adapter.skip) {
+-    return null;
+-  }
+-
+-  const transformed = adapter.transformFrontmatter(frontmatter, commandName);
+-  const hasKeys = Object.keys(transformed).length > 0;
+-
+-  // Build content: if frontmatter is empty, output body only (no --- markers)
+-  const content = hasKeys ? buildFile(transformed, body) : body;
+-
+-  // Determine filename — Codex uses SKILL.md, others use <commandName>.<ext>
+-  let filename;
+-  if (agentName === 'codex') {
+-    filename = `SKILL${adapter.extension}`;
+-  } else {
+-    filename = `${commandName}${adapter.extension}`;
+-  }
+-
+-  return {
+-    content,
+-    filename,
+-    dir: adapter.dir(commandName),
+-  };
+-}
+-
+-// ---- Sync logic -----------------------------------------------------------------
+-
+-function resolveCanonicalCommandsDir(repoRoot) {
+-  const candidates = [
+-    path.join(repoRoot, 'commands'),
+-    path.join(repoRoot, '.claude', 'commands'),
+-  ];
+-
+-  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+-}
+-
+-/**
+- * Compute a content hash for change detection.
+- * Normalizes line endings to LF before hashing to avoid CRLF/LF mismatches
+- * on Windows (git checkout converts LF to CRLF on Windows).
+- *
+- * @param {string} content
+- * @returns {string} hex digest
+- */
+-function contentHash(content) {
+-  const normalized = content.replace(/\r\n/g, '\n');
+-  return crypto.createHash('sha256').update(normalized).digest('hex');
+-}
+-
+-/**
+- * Write the sync manifest for generated entries without rewriting command files.
+- *
+- * @param {string} repoRoot
+- * @param {SyncEntry[]} entries
+- */
+-function writeSyncManifest(repoRoot, entries) {
+-  const manifestDir = path.join(repoRoot, '.forge');
+-  fs.mkdirSync(manifestDir, { recursive: true });
+-  const manifestData = {
+-    generatedAt: new Date().toISOString(),
+-    files: entries.map((e) => path.relative(repoRoot, e.filePath).replace(/\\/g, '/')),
+-  };
+-  fs.writeFileSync(
+-    path.join(manifestDir, 'sync-manifest.json'),
+-    JSON.stringify(manifestData, null, 2) + '\n'
+-  );
+-}
+-
+-/**
+- * @typedef {Object} SyncEntry
+- * @property {string} agent - Agent slug
+- * @property {string} dir - Relative directory path
+- * @property {string} filename - Output filename
+- * @property {string} content - Generated file content
+- * @property {string} filePath - Full absolute path to the output file
+- */
+-
+-/**
+- * @typedef {Object} SyncResult
+- * @property {SyncEntry[]} [planned] - (dry-run) entries that would be written
+- * @property {SyncEntry[]} [written] - (write mode) entries that were written
+- * @property {SyncEntry[]} [overwritten] - (write mode) entries that overwrote manually modified files
+- * @property {boolean} [inSync] - (check mode) whether all files match
+- * @property {SyncEntry[]} [outOfSync] - (check mode) entries that differ from expected
+- * @property {string[]} [staleFiles] - (check mode) files on disk that are no longer generated
+- * @property {boolean} [empty] - (check mode) true when no commands found in canonical source
+- * @property {boolean} [manifestMissing] - (check mode) true when sync manifest not found
+- */
+-
+-/**
+- * Sync .claude/commands/*.md files to all non-skip agent directories.
+- *
+- * Modes:
+- * - `dryRun: true` — returns planned writes without touching the filesystem
+- * - `check: true` — compares generated content with existing files, reports mismatches
+- * - default (both false) — writes files, creating directories as needed
+- *
+- * @param {{ dryRun: boolean, check: boolean, repoRoot: string, canonicalDir?: string | null }} options
+- * @returns {SyncResult}
+- */
+-function syncCommands({ dryRun, check, repoRoot, canonicalDir = null }) {
+-  const commandsDir = canonicalDir || resolveCanonicalCommandsDir(repoRoot) || path.join(repoRoot, '.claude', 'commands');
+-
+-  // Read all .md files from the commands directory
+-  /** @type {string[]} */
+-  let commandFiles = [];
+-  if (fs.existsSync(commandsDir)) {
+-    commandFiles = fs.readdirSync(commandsDir)
+-      .filter((f) => f.endsWith('.md'))
+-      .sort();
+-  }
+-
+-  // Build the list of all files to generate
+-  /** @type {SyncEntry[]} */
+-  const entries = [];
+-
+-  for (const file of commandFiles) {
+-    const commandName = file.replace(/\.md$/, '');
+-    const filePath = path.join(commandsDir, file);
+-    const raw = fs.readFileSync(filePath, 'utf8');
+-    const { frontmatter, body } = parseFrontmatter(raw);
+-
+-    for (const agentName of Object.keys(AGENT_ADAPTERS)) {
+-      const adapted = adaptForAgent(agentName, frontmatter, body, commandName);
+-      if (adapted === null) {
+-        continue; // skip canonical agent
+-      }
+-
+-      const targetDir = path.join(repoRoot, adapted.dir);
+-      const targetPath = path.join(targetDir, adapted.filename);
+-
+-      entries.push({
+-        agent: agentName,
+-        dir: adapted.dir,
+-        filename: adapted.filename,
+-        content: adapted.content,
+-        filePath: targetPath,
+-      });
+-    }
+-  }
+-
+-  // ---- dry-run mode ----
+-  if (dryRun) {
+-    return { planned: entries };
+-  }
+-
+-  // ---- check mode ----
+-  if (check) {
+-    // Warn when no commands exist (could mask a misconfigured path)
+-    if (commandFiles.length === 0) {
+-      return { inSync: false, outOfSync: [], empty: true };
+-    }
+-
+-    /** @type {SyncEntry[]} */
+-    const outOfSync = [];
+-
+-    for (const entry of entries) {
+-      if (!fs.existsSync(entry.filePath)) {
+-        outOfSync.push(entry);
+-        continue;
+-      }
+-      const existing = fs.readFileSync(entry.filePath, 'utf8');
+-      if (contentHash(existing) !== contentHash(entry.content)) {
+-        outOfSync.push(entry);
+-      }
+-    }
+-
+-    // Detect stale files using the sync manifest (.forge/sync-manifest.json).
+-    // The manifest records every file path the sync script generated on the last
+-    // write run. Stale = in manifest but NOT in current expected set.
+-    // This avoids false positives on custom files — only files sync created are tracked.
+-    const expectedPaths = new Set(entries.map((e) => e.filePath));
+-    /** @type {string[]} */
+-    const staleFiles = [];
+-
+-    const manifestPath = path.join(repoRoot, '.forge', 'sync-manifest.json');
+-    let manifestMissing = !fs.existsSync(manifestPath);
+-    if (!manifestMissing) {
+-      try {
+-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+-        const previousPaths = manifest.files || [];
+-        for (const prevPath of previousPaths) {
+-          const absPath = path.resolve(repoRoot, prevPath);
+-          if (!expectedPaths.has(absPath) && fs.existsSync(absPath)) {
+-            staleFiles.push(absPath);
+-          }
+-        }
+-      } catch (_err) {
+-        // Corrupt manifest — flag as missing so CLI warns
+-        manifestMissing = true;
+-      }
+-    }
+-
+-    return {
+-      inSync: manifestMissing ? false : outOfSync.length === 0 && staleFiles.length === 0,
+-      outOfSync,
+-      staleFiles,
+-      manifestMissing,
+-    };
+-  }
+-
+-  // ---- write mode (default) ----
+-
+-  /** @type {SyncEntry[]} */
+-  const written = [];
+-  /** @type {SyncEntry[]} */
+-  const overwritten = [];
+-
+-  for (const entry of entries) {
+-    const targetDir = path.dirname(entry.filePath);
+-
+-    // Check if existing file has been manually modified
+-    if (fs.existsSync(entry.filePath)) {
+-      const existing = fs.readFileSync(entry.filePath, 'utf8');
+-      if (contentHash(existing) !== contentHash(entry.content)) {
+-        overwritten.push(entry);
+-      }
+-    }
+-
+-    // Create directory if needed
+-    fs.mkdirSync(targetDir, { recursive: true });
+-
+-    // Write the file
+-    fs.writeFileSync(entry.filePath, entry.content);
+-    written.push(entry);
+-  }
+-
+-  // Write sync manifest — records every file generated so stale detection
+-  // can identify orphaned files without false-flagging custom files.
+-  writeSyncManifest(repoRoot, written);
+-
+-  return { written, overwritten };
+-}
+-
+-// ---- CLI entry point -------------------------------------------------------------
+-
+-if (require.main === module) {
+-  const args = process.argv.slice(2);
+-  const dryRun = args.includes('--dry-run');
+-  const check = args.includes('--check');
+-
+-  if (dryRun && check) {
+-    console.error('Error: --dry-run and --check cannot be used together.');
+-    process.exit(1);
+-  }
+-
+-  const repoRoot = path.resolve(__dirname, '..');
+-
+-  const result = syncCommands({ dryRun, check, repoRoot });
+-
+-  if (dryRun) {
+-    if (result.planned.length === 0) {
+-      console.log('No command files found in commands/ or .claude/commands/');
+-    } else {
+-      console.log('Dry run — files that would be generated:\n');
+-      for (const entry of result.planned) {
+-        console.log(`  [${entry.agent}] ${path.join(entry.dir, entry.filename)}`);
+-      }
+-      console.log(`\nTotal: ${result.planned.length} files`);
+-    }
+-  } else if (check) {
+-    if (result.empty) {
+-      console.error('Error: no command files found in commands/ or .claude/commands/ — cannot verify sync.');
+-      process.exit(1);
+-    }
+-    if (result.manifestMissing) {
+-      console.warn('Warning: .forge/sync-manifest.json not found — stale file detection skipped.');
+-      console.warn('Run "node scripts/sync-commands.js" to generate the manifest.\n');
+-    }
+-    if (result.inSync) {
+-      console.log('All agent command files are in sync.');
+-      process.exit(0);
+-    } else if (result.manifestMissing && result.outOfSync.length === 0) {
+-      // Files are content-sync'd but manifest is missing — not a content error,
+-      // just needs a write run to generate the manifest.
+-      console.error('Run "node scripts/sync-commands.js" to generate the manifest, then commit .forge/sync-manifest.json.');
+-      process.exit(1);
+-    } else {
+-      if (result.outOfSync.length > 0) {
+-        console.log('Out of sync — the following files differ from expected:\n');
+-        for (const entry of result.outOfSync) {
+-          const exists = fs.existsSync(entry.filePath);
+-          const status = exists ? 'modified' : 'missing';
+-          console.log(`  [${entry.agent}] ${path.join(entry.dir, entry.filename)} (${status})`);
+-        }
+-      }
+-      if (result.staleFiles && result.staleFiles.length > 0) {
+-        console.log('\nStale files (no longer generated, should be removed):\n');
+-        for (const f of result.staleFiles) {
+-          console.log(`  ${path.relative(repoRoot, f)}`);
+-        }
+-      }
+-      const total = result.outOfSync.length + (result.staleFiles ? result.staleFiles.length : 0);
+-      console.log(`\n${total} issue(s) found.`);
+-      process.exit(1);
+-    }
+-  } else {
+-    // Write mode
+-    if (result.overwritten.length > 0) {
+-      console.log('Warning — overwriting manually modified files:\n');
+-      for (const entry of result.overwritten) {
+-        console.log(`  [${entry.agent}] ${path.join(entry.dir, entry.filename)}`);
+-      }
+-      console.log('');
+-    }
+-
+-    if (result.written.length === 0) {
+-      console.log('No command files found in commands/ or .claude/commands/');
+-    } else {
+-      console.log(`Synced ${result.written.length} file(s) across agents.`);
+-    }
+-  }
+-}
+-
+-module.exports = {
+-  parseFrontmatter,
+-  buildFile,
+-  AGENT_ADAPTERS,
+-  adaptForAgent,
+-  listCodexSkillEntries,
+-  syncCommands,
+-  contentHash,
+-  resolveCanonicalCommandsDir,
+-  writeSyncManifest,
+-};
+diff --git a/test/agent-gaps.test.js b/test/agent-gaps.test.js
+index 48b40551..ee1b7370 100644
+--- a/test/agent-gaps.test.js
++++ b/test/agent-gaps.test.js
+@@ -1,65 +1,46 @@
+ /**
+- * Tests for agent command parity and explicit exceptions.
++ * Tests for agent parity and explicit exceptions in the skills-only surface.
+  *
+- * The canonical workflow source remains `.claude/commands/`, with Claude Code
+- * intentionally skipped during sync because it is the source adapter.
++ * The canonical workflow source is root skills/. Agent harness skill dirs are
++ * generated from it by `skills sync` / `forge setup`. There is no command-sync
++ * adapter layer anymore (the .claude/commands surface was removed in PR-A0).
+  */
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { describe, test, expect } = require('bun:test');
+-const { AGENT_ADAPTERS, syncCommands } = require('../scripts/sync-commands');
+ 
+ const repoRoot = path.resolve(__dirname, '..');
++const SUPPORTED_AGENTS = ['claude', 'codex', 'cursor', 'hermes'];
+ 
+ describe('agent parity gaps', () => {
+-  test('claude-code remains the canonical adapter and is intentionally skipped', () => {
+-    const adapter = AGENT_ADAPTERS['claude-code'];
+-    expect(adapter).toBeDefined();
+-    expect(adapter.skip).toBe(true);
+-    expect(typeof adapter.transformFrontmatter).toBe('function');
+-  });
+-
+-  test('sync does not generate files for the canonical claude-code adapter', () => {
+-    const result = syncCommands({ dryRun: true, check: false, repoRoot });
+-    const claudeEntries = result.planned.filter((entry) => entry.agent === 'claude-code');
+-    expect(claudeEntries).toEqual([]);
+-  });
+-
+-  test('sync generates files for every non-skipped registered agent', () => {
+-    const result = syncCommands({ dryRun: true, check: false, repoRoot });
+-    const agentsWithEntries = new Set(result.planned.map((entry) => entry.agent));
+-    for (const agentName of Object.keys(AGENT_ADAPTERS)) {
+-      if (AGENT_ADAPTERS[agentName].skip) {
+-        expect(agentsWithEntries.has(agentName)).toBe(false);
+-      } else {
+-        expect(agentsWithEntries.has(agentName)).toBe(true);
+-      }
++  test('all supported agents have plugin definitions', () => {
++    const agentsDir = path.join(repoRoot, 'lib', 'agents');
++    for (const agent of SUPPORTED_AGENTS) {
++      expect(fs.existsSync(path.join(agentsDir, `${agent}.plugin.json`))).toBe(true);
+     }
+   });
+ 
+-  test('canonical source is .claude/commands/', () => {
+-    const commandsDir = path.join(repoRoot, '.claude', 'commands');
+-    expect(fs.existsSync(commandsDir)).toBe(true);
+-
+-    const result = syncCommands({ dryRun: true, check: false, repoRoot });
+-    expect(result.planned.length).toBeGreaterThan(0);
++  test('canonical workflow source is skills/', () => {
++    const skillsDir = path.join(repoRoot, 'skills');
++    expect(fs.existsSync(skillsDir)).toBe(true);
++    const entries = fs.readdirSync(skillsDir).filter((d) =>
++      fs.statSync(path.join(skillsDir, d)).isDirectory()
++    );
++    expect(entries.length).toBeGreaterThan(0);
++    // The umbrella + a representative stage skill are present.
++    expect(entries).toContain('kernel');
++    expect(entries).toContain('plan');
+   });
+ 
+-  test('all supported agents have adapters', () => {
+-    const expected = ['claude-code', 'cursor', 'codex'];
+-    for (const agent of expected) {
+-      expect(AGENT_ADAPTERS[agent]).toBeDefined();
++  test('every plugin declaring skills capability configures a skills directory', () => {
++    const agentsDir = path.join(repoRoot, 'lib', 'agents');
++    for (const file of fs.readdirSync(agentsDir).filter((f) => f.endsWith('.plugin.json'))) {
++      const plugin = JSON.parse(fs.readFileSync(path.join(agentsDir, file), 'utf8'));
++      if (plugin.capabilities && plugin.capabilities.skills) {
++        expect(plugin.directories && plugin.directories.skills).toBeTruthy();
++      }
+     }
+-    expect(Object.keys(AGENT_ADAPTERS).sort()).toEqual(expected.slice().sort());
+-  });
+-
+-  test('contentHash is exported from sync-commands', () => {
+-    const { contentHash } = require('../scripts/sync-commands');
+-    expect(typeof contentHash).toBe('function');
+-    const hash = contentHash('test content');
+-    expect(typeof hash).toBe('string');
+-    expect(hash.length).toBe(64);
+   });
+ 
+   test('removed agents have no plugin definitions', () => {
+diff --git a/test/command-sync-check.test.js b/test/command-sync-check.test.js
+deleted file mode 100644
+index 98298ce3..00000000
+--- a/test/command-sync-check.test.js
++++ /dev/null
+@@ -1,26 +0,0 @@
+-const { describe, test, expect } = require('bun:test');
+-const { execSync } = require('child_process');
+-const path = require('path');
+-
+-/**
+- * Verify command files are synced to all agent directories.
+- *
+- * Note: execSync runs a fixed script path with --check flag.
+- * No user input — safe from injection.
+- */
+-describe('Command sync check', () => {
+-  test('sync-commands.js --check exits 0 (all commands synced)', () => {
+-    const scriptPath = path.resolve(__dirname, '..', 'scripts', 'sync-commands.js');
+-    let exitCode = 0;
+-    try {
+-      execSync(`node "${scriptPath}" --check`, {
+-        cwd: path.resolve(__dirname, '..'),
+-        encoding: 'utf8',
+-        timeout: 30000,
+-      });
+-    } catch (err) {
+-      exitCode = err.status;
+-    }
+-    expect(exitCode).toBe(0);
+-  });
+-});
+diff --git a/test/commands-reset.test.js b/test/commands-reset.test.js
+deleted file mode 100644
+index 64614291..00000000
+--- a/test/commands-reset.test.js
++++ /dev/null
+@@ -1,59 +0,0 @@
+-const { afterEach, describe, test, expect } = require('bun:test');
+-const fs = require('node:fs');
+-const os = require('node:os');
+-const path = require('node:path');
+-
+-const {
+-  resetCommands,
+-  resolveCanonicalCommandsDir,
+-} = require('../lib/commands/commands-reset');
+-
+-const repoRoot = path.join(__dirname, '..');
+-const tempRoots = [];
+-
+-afterEach(() => {
+-  for (const tempRoot of tempRoots.splice(0)) {
+-    fs.rmSync(tempRoot, { recursive: true, force: true });
+-  }
+-});
+-
+-describe('commands-reset canonical source resolution', () => {
+-  test('resolves the packaged canonical command directory with legacy fallback', () => {
+-    const canonicalDir = resolveCanonicalCommandsDir(repoRoot);
+-
+-    expect(canonicalDir).toBe(path.join(repoRoot, '.claude', 'commands'));
+-  });
+-
+-  test('dry-run reset accepts the packaged canonical command source', () => {
+-    const result = resetCommands({
+-      repoRoot,
+-      commandName: 'plan',
+-      all: false,
+-      dryRun: true,
+-    });
+-
+-    expect(result.errors).toEqual([]);
+-  });
+-
+-  test('dry-run reset plans from commands/ when that is the canonical source', () => {
+-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-reset-'));
+-    tempRoots.push(tempRoot);
+-
+-    const commandsDir = path.join(tempRoot, 'commands');
+-    fs.mkdirSync(commandsDir, { recursive: true });
+-    fs.writeFileSync(
+-      path.join(commandsDir, 'plan.md'),
+-      '---\ndescription: Plan\n---\nUse the plan workflow.\n'
+-    );
+-
+-    const result = resetCommands({
+-      repoRoot: tempRoot,
+-      commandName: 'plan',
+-      all: false,
+-      dryRun: true,
+-    });
+-
+-    expect(result.errors).toEqual([]);
+-    expect(result.reset.some((entry) => entry.file.includes('plan'))).toBe(true);
+-  });
+-});
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index a24b00b6..3081372d 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -470,13 +470,12 @@ describe('forge test command', () => {
+ 			]);
+ 		});
+ 
+-		test('maps canonical command edits to command sync tests', async () => {
++		test('maps legacy command edits to the skills drift test', async () => {
+ 			const spawnSpy = makeSpawnSync();
+ 			await testCommand.handler([], { affected: true }, '/fake/root', {
+ 				fs: makeFsStub({
+ 					existingPaths: [
+-						'/fake/root/test/command-sync-check.test.js',
+-						'/fake/root/test/structural/command-sync.test.js',
++						'/fake/root/test/structural/skills-sync-drift.test.js',
+ 					],
+ 				}),
+ 				execFileSync: makeExecFileSync({
+@@ -488,8 +487,7 @@ describe('forge test command', () => {
+ 			expect(spawnSpy.calls[0].args).toEqual([
+ 				'run',
+ 				'test',
+-				'test/command-sync-check.test.js',
+-				'test/structural/command-sync.test.js',
++				'test/structural/skills-sync-drift.test.js',
+ 			]);
+ 		});
+ 
+@@ -499,9 +497,8 @@ describe('forge test command', () => {
+ 				fs: makeFsStub({
+ 					existingPaths: [
+ 						'/fake/root/test/agent-gaps.test.js',
+-						'/fake/root/test/command-sync-check.test.js',
+ 						'/fake/root/test/scripts/check-agents.test.js',
+-						'/fake/root/test/structural/command-sync.test.js',
++						'/fake/root/test/structural/skills-sync-drift.test.js',
+ 					],
+ 				}),
+ 				execFileSync: makeExecFileSync({
+@@ -514,9 +511,8 @@ describe('forge test command', () => {
+ 				'run',
+ 				'test',
+ 				'test/agent-gaps.test.js',
+-				'test/command-sync-check.test.js',
+ 				'test/scripts/check-agents.test.js',
+-				'test/structural/command-sync.test.js',
++				'test/structural/skills-sync-drift.test.js',
+ 			]);
+ 		});
+ 
+diff --git a/test/plugins/hermes-plugin.test.js b/test/plugins/hermes-plugin.test.js
+index c7af9dd6..18b0290c 100644
+--- a/test/plugins/hermes-plugin.test.js
++++ b/test/plugins/hermes-plugin.test.js
+@@ -119,11 +119,4 @@ describe('hermes-forge SKILL.md — shepherd consumption', () => {
+     // Shepherd is not surfaced via the deterministic orient envelope.
+     expect(/not[\s\S]{0,40}orient|orient[\s\S]{0,80}no live PR/i.test(body)).toBe(true);
+   });
+-
+-  test('Hermes remains absent from sync-commands AGENT_ADAPTERS', () => {
+-    const { AGENT_ADAPTERS } = require('../../scripts/sync-commands');
+-    const keys = Object.keys(AGENT_ADAPTERS).sort();
+-    expect(keys).toEqual(['claude-code', 'codex', 'cursor']);
+-    expect(keys).not.toContain('hermes');
+-  });
+ });
+diff --git a/test/scripts/check-agents.test.js b/test/scripts/check-agents.test.js
+index f14d5122..d03b1417 100644
+--- a/test/scripts/check-agents.test.js
++++ b/test/scripts/check-agents.test.js
+@@ -1,495 +1,194 @@
+-const { describe, test, expect } = require('bun:test');
++const { describe, test, expect, afterEach } = require('bun:test');
+ const path = require('path');
+ const fs = require('fs');
+ const os = require('os');
+ 
+ /**
+- * Tests for scripts/check-agents.js
++ * Tests for scripts/check-agents.js (skills-only surface).
+  *
+  * The module exports:
+  * - checkAgents(repoRoot) -> { errors: string[], warnings: string[] }
++ *
++ * check-agents now validates: (1) skill drift between canonical skills/ and the
++ * generated agent mirrors (.codex/skills), and (2) plugin.json schema/parity.
++ * The old .claude/commands sync-drift surface was removed in PR-A0.
+  */
+ 
+ const { checkAgents } = require('../../scripts/check-agents.js');
+-const { syncCommands } = require('../../scripts/sync-commands.js');
++const { populateAgentSkills } = require('../../lib/skills-sync.js');
++
++const tmpDirs = [];
++
++function defaultPlugin() {
++  return {
++    id: 'codex',
++    name: 'Codex',
++    version: '1.0.0',
++    capabilities: { skills: true },
++    directories: { skills: '.codex/skills' },
++  };
++}
+ 
+ /**
+- * Create a temp directory with a .claude/commands/ structure and
+- * lib/agents/*.plugin.json files for testing.
+- *
+- * @param {Record<string, string>} commands - Map of command name to file content
+- * @param {Array<object>} [plugins] - Plugin JSON objects to write (auto-generates defaults if omitted)
+- * @returns {string} Absolute path to the temp repo root
++ * Create a temp repo with canonical skills/, generated .codex/skills mirror,
++ * and lib/agents/*.plugin.json files.
+  */
+-function createTempRepo(commands, plugins) {
+-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-check-test-'));
+-  const cmdDir = path.join(tmpDir, '.claude', 'commands');
+-  fs.mkdirSync(cmdDir, { recursive: true });
+-  for (const [name, content] of Object.entries(commands)) {
+-    fs.writeFileSync(path.join(cmdDir, `${name}.md`), content);
++function createTempRepo({ skills = { plan: 'plan body\n' }, plugins, populate = true } = {}) {
++  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-check-agents-'));
++  tmpDirs.push(tmpDir);
++
++  for (const [name, body] of Object.entries(skills)) {
++    const dir = path.join(tmpDir, 'skills', name);
++    fs.mkdirSync(dir, { recursive: true });
++    fs.writeFileSync(path.join(dir, 'SKILL.md'), body, 'utf8');
+   }
+ 
+-  // Write plugin files
+-  const agentDir = path.join(tmpDir, 'lib', 'agents');
+-  fs.mkdirSync(agentDir, { recursive: true });
+-
+-  if (plugins) {
+-    for (const plugin of plugins) {
+-      fs.writeFileSync(
+-        path.join(agentDir, `${plugin.id}.plugin.json`),
+-        JSON.stringify(plugin, null, 2)
+-      );
+-    }
++  const agentsDir = path.join(tmpDir, 'lib', 'agents');
++  fs.mkdirSync(agentsDir, { recursive: true });
++  const pluginList = plugins || [defaultPlugin()];
++  for (const p of pluginList) {
++    fs.writeFileSync(path.join(agentsDir, `${p.id || 'x'}.plugin.json`), JSON.stringify(p), 'utf8');
+   }
+ 
++  if (populate) {
++    populateAgentSkills({ sourceRoot: tmpDir, targetSkillsDir: path.join(tmpDir, '.codex', 'skills') });
++  }
+   return tmpDir;
+ }
+ 
+-/**
+- * Clean up a temp directory.
+- *
+- * @param {string} tmpDir
+- */
+-function cleanupTempRepo(tmpDir) {
+-  fs.rmSync(tmpDir, { recursive: true, force: true });
+-}
+-
+-// ---- Happy path: all files in sync -----------------------------------------------
+-
+-describe('checkAgents — happy path', () => {
+-  test('returns no errors when all files are in sync and plugins are valid', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan a feature\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
+-        capabilities: { commands: true },
+-        directories: { commands: '.cursor/commands' },
+-      },
+-    ]);
++afterEach(() => {
++  while (tmpDirs.length) {
++    const d = tmpDirs.pop();
+     try {
+-      // Write synced files first (creates manifest + agent files)
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors).toHaveLength(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
++      fs.rmSync(d, { recursive: true, force: true });
++    } catch (_e) {
++      /* best effort */
+     }
++  }
++});
++
++describe('checkAgents — happy path', () => {
++  test('returns no errors when skills are in sync and plugins are valid', () => {
++    const tmpDir = createTempRepo();
++    const result = checkAgents(tmpDir);
++    expect(result.errors).toHaveLength(0);
+   });
+ 
+   test('returns correct shape with current repo root', () => {
+-    const repoRoot = path.resolve(__dirname, '..', '..');
++    const repoRoot = path.resolve(__dirname, '../..');
+     const result = checkAgents(repoRoot);
+     expect(Array.isArray(result.errors)).toBe(true);
+     expect(Array.isArray(result.warnings)).toBe(true);
+   });
+ });
+ 
+-// ---- Sync check integration ------------------------------------------------------
+-
+-describe('checkAgents — sync check', () => {
+-  test('reports error when agent files are out of sync', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write synced files
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Modify one file to create drift
+-      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+-      fs.writeFileSync(cursorFile, 'Manually modified content');
+-
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.length).toBeGreaterThan(0);
+-      expect(result.errors.some((e) => e.includes('out of sync') || e.includes('Out of sync'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++describe('checkAgents — skill drift', () => {
++  test('reports error when a mirrored skill file is modified', () => {
++    const tmpDir = createTempRepo();
++    fs.writeFileSync(path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md'), 'tampered', 'utf8');
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('Out of sync') && e.includes('plan'))).toBe(true);
+   });
+ 
+-  test('reports error when manifest is missing', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write synced files, then delete manifest
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      fs.unlinkSync(path.join(tmpDir, '.forge', 'sync-manifest.json'));
++  test('reports stale mirror dir with no canonical source', () => {
++    const tmpDir = createTempRepo();
++    fs.mkdirSync(path.join(tmpDir, '.codex', 'skills', 'ghost'), { recursive: true });
++    fs.writeFileSync(path.join(tmpDir, '.codex', 'skills', 'ghost', 'SKILL.md'), 'x', 'utf8');
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('Out of sync') && e.includes('stale'))).toBe(true);
++  });
+ 
+-      const result = checkAgents(tmpDir);
+-      // Should have a warning or error about missing manifest
+-      const allMessages = [...result.errors, ...result.warnings];
+-      expect(allMessages.some((m) => m.includes('manifest'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++  test('reports missing canonical skill in the mirror', () => {
++    const tmpDir = createTempRepo({ skills: { plan: 'p\n', dev: 'd\n' } });
++    fs.rmSync(path.join(tmpDir, '.codex', 'skills', 'dev'), { recursive: true, force: true });
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('Out of sync') && e.includes('dev'))).toBe(true);
+   });
+ 
+-  test('reports stale files as errors', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-      dev: '---\ndescription: Dev\n---\n\nDev body.',
+-    });
+-    try {
+-      // Sync both commands
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Delete 'dev' from canonical source
+-      fs.unlinkSync(path.join(tmpDir, '.claude', 'commands', 'dev.md'));
++  test('warns (no error) when no agent skill dirs exist yet', () => {
++    const tmpDir = createTempRepo({ populate: false });
++    const result = checkAgents(tmpDir);
++    expect(result.errors).toHaveLength(0);
++    expect(result.warnings.some((w) => w.includes('skipped'))).toBe(true);
++  });
+ 
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('stale') || e.includes('Stale'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++  test('errors when no canonical skills/ exist', () => {
++    const tmpDir = createTempRepo({ skills: {}, populate: false });
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('No canonical skills'))).toBe(true);
+   });
+ });
+ 
+-// ---- Plugin catalog validation ---------------------------------------------------
+-
+ describe('checkAgents — plugin catalog', () => {
+   test('reports error when plugin support metadata is invalid', () => {
+     const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
++      plugins: [{
++        id: 'codex',
++        name: 'Codex',
+         version: '1.0.0',
+-        capabilities: { commands: true },
+-        support: { status: 'gold-tier' },
+-        directories: { commands: '.cursor/commands' },
+-      },
+-    ]);
+-    try {
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('support.status'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('reports error when commands-capable plugin has no sync adapter', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'mystery-agent',
+-        name: 'Mystery Agent',
+-        version: '1.0.0',
+-        capabilities: { commands: true },
+-        directories: { commands: '.mystery/commands' },
+-      },
+-    ]);
+-    try {
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('sync adapter') && e.includes('mystery-agent'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('reports error when plugin command directory does not match sync adapter output', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
+-        version: '1.0.0',
+-        capabilities: { commands: true },
+-        directories: { commands: '.cursor/workflows' },
+-      },
+-    ]);
+-    try {
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('sync output') && e.includes('.cursor/workflows'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++        capabilities: { skills: true },
++        directories: { skills: '.codex/skills' },
++        support: { status: 'bogus-tier' },
++      }],
++    });
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('support.status'))).toBe(true);
+   });
+ 
+-  test('reports error when rules capability is declared without any scaffold path', () => {
++  test('reports error when rules capability has no scaffold path', () => {
+     const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
++      plugins: [{
++        id: 'codex',
++        name: 'Codex',
+         version: '1.0.0',
+-        capabilities: { commands: true, rules: true },
+-        directories: { commands: '.cursor/commands' },
+-      },
+-    ]);
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('rules') && e.includes('cursor'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++        capabilities: { rules: true },
++        directories: { skills: '.codex/skills' },
++      }],
++    });
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('rules'))).toBe(true);
+   });
+ 
+-  test('reports error when skills capability is declared without any scaffold path', () => {
++  test('reports error when skills capability has no scaffold path', () => {
+     const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
++      plugins: [{
++        id: 'codex',
++        name: 'Codex',
+         version: '1.0.0',
+-        capabilities: { commands: true, skills: true },
+-        directories: { commands: '.cursor/commands' },
+-      },
+-    ]);
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('skills') && e.includes('cursor'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++        capabilities: { skills: true },
++        directories: { rules: '.codex/rules' },
++      }],
++    });
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('skills'))).toBe(true);
+   });
+ 
+   test('reports error when deprecated plugin still claims skill parity', () => {
+     const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
+-        version: '1.0.0',
+-        capabilities: { commands: true, skills: true },
+-        support: { status: 'deprecated', surface: 'editor-native' },
+-        directories: {
+-          commands: '.cursor/commands',
+-          skills: '.cursor/skills/forge-workflow',
+-        },
+-        setup: {
+-          createSkill: true,
+-        },
+-      },
+-    ]);
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'skills', 'forge-workflow'), { recursive: true });
+-
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('deprecated') && e.includes('skills'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('accepts deprecated compatibility plugin when it only claims command parity', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
++      plugins: [{
++        id: 'legacy',
++        name: 'Legacy',
+         version: '1.0.0',
+-        capabilities: { commands: true, skills: false },
+-        support: {
+-          status: 'deprecated',
+-          surface: 'editor-native',
+-          install: { required: false, repairRequired: false },
+-        },
+-        directories: {
+-          commands: '.cursor/commands',
+-        },
+-        files: {
+-          rootConfig: '.cursorrules',
+-        },
+-        setup: {
+-          copyCommands: true,
+-        },
+-      },
+-    ]);
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors).toHaveLength(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('accepts plugin metadata when support tier, sync path, and scaffolds align', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
+-        version: '1.0.0',
+-        capabilities: {
+-          commands: true,
+-          rules: true,
+-          skills: true,
+-          hooks: { blocking: false },
+-          mcp: true,
+-          contextMode: false,
+-        },
+-        support: {
+-          status: 'supported',
+-          surface: 'editor-native',
+-          install: { required: true, repairRequired: false },
+-        },
+-        directories: {
+-          commands: '.cursor/commands',
+-          rules: '.cursor/rules',
+-          skills: '.cursor/skills/forge-workflow',
+-        },
+-        files: {
+-          rootConfig: '.cursorrules',
+-        },
+-        setup: {
+-          copyRules: true,
+-          createSkill: true,
+-        },
+-      },
+-    ]);
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'rules'), { recursive: true });
+-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'skills', 'forge-workflow'), { recursive: true });
+-
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors).toHaveLength(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('reports error when plugin with commands:true has empty command directory', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
+-        capabilities: { commands: true },
+-        directories: { commands: '.cursor/commands' },
+-      },
+-    ]);
+-    try {
+-      // Do NOT sync — so .cursor/commands/ doesn't exist
+-      const result = checkAgents(tmpDir);
+-      expect(result.errors.some((e) => e.includes('cursor') || e.includes('Cursor'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('no plugin error when commands:false even if directory is missing', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'test-agent',
+-        name: 'Test Agent',
+-        capabilities: { commands: false },
+-        directories: { commands: '.test-agent/commands' },
+-      },
+-    ]);
+-    try {
+-      // Sync to create manifest (avoid sync errors dominating)
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-
+-      const result = checkAgents(tmpDir);
+-      // Should not have an error about test-agent missing commands
+-      expect(result.errors.some((e) => e.includes('test-agent') || e.includes('Test Agent'))).toBe(false);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('reports error when command directory exists but is empty', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'cursor',
+-        name: 'Cursor',
+-        capabilities: { commands: true },
+-        directories: { commands: '.cursor/commands' },
+-      },
+-    ]);
+-    try {
+-      // Create the directory but leave it empty
+-      fs.mkdirSync(path.join(tmpDir, '.cursor', 'commands'), { recursive: true });
+-      // Sync to get manifest (but this will also populate .cursor/commands)
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Delete all files from .cursor/commands/ to simulate empty dir
+-      const cursorCmdDir = path.join(tmpDir, '.cursor', 'commands');
+-      for (const f of fs.readdirSync(cursorCmdDir)) {
+-        fs.unlinkSync(path.join(cursorCmdDir, f));
+-      }
+-
+-      const result = checkAgents(tmpDir);
+-      // Should catch that sync is out of sync (missing files)
+-      expect(result.errors.length).toBeGreaterThan(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('handles plugins without directories field gracefully', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    }, [
+-      {
+-        id: 'minimal',
+-        name: 'Minimal Agent',
+-        capabilities: { commands: true },
+-      },
+-    ]);
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-
+-      const result = checkAgents(tmpDir);
+-      // Should not crash — gracefully handle missing directories
+-      expect(Array.isArray(result.errors)).toBe(true);
+-      expect(Array.isArray(result.warnings)).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('handles repo with no plugin files gracefully', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
++        capabilities: { skills: true },
++        directories: { skills: '.legacy/skills' },
++        support: { status: 'deprecated' },
++      }],
+     });
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // lib/agents/ doesn't exist at all
+-      const result = checkAgents(tmpDir);
+-      // Should have a warning about no plugins found
+-      const allMessages = [...result.errors, ...result.warnings];
+-      expect(allMessages.some((m) => m.includes('plugin') || m.includes('No plugin'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++    const result = checkAgents(tmpDir);
++    expect(result.errors.some((e) => e.includes('deprecated') && e.includes('skills'))).toBe(true);
+   });
+-});
+-
+-// ---- Return shape ----------------------------------------------------------------
+ 
+-describe('checkAgents — return shape', () => {
+-  test('always returns errors and warnings arrays', () => {
++  test('accepts a valid skills-only plugin', () => {
+     const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
++      plugins: [{
++        id: 'codex',
++        name: 'Codex',
++        version: '1.0.0',
++        capabilities: { skills: true },
++        directories: { skills: '.codex/skills' },
++      }],
+     });
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      const result = checkAgents(tmpDir);
+-      expect(Array.isArray(result.errors)).toBe(true);
+-      expect(Array.isArray(result.warnings)).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
++    const result = checkAgents(tmpDir);
++    expect(result.errors).toHaveLength(0);
+   });
+ });
+diff --git a/test/scripts/sync-commands.test.js b/test/scripts/sync-commands.test.js
+deleted file mode 100644
+index 5b78500e..00000000
+--- a/test/scripts/sync-commands.test.js
++++ /dev/null
+@@ -1,606 +0,0 @@
+-const { describe, test, expect } = require('bun:test');
+-
+-/**
+- * Tests for scripts/sync-commands.js
+- *
+- * The module exports two functions:
+- * - parseFrontmatter(content) -> { frontmatter: object, body: string }
+- * - buildFile(frontmatter, body) -> string (reconstructed file content)
+- */
+-
+-const {
+-  parseFrontmatter,
+-  buildFile,
+-  AGENT_ADAPTERS,
+-  adaptForAgent,
+-} = require('../../scripts/sync-commands.js');
+-
+-// ---- parseFrontmatter ---------------------------------------------------------
+-
+-describe('parseFrontmatter', () => {
+-  test('extracts simple key-value frontmatter', () => {
+-    const input = '---\ndescription: Check current stage\n---\nSome body text';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({ description: 'Check current stage' });
+-    expect(result.body).toBe('Some body text');
+-  });
+-
+-  test('handles UTF-8 BOM before frontmatter', () => {
+-    const input = '\uFEFF---\ndescription: Check current stage\n---\nSome body text';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({ description: 'Check current stage' });
+-    expect(result.body).toBe('Some body text');
+-  });
+-
+-  test('strips UTF-8 BOM from body after frontmatter', () => {
+-    const input = '---\ndescription: Check current stage\n---\n\uFEFFSome body text';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({ description: 'Check current stage' });
+-    expect(result.body).toBe('Some body text');
+-  });
+-
+-  test('handles multiple frontmatter keys', () => {
+-    const input = '---\ndescription: Plan a feature\nallowed_agents: claude\n---\nbody here';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({
+-      description: 'Plan a feature',
+-      allowed_agents: 'claude',
+-    });
+-    expect(result.body).toBe('body here');
+-  });
+-
+-  test('returns empty object and full content when no frontmatter markers', () => {
+-    const input = 'Just a regular markdown file\nwith no frontmatter';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({});
+-    expect(result.body).toBe(input);
+-  });
+-
+-  test('handles empty body after frontmatter', () => {
+-    const input = '---\ndescription: Something\n---\n';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({ description: 'Something' });
+-    expect(result.body).toBe('');
+-  });
+-
+-  test('handles empty frontmatter block', () => {
+-    const input = '---\n---\nBody only';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({});
+-    expect(result.body).toBe('Body only');
+-  });
+-
+-  test('preserves body that contains --- separators (not frontmatter)', () => {
+-    const input = '---\ndescription: Test\n---\n\n---\n\nThis has horizontal rules';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({ description: 'Test' });
+-    expect(result.body).toContain('---');
+-    expect(result.body).toContain('This has horizontal rules');
+-  });
+-
+-  test('strips leading newline from body (newline after closing ---)', () => {
+-    const input = '---\ndescription: X\n---\n\nActual body starts here';
+-    const result = parseFrontmatter(input);
+-    expect(result.body).toBe('\nActual body starts here');
+-  });
+-
+-  test('handles multiline YAML values (quoted strings)', () => {
+-    const input = '---\ndescription: "A value with: colons"\n---\nbody';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter.description).toBe('A value with: colons');
+-    expect(result.body).toBe('body');
+-  });
+-
+-  test('handles real plan.md frontmatter format', () => {
+-    const input = '---\ndescription: Design intent → research → branch + worktree + task list\n---\n\nPlan a feature from scratch.';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter.description).toBe(
+-      'Design intent → research → branch + worktree + task list'
+-    );
+-    expect(result.body).toContain('Plan a feature from scratch.');
+-  });
+-
+-  test('returns empty object for content with single --- at start only', () => {
+-    const input = '---\nNo closing marker so this is not frontmatter';
+-    const result = parseFrontmatter(input);
+-    expect(result.frontmatter).toEqual({});
+-    expect(result.body).toBe(input);
+-  });
+-
+-  test('handles empty string input', () => {
+-    const result = parseFrontmatter('');
+-    expect(result.frontmatter).toEqual({});
+-    expect(result.body).toBe('');
+-  });
+-});
+-
+-// ---- buildFile ----------------------------------------------------------------
+-
+-describe('buildFile', () => {
+-  test('produces valid frontmatter with --- delimiters', () => {
+-    const output = buildFile({ description: 'Hello world' }, 'Some body');
+-    expect(output).toBe('---\ndescription: Hello world\n---\nSome body');
+-  });
+-
+-  test('roundtrips through parseFrontmatter', () => {
+-    const original = '---\ndescription: Check current stage\n---\n\nBody content here.';
+-    const parsed = parseFrontmatter(original);
+-    const rebuilt = buildFile(parsed.frontmatter, parsed.body);
+-    expect(rebuilt).toBe(original);
+-  });
+-
+-  test('handles multiple frontmatter keys', () => {
+-    const output = buildFile(
+-      { description: 'Test', allowed_agents: 'claude' },
+-      'body'
+-    );
+-    expect(output).toContain('---\n');
+-    expect(output).toContain('description: Test');
+-    expect(output).toContain('allowed_agents: claude');
+-    expect(output).toEndWith('\n---\nbody');
+-  });
+-
+-  test('handles empty frontmatter object', () => {
+-    const output = buildFile({}, 'Just a body');
+-    expect(output).toBe('---\n---\nJust a body');
+-  });
+-
+-  test('handles empty body', () => {
+-    const output = buildFile({ description: 'X' }, '');
+-    expect(output).toBe('---\ndescription: X\n---\n');
+-  });
+-
+-  test('quotes values that contain colons', () => {
+-    const output = buildFile({ description: 'A value with: colons' }, 'body');
+-    const reparsed = parseFrontmatter(output);
+-    expect(reparsed.frontmatter.description).toBe('A value with: colons');
+-  });
+-
+-  test('rebuilds with different frontmatter while keeping body', () => {
+-    const original = '---\ndescription: Old description\n---\n\nOriginal body.';
+-    const parsed = parseFrontmatter(original);
+-    const rebuilt = buildFile({ description: 'New description' }, parsed.body);
+-    const reparsed = parseFrontmatter(rebuilt);
+-    expect(reparsed.frontmatter.description).toBe('New description');
+-    expect(reparsed.body).toBe(parsed.body);
+-  });
+-});
+-
+-// ---- AGENT_ADAPTERS -------------------------------------------------------------
+-
+-describe('AGENT_ADAPTERS', () => {
+-  test('contains exactly the supported agents', () => {
+-    const expected = [
+-      'claude-code',
+-      'cursor',
+-      'codex',
+-    ];
+-    for (const agent of expected) {
+-      expect(AGENT_ADAPTERS[agent]).toBeDefined();
+-    }
+-    expect(Object.keys(AGENT_ADAPTERS).sort()).toEqual(expected.slice().sort());
+-  });
+-
+-  test('each adapter has required properties', () => {
+-    for (const [_name, adapter] of Object.entries(AGENT_ADAPTERS)) {
+-      expect(typeof adapter.dir).toBe('function');
+-      expect(typeof adapter.extension).toBe('string');
+-      expect(typeof adapter.transformFrontmatter).toBe('function');
+-      expect(typeof adapter.baseDir).toBe('string');
+-    }
+-  });
+-
+-  test('claude-code is marked as skip (canonical)', () => {
+-    expect(AGENT_ADAPTERS['claude-code'].skip).toBe(true);
+-  });
+-});
+-
+-// ---- adaptForAgent — Tier 1 agents -----------------------------------------------
+-
+-describe('adaptForAgent — Tier 1', () => {
+-  const fm = { description: 'Design intent', allowed_agents: 'claude' };
+-  const body = '\nPlan a feature from scratch.';
+-
+-  test('claude-code returns null (skipped)', () => {
+-    const result = adaptForAgent('claude-code', fm, body, 'plan');
+-    expect(result).toBeNull();
+-  });
+-
+-  // -- Cursor --
+-  test('cursor strips all frontmatter', () => {
+-    const result = adaptForAgent('cursor', fm, body, 'plan');
+-    const parsed = parseFrontmatter(result.content);
+-    expect(Object.keys(parsed.frontmatter)).toHaveLength(0);
+-  });
+-
+-  test('cursor outputs to .cursor/commands/ with <name>.md', () => {
+-    const result = adaptForAgent('cursor', fm, body, 'plan');
+-    expect(result.dir).toBe('.cursor/commands/');
+-    expect(result.filename).toBe('plan.md');
+-  });
+-
+-  test('cursor preserves body content', () => {
+-    const result = adaptForAgent('cursor', fm, body, 'plan');
+-    expect(result.content).toContain('Plan a feature from scratch.');
+-  });
+-
+-  // -- Codex --
+-  test('codex outputs to .codex/skills/<name>/ with SKILL.md', () => {
+-    const result = adaptForAgent('codex', fm, body, 'validate');
+-    expect(result.dir).toBe('.codex/skills/validate/');
+-    expect(result.filename).toBe('SKILL.md');
+-  });
+-
+-  test('codex keeps description in frontmatter', () => {
+-    const result = adaptForAgent('codex', fm, body, 'validate');
+-    const parsed = parseFrontmatter(result.content);
+-    expect(parsed.frontmatter.description).toBe('Design intent');
+-    expect(parsed.frontmatter.allowed_agents).toBeUndefined();
+-  });
+-});
+-
+-// ---- adaptForAgent — edge cases ---------------------------------------------------
+-
+-describe('adaptForAgent — edge cases', () => {
+-  test('throws for unknown agent name', () => {
+-    expect(() => adaptForAgent('unknown-agent', {}, 'body', 'plan')).toThrow();
+-  });
+-
+-  test('handles empty frontmatter input', () => {
+-    const result = adaptForAgent('cursor', {}, 'body', 'plan');
+-    expect(result.content).toBe('body');
+-  });
+-
+-  test('codex with no description produces empty frontmatter', () => {
+-    const result = adaptForAgent('codex', { allowed_agents: 'claude' }, 'body', 'dev');
+-    const parsed = parseFrontmatter(result.content);
+-    expect(parsed.frontmatter.description).toBeUndefined();
+-    expect(parsed.frontmatter.allowed_agents).toBeUndefined();
+-  });
+-
+-  test('preserves body across all non-skip agents', () => {
+-    const agents = ['cursor', 'codex'];
+-    const testBody = '\nSome important body content.';
+-    for (const agent of agents) {
+-      const result = adaptForAgent(agent, { description: 'X' }, testBody, 'plan');
+-      expect(result.content).toContain('Some important body content.');
+-    }
+-  });
+-});
+-
+-// ---- syncCommands — CLI sync logic ------------------------------------------------
+-
+-const fs = require('fs');
+-const path = require('path');
+-const os = require('os');
+-const { syncCommands } = require('../../scripts/sync-commands.js');
+-
+-/**
+- * Create a temp directory with a .claude/commands/ structure containing
+- * the given command files. Returns the temp dir path.
+- *
+- * @param {Record<string, string>} commands - Map of command name to file content
+- * @returns {string} Absolute path to the temp repo root
+- */
+-function createTempRepo(commands) {
+-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-sync-test-'));
+-  const cmdDir = path.join(tmpDir, '.claude', 'commands');
+-  fs.mkdirSync(cmdDir, { recursive: true });
+-  for (const [name, content] of Object.entries(commands)) {
+-    fs.writeFileSync(path.join(cmdDir, `${name}.md`), content);
+-  }
+-  return tmpDir;
+-}
+-
+-/**
+- * Clean up a temp directory created by createTempRepo.
+- *
+- * @param {string} tmpDir
+- */
+-function cleanupTempRepo(tmpDir) {
+-  fs.rmSync(tmpDir, { recursive: true, force: true });
+-}
+-
+-describe('syncCommands — dry-run mode', () => {
+-  test('prints planned writes without creating any files', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan a feature\n---\n\nPlan body.',
+-    });
+-    try {
+-      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+-      // Should report planned writes
+-      expect(result.planned.length).toBeGreaterThan(0);
+-      // Should NOT have written any agent directories
+-      const cursorDir = path.join(tmpDir, '.cursor', 'commands');
+-      expect(fs.existsSync(cursorDir)).toBe(false);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('planned entries contain agent, dir, filename, and content', () => {
+-    const tmpDir = createTempRepo({
+-      status: '---\ndescription: Check status\n---\n\nStatus body.',
+-    });
+-    try {
+-      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+-      for (const entry of result.planned) {
+-        expect(typeof entry.agent).toBe('string');
+-        expect(typeof entry.dir).toBe('string');
+-        expect(typeof entry.filename).toBe('string');
+-        expect(typeof entry.content).toBe('string');
+-      }
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('skips claude-code agent (canonical source)', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nBody.',
+-    });
+-    try {
+-      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+-      const agentNames = result.planned.map((e) => e.agent);
+-      expect(agentNames).not.toContain('claude-code');
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-});
+-
+-describe('syncCommands — default write mode', () => {
+-  test('creates agent directories and writes adapted files', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan a feature\n---\n\nPlan body.',
+-    });
+-    try {
+-      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      expect(result.written.length).toBeGreaterThan(0);
+-      // Check that at least one agent file was actually written
+-      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+-      expect(fs.existsSync(cursorFile)).toBe(true);
+-      const content = fs.readFileSync(cursorFile, 'utf8');
+-      expect(content).toContain('Plan body.');
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('creates nested directories for cursor and codex', () => {
+-    const tmpDir = createTempRepo({
+-      dev: '---\ndescription: Develop\n---\n\nDev body.',
+-    });
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'dev.md');
+-      const codexFile = path.join(tmpDir, '.codex', 'skills', 'dev', 'SKILL.md');
+-      expect(fs.existsSync(cursorFile)).toBe(true);
+-      expect(fs.existsSync(codexFile)).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('handles multiple command files', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-      dev: '---\ndescription: Dev\n---\n\nDev body.',
+-    });
+-    try {
+-      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      const nonSkipCount = Object.values(AGENT_ADAPTERS).filter((a) => !a.skip).length;
+-      expect(result.written.length).toBe(nonSkipCount * 2);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-});
+-
+-describe('syncCommands — check mode', () => {
+-  test('returns inSync=true when all files match', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // First, write files
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Then, check — should be in sync
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.inSync).toBe(true);
+-      expect(result.outOfSync.length).toBe(0);
+-      expect(result.staleFiles).toHaveLength(0);
+-      expect(result.manifestMissing).toBe(false);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('returns inSync=false when a file has been manually modified', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write files
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Manually modify one file
+-      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+-      fs.writeFileSync(cursorFile, 'Manually modified content');
+-      // Check — should detect out of sync
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.inSync).toBe(false);
+-      expect(result.outOfSync.length).toBeGreaterThan(0);
+-      const outPaths = result.outOfSync.map((e) => e.filePath);
+-      expect(outPaths.some((p) => p.includes('cursor'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('returns inSync=false when agent file is missing', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Do NOT write files first — agent dirs don't exist
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.inSync).toBe(false);
+-      expect(result.outOfSync.length).toBeGreaterThan(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('one agent in sync and one out of sync', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write all files
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Modify only the codex file
+-      const codexFile = path.join(tmpDir, '.codex', 'skills', 'plan', 'SKILL.md');
+-      fs.writeFileSync(codexFile, 'Modified codex content');
+-      // Check
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.inSync).toBe(false);
+-      // Only the modified file should be out of sync
+-      const outPaths = result.outOfSync.map((e) => e.filePath);
+-      expect(outPaths.some((p) => p.includes('codex'))).toBe(true);
+-      // Other agents should still be in sync (verify count is small)
+-      expect(result.outOfSync.length).toBe(1);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-});
+-
+-describe('syncCommands — stale file detection', () => {
+-  test('returns staleFiles when a command is deleted from canonical source', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-      dev: '---\ndescription: Dev\n---\n\nDev body.',
+-    });
+-    try {
+-      // Sync both commands
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Delete 'dev' from canonical source
+-      fs.unlinkSync(path.join(tmpDir, '.claude', 'commands', 'dev.md'));
+-      // Check should detect stale dev files
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.staleFiles.length).toBeGreaterThan(0);
+-      expect(result.inSync).toBe(false);
+-      // At least one stale file should reference 'dev'
+-      expect(result.staleFiles.some((f) => f.includes('dev'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('does not flag custom files as stale even with managed extension', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Add a custom file with the SAME managed extension (.md) in an agent dir
+-      // This is the key test: manifest-based detection should NOT flag it
+-      const customFile = path.join(tmpDir, '.cursor', 'commands', 'my-custom-guidelines.md');
+-      fs.writeFileSync(customFile, 'Custom prompt guidelines');
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      const stalePaths = result.staleFiles || [];
+-      expect(stalePaths.some((f) => f.includes('my-custom-guidelines'))).toBe(false);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-});
+-
+-describe('syncCommands — overwrite warning', () => {
+-  test('reports files that would be overwritten with different content', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write files initially
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Manually modify a file
+-      const cursorFile = path.join(tmpDir, '.cursor', 'commands', 'plan.md');
+-      fs.writeFileSync(cursorFile, 'Manually modified content');
+-      // Write again — should report overwrite warnings
+-      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      expect(result.overwritten.length).toBeGreaterThan(0);
+-      expect(result.overwritten.some((e) => e.filePath.includes('cursor'))).toBe(true);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('no overwrite warnings when files match expected content', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write files
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      // Write again — no modifications, so no warnings
+-      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      expect(result.overwritten.length).toBe(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-});
+-
+-describe('syncCommands — edge cases', () => {
+-  test('handles empty commands directory', () => {
+-    const tmpDir = createTempRepo({});
+-    try {
+-      const result = syncCommands({ dryRun: true, check: false, repoRoot: tmpDir });
+-      expect(result.planned.length).toBe(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('check mode returns empty=true when commands directory is empty', () => {
+-    const tmpDir = createTempRepo({});
+-    try {
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.empty).toBe(true);
+-      expect(result.inSync).toBe(false);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('check mode returns manifestMissing when files in sync but no manifest', () => {
+-    const tmpDir = createTempRepo({
+-      plan: '---\ndescription: Plan\n---\n\nPlan body.',
+-    });
+-    try {
+-      // Write files (creates manifest), then delete manifest
+-      syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      fs.unlinkSync(path.join(tmpDir, '.forge', 'sync-manifest.json'));
+-      // Check: files are in sync but manifest is missing
+-      const result = syncCommands({ dryRun: false, check: true, repoRoot: tmpDir });
+-      expect(result.manifestMissing).toBe(true);
+-      expect(result.inSync).toBe(false);
+-      expect(result.outOfSync.length).toBe(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-
+-  test('handles command file with no frontmatter', () => {
+-    const tmpDir = createTempRepo({
+-      simple: 'Just a body with no frontmatter.',
+-    });
+-    try {
+-      const result = syncCommands({ dryRun: false, check: false, repoRoot: tmpDir });
+-      expect(result.written.length).toBeGreaterThan(0);
+-    } finally {
+-      cleanupTempRepo(tmpDir);
+-    }
+-  });
+-});
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index ba6ed864..5c8decc8 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -85,14 +85,13 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.testTargets).toEqual(expect.arrayContaining(riskTargets));
+   });
+ 
+-  test('classifyPushTests maps canonical command edits to command sync checks', () => {
++  test('classifyPushTests maps legacy command edits to the skills drift check', () => {
+     const plan = classifyPushTests(repoRoot, makeExecFileSync({
+       changedFiles: '.claude/commands/ship.md\n',
+     }));
+ 
+     expect(plan.testTargets).toEqual([
+-      'test/command-sync-check.test.js',
+-      'test/structural/command-sync.test.js',
++      'test/structural/skills-sync-drift.test.js',
+       ...riskTargets,
+     ]);
+   });
+@@ -106,9 +105,8 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.hasUnmappedFiles).toBe(false);
+     expect(plan.testTargets).toEqual([
+       'test/agent-gaps.test.js',
+-      'test/command-sync-check.test.js',
+       'test/scripts/check-agents.test.js',
+-      'test/structural/command-sync.test.js',
++      'test/structural/skills-sync-drift.test.js',
+       ...riskTargets,
+     ]);
+   });
+@@ -218,9 +216,8 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.hasUnmappedFiles).toBe(false);
+     expect(plan.testTargets).toEqual([
+       'test/agent-gaps.test.js',
+-      'test/command-sync-check.test.js',
+       'test/scripts/check-agents.test.js',
+-      'test/structural/command-sync.test.js',
++      'test/structural/skills-sync-drift.test.js',
+       ...riskTargets,
+     ]);
+   });
+@@ -357,7 +354,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
+   });
+ 
+-  test('runPrePushTests skips broad unit tests when only canonical command docs changed', () => {
++  test('runPrePushTests skips broad unit tests when only legacy command docs changed', () => {
+     const spawnSync = makeSpawnSync(0);
+     const status = runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+@@ -373,8 +370,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual([
+       'run',
+       'test',
+-      'test/command-sync-check.test.js',
+-      'test/structural/command-sync.test.js',
++      'test/structural/skills-sync-drift.test.js',
+       ...riskTargets,
+     ]);
+   });
+diff --git a/test/shepherd-acceptance.test.js b/test/shepherd-acceptance.test.js
+index 1362a871..8e1548d6 100644
+--- a/test/shepherd-acceptance.test.js
++++ b/test/shepherd-acceptance.test.js
+@@ -10,7 +10,6 @@
+  */
+ 
+ const { describe, test, expect } = require('bun:test');
+-const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+@@ -189,10 +188,11 @@ describe('shepherd acceptance §5', () => {
+     }
+   });
+ 
+-  // §5.8 — sync integrity.
+-  test('§5.8 node scripts/sync-commands.js --check exits 0', () => {
+-    const out = execFileSync('node', ['scripts/sync-commands.js', '--check'], { cwd: ROOT, encoding: 'utf8' });
+-    expect(typeof out).toBe('string');
++  // §5.8 — sync integrity (skills drift check; the command-sync surface was removed in PR-A0).
++  test('§5.8 skill mirrors are in sync with canonical skills/', () => {
++    const { checkSkillsSync } = require('../lib/skills-sync');
++    const result = checkSkillsSync({ repoRoot: ROOT });
++    expect(result.inSync).toBe(true);
+   });
+ 
+   // §5.9 — Shepherd is decoupled from the release gate. Observable assertion:
+diff --git a/test/shepherd-skill-sync.test.js b/test/shepherd-skill-sync.test.js
+index 8a8226e8..c6f349fa 100644
+--- a/test/shepherd-skill-sync.test.js
++++ b/test/shepherd-skill-sync.test.js
+@@ -1,10 +1,11 @@
+ 'use strict';
+ 
+ const { describe, test, expect } = require('bun:test');
+-const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ 
++const { checkSkillsSync } = require('../lib/skills-sync');
++
+ const ROOT = path.resolve(__dirname, '..');
+ 
+ function read(rel) {
+@@ -12,44 +13,34 @@ function read(rel) {
+ }
+ 
+ describe('shepherd skill sync', () => {
+-  test('node scripts/sync-commands.js --check exits 0 (in sync)', () => {
+-    const res = execFileSync('node', ['scripts/sync-commands.js', '--check'], {
+-      cwd: ROOT,
+-      encoding: 'utf8',
+-    });
+-    // execFileSync throws on non-zero exit; reaching here means exit 0.
+-    expect(typeof res).toBe('string');
++  test('skill mirrors are in sync with canonical skills/ (skills sync --check)', () => {
++    const result = checkSkillsSync({ repoRoot: ROOT });
++    expect(result.inSync).toBe(true);
+   });
+ 
+-  test('canonical .claude/commands/shepherd.md exists and is token-clean', () => {
+-    const src = read('.claude/commands/shepherd.md');
++  test('canonical skills/shepherd/SKILL.md exists and is token-clean', () => {
++    const src = read('skills/shepherd/SKILL.md');
+     expect(src.length).toBeGreaterThan(0);
+     expect(/\bbd\b/i.test(src)).toBe(false);
+     expect(/\.beads\b/i.test(src)).toBe(false);
+     expect(/\bdolt\b/i.test(src)).toBe(false);
+   });
+ 
+-  test('shepherd.md never promises merge or thread resolution', () => {
+-    const src = read('.claude/commands/shepherd.md');
++  test('shepherd skill never promises merge or thread resolution', () => {
++    const src = read('skills/shepherd/SKILL.md');
+     expect(/gh pr merge/.test(src)).toBe(false);
+     expect(/--auto-merge/.test(src)).toBe(false);
+     expect(/never merges/i.test(src)).toBe(true);
+     expect(/never resolves/i.test(src) || /resolution[^.]*stays with/i.test(src)).toBe(true);
+   });
+ 
+-  test('cursor output exists with frontmatter stripped', () => {
+-    const cursor = read('.cursor/commands/shepherd.md');
+-    expect(cursor.startsWith('---')).toBe(false);
+-    expect(cursor).toContain('Shepherd');
+-  });
+-
+-  test('codex output exists at .codex/skills/shepherd/SKILL.md with a kept description', () => {
+-    const codex = read('.codex/skills/shepherd/SKILL.md');
+-    expect(codex).toContain('description:');
+-    expect(codex).toContain('Shepherd');
++  test('codex mirror .codex/skills/shepherd/SKILL.md matches canonical', () => {
++    const canonical = read('skills/shepherd/SKILL.md').replace(/\r\n/g, '\n');
++    const codex = read('.codex/skills/shepherd/SKILL.md').replace(/\r\n/g, '\n');
++    expect(codex).toBe(canonical);
+   });
+ 
+-  test('no Hermes shepherd file is created by sync (Hermes is not a sync target)', () => {
++  test('no Hermes shepherd skill file exists (Hermes dir is absent / not committed)', () => {
+     const hermesCandidate = path.join(ROOT, '.hermes', 'skills', 'shepherd');
+     expect(fs.existsSync(hermesCandidate)).toBe(false);
+   });
+diff --git a/test/structural/command-sync.test.js b/test/structural/command-sync.test.js
+deleted file mode 100644
+index ccc3fb11..00000000
+--- a/test/structural/command-sync.test.js
++++ /dev/null
+@@ -1,50 +0,0 @@
+-const { describe, test, expect } = require('bun:test');
+-const path = require('node:path');
+-
+-const { syncCommands } = require('../../scripts/sync-commands');
+-
+-const repoRoot = path.resolve(__dirname, '../..');
+-
+-// ─── sync drift detection ────────────────────────────────────────────────────
+-
+-describe('command sync drift detection', () => {
+-  test('all agent command files are in sync with canonical source', () => {
+-    const result = syncCommands({ dryRun: false, check: true, repoRoot });
+-
+-    if (result.empty) {
+-      throw new Error('No command files found in .claude/commands/ — cannot verify sync.');
+-    }
+-
+-    if (result.manifestMissing) {
+-      throw new Error(
+-        'Sync manifest (.forge/sync-manifest.json) not found — stale file detection skipped.\n' +
+-        'Run "node scripts/sync-commands.js" to generate the manifest and commit it.'
+-      );
+-    }
+-
+-    const issues = [];
+-
+-    if (result.outOfSync.length > 0) {
+-      const listing = result.outOfSync
+-        .map((e) => `  [${e.agent}] ${path.join(e.dir, e.filename)}`)
+-        .join('\n');
+-      issues.push(`${result.outOfSync.length} file(s) out of sync:\n${listing}`);
+-    }
+-
+-    if (result.staleFiles && result.staleFiles.length > 0) {
+-      const listing = result.staleFiles
+-        .map((f) => `  ${path.relative(repoRoot, f)}`)
+-        .join('\n');
+-      issues.push(`${result.staleFiles.length} stale file(s) should be removed:\n${listing}`);
+-    }
+-
+-    if (issues.length > 0) {
+-      throw new Error(
+-        `Sync drift detected. Run "node scripts/sync-commands.js" and commit the results.\n${issues.join('\n')}`
+-      );
+-    }
+-
+-    expect(result.outOfSync).toHaveLength(0);
+-    expect(result.staleFiles).toHaveLength(0);
+-  });
+-});
+diff --git a/test/structural/skills-sync-drift.test.js b/test/structural/skills-sync-drift.test.js
+new file mode 100644
+index 00000000..e01cbb3f
+--- /dev/null
++++ b/test/structural/skills-sync-drift.test.js
+@@ -0,0 +1,36 @@
++const { describe, test, expect } = require('bun:test');
++const path = require('node:path');
++
++const { checkSkillsSync } = require('../../lib/skills-sync');
++
++const repoRoot = path.resolve(__dirname, '../..');
++
++// ─── skills drift detection (replaces the removed command-sync gate) ──────────
++//
++// Canonical skills live in root skills/. Generated agent mirrors (the committed
++// .codex/skills, plus any locally-populated .claude/skills/.cursor/skills) must
++// match. This is the in-repo equivalent of `skills sync --check`; it uses the
++// dependency-free lib so it runs in `bun test` without the @forge/skills deps.
++
++describe('skills sync drift detection', () => {
++  test('generated agent skill mirrors are in sync with canonical skills/', () => {
++    const result = checkSkillsSync({ repoRoot });
++
++    if (!result.inSync) {
++      const listing = result.drift
++        .map((d) => `  [${d.agent}] ${d.skill}/${d.file} — ${d.status}`)
++        .join('\n');
++      throw new Error(
++        'Skill drift detected. Run "forge setup" (or "skills sync") and commit the regenerated ' +
++        `agent skill dirs.\n${listing}`
++      );
++    }
++
++    expect(result.drift).toHaveLength(0);
++  });
++
++  test('the committed .codex/skills mirror is among the checked agents', () => {
++    const result = checkSkillsSync({ repoRoot });
++    expect(result.checkedAgents).toContain('.codex/skills');
++  });
++});
+-- 
+2.51.0.windows.1
+

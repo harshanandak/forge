@@ -1,0 +1,106 @@
+From cf96845610041b86e31fa907ec3c459072250049 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 17:01:35 +0530
+Subject: [PATCH] fix(memory): require receipt PR evidence
+
+---
+ packages/memory/src/pr-lifecycle-authority.js | 27 +++++++++++++++----
+ .../test/pr-lifecycle-authority.test.js       | 11 ++++++--
+ 2 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 0bcbe61f..81981bdc 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -523,15 +523,19 @@ function assertPacketLiveBindings(packet, live) {
+ function deriveLinkage(packet, receipt, gates) {
+   const target = packet.payload.target ?? {};
+   const prEvidence = receipt.payload.evidence_refs.filter(entry => entry?.kind === 'pr' && Number.isInteger(entry?.pr_number));
+-  const evidenceNumbers = new Set(prEvidence.map(entry => entry.pr_number));
+-  if (evidenceNumbers.size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR numbers');
++  if (prEvidence.length !== 1 || prEvidence[0].pr_number <= 0 || typeof prEvidence[0].url !== 'string') {
++    fail('PR_LIFECYCLE_LINKAGE_UNAVAILABLE', 'opened receipt must contain exactly one complete PR evidence reference');
++  }
++  const evidenceRepository = prEvidence[0].repository_id ?? prEvidence[0].repository ?? prEvidence[0].repo;
++  if (evidenceRepository !== undefined && evidenceRepository !== packet.payload.repository_id) {
++    fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR repository conflicts with packet authority');
++  }
+   if (Number.isInteger(target.pr_number) && prEvidence.some(entry => entry.pr_number !== target.pr_number)) {
+     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR number conflicts with packet target');
+   }
+   let prNumber = Number.isInteger(target.pr_number) ? target.pr_number : undefined;
+   if (prNumber === undefined) prNumber = prEvidence[0]?.pr_number;
+-  const matchingEvidence = prEvidence.filter(entry => entry.pr_number === prNumber && typeof entry?.url === 'string');
+-  if (new Set(matchingEvidence.map(entry => entry.url)).size > 1) fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt contains ambiguous PR URLs');
++  const matchingEvidence = prEvidence;
+   if (typeof target.url === 'string' && matchingEvidence.some(entry => entry.url !== target.url)) {
+     fail('PR_LIFECYCLE_LINKAGE_CONFLICT', 'receipt PR URL conflicts with packet target');
+   }
+@@ -547,6 +551,19 @@ function deriveLinkage(packet, receipt, gates) {
+   };
+ }
+ 
++function packetLinkage(packet, gates) {
++  const target = packet.payload.target ?? {};
++  return {
++    issue_id: packet.payload.issue_id,
++    repository_id: packet.payload.repository_id,
++    head: packet.payload.target_head,
++    ...(Number.isInteger(target.pr_number) ? { pr_number: target.pr_number } : {}),
++    ...(typeof target.url === 'string' ? { url: target.url } : {}),
++    ...(typeof target.git_common_dir === 'string' ? { git_common_dir: target.git_common_dir } : {}),
++    gate_ids: [...gates.ids],
++  };
++}
++
+ function traceItems(trace) {
+   const items = [];
+   const requests = Array.isArray(trace?.pull_requests) ? trace.pull_requests : [];
+@@ -822,7 +839,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+     const packet = buildPacket(input, live);
+     assertContract(packet, WORK_PACKET_SCHEMA, { issueRevision: live.issueRevision, workflowConfigRevision: live.workflowConfigRevision, capabilityManifestDigest: live.capabilityDigest, exactHead: live.head.head });
+     assertPacketLiveBindings(packet, live);
+-    return { packet: snapshot(packet, 'WorkPacket', { allowGitCommonDir: 'target' }), linkage: deriveLinkage(packet, { payload: { evidence_refs: [] } }, live.gates) };
++    return { packet: snapshot(packet, 'WorkPacket', { allowGitCommonDir: 'target' }), linkage: packetLinkage(packet, live.gates) };
+   }
+ 
+   async function acceptRunReceipt(rawInput = {}) {
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 50f7c486..d78407a7 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -82,7 +82,11 @@ function receipt(workPacket, overrides = {}) {
+     executor: { product_id: 'forge-flow', mode: 'test' },
+     started_at: NOW,
+     ended_at: NOW,
+-    evidence_refs: [{ kind: 'terminal', status: 'PASS' }],
++    evidence_refs: [{ kind: 'terminal', status: 'PASS' }, {
++      kind: 'pr',
++      pr_number: workPacket.payload.target?.pr_number ?? 514,
++      url: workPacket.payload.target?.url ?? `https://example.test/pull/${workPacket.payload.target?.pr_number ?? 514}`,
++    }],
+     validation: { status: 'PASS', terminal: true },
+     cleanup: { status: 'PASS', terminal: true },
+     mutations_attempted: ['pr.opened'],
+@@ -340,7 +344,8 @@ describe('public PR lifecycle authority', () => {
+     let writes = 0;
+     const workPacket = packet({ payload: { target: { pr_number: 514, branch: 'codex/test', git_common_dir: '/repo/.git' } } });
+     const authority = createPrLifecycleAuthority({ provider: provider({ recordPrLinkage: async () => { writes += 1; } }) });
+-    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
++    const runReceipt = receipt(workPacket, { payload: { evidence_refs: [{ kind: 'pr', pr_number: 514, url: null }] } });
++    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: runReceipt, session_id: 'session-1' }))
+       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_UNAVAILABLE' });
+     expect(writes).toBe(0);
+ 
+@@ -714,6 +719,8 @@ describe('public PR lifecycle authority', () => {
+       [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514' },
+         { kind: 'pr', pr_number: 514, url: 'https://example.test/pull/other' }],
+       [{ kind: 'validation', pr_number: 514, url: 'https://example.test/pull/514' }],
++      [{ kind: 'pr', pr_number: 514 }],
++      [{ kind: 'pr', pr_number: 514, url: 'https://example.test/pull/514', repo: 'github.com/other/repo' }],
+     ]) {
+       const runReceipt = receipt(workPacket, { payload: { evidence_refs } });
+       const authority = createPrLifecycleAuthority({ provider: provider({
+-- 
+2.51.0.windows.1
+

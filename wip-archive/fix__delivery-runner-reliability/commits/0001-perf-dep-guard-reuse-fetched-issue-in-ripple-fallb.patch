@@ -1,0 +1,271 @@
+From b519b68af9c99da9c90ae5c02f0c4cb179bad02c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 19:20:42 +0530
+Subject: [PATCH] perf(dep-guard): reuse fetched issue in ripple fallback
+
+---
+ .../bd-call-site-kill-list.md                 |  2 +-
+ .../decisions.md                              | 55 +++++++++++++++++++
+ .../plan.md                                   | 48 ++++++++++++++++
+ .../tasks.md                                  | 14 +++++
+ scripts/dep-guard.sh                          | 35 +++++++-----
+ .../dep-guard.check-ripple.basic.test.js      | 24 +++++++-
+ 6 files changed, 161 insertions(+), 17 deletions(-)
+ create mode 100644 docs/work/2026-09-24-delivery-runner-reliability/decisions.md
+ create mode 100644 docs/work/2026-09-24-delivery-runner-reliability/plan.md
+ create mode 100644 docs/work/2026-09-24-delivery-runner-reliability/tasks.md
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 495a804b..7bdc93c7 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -61,7 +61,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] scripts/conflict-detect.sh (2)
+   - lines: 56 (.beads), 60 (.beads)
+ - [ ] scripts/dep-guard.sh (22)
+-  - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 328 (bd), 332 (bd), 333 (bd), 335 (bd), 414 (bd), 415 (bd), 454 (bd), 460 (bd), 466 (bd), 473 (bd), 520 (bd)
++  - lines: 70 (bd), 91 (bd), 92 (bd), 95 (bd), 103 (bd), 116 (bd), 135 (bd), 152 (bd), 158 (bd), 160 (bd), 165 (bd), 333 (bd), 337 (bd), 338 (bd), 340 (bd), 419 (bd), 420 (bd), 459 (bd), 465 (bd), 471 (bd), 478 (bd), 525 (bd)
+ - [ ] scripts/file-index.sh (2)
+   - lines: 4 (.beads), 38 (.beads)
+ - [ ] scripts/pr-coordinator.sh (14)
+diff --git a/docs/work/2026-09-24-delivery-runner-reliability/decisions.md b/docs/work/2026-09-24-delivery-runner-reliability/decisions.md
+new file mode 100644
+index 00000000..31456320
+--- /dev/null
++++ b/docs/work/2026-09-24-delivery-runner-reliability/decisions.md
+@@ -0,0 +1,55 @@
++# Decisions and evidence
++
++## 2026-09-24: parallel diagnosis, single ownership
++
++The user explicitly requested multiple Claude agents. Two actual Opus 5.5
++read-only jobs inspect separate mechanisms. Each launch has only four
++repository-reading tools and no optional MCP integrations; hooks and permission
++checks remain enabled. This reuses the successful invocation from the prior
++review and avoids its oversized tool-context failure.
++
++Root holds the issue lease as `delivery-reliability-root-20260924`, owns the
++new `fix/delivery-runner-reliability` worktree, and preserves the separate
++Shepherd commit. No repeated full suite is authorized by the diagnostic plan.
++The exact implementation scope depends on the bounded reproduction findings.
++
++## Selected first fix: reuse the issue snapshot in ripple fallback
++
++Claude found duplicated sanitize/show/title work when `cmd_check_ripple` falls
++back to `cmd_check_ripple_keyword_v1`. A single implementer owns only
++`scripts/dep-guard.sh` and its existing basic ripple test file. The regression
++counts backend show calls, making the waste reproducible without a timing
++threshold. Preserve existing direct callers and all validation/failure paths.
++This removes proven repeated work; it does not establish the cause of every
++canonical timing failure. The proposed additional broad diagnostic run is
++rejected in favor of this bounded check.
++
++## Focused evidence: incomplete reliability proof
++
++The backend-call regression failed with two calls before the change and passed
++with one afterward (1 pass, 0 fail). Strict JS lint and shell syntax passed.
++The two-file focused suite was unstable: an after-change run had 6 pass and
++2 timeouts; a later run had 8 pass in 56.16 seconds. Preserve both results;
++the retry does not establish stable validation or explain the earlier failures.
++Raw evidence is in ignored `test-results/dep-guard-ripple-dedupe/`.
++
++The initial baseline copy was invalid and is excluded from performance claims.
++A replacement interleaved benchmark has only one observed pair so far; this
++is not enough to claim a repeatable wall-clock improvement. Removing a backend
++call is proven; total delivery-cycle improvement remains unmeasured.
++
++## Independent review
++
++Separate Claude Opus 5.5 specification and quality reviewers approved the diff
++with no blockers. Both verified the two callers pass an already-sanitized id
++and nonempty title; the command dispatcher cannot expose the optional title
++argument directly. The single call-count regression covers the no-task-file
++route; existing sibling tests exercise analyzer fallback without counting its
++calls. That additional assertion is optional, not claimed coverage.
++
++Canonical validation is still pending. At 13:47:34-37 UTC, three Windows CIM
++samples reported 100 percent CPU and 1.32-1.41 GiB free physical memory. This is
++a brief host observation, not proof of the cause of any earlier timeout. No
++task-owned fixture process matched the current worktrees in the follow-up
++process inventory. Do not stop unrelated processes or retry broad validation
++from this result alone.
+diff --git a/docs/work/2026-09-24-delivery-runner-reliability/plan.md b/docs/work/2026-09-24-delivery-runner-reliability/plan.md
+new file mode 100644
+index 00000000..10afe0d7
+--- /dev/null
++++ b/docs/work/2026-09-24-delivery-runner-reliability/plan.md
+@@ -0,0 +1,48 @@
++# Delivery reliability prerequisite
++
++Issue: `a04a58d4-9266-4fff-8c1a-24cd6bd014fe`.
++The user authorized continuing with multiple Claude agents on 2026-09-24.
++
++## Objective
++
++Remove a proven shared cause of slow or incomplete validation before retrying
++the preserved Shepherd patch. Keep every required test, existing deadline,
++permission boundary, and signed-receipt requirement.
++
++## Evidence already available
++
++At Shepherd commit `3d7142d0a6350e7d39b99ba8568755cb1d2f896a`, one canonical
++run with budget two exceeded its 25-minute test deadline. The recorded prefix
++consumed at least 1468.759 seconds of the 1500-second deadline. Independent
++Claude review corrected the earlier completeness assumption: the exclusive
++lane has 17 files; only its first file completed, the second was still running,
++and 15 had not started. Five JUnit files are not all required shards. Missing
++aggregate/profile does not demonstrate a shutdown or output-drain defect.
++Dependency-ripple and smart-status shell fixtures also timed out; one isolated
++diagnostic passed all seven tests in 17.608 seconds. The smart-status child has
++a 30-second limit inside a 20-second test. These facts do not establish CPU
++load, output draining, or test ordering as the ultimate cause.
++
++Raw evidence is preserved under the common Git directory at
++`forge/verification-artifacts/shepherd-3d7142d0/`. Kernel issue comments carry
++the detailed measurements and their limits.
++
++## Work boundaries
++
++Two read-only Claude lanes cover runner terminal/output behavior and shared
++shell-fixture process cost. They must propose bounded distinguishing checks,
++not repeat the broad suite. After comparing findings, one implementer owns each
++non-overlapping change; shared runner/helper changes have one owner.
++
++Choose the smallest reproduced shared defect or measured redundant work. Reuse
++existing helpers and tests. Do not add a generic instrumentation framework,
++new dependency, scheduler service, timeout increase, skipped test, or exemption.
++Keep Shepherd and unrelated machine/configuration work separate.
++
++## Proof required
++
++Before production edits, reproduce the chosen bad case with a focused runnable
++check. The correction must preserve failure propagation, complete required
++coverage, child cleanup, and honest incomplete/terminal evidence. Compare
++before/after using the same bounded workload. Then obtain independent spec and
++quality review before one canonical validation of the selected clean head.
+diff --git a/docs/work/2026-09-24-delivery-runner-reliability/tasks.md b/docs/work/2026-09-24-delivery-runner-reliability/tasks.md
+new file mode 100644
+index 00000000..19446135
+--- /dev/null
++++ b/docs/work/2026-09-24-delivery-runner-reliability/tasks.md
+@@ -0,0 +1,14 @@
++# Approved bounded work
++
++1. Reconcile the two Claude source findings against saved runtime evidence.
++   Select one minimal distinguishing reproduction and record the chosen scope
++   in the issue before editing production code.
++2. Assign one owner for the selected shared fix. Demonstrate the focused bad
++   case, apply the minimum correction, and verify it with existing deadlines,
++   coverage, failure handling, and cleanup preserved. Measure the same workload.
++3. Obtain independent spec then quality review, update the scoped documentation,
++   and commit through normal hooks. Only then run canonical validation and use
++   an unchanged passing receipt for the personal-account push.
++
++Do not treat a focused pass as complete validation or close the issue before
++live delivery verification. Unrelated findings remain separately tracked.
+diff --git a/scripts/dep-guard.sh b/scripts/dep-guard.sh
+index c4487614..0df3274c 100644
+--- a/scripts/dep-guard.sh
++++ b/scripts/dep-guard.sh
+@@ -298,21 +298,26 @@ cmd_check_ripple_keyword_v1() {
+     exit 1
+   fi
+ 
+-  local issue_id
+-  issue_id="$(sanitize "$1")"
+-
+-  # ---- Step 1: Validate issue exists ----------------------------------------
+-  local src_json
+-  src_json="$(bd_show_json "$issue_id")"
++  local issue_id="$1"
++  # Optional $2: title already fetched by cmd_check_ripple for this sanitized
++  # issue id, so the fallback does not show the same issue a second time.
++  local src_title="${2:-}"
+ 
+-  # ---- Step 2: Extract source title ----------------------------------------
+-  local src_title=""
+-  if command -v jq &>/dev/null; then
+-    src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
+-  fi
+-  # Fallback: grep for title in JSON
+   if [[ -z "$src_title" ]]; then
+-    src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
++    issue_id="$(sanitize "$1")"
++
++    # ---- Step 1: Validate issue exists --------------------------------------
++    local src_json
++    src_json="$(bd_show_json "$issue_id")"
++
++    # ---- Step 2: Extract source title --------------------------------------
++    if command -v jq &>/dev/null; then
++      src_title="$(printf '%s' "$src_json" | jq -r '.title // ""' 2>/dev/null)" || true
++    fi
++    # Fallback: grep for title in JSON
++    if [[ -z "$src_title" ]]; then
++      src_title="$(printf '%s' "$src_json" | grep -oE '"title"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"title"[[:space:]]*:[[:space:]]*"//;s/"$//')" || true
++    fi
+   fi
+ 
+   if [[ -z "$src_title" ]]; then
+@@ -405,7 +410,7 @@ cmd_check_ripple() {
+   task_file="$(extract_task_file_from_design "$design_text" || true)"
+   if [[ -z "$task_file" || ! -f "$task_file" ]]; then
+     echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+-    cmd_check_ripple_keyword_v1 "$issue_id"
++    cmd_check_ripple_keyword_v1 "$issue_id" "$src_title"
+     return 0
+   fi
+ 
+@@ -432,7 +437,7 @@ cmd_check_ripple() {
+   fi
+ 
+   echo "Warning: structured analyzer unavailable, falling back to keyword-only ripple check." >&2
+-  cmd_check_ripple_keyword_v1 "$issue_id"
++  cmd_check_ripple_keyword_v1 "$issue_id" "$src_title"
+ }
+ 
+ cmd_apply_decision() {
+diff --git a/test/scripts/dep-guard.check-ripple.basic.test.js b/test/scripts/dep-guard.check-ripple.basic.test.js
+index 1b300f84..2bfc88d3 100644
+--- a/test/scripts/dep-guard.check-ripple.basic.test.js
++++ b/test/scripts/dep-guard.check-ripple.basic.test.js
+@@ -46,8 +46,21 @@ ENDJSON
+         echo "Unknown command: $*" >&2
+         exit 1
+       `),
++      countedShow: createMockBd(`
++        if [[ "$1" == "show" && "$2" == "forge-abc" ]]; then
++          printf 'show\\n' >> "$0.calls"
++          echo '{"id":"forge-abc","title":"Pre-change dependency guard for plan workflow","status":"in_progress"}'
++          exit 0
++        fi
++        if [[ "$1" == "list" ]]; then
++          echo "- forge-abc [P2] [feature] - Pre-change dependency guard for plan workflow"
++          exit 0
++        fi
++        echo "Unknown command: $*" >&2
++        exit 1
++      `),
+     };
+-    mockFiles.push(...Object.values(scenarios));
++    mockFiles.push(...Object.values(scenarios), `${scenarios.countedShow}.calls`);
+   });
+ 
+   afterAll(() => {
+@@ -86,4 +99,13 @@ ENDJSON
+     expect(result.stdout).toContain('No conflicts detected');
+     expect(result.stdout).toContain('forge-abc');
+   });
++
++  test('keyword fallback reuses the source issue instead of showing it again', () => {
++    const result = runDepGuard(['check-ripple', 'forge-abc'], { BD_CMD: scenarios.countedShow });
++    expect(result.status).toBe(0);
++    expect(result.stderr).toContain('falling back to keyword-only ripple check');
++    expect(result.stdout).toContain('No conflicts detected');
++    const showCalls = fs.readFileSync(`${scenarios.countedShow}.calls`, 'utf8').trim().split('\n');
++    expect(showCalls).toHaveLength(1);
++  });
+ });
+-- 
+2.51.0.windows.1
+

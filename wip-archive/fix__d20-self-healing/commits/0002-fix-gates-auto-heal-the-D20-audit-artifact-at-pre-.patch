@@ -1,0 +1,222 @@
+From 81721d785ebdf7dd15d6c84fde50465978217193 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 26 Jul 2026 02:59:11 +0530
+Subject: [PATCH] fix(gates): auto-heal the D20 audit artifact at pre-commit
+
+---
+ .../bd-call-site-kill-list.md                 |  11 +-
+ lib/release-readiness.js                      |  32 +++++
+ scripts/sync-d20-audit.js                     | 109 ++++++++++++++++++
+ 3 files changed, 148 insertions(+), 4 deletions(-)
+ create mode 100644 scripts/sync-d20-audit.js
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 56109973..63a002fd 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -8,10 +8,10 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+ | command | 29 | 6 |
+-| runtime | 116 | 20 |
++| runtime | 118 | 21 |
+ | docs | 386 | 45 |
+ | skills | 1 | 1 |
+-| hooks | 0 | 0 |
++| hooks | 1 | 1 |
+ 
+ ## command
+ 
+@@ -68,6 +68,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 4 (.beads), 38 (.beads)
+ - [ ] scripts/pr-coordinator.sh (14)
+   - lines: 53 (bd), 59 (bd), 61 (bd), 78 (bd), 94 (bd), 113 (bd), 130 (bd), 152 (bd), 268 (bd), 275 (bd), 312 (bd), 375 (bd), 488 (bd), 493 (bd)
++- [ ] scripts/sync-d20-audit.js (2)
++  - lines: 5 (bd), 8 (bd)
+ - [ ] scripts/sync-utils.sh (23)
+   - lines: 88 (.beads), 94 (.beads), 106 (.beads), 113 (.beads), 158 (.beads), 219 (.beads), 260 (bd), 262 (.beads), 273 (bd, dolt), 281 (bd), 288 (dolt), 307 (.beads), 311 (.beads), 312 (.beads), 319 (bd, dolt), 321 (bd, dolt), 371 (.beads), 372 (.beads), 408 (bd), 420 (.beads), 421 (.beads), 450 (.beads), 458 (.beads)
+ 
+@@ -86,7 +88,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] docs/reference/beads-to-kernel-migration-ux.md (1)
+   - lines: 15 (.beads)
+ - [ ] docs/reference/COMMANDS.md (1)
+-  - lines: 104 (dolt)
++  - lines: 105 (dolt)
+ - [ ] docs/reference/DECISION_DRIFT_GUARDS.md (3)
+   - lines: 9 (dolt), 71 (.beads), 72 (bd)
+ - [ ] docs/reference/dependency-chain.md (19)
+@@ -171,4 +173,5 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ 
+ ## hooks
+ 
+-No current call sites in this group.
++- [ ] lefthook.yml (1)
++  - lines: 24 (bd)
+diff --git a/lib/release-readiness.js b/lib/release-readiness.js
+index ba726059..bfee3b94 100644
+--- a/lib/release-readiness.js
++++ b/lib/release-readiness.js
+@@ -557,6 +557,37 @@ function auditBdCallSites(projectRoot, options = {}) {
+   };
+ }
+ 
++// Would a change to this repo-relative path shift the bd call-site census?
++//
++// The pre-commit auto-heal (scripts/sync-d20-audit.js) asks this before doing any work,
++// so it must answer exactly what auditBdCallSites would scan. It is therefore assembled
++// from that walk's own pieces — getScanRoots, shouldSkipRelativePath, isTextFile,
++// SKIP_DIR_NAMES — rather than a parallel list that could drift from the gate.
++function isBdCensusPath(projectRoot, filePath, options = {}) {
++  const relativePath = safeNormalizeRepoPath(projectRoot, filePath);
++  if (!relativePath || shouldSkipRelativePath(relativePath) || !isTextFile(relativePath, projectRoot)) {
++    return false;
++  }
++
++  return getScanRoots(projectRoot, options)
++    .map(normalizeRepoPath)
++    .some(root => {
++      // walkFiles applies no directory skips to a root that is itself a file.
++      if (relativePath === root) {
++        return true;
++      }
++      if (!relativePath.startsWith(`${root}/`)) {
++        return false;
++      }
++      // Below a directory root it refuses to descend into skipped directories.
++      return !relativePath
++        .slice(root.length + 1)
++        .split('/')
++        .slice(0, -1)
++        .some(directory => SKIP_DIR_NAMES.has(directory));
++    });
++}
++
+ function readRepoFile(projectRoot, relativePath) {
+   const fullPath = absolutePath(projectRoot, relativePath);
+   return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf8') : '';
+@@ -2096,6 +2127,7 @@ module.exports = {
+   auditBdCallSites,
+   buildReadinessReport,
+   canonicalizeAuditArtifact,
++  isBdCensusPath,
+   renderBdCallSiteAuditMarkdown,
+   renderReadinessReport,
+   writeAuditArtifact,
+diff --git a/scripts/sync-d20-audit.js b/scripts/sync-d20-audit.js
+new file mode 100644
+index 00000000..ced7df9a
+--- /dev/null
++++ b/scripts/sync-d20-audit.js
+@@ -0,0 +1,109 @@
++#!/usr/bin/env node
++'use strict';
++
++/**
++ * Pre-commit auto-heal for the D20 bd call-site kill-list artifact.
++ *
++ * The `d20-audit-artifact-current` release gate compares the checked-in kill-list
++ * against a live re-scan, so any commit that shifts the bd call-site census leaves the
++ * artifact stale until someone runs `forge release regen-audit`. Five builders in a row
++ * forgot, and each found out a full CI round later (kernel issue 4cf2c43d).
++ *
++ * This removes the regen from the human's list, the same way scripts/sync-agent-skills.js
++ * removed the `.agents/skills` mirror regen: gate on a cheap changed-path predicate,
++ * regenerate, re-stage, succeed quietly. The release gate stays as the backstop for
++ * anything committed without this hook.
++ *
++ * The predicate is `isBdCensusPath`, exported by the gate's own module, so the hook and
++ * the gate always agree on which files count. The artifact itself is not a census path,
++ * so re-staging it cannot re-trigger the hook.
++ */
++
++const { execFileSync } = require('node:child_process');
++const path = require('node:path');
++const { AUDIT_ARTIFACT, isBdCensusPath, writeAuditArtifact } = require('../lib/release-readiness');
++
++function repoRoot() {
++  try {
++    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'ignore'],
++    }).trim();
++  } catch {
++    return path.resolve(__dirname, '..');
++  }
++}
++
++/**
++ * Both sides of a rename shift the census — the old path leaves it and the new one may
++ * not enter it — so this reads --name-status rather than --name-only, which would report
++ * the destination alone.
++ */
++function parseStagedNameStatus(output) {
++  const files = [];
++  for (const line of output.split(/\r?\n/)) {
++    const parts = line.trim().split('\t').filter(Boolean);
++    if (parts.length < 2) {
++      continue;
++    }
++    if (/^[RC]/.test(parts[0])) {
++      files.push(...parts.slice(1, 3));
++    } else {
++      files.push(parts[1]);
++    }
++  }
++  return [...new Set(files)];
++}
++
++function stagedPaths(projectRoot) {
++  return parseStagedNameStatus(
++    execFileSync('git', ['-C', projectRoot, 'diff', '--cached', '--name-status', '--diff-filter=ACMRDT'], {
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'ignore'],
++    }),
++  );
++}
++
++function stageArtifact(projectRoot, relativePath) {
++  execFileSync('git', ['-C', projectRoot, 'add', '--', relativePath], {
++    stdio: ['ignore', 'ignore', 'inherit'],
++  });
++}
++
++function run(deps) {
++  const { projectRoot, staged, isCensusPath, writeArtifact, stage, log } = deps;
++
++  const triggers = staged().filter(filePath => isCensusPath(projectRoot, filePath));
++  if (triggers.length === 0) {
++    return { regenerated: false, triggers: [] };
++  }
++
++  writeArtifact(projectRoot);
++  stage(projectRoot, AUDIT_ARTIFACT);
++  log(`sync-d20-audit: regenerated ${AUDIT_ARTIFACT} (census paths staged: ${triggers.join(', ')})`);
++  return { regenerated: true, triggers };
++}
++
++function main() {
++  const projectRoot = repoRoot();
++  try {
++    run({
++      projectRoot,
++      staged: () => stagedPaths(projectRoot),
++      isCensusPath: isBdCensusPath,
++      writeArtifact: root => writeAuditArtifact(root),
++      stage: stageArtifact,
++      log: message => console.log(message),
++    });
++  } catch (error) {
++    console.error(`sync-d20-audit: failed to regenerate ${AUDIT_ARTIFACT} — ${error.message}`);
++    console.error('Run `forge release regen-audit` and stage the result, or fix the error above.');
++    process.exit(1);
++  }
++}
++
++if (require.main === module) {
++  main();
++}
++
++module.exports = { run, parseStagedNameStatus, stagedPaths, repoRoot };
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,82 @@
+From 8f71fdad6ffa5d7e0301624c4f8b50806850b9a6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 18:46:39 +0530
+Subject: [PATCH] fix(setup): don't write through a symlinked lefthook.yml
+ (CodeRabbit #334)
+
+readFileSync/writeFileSync follow symlinks, so a checked-out lefthook.yml pointing
+outside projectRoot could be created/overwritten. forgeShouldWriteLefthookConfig now
+lstatSyncs first and only inspects+replaces a regular (non-symlink) file. Adds a
+symlink-escape regression test.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/commands/setup.js                      | 16 +++++++++++++---
+ test/commands/lefthook-user-config.test.js | 21 +++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 87d47c83..0804e594 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2660,12 +2660,22 @@ pre-push:
+ // Overwrite a missing file or such a stub, but never clobber a lefthook.yml that already
+ // has active (uncommented) jobs — a user's real config, or Forge's own once written.
+ function forgeShouldWriteLefthookConfig(lefthookTarget) {
+-  let content;
++  let stat;
+   try {
+-    content = fs.readFileSync(lefthookTarget, 'utf8');
+-  } catch {
++    stat = fs.lstatSync(lefthookTarget);
++  } catch (error) {
++    if (error && error.code !== 'ENOENT') {
++      throw error;
++    }
+     return true; // no existing file → write Forge's config
+   }
++  // Never write THROUGH a symlink (or any non-regular file): a checked-out lefthook.yml
++  // pointing outside projectRoot could otherwise be created/overwritten via the follow-
++  // through of readFileSync/writeFileSync. Only regular files are safe to inspect+replace.
++  if (!stat.isFile() || stat.isSymbolicLink()) {
++    return false;
++  }
++  const content = fs.readFileSync(lefthookTarget, 'utf8');
+   const activeLines = content
+     .split(/\r?\n/)
+     .map((line) => line.trim())
+diff --git a/test/commands/lefthook-user-config.test.js b/test/commands/lefthook-user-config.test.js
+index 52fbdc18..ff0fa014 100644
+--- a/test/commands/lefthook-user-config.test.js
++++ b/test/commands/lefthook-user-config.test.js
+@@ -46,6 +46,27 @@ describe('forgeShouldWriteLefthookConfig', () => {
+     }
+   });
+ 
++  test('never writes THROUGH a symlinked lefthook.yml (no escape outside the project)', () => {
++    // CodeRabbit hardening: readFileSync/writeFileSync follow symlinks, so a checked-out
++    // lefthook.yml -> ../outside could let setup create/overwrite a file outside the repo.
++    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-lefthook-symlink-'));
++    const outside = path.join(dir, 'outside.txt');
++    const link = path.join(dir, 'lefthook.yml');
++    fs.writeFileSync(outside, '# fully commented stub\n');
++    try {
++      fs.symlinkSync(outside, link);
++    } catch {
++      // Symlink creation needs privileges on Windows — skip if unavailable.
++      fs.rmSync(dir, { recursive: true, force: true });
++      return;
++    }
++    try {
++      expect(forgeShouldWriteLefthookConfig(link)).toBe(false);
++    } finally {
++      fs.rmSync(dir, { recursive: true, force: true });
++    }
++  });
++
+   test('never clobbers a config that already has active jobs', () => {
+     const { dir, file } = writeTemp(FORGE_USER_LEFTHOOK_YML);
+     try {
+-- 
+2.51.0.windows.1
+

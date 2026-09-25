@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+if [ "$1" = "issue" ] && [ "$2" = "show" ] && [ "$4" = "--json" ]; then
+  if [ "0" -ne 0 ]; then
+    echo "Error resolving issue: $3" >&2
+    exit 0
+  fi
+  cat './.forge-validate-shim-1784011892633-ss3plg2sw6/show.json'
+  exit 0
+fi
+echo "forge shim: $*" >&2
+exit 1

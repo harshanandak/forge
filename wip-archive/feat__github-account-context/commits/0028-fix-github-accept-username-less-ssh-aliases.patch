@@ -1,0 +1,111 @@
+From 90075944ba4d3c085016357bd5da6cf572a9fc22 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 20:44:31 +0530
+Subject: [PATCH] fix(github): accept username-less ssh aliases
+
+---
+ lib/commands/github.js                |  7 +++++--
+ lib/commands/merge.js                 |  3 ++-
+ test/commands/github.test.js          | 12 +++++++++---
+ test/commands/merge-authority.test.js |  2 ++
+ 4 files changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/lib/commands/github.js b/lib/commands/github.js
+index 8e3d08ec..8c82785a 100644
+--- a/lib/commands/github.js
++++ b/lib/commands/github.js
+@@ -29,7 +29,8 @@ function safeFailure(error) {
+ 
+ function isGithubOrigin(remote, root, options) {
+   try {
+-    const scpHost = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):/.exec(remote);
++    const scpHost = /^[A-Za-z]:/.test(remote) || /^(?:git|https?|ssh|file):/i.test(remote) ? null
++      : /^(?:[A-Za-z0-9._-]+@)?([A-Za-z0-9][A-Za-z0-9.-]*):[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.exec(remote);
+     const parsed = scpHost ? null : new URL(remote);
+     if (parsed && !['https:', 'ssh:'].includes(parsed.protocol)) return false;
+     const host = scpHost ? scpHost[1] : parsed.hostname;
+@@ -69,7 +70,9 @@ function transportOf(remote) {
+   if (!remote) return 'missing';
+   if (/^https:\/\//i.test(remote)) return 'https';
+   if (/^http:\/\//i.test(remote)) return 'http';
+-  if (/^ssh:\/\//i.test(remote) || /^[^\s/:]+@[^\s/:]+:/.test(remote)) return 'ssh';
++  if (/^ssh:\/\//i.test(remote)
++    || (!/^[A-Za-z]:/.test(remote) && !/^(?:git|https?|ssh|file):/i.test(remote)
++      && /^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9.-]*:[^\\/\s][^\s]*$/.test(remote))) return 'ssh';
+   return 'other';
+ }
+ 
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index ba3d8816..c38af6d0 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -126,7 +126,8 @@ function defaultResolveLocalRepository({ projectRoot, git = execFileSync }) {
+       stdio: ['pipe', 'pipe', 'pipe'],
+       windowsHide: true,
+     }).trim();
+-    const scp = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(remote);
++    const scp = /^[A-Za-z]:/.test(remote) || /^(?:git|https?|ssh|file):/i.test(remote) ? null
++      : /^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9.-]*:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(remote);
+     if (scp) return normalizeRepository(scp[1]);
+     const parsed = new URL(remote);
+     if (!['git:', 'http:', 'https:', 'ssh:'].includes(parsed.protocol)
+diff --git a/test/commands/github.test.js b/test/commands/github.test.js
+index a28bce8b..19ee7f70 100644
+--- a/test/commands/github.test.js
++++ b/test/commands/github.test.js
+@@ -99,7 +99,7 @@ describe('forge github lifecycle', () => {
+   });
+ 
+   test('unbound status makes no gh calls and explains independent SSH selection', async () => {
+-    const f = fixture({ account: '', remote: `git@github-work:org/${CANARY}.git` });
++    const f = fixture({ account: '', remote: `github-work:org/${CANARY}.git` });
+     const result = await handler(['status'], {}, '/repo', f.options);
+     expect(result.status).toMatchObject({ state: 'unbound', account: null, source: null, login: null, transport: 'ssh', repositoryAccess: null });
+     expect(f.calls.some(c => c.command === 'gh')).toBe(false);
+@@ -124,8 +124,13 @@ describe('forge github lifecycle', () => {
+     expect(f.calls).toHaveLength(0);
+   });
+ 
+-  test.each(['github-work', 'github-personal'])('use and bound status resolve SSH alias %s before querying an explicit GitHub repository', async host => {
+-    const f = fixture({ account: 'work', remote: `git@${host}:org/project.git` });
++  test.each([
++    { host: 'github-work', remote: 'git@github-work:org/project.git' },
++    { host: 'github-work', remote: 'github-work:org/project.git' },
++    { host: 'github-personal', remote: 'git@github-personal:org/project.git' },
++    { host: 'github-personal', remote: 'github-personal:org/project.git' },
++  ])('use and bound status resolve SSH alias before querying an explicit GitHub repository: %j', async ({ host, remote }) => {
++    const f = fixture({ account: 'work', remote });
+     expect((await handler(['use', 'work'], {}, '/repo', f.options)).success).toBe(true);
+     expect((await handler(['status', '--json'], {}, '/repo', f.options)).status.state).toBe('ready');
+     const ssh = f.calls.filter(c => c.command === 'ssh');
+@@ -143,6 +148,7 @@ describe('forge github lifecycle', () => {
+     { remote: `https://user:${CANARY}@github.com/org/project.git` },
+     { remote: 'git@github-work:org/project.git', sshHostname: 'gitlab.com' },
+     { remote: 'git@github-work:org/project.git', sshHostname: CANARY },
++    { remote: 'C:org/project.git', sshHostname: 'github.com' },
+   ])('invalid or non-GitHub origins fail safely without querying or changing the binding: %j', async remote => {
+     const f = fixture(remote);
+     const result = await handler(['use', 'work'], {}, '/repo', f.options);
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 1a400e41..da3c2015 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -78,6 +78,7 @@ describe('merge command — mandatory release authority', () => {
+     for (const remote of [
+       'https://github.com/Acme/Forge.git',
+       'git@github.com:Acme/Forge.git',
++      'github-work:Acme/Forge.git',
+       'ssh://git@github.com/Acme/Forge.git',
+     ]) {
+       const calls = [];
+@@ -89,6 +90,7 @@ describe('merge command — mandatory release authority', () => {
+     }
+     for (const remote of [
+       'C:/repo/Acme/Forge.git',
++      'C:Acme/Forge.git',
+       '/repo/Acme/Forge.git',
+       'file:///repo/Acme/Forge.git',
+       'ssh:/Acme/Forge.git',
+-- 
+2.51.0.windows.1
+

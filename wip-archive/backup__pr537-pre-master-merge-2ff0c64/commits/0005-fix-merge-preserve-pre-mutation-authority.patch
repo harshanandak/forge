@@ -1,0 +1,281 @@
+From 0a7a8083621288e9ad025ed1ae46da8da912fceb Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 17:24:19 +0530
+Subject: [PATCH] fix(merge): preserve pre-mutation authority
+
+---
+ lib/commands/merge.js                         | 88 ++++---------------
+ ...merge-authority-review-regressions.test.js |  5 +-
+ test/commands/merge-authority.test.js         | 59 +++++++++++--
+ 3 files changed, 71 insertions(+), 81 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index fa280274..4998d4ca 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -433,13 +433,19 @@ async function defaultPrepareMergeDecision({
+   };
+ }
+ 
+-async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedHead, repository, projectRoot, buildBroker }) {
++async function defaultRecordMergeDecision({
++  decision, mergeResult, completedAt, pr, expectedHead, repository, projectRoot, buildBroker,
++}) {
+   if (!decision?.packet || !decision?.binding) throw new Error('Merge decision evidence is unavailable.');
+   const recovered = mergeResult?.recovered === true;
++  const completionTimestamp = currentTimestamp(completedAt);
++  if (Date.parse(completionTimestamp) < Date.parse(decision.occurredAt)) {
++    throw new Error('Merge completion cannot precede its authority decision.');
++  }
+   const receipt = contractEnvelope(
+     'forge.memory.run-receipt.v1',
+     uuidFromSeed(`merge-receipt:${decision.packet.content_hash}`),
+-    decision.occurredAt,
++    completionTimestamp,
+     decision.actor,
+     {
+       packet_hash: decision.packet.content_hash,
+@@ -452,7 +458,7 @@ async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedH
+       status: 'PASS',
+       executor: { product_id: 'forge', mode: recovered ? 'guarded-exact-head-recovery' : 'guarded-exact-head' },
+       started_at: decision.occurredAt,
+-      ended_at: decision.occurredAt,
++      ended_at: completionTimestamp,
+       evidence_refs: [{ kind: 'pr', repository, pr_number: Number(pr), head_sha: expectedHead }],
+       validation: { status: 'PASS', decision_id: decision.decisionId },
+       cleanup: { status: 'NOT_REQUIRED' },
+@@ -680,9 +686,7 @@ function mandatoryContextError(context, expectedHead) {
+   return protectedGate.allowed ? null : protectedGate.reason;
+ }
+ 
+-async function recoverMergedTerminal({
+-  pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps, replayOnly = false,
+-}) {
++async function recoverMergedTerminal({ pr, parsed, root, prContext, deps }) {
+   const repository = normalizeRepository(prContext?.repository);
+   if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead || !repository) {
+     return { success: false, merged: true, error: 'Merged PR identity does not match the expected head and repository.' };
+@@ -705,71 +709,12 @@ async function recoverMergedTerminal({
+       ...binding.terminalEvidence,
+     };
+   }
+-  if (replayOnly) {
+-    return {
+-      success: false,
+-      merged: true,
+-      replayMissing: true,
+-      error: 'Merged PR terminal evidence is not yet available for replay.',
+-    };
+-  }
+-  const decisionAt = currentTimestamp(deps.now || Date.now);
+-  const verifyMergeGate = deps.verifyMergeGate || defaultVerifyMergeGate;
+-  const gateApproval = await verifyMergeGate({
+-    issueId: parsed.issueId, projectRoot: root, actor: ownershipActor, now: decisionAt,
+-  });
+-  if (gateApproval !== true && gateApproval?.approved !== true && gateApproval?.disabled !== true) {
+-    return { success: false, merged: true, error: `${MERGE_GATE} is not approved for this issue.` };
+-  }
+-  if (gateApproval?.disabled === true) {
+-    return {
+-      success: false,
+-      merged: true,
+-      error: 'The disabled merge gate cannot produce broker-verifiable terminal authority.',
+-    };
+-  }
+-  const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
+-  const decision = await prepareMergeDecision({
+-    issueId: parsed.issueId,
+-    pr,
+-    expectedHead: parsed.expectedHead,
+-    repository,
+-    binding,
+-    actor: ownershipActor,
+-    sessionId: ownershipSessionId,
+-    env: deps.env || process.env,
+-    requireMergeGate: gateApproval?.disabled !== true,
+-    config,
+-    projectRoot: root,
+-    now: decisionAt,
+-  });
+-  if (!decision || typeof decision.decisionId !== 'string' || !decision.decisionId) {
+-    return { success: false, merged: true, error: 'Merge recovery decision evidence is unavailable.' };
+-  }
+-  const recordMergeDecision = deps.recordMergeDecision || defaultRecordMergeDecision;
+-  try {
+-    const terminal = await recordMergeDecision({
+-      decision,
+-      mergeResult: { merged: true, recovered: true },
+-      pr,
+-      expectedHead: parsed.expectedHead,
+-      repository,
+-      projectRoot: root,
+-      buildBroker: deps.buildMergeBroker,
+-    });
+-    if (!terminal || typeof terminal.receiptId !== 'string' || !terminal.receiptId) {
+-      throw new Error('terminal receipt evidence is unavailable');
+-    }
+-    return {
+-      success: true, merged: true, enabled: true, recovered: true,
+-      decisionId: decision.decisionId, ...terminal,
+-    };
+-  } catch (error) {
+-    return {
+-      success: false, merged: true, enabled: true, decisionId: decision.decisionId,
+-      error: `Merged PR terminal linkage recovery failed: ${error.message}`,
+-    };
+-  }
++  return {
++    success: false,
++    merged: true,
++    replayMissing: true,
++    error: 'Merged PR terminal evidence is missing durable pre-merge authority; recovery remains incomplete.',
++  };
+ }
+ 
+ /** Default `gh` runner. Only reached by the default fetch/merge seams (never in unit tests). */
+@@ -1300,6 +1245,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     terminal = await recordMergeDecision({
+       decision,
+       mergeResult,
++      completedAt: currentTimestamp(deps.now || Date.now),
+       pr,
+       expectedHead: parsed.expectedHead,
+       repository: leasedRepository,
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 4cfbd2d7..a9e8951f 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -410,7 +410,7 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(mergeCmd.parseMergeArgs(args('42')).pr).toBe('42');
+   });
+ 
+-  test('only OPEN proceeds, MERGED reconciles evidence, and CLOSED is a terminal no-op', async () => {
++  test('only OPEN proceeds, MERGED requires pre-existing evidence, and CLOSED is a terminal no-op', async () => {
+     for (const state of [undefined, null, '', 'UNKNOWN', 'DRAFT', 'BOGUS']) {
+       let merges = 0;
+       const first = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -437,7 +437,8 @@ describe('merge authority — exact reviewer regressions', () => {
+     const merged = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => context({ state: 'MERGED' }),
+     }));
+-    expect(merged).toMatchObject({ success: true, merged: true, recovered: true });
++    expect(merged).toMatchObject({ success: false, merged: true, replayMissing: true });
++    expect(merged.error).toMatch(/pre-merge authority/i);
+ 
+     const closed = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => context({ state: 'CLOSED' }),
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index ffe44558..6b527df9 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -175,7 +175,37 @@ describe('merge command — mandatory release authority', () => {
+     expect(out.error).toContain('terminal linkage failed');
+   });
+ 
+-  test('reconciles missing terminal linkage when GitHub already reports the exact PR merged', async () => {
++  test('does not mint guarded terminal evidence after an unproven external merge', async () => {
++    let decisions = 0;
++    let records = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      prepareMergeDecision: async () => { decisions += 1; return { decisionId: 'late-decision' }; },
++      recordMergeDecision: async () => { records += 1; return { receiptId: 'late-receipt' }; },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: true, replayMissing: true });
++    expect(out.error).toMatch(/pre-merge authority/i);
++    expect(decisions).toBe(0);
++    expect(records).toBe(0);
++  });
++
++  test('timestamps successful terminal evidence after the provider confirms the merge', async () => {
++    const instants = [
++      Date.parse('2026-08-01T12:00:00.000Z'),
++      Date.parse('2026-08-01T12:00:05.000Z'),
++    ];
++    let recorded;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      now: () => instants.shift(),
++      recordMergeDecision: async (input) => { recorded = input; return { receiptId: 'receipt-1' }; },
++    }));
++
++    expect(out).toMatchObject({ success: true, merged: true });
++    expect(recorded.completedAt).toBe('2026-08-01T12:00:05.000Z');
++  });
++
++  test('keeps missing terminal linkage incomplete when GitHub already reports the exact PR merged', async () => {
+     let merges = 0;
+     let records = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -184,9 +214,10 @@ describe('merge command — mandatory release authority', () => {
+       recordMergeDecision: async () => { records += 1; return { receiptId: 'receipt-recovered' }; },
+     }));
+ 
+-    expect(out).toMatchObject({ success: true, merged: true, recovered: true, receiptId: 'receipt-recovered' });
++    expect(out).toMatchObject({ success: false, merged: true, replayMissing: true });
++    expect(out.error).toMatch(/pre-merge authority/i);
+     expect(merges).toBe(0);
+-    expect(records).toBe(1);
++    expect(records).toBe(0);
+   });
+ 
+   test('replays existing terminal evidence without regenerating retry-time receipts', async () => {
+@@ -298,16 +329,18 @@ describe('merge command — mandatory release authority', () => {
+     expect(records).toBe(0);
+   });
+ 
+-  test('fails closed before recovery evidence when a disabled gate cannot satisfy the broker contract', async () => {
++  test('does not treat a retry-time gate state as pre-merge recovery authority', async () => {
+     let decisions = 0;
++    let gateChecks = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => context({ state: 'MERGED' }),
+-      verifyMergeGate: async () => ({ success: true, disabled: true }),
++      verifyMergeGate: async () => { gateChecks += 1; return { success: true, disabled: true }; },
+       prepareMergeDecision: async () => { decisions += 1; },
+     }));
+ 
+-    expect(out).toMatchObject({ success: false, merged: true });
+-    expect(out.error).toMatch(/disabled.*terminal authority/i);
++    expect(out).toMatchObject({ success: false, merged: true, replayMissing: true });
++    expect(out.error).toMatch(/pre-merge authority/i);
++    expect(gateChecks).toBe(0);
+     expect(decisions).toBe(0);
+   });
+ 
+@@ -348,6 +381,7 @@ describe('merge command — mandatory release authority', () => {
+     broker.readTrace = async () => [];
+     const terminal = await mergeCmd.defaultRecordMergeDecision({
+       decision,
++      completedAt: '2026-08-01T12:00:05.000Z',
+       pr: 42,
+       expectedHead: HEAD,
+       repository: 'acme/forge',
+@@ -363,7 +397,15 @@ describe('merge command — mandatory release authority', () => {
+       number: 42,
+       branch: 'feature/merge',
+       work_packet: decision.packet,
+-      run_receipt: { payload: { exact_head: HEAD, mutations_authorized: ['pr.merged'] } },
++      run_receipt: {
++        created_at: '2026-08-01T12:00:05.000Z',
++        payload: {
++          exact_head: HEAD,
++          started_at: '2026-08-01T12:00:00.000Z',
++          ended_at: '2026-08-01T12:00:05.000Z',
++          mutations_authorized: ['pr.merged'],
++        },
++      },
+     });
+     expect(calls[0][1]).toEqual({
+       actor: 'release-actor',
+@@ -375,6 +417,7 @@ describe('merge command — mandatory release authority', () => {
+     await mergeCmd.defaultRecordMergeDecision({
+       decision,
+       mergeResult: { merged: true, recovered: true },
++      completedAt: '2026-08-01T12:00:05.000Z',
+       pr: 42,
+       expectedHead: HEAD,
+       repository: 'acme/forge',
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,38 @@
+From 66e36f31f1e69cd45352f8299eef38e1cba1b27f Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:23:13 +0530
+Subject: [PATCH] fix(windows): delimit ACL script with newlines
+
+---
+ lib/kernel/sqlite-driver.js             | 2 +-
+ test/kernel/legacy-claim-repair.test.js | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 28afe6f2..dc1938a3 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4536,7 +4536,7 @@ const WINDOWS_PRIVATE_ACL_SCRIPT = [
+ 	'$private = $private -and (($rules[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl)',
+ 	'if (-not $private) { throw "owner-only ACL verification failed" }',
+ 	'}',
+-].join('; ');
++].join('\n');
+ 
+ function resolveWindowsPowerShellPath(environment = process.env) {
+ 	const systemRoot = environment.SystemRoot;
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 6046d9f6..b6e804ed 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -215,6 +215,7 @@ describe('legacy claim repair preflight', () => {
+ 			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+ 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
+ 		]);
++		expect(invocation.command.at(-1)).not.toContain('{;');
+ 		expect(invocation.options).toMatchObject({
+ 			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+ 			stderr: 'pipe',
+-- 
+2.51.0.windows.1
+

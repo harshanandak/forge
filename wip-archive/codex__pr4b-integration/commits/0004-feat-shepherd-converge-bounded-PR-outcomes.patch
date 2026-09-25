@@ -1,0 +1,1101 @@
+From 34222496000aa3b9c018b5e0743eb307b4d3972d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 20:02:12 +0530
+Subject: [PATCH] feat(shepherd): converge bounded PR outcomes
+
+---
+ .agents/skills/shepherd/SKILL.md         |  20 ++-
+ docs/reference/shepherd.md               |  32 +++--
+ lib/commands/shepherd.js                 | 145 ++++++++++++++++++--
+ lib/pr-monitor/flow-monitor.js           |  76 ++++++++++-
+ lib/pr-monitor/monitor.js                |  14 +-
+ lib/pr-monitor/review-preflight.js       | 165 +++++++++++++++++++++++
+ skills/shepherd/SKILL.md                 |  20 ++-
+ test/commands-shepherd-bundle.test.js    |   4 +
+ test/commands/shepherd.test.js           |  37 ++++-
+ test/pr-monitor/flow-monitor.test.js     |  61 ++++++++-
+ test/pr-monitor/monitor.test.js          |  23 ++++
+ test/pr-monitor/review-preflight.test.js |  86 ++++++++++++
+ test/shepherd-acceptance.test.js         |   4 +
+ 13 files changed, 650 insertions(+), 37 deletions(-)
+ create mode 100644 lib/pr-monitor/review-preflight.js
+ create mode 100644 test/pr-monitor/review-preflight.test.js
+
+diff --git a/.agents/skills/shepherd/SKILL.md b/.agents/skills/shepherd/SKILL.md
+index de6504f5..0909853e 100644
+--- a/.agents/skills/shepherd/SKILL.md
++++ b/.agents/skills/shepherd/SKILL.md
+@@ -27,7 +27,7 @@ Forge owns your open PRs. A singleton daemon converges every open PR toward merg
+ `shepherd` is the PR-ownership utility, not a workflow stage. It has two modes over the **single `forge shepherd` verb**:
+ 
+ - **Daemon (default ownership):** `forge shepherd daemon` is a machine-wide singleton for this repo. It heartbeats and converges the whole PR world every ~60s — self-registering hand-opened PRs, restarting killed watchers, reaping verified orphans, converging CI check state into kernel verdicts, retiring merged/closed PRs — then self-retires (releases the lease, kills its children, exits) once no PRs remain open. You do NOT poll by hand; the daemon does.
+-- **One-shot pass:** `forge shepherd <pr>` reads one PR's state, takes at most one idempotent Tier-A action, and exits. Use it for a point-in-time question about a single PR.
++- **One-shot convergence:** `forge shepherd <pr>` runs the local review preflight, reads one PR's current-head state, takes at most one idempotent Tier-A action, persists bounded deltas/receipts, and exits. Use it for a point-in-time question or one bounded convergence attempt on a single PR.
+ 
+ ## Which mode? (decision rule)
+ 
+@@ -57,6 +57,15 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence
+ 
+ `--pull` is strictly read-only (dry-run pass: no rerun, no rebase, no merge, no thread resolution). It returns one bounded, actionable-only payload — `blockers[]`, classified `requiredChecks`, failed-check log `failures[]` (matrix-deduped), and every unresolved `reviewThreads[]` — so you get "everything blocking this PR + what to fix" in one call. Passing checks and satisfied policy are omitted.
+ 
++A plain `forge shepherd <pr>` also returns a consolidated `localPreflight`, at
++most 128 `deltas`, `receiptIds`, and one explicit `handoff`. The preflight probes
++CodeRabbit and runs strict lint, Sonar parity, structural drift, and affected
++tests. An unavailable or unauthenticated CodeRabbit CLI is reported as
++`UNAVAILABLE`/`INCOMPLETE`, never as a fabricated pass; deterministic failures or
++actual review findings make the remote decision read-only for that pass. A
++checkout that is not the exact PR head is `NOT_APPLICABLE`, never reviewed as if
++it were authoritative.
++
+ ### Verdict vocabulary (collapsed, W-S1)
+ 
+ | Verdict | Meaning |
+@@ -109,4 +118,11 @@ before lease, Kernel-state, or process work. All leave the manual
+ 
+ ## State
+ 
+-Progress is durable in GitHub (PR comments, labels, `git`). The one local store is the per-PR journal under `.forge/pr-monitor/<repo>-<pr>/` (append-only `events.ndjson` + snapshot/consumer cursors) — the replay surface for `events --since`. The bounded one-shot pass keeps no separate local state.
++Public Memory is the durable monitor authority and public Flow reducers restore
++its bounded event and watcher-process checkpoints after restart. The per-PR
++journal under `.forge/pr-monitor/<repo>-<pr>/` remains a compatibility delivery
++surface for `events --since`, not authority. Merged/closed evidence produces one
++idempotent terminal MonitorReceipt; conflicting or incomplete replay fails
++closed. For 0.1 no receipt grants continuing lease authority: live ownership is
++re-probed at consequential boundaries, and canonical LeaseReceipt epoch/scope
++plus the same-actor/session ABA fix remain explicitly deferred.
+diff --git a/docs/reference/shepherd.md b/docs/reference/shepherd.md
+index 02dd8e8e..c192fa4e 100644
+--- a/docs/reference/shepherd.md
++++ b/docs/reference/shepherd.md
+@@ -33,9 +33,10 @@ verb:
+   non-dry-run ship. These are the only automatic firing seams; ordinary commands
+   do not launch it. Once running, an agent does not poll: the daemon owns the
+   convergence loop.
+-- **`forge shepherd <pr>` — one bounded pass.** Reads one PR's state, takes at
+-  most one Tier-A action, exits. The point-in-time surface for a single PR (see
+-  *Bounded-pass model* below).
++- **`forge shepherd <pr>` — one bounded convergence pass.** Runs local review
++  preflight, reads one PR's state, takes at most one Tier-A action, persists
++  bounded deltas/receipts, and exits. The point-in-time surface for a single PR
++  (see *Bounded-pass model* below).
+ - **`forge shepherd watch <pr>` / `watch --adopt`** — foreground streaming watch of
+   one PR, or (`--adopt`) adopt every currently-open PR into the watcher set.
+ - **`forge shepherd events <pr> --since <seq>`** — the event deltas for a PR since a
+@@ -115,6 +116,16 @@ project's documented ergonomic — poll briefly, then stop and hand off. A pass
+ that finds checks still pending returns `PENDING`; the next scheduled pass picks
+ up from there.
+ 
++Before remote mutation, the plain pass consolidates a probed CodeRabbit CLI with
++strict lint, structural drift, Sonar parity, and affected tests. The result is
++returned as `localPreflight`; CodeRabbit absence/auth loss is explicitly
++`UNAVAILABLE`/`INCOMPLETE`, not green. Deterministic failure or actual local
++review findings makes the remote decision dry-run for that pass. A local
++checkout that is not the exact PR head is explicitly `NOT_APPLICABLE`. Output is
++bounded to 128 `deltas` plus receipt IDs and one outcome handoff: `review` for
++semantic feedback, explicit human-approved `merge` at `MERGE_READY`, or `verify`
++after merged evidence. Shepherd never resolves threads and never merges.
++
+ `--watch`-style behavior, if desired, belongs in an external scheduler (cron, or
+ a `/loop`) that re-invokes the bounded pass with a debounce of at least 60
+ seconds and cancel-in-progress. The shepherd itself never waits in-process.
+@@ -248,8 +259,13 @@ neutral `forge/pr-monitor` check.
+ 
+ ## State
+ 
+-Progress is durable in the Actions job summary, the single verdict label, and
+-`git`. The one local store is the constant monitor's per-PR journal under
+-`.forge/pr-monitor/<repo>-<pr>/` (the append-only `events.ndjson` + snapshot and
+-consumer cursors) — the delivery/replay surface for `forge shepherd watch` and
+-`events --since`. The bounded shepherd pass itself keeps no separate local state.
++Public Memory is the durable monitor authority; public Flow reducers replay its
++bounded event and watcher-process checkpoints after restart. The per-PR journal
++under `.forge/pr-monitor/<repo>-<pr>/` is retained as a compatibility delivery
++surface for `forge shepherd watch` and `events --since`, not as authority.
++Merged/closed evidence records one idempotent terminal MonitorReceipt that drives
++cleanup and the `verify` handoff; incomplete or conflicting replay fails closed.
++
++For 0.1, no receipt grants continuing lease authority. Consequential paths
++re-probe live ownership, while canonical LeaseReceipt epoch/scope and the
++same-actor/session release-reclaim ABA fix remain explicitly deferred.
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 0c6f905f..57e3e994 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -3,11 +3,11 @@
+ /**
+  * shepherd command — one bounded monitor pass over a pull request.
+  *
+- * `forge shepherd <pr> [--auto-rebase]` reads PR/CI state, takes at most one
+- * idempotent Tier-A action (rerun a flaky required check), and exits with a
+- * terminal state. It NEVER merges and NEVER resolves review threads. A
+- * `--watch` loop, if desired, lives in an external scheduler that re-invokes
+- * this command on an interval — there is no in-process polling loop here.
++ * `forge shepherd <pr> [--auto-rebase]` runs one local review preflight, reads
++ * PR/CI state, takes at most one idempotent Tier-A action (rerun a flaky required
++ * check), persists bounded deltas/receipts, and exits. It NEVER merges and NEVER
++ * resolves review threads. Event-driven waiting belongs to the singleton/watch
++ * process; this command does not model-poll or loop in-process.
+  *
+  * `forge shepherd <pr> --bundle --json` instead prints the COMPLETE read-only
+  * PR-state bundle (all unresolved threads, merge state, CI, divergence,
+@@ -21,7 +21,7 @@
+  * done IN CODE so an agent gets one payload instead of running those by hand. It
+  * still NEVER merges and NEVER resolves threads.
+  *
+- * State persists via GitHub PR comments/labels and git only.
++ * Public Memory is durable authority; the local journal is compatibility delivery.
+  *
+  * @module commands/shepherd
+  */
+@@ -42,6 +42,7 @@ const monitorJournal = require('../pr-monitor/journal');
+ const brokerMod = require('../kernel/broker');
+ const { EVENT_TYPES: T } = require('../pr-monitor/events');
+ const { autoShepherdRailEnabled } = require('./ship');
++const { runLocalReviewPreflight } = require('../pr-monitor/review-preflight');
+ 
+ const DEFAULT_RERUN_BUDGET = 3;
+ 
+@@ -68,9 +69,12 @@ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', tim
+  * @returns {Promise<{ pr: string, owner: string, repo: string, base: string, baseRef: string, cwd?: string }>}
+  */
+ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+-  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName']);
++  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName,headRefOid']);
+   const prInfo = JSON.parse(prJson || '{}');
+   const base = prInfo.baseRefName || 'master';
++  const headSha = typeof prInfo.headRefOid === 'string' && /^[0-9a-f]{40}$/i.test(prInfo.headRefOid)
++    ? prInfo.headRefOid.toLowerCase()
++    : null;
+ 
+   const repoJson = gh('gh', ['repo', 'view', '--json', 'owner,name']);
+   const repo = JSON.parse(repoJson || '{}');
+@@ -84,12 +88,22 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+     baseRemote = 'origin';
+   }
+ 
++  let localHead = null;
++  try {
++    const candidate = git('git', ['rev-parse', 'HEAD']).trim();
++    if (/^[0-9a-f]{40}$/i.test(candidate)) localHead = candidate.toLowerCase();
++  } catch {
++    /* a missing local checkout makes local review preflight not applicable */
++  }
++
+   return {
+     pr: String(pr),
+     owner,
+     repo: name,
+     base,
+     baseRef: `${baseRemote}/${base}`,
++    headSha,
++    localHead,
+     ...(projectRoot ? { cwd: projectRoot } : {}),
+   };
+ }
+@@ -226,7 +240,7 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+       runGh: (ghArgs) => gh('gh', ghArgs),
+       gatherPull: deps.gatherPull,
+     });
+-    const shouldBuildAuthority = deps.store || deps.buildKernelDeps || deps.createMonitorStore || !deps.adapter;
++    const shouldBuildAuthority = deps.forceAuthority || deps.store || deps.buildKernelDeps || deps.createMonitorStore || !deps.adapter;
+     if (!deps.store && shouldBuildAuthority) {
+       const buildKernelDeps = deps.buildKernelDeps
+         || require('../kernel/cli-broker-factory').buildMigratedKernelIssueDeps;
+@@ -448,6 +462,55 @@ async function handleDaemon(projectRoot, deps = {}) {
+   return { success: true, started: true };
+ }
+ 
++async function collectConvergenceEvidence({ args, pr, projectRoot, context, adapter, deps }) {
++  const built = await buildMonitorContext(pr, projectRoot, {
++    ...deps,
++    adapter,
++    buildContext: async () => context,
++    forceAuthority: true,
++  });
++  if (built.error) throw new Error(built.error);
++  try {
++    const polled = await (deps.pollEvents || pollEvents)({
++      ...built,
++      since: parseSince(args),
++      now: deps.now,
++      watcherRunning: deps.watcherRunning,
++    });
++    const snapshot = monitorJournal.readSnapshot(built.dir)?.snapshot || null;
++    return {
++      deltas: Array.isArray(polled.events) ? polled.events : [],
++      deltaOverflow: polled.overflow === true,
++      receiptIds: Array.isArray(polled.receiptIds) ? polled.receiptIds : [],
++      ...(polled.terminalReceiptId ? { terminalReceiptId: polled.terminalReceiptId } : {}),
++      exactHead: snapshot?.headSha || null,
++    };
++  } finally {
++    await built.close?.();
++  }
++}
++
++function convergenceHandoff(state, pr, evidence) {
++  if (state === 'MERGE_READY') {
++    return {
++      next: 'merge',
++      command: `forge merge --auto ${pr} --expect-head ${evidence.exactHead || '<exact-head>'} --issue <issue-id>`,
++      humanApprovalRequired: true,
++    };
++  }
++  if (state === 'MERGED') {
++    return {
++      next: 'verify',
++      command: 'forge verify',
++      terminalReceiptId: evidence.terminalReceiptId || null,
++    };
++  }
++  if (state === 'NEEDS_REVIEW') {
++    return { next: 'review', command: 'forge review', resolvesThreads: false };
++  }
++  return null;
++}
++
+ /**
+  * Command handler.
+  *
+@@ -526,6 +589,25 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: true, bundle, output: JSON.stringify(bundle, null, 2) };
+   }
+ 
++  const runPreflight = deps.runLocalPreflight || runLocalReviewPreflight;
++  let localPreflight;
++  try {
++    localPreflight = await runPreflight({
++      projectRoot: projectRoot || process.cwd(),
++      base: ctx.base,
++      pr: String(pr),
++      expectedHead: ctx.headSha,
++      localHead: ctx.localHead,
++    });
++  } catch (error) {
++    localPreflight = {
++      status: 'FAIL',
++      blocking: true,
++      providers: {},
++      findings: [{ provider: 'local-preflight', detail: error?.message || String(error) }],
++    };
++  }
++
+   const result = await runPass({
+     ...ctx,
+     adapter,
+@@ -533,13 +615,39 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     cleanTree: autoRebase ? isWorkingTreeClean(git) : false,
+     rerunBudget: deps.rerunBudget || DEFAULT_RERUN_BUDGET,
+     rerunsUsed: deps.rerunsUsed || 0,
++    dryRun: localPreflight.blocking === true,
+   });
+ 
++  const collectEvidence = deps.collectConvergenceEvidence || collectConvergenceEvidence;
++  let evidence;
++  try {
++    evidence = await collectEvidence({ args, pr, projectRoot, context: ctx, adapter, deps });
++  } catch (error) {
++    return {
++      success: false,
++      state: 'INCOMPLETE',
++      remoteState: result.state,
++      reason: `Durable convergence evidence is unavailable: ${error.message}`,
++      actions: [],
++      localPreflight,
++      deltas: [],
++      deltaOverflow: false,
++      receiptIds: [],
++    };
++  }
++
++  const effectiveState = localPreflight.blocking === true && result.state === 'MERGE_READY'
++    ? 'PENDING'
++    : result.state;
++  const effectiveReason = effectiveState !== result.state
++    ? 'Local review preflight is blocking merge readiness.'
++    : result.reason;
++
+   // Surface the pass outcome so the monitor is legible when run interactively or
+   // tailed by a scheduler (the bounded state machine is otherwise silent).
+   const passActions = Array.isArray(result.actions) ? result.actions : [];
+-  const reasonSuffix = result.reason ? ` — ${result.reason}` : '';
+-  process.stdout.write(`Shepherd pass — PR #${pr}: ${result.state}${reasonSuffix}\n`);
++  const reasonSuffix = effectiveReason ? ` — ${effectiveReason}` : '';
++  process.stdout.write(`Shepherd pass — PR #${pr}: ${effectiveState}${reasonSuffix}\n`);
+   for (const action of passActions) {
+     process.stdout.write(`  • ${formatAction(action)}\n`);
+   }
+@@ -548,10 +656,19 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   return {
+-    success: result.state !== 'HARD_STOP',
+-    state: result.state,
+-    reason: result.reason,
++    success: effectiveState !== 'HARD_STOP',
++    state: effectiveState,
++    ...(effectiveState !== result.state ? { remoteState: result.state } : {}),
++    reason: effectiveReason,
+     actions: result.actions || [],
++    localPreflight,
++    deltas: evidence.deltas,
++    deltaOverflow: evidence.deltaOverflow,
++    receiptIds: evidence.receiptIds,
++    ...(evidence.terminalReceiptId ? { terminalReceiptId: evidence.terminalReceiptId } : {}),
++    ...(convergenceHandoff(effectiveState, pr, evidence)
++      ? { handoff: convergenceHandoff(effectiveState, pr, evidence) }
++      : {}),
+     ...(result.authClass ? { authClass: result.authClass } : {}),
+     ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
+   };
+@@ -567,6 +684,8 @@ module.exports = {
+   buildMonitorContext,
+   makeCheckFailureEnricher,
+   parseSince,
++  collectConvergenceEvidence,
++  convergenceHandoff,
+   defaultBuildContext,
+   isWorkingTreeClean,
+ };
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 326cf9d5..ea3a04f4 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -2,9 +2,10 @@
+ 
+ const crypto = require('node:crypto');
+ 
+-const { computeContentHash } = require('../../packages/memory-contracts');
++const { computeContentHash, validateContractStructure } = require('../../packages/memory-contracts');
+ const {
+   createMonitorDurabilityBridge,
++  createMonitorReceipt,
+   createMonitorState,
+   reduceMonitor,
+ } = require('../../packages/flow');
+@@ -54,9 +55,12 @@ function parseEventRow(row, monitorId) {
+   } catch {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is malformed');
+   }
+-  if (event?.schema_id !== 'forge.memory.monitor-event.v1'
++  const validation = validateContractStructure(event);
++  if (!validation.ok
++    || event?.schema_id !== 'forge.memory.monitor-event.v1'
+     || event.payload?.monitor_id !== monitorId
+-    || !Number.isSafeInteger(event.payload?.sequence)) {
++    || !Number.isSafeInteger(event.payload?.sequence)
++    || (typeof row?.content_hash === 'string' && row.content_hash !== event.content_hash)) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is incomplete');
+   }
+   return event;
+@@ -151,6 +155,31 @@ function deliveryReceipt(ctx, event, deliveredAt) {
+   );
+ }
+ 
++function terminalPrState(snapshot) {
++  const state = String(snapshot?.prState || snapshot?.state || '').toUpperCase();
++  if (state === 'MERGED') return 'PASS';
++  if (state === 'CLOSED') return 'FAIL';
++  return null;
++}
++
++async function recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt) {
++  const terminalState = terminalPrState(snapshot);
++  if (!terminalState) return null;
++  const terminating = reduceMonitor(spec, state, { kind: 'subject-terminal', terminalState }).state;
++  const terminal = reduceMonitor(spec, terminating, {
++    kind: 'cleanup-complete',
++    processCleanup: { status: 'not-required', owner: 'repo-singleton-shepherd' },
++    leaseCleanup: { status: 'checkpointed', continuing_authority: false },
++  }).state;
++  const receipt = createMonitorReceipt(spec, terminal, {
++    objectId: uuidFrom(`terminal:${ctx.monitorId}:${terminalState}:${terminal.lastSequence}`),
++    createdAt,
++    producerInstanceId: ctx.monitorId,
++  });
++  await bridge.recordTerminalReceipt(receipt, { maxHistory: MAX_HISTORY });
++  return receipt.object_id;
++}
++
+ async function readAuthority(ctx) {
+   let tail;
+   try {
+@@ -190,11 +219,36 @@ async function runFlowMonitorPass(ctx) {
+     throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable delivery state is incomplete');
+   }
+ 
++  if (deliveryState.terminal_receipt) {
++    let terminal;
++    try {
++      terminal = JSON.parse(deliveryState.terminal_receipt.envelope_json);
++    } catch {
++      throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable terminal receipt is malformed');
++    }
++    const validation = validateContractStructure(terminal);
++    if (!validation.ok
++      || terminal?.schema_id !== 'forge.memory.monitor-receipt.v1'
++      || terminal.payload?.monitor_id !== ctx.monitorId
++      || typeof terminal.object_id !== 'string' || !terminal.object_id
++      || deliveryState.terminal_receipt.content_hash !== terminal.content_hash) {
++      throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable terminal receipt is incomplete');
++    }
++    return {
++      events: [],
++      changed: false,
++      authority: 'memory',
++      terminalReceiptId: terminal.object_id,
++      receiptIds: [terminal.object_id],
++    };
++  }
++
+   const bridge = createMonitorDurabilityBridge({
+     store: bridgeStore(ctx.store),
+     deliveryTargets: [DELIVERY_TARGET],
+     deliver: async (event) => ctx.deliverLegacy(event.payload.bounded_payload.record),
+   });
++  const receiptIds = [];
+   const cursor = deliveryState.cursors.find(item => item.target === DELIVERY_TARGET)?.sequence ?? 0;
+   if (cursor > 0 && durableEvents.some(event => event.payload.sequence === cursor)) {
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: cursor }).state;
+@@ -203,6 +257,7 @@ async function runFlowMonitorPass(ctx) {
+     await ctx.deliverLegacy(event.payload.bounded_payload.record);
+     const receipt = deliveryReceipt(ctx, event, now());
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
++    receiptIds.push(receipt.object_id);
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: event.payload.sequence }).state;
+   }
+ 
+@@ -210,7 +265,12 @@ async function runFlowMonitorPass(ctx) {
+   const previous = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
+   const candidates = diffSnapshots(previous, next);
+   if (candidates.length === 0) {
+-    return { events: [], changed: false, authority: 'memory' };
++    const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, next, now());
++    if (terminalReceiptId) receiptIds.push(terminalReceiptId);
++    return {
++      events: [], changed: false, authority: 'memory', receiptIds,
++      ...(terminalReceiptId ? { terminalReceiptId } : {}),
++    };
+   }
+   const timestamp = now();
+   const records = finalizeRecords(candidates, {
+@@ -225,9 +285,15 @@ async function runFlowMonitorPass(ctx) {
+     await bridge.persistEvent(event);
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
++    receiptIds.push(receipt.object_id);
+     state = reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
+   }
+-  return { events: records, changed: true, authority: 'memory' };
++  const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, next, timestamp);
++  if (terminalReceiptId) receiptIds.push(terminalReceiptId);
++  return {
++    events: records, changed: true, authority: 'memory', receiptIds,
++    ...(terminalReceiptId ? { terminalReceiptId } : {}),
++  };
+ }
+ 
+ module.exports = { FlowMonitorError, runFlowMonitorPass };
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index 5f71a19b..0151da05 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -12,6 +12,8 @@ const { finalizeEvent, eventIdentity, fingerprint } = require('./events');
+ const { diffSnapshots } = require('./differ');
+ const journal = require('./journal');
+ 
++const MAX_EVENT_DELTAS = 128;
++
+ /** ISO-8601 timestamp; injectable via ctx.now for deterministic tests. */
+ function defaultNow() { return new Date().toISOString(); }
+ 
+@@ -151,14 +153,21 @@ async function pollEvents(ctx) {
+   const { dir, gather, since = 0 } = ctx;
+   const isRunning = (ctx.watcherRunning || journal.watcherRunning)(dir);
+   let ranPass = false;
++  let pass = null;
+   if (!isRunning) {
+-    await runMonitorPass({ ...ctx, dir, gather, now: ctx.now, enrich: ctx.enrich });
++    pass = await runMonitorPass({ ...ctx, dir, gather, now: ctx.now, enrich: ctx.enrich });
+     ranPass = true;
+   }
++  const available = journal.readEventsSince(dir, since);
++  const overflow = available.length > MAX_EVENT_DELTAS;
++  const events = overflow ? available.slice(-MAX_EVENT_DELTAS) : available;
+   return {
+-    events: journal.readEventsSince(dir, since),
++    events,
+     since: Number(since) || 0,
+     ranPass,
++    overflow,
++    receiptIds: Array.isArray(pass?.receiptIds) ? pass.receiptIds.slice(0, MAX_EVENT_DELTAS) : [],
++    ...(pass?.terminalReceiptId ? { terminalReceiptId: pass.terminalReceiptId } : {}),
+   };
+ }
+ 
+@@ -168,4 +177,5 @@ module.exports = {
+   dedupeAgainstJournal,
+   finalizeRecords,
+   defaultNow,
++  MAX_EVENT_DELTAS,
+ };
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+new file mode 100644
+index 00000000..72c3a4ad
+--- /dev/null
++++ b/lib/pr-monitor/review-preflight.js
+@@ -0,0 +1,165 @@
++'use strict';
++
++const { execFileSync } = require('node:child_process');
++
++const preflightCommand = require('../commands/preflight');
++
++const MAX_FINDINGS = 20;
++const MAX_FINDING_CHARS = 500;
++
++function boundedLines(value) {
++  return String(value || '')
++    .split(/\r?\n/)
++    .map(line => line.trim())
++    .filter(Boolean)
++    .slice(0, MAX_FINDINGS)
++    .map(line => line.slice(0, MAX_FINDING_CHARS));
++}
++
++async function defaultProbeCodeRabbit({ projectRoot }, exec = execFileSync) {
++  try {
++    exec('coderabbit', ['--version'], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      timeout: 10_000,
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++    return { available: true };
++  } catch (error) {
++    const reason = error?.code === 'ENOENT' ? 'CLI not installed' : 'CLI unavailable or unauthenticated';
++    return { available: false, reason };
++  }
++}
++
++async function defaultRunCodeRabbit({ projectRoot, base }, exec = execFileSync) {
++  try {
++    const output = exec('coderabbit', ['review', '--agent', '--base', base], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      timeout: 180_000,
++      maxBuffer: 1024 * 1024,
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++    const lines = boundedLines(output);
++    const clean = lines.length === 0
++      || lines.some(line => /no (?:actionable )?(?:issues|findings)(?: found)?/i.test(line));
++    return {
++      ok: clean,
++      summary: clean ? 'local review completed with no findings' : `${lines.length} local review finding(s)`,
++      findings: clean ? [] : lines,
++    };
++  } catch (error) {
++    const output = `${error?.stdout || ''}\n${error?.stderr || ''}`;
++    const findings = boundedLines(output);
++    if (/unauthori[sz]ed|authentication|not authenticated|log in|login required/i.test(output)) {
++      return { ok: false, unavailable: true, summary: 'CLI authentication unavailable', findings: [] };
++    }
++    return {
++      ok: false,
++      summary: findings[0] || 'local review failed',
++      findings,
++    };
++  }
++}
++
++async function defaultRunDeterministic({ projectRoot }) {
++  return preflightCommand.handler([], {}, projectRoot, { log: () => {} });
++}
++
++function providerResult(status, ok, summary, findings = []) {
++  return { status, ok, summary, findings: findings.slice(0, MAX_FINDINGS) };
++}
++
++function deterministicFindings(results) {
++  return (Array.isArray(results) ? results : [])
++    .filter(result => result && result.ok === false && !result.skipped)
++    .slice(0, MAX_FINDINGS)
++    .map(result => ({
++      provider: String(result.name || 'deterministic-gate').slice(0, 80),
++      detail: String(result.summary || 'gate failed').slice(0, MAX_FINDING_CHARS),
++    }));
++}
++
++async function runLocalReviewPreflight(context, deps = {}) {
++  const probeCodeRabbit = deps.probeCodeRabbit || defaultProbeCodeRabbit;
++  const runCodeRabbit = deps.runCodeRabbit || defaultRunCodeRabbit;
++  const runDeterministic = deps.runDeterministic || defaultRunDeterministic;
++
++  const exactHeadAvailable = typeof context.expectedHead === 'string'
++    && /^[0-9a-f]{40}$/i.test(context.expectedHead);
++  if (!exactHeadAvailable || context.localHead !== context.expectedHead) {
++    return {
++      status: 'INCOMPLETE',
++      blocking: false,
++      providers: {
++        coderabbit: providerResult(
++          'NOT_APPLICABLE',
++          false,
++          exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable',
++        ),
++        deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
++      },
++      findings: [],
++    };
++  }
++
++  let coderabbit;
++  const probe = await probeCodeRabbit(context);
++  if (probe?.available === true) {
++    const review = await runCodeRabbit(context);
++    coderabbit = review?.unavailable === true
++      ? providerResult('UNAVAILABLE', false, review.summary || 'CLI unavailable')
++      : providerResult(
++        review?.ok === true ? 'PASS' : 'FAIL',
++        review?.ok === true,
++        review?.summary || 'local review completed',
++        Array.isArray(review?.findings) ? review.findings : [],
++      );
++  } else {
++    coderabbit = providerResult('UNAVAILABLE', false, probe?.reason || 'CLI unavailable');
++  }
++
++  let deterministic;
++  try {
++    deterministic = await runDeterministic(context);
++  } catch (error) {
++    deterministic = { success: false, results: [], reason: error?.message || String(error) };
++  }
++  const gateResults = Array.isArray(deterministic?.results) ? deterministic.results : [];
++  const deterministicOk = deterministic?.success === true;
++  const findings = [
++    ...coderabbit.findings.map(detail => ({ provider: 'coderabbit', detail })),
++    ...deterministicFindings(gateResults),
++  ].slice(0, MAX_FINDINGS);
++  if (!deterministicOk && findings.length === 0) {
++    findings.push({
++      provider: 'deterministic-gates',
++      detail: String(deterministic?.reason || 'preflight failed').slice(0, MAX_FINDING_CHARS),
++    });
++  }
++
++  const blocking = !deterministicOk || coderabbit.status === 'FAIL';
++  return {
++    status: blocking ? 'FAIL' : (coderabbit.status === 'UNAVAILABLE' ? 'INCOMPLETE' : 'PASS'),
++    blocking,
++    providers: {
++      coderabbit,
++      deterministic: {
++        status: deterministicOk ? 'PASS' : 'FAIL',
++        ok: deterministicOk,
++        results: gateResults,
++      },
++    },
++    findings,
++  };
++}
++
++module.exports = {
++  MAX_FINDINGS,
++  boundedLines,
++  defaultProbeCodeRabbit,
++  defaultRunCodeRabbit,
++  runLocalReviewPreflight,
++};
+diff --git a/skills/shepherd/SKILL.md b/skills/shepherd/SKILL.md
+index de6504f5..0909853e 100644
+--- a/skills/shepherd/SKILL.md
++++ b/skills/shepherd/SKILL.md
+@@ -27,7 +27,7 @@ Forge owns your open PRs. A singleton daemon converges every open PR toward merg
+ `shepherd` is the PR-ownership utility, not a workflow stage. It has two modes over the **single `forge shepherd` verb**:
+ 
+ - **Daemon (default ownership):** `forge shepherd daemon` is a machine-wide singleton for this repo. It heartbeats and converges the whole PR world every ~60s — self-registering hand-opened PRs, restarting killed watchers, reaping verified orphans, converging CI check state into kernel verdicts, retiring merged/closed PRs — then self-retires (releases the lease, kills its children, exits) once no PRs remain open. You do NOT poll by hand; the daemon does.
+-- **One-shot pass:** `forge shepherd <pr>` reads one PR's state, takes at most one idempotent Tier-A action, and exits. Use it for a point-in-time question about a single PR.
++- **One-shot convergence:** `forge shepherd <pr>` runs the local review preflight, reads one PR's current-head state, takes at most one idempotent Tier-A action, persists bounded deltas/receipts, and exits. Use it for a point-in-time question or one bounded convergence attempt on a single PR.
+ 
+ ## Which mode? (decision rule)
+ 
+@@ -57,6 +57,15 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence
+ 
+ `--pull` is strictly read-only (dry-run pass: no rerun, no rebase, no merge, no thread resolution). It returns one bounded, actionable-only payload — `blockers[]`, classified `requiredChecks`, failed-check log `failures[]` (matrix-deduped), and every unresolved `reviewThreads[]` — so you get "everything blocking this PR + what to fix" in one call. Passing checks and satisfied policy are omitted.
+ 
++A plain `forge shepherd <pr>` also returns a consolidated `localPreflight`, at
++most 128 `deltas`, `receiptIds`, and one explicit `handoff`. The preflight probes
++CodeRabbit and runs strict lint, Sonar parity, structural drift, and affected
++tests. An unavailable or unauthenticated CodeRabbit CLI is reported as
++`UNAVAILABLE`/`INCOMPLETE`, never as a fabricated pass; deterministic failures or
++actual review findings make the remote decision read-only for that pass. A
++checkout that is not the exact PR head is `NOT_APPLICABLE`, never reviewed as if
++it were authoritative.
++
+ ### Verdict vocabulary (collapsed, W-S1)
+ 
+ | Verdict | Meaning |
+@@ -109,4 +118,11 @@ before lease, Kernel-state, or process work. All leave the manual
+ 
+ ## State
+ 
+-Progress is durable in GitHub (PR comments, labels, `git`). The one local store is the per-PR journal under `.forge/pr-monitor/<repo>-<pr>/` (append-only `events.ndjson` + snapshot/consumer cursors) — the replay surface for `events --since`. The bounded one-shot pass keeps no separate local state.
++Public Memory is the durable monitor authority and public Flow reducers restore
++its bounded event and watcher-process checkpoints after restart. The per-PR
++journal under `.forge/pr-monitor/<repo>-<pr>/` remains a compatibility delivery
++surface for `events --since`, not authority. Merged/closed evidence produces one
++idempotent terminal MonitorReceipt; conflicting or incomplete replay fails
++closed. For 0.1 no receipt grants continuing lease authority: live ownership is
++re-probed at consequential boundaries, and canonical LeaseReceipt epoch/scope
++plus the same-actor/session ABA fix remain explicitly deferred.
+diff --git a/test/commands-shepherd-bundle.test.js b/test/commands-shepherd-bundle.test.js
+index a58c70cf..28e6a658 100644
+--- a/test/commands-shepherd-bundle.test.js
++++ b/test/commands-shepherd-bundle.test.js
+@@ -83,6 +83,10 @@ describe('forge shepherd --bundle handler path', () => {
+         adapter,
+         buildContext,
+         runPass: async () => ({ state: 'PENDING', actions: [], reason: 'waiting' }),
++        runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
++        collectConvergenceEvidence: async () => ({
++          deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
++        }),
+       },
+     );
+     expect(result.bundle).toBeUndefined();
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index afb36aa2..9f85179c 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -5,6 +5,13 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+ const shepherdCmd = require('../../lib/commands/shepherd');
+ const { validateCommand } = require('../../lib/commands/_registry');
+ 
++const CONVERGENCE_DEPS = {
++  runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
++  collectConvergenceEvidence: async () => ({
++    deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
++  }),
++};
++
+ describe('shepherd command handler', () => {
+   test('satisfies the _registry { name, description, handler } contract', () => {
+     expect(validateCommand(shepherdCmd)).toEqual({ valid: true });
+@@ -21,6 +28,7 @@ describe('shepherd command handler', () => {
+       return { state: 'PENDING', actions: [], reason: 'pending' };
+     };
+     const out = await shepherdCmd.handler(['123'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
+       runPass: fakeRun,
+       buildContext: async () => ({ pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
+     });
+@@ -37,10 +45,10 @@ describe('shepherd command handler', () => {
+     };
+     const buildContext = async () => ({ pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' });
+ 
+-    await shepherdCmd.handler(['5'], {}, process.cwd(), { runPass: fakeRun, buildContext });
++    await shepherdCmd.handler(['5'], {}, process.cwd(), { ...CONVERGENCE_DEPS, runPass: fakeRun, buildContext });
+     expect(seenAutoRebase).toBe(false);
+ 
+-    await shepherdCmd.handler(['5', '--auto-rebase'], {}, process.cwd(), { runPass: fakeRun, buildContext });
++    await shepherdCmd.handler(['5', '--auto-rebase'], {}, process.cwd(), { ...CONVERGENCE_DEPS, runPass: fakeRun, buildContext });
+     expect(seenAutoRebase).toBe(true);
+   });
+ 
+@@ -58,7 +66,7 @@ describe('shepherd command handler', () => {
+     const gh = (cmd, args) => {
+       ghCalls.push(args.join(' '));
+       if (args.includes('pr') && args.includes('view')) {
+-        return JSON.stringify({ baseRefName: 'release/2.0' });
++        return JSON.stringify({ baseRefName: 'release/2.0', headRefOid: 'a'.repeat(40) });
+       }
+       if (args.includes('repo') && args.includes('view')) {
+         return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+@@ -71,6 +79,7 @@ describe('shepherd command handler', () => {
+ 
+     expect(ctx.base).toBe('release/2.0');
+     expect(ctx.baseRef).toBe('origin/release/2.0');
++    expect(ctx.headSha).toBe('a'.repeat(40));
+     expect(ctx.owner).toBe('acme');
+     expect(ctx.repo).toBe('widget');
+     // It MUST consult the PR, not just `gh repo view` defaultBranchRef.
+@@ -94,11 +103,33 @@ describe('shepherd command handler', () => {
+ 
+   test('MERGE_READY result never carries a merge side-effect', async () => {
+     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
+       runPass: async () => ({ state: 'MERGE_READY', actions: [], reason: 'ready' }),
+       buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
+     });
+     expect(out.state).toBe('MERGE_READY');
+     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
++    expect(out.handoff).toMatchObject({ next: 'merge', humanApprovalRequired: true });
++  });
++
++  test('consolidates blocking local findings before a read-only remote decision', async () => {
++    let dryRun;
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runLocalPreflight: async () => ({
++        status: 'FAIL', blocking: true, providers: {},
++        findings: [{ provider: 'lint', detail: 'error' }],
++      }),
++      runPass: async (context) => {
++        dryRun = context.dryRun;
++        return { state: 'MERGE_READY', actions: [], reason: 'remote ready' };
++      },
++      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
++    });
++
++    expect(dryRun).toBe(true);
++    expect(out).toMatchObject({ state: 'PENDING', remoteState: 'MERGE_READY' });
++    expect(out.localPreflight.findings).toEqual([{ provider: 'lint', detail: 'error' }]);
+   });
+ });
+ 
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index dca95b50..305f104b 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -22,8 +22,10 @@ function snapshot(overrides = {}) {
+ function durableStore() {
+   const events = [];
+   const cursors = new Map();
++  let terminalReceipt = null;
+   return {
+     events,
++    get terminalReceipt() { return terminalReceipt; },
+     async appendEvent(event, targets) {
+       const existing = events.find((item) => item.payload.event_id === event.payload.event_id
+         || item.payload.sequence === event.payload.sequence);
+@@ -45,7 +47,13 @@ function durableStore() {
+     async readEventTail(_monitorId, { limit }) {
+       const selected = events.slice(-limit);
+       return {
+-        events: selected.map(event => ({ envelope_json: JSON.stringify(event) })),
++        events: selected.map(event => ({
++          event_id: event.payload.event_id,
++          monitor_id: event.payload.monitor_id,
++          sequence: event.payload.sequence,
++          content_hash: event.content_hash,
++          envelope_json: JSON.stringify(event),
++        })),
+         overflow: events.length > limit,
+         truncated_before_sequence: events.length > limit ? selected[0].payload.sequence : null,
+       };
+@@ -54,7 +62,11 @@ function durableStore() {
+       return {
+         cursors: [...cursors.entries()].map(([target, sequence]) => ({ monitor_id: monitorId, target, sequence })),
+         outbox: [],
+-        terminal_receipt: null,
++        terminal_receipt: terminalReceipt && {
++          monitor_id: monitorId,
++          content_hash: terminalReceipt.content_hash,
++          envelope_json: JSON.stringify(terminalReceipt),
++        },
+         overflow: { cursors: false, outbox: false },
+       };
+     },
+@@ -63,6 +75,13 @@ function durableStore() {
+       cursors.set(receipt.payload.target, event.payload.sequence);
+       return { idempotent: false };
+     },
++    async recordTerminalReceipt(receipt) {
++      if (terminalReceipt && terminalReceipt.content_hash !== receipt.content_hash) {
++        throw new Error('monitor receipt conflict');
++      }
++      terminalReceipt = structuredClone(receipt);
++      return { idempotent: Boolean(terminalReceipt) };
++    },
+   };
+ }
+ 
+@@ -137,4 +156,42 @@ describe('Flow-backed PR monitor authority', () => {
+     await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+   });
++
++  test('rejects content-corrupted durable history before provider observation', async () => {
++    const store = durableStore();
++    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
++    store.events[0].payload.bounded_payload.snapshot.headSha = 'b'.repeat(40);
++
++    await expect(runFlowMonitorPass(context(store, async () => {
++      throw new Error('corrupt replay must not poll the provider');
++    }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++  });
++
++  test('records one terminal receipt after merged evidence and replays its id', async () => {
++    const store = durableStore();
++    const merged = snapshot({ state: 'MERGED' });
++    const first = await runFlowMonitorPass(context(store, async () => merged, async () => {}));
++    const replay = await runFlowMonitorPass(context(store, async () => {
++      throw new Error('terminal replay must not poll the provider');
++    }, async () => {}));
++
++    expect(first.terminalReceiptId).toBeString();
++    expect(first.receiptIds).toContain(first.terminalReceiptId);
++    expect(store.terminalReceipt.payload).toMatchObject({
++      terminal_state: 'PASS',
++      cancellation_acknowledged: false,
++      lease_cleanup: { continuing_authority: false },
++    });
++    expect(replay.terminalReceiptId).toBe(first.terminalReceiptId);
++  });
++
++  test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {
++    const store = durableStore();
++    await runFlowMonitorPass(context(store, async () => snapshot({ state: 'MERGED' }), async () => {}));
++    store.terminalReceipt.payload.terminal_reason = 'tampered';
++
++    await expect(runFlowMonitorPass(context(store, async () => {
++      throw new Error('corrupt terminal replay must not poll the provider');
++    }, async () => {}))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++  });
+ });
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+index d5afe320..6d4b9fb6 100644
+--- a/test/pr-monitor/monitor.test.js
++++ b/test/pr-monitor/monitor.test.js
+@@ -162,4 +162,27 @@ describe('pollEvents (events --since)', () => {
+     expect(res.ranPass).toBe(true);
+     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
+   });
++
++  test('caps returned deltas and reports overflow instead of returning whole history', async () => {
++    const records = Array.from({ length: 140 }, (_, index) => ({
++      seq: index + 1,
++      ts: '2026-07-13T00:00:00.000Z',
++      type: T.VERDICT_CHANGED,
++      key: `state:${index}`,
++      repo: 'acme-forge',
++      pr: '1',
++      data: {},
++    }));
++    journal.appendEvents(dir, records);
++    const res = await pollEvents({
++      dir,
++      gather: async () => { throw new Error('must not run'); },
++      since: 0,
++      watcherRunning: () => true,
++    });
++
++    expect(res.overflow).toBe(true);
++    expect(res.events).toHaveLength(128);
++    expect(res.events[0].seq).toBe(13);
++  });
+ });
+diff --git a/test/pr-monitor/review-preflight.test.js b/test/pr-monitor/review-preflight.test.js
+new file mode 100644
+index 00000000..a589da25
+--- /dev/null
++++ b/test/pr-monitor/review-preflight.test.js
+@@ -0,0 +1,86 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++
++const { runLocalReviewPreflight } = require('../../lib/pr-monitor/review-preflight');
++
++const EXACT_HEAD_CONTEXT = {
++  projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'a'.repeat(40),
++};
++
++describe('bounded local review preflight', () => {
++  test('does not review an unrelated local checkout as if it were the PR head', async () => {
++    let calls = 0;
++    const result = await runLocalReviewPreflight({
++      projectRoot: '/repo', base: 'master', expectedHead: 'a'.repeat(40), localHead: 'b'.repeat(40),
++    }, {
++      probeCodeRabbit: async () => { calls += 1; },
++      runDeterministic: async () => { calls += 1; },
++    });
++
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: false });
++    expect(result.providers.coderabbit.status).toBe('NOT_APPLICABLE');
++    expect(calls).toBe(0);
++  });
++
++  test('does not review a checkout when the authoritative PR head is unavailable', async () => {
++    let calls = 0;
++    const result = await runLocalReviewPreflight({
++      projectRoot: '/repo', base: 'master', expectedHead: null, localHead: 'a'.repeat(40),
++    }, {
++      probeCodeRabbit: async () => { calls += 1; },
++      runDeterministic: async () => { calls += 1; },
++    });
++
++    expect(result).toMatchObject({ status: 'INCOMPLETE', blocking: false });
++    expect(result.providers.coderabbit).toMatchObject({
++      status: 'NOT_APPLICABLE', summary: 'PR head is unavailable',
++    });
++    expect(calls).toBe(0);
++  });
++
++  test('classifies unavailable CodeRabbit without manufacturing a pass', async () => {
++    const result = await runLocalReviewPreflight(EXACT_HEAD_CONTEXT, {
++      probeCodeRabbit: async () => ({ available: false, reason: 'not installed' }),
++      runDeterministic: async () => ({ success: true, results: [
++        { name: 'lint', ok: true, skipped: false, summary: 'clean' },
++        { name: 'sonar', ok: true, skipped: false, summary: 'clean' },
++        { name: 'affected-tests', ok: true, skipped: false, summary: 'passed' },
++      ] }),
++    });
++
++    expect(result.status).toBe('INCOMPLETE');
++    expect(result.blocking).toBe(false);
++    expect(result.providers.coderabbit).toMatchObject({ status: 'UNAVAILABLE', ok: false });
++  });
++
++  test('consolidates provider findings and blocks remote mutation on failure', async () => {
++    const result = await runLocalReviewPreflight(EXACT_HEAD_CONTEXT, {
++      probeCodeRabbit: async () => ({ available: true }),
++      runCodeRabbit: async () => ({ ok: false, summary: '2 findings', findings: ['one', 'two'] }),
++      runDeterministic: async () => ({ success: false, results: [
++        { name: 'lint', ok: false, skipped: false, summary: 'one error' },
++        { name: 'sonar', ok: null, skipped: true, summary: 'skipped' },
++      ] }),
++    });
++
++    expect(result).toMatchObject({ status: 'FAIL', blocking: true });
++    expect(result.findings).toEqual([
++      { provider: 'coderabbit', detail: 'one' },
++      { provider: 'coderabbit', detail: 'two' },
++      { provider: 'lint', detail: 'one error' },
++    ]);
++  });
++
++  test('classifies a probed but unauthenticated CLI as unavailable, not green', async () => {
++    const result = await runLocalReviewPreflight(EXACT_HEAD_CONTEXT, {
++      probeCodeRabbit: async () => ({ available: true }),
++      runCodeRabbit: async () => ({ ok: false, unavailable: true, summary: 'login required' }),
++      runDeterministic: async () => ({ success: true, results: [] }),
++    });
++
++    expect(result.status).toBe('INCOMPLETE');
++    expect(result.blocking).toBe(false);
++    expect(result.providers.coderabbit).toMatchObject({ status: 'UNAVAILABLE', ok: false });
++  });
++});
+diff --git a/test/shepherd-acceptance.test.js b/test/shepherd-acceptance.test.js
+index f32b1c7b..a94720e9 100644
+--- a/test/shepherd-acceptance.test.js
++++ b/test/shepherd-acceptance.test.js
+@@ -237,6 +237,10 @@ describe('shepherd acceptance §5', () => {
+     const out = await shepherdCmd.handler(['123'], {}, ROOT, {
+       adapter: s.adapter,
+       buildContext: async () => BASE_CTX,
++      runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
++      collectConvergenceEvidence: async () => ({
++        deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
++      }),
+     });
+     expect(out.state).toBe('MERGE_READY');
+     expect((out.actions || []).some((a) => a.type === 'merge')).toBe(false);
+-- 
+2.51.0.windows.1
+

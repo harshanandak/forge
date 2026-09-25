@@ -1,0 +1,1138 @@
+From a4b193ff63f1488f972baa7e9344655e468cf5ac Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 17:10:45 +0530
+Subject: [PATCH] fix(release): trust Kernel workflow capabilities
+
+---
+ docs/reference/protected-state-surfaces.md    |   4 +-
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/commands/release.js                       |   5 +-
+ lib/npm-publish-workflow.js                   |  51 +++-
+ lib/protected-state-authority.js              | 283 ++++++++++++++++++
+ lib/protected-state-surfaces.js               |  50 +---
+ scripts/protected-state-check.js              |  66 ++--
+ test/npm-publish-workflow.test.js             | 148 +++++++--
+ test/protected-state-authority.test.js        | 116 +++++++
+ test/protected-state-surfaces.test.js         |  92 +-----
+ 10 files changed, 627 insertions(+), 190 deletions(-)
+ create mode 100644 lib/protected-state-authority.js
+ create mode 100644 test/protected-state-authority.test.js
+
+diff --git a/docs/reference/protected-state-surfaces.md b/docs/reference/protected-state-surfaces.md
+index 1da4038d..e584823b 100644
+--- a/docs/reference/protected-state-surfaces.md
++++ b/docs/reference/protected-state-surfaces.md
+@@ -23,9 +23,9 @@ The committed manifest is `.forge/protected-paths.yaml`. Runtime enforcement is
+ 
+ - Direct edits, additions, modifications, renames, and deletions of protected files are blocked by `scripts/protected-state-check.js`.
+ - Allowed Forge API writes must declare the matching required surface. For example, a Forge config writer must call the protected writer with `surface: "forge_config"` and `viaForgeApi: true`.
+-- Forge-owned commands that intentionally stage generated protected changes can set `FORGE_PROTECTED_STATE_ALLOWED_SURFACES` to the comma-separated surfaces they own for that command invocation.
++- Surface-only environment declarations do not authorize protected changes. Forge-owned workflow commands must issue a content-bound Kernel capability for the exact actor, worktree, surface, path, and bytes.
+ - Blocked decisions include actor, path, decision, required surface, reason, and repair hint.
+-- Audit-ready events use kind `protected_state_write` and are appended as JSON lines to `.forge/protected-state-audit.jsonl` (git-ignored, capped at the newest 500 records). The write is best-effort: a failing audit sink never blocks the check.
++- Audit-ready events use kind `protected_state_write` and are appended as JSON lines to `.forge/protected-state-audit.jsonl` (git-ignored, capped at the newest 500 records). This log is visibility-only and never authorizes a protected edit. Forge-owned workflow authorization uses one-time, content-bound Kernel events that the protected-state checker consumes; hand-written JSON cannot grant authority. The audit write remains best-effort for ordinary blocked checks, while the workflow generator rolls back its file transaction if its required audit or Kernel authorization write fails.
+ 
+ ## Repair Hint
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index fb341925..74173a27 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -43,7 +43,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/protected-path-manifest.js (2)
+   - lines: 23 (bd), 33 (bd)
+ - [ ] lib/protected-state-surfaces.js (3)
+-  - lines: 52 (.beads), 59 (.beads), 60 (.beads)
++  - lines: 77 (.beads), 84 (.beads), 85 (.beads)
+ - [ ] lib/runtime-health.js (7)
+   - lines: 486 (bd), 520 (bd), 521 (bd), 522 (bd), 526 (bd), 527 (bd), 569 (bd)
+ - [ ] lib/status/snapshot.js (1)
+diff --git a/lib/commands/release.js b/lib/commands/release.js
+index 85481da7..02866919 100644
+--- a/lib/commands/release.js
++++ b/lib/commands/release.js
+@@ -59,7 +59,10 @@ async function handler(args, _flags, projectRoot, opts = {}) {
+ 	const parsed = parseReleaseArgs(args);
+ 
+ 	if (parsed.subcommand === 'generate-npm-workflow') {
+-		const generated = generateNpmPublishWorkflow(projectRoot, { env: opts.env });
++		const generated = await generateNpmPublishWorkflow(projectRoot, {
++			env: opts.env,
++			kernelDeps: opts.kernelDeps,
++		});
+ 		return generated.success
+ 			? {
+ 				success: true,
+diff --git a/lib/npm-publish-workflow.js b/lib/npm-publish-workflow.js
+index abb5a98c..065b215c 100644
+--- a/lib/npm-publish-workflow.js
++++ b/lib/npm-publish-workflow.js
+@@ -4,10 +4,14 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+ const {
+-	createProtectedStateAuthorization,
++	createProtectedStateAuditRecord,
+ 	recordProtectedStateAuditEvent,
+ 	writeProtectedFile,
+ } = require('./protected-state-surfaces');
++const {
++	NPM_WORKFLOW_SOURCE_COMMAND,
++	issueProtectedStateAuthorization,
++} = require('./protected-state-authority');
+ 
+ const NPM_PUBLISH_WORKFLOW_PATH = '.github/workflows/npm-publish.yml';
+ 
+@@ -172,11 +176,12 @@ jobs:
+ `;
+ }
+ 
+-function generateNpmPublishWorkflow(projectRoot, options = {}) {
++async function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 	const content = renderNpmPublishWorkflow();
+ 	const actor = options.actor || options.env?.FORGE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'unknown';
+ 	const protectedWriter = options.writeProtectedFile || writeProtectedFile;
+ 	const auditWriter = options.recordProtectedStateAuditEvent || recordProtectedStateAuditEvent;
++	const authorizationWriter = options.issueProtectedStateAuthorization || issueProtectedStateAuthorization;
+ 	const snapshot = snapshotWorkflow(projectRoot);
+ 	const writeOptions = {
+ 		actor,
+@@ -194,7 +199,7 @@ function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 		return { success: false, error: write.reason, write };
+ 	}
+ 
+-	const authorization = createProtectedStateAuthorization({
++	const auditRecord = createProtectedStateAuditRecord({
+ 		actor,
+ 		surface: 'workflows',
+ 		path: NPM_PUBLISH_WORKFLOW_PATH,
+@@ -203,7 +208,7 @@ function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 	});
+ 	let audit;
+ 	try {
+-		audit = auditWriter(authorization, { cwd: projectRoot });
++		audit = auditWriter(auditRecord, { cwd: projectRoot });
+ 	} catch (error) {
+ 		audit = { success: false, error: error.message };
+ 	}
+@@ -222,7 +227,43 @@ function generateNpmPublishWorkflow(projectRoot, options = {}) {
+ 		};
+ 	}
+ 
+-	return { success: true, path: NPM_PUBLISH_WORKFLOW_PATH, contentHash: write.contentHash, write, audit };
++	let trustedAuthorization;
++	try {
++		trustedAuthorization = await authorizationWriter(projectRoot, {
++			actor,
++			surface: 'workflows',
++			path: NPM_PUBLISH_WORKFLOW_PATH,
++			content,
++			operation: 'generate_npm_workflow',
++			sourceCommand: NPM_WORKFLOW_SOURCE_COMMAND,
++		}, { deps: options.kernelDeps });
++	} catch (error) {
++		trustedAuthorization = { success: false, error: error.message };
++	}
++	if (!trustedAuthorization.success) {
++		let rollbackError;
++		try {
++			rollbackWorkflow(snapshot, projectRoot, protectedWriter, writeOptions);
++		} catch (error) {
++			rollbackError = error.message;
++		}
++		return {
++			success: false,
++			error: `Could not record trusted protected-state authorization: ${trustedAuthorization.error}`,
++			audit,
++			trustedAuthorization,
++			rollbackError,
++		};
++	}
++
++	return {
++		success: true,
++		path: NPM_PUBLISH_WORKFLOW_PATH,
++		contentHash: write.contentHash,
++		write,
++		audit,
++		trustedAuthorization,
++	};
+ }
+ 
+ module.exports = {
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+new file mode 100644
+index 00000000..f1168b85
+--- /dev/null
++++ b/lib/protected-state-authority.js
+@@ -0,0 +1,283 @@
++'use strict';
++
++// The ignored JSONL audit log is visibility-only. Workflow write authority is
++// an append-only Kernel capability scoped to one worktree and consumed once.
++
++const { randomUUID } = require('node:crypto');
++const path = require('node:path');
++const { resolveOwnedKernel, closeIfOwned } = require('./kernel/owned-kernel');
++const { hashProtectedContent, normalizeRepoPath } = require('./protected-state-surfaces');
++
++const PROTECTED_STATE_ENTITY_TYPE = 'protected_state';
++const PROTECTED_STATE_AUTHORIZATION_ISSUED = 'protected_state.authorization.issued';
++const PROTECTED_STATE_AUTHORIZATION_CONSUMED = 'protected_state.authorization.consumed';
++const PROTECTED_STATE_AUTHORIZATION_VERSION = 1;
++const PROTECTED_STATE_AUTHORIZATION_ORIGIN = 'cli';
++const NPM_WORKFLOW_SOURCE_COMMAND = 'forge release generate-npm-workflow';
++
++function resolveWorktreeScope(projectRoot) {
++	const resolved = path.resolve(projectRoot);
++	const canonical = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++	return hashProtectedContent(canonical);
++}
++
++function authorizationEntityId(worktreeScope, filePath) {
++	return `${worktreeScope}:${normalizeRepoPath(filePath)}`;
++}
++
++function parsePayload(row) {
++	try {
++		return row?.payload_json ? JSON.parse(row.payload_json) : (row?.payload || {});
++	} catch {
++		return {};
++	}
++}
++
++function parseAuthorizationEvent(row) {
++	const payload = parsePayload(row);
++	return {
++		eventType: row?.event_type,
++		actor: row?.actor,
++		payloadActor: payload.actor,
++		origin: row?.origin,
++		entityId: row?.entity_id,
++		createdAt: row?.created_at,
++		version: payload.version,
++		capabilityId: payload.capabilityId,
++		path: normalizeRepoPath(payload.path),
++		surface: payload.surface,
++		contentHash: payload.contentHash,
++		operation: payload.operation,
++		sourceCommand: payload.sourceCommand,
++		worktreeScope: payload.worktreeScope,
++	};
++}
++
++function blockedDecision(request, reason) {
++	return {
++		allowed: false,
++		decision: 'blocked',
++		actor: request.actor,
++		path: normalizeRepoPath(request.path),
++		operation: request.operation || 'staged_edit',
++		requiredSurface: request.surface,
++		declaredSurface: request.surface,
++		contentHash: hashProtectedContent(request.content),
++		reason,
++		repairHint: 'Regenerate the protected file through its owning Forge command, then stage that exact output.',
++	};
++}
++
++function evaluateAuthorization(request, rows = []) {
++	const expected = {
++		actor: request.actor,
++		path: normalizeRepoPath(request.path),
++		surface: request.surface,
++		contentHash: hashProtectedContent(request.content),
++		worktreeScope: request.worktreeScope,
++	};
++	const issued = rows
++		.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_ISSUED)
++		.map(parseAuthorizationEvent);
++	const consumedCapabilities = new Set(rows
++		.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)
++		.map(row => parseAuthorizationEvent(row).capabilityId)
++		.filter(Boolean));
++	const active = issued.filter(event => !consumedCapabilities.has(event.capabilityId));
++
++	if (issued.length === 0) {
++		return blockedDecision(request, 'No Forge-owned authorization exists for this protected path and content-bound write.');
++	}
++	if (active.length === 0) {
++		return blockedDecision(request, 'The latest Forge-owned authorization was already consumed; stale and same-content replays are denied.');
++	}
++	if (active.length !== 1) {
++		return blockedDecision(request, 'Protected-state authority is ambiguous because multiple unconsumed authorizations exist; failing closed.');
++	}
++	const latest = active[0];
++
++	const structurallyValid =
++		latest.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
++		typeof latest.capabilityId === 'string' && latest.capabilityId.length > 0 &&
++		latest.origin === PROTECTED_STATE_AUTHORIZATION_ORIGIN &&
++		latest.actor === latest.payloadActor &&
++		latest.worktreeScope === expected.worktreeScope &&
++		latest.entityId === authorizationEntityId(expected.worktreeScope, latest.path) &&
++		latest.sourceCommand === NPM_WORKFLOW_SOURCE_COMMAND;
++	if (!structurallyValid) {
++		return blockedDecision(request, 'The latest Forge-owned authorization is malformed or was not issued by the owning command.');
++	}
++
++	if (
++		latest.actor !== expected.actor ||
++		latest.path !== expected.path ||
++		latest.surface !== expected.surface ||
++		latest.contentHash !== expected.contentHash
++	) {
++		return blockedDecision(request, 'The latest Forge-owned content-bound authorization does not match this actor, surface, path, and content hash.');
++	}
++
++	return {
++		allowed: true,
++		decision: 'allowed',
++		actor: expected.actor,
++		path: expected.path,
++		operation: request.operation || 'staged_edit',
++		requiredSurface: expected.surface,
++		declaredSurface: expected.surface,
++		contentHash: expected.contentHash,
++		capabilityId: latest.capabilityId,
++		worktreeScope: latest.worktreeScope,
++		reason: 'Staged content matches the latest unconsumed Forge-owned authorization.',
++		repairHint: null,
++	};
++}
++
++async function issueProtectedStateAuthorization(projectRoot, request = {}, options = {}) {
++	const actor = request.actor;
++	const normalizedPath = normalizeRepoPath(request.path);
++	if (!actor || !request.surface || !normalizedPath || request.content === undefined) {
++		throw new TypeError('Protected state authorization requires actor, surface, path, and content');
++	}
++
++	const capabilityId = options.capabilityId || randomUUID();
++	const createdAt = options.now || new Date().toISOString();
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot);
++	const entityId = authorizationEntityId(worktreeScope, normalizedPath);
++	const event = {
++		entity_type: PROTECTED_STATE_ENTITY_TYPE,
++		entity_id: entityId,
++		event_type: PROTECTED_STATE_AUTHORIZATION_ISSUED,
++		idempotency_key: `${PROTECTED_STATE_AUTHORIZATION_ISSUED}:${capabilityId}`,
++		expected_revision: 0,
++		actor,
++		origin: PROTECTED_STATE_AUTHORIZATION_ORIGIN,
++		payload: {
++			version: PROTECTED_STATE_AUTHORIZATION_VERSION,
++			capabilityId,
++			actor,
++			path: normalizedPath,
++			surface: request.surface,
++			contentHash: hashProtectedContent(request.content),
++			worktreeScope,
++			operation: request.operation || 'generate',
++			sourceCommand: request.sourceCommand || NPM_WORKFLOW_SOURCE_COMMAND,
++		},
++		created_at: createdAt,
++	};
++
++	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
++	try {
++		const existingRows = await kernel.driver.listKernelEvents(
++			PROTECTED_STATE_ENTITY_TYPE,
++			entityId,
++			{},
++			kernel.config,
++		);
++		const consumedCapabilities = new Set((existingRows || [])
++			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)
++			.map(row => parseAuthorizationEvent(row).capabilityId)
++			.filter(Boolean));
++		const activeCapabilities = (existingRows || [])
++			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_ISSUED)
++			.map(parseAuthorizationEvent)
++			.filter(existing => existing.capabilityId && !consumedCapabilities.has(existing.capabilityId));
++		for (const existing of activeCapabilities) {
++			await kernel.driver.insertKernelEvent({
++				entity_type: PROTECTED_STATE_ENTITY_TYPE,
++				entity_id: entityId,
++				event_type: PROTECTED_STATE_AUTHORIZATION_CONSUMED,
++				idempotency_key: `${PROTECTED_STATE_AUTHORIZATION_CONSUMED}:${existing.capabilityId}`,
++				expected_revision: 0,
++				actor,
++				origin: PROTECTED_STATE_AUTHORIZATION_ORIGIN,
++				payload: {
++					version: PROTECTED_STATE_AUTHORIZATION_VERSION,
++					capabilityId: existing.capabilityId,
++					actor,
++					path: normalizedPath,
++					surface: existing.surface,
++					contentHash: existing.contentHash,
++					worktreeScope,
++					operation: 'superseded',
++					sourceCommand: request.sourceCommand || NPM_WORKFLOW_SOURCE_COMMAND,
++				},
++				created_at: createdAt,
++			}, {}, kernel.config);
++		}
++		const inserted = await kernel.driver.insertKernelEvent(event, {}, kernel.config);
++		return { success: true, capabilityId, event: parseAuthorizationEvent(inserted) };
++	} finally {
++		closeIfOwned(kernel);
++	}
++}
++
++async function authorizeAndConsumeProtectedStateWrites(projectRoot, requests = [], options = {}) {
++	if (requests.length === 0) return { success: true, decisions: [] };
++	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot);
++	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
++	try {
++		const decisions = [];
++		for (const request of requests) {
++			const normalizedPath = normalizeRepoPath(request.path);
++			const entityId = authorizationEntityId(worktreeScope, normalizedPath);
++			const rows = await kernel.driver.listKernelEvents(
++				PROTECTED_STATE_ENTITY_TYPE,
++				entityId,
++				{},
++				kernel.config,
++			);
++			decisions.push(evaluateAuthorization({
++				...request,
++				path: normalizedPath,
++				worktreeScope,
++			}, rows || []));
++		}
++
++		if (decisions.some(decision => !decision.allowed)) {
++			return { success: false, decisions };
++		}
++
++		for (const decision of decisions) {
++			const createdAt = options.now || new Date().toISOString();
++			await kernel.driver.insertKernelEvent({
++				entity_type: PROTECTED_STATE_ENTITY_TYPE,
++				entity_id: authorizationEntityId(decision.worktreeScope, decision.path),
++				event_type: PROTECTED_STATE_AUTHORIZATION_CONSUMED,
++				idempotency_key: `${PROTECTED_STATE_AUTHORIZATION_CONSUMED}:${decision.capabilityId}`,
++				expected_revision: 0,
++				actor: decision.actor,
++				origin: PROTECTED_STATE_AUTHORIZATION_ORIGIN,
++				payload: {
++					version: PROTECTED_STATE_AUTHORIZATION_VERSION,
++					capabilityId: decision.capabilityId,
++					actor: decision.actor,
++					path: decision.path,
++					surface: decision.requiredSurface,
++					contentHash: decision.contentHash,
++					worktreeScope: decision.worktreeScope,
++					operation: 'staged_edit',
++					sourceCommand: 'scripts/protected-state-check.js',
++				},
++				created_at: createdAt,
++			}, {}, kernel.config);
++		}
++
++		return { success: true, decisions };
++	} finally {
++		closeIfOwned(kernel);
++	}
++}
++
++module.exports = {
++	PROTECTED_STATE_ENTITY_TYPE,
++	PROTECTED_STATE_AUTHORIZATION_ISSUED,
++	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
++	NPM_WORKFLOW_SOURCE_COMMAND,
++	resolveWorktreeScope,
++	authorizationEntityId,
++	parseAuthorizationEvent,
++	evaluateAuthorization,
++	issueProtectedStateAuthorization,
++	authorizeAndConsumeProtectedStateWrites,
++};
+diff --git a/lib/protected-state-surfaces.js b/lib/protected-state-surfaces.js
+index 884f442b..f11d12c3 100644
+--- a/lib/protected-state-surfaces.js
++++ b/lib/protected-state-surfaces.js
+@@ -25,9 +25,9 @@ function hashProtectedContent(content) {
+ 	return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+ }
+ 
+-function createProtectedStateAuthorization({ actor, surface, path: filePath, content, operation = 'generate' }) {
++function createProtectedStateAuditRecord({ actor, surface, path: filePath, content, operation = 'generate' }) {
+ 	if (!actor || !surface || !filePath || content === undefined) {
+-		throw new TypeError('Protected state authorization requires actor, surface, path, and content');
++		throw new TypeError('Protected state audit record requires actor, surface, path, and content');
+ 	}
+ 
+ 	return {
+@@ -44,49 +44,6 @@ function createProtectedStateAuthorization({ actor, surface, path: filePath, con
+ 	};
+ }
+ 
+-function verifyProtectedStateAuthorization(request, records = []) {
+-	const expected = createProtectedStateAuthorization(request);
+-	const latest = [...records].reverse().find(record =>
+-		record?.decision === 'allowed' &&
+-		record.requiredSurface === expected.requiredSurface &&
+-		normalizeRepoPath(record.path) === expected.path,
+-	);
+-	const matched = latest?.actor === expected.actor &&
+-		latest.declaredSurface === expected.declaredSurface &&
+-		latest.contentHash === expected.contentHash
+-		? latest
+-		: null;
+-
+-	if (!matched) {
+-		return {
+-			allowed: false,
+-			decision: 'blocked',
+-			actor: expected.actor,
+-			path: expected.path,
+-			operation: request.operation || 'staged_edit',
+-			requiredSurface: expected.requiredSurface,
+-			declaredSurface: expected.declaredSurface,
+-			contentHash: expected.contentHash,
+-			reason: 'The latest content-bound authorization record does not match this actor, surface, path, and content hash.',
+-			repairHint: 'Regenerate the protected file through its owning Forge command, then stage that exact output.',
+-		};
+-	}
+-
+-	return {
+-		allowed: true,
+-		decision: 'allowed',
+-		actor: expected.actor,
+-		path: expected.path,
+-		operation: request.operation || 'staged_edit',
+-		requiredSurface: expected.requiredSurface,
+-		declaredSurface: expected.declaredSurface,
+-		contentHash: expected.contentHash,
+-		authorization: matched,
+-		reason: 'Staged content matches its Forge-owned protected-state authorization record.',
+-		repairHint: null,
+-	};
+-}
+-
+ function startsWithAny(filePath, prefixes) {
+ 	return prefixes.some(prefix => filePath === prefix || filePath.startsWith(`${prefix}/`));
+ }
+@@ -437,8 +394,7 @@ module.exports = {
+ 	PROTECTED_STATE_AUDIT_MAX_RECORDS,
+ 	normalizeRepoPath,
+ 	hashProtectedContent,
+-	createProtectedStateAuthorization,
+-	verifyProtectedStateAuthorization,
++	createProtectedStateAuditRecord,
+ 	resolveRepoRelativePath,
+ 	lstatIfPresent,
+ 	assertNoAncestorSymlinkEscape,
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 1bce4c05..163dd880 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -1,14 +1,11 @@
+ #!/usr/bin/env node
+ 
+ const { execFileSync } = require('node:child_process');
+-const fs = require('node:fs');
+-const path = require('node:path');
+ const {
+-	PROTECTED_STATE_AUDIT_LOG,
+ 	assertProtectedWriteAllowed,
+-	verifyProtectedStateAuthorization,
+ 	recordProtectedStateAuditEvent,
+ } = require('../lib/protected-state-surfaces');
++const { authorizeAndConsumeProtectedStateWrites } = require('../lib/protected-state-authority');
+ 
+ function parseNameStatus(output) {
+ 	const files = [];
+@@ -45,19 +42,6 @@ function getStagedFiles() {
+ 	return parseNameStatus(output);
+ }
+ 
+-function readAuthorizationRecords() {
+-	try {
+-		return fs
+-			.readFileSync(path.resolve(process.cwd(), PROTECTED_STATE_AUDIT_LOG), 'utf8')
+-			.split(/\r?\n/)
+-			.filter(Boolean)
+-			.map(line => JSON.parse(line));
+-	} catch (error) {
+-		if (error.code === 'ENOENT') return [];
+-		throw error;
+-	}
+-}
+-
+ function getStagedContent(file) {
+ 	if (process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON) {
+ 		const contents = JSON.parse(process.env.FORGE_PROTECTED_STATE_STAGED_CONTENTS_JSON);
+@@ -74,30 +58,44 @@ function getStagedContent(file) {
+ 	}
+ }
+ 
+-function main() {
++async function main() {
+ 	const actor =
+ 		process.env.FORGE_PROTECTED_STATE_ACTOR ||
+ 		process.env.FORGE_ACTOR ||
+ 		process.env.USER ||
+ 		process.env.USERNAME ||
+ 		'unknown';
+-	const authorizationRecords = readAuthorizationRecords();
+-	const decisions = getStagedFiles()
++	const probes = getStagedFiles()
+ 		.map(file => {
+ 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
+-			if (!probe.requiredSurface) return probe;
++			if (!probe.requiredSurface) return { probe };
+ 
+ 			const content = getStagedContent(probe.path);
+-			if (content === null) return probe;
+-			const authorization = verifyProtectedStateAuthorization({
+-				actor,
+-				surface: probe.requiredSurface,
+-				path: probe.path,
+-				content,
+-				operation: 'staged_edit',
+-			}, authorizationRecords);
+-			if (authorization.allowed) return authorization;
+-			return { ...probe, ...authorization, repairHint: probe.repairHint };
++			if (content === null) return { probe };
++			return {
++				probe,
++				request: {
++					actor,
++					surface: probe.requiredSurface,
++					path: probe.path,
++					content,
++					operation: 'staged_edit',
++				},
++			};
++		});
++	const protectedProbes = probes.filter(entry => entry.request);
++	const authorization = await authorizeAndConsumeProtectedStateWrites(
++		process.cwd(),
++		protectedProbes.map(entry => entry.request),
++	);
++	let authorizationIndex = 0;
++	const decisions = probes
++		.map(entry => {
++			if (!entry.request) return entry.probe;
++			const trustedDecision = authorization.decisions[authorizationIndex++];
++			return trustedDecision.allowed
++				? trustedDecision
++				: { ...entry.probe, ...trustedDecision, repairHint: entry.probe.repairHint };
+ 		})
+ 		.filter(decision => !decision.allowed);
+ 
+@@ -125,9 +123,7 @@ function main() {
+ 	process.exit(1);
+ }
+ 
+-try {
+-	main();
+-} catch (error) {
++main().catch(error => {
+ 	console.error(`Protected state check failed: ${error.message}`);
+ 	process.exit(1);
+-}
++});
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+index 7e3d0df3..d090fa42 100644
+--- a/test/npm-publish-workflow.test.js
++++ b/test/npm-publish-workflow.test.js
+@@ -14,7 +14,6 @@ const {
+ } = require('../lib/npm-publish-workflow');
+ const {
+ 	PROTECTED_STATE_AUDIT_LOG,
+-	verifyProtectedStateAuthorization,
+ } = require('../lib/protected-state-surfaces');
+ const {
+ 	createReleaseSuiteReceipt,
+@@ -129,6 +128,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 	test('release generator writes through the protected API and records content-bound evidence', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-workflow-'));
+ 		try {
++			expect(spawnSync('git', ['init'], { cwd: root }).status).toBe(0);
+ 			const result = await releaseCommand.handler(
+ 				['generate-npm-workflow'],
+ 				{},
+@@ -153,16 +153,17 @@ describe('Forge-owned npm publish workflow', () => {
+ 				decision: 'allowed',
+ 			});
+ 			expect(records.at(-1).contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
++			expect(result.generated.trustedAuthorization.capabilityId).toBeTruthy();
+ 		} finally {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+ 	});
+ 
+-	test('does not publish authorization when the protected write fails', () => {
++	test('does not publish authorization when the protected write fails', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-write-failure-'));
+ 		let auditCalls = 0;
+ 		try {
+-			const result = generateNpmPublishWorkflow(root, {
++			const result = await generateNpmPublishWorkflow(root, {
+ 				actor: 'release-test',
+ 				writeProtectedFile: () => ({
+ 					allowed: false,
+@@ -183,14 +184,14 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
+-	test('restores previous workflow bytes when authorization audit persistence fails', () => {
++	test('restores previous workflow bytes when authorization audit persistence fails', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-failure-'));
+ 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+ 		const previous = Buffer.from('previous workflow bytes\r\n', 'utf8');
+ 		try {
+ 			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+ 			fs.writeFileSync(workflowPath, previous);
+-			const result = generateNpmPublishWorkflow(root, {
++			const result = await generateNpmPublishWorkflow(root, {
+ 				actor: 'release-test',
+ 				recordProtectedStateAuditEvent: () => ({
+ 					success: false,
+@@ -208,11 +209,11 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
+-	test('removes a newly created workflow when authorization audit persistence throws', () => {
++	test('removes a newly created workflow when authorization audit persistence throws', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-audit-throw-'));
+ 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+ 		try {
+-			const result = generateNpmPublishWorkflow(root, {
++			const result = await generateNpmPublishWorkflow(root, {
+ 				actor: 'release-test',
+ 				recordProtectedStateAuditEvent: () => {
+ 					throw new Error('audit sink exploded');
+@@ -229,7 +230,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 		}
+ 	});
+ 
+-	test('real capped audit failure cannot leave a reusable authorization behind', () => {
++	test('real capped audit failure cannot leave a reusable authorization behind', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-capped-audit-'));
+ 		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
+ 		const auditPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
+@@ -254,7 +255,7 @@ describe('Forge-owned npm publish workflow', () => {
+ 				return realWriteFileSync(target, ...args);
+ 			};
+ 
+-			const result = generateNpmPublishWorkflow(root, { actor: 'release-test' });
++			const result = await generateNpmPublishWorkflow(root, { actor: 'release-test' });
+ 			expect(result).toMatchObject({
+ 				success: false,
+ 				error: 'Could not record protected-state authorization: forced audit temp failure',
+@@ -262,18 +263,38 @@ describe('Forge-owned npm publish workflow', () => {
+ 			expect(fs.readFileSync(workflowPath)).toEqual(previous);
+ 			const records = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+ 			expect(records).toHaveLength(500);
+-			expect(verifyProtectedStateAuthorization({
+-				actor: 'release-test',
+-				surface: 'workflows',
+-				path: NPM_PUBLISH_WORKFLOW_PATH,
+-				content: renderNpmPublishWorkflow(),
+-			}, records).allowed).toBe(false);
++			expect(records.every(record => record.capabilityId === undefined)).toBe(true);
+ 		} finally {
+ 			fs.writeFileSync = realWriteFileSync;
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+ 	});
+ 
++	test('restores previous workflow bytes when trusted authorization persistence fails', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-authority-failure-'));
++		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
++		const previous = Buffer.from('previous trusted workflow bytes\n', 'utf8');
++		try {
++			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
++			fs.writeFileSync(workflowPath, previous);
++			const result = await generateNpmPublishWorkflow(root, {
++				actor: 'release-test',
++				issueProtectedStateAuthorization: async () => ({
++					success: false,
++					error: 'kernel authority unavailable',
++				}),
++			});
++
++			expect(result).toMatchObject({
++				success: false,
++				error: 'Could not record trusted protected-state authorization: kernel authority unavailable',
++			});
++			expect(fs.readFileSync(workflowPath)).toEqual(previous);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
+ 	test('hook accepts exact generator evidence but denies raw edits and missing evidence', async () => {
+ 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-hook-'));
+ 		const actor = 'release-hook-test';
+@@ -293,20 +314,111 @@ describe('Forge-owned npm publish workflow', () => {
+ 				{ env: { FORGE_ACTOR: actor } },
+ 			)).success).toBe(true);
+ 			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
++			const wrongActor = spawnSync(process.execPath, [checker], {
++				cwd: root,
++				encoding: 'utf8',
++				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: `${actor}-other` },
++			});
++			expect(wrongActor.status).toBe(1);
++			expect(`${wrongActor.stdout}${wrongActor.stderr}`).toContain('content-bound authorization');
+ 			expect(check().status).toBe(0);
+ 
++			expect((await releaseCommand.handler(
++				['generate-npm-workflow'],
++				{},
++				root,
++				{ env: { FORGE_ACTOR: actor } },
++			)).success).toBe(true);
+ 			fs.appendFileSync(path.join(root, NPM_PUBLISH_WORKFLOW_PATH), '# raw edit\n');
+ 			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
+ 			const rawEdit = check();
+ 			expect(rawEdit.status).toBe(1);
+ 			expect(`${rawEdit.stdout}${rawEdit.stderr}`).toContain('content-bound authorization');
+ 
+-			fs.rmSync(path.join(root, PROTECTED_STATE_AUDIT_LOG));
++			fs.rmSync(path.join(root, '.git', 'forge'), { recursive: true, force: true });
+ 			const missingEvidence = check();
+ 			expect(missingEvidence.status).toBe(1);
+-			expect(`${missingEvidence.stdout}${missingEvidence.stderr}`).toContain('content-bound authorization');
++			expect(`${missingEvidence.stdout}${missingEvidence.stderr}`).toContain('Forge-owned authorization');
+ 		} finally {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+-	});
++	}, 30_000);
++
++	test('hook denies a fabricated audit record in a real temporary repository', () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-fabricated-audit-'));
++		const actor = 'fabricated-release-actor';
++		const checker = path.join(repoRoot, 'scripts', 'protected-state-check.js');
++		const workflow = renderNpmPublishWorkflow();
++		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
++		const auditPath = path.join(root, PROTECTED_STATE_AUDIT_LOG);
++		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
++		try {
++			expect(run('git', ['init']).status).toBe(0);
++			fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
++			fs.writeFileSync(workflowPath, workflow, 'utf8');
++			fs.mkdirSync(path.dirname(auditPath), { recursive: true });
++			fs.writeFileSync(auditPath, `${JSON.stringify({
++				kind: 'protected_state_write',
++				actor,
++				path: NPM_PUBLISH_WORKFLOW_PATH,
++				decision: 'allowed',
++				requiredSurface: 'workflows',
++				declaredSurface: 'workflows',
++				operation: 'generate_npm_workflow',
++				contentHash: `sha256:${require('node:crypto').createHash('sha256').update(workflow).digest('hex')}`,
++				viaForgeApi: true,
++			})}\n`, 'utf8');
++			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
++
++			const result = spawnSync(process.execPath, [checker], {
++				cwd: root,
++				encoding: 'utf8',
++				env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
++			});
++
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain('Forge-owned authorization');
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 15_000);
++
++	test('hook consumes authorization and denies a later same-content stale replay', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-npm-same-content-replay-'));
++		const actor = 'release-replay-test';
++		const checker = path.join(repoRoot, 'scripts', 'protected-state-check.js');
++		const workflowPath = path.join(root, NPM_PUBLISH_WORKFLOW_PATH);
++		const run = (command, args) => spawnSync(command, args, { cwd: root, encoding: 'utf8' });
++		const check = () => spawnSync(process.execPath, [checker], {
++			cwd: root,
++			encoding: 'utf8',
++			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: actor },
++		});
++		try {
++			expect(run('git', ['init']).status).toBe(0);
++			expect(run('git', ['config', 'user.email', 'forge-test@example.invalid']).status).toBe(0);
++			expect(run('git', ['config', 'user.name', 'Forge Test']).status).toBe(0);
++			expect((await releaseCommand.handler(
++				['generate-npm-workflow'],
++				{},
++				root,
++				{ env: { FORGE_ACTOR: actor } },
++			)).success).toBe(true);
++			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
++			expect(check().status).toBe(0);
++			expect(run('git', ['commit', '-m', 'generated workflow']).status).toBe(0);
++
++			fs.writeFileSync(workflowPath, 'name: intermediate raw workflow\n', 'utf8');
++			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
++			expect(run('git', ['commit', '-m', 'intermediate workflow']).status).toBe(0);
++			fs.writeFileSync(workflowPath, renderNpmPublishWorkflow(), 'utf8');
++			expect(run('git', ['add', NPM_PUBLISH_WORKFLOW_PATH]).status).toBe(0);
++
++			const replay = check();
++			expect(replay.status).toBe(1);
++			expect(`${replay.stdout}${replay.stderr}`).toContain('already consumed');
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 30_000);
+ });
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+new file mode 100644
+index 00000000..1f721dbe
+--- /dev/null
++++ b/test/protected-state-authority.test.js
+@@ -0,0 +1,116 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { hashProtectedContent } = require('../lib/protected-state-surfaces');
++const {
++	PROTECTED_STATE_AUTHORIZATION_CONSUMED,
++	PROTECTED_STATE_AUTHORIZATION_ISSUED,
++	NPM_WORKFLOW_SOURCE_COMMAND,
++	authorizationEntityId,
++	evaluateAuthorization,
++} = require('../lib/protected-state-authority');
++
++const target = {
++	actor: 'forge-release',
++	surface: 'workflows',
++	path: '.github/workflows/npm-publish.yml',
++	content: 'generated: true\n',
++	worktreeScope: 'scope-a',
++};
++
++function eventRow(eventType, capabilityId, overrides = {}) {
++	const actor = overrides.actor || target.actor;
++	const filePath = overrides.path || target.path;
++	const surface = overrides.surface || target.surface;
++	const content = overrides.content || target.content;
++	return {
++		entity_type: 'protected_state',
++		entity_id: overrides.entityId || authorizationEntityId(
++			overrides.worktreeScope || target.worktreeScope,
++			filePath,
++		),
++		event_type: eventType,
++		actor,
++		origin: overrides.origin || 'cli',
++		created_at: overrides.createdAt || '2026-08-08T00:00:00.000Z',
++		payload_json: JSON.stringify({
++			version: 1,
++			capabilityId,
++			actor: overrides.payloadActor || actor,
++			path: filePath,
++			surface,
++			contentHash: hashProtectedContent(content),
++			worktreeScope: overrides.worktreeScope || target.worktreeScope,
++			operation: eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED ? 'generate_npm_workflow' : 'staged_edit',
++			sourceCommand: overrides.sourceCommand || (
++				eventType === PROTECTED_STATE_AUTHORIZATION_ISSUED
++					? NPM_WORKFLOW_SOURCE_COMMAND
++					: 'scripts/protected-state-check.js'
++			),
++		}),
++	};
++}
++
++describe('protected-state Kernel authority', () => {
++	test('accepts one exact unconsumed command-issued capability', () => {
++		const decision = evaluateAuthorization(target, [
++			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-1'),
++		]);
++
++		expect(decision).toMatchObject({
++			allowed: true,
++			actor: target.actor,
++			path: target.path,
++			requiredSurface: target.surface,
++			capabilityId: 'capability-1',
++		});
++	});
++
++	test('fails closed on cross-actor, cross-surface, and malformed issuer records', () => {
++		const crossActor = evaluateAuthorization(
++			{ ...target, actor: 'other-actor' },
++			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-actor')],
++		);
++		const crossSurface = evaluateAuthorization(
++			{ ...target, surface: 'forge_config' },
++			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-surface')],
++		);
++		const malformedIssuer = evaluateAuthorization(target, [
++			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-malformed', {
++				sourceCommand: 'raw sqlite write',
++			}),
++		]);
++
++		expect(crossActor.allowed).toBe(false);
++		expect(crossSurface.allowed).toBe(false);
++		expect(malformedIssuer.allowed).toBe(false);
++	});
++
++	test('denies a capability issued from a different worktree scope', () => {
++		const row = eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-worktree');
++		const payload = JSON.parse(row.payload_json);
++		row.payload_json = JSON.stringify({ ...payload, worktreeScope: 'scope-a' });
++
++		const decision = evaluateAuthorization(
++			{ ...target, worktreeScope: 'scope-b' },
++			[row],
++		);
++
++		expect(decision.allowed).toBe(false);
++	});
++
++	test('denies consumed replays and ambiguous concurrent issuances', () => {
++		const issued = eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-consumed');
++		const consumed = eventRow(PROTECTED_STATE_AUTHORIZATION_CONSUMED, 'capability-consumed');
++		const replay = evaluateAuthorization(target, [issued, consumed]);
++		const ambiguous = evaluateAuthorization(target, [
++			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-a'),
++			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-b'),
++		]);
++
++		expect(replay.allowed).toBe(false);
++		expect(replay.reason).toContain('already consumed');
++		expect(ambiguous.allowed).toBe(false);
++		expect(ambiguous.reason).toContain('multiple unconsumed');
++	});
++});
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 540314d4..4e9a63ea 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -12,8 +12,7 @@ const {
+ 	classifyProtectedPath,
+ 	assertProtectedWriteAllowed,
+ 	writeProtectedFile,
+-	createProtectedStateAuthorization,
+-	verifyProtectedStateAuthorization,
++	createProtectedStateAuditRecord,
+ 	buildProtectedStateAuditEvent,
+ 	recordProtectedStateAuditEvent,
+ } = require('../lib/protected-state-surfaces');
+@@ -74,93 +73,24 @@ describe('protected state surfaces', () => {
+ 		expect(decision.requiredSurface).toBe('beads_state');
+ 	});
+ 
+-	test('authorizes only the exact actor, surface, path, and content hash', () => {
+-		const authorization = createProtectedStateAuthorization({
++	test('builds content-bound visibility records without conferring authority', () => {
++		const auditRecord = createProtectedStateAuditRecord({
+ 			actor: 'forge-release',
+ 			surface: 'workflows',
+ 			path: '.github/workflows/npm-publish.yml',
+ 			content: 'generated: true\n',
+ 		});
+ 
+-		expect(verifyProtectedStateAuthorization({
++		expect(auditRecord).toMatchObject({
++			kind: 'protected_state_write',
+ 			actor: 'forge-release',
+-			surface: 'workflows',
+-			path: '.github/workflows/npm-publish.yml',
+-			content: 'generated: true\n',
+-		}, [authorization]).allowed).toBe(true);
+-
+-		const rawEdit = verifyProtectedStateAuthorization({
+-			actor: 'codex',
+-			surface: 'workflows',
+ 			path: '.github/workflows/npm-publish.yml',
+-			content: 'generated: true\n',
+-		}, [authorization]);
+-		expect(rawEdit.allowed).toBe(false);
+-		expect(rawEdit.reason).toContain('content-bound authorization');
+-	});
+-
+-	test('denies stale content records and missing authorization evidence', () => {
+-		const authorization = createProtectedStateAuthorization({
+-			actor: 'forge-release',
+-			surface: 'workflows',
+-			path: '.github/workflows/npm-publish.yml',
+-			content: 'original\n',
++			decision: 'allowed',
++			requiredSurface: 'workflows',
++			declaredSurface: 'workflows',
+ 		});
+-		const request = {
+-			actor: 'forge-release',
+-			surface: 'workflows',
+-			path: '.github/workflows/npm-publish.yml',
+-			content: 'raw edit\n',
+-		};
+-
+-		expect(verifyProtectedStateAuthorization(request, [authorization]).allowed).toBe(false);
+-		expect(verifyProtectedStateAuthorization(request, []).allowed).toBe(false);
+-	});
+-
+-	test('denies a raw revert that matches an older superseded authorization record', () => {
+-		const base = {
+-			actor: 'forge-release',
+-			surface: 'workflows',
+-			path: '.github/workflows/npm-publish.yml',
+-		};
+-		const authorizationA = createProtectedStateAuthorization({ ...base, content: 'version: A\n' });
+-		const authorizationB = createProtectedStateAuthorization({ ...base, content: 'version: B\n' });
+-
+-		expect(verifyProtectedStateAuthorization(
+-			{ ...base, content: 'version: B\n' },
+-			[authorizationA, authorizationB],
+-		).allowed).toBe(true);
+-		const reverted = verifyProtectedStateAuthorization(
+-			{ ...base, content: 'version: A\n' },
+-			[authorizationA, authorizationB],
+-		);
+-		expect(reverted.allowed).toBe(false);
+-		expect(reverted.reason).toContain('latest');
+-	});
+-
+-	test('denies cross-actor replay after another actor supersedes the protected path', () => {
+-		const target = {
+-			surface: 'workflows',
+-			path: '.github/workflows/npm-publish.yml',
+-		};
+-		const actorA = createProtectedStateAuthorization({
+-			...target,
+-			actor: 'forge-release-a',
+-			content: 'version: A\n',
+-		});
+-		const actorB = createProtectedStateAuthorization({
+-			...target,
+-			actor: 'forge-release-b',
+-			content: 'version: B\n',
+-		});
+-
+-		const replay = verifyProtectedStateAuthorization({
+-			...target,
+-			actor: 'forge-release-a',
+-			content: 'version: A\n',
+-		}, [actorA, actorB]);
+-		expect(replay.allowed).toBe(false);
+-		expect(replay.reason).toContain('latest');
++		expect(auditRecord.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
++		expect(auditRecord).not.toHaveProperty('capabilityId');
+ 	});
+ 
+ 	test('writes protected files only through the declared Forge API surface', () => {
+@@ -472,7 +402,7 @@ describe('scripts/protected-state-check.js', () => {
+ 
+ 		expect(result.status).toBe(1);
+ 		expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
+-	});
++	}, 15_000);
+ 
+ 	test('includes deletions in the staged protected-state query', () => {
+ 		const content = fs.readFileSync(scriptPath, 'utf8');
+-- 
+2.51.0.windows.1
+

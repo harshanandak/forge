@@ -1,0 +1,216 @@
+From e00aa1440e91d10303ebb8260196ef1559e1c9ee Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 16:23:51 +0530
+Subject: [PATCH] fix(dashboard): rail rows track real config state + honesty
+ fixes (review)
+
+---
+ web/dashboard/app.js      | 54 +++++++++++++++++++++++++++++----------
+ web/dashboard/app.test.js | 29 +++++++++++++++++++++
+ web/dashboard/styles.css  |  4 ++-
+ 3 files changed, 72 insertions(+), 15 deletions(-)
+
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index d0b6ff14..cb1686f2 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -890,6 +890,11 @@ function gateCommand(gate) {
+ function roleCommand(role) {
+   return `forge role ${role.role} --use ${role.skill}`;
+ }
++// A role bound to its own default skill with no override — copying `forge role dev
++// --use dev` is a self-noop, so the cockpit shows a customize template instead.
++function isDefaultBinding(role) {
++  return !!role && role.skill === role.role && !isCustomized(role.configSource);
++}
+ // The 6-stage rail: role binding (always) joined with its phase record (only the
+ // 4 plan/dev/validate/ship phases exist today — review/verify are role-only).
+ function stageRailModel(wf) {
+@@ -899,7 +904,7 @@ function stageRailModel(wf) {
+ }
+ 
+ /* ---------- cockpit render (DOM-facing) ---------- */
+-const cmdChip = (cmd) => `<button class="cmdchip" data-act="copy" data-cmd="${esc(cmd)}" title="Copy command"><code>${esc(cmd)}</code><span class="cmdchip__ico" aria-hidden="true">⧉</span></button>`;
++const cmdChip = (cmd) => `<button class="cmdchip" data-act="copy" data-cmd="${esc(cmd)}" title="Copy command"><code>${esc(cmd)}</code><span class="cmdchip__ico" aria-hidden="true">⧉</span><span class="cmdchip__sr" aria-live="polite"></span></button>`;
+ const cfgBadge = (src) => (isCustomized(src)
+   ? '<span class="wbadge wbadge--custom" title="overridden in .forge/config.yaml">customized</span>'
+   : '<span class="wbadge wbadge--default" title="shipped default — no override">default</span>');
+@@ -914,24 +919,30 @@ function planSubSkillsBlock(wf) {
+   const items = subs.map((s) => `<li>${esc(s.label || shortId(s.id))}</li>`).join('');
+   return `<div class="stage__row"><span class="wk">/plan sub-skills</span><ol class="wsubs">${items}</ol></div>`;
+ }
++function roleCmdHtml(role, id) {
++  if (!role) return '';
++  if (isDefaultBinding(role)) return `<div class="stage__cmd wmute">default binding — customize: <code>forge role ${esc(id)} --use &lt;skill&gt;</code></div>`;
++  return `<div class="stage__cmd">${cmdChip(roleCommand(role))}</div>`;
++}
+ function stageCard(node, idx, wf) {
+   const { id, role, phase } = node;
+   const skill = role ? role.skill : null;
+-  const cmd = role ? `<div class="stage__cmd">${cmdChip(roleCommand(role))}</div>` : '';
++  const phaseState = phase ? `${cfgBadge(phase.configSource)}${gateStateBadge(phase)}` : '';
+   const gates = phase ? `<div class="stage__row"><span class="wk">gates</span>${wtags(phase.gates)}</div>` : '';
+   const ev = phase ? `<div class="stage__row"><span class="wk">evidence</span>${wtags(phase.evidence, 'wtag--ev')}</div>` : '';
+   const art = phase ? `<div class="stage__row"><span class="wk">artifacts</span>${wtags(phase.artifacts, 'wtag--art')}</div>` : '';
+   const sub = id === 'plan' ? planSubSkillsBlock(wf) : '';
+   const seam = phase ? '' : `<div class="wseam">role-only stage — no runtime phase record yet · ${wseam('reviewVerifyPhases')}</div>`;
+   return `<div class="stage ${phase ? '' : 'stage--roleonly'}">
+-    <div class="stage__hd"><span class="stage__n">${idx + 1}</span><span class="stage__id">/${esc(id)}</span></div>
++    <div class="stage__hd"><span class="stage__n">${idx + 1}</span><span class="stage__id">/${esc(id)}</span>${phaseState}</div>
+     <div class="stage__role">role <b>${esc(id)}</b> → skill <b>${esc(skill || '—')}</b> ${role ? cfgBadge(role.configSource) : ''}</div>
+-    ${cmd}${gates}${ev}${art}${sub}${seam}
++    ${roleCmdHtml(role, id)}${gates}${ev}${art}${sub}${seam}
+   </div>`;
+ }
+-function gateStateBadge(gate) {
+-  if (gate.locked) return lockedBadge(`Cannot disable locked gate '${gate.id}'`);
+-  return gate.enabled === false ? '<span class="wbadge wbadge--off">disabled</span>' : '<span class="wbadge wbadge--on">enabled</span>';
++// Shared state badge for gates, rails, and phases — all carry enabled/locked.
++function gateStateBadge(item) {
++  if (item.locked) return lockedBadge(`Cannot disable locked '${item.id}'`);
++  return item.enabled === false ? '<span class="wbadge wbadge--off">disabled</span>' : '<span class="wbadge wbadge--on">enabled</span>';
+ }
+ function gateRow(gate) {
+   const cmd = gateCommand(gate);
+@@ -954,29 +965,42 @@ function gatesPanel(wf) {
+   const verify = gates.filter((g) => gateBucket(g) === 'verify');
+   return `<div class="wpanel"><div class="wpanel__hd">Gates <span class="wmute">${stage.length} stage · ${human.length} human · ${verify.length} write-verify</span></div>${gateGroupHtml('Stage gates', stage, 'phase entry/exit')}${gateGroupHtml('Human gates', human, 'approval events')}${gateGroupHtml('Write verification', verify, 'check-after-write')}</div>`;
+ }
++// Rails reuse the SAME helpers as gates so their state, command (enable vs
++// disable), and customized badge all track the real resolved config — never a
++// hardcoded "enabled" that goes stale after `forge gate disable rail.kernel_tracking`.
+ function railRow(rail) {
+-  const state = rail.locked ? lockedBadge('fixed L1 guardrail — cannot disable') : '<span class="wbadge wbadge--on">enabled</span>';
+-  const cmdHtml = rail.locked ? '<div class="grow__cmd wmute">fixed — cannot disable</div>' : `<div class="grow__cmd">${cmdChip(`forge gate disable ${rail.id}`)}</div>`;
++  const cmd = gateCommand(rail);
++  const cmdHtml = cmd ? `<div class="grow__cmd">${cmdChip(cmd)}</div>` : '<div class="grow__cmd wmute">fixed — cannot disable</div>';
+   return `<div class="grow ${rail.locked ? 'grow--locked' : ''}">
+     <div class="grow__main"><code class="gid">${esc(rail.id)}</code><span class="glabel">${esc(rail.label || '')}</span></div>
+-    <div class="grow__meta"><span class="wk">${esc(rail.layer || 'L1')}</span>${state}</div>
++    <div class="grow__meta"><span class="wk">${esc(rail.layer || 'L1')}</span>${cfgBadge(rail.configSource)}${gateStateBadge(rail)}</div>
+     ${cmdHtml}
+   </div>`;
+ }
+ function railsPanel(wf) {
+-  return `<div class="wpanel"><div class="wpanel__hd">Rails <span class="wmute">L1 — all locked except rail.kernel_tracking</span></div>${(wf.rails || []).map(railRow).join('')}</div>`;
++  const rails = wf.rails || [];
++  const unlocked = rails.filter((r) => !r.locked).map((r) => r.id);
++  const note = unlocked.length ? `L1 — unlocked: ${unlocked.join(', ')}` : 'L1 — all locked';
++  return `<div class="wpanel"><div class="wpanel__hd">Rails <span class="wmute">${esc(note)}</span></div>${rails.map(railRow).join('')}</div>`;
+ }
+ function skillRow(sk) {
+   const lock = sk.lock ? `<span class="wtag" title="${esc(sk.lock.source)} · ${esc(sk.lock.sourceType)}">lock ${esc(sk.lock.hash)}</span>` : '<span class="wmute">no lock entry</span>';
+   return `<div class="skrow"><code class="skname">${esc(sk.name)}</code><span class="wbadge wbadge--win" title="wins precedence: user .skills &gt; project skills &gt; packaged">${esc(sk.winner)}</span>${lock}</div>`;
+ }
++// Harnesses that actually inject context at SessionStart — DERIVED from the baked
++// matrix, not hardcoded, so it stays honest if the capability matrix changes.
++function renderingHarnesses(wf) {
++  return Object.entries(wf.harnessMatrix || {}).filter(([, v]) => v.rendered).map(([h]) => h);
++}
+ function harnessMatrixHtml(wf) {
+   return Object.entries(wf.harnessMatrix || {}).map(([h, v]) => `<span class="hchip ${v.rendered ? 'hchip--on' : 'hchip--off'}" title="${esc(v.reason || 'SessionStart injection')}">${esc(h)} ${v.rendered ? '✓' : '✕'}</span>`).join('');
+ }
+ function skillsCatalog(wf) {
+   const dirs = (wf.skillDirs || []).map((d) => `<span class="wtag ${d.exists ? '' : 'wtag--muted'}">${esc(d.label)}${d.exists ? '' : ' (absent)'}</span>`).join(' › ');
++  const renders = renderingHarnesses(wf);
++  const note = renders.length ? `only ${renders.join(', ')} inject${renders.length === 1 ? 's' : ''} context` : 'no harness injects context';
+   return `<div class="wpanel"><div class="wpanel__hd">Skills catalog <span class="wmute">precedence ${dirs}</span></div>
+-    <div class="wpanel__sub">SessionStart render: ${harnessMatrixHtml(wf)} <span class="wmute">— only Claude injects context (honest)</span></div>
++    <div class="wpanel__sub">SessionStart render: ${harnessMatrixHtml(wf)} <span class="wmute">— ${esc(note)} (derived)</span></div>
+     <div class="sklist">${(wf.skills || []).map(skillRow).join('')}</div></div>`;
+ }
+ function profileRow(name, p) {
+@@ -1138,11 +1162,13 @@ function handleAct(t) {
+ function copyCommand(el) {
+   const cmd = el.dataset.cmd || '';
+   const ico = el.querySelector('.cmdchip__ico');
++  const sr = el.querySelector('.cmdchip__sr');
+   const flash = () => {
+     el.classList.add('copied');
+     const prev = ico ? ico.textContent : '';
+     if (ico) ico.textContent = '✓';
+-    setTimeout(() => { el.classList.remove('copied'); if (ico) ico.textContent = prev; }, 1200);
++    if (sr) sr.textContent = 'Copied to clipboard';
++    setTimeout(() => { el.classList.remove('copied'); if (ico) ico.textContent = prev; if (sr) sr.textContent = ''; }, 1200);
+   };
+   try {
+     if (navigator.clipboard && navigator.clipboard.writeText) {
+@@ -1275,5 +1301,5 @@ async function boot() {
+ }
+ if (typeof document !== 'undefined') boot();
+ if (typeof module !== 'undefined' && module.exports) {
+-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId };
++  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId, isDefaultBinding, renderingHarnesses };
+ }
+diff --git a/web/dashboard/app.test.js b/web/dashboard/app.test.js
+index 560c2281..3bf82baa 100644
+--- a/web/dashboard/app.test.js
++++ b/web/dashboard/app.test.js
+@@ -247,6 +247,35 @@ test('cockpit: roleCommand yields the exact role→skill binding command', () =>
+   expect(app.roleCommand({ role: 'plan', skill: 'my-plan' })).toBe('forge role plan --use my-plan');
+ });
+ 
++test('cockpit: isDefaultBinding flags the self-noop default, not customized bindings', () => {
++  // dev→dev with no override → default self-binding (copy would be a no-op)
++  expect(app.isDefaultBinding({ role: 'dev', skill: 'dev', configSource: 'package-defaults' })).toBe(true);
++  // a different skill → meaningful, not default
++  expect(app.isDefaultBinding({ role: 'dev', skill: 'my-skill', configSource: 'package-defaults' })).toBe(false);
++  // same name but overridden in config → still show the (re-applying) command
++  expect(app.isDefaultBinding({ role: 'dev', skill: 'dev', configSource: '.forge/config.yaml' })).toBe(false);
++});
++
++test('cockpit: rail state tracks real config — a disabled unlocked rail offers ENABLE, not disable', () => {
++  // enabled + unlocked (default kernel_tracking) → disable command
++  expect(app.gateCommand({ id: 'rail.kernel_tracking', enabled: true, locked: false })).toBe('forge gate disable rail.kernel_tracking');
++  // AFTER `forge gate disable rail.kernel_tracking` → re-bake shows enabled:false;
++  // the cockpit must now offer ENABLE (never a stale "disable")
++  expect(app.gateCommand({ id: 'rail.kernel_tracking', enabled: false, locked: false })).toBe('forge gate enable rail.kernel_tracking');
++  // a disabled rail is customized → cfgBadge must reflect the override (isCustomized)
++  expect(app.isCustomized('.forge/config.yaml')).toBe(true);
++  // locked rails never emit a command
++  expect(app.gateCommand({ id: 'rail.secret_scan', enabled: true, locked: true })).toBe(null);
++});
++
++test('cockpit: renderingHarnesses derives SessionStart support from the matrix (no hardcoding)', () => {
++  const wf = { harnessMatrix: { claude: { rendered: true }, cursor: { rendered: false }, codex: { rendered: false } } };
++  expect(app.renderingHarnesses(wf)).toEqual(['claude']);
++  // if the matrix changes, the derivation changes with it
++  const wf2 = { harnessMatrix: { claude: { rendered: true }, cursor: { rendered: true } } };
++  expect(app.renderingHarnesses(wf2)).toEqual(['claude', 'cursor']);
++});
++
+ test('cockpit: shortId strips the primitive prefix', () => {
+   expect(app.shortId('gate.plan-exit')).toBe('plan-exit');
+   expect(app.shortId('evidence.tdd-tests')).toBe('tdd-tests');
+diff --git a/web/dashboard/styles.css b/web/dashboard/styles.css
+index 4e77e2ee..a68e7f99 100644
+--- a/web/dashboard/styles.css
++++ b/web/dashboard/styles.css
+@@ -642,6 +642,7 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+ .wnote { font-family: var(--mono); font-size: 11px; padding: 8px 11px; border: 1px solid var(--line); margin-bottom: 14px; color: var(--muted); }
+ .wnote--warn { border-color: var(--text); color: var(--text); }
+ .wnote--warn ul { margin: 6px 0 0; padding-left: 18px; }
++.wnote--ok { color: var(--muted); border-style: dashed; }
+ 
+ /* honesty badges + tags */
+ .wbadge { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; padding: 1px 6px; border: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
+@@ -656,7 +657,7 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+ .wtag--ev { border-style: dashed; }
+ .wtag--art { color: var(--faint); }
+ .wtag--kw { color: var(--faint); }
+-.wtag--muted, .wtag--muted { color: var(--faint); border-style: dashed; opacity: .7; }
++.wtag--muted { color: var(--faint); border-style: dashed; opacity: .7; }
+ 
+ /* copy-as-command chip */
+ .cmdchip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line-2); padding: 4px 9px; cursor: pointer; font-family: var(--mono); max-width: 100%; overflow: hidden; }
+@@ -665,6 +666,7 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+ .cmdchip__ico { color: var(--faint); font-size: 12px; }
+ .cmdchip.copied { border-color: var(--text); }
+ .cmdchip.copied .cmdchip__ico { color: var(--text); }
++.cmdchip__sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+ 
+ /* stage rail */
+ .stagerail { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 8px; }
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,140 @@
+From 951a4f2d696db8c5c95d518a15a968a1479ed095 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 15:02:06 +0530
+Subject: [PATCH] fix: preserve audited emergency merge bypass
+
+---
+ lib/commands/merge.js        | 33 +++++++++++++++++++++------------
+ lib/reviewer-ledger.js       |  4 +++-
+ test/reviewer-ledger.test.js | 24 ++++++++++++++++++++++++
+ 3 files changed, 48 insertions(+), 13 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 52da3bbc..a513e940 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -48,6 +48,7 @@ const {
+   buildMergeEvidenceSnapshot,
+   evaluateReviewerLedger,
+   readAuthoritativeReviewerLedger,
++  authorizeEmergencyBypass,
+ } = require('../reviewer-ledger');
+ const { runIssueOperation } = require('../forge-issues');
+ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+@@ -161,6 +162,22 @@ function parseMergeArgs(argv) {
+   return values;
+ }
+ 
++function reviewerGateForMerge(context, now) {
++  const emergencyBypass = context && context.emergencyBypass;
++  if (emergencyBypass) {
++    try {
++      return { status: 'ready', bypassed: true, audit: authorizeEmergencyBypass(emergencyBypass) };
++    } catch (error) {
++      return { status: 'pending', reason: error.message };
++    }
++  }
++  return evaluateReviewerLedger(context && context.reviewerLedger, {
++    now: context && context.now !== undefined ? context.now : now,
++    headSha: context && context.headSha,
++    requiredChecks: context && context.requiredChecksEvidence,
++  });
++}
++
+ function resolveOwnershipActor(env = process.env) {
+   return (typeof env.FORGE_ACTOR === 'string' && env.FORGE_ACTOR.trim())
+     || (typeof env.FORGE_SESSION_ID === 'string' && env.FORGE_SESSION_ID.trim())
+@@ -784,12 +801,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: 'PR is not authoritatively linked to the supplied Forge issue.' };
+   }
+ 
+-  const reviewerGate = evaluateReviewerLedger(prContext && prContext.reviewerLedger, {
+-    now: prContext && prContext.now !== undefined ? prContext.now : (deps.now || Date.now()),
+-    headSha: prContext && prContext.headSha,
+-    requiredChecks: prContext && prContext.requiredChecksEvidence,
+-    emergencyBypass: prContext && prContext.emergencyBypass,
+-  });
++  const reviewerGate = reviewerGateForMerge(prContext, deps.now || Date.now());
+   if (reviewerGate.status !== 'ready') {
+     const reason = reviewerGate.reason || 'reviewer ledger is not ready.';
+     return {
+@@ -836,18 +848,15 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const reviewerRecheck = atomicPreMergeRecheck(
+     buildMergeEvidenceSnapshot(prContext, { issueId: parsed.issueId }),
+     buildMergeEvidenceSnapshot(freshContext, { issueId: parsed.issueId }),
++    { emergencyBypass: Boolean(prContext && prContext.emergencyBypass
++      && freshContext && freshContext.emergencyBypass) },
+   );
+   if (!reviewerRecheck.ok) {
+     return { success: true, merged: false, enabled: true, allowed: false,
+       reason: reviewerRecheck.reason || 'reviewer ledger changed before merge.' };
+   }
+ 
+-  const freshReviewerGate = evaluateReviewerLedger(freshContext && freshContext.reviewerLedger, {
+-    now: freshContext && freshContext.now !== undefined ? freshContext.now : (deps.now || Date.now()),
+-    headSha: freshContext && freshContext.headSha,
+-    requiredChecks: freshContext && freshContext.requiredChecksEvidence,
+-    emergencyBypass: freshContext && freshContext.emergencyBypass,
+-  });
++  const freshReviewerGate = reviewerGateForMerge(freshContext, deps.now || Date.now());
+   if (freshReviewerGate.status !== 'ready') {
+     const reason = freshReviewerGate.reason || 'reviewer ledger is not ready.';
+     return {
+diff --git a/lib/reviewer-ledger.js b/lib/reviewer-ledger.js
+index 137899ba..29eaeccc 100644
+--- a/lib/reviewer-ledger.js
++++ b/lib/reviewer-ledger.js
+@@ -520,7 +520,7 @@ function ledgerEvidence(ledger, label) {
+   } catch (error) { return `${label} snapshot is unreadable: ${error.message}`; }
+ }
+ 
+-function atomicPreMergeRecheck(expected, current) {
++function atomicPreMergeRecheck(expected, current, { emergencyBypass = false } = {}) {
+   if (!expected || !current || typeof expected !== 'object' || typeof current !== 'object') {
+     return { ok: false, reason: 'pre-merge snapshot is unreadable.' };
+   }
+@@ -536,6 +536,8 @@ function atomicPreMergeRecheck(expected, current) {
+       return { ok: false, reason: `${label} evidence changed before merge.` };
+     }
+   }
++  if (emergencyBypass) return { ok: true };
++
+   const expectedLedger = expected.reviewerLedger;
+   const currentLedger = current.reviewerLedger;
+   const expectedError = ledgerEvidence(expectedLedger, 'reviewer ledger');
+diff --git a/test/reviewer-ledger.test.js b/test/reviewer-ledger.test.js
+index cc3edb05..26e8702a 100644
+--- a/test/reviewer-ledger.test.js
++++ b/test/reviewer-ledger.test.js
+@@ -341,4 +341,28 @@ test('merge command requires a reviewer ledger even when configured rules omit i
+   expect(merges).toBe(0);
+ });
+ 
++test('audited emergency bypass is the explicit exception to the mandatory ledger gate', async () => {
++  let merges = 0;
++  const context = {
++    number: 42, repository: 'acme/forge', state: 'OPEN', headSha: HEAD, isDraft: false, conflicting: false,
++    unresolvedThreads: 0, reviewEvidenceReadable: true, reviews: [],
++    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', appId: 123 }],
++    requiredChecks: [{ context: 'ci', appId: 123 }], requiredCheckSource: 'protection', requiredChecksKnown: true,
++    emergencyBypass: { humanActor: 'release-manager', reason: 'incident window', auditId: 'audit-99', at: START },
++  };
++  const out = await mergeCmd.handler(
++    ['42', '--auto', '--expect-head', HEAD, '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++    {}, process.cwd(), {
++      loadConfig: () => ({ merge: { auto: { enabled: true, rules: ['checks_green'] } } }),
++      env: { FORGE_ACTOR: 'release-actor' },
++      verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
++      verifyPrIssueBinding: async () => ({ bound: true }),
++      fetchPrContext: async () => ({ ...context }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    },
++  );
++  expect(out.merged).toBe(true);
++  expect(merges).toBe(1);
++});
++
+ expect(DEFAULT_QUIET_WINDOW_MS).toBe(10 * 60_000);
+-- 
+2.51.0.windows.1
+

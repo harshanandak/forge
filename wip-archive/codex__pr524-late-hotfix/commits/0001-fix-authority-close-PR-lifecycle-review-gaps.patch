@@ -1,0 +1,209 @@
+From 536c208873ccb07683d3f8a2765a416109617c23 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 23:14:25 +0530
+Subject: [PATCH] fix(authority): close PR lifecycle review gaps
+
+Issue: 50571aa3-b1cd-42f4-9c50-2c7576d1b0d4
+---
+ lib/kernel/broker.js                          |  2 +-
+ packages/memory/src/pr-lifecycle-authority.js |  9 +--
+ .../test/pr-lifecycle-authority.test.js       | 59 +++++++++++++------
+ test/kernel/trace.test.js                     | 19 +++++-
+ 4 files changed, 64 insertions(+), 25 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 5ef81c48..3f4b619a 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -1824,7 +1824,7 @@ function createLocalBroker(options = {}) {
+ 				try {
+ 				await beginImmediate(transactionDriver, config);
+ 				transactionOpen = true;
+-				if (context.requireExactLifecycleOwnership === true) {
++				if (linkageInput.phase === 'opened' || context.requireExactLifecycleOwnership === true) {
+ 					await assertExactLifecycleOwnership(transactionDriver, evidence, context, config);
+ 				}
+ 				const inferred = await transactionDriver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index c175288b..aab6c521 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -31,7 +31,7 @@ const SECRET_PATTERNS = Object.freeze([
+   /AKIA[0-9A-Z]{16}/i,
+   /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
+ ]);
+-const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
++const USER_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+(?:\/|$))/i;
+ 
+ // Complete accepted provider capability contract. Live probes may supply the optional reads;
+ // runIssueOperation, recordPrLinkage, and readTrace remain mandatory (see authority-provider.js).
+@@ -197,9 +197,7 @@ async function invokeWithDeadline(target, method, args, timeoutMs, options = {})
+   });
+   try {
+     const result = await Promise.race([operation, deadline]);
+-    // Consequential operations must never report a timeout while a write can still
+-    // complete later. If cancellation did not settle it, reconcile the actual result.
+-    return result === PROVIDER_DEADLINE_SENTINEL ? await operation : result;
++    return result;
+   } finally {
+     clearTimeout(timer);
+     if (timedOut && !options.reconcileOnTimeout) controller?.abort();
+@@ -218,6 +216,9 @@ async function callMethod(target, method, args, label, options = {}) {
+     if (error instanceof PrLifecycleAuthorityError) throw error;
+     fail('PR_LIFECYCLE_UNAVAILABLE', `${label} provider operation failed`, { cause: error });
+   }
++  // Consequential writes reconcile this private deadline through a bounded,
++  // authoritative trace read instead of waiting on an unacknowledged write.
++  if (result === PROVIDER_DEADLINE_SENTINEL) return result;
+   try {
+     const projected = typeof options.project === 'function' ? options.project(result) : result;
+     const bounded = snapshot(projected, `${label} provider response`, {
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index 88200edf..f8b73810 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -312,6 +312,18 @@ describe('public PR lifecycle authority', () => {
+     })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
+   });
+ 
++  test('rejects bare POSIX user home directories at the privacy boundary', async () => {
++    const authority = createPrLifecycleAuthority({ provider: provider() });
++    for (const objective of ['/home/alice', '/Users/alice']) {
++      await expect(authority.issueWorkPacket({
++        issue_id: ISSUE_ID,
++        repository_id: REPOSITORY_ID,
++        actor_id: 'agent-1', session_id: 'session-1',
++        objective,
++      })).rejects.toMatchObject({ code: 'PR_LIFECYCLE_PRIVACY_REJECTED' });
++    }
++  });
++
+   test('rejects traversal, encoded traversal, and secret-bearing trusted path segments before linkage', async () => {
+     for (const gitCommonDir of [
+       '/home/alice/../repo/.git',
+@@ -450,27 +462,40 @@ describe('public PR lifecycle authority', () => {
+       .rejects.toMatchObject({ code: 'PR_LIFECYCLE_OWNERSHIP_STALE' });
+   });
+ 
+-  test('reconciles consequential provider completion instead of reporting a false timeout', async () => {
+-    let writes = 0;
+-    let releaseWrite;
+-    const writeGate = new Promise(resolve => { releaseWrite = resolve; });
++  test('reconciles durable consequential writes whose acknowledgement never settles', async () => {
++    let recorded;
+     const workPacket = packet();
+     const authority = createPrLifecycleAuthority({
+-      provider: provider({ recordPrLinkage: async () => {
+-        await writeGate;
+-        writes += 1;
+-        return { ok: true };
+-      } }),
++      provider: provider({
++        recordPrLinkage: async value => {
++          recorded = value;
++          return new Promise(() => {});
++        },
++        readTrace: async () => recorded ? { pull_requests: [{
++          number: 514, repo: REPOSITORY_ID, head_sha: HEAD, issue_id: ISSUE_ID,
++          iterations: [{ type: 'pr.opened', work_packet_hash: workPacket.content_hash,
++            work_packet_identity: packetIdentity(workPacket), run_receipt_hash: recorded.run_receipt.content_hash }],
++        }] } : { pull_requests: [] },
++      }),
+       timeoutMs: 5,
+     });
+-    let settled = false;
+-    const merge = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
+-      .finally(() => { settled = true; });
+-    await new Promise(resolve => setTimeout(resolve, 15));
+-    expect(settled).toBe(false);
+-    releaseWrite();
+-    await expect(merge).resolves.toMatchObject({ accepted: true });
+-    expect(writes).toBe(1);
++    await expect(authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' }))
++      .resolves.toMatchObject({ accepted: true });
++  });
++
++  test('bounds fail-closed reconciliation when opened linkage persistence never settles', async () => {
++    const workPacket = packet();
++    const authority = createPrLifecycleAuthority({
++      provider: provider({ recordPrLinkage: async () => new Promise(() => {}) }),
++      timeoutMs: 5,
++    });
++    const outcome = authority.acceptRunReceipt({ packet: workPacket, receipt: receipt(workPacket), session_id: 'session-1' })
++      .then(() => ({ accepted: true }), error => error);
++    const observed = await Promise.race([
++      outcome,
++      new Promise(resolve => setTimeout(() => resolve('still-pending'), 30)),
++    ]);
++    expect(observed).toMatchObject({ code: 'PR_LIFECYCLE_LINKAGE_CONFLICT' });
+   });
+ 
+   test('re-probes ownership and exact head at receipt acceptance', async () => {
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 54a855f3..ed4eed96 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -16,6 +16,7 @@ const RISK_DIGEST = 'b'.repeat(64);
+ const MANIFEST_DIGEST = 'c'.repeat(64);
+ const GATE_ID = 'gate.merge';
+ const GATE_RECEIPT = 'gate.approved:issue-trace:gate.merge:maintainer';
++const LIFECYCLE_CONTEXT = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
+ 
+ function rehash(envelope) {
+ 	const copy = structuredClone(envelope);
+@@ -94,6 +95,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 	let gitCommonDir;
+ 	let branch;
+ 	let workFolder;
++	let rawRecordPrLinkage;
+ 
+ 	beforeEach(async () => {
+ 		root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-trace-'));
+@@ -134,6 +136,12 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			payload: { gate: GATE_ID, expires_at: null, generation: 0 },
+ 			created_at: '2026-08-11T00:04:00.000Z',
+ 		}, {}, config);
++		await driver.insertKernelClaim({
++			id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
++			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z',
++		}, {}, config);
++		rawRecordPrLinkage = broker.recordPrLinkage.bind(broker);
++		broker.recordPrLinkage = (input, context = LIFECYCLE_CONTEXT) => rawRecordPrLinkage(input, context);
+ 	});
+ 
+ 	afterEach(() => {
+@@ -242,7 +250,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099' });
+ 			const first = linkage('opened', firstPacket, runReceipt(firstPacket));
+ 			const second = linkage('opened', secondPacket, runReceipt(secondPacket), { number: 515, url: 'https://github.com/owner/forge/pull/515' });
+-			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second)]);
++			const results = await Promise.allSettled([broker.recordPrLinkage(first), secondBroker.recordPrLinkage(second, LIFECYCLE_CONTEXT)]);
+ 			expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+ 			const rejected = results.find(result => result.status === 'rejected');
+ 			expect(rejected.reason).toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+@@ -359,8 +367,6 @@ describe('Kernel receipt-bound PR trace', () => {
+ 	});
+ 
+ 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+-		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+-			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+ 		const context = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
+ 		await expect(broker.recordOpenedPrLinkage(linkage(), context)).resolves.toHaveProperty('iteration');
+ 		await driver.updateKernelClaimState('claim-1', 'released', {}, config);
+@@ -372,6 +378,13 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+ 	});
+ 
++	test('enforces exact claim ownership on the exported opened linkage writer', async () => {
++		await expect(rawRecordPrLinkage(linkage()))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++	});
++
+ 	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {
+ 		await driver.exec("INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');", config);
+ 		await driver.upsertPr({ id: 'foreign-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
+-- 
+2.51.0.windows.1
+

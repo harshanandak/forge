@@ -1,0 +1,1362 @@
+From 973ae530ebd6d50b33cda08dec59377845ca8bf1 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 13:15:05 +0530
+Subject: [PATCH] fix(push): bind hook reuse to live push invocation
+
+---
+ CHANGELOG.md                                  |   2 +
+ .../2026-09-18-delivery-push/decisions.md     |  20 +
+ lib/commands/push.js                          |  69 ++-
+ lib/validation-receipt.js                     |  93 +++-
+ scripts/check-forge-token.js                  | 152 ++++---
+ test/check-forge-token.test.js                | 419 +++++++++---------
+ test/commands/github-indirect-routes.test.js  |   1 +
+ test/commands/push.test.js                    | 158 ++++++-
+ test/pr-monitor/auto-trigger-wiring.test.js   |   1 +
+ test/push-backing-issue.test.js               |   1 +
+ test/validation-receipt.test.js               |  73 ++-
+ 11 files changed, 702 insertions(+), 287 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0b63407d..b41e3d75 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **Forge pushes use the supervised full-suite runner when validation cannot be reused.** Consumer repositories retain their configured test command, and failed or incomplete runs prevent the push. Git arguments retain their order across Forge's passthrough delimiter. (issues `11e5ef49-5ae3-4cd0-a32e-0f233fc00ce8`, `e8b5e91f-d9f3-40e3-921a-e12c392054f1`)
++- **Slow pre-push hooks no longer expire authorization for completed checks.** Reuse is bound to the live push, its worktree, branch, unchanged inputs, and completed gates; ended or mismatched invocations run the ordinary hooks. Quick pushes continue to omit tests explicitly. (issue `291d09b0-b3c4-41a6-8fa0-6b843e7fad05`)
+ - **The test workflow template marker no longer resembles a credential assignment.** Internal renderer code now describes `__BUN_VERSION__` as a placeholder, so the shipped-library secret scan accepts the deterministic workflow writer without weakening its detection rules or changing generated workflow bytes. (issue `0acc4a68-ab0a-4008-83bf-6e954d075007`)
+ 
+ ## [0.1.0-beta.7] - 2026-09-11
+diff --git a/docs/work/2026-09-18-delivery-push/decisions.md b/docs/work/2026-09-18-delivery-push/decisions.md
+index 5d75f556..84c7100b 100644
+--- a/docs/work/2026-09-18-delivery-push/decisions.md
++++ b/docs/work/2026-09-18-delivery-push/decisions.md
+@@ -9,3 +9,23 @@
+ **Route**: PROCEED
+ **Choice made**: Reuse the existing `node scripts/test-full-suite.js` supervised full-runner route already used by `validate`. It inherits the checkout cwd/environment, returns nonzero for FAIL or INCOMPLETE aggregates, and leaves full-receipt creation exclusively with `validate`.
+ **Status**: RESOLVED
++
++## Decision 2
++
++**Date**: 2026-09-19
++**Task**: Invocation proof lifetime and revocation
++**Gap**: A shared marker cannot compare-and-delete atomically if another push replaces it between the read and unlink operations.
++**Score**: 5 / 14
++**Route**: BLOCKED — resolved by the spec owner
++**Choice made**: Store one signed proof per nonce under worktree-private Git metadata. The Git child receives only its nonce, each push deletes only its own file, and exact process identity invalidates crash residue without a lock or registry.
++**Status**: RESOLVED
++
++## Decision 3
++
++**Date**: 2026-09-19
++**Task**: Existing unparameterized hook predicates
++**Gap**: `lefthook.yml` is protected and has no sanctioned active-root-config writer in scope.
++**Score**: 2 / 14
++**Route**: PROCEED after spec-owner review
++**Choice made**: Leave all three hook calls unchanged. A full proof signs exactly branch protection, lint, and tests; a quick proof signs exactly branch protection and lint and also requires the existing quick child lane. Any other shape runs ordinary hooks.
++**Status**: RESOLVED
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 4a43791b..1d36b413 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -6,7 +6,10 @@ const path = require('node:path');
+ const forgeToken = require('../../scripts/check-forge-token');
+ const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE, resolveFullSuiteTimeoutMs } = require('../../scripts/test');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+-const { verifyValidationReceipt } = require('../validation-receipt');
++const validationReceipt = require('../validation-receipt');
++
++const { verifyValidationReceipt } = validationReceipt;
++const PUSH_NONCE_ENV_VAR = forgeToken._internal.NONCE_ENV_VAR;
+ 
+ const isWindows = process.platform === 'win32';
+ 
+@@ -160,18 +163,25 @@ function maybeTriggerShepherdAfterPush({
+  *
+  * @param {boolean} quickMode - Whether this is a --quick push
+  * @param {NodeJS.ProcessEnv} [baseEnv=process.env] - Environment to derive from
++ * @param {string} [nonce] - Signed invocation proof locator for the Git child
+  * @returns {NodeJS.ProcessEnv} Environment for the git push child process
+  */
+-function buildPushEnv(quickMode, baseEnv = process.env) {
++function buildPushEnv(quickMode, baseEnv = process.env, nonce) {
+ 	const env = { ...baseEnv };
++	delete env[PUSH_NONCE_ENV_VAR];
+ 	if (quickMode) {
+ 		env[QUICK_LANE_ENV_VAR] = QUICK_LANE_VALUE;
+ 	} else {
+ 		delete env[QUICK_LANE_ENV_VAR];
+ 	}
++	if (nonce) env[PUSH_NONCE_ENV_VAR] = nonce;
+ 	return env;
+ }
+ 
++function buildGateEnv(baseEnv = process.env) {
++	return buildPushEnv(false, baseEnv);
++}
++
+ /**
+  * Run branch protection check as a subprocess.
+  * @param {function} execFn - execFileSync or mock
+@@ -179,9 +189,9 @@ function buildPushEnv(quickMode, baseEnv = process.env) {
+  * @param {function} log - Logger function
+  * @returns {boolean} True if branch protection passed
+  */
+-function runBranchProtection(execFn, projectRoot, log) {
++function runBranchProtection(execFn, projectRoot, log, env) {
+ 	try {
+-		execFn('node', [path.join(projectRoot, 'scripts', 'branch-protection.js')]);
++		execFn('node', [path.join(projectRoot, 'scripts', 'branch-protection.js')], { env });
+ 		return true;
+ 	} catch (_err) { /* intentional: fallback to failure */ // NOSONAR S2486
+ 		log('Branch protection check failed — push aborted.');
+@@ -196,11 +206,12 @@ function runBranchProtection(execFn, projectRoot, log) {
+  * @param {string} projectRoot - Absolute path to project root
+  * @returns {boolean} True if lint passed
+  */
+-function runLint(spawnFn, pkgManager, projectRoot) {
++function runLint(spawnFn, pkgManager, projectRoot, env) {
+ 	const lintResult = spawnFn(pkgManager, ['run', 'lint'], {
+ 		stdio: 'inherit',
+ 		shell: isWindows,
+ 		cwd: projectRoot,
++		env,
+ 	});
+ 	return lintResult.status === 0;
+ }
+@@ -331,6 +342,7 @@ function runTests(spawnFn, execFn, readFileFn, existsFn, pkgManager, projectRoot
+ 		stdio: 'inherit',
+ 		shell: isWindows,
+ 		cwd: projectRoot,
++		env,
+ 		timeout: timeoutMs,
+ 		killSignal: TEST_RUN_KILL_SIGNAL,
+ 	});
+@@ -366,56 +378,84 @@ module.exports = {
+ 		const readFileFn = deps?.readFileSync || fs.readFileSync;
+ 		const log = deps?.log || console.log;
+ 		const tokenWrite = deps?.writeForgeToken || forgeToken.write;
++		const tokenConsume = deps?.consumeForgeToken || forgeToken.consume;
++		const beginPushProof = deps?.beginPushProof || validationReceipt._pushProof.begin;
+ 		const verifyReceipt = deps?.verifyValidationReceipt || verifyValidationReceipt;
+ 
+ 		const quickMode = !!(flags && (flags['--quick'] || flags.quick));
+ 		const pkgManager = detectPackageManager(projectRoot, existsFn);
++		const worktreeRoot = resolveGitToplevel(execFn, projectRoot);
++		const gateEnv = buildGateEnv(deps?.env || process.env);
++		let proofSnapshot = null;
++		try {
++			proofSnapshot = beginPushProof(worktreeRoot, { env: gateEnv });
++		} catch { /* invalid snapshot falls back to ordinary hooks */ }
++		const completedGates = [];
+ 
+ 		// Step 1: Branch protection
+-		const branchOk = runBranchProtection(execFn, projectRoot, log);
++		const branchOk = runBranchProtection(execFn, projectRoot, log, gateEnv);
+ 		if (!branchOk) {
+ 			return { success: false, quickMode, lintPassed: false, pushed: false };
+ 		}
++		completedGates.push('branch-protection');
+ 
+ 		// Auto-file rail (non-blocking): ensure the branch being pushed has a backing
+ 		// Kernel issue so started work never goes unfiled. Never aborts the push.
+ 		await autoFileBackingIssueForPush(projectRoot, execFn, deps || {});
+ 
+ 		// Step 2: Lint
+-		const lintPassed = runLint(spawnFn, pkgManager, projectRoot);
++		const lintPassed = runLint(spawnFn, pkgManager, projectRoot, gateEnv);
+ 		if (!lintPassed) {
+ 			log('Lint failed — push aborted.');
+ 			return { success: false, quickMode, lintPassed: false, pushed: false };
+ 		}
++		completedGates.push('lint');
+ 
+ 		// Step 3: Tests (skip in quick mode)
+ 		const receipt = quickMode
+ 			? { valid: false }
+-			: verifyReceipt(resolveGitToplevel(execFn, projectRoot));
++			: verifyReceipt(worktreeRoot);
+ 		const validationReused = receipt.valid === true;
+ 		if (validationReused) log(`Tests reused from full validation at ${receipt.head || 'current HEAD'}`);
+ 		const testsPassed = validationReused
+ 			? true
+-			: runTests(spawnFn, execFn, readFileFn, existsFn, pkgManager, projectRoot, quickMode, log, deps?.env || process.env);
++			: runTests(spawnFn, execFn, readFileFn, existsFn, pkgManager, projectRoot, quickMode, log, gateEnv);
+ 		if (!quickMode && !testsPassed) {
+ 			return { success: false, quickMode, lintPassed: true, testsPassed: false, validationReused, pushed: false };
+ 		}
++		if (!quickMode) completedGates.push('tests');
+ 
+-		// Step 4: Write nonce token so lefthook skips pre-push hooks.
+-		// Write to the git worktree top-level (where the hook checks), not the
+-		// inherited projectRoot, so the skip works from linked worktrees too.
++		// Step 4: Write invocation proof under worktree-private Git metadata.
++		let authorization = null;
+ 		try {
+-			tokenWrite(resolveGitToplevel(execFn, projectRoot));
++			authorization = tokenWrite(worktreeRoot, {
++				snapshot: proofSnapshot,
++				mode: quickMode ? 'quick' : 'full',
++				gates: completedGates,
++				receiptIdentity: quickMode ? null : (validationReused ? receipt.identity : 'fresh-tests'),
++				env: gateEnv,
++			});
+ 		} catch (_err) { /* intentional: non-fatal, lefthook will re-run hooks */ // NOSONAR S2486
+ 			log('Warning: Could not write forge push token — lefthook hooks will run again');
+ 		}
+ 
+ 		// Step 5: git push with passthrough args
+ 		const gitArgs = args.slice(args.indexOf('--') + 1).filter(a => a !== '--quick');
++		let pushFailed = false;
+ 		try {
+-			execFn('git', ['push', ...gitArgs], { stdio: 'inherit', env: buildPushEnv(quickMode) });
++			execFn('git', ['push', ...gitArgs], {
++				stdio: 'inherit',
++				env: buildPushEnv(quickMode, deps?.env || process.env, authorization?.nonce),
++			});
+ 		} catch (_pushErr) { // NOSONAR S2486
+ 			log('git push failed.');
++			pushFailed = true;
++		} finally {
++			if (authorization?.nonce) {
++				try { tokenConsume(worktreeRoot, { nonce: authorization.nonce }); } catch { /* best effort revocation */ }
++			}
++		}
++		if (pushFailed) {
+ 			return {
+ 				success: false,
+ 				quickMode,
+@@ -443,6 +483,7 @@ module.exports = {
+ 	// Exposed for unit tests; not part of the CLI surface.
+ 	_internal: {
+ 		autoFileBackingIssueForPush,
++		buildGateEnv,
+ 		buildPushEnv,
+ 		maybeTriggerShepherdAfterPush,
+ 	},
+diff --git a/lib/validation-receipt.js b/lib/validation-receipt.js
+index 4e6ac192..a00172fa 100644
+--- a/lib/validation-receipt.js
++++ b/lib/validation-receipt.js
+@@ -11,6 +11,11 @@ const SCHEMA_VERSION = 1;
+ const RECEIPT_TTL_MS = 60 * 60 * 1000;
+ const FUTURE_SKEW_MS = 60 * 1000;
+ const RUNNER_ID = 'forge-full-suite-v1';
++const PUSH_PROOF_SCHEMA_VERSION = 1;
++const PUSH_MODES = Object.freeze({
++	full: Object.freeze(['branch-protection', 'lint', 'tests']),
++	quick: Object.freeze(['branch-protection', 'lint']),
++});
+ 
+ function git(projectRoot, args, deps = {}) {
+ 	return (deps.execFileSync || execFileSync)('git', args, {
+@@ -87,6 +92,87 @@ function sameState(left, right) {
+ 		&& left.runner === right.runner;
+ }
+ 
++function capturePushState(projectRoot, deps = {}) {
++	if (deps.capturePushState) return deps.capturePushState(projectRoot);
++	const root = resolveGitRoot(projectRoot, deps);
++	return {
++		...captureState(root, deps),
++		branch: git(root, ['symbolic-ref', '--quiet', 'HEAD'], deps),
++	};
++}
++
++function samePushState(left, right) {
++	return sameState(left, right) && left?.branch === right?.branch;
++}
++
++function hasExactGates(mode, gates) {
++	if (mode !== 'full' && mode !== 'quick') return false;
++	const expected = PUSH_MODES[mode];
++	return Boolean(expected)
++		&& Array.isArray(gates)
++		&& gates.length === expected.length
++		&& gates.every((gate, index) => gate === expected[index]);
++}
++
++function beginPushProof(projectRoot, deps = {}) {
++	try {
++		const state = capturePushState(projectRoot, deps);
++		return state.clean ? state : null;
++	} catch {
++		return null;
++	}
++}
++
++function createPushProof(projectRoot, snapshot, claims, deps = {}) {
++	if (!snapshot) throw new Error('push proof requires a clean pre-gate snapshot');
++	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(claims?.nonce || '')) {
++		throw new Error('push proof requires a valid nonce');
++	}
++	if (!hasExactGates(claims?.mode, claims?.gates)) throw new Error('push proof gates do not match mode');
++	if (!Number.isInteger(claims?.owner?.pid) || claims.owner.pid <= 0 || typeof claims.owner.identity !== 'string' || !claims.owner.identity) {
++		throw new Error('push proof requires an exact process owner');
++	}
++	if (claims.mode === 'full' && (typeof claims.receiptIdentity !== 'string' || !claims.receiptIdentity)) {
++		throw new Error('full push proof requires test evidence identity');
++	}
++	const current = capturePushState(projectRoot, deps);
++	if (!samePushState(snapshot, current)) throw new Error('push proof state changed during gates');
++	const payload = {
++		schemaVersion: PUSH_PROOF_SCHEMA_VERSION,
++		type: 'forge-push-invocation',
++		nonce: claims.nonce,
++		state: current,
++		mode: claims.mode,
++		gates: [...claims.gates],
++		owner: { ...claims.owner },
++		receiptIdentity: claims.receiptIdentity || null,
++	};
++	return { payload, signature: sign(payload, deps) };
++}
++
++function verifyPushProof(projectRoot, proof, expected, deps = {}) {
++	try {
++		const payload = proof?.payload;
++		if (payload?.schemaVersion !== PUSH_PROOF_SCHEMA_VERSION || payload.type !== 'forge-push-invocation') {
++			return { valid: false, reason: 'schema' };
++		}
++		if (payload.nonce !== expected?.nonce) return { valid: false, reason: 'nonce' };
++		if (!signatureMatches(payload, proof.signature, deps)) return { valid: false, reason: 'signature' };
++		if (!hasExactGates(payload.mode, payload.gates)) return { valid: false, reason: 'gates' };
++		const quickLane = expected?.env?.FORGE_PUSH_LANE === 'quick';
++		if ((payload.mode === 'quick') !== quickLane) return { valid: false, reason: 'mode' };
++		if (payload.mode === 'full' && (typeof payload.receiptIdentity !== 'string' || !payload.receiptIdentity)) {
++			return { valid: false, reason: 'test-evidence' };
++		}
++		if (!samePushState(payload.state, capturePushState(projectRoot, deps))) {
++			return { valid: false, reason: 'state' };
++		}
++		return { valid: true, payload };
++	} catch {
++		return { valid: false, reason: 'missing-or-invalid' };
++	}
++}
++
+ function validationIsComplete(result) {
+ 	const checks = result?.checks || {};
+ 	const tests = checks.tests || {};
+@@ -175,7 +261,7 @@ function verifyValidationReceipt(projectRoot, deps = {}) {
+ 		if (receipt.payload.issuedAt > now + FUTURE_SKEW_MS) return { valid: false, reason: 'future' };
+ 		if (receipt.payload.expiresAt < now) return { valid: false, reason: 'expired' };
+ 		if (!sameState(receipt.payload, captureState(projectRoot, deps))) return { valid: false, reason: 'state' };
+-		return { valid: true, head: receipt.payload.head };
++		return { valid: true, head: receipt.payload.head, identity: receipt.signature };
+ 	} catch {
+ 		return { valid: false, reason: 'missing-or-invalid' };
+ 	}
+@@ -187,4 +273,9 @@ module.exports = {
+ 	resolveReceiptPath,
+ 	validationIsComplete,
+ 	verifyValidationReceipt,
++	_pushProof: {
++		begin: beginPushProof,
++		create: createPushProof,
++		verify: verifyPushProof,
++	},
+ };
+diff --git a/scripts/check-forge-token.js b/scripts/check-forge-token.js
+index 25f5ac2e..1c4e96d7 100644
+--- a/scripts/check-forge-token.js
++++ b/scripts/check-forge-token.js
+@@ -1,97 +1,115 @@
+ 'use strict';
+ 
+-const fs = require('node:fs');
++const { execFileSync } = require('node:child_process');
+ const crypto = require('node:crypto');
++const fs = require('node:fs');
+ const path = require('node:path');
++const { _pushProof } = require('../lib/validation-receipt');
++const { defaultGetProcessIdentity } = require('./process-tree');
+ 
+-const TOKEN_FILENAME = '.forge-push-token';
+-const MAX_AGE_MS = 30000; // 30 seconds
++const NONCE_ENV_VAR = 'FORGE_PUSH_NONCE';
++const NONCE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+ 
+-/**
+- * Get the absolute path to the token file.
+- *
+- * @param {string} projectRoot - Absolute path to project root
+- * @returns {string} Token file path
+- */
+-function tokenPath(projectRoot) {
+-  return path.join(projectRoot, TOKEN_FILENAME);
++function git(projectRoot, args, deps = {}) {
++  return (deps.execFileSync || execFileSync)('git', args, {
++    cwd: projectRoot,
++    encoding: 'utf8',
++    stdio: ['ignore', 'pipe', 'pipe'],
++  }).trim();
+ }
+ 
+-/**
+- * Write a one-time nonce token to disk.
+- * Called by `forge push` right before `git push` so lefthook hooks
+- * can detect that checks already passed and skip re-running them.
+- *
+- * @param {string} projectRoot - Absolute path to project root
+- * @returns {{nonce: string, timestamp: number}} The written token data
+- */
+-function write(projectRoot) {
+-  const data = {
+-    nonce: crypto.randomUUID(),
+-    timestamp: Date.now(),
+-  };
+-  fs.writeFileSync(tokenPath(projectRoot), JSON.stringify(data), 'utf-8');
+-  return data;
++function resolveProofPath(projectRoot, nonce, deps = {}) {
++  if (!NONCE_PATTERN.test(nonce || '')) throw new Error('invalid push proof nonce');
++  if (deps.resolvePushProofPath) return path.resolve(deps.resolvePushProofPath(projectRoot, nonce));
++  const root = path.resolve(git(projectRoot, ['rev-parse', '--show-toplevel'], deps));
++  return path.resolve(root, git(root, ['rev-parse', '--git-path', `forge/push-tokens/${nonce}.json`], deps));
++}
++
++function writeAtomic(filePath, content) {
++  fs.mkdirSync(path.dirname(filePath), { recursive: true });
++  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
++  try {
++    fs.writeFileSync(temporary, content, { flag: 'wx', mode: 0o600 });
++    fs.renameSync(temporary, filePath);
++  } finally {
++    fs.rmSync(temporary, { force: true });
++  }
+ }
+ 
+ /**
+- * Check if a valid (fresh, well-formed) forge push token exists.
+- * Does NOT delete the token — use `consume()` for one-time validation.
++ * Write signed authority for one active `forge push` invocation.
+  *
+- * @param {string} projectRoot - Absolute path to project root
+- * @returns {boolean} True if a valid, fresh token exists
++ * @param {string} projectRoot
++ * @param {object} options
++ * @returns {{nonce: string}}
+  */
+-function isValid(projectRoot) {
++function write(projectRoot, options = {}) {
++  const nonce = (options.randomUUID || crypto.randomUUID)();
++  const ownerPid = options.processPid || process.pid;
++  const getProcessIdentity = options.getProcessIdentity || defaultGetProcessIdentity;
++  const ownerIdentity = getProcessIdentity(ownerPid);
++  if (!ownerIdentity) throw new Error('push proof owner identity unavailable');
++  const proof = _pushProof.create(projectRoot, options.snapshot, {
++    nonce,
++    mode: options.mode,
++    gates: options.gates,
++    owner: { pid: ownerPid, identity: ownerIdentity },
++    receiptIdentity: options.receiptIdentity,
++  }, options);
++  writeAtomic(resolveProofPath(projectRoot, nonce, options), JSON.stringify(proof));
++  return { nonce };
++}
++
++function validate(projectRoot, options = {}) {
+   try {
+-    const raw = fs.readFileSync(tokenPath(projectRoot), 'utf-8');
+-    const content = JSON.parse(raw);
+-    if (!content.nonce || typeof content.timestamp !== 'number') {
+-      return false;
++    const env = options.env || process.env;
++    const nonce = env[NONCE_ENV_VAR];
++    if (!NONCE_PATTERN.test(nonce || '')) return { valid: false };
++    const proof = JSON.parse(fs.readFileSync(resolveProofPath(projectRoot, nonce, options), 'utf8'));
++    const verified = _pushProof.verify(projectRoot, proof, { nonce, env }, options);
++    if (!verified.valid) return verified;
++    const getProcessIdentity = options.getProcessIdentity || defaultGetProcessIdentity;
++    const owner = verified.payload.owner;
++    if (!owner || getProcessIdentity(owner.pid) !== owner.identity) {
++      return { valid: false, reason: 'owner' };
+     }
+-    const age = Date.now() - content.timestamp;
+-    return age < MAX_AGE_MS;
+-  } catch (_err) {
+-    return false;
++    return verified;
++  } catch {
++    return { valid: false };
+   }
+ }
+ 
+ /**
+- * Validate and delete the token in one atomic operation (one-time use).
+- * Always attempts to delete the file, even if the token is stale or invalid.
+- *
+- * @param {string} projectRoot - Absolute path to project root
+- * @returns {boolean} True if the token was valid before deletion
++ * Check signed authority without consuming it so all three hook predicates can read it.
+  */
+-function consume(projectRoot) {
+-  const tp = tokenPath(projectRoot);
+-  try {
+-    const raw = fs.readFileSync(tp, 'utf-8');
+-    // Always delete after reading — whether valid or not
+-    try { fs.unlinkSync(tp); } catch (_e) { /* already gone */ }
++function isValid(projectRoot, options = {}) {
++  return validate(projectRoot, options).valid === true;
++}
+ 
+-    const content = JSON.parse(raw);
+-    if (!content.nonce || typeof content.timestamp !== 'number') {
+-      return false;
+-    }
+-    const age = Date.now() - content.timestamp;
+-    return age < MAX_AGE_MS;
+-  } catch (_err) {
+-    // File doesn't exist or isn't readable — try cleanup anyway
+-    try { fs.unlinkSync(tp); } catch (_e) { /* nothing to clean */ }
++/**
++ * Revoke only the proof named by this invocation's nonce.
++ */
++function consume(projectRoot, options = {}) {
++  try {
++    const nonce = options.nonce || (options.env || process.env)[NONCE_ENV_VAR];
++    fs.unlinkSync(resolveProofPath(projectRoot, nonce, options));
++    return true;
++  } catch {
+     return false;
+   }
+ }
+ 
+-module.exports = { write, isValid, consume };
++module.exports = {
++  write,
++  isValid,
++  consume,
++  _internal: { NONCE_ENV_VAR, resolveProofPath, validate },
++};
+ 
+-// When run directly as a script (e.g., from lefthook skip check):
+-// Exit 0 = token valid (skip hooks), Exit 1 = run hooks normally.
+-// Uses isValid() (non-destructive) so multiple lefthook commands can
+-// each check the same token. The token expires after 30s automatically.
+ if (require.main === module) {
+-  const projectRoot = process.cwd();
+-  if (isValid(projectRoot)) {
+-    console.log('forge push token valid — skipping pre-push hooks');
++  const result = validate(process.cwd());
++  if (result.valid) {
++    console.log(`forge push ${result.payload.mode} authorization valid — skipping pre-push hooks`);
+     process.exit(0);
+   }
+   process.exit(1);
+diff --git a/test/check-forge-token.test.js b/test/check-forge-token.test.js
+index 1b81ae58..d8b9ff5d 100644
+--- a/test/check-forge-token.test.js
++++ b/test/check-forge-token.test.js
+@@ -1,234 +1,251 @@
+ 'use strict';
+ 
++const { spawn } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const os = require('node:os');
+ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+-
+-/**
+- * Forge Push Nonce Token Tests
+- *
+- * Tests the one-time nonce token mechanism that allows `forge push`
+- * to skip lefthook pre-push hooks (since it already ran the checks).
+- *
+- * The token is a JSON file (.forge-push-token) with:
+- *   - nonce: crypto.randomUUID()
+- *   - timestamp: Date.now()
+- *
+- * Three exported functions:
+- *   - write(projectRoot) — create token file
+- *   - isValid(projectRoot) — check token exists and is fresh (< 30s)
+- *   - consume(projectRoot) — validate AND delete (one-time use)
+- */
+-
+-// Module under test — will not exist yet (RED phase)
++const { defaultGetProcessIdentity } = require('../scripts/process-tree');
+ const forgeToken = require('../scripts/check-forge-token');
++const { _pushProof } = require('../lib/validation-receipt');
++
++const FULL_GATES = ['branch-protection', 'lint', 'tests'];
++const QUICK_GATES = ['branch-protection', 'lint'];
++const NONCE_ENV = 'FORGE_PUSH_NONCE';
++const QUICK_ENV = 'FORGE_PUSH_LANE';
++
++const BASE_STATE = Object.freeze({
++  worktree: 'worktree-a',
++  head: 'a'.repeat(40),
++  clean: true,
++  runtime: 'forge-runtime',
++  testRuntime: 'bun-a',
++  runner: 'forge-full-suite-v1',
++  branch: 'refs/heads/feature',
++});
+ 
+-describe('check-forge-token', () => {
+-  let tmpDir;
+-
+-  beforeEach(() => {
+-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-token-'));
+-  });
+-
+-  afterEach(() => {
+-    fs.rmSync(tmpDir, { recursive: true, force: true });
+-  });
+-
+-  describe('module exports', () => {
+-    test('should export write, isValid, and consume functions', () => {
+-      expect(typeof forgeToken.write).toBe('function');
+-      expect(typeof forgeToken.isValid).toBe('function');
+-      expect(typeof forgeToken.consume).toBe('function');
+-    });
++function deps(root, overrides = {}) {
++  const state = overrides.state || BASE_STATE;
++  return {
++    homeDir: path.join(root, '.git', 'forge-test-home'),
++    runtimeIdentity: 'forge-runtime',
++    testRuntimeIdentity: 'bun-a',
++    capturePushState: () => ({ ...state }),
++    resolvePushProofPath: (_projectRoot, nonce) => path.join(root, '.git', 'forge', 'push-tokens', `${nonce}.json`),
++    processPid: 4242,
++    getProcessIdentity: pid => pid === 4242 ? 'process-4242-start-a' : null,
++    env: {},
++    ...overrides,
++  };
++}
++
++function issue(root, mode = 'full', overrides = {}) {
++  const options = deps(root, overrides);
++  const snapshot = _pushProof.begin(root, options);
++  const token = forgeToken.write(root, {
++    ...options,
++    snapshot,
++    mode,
++    gates: mode === 'quick' ? QUICK_GATES : FULL_GATES,
++    receiptIdentity: mode === 'full' ? 'receipt-or-fresh-tests' : null,
+   });
++  return { token, options };
++}
+ 
+-  describe('write()', () => {
+-    test('should create .forge-push-token file in projectRoot', () => {
+-      forgeToken.write(tmpDir);
+-
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      expect(fs.existsSync(tokenPath)).toBe(true);
+-    });
+-
+-    test('should write valid JSON with nonce and timestamp', () => {
+-      forgeToken.write(tmpDir);
+-
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      const content = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
+-
+-      expect(typeof content.nonce).toBe('string');
+-      expect(content.nonce.length).toBeGreaterThan(0);
+-      expect(typeof content.timestamp).toBe('number');
+-    });
+-
+-    test('should use crypto.randomUUID format for nonce', () => {
+-      forgeToken.write(tmpDir);
+-
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      const content = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
++function tokenEnv(token, extra = {}) {
++  return { [NONCE_ENV]: token.nonce, ...extra };
++}
+ 
+-      // UUID v4 format: 8-4-4-4-12 hex chars
+-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+-      expect(content.nonce).toMatch(uuidRegex);
+-    });
+-
+-    test('should write timestamp close to Date.now()', () => {
+-      const before = Date.now();
+-      forgeToken.write(tmpDir);
+-      const after = Date.now();
+-
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      const content = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
+-
+-      expect(content.timestamp).toBeGreaterThanOrEqual(before);
+-      expect(content.timestamp).toBeLessThanOrEqual(after);
+-    });
+-
+-    test('should overwrite existing token on repeated write', () => {
+-      forgeToken.write(tmpDir);
+-      const first = JSON.parse(
+-        fs.readFileSync(path.join(tmpDir, '.forge-push-token'), 'utf-8'),
+-      );
++describe('check-forge-token', () => {
++  let root;
+ 
+-      forgeToken.write(tmpDir);
+-      const second = JSON.parse(
+-        fs.readFileSync(path.join(tmpDir, '.forge-push-token'), 'utf-8'),
+-      );
++  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-push-proof-')); });
++  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+ 
+-      // Nonces should differ (UUIDs are unique)
+-      expect(second.nonce).not.toBe(first.nonce);
+-    });
++  test('preserves write, isValid, and consume exports', () => {
++    expect(typeof forgeToken.write).toBe('function');
++    expect(typeof forgeToken.isValid).toBe('function');
++    expect(typeof forgeToken.consume).toBe('function');
+   });
+ 
+-  describe('isValid()', () => {
+-    test('should return true for a fresh token (< 30s old)', () => {
+-      forgeToken.write(tmpDir);
+-
+-      expect(forgeToken.isValid(tmpDir)).toBe(true);
+-    });
+-
+-    test('should return false when no token file exists', () => {
+-      expect(forgeToken.isValid(tmpDir)).toBe(false);
+-    });
+-
+-    test('should return false for a stale token (> 30s old)', () => {
+-      // Write a token with a timestamp 31 seconds in the past
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      const staleToken = {
+-        nonce: '00000000-0000-0000-0000-000000000000',
+-        timestamp: Date.now() - 31000,
+-      };
+-      fs.writeFileSync(tokenPath, JSON.stringify(staleToken));
+-
+-      expect(forgeToken.isValid(tmpDir)).toBe(false);
+-    });
+-
+-    test('should return false for token missing nonce field', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      fs.writeFileSync(tokenPath, JSON.stringify({ timestamp: Date.now() }));
+-
+-      expect(forgeToken.isValid(tmpDir)).toBe(false);
+-    });
+-
+-    test('should return false for token missing timestamp field', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      fs.writeFileSync(tokenPath, JSON.stringify({ nonce: 'abc-123' }));
+-
+-      expect(forgeToken.isValid(tmpDir)).toBe(false);
+-    });
+-
+-    test('should return false for corrupted (non-JSON) token file', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      fs.writeFileSync(tokenPath, 'not valid json!!!');
+-
+-      expect(forgeToken.isValid(tmpDir)).toBe(false);
+-    });
+-
+-    test('should return false for empty token file', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      fs.writeFileSync(tokenPath, '');
+-
+-      expect(forgeToken.isValid(tmpDir)).toBe(false);
+-    });
+-
+-    test('should NOT delete the token file (read-only check)', () => {
+-      forgeToken.write(tmpDir);
+-      forgeToken.isValid(tmpDir);
+-
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      expect(fs.existsSync(tokenPath)).toBe(true);
+-    });
++  test('accepts the same live full invocation after 31 seconds without a TTL bypass', () => {
++    const now = 1_000_000;
++    const { token, options } = issue(root, 'full', { now: () => now });
++    expect(forgeToken.isValid(root, {
++      ...options,
++      now: () => now + 31_000,
++      env: tokenEnv(token),
++    })).toBe(true);
+   });
+ 
+-  describe('consume()', () => {
+-    test('should return true for a fresh token', () => {
+-      forgeToken.write(tmpDir);
+-
+-      expect(forgeToken.consume(tmpDir)).toBe(true);
+-    });
++  test('accepts quick only with its exact gate set and explicit quick child lane', () => {
++    const { token, options } = issue(root, 'quick');
++    expect(forgeToken.isValid(root, {
++      ...options,
++      env: tokenEnv(token, { [QUICK_ENV]: 'quick' }),
++    })).toBe(true);
++    expect(forgeToken.isValid(root, { ...options, env: tokenEnv(token) })).toBe(false);
++  });
+ 
+-    test('should delete the token file after consuming', () => {
+-      forgeToken.write(tmpDir);
+-      forgeToken.consume(tmpDir);
++  test('rejects a full proof when a stale inherited quick lane reaches the child', () => {
++    const { token, options } = issue(root);
++    expect(forgeToken.isValid(root, {
++      ...options,
++      env: tokenEnv(token, { [QUICK_ENV]: 'quick' }),
++    })).toBe(false);
++  });
+ 
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      expect(fs.existsSync(tokenPath)).toBe(false);
+-    });
++  test('rejects missing nonce, malformed nonce, tampering, and corrupted JSON', () => {
++    const { token, options } = issue(root);
++    expect(forgeToken.isValid(root, { ...options, env: {} })).toBe(false);
++    expect(forgeToken.isValid(root, { ...options, env: tokenEnv({ nonce: '../escape' }) })).toBe(false);
+ 
+-    test('should return false when no token file exists', () => {
+-      expect(forgeToken.consume(tmpDir)).toBe(false);
+-    });
++    const proofPath = forgeToken._internal.resolveProofPath(root, token.nonce, options);
++    const proof = JSON.parse(fs.readFileSync(proofPath, 'utf8'));
++    proof.payload.mode = 'quick';
++    fs.writeFileSync(proofPath, JSON.stringify(proof));
++    expect(forgeToken.isValid(root, { ...options, env: tokenEnv(token) })).toBe(false);
+ 
+-    test('should return false for a stale token (> 30s old)', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      const staleToken = {
+-        nonce: '00000000-0000-0000-0000-000000000000',
+-        timestamp: Date.now() - 31000,
+-      };
+-      fs.writeFileSync(tokenPath, JSON.stringify(staleToken));
++    fs.writeFileSync(proofPath, 'not json');
++    expect(forgeToken.isValid(root, { ...options, env: tokenEnv(token) })).toBe(false);
++  });
+ 
+-      expect(forgeToken.consume(tmpDir)).toBe(false);
+-    });
++  test('rejects missing, extra, duplicate, or mode-mismatched completed gates', () => {
++    for (const gates of [
++      ['branch-protection', 'lint'],
++      ['branch-protection', 'lint', 'tests', 'security'],
++      ['branch-protection', 'lint', 'tests', 'tests'],
++    ]) {
++      const options = deps(root);
++      const snapshot = _pushProof.begin(root, options);
++      expect(() => forgeToken.write(root, { ...options, snapshot, mode: 'full', gates })).toThrow();
++    }
++
++    for (const mode of ['toString', 'constructor', '__proto__', 'unknown']) {
++      const options = deps(root);
++      const snapshot = _pushProof.begin(root, options);
++      expect(() => forgeToken.write(root, { ...options, snapshot, mode, gates: [] })).toThrow();
++    }
++
++    const options = deps(root);
++    const snapshot = _pushProof.begin(root, options);
++    expect(() => forgeToken.write(root, {
++      ...options,
++      snapshot,
++      mode: 'full',
++      gates: FULL_GATES,
++      receiptIdentity: '',
++    })).toThrow();
++  });
+ 
+-    test('should still delete stale token file (cleanup)', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      const staleToken = {
+-        nonce: '00000000-0000-0000-0000-000000000000',
+-        timestamp: Date.now() - 31000,
+-      };
+-      fs.writeFileSync(tokenPath, JSON.stringify(staleToken));
++  test('rejects changed HEAD, runtime, test runtime, tracked content, and untracked content', () => {
++    const issued = issue(root);
++    for (const changed of [
++      { head: 'b'.repeat(40) },
++      { runtime: 'other-runtime' },
++      { testRuntime: 'other-test-runtime' },
++      { clean: false },
++    ]) {
++      expect(forgeToken.isValid(root, {
++        ...issued.options,
++        capturePushState: () => ({ ...BASE_STATE, ...changed }),
++        env: tokenEnv(issued.token),
++      })).toBe(false);
++    }
++  });
+ 
+-      forgeToken.consume(tmpDir);
++  test('rejects switching to a protected branch at the identical HEAD', () => {
++    const { token, options } = issue(root);
++    expect(forgeToken.isValid(root, {
++      ...options,
++      capturePushState: () => ({ ...BASE_STATE, branch: 'refs/heads/main' }),
++      env: tokenEnv(token),
++    })).toBe(false);
++  });
+ 
+-      expect(fs.existsSync(tokenPath)).toBe(false);
+-    });
++  test('rejects a proof copied into another worktree', () => {
++    const { token, options } = issue(root);
++    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-push-proof-other-'));
++    try {
++      const otherOptions = deps(other, { state: { ...BASE_STATE, worktree: 'worktree-b' } });
++      const target = forgeToken._internal.resolveProofPath(other, token.nonce, otherOptions);
++      fs.mkdirSync(path.dirname(target), { recursive: true });
++      fs.copyFileSync(forgeToken._internal.resolveProofPath(root, token.nonce, options), target);
++      expect(forgeToken.isValid(other, { ...otherOptions, env: tokenEnv(token) })).toBe(false);
++    } finally {
++      fs.rmSync(other, { recursive: true, force: true });
++    }
++  });
+ 
+-    test('should return false for corrupted token and delete it', () => {
+-      const tokenPath = path.join(tmpDir, '.forge-push-token');
+-      fs.writeFileSync(tokenPath, 'garbage data');
++  test('rejects unknown, ended, and PID-reused owners', () => {
++    const { token, options } = issue(root);
++    expect(forgeToken.isValid(root, {
++      ...options,
++      getProcessIdentity: () => null,
++      env: tokenEnv(token),
++    })).toBe(false);
++    expect(forgeToken.isValid(root, {
++      ...options,
++      getProcessIdentity: () => 'process-4242-start-b',
++      env: tokenEnv(token),
++    })).toBe(false);
++  });
+ 
+-      expect(forgeToken.consume(tmpDir)).toBe(false);
+-      expect(fs.existsSync(tokenPath)).toBe(false);
+-    });
++  test('tracks a real short-lived owner process without sleeping 30 seconds', async () => {
++    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
++      stdio: 'ignore',
++      windowsHide: true,
++    });
++    const exited = new Promise(resolve => child.once('exit', resolve));
++    try {
++      let identity = null;
++      for (let attempt = 0; attempt < 50 && !identity; attempt++) {
++        identity = defaultGetProcessIdentity(child.pid);
++        if (!identity) await new Promise(resolve => setTimeout(resolve, 20));
++      }
++      expect(identity).toBeTruthy();
++
++      const options = deps(root, {
++        processPid: child.pid,
++        getProcessIdentity: defaultGetProcessIdentity,
++      });
++      const snapshot = _pushProof.begin(root, options);
++      const token = forgeToken.write(root, {
++        ...options,
++        snapshot,
++        mode: 'full',
++        gates: FULL_GATES,
++        receiptIdentity: 'fresh-tests',
++      });
++      expect(forgeToken.isValid(root, { ...options, env: tokenEnv(token) })).toBe(true);
++
++      child.kill();
++      await exited;
++      expect(forgeToken.isValid(root, { ...options, env: tokenEnv(token) })).toBe(false);
++    } finally {
++      if (child.exitCode === null && child.signalCode === null) child.kill();
++      await exited;
++    }
++  });
+ 
+-    test('should be one-time use — second consume returns false', () => {
+-      forgeToken.write(tmpDir);
++  test('consume deletes only its own invocation proof', () => {
++    const first = issue(root);
++    const second = issue(root);
++    const firstPath = forgeToken._internal.resolveProofPath(root, first.token.nonce, first.options);
++    const secondPath = forgeToken._internal.resolveProofPath(root, second.token.nonce, second.options);
+ 
+-      expect(forgeToken.consume(tmpDir)).toBe(true);
+-      expect(forgeToken.consume(tmpDir)).toBe(false);
+-    });
++    expect(forgeToken.consume(root, { ...first.options, env: tokenEnv(first.token) })).toBe(true);
++    expect(fs.existsSync(firstPath)).toBe(false);
++    expect(fs.existsSync(secondPath)).toBe(true);
++    expect(forgeToken.isValid(root, { ...second.options, env: tokenEnv(second.token) })).toBe(true);
+   });
+ 
+-  describe('.gitignore entry', () => {
+-    test('.gitignore in the real project contains .forge-push-token', () => {
+-      const projectRoot = path.resolve(__dirname, '..');
+-      const gitignore = fs.readFileSync(
+-        path.join(projectRoot, '.gitignore'),
+-        'utf8',
+-      );
+-
+-      expect(gitignore).toContain('.forge-push-token');
+-    });
++  test('the ignored legacy marker stays ignored and proof files never dirty the worktree', () => {
++    const { token, options } = issue(root);
++    expect(forgeToken._internal.resolveProofPath(root, token.nonce, options))
++      .toContain(path.join('.git', 'forge', 'push-tokens'));
++    expect(fs.readFileSync(path.resolve(__dirname, '..', '.gitignore'), 'utf8'))
++      .toContain('.forge-push-token');
++    forgeToken.consume(root, { ...options, env: tokenEnv(token) });
+   });
+ });
+diff --git a/test/commands/github-indirect-routes.test.js b/test/commands/github-indirect-routes.test.js
+index 8a9d4833..8a209be4 100644
+--- a/test/commands/github-indirect-routes.test.js
++++ b/test/commands/github-indirect-routes.test.js
+@@ -158,6 +158,7 @@ describe('indirect GitHub account boundaries', () => {
+   test('push and session-start hand workers project metadata, never private context', async () => {
+     const triggers = [];
+     const result = await push.handler([], { quick: true }, ROOT, {
++      env: { PATH: 'C:/synthetic-tools' },
+       execFileSync: (cmd, args, opts) => { clean(opts || {}); return args[0] === 'branch' ? 'test' : ROOT; },
+       spawnSync: (_cmd, _args, opts) => { clean(opts); return { status: 0 }; },
+       existsSync: () => false, writeForgeToken: () => {}, log: () => {},
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index d1e73446..a24a88c6 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -12,6 +12,7 @@ const { describe, test, expect } = require('bun:test');
+ 
+ // We will require push.js once it exists — for now these tests should RED
+ const pushModule = require('../../lib/commands/push.js');
++const { executeCommand } = require('../../lib/commands/_registry.js');
+ const {
+ 	QUICK_LANE_ENV_VAR,
+ 	QUICK_LANE_VALUE,
+@@ -24,6 +25,7 @@ const FORGE_MANIFEST = JSON.stringify({
+ 	bin: { forge: 'bin/forge.js' },
+ 	scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
+ });
++const PUSH_NONCE_ENV_VAR = 'FORGE_PUSH_NONCE';
+ 
+ function isForgeFullRunnerCall(cmd, args) {
+ 	return cmd === 'node' && args[0] === 'scripts/test-full-suite.js';
+@@ -195,7 +197,8 @@ describe('Forge Push Command', () => {
+ 				args: ['scripts/test-full-suite.js'],
+ 				opts: expect.objectContaining({ cwd: '/fake/project' }),
+ 			});
+-			expect(runnerCall.opts.env).toBeUndefined();
++			expect(runnerCall.opts.env[PUSH_NONCE_ENV_VAR]).toBeUndefined();
++			expect(runnerCall.opts.env[QUICK_LANE_ENV_VAR]).toBeUndefined();
+ 			expect(spawnCalls.some(call => call.args.includes('run') && call.args.includes('test'))).toBe(false);
+ 		});
+ 
+@@ -376,7 +379,7 @@ describe('Forge Push Command', () => {
+ 					}
+ 					return { status: 0 };
+ 				},
+-				env: { ...process.env, FORGE_TEST_TIMEOUT_MS: '1234567' },
++				env: { PATH: 'C:/synthetic-tools', FORGE_TEST_TIMEOUT_MS: '1234567' },
+ 			});
+ 
+ 			await pushModule.handler([], {}, '/fake/project', deps);
+@@ -594,6 +597,43 @@ describe('Forge Push Command', () => {
+ 			expect(pushCall.args).toEqual(['push', '--', 'origin', 'feat/slug']);
+ 		});
+ 
++		test.each([
++			[['-u', 'origin', 'feat/slug'], ['push', '-u', 'origin', 'feat/slug']],
++			[[
++				'--',
++				'--force-with-lease=refs/heads/feat/slug:0123456789abcdef0123456789abcdef01234567',
++				'origin',
++				'feat/slug',
++			], [
++				'push',
++				'--force-with-lease=refs/heads/feat/slug:0123456789abcdef0123456789abcdef01234567',
++				'origin',
++				'feat/slug',
++			]],
++		])('preserves Git argv through registry dispatch without a network push', async (argv, expected) => {
++			const execCalls = [];
++			const result = await executeCommand(
++				new Map([['push', pushModule]]),
++				'push',
++				argv,
++				{},
++				'/fake/project',
++				{
++					skipEnsureHome: true,
++					commandOpts: makeDeps({
++						execFileSync: (cmd, args) => {
++							execCalls.push({ cmd, args: [...args] });
++							return '';
++						},
++					}),
++				},
++			);
++
++			expect(result.success).toBe(true);
++			expect(execCalls.find(call => call.cmd === 'git' && call.args[0] === 'push').args)
++				.toEqual(expected);
++		});
++
+ 		test('should declare the quick lane on the spawned git push env in quick mode', async () => {
+ 			const execCalls = [];
+ 			const deps = makeDeps({
+@@ -667,6 +707,116 @@ describe('Forge Push Command', () => {
+ 	});
+ 
+ 	describe('Forge push nonce token', () => {
++		test.each([
++			[false, 'full', ['branch-protection', 'lint', 'tests']],
++			[true, 'quick', ['branch-protection', 'lint']],
++		])('captures clean state before gates and signs only completed gates (quick=%s)', async (quick, mode, gates) => {
++			const order = [];
++			let writeOptions;
++			const deps = makeDeps({
++				beginPushProof: () => { order.push('snapshot'); return { clean: true, branch: 'refs/heads/feature' }; },
++				execFileSync: (cmd, args) => {
++					if (cmd === 'node' && args[0].includes('branch-protection.js')) order.push('branch');
++					return '';
++				},
++				spawnSync: (_cmd, args) => {
++					if (args.includes('lint')) order.push('lint');
++					if (isForgeFullRunnerCall('node', args)) order.push('tests');
++					return { status: 0 };
++				},
++				writeForgeToken: (_root, options) => {
++					order.push('write');
++					writeOptions = options;
++					return { nonce: '00000000-0000-4000-8000-000000000000' };
++				},
++				consumeForgeToken: () => true,
++			});
++
++			await pushModule.handler([], quick ? { '--quick': true } : {}, '/fake/project', deps);
++
++			expect(order[0]).toBe('snapshot');
++			expect(order.indexOf('write')).toBeGreaterThan(order.indexOf('lint'));
++			expect(writeOptions).toMatchObject({ mode, gates });
++			expect(writeOptions.snapshot).toEqual({ clean: true, branch: 'refs/heads/feature' });
++		});
++
++		test('passes validation receipt identity into the signed invocation proof', async () => {
++			let writeOptions;
++			await pushModule.handler([], {}, '/fake/project', makeDeps({
++				verifyValidationReceipt: () => ({ valid: true, identity: 'receipt-signature-hash' }),
++				beginPushProof: () => ({ clean: true }),
++				writeForgeToken: (_root, options) => {
++					writeOptions = options;
++					return { nonce: '00000000-0000-4000-8000-000000000000' };
++				},
++				consumeForgeToken: () => true,
++			}));
++
++			expect(writeOptions.receiptIdentity).toBe('receipt-signature-hash');
++		});
++
++		test('puts only the fresh nonce and declared lane in the Git child environment', async () => {
++			const parentEnv = {
++				PATH: '/tools',
++				[PUSH_NONCE_ENV_VAR]: 'stale-parent-nonce',
++				[QUICK_LANE_ENV_VAR]: 'stale-parent-lane',
++			};
++			let childEnv;
++			const deps = makeDeps({
++				env: parentEnv,
++				beginPushProof: () => ({ clean: true }),
++				writeForgeToken: () => ({ nonce: '00000000-0000-4000-8000-000000000000' }),
++				consumeForgeToken: () => true,
++				execFileSync: (cmd, args, options) => {
++					if (cmd === 'git' && args[0] === 'push') childEnv = options.env;
++					return '';
++				},
++			});
++
++			await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(childEnv[PUSH_NONCE_ENV_VAR]).toBe('00000000-0000-4000-8000-000000000000');
++			expect(childEnv[QUICK_LANE_ENV_VAR]).toBeUndefined();
++			expect(parentEnv).toEqual({
++				PATH: '/tools',
++				[PUSH_NONCE_ENV_VAR]: 'stale-parent-nonce',
++				[QUICK_LANE_ENV_VAR]: 'stale-parent-lane',
++			});
++		});
++
++		test.each([false, true])('revokes its own proof in finally when Git push fails=%s', async fails => {
++			const consumed = [];
++			const deps = makeDeps({
++				beginPushProof: () => ({ clean: true }),
++				writeForgeToken: () => ({ nonce: '00000000-0000-4000-8000-000000000000' }),
++				consumeForgeToken: (_root, options) => consumed.push(options.nonce),
++				execFileSync: (cmd, args) => {
++					if (fails && cmd === 'git' && args[0] === 'push') throw new Error('push failed');
++					return '';
++				},
++			});
++
++			const result = await pushModule.handler([], {}, '/fake/project', deps);
++
++			expect(result.success).toBe(!fails);
++			expect(consumed).toEqual(['00000000-0000-4000-8000-000000000000']);
++		});
++
++		test('token write failure scrubs inherited authority and falls back to ordinary hooks', async () => {
++			let childEnv;
++			await pushModule.handler([], {}, '/fake/project', makeDeps({
++				env: { [PUSH_NONCE_ENV_VAR]: 'stale' },
++				beginPushProof: () => ({ clean: true }),
++				writeForgeToken: () => { throw new Error('read-only metadata'); },
++				execFileSync: (cmd, args, options) => {
++					if (cmd === 'git' && args[0] === 'push') childEnv = options.env;
++					return '';
++				},
++			}));
++
++			expect(childEnv[PUSH_NONCE_ENV_VAR]).toBeUndefined();
++		});
++
+ 		test('should call writeForgeToken before git push on success', async () => {
+ 			let tokenWritten = false;
+ 			const execCalls = [];
+@@ -839,17 +989,19 @@ describe('Forge Push Command', () => {
+ function makeDeps(overrides = {}) {
+ 	const noop = () => '';
+ 	return {
++		env: overrides.env || { PATH: 'C:/synthetic-tools' },
+ 		execFileSync: overrides.execFileSync || noop,
+ 		spawnSync: overrides.spawnSync || ((_cmd, _args, _opts) => ({ status: 0 })),
+ 		existsSync: overrides.existsSync || (() => true), // bun.lock exists by default
+ 		readFileSync: overrides.readFileSync || (() => FORGE_MANIFEST),
+ 		log: overrides.log || (() => {}),
+ 		writeForgeToken: overrides.writeForgeToken || (() => {}),
++		consumeForgeToken: overrides.consumeForgeToken || (() => false),
++		beginPushProof: overrides.beginPushProof || (() => ({ clean: true })),
+ 		verifyValidationReceipt: overrides.verifyValidationReceipt || (() => ({ valid: false, reason: 'missing' })),
+ 		fireAndForget: () => {},
+ 		_ensureBackingIssue: async () => null,
+ 		_kernelDriver: {},
+ 		_kernelBroker: {},
+-		...(overrides.env ? { env: overrides.env } : {}),
+ 	};
+ }
+diff --git a/test/pr-monitor/auto-trigger-wiring.test.js b/test/pr-monitor/auto-trigger-wiring.test.js
+index b5b80607..0b34b05c 100644
+--- a/test/pr-monitor/auto-trigger-wiring.test.js
++++ b/test/pr-monitor/auto-trigger-wiring.test.js
+@@ -10,6 +10,7 @@ const { executeShip, maybeTriggerShepherdAfterShip } = require('../../lib/comman
+ 
+ function successfulPushDeps(fireAndForget) {
+ 	return {
++		env: { PATH: 'C:/synthetic-tools' },
+ 		execFileSync: () => '',
+ 		spawnSync: () => ({ status: 0 }),
+ 		existsSync: () => true,
+diff --git a/test/push-backing-issue.test.js b/test/push-backing-issue.test.js
+index fbe49cce..cd9d8a67 100644
+--- a/test/push-backing-issue.test.js
++++ b/test/push-backing-issue.test.js
+@@ -55,6 +55,7 @@ describe('push auto-file rail (autoFileBackingIssueForPush)', () => {
+ describe('push handler wires the rail non-blockingly', () => {
+   function pushDeps(ensureImpl) {
+     return {
++      env: { PATH: 'C:/synthetic-tools' },
+       execFileSync: fakeExec('feat/foo'),
+       spawnSync: () => ({ status: 0 }),        // lint passes
+       existsSync: () => false,                 // npm default; no lockfiles
+diff --git a/test/validation-receipt.test.js b/test/validation-receipt.test.js
+index e3703a1e..846e7dd0 100644
+--- a/test/validation-receipt.test.js
++++ b/test/validation-receipt.test.js
+@@ -10,6 +10,7 @@ const {
+ 	completeValidation,
+ 	resolveReceiptPath,
+ 	verifyValidationReceipt,
++	_pushProof,
+ } = require('../lib/validation-receipt');
+ 
+ function createRepo() {
+@@ -71,7 +72,10 @@ describe('validation receipt', () => {
+ 			const snapshot = beginValidation(root, deps);
+ 			expect(snapshot).toBeTruthy();
+ 			expect(completeValidation(root, snapshot, fullPass(), deps)).toBe(true);
+-			expect(verifyValidationReceipt(root, deps)).toMatchObject({ valid: true });
++			expect(verifyValidationReceipt(root, deps)).toMatchObject({
++				valid: true,
++				identity: expect.stringMatching(/^[a-f0-9]{64}$/),
++			});
+ 		} finally {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+@@ -124,4 +128,71 @@ describe('validation receipt', () => {
+ 			fs.rmSync(repo.root, { recursive: true, force: true });
+ 		}
+ 	});
++
++	test('push proof binds exact clean state and symbolic branch without changing receipt semantics', () => {
++		const { root, homeDir } = createRepo();
++		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
++		try {
++			execFileSync('git', ['switch', '-q', '-c', 'feature'], { cwd: root });
++			const snapshot = _pushProof.begin(root, deps);
++			const proof = _pushProof.create(root, snapshot, {
++				nonce: '00000000-0000-4000-8000-000000000000',
++				mode: 'full',
++				gates: ['branch-protection', 'lint', 'tests'],
++				owner: { pid: 42, identity: 'process-start-a' },
++				receiptIdentity: 'fresh-tests',
++			}, deps);
++			expect(_pushProof.verify(root, proof, {
++				nonce: proof.payload.nonce,
++				env: {},
++			}, deps)).toMatchObject({ valid: true });
++
++			execFileSync('git', ['switch', '-q', '-c', 'main'], { cwd: root });
++			expect(_pushProof.verify(root, proof, {
++				nonce: proof.payload.nonce,
++				env: {},
++			}, deps)).toMatchObject({ valid: false, reason: 'state' });
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
++	test('push proof refuses to bless mutations made after the pre-gate snapshot', () => {
++		const { root, homeDir } = createRepo();
++		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
++		try {
++			const snapshot = _pushProof.begin(root, deps);
++			fs.writeFileSync(path.join(root, 'tracked.txt'), 'mutated by gate\n');
++			expect(() => _pushProof.create(root, snapshot, {
++				nonce: '00000000-0000-4000-8000-000000000000',
++				mode: 'full',
++				gates: ['branch-protection', 'lint', 'tests'],
++				owner: { pid: 42, identity: 'process-start-a' },
++				receiptIdentity: 'fresh-tests',
++			}, deps)).toThrow('state changed');
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
++
++	test('never accepts a signed push proof as a full validation receipt', () => {
++		const { root, homeDir } = createRepo();
++		const deps = { homeDir, runtimeIdentity: 'forge-runtime', testRuntimeIdentity: 'bun-a' };
++		try {
++			const snapshot = _pushProof.begin(root, deps);
++			const proof = _pushProof.create(root, snapshot, {
++				nonce: '00000000-0000-4000-8000-000000000000',
++				mode: 'full',
++				gates: ['branch-protection', 'lint', 'tests'],
++				owner: { pid: 42, identity: 'process-start-a' },
++				receiptIdentity: 'fresh-tests',
++			}, deps);
++			fs.mkdirSync(path.dirname(resolveReceiptPath(root, deps)), { recursive: true });
++			fs.writeFileSync(resolveReceiptPath(root, deps), JSON.stringify(proof));
++
++			expect(verifyValidationReceipt(root, deps)).toMatchObject({ valid: false });
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	});
+ });
+-- 
+2.51.0.windows.1
+

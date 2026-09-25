@@ -1,0 +1,114 @@
+From 9c44fc2a9a7891024a463014e8c648c3c738ef7f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 5 Aug 2026 20:33:44 +0530
+Subject: [PATCH] fix(test): reject incomplete shard assignments
+
+---
+ scripts/test-full-suite.js           | 25 +++++++++++++++++++++++++
+ test/scripts/test-full-suite.test.js | 25 ++++++++++++++++++++++++-
+ 2 files changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index bea7360b..a27233da 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -82,6 +82,29 @@ function walkAllTests(dir) {
+   return results;
+ }
+ 
++function assertExactShardAssignment(allTests, shardSpecs) {
++  const expectedFiles = new Set(allTests);
++  const assignedFiles = new Set();
++
++  for (const shard of shardSpecs) {
++    for (const file of shard.files) {
++      if (!expectedFiles.has(file)) {
++        throw new Error(`Test file ${file} is not part of the full suite`);
++      }
++      if (assignedFiles.has(file)) {
++        throw new Error(`Test file ${file} belongs to more than exactly one shard`);
++      }
++      assignedFiles.add(file);
++    }
++  }
++
++  for (const file of expectedFiles) {
++    if (!assignedFiles.has(file)) {
++      throw new Error(`Test file ${file} was omitted from the shard assignment`);
++    }
++  }
++}
++
+ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
+   const specs = [];
+   for (let shardIndex = 0; shardIndex < shardTotal; shardIndex += 1) {
+@@ -101,6 +124,7 @@ function buildShardSpecs(allTests, shardTotal, durationMap = new Map()) {
+       source: plan.source,
+     });
+   }
++  assertExactShardAssignment(allTests, specs);
+   return specs;
+ }
+ 
+@@ -233,6 +257,7 @@ if (require.main === module) {
+ }
+ 
+ module.exports = {
++  assertExactShardAssignment,
+   buildShardSpecs,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 469865b8..a14ac80a 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
+ const { describe, expect, test } = require('bun:test');
+ 
+ const {
++  assertExactShardAssignment,
+   buildShardSpecs,
+   getDefaultShardCount,
+   listAllFullSuiteTests,
+@@ -38,8 +39,12 @@ describe('scripts/test-full-suite.js', () => {
+       ['packages/skills/test/a.test.js', 500],
+     ]));
+ 
++    const assignedFiles = specs.flatMap((spec) => spec.files);
++
+     expect(specs).toHaveLength(2);
+-    expect(specs.flatMap((spec) => spec.files).sort()).toEqual([
++    expect(assignedFiles).toHaveLength(4);
++    expect(new Set(assignedFiles)).toHaveLength(4);
++    expect(assignedFiles.sort()).toEqual([
+       'packages/skills/test/a.test.js',
+       'test/a.test.js',
+       'test/b.test.js',
+@@ -47,6 +52,24 @@ describe('scripts/test-full-suite.js', () => {
+     ]);
+   });
+ 
++  test('rejects duplicate test files instead of accepting overlapping shard evidence', () => {
++    expect(() => buildShardSpecs([
++      'test/a.test.js',
++      'test/b.test.js',
++      'test/overlap.test.js',
++      'test/overlap.test.js',
++      'test/c.test.js',
++      'test/d.test.js',
++    ], 4)).toThrow(/exactly one shard/);
++  });
++
++  test('rejects an omitted full-suite test file', () => {
++    expect(() => assertExactShardAssignment([
++      'test/a.test.js',
++      'test/b.test.js',
++    ], [{ files: ['test/a.test.js'] }])).toThrow(/omitted/);
++  });
++
+   test('listAllFullSuiteTests includes repo-level script tests', () => {
+     expect(listAllFullSuiteTests()).toContain('scripts/release-asset.test.js');
+   });
+-- 
+2.51.0.windows.1
+

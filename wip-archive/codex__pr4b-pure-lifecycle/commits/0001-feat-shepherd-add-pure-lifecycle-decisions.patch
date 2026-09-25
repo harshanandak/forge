@@ -1,0 +1,476 @@
+From f3a8b7058820f1e284c9a60b16929353a16f7fa5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:12:11 +0530
+Subject: [PATCH] feat(shepherd): add pure lifecycle decisions
+
+---
+ lib/pr-monitor/auto-actions.js       |  93 ++++++++++++++++++++++++++-
+ lib/pr-monitor/events.js             | Bin 3705 -> 5592 bytes
+ lib/pr-monitor/reconcile.js          | Bin 6290 -> 10651 bytes
+ test/pr-monitor/auto-actions.test.js |  71 +++++++++++++++++++-
+ test/pr-monitor/events.test.js       |  40 +++++++++++-
+ test/pr-monitor/reconcile.test.js    |  65 ++++++++++++++++++-
+ 6 files changed, 264 insertions(+), 5 deletions(-)
+
+diff --git a/lib/pr-monitor/auto-actions.js b/lib/pr-monitor/auto-actions.js
+index a2cdc904..236ea944 100644
+--- a/lib/pr-monitor/auto-actions.js
++++ b/lib/pr-monitor/auto-actions.js
+@@ -35,6 +35,17 @@ const INFRA_CONCLUSIONS = new Set(['CANCELLED', 'TIMED_OUT', 'STALE', 'STARTUP_F
+ /** Conclusions that mean the code is genuinely broken — NEVER auto-rerun these. */
+ const REAL_FAILURE_CONCLUSIONS = new Set(['FAILURE', 'ERROR', 'ACTION_REQUIRED']);
+ 
++const AUTO_ACTION_STATUS = Object.freeze({
++  PASS: 'PASS',
++  UNCHANGED: 'UNCHANGED',
++  STALE: 'STALE',
++  INCOMPLETE: 'INCOMPLETE',
++  CONFLICT: 'CONFLICT',
++});
++
++const MAX_AUTO_ACTIONS = 8;
++const MAX_AUTO_ATTEMPTS = 5;
++
+ /**
+  * Pull the numeric Actions run id from a job/run "details" URL
+  * (`.../actions/runs/<run>/job/<job>` or `.../actions/runs/<run>`). Returns null
+@@ -140,7 +151,7 @@ function decideRerun(payload) {
+   }
+ 
+   const runIds = [...new Set(picked.map((p) => p.runId).filter(Boolean))];
+-  if (runIds.length === 0) return empty('no run id derivable from failure jobUrl — fail closed');
++  if (picked.some((item) => !item.runId)) return empty('no run id derivable from failure jobUrl — fail closed');
+   return {
+     should: true,
+     checks: picked,
+@@ -164,6 +175,84 @@ function decideAutoActions(payload, opts = {}) {
+   };
+ }
+ 
++function boundedPolicyValue(value, fallback, maximum) {
++  const selected = value ?? fallback;
++  return Number.isSafeInteger(selected) && selected > 0 && selected <= maximum ? selected : null;
++}
++
++function normalizeActionHistory(history) {
++  if (!Array.isArray(history)) return { ok: false, reason: 'action history is incomplete' };
++  const byKey = new Map();
++  for (const item of history) {
++    if (!item || typeof item.key !== 'string' || !item.key
++      || !['pending', 'applied', 'failed'].includes(item.state)
++      || !Number.isSafeInteger(item.attempts) || item.attempts < 0) {
++      return { ok: false, reason: 'action history is incomplete' };
++    }
++    const prior = byKey.get(item.key);
++    if (prior && (prior.state !== item.state || prior.attempts !== item.attempts)) {
++      return { ok: false, conflict: true, reason: `action history conflicts for ${item.key}` };
++    }
++    if (!prior) byKey.set(item.key, item);
++  }
++  return { ok: true, byKey };
++}
++
++/** Select a deterministic, per-head, bounded action/retry batch. */
++function decideBoundedAutoActions(payload, opts = {}) {
++  const closed = (status, reason) => ({ status, reason, actions: [] });
++  const subjectRevision = payload?.headSha;
++  if (typeof subjectRevision !== 'string' || !/^[0-9a-f]{40}$/i.test(subjectRevision)) {
++    return closed(AUTO_ACTION_STATUS.INCOMPLETE, 'exact head authority is incomplete');
++  }
++  if (opts.expectedRevision != null && opts.expectedRevision !== subjectRevision) {
++    return closed(AUTO_ACTION_STATUS.STALE, 'payload head does not match expected revision');
++  }
++  const maxActions = boundedPolicyValue(opts.maxActions, 1, MAX_AUTO_ACTIONS);
++  const maxAttempts = boundedPolicyValue(opts.maxAttempts, 2, MAX_AUTO_ATTEMPTS);
++  if (maxActions == null || maxAttempts == null) {
++    return closed(AUTO_ACTION_STATUS.INCOMPLETE, 'auto-action policy exceeds bounded limits');
++  }
++  const history = normalizeActionHistory(opts.history || []);
++  if (!history.ok) {
++    return closed(history.conflict ? AUTO_ACTION_STATUS.CONFLICT : AUTO_ACTION_STATUS.INCOMPLETE, history.reason);
++  }
++
++  const decision = decideAutoActions(payload, opts);
++  if (decision.updateBranch.should && decision.rerunFlaky.should) {
++    return closed(AUTO_ACTION_STATUS.CONFLICT, 'payload authorizes conflicting update and rerun actions');
++  }
++
++  const candidates = [];
++  if (decision.updateBranch.should) {
++    candidates.push({ type: 'updateBranch', key: `updateBranch:${subjectRevision}`, subjectRevision });
++  }
++  if (decision.rerunFlaky.should) {
++    for (const runId of [...decision.rerunFlaky.runIds].sort()) {
++      candidates.push({
++        type: 'rerunFlaky',
++        key: `rerunFlaky:${subjectRevision}:${runId}`,
++        subjectRevision,
++        runId,
++      });
++    }
++  }
++
++  const actions = [];
++  for (const candidate of candidates) {
++    const prior = history.byKey.get(candidate.key);
++    if (prior && (prior.state === 'pending' || prior.state === 'applied' || prior.attempts >= maxAttempts)) continue;
++    actions.push({ ...candidate, attempt: prior ? prior.attempts + 1 : 1 });
++    if (actions.length === maxActions) break;
++  }
++  if (actions.length === 0) {
++    return closed(AUTO_ACTION_STATUS.UNCHANGED, candidates.length === 0
++      ? 'no safe auto-action transition'
++      : 'identical actions are pending, applied, or retry-exhausted');
++  }
++  return { status: AUTO_ACTION_STATUS.PASS, reason: 'bounded auto-actions selected', actions };
++}
++
+ module.exports = {
+   decideAutoActions,
+   decideUpdateBranch,
+@@ -172,4 +261,6 @@ module.exports = {
+   isDegraded,
+   INFRA_CONCLUSIONS,
+   REAL_FAILURE_CONCLUSIONS,
++  AUTO_ACTION_STATUS,
++  decideBoundedAutoActions,
+ };
+diff --git a/lib/pr-monitor/events.js b/lib/pr-monitor/events.js
+index 0ef220d92ddda08cb6a6ad98b8f80ca6f73d12de..5fccdf486d980eaecdf461da74e89b5dcf49ad99 100644
+GIT binary patch
+delta 1879
+zcmb7F&2G~`5SBO^fz%ThkfuUvk`mkssh6gyD4{^4HbG5#Mq7KFm^!;*cij-$$Pdvc
+z;K~V!m*Ew71WqvPpN*S_pdO;EXU8+&%zWSY_v4?>zJI%y^iK{ty>`Fd?R@C<5BjG)
+zXhQewBYN5mB;psWUOE7+cL$xfhp%^`lAkJdvYvM4c6&~5DAds*d8hxWrQK<DkKZ31
+z_KkV|@Fcx#bvtj4+O58cpC8FStNr+T@A&>s5OYt5f`cbU;|MkOCF3eIrs@TYVyuC|
+zC{f3f!z&>oWc>P%^E4qVz{UpX=@>--sk5u%w7e6%2$hN2Y&M~yv<&&6Vw{(Hxe@Y#
+z9>P9s7eQD0?KR=WPO?+@cH+?)N;gzJ7GRre9H7jwy9z(W$UQ1zo;x?eeiOE94QJ*!
+zTbr8>Y(gtyN`=7`1V<{^k3E#2Z98BR>Y<1=b&9Kalu${aw2*9oAS5vGBH^98(908;
+zkf8!SG}k_w766MWgbekx0p!J^=LJB@H;&lUyudsU#~OWt5lvw-L=K@=CYr~%;GxGN
+z10m7Kweb&qIvA@<K3k3*sE;09mBu-iG!+r6I&l1~v$=)=RM(e`KJ&P`f@<*=tT%zj
+zQDi!4-bfbNQaILXS!hd|OKKC-vD$@OdT{4tt%EmYe1QHg1T0cmr<O1!IMKE=1KU7I
+zOzFIUUV&MI_%NfNDXG9h{7XUK0a32H5*#h#GMbQ+I#`rg#gsU*0K;_AauD{QfMsoW
+zz?G`KgeqClCCjRjxF8~(G4FiBq_0-OGgAF0K-vs*qM1%ZLS;|W-C*{BB_VCNfS8VQ
+zOoZ2V5Vdp@ly6dorIBDp%+}t}2FsVtYThKp$}9C`MN3FAg<!ZK4Hr_%Tar;HBhR`m
+zrWnsMDkqD(-7U833P6gDutXQIgBmggei#HOjjD673)pV9C0VK``=wX`!j@M?lI@=o
+vL2hQdo$Tdl&;74fI8JDX79uU>qeR!g9@N)vZG`K!hxiC!ae2`PtKs|w<REH{
+
+delta 24
+gcmcbi{ZnScDyGf;%r4xMRYcV%Cx|98*IIJ{0Cn#N>Hq)$
+
+diff --git a/lib/pr-monitor/reconcile.js b/lib/pr-monitor/reconcile.js
+index d8f3b5c5ee1a218c27fbf50de13914024e98e8f8..6f93fdc917ef9f9186467256bbe2bf9ffc25f847 100644
+GIT binary patch
+literal 10651
+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
+
+delta 25
+hcmbOoJjrl_GRNdc8fu$;#We*cM`+5hDAZbW0RVNC2etqJ
+
+diff --git a/test/pr-monitor/auto-actions.test.js b/test/pr-monitor/auto-actions.test.js
+index 22192eda..12f57e80 100644
+--- a/test/pr-monitor/auto-actions.test.js
++++ b/test/pr-monitor/auto-actions.test.js
+@@ -7,6 +7,8 @@ const {
+   decideUpdateBranch,
+   decideRerun,
+   runIdFromUrl,
++  decideBoundedAutoActions,
++  AUTO_ACTION_STATUS,
+ } = require('../../lib/pr-monitor/auto-actions');
+ 
+ /** An otherwise-clean-behind payload; override any field per test. */
+@@ -180,8 +182,11 @@ describe('decideRerun — flaky required-check rerun gate', () => {
+ 
+   test('infra conclusion but no derivable run id → NO rerun', () => {
+     const d = decideRerun(behindPayload({
+-      requiredChecks: { failing: ['test'] },
+-      failures: [{ name: 'test', conclusion: 'CANCELLED', jobUrl: 'not-a-url' }],
++      requiredChecks: { failing: ['known', 'unknown'] },
++      failures: [
++        { name: 'known', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/1/job/2' },
++        { name: 'unknown', conclusion: 'TIMED_OUT', jobUrl: 'not-a-url' },
++      ],
+     }));
+     expect(d.should).toBe(false);
+     expect(d.reason).toContain('run id');
+@@ -221,3 +226,65 @@ describe('decideAutoActions — combined', () => {
+     expect(d.rerunFlaky.should).toBe(false);
+   });
+ });
++
++describe('decideBoundedAutoActions - idempotency and retry bounds', () => {
++  function flakyPayload(over = {}) {
++    return behindPayload({
++      headSha: 'a'.repeat(40),
++      verdict: 'BLOCKED-CHECKS',
++      blockers: [{ type: 'check-failing', detail: 'infra' }],
++      requiredChecks: { failing: ['one', 'two'] },
++      failures: [
++        { name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' },
++        { name: 'two', conclusion: 'TIMED_OUT', jobUrl: 'https://github.com/o/r/actions/runs/22/job/2' },
++      ],
++      ...over,
++    });
++  }
++
++  test('selects at most the configured number of deterministic actions', () => {
++    const decision = decideBoundedAutoActions(flakyPayload(), { maxActions: 1, maxAttempts: 2 });
++    expect(decision.status).toBe(AUTO_ACTION_STATUS.PASS);
++    expect(decision.actions).toHaveLength(1);
++    expect(decision.actions[0]).toMatchObject({ type: 'rerunFlaky', runId: '11', attempt: 1 });
++  });
++
++  test('failed action retries once, then identical exhausted/applied input consumes no action', () => {
++    const oneFailure = flakyPayload({
++      requiredChecks: { failing: ['one'] },
++      failures: [{ name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' }],
++    });
++    const first = decideBoundedAutoActions(oneFailure, { maxActions: 1, maxAttempts: 2 });
++    const key = first.actions[0].key;
++
++    expect(decideBoundedAutoActions(oneFailure, {
++      maxActions: 1, maxAttempts: 2, history: [{ key, state: 'failed', attempts: 1 }],
++    }).actions[0].attempt).toBe(2);
++
++    for (const prior of [
++      { key, state: 'failed', attempts: 2 },
++      { key, state: 'applied', attempts: 1 },
++      { key, state: 'pending', attempts: 1 },
++    ]) {
++      expect(decideBoundedAutoActions(oneFailure, {
++        maxActions: 1, maxAttempts: 2, history: [prior],
++      })).toMatchObject({ status: AUTO_ACTION_STATUS.UNCHANGED, actions: [] });
++    }
++  });
++
++  test('stale head, incomplete authority, and contradictory decisions fail closed', () => {
++    expect(decideBoundedAutoActions(flakyPayload(), { expectedRevision: 'b'.repeat(40) })).toMatchObject({
++      status: AUTO_ACTION_STATUS.STALE,
++      actions: [],
++    });
++    expect(decideBoundedAutoActions(flakyPayload({ headSha: undefined }))).toMatchObject({
++      status: AUTO_ACTION_STATUS.INCOMPLETE,
++      actions: [],
++    });
++    expect(decideBoundedAutoActions(behindPayload({
++      headSha: 'a'.repeat(40),
++      requiredChecks: { failing: ['one'] },
++      failures: [{ name: 'one', conclusion: 'CANCELLED', jobUrl: 'https://github.com/o/r/actions/runs/11/job/1' }],
++    }))).toMatchObject({ status: AUTO_ACTION_STATUS.CONFLICT, actions: [] });
++  });
++});
+diff --git a/test/pr-monitor/events.test.js b/test/pr-monitor/events.test.js
+index 7bf9de28..0d2347b5 100644
+--- a/test/pr-monitor/events.test.js
++++ b/test/pr-monitor/events.test.js
+@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
+ 
+ const {
+   SCHEMA_VERSION, EVENT_TYPES, makeEvent, finalizeEvent, eventIdentity,
+-  canonicalStringify, fingerprint,
++  canonicalStringify, fingerprint, decideTransition, TRANSITION_STATUS,
+ } = require('../../lib/pr-monitor/events');
+ 
+ describe('events — schema + envelope', () => {
+@@ -50,3 +50,41 @@ describe('events — identity + fingerprint', () => {
+     expect(fingerprint({ x: 1, y: [1, 3] })).not.toBe(a);
+   });
+ });
++
++describe('events - deterministic transition authority', () => {
++  const state = (sequence, value = 'same') => ({ subjectRevision: 'head-a', sequence, value });
++
++  test('identical replay is unchanged and consumes no transition', () => {
++    expect(decideTransition(state(4), state(4))).toEqual({
++      status: TRANSITION_STATUS.UNCHANGED,
++      changed: false,
++      reason: 'identical transition replay',
++    });
++  });
++
++  test('same revision and sequence with different content conflicts closed', () => {
++    expect(decideTransition(state(4), state(4, 'different'))).toMatchObject({
++      status: TRANSITION_STATUS.CONFLICT,
++      changed: false,
++    });
++  });
++
++  test('older sequence is stale and missing authority is incomplete', () => {
++    expect(decideTransition(state(4), state(3))).toMatchObject({
++      status: TRANSITION_STATUS.STALE,
++      changed: false,
++    });
++    expect(decideTransition(state(4), { sequence: 5 })).toMatchObject({
++      status: TRANSITION_STATUS.INCOMPLETE,
++      changed: false,
++    });
++  });
++
++  test('a newer complete sequence is the only actionable transition', () => {
++    expect(decideTransition(state(4), { ...state(5), subjectRevision: 'head-b' })).toEqual({
++      status: TRANSITION_STATUS.CHANGED,
++      changed: true,
++      reason: 'newer complete transition',
++    });
++  });
++});
+diff --git a/test/pr-monitor/reconcile.test.js b/test/pr-monitor/reconcile.test.js
+index 44e55964..52c56503 100644
+--- a/test/pr-monitor/reconcile.test.js
++++ b/test/pr-monitor/reconcile.test.js
+@@ -2,7 +2,7 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ const fs = require('node:fs');
+-const { reconcile } = require('../../lib/pr-monitor/reconcile');
++const { reconcile, decideLifecycle, LIFECYCLE_STATUS } = require('../../lib/pr-monitor/reconcile');
+ 
+ // W-S4a §1/§6: the reconciler is a PURE diff of desired (GitHub ∩ kernel) vs
+ // observed (kernel rows + lease watchers + live pids). Zero I/O — every case here
+@@ -173,3 +173,66 @@ describe('reconcile() — pure diff rules', () => {
+ 		expect(src).not.toMatch(/require\(/); // pure module: no requires at all
+ 	});
+ });
++
++describe('decideLifecycle() - fail-closed lifecycle authority', () => {
++	test('adopts a desired PR once when its recorded watcher is not live', () => {
++		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha5')] };
++		const observed = {
++			lease: { watchers: [{ pr: 5, pid: 100, startedAt: 'old' }] },
++			leaseFresh: true,
++			prRows: [kRow(5, 'sha5')],
++			liveWatcherPids: [],
++		};
++
++		expect(decideLifecycle(desired, observed, NOW)).toEqual({
++			status: LIFECYCLE_STATUS.PASS,
++			reason: 'lifecycle evidence accepted',
++			actions: [{ type: 'startWatcher', pr: { repo: 'owner/r', number: 5, branch: 'feat/5', headSha: 'sha5' } }],
++		});
++	});
++
++	test('identical duplicate desired rows and watcher rows never duplicate actions', () => {
++		const item = pr(5, 'sha5');
++		const watcher = { pr: 9, pid: 99, startedAt: 't9' };
++		const desired = { gitCommonDir: '/r/.git', openPrs: [item, { ...item }] };
++		const observed = {
++			lease: { watchers: [watcher, { ...watcher }] },
++			leaseFresh: true,
++			prRows: [],
++			liveWatcherPids: [{ pid: 99, startedAt: 't9' }],
++		};
++
++		const decision = decideLifecycle(desired, observed, NOW);
++		expect(decision.status).toBe(LIFECYCLE_STATUS.PASS);
++		expect(decision.actions.filter(action => action.type === 'upsertPrRow')).toHaveLength(1);
++		expect(decision.actions.filter(action => action.type === 'startWatcher')).toHaveLength(1);
++		expect(decision.actions.filter(action => action.type === 'stopWatcher')).toHaveLength(1);
++		expect(decision.actions.filter(action => action.type === 'reapOrphan')).toHaveLength(1);
++	});
++
++	test('conflicting duplicate PR authority fails closed with zero actions', () => {
++		const desired = { gitCommonDir: '/r/.git', openPrs: [pr(5, 'sha-a'), pr(5, 'sha-b')] };
++		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
++
++		expect(decideLifecycle(desired, observed, NOW)).toMatchObject({
++			status: LIFECYCLE_STATUS.CONFLICT,
++			actions: [],
++		});
++	});
++
++	test('incomplete enumeration and a stale existing lease both fail closed', () => {
++		const observed = { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] };
++		expect(decideLifecycle({ gitCommonDir: '/r/.git', openPrs: [], listingOk: false }, observed, NOW)).toMatchObject({
++			status: LIFECYCLE_STATUS.INCOMPLETE,
++			actions: [],
++		});
++		expect(decideLifecycle({ gitCommonDir: '/r/.git', openPrs: [] }, {
++			...observed,
++			lease: { watchers: [] },
++			leaseFresh: false,
++		}, NOW)).toMatchObject({
++			status: LIFECYCLE_STATUS.STALE,
++			actions: [],
++		});
++	});
++});
+-- 
+2.51.0.windows.1
+

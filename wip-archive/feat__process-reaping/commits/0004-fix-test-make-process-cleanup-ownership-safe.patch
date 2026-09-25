@@ -1,0 +1,1141 @@
+From 8d3b1432f79ceb3e08730fa375f17cfcb7055669 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 19:10:19 +0530
+Subject: [PATCH] fix(test): make process cleanup ownership-safe
+
+---
+ scripts/process-tree.js              | 213 +++++++++++++++++----------
+ scripts/test-full-suite.js           |   9 +-
+ scripts/test.js                      | 143 +++++++++++++-----
+ test/scripts/process-tree.test.js    |  91 +++++++++++-
+ test/scripts/test-full-suite.test.js |   1 +
+ test/scripts/test-runner.test.js     | 123 +++++++++++-----
+ 6 files changed, 425 insertions(+), 155 deletions(-)
+
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index e1b23414..050dc763 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -8,6 +8,7 @@ const { spawnSync: defaultSpawnSync } = require('node:child_process');
+ 
+ const MANIFEST_ENV = 'FORGE_TEST_PROCESS_MANIFEST';
+ const TOKEN_ENV = 'FORGE_TEST_PROCESS_TOKEN';
++const INSTANCE_ENV = 'FORGE_TEST_PROCESS_INSTANCE';
+ const MANIFEST_VERSION = 1;
+ const DEFAULT_MANIFEST_DIR = path.join(os.tmpdir(), 'forge-test-processes');
+ 
+@@ -38,6 +39,7 @@ function isValidManifestEntry(entry) {
+   if (!nonEmptyString(entry.id) || !nonEmptyString(entry.token)) return false;
+   if (!['reserved', 'running'].includes(entry.status)) return false;
+   if (!nonEmptyString(entry.startedAt)) return false;
++  if (entry.instanceId != null && !nonEmptyString(entry.instanceId)) return false;
+   if (entry.status === 'reserved') {
+     if (entry.pid == null) return entry.identity == null;
+     return normalizePid(entry.pid) === entry.pid
+@@ -51,6 +53,7 @@ function isValidManifest(manifest) {
+     manifest
+       && manifest.version === MANIFEST_VERSION
+       && nonEmptyString(manifest.token)
++      && (manifest.instanceId == null || nonEmptyString(manifest.instanceId))
+       && manifest.owner
+       && typeof manifest.owner === 'object'
+       && normalizePid(manifest.owner.pid) === manifest.owner.pid
+@@ -95,64 +98,56 @@ function defaultIsAlive(pid, processApi) {
+   }
+ }
+ 
+-function defaultGetProcessIdentity(pid, options = {}) {
+-  const normalizedPid = normalizePid(pid);
+-  if (!normalizedPid) return null;
+-  const platform = options.platform || process.platform;
+-  const fsApi = options.fsApi || fs;
+-  const spawnSync = options.spawnSync || defaultSpawnSync;
+-
+-  if (platform !== 'win32') {
+-    try {
+-      const stat = fsApi.readFileSync(`/proc/${normalizedPid}/stat`, 'utf8');
+-      const closeParen = stat.lastIndexOf(')');
+-      if (closeParen >= 0) {
+-        const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
+-        const startTime = nonEmptyString(fields[19]);
+-        if (startTime) return `proc:${startTime}`;
+-      }
+-    } catch {
+-      // Fall through to ps on platforms without procfs.
++function readProcIdentity(pid, fsApi) {
++  try {
++    const stat = fsApi.readFileSync(`/proc/${pid}/stat`, 'utf8');
++    const closeParen = stat.lastIndexOf(')');
++    if (closeParen >= 0) {
++      const startTime = nonEmptyString(stat.slice(closeParen + 2).trim().split(/\s+/)[19]);
++      if (startTime) return `proc:${startTime}`;
+     }
++  } catch {
++    // Fall through to ps on platforms without procfs.
++  }
++  return null;
++}
+ 
+-    try {
+-      const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(normalizedPid)], {
+-        shell: false,
+-        stdio: ['ignore', 'pipe', 'ignore'],
+-        encoding: 'utf8',
+-        windowsHide: true,
+-      });
+-      if (result && !result.error && result.status === 0) {
+-        const value = normalizeIdentity(result.stdout);
+-        if (value) return `ps:${value}`;
+-      }
+-    } catch {
+-      // Unavailable identity evidence is treated as unverifiable.
+-    }
++function readPsIdentity(pid, spawnSync) {
++  try {
++    const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
++      shell: false, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', windowsHide: true,
++    });
++    const value = result && !result.error && result.status === 0
++      ? normalizeIdentity(result.stdout) : null;
++    return value ? `ps:${value}` : null;
++  } catch {
+     return null;
+   }
++}
+ 
++function readWindowsIdentity(pid, spawnSync) {
+   try {
+     const result = spawnSync('powershell.exe', [
+-      '-NoLogo',
+-      '-NoProfile',
+-      '-NonInteractive',
+-      '-Command',
+-      `(Get-Process -Id ${String(normalizedPid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+-    ], {
+-      shell: false,
+-      stdio: ['ignore', 'pipe', 'ignore'],
+-      encoding: 'utf8',
+-      windowsHide: true,
+-    });
+-    if (result && !result.error && result.status === 0) {
+-      const value = normalizeIdentity(result.stdout);
+-      if (value) return `windows:${value}`;
+-    }
++      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
++      `(Get-Process -Id ${String(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
++    ], { shell: false, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', windowsHide: true });
++    const value = result && !result.error && result.status === 0
++      ? normalizeIdentity(result.stdout) : null;
++    return value ? `windows:${value}` : null;
+   } catch {
+-    // Unavailable identity evidence is treated as unverifiable.
++    return null;
+   }
+-  return null;
++}
++
++function defaultGetProcessIdentity(pid, options = {}) {
++  const normalizedPid = normalizePid(pid);
++  if (!normalizedPid) return null;
++  const platform = options.platform || process.platform;
++  const fsApi = options.fsApi || fs;
++  const spawnSync = options.spawnSync || defaultSpawnSync;
++  if (platform !== 'win32') return readProcIdentity(normalizedPid, fsApi)
++    || readPsIdentity(normalizedPid, spawnSync);
++  return readWindowsIdentity(normalizedPid, spawnSync);
+ }
+ 
+ function signalExitCode(signal) {
+@@ -161,7 +156,7 @@ function signalExitCode(signal) {
+   return 1;
+ }
+ 
+-function createInitialManifest(token, processApi, getProcessIdentity) {
++function createInitialManifest(token, processApi, getProcessIdentity, instanceId) {
+   const ownerPid = normalizePid(processApi.pid);
+   let ownerIdentity;
+   try {
+@@ -172,6 +167,7 @@ function createInitialManifest(token, processApi, getProcessIdentity) {
+   return {
+     version: MANIFEST_VERSION,
+     token,
++    instanceId,
+     owner: {
+       pid: ownerPid,
+       identity: ownerIdentity,
+@@ -187,6 +183,8 @@ function createProcessTree(options = {}) {
+   const platform = options.platform || process.platform;
+   const spawnSync = options.spawnSync || defaultSpawnSync;
+   const env = options.env || process.env;
++  const allInstances = options.allInstances === true;
++  const instanceId = allInstances ? null : String(options.instanceId || randomUUID());
+   const hasCustomIdentity = typeof options.getProcessIdentity === 'function';
+   const getProcessIdentity = options.getProcessIdentity || ((pid) => defaultGetProcessIdentity(pid, {
+     platform,
+@@ -220,6 +218,7 @@ function createProcessTree(options = {}) {
+       processApi,
+       spawnSync,
+       getProcessIdentity,
++      allInstances: true,
+     });
+   }
+ 
+@@ -233,9 +232,15 @@ function createProcessTree(options = {}) {
+   const usable = !markerExists || (existing && existing.token === token);
+   let manifest = existing && existing.token === token
+     ? existing
+-    : (usable ? createInitialManifest(token, processApi, getProcessIdentity) : null);
++    : (usable ? createInitialManifest(token, processApi, getProcessIdentity, instanceId) : null);
+   let sequence = manifest ? manifest.children.length : 0;
+   let cleanupSignal = null;
++  let cleanupComplete = false;
++
++  function ownsEntry(entry, latest = manifest) {
++    return Boolean(allInstances || (entry && entry.instanceId === instanceId)
++      || (entry && entry.instanceId == null && latest?.instanceId === instanceId));
++  }
+ 
+   if (usable) {
+     try {
+@@ -272,8 +277,9 @@ function createProcessTree(options = {}) {
+     const latest = currentManifest();
+     if (!latest) return null;
+     const entry = {
+-      id: `${token}:${sequence++}`,
++      id: `${token}:${sequence++}:${randomUUID()}`,
+       token,
++      instanceId,
+       kind: metadata.kind || 'child',
+       label: metadata.label || null,
+       command: metadata.command || null,
+@@ -293,7 +299,7 @@ function createProcessTree(options = {}) {
+     const pid = normalizePid(child && child.pid);
+     if (!latest || typeof id !== 'string' || !pid) return null;
+     const entry = latest.children.find((candidate) => candidate.id === id);
+-    if (!entry || entry.token !== token || entry.status !== 'reserved') return null;
++    if (!entry || !ownsEntry(entry, latest) || entry.token !== token || entry.status !== 'reserved') return null;
+     const identity = captureIdentity(pid);
+     if (!identity) return null;
+     entry.pid = pid;
+@@ -307,16 +313,25 @@ function createProcessTree(options = {}) {
+     const latest = currentManifest();
+     const id = reservation && reservation.id;
+     if (!latest || typeof id !== 'string') return false;
+-    const next = { ...latest, children: latest.children.filter((entry) => entry.id !== id) };
++    const entry = latest.children.find((candidate) => candidate.id === id);
++    if (!ownsEntry(entry, latest)) return false;
++    const next = { ...latest, children: latest.children.filter((candidate) => candidate.id !== id) };
+     return persist(next);
+   }
+ 
+   function envFor(childEnv = env) {
+-    if (!usable || !manifest) return { ...childEnv };
++    if (!usable || !manifest) {
++      const stripped = { ...childEnv };
++      delete stripped[MANIFEST_ENV];
++      delete stripped[TOKEN_ENV];
++      delete stripped[INSTANCE_ENV];
++      return stripped;
++    }
+     return {
+       ...childEnv,
+       [MANIFEST_ENV]: manifestPath,
+       [TOKEN_ENV]: token,
++      [INSTANCE_ENV]: instanceId,
+     };
+   }
+ 
+@@ -327,6 +342,7 @@ function createProcessTree(options = {}) {
+         && latest.token === token
+         && entry
+         && entry.token === token
++        && ownsEntry(entry, latest)
+         && typeof entry.id === 'string'
+         && entry.status === 'running'
+         && normalizePid(entry.pid) === entry.pid
+@@ -345,6 +361,14 @@ function createProcessTree(options = {}) {
+     return currentIdentity !== null && currentIdentity === storedIdentity;
+   }
+ 
++  function isEntryAlive(entry) {
++    try {
++      return (options.isAlive || defaultIsAlive)(entry.pid, processApi);
++    } catch {
++      return true;
++    }
++  }
++
+   function killOwnedEntry(entry, signal) {
+     const pid = normalizePid(entry && entry.pid);
+     if (!pid || pid === normalizePid(processApi.pid) || !isVerifiableEntry(currentManifest(), entry)) {
+@@ -370,7 +394,7 @@ function createProcessTree(options = {}) {
+ 
+   function cleanup(signal = 'SIGTERM') {
+     const force = signal === 'SIGKILL';
+-    if (cleanupSignal === 'SIGKILL' || (cleanupSignal === signal && !force)) {
++    if (cleanupComplete || (cleanupSignal === signal && !force)) {
+       return { killed: [] };
+     }
+     cleanupSignal = signal;
+@@ -382,14 +406,26 @@ function createProcessTree(options = {}) {
+       if (killOwnedEntry(entry, signal)) killed.push(entry.pid);
+     }
+ 
+-    const finalManifest = currentManifest();
+-    const hasUnverifiableRunningEntry = finalManifest?.children.some(
+-      (entry) => entry.status === 'running' && !isVerifiableEntry(finalManifest, entry),
++    let finalManifest = currentManifest();
++    if (finalManifest) {
++      const liveEntries = finalManifest.children.filter((entry) => !(
++        entry.status === 'running'
++        && !isVerifiableEntry(finalManifest, entry)
++        && !isEntryAlive(entry)
++      ));
++      if (liveEntries.length !== finalManifest.children.length) {
++        persist({ ...finalManifest, children: liveEntries });
++        finalManifest = currentManifest();
++      }
++    }
++    const hasUnverifiableLiveEntry = finalManifest?.children.some(
++      (entry) => entry.status === 'running' && !isVerifiableEntry(finalManifest, entry)
++        && isEntryAlive(entry),
+     );
+     const hasLiveRunningEntry = finalManifest?.children.some(
+       (entry) => entry.status === 'running'
+         && isVerifiableEntry(finalManifest, entry)
+-        && (options.isAlive || defaultIsAlive)(entry.pid, processApi),
++        && isEntryAlive(entry),
+     );
+     const hasOutstandingReservation = finalManifest?.children.some(
+       (entry) => entry.status === 'reserved',
+@@ -397,17 +433,18 @@ function createProcessTree(options = {}) {
+     const hasFailedLiveEntry = finalManifest?.children.some(
+       (entry) => entry.status === 'running'
+         && isVerifiableEntry(finalManifest, entry)
+-        && (options.isAlive || defaultIsAlive)(entry.pid, processApi)
++        && isEntryAlive(entry)
+         && !killed.includes(entry.pid),
+     );
+     const safeToRemove = finalManifest
+-      && !hasUnverifiableRunningEntry
++      && !hasUnverifiableLiveEntry
+       && !hasOutstandingReservation
+       && !hasFailedLiveEntry
+       && (force || !hasLiveRunningEntry);
+     if (safeToRemove && finalManifest.token === token) {
+       try {
+         fsApi.rmSync(manifestPath, { force: true });
++        cleanupComplete = !pathExists(manifestPath, fsApi);
+       } catch {
+         // A stale marker is safe to leave behind; its token still prevents a
+         // later run from touching this process tree.
+@@ -417,18 +454,45 @@ function createProcessTree(options = {}) {
+   }
+ 
+   function abortChild(reservation, child, signal = 'SIGKILL') {
++    const pid = normalizePid(child && child.pid);
++    const retainReservation = (identityOverride = null) => {
++      const latest = currentManifest();
++      const id = reservation && reservation.id;
++      const entry = latest?.children.find((candidate) => candidate.id === id);
++      if (!latest || !entry || !ownsEntry(entry, latest) || entry.token !== token || entry.status !== 'reserved') {
++        return false;
++      }
++      entry.pid = pid;
++      entry.identity = identityOverride || captureIdentity(pid) || `unverified:${pid}`;
++      entry.status = 'running';
++      entry.registeredAt = nowIso();
++      persist(latest);
++      return true;
++    };
++
++    // Capture stable identity before direct kill so the process-group/tree kill
++    // can reap descendants while the reservation is still verifiable.
++    const identity = pid ? captureIdentity(pid) : null;
++    const retained = pid && identity ? retainReservation(identity) : false;
++    const groupResult = retained ? cleanup(signal) : { killed: [] };
++    if (pid && groupResult.killed.includes(pid)) {
++      unregisterChild(reservation);
++      cleanup('SIGKILL');
++      return true;
++    }
++
+     let killSucceeded = false;
+     try {
+       if (child && typeof child.kill === 'function') {
+-        const result = child.kill(signal);
+-        killSucceeded = result !== false;
++        killSucceeded = child.kill(signal) === true;
+       }
+     } catch {
+       killSucceeded = false;
+     }
+ 
+-    const pid = normalizePid(child && child.pid);
+     if (killSucceeded || !pid) {
++      if (pid && !retained) retainReservation(identity);
++      cleanup('SIGKILL');
+       unregisterChild(reservation);
+       cleanup('SIGKILL');
+       return killSucceeded;
+@@ -442,23 +506,15 @@ function createProcessTree(options = {}) {
+       }
+     })();
+     if (!alive) {
++      if (!retained) retainReservation(identity);
++      cleanup('SIGKILL');
+       unregisterChild(reservation);
+       cleanup('SIGKILL');
+       return killSucceeded;
+     }
+ 
+-    const latest = currentManifest();
+-    const id = reservation && reservation.id;
+-    const entry = latest?.children.find((candidate) => candidate.id === id);
+-    if (latest && entry && entry.token === token && entry.status === 'reserved') {
+-      const identity = captureIdentity(pid);
+-      entry.pid = pid;
+-      entry.identity = identity;
+-      if (identity) {
+-        entry.status = 'running';
+-        entry.registeredAt = nowIso();
+-      }
+-      persist(latest);
++    if (!retained) retainReservation(identity);
++    if (currentManifest()?.children.some((entry) => entry.pid === pid && entry.status === 'running')) {
+       // If identity evidence was available, cleanup can attempt a verified
+       // tree kill. Otherwise retain the reservation for later reconciliation.
+       cleanup('SIGKILL');
+@@ -493,6 +549,7 @@ function createProcessTree(options = {}) {
+     unregisterChild,
+     abortChild,
+     manifestPath,
++    instanceId,
+     token,
+   };
+ }
+@@ -525,6 +582,7 @@ function reapProcessManifest(manifestPath, options = {}) {
+     ...options,
+     manifestPath,
+     token: existing.token,
++    allInstances: true,
+     reconcile: false,
+   });
+   const result = tree.cleanup(options.signal || 'SIGKILL');
+@@ -559,6 +617,7 @@ function reconcileProcessManifests(options = {}) {
+ }
+ 
+ module.exports = {
++  INSTANCE_ENV,
+   MANIFEST_ENV,
+   MANIFEST_VERSION,
+   TOKEN_ENV,
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index 4b305a10..bea7360b 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -143,6 +143,10 @@ function spawnShard(shard, options = {}) {
+         detached: platform !== 'win32',
+         windowsHide: true,
+       });
++      child.on('error', (error) => {
++        processTree.unregisterChild(reservation);
++        reject(error);
++      });
+       if (!processTree.registerChild(reservation, child)) {
+         if (typeof processTree.abortChild === 'function') {
+           processTree.abortChild(reservation, child);
+@@ -150,6 +154,7 @@ function spawnShard(shard, options = {}) {
+           try {
+             child.kill?.('SIGKILL');
+           } finally {
++            processTree.cleanup?.('SIGKILL');
+             processTree.unregisterChild(reservation);
+           }
+         }
+@@ -162,10 +167,6 @@ function spawnShard(shard, options = {}) {
+       return;
+     }
+ 
+-    child.on('error', (error) => {
+-      processTree.unregisterChild(reservation);
+-      reject(error);
+-    });
+     child.on('close', (code) => {
+       processTree.unregisterChild(reservation);
+       resolve(code ?? 1);
+diff --git a/scripts/test.js b/scripts/test.js
+index 7f510a58..1496c19a 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -13,7 +13,11 @@
+  * (`--validate`) ignores the variable entirely, and CI runs the full matrix.
+  */
+ 
+-const { execFileSync: defaultExecFileSync, spawnSync: defaultSpawnSync } = require('node:child_process');
++const { EventEmitter } = require('node:events');
++const {
++  execFileSync: defaultExecFileSync,
++  spawn: defaultSpawn,
++} = require('node:child_process');
+ const fs = require('node:fs');
+ 
+ const {
+@@ -340,33 +344,80 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
+  *
+  * @param {string} command Executable name.
+  * @param {string[]} args Command arguments.
+- * @param {import('node:child_process').SpawnSyncOptions} [options={}] Spawn options.
+- * @param {typeof defaultSpawnSync} [spawnSync=defaultSpawnSync] Process runner.
+- * @returns {number} Process exit status, or 1 when no status is reported.
++ * @param {import('node:child_process').SpawnOptions} [options={}] Spawn options.
++ * @param {typeof defaultSpawn} [spawn=defaultSpawn] Process runner.
++ * @returns {Promise<number>} Process exit status, or 1 when no status is reported.
+  */
+-function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
++function runCommand(command, args, options = {}, spawn = defaultSpawn) {
+   const { processTree, ...spawnOptions } = options;
+-  const result = spawnSync(command, args, {
+-    stdio: 'inherit',
+-    shell: isWindows,
+-    ...spawnOptions,
+-  });
+-
+-  if (result.error) {
+-    if (result.error.code === 'ETIMEDOUT') {
++  const timeout = spawnOptions.timeout;
++  return new Promise((resolve, reject) => {
++    let child;
++    let settled = false;
++    let timer = null;
++    const reservation = processTree?.reserveChild?.({ kind: 'test-lane', label: command }) || null;
++    let registered = false;
++    const release = () => {
++      if (registered) {
++        processTree?.unregisterChild?.(reservation);
++        registered = false;
++      }
++    };
++    const finish = (status) => {
++      if (settled) return;
++      settled = true;
++      release();
++      resolve(status ?? 1);
++    };
++    const fail = (error) => {
++      if (settled) return;
++      if (timer) clearTimeout(timer);
++      if (error?.code === 'ETIMEDOUT') {
++        processTree?.cleanup?.('SIGKILL');
++        console.error('');
++        console.error('Test lane exceeded its wall-clock ceiling and was terminated.');
++        console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
++        console.error('Adjust the ceiling with FORGE_TEST_TIMEOUT_MS. Failing the run instead of');
++        console.error('blocking the push. See issue 8aef79e8.');
++        console.error('');
++        finish(TIMEOUT_EXIT_CODE);
++        return;
++      }
++      settled = true;
++      release();
++      reject(error);
++    };
++    try {
++      child = spawn(command, args, { stdio: 'inherit', shell: isWindows, ...spawnOptions });
++    } catch (error) {
++      fail(error);
++      return;
++    }
++    child.once?.('error', fail);
++    child.once?.('close', (status, signal) => {
++      if (timer) clearTimeout(timer);
++      finish(status ?? signalExitCode(signal));
++    });
++    if (reservation && typeof processTree?.registerChild === 'function') {
++      registered = true;
++      if (!processTree.registerChild(reservation, child)) {
++        processTree.abortChild?.(reservation, child);
++        release();
++        fail(new Error('test lane process could not be registered'));
++        return;
++      }
++    }
++    timer = timeout > 0 ? setTimeout(() => {
++      processTree?.cleanup?.('SIGKILL');
++      try { child.kill?.('SIGKILL'); } catch { /* best effort */ }
+       processTree?.cleanup?.('SIGKILL');
+-      console.error('');
+-      console.error('Test lane exceeded its wall-clock ceiling and was terminated.');
+-      console.error('A single test likely hung (e.g. a spawned git/bash call that never returns).');
+-      console.error('Adjust the ceiling with FORGE_TEST_TIMEOUT_MS. Failing the run instead of');
+-      console.error('blocking the push. See issue 8aef79e8.');
+-      console.error('');
+-      return TIMEOUT_EXIT_CODE;
++      finish(TIMEOUT_EXIT_CODE);
++    }, timeout) : null;
++    if (!child.once) {
++      if (timer) clearTimeout(timer);
++      finish(child.status ?? 1);
+     }
+-    throw result.error;
+-  }
+-
+-  return result.status ?? 1;
++  });
+ }
+ 
+ /**
+@@ -376,8 +427,23 @@ function runCommand(command, args, options = {}, spawnSync = defaultSpawnSync) {
+  * @param {Object} [deps={}] Runtime dependencies for tests.
+  * @returns {number} Exit status for the executed plan.
+  */
+-function runTestExecutionPlan(plan, deps = {}) {
+-  const spawnSync = deps.spawnSync || defaultSpawnSync;
++async function runTestExecutionPlan(plan, deps = {}) {
++  const spawn = deps.spawn || (deps.spawnSync ? (...args) => {
++    const child = new EventEmitter();
++    let result;
++    try {
++      result = deps.spawnSync(...args);
++    } catch (error) {
++      process.nextTick(() => child.emit('error', error));
++      return child;
++    }
++    child.pid = result?.pid || process.pid;
++    process.nextTick(() => {
++      if (result?.error) child.emit('error', result.error);
++      else child.emit('close', result?.status ?? 1, result?.signal);
++    });
++    return child;
++  } : defaultSpawn);
+   const pkgManager = deps.pkgManager || detectPackageManager();
+   const env = deps.env || stripGitHookEnv(process.env);
+   const processTree = deps.processTree || createProcessTree({
+@@ -409,27 +475,27 @@ function runTestExecutionPlan(plan, deps = {}) {
+   try {
+     if (plan.runFullSuite) {
+       console.log(`  Mode: full suite (${plan.reason})`);
+-      const status = runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawnSync);
++       const status = await runCommand('node', ['scripts/test-full-suite.js'], fullSuiteOptions, spawn);
+       if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     } else if (plan.testTargets.length > 0) {
+       console.log(`  Mode: targeted (${plan.testTargets.length} test file${plan.testTargets.length === 1 ? '' : 's'})`);
+       const command = pkgManager === 'bun' ? bunCommand : pkgManager;
+-      const status = runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawnSync);
++       const status = await runCommand(command, ['run', 'test', ...plan.testTargets], laneOptions, spawn);
+       if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     }
+ 
+     if (plan.runE2E) {
+       console.log('  Extra: running affected e2e tests');
+-      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawnSync);
++       const status = await runCommand(bunCommand, ['test', '--timeout', '15000', 'test/e2e/'], laneOptions, spawn);
+       if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     }
+ 
+     if (!plan.runFullSuite && plan.runTestEnv) {
+       console.log('  Extra: running affected edge-case tests');
+-      const status = runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawnSync);
++       const status = await runCommand(bunCommand, ['test', '--timeout', '15000', 'test-env/'], laneOptions, spawn);
+       if (signal) return signalExitCode(signal);
+       if (status !== 0) return status;
+     }
+@@ -454,7 +520,7 @@ function runTestExecutionPlan(plan, deps = {}) {
+  * @param {Object} [deps={}] Runtime dependencies for tests.
+  * @returns {number} Exit status for pre-push tests.
+  */
+-function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
++async function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
+   if (isQuickPushLane(deps.env || process.env)) {
+     console.log('');
+     console.log('  quick lane: tests skipped locally — CI runs the full matrix');
+@@ -475,17 +541,22 @@ function runPrePushTests(projectRoot = process.cwd(), deps = {}) {
+  * @param {Object} [deps={}] Runtime dependencies for tests.
+  * @returns {number} Exit status for local validation tests.
+  */
+-function runLocalValidationTests(projectRoot = process.cwd(), deps = {}) {
++async function runLocalValidationTests(projectRoot = process.cwd(), deps = {}) {
+   const execFileSync = deps.execFileSync || defaultExecFileSync;
+   const plan = buildTestExecutionPlan(projectRoot, execFileSync, { sinceUpstream: true });
+   return runTestExecutionPlan(plan, { ...deps, label: 'local validation tests' });
+ }
+ 
+ if (require.main === module) {
+-  const exitCode = process.argv.includes('--validate')
+-    ? runLocalValidationTests()
+-    : runPrePushTests();
+-  process.exit(exitCode);
++  (async () => {
++    const exitCode = process.argv.includes('--validate')
++      ? await runLocalValidationTests()
++      : await runPrePushTests();
++    process.exit(exitCode);
++  })().catch((error) => {
++    console.error(error);
++    process.exit(1);
++  });
+ }
+ 
+ module.exports = {
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index 6b7a67e2..0ef9809c 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -8,6 +8,7 @@ const { afterEach, describe, expect, test } = require('bun:test');
+ const {
+   MANIFEST_ENV,
+   MANIFEST_VERSION,
++  INSTANCE_ENV,
+   TOKEN_ENV,
+   createProcessTree,
+   reconcileProcessManifests,
+@@ -88,7 +89,10 @@ describe('scripts/process-tree.js', () => {
+       token: 'windows-token',
+       platform: 'win32',
+       processApi: { pid: 9000 },
+-      spawnSync: (...args) => calls.push(args),
++      spawnSync: (...args) => {
++        calls.push(args);
++        return { status: 0 };
++      },
+       isAlive: () => true,
+       getProcessIdentity: () => 'child-start',
+     });
+@@ -102,11 +106,12 @@ describe('scripts/process-tree.js', () => {
+       [TOKEN_ENV]: 'windows-token',
+     }));
+ 
+-    tree.cleanup('SIGTERM');
++    const result = tree.cleanup('SIGTERM');
+     expect(calls).toHaveLength(1);
+     expect(calls[0][0]).toBe('taskkill');
+     expect(calls[0][1]).toEqual(['/PID', '9012', '/T', '/F']);
+     expect(calls[0][2]).toEqual(expect.objectContaining({ windowsHide: true, stdio: 'ignore' }));
++    expect(result.killed).toEqual([9012]);
+   });
+ 
+   test('escalates a signal cleanup to timeout cleanup without double-killing', () => {
+@@ -204,6 +209,29 @@ describe('scripts/process-tree.js', () => {
+     expect(JSON.parse(fs.readFileSync(foreignPath, 'utf8'))).toEqual(foreign);
+   });
+ 
++  test('captures identity before abort and reaps the owned process group first', () => {
++    const manifestPath = path.join(makeTempDir(), 'run.json');
++    const groupKills = [];
++    const directKills = [];
++    let identityCalls = 0;
++    const tree = createProcessTree({
++      manifestPath,
++      token: 'group-abort-token',
++      platform: 'linux',
++      processApi: { pid: 9000, kill: (pid, signal) => groupKills.push({ pid, signal }) },
++      isAlive: () => true,
++      getProcessIdentity: () => (identityCalls++ < 2 ? null : 'child-start'),
++    });
++    const reservation = tree.reserveChild({ kind: 'shard', label: 'unit-0' });
++    const child = { pid: 9019, kill: (signal) => { directKills.push(signal); return true; } };
++
++    expect(tree.registerChild(reservation, child)).toBeNull();
++    expect(tree.abortChild(reservation, child)).toBe(true);
++    expect(groupKills).toEqual([{ pid: -9019, signal: 'SIGKILL' }]);
++    expect(directKills).toEqual([]);
++    expect(fs.existsSync(manifestPath)).toBe(false);
++  });
++
+   test('abortChild kills a newly spawned child when identity registration fails', () => {
+     const manifestPath = path.join(makeTempDir(), 'run.json');
+     const killed = [];
+@@ -214,7 +242,7 @@ describe('scripts/process-tree.js', () => {
+       getProcessIdentity: () => null,
+     });
+     const reservation = tree.reserveChild({ kind: 'shard', label: 'unit-0' });
+-    const child = { pid: 9016, kill: (signal) => killed.push(signal) };
++    const child = { pid: 9016, kill: (signal) => { killed.push(signal); return true; } };
+ 
+     expect(tree.registerChild(reservation, child)).toBeNull();
+     tree.abortChild(reservation, child);
+@@ -243,10 +271,65 @@ describe('scripts/process-tree.js', () => {
+     const retained = readProcessManifest(manifestPath);
+     expect(retained).toBeTruthy();
+     expect(retained.children).toHaveLength(1);
+-    expect(retained.children[0].status).toBe('reserved');
++    expect(retained.children[0].status).toBe('running');
++    expect(retained.children[0].identity).toBe('unverified:9017');
+     expect(retained.children[0].pid).toBe(9017);
+   });
+ 
++  test('strips foreign manifest markers when an environment tree is unusable', () => {
++    const manifestPath = path.join(makeTempDir(), 'foreign.json');
++    fs.writeFileSync(manifestPath, JSON.stringify({
++      version: MANIFEST_VERSION,
++      token: 'foreign-token',
++      owner: { pid: 9001, identity: 'owner-start', startedAt: '2026-08-03T00:00:00.000Z' },
++      children: [],
++    }));
++    const tree = createProcessTree({
++      env: { [MANIFEST_ENV]: manifestPath, [TOKEN_ENV]: 'new-token', [INSTANCE_ENV]: 'foreign-instance' },
++      token: 'new-token',
++      processApi: { pid: 9000 },
++    });
++    expect(tree.envFor({ [MANIFEST_ENV]: manifestPath, [TOKEN_ENV]: 'new-token', [INSTANCE_ENV]: 'foreign-instance' }))
++      .toEqual({});
++  });
++
++  test('uses per-instance reservation ids and does not clean another instance', () => {
++    const manifestPath = path.join(makeTempDir(), 'run.json');
++    const first = createProcessTree({ manifestPath, token: 'shared-token', instanceId: 'first', processApi: { pid: 9000 }, getProcessIdentity: () => 'owner' });
++    const second = createProcessTree({
++      env: first.envFor({ PATH: 'test-path' }),
++      processApi: { pid: 9001 },
++      getProcessIdentity: () => 'owner',
++    });
++    const firstReservation = first.reserveChild();
++    const secondReservation = second.reserveChild();
++    expect(second.instanceId).not.toBe(first.instanceId);
++    expect(second.envFor({})[MANIFEST_ENV]).toBe(manifestPath);
++    expect(firstReservation.id).not.toBe(secondReservation.id);
++    expect(second.unregisterChild(firstReservation)).toBe(false);
++    expect(readProcessManifest(manifestPath).children).toHaveLength(2);
++  });
++
++  test('removes dead unverifiable entries during cleanup', () => {
++    const manifestPath = path.join(makeTempDir(), 'run.json');
++    const tree = createProcessTree({
++      manifestPath,
++      token: 'unverified-token',
++      processApi: { pid: 9000 },
++      isAlive: () => false,
++      getProcessIdentity: () => null,
++    });
++    const reservation = tree.reserveChild();
++    const manifest = readProcessManifest(manifestPath);
++    manifest.children[0] = {
++      ...manifest.children[0], pid: 9018, status: 'running', identity: 'unverified:9018',
++    };
++    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
++    tree.cleanup('SIGKILL');
++    expect(fs.existsSync(manifestPath)).toBe(false);
++    expect(reservation).toBeTruthy();
++  });
++
+   test('startup reconciliation reaps only owned orphan manifests with a dead owner', () => {
+     const manifestDir = makeTempDir();
+     const orphanPath = path.join(manifestDir, 'orphan.json');
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 6d3c54c2..469865b8 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -136,6 +136,7 @@ describe('scripts/test-full-suite.js', () => {
+       const child = new EventEmitter();
+       child.pid = 9300;
+       child.kill = (signal) => killed.push(signal);
++      process.nextTick(() => child.emit('error', new Error('spawn failed')));
+       return child;
+     };
+ 
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index b7a772da..1e3098c5 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { describe, expect, test } = require('bun:test');
++const { EventEmitter } = require('node:events');
+ const path = require('node:path');
+ 
+ const {
+@@ -455,9 +456,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.testTargets).toEqual([]);
+   });
+ 
+-  test('runPrePushTests runs targeted tests instead of the full suite when possible', () => {
++  test('runPrePushTests runs targeted tests instead of the full suite when possible', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: 'lib/commands/ship.js\n',
+@@ -478,9 +479,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
+   });
+ 
+-  test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', () => {
++  test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: '.claude/commands/review.md\n',
+@@ -496,9 +497,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('runPrePushTests falls back to the full unit suite for unmapped pushed files', () => {
++  test('runPrePushTests falls back to the full unit suite for unmapped pushed files', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: 'docs/random-spec.md\n',
+@@ -513,9 +514,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', () => {
++  test('runPrePushTests runs e2e lane after full suite for mixed zero-target e2e changes', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: 'test/e2e/helpers/scaffold.js\nscripts/new-maintenance-task.sh\n',
+@@ -532,9 +533,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test/e2e/']);
+   });
+ 
+-  test('runLocalValidationTests reuses the same targeted runner path', () => {
++  test('runLocalValidationTests reuses the same targeted runner path', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runLocalValidationTests(repoRoot, {
++    const status = await runLocalValidationTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: '.github/agentic-workflows/behavioral-test.md\n',
+@@ -559,9 +560,9 @@ describe('scripts/test pre-push runner', () => {
+     ]);
+   });
+ 
+-  test('runLocalValidationTests falls back to the full suite when no runnable tests are selected', () => {
++  test('runLocalValidationTests falls back to the full suite when no runnable tests are selected', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runLocalValidationTests(repoRoot, {
++    const status = await runLocalValidationTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: 'test/scripts/smart-status.helpers.js\n',
+@@ -576,9 +577,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('runPrePushTests falls back to the full unit suite when diff-base resolution yields no changed files', () => {
++  test('runPrePushTests falls back to the full unit suite when diff-base resolution yields no changed files', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: '',
+@@ -594,9 +595,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', () => {
++  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    runPrePushTests(repoRoot, {
++    await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: 'lib/commands/ship.js\n',
+@@ -612,9 +613,9 @@ describe('scripts/test pre-push runner', () => {
+     }
+   });
+ 
+-  test('FORGE_TEST_TIMEOUT_MS overrides the wall-clock lane timeout', () => {
++  test('FORGE_TEST_TIMEOUT_MS overrides the wall-clock lane timeout', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    runPrePushTests(repoRoot, {
++    await runPrePushTests(repoRoot, {
+       env: { FORGE_TEST_TIMEOUT_MS: '5000', PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({
+         changedFiles: 'lib/commands/ship.js\n',
+@@ -636,9 +637,9 @@ describe('scripts/test pre-push runner', () => {
+     expect(resolveCommandTimeoutMs({ FORGE_TEST_TIMEOUT_MS: '20000' })).toBe(20000);
+   });
+ 
+-  test('the full-suite fallback lane uses the larger validation-aligned budget, not the fail-fast ceiling', () => {
++  test('the full-suite fallback lane uses the larger validation-aligned budget, not the fail-fast ceiling', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    runPrePushTests(repoRoot, {
++    await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       // Unmapped pushed file → hasUnmappedFiles → full-suite fallback lane.
+       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+@@ -664,14 +665,14 @@ describe('scripts/test pre-push runner', () => {
+     expect(DEFAULT_FULL_SUITE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+   });
+ 
+-  test('a lane that times out fails fast with a non-zero status instead of hanging', () => {
++  test('a lane that times out fails fast with a non-zero status instead of hanging', async () => {
+     const timedOutSpawnSync = () => ({
+       error: Object.assign(new Error('spawnSync bun ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+       signal: 'SIGKILL',
+       status: null,
+     });
+ 
+-    const status = runTestExecutionPlan({
++    const status = await runTestExecutionPlan({
+       changedFiles: ['lib/commands/ship.js'],
+       mode: 'targeted',
+       reason: 'known changes mapped to targeted tests',
+@@ -688,14 +689,14 @@ describe('scripts/test pre-push runner', () => {
+     expect(status).not.toBe(0);
+   });
+ 
+-  test('a timed-out lane reaps its owned process tree with SIGKILL', () => {
++  test('a timed-out lane reaps its owned process tree with SIGKILL', async () => {
+     const events = [];
+     const processTree = {
+       envFor: (env) => env,
+       installSignalHandlers: () => () => {},
+       cleanup: (signal) => events.push(signal),
+     };
+-    const status = runTestExecutionPlan({
++    const status = await runTestExecutionPlan({
+       changedFiles: ['lib/commands/ship.js'],
+       mode: 'targeted',
+       reason: 'known changes mapped to targeted tests',
+@@ -718,7 +719,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(events).toContain('SIGKILL');
+   });
+ 
+-  test('captured SIGINT and SIGTERM override nonzero targeted and E2E lane statuses', () => {
++  test('captured SIGINT and SIGTERM override nonzero targeted and E2E lane statuses', async () => {
+     for (const [received, expected] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+       for (const plan of [
+         {
+@@ -744,7 +745,7 @@ describe('scripts/test pre-push runner', () => {
+           },
+           cleanup: (signal) => cleanupSignals.push(signal),
+         };
+-        const status = runTestExecutionPlan({
++        const status = await runTestExecutionPlan({
+           changedFiles: ['lib/commands/ship.js'],
+           mode: 'targeted',
+           reason: 'known changes mapped to targeted tests',
+@@ -764,6 +765,59 @@ describe('scripts/test pre-push runner', () => {
+       }
+     }
+   });
++
++  test('a captured SIGINT terminates the registered async lane child and returns 130', async () => {
++    const killed = [];
++    let activeChild;
++    const processTree = {
++      envFor: (env) => env,
++      reserveChild: () => ({ id: 'lane' }),
++      registerChild: (_reservation, child) => {
++        activeChild = child;
++        return true;
++      },
++      unregisterChild: () => {},
++      installSignalHandlers: (notify) => {
++        process.nextTick(() => {
++          processTree.cleanup('SIGTERM');
++          notify('SIGINT');
++        });
++        return () => {};
++      },
++      cleanup: (signal) => {
++        if (activeChild && !activeChild.closed) activeChild.kill(signal);
++      },
++    };
++    const spawn = () => {
++      const child = new EventEmitter();
++      child.pid = 9400;
++      child.kill = (signal) => {
++        killed.push(signal);
++        child.closed = true;
++        process.nextTick(() => child.emit('close', null, signal));
++        return true;
++      };
++      return child;
++    };
++
++    const status = await runTestExecutionPlan({
++      changedFiles: ['lib/commands/ship.js'],
++      mode: 'targeted',
++      reason: 'signal integration regression',
++      runE2E: false,
++      runFullSuite: false,
++      runTestEnv: false,
++      testTargets: ['test/commands/ship.test.js'],
++    }, {
++      env: { PATH: process.env.PATH || '' },
++      pkgManager: 'bun',
++      processTree,
++      spawn,
++    });
++
++    expect(status).toBe(130);
++    expect(killed).toEqual(['SIGTERM']);
++  });
+ });
+ 
+ describe('quick push lane', () => {
+@@ -786,9 +840,9 @@ describe('quick push lane', () => {
+     expect(isQuickPushLane({ [QUICK_LANE_ENV_VAR]: '1' })).toBe(false);
+   });
+ 
+-  test('runPrePushTests short-circuits the whole test lane when the quick lane is declared', () => {
++  test('runPrePushTests short-circuits the whole test lane when the quick lane is declared', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const { lines, result: status } = captureLog(() => runPrePushTests(repoRoot, {
++    const { lines, result: statusPromise } = captureLog(() => runPrePushTests(repoRoot, {
+       env: { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: process.env.PATH || '' },
+       // Unmapped file → would otherwise take the 10-minute full-suite lane.
+       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+@@ -796,6 +850,7 @@ describe('quick push lane', () => {
+       spawnSync,
+     }));
+ 
++    const status = await statusPromise;
+     expect(status).toBe(0);
+     expect(spawnSync.calls).toHaveLength(0);
+     // The skip must be loud: silently green tests would be indistinguishable
+@@ -804,9 +859,9 @@ describe('quick push lane', () => {
+     expect(lines.join('\n')).toContain('CI runs the full matrix');
+   });
+ 
+-  test('runPrePushTests runs the full lane when the quick lane is not declared', () => {
++  test('runPrePushTests runs the full lane when the quick lane is not declared', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+       pkgManager: 'bun',
+@@ -818,9 +873,9 @@ describe('quick push lane', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('runPrePushTests runs the full lane for a non-quick value of the lane variable', () => {
++  test('runPrePushTests runs the full lane for a non-quick value of the lane variable', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runPrePushTests(repoRoot, {
++    const status = await runPrePushTests(repoRoot, {
+       env: { [QUICK_LANE_ENV_VAR]: 'full', PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+       pkgManager: 'bun',
+@@ -831,9 +886,9 @@ describe('quick push lane', () => {
+     expect(spawnSync.calls).toHaveLength(1);
+   });
+ 
+-  test('the quick lane never short-circuits local validation, only the pre-push lane', () => {
++  test('the quick lane never short-circuits local validation, only the pre-push lane', async () => {
+     const spawnSync = makeSpawnSync(0);
+-    const status = runLocalValidationTests(repoRoot, {
++    const status = await runLocalValidationTests(repoRoot, {
+       env: { [QUICK_LANE_ENV_VAR]: QUICK_LANE_VALUE, PATH: process.env.PATH || '' },
+       execFileSync: makeExecFileSync({ changedFiles: 'docs/random-spec.md\n' }),
+       pkgManager: 'bun',
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,74 @@
+From 8ac98908d1b014ef423e4a94b90429590b443843 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 02:18:55 +0530
+Subject: [PATCH] fix(shepherd): fail closed on watcher capacity
+
+---
+ lib/pr-monitor/reconcile-executor.js       |  9 +--------
+ test/pr-monitor/reconcile-executor.test.js | 23 ++++++++++++++--------
+ 2 files changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 251b3222..7c953f8f 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -653,14 +653,7 @@ async function execute(actions, ctx = {}) {
+ function checkpointWriter(opts, updateWatchers, projectRoot, gitCommonDir) {
+ 	if (opts.persistLifecycleCheckpoint) return opts.persistLifecycleCheckpoint;
+ 	if (!opts.token) return undefined;
+-	return current => {
+-		try {
+-			return updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token });
+-		} catch (error) {
+-			if (error?.code === shepherdLease.WATCHER_CHECKPOINT_CAPACITY_EXCEEDED) return true;
+-			throw error;
+-		}
+-	};
++	return current => updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token });
+ }
+ 
+ async function executeConvergedActions(actions, seedWatchers, projectRoot, gitCommonDir, now, opts, updateWatchers) {
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index ccc87ec0..30f6385c 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -678,21 +678,28 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
+ 		expect(conv.leaseLost).toBe(true);
+ 	});
+ 
+-	test('convergeOnce preserves ownership when the watcher checkpoint exceeds capacity', async () => {
+-		const conv = await executor.convergeOnce('/repo', {
++	test('convergeOnce reaps a new watcher when its authority checkpoint exceeds capacity', async () => {
++		const killed = [];
++		const capacityError = Object.assign(new RangeError('too large'), {
++			code: 'WATCHER_CHECKPOINT_CAPACITY_EXCEEDED',
++		});
++		await expect(executor.convergeOnce('/repo', {
+ 			gitCommonDir: '/repo/.git',
+ 			token: 'owner-token',
++			now: () => 0,
+ 			gatherDesired: async () => ({ openPrs: [{ repo: 'forge', number: 1, branch: 'b', headSha: 's', issueId: null, worktreeId: null, journalPtr: null }], gitCommonDir: '/repo/.git' }),
+ 			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
+ 			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
+ 			spawnWatcher: () => ({ pid: 1 }),
+-			writeClaim: () => {},
+-			updateWatchers: () => {
+-				throw Object.assign(new RangeError('too large'), { code: 'WATCHER_CHECKPOINT_CAPACITY_EXCEEDED' });
++			writeClaim: () => {}, removeClaim: () => {},
++			readClaim: () => '1970-01-01T00:00:00.000Z', isAlive: () => true,
++			kill: (pid, signal) => killed.push([pid, signal]),
++			updateWatchers: (_root, current) => {
++				if (current.length === 0) return true;
++				throw capacityError;
+ 			},
+-		});
+-		expect(conv.leaseLost).toBe(false);
+-		expect(conv.watchers).toHaveLength(1);
++		})).rejects.toBe(capacityError);
++		expect(killed).toEqual([[1, 'SIGKILL']]);
+ 	});
+ 
+ 	test('daemon self-exits when superseded (updateWatchers rejects its stale token)', async () => {
+-- 
+2.51.0.windows.1
+

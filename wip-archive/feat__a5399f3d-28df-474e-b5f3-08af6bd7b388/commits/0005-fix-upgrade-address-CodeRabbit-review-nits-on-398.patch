@@ -1,0 +1,84 @@
+From 0cf159d3f2c9ee1df673818d4ca856c974a9c7ed Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 00:26:02 +0530
+Subject: [PATCH] fix(upgrade): address CodeRabbit review nits on #398
+
+- lib/upgrade-safety.js (T2): the beads-migration advisory listed only
+  the `.forge/config.yaml` opt-in; add the `FORGE_ISSUE_BACKEND=beads`
+  env opt-out too, matching resolveIssueBackend (which honors both) and
+  the sibling nudge in beads-nudge.js.
+- lib/beads-detect.js + lib/beads-nudge.js (T1): move `// NOSONAR S2486`
+  onto each `catch` line. NOSONAR is line-scoped, so on the inner
+  comment line it did not actually silence the catch-clause warning it
+  was meant for.
+
+Comment/text + suppression-placement only; no behavior change. Affected
+tests 22/22 green; ESLint clean; D20 audit artifact still current.
+
+Refs: a5399f3d-28df-474e-b5f3-08af6bd7b388
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/beads-detect.js   | 8 ++++----
+ lib/beads-nudge.js    | 4 ++--
+ lib/upgrade-safety.js | 3 ++-
+ 3 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/lib/beads-detect.js b/lib/beads-detect.js
+index 53d7574e..5e3f9375 100644
+--- a/lib/beads-detect.js
++++ b/lib/beads-detect.js
+@@ -17,8 +17,8 @@ const path = require('node:path');
+ function dirHasJsonl(dir) {
+   try {
+     return fs.readdirSync(dir).some(entry => entry.endsWith('.jsonl'));
+-  } catch (_err) {
+-    /* intentional: an unreadable directory has no usable jsonl */ // NOSONAR S2486
++  } catch (_err) { // NOSONAR S2486 — line-scoped; must sit on the catch line
++    /* intentional: an unreadable directory has no usable jsonl */
+     return false;
+   }
+ }
+@@ -48,8 +48,8 @@ function detectBeadsJsonlSource(projectRoot) {
+       return backupDir;
+     }
+     return null;
+-  } catch (_err) {
+-    /* intentional: an unreadable project root has no detectable beads source */ // NOSONAR S2486
++  } catch (_err) { // NOSONAR S2486 — line-scoped; must sit on the catch line
++    /* intentional: an unreadable project root has no detectable beads source */
+     return null;
+   }
+ }
+diff --git a/lib/beads-nudge.js b/lib/beads-nudge.js
+index d0d29e89..06c3fa9a 100644
+--- a/lib/beads-nudge.js
++++ b/lib/beads-nudge.js
+@@ -80,8 +80,8 @@ function maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts = {})
+       + 'Prefer to stay on the legacy backend? Set `issueBackend: beads` in .forge/config.yaml '
+       + '(or FORGE_ISSUE_BACKEND=beads).\n',
+     );
+-  } catch (_err) {
+-    /* the nudge is a best-effort hint; it must never break a read */ // NOSONAR S2486
++  } catch (_err) { // NOSONAR S2486 — line-scoped; must sit on the catch line
++    /* the nudge is a best-effort hint; it must never break a read */
+   }
+ }
+ 
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index 39e1d76d..f1fb1a74 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -184,7 +184,8 @@ function appendBeadsMigration(lines, beadsMigration) {
+     'on disk in the meantime). To migrate:',
+     '  forge migrate --from beads   # import your Beads issues into the Kernel',
+     '  forge setup                  # (re)wire hooks + provision the Kernel store',
+-    'Prefer to stay on Beads? Set `issueBackend: beads` in .forge/config.yaml.',
++    'Prefer to stay on Beads? Set `issueBackend: beads` in .forge/config.yaml '
++    + '(or FORGE_ISSUE_BACKEND=beads).',
+   );
+ }
+ 
+-- 
+2.51.0.windows.1
+

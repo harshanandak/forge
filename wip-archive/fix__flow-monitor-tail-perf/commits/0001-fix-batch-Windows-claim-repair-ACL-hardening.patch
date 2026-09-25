@@ -1,0 +1,283 @@
+From 6914fed27d3b73e168c9c4cf87815e562eec425d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:24:58 +0530
+Subject: [PATCH] fix: batch Windows claim repair ACL hardening
+
+---
+ lib/kernel/legacy-claim-repair.js       | 38 ++++++++++++++++--------
+ lib/kernel/sqlite-driver.js             | 39 ++++++++++++++++++++++---
+ scripts/legacy-claim-repair.js          |  8 ++++-
+ test/kernel/legacy-claim-repair.test.js | 19 ++++++++++++
+ 4 files changed, 87 insertions(+), 17 deletions(-)
+
+diff --git a/lib/kernel/legacy-claim-repair.js b/lib/kernel/legacy-claim-repair.js
+index b5084543..0013c8d2 100644
+--- a/lib/kernel/legacy-claim-repair.js
++++ b/lib/kernel/legacy-claim-repair.js
+@@ -323,19 +323,25 @@ function cleanupRestoreProofDirectory(directory, fsApi = fs) {
+ function prepareRestoreProofSnapshot(backupPath, restoreDir, restorePath, options = {}) {
+ 	const fsApi = options.fsApi || fs;
+ 	const hardenPath = options.hardenPath;
++	const hardenPaths = options.hardenPaths;
+ 	if (typeof hardenPath !== 'function') {
+ 		throw new ClaimRepairError(
+ 			'CLAIM_REPAIR_BACKUP_PERMISSIONS',
+ 			'Restore proof requires a platform permission hardener',
+ 		);
+ 	}
+-	hardenPath(restoreDir);
++	if (!options.restoreDirHardened) {
++		if (typeof hardenPaths === 'function') hardenPaths([restoreDir]);
++		else hardenPath(restoreDir);
++	}
+ 	fsApi.copyFileSync(backupPath, restorePath, fs.constants.COPYFILE_EXCL);
+-	hardenPath(restorePath);
++	if (typeof hardenPaths === 'function') hardenPaths([restorePath]);
++	else hardenPath(restorePath);
+ }
+ 
+ async function verifyClaimRepairBackup(options = {}) {
+-	const { backupPath, observedAt, openDriver, hardenPath } = options;
++	const { backupPath, observedAt, openDriver, hardenPath, hardenPaths } = options;
++	const batchHardenPath = hardenPaths || hardenPath?.batch;
+ 	if (!backupPath || typeof openDriver !== 'function' || !fs.existsSync(backupPath)) {
+ 		throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_REQUIRED', 'A readable separate SQLite backup is required');
+ 	}
+@@ -345,17 +351,25 @@ async function verifyClaimRepairBackup(options = {}) {
+ 			'Backup verification requires a platform permission hardener',
+ 		);
+ 	}
+-	hardenPath(backupPath);
+-	for (const suffix of ['-wal', '-shm', '-journal']) {
+-		if (fs.existsSync(`${backupPath}${suffix}`)) {
+-			throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_DRIFT', 'Backup sidecars are not allowed during restore proof');
+-		}
+-	}
+ 	const restoreDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claim-restore-proof-'));
+ 	const restorePath = path.join(restoreDir, 'kernel.restored.sqlite');
+ 	let restoreDriver;
+ 	try {
+-		prepareRestoreProofSnapshot(backupPath, restoreDir, restorePath, { hardenPath });
++		if (typeof batchHardenPath === 'function') batchHardenPath([backupPath, restoreDir]);
++		else {
++			hardenPath(backupPath);
++			hardenPath(restoreDir);
++		}
++		for (const suffix of ['-wal', '-shm', '-journal']) {
++			if (fs.existsSync(`${backupPath}${suffix}`)) {
++				throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_DRIFT', 'Backup sidecars are not allowed during restore proof');
++			}
++		}
++		prepareRestoreProofSnapshot(backupPath, restoreDir, restorePath, {
++			hardenPath,
++			hardenPaths: batchHardenPath,
++			restoreDirHardened: typeof batchHardenPath === 'function',
++		});
+ 		restoreDriver = openDriver(restorePath);
+ 		const restored = await restoreDriver.preflightLegacyClaimRepair({ observedAt });
+ 		const restoredHash = await hashFile(restorePath);
+@@ -380,7 +394,7 @@ async function verifyClaimRepairBackup(options = {}) {
+ }
+ 
+ async function createVerifiedClaimRepairBackup(options = {}) {
+-	const { sourceDriver, backupPath, observedAt, openDriver, hardenPath } = options;
++	const { sourceDriver, backupPath, observedAt, openDriver, hardenPath, hardenPaths } = options;
+ 	if (!sourceDriver || typeof sourceDriver.preflightLegacyClaimRepair !== 'function'
+ 		|| typeof sourceDriver.backup !== 'function') {
+ 		throw new ClaimRepairError('CLAIM_REPAIR_BACKUP_UNAVAILABLE', 'Source driver cannot create a verified SQLite backup');
+@@ -406,7 +420,7 @@ async function createVerifiedClaimRepairBackup(options = {}) {
+ 		}
+ 		throw error;
+ 	}
+-	const proof = await verifyClaimRepairBackup({ backupPath, observedAt, openDriver, hardenPath });
++	const proof = await verifyClaimRepairBackup({ backupPath, observedAt, openDriver, hardenPath, hardenPaths });
+ 	if (proof.restore_digest !== source.digest) {
+ 		throw new ClaimRepairError(
+ 			'CLAIM_REPAIR_BACKUP_DRIFT',
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 2ec1910d..f93a22aa 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3429,7 +3429,9 @@ function openClaimRepairBackupFence(databasePath, backupPath, backupProof, recov
+ 		}
+ 		recoveryPath = claimRepairRecoveryPath(backupPath, recoveryReference);
+ 		recoveryFileDescriptor = fs.openSync(recoveryPath, 'wx+', 0o600);
+-		hardenBackupPermissions(recoveryPath);
++		// The backup was hardened before opening its descriptor; harden the retained
++		// copy in the same Windows PowerShell pass before copying any bytes.
++		hardenBackupPermissionsBatch([backupPath, recoveryPath]);
+ 		copyOpenFileDescriptor(fileDescriptor, recoveryFileDescriptor);
+ 		syncClaimRepairRecoveryDirectory(recoveryPath);
+ 		const sourceAfterCopy = fs.fstatSync(fileDescriptor);
+@@ -4120,6 +4122,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 				observedAt: input.observedAt,
+ 				openDriver: databasePath => createDriver(runtime, databasePath),
+ 				hardenPath: hardenBackupPermissions,
++				hardenPaths: hardenBackupPermissionsBatch,
+ 			});
+ 			return applyLegacyClaimRepairRow(
+ 				runtime,
+@@ -4491,9 +4494,31 @@ function hardenBackupPermissions(filePath, options = {}) {
+ 	}
+ }
+ 
++function hardenBackupPermissionsBatch(filePaths, options = {}) {
++	if (!Array.isArray(filePaths) || filePaths.length === 0) return;
++	const paths = [...new Set(filePaths)];
++	const platform = options.platform || process.platform;
++	if (platform === 'win32' && !options.aclSecurer && !options.fsApi) {
++		try {
++			// PowerShell startup dominates ACL work on Windows; the script still
++			// resets and verifies every path, but one process serves the whole batch.
++			secureWindowsPathsAcl(paths);
++			return;
++		} catch (error) {
++			throw new ClaimRepairError(
++				'CLAIM_REPAIR_BACKUP_PERMISSIONS',
++				'SQLite backup could not be secured with owner-only permissions',
++				{ cause: error.message || String(error) },
++			);
++		}
++	}
++	for (const filePath of paths) hardenBackupPermissions(filePath, options);
++}
++
+ const WINDOWS_PRIVATE_ACL_SCRIPT = [
+-	'$targetPath = $env:FORGE_PRIVATE_ACL_TARGET',
++	'$targets = $env:FORGE_PRIVATE_ACL_TARGETS | ConvertFrom-Json',
+ 	'$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
++	'foreach ($targetPath in $targets) {',
+ 	'$isDirectory = [System.IO.Directory]::Exists($targetPath)',
+ 	'$acl = if ($isDirectory) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }',
+ 	'$acl.SetOwner($sid)',
+@@ -4510,6 +4535,7 @@ const WINDOWS_PRIVATE_ACL_SCRIPT = [
+ 	'$private = $private -and -not $rules[0].IsInherited -and $rules[0].AccessControlType -eq "Allow"',
+ 	'$private = $private -and (($rules[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl)',
+ 	'if (-not $private) { throw "owner-only ACL verification failed" }',
++	'}',
+ ].join('; ');
+ 
+ function resolveWindowsPowerShellPath(environment = process.env) {
+@@ -4520,14 +4546,14 @@ function resolveWindowsPowerShellPath(environment = process.env) {
+ 	return path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+ }
+ 
+-function secureWindowsPathAcl(filePath) {
++function secureWindowsPathsAcl(filePaths) {
+ 	execFileSync(
+ 		resolveWindowsPowerShellPath(),
+ 		['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PRIVATE_ACL_SCRIPT],
+ 		{
+ 			encoding: 'utf8',
+ 			env: {
+-				FORGE_PRIVATE_ACL_TARGET: filePath,
++				FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
+ 				SystemRoot: process.env.SystemRoot,
+ 			},
+ 			stdio: 'pipe',
+@@ -4537,6 +4563,10 @@ function secureWindowsPathAcl(filePath) {
+ 	);
+ }
+ 
++function secureWindowsPathAcl(filePath) {
++	secureWindowsPathsAcl([filePath]);
++}
++
+ function createPrivateBackupDirectory(backupPath) {
+ 	const directory = fs.mkdtempSync(path.join(path.dirname(backupPath), '.forge-sqlite-backup-'));
+ 	try {
+@@ -4662,6 +4692,7 @@ module.exports = {
+ 	classifyConflictSignal,
+ 	createBuiltinSQLiteDriver,
+ 	hardenBackupPermissions,
++	hardenBackupPermissionsBatch,
+ 	requireSqliteRuntimeModule,
+ 	resolveWindowsPowerShellPath,
+ 	selectBuiltinSQLiteRuntime,
+diff --git a/scripts/legacy-claim-repair.js b/scripts/legacy-claim-repair.js
+index f75dfd91..d1f0d6e4 100644
+--- a/scripts/legacy-claim-repair.js
++++ b/scripts/legacy-claim-repair.js
+@@ -3,7 +3,11 @@
+ 
+ const path = require('node:path');
+ 
+-const { createBuiltinSQLiteDriver, hardenBackupPermissions } = require('../lib/kernel/sqlite-driver');
++const {
++	createBuiltinSQLiteDriver,
++	hardenBackupPermissions,
++	hardenBackupPermissionsBatch,
++} = require('../lib/kernel/sqlite-driver');
+ const {
+ 	ClaimRepairError,
+ 	createVerifiedClaimRepairBackup,
+@@ -71,6 +75,7 @@ async function run(options, dependencies = {}) {
+ 	const createBackup = dependencies.createVerifiedClaimRepairBackup
+ 		|| createVerifiedClaimRepairBackup;
+ 	const hardenPath = dependencies.hardenPath || hardenBackupPermissions;
++	const hardenPaths = dependencies.hardenPaths || hardenBackupPermissionsBatch;
+ 	const sourceDriver = openDriver(options.databasePath);
+ 	try {
+ 		if (options.mode === 'dry-run') {
+@@ -80,6 +85,7 @@ async function run(options, dependencies = {}) {
+ 				observedAt: options.observedAt,
+ 				openDriver,
+ 				hardenPath,
++				hardenPaths,
+ 			});
+ 			const preflight = await sourceDriver.preflightLegacyClaimRepair({ observedAt: options.observedAt });
+ 			if (preflight.digest !== backup.plan_digest) {
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 2a143167..45e1a70a 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -9,6 +9,7 @@ const { createLocalBroker } = require('../../lib/kernel/broker');
+ const {
+ 	createBuiltinSQLiteDriver,
+ 	hardenBackupPermissions,
++	hardenBackupPermissionsBatch,
+ 	resolveWindowsPowerShellPath,
+ 	syncClaimRepairRecoveryDirectory,
+ } = require('../../lib/kernel/sqlite-driver');
+@@ -23,6 +24,7 @@ const { parseArgs, run } = require('../../scripts/legacy-claim-repair');
+ const OBSERVED_AT = '2026-08-12T08:00:00.000Z';
+ const tempDirs = [];
+ const hardenPath = filePath => hardenBackupPermissions(filePath);
++hardenPath.batch = filePaths => hardenBackupPermissionsBatch(filePaths);
+ 
+ async function removeDirWithRetry(dir, attempts = 10) {
+ 	for (let attempt = 0; attempt < attempts; attempt += 1) {
+@@ -186,6 +188,19 @@ describe('legacy claim repair preflight', () => {
+ 		})).toThrow('owner-only permissions');
+ 	});
+ 
++	test('batches Windows ACL hardening while preserving per-path failure handling', () => {
++		const secured = [];
++		hardenBackupPermissionsBatch(['backup.sqlite', 'restore.sqlite', 'backup.sqlite'], {
++			platform: 'win32',
++			aclSecurer(filePath) { secured.push(filePath); },
++		});
++		expect(secured).toEqual(['backup.sqlite', 'restore.sqlite']);
++		expect(() => hardenBackupPermissionsBatch(['backup.sqlite'], {
++			platform: 'win32',
++			aclSecurer() { throw new Error('ACL remained inherited'); },
++		})).toThrow('owner-only permissions');
++	});
++
+ 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
+ 		let cleanupOptions;
+ 		expect(() => cleanupRestoreProofDirectory('restore-proof', {
+@@ -350,6 +365,10 @@ describe('legacy claim repair backup and apply', () => {
+ 			hardenedPaths.push(filePath);
+ 			hardenPath(filePath);
+ 		};
++		trackingHardener.batch = filePaths => {
++			hardenedPaths.push(...filePaths);
++			hardenBackupPermissionsBatch(filePaths);
++		};
+ 
+ 		const proof = await createVerifiedClaimRepairBackup({
+ 			sourceDriver: fixture.driver,
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,247 @@
+From 7ae9d6c3630cc857a2213e0ca462e0c574a39298 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 13:10:00 +0530
+Subject: [PATCH] fix(hooks): exempt unchanged merge-carried protected paths
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                          |  1 +
+ scripts/protected-state-check.js      | 92 +++++++++++++++++++++++++++
+ test/protected-state-surfaces.test.js | 84 ++++++++++++++++++++++++
+ 3 files changed, 177 insertions(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b8b6d3ee..e6799ac5 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **The protected-state pre-commit check is now merge-aware.** While a merge is in progress (per-worktree `MERGE_HEAD`), a staged protected path is exempt only when its staged blob is byte-identical to that path on `HEAD` or on a `MERGE_HEAD` — content carried in by the merge rather than edited. Paths differing from every merge side stay blocked, the non-merge path is unchanged, and any failed git query fails closed. (issue `f6d43eb1-249d-4d81-b679-32502ffa28c2`)
+ - **The targeted PR lane's full-suite fallback now uses the lane-aware runner.** When the execution planner returns `mode=full`, the follow-up job runs `scripts/test-full-suite.js` instead of a raw `bun test test/`, so subprocess-heavy files get resource-lane separation and the worker budget the full matrix already had — closing the Windows-only spawn failures that hit only this lane.
+ - **Full-suite validation now respects the computed worker budget.** Resource-aware lanes share the reserved worker pool by default, and `forge validate` uses that runner when available, preventing mixed unit and subprocess shards from oversubscribing Windows runners. (PR #545, issue `8cb52d50-24ea-4c69-8579-b30a0f1ee467`)
+ - **Windows legacy-claim repair now preserves owner-only ACL guarantees without PowerShell transport stalls.** The operator-only repair path uses bounded, privacy-safe Windows security-descriptor verification, exact owner/DACL replacement, Unicode-safe targets, transaction-isolated async hardening, and fail-closed timeout cleanup. (#538, issue `eb2c56e8-5054-4542-8f02-3f9fe635fd2d`)
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index bf24066d..e680f01b 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -1,6 +1,8 @@
+ #!/usr/bin/env node
+ 
+ const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const path = require('node:path');
+ const {
+ 	assertProtectedWriteAllowed,
+ 	recordProtectedStateAuditEvent,
+@@ -105,6 +107,86 @@ function getCurrentHead() {
+ 	}
+ }
+ 
++const ABSENT_OBJECT = 'absent';
++
++function gitCapture(args) {
++	return execFileSync('git', args, {
++		encoding: 'utf8',
++		stdio: ['ignore', 'pipe', 'pipe'],
++	}).trim();
++}
++
++// Resolve a commit-ish to a full object id, or null when it does not exist.
++// Worktree-safe: plain `git rev-parse` already resolves per-worktree state.
++function resolveCommit(revision) {
++	try {
++		const id = gitCapture(['rev-parse', '--verify', '--quiet', `${revision}^{commit}`]);
++		return isValidGitObjectId(id) ? id : null;
++	} catch {
++		return null;
++	}
++}
++
++// Object id of `<spec>` (e.g. `:path`, `<sha>:path`).
++// Returns ABSENT_OBJECT when the path is provably missing from an existing tree,
++// and null when the answer is unknown — callers must fail closed on null.
++function objectIdForSpec(spec) {
++	try {
++		const id = gitCapture(['rev-parse', '--verify', '--quiet', spec]);
++		if (isValidGitObjectId(id)) return id;
++		return id === '' ? ABSENT_OBJECT : null;
++	} catch (error) {
++		if (error && error.status === 1 && !String(error.stderr || '').trim()) return ABSENT_OBJECT;
++		return null;
++	}
++}
++
++// A merge is in progress when the per-worktree MERGE_HEAD exists. `--git-path`
++// resolves the correct (possibly linked-worktree) git dir.
++function readMergeSides() {
++	let mergeHeadPath;
++	try {
++		mergeHeadPath = gitCapture(['rev-parse', '--git-path', 'MERGE_HEAD']);
++	} catch {
++		return [];
++	}
++	if (!mergeHeadPath) return [];
++	let raw;
++	try {
++		raw = fs.readFileSync(path.resolve(process.cwd(), mergeHeadPath), 'utf8');
++	} catch {
++		return [];
++	}
++	const ids = raw
++		.split(/\r?\n/)
++		.map(line => line.trim())
++		.filter(Boolean);
++	if (ids.length === 0 || !ids.every(isValidGitObjectId)) return [];
++	const resolved = ids.map(id => resolveCommit(id));
++	if (resolved.some(commit => commit === null)) return [];
++	const head = resolveCommit('HEAD');
++	return head ? [head, ...resolved] : resolved;
++}
++
++// Exemption predicate: while a merge is in progress, a staged protected path is
++// exempt only when its staged blob is byte-identical to that path on one of the
++// merge sides (HEAD or any MERGE_HEAD) — i.e. the committer introduced no net
++// change; the content came from the merge. The merge base is deliberately NOT a
++// permitted side: matching only the base means the committer reverted both sides,
++// which is an edit. Anything else stays blocked, and any failed git query fails closed.
++function createMergeExemption() {
++	const sides = readMergeSides();
++	if (sides.length === 0) return () => false;
++	return file => {
++		const staged = objectIdForSpec(`:${file}`);
++		if (staged === null) return false;
++		return sides.some(side => {
++			const sideObject = objectIdForSpec(`${side}:${file}`);
++			return sideObject !== null && sideObject === staged;
++		});
++	};
++}
++
+ async function main() {
+ 	const actor =
+ 		process.env.FORGE_PROTECTED_STATE_ACTOR ||
+@@ -113,10 +195,16 @@ async function main() {
+ 		process.env.USERNAME ||
+ 		'unknown';
+ 	const sourceHead = getCurrentHead();
++	const isMergeCarryOver = createMergeExemption();
++	const mergeExempt = [];
+ 	const probes = getStagedFiles()
+ 		.map(file => {
+ 			const probe = assertProtectedWriteAllowed(file, { actor, operation: 'staged_edit' });
+ 			if (!probe.requiredSurface) return { probe };
++			if (isMergeCarryOver(probe.path)) {
++				mergeExempt.push(probe.path);
++				return { probe: { ...probe, allowed: true, decision: 'allowed_merge_carry_over' } };
++			}
+ 			if (probe.path === 'bun.lock' && probe.requiredSurface === 'lockfiles') {
+ 				return {
+ 					probe,
+@@ -165,6 +253,10 @@ async function main() {
+ 		}
+ 	}
+ 
++	for (const file of mergeExempt) {
++		console.log(`OK: ${file} matches a merge side unchanged (merge in progress); no net edit introduced.`);
++	}
++
+ 	if (decisions.length === 0) {
+ 		console.log('OK: No protected state edits detected.');
+ 		process.exit(0);
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 2df41c8b..e13c606d 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -491,3 +491,87 @@ describe('scripts/protected-state-check.js', () => {
+ 		expect(output).toContain('beads_state');
+ 	});
+ });
++
++describe('scripts/protected-state-check.js merge awareness', () => {
++	const scriptPath = path.join(__dirname, '..', 'scripts', 'protected-state-check.js');
++	const WORKFLOW = '.github/workflows/test.yml';
++
++	function writeRepoFile(root, relPath, content) {
++		fs.mkdirSync(path.join(root, path.dirname(relPath)), { recursive: true });
++		fs.writeFileSync(path.join(root, relPath), content);
++	}
++
++	function initRepo(root) {
++		runGit(root, ['init', '--quiet', '--initial-branch=master']);
++		runGit(root, ['config', 'user.email', 'test@example.com']);
++		runGit(root, ['config', 'user.name', 'Test']);
++		runGit(root, ['config', 'commit.gpgsign', 'false']);
++		writeRepoFile(root, WORKFLOW, 'name: base\n');
++		writeRepoFile(root, 'lib/safe.js', 'module.exports = 1;\n');
++		runGit(root, ['add', '.']);
++		runGit(root, ['commit', '--quiet', '-m', 'base']);
++	}
++
++	function startMerge(root) {
++		runGit(root, ['checkout', '--quiet', '-b', 'feature']);
++		runGit(root, ['checkout', '--quiet', 'master']);
++		writeRepoFile(root, WORKFLOW, 'name: base\njobs: {}\n');
++		runGit(root, ['add', WORKFLOW]);
++		runGit(root, ['commit', '--quiet', '-m', 'upstream workflow change']);
++		runGit(root, ['checkout', '--quiet', 'feature']);
++		writeRepoFile(root, 'lib/safe.js', 'module.exports = 2;\n');
++		runGit(root, ['add', 'lib/safe.js']);
++		runGit(root, ['commit', '--quiet', '-m', 'feature change']);
++		runGit(root, ['merge', '--no-commit', '--no-ff', '--quiet', 'master']);
++	}
++
++	function runCheck(root) {
++		return spawnSync('node', [scriptPath], {
++			cwd: root,
++			stdio: 'pipe',
++			env: { ...process.env, FORGE_PROTECTED_STATE_ACTOR: 'merge-test' },
++		});
++	}
++
++	test('allows a merge-in-progress protected path whose staged blob came from MERGE_HEAD', () => {
++		const root = createTempDir();
++		try {
++			initRepo(root);
++			startMerge(root);
++			const result = runCheck(root);
++			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
++			expect(result.status).toBe(0);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 30_000);
++
++	test('still blocks a merge-in-progress protected path edited beyond the merge content', () => {
++		const root = createTempDir();
++		try {
++			initRepo(root);
++			startMerge(root);
++			writeRepoFile(root, WORKFLOW, 'name: base\njobs: {}\n# hand edit\n');
++			runGit(root, ['add', WORKFLOW]);
++			const result = runCheck(root);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 30_000);
++
++	test('still blocks a staged protected path when no merge is in progress', () => {
++		const root = createTempDir();
++		try {
++			initRepo(root);
++			writeRepoFile(root, WORKFLOW, 'name: base\njobs: {}\n');
++			runGit(root, ['add', WORKFLOW]);
++			const result = runCheck(root);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 30_000);
++});
+-- 
+2.51.0.windows.1
+

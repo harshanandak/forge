@@ -1,0 +1,1793 @@
+From cf1d6b4a8dd42cd11e83066d74eac6a887400b7e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 12:40:30 +0530
+Subject: [PATCH] docs(plan): approve Forge 0.1.0 restructure
+
+---
+ .../acceptance-contracts.md                   | 116 +++
+ .../decision-register.md                      |  30 +
+ .../external-execution-convergence.md         |  64 ++
+ .../external-market-architecture-research.md  | 251 +++++
+ .../facade-routing.md                         |  54 ++
+ .../issue-disposition.md                      | 100 ++
+ .../plan.md                                   | 887 ++++++++++++++++++
+ .../tasks.md                                  | 100 ++
+ .../validation-matrix.md                      | 107 +++
+ 9 files changed, 1709 insertions(+)
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/decision-register.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/external-execution-convergence.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/external-market-architecture-research.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/facade-routing.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/plan.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/tasks.md
+ create mode 100644 docs/work/2026-08-09-forge-product-restructure/validation-matrix.md
+
+diff --git a/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md b/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+new file mode 100644
+index 00000000..a58d8e88
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+@@ -0,0 +1,116 @@
++# Forge 0.1.0 Missing Acceptance Contracts
++
++Status: normative proposal companion. These contracts must be written to the matching live Kernel issue and read back at the expected revision during the pre-implementation admission gate. They do not authorize implementation.
++
++Snapshot facts:
++
++- 79 disposition rows; 54 currently report `AC=no`.
++- 48 actionable rows report `AC=no`; one is the stable-release tracking root, leaving 47 implementation/migration candidates requiring contracts before code begins.
++- Epics receive no completion credit for a child outcome. An epic closes only after every mapped child is closed with accepted evidence or explicitly deferred through an approved linked issue.
++- Existing issue acceptance criteria remain authoritative unless this proposal is explicitly approved and written to the Kernel.
++
++Common acceptance rules for every row below:
++
++1. Evidence is bound to the issue id/revision, WorkPacket hash, exact head, risk-manifest digest, and owning gate receipts.
++2. `INCOMPLETE`, stale, truncated, conflicting, unauthorized, or non-reconstructable evidence is not completion.
++3. No row may expand its owning PR's path/API boundary; unrelated findings receive a separate issue/PR.
++4. The listed outcome plus all listed checks must pass; a title match or merged neighboring change is insufficient.
++
++## PR 1 — Control-plane trust and fast validation
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `9b69a551` | Reconcile only claims whose verified Forge-owned run is dead and linked worktree is missing. Dead+missing releases exactly that claim; live/active-worktree/missing-marker/marker-mismatch/unverifiable fixtures remain unchanged; replay is idempotent with process-run-manifest evidence; no TTL/PID-only broad cleanup. |
++| `1390e1d1` | Lifecycle-hygiene epic. Kernel child query accounts for all mapped lifecycle children as evidence-closed or approved linked deferrals; each completed child has hook/gate/check-after-write evidence; epic cannot close while any mapped child is open or unverified. |
++| `765a4cd8` | Merge authority accepts passing required checks plus successful optional `SKIPPED`/`NEUTRAL` observations. Required failure, optional failure, stale head, or unresolved actionable thread blocks; neutral `forge/pr-monitor` never becomes a false blocker. |
++| `7f8c8471` | Packaged Smith/claim-safety references resolve or use a documented supported primitive. Asset scan finds every reference; invocation succeeds or deterministically falls back; claim-safety still proves a live owned lease and rejects foreign/expired leases. |
++| `94f782e0` | Foreign-lease reconcile child exits deterministically on Windows. Repeated affected Windows/Node fixture exits successfully within its bound; a valid lease remains active and untouched; recurrent environmental failure becomes separate evidence/fix, not a weakened assertion. |
++| `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
++| `b977b0a2` | Approval events support issue/project scope and TTL through one control. Round-trip returns scope/expiry/control id; valid approval permits the protected write; wrong-scope/expired/missing approval denies; replay is idempotent and audit-visible. |
++| `c29f3952` | Kernel status honestly exposes live sessions, held leases, and last-seen. Active fixture reports actor/issues/activity; closed/expired/unverifiable session is offline; read does not mutate leases. |
++| `eea2f9ce` | Claim-safety refuses work without a current actor-owned unexpired lease. Owned/unexpired passes; foreign/expired/missing/duplicate-collapsed fails before work; proof comes from live Kernel state rather than a local claim token. |
++| `c3952ba5` | Kernel graph automatically registers PRs, sessions, and Shepherd verdicts. Ship/orientation/Shepherd fixtures create the expected rows; replay is idempotent; one trace answers issue→claim→session→worktree→PR→verdict→events/comments with explicit gaps. |
++
++## PR 2 — Contracts and package boundaries
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `5037a7da` | Memory exposes a formal adapter registry while local Kernel memory remains the mandatory floor. Contract fixtures cover add/recall/search/capture/digest and local default; configured adapters resolve deterministically; invalid config fails doctor; adapter failure cannot block/remove local write or recall; selection appears in a versioned receipt. |
++
++## PR 3 — Memory foundation
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `6b56673a` | Capture remains bounded through supersession, staleness demotion, duplicate/contradiction detection, and review. Superseded notes hide by default but remain recoverable; unused >90-day notes demote deterministically; review surfaces stable duplicate/contradiction ids; repeated equivalent capture produces no duplicate issue. |
++| `33d6dce9` | Supported read attention receives fenced, budget-capped relevant memory without treating it as authority. Capable path injects only path-matched notes; unsupported harness reports an honest skip; content is fenced/untrusted and cannot mutate Kernel; unrelated path gets no note. |
++| `b6bdf122` | Knowledge-architecture epic. Kernel child query lists every mapped child with accepted evidence or approved linked deferral; required corpus/authority/migration evidence is attached; any unevidenced child keeps the epic open. |
++| `bec40cf9` | `forge recall` provides deterministic cross-platform Kernel-native recall without requiring context-mode. Same corpus/query yields consistent results and explicit empty state; optional adapter absence does not break core; enrichment never changes authority; kind/cap metadata is truthful. |
++| `6d5ed439` | Session learning uses an honest non-blocking supported-hook nudge. Missing summary emits one deduplicated reminder through a supported hook; unsupported hooks are not assumed; explicit summary persists deterministic metadata and repeated submission is idempotent. |
++| `bb5b054c` | `recall --kind` is complete or reports truncation. A >1000-note corpus with an old match either returns it through store filtering or sets `capped:true`; it never claims uncapped completeness when matches may be omitted; ordering/cap metadata is deterministic. |
++
++## PR 4A — Flow core, skills, and observers
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `183dc7ca` | Skills auto-trigger agent-agnostically and compose sub-skills with terminal/next states and evaluation evidence. Chain fixtures prove trigger→handoff→terminal with no hard-coded harness/vendor; evaluation records trigger accuracy, cost, and outcome. Epic closes only after mapped skill children. |
++| `2b71e189` | Skills orient before acting, announce relevant skills, and chain progressive sub-skills across harnesses. User-named/auto-trigger paths converge; unsupported next skill fails closed without expanding scope. |
++| `7da81cbd` | Smith composes stage sub-skills through typed gate events and size×importance×complexity autonomy. Replay proves deterministic routing, bounded handoffs, budget/failure authority, and terminal stop. |
++| `028a149e` | Skill handoffs use explicit `Skill("name")` convention in Smith, Kernel, and research with valid frontmatter. Static/parser fixtures cover all handoff sites and preserve the research single source. |
++| `9aac4554` | `forge loop` is a bounded agent-agnostic tick driver that closes on terminal state. One-tick/retry/timeout replay proves cleanup and no harness scheduler dependency. |
++
++## PR 4B — Shepherd, review, merge, and post-merge handoff
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `57fb8889` | Shepherd reconciles PRs independently of sessions, survives restart/reboot, and retires cleanly. Replay covers restart/reclaim/orphan/closure and deduplicated events; no model polling or merge authority. Epic closes only after mapped Shepherd children. |
++| `9af1ee0a` | Every reproducible Fable Shepherd audit gap is fixed or represented by an owned regression, including pull/bundle paths. Audit checklist has zero unowned reproducible gaps; exact-head Shepherd/pull/bundle replay passes. |
++| `c2d398e5` | Singleton agent-agnostic monitor reconciles all PRs and emits only new actionable events. Tick/replay proves coverage, deduplication, event order, and stop when no PR remains; no per-agent scheduler/model poll. Epic closes only after mapped monitor/event children. |
++| `f1af41ef` | One fail-closed current-head merge verdict derives from checks, threads, ancestry, and mergeability under Memory authority. Adversarial replay covers open/zero threads, torn reads, and stale heads; evidence names exact head/source. Epic closes only after mapped merge-safety children. |
++| `00eef22d` | Zero actionable threads never yields `BLOCKED-THREADS`. Regression returns a non-blocking current-head verdict with empty, internally consistent blocker evidence. |
++| `265774da` | Behind-base uses the current GitHub base oid/graph and does not block a zero-behind PR. A 0-behind/1-ahead fixture passes; stale/mismatched base is explicit `INCOMPLETE`/blocked; compared SHAs are emitted. |
++| `52ebe3fd` | Shepherd docs/examples describe any review bot, not CodeRabbit as a dependency. Static scan has no vendor-only normative reference; provider-neutral fixtures render equivalent behavior; docs drift passes. |
++| `931d73f5` | Review-bot classification uses author typename/`[bot]` and current commit, never a login allow-list. Multi-author/stale-commit fixtures pass; static scan finds no provider login equality. |
++| `9df80006` | `BLOCKED-THREADS` always carries real blocker evidence and never an empty blocker. Clean state is not blocked; blocked state includes ids/reasons; required-source/verdict fields agree. |
++| `a696e954` | `shepherd events --all` provides a local cross-PR digest with stable cursor, ordering, deduplication, and self-retirement. It uses no CI-token dependency. |
++| `addf5297` | Tier-2 trigger fires only for a current clean verdict and enabled gate, then nudges ship without merge authority. Toggle/stale-head/open-thread matrix and event receipt pass. |
++| `c66f076e` | Review list/reply/resolve uses agent-agnostic Forge verbs. Static scan finds no runtime `.claude` dependency; fake-adapter round-trip preserves current-head thread identity and propagates failure. |
++| `4a65c50f` | Tier-3 maintainer path forks safely, appends idempotent verdict history, emits `pr.verdict_changed`, and cannot merge without authority. Replay binds exact head and issue. |
++| `67ecc083` | Ship→Shepherd→Review handoffs preserve PR/head/issue state without dropped/duplicate transitions. End-to-end fake-provider retry is idempotent; stale/terminal transitions stop work. |
++| `b03ddbf2` | `shepherd --pull` exposes actionable current-head direct comments/review summaries while filtering status noise, resolved items, and old heads in stable provider-neutral JSON. |
++| `b34dfc57` | Restart adopts the reclaimed lease watcher set and reaps orphan watchers at terminal PR state. Replay proves transfer, adoption, no duplicates, cleanup, and recorded handle/lease evidence. |
++| `e2420489` | Compact `shepherd <pr> --verdict --json` returns the canonical three-signal current-head verdict. Schema snapshot matches the canonical evaluator; missing evidence is `INCOMPLETE`, never `PASS`. |
++| `ffbdb6b7` | Reconcile tests inject inert fakes for every environment seam. Seam inventory passes offline deterministically and retains failure-path assertions without live process/network state. |
++
++## PR 5 — Facade, harness, and capabilities
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `7268bc9b` | Hook adapter evaluates mandatory/optional/permission controls and reports honest per-harness downgrade. Policy matrix covers deny/warn/TTL approval/expiry; observational-only harnesses never claim enforcement; decisions are auditable. |
++| `9658c21a` | MCP registry renders/drift-checks control state and consent at render time only. Fixtures cover control types, toggles, drift, consent expiry, and stable capability/config digests without claiming runtime enforcement. |
++
++## PR 6 — Migration and extraction readiness
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `18bee669` | Replace all 28 `beads-context.sh` shell-outs/fallbacks with Kernel-authoritative reads. Static scan finds none at runtime; populated-Kernel/missing-Beads fixture succeeds; genuinely missing context stays `FAIL`/`INCOMPLETE`. |
++| `ea6c7b14` | Runtime is Beads-free; one explicit opt-in migrator is the only surviving Beads surface. Migration/rollback/interruption/post-cutover suite passes; dependency scan excludes only migrator; epic closes only after every mapped retirement child. |
++| `920a086a` | D44 ledger, AGENTS, skills, and references state migrator-only Beads and remove retired runtime guidance. Link/drift/static scans pass and record `BEADS_GITHUB_SYNC` retirement. |
++| `d9cb9823` | Beads retirement plan maps every slice to owner, proof artifact, rollback/`INCOMPLETE` behavior, and child issue; appendix link/render check passes. |
++
++## PR 7 — Release convergence
++
++| Issue | Outcome and machine-verifiable acceptance |
++| --- | --- |
++| `8e634347` | Cut `0.1.0` reproducibly from the accepted exact-SHA BOM. Package/version/doc/changelog sweep matches candidate; signed BOM/artifacts reproduce; tag/publish occurs only after G8 and metadata-only promotion rules. This release root tracks promotion and is not an additional implementation outcome. |
++| `28d67d69` | Real `node bin/forge.js` memory add/recall/search/remember smoke catches handler/CLI drift. Spawned fixture verifies exits/stdout/schema, including `--type` versus `--kind`, with no live provider dependency. |
++
++## Admission procedure
++
++After proposal approval and before any implementation branch or WorkPacket:
++
++1. Generate a canonical amendment batch for the 48 actionable `AC=no` issues from this document.
++2. For each issue, compare the expected revision from the approved snapshot, write its contract to the Kernel, and read it back.
++3. Refuse partial silent success: conflicts remain unadmitted and are reported; successfully amended issues retain their new revision and receipt.
++4. Recompute the disposition snapshot and prove every one of the 70 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
++5. Epic admission additionally requires an explicit mapped-child list; epic closure remains impossible while a mapped child lacks accepted completion or approved deferral evidence.
++6. Publish `admission-evidence.v1.json` with before/after revisions, contract hashes, conflicts, and aggregate `PASS|FAIL|INCOMPLETE`. Only aggregate `PASS` authorizes PR 1 implementation.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/decision-register.md b/docs/work/2026-08-09-forge-product-restructure/decision-register.md
+new file mode 100644
+index 00000000..72d64684
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/decision-register.md
+@@ -0,0 +1,30 @@
++# Forge 0.1.0 Restructuring Decision Register
++
++**Status:** Approved for implementation subject to the admission checkpoint in `plan.md` §9
++**Epic:** `d6a74dc8-10f7-4be9-9761-2467c3df4798`
++
++| ID | Decision | Status | Approval/evidence |
++| --- | --- | --- | --- |
++| R1 | `0.1.0` is the restructuring release; beta.5 is rollback baseline | Locked | User decision; tag SHA recorded in plan |
++| R2 | Deliver through seven milestones/eight cohesive PRs, parallel preparation only for disjoint ownership, sequential merge | Locked | External review evidence required splitting conceptually distinct Flow core from Shepherd semantics; user rejected one mega-PR and tiny churn |
++| R3 | Targeted risk-owned PR tests; one complete exact candidate matrix | Locked | User identified test burden as release constraint |
++| R4 | Each supervised run consumes strictly less than 40% of declared parent budget, leaving more than 60% unused | Locked | User correction |
++| R5 | Mandatory deterministic replans at 20% and 30%; completion/handoff decision at 35%; hard stop at 39% | Locked | User correction |
++| R6 | Forge Memory owns Kernel, durable authority, memory, contracts, packets, leases, receipts, and history; Flow is optional executor | Approved and locked | Matches user's refined Memory-foundation architecture and current D44/D45 Kernel authority |
++| R7 | No neutral protocol product; `@forge/memory-contracts` is owned by Memory | Approved and locked | Avoids a third governance/release dependency |
++| R8 | Ship 0.1.0 as an extraction-ready modular monolith with independently releasable Memory/Flow packages; postpone physical repository separation until post-stable measured triggers pass | Approved and locked | External research red-team: an early split risks a distributed monolith and coordinated-release burden |
++| R9 | Preserve `forge-workflow` and current binaries through 0.1.x as compatibility facade | Approved and locked | Minimizes beta.5 migration breakage |
++| R10 | Kernel/Memory remains sole authority writer; migration allows shadow/dual-read but never authority dual-write | Approved and locked | D44/D45 and split-brain prevention |
++| R11 | Include 67 architecture/control issues, resolve three additional release gates separately, defer five nonessential architecture candidates, audit three close/supersede candidates, and keep unrelated backlog outside the train | Approved and locked | Corrected 79-row live Kernel ledger: 72 candidates minus five deferrals, plus four release/root and three closure-audit rows |
++| R12 | Release order: beta.6 contracts/preflight → beta.7 operational split → RC migration/freeze → metadata-only stable | Approved and locked | Monotonic SemVer progression from the published beta.5 rollback baseline |
++| R13 | Every candidate is bound by a signed release BOM and exact immutable package artifacts; the schema supports the 0.1 single-repository case and a later multi-repository case | Approved and locked | Required for atomic rollback/provenance without forcing an early repository split |
++| R14 | Model-winner promotion is separate from 0.1.0 unless default routing changes | Approved and locked | Infrastructure alone cannot prove a model winner |
++| R15 | EfficiencySupervisor is event-driven; deterministic observation uses no model; optional small model is threshold-only and capped | Locked | User requested continuous waste detection without token burn; R4/R5 fix the exact budget policy |
++| R16 | Unrelated findings get separate issues/PRs and cannot expand an active architecture PR | Locked | Repeated user instruction |
++| R17 | Feedback is structured, per-report consent-gated, identity/device-free, and uses no client model tokens; optional cloud triage is Forge-funded and local triage is manual | Locked | User explicitly approved this privacy/token boundary |
++| R18 | Monitor capability is version-bound and executable-probed per harness; unknown capability degrades explicitly rather than being assumed | Locked | User required current capability verification across target harnesses |
++| R19 | Forge Flow provides one shared durable Monitor Engine; Memory stores monitor evidence; harnesses receive capability-tiered delivery; only actionable transitions enter model context | Locked | User approved learning from Claude Monitor while improving durability, portability, lifecycle, security, and token efficiency |
++
++## Approval rule
++
++The user approved R6–R14 and the plan-to-development transition on 2026-08-09. Implementation may begin after the pre-implementation admission checkpoint writes and verifies the approved acceptance contracts in Kernel authority. Each implementation PR still requires its own claimed issue, exact scope, and stage evidence; this approval does not authorize unrelated work or bypass release gates.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/external-execution-convergence.md b/docs/work/2026-08-09-forge-product-restructure/external-execution-convergence.md
+new file mode 100644
+index 00000000..41663d24
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/external-execution-convergence.md
+@@ -0,0 +1,64 @@
++## Decision Memo: Modular Restructuring for Open-Source AI Coding-Agent Platform
++
++**Date:** 2026-08-09
++
++**Objective:** To provide recommendations for modular restructuring of an open-source AI coding-agent platform, focusing on repository structure, component packaging, decision locking, and acceptance criteria for independence.
++
++**1. Repository Separation Strategy:**
++
++*   **Recommendation:** Postpone physical repository separation until after a stable release (e.g., post-0.2.0). Focus on establishing strong internal modularity within the current repository first.
++*   **Rationale:** Significant architectural refactoring (like splitting repositories) introduces churn and review hazards that are best avoided before a stable baseline is achieved. This aligns with the principle of establishing a solid foundation before extensive decomposition (5).
++*   **Measurable Extraction Triggers:**
++    *   **Independent Deployability:** A component or agent group demonstrates clear functional boundaries and can be deployed and scaled independently of the core platform.
++    *   **Significant Inter-Component Dependency:** The complexity of managing dependencies between a component and the core platform becomes a bottleneck, indicating that extraction would simplify management.
++    *   **Team Ownership:** A specific team or sub-project is solely responsible for a set of functionalities, making independent development and release cycles beneficial.
++
++**2. PR/Milestone Decomposition:**
++
++*   **Recommendation:** Decompose work into small, focused Pull Requests (PRs) aligned with specific agent capabilities or user-facing features. Prioritize incremental delivery of modular components.
++*   **Rationale:** Large changes increase review latency and complexity (1, 10). Breaking down work into smaller PRs facilitates easier review, reduces the risk of merge conflicts, and allows for continuous integration of modular pieces. This supports a "vertical slice" approach where complete, albeit small, features or functionalities are delivered incrementally (4).
++*   **Milestone Decomposition (Conceptual):**
++    *   **Milestone 1 (Core Orchestration):** Focus on establishing the fundamental agent orchestration pattern (e.g., multi-agent, event-driven) and basic communication protocols. PRs will be small, focusing on defining agent interfaces and core workflow logic.
++        *   *PR Size:* Small (1-3 files, <100 LoC per PR)
++        *   *Surface Area:* Agent communication protocols, core workflow manager.
++    *   **Milestone 2 (Memory & Tool Integration):** Implement and integrate the chosen memory/persistence mechanism and initial set of core tools. PRs will focus on abstracting tool interfaces and integrating the memory module.
++        *   *PR Size:* Small to Medium (2-5 files, <200 LoC per PR)
++        *   *Surface Area:* Memory management module, tool abstraction layer.
++    *   **Milestone 3 (Agent Specialization):** Develop and integrate specialized agents (e.g., code analysis, test generation, refactoring agents). PRs will focus on individual agent logic and their integration points.
++        *   *PR Size:* Medium (3-7 files, <300 LoC per PR)
++        *   *Surface Area:* Individual agent modules, agent registry.
++    *   **Milestone 4 (Modular Extraction Planning):** Based on defined triggers, plan and prototype the extraction of the first set of independent services.
++        *   *PR Size:* Small (focus on planning and initial extraction code)
++        *   *Surface Area:* Service boundary definitions, initial extraction scripts.
++
++**3. Component Packaging (Modular-Monolith vs. Services):**
++
++*   **Recommendation:** Adopt a modular-monolith strategy initially. Package core orchestration, shared utilities, and tightly coupled agent functionalities within a single deployable unit. Extract highly specialized, independently scalable agents or functionalities into separate services later.
++*   **Rationale:** A modular-monolith allows for internal modularity and separation of concerns without the immediate overhead of managing multiple distributed services (5, 12). This approach provides flexibility, allowing for gradual extraction as components mature and demonstrate independent value (25, 26, 30).
++*   **Modular-Monolith Components:** Core agent orchestrator, shared context management, fundamental memory/persistence interfaces, common utility functions, tightly coupled agent groups (e.g., agents working on the same file or task).
++*   **Future Services:** Highly specialized agents (e.g., advanced code generation, specific domain analysis), independently scalable components (e.g., a dedicated search agent), or components requiring different technology stacks.
++
++**4. Decision Locking (Now vs. Postponed):**
++
++*   **Decisions to Lock Now:**
++    *   **Core Orchestration Pattern:** Multi-agent vs. single-agent, event-driven vs. direct invocation (25, 26, 34).
++    *   **Primary Memory/Persistence Strategy:** How agent state and context are stored and retrieved (LangChain memory docs, prior sources).
++    *   **Core Communication Protocols:** How agents and components interact (e.g., A2A Protocol, gRPC, REST) (prior sources).
++    *   **Modularity Principles:** Adherence to defined module boundaries and interfaces (21).
++*   **Decisions to Postpone:**
++    *   **Specific LLM Provider Integration:** While supporting multiple providers is good (32), locking into one for the core platform might be premature. Focus on abstraction.
++    *   **Detailed Tool Integrations:** Specific implementations of external tools can be added iteratively.
++    *   **UI/UX specific details:** Unless directly impacting core agent functionality.
++*   **Rationale:** "Screaming Architecture" principles suggest deferring environmental decisions (8). Core architectural decisions provide the necessary structure for modular development, while others can be adapted as the platform evolves.
++
++**5. Acceptance Metrics for Independence (Without Physical Repo Split):**
++
++*   **Recommendation:** Utilize internal metrics and testing strategies to validate modular independence before physical repository separation.
++*   **Metrics:**
++    *   **Unit & Integration Test Coverage:** Achieve high test coverage for individual modules/agents, ensuring they can be tested in isolation with mocked dependencies.
++    *   **Dependency Graph Analysis:** Visualize and enforce module dependencies. Aim for a clear, directed graph with minimal cross-module coupling (21). Tools like Nx can help enforce these constraints (21).
++    *   **Contract Testing:** Implement tests that verify the adherence of components to their defined interfaces and communication protocols.
++    *   **Code Complexity Metrics:** Monitor cyclomatic complexity and lines of code within modules. Smaller, contained changes indicate better modularity.
++    *   **Performance Benchmarks:** Measure the performance of individual modules or agent workflows to ensure they meet requirements and do not introduce performance regressions in other parts of the system.
++    *   **Documentation:** Maintain clear documentation for each module's API, responsibilities, and dependencies.
++*   **Rationale:** These metrics provide objective evidence of modularity and independence, allowing for confident refactoring and eventual extraction without the immediate overhead of managing separate repositories (25, 26).
+\ No newline at end of file
+diff --git a/docs/work/2026-08-09-forge-product-restructure/external-market-architecture-research.md b/docs/work/2026-08-09-forge-product-restructure/external-market-architecture-research.md
+new file mode 100644
+index 00000000..5c5b5861
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/external-market-architecture-research.md
+@@ -0,0 +1,251 @@
++# Durable Memory First: A Safe Flow Extraction Plan
++
++## Executive Summary
++
++- **Authority Separation**: Leading products keep instructions, memory, issue context, or session history separate from the process that edits and tests code. Claude Code uses versionable CLAUDE.md plus machine-local auto memory, while Codex layers AGENTS.md and project threads over execution [22] [4]. -> Make Memory the canonical work ledger, not merely a vector store.
++- **Workflow Ownership**: GitHub Copilot and Claude Code anchor work in repository issues, branches, pull requests, CI events, or PR review comments, while Cursor and Devin add scheduled and event-triggered automation [23] [21] [29] [14]. -> Give one product ownership of work identity, leases, state transitions, and receipts.
++- **Native Capability Gap**: Claude Code, Cursor, Codex, Devin, and Hermes all expose some form of unattended execution, but official documentation is uneven on cancellation, delivery guarantees, cleanup, and event streaming back to an initiating agent [21] [11] [29] [48]. -> Treat undocumented behavior as unknown, never as a contract.
++- **Asymmetric Product Fit**: A Memory owner plus optional Flow executors is sound if Flow is a replaceable worker and cannot become a second authority. -> Ship the boundary as interfaces inside one modular monolith before creating a second service or repository.
++- **Protocol Positioning**: MCP Tasks, A2A, and AG-UI solve different layers: tool/task interoperability, remote agent task exchange, and frontend event streaming. AG-UI explicitly uses a streaming event architecture [27], but none of these should become the canonical domain model. -> Use them as adapters around an internal Work Packet and Receipt contract.
++- **Migration Safety**: The safest path is package extraction, compatibility facades, shadow reads, one canonical writer, event or outbox publication, then optional service extraction. Microservice guidance warns that decomposition is costly and should follow vertical capabilities and operational readiness [41]. -> Postpone multi-repository ownership until the seam survives failure and rollback tests.
++- **Test Economics**: Test impact analysis can select affected tests from a call graph [45], while a systematic review covered **27 papers**, **36 empirical studies**, and **28 techniques** [47]. -> Combine exact-candidate matrices with risk-owned fallbacks and a full-suite escape hatch.
++- **Privacy Boundary**: Client feedback should be explicit, redacted, content-minimal, and independent of the client model. Private vulnerability reporting demonstrates a separate channel for sensitive submissions [42]. -> Send a bounded envelope to server-side triage; never ask the local agent to summarize telemetry by default.
++- **Review Discipline**: Google finds small changes easier to review quickly and thoroughly [40]. -> Use small PRs for seams, medium vertical slices for behavior, and large PRs only for mechanically generated or unavoidable cutovers.
++
++**Executive recommendation.** Build a Memory-first modular monolith with four internal packages: `work-ledger`, `protocol-contracts`, `flow-runtime`, and `observers`. Memory owns issues, workflows, runs, attempts, leases, receipts, privacy policy, history, and authorization. Flow consumes immutable work packets, emits progress and artifacts, and returns a receipt. The first Flow implementation can be an in-process adapter, a local plugin, or a remote worker without changing Memory's authority model.
++
++Do not split repositories yet. First prove that a run can be created, leased, resumed, cancelled, retried, observed, and rolled back with one canonical state machine. Then extract a package, publish a compatibility facade, and only later make Flow independently deployable. This is the durable design because it separates the decision that must survive every executor from the mechanism that will change fastest.
++
++## 1. What Leading Products Actually Separate
++
++The market does not present one universal architecture. It presents a recurring pattern: durable context is represented as files, knowledge items, threads, projects, or checkpoints; work authority is represented by issues, PRs, schedules, or sessions; execution is a runtime that operates in a sandbox. The boundary is often implicit, which is precisely why an open-source platform should make it explicit.
++
++| Product or framework | Durable context or memory | Work authority | Execution and orchestration | Architectural lesson |
++|---|---|---|---|---|
++| Claude Code | CLAUDE.md is persistent project, personal, or organizational instruction; auto memory records build commands, debugging insights, architecture notes, and preferences, but machine-local auto memory is context rather than enforcement [22] [22]. | Cloud sessions can watch a PR, receive CI and review-comment events, and decide whether to push a clear fix [21]. | Hooks run at session, turn, and tool-call lifecycle points; subagents run in parallel or sequence and can resume by agent id [15] [26] [26]. | Separate guidance from policy. Put hard authorization in a hook or ledger, not in a markdown memory file. |
++| OpenAI Codex | AGENTS.md is discovered in global and project scopes, merged by directory precedence, and capped by `project_doc_max_bytes`, **32 KiB by default** [4]. Skills bundle instructions, resources, and scripts [11]. | Projects contain separate agent threads and a review queue; worktrees let multiple agents work on a repository without conflicts [11] [11]. | Automations run in the background on schedules; cloud triggers were described as being built out [11] [11]. | Treat instruction layering and work threads as separate records. Do not mistake an AGENTS file for an issue system. |
++| Cursor | Automation memories persist as named entries outside the working filesystem and can be disabled. Cursor warns that untrusted inputs can poison those memories [29]. | Cloud agents clone a repository, work on a separate branch, push changes, and can open PRs; automations can trigger from schedules, GitHub, Slack, and webhooks [25] [29]. | Isolated cloud VMs can run agents in parallel and across multiple repositories [25]. | Persistent automation memory needs trust boundaries and provenance. Multi-repo execution is not the same as multi-repo authority. |
++| GitHub Copilot cloud agent | Repository custom-instruction files tell the agent how to understand, build, test, and validate a project [23]. | GitHub issues, branches, commits, PRs, and session logs are the work surface. Copilot can be assigned an issue, work independently, and optionally open one PR [23] [23] [23]. | Each session uses an ephemeral GitHub Actions development environment, explores code, edits, tests, and records each step in commits and logs [23] [23]. | The host system owns durable work identity. An agent runtime is a bounded implementation, not the source of truth. |
++| Devin | Knowledge is organization or enterprise-scoped guidance, retrieved when relevant and optionally pinned to a repository or all repositories [6] [6]. | Scheduled sessions and Automations own recurring or event-triggered work; past sessions are retained for audit [14] [14] [14]. | Devin sessions execute autonomous coding work; schedule triggers can be cron-based, one-time, or event-driven [14]. | A shared knowledge plane and a session scheduler are distinct. Make both explicit rather than hiding them inside an agent loop. |
++| OpenHands | The SDK exposes a Python and REST boundary for agents that work with code and can run locally or in the cloud [7]. | The SDK description is execution-oriented and does not establish a universal issue ledger, lease model, or receipt authority. | Runtime components execute actions and manage the runtime environment; task planning and decomposition are SDK features [7]. | OpenHands is a useful Flow implementation, but Memory must wrap it with run identity, limits, and receipts. |
++| LangGraph and LangSmith | LangGraph persistence provides thread/checkpoint state and replay or interruption primitives; LangSmith records traces, feedback, evaluation, cost, and latency. These are application-state and observability layers, not automatically an issue authority [9] [3]. | The application chooses the business owner of a run; LangSmith observes it rather than replacing that owner [3]. | LangGraph executes graph steps and durable checkpoints; LangSmith monitors and evaluates them. | Adopt the separation of checkpointed execution from observability, but keep canonical work state outside a vendor-specific trace store. |
++| Temporal | Temporal treats workflows as durable execution histories, recommends idempotent Activities, and supports worker versioning so new worker builds can coexist safely with running workflows [5] [20]. | The workflow engine owns execution history and signals, but the business system must still own issue semantics and authorization. | Workers execute Activities with retries and version routing. | Borrow durable execution and versioning patterns without forcing all product concepts into a workflow engine. |
++
++The contrast is important. Claude Code and Codex emphasize repository-local instructions and session continuity. Cursor and Devin emphasize always-on triggers and persistent automation memory. GitHub makes issues and pull requests the visible authority. OpenHands exposes a runtime that an external control plane can govern. LangGraph and Temporal make checkpointing and replay explicit, while LangSmith makes observability explicit. The common design opportunity is therefore not another agent loop. It is a stable control plane that can host many loops.
++
++## 2. Native Capability Matrix: What Is Proven, Emulated, or Unknown
++
++The phrase "background agent" hides several distinct capabilities. A schedule starts a new run. A monitor wakes an existing run. Streaming sends incremental observations. Resume rehydrates state. Cancellation changes authority and stops work. Cleanup reclaims credentials, VMs, branches, and leases. The table distinguishes official evidence from adapter behavior.
++
++| System | Background or recurring | Monitor and event delivery | Resume or wake | Cancellation | Scoped cleanup | Status |
++|---|---|---|---|---|---|---|
++| Claude Code | Official cloud sessions persist after browser or laptop closure. PR Auto-fix subscribes to GitHub activity and investigates CI failures or review comments [21] [21]. | Official PR events reach the cloud session; the docs do not promise a generic event stream to an initiating agent. | Official: when an inactive VM is reclaimed, reopening the session provisions a fresh VM with conversation history restored [21]. Subagents can resume by id; manual `/tasks` or SDK stop does not auto-resume as of the documented version [26]. | Official stop-monitoring exists through the Auto-fix toggle. A separate in-progress task cancellation API, command interruption semantics, and partial-change behavior are not established [21]. | Official SessionEnd hooks can log, save state, or clean up; cloud VM reclamation is documented. Exact resource, credential, and branch cleanup guarantees remain unknown [15] [21]. | Strongest documented lifecycle, but do not infer exactly-once event delivery. |
++| Codex | Official app Automations run in the background on a schedule; cloud-trigger support is described as under development [11] [11]. | The official app page documents a review queue, not streaming events to the originating thread. | Threads and projects preserve task context; the page does not specify wake semantics for an existing run [11]. | The app page does not specify cancellation behavior. | The app page does not specify VM, worktree, secret, or branch cleanup after cancellation or expiry. | Background and schedule are official; stream, wake, cancel, and cleanup are unknown. An adapter may emulate them with polling. |
++| Cursor | Official Cloud Agents run in isolated VMs. Automations run on recurring schedules or GitHub, Slack, and webhook events [25] [29]. | Official actions include branch, PR, comment, and reviewer operations; generic streaming to the initiating agent is not documented [29]. | Persistent automation memories are official, but resume of a prior run or wake of a paused run is not documented [29]. | Cancellation semantics are not specified in the cited docs. | Cleanup of VMs, credentials, branches, and automation memories after cancellation is not specified. | Strong trigger surface; lifecycle contract remains partial. |
++| Hermes | The official repository advertises a built-in cron scheduler, unattended delivery, parallel isolated subagents, and environments that hibernate and wake on demand [48]. | The TUI provides streaming tool output, and the terminal supports interrupt-and-redirect [48]. That is an interface capability, not proof of a durable event channel to a parent run. | Cross-session conversation search, memory, and hibernating environments support continuity [48]. A formal run resume token or receipt protocol is not established. | Interrupt-and-redirect is official at the interactive surface. Durable cancellation, lease revocation, and descendant cancellation are unknown. | No authoritative scoped cleanup contract for cron-created processes, secrets, worktrees, or subagents is established in the README. | Rich open-source adapter/runtime, but use a Memory-owned wrapper for leases and cleanup. |
++
++**Decision rule.** A capability is native only when the product documentation defines its trigger, state, and lifecycle. If a local adapter polls a log, stores a cursor, or kills a process, label that behavior adapter-emulated. This distinction prevents a compatibility layer from accidentally promising guarantees that the underlying tool does not provide.
++
++## 3. Recommended Asymmetric Architecture: Memory Owns the Contract
++
++The proposed asymmetry is sound, with one naming and boundary correction. Memory should mean a durable work ledger and policy plane, not a semantic search database. Flow should mean one or more replaceable execution strategies, not a second workflow authority.
++
++### The canonical model
++
++Memory owns these records:
++
++1. **Issue and intent**: immutable external reference, normalized goal, requester policy, repository scope, and privacy class.
++2. **Workflow**: versioned plan or policy that defines allowed transitions, retry budget, test policy, and required capabilities.
++3. **Run and attempt**: stable run id, attempt id, parent run, executor identity, model/provider metadata, and state transition history.
++4. **Lease**: owner, expiry, fencing token, renewal policy, and cancellation generation. A stale worker must be rejected even if it continues executing locally.
++5. **Work Packet**: a bounded, signed or integrity-checked request containing only the context and capabilities needed for one step.
++6. **Receipt**: accepted, started, progress, blocked, succeeded, failed, cancelled, or expired status; artifact references; test evidence; and idempotency key.
++7. **History and privacy**: retention, deletion, redaction, access audit, and user-visible history.
++
++Flow receives a packet and returns events or a receipt. It may run Claude Code, Codex, Cursor, Hermes, OpenHands, a custom loop, or a human. It may checkpoint internally, but those checkpoints are not canonical until Memory accepts them. Flow must not directly mutate issue state, rotate leases, or write an authoritative receipt without going through the Memory interface.
++
++The packet interface should have four operations: `claim`, `heartbeat`, `emit`, and `complete`. `claim` is conditional on a fencing token. `heartbeat` renews a lease. `emit` accepts deduplicated progress and artifact references. `complete` is a compare-and-set transition from the current attempt state. Every operation carries `run_id`, `attempt_id`, `sequence`, `idempotency_key`, `contract_version`, and executor capability facts.
++
++### Comparison of structural options
++
++| Option | Strength | Main failure mode | Decision |
++|---|---|---|---|
++| Memory-first modular monolith | One transaction boundary, easy debugging, fast package refactoring, one canonical writer | Internal coupling can remain hidden; scale is not independent | **Choose first**. Enforce package APIs and contract tests. |
++| Neutral protocol product | Broad ecosystem appeal and lower product bias | A protocol without authority does not solve leases, history, privacy, or rollback; standards become a second product | Use a neutral wire contract as a capability, not as the first company/product boundary. |
++| Plugin-only architecture | Low operational cost and easy local experimentation | Plugins share process, dependencies, credentials, and failure domain; cleanup and isolation are weak | Use plugins for local Flow adapters after Memory contracts stabilize. |
++| Separate Memory and Flow services | Independent scaling, deployment, and security boundaries | Network retries, schema drift, lease races, observability, and release coordination arrive immediately | Earn this split after failure tests and real load justify it. |
++| Separate repositories immediately | Clear ownership and independent releases | Cross-repo PR choreography and incompatible versions slow every architectural change | Anti-recommendation for the first restructuring phase. |
++
++This is not a case for a permanent monolith. It is a case for delaying a distributed system until its contracts have operational evidence. The Memory/Flow asymmetry is better than a neutral protocol product because it assigns responsibility. It is safer than immediate services because it keeps the first authority transaction local. It is more durable than plugins because the protocol survives replacement of any plugin.
++
++## 4. Protocol Layer: MCP, A2A, and AG-UI Without Authority Leakage
++
++Use protocol standards at their natural layers. MCP is a tool and server interaction boundary. Its Tasks work describes durable task state around long-running requests, but the platform should map MCP task identifiers to a Memory attempt rather than make an MCP server the owner of an issue. A2A is appropriate for a remote Flow executor that advertises capabilities, accepts a task, returns artifacts, and supports streaming or asynchronous delivery. The A2A task remains an execution projection of the Memory run.
++
++AG-UI is a frontend interaction layer. Its documentation describes a streaming event-based architecture in which events are the fundamental communication units between agents and frontends [27]. That makes it useful for `RunStarted`, `ToolCall`, `TextDelta`, `Artifact`, `ApprovalRequired`, `RunFinished`, and `RunError` projections. It does not by itself define leases, durable retention, issue authority, or exactly-once delivery.
++
++The internal protocol should therefore be richer than a UI stream and narrower than a universal agent standard. Define a canonical event envelope with: `event_id`, `run_id`, `attempt_id`, `sequence`, `event_type`, `occurred_at`, `producer`, `contract_version`, `payload_ref`, and `privacy_class`. At-least-once delivery is the safe default. Consumers deduplicate by `event_id` and reject sequence regressions unless a replay mode is explicitly requested.
++
++Capability negotiation belongs at the Flow boundary. A worker should advertise capabilities such as `streaming`, `resume`, `cancel`, `workspace_snapshot`, `multi_repo`, `mcp_tasks`, `a2a_push`, `test_impact_analysis`, and `scoped_cleanup`. Memory then chooses a workflow policy compatible with the advertised set. If a worker lacks `cancel`, Memory can mark the attempt cancellation-requested, revoke the lease, and quarantine late receipts rather than pretending that the process stopped.
++
++## 5. Package Extraction, Repository Splitting, and Rollback
++
++### Stage 1: package boundaries inside one repository
++
++Start with a dependency rule, not a directory move. `work-ledger` may depend on storage abstractions and contract types, but never on a specific agent SDK. `flow-runtime` may depend on the packet interface, but never update the issue table directly. `observers` may consume events but cannot mutate canonical state. `protocol-contracts` contains schemas, version rules, test fixtures, and compatibility vectors.
++
++Use a compatibility facade around the existing API. The facade translates legacy commands into canonical Memory commands and translates canonical receipts back into the old response shape. The Strangler Fig pattern is appropriate because a facade can route selected requests to new functionality while the legacy path continues to serve the rest; the pattern is explicitly intended to reduce migration risk through incremental replacement [39] [41]. Do not make the facade a second business implementation. It must be a translation and routing layer with metrics.
++
++### Stage 2: event history and one writer
++
++Use an append-only run event log if replay, audit, or reconciliation is a real requirement. Do not event-source every token delta by default. Persist state-changing commands and materialize views for the UI, while treating verbose model output as an expiring artifact unless retention policy says otherwise.
++
++For side effects, use a transactional outbox. The command transaction writes the canonical state change and an outbox record; a publisher retries delivery; consumers deduplicate. The outbox guidance supports reliable event publication, but it does not remove the need for idempotent consumers or define exactly-once external effects [46]. All external effects need an idempotency key, such as `run_id + attempt_id + effect_type + logical_target`.
++
++Use dual reads, but avoid dual-authority writes. First, the old store remains canonical while the new projection reads and compares. Then the new projection becomes the read path behind a feature flag. Only after parity is proven should the new ledger become the canonical writer. Never let old and new systems both accept authoritative writes without a conflict protocol. If rollback is needed, route reads and writes back to the old writer, stop new claims, replay the event or outbox stream, and fence late workers with a generation token.
++
++### Stage 3: repository and release extraction
++
++Extract a repository only when a package has a stable owner, contract tests, an independent release need, and an operational reason to scale or isolate it. Publish a signed cross-repository BOM containing exact versions, source revisions, dependency hashes, contract schema versions, and build provenance. GitHub describes an SBOM as a representation of repository dependency state in SPDX format [34]. Artifact attestations establish where and how an artifact was built [32]. These are valuable integrity controls, but an SBOM does not prove API compatibility and provenance does not prove behavioral correctness.
++
++Use three compatibility axes: wire contract, data/schema, and behavioral capability. Semantic Versioning requires a declared public API and distinguishes backward-compatible minor additions from breaking major changes [44]. For event schemas, prefer additive fields, tolerant readers, explicit deprecation windows, and N/N-1 consumer compatibility. For workflows, use worker versioning or equivalent routing so in-flight runs remain on a compatible implementation [20].
++
++Rollback must be a designed command. Define how to pause new claims, drain or fence attempts, restore the previous worker version, route to the previous facade, preserve receipts, and replay missing events. A release that can deploy forward but cannot stop claims or reject stale receipts is not rollback-capable.
++
++## 6. Lowering Test and Token Cost Without Lowering Quality
++
++Test impact analysis is the primary lever. TIA analyzes a source call graph to identify tests affected by production changes [45]. The research base is not a single anecdote: the systematic review identified **27 papers**, **36 empirical studies**, and **28 regression-selection techniques** [47]. That evidence supports selective execution, but not blind trust in a graph.
++
++Implement an exact-candidate matrix. For every changed file, symbol, public contract, event type, database migration, and permission, record candidate unit, integration, contract, end-to-end, security, and migration tests. Add a risk owner and a reason for inclusion. The selector produces three sets: `required`, `recommended`, and `blocked-unknown`. Any change that touches authorization, lease fencing, persistence, migration, or cross-repository contracts automatically expands to the full relevant suite.
++
++Use risk ownership rather than a single global threshold. The owner of a domain declares its high-risk surfaces and the fallback suite. A false-negative incident promotes the missed dependency to a permanent matrix rule. Track selection precision, missed-test defects, time saved, and token budget by run. If the graph is stale or the change is ambiguous, fail open to broader tests rather than silently claiming coverage.
++
++Separate deterministic observers from agent diagnosis. AWS describes observer and monitoring agents as passive listeners that observe systems and telemetry, detect patterns, and trigger actions without directly initiating behavior [36]. In this platform, deterministic observers should first parse exit codes, structured test results, lease violations, event sequence errors, and changed-file maps. A server-side model may summarize a bounded failure bundle after those facts are collected. The client agent should not spend tokens polling dashboards or restating logs.
++
++Use event-driven monitoring with bounded payloads. Emit one deduplicated event for a state change, not a heartbeat-sized transcript. Store raw logs outside the model context, hash or reference them, and send the agent only the failing test, relevant diff, prior attempt receipt, and next permitted action. This is both a token optimization and a correctness measure: the agent reasons from stable facts rather than a noisy stream.
++
++## 7. Privacy-Safe Feedback and Cloud Triage
++
++The client feedback path should be an explicit user action, not implicit telemetry. Default payload: category, free-text description, application version, contract version, a random feedback id, and optional user-selected logs or diff excerpts. Do not include account identity, device identifiers, filesystem paths, repository URLs, environment variables, full transcripts, or source code unless the user deliberately attaches them. Do not rely on client-side model summarization; it consumes tokens and may leak more than the user intended.
++
++Apply deterministic redaction before upload. Remove secrets, access tokens, email addresses, absolute paths, hostnames, and repository remotes. Show the redacted preview and let the user edit it. The server should record the minimum envelope needed for deduplication and triage, with separate retention for metadata and content. Diagnostic data categories need to be treated explicitly; Android's privacy guidance distinguishes crash-log data such as crash counts and stack traces as a data category [37].
++
++Use two channels. Normal product feedback goes to an anonymous intake queue. Security reports go to a private vulnerability channel; GitHub documents private vulnerability reporting that lets anyone submit a report directly and privately to maintainers [42]. A cloud triage worker can classify, deduplicate, label, and suggest routing, but it should not push code, delete issues, or change repository settings. Those permissions are unnecessary for triage.
++
++The triage pipeline should be server-side and event-driven: ingest, redact again, hash a normalized signature, group duplicates, assign a risk label, and create a ticket only after policy checks. If an LLM is used, send the minimum redacted bundle from the server and retain the model output according to the same privacy policy. The initiating client pays no model-token cost for collection or classification. Never use feedback text to write durable agent memory automatically; require explicit maintainer approval to convert a report into a trusted Knowledge or project-instruction item.
++
++## 8. Pull Request Strategy for an Architecture Train
++
++| PR class | Appropriate content | Review value | Main hazard | Recommendation |
++|---|---|---|---|---|
++| Small, usually under one conceptual seam | Rename and move, contract type, facade adapter, event envelope, one test matrix rule, documentation | Google says small CLs are reviewed more quickly and more thoroughly because reviewers can find short review windows and avoid comment overload [40]. | Reviewers may approve locally without seeing the eventual architecture. | Use continuously. Every small PR states the target boundary and compatibility rule. |
++| Medium, one vertical slice | Create run, claim lease, execute one Flow adapter, emit receipt, expose one UI projection | Preserves enough behavior to test end to end while remaining understandable. | Hidden coupling appears when the slice crosses storage, protocol, and runtime. | Use stacked PRs with contract tests, failure injection, and a rollback switch. |
++| Large, unavoidable cutover | Mechanical repository split, generated schema migration, mass import, final routing flip | Can preserve atomicity for changes that are unsafe to land partially. | Review fatigue, merge conflicts, buried behavior changes, untestable rollback, and false confidence from green mechanical checks. | Keep behavior frozen, automate the diff, split review by ownership, and land only after small and medium PRs have proved the seam. |
++
++Pull requests are a pre-integration review mechanism, not proof that the architecture is correct [35]. Large PRs become hazardous when reviewers must simultaneously infer the new domain model, verify compatibility, inspect security changes, and understand a new deployment topology. A large mechanical PR can be safer than a small semantic PR if it is generated, behavior-neutral, and backed by parity tests. Size alone is not the control; conceptual surface area and rollback difficulty are.
++
++An architecture train should therefore be a sequence: decision record and contract, package boundary, compatibility facade, one vertical execution slice, observers and test matrix, shadow read, canary, then cutover. Each PR must have a single operational question and a revert path. Do not mix repository moves, schema changes, new retry semantics, provider replacement, and UI redesign in one train.
++
++## 9. Red-Team Findings and Anti-Recommendations
++
++**Premature multi-repo split.** The strongest objection is operational, not ideological. Microservices introduce more moving parts, development and testing difficulty, data-consistency concerns, and observability burden [31]. A split before the run state machine is stable creates a distributed monolith: every change still requires coordinated releases, but failures now cross networks. Anti-recommendation: do not split because package names feel crowded.
++
++**Contract overdesign.** A universal Work Packet that includes every provider, UI, workflow, and future protocol field will become a compatibility cemetery. Start with the minimum state-changing contract and put extension data behind namespaced, versioned metadata. Do not freeze token-level streaming, model-specific reasoning fields, or provider-specific sandbox details as core fields.
++
++**Operational complexity.** Leases, retries, outbox delivery, event sourcing, receipts, redaction, and rollback are individually sensible but collectively expensive. The inference is that each new guarantee adds a failure mode and an observable state. Keep one process and one database transaction boundary until the product can measure lease contention, duplicate effects, orphaned workspaces, and reconciliation latency.
++
++**Vendor lock-in.** LangSmith, Temporal, OpenHands, MCP, A2A, AG-UI, and hosted coding agents are useful, but their state models should remain adapters. Keep canonical run IDs, receipts, privacy classes, and event envelopes in an open schema. Store vendor IDs as optional references. If a Flow provider disappears, Memory must still show the run, revoke the lease, and dispatch the packet elsewhere.
++
++**Memory poisoning.** Cursor explicitly warns that automation memories can be influenced by untrusted input and may become misleading or malicious [29]. The same risk applies to auto-generated project memory, feedback, and agent-written lessons. Anti-recommendation: never promote observed text to trusted memory without provenance, scope, approval, and deletion.
++
++**Release and versioning mistakes.** A signed BOM proves what was built and a SemVer label communicates intended API compatibility; neither proves that an old worker can interpret a new event or that a provider will honor cancellation. Require contract replay tests, N/N-1 compatibility, capability negotiation, signed release metadata, and a tested pause-and-rollback command.
++
++**Review theater.** Small PRs reduce review burden, but a sequence of individually green PRs can still create a bad system if no one owns the end-to-end decision. Require an ADR, an operational demo, failure injection, and an explicit red-team signoff before the routing flip.
++
++### Irreversible decisions to postpone
++
++| Decision | Why postponement preserves optionality | Evidence needed before deciding |
++|---|---|---|
++| Separate Memory and Flow deployments | Avoids network and release complexity while contracts are changing | Measured load, isolation need, and failure tests |
++| Event-source every model and tool token | Prevents storage, privacy, and replay cost from becoming permanent | Audit and replay requirements, retention budget |
++| Make MCP or A2A the canonical domain model | Prevents standards churn from freezing product semantics | Two independent adapters and contract parity |
++| Require exactly-once external effects | Exactly-once is often an application illusion across networks | Idempotency tests and effect reconciliation |
++| Store all agent memory centrally | Avoids turning private local context into a liability | User need, consent, deletion and poisoning controls |
++| Commit to a single hosted provider | Keeps Flow replaceable and reduces vendor lock-in | Provider-neutral benchmark and migration exercise |
++
++## 10. Staged Execution Plan With Exit Criteria
++
++**Phase 0 - Freeze the problem, not the implementation.** Write an ADR that names Memory as authority and Flow as executor. Define the state machine, packet, receipt, lease, event envelope, privacy classes, and capability vocabulary. Exit only when invalid transitions, stale receipts, and cancellation states are enumerated.
++
++**Phase 1 - Modular monolith.** Create packages and dependency checks. Put all legacy calls behind the compatibility facade. Implement one in-process Flow adapter and one fake adapter that injects timeout, duplicate receipt, stale lease, partial artifact, and cancellation races. Exit when contract tests pass against both adapters.
++
++**Phase 2 - Observability and cost controls.** Add deterministic observers, outbox publication, exact-candidate matrices, risk ownership, and bounded failure bundles. Measure test-selection precision, tokens per successful run, duplicate events, orphan resources, and time to reconcile. Exit only if selective testing has a full-suite fallback and no silent coverage loss.
++
++**Phase 3 - Shadow migration.** Keep the old writer canonical. Build the new ledger projection with dual reads and compare state, receipts, and history. Redact and retention-test feedback. Exit when parity holds across normal, retry, cancel, restart, and crash-recovery scenarios.
++
++**Phase 4 - Controlled authority cutover.** Flip one repository or tenant at a time to the new writer behind a feature flag. Fence old workers, drain claims, and keep a reversible route to the old facade. Use signed artifacts, BOMs, contract replay, and N/N-1 compatibility. Exit when rollback has been performed in a staging failure drill, not merely documented.
++
++**Phase 5 - Optional Flow extraction.** Extract Flow to a separate package, then a separate repository or service only if independent scaling, sandbox isolation, or release cadence is demonstrated. Offer MCP, A2A, and AG-UI adapters at this stage. The first remote Flow should be deliberately less trusted than the in-process adapter so that the authority boundary is exercised.
++
++## Synthesis
++
++Across the market, durable context and execution are separated by different mechanisms: files and Knowledge in Claude Code, Codex, Cursor, and Devin; issue and PR systems in GitHub and Claude Code; checkpoints in LangGraph; workflow histories and worker versions in Temporal; and runtime APIs in OpenHands. The mechanisms differ, but the design signal is consistent: the agent loop is replaceable, while context, work identity, history, and policy must outlive it.
++
++The key tension is between Cursor, Devin, Hermes, and Codex, which are moving toward always-on automation, and the incomplete lifecycle contracts documented for several of them. Trigger breadth is not durability. A schedule can start work without defining how a lease expires, how a duplicate trigger is deduplicated, how an initiating agent receives events, or how a VM and secret are cleaned up. Claude Code currently provides the clearest documented example of PR event monitoring and session restoration, but even its docs leave separate in-progress cancellation semantics open [21]. The platform should compete on these boring guarantees rather than imitate another trigger catalog.
++
++The second tension is between neutral interoperability and product authority. MCP, A2A, and AG-UI make it easier to connect tools, agents, and interfaces, but a connection protocol cannot decide which receipt is canonical, who owns a lease, which history may be deleted, or whether a late worker may publish a result. Therefore the best architecture is asymmetric in responsibility but neutral in execution: Memory owns the durable contract; Flow can be any compliant adapter.
++
++The final tension is speed versus reversibility. Small PRs, selective tests, and event-driven observers reduce cost, but only if risk ownership, full-suite escape hatches, and end-to-end review remain. The recommended architecture earns its future multi-repo shape through package seams, compatibility facades, one-writer migrations, signed release evidence, and rollback drills. It does not assume that a clean repository split is the same thing as modularity.
++
++## References
++
++1. *Automations - Cursor*. https://cursor.com/changelog/03-05-26
++2. *Starting GitHub Copilot sessions*. https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/start-copilot-sessions
++3. *LangSmith Observability*. https://docs.langchain.com/langsmith/observability
++4. [
++  Custom instructions with AGENTS.md | ChatGPT Learn
++](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
++5. *Activity Definition | Temporal Platform Documentation*. https://docs.temporal.io/activity-definition
++6. *Knowledge*. https://docs.devin.ai/product-guides/knowledge
++7. *Software Agent SDK - OpenHands Docs*. https://docs.all-hands.dev/sdk/index
++8. *Introducing Devin*. https://docs.devin.ai/get-started/devin-intro
++9. *Persistence*. https://docs.langchain.com/oss/python/langgraph/persistence
++10. *Persistence*. https://docs.langchain.com/oss/python/langgraph/durable-execution
++11. *Introducing the Codex app | OpenAI*. https://openai.com/index/introducing-the-codex-app/
++12. *Adding repository custom instructions for GitHub Copilot*. https://docs.github.com/en/copilot/how-tos/custom-instructions/adding-repository-custom-instructions-for-github-copilot
++13. *OpenHands/openhands/runtime at main - OpenHands/OpenHands - GitHub*. https://github.com/OpenHands/OpenHands/tree/main/openhands/runtime
++14. *Scheduled Sessions*. https://docs.devin.ai/product-guides/scheduled-sessions
++15. *Hooks reference*. https://code.claude.com/docs/en/hooks
++16. *Streaming & Asynchronous Operations - A2A Protocol*. https://a2a-protocol.org/latest/topics/streaming-and-async/
++17. *Build agents that run automatically - Cursor*. https://cursor.com/blog/automations
++18. *Introducing Codex | OpenAI*. https://openai.com/index/introducing-codex/
++19. *OpenHands/openhands/runtime/README.md at main - OpenHands/OpenHands - GitHub*. https://github.com/OpenHands/OpenHands/blob/main/openhands/runtime/README.md
++20. *Worker Versioning*. https://docs.temporal.io/production-deployment/worker-deployments/worker-versioning
++21. *Use Claude Code on the web*. https://code.claude.com/docs/en/claude-code-on-the-web
++22. *How Claude remembers your project*. https://code.claude.com/docs/en/memory
++23. *About GitHub Copilot cloud agent*. https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-cloud-agent
++24. *Specification - A2A Protocol*. https://a2a-protocol.org/v0.3.0/specification
++25. *Fetched web page*. https://cursor.com/docs/cloud-agent
++26. *Create custom subagents*. https://code.claude.com/docs/en/sub-agents
++27. *Events*. https://docs.ag-ui.com/concepts/events
++28. *SEP-1686: Tasks*. https://modelcontextprotocol.io/seps/1686-tasks
++29. *Automations | Cursor Docs*. https://cursor.com/docs/cloud-agent/automations
++30. *Tasks*. https://modelcontextprotocol.io/extensions/tasks/overview
++31. *Microservices Architecture Style - Azure Architecture Center | Microsoft Learn*. https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/microservices
++32. *Using artifact attestations to establish provenance for builds*. https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds
++33. *Microservices*. https://martinfowler.com/articles/microservices.html
++34. *Exporting a software bill of materials for your repository*. https://docs.github.com/code-security/supply-chain-security/understanding-your-software-supply-chain/exporting-a-software-bill-of-materials-for-your-repository
++35. *Pull Request*. https://martinfowler.com/bliki/PullRequest.html
++36. *Observer and monitoring agents*. https://docs.aws.amazon.com/prescriptive-guidance/latest/agentic-ai-patterns/observer-and-monitoring-agents.html
++37. *Declare your app's data use -|- Privacy -|- Android Developers*. https://developer.android.com/privacy-and-security/declare-data-use
++38. *SLSA - Security levels*. https://slsa.dev/spec/v1.0/levels
++39. *Strangler Fig Pattern - Azure Architecture Center | Microsoft Learn*. https://learn.microsoft.com/en-us/azure/architecture/patterns/strangler-fig
++40. *Small CLs | eng-practices*. https://google.github.io/eng-practices/review/developer/small-cls.html
++41. *How to break a Monolith into Microservices*. https://martinfowler.com/articles/break-monolith-into-microservices.html
++42. *Privately reporting a security vulnerability*. https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability
++43. *Firefox Privacy Notice - Mozilla*. https://www.mozilla.org/en-US/privacy/firefox/
++44. *Semantic Versioning 2.0.0 | Semantic Versioning*. https://semver.org/
++45. *The Rise of Test Impact Analysis*. https://martinfowler.com/articles/rise-test-impact-analysis.html
++46. *Implement the Transactional Outbox Pattern by Using Azure Cosmos DB - Azure Architecture Center | Microsoft Learn*. https://learn.microsoft.com/en-us/azure/architecture/databases/guide/transactional-out-box-cosmos
++47. *A Systematic Review on Regression Test Selection ...*. https://fileadmin.cs.lth.se/cs/Personal/Emelie_Engstrom/Papers/IST_syst_review_regr_test.pdf
++48. *GitHub - NousResearch/hermes-agent: The agent that grows with you - GitHub*. https://github.com/NousResearch/hermes-agent
+diff --git a/docs/work/2026-08-09-forge-product-restructure/facade-routing.md b/docs/work/2026-08-09-forge-product-restructure/facade-routing.md
+new file mode 100644
+index 00000000..0ed8ad44
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/facade-routing.md
+@@ -0,0 +1,54 @@
++# Forge 0.1.0 Facade Routing Ledger
++
++**Status:** Approved normative companion to `plan.md`
++**Diagnostics:** `FORGE_MEMORY_UNAVAILABLE`, `FORGE_FLOW_UNAVAILABLE`, `FORGE_CAPABILITY_UNAVAILABLE`, `FORGE_ROUTING_AMBIGUOUS`, `FORGE_SETUP_REQUIRED`
++
++The facade routes but owns no product authority. Bare legacy commands are compatibility routes to the canonical noun command, not separate implementations.
++
++| Current public surface and aliases | Target owner/capability | Memory authorization | Missing-product behavior |
++| --- | --- | --- | --- |
++| `forge`, `forge-workflow` | Facade / `routing.v1` | Proxy only | Route selected command to stable Memory/Flow diagnostic |
++| `forge-preflight` | Facade wrapper → Flow / `flow.preflight.v1` | Only when persisting receipt/gate evidence | `FORGE_FLOW_UNAVAILABLE` |
++| `issue {create,update,claim,release,comment,close,show,list,ready,search,stats,blocked,stale,orphans,lint,children,owns,claims,dep}` | Memory / `kernel.issue.v1` | Native Memory authority; lease rules apply | `FORGE_MEMORY_UNAVAILABLE` |
++| Bare `create update claim close show list ready blocked stale orphans lint claims issues` | Facade → canonical `issue` subcommand | Same as canonical route | `FORGE_MEMORY_UNAVAILABLE` |
++| `memory {add,recall,search,insights}` | Memory / `memory.v1` | Native Memory read/write | `FORGE_MEMORY_UNAVAILABLE` |
++| `remember`, `recall`, `insights` | Facade → canonical `memory` subcommand | Same as canonical route | `FORGE_MEMORY_UNAVAILABLE` |
++| `migrate --from beads`; Kernel `export` | Memory / migration/export capability | Native Memory authority; inbound Beads only | `FORGE_MEMORY_UNAVAILABLE` |
++| `sync`, `team`, `inbox` | Memory / team sync/inbox | Server acceptance required for team writes | `FORGE_MEMORY_UNAVAILABLE` |
++| `stage`; `gate` policy/config; `control`; `role` | Memory / workflow graph and gates | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `options`, `explain`, `skill for` | Memory / workflow/provider read | Memory read | `FORGE_MEMORY_UNAVAILABLE` |
++| `skill eval` | Flow / evaluator execution | Memory-authorized WorkPacket; Memory ingests receipt | Flow or Memory unavailable diagnostic |
++| `skill scores`, `skill coverage` | Memory / evaluator evidence read | Memory read | `FORGE_MEMORY_UNAVAILABLE` |
++| `doctor` | Facade aggregation of `memory doctor` and optional `flow doctor` | Memory required; Flow state explicit | Memory absence is failure; Flow absence reported, never hidden |
++| `status`, `prime`, `orient`, `recap` | Facade read aggregation | Memory read required; optional Flow runtime view | Memory absence is failure; Flow absence is explicit partial state |
++| `plan` | Flow / `flow.plan.v1` | Memory creates/links issue and authorizes packet/run | Flow or Memory unavailable diagnostic |
++| `dev`, `validate` | Flow / execute/validate | Current lease required before shared mutation; Memory records stage/gates | Flow, Memory, or capability unavailable diagnostic |
++| `pr ship`, `ship`, `push` | Flow / git and PR | WorkPacket, lease, exact head, receipt | Flow or Memory unavailable diagnostic |
++| `pr preflight`, `preflight`, `test` | Flow / preflight and test | None for pure local check; Memory required to record authoritative result | `FORGE_FLOW_UNAVAILABLE` |
++| `pr shepherd`, `shepherd`; review `adapter` | Flow / monitor/review adapter | Memory run/lease/evidence binding; no issue authority | Flow or Memory unavailable diagnostic |
++| `pr merge`, `merge` | Flow / guarded external merge | Memory-issued merge authorization, exact head and current lease | Flow or Memory unavailable diagnostic |
++| `clean`, `worktree` | Flow / worktree and git | Memory required when registering/removing durable worktree/run state | Flow or Memory unavailable diagnostic |
++| `gate doc` policy | Memory / gate policy | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `doc-gate`; `preflight doc` | Flow / executable check | Memory policy required only for authoritative gate receipt | Flow unavailable; Memory additionally unavailable when authoritative |
++| `issue release <id>`; legacy `release <id>` | Memory / lease release | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `release check`, `release regen-audit` | Memory / release evidence and protected-state authority | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `release generate-npm-workflow` | Flow/facade integration / protected generator | Memory-issued one-time protected-write capability and audit receipt | Flow or Memory unavailable diagnostic |
++| `patch record` | Memory / durable patch intent/evidence | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `patch inspect` | Flow / diff acquisition | No authority unless recording result | `FORGE_FLOW_UNAVAILABLE` |
++| Legacy `patch` without a resolvable subcommand | Facade | None | `FORGE_ROUTING_AMBIGUOUS`; no guessed fallback |
++| `add`, `audit` | Memory / provider registry/trust | Native Memory authority | `FORGE_MEMORY_UNAVAILABLE` |
++| `init`, `setup`, `upgrade`, `new`, `hooks`, `recommend` | Facade orchestration | Calls product-owned APIs for authoritative writes; may render projections | `FORGE_CAPABILITY_UNAVAILABLE` or `FORGE_SETUP_REQUIRED` |
++| `serve` | Facade UI client | Reads/writes through Memory/Flow APIs only | `FORGE_MEMORY_UNAVAILABLE` when authority state is required |
++| `capabilities --json` | Facade | None | Always available; reports absent products without activation |
++| `feedback report` | Memory / privacy-safe feedback intake | Explicit per-report consent; no implicit identity | Preview locally; no network send without approval |
++| `triage` | Memory / issue grouping and priority policy | Memory authority for durable changes | Local manual mode; cloud capability reported explicitly |
++
++## Routing invariants
++
++- A Flow path that mutates shared state requires a WorkPacket and current Memory lease.
++- Pure local validation may be packetless only when it cannot mutate shared state or record authoritative success.
++- Status/orientation surfaces never report full success while Memory is unavailable.
++- Generated setup/config work is performed through the owning product API; the facade does not create shadow authority.
++- PR 2 generates the exhaustive command manifest from the live registry and fails if any current surface lacks exactly one route.
++- Harness monitor claims come from version-bound executable probes, never a static name list.
++- Feedback and triage consume no client model tokens; optional cloud AI is Forge-funded and receives redacted structured fields only.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md b/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+new file mode 100644
+index 00000000..2ac4dd0b
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+@@ -0,0 +1,100 @@
++# Forge 0.1.0 Issue Disposition
++
++Status: planning snapshot; no issue is closed, migrated, or deferred by this document.
++
++Snapshot evidence:
++
++- Kernel snapshot SHA-256: `6a534378e84d4588cb06667f0d9dac7ddc4771c3e2b46b60cac0c716557f5ce4`
++- 1,168 total issues; 522 open or in progress; maximum issue revision 5
++- 79 explicitly classified rows: 72 architecture/control candidates, four release/root rows, and three close/supersede audits
++- Five architecture/control candidates are explicitly deferred
++- The `0.1.0` train therefore contains 67 architecture/control issues plus three release-gate work issues: 70 actionable issue outcomes, consolidated into seven milestones/eight cohesive PRs—not 70 PRs
++- The 70 are candidate issue records, including epics and their children; they are not 70 independent code changes and receive no double completion credit
++- The stable-release root issue tracks promotion and is not counted as another implementation outcome
++- The remaining 443 open/in-progress issues stay outside this train unless separately approved
++
++Forty-seven implementation/migration candidates plus the stable-release tracking root currently lack explicit Kernel acceptance criteria. They remain unadmitted until the contracts in [acceptance-contracts.md](./acceptance-contracts.md) are approved, revision-checked, written to Kernel authority, and read back before code begins.
++
++Actions are conservative. `verify-close` and `supersede` require evidence before any Kernel mutation. `defer` means outside `0.1.0`, not cancelled.
++
++| ID | Title | Status | AC | Bucket | Primary owner | Delivery | Validation owner | Action |
++|---|---|---|---|---|---|---|---|---|
++|16b75ba8-7c70-4749-a4f6-fe1d42c82837|Publish Forge v0.1.0-beta.5|open|yes|close/supersede-audit|Release|separate|Release tag/npm artifact audit|verify-close|
++|183dc7ca-f631-4e00-8867-9e0b793e3ce8|[epic] Skills as a first-class system — reasoning-driven auto-trigger, sub-skill composition, progressive adoption, and skill eval/scoring|open|no|architecture/flow|Flow|PR4A|Flow runtime/skill-eval suite|migrate|
++|2c4dff71-4cb0-4530-be49-ebb2cb281039|Add Shepherd shadow replay and non-circular control-plane break-fix lane|open|yes|architecture/flow|Flow (Memory authority dependency PR1)|PR4B|Flow replay + Kernel authority integration|implement|
++|4265026c-3764-4ff2-a150-7aba74996aa5|Resolve resurfaced js-yaml and qs audit advisories|open|yes|release/root|Release|PR7|Security audit + dependency suite|implement|
++|4a32d61b-8e86-481b-b8c1-f77d464e445e|Cross-harness Shepherd auto-wake adapters and capability truth|open|yes|architecture/flow|Facade (Flow dependency PR4)|PR5|Facade harness/capability integration suite|implement|
++|4ee7f9a9-4fa0-42c1-bd96-96638cc9feff|Require executable issue contracts before ready|open|yes|control-plane/debt|Memory|PR1|Memory Kernel contract/authority tests|implement|
++|4f436ee2-d51f-456e-ada2-eab6220383b1|Collapse release critical path with adversarial worker swarms and durable transition control|in_progress|yes|architecture/flow|Flow (Release dependency PR7)|PR7|Flow transition + release convergence suite|implement|
++|5037a7da-d49b-4015-a3fa-aac34425078e|[memory] Formalize the MemoryBackend adapter interface (pluggable memory layer; local floor + opt-in enrichers)|open|no|architecture/memory|Memory|PR2|Memory contract compatibility suite|implement|
++|57fb8889-e234-4115-a9e1-6235f1dd7360|[epic] Autonomous shepherd — PR-owned, session-independent monitoring via a reconcile loop (never invoked, self-healing, agnostic)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd replay suite|migrate|
++|6b56673a-ff47-4532-8a51-c4a73011a12c|[memory] Supersession + staleness/dedup hygiene (fixes the 296-issue auto-file flood)|open|no|architecture/memory|Memory|PR3|Memory retention/recall suite|implement|
++|8a3ee1f0-2669-4878-9565-c1c50791b302|Implement durable release transition controller and critical-path telemetry|open|yes|architecture/flow|Flow (Release dependency PR7)|PR7|Flow release telemetry + exact-SHA suite|implement|
++|8e634347-4562-4570-bc81-c22b210507d9|Cut 0.1.0 release (version bump + CHANGELOG + ~7-doc version sweep + tag/publish)|open|no|release/root|Release|PR7|Release exact-SHA/full-suite evidence|implement|
++|9af1ee0a-a090-48ca-9d89-5c06a0a67fc9|[shepherd] Comprehensive defect audit (Fable) -- gaps beyond PR #366|open|no|architecture/flow|Flow|PR4B|Flow Shepherd replay suite|implement|
++|9b69a551-f5a0-4057-9d9f-96fb0d744fd3|Safely reconcile claims left by dead Forge-owned runs|open|no|control-plane/debt|Memory|PR1|Memory claim-reaping/authority suite|implement|
++|af79e102-a8d7-4271-b7d5-62318eb984c5|npm release workflow can publish without full repository test coverage|in_progress|yes|release/root|Release|PR7|Release exact-SHA gate|implement|
++|c2d398e5-26cf-4963-b47a-70b4102636bb|[epic] Constant agent-agnostic PR monitor -- forge shepherd watch/events (pushes events every ~60s)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd event/replay suite|migrate|
++|d362bd71-cd0c-4178-a11e-0069382ae949|Behavioral eval tier + holdout improvement loop|open|yes|release/root|Release|PR7|Release evaluation/holdout suite|implement|
++|eed58484-42a7-4081-842a-60e635c3482c|Version provider lifecycle envelopes and fail closed on format drift|open|yes|architecture/contracts|Memory|PR2|Memory protocol compatibility suite|implement|
++|f1af41ef-7fcb-4a55-8c24-4ff7a41f1239|[epic] Shepherd merge-safety redesign — one trustworthy agent-agnostic verdict|open|no|architecture/flow|Flow (Memory authority dependency PR1)|PR4B|Flow verdict replay + Kernel gate suite|migrate|
++|00eef22d-0556-443d-9fa7-154bf51637d4|Fix Shepherd BLOCKED-THREADS verdict when zero threads remain|open|no|architecture/flow|Flow|PR4B|Flow Shepherd verdict suite|implement|
++|0f6ce951-2493-4c08-ac61-2a158b363a79|Pin Forge feedback intake and idempotent receipt contract|open|yes|architecture/contracts|Memory|PR2|Memory receipt/idempotency compatibility suite|implement|
++|1390e1d1-9b49-43e3-b6f8-2dbf3473a8f2|EPIC: Forge lifecycle self-enforcement — kernel-authoritative hygiene|open|no|control-plane/debt|Memory|PR1|Memory Kernel hygiene/authority suite|migrate|
++|18bee669-dd71-46c8-ac24-b36cf1a613b2|Phase B: forge context verb -> retire the 28 beads-context.sh shell-outs + delete fallback forks (single highest-leverage item)|open|no|control-plane/debt|Memory|PR6|Memory Beads migration/parity suite|migrate|
++|2286ede8-f60f-4f33-9229-8d8de64e8a68|Fix Shepherd bot-comment blocker projection|open|yes|architecture/flow|Flow|PR4B|Flow Shepherd verdict suite|implement|
++|265774da-f615-4d66-999d-564b8e4a11ce|Fix Shepherd false behind-base blocker|open|no|architecture/flow|Flow|PR4B|Flow ancestry/verdict suite|implement|
++|2b71e189-43b1-4e17-89ba-fabd9175c829|[activation] Self-initiating, adaptive Forge skill flow modeled on the superpowers brainstorming->plan->execute chain|open|no|architecture/flow|Flow|PR4A|Flow skill-chain evaluation suite|migrate|
++|2d51a6de-848e-41f0-9fdb-61e5641099c8|[shepherd] Reap duplicate watcher registrations across reconcile ticks|open|yes|architecture/flow|Flow|PR4B|Flow Shepherd reconcile replay suite|implement|
++|33d6dce9-7295-4657-9034-46fab19af669|[memory] Attention-following injection -- PreToolUse:Read hook injects notes about the file being read|open|no|architecture/memory|Memory|PR3|Memory injection/recall suite|implement|
++|3b863d8b-1e42-4f75-bb45-6a5a8da0de6b|Smith: harness execution capability adapter for spawn, message, interrupt, resume, and isolation|open|yes|architecture/flow|Flow|PR4A|Flow harness adapter suite|implement|
++|52ebe3fd-a717-4466-add5-3874311386e2|[shepherd] De-CodeRabbit-center the docs/skill/examples — present shepherd as ANY-review-bot (fix the dependency PERCEPTION)|open|no|architecture/flow|Flow|PR4B|Flow review-adapter evaluation suite|implement|
++|5ded6d2a-6e6c-41b3-aa73-251cf9bd6987|[BETA] Implement forge design CLI (check/sync/list)|open|no|close/supersede-audit|Facade|separate|Facade source/PR completion audit|verify-close|
++|7268bc9b-4a64-4ff5-bd83-4ec92481211c|[control-plane] Hook adapter consults controls (warn/deny/deny-unless-approved) + honest per-harness downgrade|open|no|control-plane/debt|Facade|PR5|Facade harness-control integration suite|implement|
++|765a4cd8-65c1-4edc-87e0-42d607a046fb|Merge authority must ignore successful skipped and neutral optional checks|open|no|control-plane/debt|Memory|PR1|Memory merge-authority/Kernel gate suite|implement|
++|7da81cbd-f890-49dc-b237-9ce4729ed6be|smith orchestrator v1 — thin super-skill composing stage sub-skills with gate events + planning-phase autonomy calibration (size x importance x complexity)|open|no|architecture/flow|Flow|PR4A|Flow orchestrator/skill evaluation suite|migrate|
++|7f8c8471-9933-458f-af43-66bd753dc847|Smith and claim-safety skills require missing CLI adapters and Smith reference asset|open|no|control-plane/debt|Memory (Flow dependency PR4)|PR1|Memory claim authority + Flow adapter suite|implement|
++|894f0b0d-032f-4053-a7fa-1b036d64c829|Shepherd: bounded complete review-thread handoff without GitHub refetch|open|yes|architecture/flow|Flow|PR4B|Flow review-thread replay suite|implement|
++|931d73f5-d966-420d-899e-dcf64302b23b|[shepherd] Mechanism-first review-bot classification — retire REVIEW_BOT_LOGINS name-list for authorTypename/[bot] detection|open|no|architecture/flow|Flow|PR4B|Flow review-bot classification suite|implement|
++|94f782e0-0d5e-476c-a93f-cb8624d21f1f|Stabilize reconcile-executor foreign-lease child exit on Windows|open|no|control-plane/debt|Memory (Flow dependency PR4)|PR1|Memory lease authority + Flow Windows suite|implement|
++|9658c21a-f31e-4a5d-b9de-157065013473|[control-plane] MCP registry section + render/drift/consent wiring (render-time locus, honest SEAM)|open|no|control-plane/debt|Facade|PR5|Facade capability/consent integration suite|implement|
++|9a3dc574-d96c-4f15-b85f-baf0dca4c129|Decision: PostgreSQL or libSQL for Forge team authority after representative load proof|open|yes|control-plane/debt|Memory|defer|Memory authority load evidence|defer|
++|9df80006-adea-4e9c-9204-0316d32ccb50|Shepherd emits BLOCKED-THREADS with empty blocker evidence|open|no|architecture/flow|Flow|PR4B|Flow Shepherd verdict replay suite|implement|
++|9f6ffb42-6ee0-4a9c-a2ac-ca428866f6e9|P0 kernel linkage: issue->worktree->work-folder->files provenance (kernel_worktrees writes)|open|no|control-plane/debt|Memory|PR1|Memory Kernel provenance/authority suite|implement|
++|a696e954-af9f-4dc0-b659-23804b7eeb55|forge shepherd events --all — cross-PR digest for out-of-repo orchestrator sessions (make the LOCAL tier the primary surface)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd events suite|implement|
++|addf5297-ef13-4209-afa4-02d46d44a3fa|[shepherd] Auto-trigger Tier-2 -- verdict_clean merge rule + gate toggle + forge ship nudge|open|no|architecture/flow|Flow|PR4B|Flow auto-trigger/gate suite|implement|
++|b4a63278-8f95-4c98-9b79-9b31526ff805|Smith: bounded worker contracts, lifecycle events, and scope-drift enforcement|open|yes|architecture/flow|Flow (Memory contract dependency PR2)|PR4A|Flow scope/lifecycle evaluation suite|implement|
++|b6bdf122-9945-4fa3-a73f-38f9fa2eec6d|EPIC: Knowledge architecture / OKF (info-arch 2026-07-04)|open|no|architecture/memory|Memory|PR3|Memory knowledge/recall suite|migrate|
++|b811a974-a866-47e0-8f83-3f5d2423aded|Eliminate Kernel-to-plan artifact split-brain across projects|open|yes|control-plane/debt|Memory|PR1|Memory Kernel plan-authority suite|implement|
++|b977b0a2-11f6-40d7-a230-8e2ff5f79115|[control-plane] Approval-event generalization -- project-scope + TTL for permission on non-issue items|open|no|control-plane/debt|Memory|PR1|Memory approval-authority suite|implement|
++|bec40cf9-05ed-47df-93af-9eb10969ef12|Phase B: forge recall -- cross-platform kernel-native history/memory recall (ctx-inspired; optional ctx adapter; NOT a ctx dependency; kernel corpus)|open|no|architecture/memory|Memory|PR3|Memory recall compatibility suite|migrate|
++|c29f3952-1229-4f13-afd7-416a426c916a|[online] Presence/lease surfacing -- agent live / holds lease on N / last-seen|open|no|control-plane/debt|Memory|PR1|Memory lease/presence suite|implement|
++|c66f076e-70a8-4f94-80e6-e98536ea1c9b|[shepherd] Retire .claude/scripts/review-resolve.sh into agent-agnostic forge verbs|open|no|architecture/flow|Flow|PR4B|Flow review-verb compatibility suite|implement|
++|d2c3cce3-7cfb-45bf-b946-7cf9a61df513|Shepherd: expose daemon lifecycle status through an existing bounded read surface|open|yes|architecture/flow|Flow|PR4B|Flow Shepherd lifecycle suite|implement|
++|d4a60823-e08e-4ed3-b069-96d053cb11ec|Fix Shepherd false behind count on current PR branches|open|yes|architecture/flow|Flow|PR4B|Flow ancestry/divergence suite|implement|
++|da14d0fd-2ea3-4d47-8299-f6ff76a7f269|Stabilize SQLite FTS5 recall filtering on Windows|open|yes|architecture/memory|Memory|PR3|Memory FTS5 recall suite|implement|
++|dd77fcbb-e6bd-45de-8fff-d1002f0c6d13|Add zero-token post-merge backlog triage and next-work handoff|open|yes|control-plane/debt|Flow (Memory record dependency PR1)|PR4B|Flow post-merge handoff + Kernel evidence suite|implement|
++|ea6c7b14-9a46-45ef-a940-653b56f64ea4|[epic] Beads full retirement — runtime-free, keep only an opt-in migrator (D44 endgame)|open|no|control-plane/debt|Memory|PR6|Memory Beads retirement migration suite|migrate|
++|eea2f9ce-065f-49e8-9e65-4bfbb6092428|claim-safety skill — verify lease ownership (show --json.claimed_by == own actor & not expired) before working; refuse foreign duplicate-collapsed claim|open|no|control-plane/debt|Memory|PR1|Memory claim-safety/lease suite|implement|
++|f8712b8e-4d85-401b-8bb4-dad884e6ef68|Shepherd: acquire external or fork PR head before divergence checks|open|yes|architecture/flow|Flow|PR4B|Flow external-head/ancestry suite|implement|
++|forge-titl|Forge v2 Master Tracking: 13-15w with 2 engineers OR 22-26w solo OR 3 sequenced releases|open|no|close/supersede-audit|Facade|separate|Facade N1/v2 issue-graph audit|supersede|
++|028a149e-29c3-4892-8867-c277855c7299|Skill invocation convention: standardize Skill("name") handoffs|open|no|architecture/flow|Flow|PR4A|Flow skill invocation suite|implement|
++|205a8106-bf54-44b7-9129-6f3f111b9103|Workflow: generate all projections from one canonical runtime contract|open|yes|architecture/contracts|Memory|PR2|Memory protocol compatibility suite|implement|
++|4a65c50f-c10c-480b-9956-b52cc66c10e0|[shepherd] Auto-trigger Tier-3 -- fork-PR maintainer path + verdict history + pr.verdict_changed event|open|no|architecture/flow|Flow|PR4B|Flow maintainer/verdict replay suite|implement|
++|50929aee-b925-41f0-a951-aa2ab8d40042|Conditional auto-merge RULES ENGINE (opt-in onPass/shepherd Tier-B) — composable built-in conditions (settle_min/idle_min/checks_green/threads_resolved/actor-scoped) + custom-predicate seam|open|no|architecture/flow|Flow (Memory authority dependency PR1)|defer|Flow policy simulation + Memory gate evidence|defer|
++|67ecc083-91e9-47b0-b1b1-833d93fa510d|Strengthen ship<->shepherd<->review relationship (PR lifecycle handoffs)|open|no|architecture/flow|Flow|PR4B|Flow ship/review lifecycle suite|migrate|
++|6c7ee76a-7199-4811-8040-eedf6d4733af|[control-plane] Per-rule control -> alwaysApply rendering + rail-backed delegation|open|no|control-plane/debt|Facade|defer|Facade routing/control rendering suite|defer|
++|6d5ed439-c7a1-416e-8d4a-afb3f61f71b0|[memory] Prompt agent to write session LEARNINGS at exit (nudge tier)|open|no|architecture/memory|Memory|PR3|Memory session-capture suite|implement|
++|920a086a-99ca-425f-a666-890447711c6e|[beads-retire] Docs + D44 ledger update: record full-retirement (2026-07-15) + scrub Beads from AGENTS.md/skills/reference (except the migrator)|open|no|control-plane/debt|Memory|PR6|Memory Beads docs/parity suite|migrate|
++|9aac4554-3eb0-4244-8217-5e1e36720119|forge loop: agent-agnostic tick driver for bounded-pass tasks (shepherd first consumer)|open|no|architecture/flow|Flow|PR4A|Flow bounded-tick/Shepherd suite|implement|
++|9c343cdb-0a41-4933-8296-d29a0f4174c4|[memory] Rerank over FTS5 BM25 (+ optional local embeddings, opt-in vector-light)|open|no|architecture/memory|Memory|defer|Memory ranking benchmark|defer|
++|b03ddbf2-1f9f-4713-8538-bb3b2844d4a0|Shepherd --pull: surface actionable direct PR comments + review-level summaries (item 6)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd read/review suite|implement|
++|b34dfc57-3768-43c2-92d0-5f979c889b58|[shepherd] Daemon restart must adopt the reclaimed lease's watcher set|open|no|architecture/flow|Flow (Memory lease dependency PR1)|PR4B|Flow restart replay + Memory lease evidence|implement|
++|c3952ba5-10ae-42ca-9626-413fd21a33fa|Close the kernel graph: auto-register PRs, instantiate sessions, persist shepherd verdicts|open|no|architecture/flow|Memory (Flow dependency PR4)|PR1|Memory Kernel graph + Flow Shepherd integration suite|implement|
++|d9cb9823-d002-4657-8d0e-194875f85f63|Beads-removal: add slice exit-criteria DoD appendix to the plan|open|no|control-plane/debt|Memory|PR6|Memory Beads migration exit-criteria suite|migrate|
++|dae18794-662c-4bb2-a94c-d0897739723d|[memory] Progressive disclosure + scoped recall (ranked index first; scope by worktree/issue)|open|no|architecture/memory|Memory|defer|Memory scoped-recall benchmark|defer|
++|e2420489-b4cb-487a-918b-a5de0938c9e4|[shepherd] Compact verdict read-interface: forge shepherd <pr> --verdict --json|open|no|architecture/flow|Flow|PR4B|Flow verdict read-interface suite|implement|
++|ffbdb6b7-570c-4c30-b984-b6f4df6c3ab7|[shepherd][test-quality] Seam-helper discipline for reconcile-executor tests (fafCtx/daemonOpts)|open|no|architecture/flow|Flow|PR4B|Flow Shepherd test suite|implement|
++|28d67d69-c175-4542-bc29-f6091a784330|[memory] Add an end-to-end node bin/forge.js memory smoke test (the --type-vs-real-CLI class)|open|no|architecture/memory|Memory|PR7|Memory CLI hardening/smoke suite|implement|
++|bb5b054c-c8e1-45aa-a42d-3e57140c5dd9|[memory] recall --kind scans only the newest 1000-note window then filters — misses older typed notes while claiming capped:false|open|no|architecture/memory|Memory|PR3|Memory recall cap regression suite|implement|
++|f21279f4-473a-4d20-95d4-533ddbb1d102|Add an event-driven efficiency supervisor for Flow runs|open|yes|architecture/flow|Flow (Memory evidence dependency PR1)|PR4A|Flow efficiency thresholds/recommendation + Kernel evidence suite|implement|
+diff --git a/docs/work/2026-08-09-forge-product-restructure/plan.md b/docs/work/2026-08-09-forge-product-restructure/plan.md
+new file mode 100644
+index 00000000..dbe37331
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/plan.md
+@@ -0,0 +1,887 @@
++# Forge 0.1.0 Product Restructuring
++
++**Status:** Approved development plan; implementation is gated by §9 admission evidence
++**Date:** 2026-08-09
++**Epic:** `d6a74dc8-10f7-4be9-9761-2467c3df4798`
++**Classification:** Critical architecture and migration
++**Target release:** `0.1.0`
++**Rollback baseline:** `v0.1.0-beta.5` at `ebeb4e5b31fc2dacdf23c5936c02fb2656990f49`
++
++**Normative companions:**
++
++- [decision-register.md](./decision-register.md)
++- [facade-routing.md](./facade-routing.md)
++- [validation-matrix.md](./validation-matrix.md)
++- [issue-disposition.md](./issue-disposition.md)
++- [acceptance-contracts.md](./acceptance-contracts.md)
++
++**Advisory research evidence:**
++
++- [external-market-architecture-research.md](./external-market-architecture-research.md) — Parallel `pro-fast` multi-source report
++- [external-execution-convergence.md](./external-execution-convergence.md) — chained repository/PR decision memo
++
++Research provenance: Parallel runs `trun_11201b6ad6384421837b2856e54a3dfc` and `trun_e8b40fe698564653848a39c49e5d11db`; Context7 lookups for the Temporal TypeScript SDK, LangGraph JavaScript persistence, and Sigstore verification; official product documentation and version-bound local CLI probes. The external reports are advisory inputs, not release authority.
++
++## 1. Executive decision
++
++Forge 0.1.0 will stop being one undifferentiated workflow package and become three independently evolvable product surfaces:
++
++1. **Forge Memory** — the durable foundation. It owns the Forge Kernel, issue/workflow/run authority, memory, context assembly, claims and leases, evidence, migrations, and the canonical packet/receipt contracts.
++2. **Forge Flow** — an optional executor. It owns execution planning, harness routing, runtime monitoring, Git/CI integration, review and merge orchestration, and process lifecycle.
++3. **Forge** — a thin compatibility and integration facade. It preserves the existing `forge` experience while routing commands to Memory or Flow. It owns no durable product state.
++
++The architecture is intentionally asymmetric. Memory defines durable intent and evidence; Flow consumes that intent and returns evidence. There is no neutral third protocol product and no direct Flow dependency on Memory storage or server implementation.
++
++This decision is the recommended default and remains the first user-approval checkpoint before implementation.
++
++## 2. Decisions already locked
++
++- `0.1.0` is the restructuring release, not a quick stable promotion of the beta.5 monolith.
++- Beta.5 remains immutable and is the rollback baseline.
++- Delivery uses several large cohesive PRs, not one mega-PR and not dozens of tiny PRs.
++- Independent branches may be prepared in parallel only when file and product ownership do not overlap.
++- The merge train is sequential and exact-head guarded.
++- Per-PR validation is targeted and risk-owned. The full compatibility matrix runs once on the settled release SHA.
++- Unrelated defects remain separate issues and PRs, even when discovered during restructuring.
++- Test quality is measured by distinct risks covered, not raw test count.
++
++## 3. Evidence baseline
++
++### 3.1 Current product coupling
++
++- The root package is `forge-workflow@0.1.0-beta.5` and exposes `forge`, `forge-workflow`, and `forge-preflight` binaries.
++- The only separately packaged workspace is `@forge/skills@1.0.0`.
++- No existing `WorkPacket`, `ContextPacket`, or `RunReceipt` implementation exists. These are new contracts.
++- Memory currently reaches directly into Kernel broker, database, schema, and FTS5 implementation.
++- The SQLite driver mixes issue/run authority and memory projection concerns.
++- Shepherd, PR monitoring, review, merge rules, GitHub adapters, and process watching form a natural Flow extraction seam.
++- `bin/forge.js` and `bin/forge-cmd.js` currently act as monolithic composition roots rather than thin routers.
++
++### 3.2 Validation burden
++
++The current tree has approximately:
++
++- 558 test files;
++- 6,091 `test`/`it` cases;
++- 1,265 `describe` blocks;
++- six full-matrix copies of `test/` across three operating systems and two Node versions;
++- a separate four-shard unit lane, coverage lane, and additional integration workflows.
++
++Five retained JUnit files contained 3,953 suite entries and 2,736 cumulative suite-seconds. This is enough duplication and host-contention exposure to make validation architecture a release workstream.
++
++### 3.3 Backlog and control-plane state
++
++Latest audited snapshot:
++
++- 1,168 total issues;
++- 522 open or in progress;
++- 427 open/in-progress issues without acceptance criteria;
++- 382 stale open issues at the 14-day threshold;
++- zero missing dependency targets and zero dependency cycles;
++- contradictory claim projections: 121 `claimed_by` fields, 53 live claim rows, 47 rows attached to done/cancelled work, and 16 open issues with `claimed_by` but no live row.
++
++The backlog cannot be migrated or released by current labels alone.
++
++### 3.4 External architecture and market evidence
++
++External evidence supports the asymmetric Memory/Flow boundary but changes two delivery assumptions. Durable agent/workflow systems separate accepted long-term facts from execution checkpoints and non-deterministic activities. LangGraph distinguishes thread-scoped checkpoints from cross-thread stores; Temporal keeps filesystem/network work outside deterministic workflow code. Memory therefore owns accepted durable facts, while Flow owns ephemeral execution/checkpoints until Memory accepts a receipt. Sources: [LangGraph persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence) and [Temporal TypeScript determinism](https://docs.temporal.io/develop/typescript/core-application#develop-workflows).
++
++MCP, A2A, and AG-UI are interoperability edges, not substitutes for Forge's domain model. Their adapters may translate tools, agent messages, and UI events, but canonical intent, authority, idempotency, and evidence remain the Memory-owned packet and receipt contracts. This keeps standards adoption replaceable and prevents an external transport from becoming a second source of truth.
++
++The strongest red-team finding is premature physical repository separation. Independent packages, APIs, CI lanes, versions, and release permissions can be proven in one repository. Splitting before compatibility and failure-injection evidence creates a distributed monolith and coordinated release burden. The 0.1.0 target is therefore an extraction-ready modular monolith; physical repository separation is a later evidence-gated option, not an RC requirement.
++
++PR size is governed by **conceptual surface and rollback difficulty**, not line count. Small seam changes and medium vertical slices are easier to review; a large PR is accepted only for behavior-neutral mechanical movement, generated artifacts, or an atomic cutover that cannot safely land partially. The train keeps seven milestones but uses eight PRs by splitting Flow core from Shepherd/review/merge semantics.
++
++Current harness evidence (observed 2026-08-09) is deliberately surface-specific:
++
++| Harness/product | Live local evidence | Official native capability evidence | Forge planning conclusion |
++| --- | --- | --- | --- |
++| Claude Code | v2.1.226; CLI exposes background/cloud sessions, resume, and stream JSON | `/loop`, session tasks, agent view, and Monitor streaming are documented; cloud/desktop scheduling have different persistence | Prefer native Monitor/background adapter when the version-bound probe passes; preserve session expiry/cancel semantics |
++| Codex | CLI 0.147.0 exposes resume, fork, and cloud task browsing | Codex app Automations run scheduled background workflows into a review queue; current product material describes wake/continuation | Do not equate app Automation with CLI capability; advertise each installed surface separately |
++| Cursor | Editor CLI v3.7.42 found; `cursor-agent` not found | Background Agents are remote isolated agents with status, follow-up, takeover, and API management | Treat schedule, initiating-agent stream, cancel acknowledgement, and cleanup as unknown until probed |
++| Hermes | Agent v0.19.1 installed; CLI exposes cron, gateway, resume, sessions, and monitoring | Cron supports create/pause/resume/edit/trigger/remove, fresh sessions, origin delivery, and no-agent zero-token watchdogs | Use cron/no-agent adapters where configured; verify gateway ownership, delivery target, timeout, and cleanup per manifest |
++
++Primary sources: [Claude scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks), [Claude agent view](https://code.claude.com/docs/en/agent-view), [Codex app Automations](https://openai.com/index/introducing-the-codex-app/), [Cursor Background Agents](https://docs.cursor.com/background-agent), and [Hermes scheduled tasks](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/cron.md). Undocumented behavior remains `UNKNOWN`; product marketing is not a capability receipt.
++
++### 3.5 Security, duplication, blast-radius, and TDD research closure
++
++The [OWASP Top 10:2025](https://owasp.org/Top10/2025/) risk pass is mapped to executable gates rather than a prose checklist:
++
++| OWASP risk | Forge exposure | Planned proof |
++| --- | --- | --- |
++| A01 access control and A07 authentication | claims, leases, approvals, merge/release authority, team provider | G4 adversarial ownership, expiry, actor, stale-head, and unauthorized-action fixtures |
++| A02 misconfiguration | optional products, harness capabilities, hooks, native monitor claims | version-bound capability receipts, honest downgrade, absent-product and unsupported-feature fixtures |
++| A03 supply chain, A04 cryptography, A08 integrity | packages, generated workflows, BOM, OIDC, receipts | exact-artifact integrity, RFC 8785 canonicalization, DSSE/Sigstore verification, negative identity/digest fixtures |
++| A05 injection | untrusted ContextPacket, feedback, provider output, review text | schema allow-lists, fenced untrusted content, redaction, no raw prompt persistence, malicious fixture corpus |
++| A06 insecure design | dual authority, hidden coupling, external protocol capture | sole-writer invariant, forbidden private imports, facade routing ledger, failure injection and rollback |
++| A09 logging/alerting and A10 exceptional conditions | monitor loss, partial evidence, timeouts, cleanup | redacted structured events, acknowledged cancellation, orphan reaping, and `INCOMPLETE` instead of guessed `PASS` |
++
++DRY and blast-radius closure uses the import and ownership audit: Kernel/schema/storage and packet validation each receive one Memory owner; execution/checkpoint/process lifecycle receives one Flow-core owner; PR review/merge semantics receive one Shepherd owner; routing remains facade-only. Higher layers reuse canonical fixtures and prove wiring rather than copy edge-case matrices. Private cross-package imports, duplicate contract validators, and duplicated owner tests fail G1/G3.
++
++The implementation train begins from these TDD acceptance journeys:
++
++1. A valid stateless `WorkPacket` executes through Flow and Memory accepts exactly one `RunReceipt`.
++2. Duplicate identical receipts deduplicate; same identity with different content conflicts; stale lease/head is rejected.
++3. A monitor streams bounded events, acknowledges cancel, reaps its process/lease, and emits no event after terminal closure.
++4. Missing or unsupported native harness capability downgrades honestly without inventing monitor, resume, or cleanup support.
++5. An interrupted beta.5 migration restores from backup and leaves one authority; retry is idempotent.
++6. Efficiency supervision replans at 20% and 30%, chooses terminal/handoff at 35%, stops before 40%, and fails closed on missing telemetry.
++7. Feedback remains local until per-report preview/consent, contains no stable user/device identity or raw private payload, and deduplicates by issue signature.
++
++## 4. Product independence contract
++
++### 4.1 Forge Memory owns
++
++- Forge Kernel API and authority rules;
++- issue, workflow, stage, claim, lease, session, worktree, run, evidence, projection, and migration state;
++- local SQLite WAL and future team authority implementations;
++- memory storage, search, ranking, supersession, context assembly, privacy, retention, and feedback ingestion;
++- canonical `WorkPacket`, `ContextPacket`, `ClaimRequest`, `LeaseReceipt`, `RunReceipt`, `CapabilityManifest`, `FeedbackReport`, and `StructuredError` schemas;
++- schema versions, validators, compatibility policy, provenance, idempotency, and conflict detection;
++- portable packet and receipt files;
++- inbound Beads migration and GitHub/Linear issue projections.
++
++Memory/Kernel alone resolves workflow bindings, required capabilities, policy strictness, stage transitions, evaluator bindings, gate outcomes, merge eligibility, and the durable result of every transition. It issues an authorized invocation to Flow and decides whether the returned receipt permits a state transition. Flow cannot advance a stage, authorize a merge, or record a gate as passed.
++
++Memory owns GitHub/Linear issue-projection configuration, external-field mappings, delivery state, outbox/dead letters, conflict policy, and projection revisions. Projection failure never changes accepted Kernel authority.
++
++Memory remains fully usable without Flow. Humans, agents, or other runtimes may consume a work packet and submit a run receipt.
++
++### 4.2 Forge Flow owns
++
++- execution plans and invocation lifecycle;
++- agent and harness selection;
++- stage and sub-skill execution;
++- runtime monitors and event streaming;
++- process handles, cancellation, timeout, and cleanup;
++- Git, CI, review, PR, merge-train, and deployment adapters;
++- Shepherd and PR-monitor behavior;
++- Flow-specific transient types such as `ExecutionPlan`, `InvocationRequest`, `ProcessHandle`, and `MonitorState`.
++
++Flow executes only an invocation already authorized by Memory/Kernel. Its GitHub adapter is run-scoped: it gathers PR/check/review evidence and performs an explicitly authorized external action. It never writes the issue graph, projection state, workflow transition, gate result, or merge authorization. Models and Flow may report evidence; Memory policy owns the decision.
++
++Flow never imports Memory database, broker, schema, migration, or storage modules. It communicates through `@forge/memory-contracts`, an injected `MemoryProvider`, or portable files.
++
++### 4.3 Forge facade owns
++
++- command discovery and routing;
++- compatibility aliases for `forge-workflow` and `forge-preflight`;
++- installation and capability discovery;
++- integration tests proving compatible Memory and Flow combinations.
++
++The facade contains no authoritative tables, claim logic, workflow implementation, or hidden coupling.
++
++### 4.4 Independent evolution rules
++
++- A Memory-only internal change runs Memory tests and does not require a Flow release.
++- A Flow-only internal change runs Flow tests and does not require a Memory release.
++- A contract change requires Memory contract compatibility review and Flow conformance tests.
++- An adapter change runs only its owner product plus contract fixtures.
++- No shared database tables or private source imports.
++- No behavior activates merely because both products are installed.
++- Capabilities are negotiated at runtime; versions are not used as capability proxies.
++
++## 5. Public contracts
++
++All durable cross-product objects use an envelope:
++
++```text
++schema_id
++schema_version
++object_id
++created_at
++producer
++capabilities_used
++provenance
++content_hash
++payload
++extensions
++```
++
++### 5.1 WorkPacket
++
++Carries immutable execution intent:
++
++- issue and exact revision;
++- objective and acceptance criteria;
++- authority, allowed mutations, and prohibited actions;
++- dependencies, constraints, risk, and platform;
++- context references and expected outputs;
++- target repository, branch, base, and exact head when applicable;
++- receipt requirements and idempotency key.
++
++Changing consequential intent creates a new packet revision and content hash.
++
++### 5.2 ContextPacket
++
++Carries privacy-scoped, provenance-backed context selected by Memory. It includes references or allow-listed summaries, never an implicit transcript dump. Flow cannot widen its scope.
++
++### 5.3 ClaimRequest and LeaseReceipt
++
++Claims are requests; leases are authoritative receipts. A Flow run requiring ownership must prove a current lease. Standalone file mode may use an explicitly ephemeral provider, but its receipts are marked non-durable and cannot authorize shared mutations.
++
++### 5.4 CapabilityManifest
++
++Flow and harness adapters declare supported packet versions, receipt versions, monitoring, cancellation, tools, isolation, and platform capabilities. Memory uses capability negotiation before issuing work.
++
++Capability truth is executable, not documentation-only. Each adapter probes the installed harness version and records whether it supports native streaming monitors, bounded background tasks, wake/resume, cancellation, session-scoped cleanup, and event delivery to the initiating agent. The manifest binds the harness executable identity, version, probe revision, and result hash. Unknown, unprobed, stale, or usage-limited capabilities are reported unavailable; Forge never assumes that Claude, Codex, Cursor, Hermes, or another harness lacks or possesses a monitor feature.
++
++### 5.5 RunReceipt
++
++Carries the terminal evidence Memory can ingest:
++
++- packet id/revision/hash;
++- exact repository head;
++- executor, model, role, effort, and tool/config hashes;
++- start/end, active/passive time, tokens, retries, and corrections;
++- mutations attempted and authorized;
++- validation and gate results;
++- output/evidence references;
++- terminal `PASS`, `FAIL`, or `INCOMPLETE` status;
++- structured error and cleanup/monitor closure status.
++
++Missing, truncated, stale-head, conflicting, or non-reconstructable evidence is `INCOMPLETE`, never `PASS`.
++
++### 5.6 Compatibility rules
++
++- Additive advisory fields are preserved and may be ignored.
++- Unknown consequential fields fail closed.
++- Breaking required-field changes create a new schema version.
++- Readers declare exact supported versions.
++- Memory migrates durable history; Flow never rewrites it.
++- Semantic identity plus content hash provides retry deduplication and conflict detection.
++
++### 5.7 Normative encoding and identity
++
++All contract objects use UTF-8 JSON Canonicalization Scheme encoding (RFC 8785) and lowercase SHA-256 content hashes. `content_hash` itself is excluded from the hash input; every other envelope field, including `extensions`, participates. Floating-point values that cannot be represented canonically are rejected.
++
++The common envelope is field-level normative:
++
++| Field | Type and constraint |
++| --- | --- |
++| `schema_id` | non-empty namespaced string fixed by the contract schema |
++| `schema_version` | positive integer; v1 is `1` |
++| `object_id` | UUID string generated once per semantic object |
++| `created_at` | canonical UTC RFC 3339 timestamp |
++| `producer` | object containing stable product id, product version, and instance/run id |
++| `capabilities_used` | sorted array of `{ capability_id, manifest_digest }` objects |
++| `provenance` | object containing source kind, actor class/id, repository identity when applicable, and exact head when applicable |
++| `content_hash` | 64-character lowercase SHA-256 hex over the canonical object with this field omitted |
++| `payload` | contract-specific object; unknown top-level payload fields are rejected unless registered by that schema version |
++| `extensions` | object keyed by namespaced extension id; each value is `{ impact: advisory|consequential, schema_version, value }` |
++
++Unknown advisory extensions are preserved byte-for-byte through read/write cycles and may be ignored. Unknown consequential extensions reject the object before execution or transition.
++
++| Contract | `schema_id` | Semantic identity | Required authority binding |
++| --- | --- | --- | --- |
++| Work packet | `forge.memory.work-packet.v1` | issue id + expected issue revision + packet id/revision + repository identity + target head | expected revision, allowed mutations, workflow-config revision |
++| Context packet | `forge.memory.context-packet.v1` | work-packet hash + context-selection revision + privacy-scope hash | work-packet hash, retention and disclosure class |
++| Claim request | `forge.memory.claim-request.v1` | issue id + expected revision + actor + request id | actor, requested lease scope, idempotency key |
++| Lease receipt | `forge.memory.lease-receipt.v1` | claim request id + lease id/epoch | issue revision, actor, scope, expiry, authority signature/provenance |
++| Capability manifest | `forge.memory.capability-manifest.v1` | provider id + manifest revision + config revision | provider provenance and evaluator status |
++| Run receipt | `forge.memory.run-receipt.v1` | packet hash + run id + attempt id + exact head | lease epoch when required, manifest digest, workflow-config revision |
++| Feedback report | `forge.memory.feedback-report.v1` | report id + product version + content fingerprint | explicit consent event, redaction-policy revision, intake provenance |
++| Structured error | `forge.memory.structured-error.v1` | parent object hash + error occurrence id | stable code, terminal classification, safe details |
++
++PR 2 materializes these contracts at `packages/memory-contracts/schemas/v1/<schema-id>.schema.json`, with deterministic generated validators and fixtures under `packages/memory-contracts/fixtures/v1/`. Required fixture ids are `valid-minimal`, `valid-full`, `canonical-hash`, `retry-identical`, `identity-conflict`, `unknown-advisory-roundtrip`, `unknown-consequential-reject`, `stale-authority-reject`, `wrong-capability-digest`, `privacy-redaction`, and one malformed/missing-required fixture per field. `packages/memory-contracts/contract-baseline.v1.json` records every schema/fixture digest and generator version. G3 cannot pass from prose or unit tests alone; it verifies this baseline and a forward/backward reader matrix.
++
++Exact retries with the same semantic identity and content hash return the prior result. Reuse of a semantic identity with different content is a conflict and is never overwritten.
++
++Receipt ingestion order is fixed:
++
++1. parse canonical envelope and verify hash;
++2. validate schema and consequential extensions;
++3. verify packet, workflow-config revision, capability digest, exact head, and lease epoch;
++4. apply semantic idempotency/conflict checks;
++5. validate evidence references and terminal classification;
++6. append the accepted or rejected authority event;
++7. evaluate gates and, only when authorized, commit the workflow transition.
++
++Malformed, unauthorized, unsupported, stale, or conflicting objects are rejected and receive a structured rejection event. `INCOMPLETE` applies only when an authorized execution began but terminal evidence is missing, truncated, timed out, or non-reconstructable. `FAIL` is a valid terminal receipt showing unmet acceptance or gates. `PASS` requires valid evidence and every required gate.
++
++### 5.8 Capability trust
++
++The negotiated capability-manifest digest and workflow-config revision are embedded in the WorkPacket and echoed in the RunReceipt. Unknown providers begin quarantined. A capability may become required only after its manifest, contract mapping, evidence schema, and evaluator are approved. Unsupported or changed required capabilities fail before packet issuance; a changed digest during execution makes the receipt stale and requires a new packet.
++
++### 5.9 Evidence privacy classes
++
++Receipt metadata and artifacts are classified as:
++
++- `public_metadata`: hashes, counts, timing, status, and non-sensitive identifiers permitted by policy;
++- `local_sensitive`: raw test output, prompts, tool logs, stack traces, source excerpts, and local paths; local-only by default;
++- `remote_redacted`: explicitly allow-listed summaries redacted before upload;
++- `restricted`: secrets, credentials, personal data, or disallowed content; never uploaded or given to the supervisor model.
++
++Receipts contain references and hashes, not embedded raw logs. Remote upload requires an explicit project or per-artifact policy, redaction, encryption in transit, retention/expiry, deletion behavior, and destination provenance. Model context receives bounded redacted summaries only.
++
++### 5.10 Product feedback contract
++
++`FeedbackReport` is a Memory-owned, privacy-safe intake contract derived from a `StructuredError` or bounded `RunReceipt` evidence. It contains a per-report random id, product/contract version, stable error code, affected capability, redacted reproduction steps, expected/actual classification, occurrence count, content fingerprint, and optional proposed fix. Its provenance actor is the fixed class `anonymous-user` plus the per-report nonce; it has no stable cross-report identity. It excludes user identity, device identifiers, raw prompts, transcripts, source code, secrets, personal data, absolute paths, and unrestricted logs.
++
++Consent is two-stage and never implied. Interactive setup may enable **ask on error**; it does not enable automatic upload. Every report is previewed and requires explicit per-report approval. In a non-interactive run, Forge emits a pending consent request for the agent to present to the user and performs no network action until approval is recorded. Declining has no product penalty.
++
++Report construction, redaction, hashing, deduplication, and upload use deterministic client code and consume no user model tokens. Optional AI clustering or fix synthesis runs only on Forge-operated infrastructure under Forge's budget. Similar reports are grouped by content fingerprint and error semantics, never by user or device. A return channel is absent by default and is included only when the user explicitly supplies one.
++
++## 6. Package, repository, and CLI topology
++
++### 6.1 Initial package extraction
++
++The current monorepo first creates enforceable package boundaries:
++
++```text
++@forge/memory-contracts  # owned and released by Memory
++@forge/memory            # Kernel + durable memory product
++@forge/flow              # optional executor product
++@forge/skills            # existing independent provider package
++forge-workflow           # compatibility/integration facade
++```
++
++All new packages begin at `0.1.0` prerelease versions. `@forge/skills@1.0.0` remains independently versioned and is not silently reset or synchronized.
++
++`@forge/memory-contracts` also defines the transport-neutral `MemoryProvider` and `CoordinationProvider` interfaces. Flow may depend on this package only. The facade or operator injects a local, server, or explicitly ephemeral provider; Flow does not construct a Memory database or network client implicitly.
++
++### 6.2 Extraction-ready modular monolith
++
++All 0.1.0 prereleases and stable ship from the current repository. Independence is enforced inside the monorepo through package APIs, forbidden-import rules, product-owned CI lanes, independent package versions/changelogs/publish permissions, compatibility ranges, and standalone-pack/install fixtures. A Memory-only change must build, test, and publish without Flow source changes; a Flow-only change must do the same without Memory implementation imports.
++
++Physical `forge-memory` and `forge-flow` repositories are postponed until after stable and require an explicit extraction decision. Repository crowding or package names are not justification. Extraction is permitted only when all of the following are proven over at least two accepted prerelease/stable package cycles:
++
++- zero forbidden private imports and zero facade-owned authority writes;
++- Memory-only, Flow-stateless, Flow-connected, and facade packages build/test from isolated sparse exports using only declared dependencies;
++- N and N-1 package compatibility works without coordinated source commits;
++- failure-injection proves provider loss, duplicate/stale receipt, cancellation race, partial publication, and rollback across the package seam;
++- independent ownership, release cadence, security isolation, scaling, or technology-stack need is measured—not predicted;
++- the signed BOM/verifier supports both the current single-repository case and a multi-repository candidate without changing contract identity.
++
++If approved later, history is preserved where practical, each repository receives independent CI/release authority, and the facade consumes published immutable packages. The split itself is behavior-neutral and must retain a one-command rollback to the last monorepo BOM. Separate services remain an even later decision requiring an operational need; repository separation does not imply network services.
++
++### 6.3 CLI surfaces
++
++```text
++forge memory ...       # Memory product through facade
++forge flow ...         # Flow product through facade
++forge capabilities --json
++
++forge-memory ...       # standalone Memory binary
++forge-flow ...         # standalone Flow binary
++
++forge flow run --packet work-packet.json --receipt run-receipt.json
++forge feedback report ... # preview and consent-gated Memory intake
++forge triage ...          # explicit local triage; cloud cadence is event-driven
++```
++
++Existing `forge`, `forge-workflow`, and `forge-preflight` entry points remain compatible through 0.1.x. Existing JSON keys, exit-code meanings, config paths, and supported command aliases either remain compatible or receive an explicit migration diagnostic.
++
++### 6.4 Flow operating modes
++
++| Mode | Input/output | Authority | Allowed mutations |
++| --- | --- | --- | --- |
++| Stateless | portable WorkPacket file → local RunReceipt file | none beyond packet signature/provenance | only packet-authorized local mutations; no shared claim, stage, issue, projection, or merge mutation |
++| Connected local | injected local MemoryProvider | local Kernel broker | operations authorized by current lease and packet |
++| Connected team | injected authenticated team MemoryProvider | team authority | operations authorized by membership, lease, packet, and server policy |
++
++Stateless mode cannot claim shared work, validate a live team lease, authorize a merge, or submit an authoritative transition. It produces a receipt that Memory may later accept or reject.
++
++### 6.5 Facade routing and absence behavior
++
++| Existing surface | Owner | Missing-product behavior |
++| --- | --- | --- |
++| `forge issue`, `create`, `update`, `claim`, `close`, `show`, `ready`, `stats`, `events` | Memory | stable `FORGE_MEMORY_UNAVAILABLE`; no fallback tracker |
++| `forge memory`, `remember`, `recall`, `forget`, `compact`, `insights` | Memory | stable `FORGE_MEMORY_UNAVAILABLE`; no local ad-hoc store |
++| `forge migrate`, Kernel export/import, issue projections | Memory | stable capability/migration diagnostic; never delegated to Flow |
++| `forge plan`, `dev`, `validate`, `ship`, `review`, `verify` | Flow execution + Memory authorization | `FORGE_FLOW_UNAVAILABLE` before execution; packet/issue state unchanged |
++| `forge shepherd`, PR monitor, test, push, merge, rollback | Flow | stable `FORGE_FLOW_UNAVAILABLE`; no hidden shell fallback |
++| `forge setup`, `doctor`, `upgrade`, `status`, `recap` | Facade composition | report each installed capability independently; partial mode is explicit |
++| `forge capabilities --json` | Facade | always available; reports absence without activating products |
++| `forge-preflight` | Flow compatibility binary | `FORGE_FLOW_UNAVAILABLE` when Flow is absent |
++| `forge-workflow` | Facade compatibility alias | byte-equivalent routing to `forge`; emits deprecation only when a future approved lane exists |
++
++The generated command manifest becomes the exhaustive routing ledger in PR 2. Any command not assigned to exactly one owner fails the boundary gate. Installing both products does not change defaults; activation requires explicit config or command selection.
++
++### 6.6 Release BOM
++
++Every integrated candidate has a signed, canonical release bill of materials containing:
++
++- Memory, Memory Contracts, Flow, Skills, and facade source commit ids plus repository identity; the 0.1.0 BOM may reference one repository and later BOMs may reference several;
++- package names and exact versions;
++- packed tarball SHA-512 integrity and registry provenance;
++- source tag and dist-tag;
++- contract schema versions and capability-manifest digests;
++- facade lockfile digest and supported compatibility ranges;
++- migration schema/version and beta.5 fixture-corpus revision.
++
++The BOM artifact is RFC 8785 canonical JSON using schema id `forge.release-bom.v1`. Its SHA-256 digest is signed as a DSSE envelope by the protected GitHub Actions release workflow using keyless Sigstore OIDC. The verification policy pins the GitHub OIDC issuer, repository owner/name, workflow path and immutable workflow revision, protected tag/ref, source commit, and a versioned Sigstore trust-root bundle. A long-lived repository signing key is not accepted. Trust-root or workflow-identity changes require a reviewed policy revision and a new candidate; old candidates retain the verifier bundle and policy digest used when accepted.
++
++PR 6 delivers a pinned offline-capable `forge release verify-bom` verifier and negative fixtures for altered package digest, wrong repository/workflow identity, wrong tag/SHA, missing transparency proof, a certificate invalid at its recorded signing time, unknown policy revision, and partial publication. The accepted evidence artifact contains the canonical BOM, DSSE envelope, Sigstore verification bundle, verifier/policy/tool versions, per-package registry integrity, and aggregate `PASS|FAIL|INCOMPLETE`. Missing required transparency evidence is `INCOMPLETE`, never unsigned success.
++
++Publish order is contracts → Memory → Flow → facade. The facade candidate is built only from already published immutable prerelease artifacts and pins their integrity in its lockfile. Every package build must reproduce the exact-tag/artifact/OIDC gate even while all packages share the monorepo. A failed later publish does not retag earlier artifacts; the candidate BOM is rejected. Rollback selects the last known-good facade BOM and restores the compatible Memory backup where required.
++
++## 7. Monitor lifecycle
++
++Monitoring is one Flow capability, not one implementation per harness and not model polling. Forge owns the portable control path; a harness-native monitor is an optional delivery accelerator discovered through an executable capability probe.
++
++Claude's current monitor validates the useful core pattern: a background command or WebSocket can deliver events into an active conversation without pausing it. It also exposes the portability gaps Forge must close: monitor processes are session-bound, are not restored on resume, plugin monitors are unsandboxed, and raw stdout lines become model events. Forge adopts the event-driven behavior without adopting those limitations. Sources: [Claude tools reference](https://code.claude.com/docs/en/tools-reference), [scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks), [plugin monitors](https://code.claude.com/docs/en/plugins-reference), and [channels](https://code.claude.com/docs/en/channels).
++
++The portable path is:
++
++```text
++source adapters -> Flow Monitor Engine -> deterministic reducer -> Memory durable outbox
++                                                            -> harness delivery adapter
++```
++
++There is one Monitor Engine shared by Claude, Codex, Cursor, Hermes, local CLI, and future harnesses. Shepherd is its first PR-specific consumer, not a second monitor implementation.
++
++The contract boundary is explicit:
++
++- Flow owns `MonitorSpec`: monitor id, owner run, packet id, subject, source adapters, deterministic filter/reducer, terminal predicate, deadline, lifetime, delivery targets, and security policy;
++- Memory owns durable `MonitorEvent` storage as part of run evidence: event id, monotonic sequence, subject revision or head SHA, type, actionability, bounded payload or artifact digest, and observation time;
++- the facade/harness adapter emits `DeliveryReceipt`: event id, target, transport tier, attempt, delivery time, acknowledgement, and outcome;
++- terminal cleanup emits `MonitorReceipt`: terminal state and reason, last sequence, evidence digest, cancellation acknowledgement, process/lease cleanup proof, and any undelivered cursor.
++
++Transport is at-least-once. Idempotent event ids, monotonic cursors, and acknowledgement make agent-context delivery effectively once without pretending the transport itself is exactly once. Events are persisted before delivery; a crashed adapter cannot erase them.
++
++Delivery is capability-negotiated:
++
++```text
++T0  durable journal and explicit pull
++T1  bounded injection on the agent's next turn
++T2  live event/message to an active session
++T3  resume or wake a durable task
++T4  user notification for required human action
++```
++
++Every target must support T0. Higher tiers are used only when their live executable probe passes. Forge promises that every actionable transition is durably recorded and delivered as soon as the target harness can accept it; it does not promise impossible universal mid-response injection.
++
++Monitor lifetime is declared rather than inferred:
++
++- `session` closes on parent-session termination;
++- `run` survives session loss until the owning run reaches a terminal state or deadline;
++- `subject` survives session and run loss until the PR, deployment, issue, or other subject reaches its terminal state or deadline.
++
++Run- and subject-scoped monitors transfer to durable orphan-safe ownership when an initiating session disappears. Success, failure, acknowledged cancellation, lease loss, timeout, or the declared terminal predicate closes them. Reaping, lease fencing, crash recovery, child-process termination, and cleanup receipts are deterministic and require no model turn.
++
++Event production is push-first: authenticated provider webhooks or native feeds, then bounded command/WebSocket adapters, with jittered/backoff polling only as a fallback. Commands and network destinations are allow-listed and sandboxed where the host permits; credentials are referenced rather than embedded; payloads are capped, redacted, source-authenticated, and fenced as untrusted input. A monitor event never grants approval or merge authority.
++
++The reducer emits only actionable state transitions. It suppresses unchanged state, coalesces duplicates and rapid oscillations, applies bounded priority/backpressure, stores full diagnostics in local artifacts, and delivers a compact summary plus evidence pointer. Unavailable or usage-limited reviewers become explicit unavailable observations rather than infinite waits. The ten-minute review window remains a maximum discovery window after the final correction SHA, not a recurring comment or polling loop.
++
++### 7.1 Efficiency supervisor
++
++Flow provides one scoped `EfficiencySupervisor` per run. Observation is deterministic and event-driven; it does not spend model tokens merely to poll.
++
++The supervisor receives structured events for:
++
++- active and passive time;
++- input/output/cached tokens and cost when available;
++- focused, package, matrix, and repeated test runs;
++- repository head and whether a broad suite already ran on that SHA;
++- attempts, identical failures, correction batches, and review rotations;
++- packet scope, changed files, newly discovered defects, and authority decisions;
++- queue, CI, review, and merge wait time.
++
++Deterministic policy emits one of:
++
++```text
++CONTINUE  NARROW  BATCH  REPLAN  DEFER  ESCALATE  STOP
++```
++
++Before admission, each WorkPacket declares `token_budget`, `budget_metric`, the strict 39% run cap, and reserved capacity for terminal evidence. For 0.1.0, `budget_metric` is fixed to `provider_reported_total_tokens`: uncached input, cached input, cache-write, output, reasoning, and supervisor-model tokens are all counted without discount whenever the provider exposes them; an authoritative provider aggregate is used when only that aggregate exists. Wall time, test duration, and money are recorded as separate guardrails and are never converted into tokens.
++
++The 20%, 30%, 35%, and 39% thresholds are computed from cumulative counted tokens divided by the declared integer `token_budget`. Missing, reset, contradictory, or non-monotonic usage telemetry prevents a compliant `PASS`: model-assisted supervision stops, the run produces `INCOMPLETE`, and the receipt preserves the last trustworthy count. Deterministic commands may continue only long enough to close processes and write the bounded handoff. Work that cannot plausibly finish its implementation and required terminal gate within the cap is split into independently valuable packets before execution.
++
++The run must finish after consuming strictly less than 40% of its declared parent budget, leaving more than 60% unused. Remaining budget is reserve capacity, not permission to expand scope. Initial triggers are explicit:
++
++- run a mandatory deterministic replan at both 20% and 30% of the parent budget; if scope, evidence, and terminal path are unchanged, the checkpoint records that fact without a model call or new plan prose;
++- at 35%, stop exploration and commit to either bounded terminal completion or a resumable handoff; reserve 35–39% for required evidence, cleanup, and handoff; stop all new work at 39%;
++- if the authorized outcome is incomplete at the 39% stop, emit `INCOMPLETE` with a compact resumable handoff and require a new explicit budget decision rather than overrunning;
++- reject a repeated broad suite on an unchanged SHA unless the prior receipt was incomplete;
++- after two materially identical failed attempts, require a changed hypothesis or narrower reproduction;
++- after three failed approaches, escalate or defer instead of repeating the same configuration;
++- after two correction batches, batch remaining feedback and reassess the contract before another push;
++- when changed files escape the packet scope, stop and create or link a separate issue;
++- when wait time dominates active time, yield to an event-driven monitor instead of consuming an agent turn;
++- when a test lane exceeds its budget, report the slow owner tests and use the smallest valid lane rather than rerunning everything;
++- store raw test output in receipts/artifacts and stream only bounded failure summaries back into model context.
++
++A configured small model may be invoked only for a threshold event that deterministic rules cannot classify. It receives a privacy-safe structured summary, not source code, prompts, transcripts, secrets, or personal data. Its counted usage is included in the parent total and also capped independently at the smaller of 1,000 tokens or 1% of the parent `token_budget`, with at most two invocations per run. If the parent run has no declared token budget, model-assisted supervision is disabled.
++
++Required release-candidate validation is a separate authorized WorkPacket with its own declared budget and receipt. It never competes with incidental exploration inside an implementation packet.
++
++The supervisor may recommend deferral, but it never silently abandons work. Deferred work must be linked to an existing Kernel issue or filed as a scoped follow-up with evidence. It cannot waive security, authority, migration, data-integrity, required-check, exact-head, or lease gates; merge PRs; resolve review threads; or close issues. It streams recommendations to the initiating agent and closes automatically with the parent run.
++
++### 7.2 Feedback and backlog-triage lifecycle
++
++Flow emits bounded structured errors and terminal receipts; Memory owns feedback intake, similarity grouping, issue supersession, priority policy, and durable triage history. Neither product imports the other's implementation.
++
++- local/CLI triage is manual and deterministic by default;
++- optional Forge Cloud triage is event-driven after five completed PR receipts or 20 new untriaged reports/issues, whichever occurs first; projects may configure stricter thresholds;
++- unchanged state never wakes a model or consumes a client token;
++- cloud AI, when enabled, is Forge-funded and sees only redacted structured fields;
++- exact duplicates and supersession links may be applied idempotently under project policy; closure, security downgrade, destructive priority change, or scope expansion requires an auditable approval;
++- every triage pass returns a `RunReceipt` with inputs, grouping decisions, priority changes, deferred items, and next evaluation threshold;
++- post-merge Flow handoff asks Memory for the current prioritized next packet; it does not independently invent backlog state.
++
++## 8. Migration, cutover, and rollback
++
++### 8.1 Authority invariant
++
++Kernel/Memory is the only authority writer throughout migration. Shadow comparison and dual-read are allowed; dual-write authority is forbidden.
++
++### 8.2 Migration phases
++
++1. **Inventory and backup** — identify database version, config, generated projections, packages, and installed harnesses; create and verify restorable backup.
++2. **Dry run** — report preserved, transformed, dropped, unresolved, and incompatible fields without mutating authority.
++3. **Additive migration** — add new schema/contracts and adapters while beta.5-compatible data remains readable.
++4. **Shadow comparison** — execute old and new read/execution paths against identical packets; compare normalized receipts.
++5. **Cutover** — route commands through package APIs; Kernel remains sole writer.
++6. **Rollback exercise** — restore backup and reinstall beta.5 in a clean fixture; prove the previous user workflow remains usable.
++7. **Finalization** — remove shadow code only after RC evidence, not in the same PR that introduces it.
++
++### 8.3 Executable beta.5 compatibility corpus
++
++A versioned, immutable beta.5 fixture corpus is captured before behavior moves. It contains only synthetic/redacted data and covers:
++
++- all three installed binaries and their supported command/alias manifest;
++- success, failure, and unavailable JSON envelopes and exit codes;
++- `.forge/config.yaml`, workflow stage matrix, gate/rail settings, generated skills/rules, and harness projections;
++- representative Kernel issue, dependency, comment, claim, run, event, projection, and memory data;
++- empty, large, stale-claim, conflicted-revision, and interrupted-migration database states;
++- pre-cutover, mid-cutover, and post-cutover-write rollback cases;
++- package install, upgrade, uninstall, and restored beta.5 operation.
++
++The corpus is content-hashed and versioned in the release BOM. Compatibility claims are accepted only from this corpus plus declared public-contract snapshots.
++
++### 8.4 Migration guarantees
++
++- issue ids, revisions, dependencies, comments, claim history, run ids, event ordering, provenance, and idempotency survive;
++- migration is restartable and idempotent;
++- stale writes and conflicting receipts remain rejected;
++- Beads remains one-way inbound migration only;
++- projection failures never roll back accepted Kernel events;
++- raw prompts and tool logs remain local by default;
++- generated harness files remain projections, never authority;
++- rollback never silently discards post-migration writes: the tool reports them and requires explicit resolution.
++
++## 9. Backlog disposition
++
++The latest 522 open/in-progress issues are partitioned conservatively. The count is one higher than the initial audit because the requested Flow efficiency supervisor is now tracked explicitly:
++
++| Bucket | Count | 0.1.0 treatment |
++| --- | ---: | --- |
++| Memory/Flow/contracts migration candidates | 52 | Consolidate into product PRs after acceptance review |
++| Control-plane debt | 20 | Resolve in Wave 1 or relevant product wave |
++| Separate release/quality gates | 3 actionable + 1 release root | Resolve before stable; do not mix into architecture diffs |
++| Close/supersede audit | 3 | Close only after implementation/release evidence is verified |
++| Unrelated/defer | 443 | Keep out of 0.1.0 restructuring train |
++
++The 72 architecture/control candidates include five deliberately deferred items whose value is real but not required for 0.1.0. Therefore 67 issues enter the architecture train. Three separate release-gate issues require work, while the stable root is tracking only. The final actionable total is 70 issues, not 70 PRs.
++
++### 9.1 Inclusion rule
++
++An issue enters the 0.1.0 train only if it is required to:
++
++- establish or enforce the Memory/Flow boundary;
++- preserve or migrate public behavior or durable data;
++- make authority, claims, release evidence, or rollback trustworthy;
++- replace validation duplication needed to deliver these waves safely;
++- close a security issue that blocks the release.
++
++Every included issue must have acceptance criteria, owner wave, product owner, affected contract, and validation owner. Current labels alone are insufficient.
++
++The snapshot maps 70 candidate work outcomes, but 47 implementation/migration candidates and the stable-release tracking root currently lack explicit Kernel acceptance criteria. They are not admitted merely because they appear in the ledger. The approved contracts in [acceptance-contracts.md](./acceptance-contracts.md) must be revision-checked, written to Kernel authority, read back, and aggregated into a passing `admission-evidence.v1.json` before PR 1 implementation begins. This is a pre-implementation admission checkpoint, not an eighth code PR.
++
++### 9.2 Existing release issues
++
++- The old stable root `8e634347-4562-4570-bc81-c22b210507d9` is superseded or relinked to this release plan.
++- `af79e102` and its writer dependency are closed only after PR #496 exact-SHA evidence is verified.
++- `d362bd71` remains an evaluation gate only for behavior or routing changed by 0.1.0; infrastructure alone is not completion.
++- Security recurrence `4265026c` remains a separate PR and must be green before RC.
++- Beta.5 release issue `16b75ba8` is closed after the published artifact/tag is verified.
++
++### 9.3 Control-plane prerequisites
++
++- `9e31a2f0-49c2-4d83-a936-1674871679a2`: reconcile claim projections before migration.
++- `7a6a3fb3-c82c-48e7-86ee-630c171b924c`: redesign risk-owned validation.
++- `f21279f4-473a-4d20-95d4-533ddbb1d102`: add an event-driven efficiency supervisor for Flow runs.
++- `18bee669-dd71-46c8-ac24-b36cf1a613b2`: make context/recap consume Kernel authority instead of a stale Beads projection.
++
++No issue is automatically closed from title matching or staleness.
++
++## 10. Implementation and PR train
++
++The proposal itself is a documentation PR. Implementation begins only after it is approved and merged.
++
++### PR 1 — Control-plane trust and fast validation
++
++**Outcome:** claim state, issue readiness, release evidence selection, and affected-test selection become trustworthy enough to support the train.
++
++- reconcile claim projections;
++- require contract-valid acceptance criteria for train inclusion;
++- implement risk-to-test ownership manifest and changed-surface selection;
++- separate PR, scheduled, and release validation lanes;
++- add prerelease/RC npm dist-tag behavior and exact-SHA receipts;
++- capture the immutable beta.5 compatibility corpus;
++- implement state inventory, verified backup, and non-mutating migration dry-run scaffolding required by beta.6.
++
++### PR 2 — Memory contracts and package boundaries
++
++**Outcome:** versioned packet/receipt contracts and enforceable import boundaries exist without behavior change.
++
++- create `@forge/memory-contracts`;
++- define schemas, validators, semantic identity, and compatibility fixtures;
++- create `@forge/memory` and `@forge/flow` package skeletons;
++- add forbidden-private-import checks;
++- keep the legacy CLI facade behavior identical.
++
++### PR 3 — Forge Memory foundation
++
++**Outcome:** Kernel authority and durable memory are reachable only through Memory public APIs.
++
++- move/wrap Kernel, broker, schema, migration, issue, run, evidence, memory, and projection ownership;
++- split memory storage concerns from the monolithic SQLite driver behind internal Memory interfaces;
++- expose client and portable file APIs;
++- implement consent-gated structured feedback intake and event-driven cloud/manual triage boundaries;
++- preserve exact authority and data semantics.
++
++### PR 4A — Forge Flow core, skills, and observers
++
++**Outcome:** packet execution, skill composition, process lifecycle, monitors, and efficiency supervision form a standalone Flow core without PR-review semantics.
++
++- extract Flow execution and bounded-loop APIs;
++- move generic process/monitor lifecycle and Smith/skill runtime composition;
++- implement the single Flow Monitor Engine, `MonitorSpec`, deterministic reducer, delivery cursor, acknowledgement, and session/run/subject lifecycle;
++- integrate Memory-owned durable events and terminal monitor receipts without importing Memory internals;
++- probe and publish installed-harness monitor/cancellation/cleanup capabilities instead of relying on name-based assumptions;
++- implement the event-driven efficiency supervisor and its hard sub-budget;
++- consume only Memory contracts/client and prove standalone packet-to-receipt execution;
++- add failure injection for timeout, cancel acknowledgement, duplicate/conflicting receipt, stale lease, provider loss, and orphan cleanup.
++
++PR 3 and PR 4A may be prepared in parallel after PR 2. They merge Memory first, Flow core second.
++
++### PR 4B — Shepherd, review, merge, and post-merge handoff
++
++**Outcome:** GitHub/PR orchestration becomes one understandable vertical Flow slice over the proven Memory and Flow-core seams.
++
++- move Shepherd, PR monitor specialization, review, merge, ancestry, thread, and PR-state adapters onto the shared Monitor Engine;
++- preserve one current-head fail-closed verdict and Memory-issued merge authority;
++- adapt native harness delivery where probed and fall back to Forge-owned events/lifecycle without model polling;
++- emit bounded post-merge receipts and request the next prioritized packet from Memory;
++- replay restart, watcher adoption/reaping, stale head, zero/open threads, optional neutral checks, and external/fork PR heads.
++
++### PR 5 — Facade, harness, and capability negotiation
++
++**Outcome:** existing commands route through product APIs and all harnesses negotiate capabilities without owning state.
++
++- thin `forge` command routing;
++- preserve legacy bins and supported JSON/exit behavior;
++- move harness and GitHub edges to their owning product;
++- keep `@forge/skills` independent;
++- implement `forge capabilities --json`;
++- implement T0-T4 delivery adapters for Claude, Codex, Cursor, and Hermes with truthful per-installed-version degradation;
++- regenerate projections from canonical sources.
++
++### PR 6 — Migration, shadow comparison, and extraction readiness
++
++**Outcome:** beta.5 users can upgrade, compare, cut over, restore, and use independently released packages without a physical repository split.
++
++- dry-run, backup, additive migration, replay, shadow comparison, cutover, and rollback;
++- clean-install and upgrade fixtures;
++- prove isolated sparse-export builds/tests and independent package publish lanes;
++- make facade depend on published packages rather than source paths;
++- generate and verify the signed release BOM in its single-repository/multi-package form;
++- exercise the future multi-repository BOM verifier and extraction failure fixtures without moving repositories.
++
++### PR 7 — Release convergence and backlog disposition
++
++**Outcome:** contracts freeze, superseded work is closed with evidence, documentation is current, and the tree is ready to tag one exact RC candidate. Promotion happens after the tagged candidate matrix, not inside this PR.
++
++- finish issue disposition and supersession links;
++- resolve separate security/evaluation/release gates;
++- remove obsolete shadow paths only after evidence;
++- publish migration and rollback guides;
++- freeze the release BOM and candidate-generation workflow;
++- make the post-tag exact-SHA matrix and later metadata-only promotion executable.
++
++### 10.1 Path and API ownership
++
++| PR | Exclusive production ownership | Exclusive test/evidence ownership | Shared surfaces |
++| --- | --- | --- | --- |
++| 1 | claim/readiness truth, test selection, release/preflight utilities | claim conformance, risk manifest, beta.5 corpus capture | CI workflows only through PR 1 owner |
++| 2 | contract schemas/validators, package skeletons, public interfaces | contract fixtures, command routing snapshot, boundary checks | root workspace manifests and command manifest freeze here |
++| 3 | `@forge/memory`, Kernel/Memory internals and compatibility shims | Memory, Kernel, storage, migration-unit tests | consumes frozen PR 2 contracts; no Flow files |
++| 4A | `@forge/flow` execution, skills, generic monitors/processes, EfficiencySupervisor | Flow core, capability probe, cancellation, budget, lifecycle tests | consumes frozen PR 2 contracts; no Memory internals or PR semantics |
++| 4B | Shepherd, PR-specific monitor, review/merge/ancestry/thread adapters | current-head verdict and PR lifecycle replay | consumes merged PR 3 + PR 4A public APIs |
++| 5 | facade routing, harness adapters, capability discovery | CLI/JSON/exit snapshots, harness parity | only facade owner changes composition roots |
++| 6 | migration/cutover/rollback and extraction-readiness tooling | beta.5 replay, clean upgrade, rollback, sparse exports, release BOM | exact package candidates only; no repository move |
++| 7 | release metadata/docs/disposition tooling | RC generation and promotion evidence definitions | no product behavior changes |
++
++The main integrator alone owns root `package.json`, `bun.lock`, shared CI matrices, generated command manifests, and cross-product fixtures during parallel work. PR 3 and PR 4A branches start from and rebase onto the exact frozen PR 2 API commit before review. PR 4B starts only after both public seams are merged. Parallel workers do not independently regenerate shared lockfiles or edit one another's compatibility shims.
++
++## 11. Parallelism and merge discipline
++
++- One owner per file/module/workstream.
++- PR 1 and PR 2 are sequential foundations.
++- After PR 2, Memory and Flow-core worktrees can proceed concurrently with disjoint ownership.
++- Shepherd/PR semantics begin only after Memory and Flow-core APIs merge; facade work begins only after those public APIs freeze.
++- Migration consumes exact package candidates; it does not chase moving branches.
++- Every correction batch produces one new SHA after feedback is batched.
++- Full CI is not rerun on an unchanged SHA.
++- Merge order is PR 1 → PR 2 → PR 3 → PR 4A → PR 4B → PR 5 → PR 6 → PR 7.
++- Required checks, exact ancestry, current head, unresolved actionable threads, and authority are read live before merge.
++
++## 12. Risk-based validation architecture
++
++### 12.1 Canonical ownership rule
++
++Every invariant has one lowest-level canonical owner test. Higher-level journeys prove wiring and do not repeat its entire edge-case matrix.
++
++The risk-to-test ownership manifest is versioned and content-hashed. Its digest is included in the WorkPacket and RunReceipt. A changed surface with no exact or conservative ownership mapping cannot receive a targeted `PASS`: it runs the owning package plus contract and affected-platform baseline; if even the owning package is ambiguous, selection fails closed and routes to the full repository baseline until the mapping is repaired.
++
++### 12.2 Feedback budgets
++
++| Lane | Purpose | Initial wall-time budget |
++| --- | --- | ---: |
++| RED/GREEN focus | one behavior or contract | 60 seconds typical |
++| Changed package | unit + owned contract tests | 5 minutes |
++| Cross-product contract | Memory/Flow conformance | 8 minutes |
++| Affected platform | only platform-sensitive surfaces | 12 minutes |
++| Scheduled compatibility | broad OS/runtime/adapters | non-blocking PR lane |
++| Release candidate | complete exact-SHA matrix | 30 minutes target |
++
++A budget breach does not weaken a gate. It creates an owned performance/flakiness issue and moves redundant coverage to the correct lane.
++
++### 12.3 PR selection
++
++- Contract changes: schema fixtures plus Memory and Flow conformance.
++- Memory storage changes: Memory package, migration corpus, backup/restore, Windows and Linux SQLite checks.
++- Flow changes: Flow package, fake Memory provider, process/monitor cleanup, affected platform only.
++- Adapter changes: adapter contract fixtures plus one end-to-end journey.
++- CLI/facade changes: command/JSON/exit snapshots and package installation.
++- Docs-only changes: links, generated projections, and drift checks.
++- Security/authority changes: mandatory focused adversarial cases; never quarantined.
++
++### 12.4 Release matrix
++
++Only the settled candidate runs:
++
++- Ubuntu, macOS, and Windows;
++- Node 22 and 24;
++- clean install of each product and facade;
++- beta.5 upgrade, migration dry-run, cutover, and rollback;
++- Kernel conformance and claim/lease truth;
++- contract forward/backward fixtures;
++- Claude, Codex, Cursor, and Hermes projection parity;
++- npm package contents, provenance, OIDC, dist-tags, and exact SHA;
++- one real monitor lifecycle and sequential merge-train simulation.
++
++### 12.5 Test reduction safeguards
++
++- A test is removed only when its risk is mapped to an equal or stronger canonical test.
++- Deletion evidence identifies old test, risk, replacement, and measured runtime gain.
++- Flaky noncritical tests may be quarantined only with owner, issue, expiry, and non-required status.
++- Security, authority, migration, stale-head, and data-integrity tests cannot be quarantined.
++- Comment count, test count, and merge rate are not quality metrics.
++
++## 13. Release sequence
++
++### 13.1 `0.1.0-beta.6` — contracts and compatibility facade
++
++- PR 1 and PR 2 merged;
++- no authority behavior change;
++- package boundaries and contract fixtures available;
++- migration inventory, backup, and dry-run available;
++- publish under `next`, never `latest`;
++- exit beta.6 after at least ten clean synthetic corpus journeys; no passive calendar wait substitutes for evidence.
++
++### 13.2 `0.1.0-beta.7` — Memory and Flow operational split
++
++- PR 3 through PR 5 merged;
++- Kernel remains sole writer;
++- shadow comparison on identical packets;
++- clean beta.5 upgrade fixtures;
++- internal canary projects complete representative Memory-only, Flow-only, and integrated journeys;
++- exit beta.7 after at least 25 clean canary journeys covering Windows and Linux, standalone and connected modes, and a minimum 72-hour automated observation window with no unresolved S0/S1 escape. Monitoring consumes no model turns while state is unchanged.
++
++### 13.3 `0.1.0-rc.1` — migration and contract freeze
++
++- all eight implementation PRs across milestones 1–7 merged;
++- contract/config/schema freeze;
++- package independence and future extraction readiness proven without a physical repository split;
++- rollback exercise passes;
++- no unresolved S0/S1 defect;
++- the signed release BOM is frozen;
++- tag the exact candidate, publish immutable prerelease packages in BOM order under `next`, then run the complete exact-artifact/exact-SHA matrix;
++- exit RC after at least 50 clean canary journeys and seven cumulative automated observation days across RCs with no unresolved S0/S1 escape.
++
++Behavioral changes after RC create RC.2 and rerun only the affected evidence and canary lane. Unaffected evidence and cumulative observation remain valid when the BOM proves their inputs did not change.
++
++### 13.4 `0.1.0`
++
++- metadata-only promotion of the exact accepted candidate;
++- npm `latest` points to the verified SHA;
++- fresh install, beta.5 upgrade, and rollback are reverified;
++- all release issues are closed or explicitly deferred with rationale;
++- no code change is introduced during promotion.
++
++## 14. Evaluation disposition
++
++The Sol/Luna evaluation is not allowed to become an unrelated architecture blocker:
++
++- 30 cases prove instrumentation and execution viability;
++- 100 blind cases gate any new default model-routing decision;
++- 300 rolling cases provide operating evidence for later promotion;
++- no model winner is claimed from infrastructure, comment counts, or historical routing logs;
++- if 0.1.0 does not change default model routing, the architecture release requires the instrumentation smoke but not a model winner.
++
++## 15. Stop conditions
++
++The train stops before merge or release when any of the following occurs:
++
++- two components can write the same authority state;
++- Flow imports Memory private storage or schema modules;
++- migration cannot enumerate preserved, transformed, dropped, and unresolved fields;
++- rollback loses acknowledged post-migration data without explicit user resolution;
++- packet or receipt identity is ambiguous;
++- exact head, issue, lease, or authority cannot be reconstructed;
++- a required security, authority, migration, or data-integrity gate is red or incomplete;
++- package or repository split changes runtime behavior;
++- public CLI/JSON/config behavior changes without migration diagnostics;
++- final candidate evidence is not tied to one exact SHA;
++- an unrelated issue expands the active PR rather than receiving its own issue/PR.
++
++## 16. Requirement traceability and completion definition
++
++| Required planning dimension | Authoritative evidence | Remaining decision |
++| --- | --- | --- |
++| Product boundaries and architecture | §§4–6; `decision-register.md` R6–R10; `facade-routing.md` | Approve R6–R10 |
++| Migration, cutover, and rollback | §8; PR 6 in §10; G5 and the RC matrix in `validation-matrix.md` | Approve sole-writer and extraction timing |
++| Beta.5 compatibility | §§6.5, 8.3–8.4; facade routing ledger; beta.5 corpus gates | Approve R9–R10 |
++| Release sequencing and provenance | §§6.6, 13; G8; signed BOM/verifier rules | Approve R12–R13 |
++| Issue disposition and admission | §9; `issue-disposition.md`; `acceptance-contracts.md` | Approve R11, then perform revision-checked Kernel admission before code |
++| Implementation waves and merge order | §§10–11; seven milestones/eight PRs; disjoint ownership table | Approve R2/R11 train details |
++| Validation and token efficiency | §§7.1, 12; `validation-matrix.md`; risk manifest and 20/30/35/39 policy | Approve targeted-plus-final-matrix strategy |
++| Market, standards, harnesses, and security | §§3.4–3.5; advisory Parallel reports; Context7/official-doc evidence; OWASP/TDD mapping | Re-probe capability manifests during PR 5; no assumption becomes a gate |
++
++Every row has normative evidence and an explicit authority. The only unresolved planning state is user disposition of proposed decisions R6–R14; there is no hidden technical prerequisite to that decision.
++
++Planning is complete only when the user approves:
++
++- the asymmetric Memory-foundation/optional-Flow ownership;
++- package, repository, and CLI topology;
++- beta.5 compatibility and rollback guarantees;
++- seven-milestone/eight-PR implementation train and merge order;
++- 67-issue architecture/control train, three separate release gates, and disposition rules;
++- risk-based validation lanes and budgets;
++- beta.6/beta.7/RC/stable sequence;
++- evaluation boundary and stop conditions.
++
++Implementation is not authorized by approving this draft. After approval, this document is committed and opened as a strategic proposal PR. Implementation planning and task decomposition begin only after that proposal merges.
++
++## 17. Approval questions
++
++1. Lock Forge Memory as the owner of Kernel, durable contracts, packets, leases, receipts, and history, with Flow as an optional executor?
++2. Keep 0.1.0 as an extraction-ready modular monolith with independently releasable Memory and Flow packages, postponing physical repository separation until the measured post-stable triggers pass?
++3. Preserve beta.5 CLI/config/data behavior unless an explicit migration diagnostic and rollback path exists?
++4. Accept seven milestones delivered through eight cohesive PRs, with Flow core (4A) separated from Shepherd/review/merge semantics (4B), and the stated sequential merge order?
++5. Accept 67 architecture/control issues in the eight-PR train, three separate release-gate issues, five explicit candidate deferrals, and all unrelated work outside the train?
++6. Accept targeted PR validation plus one full exact-SHA release matrix?
++7. Decouple model-winner promotion from 0.1.0 unless default routing changes?
+diff --git a/docs/work/2026-08-09-forge-product-restructure/tasks.md b/docs/work/2026-08-09-forge-product-restructure/tasks.md
+new file mode 100644
+index 00000000..887eeadf
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/tasks.md
+@@ -0,0 +1,100 @@
++# Forge 0.1.0 Restructuring Tasks
++
++**Status:** Approved development handoff
++**Epic:** `d6a74dc8-10f7-4be9-9761-2467c3df4798`
++**Plan:** [plan.md](./plan.md)
++**Decision register:** [decision-register.md](./decision-register.md)
++
++## Operating contract
++
++- Deliver seven milestones through eight cohesive PRs in this merge order: PR 1 -> PR 2 -> PR 3 -> PR 4A -> PR 4B -> PR 5 -> PR 6 -> PR 7.
++- PR 3 and PR 4A may be prepared in parallel only after PR 2 freezes their public contracts; Memory merges first.
++- One issue and one non-overlapping file owner per task. The main integrator alone owns shared manifests, lockfiles, generated projections, and cross-product fixtures.
++- Use one failing contract or journey before implementation, then the smallest risk-owned verification lane. Do not repeat a broad suite on an unchanged SHA. Run the complete matrix once on the final exact release candidate.
++- Mandatory deterministic replans occur at 20% and 30% of the declared token budget. Choose completion or resumable handoff at 35%; stop all new work at 39%.
++- Unrelated discoveries become separate Kernel issues and cannot expand an active PR.
++
++## Task 0 — Admission checkpoint
++
++**Outcome:** every implementation/migration candidate has executable acceptance criteria in Kernel authority before production code changes.
++
++1. Read the issue at its expected revision and apply the approved contract from [acceptance-contracts.md](./acceptance-contracts.md).
++2. Read the issue back and verify the exact revision, normalized acceptance text, owner PR, product owner, affected contract, and validation owner.
++3. Generate `admission-evidence.v1.json`; any missing, stale, conflicting, or unverified write is `INCOMPLETE`.
++4. Claim and prove ownership of the first PR 1 child issue. Do not claim the restructuring epic itself.
++
++## Task 1 — PR 1: control-plane trust and fast validation
++
++**Outcome:** claims, readiness, affected-test selection, and release evidence are trustworthy enough to support the train.
++
++- Reconcile claim projections and enforce contract-valid readiness.
++- Add the versioned risk-to-test ownership manifest and changed-surface selector.
++- Separate PR, scheduled, and release validation lanes without weakening security, authority, migration, or data-integrity coverage.
++- Add prerelease/RC dist-tag behavior, exact-SHA receipts, beta.5 corpus capture, state inventory, verified backup, and non-mutating migration dry-run scaffolding.
++- Verify only control-plane, manifest-selection, release-preflight, and compatibility-corpus owner lanes.
++
++## Task 2 — PR 2: Memory contracts and package boundaries
++
++**Outcome:** public contracts and package boundaries exist without behavior change.
++
++- Add `@forge/memory-contracts`, `@forge/memory`, and `@forge/flow` package boundaries.
++- Define canonical envelopes, WorkPacket, ContextPacket, RunReceipt, MonitorEvent, DeliveryReceipt, and MonitorReceipt schemas, validators, semantic identities, fixtures, and compatibility snapshots.
++- Add forbidden-private-import checks and preserve the legacy facade's command, JSON, and exit behavior.
++- Freeze the exact API commit consumed by PR 3 and PR 4A.
++
++## Task 3 — PR 3: Forge Memory foundation
++
++**Outcome:** Kernel authority, durable memory, monitor evidence, and feedback intake are available only through Memory public APIs.
++
++- Move or wrap authority, broker, schema, migrations, issues, runs, evidence, memory, and projections.
++- Split storage concerns behind internal Memory interfaces.
++- Implement durable monitor event/outbox storage, idempotent sequence/cursor semantics, and receipt ingestion without importing Flow.
++- Preserve authority, privacy, migration, and rollback behavior through the beta.5 corpus and Memory owner lanes.
++
++## Task 4A — PR 4A: Forge Flow core, skills, observers, and efficiency
++
++**Outcome:** standalone packet execution and one universal Monitor Engine work without PR-specific semantics.
++
++- Implement Flow execution, bounded-loop APIs, Smith/skill composition, and process lifecycle.
++- Implement `MonitorSpec`, source adapters, deterministic transition reducer, acknowledgement cursor, retry/backpressure, and session/run/subject lifetime.
++- Persist before delivery through Memory contracts; prove crash recovery, lease fencing, cancellation acknowledgement, child reaping, deadline handling, and terminal cleanup receipts.
++- Implement the deterministic EfficiencySupervisor and strict sub-budget.
++- Verify that unchanged or duplicate observations consume no model turn and that full diagnostics remain artifacts rather than model context.
++
++## Task 4B — PR 4B: Shepherd, review, merge, and post-merge handoff
++
++**Outcome:** PR orchestration becomes the first vertical consumer of the shared Monitor Engine.
++
++- Move Shepherd, PR-monitor specialization, review, merge, ancestry, thread, and PR-state adapters onto Flow and Memory public seams.
++- Preserve one current-head fail-closed verdict and Memory-issued merge authority.
++- Replay restart, watcher adoption/reaping, stale head, zero/open threads, optional neutral checks, external/fork heads, bounded feedback discovery, and post-merge handoff.
++- Never poll with a model, resolve threads automatically, or merge without the existing authority gate.
++
++## Task 5 — PR 5: facade, harness, and capability negotiation
++
++**Outcome:** the current CLI remains compatible while every installed harness receives truthful delivery behavior.
++
++- Thin the facade, preserve legacy bins/JSON/exit codes, and add `forge capabilities --json`.
++- Implement T0 durable pull, T1 next-turn injection, T2 active-session delivery, T3 resume/wake, and T4 human notification adapters.
++- Probe the installed Claude, Codex, Cursor, and Hermes versions and executable behavior; never infer support from harness name.
++- Use native monitor/channel/message facilities only when their probe passes; otherwise degrade to the next supported tier.
++
++## Task 6 — PR 6: migration, shadow comparison, and extraction readiness
++
++**Outcome:** beta.5 users can upgrade, compare, cut over, restore, and consume independently releasable packages.
++
++- Implement dry-run, backup, additive migration, replay, shadow comparison, cutover, and rollback.
++- Prove clean install, beta.5 upgrade, interrupted migration, post-cutover-write handling, sparse package builds, independent publish lanes, and signed BOM verification.
++- Keep Kernel/Memory the sole authority writer; shadow mode may dual-read but never dual-write authority.
++
++## Task 7 — PR 7: convergence and release evidence
++
++**Outcome:** the exact RC candidate has frozen contracts, resolved dispositions, complete evidence, and reversible release artifacts.
++
++- Finish issue disposition, supersession links, security/evaluation/release gates, migration/rollback documentation, and obsolete-shadow removal supported by evidence.
++- Run the complete exact-BOM matrix once after the final correction SHA is settled.
++- Aggregate tri-state journey evidence, verify observation windows and rollback, then prepare metadata-only stable promotion.
++
++## Development start
++
++The next authorized action is Task 0. Production implementation begins only after its admission evidence passes; the first code branch is PR 1, not PR 4A or the Shepherd specialization.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md b/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md
+new file mode 100644
+index 00000000..7c19e1b1
+--- /dev/null
++++ b/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md
+@@ -0,0 +1,107 @@
++# Forge 0.1.0 Restructuring Validation Matrix
++
++**Status:** Approved normative companion to `plan.md`
++**Principle:** one risk, one canonical owner test; higher-level journeys prove wiring, not every lower-level edge case.
++
++## Gate classes
++
++| Gate | Trigger | Required evidence | Failure behavior |
++| --- | --- | --- | --- |
++| G0 formatting/static | every changed source/doc/config | diff check, targeted lint/type/schema parse | Block PR |
++| G1 risk selection | every PR | versioned risk-manifest digest, changed-surface map, selected lanes | Missing/ambiguous owner routes to conservative baseline; never targeted PASS |
++| G2 package | product/package source change | canonical unit tests for changed package | Block PR |
++| G3 contract | contract, boundary, provider, or cross-product change | canonical fixtures, forward/backward reader matrix, semantic idempotency/conflict cases | Block PR |
++| G4 authority/security | issue, claim, lease, stage, gate, merge, protected state, auth | focused adversarial authority suite | Block; never quarantine |
++| G5 migration/data | schema, storage, import/export, projection, package extraction/cutover | beta.5 corpus, dry-run, backup/restore, replay, interrupted migration, post-cutover-write resolution | Block; `INCOMPLETE` is not PASS |
++| G6 platform | OS/runtime-sensitive path | owning package + affected OS/runtime baseline | Block affected lane; broad unaffected matrix stays scheduled |
++| G7 journey | adapter/facade/integration change | one representative end-to-end journey per changed route | Block changed route |
++| G8 release | one settled RC BOM | complete exact-artifact/exact-SHA matrix | Block release only; never rerun unchanged candidate |
++
++## Conservative selection default
++
++The selector output and risk-manifest digest are stored in the WorkPacket and RunReceipt.
++
++The canonical source is `validation/risk-manifest.source.yaml`; `scripts/generate-risk-manifest.js` deterministically produces `validation/risk-manifest.v1.json`. The generated manifest has `schema_id`, integer `revision`, `source_hash`, `generator_version`, `risks`, and `owners`. Every risk contains stable id, severity, non-quarantinable flag, and gate ids. Every owner contains non-overlapping path/command/schema selectors, product, package, owned risk ids, canonical test ids, dependent routes, and platform/runtime additions. The manifest declares the unknown-owner fallback as the repository baseline. Generation contains no timestamp or host data; rerunning at the same source SHA must be byte-identical.
++
++G1 verifies that every tracked production path, public command, contract schema, migration, and generated projection resolves to exactly one canonical owner; overlaps and gaps fail. The selected manifest revision, digest, matched selectors, changed surfaces, required gates, and test ids are persisted in both WorkPacket and RunReceipt.
++
++- Exact mapping: run the mapped canonical owner plus required dependent gates.
++- Package known, risk ambiguous: run package + contract + affected-platform baseline.
++- Package unknown: run repository baseline and block targeted selection until ownership is added.
++- Security, authority, migration, data integrity, stale head, and protected state always add their dedicated gate.
++- A failed or incomplete broad run may be retried only when the receipt identifies environmental/incomplete evidence; an unchanged complete failure is diagnosed, not blindly rerun.
++
++## PR matrix
++
++| PR | Always required | Conditional | Explicitly deferred |
++| --- | --- | --- | --- |
++| 1 Control-plane trust/fast validation | G0, G1, G4; selector self-tests; claim projection reconciliation; beta.5 corpus hash | G6 Windows claim/process cases; release workflow fixture | Full product/repository matrix |
++| 2 Contracts/package boundaries | G0–G3; forbidden-private-import scan; facade routing ledger completeness | G7 portable packet→receipt smoke | Storage migration and live provider calls |
++| 3 Memory foundation | G0–G5 for Memory; Kernel conformance; memory recall; backup/restore unit corpus; feedback consent/redaction/idempotency; triage cadence and authority | G6 Windows/Linux SQLite; inbound Beads fixture | Flow/Shepherd matrix |
++| 4A Flow core, skills, and observers | G0–G4 for Flow core; fake MemoryProvider; generic monitor closure; skill/orchestrator fixtures; EfficiencySupervisor 20/30/35/39 budget cases | G6 process/platform; portable packet→receipt journey | Shepherd/review semantics, Memory storage edges, and live model waits |
++| 4B Shepherd, review, merge, and handoff | G0–G4 for current-head verdicts, ancestry, threads, watcher lifecycle, and post-merge receipt handoff; fake review providers | G6 process/platform; G7 PR adapter journey | Memory storage edges and live bot wait loops |
++| 5 Facade/harness/capabilities | G0–G3, G7; CLI/JSON/exit snapshots; command ownership; harness projection parity; version-bound native monitor/cancel/resume/cleanup probes | G6 installed binary smoke for Claude, Codex, Cursor, and Hermes | Full migration replay |
++| 6 Migration/extraction readiness | G0–G7; beta.5 clean upgrade, interrupted migration, cutover, rollback, release BOM, sparse standalone package builds, forbidden-private-import scan | package-registry prerelease canary | Physical repository separation and stable promotion |
++| 7 Release convergence | G0, docs/drift/disposition verification; candidate-generation reproducibility | affected gate for any correction | Product behavior changes |
++
++## Developer and PR budgets
++
++| Lane | Budget | Output returned to model |
++| --- | ---: | --- |
++| Focused RED/GREEN | 60 seconds typical | failing assertion and bounded context only |
++| Changed package | 5 minutes | counts, slowest owners, failures |
++| Cross-product contract | 8 minutes | fixture/gate summary and conflicts |
++| Affected platform | 12 minutes | platform delta and receipt link |
++| Scheduled compatibility | not PR-blocking unless affected | artifact link and tri-state result |
++| RC matrix | 30-minute target | BOM, exact SHA, per-lane receipts, aggregate tri-state |
++
++Raw logs remain local-sensitive artifacts by default. They are never streamed wholesale into model context.
++
++## Exact RC matrix
++
++The matrix consumes one signed release BOM and proves:
++
++- Ubuntu, macOS, Windows;
++- Node 22 and 24;
++- Memory-only, Flow stateless, Flow connected, and facade installations;
++- Claude, Codex, Cursor, and Hermes projections;
++- current beta.5 binaries/config/JSON/database upgrade;
++- dry-run, backup, cutover, interrupted migration, post-cutover-write handling, and rollback;
++- packet/receipt schema forward/backward compatibility;
++- claim/lease/workflow/gate/merge authority;
++- shared monitor-engine streaming, durable-before-delivery ordering, at-least-once retry with idempotent cursor acknowledgement, cancellation, timeout, crash recovery, reaping, and terminal cleanup receipts;
++- session/run/subject lifetime fixtures proving session closure and durable run/subject continuation after initiating-session loss;
++- installed-harness capability probes and truthful T0-T4 degradation for native live delivery, next-turn injection, wake/resume, user notification, cancellation, and cleanup;
++- reducer fixtures proving unchanged observations and duplicate or oscillating raw events consume no model turn and emit only bounded actionable transitions;
++- consent-gated feedback with no identity/device leakage or client model-token use, plus event-driven triage receipts;
++- package contents, integrity, provenance, OIDC, dist-tags, and facade lockfile;
++- one sequential merge-train simulation on exact heads.
++
++Every lane returns `PASS`, `FAIL`, or `INCOMPLETE`. Missing receipts, wrong BOM artifacts, stale heads, timeout, truncation, or non-reconstructable evidence are `INCOMPLETE`.
++
++## Release evidence semantics
++
++Release journeys are versioned data under `validation/journeys/v1/`; each immutable YAML case declares `journey_id`, risk ids, fixture digest, product mode, platform/runtime requirements, ordered commands/actions, expected contract transitions, cleanup assertions, and severity on violation. The beta.5 compatibility corpus and journey index are content-hashed in the release BOM.
++
++A **clean journey** means one distinct indexed journey executed against one exact BOM/environment where every required step and receipt is `PASS`, no required step is skipped or `INCOMPLETE`, all expected state transitions are accepted at the declared revision, no unauthorized mutation occurs, and every process/monitor/lease closes. Repeating the same journey id on the same BOM/environment does not increase the clean count. A failed attempt remains in evidence; a later correction requires a new BOM or an explicitly environmental `INCOMPLETE` receipt.
++
++`release/severity-policy.v1.json` maps risk ids to severity. S0 is any security compromise, unauthorized authority mutation, acknowledged data loss, irrecoverable rollback, false `PASS`, or untrusted artifact. S1 is a broken supported install/upgrade/runtime path, deterministic crash, contract incompatibility, migration mismatch, or required platform/harness failure without data/authority compromise. Severity is derived from the violated risk id and cannot be downgraded without a signed approval receipt naming the evidence and rationale.
++
++`forge release aggregate-evidence --bom <path>` deterministically writes canonical `release-evidence.v1.json` containing BOM/policy/corpus digests, distinct journey ids and environments, per-gate tri-state receipts, coverage by required risk stratum, open S0/S1 ids, observation-window events, retries, and aggregate status. Beta.6 requires at least 10 distinct clean synthetic journey ids. Beta.7 requires at least 25 clean canary journey/environment pairs covering every required platform/mode stratum and 72 continuous hours without a new S0/S1 event. RC requires at least 50 such pairs, every G0–G8 lane, and seven cumulative automated observation days. Missing strata, unverifiable time/events, stale BOM inputs, or an unresolved S0/S1 produce `INCOMPLETE` or `FAIL`, never release eligibility.
++
++## Test reduction evidence
++
++Removing or consolidating a test requires a ledger row with:
++
++```text
++old_test
++risk_owned
++replacement_test
++equivalence_or_stronger_reason
++before_runtime
++after_runtime
++owner
++expiry_or_follow_up
++```
++
++No test-count target exists. The objective is complete unique-risk coverage inside the feedback budgets.
+-- 
+2.51.0.windows.1
+

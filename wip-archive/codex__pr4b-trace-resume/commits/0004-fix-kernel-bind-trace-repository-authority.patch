@@ -1,0 +1,79 @@
+From 0d012b3f0e600d3baef9dbfece4b7d22aa5f401b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:27:51 +0530
+Subject: [PATCH] fix(kernel): bind trace repository authority
+
+---
+ lib/kernel/broker.js      | 10 +++++++++-
+ test/kernel/trace.test.js | 15 +++++++++++++++
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 526de0c3..d058fc53 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -209,12 +209,16 @@ function snapshotReceipt(receipt) {
+ 	return JSON.parse(canonicalReceiptStringify(receipt));
+ }
+ 
++function normalizeTraceRepository(value) {
++	return typeof value === 'string' ? value.trim().toLowerCase() : value;
++}
++
+ function snapshotPrLinkageInput(input) {
+ 	if (!input || typeof input !== 'object') return input;
+ 	return {
+ 		phase: input.phase,
+ 		git_common_dir: input.git_common_dir,
+-		repo: input.repo,
++		repo: normalizeTraceRepository(input.repo),
+ 		number: input.number,
+ 		url: input.url,
+ 		branch: input.branch,
+@@ -259,6 +263,7 @@ function derivePrEvidence(input) {
+ 	if (typeof packetPayload.issue_id !== 'string' || !packetPayload.issue_id
+ 		|| !Number.isInteger(packetPayload.expected_issue_revision) || packetPayload.expected_issue_revision < 0
+ 		|| packetPayload.authority?.issue_revision !== packetPayload.expected_issue_revision
++		|| typeof packetPayload.repository_id !== 'string' || !packetPayload.repository_id
+ 		|| !TRACE_FULL_HEAD.test(packetPayload.target_head)
+ 		|| !TRACE_SHA256.test(packetPayload.risk_manifest_digest)) {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage WorkPacket authority binding is incomplete');
+@@ -294,6 +299,9 @@ function derivePrEvidence(input) {
+ 	if (input.issue_id && input.issue_id !== packetPayload.issue_id) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage explicit issue_id conflicts with WorkPacket authority');
+ 	}
++	if (packetPayload.repository_id !== input.repo) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage repository conflicts with WorkPacket authority');
++	}
+ 	return {
+ 		issue_id: packetPayload.issue_id,
+ 		issue_revision: packetPayload.expected_issue_revision,
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index afb719ab..02d222d8 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -218,6 +218,21 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+ 	});
+ 
++	test('binds hash-valid WorkPacket repository authority to the normalized linkage repository', async () => {
++		const crossRepoPacket = workPacket({ repository_id: 'owner/repository-a' });
++		await expect(broker.recordPrLinkage(linkage('opened', crossRepoPacket, runReceipt(crossRepoPacket), {
++			repo: 'owner/repository-b',
++		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++
++		const packet = workPacket();
++		await broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet), {
++			repo: ' Owner/Forge ',
++		}));
++		expect(await driver.queryAll('SELECT repo FROM kernel_pr;', config)).toEqual([{ repo: 'owner/forge' }]);
++	});
++
+ 	test('resolves gate authority historically at the linkage occurrence time', async () => {
+ 		await driver.insertKernelEvent({
+ 			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
+-- 
+2.51.0.windows.1
+

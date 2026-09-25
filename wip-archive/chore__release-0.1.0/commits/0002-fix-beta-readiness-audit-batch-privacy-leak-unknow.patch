@@ -1,0 +1,198 @@
+From 512bbf1083bbec7ea9790202513effc356558a3e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 15:18:33 +0530
+Subject: [PATCH] fix: beta-readiness audit batch (privacy leak,
+ unknown-command, docs)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+From the pre-beta feature+docs audit (epic be7ce156):
+- package.json: drop docs/work/** from files[] — stop shipping maintainer
+  local paths + internal project name to npm (843->425 files, 2.1MB->997kB) [56a3a16d]
+- bin/forge.js: unknown command errors + exit 1 instead of the installer
+  banner with exit 0; add regression test [b3bae4f3]
+- status hint: forge docs workflow -> forge docs setup (dead topic) [95ddc997]
+- board/test --help: drop stale Beads wording (kernel is default) [23ba0ea7]
+- QUICKSTART: add npm install beside bun; Hermes listed as supported;
+  section 6 validates the user's project (forge validate) not this repo [4a240274 00149f49 127e9bd2]
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ QUICKSTART.md                                 | 17 +++++++++++------
+ bin/forge.js                                  |  9 ++++++++-
+ .../bd-call-site-kill-list.md                 |  2 +-
+ lib/commands/board.js                         |  2 +-
+ lib/commands/test.js                          |  2 +-
+ lib/status/presenter.js                       |  2 +-
+ package.json                                  |  3 ---
+ test/bin/orientation-front-door.test.js       | 19 +++++++++++++++++++
+ 8 files changed, 42 insertions(+), 14 deletions(-)
+
+diff --git a/QUICKSTART.md b/QUICKSTART.md
+index bbc6352b..d38ae7f9 100644
+--- a/QUICKSTART.md
++++ b/QUICKSTART.md
+@@ -13,15 +13,19 @@ This guide gets Forge installed and visible to an AI coding agent without assumi
+ ## 1. Install The Package
+ 
+ ```bash
++# Bun
+ bun add -D forge-workflow
++
++# npm
++npm install --save-dev forge-workflow
+ ```
+ 
+-You can also run one-off commands with `bunx forge ...`.
++You can also run one-off commands with `bunx forge ...` (or `npx forge ...`).
+ 
+ Terms used below:
+ 
+ - Runtime config means local `.forge/` files that describe adoption choices.
+-- Harness means an agent-specific install target. Forge currently supports Claude Code, Codex, and Cursor. Hermes support is planned.
++- Harness means an agent-specific install target. Forge currently supports Claude Code, Codex, Cursor, and Hermes.
+ - Beads means the opt-out `bd` issue backend. By default `forge ready`, `forge show`, and related wrappers use the built-in kernel backend; select Beads as described in section 5.
+ 
+ ## 2. Initialize Runtime Config
+@@ -97,14 +101,15 @@ If Beads (when selected) reports a Dolt database or server error, use [Support a
+ 
+ ## 6. Run Validation
+ 
+-For this repository:
++Validate your own project's changes before shipping:
+ 
+ ```bash
+-bun run check
+-npm pack --dry-run
++bunx forge validate
+ ```
+ 
+-`bun run check` runs typecheck, lint, security audit, and tests through `scripts/validate.js`.
++`forge validate` runs your configured checks (tests, lint) and drops into a guided
++debug flow on failure. (Contributors to Forge itself run `bun run check` — typecheck,
++lint, security audit, and tests via `scripts/validate.js`.)
+ 
+ ## 7. Understand Stage Commands
+ 
+diff --git a/bin/forge.js b/bin/forge.js
+index 46b52b36..e5f6e326 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4313,9 +4313,16 @@ async function main() {
+       console.error(`Error running 'status':`, err.message);
+       process.exit(1);
+     }
+-  } else {
++  } else if (command === undefined) {
+     // Explicit invocation with no command in an UNINITIALIZED project: run minimal install.
+     minimalInstall();
++  } else {
++    // Defined but unrecognized command → fail honestly instead of printing the
++    // installer banner with exit 0 (kernel b3bae4f3). A typo like `forge bogusxyz`
++    // must be detectable by scripts (non-zero exit) and humans (a real error).
++    console.error(`Error: Unknown command '${command}'`);
++    console.error("Run 'forge --help' to see the available commands.");
++    process.exit(1);
+   }
+ }
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 531510eb..63ff5083 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## command
+ 
+ - [ ] bin/forge.js (26)
+-  - lines: 2184 (bd), 2186 (bd), 2342 (bd), 2785 (bd), 2794 (bd), 2807 (bd), 2820 (.beads), 2840 (bd), 2842 (bd), 2844 (bd), 2879 (bd), 2903 (bd), 2989 (bd), 3033 (bd), 3057 (bd), 3063 (bd), 3067 (bd), 3072 (bd), 3078 (bd), 3088 (bd), 3220 (bd), 3225 (bd), 3236 (bd), 3303 (bd), 4008 (bd), 4506 (bd)
++  - lines: 2184 (bd), 2186 (bd), 2342 (bd), 2785 (bd), 2794 (bd), 2807 (bd), 2820 (.beads), 2840 (bd), 2842 (bd), 2844 (bd), 2879 (bd), 2903 (bd), 2989 (bd), 3033 (bd), 3057 (bd), 3063 (bd), 3067 (bd), 3072 (bd), 3078 (bd), 3088 (bd), 3220 (bd), 3225 (bd), 3236 (bd), 3303 (bd), 4008 (bd), 4513 (bd)
+ - [ ] lib/commands/_resolve-command-opts.js (2)
+   - lines: 8 (bd), 10 (bd)
+ - [ ] lib/commands/dev.js (1)
+diff --git a/lib/commands/board.js b/lib/commands/board.js
+index cf32ae6e..49a0c592 100644
+--- a/lib/commands/board.js
++++ b/lib/commands/board.js
+@@ -57,7 +57,7 @@ async function handler(args = [], flags = {}, projectRoot = process.cwd()) {
+ 
+ module.exports = {
+ 	name: 'board',
+-	description: 'Show a local team runtime board from Beads state',
++	description: 'Show a local team runtime board from kernel state',
+ 	handler,
+ 	getFlagValue,
+ 	hasJsonFlag,
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 6c38dbf1..50ee6bd6 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -233,7 +233,7 @@ module.exports = {
+ 	getAffectedTestFiles,
+ 	getTestCandidatesForChangedFile,
+ 	name: 'test',
+-	description: 'Run tests with smart defaults (timeout, Beads skip, affected-only)',
++	description: 'Run tests with smart defaults (timeout, affected-only)',
+ 	usage: 'forge test [--affected]',
+ 	flags: {
+ 		'--affected': 'Run only tests for changed files',
+diff --git a/lib/status/presenter.js b/lib/status/presenter.js
+index 5a1e5f65..b3d4ae05 100644
+--- a/lib/status/presenter.js
++++ b/lib/status/presenter.js
+@@ -136,7 +136,7 @@ function formatZeroArgStatus({ context, snapshot, workflowResult = null, full =
+ 		buildYouAreHere(workflowResult, snapshot).join('\n'),
+ 		['Context', `  ${contextLine}`].join('\n'),
+ 		['Your work', ...workLines.map(line => `  ${line}`)].join('\n'),
+-		'New here? forge docs workflow | forge --help',
++		'New here? forge docs setup | forge --help',
+ 	];
+ 
+ 	if (full) {
+diff --git a/package.json b/package.json
+index 1861e092..d0367d11 100644
+--- a/package.json
++++ b/package.json
+@@ -102,9 +102,6 @@
+     "docs/architecture/**/*.md",
+     "docs/guides/*.md",
+     "docs/reference/*.md",
+-    "docs/work/**/*.md",
+-    "docs/work/**/*.mjs",
+-    "docs/work/**/*.tsv",
+     "docs/forge/*.md",
+     "install.sh",
+     "lefthook.yml",
+diff --git a/test/bin/orientation-front-door.test.js b/test/bin/orientation-front-door.test.js
+index c43004bd..535f0373 100644
+--- a/test/bin/orientation-front-door.test.js
++++ b/test/bin/orientation-front-door.test.js
+@@ -61,6 +61,25 @@ describe('orientation front door', () => {
+     expect(out).toContain('--budget');
+   });
+ 
++  test('an unknown command in an initialized project errors + exits 1 (not the installer banner)', () => {
++    // Regression (kernel b3bae4f3): `forge bogusxyz` used to fall through to the
++    // minimal-install banner with exit 0, so typos looked like success.
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-unknown-'));
++    try {
++      spawnSync('git', ['init', '-q'], { cwd: repo });
++      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# unknown-cmd test\n');
++
++      const result = runForge(['bogusxyz'], repo);
++      expect(result.status).toBe(1);
++      expect(`${result.stderr || ''}`).toContain("Unknown command 'bogusxyz'");
++      // Must NOT print the installer banner, and must not scaffold anything.
++      expect(`${result.stdout || ''}`).not.toContain('npx forge setup');
++      expect(fs.existsSync(path.join(repo, '.forge'))).toBe(false);
++    } finally {
++      rmrf(repo);
++    }
++  }, 30000);
++
+   test('bare `forge` in an initialized project renders the orientation view (no mutation)', () => {
+     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-orient-'));
+     try {
+-- 
+2.51.0.windows.1
+

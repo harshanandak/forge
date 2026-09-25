@@ -1,0 +1,96 @@
+From 816cad29d65f164a73ced984da306fa36ddef373 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 17:07:59 +0530
+Subject: [PATCH] fix: isolate explicit process-tree manifests
+
+---
+ scripts/process-tree.js           |  3 ++-
+ test/hooks-session-start.test.js  |  7 ++++---
+ test/scripts/process-tree.test.js | 28 ++++++++++++++++++++++++++++
+ 3 files changed, 34 insertions(+), 4 deletions(-)
+
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index c3969c75..1fe584a0 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -356,7 +356,8 @@ function createProcessTree(options = {}) {
+   const existing = readProcessManifest(manifestPath, fsApi, processApi);
+   // An environment-provided path may belong to another run. Treat that as
+   // unverifiable and fail closed; never overwrite or reap another run's marker.
+-  const inheritedManifestVerified = !environmentManifestPath
++  const inheritedManifestVerified = explicitManifestPath
++    || !environmentManifestPath
+     || Boolean(inheritedToken && existing?.token === inheritedToken);
+   const usable = inheritedManifestVerified
+     && (!markerExists || (existing && existing.token === token));
+diff --git a/test/hooks-session-start.test.js b/test/hooks-session-start.test.js
+index 569abb6e..51d2d12c 100644
+--- a/test/hooks-session-start.test.js
++++ b/test/hooks-session-start.test.js
+@@ -29,12 +29,14 @@ describe('forge hooks session-start (context hook — memory push)', () => {
+ 
+   test('runs independent project reads concurrently', async () => {
+     const starts = [];
++    let release;
++    const allStarted = new Promise(resolve => { release = resolve; });
+     const slow = name => async () => {
+       starts.push(name);
+-      await new Promise(resolve => setTimeout(resolve, 30));
++      if (starts.length === 4) release();
++      await allStarted;
+       return [];
+     };
+-    const startedAt = Date.now();
+     await run(['session-start', '--harness', 'claude'], {
+       loadDispatchText: () => '',
+       fetchNotes: slow('notes'),
+@@ -43,7 +45,6 @@ describe('forge hooks session-start (context hook — memory push)', () => {
+       sessionStartDeadlineMs: 200,
+     });
+     expect(starts.sort()).toEqual(['in_progress', 'inbox', 'notes', 'ready']);
+-    expect(Date.now() - startedAt).toBeLessThan(90);
+   });
+ 
+   test('fails open by its internal deadline while preserving dispatch bootstrap', async () => {
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index 8a3e3f1b..ac35a0e4 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -30,6 +30,34 @@ afterEach(() => {
+ });
+ 
+ describe('scripts/process-tree.js', () => {
++  test('explicit manifest paths isolate a tree from inherited parent markers', () => {
++    const manifestPath = path.join(makeTempDir(), 'run.json');
++    const inheritedPath = path.join(makeTempDir(), 'parent.json');
++    fs.writeFileSync(inheritedPath, JSON.stringify({
++      version: MANIFEST_VERSION,
++      token: 'parent-token',
++      owner: { pid: 9001, identity: 'parent-start', startedAt: '2026-08-03T00:00:00.000Z' },
++      children: [],
++    }));
++
++    const tree = createProcessTree({
++      manifestPath,
++      token: 'local-token',
++      env: {
++        [MANIFEST_ENV]: inheritedPath,
++        [TOKEN_ENV]: 'parent-token',
++        [INSTANCE_ENV]: 'parent-instance',
++      },
++      platform: 'linux',
++      processApi: { pid: 9000 },
++      getProcessIdentity: () => 'local-start',
++    });
++
++    expect(tree.reserveChild({ kind: 'test', label: 'local' })).toBeTruthy();
++    expect(readProcessManifest(manifestPath).token).toBe('local-token');
++    expect(tree.envFor({})[MANIFEST_ENV]).toBe(manifestPath);
++  });
++
+   test('writes a verified run manifest and registers a shard before cleanup', () => {
+     const manifestPath = path.join(makeTempDir(), 'run.json');
+     const kills = [];
+-- 
+2.51.0.windows.1
+

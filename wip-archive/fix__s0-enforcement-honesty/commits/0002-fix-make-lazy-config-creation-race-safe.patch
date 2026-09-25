@@ -1,0 +1,66 @@
+From b0ef3ff9527b3bf6ec530372026cf59170a85d22 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 21:17:00 +0530
+Subject: [PATCH] fix: make lazy config creation race-safe
+
+---
+ lib/activation/ensure-forge-home.js       | 12 +++++++++++-
+ test/activation/ensure-forge-home.test.js | 19 +++++++++++++++++++
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/lib/activation/ensure-forge-home.js b/lib/activation/ensure-forge-home.js
+index e583649a..8a28e5e1 100644
+--- a/lib/activation/ensure-forge-home.js
++++ b/lib/activation/ensure-forge-home.js
+@@ -130,7 +130,17 @@ function ensureForgeHome(projectRoot = process.cwd(), deps = {}) {
+   }
+ 
+   fsImpl.mkdirSync(forgeDir, { recursive: true });
+-  fsImpl.writeFileSync(configPath, renderDefaultConfig(deps), 'utf8');
++  try {
++    fsImpl.writeFileSync(configPath, renderDefaultConfig(deps), {
++      encoding: 'utf8',
++      flag: 'wx',
++    });
++  } catch (error) {
++    if (error?.code === 'EEXIST') {
++      return { created: false, reason: 'config-exists', configPath };
++    }
++    throw error;
++  }
+   return { created: true, configPath };
+ }
+ 
+diff --git a/test/activation/ensure-forge-home.test.js b/test/activation/ensure-forge-home.test.js
+index dd133da4..25f95eeb 100644
+--- a/test/activation/ensure-forge-home.test.js
++++ b/test/activation/ensure-forge-home.test.js
+@@ -135,6 +135,25 @@ describe('ensureForgeHome', () => {
+     expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
+   });
+ 
++  test('preserves a config created after the existence check instead of clobbering it', () => {
++    const root = makeBareRepo();
++    const configPath = path.join(root, '.forge', 'config.yaml');
++    const racingFs = {
++      existsSync: fs.existsSync,
++      mkdirSync: fs.mkdirSync,
++      writeFileSync: (file, data, options) => {
++        fs.writeFileSync(file, 'user configuration\\n', 'utf8');
++        return fs.writeFileSync(file, data, options);
++      },
++    };
++
++    const result = ensureForgeHome(root, { fs: racingFs });
++
++    expect(result.created).toBe(false);
++    expect(result.reason).toBe('config-exists');
++    expect(fs.readFileSync(configPath, 'utf8')).toBe('user configuration\\n');
++  });
++
+   test('a write failure after mkdir leaves a RETRYABLE state, not a stuck half-init', () => {
+     const root = makeBareRepo();
+     let throwOnce = true;
+-- 
+2.51.0.windows.1
+

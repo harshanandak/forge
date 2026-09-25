@@ -1,0 +1,65 @@
+From 2ac3c426adc5d4065bef795f96c08020894a3f0b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 16:23:45 +0530
+Subject: [PATCH] fix: prefer clean worktree pointer bytes
+
+---
+ lib/commands/setup.js                  | 12 +++++-------
+ test/setup-claude-pointer-head.test.js | 11 ++++++-----
+ 2 files changed, 11 insertions(+), 12 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 9fe5b99e..534090d6 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -194,11 +194,6 @@ function normalizeClaudePointerContent(content) {
+   return Buffer.from(String(content || '').replace(/\r\n/g, '\n'));
+ }
+ 
+-function isExactClaudePointerBytes(content) {
+-	const bytes = Buffer.from(content || '');
+-	return bytes.equals(Buffer.from('@AGENTS.md\n')) || bytes.equals(Buffer.from('@AGENTS.md\r\n'));
+-}
+-
+ function readCleanClaudePointerWorktreeContent(cwd, commandRunner) {
+ 	const tempIndexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-claude-index-'));
+ 	const tempIndex = path.join(tempIndexDir, 'index');
+@@ -238,8 +233,11 @@ function readStagedClaudePointerContent(cwd = projectRoot, commandRunner = execF
+ 			encoding: null,
+ 			stdio: 'pipe',
+ 		});
+-		if (isExactClaudePointerBytes(stagedContent)) return stagedContent;
+-		return readCleanClaudePointerWorktreeContent(cwd, commandRunner);
++		try {
++			return readCleanClaudePointerWorktreeContent(cwd, commandRunner);
++		} catch (_worktreeError) {
++			return stagedContent;
++		}
+ 	} catch (showError) {
+ 		try {
+ 			commandRunner('git', ['ls-files', '--error-unmatch', '--', 'CLAUDE.md'], {
+diff --git a/test/setup-claude-pointer-head.test.js b/test/setup-claude-pointer-head.test.js
+index b3419005..36c830e0 100644
+--- a/test/setup-claude-pointer-head.test.js
++++ b/test/setup-claude-pointer-head.test.js
+@@ -44,11 +44,12 @@ describe('CLAUDE.md pointer authorization source head', () => {
+ 		});
+ 
+ 		expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
+-		expect(call).toEqual({
+-			file: 'git',
+-			args: ['show', ':CLAUDE.md'],
+-			options: { cwd: 'C:\\repo', encoding: null, stdio: 'pipe' },
+-		});
++		expect(call.file).toBe('git');
++		expect(call.args).toEqual(['show', ':CLAUDE.md']);
++		expect(call.options.cwd).toBe('C:\\repo');
++		expect(call.options.encoding).toBe(null);
++		expect(call.options.stdio).toBe('pipe');
++		expect(call.options.env.GIT_INDEX_FILE).toContain('forge-claude-index-');
+ 	});
+ 
+ 	test('uses clean worktree pointer bytes when the index still has previous content', () => {
+-- 
+2.51.0.windows.1
+

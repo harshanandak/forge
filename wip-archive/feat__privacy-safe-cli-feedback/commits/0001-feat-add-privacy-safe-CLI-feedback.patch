@@ -1,0 +1,712 @@
+From 15a7f8ccf1a01d2879f4c58a8c64587a378d5dd6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 16:58:48 +0530
+Subject: [PATCH] feat: add privacy-safe CLI feedback
+
+---
+ .../decisions.md                              |  21 ++
+ .../plan.md                                   |  31 +++
+ .../tasks.md                                  |  22 +++
+ lib/commands/_manifest.js                     |   1 +
+ lib/commands/_registry.js                     |  12 ++
+ lib/commands/feedback.js                      |  77 ++++++++
+ lib/feedback.js                               | 182 ++++++++++++++++++
+ test/commands/feedback.test.js                |  92 +++++++++
+ test/feedback.test.js                         | 176 +++++++++++++++++
+ 9 files changed, 614 insertions(+)
+ create mode 100644 docs/work/2026-08-07-privacy-safe-cli-feedback/decisions.md
+ create mode 100644 docs/work/2026-08-07-privacy-safe-cli-feedback/plan.md
+ create mode 100644 docs/work/2026-08-07-privacy-safe-cli-feedback/tasks.md
+ create mode 100644 lib/commands/feedback.js
+ create mode 100644 lib/feedback.js
+ create mode 100644 test/commands/feedback.test.js
+ create mode 100644 test/feedback.test.js
+
+diff --git a/docs/work/2026-08-07-privacy-safe-cli-feedback/decisions.md b/docs/work/2026-08-07-privacy-safe-cli-feedback/decisions.md
+new file mode 100644
+index 00000000..373ba2bf
+--- /dev/null
++++ b/docs/work/2026-08-07-privacy-safe-cli-feedback/decisions.md
+@@ -0,0 +1,21 @@
++# Decisions
++
++## Decision 1
++
++**Date**: 2026-08-07
++**Task**: Task 1 - Privacy-safe state and payload core
++**Gap**: The approved categories did not enumerate machine-readable failure codes and subsystems.
++**Score**: 3/14
++**Route**: PROCEED
++**Choice made**: Use a closed map of four Forge internal codes and six Forge subsystems. Unknown values have no payload slot and are not captured.
++**Status**: RESOLVED
++
++## Decision 2
++
++**Date**: 2026-08-07
++**Task**: Task 1 - Privacy-safe state and payload core
++**Gap**: No deployed private intake URL exists in the plan or repository.
++**Score**: 2/14
++**Route**: PROCEED
++**Choice made**: Require an injected or `FORGE_FEEDBACK_ENDPOINT` HTTPS URL and fail closed when absent. No user/provider credential is read or attached.
++**Status**: RESOLVED
+diff --git a/docs/work/2026-08-07-privacy-safe-cli-feedback/plan.md b/docs/work/2026-08-07-privacy-safe-cli-feedback/plan.md
+new file mode 100644
+index 00000000..afe67d3a
+--- /dev/null
++++ b/docs/work/2026-08-07-privacy-safe-cli-feedback/plan.md
+@@ -0,0 +1,31 @@
++# Privacy-safe CLI feedback
++
++## Intent
++
++Add the smallest private feedback path that can persist an allowlisted Forge-owned
++failure locally, preview exactly what will be sent, and transmit it only after
++explicit interactive approval.
++
++## Locked decisions
++
++- Consent is local and is exactly `disabled`, `pending`, or `enabled`; it is never
++  implicitly enabled.
++- Only fixed, structured Forge failure fields are accepted. Prompts, code, diffs,
++  paths, logs, arguments, environment, secrets, and identity fields have no input
++  or payload slot.
++- Non-interactive execution never prompts or sends. Pending drafts can be handled
++  by a later interactive `forge feedback` invocation.
++- A declined incident deletes its draft and suppresses only its fingerprint.
++  Global disable deletes all drafts and the anonymous source ID.
++- The client is deterministic and uses no model/provider token. The transport is
++  native HTTPS with an injectable endpoint and client for tests.
++
++## Out of scope
++
++Backend AI triage, public issue promotion, analytics/clustering services, free-form
++descriptions, repository identity, and any user model/provider integration.
++
++## Ambiguity policy
++
++Fail closed. Do not capture an unknown failure code, do not send without an HTTPS
++endpoint and explicit approval, and do not add fields beyond the fixed schema.
+diff --git a/docs/work/2026-08-07-privacy-safe-cli-feedback/tasks.md b/docs/work/2026-08-07-privacy-safe-cli-feedback/tasks.md
+new file mode 100644
+index 00000000..82853dbe
+--- /dev/null
++++ b/docs/work/2026-08-07-privacy-safe-cli-feedback/tasks.md
+@@ -0,0 +1,22 @@
++# Tasks
++
++## Task 1: Privacy-safe state and payload core
++
++- Add local consent, allowlisted capture, fingerprint deduplication, draft deletion,
++  global disable, anonymous IDs, exact payload construction, and native send-once
++  transport.
++- Prove pending/disabled behavior, allowlist rejection, payload field exclusion,
++  deduplication, decline, disable, and receipt handling with focused tests.
++
++## Task 2: CLI feedback flow
++
++- Add `forge feedback` preview/status/disable handling and the interactive choices:
++  send once, send and enable, or decline.
++- Prove non-interactive invocation does not prompt or send and interactive sends use
++  the exact previewed payload.
++
++## Task 3: Capture integration and manifest
++
++- Capture only explicitly classified Forge-owned internal command failures at the
++  top-level registry error boundary without replacing the original error.
++- Regenerate the command manifest and run focused lint/type/tests.
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index 62595c38..baf8721b 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -38,6 +38,7 @@ const commands = [
+   { file: "doctor.js", module: require("./doctor") },
+   { file: "explain.js", module: require("./explain") },
+   { file: "export.js", module: require("./export") },
++  { file: "feedback.js", module: require("./feedback") },
+   { file: "gate.js", module: require("./gate") },
+   { file: "hooks.js", module: require("./hooks") },
+   { file: "inbox.js", module: require("./inbox") },
+diff --git a/lib/commands/_registry.js b/lib/commands/_registry.js
+index 77ae8a9b..641a23ad 100644
+--- a/lib/commands/_registry.js
++++ b/lib/commands/_registry.js
+@@ -13,6 +13,7 @@ const { existsSync, readdirSync } = require('node:fs');
+ const path = require('node:path');
+ const { normalizeStageId } = require('../workflow/stages');
+ const { ensureForgeHome, isMutatingVerb } = require('../activation/ensure-forge-home');
++const { captureFailure } = require('../feedback');
+ 
+ // Static command manifest (bundleable fast path). This is a static require so
+ // `bun build --compile` can bundle the command graph; the file is generated by
+@@ -228,6 +229,17 @@ async function executeCommand(commands, commandName, args, flags, projectRoot, o
+ 
+     return result;
+   } catch (err) {
++    try {
++      await captureFailure(
++        { code: err?.forgeFeedbackCode, subsystem: err?.forgeSubsystem },
++        {
++          ...(options.feedback || {}),
++          interactive: options.commandOpts?.isInteractive === true,
++        },
++      );
++    } catch (_feedbackError) {
++      // Feedback must never replace or obscure the original command failure.
++    }
+     return {
+       success: false,
+       error: err?.message ?? `Failed to execute ${commandName}`,
+diff --git a/lib/commands/feedback.js b/lib/commands/feedback.js
+new file mode 100644
+index 00000000..8f1efac7
+--- /dev/null
++++ b/lib/commands/feedback.js
+@@ -0,0 +1,77 @@
++'use strict';
++
++const readline = require('node:readline/promises');
++const {
++  declineDraft,
++  disableFeedback,
++  loadFeedbackState,
++  sendDraft,
++} = require('../feedback');
++
++const USAGE = 'Usage: forge feedback [status|preview|disable]';
++
++function statusOutput(state) {
++  return `Consent: ${state.consent}\nPending drafts: ${Object.keys(state.drafts).length}\n`;
++}
++
++async function askDefault(prompt) {
++  const input = readline.createInterface({ input: process.stdin, output: process.stdout });
++  try {
++    return await input.question(prompt);
++  } finally {
++    input.close();
++  }
++}
++
++async function handler(args, _flags, _projectRoot, options = {}) {
++  const subcommand = args[0] || null;
++  if (subcommand === 'status') {
++    return { success: true, output: statusOutput(loadFeedbackState(options)) };
++  }
++  if (subcommand === 'preview') {
++    const drafts = Object.values(loadFeedbackState(options).drafts);
++    return { success: true, output: `${JSON.stringify(drafts, null, 2)}\n` };
++  }
++  if (subcommand === 'disable') {
++    disableFeedback(options);
++    return { success: true, output: 'Feedback disabled. Anonymous source ID and queued drafts deleted.\n' };
++  }
++  if (subcommand) return { success: false, error: USAGE };
++
++  const state = loadFeedbackState(options);
++  const fingerprint = Object.keys(state.drafts).sort()[0];
++  const interactive = options.isInteractive === true && (typeof options.question === 'function' || process.stdin.isTTY);
++  if (!interactive || !fingerprint) {
++    return { success: true, output: statusOutput(state) };
++  }
++
++  const write = options.write || (value => process.stdout.write(value));
++  const question = options.question || askDefault;
++  write(`Privacy-safe draft:\n${JSON.stringify(state.drafts[fingerprint], null, 2)}\n`);
++  write('1. Send this report once\n2. Send this report and enable future eligible reports\n3. Do not send\n');
++  const choice = String(await question('Choice [1-3]: ')).trim();
++  if (choice === '3') {
++    declineDraft(fingerprint, options);
++    return { success: true, output: 'Draft deleted and this incident fingerprint suppressed.\n' };
++  }
++  if (choice !== '1' && choice !== '2') {
++    return { success: false, error: 'No report sent. Choose 1, 2, or 3.' };
++  }
++
++  const result = await sendDraft(fingerprint, {
++    ...options,
++    enable: choice === '2',
++    preview: payload => write(`Exact payload:\n${JSON.stringify(payload, null, 2)}\n`),
++  });
++  return {
++    success: true,
++    output: `Report sent. Receipt: ${result.receiptId}\n${choice === '2' ? 'Future eligible reports enabled.\n' : ''}`,
++  };
++}
++
++module.exports = {
++  name: 'feedback',
++  description: 'Preview or send privacy-safe Forge failure reports',
++  usage: USAGE,
++  handler,
++};
+diff --git a/lib/feedback.js b/lib/feedback.js
+new file mode 100644
+index 00000000..937dfa4c
+--- /dev/null
++++ b/lib/feedback.js
+@@ -0,0 +1,182 @@
++'use strict';
++
++const crypto = require('node:crypto');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const FAILURE_CLASSES = Object.freeze({
++  FORGE_INTERNAL_ERROR: 'crash',
++  FORGE_INVARIANT_VIOLATION: 'invariant_violation',
++  FORGE_STATE_CORRUPTION: 'state_corruption',
++  FORGE_INTERNAL_TIMEOUT: 'timeout',
++});
++const SUBSYSTEMS = new Set(['cli', 'kernel', 'setup', 'shepherd', 'validation', 'workflow']);
++const CONSENTS = new Set(['disabled', 'pending', 'enabled']);
++const SCHEMA_VERSION = 1;
++
++function feedbackHome(options = {}) {
++  return options.homeDir || process.env.FORGE_FEEDBACK_HOME || path.join(os.homedir(), '.forge', 'feedback');
++}
++
++function feedbackStatePath(options = {}) {
++  return path.join(feedbackHome(options), 'state.json');
++}
++
++function emptyState() {
++  return {
++    consent: 'pending',
++    anonymous_source_id: null,
++    drafts: {},
++    suppressed_fingerprints: [],
++  };
++}
++
++function normalizeState(value) {
++  if (!value || typeof value !== 'object') return emptyState();
++  return {
++    consent: CONSENTS.has(value.consent) ? value.consent : 'pending',
++    anonymous_source_id: typeof value.anonymous_source_id === 'string' ? value.anonymous_source_id : null,
++    drafts: value.drafts && typeof value.drafts === 'object' && !Array.isArray(value.drafts) ? value.drafts : {},
++    suppressed_fingerprints: Array.isArray(value.suppressed_fingerprints)
++      ? value.suppressed_fingerprints.filter(item => typeof item === 'string')
++      : [],
++  };
++}
++
++function loadFeedbackState(options = {}) {
++  try {
++    return normalizeState(JSON.parse(fs.readFileSync(feedbackStatePath(options), 'utf8')));
++  } catch (_error) {
++    return emptyState();
++  }
++}
++
++function saveFeedbackState(state, options = {}) {
++  const file = feedbackStatePath(options);
++  fs.mkdirSync(path.dirname(file), { recursive: true });
++  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
++  fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
++  fs.renameSync(temporary, file);
++}
++
++function versionBucket(version) {
++  const match = /^(\d+)\.(\d+)/.exec(String(version || ''));
++  return match ? `${match[1]}.${match[2]}` : 'unknown';
++}
++
++function buildDraft(failure, version) {
++  const failureClass = FAILURE_CLASSES[failure?.code];
++  if (!failureClass || !SUBSYSTEMS.has(failure?.subsystem)) return null;
++  const bucket = versionBucket(version);
++  const incidentFingerprint = crypto
++    .createHash('sha256')
++    .update(`${failure.code}\n${failure.subsystem}\n${bucket}`)
++    .digest('hex');
++  return {
++    schema_version: SCHEMA_VERSION,
++    error_code: failure.code,
++    subsystem: failure.subsystem,
++    failure_class: failureClass,
++    forge_version_bucket: bucket,
++    incident_fingerprint: incidentFingerprint,
++  };
++}
++
++function resolveEndpoint(options = {}) {
++  const raw = options.endpoint || process.env.FORGE_FEEDBACK_ENDPOINT;
++  if (!raw) throw new Error('Feedback endpoint is not configured.');
++  const endpoint = new URL(raw);
++  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) {
++    throw new Error('Feedback endpoint must be HTTPS and contain no credentials.');
++  }
++  return endpoint.toString();
++}
++
++async function sendDraft(incidentFingerprint, options = {}) {
++  const state = loadFeedbackState(options);
++  const draft = state.drafts[incidentFingerprint];
++  if (!draft) throw new Error('Feedback draft not found.');
++  const endpoint = resolveEndpoint(options);
++  const generateId = options.idGenerator || crypto.randomUUID;
++  const anonymousSourceId = state.anonymous_source_id || generateId();
++  const receiptId = generateId();
++  const payload = {
++    ...draft,
++    anonymous_source_id: anonymousSourceId,
++    receipt_id: receiptId,
++  };
++
++  state.anonymous_source_id = anonymousSourceId;
++  saveFeedbackState(state, options);
++  if (options.preview) options.preview(payload);
++
++  const post = options.fetch || globalThis.fetch;
++  if (typeof post !== 'function') throw new Error('HTTPS transport is unavailable.');
++  const response = await post(endpoint, {
++    method: 'POST',
++    headers: { 'content-type': 'application/json' },
++    body: JSON.stringify(payload),
++    redirect: 'error',
++  });
++  if (!response?.ok) throw new Error(`Feedback transport failed with status ${response?.status || 'unknown'}.`);
++
++  delete state.drafts[incidentFingerprint];
++  if (options.enable === true) state.consent = 'enabled';
++  saveFeedbackState(state, options);
++  return { receiptId, payload };
++}
++
++async function captureFailure(failure, options = {}) {
++  const draft = buildDraft(failure, options.version || require('../package.json').version);
++  if (!draft) return { captured: false, reason: 'ineligible' };
++  const state = loadFeedbackState(options);
++  if (state.consent === 'disabled') return { captured: false, reason: 'disabled' };
++  const fingerprint = draft.incident_fingerprint;
++  if (state.suppressed_fingerprints.includes(fingerprint)) {
++    return { captured: false, suppressed: true, incidentFingerprint: fingerprint };
++  }
++  if (state.drafts[fingerprint]) {
++    return { captured: true, deduplicated: true, incidentFingerprint: fingerprint };
++  }
++
++  state.drafts[fingerprint] = draft;
++  saveFeedbackState(state, options);
++  const result = { captured: true, deduplicated: false, incidentFingerprint: fingerprint };
++  if (state.consent === 'enabled' && options.interactive === true) {
++    try {
++      const sent = await sendDraft(fingerprint, options);
++      return { ...result, sent: true, receiptId: sent.receiptId };
++    } catch (_error) {
++      return { ...result, sent: false };
++    }
++  }
++  return result;
++}
++
++function declineDraft(incidentFingerprint, options = {}) {
++  const state = loadFeedbackState(options);
++  delete state.drafts[incidentFingerprint];
++  if (!state.suppressed_fingerprints.includes(incidentFingerprint)) {
++    state.suppressed_fingerprints.push(incidentFingerprint);
++  }
++  saveFeedbackState(state, options);
++  return state;
++}
++
++function disableFeedback(options = {}) {
++  const state = loadFeedbackState(options);
++  state.consent = 'disabled';
++  state.anonymous_source_id = null;
++  state.drafts = {};
++  saveFeedbackState(state, options);
++  return state;
++}
++
++module.exports = {
++  captureFailure,
++  declineDraft,
++  disableFeedback,
++  loadFeedbackState,
++  sendDraft,
++};
+diff --git a/test/commands/feedback.test.js b/test/commands/feedback.test.js
+new file mode 100644
+index 00000000..849c5ba9
+--- /dev/null
++++ b/test/commands/feedback.test.js
+@@ -0,0 +1,92 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const feedbackCommand = require('../../lib/commands/feedback');
++const { captureFailure, loadFeedbackState } = require('../../lib/feedback');
++
++function tempHome() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-feedback-command-'));
++}
++
++async function seed(homeDir) {
++  return captureFailure(
++    { code: 'FORGE_INTERNAL_ERROR', subsystem: 'cli' },
++    { homeDir, version: '1.7.0' },
++  );
++}
++
++describe('forge feedback command', () => {
++  test('non-interactive invocation never asks or sends', async () => {
++    const homeDir = tempHome();
++    await seed(homeDir);
++    let asked = 0;
++    let sent = 0;
++    const result = await feedbackCommand.handler([], {}, '.', {
++      homeDir,
++      isInteractive: false,
++      question: async () => { asked += 1; return '1'; },
++      fetch: async () => { sent += 1; return { ok: true }; },
++    });
++
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('Consent: pending');
++    expect(result.output).toContain('Pending drafts: 1');
++    expect(asked).toBe(0);
++    expect(sent).toBe(0);
++  });
++
++  test('interactive send once previews the exact transmitted payload without enabling', async () => {
++    const homeDir = tempHome();
++    await seed(homeDir);
++    let sent;
++    let displayed = '';
++    const result = await feedbackCommand.handler([], {}, '.', {
++      homeDir,
++      isInteractive: true,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      question: async () => '1',
++      write: value => { displayed += value; },
++      fetch: async (_url, options) => {
++        sent = JSON.parse(options.body);
++        return { ok: true, status: 202 };
++      },
++    });
++
++    const exact = displayed.slice(displayed.indexOf('Exact payload:\n') + 'Exact payload:\n'.length);
++    const preview = JSON.parse(exact.slice(0, exact.lastIndexOf('}') + 1));
++    expect(preview).toEqual(sent);
++    expect(result.output).toContain(`Receipt: ${sent.receipt_id}`);
++    expect(loadFeedbackState({ homeDir }).consent).toBe('pending');
++  });
++
++  test('interactive send-and-enable and decline map to choices 2 and 3', async () => {
++    const enableHome = tempHome();
++    await seed(enableHome);
++    await feedbackCommand.handler([], {}, '.', {
++      homeDir: enableHome,
++      isInteractive: true,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      question: async () => '2',
++      write: () => {},
++      fetch: async () => ({ ok: true, status: 202 }),
++    });
++    expect(loadFeedbackState({ homeDir: enableHome }).consent).toBe('enabled');
++
++    const declineHome = tempHome();
++    const draft = await seed(declineHome);
++    await feedbackCommand.handler([], {}, '.', {
++      homeDir: declineHome,
++      isInteractive: true,
++      question: async () => '3',
++      write: () => {},
++    });
++    const declined = loadFeedbackState({ homeDir: declineHome });
++    expect(declined.drafts).toEqual({});
++    expect(declined.suppressed_fingerprints).toContain(draft.incidentFingerprint);
++    expect(declined.consent).toBe('pending');
++  });
++});
+diff --git a/test/feedback.test.js b/test/feedback.test.js
+new file mode 100644
+index 00000000..9d135dd1
+--- /dev/null
++++ b/test/feedback.test.js
+@@ -0,0 +1,176 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  captureFailure,
++  declineDraft,
++  disableFeedback,
++  loadFeedbackState,
++  sendDraft,
++} = require('../lib/feedback');
++const { executeCommand } = require('../lib/commands/_registry');
++
++function tempHome() {
++  return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-feedback-'));
++}
++
++const eligible = {
++  code: 'FORGE_STATE_CORRUPTION',
++  subsystem: 'kernel',
++};
++
++describe('privacy-safe feedback core', () => {
++  test('starts pending, captures only allowlisted fields, and deduplicates by fingerprint', async () => {
++    const homeDir = tempHome();
++    const first = await captureFailure(
++      { ...eligible, path: 'C:/secret/repo', prompt: 'private', log: 'raw' },
++      { homeDir, version: '1.7.4', interactive: false },
++    );
++    const second = await captureFailure(eligible, { homeDir, version: '1.7.9', interactive: false });
++    const state = loadFeedbackState({ homeDir });
++    const draft = Object.values(state.drafts)[0];
++
++    expect(state.consent).toBe('pending');
++    expect(first.captured).toBe(true);
++    expect(second.deduplicated).toBe(true);
++    expect(Object.keys(state.drafts)).toHaveLength(1);
++    expect(draft).toEqual({
++      schema_version: 1,
++      error_code: 'FORGE_STATE_CORRUPTION',
++      subsystem: 'kernel',
++      failure_class: 'state_corruption',
++      forge_version_bucket: '1.7',
++      incident_fingerprint: first.incidentFingerprint,
++    });
++    expect(JSON.stringify(draft)).not.toMatch(/secret|repo|private|raw|path|prompt|log/i);
++  });
++
++  test('rejects unknown and non-Forge failures without creating state', async () => {
++    const homeDir = tempHome();
++    expect((await captureFailure({ code: 'ENOENT', subsystem: 'kernel' }, { homeDir })).captured).toBe(false);
++    expect((await captureFailure({ code: eligible.code, subsystem: 'provider' }, { homeDir })).captured).toBe(false);
++    expect(fs.readdirSync(homeDir)).toEqual([]);
++  });
++
++  test('decline deletes one draft and suppresses only its fingerprint', async () => {
++    const homeDir = tempHome();
++    const first = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    const other = await captureFailure(
++      { code: 'FORGE_INTERNAL_TIMEOUT', subsystem: 'workflow' },
++      { homeDir, version: '1.7.0' },
++    );
++
++    declineDraft(first.incidentFingerprint, { homeDir });
++    const again = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    const state = loadFeedbackState({ homeDir });
++
++    expect(again.suppressed).toBe(true);
++    expect(state.drafts[first.incidentFingerprint]).toBeUndefined();
++    expect(state.drafts[other.incidentFingerprint]).toBeDefined();
++  });
++
++  test('approved send previews the exact payload, uses no credentials, and returns an unguessable receipt', async () => {
++    const homeDir = tempHome();
++    const captured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    let request;
++    let preview;
++    const result = await sendDraft(captured.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      idGenerator: (() => {
++        const ids = ['source-4ce92c91-2435-44fa-854f-6fb36ab8d5cb', 'receipt-3870317c-3368-4949-8f91-945a959244cb'];
++        return () => ids.shift();
++      })(),
++      preview: payload => { preview = payload; },
++      fetch: async (url, options) => {
++        request = { url, options };
++        return { ok: true, status: 202 };
++      },
++    });
++
++    expect(JSON.parse(request.options.body)).toEqual(preview);
++    expect(request.options.headers).toEqual({ 'content-type': 'application/json' });
++    expect(preview).toEqual({
++      schema_version: 1,
++      error_code: eligible.code,
++      subsystem: 'kernel',
++      failure_class: 'state_corruption',
++      forge_version_bucket: '1.7',
++      incident_fingerprint: captured.incidentFingerprint,
++      anonymous_source_id: 'source-4ce92c91-2435-44fa-854f-6fb36ab8d5cb',
++      receipt_id: 'receipt-3870317c-3368-4949-8f91-945a959244cb',
++    });
++    expect(result.receiptId).toBe(preview.receipt_id);
++    expect(loadFeedbackState({ homeDir }).drafts).toEqual({});
++  });
++
++  test('send-and-enable is explicit and global disable deletes identity and drafts', async () => {
++    const homeDir = tempHome();
++    const captured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    await sendDraft(captured.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      enable: true,
++      fetch: async () => ({ ok: true, status: 202 }),
++    });
++    await captureFailure({ code: 'FORGE_INTERNAL_ERROR', subsystem: 'cli' }, { homeDir, version: '1.7.0' });
++    expect(loadFeedbackState({ homeDir }).consent).toBe('enabled');
++    expect(loadFeedbackState({ homeDir }).anonymous_source_id).toBeTruthy();
++
++    disableFeedback({ homeDir });
++    const disabled = loadFeedbackState({ homeDir });
++    expect(disabled.consent).toBe('disabled');
++    expect(disabled.anonymous_source_id).toBeNull();
++    expect(disabled.drafts).toEqual({});
++    const ignored = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    expect(ignored.reason).toBe('disabled');
++    expect(loadFeedbackState({ homeDir }).drafts).toEqual({});
++  });
++
++  test('unattended enabled capture queues but never sends', async () => {
++    const homeDir = tempHome();
++    const initial = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    await sendDraft(initial.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      enable: true,
++      fetch: async () => ({ ok: true, status: 202 }),
++    });
++    let sends = 0;
++    const queued = await captureFailure(
++      { code: 'FORGE_INTERNAL_TIMEOUT', subsystem: 'workflow' },
++      { homeDir, version: '1.7.0', interactive: false, fetch: async () => { sends += 1; } },
++    );
++
++    expect(queued.captured).toBe(true);
++    expect(sends).toBe(0);
++    expect(Object.keys(loadFeedbackState({ homeDir }).drafts)).toHaveLength(1);
++  });
++
++  test('registry catches only explicitly classified internal command errors', async () => {
++    const homeDir = tempHome();
++    const error = Object.assign(new Error('raw path C:/private must not persist'), {
++      forgeFeedbackCode: 'FORGE_INVARIANT_VIOLATION',
++      forgeSubsystem: 'workflow',
++    });
++    const commands = new Map([['explode', {
++      name: 'explode',
++      description: 'test command',
++      handler: async () => { throw error; },
++    }]]);
++    const result = await executeCommand(commands, 'explode', [], {}, '.', {
++      skipEnsureHome: true,
++      feedback: { homeDir, version: '1.7.0' },
++      commandOpts: { isInteractive: false },
++    });
++
++    expect(result.success).toBe(false);
++    const stateText = fs.readFileSync(path.join(homeDir, 'state.json'), 'utf8');
++    expect(stateText).toContain('FORGE_INVARIANT_VIOLATION');
++    expect(stateText).not.toContain('private');
++  });
++});
+-- 
+2.51.0.windows.1
+

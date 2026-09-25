@@ -1,0 +1,25 @@
+From 1d81c6f30d921d62850a7c7e30bead20c0b3407c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 01:08:20 +0530
+Subject: [PATCH] docs(windows): clarify bounded net use probe
+
+---
+ lib/kernel/fs-class.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/kernel/fs-class.js b/lib/kernel/fs-class.js
+index 76e25ab8..2283c9a8 100644
+--- a/lib/kernel/fs-class.js
++++ b/lib/kernel/fs-class.js
+@@ -284,7 +284,7 @@ function driveLetterOf(absPath) {
+ 
+ // Bounded exec options for the Windows drive probes. The timeout is the BLOCKER-1
+ // fix: execFileSync's try/catch only catches throws, never hangs, so an
+-// unresponsive `net use` / PowerShell (e.g. a wedged network redirector) would
++// an unresponsive `net use` probe (e.g. a wedged network redirector) would
+ // hang the whole process indefinitely. With a timeout, a hang becomes a throw
+ // that the gatherSignals catch turns into driveType='unknown' → warn (never
+ // refuse), symmetric with the G1 fail-safe. killSignal forces the child dead.
+-- 
+2.51.0.windows.1
+

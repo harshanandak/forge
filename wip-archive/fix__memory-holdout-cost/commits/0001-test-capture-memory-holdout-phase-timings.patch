@@ -1,0 +1,652 @@
+From 547cb25119f518d7abd71c7e36c96423f522d0e8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 20:15:52 +0530
+Subject: [PATCH] test: capture memory holdout phase timings
+
+Diagnostic-only probe; preserve assertions and deadlines.
+
+Spec and quality reviews passed. No production behavior changes.
+
+Issue: 5e085fe5-21ff-4d2b-9615-44098d79f492
+---
+ .../decisions.md                              |  64 ++++++
+ .../2026-09-20-memory-holdout-cost/plan.md    | 202 ++++++++++++++++++
+ .../2026-09-20-memory-holdout-cost/tasks.md   |  49 +++++
+ test/e2e/memory-recall-holdout.test.js        | 196 +++++++++++++++--
+ 4 files changed, 492 insertions(+), 19 deletions(-)
+ create mode 100644 docs/work/2026-09-20-memory-holdout-cost/decisions.md
+ create mode 100644 docs/work/2026-09-20-memory-holdout-cost/plan.md
+ create mode 100644 docs/work/2026-09-20-memory-holdout-cost/tasks.md
+
+diff --git a/docs/work/2026-09-20-memory-holdout-cost/decisions.md b/docs/work/2026-09-20-memory-holdout-cost/decisions.md
+new file mode 100644
+index 00000000..47473023
+--- /dev/null
++++ b/docs/work/2026-09-20-memory-holdout-cost/decisions.md
+@@ -0,0 +1,64 @@
++# Memory holdout execution decisions
++
++## Decision 1: Start with diagnostics
++
++Date: 2026-09-20. Task: observe the existing holdout.
++User approved the saved diagnostic-first plan. Reuse the test's helpers and the
++existing CI artifact path. Do not change the production driver, runner, workflow,
++test budget, fixture semantics or assertions. The preserved batching patch stays
++untouched until measured evidence supports it. Status: RESOLVED.
++
++## Decision 2: Test instrumentation verification
++
++Date: 2026-09-20. Task: observe the existing holdout.
++The patch modifies an existing test only. Verify missing artifact before the
++change, then existing behavioral tests plus artifact shape/count/privacy checks
++afterward; no new product API or artificial production regression is introduced.
++Root will review this evidence before canonical validation. Status: RESOLVED.
++
++## Decision 3: Measure unaccounted time without more hooks
++
++Date: 2026-09-20. Task: observe the existing holdout.
++Add total case wall/CPU time through cleanup, before artifact serialization.
++Comparing that with database phases reveals time outside the measured calls
++without wrapping more production methods or global filesystem functions. Remove
++per-store restoration bookkeeping because stores are isolated and discarded at
++cleanup. Preserve the explicit 20-second performance-case timeout and the
++15-second default. Status: RESOLVED.
++
++## Focused execution evidence
++
++The finalized probe passed 10 cases and 177 assertions in 3.17 seconds with
++`bun test --timeout 15000 test/e2e/memory-recall-holdout.test.js`. Focused ESLint
++exited 0. The local JSON contained 10 case totals, no recording-error flag, and
++only finite nonnegative durations and positive counts. Root independently read
++the artifact and checked its counts. Source review remains a separate gate.
++
++Artifact: `test-results/memory-recall-holdout-timing-2400-1789914896437.json`.
++SHA-256: `055cd51a7b08b92c9e4ceb065d1204442ad4eefef7aba9cc30e1460c6bd42fec`.
++
++Identity case: 76.679 ms total, first write 43.870 ms, four later writes
++25.106 ms, two searches 2.736 ms. Single-write harness case: 45.079 ms total.
++These are local diagnostic measurements, not proof of improved CI reliability
++or a reproduced root cause. Windows CPU accounting is coarse; a reported zero
++does not prove that an operation consumed no CPU.
++
++## Decision 4: Make missing diagnostic evidence visible
++
++Date: 2026-09-20. Task: observe the existing holdout.
++Spec review identified that a failed final artifact write cannot persist its own
++error flag. Emit a fixed content-free warning on that failure, without exception
++text, paths or fixture values. Keep the original test/cleanup failure intact.
++This changes only diagnostic visibility. Status: RESOLVED.
++
++The warning change passed the original 10 cases / 177 assertions in 3.04 seconds
++and focused lint. Spec re-review passed. Root also executed the actual helper and
++cleanup source in an isolated VM with artifact output and stderr both throwing:
++the original cleanup error remained the thrown object, warning text stayed
++content-free, and synchronous operation return/error identity was preserved.
++No real filesystem operations were performed by that failure-path check.
++
++Independent Luna spec review and subsequent Sol quality/final review both
++passed. The final review included the driver lifecycle and repository coding
++standards. No blocking findings remain for this diagnostic-only change. Canonical
++validation and the hosted Windows exposure remain separate evidence steps.
+diff --git a/docs/work/2026-09-20-memory-holdout-cost/plan.md b/docs/work/2026-09-20-memory-holdout-cost/plan.md
+new file mode 100644
+index 00000000..c312b1e8
+--- /dev/null
++++ b/docs/work/2026-09-20-memory-holdout-cost/plan.md
+@@ -0,0 +1,202 @@
++# Recurring memory holdout timeout: diagnosis and proposed plan
++
++Issue: `5e085fe5-21ff-4d2b-9615-44098d79f492`
++
++Status: diagnostic-first plan approved after independent Sol review; temporary
++test instrumentation in development. The cause and plan were explained before
++the user authorized implementation with "Then lets work on it".
++Base: `9dac015783200221ea652c378c7cada9da808a8b` (merged PR #573).
++
++## Purpose and limits
++
++Make the real memory-recall holdout reliable without concealing slow work or
++weakening its assertions. Preserve fresh isolated databases, production memory
++read/write paths, privacy, trust, ranking, identity, locking, fail-open behavior,
++and the existing 15-second deadline. Preserve the separate resource-budget
++branch and the earlier SQLite incident; similar symptoms do not prove one cause.
++
++This is a partial planning invocation: evidence gathering, synthesis and an
++independent challenge. A new feature interview, external vendor research, broad
++baseline suite and implementation handoff are unnecessary or not reached.
++
++## What happened in CI
++
++[Tests run 35508915897](https://github.com/harshanandak/forge/actions/runs/35508915897)
++ran the same merge with Bun 1.4.2 on Windows. Node versions were 24.20.0 and
++22.23.2. The Node 24 job failed one test; the Node 22 sibling passed.
++
++| Holdout case | Node 24 | Node 22 |
++| --- | ---: | ---: |
++| Foreign rows / unseen local memory | 1,801.64 ms | 793.79 ms |
++| Suggested authority precedence | 446.84 ms | 276.09 ms |
++| Shadow evidence fail-open | 2.09 ms | 2.80 ms |
++| Locked SQLite prompt recall | 1,825.78 ms | 1,593.74 ms |
++| 26 stronger seen rows excluded | 118.39 ms | 31.45 ms |
++| Foreign/suggested superseders | 594.23 ms | 258.25 ms |
++| Duplicate recall / oversized hit | 7,956.53 ms | 214.58 ms |
++| Common-directory identity | **17,647.41 ms (timeout)** | 296.37 ms |
++| Assembled 1,000-row recall | 2,180.15 ms | 375.12 ms |
++| Harness rendering | 8,286.64 ms | 160.55 ms |
++
++Node 24 file result: 9 pass, 1 fail, 177 assertions, 40.99 seconds. Full-suite
++result: 8,748 passed, 1 failed, 33 skipped, no errors (8,782 tests).
++
++Sources:
++
++- [Node 24 job 106073313172](https://github.com/harshanandak/forge/actions/runs/35508915897/job/106073313172)
++- [Node 22 job 106073313190](https://github.com/harshanandak/forge/actions/runs/35508915897/job/106073313190)
++- JUnit artifact IDs: Node 24 `10604669221`; Node 22 `10604684125`.
++
++The readiness check changed in PR #573 passed on the failing runner in 173.87 ms;
++its manifest-read regression passed in 69.11 ms. The failing holdout file was
++unchanged by that PR.
++
++## What the previous fix did
++
++[PR #553](https://github.com/harshanandak/forge/pull/553) moved the holdout into
++the exclusive resource lane and added scheduler coverage. Both current jobs
++reported `exclusive: files=21, shards=21, concurrency=1, nominal=1, cost=2,
++budget=3`. The failed file was exclusive shard 12.
++
++At the exact base, `scripts/test-full-suite.js:581-599` waits for both immediate
++and deferred shared lanes before starting exclusive work. Intended overlap with
++ordinary suite workers is therefore excluded by the scheduler's control flow.
++Surviving descendants or unrelated host activity are not ruled out by that fact;
++the retained CI evidence does not measure them.
++
++## Local phase evidence
++
++One baseline run used the original test file and deadline:
++
++```text
++bun test --preload <artifact>/preload.js test/e2e/memory-recall-holdout.test.js --timeout 15000
++```
++
++Exact base, Bun 1.4.2, Node 24.18.0: **10 tests passed in 3.76 seconds**, command
++wall time 3.816 seconds. The host went from 48% to 82% reported CPU and 5.53 to
++6.01 GiB free RAM during the sample. This is not identical CI hardware/runtime.
++
++The previously failing case took 100.96 ms locally:
++
++- Five memory writes: 91.793 ms total; first/maximum write: 71.075 ms.
++- Two ranked searches: 2.964 ms total.
++- Close: 0.229 ms.
++- All eleven recursive removals across the file: 10.778 ms total.
++
++The first write to each fresh database costs roughly 40-71 ms locally and
++includes lazy open, schema/FTS initialization and insertion. The profiler does
++not separate those internal phases. The only profiled native operation over
++100 ms was the intentionally locked database read: 1,808.936 ms wall / 16 ms CPU.
++It is part of an existing locking/fail-open scenario, not evidence of this stall.
++
++Retained local artifacts:
++
++```text
++C:/Users/harsha_befach/AppData/Local/Temp/forge-memory-holdout-profile-20260920-sol/
++  preload.js
++  phase-profile.json
++  bun-test.log
++  run-metadata.json
++```
++
++## What we can and cannot conclude
++
++Confirmed: several operations became much slower in the failed CI job; the
++problem is not confined to one assertion. The local run did not reproduce it.
++Node major version alone is not established as the cause: both jobs execute
++the holdout through the same Bun version, and older evidence has also shown
++Node 22 slower than Node 24.
++
++Multi-row fixtures incur avoidable autocommit boundaries. However, the three
++slow late cases use two, five and **one** writes respectively. Repeated per-row
++commits alone cannot explain the single-write case's 8.29-second duration.
++Neither SQLite durability, schema initialization, host scheduling, orphan
++processes nor filesystem latency is yet established as the cause of the CI stall.
++
++## Preserve and assess existing work
++
++The old `fix/memory-holdout-transaction` worktree is preserved at `de3e383b` with
++uncommitted changes only to `CHANGELOG.md` and the holdout test. It has no unique
++commits and no PR; its base is 16 commits behind this plan's base. The original
++holdout test is byte-identical between those bases.
++
++That patch extracts an existing `BEGIN` / `COMMIT` / `ROLLBACK` fixture pattern
++into `writeMemoryBatch`, batches multi-row setup and keeps real assertions.
++It is a candidate optimization to reuse, not proof that the current stall is
++fixed. Keep one-row and locking scenarios intact. Do not overwrite the old
++worktree or recreate its patch from memory.
++
++## Proposed sequence
++
++1. Capture bounded phase evidence during the normal full Windows CI run, before
++   naming a root fix. Keep fixture operations, inputs, assertions and deadlines
++   unchanged. Add temporary, test-local timing around first record, later records,
++   search, close and cleanup. Reuse the local profiler's mechanism; initially keep
++   lazy open/schema/FTS/insert in the first-record aggregate and split it only if
++   it dominates. Record wall time, process CPU time, counts and stable case labels,
++   never memory contents, queries, SQL values or temporary filesystem paths.
++   Keep the original failure visible. Do not build a general telemetry service.
++2. Select the repair from the measured phase. If later records/commits account for
++   the excess cost, compare the preserved batching candidate against the baseline
++   with identical data and assertions. Record transaction boundaries and elapsed
++   phases; prove error/rollback behavior. If first-write initialization, reads or
++   low-CPU waiting dominates, do not call batching the timeout fix: diagnose that
++   shared phase instead. Low CPU narrows the search to waiting/descheduling; it
++   does not independently prove a lock, filesystem cause or host overload.
++3. Review the selected patch, run focused affected checks, then one canonical
++   validation on a clean commit and unchanged receipt-reusing push. Require the
++   hosted Windows lanes and exact merge checks to finish healthy. Record remaining
++   uncertainty even when a run passes.
++
++## Smallest supported diagnostic route
++
++Independent Sol review recommends diagnostic-first, before the existing batching
++patch. A separate standalone rerun would lose the suite history that preceded the
++failure, so preserve the current full-suite invocation and exclusive lane order.
++
++- Sol owns the temporary change to `test/e2e/memory-recall-holdout.test.js` only.
++  Root owns issue state, review, integration and publication. No concurrent writer
++  edits the driver, runner, workflow or preserved batching worktree.
++- Flush a bounded phase summary atomically after each test to a uniquely named
++  JSON sibling under `test-results/`. Preserve synchronous/async method behavior,
++  return values and exceptions. No retry or swallowed test failure. Account for
++  instrumentation overhead outside the timed database operation.
++- Existing `.github/workflows/test.yml:131-139` runs the canonical suite and
++  always uploads `test-results/`. Runner cleanup at
++  `scripts/test-full-suite.js:1044-1046` removes its own generated suite directory;
++  a sibling diagnostic artifact survives. No workflow edit, writer prerequisite,
++  public CLI option, general profiler or dependency is needed.
++- After normal local validation and publication of the diagnostic commit, use
++  the existing `workflow_dispatch` on that exact branch and verify its resolved
++  head. Non-PR events select the full OS matrix; a test-only PR can otherwise
++  skip it. Capture one natural Windows Node 22/24 exposure, without retries
++  substituted for proof. Verify the exact dispatch SHA before comparing results.
++- The observed timed-out file continued through its remaining cases, so an
++  `afterEach` summary is viable for that failure mode. A hard process kill may
++  retain only summaries from earlier cases; state that limit rather than treating
++  an absent phase as fast or successful.
++- If the stall does not recur, keep the cause unproven and retain the evidence.
++  Do not enter an open-ended rerun loop or declare batching a reliability repair.
++  Any demonstrated fixture improvement can be evaluated separately.
++- Keep diagnostics in a separate commit from the selected fix. Remove temporary
++  capture before final landing, retain the evidence in this work record, and
++  require the ordinary uninstrumented checks to pass on the final head.
++
++The approved implementation tasks are in `tasks.md`; execution decisions are in
++`decisions.md`. Approval covers this diagnostic sequence, not a speculative
++production SQLite rewrite. The resource-budget patch stays separate.
++
++## Success criteria and stop rules
++
++- A deterministic explanation for reduced work, not only a green run.
++- Every existing functional, privacy and timing assertion remains in place.
++- Evidence includes the currently failing case, the slow single-write case,
++  a multi-row case, and the intentional locking scenario.
++- No global cache, shared mutable fixture database, new dependency, timeout
++  increase, retry-based acceptance, skipped gate or migration rewrite.
++- If instrumentation changes the measured behavior materially, record that
++  limitation rather than presenting the profile as equivalent execution.
++- If hosted evidence still cannot isolate the phase, keep the incident open;
++  report the measured optimization separately from reliability completion.
++- Any production behavior, schema or public API change requires a revised
++  concrete plan before implementation. Unknown cause is not permission to rewrite.
+diff --git a/docs/work/2026-09-20-memory-holdout-cost/tasks.md b/docs/work/2026-09-20-memory-holdout-cost/tasks.md
+new file mode 100644
+index 00000000..b9d9f8e5
+--- /dev/null
++++ b/docs/work/2026-09-20-memory-holdout-cost/tasks.md
+@@ -0,0 +1,49 @@
++# Memory holdout diagnostic execution
++
++Issue: `5e085fe5-21ff-4d2b-9615-44098d79f492`
++User approved the diagnostic-first plan with "Then lets work on it".
++
++## Task 1: Observe the existing holdout without changing its behavior
++
++Owner: Sol implementer. File: `test/e2e/memory-recall-holdout.test.js` only.
++Root owns the work documents, issue, commits and publication coordination.
++
++Read the complete test and the existing local preload before editing. Add
++temporary test-local timing for first record (including lazy initialization),
++later records, search, close and cleanup. Retain all original fixture values,
++assertions, timeouts, synchronous/async returns and thrown errors. Capture only
++stable case labels, counts and wall/CPU durations. No SQL, query strings, memory
++values, paths, environment data or production driver edits.
++
++Flush one bounded JSON summary atomically after each test under `test-results/`
++with a process-unique filename. Reuse the current workflow's artifact upload;
++do not modify workflow, scheduler or public CLI. Capture partial evidence through
++ordinary test failure without masking the failure. A hard process kill may lose
++the currently running case; document this limit. Keep measurement overhead out
++of the measured operation where possible. Do not apply the old batching patch.
++
++Validation: retain the original 10 test cases; demonstrate that the unmodified
++file emits no phase artifact, then run the instrumented file at 15000ms and
++inspect the artifact's counts, duration fields and absence of fixture secrets or
++absolute paths. Run focused lint. Review exception/cleanup behavior explicitly.
++This is test instrumentation, not production behavior requiring a synthetic new
++product test suite. No canonical full suite from the implementer.
++
++## Task 2: Review, publish and expose the diagnostic head
++
++Root obtains spec review followed by quality review, preserves the probe and
++baseline evidence, commits the scoped patch, and performs normal validation.
++Run at most one broad suite locally. Use the personal GitHub binding and normal
++receipt-reusing push. Invoke the existing Tests workflow_dispatch on the exact
++published branch, verify the resolved SHA, and collect both Windows Node 22/24
++artifacts from the normal full-matrix path. This diagnostic head is not a final
++reliability fix to merge merely because it passes.
++
++## Task 3: Select the measured repair
++
++Root compares phase evidence across cases/runtimes. Reuse the preserved fixture
++batching patch only if later writes/commits explain the extra cost. If another
++phase dominates, scope the root repair to that phase before implementation. A
++passing exposure without recurrence leaves the cause unproven; no rerun loop.
++Remove temporary instrumentation before final landing and preserve evidence.
++Keep the resource-budget and prior SQLite-driver work separate.
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 48240dfa..6a51ce18 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -14,14 +14,121 @@ const fixture = require('../fixtures/memory-recall-holdouts.json');
+ 
+ const roots = [];
+ const drivers = [];
++const rootCaseLabels = new Map();
++const phaseTimings = new Map();
++const timingOutputPath = path.join(
++  process.cwd(),
++  'test-results',
++  `memory-recall-holdout-timing-${process.pid}-${Date.now()}.json`,
++);
++let activeCaseLabel = null;
++let activeCaseTiming = null;
++let timingRecordFailed = false;
+ 
+-function createRecallContext(prefix = 'forge-memory-holdout-') {
+-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
++function beginProfileCase(caseLabel) {
++  activeCaseLabel = caseLabel;
++  activeCaseTiming = {
++    wallStartedAt: performance.now(),
++    cpuStartedAt: process.cpuUsage(),
++  };
++}
++
++function trackRoot(root, caseLabel = activeCaseLabel) {
+   roots.push(root);
++  rootCaseLabels.set(root, caseLabel);
++  return root;
++}
++
++function recordPhase(caseLabel, phase, wallMs, cpuUsage) {
++  const key = `${caseLabel}:${phase}`;
++  const current = phaseTimings.get(key) || {
++    caseLabel,
++    phase,
++    count: 0,
++    wallMs: 0,
++    cpuMs: 0,
++  };
++  current.count += 1;
++  current.wallMs += wallMs;
++  current.cpuMs += (cpuUsage.user + cpuUsage.system) / 1_000;
++  phaseTimings.set(key, current);
++}
++
++function measureSync(caseLabel, phase, operation) {
++  const wallStartedAt = performance.now();
++  const cpuStartedAt = process.cpuUsage();
++  try {
++    return operation();
++  } finally {
++    try {
++      recordPhase(
++        caseLabel,
++        phase,
++        performance.now() - wallStartedAt,
++        process.cpuUsage(cpuStartedAt),
++      );
++    } catch {
++      timingRecordFailed = true;
++    }
++  }
++}
++
++function createProfiledDriver(caseLabel, options) {
++  const store = createBuiltinSQLiteDriver(options);
++  let recordCount = 0;
++  const phases = new Map([
++    ['recordMemory', () => (recordCount++ === 0 ? 'record.first' : 'record.later')],
++    ['searchMemoriesRankedScored', () => 'search'],
++    ['close', () => 'close'],
++  ]);
++  for (const [method, phaseForCall] of phases) {
++    const original = store[method];
++    if (typeof original !== 'function') continue;
++    store[method] = function profiledDriverMethod(...args) {
++      return measureSync(caseLabel, phaseForCall(), () => original.apply(this, args));
++    };
++  }
++  return store;
++}
++
++function timingSummary() {
++  const cases = {};
++  const entries = [...phaseTimings.values()].sort((left, right) => (
++    left.caseLabel.localeCompare(right.caseLabel) || left.phase.localeCompare(right.phase)
++  ));
++  for (const entry of entries) {
++    const caseSummary = cases[entry.caseLabel] || {};
++    caseSummary[entry.phase] = {
++      count: entry.count,
++      wallMs: Number(entry.wallMs.toFixed(3)),
++      cpuMs: Number(entry.cpuMs.toFixed(3)),
++    };
++    cases[entry.caseLabel] = caseSummary;
++  }
++  return {
++    schema: 'forge.memory-recall-holdout-timing.v1',
++    timingRecordFailed,
++    hardKillLimit: 'A hard process termination can prevent the active case from reaching afterEach.',
++    cases,
++  };
++}
++
++function flushTimingSummary() {
++  const outputDirectory = path.dirname(timingOutputPath);
++  const temporaryPath = `${timingOutputPath}.tmp`;
++  fs.mkdirSync(outputDirectory, { recursive: true });
++  fs.writeFileSync(temporaryPath, `${JSON.stringify(timingSummary(), null, 2)}\n`, 'utf8');
++  fs.renameSync(temporaryPath, timingOutputPath);
++}
++
++function createRecallContext(prefix = 'forge-memory-holdout-', caseLabel = activeCaseLabel) {
++  const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), prefix)), caseLabel);
+   const commonDir = path.join(root, '.git');
+   fs.mkdirSync(commonDir);
+   const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
+-  const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
++  const store = createProfiledDriver(caseLabel, {
++    databasePath: path.join(root, 'kernel.sqlite'),
++  });
+   drivers.push(store);
+   return { root, commonDir, projectId, store };
+ }
+@@ -69,18 +176,62 @@ function additionalContext(result) {
+ }
+ 
+ afterEach(() => {
+-  while (drivers.length) drivers.pop().close();
+-  while (roots.length) fs.rmSync(roots.pop(), { recursive: true, force: true });
++  let firstError = null;
++  while (drivers.length) {
++    const store = drivers.pop();
++    try {
++      store.close();
++    } catch (error) {
++      firstError ||= error;
++    }
++  }
++  while (roots.length) {
++    const root = roots.pop();
++    const caseLabel = rootCaseLabels.get(root) || activeCaseLabel;
++    rootCaseLabels.delete(root);
++    try {
++      measureSync(caseLabel, 'cleanup', () => fs.rmSync(root, { recursive: true, force: true }));
++    } catch (error) {
++      firstError ||= error;
++    }
++  }
++  if (activeCaseTiming) {
++    try {
++      recordPhase(
++        activeCaseLabel,
++        'total',
++        performance.now() - activeCaseTiming.wallStartedAt,
++        process.cpuUsage(activeCaseTiming.cpuStartedAt),
++      );
++    } catch {
++      timingRecordFailed = true;
++    }
++  }
++  try {
++    flushTimingSummary();
++  } catch {
++    timingRecordFailed = true;
++    try {
++      process.stderr.write('memory-recall holdout timing diagnostic flush failed\n');
++    } catch {
++      // An unavailable diagnostic stream must not mask the original test or cleanup failure.
++    }
++  }
++  activeCaseLabel = null;
++  activeCaseTiming = null;
++  if (firstError) throw firstError;
+ });
+ 
+ describe('project-local memory recall holdout', () => {
+   test('foreign rows cannot crowd an unseen local memory out of additionalContext', async () => {
+-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-holdout-'));
+-    roots.push(root);
++    beginProfileCase('foreign-crowding');
++    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-holdout-')));
+     const commonDir = path.join(root, '.git');
+     fs.mkdirSync(commonDir);
+     const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
+-    const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
++    const store = createProfiledDriver(activeCaseLabel, {
++      databasePath: path.join(root, 'kernel.sqlite'),
++    });
+     drivers.push(store);
+ 
+     for (let index = 0; index < fixture.foreign.count; index += 1) {
+@@ -135,12 +286,14 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('keeps suggested authority separate and denies stale or superseded memories', async () => {
+-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-authority-'));
+-    roots.push(root);
++    beginProfileCase('authority-filtering');
++    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-authority-')));
+     const commonDir = path.join(root, '.git');
+     fs.mkdirSync(commonDir);
+     const projectId = commonDir.replaceAll('\\', '/').toLowerCase();
+-    const store = createBuiltinSQLiteDriver({ databasePath: path.join(root, 'kernel.sqlite') });
++    const store = createProfiledDriver(activeCaseLabel, {
++      databasePath: path.join(root, 'kernel.sqlite'),
++    });
+     drivers.push(store);
+     const records = [
+       ['confirmed', fixture.authorityDenial.confirmed, 'forge remember', [], null, '2026-07-30T00:00:00.000Z'],
+@@ -185,8 +338,8 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('shadow evidence is content-free and disabled or failed Kernel paths fail open', async () => {
+-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-privacy-'));
+-    roots.push(root);
++    beginProfileCase('privacy-fail-open');
++    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-privacy-')));
+     const options = {
+       readInput: () => JSON.stringify({
+         session_id: fixture.privacy.sessionId,
+@@ -230,13 +383,13 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('real locked SQLite prompt recall fails open below its deadline', async () => {
+-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-lock-holdout-'));
+-    roots.push(root);
++    beginProfileCase('locked-database');
++    const root = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-lock-holdout-')));
+     const commonDir = path.join(root, '.git');
+     fs.mkdirSync(commonDir);
+     const databasePath = path.join(root, 'kernel.sqlite');
+-    const locker = createBuiltinSQLiteDriver({ databasePath });
+-    const reader = createBuiltinSQLiteDriver({ databasePath });
++    const locker = createProfiledDriver(activeCaseLabel, { databasePath });
++    const reader = createProfiledDriver(activeCaseLabel, { databasePath });
+     drivers.push(locker, reader);
+     projectMemory.write(root, {
+       key: 'locked',
+@@ -267,6 +420,7 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('26 stronger seen rows are excluded before rank and an unseen local row survives', async () => {
++    beginProfileCase('seen-row-filtering');
+     const context = createRecallContext('forge-memory-seen-');
+     const seenKeys = [];
+     await context.store.exec('BEGIN;');
+@@ -302,6 +456,7 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('foreign and suggested superseders cannot erase eligible confirmed memories', async () => {
++    beginProfileCase('supersession-filtering');
+     const context = createRecallContext('forge-memory-supersession-');
+     writeMemory(context, {
+       key: 'foreign-protected',
+@@ -336,6 +491,7 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('duplicate recall is excluded and an oversized first hit does not starve a fitting hit', async () => {
++    beginProfileCase('packing-and-deduplication');
+     const context = createRecallContext('forge-memory-packing-');
+     writeMemory(context, {
+       key: 'oversized-retry',
+@@ -365,9 +521,9 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('common-dir identity is deterministic and trust/type precedence survives the assembled path', async () => {
++    beginProfileCase('common-dir-identity');
+     const context = createRecallContext('forge-memory-identity-');
+-    const siblingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-sibling-'));
+-    roots.push(siblingRoot);
++    const siblingRoot = trackRoot(fs.mkdtempSync(path.join(os.tmpdir(), 'forge-memory-sibling-')));
+     expect(projectMemory.resolveProjectId(context.root, {
+       gitCommonDir: context.commonDir,
+       realpath: value => value,
+@@ -440,6 +596,7 @@ describe('project-local memory recall holdout', () => {
+   });
+ 
+   test('assembled 1,000-row recall keeps 100-sample p95 within 250ms', async () => {
++    beginProfileCase('performance-sampling');
+     const context = createRecallContext('forge-memory-performance-');
+     await context.store.exec('BEGIN;');
+     try {
+@@ -480,6 +637,7 @@ describe('project-local memory recall holdout', () => {
+   }, 20_000);
+ 
+   test('harness matrix renders Claude JSON and fails open cleanly elsewhere', async () => {
++    beginProfileCase('harness-matrix');
+     const context = createRecallContext('forge-memory-harness-');
+     writeMemory(context, {
+       key: fixture.projectLocal.memoryId,
+-- 
+2.51.0.windows.1
+

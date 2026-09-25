@@ -1,0 +1,121 @@
+From 587d486373a60879abea732f97fc32b63e12022c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 16:21:24 +0530
+Subject: [PATCH] fix(agents): address CodeRabbit re-review on #311
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- setupClaudeMcpConfig: respect renderMcpConfig's `skipped` result — print an
+  honest "left untouched / backed up" message instead of a false "merged"
+  success when an existing .mcp.json is unparseable.
+- validateDescriptor: extract validateEnvRefs helper (drops cognitive
+  complexity below the Sonar gate) and validate descriptor.name charset
+  (safe identifier — no chars that break the TOML table header or JSON merge).
+- rules/tdd.md: expand glob to **/*.{js,jsx,ts,tsx} coverage.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/setup.js      | 12 +++++++++++-
+ lib/mcp-config-renderer.js | 30 ++++++++++++++++++++++--------
+ rules/tdd.md               |  2 +-
+ 3 files changed, 34 insertions(+), 10 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index c7f16a35..f0bc2f46 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -1781,11 +1781,21 @@ function createCodexSkills() {
+ // skipped: the old skip-if-exists behavior silently refused to add the Context7
+ // server whenever any config already existed. User/other servers are preserved.
+ function setupClaudeMcpConfig() {
+-  const { existed } = renderMcpConfig({
++  const { existed, skipped, backup } = renderMcpConfig({
+     harness: 'claude',
+     targetRoot: projectRoot,
+     descriptors: [CONTEXT7_MCP_DESCRIPTOR],
+   });
++  if (skipped) {
++    // Existing .mcp.json was unparseable (JSONC/trailing comma): renderMcpConfig
++    // left it untouched and backed it up rather than clobber the user's servers.
++    // Report that honestly instead of a false "merged" success.
++    console.log(
++      `  Skipped: .mcp.json is not valid JSON — left untouched to avoid data loss`
++      + `${backup ? ` (backed up to ${backup})` : ''}. Add the Context7 MCP server manually.`,
++    );
++    return;
++  }
+   console.log(
+     existed
+       ? '  Updated: .mcp.json (merged Context7 MCP, preserved existing servers)'
+diff --git a/lib/mcp-config-renderer.js b/lib/mcp-config-renderer.js
+index 3eb7dbbd..e5cf80b5 100644
+--- a/lib/mcp-config-renderer.js
++++ b/lib/mcp-config-renderer.js
+@@ -56,6 +56,24 @@ class McpConfigParseError extends Error {
+  * @param {object} d
+  * @returns {{ name, transport, command, args, url, envRefs }}
+  */
++// MCP server names key an object entry and are written into JSON/TOML config, so
++// restrict them to a safe identifier charset (no dots/quotes/whitespace that could
++// break the TOML table header `[mcp_servers.<name>]` or collide on merge).
++const MCP_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
++
++// Extracted so validateDescriptor stays under the cognitive-complexity gate.
++function validateEnvRefs(rawEnvRefs) {
++  const envRefs = rawEnvRefs && typeof rawEnvRefs === 'object' ? rawEnvRefs : {};
++  for (const [key, value] of Object.entries(envRefs)) {
++    if (typeof value !== 'string' || !ENV_REF_PATTERN.test(value)) {
++      throw new Error(
++        `MCP descriptor.envRefs.${key} must be a '\${VAR}' reference string, not a literal value`,
++      );
++    }
++  }
++  return envRefs;
++}
++
+ function validateDescriptor(d) {
+   if (!d || typeof d !== 'object') {
+     throw new Error('MCP descriptor must be an object');
+@@ -63,6 +81,9 @@ function validateDescriptor(d) {
+   if (!d.name || typeof d.name !== 'string') {
+     throw new Error('MCP descriptor.name is required');
+   }
++  if (!MCP_NAME_PATTERN.test(d.name)) {
++    throw new Error(`MCP descriptor.name must match ${MCP_NAME_PATTERN} (got '${d.name}')`);
++  }
+   const transport = d.transport || 'stdio';
+   if (transport !== 'stdio' && transport !== 'http') {
+     throw new Error(`MCP descriptor.transport must be 'stdio' or 'http' (got ${transport})`);
+@@ -78,14 +99,7 @@ function validateDescriptor(d) {
+   if (transport === 'stdio' && !command) {
+     throw new Error("MCP descriptor.command is required for transport 'stdio'");
+   }
+-  const envRefs = d.envRefs && typeof d.envRefs === 'object' ? d.envRefs : {};
+-  for (const [key, value] of Object.entries(envRefs)) {
+-    if (typeof value !== 'string' || !ENV_REF_PATTERN.test(value)) {
+-      throw new Error(
+-        `MCP descriptor.envRefs.${key} must be a '\${VAR}' reference string, not a literal value`,
+-      );
+-    }
+-  }
++  const envRefs = validateEnvRefs(d.envRefs);
+   return { name: d.name, transport, command, args, url, envRefs };
+ }
+ 
+diff --git a/rules/tdd.md b/rules/tdd.md
+index c7028a15..b3748add 100644
+--- a/rules/tdd.md
++++ b/rules/tdd.md
+@@ -1,7 +1,7 @@
+ ---
+ description: "TDD patterns and enforcement"
+ alwaysApply: false
+-globs: ["**/*.ts", "**/*.js", "**/*.test.ts", "**/*.test.js"]
++globs: ["**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx"]
+ ---
+ 
+ # TDD Enforcement
+-- 
+2.51.0.windows.1
+

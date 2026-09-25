@@ -1,0 +1,438 @@
+From 185c682ee7e142bf1160a527ca58f57cb87e58ea Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 01:34:38 +0530
+Subject: [PATCH] fix: bind owner and gate transition evidence
+
+---
+ lib/kernel/sqlite-driver.js                 |  27 +++++
+ lib/pr-monitor/watch-owner.js               |  94 +++++++++++++----
+ test/kernel/watch-owner-transaction.test.js |  14 +++
+ test/pr-monitor/watch-owner.test.js         | 108 ++++++++++++++++++++
+ 4 files changed, 225 insertions(+), 18 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index a2524d51..a94ca6cc 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2953,6 +2953,9 @@ const WATCH_OWNER_SNAPSHOT_FIELDS = Object.freeze([
+ 	'started_at', 'updated_at', 'heartbeat_at', 'terminal_receipt_id', 'block_reason',
+ 	'legacy_evidence_hash',
+ ]);
++const WATCH_GATE_SNAPSHOT_FIELDS = Object.freeze([
++	'singleton', 'state', 'snapshot_hash', 'conflict_code', 'updated_at',
++]);
+ const WATCH_OWNER_MUTATION_FIELDS = Object.freeze([
+ 	'repo', 'pr', 'controllerPid', 'watcherPid', 'expectedControllerPid', 'generation',
+ 	'terminalReceiptId', 'expectedReceiptId', 'now', 'snapshotHash', 'legacyEvidenceHash',
+@@ -3050,6 +3053,21 @@ function validWatchGateRow(row) {
+ 		: WATCH_GATE_CONFLICT_CODES.has(row.conflict_code);
+ }
+ 
++function copyWatchGateSnapshot(gate) {
++	if (gate === null) return null;
++	try {
++		const copy = Object.fromEntries(WATCH_GATE_SNAPSHOT_FIELDS.map(field => [field, gate[field]]));
++		return validWatchGateRow(copy) ? copy : undefined;
++	} catch {
++		return undefined;
++	}
++}
++
++function sameWatchGateSnapshot(current, expected) {
++	if (current == null || expected == null) return current == null && expected == null;
++	return WATCH_GATE_SNAPSHOT_FIELDS.every(field => Object.is(current[field], expected[field]));
++}
++
+ function readWatchOwnerRow(runtime, database, input) {
+ 	return allParams(
+ 		runtime,
+@@ -3463,6 +3481,11 @@ function captureWatchGateMutationInput(operation, input) {
+ 	if (!input) return null;
+ 	try {
+ 		const captured = { now: input.now };
++		if (Object.prototype.hasOwnProperty.call(input, 'expectedGate')) {
++			const expectedGate = copyWatchGateSnapshot(input.expectedGate);
++			if (expectedGate === undefined) return null;
++			captured.expectedGate = expectedGate;
++		}
+ 		if (operation === 'retryConflict') {
+ 			captured.expectedSnapshotHash = input.expectedSnapshotHash;
+ 			captured.expectedConflictCode = input.expectedConflictCode;
+@@ -3486,6 +3509,10 @@ function applyWatchGateOperation(runtime, databasePath, options, operation, inpu
+ 		const current = allParams(runtime, database,
+ 			`SELECT * FROM ${WATCH_GATE_TABLE} WHERE singleton = 1`)[0] || null;
+ 		if (current && !validWatchGateRow(current)) return { ok: false, changed: false, reason: 'corrupt', gate: current };
++		if (Object.prototype.hasOwnProperty.call(input, 'expectedGate')
++			&& !sameWatchGateSnapshot(current, input.expectedGate)) {
++			return { ok: false, changed: false, reason: 'stale_evidence', gate: current };
++		}
+ 		if (current && input.now < current.updated_at) {
+ 			return { ok: false, changed: false, reason: 'stale_evidence', gate: current };
+ 		}
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index ed0345b1..f64e01ae 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -200,29 +200,51 @@ function copyMigrationGate(gate) {
+ 	}
+ }
+ 
++function sameMigrationGate(left, right) {
++	if (left == null || right == null) return left == null && right == null;
++	return ['singleton', 'state', 'snapshot_hash', 'conflict_code', 'updated_at']
++		.every(field => Object.is(left[field], right[field]));
++}
++
+ function gateMatchesMutation(method, input, gate, result) {
+ 	// Every changed gate mutation stamps the durable checkpoint; only exact
+ 	// idempotent replays may keep the prior timestamp.
+ 	const advanced = result.changed === false
+ 		? gate.updated_at <= input.now
+ 		: gate.updated_at === input.now;
++	const prior = input.expectedGate;
++	if (result.reason === 'idempotent' && !sameMigrationGate(gate, prior)) return false;
+ 	switch (method) {
+ 	case 'watchGatePublishQuarantine':
+-		return gate.state === 'quarantined' && gate.conflict_code == null && advanced;
++		return gate.state === 'quarantined' && gate.conflict_code == null && advanced
++			&& (result.reason === 'idempotent' ? prior?.state === 'quarantined' : prior == null);
+ 	case 'watchGateBindSnapshot':
+ 		return gate.state === 'quarantined' && gate.snapshot_hash === input.snapshotHash
+-			&& gate.conflict_code == null && advanced;
++			&& gate.conflict_code == null && advanced && prior?.state === 'quarantined'
++			&& (result.reason === 'idempotent'
++				? prior.snapshot_hash === input.snapshotHash
++				: prior.snapshot_hash == null);
+ 	case 'watchGatePublishConflict':
+ 		return gate.state === 'conflict'
+ 			&& gate.snapshot_hash === input.snapshotHash
+-			&& gate.conflict_code === input.conflictCode && advanced;
++			&& gate.conflict_code === input.conflictCode && advanced
++			&& (result.reason === 'idempotent'
++				? prior?.state === 'conflict'
++				: prior?.state === 'quarantined' && prior.conflict_code == null
++					&& (prior.snapshot_hash == null || prior.snapshot_hash === input.snapshotHash));
+ 	case 'watchGateRetryConflict':
+ 		return gate.state === 'quarantined'
+ 			&& gate.snapshot_hash === input.replacementSnapshotHash
+-			&& gate.conflict_code == null && advanced;
++			&& gate.conflict_code == null && advanced
++			&& prior?.state === 'conflict'
++			&& prior.snapshot_hash === input.expectedSnapshotHash
++			&& prior.conflict_code === input.expectedConflictCode;
+ 	case 'watchGateCompleteMigration':
+ 		return gate.state === 'complete' && gate.snapshot_hash === input.snapshotHash && gate.conflict_code == null
+-			&& advanced;
++			&& advanced && (result.reason === 'idempotent'
++				? prior?.state === 'complete'
++				: prior?.state === 'quarantined' && prior.snapshot_hash === input.snapshotHash
++					&& prior.conflict_code == null);
+ 	default:
+ 		return true;
+ 	}
+@@ -353,6 +375,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 		if ((prior.phase === 'stop_requested') !== (result.reason === 'idempotent')) return false;
+ 		return validOwnerSuccess(result, record, 'stop_requested', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
++			heartbeatAt: prior.heartbeat_at,
+ 			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+ 		}, 'stop_requested', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+@@ -363,6 +386,7 @@ function validOwnerOperationResult(method, input, result, record) {
+ 		return validOwnerSuccess(result, record, 'terminal_pending', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 			terminalReceiptId: input.terminalReceiptId,
++			heartbeatAt: prior.heartbeat_at,
+ 			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+ 		}, 'terminal_pending', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+@@ -1107,7 +1131,11 @@ function invokeGate(method, input, opts) {
+ 	const operation = opts?.authorityMethods?.[method];
+ 	if (typeof operation !== 'function') return { ok: false, changed: false, reason: 'authority_unavailable', gate: null };
+ 	try {
+-		const result = operation(input, opts.databaseConfig || {});
++		const expectedGate = input.expectedGate == null
++			? input.expectedGate
++			: Object.freeze({ ...input.expectedGate });
++		const submitted = Object.freeze({ ...input, expectedGate });
++		const result = operation({ ...submitted }, opts.databaseConfig || {});
+ 		if (result && typeof result.then === 'function') {
+ 			Promise.resolve(result).then(() => {}, () => {});
+ 			return invalidGate('invalid_operation');
+@@ -1137,7 +1165,7 @@ function invokeGate(method, input, opts) {
+ 			return { ok: snap.ok, changed: snap.changed, reason: snap.reason, gate: null };
+ 		}
+ 		const gate = copyMigrationGate(snap.gate);
+-		if (!gate || (snap.ok && !gateMatchesMutation(method, input, gate, snap))) return invalidGate('corrupt');
++		if (!gate || (snap.ok && !gateMatchesMutation(method, submitted, gate, snap))) return invalidGate('corrupt');
+ 		return { ok: snap.ok, changed: snap.changed, reason: snap.reason, gate };
+ 	} catch (error) {
+ 		return { ok: false, changed: false,
+@@ -1145,6 +1173,14 @@ function invokeGate(method, input, opts) {
+ 	}
+ }
+ 
++function captureMigrationGate(opts) {
++	const captured = invokeGate('watchGateRead', {}, opts);
++	if (captured.ok) return { ok: true, snapshot: Object.freeze({ ...captured.gate }) };
++	return captured.reason === 'absent'
++		? { ok: true, snapshot: null }
++		: { ok: false, reason: captured.reason };
++}
++
+ async function readMigrationGate(input = {}, opts = {}) {
+ 	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead']);
+ 	const capturedInput = captureMutationInput(input);
+@@ -1152,35 +1188,50 @@ async function readMigrationGate(input = {}, opts = {}) {
+ }
+ 
+ async function publishMigrationQuarantine(input = {}, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchGatePublishQuarantine']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead', 'watchGatePublishQuarantine']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalidGate('invalid_input');
+ 	const value = gateInput(capturedInput, boundOpts);
+-	return value ? invokeGate('watchGatePublishQuarantine', value, boundOpts) : invalidGate();
++	if (!value) return invalidGate();
++	const captured = captureMigrationGate(boundOpts);
++	return captured.ok
++		? invokeGate('watchGatePublishQuarantine', { ...value, expectedGate: captured.snapshot }, boundOpts)
++		: invalidGate(captured.reason);
+ }
+ 
+ async function bindMigrationSnapshot(input = {}, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchGateBindSnapshot']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead', 'watchGateBindSnapshot']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalidGate('invalid_input');
+ 	input = capturedInput;
+ 	const value = gateInput(input, boundOpts);
+ 	if (!value || !validHash(input.snapshotHash)) return invalidGate('invalid_snapshot');
+-	return invokeGate('watchGateBindSnapshot', { ...value, snapshotHash: input.snapshotHash }, boundOpts);
++	const captured = captureMigrationGate(boundOpts);
++	return captured.ok
++		? invokeGate('watchGateBindSnapshot', {
++			...value, snapshotHash: input.snapshotHash, expectedGate: captured.snapshot,
++		}, boundOpts)
++		: invalidGate(captured.reason);
+ }
+ 
+ async function publishMigrationConflict(input = {}, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchGatePublishConflict']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead', 'watchGatePublishConflict']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalidGate('invalid_input');
+ 	input = capturedInput;
+ 	const value = gateInput(input, boundOpts);
+ 	if (!value || !validHash(input.snapshotHash) || !CONFLICT_CODES.has(input.conflictCode)) return invalidGate('invalid_conflict');
+-	return invokeGate('watchGatePublishConflict', { ...value, snapshotHash: input.snapshotHash, conflictCode: input.conflictCode }, boundOpts);
++	const captured = captureMigrationGate(boundOpts);
++	return captured.ok
++		? invokeGate('watchGatePublishConflict', {
++			...value, snapshotHash: input.snapshotHash, conflictCode: input.conflictCode,
++			expectedGate: captured.snapshot,
++		}, boundOpts)
++		: invalidGate(captured.reason);
+ }
+ 
+ async function retryMigrationConflict(input = {}, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchGateRetryConflict']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead', 'watchGateRetryConflict']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalidGate('invalid_input');
+ 	input = capturedInput;
+@@ -1189,22 +1240,29 @@ async function retryMigrationConflict(input = {}, opts = {}) {
+ 		|| !CONFLICT_CODES.has(input.expectedConflictCode)
+ 		|| !validHash(input.replacementSnapshotHash)
+ 		|| input.replacementSnapshotHash === input.expectedSnapshotHash) return invalidGate('invalid_retry');
+-	return invokeGate('watchGateRetryConflict', {
++	const captured = captureMigrationGate(boundOpts);
++	return captured.ok ? invokeGate('watchGateRetryConflict', {
+ 		...value,
+ 		expectedSnapshotHash: input.expectedSnapshotHash,
+ 		expectedConflictCode: input.expectedConflictCode,
+ 		replacementSnapshotHash: input.replacementSnapshotHash,
+-	}, boundOpts);
++		expectedGate: captured.snapshot,
++	}, boundOpts) : invalidGate(captured.reason);
+ }
+ 
+ async function completeMigrationGate(input = {}, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchGateCompleteMigration']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchGateRead', 'watchGateCompleteMigration']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalidGate('invalid_input');
+ 	input = capturedInput;
+ 	const value = gateInput(input, boundOpts);
+ 	if (!value || !validHash(input.snapshotHash)) return invalidGate('invalid_snapshot');
+-	return invokeGate('watchGateCompleteMigration', { ...value, snapshotHash: input.snapshotHash }, boundOpts);
++	const captured = captureMigrationGate(boundOpts);
++	return captured.ok
++		? invokeGate('watchGateCompleteMigration', {
++			...value, snapshotHash: input.snapshotHash, expectedGate: captured.snapshot,
++		}, boundOpts)
++		: invalidGate(captured.reason);
+ }
+ 
+ module.exports = {
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 52435ec9..d1979d10 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -1141,6 +1141,20 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate')).toEqual([]);
+ 	});
+ 
++	test('rejects a gate mutation when the captured gate changed before the transaction', async () => {
++		const published = driver.watchGatePublishQuarantine({ now: NOW });
++		expect(published.ok).toBe(true);
++		expect(driver.watchGateBindSnapshot({ snapshotHash: HASH, now: LATER }).ok).toBe(true);
++		const before = await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate');
++
++		const result = driver.watchGateCompleteMigration({
++			snapshotHash: HASH, now: LATER, expectedGate: published.gate,
++		});
++
++		expect(result).toMatchObject({ ok: false, changed: false, reason: 'stale_evidence' });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_migration_gate')).toEqual(before);
++	});
++
+ 	test('validates constructed legacy rows before insert', async () => {
+ 		await owner.publishMigrationQuarantine({ updatedAt: NOW }, { driver });
+ 		await owner.bindMigrationSnapshot({ snapshotHash: HASH, updatedAt: NOW }, { driver });
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index d8ee13d8..7159ac4c 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -1308,6 +1308,7 @@ describe('watch owner SQLite authority', () => {
+ 			let calls = 0;
+ 			const result = await scenario.call(scenario.input, {
+ 				driver: {
++					watchGateRead: () => ({ ok: false, changed: false, reason: 'absent', gate: null }),
+ 					[scenario.method]: () => {
+ 						calls += 1;
+ 						return { ok: true, changed: true, reason: 'spoofed', gate: scenario.gate };
+@@ -1319,6 +1320,80 @@ describe('watch owner SQLite authority', () => {
+ 		}
+ 	});
+ 
++	test('binds every gate mutation to its captured prior state', async () => {
++		const complete = {
++			singleton: 1, state: 'complete', snapshot_hash: HASH,
++			conflict_code: null, updated_at: NOW,
++		};
++		const quarantined = {
++			singleton: 1, state: 'quarantined', snapshot_hash: HASH,
++			conflict_code: null, updated_at: NOW,
++		};
++		const conflict = {
++			singleton: 1, state: 'conflict', snapshot_hash: HASH,
++			conflict_code: 'legacy_owner_conflict', updated_at: NOW,
++		};
++		const cases = [
++			{
++				label: 'quarantine over complete', method: 'watchGatePublishQuarantine',
++				call: owner.publishMigrationQuarantine, input: { updatedAt: LATER }, prior: complete,
++				result: {
++					ok: true, changed: true, reason: 'quarantined',
++					gate: { ...quarantined, snapshot_hash: null, updated_at: LATER },
++				},
++			},
++			{
++				label: 'bind over absence', method: 'watchGateBindSnapshot',
++				call: owner.bindMigrationSnapshot,
++				input: { snapshotHash: HASH, updatedAt: LATER }, prior: null,
++				result: {
++					ok: true, changed: true, reason: 'bound',
++					gate: { ...quarantined, updated_at: LATER },
++				},
++			},
++			{
++				label: 'conflict over complete', method: 'watchGatePublishConflict',
++				call: owner.publishMigrationConflict,
++				input: { snapshotHash: HASH, conflictCode: 'legacy_owner_conflict', updatedAt: LATER },
++				prior: complete,
++				result: { ok: true, changed: true, reason: 'conflict', gate: { ...conflict, updated_at: LATER } },
++			},
++			{
++				label: 'retry over quarantine', method: 'watchGateRetryConflict',
++				call: owner.retryMigrationConflict,
++				input: {
++					expectedSnapshotHash: HASH, expectedConflictCode: 'legacy_owner_conflict',
++					replacementSnapshotHash: OTHER_HASH, updatedAt: LATER,
++				},
++				prior: quarantined,
++				result: {
++					ok: true, changed: true, reason: 'retry_bound',
++					gate: { ...quarantined, snapshot_hash: OTHER_HASH, updated_at: LATER },
++				},
++			},
++			{
++				label: 'complete over conflict', method: 'watchGateCompleteMigration',
++				call: owner.completeMigrationGate,
++				input: { snapshotHash: HASH, updatedAt: LATER }, prior: conflict,
++				result: { ok: true, changed: true, reason: 'complete', gate: { ...complete, updated_at: LATER } },
++			},
++		];
++
++		for (const scenario of cases) {
++			let submitted;
++			const driverOverride = {
++				watchGateRead: () => scenario.prior
++					? { ok: true, changed: false, reason: 'read', gate: scenario.prior }
++					: { ok: false, changed: false, reason: 'absent', gate: null },
++				[scenario.method]: input => { submitted = input; return scenario.result; },
++			};
++			const result = await scenario.call(scenario.input, { driver: driverOverride });
++			expect(result, scenario.label)
++				.toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
++			expect(submitted.expectedGate, scenario.label).toEqual(scenario.prior);
++		}
++	});
++
+ 	test('returns gate-shaped envelopes for every gate input validation failure', async () => {
+ 		expect(await owner.publishMigrationQuarantine({ updatedAt: INVALID_TIMESTAMP }, { driver }))
+ 			.toEqual({ ok: false, changed: false, reason: 'invalid_input', gate: null });
+@@ -2961,6 +3036,39 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(completed).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 	});
+ 
++	test.each([
++		['requestStop', 992, 'watchOwnerRequestStop', 'stop_requested'],
++		['recordTerminal', 993, 'watchOwnerRecordTerminal', 'terminal_pending'],
++	])('rejects %s results that rewrite the captured heartbeat', async (_label, pr, method, phase) => {
++		const ctx = { repo: 'acme/forge', pr };
++		const running = await seedLifecycle(ctx, 'running');
++		const result = method === 'watchOwnerRequestStop'
++			? await owner.requestStop(ctx, {
++				generation: running.generation, pid: WATCHER_PID, updatedAt: FINAL,
++			}, authorityOpts({
++				...driver,
++				[method]: () => ({
++					ok: true, changed: true, reason: phase,
++					row: { ...toSnakeRow(running.record), phase, heartbeat_at: NOW, updated_at: FINAL },
++				}),
++			}))
++			: await owner.recordTerminal(ctx, {
++				generation: running.generation, pid: WATCHER_PID,
++				terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
++			}, authorityOpts({
++				...driver,
++				[method]: () => ({
++					ok: true, changed: true, reason: phase,
++					row: {
++						...toSnakeRow(running.record), phase, heartbeat_at: NOW,
++						terminal_receipt_id: RECEIPT_ID, updated_at: FINAL,
++					},
++				}),
++			}));
++
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
+ 	test('rejects blocked completion that rewrites its original start timestamp', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 984 };
+ 		const prior = await seedBlocked(ctx, false);
+-- 
+2.51.0.windows.1
+

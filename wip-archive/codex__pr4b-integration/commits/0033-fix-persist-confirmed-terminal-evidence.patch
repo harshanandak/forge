@@ -1,0 +1,141 @@
+From 22dfadf4cf4b4ad7644acecf3029182b24d4b413 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 09:10:48 +0530
+Subject: [PATCH] fix: persist confirmed terminal evidence
+
+---
+ lib/commands/shepherd.js             | 33 ++++++++++++++++++++++++++++
+ lib/pr-monitor/flow-monitor.js       |  5 ++++-
+ test/commands/shepherd.test.js       | 26 ++++++++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js | 18 +++++++++++++++
+ 4 files changed, 81 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index d4e70459..4f083c3e 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -756,6 +756,39 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+         receiptIds: evidence.receiptIds,
+       };
+     }
++    if (confirmedResult.state !== result.state) {
++      try {
++        const evidenceContext = confirmedResult.expectedHead
++          ? { ...ctx, headSha: confirmedResult.expectedHead }
++          : ctx;
++        evidence = await collectEvidence({ args, pr, projectRoot, context: evidenceContext, adapter, deps });
++      } catch (error) {
++        return {
++          success: false,
++          state: 'INCOMPLETE',
++          remoteState: confirmedResult.state,
++          reason: `Confirmed convergence evidence is unavailable: ${error.message}`,
++          actions: confirmedResult.actions,
++          localPreflight,
++          deltas: evidence.deltas,
++          deltaOverflow: evidence.deltaOverflow,
++          receiptIds: evidence.receiptIds,
++        };
++      }
++      if (confirmedResult.state === 'MERGED' && !evidence.terminalReceiptId) {
++        return {
++          success: false,
++          state: 'INCOMPLETE',
++          remoteState: confirmedResult.state,
++          reason: 'Confirmed merged state has no durable terminal receipt',
++          actions: confirmedResult.actions,
++          localPreflight,
++          deltas: evidence.deltas,
++          deltaOverflow: evidence.deltaOverflow,
++          receiptIds: evidence.receiptIds,
++        };
++      }
++    }
+   }
+ 
+   const effectiveState = localPreflight.blocking === true && confirmedResult.state === 'MERGE_READY'
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 96562116..2d623098 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -60,7 +60,10 @@ function validBoundedJobUrl(value) {
+   if (typeof value !== 'string' || value.length > JOB_URL_LIMIT || UNSAFE_PROVIDER_DIAGNOSTIC.test(value)) return null;
+   try {
+     const url = new URL(value);
+-    return url.protocol === 'https:' || url.protocol === 'http:' ? value : null;
++    return (url.protocol === 'https:' || url.protocol === 'http:')
++      && !url.username && !url.password && !url.search && !url.hash
++      ? value
++      : null;
+   } catch {
+     return null;
+   }
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 9f818595..735055bf 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -140,6 +140,32 @@ describe('shepherd command handler', () => {
+     expect(out.handoff).toMatchObject({ next: 'review' });
+   });
+ 
++  test('persists a state change observed during merge-readiness confirmation', async () => {
++    let passes = 0;
++    let evidenceCalls = 0;
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async () => (++passes === 1
++        ? { state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40) }
++        : { state: 'MERGED', actions: [], reason: 'merged concurrently', expectedHead: 'a'.repeat(40) }),
++      collectConvergenceEvidence: async () => {
++        evidenceCalls += 1;
++        return {
++          deltas: [], deltaOverflow: false, receiptIds: [`receipt-${evidenceCalls}`],
++          exactHead: 'a'.repeat(40), ...(evidenceCalls === 2 ? { terminalReceiptId: 'terminal-2' } : {}),
++        };
++      },
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
++      }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
++    });
++
++    expect(evidenceCalls).toBe(2);
++    expect(out).toMatchObject({ state: 'MERGED', terminalReceiptId: 'terminal-2', receiptIds: ['receipt-2'] });
++  });
++
+   test('consolidates blocking local findings before a read-only remote decision', async () => {
+     let dryRun;
+     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index c8168e2e..36a80210 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -332,6 +332,24 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBeUndefined();
+   });
+ 
++  test.each([
++    'https://user:password@ci.example/job/1',
++    'https://ci.example/job/1?sig=opaque',
++    'https://ci.example/job/1#credential',
++  ])('omits non-public enriched job URL %s', async (jobUrl) => {
++    const store = durableStore();
++    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
++    ctx.enrich = async records => { records.find(record => record.type === 'check.failed').data.jobUrl = jobUrl; };
++
++    await runFlowMonitorPass(ctx);
++
++    expect(delivered.find(record => record.type === 'check.failed')?.data.jobUrl).toBeUndefined();
++  });
++
+   test('preserves long repository identity in bounded durable and compatibility records', async () => {
+     const store = durableStore();
+     const repo = `owner/${'repository'.repeat(10)}`;
+-- 
+2.51.0.windows.1
+

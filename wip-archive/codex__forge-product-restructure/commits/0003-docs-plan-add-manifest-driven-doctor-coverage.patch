@@ -1,0 +1,191 @@
+From 5344a12984a8d5352e80bc8f2c8285a091396b73 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 14:28:41 +0530
+Subject: [PATCH] docs(plan): add manifest-driven doctor coverage
+
+---
+ .../acceptance-contracts.md                           |  5 +++--
+ .../decision-register.md                              |  3 ++-
+ .../2026-08-09-forge-product-restructure/decisions.md | 10 +++++++++-
+ .../issue-disposition.md                              | 11 +++++++----
+ .../work/2026-08-09-forge-product-restructure/plan.md |  9 +++++++--
+ .../2026-08-09-forge-product-restructure/tasks.md     |  1 +
+ .../validation-matrix.md                              |  2 +-
+ 7 files changed, 30 insertions(+), 11 deletions(-)
+
+diff --git a/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md b/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+index 6cd533ac..4fa9eedc 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
++++ b/docs/work/2026-08-09-forge-product-restructure/acceptance-contracts.md
+@@ -26,7 +26,7 @@ Common acceptance rules for every row below:
+ | `7f8c8471` | Packaged Smith/claim-safety references resolve or use a documented supported primitive. Asset scan finds every reference; invocation succeeds or deterministically falls back; claim-safety still proves a live owned lease and rejects foreign/expired leases. |
+ | `94f782e0` | Foreign-lease reconcile child exits deterministically on Windows. Repeated affected Windows/Node fixture exits successfully within its bound; a valid lease remains active and untouched; recurrent environmental failure becomes separate evidence/fix, not a weakened assertion. |
+ | `9f6ffb42` | Kernel trace exposes issue→worktree→work folder→plan/tasks/decisions→PR→iterations. Ship/merge emits idempotent links; one trace returns the joined envelope with explicit null gaps; duplicate events do not duplicate rows. |
+-| `b977b0a2` | Approval events support issue/project scope and TTL through one control. Round-trip returns scope/expiry/control id; valid approval permits the protected write; wrong-scope/expired/missing approval denies; replay is idempotent and audit-visible. |
++| `b977b0a2` | Existing `forge gate approve <issue-id> <gate-id>` events remain the only approval surface and gain bounded issue-scoped TTL where required. Valid approval satisfies the gate; expired/rejected/missing/wrong-issue/wrong-gate evidence fails closed; replay is idempotent and audit-visible. `forge control` remains policy classification, and unscoped/project-scoped approval is rejected. |
+ | `c29f3952` | Kernel status honestly exposes live sessions, held leases, and last-seen. Active fixture reports actor/issues/activity; closed/expired/unverifiable session is offline; read does not mutate leases. |
+ | `eea2f9ce` | Claim-safety refuses work without a current actor-owned unexpired lease. Owned/unexpired passes; foreign/expired/missing/duplicate-collapsed fails before work; proof comes from live Kernel state rather than a local claim token. |
+ | `c3952ba5` | Kernel graph automatically registers PRs, sessions, and Shepherd verdicts. Ship/orientation/Shepherd fixtures create the expected rows; replay is idempotent; one trace answers issue→claim→session→worktree→PR→verdict→events/comments with explicit gaps. |
+@@ -87,6 +87,7 @@ Common acceptance rules for every row below:
+ | --- | --- |
+ | `7268bc9b` | Hook adapter evaluates mandatory/optional/permission controls and reports honest per-harness downgrade. Policy matrix covers deny/warn/TTL approval/expiry; observational-only harnesses never claim enforcement; decisions are auditable. |
+ | `9658c21a` | MCP registry renders/drift-checks control state and consent at render time only. Fixtures cover control types, toggles, drift, consent expiry, and stable capability/config digests without claiming runtime enforcement. |
++| `e8e72233` | `forge doctor` is the one read-only, bounded, manifest-driven Health surface and is exhaustive across canonical command families. Versioned JSON reports `PASS|WARN|FAIL|INCOMPLETE`, privacy-safe evidence and remediation; scope/check selectors, parity, no-side-effect, timeout, unsupported-provider, redaction, deterministic ordering, and Windows/macOS/Linux fixtures pass. No competing health verb exists. |
+ 
+ ## PR 6 — Migration and extraction readiness
+ 
+@@ -111,6 +112,6 @@ After proposal approval and before any implementation branch or WorkPacket:
+ 1. Generate a canonical amendment batch for the 48 actionable `AC=no` issues from this document.
+ 2. For each issue, compare the expected revision from the approved snapshot, write its contract to the Kernel, and read it back.
+ 3. Refuse partial silent success: conflicts remain unadmitted and are reported; successfully amended issues retain their new revision and receipt.
+-4. Recompute the disposition snapshot and prove every one of the 70 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
++4. Recompute the disposition snapshot and prove every one of the 71 work outcomes has acceptance criteria, PR owner, product owner, affected contract/risk, and validation owner. The release tracking root may be admitted only for PR 7 promotion.
+ 5. Epic admission additionally requires an explicit mapped-child list; epic closure remains impossible while a mapped child lacks accepted completion or approved deferral evidence.
+ 6. Publish `admission-evidence.v1.json` with before/after revisions, contract hashes, conflicts, and aggregate `PASS|FAIL|INCOMPLETE`. Only aggregate `PASS` authorizes PR 1 implementation.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/decision-register.md b/docs/work/2026-08-09-forge-product-restructure/decision-register.md
+index 72d64684..f6b91e41 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/decision-register.md
++++ b/docs/work/2026-08-09-forge-product-restructure/decision-register.md
+@@ -15,7 +15,7 @@
+ | R8 | Ship 0.1.0 as an extraction-ready modular monolith with independently releasable Memory/Flow packages; postpone physical repository separation until post-stable measured triggers pass | Approved and locked | External research red-team: an early split risks a distributed monolith and coordinated-release burden |
+ | R9 | Preserve `forge-workflow` and current binaries through 0.1.x as compatibility facade | Approved and locked | Minimizes beta.5 migration breakage |
+ | R10 | Kernel/Memory remains sole authority writer; migration allows shadow/dual-read but never authority dual-write | Approved and locked | D44/D45 and split-brain prevention |
+-| R11 | Include 67 architecture/control issues, resolve three additional release gates separately, defer five nonessential architecture candidates, audit three close/supersede candidates, and keep unrelated backlog outside the train | Approved and locked | Corrected 79-row live Kernel ledger: 72 candidates minus five deferrals, plus four release/root and three closure-audit rows |
++| R11 | Include 68 architecture/control issues, resolve three additional release gates separately, defer five nonessential architecture candidates, audit three close/supersede candidates, and keep unrelated backlog outside the train | Approved and locked | Original 79-row ledger plus the user-approved manifest-driven Health issue: 73 candidates minus five deferrals, plus four release/root and three closure-audit rows |
+ | R12 | Release order: beta.6 contracts/preflight → beta.7 operational split → RC migration/freeze → metadata-only stable | Approved and locked | Monotonic SemVer progression from the published beta.5 rollback baseline |
+ | R13 | Every candidate is bound by a signed release BOM and exact immutable package artifacts; the schema supports the 0.1 single-repository case and a later multi-repository case | Approved and locked | Required for atomic rollback/provenance without forcing an early repository split |
+ | R14 | Model-winner promotion is separate from 0.1.0 unless default routing changes | Approved and locked | Infrastructure alone cannot prove a model winner |
+@@ -24,6 +24,7 @@
+ | R17 | Feedback is structured, per-report consent-gated, identity/device-free, and uses no client model tokens; optional cloud triage is Forge-funded and local triage is manual | Locked | User explicitly approved this privacy/token boundary |
+ | R18 | Monitor capability is version-bound and executable-probed per harness; unknown capability degrades explicitly rather than being assumed | Locked | User required current capability verification across target harnesses |
+ | R19 | Forge Flow provides one shared durable Monitor Engine; Memory stores monitor evidence; harnesses receive capability-tiered delivery; only actionable transitions enter model context | Locked | User approved learning from Claude Monitor while improving durability, portability, lifecycle, security, and token efficiency |
++| R20 | `forge doctor` expands into the single canonical local Health/diagnostic surface; coverage is generated from the command/capability manifest and no parallel `forge health` verb is added | Locked | User requested complete Health coverage without overlapping commands; Parallel run `trun_2e10e9ca2b9743e493fa96a9a4ae3ec2` independently recommended extending the existing diagnostic entry point; tracked by `e8e72233-c31f-4a59-a4e4-deca433d00f8` |
+ 
+ ## Approval rule
+ 
+diff --git a/docs/work/2026-08-09-forge-product-restructure/decisions.md b/docs/work/2026-08-09-forge-product-restructure/decisions.md
+index 15fde937..a57527dc 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/decisions.md
++++ b/docs/work/2026-08-09-forge-product-restructure/decisions.md
+@@ -1,3 +1,11 @@
+ # Forge 0.1.0 Restructuring Development Decisions
+ 
+-No implementation decision gaps have been recorded.
++## Decision 1
++
++**Date**: 2026-08-09
++**Task**: PR 1 lane B — issue-bound approval events
++**Gap**: The issue proposed `forge control approve|status <id>`, while `forge control` already owns policy classification and `forge gate approve <issue-id> <gate-id>` already owns durable issue-bound human decisions. Adding approval verbs to `control` would create a second authority surface.
++**Score**: 6/14; mandatory override — permission/security surface
++**Route**: BLOCKED
++**Choice made**: Keep `forge control` limited to mandatory/optional/permission policy configuration. Keep approval authority on the existing issue-bound gate event surface: `forge gate approve <issue-id> <gate-id>`. If bounded expiry is required, extend that existing event with `--ttl`; do not add project-scoped approval or a new `forge issue approve`/`forge control approve` command. Unscoped approval fails closed.
++**Status**: RESOLVED
+diff --git a/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md b/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+index 2ac4dd0b..bf2f737c 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
++++ b/docs/work/2026-08-09-forge-product-restructure/issue-disposition.md
+@@ -6,10 +6,10 @@ Snapshot evidence:
+ 
+ - Kernel snapshot SHA-256: `6a534378e84d4588cb06667f0d9dac7ddc4771c3e2b46b60cac0c716557f5ce4`
+ - 1,168 total issues; 522 open or in progress; maximum issue revision 5
+-- 79 explicitly classified rows: 72 architecture/control candidates, four release/root rows, and three close/supersede audits
++- 80 explicitly classified rows: 73 architecture/control candidates, four release/root rows, and three close/supersede audits
+ - Five architecture/control candidates are explicitly deferred
+-- The `0.1.0` train therefore contains 67 architecture/control issues plus three release-gate work issues: 70 actionable issue outcomes, consolidated into seven milestones/eight cohesive PRs—not 70 PRs
+-- The 70 are candidate issue records, including epics and their children; they are not 70 independent code changes and receive no double completion credit
++- The `0.1.0` train therefore contains 68 architecture/control issues plus three release-gate work issues: 71 actionable issue outcomes, consolidated into seven milestones/eight cohesive PRs—not 71 PRs
++- The 71 are candidate issue records, including epics and their children; they are not 71 independent code changes and receive no double completion credit
+ - The stable-release root issue tracks promotion and is not counted as another implementation outcome
+ - The remaining 443 open/in-progress issues stay outside this train unless separately approved
+ 
+@@ -17,6 +17,8 @@ Forty-seven implementation/migration candidates plus the stable-release tracking
+ 
+ Actions are conservative. `verify-close` and `supersede` require evidence before any Kernel mutation. `defer` means outside `0.1.0`, not cancelled.
+ 
++The original snapshot hash remains immutable. The user-approved post-snapshot addition `e8e72233-c31f-4a59-a4e4-deca433d00f8` was created with acceptance criteria and verified at revision 0; final release convergence must regenerate the full snapshot and admission ledger rather than rewrite historical evidence.
++
+ | ID | Title | Status | AC | Bucket | Primary owner | Delivery | Validation owner | Action |
+ |---|---|---|---|---|---|---|---|---|
+ |16b75ba8-7c70-4749-a4f6-fe1d42c82837|Publish Forge v0.1.0-beta.5|open|yes|close/supersede-audit|Release|separate|Release tag/npm artifact audit|verify-close|
+@@ -66,7 +68,7 @@ Actions are conservative. `verify-close` and `supersede` require evidence before
+ |b4a63278-8f95-4c98-9b79-9b31526ff805|Smith: bounded worker contracts, lifecycle events, and scope-drift enforcement|open|yes|architecture/flow|Flow (Memory contract dependency PR2)|PR4A|Flow scope/lifecycle evaluation suite|implement|
+ |b6bdf122-9945-4fa3-a73f-38f9fa2eec6d|EPIC: Knowledge architecture / OKF (info-arch 2026-07-04)|open|no|architecture/memory|Memory|PR3|Memory knowledge/recall suite|migrate|
+ |b811a974-a866-47e0-8f83-3f5d2423aded|Eliminate Kernel-to-plan artifact split-brain across projects|open|yes|control-plane/debt|Memory|PR1|Memory Kernel plan-authority suite|implement|
+-|b977b0a2-11f6-40d7-a230-8e2ff5f79115|[control-plane] Approval-event generalization -- project-scope + TTL for permission on non-issue items|open|no|control-plane/debt|Memory|PR1|Memory approval-authority suite|implement|
++|b977b0a2-11f6-40d7-a230-8e2ff5f79115|Keep permission approvals issue-bound on forge gate events|open|yes|control-plane/debt|Memory|PR1|Memory approval-authority suite|implement|
+ |bec40cf9-05ed-47df-93af-9eb10969ef12|Phase B: forge recall -- cross-platform kernel-native history/memory recall (ctx-inspired; optional ctx adapter; NOT a ctx dependency; kernel corpus)|open|no|architecture/memory|Memory|PR3|Memory recall compatibility suite|migrate|
+ |c29f3952-1229-4f13-afd7-416a426c916a|[online] Presence/lease surfacing -- agent live / holds lease on N / last-seen|open|no|control-plane/debt|Memory|PR1|Memory lease/presence suite|implement|
+ |c66f076e-70a8-4f94-80e6-e98536ea1c9b|[shepherd] Retire .claude/scripts/review-resolve.sh into agent-agnostic forge verbs|open|no|architecture/flow|Flow|PR4B|Flow review-verb compatibility suite|implement|
+@@ -98,3 +100,4 @@ Actions are conservative. `verify-close` and `supersede` require evidence before
+ |28d67d69-c175-4542-bc29-f6091a784330|[memory] Add an end-to-end node bin/forge.js memory smoke test (the --type-vs-real-CLI class)|open|no|architecture/memory|Memory|PR7|Memory CLI hardening/smoke suite|implement|
+ |bb5b054c-c8e1-45aa-a42d-3e57140c5dd9|[memory] recall --kind scans only the newest 1000-note window then filters — misses older typed notes while claiming capped:false|open|no|architecture/memory|Memory|PR3|Memory recall cap regression suite|implement|
+ |f21279f4-473a-4d20-95d4-533ddbb1d102|Add an event-driven efficiency supervisor for Flow runs|open|yes|architecture/flow|Flow (Memory evidence dependency PR1)|PR4A|Flow efficiency thresholds/recommendation + Kernel evidence suite|implement|
++|e8e72233-c31f-4a59-a4e4-deca433d00f8|Expand forge doctor into manifest-driven health coverage|open|yes|architecture/facade|Facade|PR5|Facade doctor schema/coverage/portability suite|implement|
+diff --git a/docs/work/2026-08-09-forge-product-restructure/plan.md b/docs/work/2026-08-09-forge-product-restructure/plan.md
+index dbe37331..891be080 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/plan.md
++++ b/docs/work/2026-08-09-forge-product-restructure/plan.md
+@@ -398,6 +398,10 @@ Stateless mode cannot claim shared work, validate a live team lease, authorize a
+ 
+ The generated command manifest becomes the exhaustive routing ledger in PR 2. Any command not assigned to exactly one owner fails the boundary gate. Installing both products does not change defaults; activation requires explicit config or command selection.
+ 
++`forge doctor [--scope <scope>] [--check <id>] [--json]` expands into the one canonical local Health/diagnostic surface; no parallel `forge health` verb is added. The generated command/capability manifest must assign every canonical non-alias command family either a stable health check, a shared dependency check, or an explicit not-applicable rationale; missing coverage fails manifest parity. Doctor is read-only and side-effect-free, groups checks by `core|memory|flow|integrations|release`, uses bounded concurrency and deadlines, redacts evidence, and returns versioned `PASS|WARN|FAIL|INCOMPLETE` results with actionable remediation. Default scope is fast, local, and project-aware; network/provider probes are explicit. `forge status` remains orientation, `forge verify` remains post-merge verification, and dashboard `GET /health` remains server liveness rather than a competing CLI contract.
++
++Parallel pro-fast run [`trun_2e10e9ca2b9743e493fa96a9a4ae3ec2`](https://platform.parallel.ai/play/deep-research/trun_2e10e9ca2b9743e493fa96a9a4ae3ec2) compared GitHub CLI, Docker, kubectl, Homebrew, npm, Rustup/Cargo, Claude Code, and Codex. It fixes these implementation constraints: coverage is a versioned contract rather than inventory; only allow-listed side-effect-free probes run by default; per-check status remains authoritative and `--json` never changes exit meaning; scope is explicit; timeout/unavailable evidence is `INCOMPLETE`; discovered capabilities without a safe adapter never pass; redaction occurs before serialization; and JSON uses stable check IDs, check versions, deterministic ordering, and forward-compatible fields.
++
+ ### 6.6 Release BOM
+ 
+ Every integrated candidate has a signed, canonical release bill of materials containing:
+@@ -573,7 +577,7 @@ The latest 522 open/in-progress issues are partitioned conservatively. The count
+ | Close/supersede audit | 3 | Close only after implementation/release evidence is verified |
+ | Unrelated/defer | 443 | Keep out of 0.1.0 restructuring train |
+ 
+-The 72 architecture/control candidates include five deliberately deferred items whose value is real but not required for 0.1.0. Therefore 67 issues enter the architecture train. Three separate release-gate issues require work, while the stable root is tracking only. The final actionable total is 70 issues, not 70 PRs.
++The original 72 architecture/control candidates plus the approved Health addition include five deliberately deferred items whose value is real but not required for 0.1.0. Therefore 68 issues enter the architecture train. Three separate release-gate issues require work, while the stable root is tracking only. The final actionable total is 71 issues, not 71 PRs.
+ 
+ ### 9.1 Inclusion rule
+ 
+@@ -676,6 +680,7 @@ PR 3 and PR 4A may be prepared in parallel after PR 2. They merge Memory first,
+ - move harness and GitHub edges to their owning product;
+ - keep `@forge/skills` independent;
+ - implement `forge capabilities --json`;
++- expand `forge doctor` into manifest-driven Health coverage with scoped, no-side-effect diagnostics; do not add a competing health verb;
+ - implement T0-T4 delivery adapters for Claude, Codex, Cursor, and Hermes with truthful per-installed-version degradation;
+ - regenerate projections from canonical sources.
+ 
+@@ -882,6 +887,6 @@ Implementation is not authorized by approving this draft. After approval, this d
+ 2. Keep 0.1.0 as an extraction-ready modular monolith with independently releasable Memory and Flow packages, postponing physical repository separation until the measured post-stable triggers pass?
+ 3. Preserve beta.5 CLI/config/data behavior unless an explicit migration diagnostic and rollback path exists?
+ 4. Accept seven milestones delivered through eight cohesive PRs, with Flow core (4A) separated from Shepherd/review/merge semantics (4B), and the stated sequential merge order?
+-5. Accept 67 architecture/control issues in the eight-PR train, three separate release-gate issues, five explicit candidate deferrals, and all unrelated work outside the train?
++5. Accept 68 architecture/control issues in the eight-PR train, three separate release-gate issues, five explicit candidate deferrals, and all unrelated work outside the train?
+ 6. Accept targeted PR validation plus one full exact-SHA release matrix?
+ 7. Decouple model-winner promotion from 0.1.0 unless default routing changes?
+diff --git a/docs/work/2026-08-09-forge-product-restructure/tasks.md b/docs/work/2026-08-09-forge-product-restructure/tasks.md
+index 3f0f41bc..4b87dbbf 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/tasks.md
++++ b/docs/work/2026-08-09-forge-product-restructure/tasks.md
+@@ -77,6 +77,7 @@
+ **Outcome:** the current CLI remains compatible while every installed harness receives truthful delivery behavior.
+ 
+ - Thin the facade, preserve legacy bins/JSON/exit codes, and add `forge capabilities --json`.
++- Expand `forge doctor [--scope] [--check] [--json]` into the one manifest-driven Health surface whose coverage parity fails when any canonical command family lacks a check, shared dependency, or explicit not-applicable rationale; do not add a competing `forge health` verb.
+ - Implement T0 durable pull, T1 next-turn injection, T2 active-session delivery, T3 resume/wake, and T4 human notification adapters.
+ - Probe the installed Claude, Codex, Cursor, and Hermes versions and executable behavior; never infer support from harness name.
+ - Use native monitor/channel/message facilities only when their probe passes; otherwise degrade to the next supported tier.
+diff --git a/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md b/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md
+index 7c19e1b1..3d4c2854 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md
++++ b/docs/work/2026-08-09-forge-product-restructure/validation-matrix.md
+@@ -40,7 +40,7 @@ G1 verifies that every tracked production path, public command, contract schema,
+ | 3 Memory foundation | G0–G5 for Memory; Kernel conformance; memory recall; backup/restore unit corpus; feedback consent/redaction/idempotency; triage cadence and authority | G6 Windows/Linux SQLite; inbound Beads fixture | Flow/Shepherd matrix |
+ | 4A Flow core, skills, and observers | G0–G4 for Flow core; fake MemoryProvider; generic monitor closure; skill/orchestrator fixtures; EfficiencySupervisor 20/30/35/39 budget cases | G6 process/platform; portable packet→receipt journey | Shepherd/review semantics, Memory storage edges, and live model waits |
+ | 4B Shepherd, review, merge, and handoff | G0–G4 for current-head verdicts, ancestry, threads, watcher lifecycle, and post-merge receipt handoff; fake review providers | G6 process/platform; G7 PR adapter journey | Memory storage edges and live bot wait loops |
+-| 5 Facade/harness/capabilities | G0–G3, G7; CLI/JSON/exit snapshots; command ownership; harness projection parity; version-bound native monitor/cancel/resume/cleanup probes | G6 installed binary smoke for Claude, Codex, Cursor, and Hermes | Full migration replay |
++| 5 Facade/harness/capabilities | G0–G3, G7; CLI/JSON/exit snapshots; command ownership; manifest-driven Doctor coverage parity; doctor schema/redaction/no-side-effect/deadline fixtures; harness projection parity; version-bound native monitor/cancel/resume/cleanup probes | G6 installed binary smoke for Claude, Codex, Cursor, and Hermes plus cross-platform Doctor fixtures | Full migration replay |
+ | 6 Migration/extraction readiness | G0–G7; beta.5 clean upgrade, interrupted migration, cutover, rollback, release BOM, sparse standalone package builds, forbidden-private-import scan | package-registry prerelease canary | Physical repository separation and stable promotion |
+ | 7 Release convergence | G0, docs/drift/disposition verification; candidate-generation reproducibility | affected gate for any correction | Product behavior changes |
+ 
+-- 
+2.51.0.windows.1
+

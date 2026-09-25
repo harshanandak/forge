@@ -1,0 +1,1892 @@
+From e1e68044a88a81644752b802d518e3340909dc7a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:27:43 +0530
+Subject: [PATCH] fix(shepherd): clear final review and sonar blockers
+
+---
+ lib/commands/merge.js                         |  82 ++-
+ lib/commands/shepherd.js                      | 177 +++---
+ lib/kernel/broker.js                          | 170 ++++-
+ lib/pr-monitor/flow-monitor.js                | 587 ++++++++----------
+ lib/pr-monitor/reconcile-executor.js          | 166 +++--
+ lib/pr-monitor/review-preflight.js            |  64 +-
+ ...merge-authority-review-regressions.test.js |   1 +
+ test/commands/merge-authority.test.js         |  44 +-
+ test/commands/shepherd.test.js                |  25 +-
+ test/kernel/trace.test.js                     |  29 +
+ test/pr-monitor/reconcile-executor.test.js    |  17 +
+ 11 files changed, 835 insertions(+), 527 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 295b17d8..0cc1c0ae 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -287,6 +287,13 @@ async function readPrBindingRows(built, allowRetired, { issueId, number, reposit
+   return built.broker.listOpenPrs(built.gitCommonDir);
+ }
+ 
++function prBindingError(bound, allowRetired) {
++  if (bound) return null;
++  return allowRetired
++    ? 'Kernel PR row is linked to a different issue.'
++    : 'Kernel PR row is not open or is linked to a different issue.';
++}
++
+ async function defaultVerifyPrIssueBinding({
+   issueId,
+   pr,
+@@ -334,9 +341,7 @@ async function defaultVerifyPrIssueBinding({
+       branch: row.branch || null,
+       url: row.url || null,
+       gitCommonDir: row.git_common_dir || built.gitCommonDir,
+-      error: bound ? null : (allowRetired
+-        ? 'Kernel PR row is linked to a different issue.'
+-        : 'Kernel PR row is not open or is linked to a different issue.'),
++      error: prBindingError(bound, allowRetired),
+       ...(terminalEvidence ? { terminalEvidence } : {}),
+     };
+   } catch (err) {
+@@ -495,7 +500,7 @@ async function defaultRecordMergeDecision({
+     }, {
+       actor: decision.actor,
+       sessionId: decision.sessionId,
+-      requireExactLifecycleOwnership: true,
++      requirePersistedMergeAuthority: true,
+     });
+     return { receiptId: receipt.object_id, receiptHash: receipt.content_hash };
+   } finally {
+@@ -505,6 +510,47 @@ async function defaultRecordMergeDecision({
+   }
+ }
+ 
++async function defaultPersistMergeDecision({ decision, pr, expectedHead, repository, projectRoot, buildBroker }) {
++  if (!decision?.packet || !decision?.binding) throw new Error('Merge decision evidence is unavailable.');
++  let built;
++  const ownsDriver = !buildBroker;
++  try {
++    if (buildBroker) built = await buildBroker({ projectRoot });
++    else {
++      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++      const deps = await buildMigratedKernelIssueDeps({
++        projectRoot,
++        gitCommonDir: decision.binding.gitCommonDir,
++      });
++      built = { broker: deps.kernelBroker, driver: deps.kernelDriver };
++    }
++    if (typeof built?.broker?.recordPrMergeAuthority !== 'function') {
++      throw new Error('Kernel merge authority provider is unavailable.');
++    }
++    const result = await built.broker.recordPrMergeAuthority({
++      phase: 'merged',
++      git_common_dir: decision.binding.gitCommonDir,
++      repo: repository,
++      number: Number(pr),
++      branch: decision.binding.branch,
++      ...(decision.binding.url ? { url: decision.binding.url } : {}),
++      occurred_at: decision.occurredAt,
++      work_packet: decision.packet,
++    }, {
++      actor: decision.actor,
++      sessionId: decision.sessionId,
++    });
++    if (!result?.iteration || !['accept', 'duplicate'].includes(result.iteration.decision)) {
++      throw new Error('Kernel did not confirm durable merge authority.');
++    }
++    return { persisted: true, decisionId: decision.decisionId, expectedHead };
++  } finally {
++    if (ownsDriver && built?.driver && typeof built.driver.close === 'function') {
++      try { await built.driver.close(); } catch { /* persisted authority outcome remains authoritative */ }
++    }
++  }
++}
++
+ function strictCheckSuccess(check) {
+   if (!check || typeof check !== 'object') return false;
+   const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
+@@ -1205,6 +1251,33 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: 'Merge decision evidence is unavailable.' };
+   }
+ 
++  const persistMergeDecision = deps.persistMergeDecision || defaultPersistMergeDecision;
++  try {
++    const authority = await persistMergeDecision({
++      decision,
++      pr,
++      expectedHead: parsed.expectedHead,
++      repository: leasedRepository,
++      projectRoot: root,
++      buildBroker: deps.buildMergeBroker,
++    });
++    if (authority?.persisted !== true) {
++      return {
++        success: false,
++        merged: false,
++        decisionId: decision.decisionId,
++        error: 'Failed to persist merge authority: durable confirmation is unavailable.',
++      };
++    }
++  } catch (err) {
++    return {
++      success: false,
++      merged: false,
++      decisionId: decision.decisionId,
++      error: `Failed to persist merge authority: ${err.message}`,
++    };
++  }
++
+   let mergeResult;
+   try {
+     mergeResult = await mergePr({
+@@ -1283,6 +1356,7 @@ module.exports = {
+   // Exported seams for testing / reuse.
+   defaultFetchPrContext,
+   defaultMergePr,
++  defaultPersistMergeDecision,
+   defaultPrepareMergeDecision,
+   defaultRecordMergeDecision,
+   defaultVerifyMergeGate,
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index ed0c9b20..894d13de 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -64,7 +64,7 @@ function rootMonitorId(owner, repo, pr) {
+ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', timeout: 30000, windowsHide: true });
+ 
+ function repositoryFromRemoteUrl(url) {
+-  const match = String(url || '').trim().match(/(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/i);
++  const match = /(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(String(url || '').trim());
+   return match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
+ }
+ 
+@@ -103,12 +103,12 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+     : null;
+ 
+   const repoJson = gh('gh', ['repo', 'view', '--json', 'owner,name']);
+-  const repo = JSON.parse(repoJson || '{}');
+-  const owner = repo.owner?.login || '';
+-  const name = repo.name || '';
++  const localRepository = JSON.parse(repoJson || '{}');
+ 
+-  const match = String(prInfo.url || '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/i);
++  const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/i.exec(String(prInfo.url || ''));
+   const baseRepository = match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
++  const owner = match?.[1] || localRepository.owner?.login || '';
++  const name = match?.[2] || localRepository.name || '';
+   const headOwner = prInfo.headRepositoryOwner?.login;
+   const headName = prInfo.headRepository?.name;
+   const headRepository = headOwner && headName ? `${headOwner}/${headName}`.toLowerCase() : baseRepository;
+@@ -118,7 +118,7 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+       baseRemote = findRepositoryRemote(git, baseRepository);
+       pushRemote = findRepositoryRemote(git, headRepository);
+     } else {
+-      [baseRemote] = git('git', ['remote']).split(/\s+/).filter(Boolean);
++      baseRemote = git('git', ['remote']).split(/\s+/).find(Boolean);
+       pushRemote = baseRemote;
+     }
+   } catch (_err) {
+@@ -163,6 +163,11 @@ function isWorkingTreeClean(git) {
+   }
+ }
+ 
++async function fetchPreflightBase(adapter, ctx, projectRoot) {
++  if (typeof adapter.fetchBase !== 'function') return;
++  await adapter.fetchBase({ baseRef: ctx.baseRef, cwd: ctx.cwd || projectRoot });
++}
++
+ // Render a single pass action for the human-readable monitor line. Strings pass
+ // through; everything else is JSON-encoded, but JSON.stringify can throw on
+ // circular refs or BigInt, so surface the reason inline rather than crash the pass.
+@@ -194,10 +199,18 @@ function formatAction(action) {
+  * @param {object} pullCtx - ctx forwarded to `gatherPull` (owner/repo/base/adapter/runGh/self).
+  * @returns {(records: object[]) => Promise<void>}
+  */
+-const UNSAFE_MONITOR_EXCERPT = /(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk_(?:live|test)_[a-z0-9]{16,}|sk-[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}|(?:^|[\\/])(?:users|home|root)[\\/]\S+)/i;
++const UNSAFE_MONITOR_EXCERPT = [
++  /gh[pousr]_[a-z0-9]{20,}/i,
++  /github_pat_[a-z0-9_]{20,}/i,
++  /sk_(?:live|test)_[a-z0-9]{16,}/i,
++  /sk-[a-z0-9]{16,}/i,
++  /AKIA[0-9A-Z]{16}/,
++  /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
++  /(?:^|[\\/])(?:users|home|root)[\\/]\S+/i,
++];
+ 
+ function safeMonitorExcerpt(value) {
+-  return typeof value === 'string' && value.length <= 16_384 && !UNSAFE_MONITOR_EXCERPT.test(value)
++  return typeof value === 'string' && value.length <= 16_384 && !UNSAFE_MONITOR_EXCERPT.some((pattern) => pattern.test(value))
+     ? value
+     : null;
+ }
+@@ -245,10 +258,8 @@ function parseSince(args) {
+  * @param {object} deps
+  * @returns {Promise<{ dir?: string, gather?: Function, enrich?: Function, error?: string }>}
+  */
+-async function buildMonitorContext(pr, projectRoot, deps) {
+-  let dir = deps.dir;
+-  let gather = deps.gather;
+-  let authority = deps.store ? {
++function injectedMonitorAuthority(deps) {
++  return deps.store ? {
+     store: deps.store,
+     monitorId: deps.monitorId,
+     ownerRunId: deps.ownerRunId,
+@@ -256,75 +267,78 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+     subjectId: deps.subjectId,
+     close: deps.close || (async () => {}),
+   } : {};
+-  // enrich decorates newly-failed checks with log excerpts before the journal
+-  // append. The caller MUST supply the default (not just forward an injected
+-  // one), or a plain `forge shepherd events`/`watch` emits bare check.failed events.
+-  let enrich = deps.enrich;
+-  if (!gather || !dir) {
+-    const gh = deps.gh || defaultGhRunner;
+-    const git = deps.git || gh;
+-    const buildContext = deps.buildContext || defaultBuildContext;
+-    const ctx = await buildContext({ pr, gh, git, projectRoot });
+-    const adapter = deps.adapter || new PrStateAdapter({ gh, git });
+-    const validation = validatePrStateAdapter(adapter);
+-    if (!validation.valid) {
+-      return { error: `Invalid pr-state adapter: ${validation.errors.join('; ')}` };
+-    }
+-    let gitCommonDir = deps.gitCommonDir;
+-    if (!gitCommonDir) {
+-      try {
+-        const resolveGitCommonDir = deps.resolveGitCommonDir || brokerMod.resolveGitCommonDir;
+-        gitCommonDir = resolveGitCommonDir(projectRoot || process.cwd(), { warn: () => {} });
+-      } catch {
+-        /* unavailable common-dir keeps the legacy per-root journal fallback */
+-      }
+-    }
+-    dir = dir || monitorJournal.journalDir({
++}
++
++function optionalGitCommonDir(projectRoot, deps) {
++  if (deps.gitCommonDir) return deps.gitCommonDir;
++  try {
++    const resolveGitCommonDir = deps.resolveGitCommonDir || brokerMod.resolveGitCommonDir;
++    return resolveGitCommonDir(projectRoot || process.cwd(), { warn: () => {} });
++  } catch {
++    return undefined;
++  }
++}
++
++async function buildMonitorAuthority(ctx, projectRoot, gitCommonDir, deps) {
++  if (deps.store) return injectedMonitorAuthority(deps);
++  const buildKernelDeps = deps.buildKernelDeps
++    || require('../kernel/cli-broker-factory').buildMigratedKernelIssueDeps;
++  const createMonitorStore = deps.createMonitorStore
++    || require('../../packages/memory').createMonitorStore;
++  let kernel;
++  try {
++    kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
++    return {
++      store: createMonitorStore(kernel.kernelDriver),
++      monitorId: rootMonitorId(ctx.owner, ctx.repo, ctx.pr),
++      ownerRunId: `shepherd:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
++      packetId: `shepherd-packet:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
++      subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
++      close: async () => kernel.kernelBroker?.close?.(),
++    };
++  } catch (error) {
++    try { await kernel?.kernelBroker?.close?.(); } catch { /* fallback must remain available */ }
++    return deps.forceAuthority ? { error: `Durable monitor authority is unavailable: ${error.message}` } : {};
++  }
++}
++
++async function buildLiveMonitorContext(pr, projectRoot, deps) {
++  const gh = deps.gh || defaultGhRunner;
++  const git = deps.git || gh;
++  const buildContext = deps.buildContext || defaultBuildContext;
++  const ctx = await buildContext({ pr, gh, git, projectRoot });
++  const adapter = deps.adapter || new PrStateAdapter({ gh, git });
++  const validation = validatePrStateAdapter(adapter);
++  if (!validation.valid) return { error: `Invalid pr-state adapter: ${validation.errors.join('; ')}` };
++  const gitCommonDir = optionalGitCommonDir(projectRoot, deps);
++  const authority = await buildMonitorAuthority(ctx, projectRoot, gitCommonDir, deps);
++  if (authority.error) return authority;
++  return {
++    dir: deps.dir || monitorJournal.journalDir({
+       root: projectRoot || process.cwd(), gitCommonDir, repo: ctx.repo, pr: ctx.pr,
+-    });
+-    gather = gather || (() => gatherMonitorSnapshot({ ...ctx, adapter, self: deps.self }));
+-    enrich = enrich || makeCheckFailureEnricher({
+-      ...ctx,
+-      adapter,
+-      self: deps.self,
+-      runGh: (ghArgs) => gh('gh', ghArgs),
+-      gatherPull: deps.gatherPull,
+-    });
+-    if (!deps.store) {
+-      const buildKernelDeps = deps.buildKernelDeps
+-        || require('../kernel/cli-broker-factory').buildMigratedKernelIssueDeps;
+-      const createMonitorStore = deps.createMonitorStore
+-        || require('../../packages/memory').createMonitorStore;
+-      let kernel;
+-      try {
+-        kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
+-        authority = {
+-          store: createMonitorStore(kernel.kernelDriver),
+-          monitorId: rootMonitorId(ctx.owner, ctx.repo, ctx.pr),
+-          ownerRunId: `shepherd:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+-          packetId: `shepherd-packet:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+-          subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
+-          close: async () => kernel.kernelBroker?.close?.(),
+-        };
+-      } catch (error) {
+-        try { await kernel?.kernelBroker?.close?.(); } catch { /* fallback must remain available */ }
+-        if (deps.forceAuthority) {
+-          return { error: `Durable monitor authority is unavailable: ${error.message}` };
+-        }
+-        authority = {};
+-      }
+-    }
+-  } else if (!enrich && deps.gatherPull) {
++    }),
++    gather: deps.gather || (() => gatherMonitorSnapshot({ ...ctx, adapter, self: deps.self })),
++    enrich: deps.enrich || makeCheckFailureEnricher({
++      ...ctx, adapter, self: deps.self, runGh: (ghArgs) => gh('gh', ghArgs), gatherPull: deps.gatherPull,
++    }),
++    ...authority,
++  };
++}
++
++async function buildMonitorContext(pr, projectRoot, deps) {
++  if (!deps.gather || !deps.dir) return buildLiveMonitorContext(pr, projectRoot, deps);
++  let enrich = deps.enrich;
++  if (!enrich && deps.gatherPull) {
+     // Injected gather (tests / programmatic callers) still gets the default
+     // enrichment when a pull-signal source is supplied.
+     enrich = makeCheckFailureEnricher({
+       pr, adapter: deps.adapter, self: deps.self, runGh: deps.runGh, gatherPull: deps.gatherPull,
+     });
+   }
+-  if (deps.forceAuthority && !authority.store) {
++  if (deps.forceAuthority && !deps.store) {
+     return { error: 'Durable monitor authority is unavailable.' };
+   }
+-  return { dir, gather, enrich, ...authority };
++  return { dir: deps.dir, gather: deps.gather, enrich, ...injectedMonitorAuthority(deps) };
+ }
+ 
+ /**
+@@ -672,6 +686,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const cleanTree = isWorkingTreeClean(git);
+   let localPreflight;
+   try {
++    await fetchPreflightBase(adapter, ctx, projectRoot);
+     localPreflight = await runPreflight({
+       projectRoot: projectRoot || process.cwd(),
+       base: ctx.base,
+@@ -850,14 +865,16 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     }
+   }
+ 
+-  const effectiveState = localPreflight.blocking === true && confirmedResult.state === 'MERGE_READY'
+-    ? (localPreflight.status === 'INCOMPLETE' ? 'INCOMPLETE' : 'PENDING')
+-    : confirmedResult.state;
+-  const effectiveReason = effectiveState !== confirmedResult.state
+-    ? (effectiveState === 'INCOMPLETE'
+-      ? 'Local review preflight is incomplete; merge readiness is not established.'
+-      : 'Local review preflight is blocking merge readiness.')
+-    : confirmedResult.reason;
++  let effectiveState = confirmedResult.state;
++  if (localPreflight.blocking === true && effectiveState === 'MERGE_READY') {
++    effectiveState = localPreflight.status === 'INCOMPLETE' ? 'INCOMPLETE' : 'PENDING';
++  }
++  let effectiveReason = confirmedResult.reason;
++  if (effectiveState === 'INCOMPLETE') {
++    effectiveReason = 'Local review preflight is incomplete; merge readiness is not established.';
++  } else if (effectiveState !== confirmedResult.state) {
++    effectiveReason = 'Local review preflight is blocking merge readiness.';
++  }
+ 
+   // Surface the pass outcome so the monitor is legible when run interactively or
+   // tailed by a scheduler (the bounded state machine is otherwise silent).
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 653e3848..3c6ea1df 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -264,7 +264,7 @@ function snapshotPrLinkageInput(input) {
+ 		url: input.url,
+ 		branch: input.branch,
+ 		work_packet: snapshotReceipt(input.work_packet),
+-		run_receipt: snapshotReceipt(input.run_receipt),
++		run_receipt: input.run_receipt === undefined ? undefined : snapshotReceipt(input.run_receipt),
+ 		occurred_at: input.occurred_at || new Date().toISOString(),
+ 		worktree_id: input.worktree_id,
+ 		issue_id: input.issue_id,
+@@ -296,11 +296,9 @@ function assertReceiptEnvelope(receipt, schemaId) {
+ 	return receipt;
+ }
+ 
+-function derivePrEvidence(input) {
++function derivePrPacketEvidence(input) {
+ 	const packet = assertReceiptEnvelope(input?.work_packet, 'forge.memory.work-packet.v1');
+-	const receipt = assertReceiptEnvelope(input?.run_receipt, 'forge.memory.run-receipt.v1');
+ 	const packetPayload = packet.payload;
+-	const receiptPayload = receipt.payload;
+ 	if (typeof packetPayload.issue_id !== 'string' || !packetPayload.issue_id
+ 		|| !Number.isInteger(packetPayload.expected_issue_revision) || packetPayload.expected_issue_revision < 0
+ 		|| packetPayload.authority?.issue_revision !== packetPayload.expected_issue_revision
+@@ -323,6 +321,40 @@ function derivePrEvidence(input) {
+ 		|| !packetPayload.allowed_mutations.includes(`pr.${input.phase}`)) {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', `recordPrLinkage WorkPacket does not authorize pr.${input.phase}`);
+ 	}
++	if (input.issue_id && input.issue_id !== packetPayload.issue_id) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage explicit issue_id conflicts with WorkPacket authority');
++	}
++	if (packetPayload.repository_id !== input.repo) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage repository conflicts with WorkPacket authority');
++	}
++	return {
++		packet,
++		packetPayload,
++		issue_id: packetPayload.issue_id,
++		issue_revision: packetPayload.expected_issue_revision,
++		head_sha: packetPayload.target_head,
++		packet_id: packetPayload.packet_id,
++		packet_revision: packetPayload.packet_revision,
++		work_packet_hash: packet.content_hash,
++		work_packet_identity: stableStringify([
++			packetPayload.issue_id,
++			packetPayload.expected_issue_revision,
++			packetPayload.packet_id,
++			packetPayload.packet_revision,
++			packetPayload.repository_id,
++			packetPayload.target_head,
++		]),
++		risk_manifest_digest: packetPayload.risk_manifest_digest,
++		gate_ids: gateIds,
++	};
++}
++
++function derivePrEvidence(input) {
++	const evidence = derivePrPacketEvidence(input);
++	const receipt = assertReceiptEnvelope(input?.run_receipt, 'forge.memory.run-receipt.v1');
++	const { packet, packetPayload } = evidence;
++	const { packet: _packet, packetPayload: _packetPayload, ...packetEvidence } = evidence;
++	const receiptPayload = receipt.payload;
+ 	if (receiptPayload.status !== 'PASS' || receiptPayload.validation?.status !== 'PASS') {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage requires a PASS RunReceipt');
+ 	}
+@@ -351,32 +383,11 @@ function derivePrEvidence(input) {
+ 	if (!bindingsMatch) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage WorkPacket and RunReceipt bindings conflict');
+ 	}
+-	if (input.issue_id && input.issue_id !== packetPayload.issue_id) {
+-		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage explicit issue_id conflicts with WorkPacket authority');
+-	}
+-	if (packetPayload.repository_id !== input.repo) {
+-		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage repository conflicts with WorkPacket authority');
+-	}
+ 	return {
+-		issue_id: packetPayload.issue_id,
+-		issue_revision: packetPayload.expected_issue_revision,
+-		head_sha: packetPayload.target_head,
+-		packet_id: packetPayload.packet_id,
+-		packet_revision: packetPayload.packet_revision,
+-		work_packet_hash: packet.content_hash,
+-		work_packet_identity: stableStringify([
+-			packetPayload.issue_id,
+-			packetPayload.expected_issue_revision,
+-			packetPayload.packet_id,
+-			packetPayload.packet_revision,
+-			packetPayload.repository_id,
+-			packetPayload.target_head,
+-		]),
++		...packetEvidence,
+ 		run_receipt_hash: receipt.content_hash,
+ 		run_id: receiptPayload.run_id,
+ 		attempt_id: receiptPayload.attempt_id,
+-		risk_manifest_digest: packetPayload.risk_manifest_digest,
+-		gate_ids: gateIds,
+ 	};
+ }
+ 
+@@ -551,6 +562,34 @@ function buildPrLinkagePayload(input, evidence, worktreeId, gateReceipts) {
+ 	};
+ }
+ 
++function buildPrMergeAuthorityPayload(input, evidence, worktreeId, gateReceipts) {
++	return {
++		phase: 'merge-authorized',
++		issue_id: evidence.issue_id,
++		issue_revision: evidence.issue_revision,
++		worktree_id: worktreeId,
++		repo: input.repo,
++		number: input.number,
++		git_common_dir: input.git_common_dir,
++		branch: input.branch,
++		url: input.url ?? null,
++		head_sha: evidence.head_sha,
++		work_packet_hash: evidence.work_packet_hash,
++		work_packet_identity: evidence.work_packet_identity,
++		packet_id: evidence.packet_id,
++		packet_revision: evidence.packet_revision,
++		risk_manifest_digest: evidence.risk_manifest_digest,
++		gate_receipts: gateReceipts,
++	};
++}
++
++function assertPersistedMergeAuthority(event, payload) {
++	if (!event) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage requires persisted exact-head merge authority');
++	}
++	assertCompatiblePrEvidence(event, payload);
++}
++
+ function assertTerminalPrCompatibility(terminalPr, input, evidence, worktreeId) {
+ 	if (!terminalPr) return;
+ 	const conflicts = evidence.head_sha !== terminalPr.head_sha
+@@ -1802,6 +1841,77 @@ function createLocalBroker(options = {}) {
+ 			return driver.upsertPr(row, context, getConfig());
+ 		},
+ 
++		async recordPrMergeAuthority(input, context = {}) {
++			if (typeof driver.forkConnection !== 'function') {
++				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrMergeAuthority requires an isolated transaction connection');
++			}
++			const config = getConfig();
++			const transactionDriver = driver.forkConnection(config);
++			if (!transactionDriver || transactionDriver === driver || typeof transactionDriver.close !== 'function') {
++				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrMergeAuthority received an invalid isolated transaction connection');
++			}
++			try {
++				return await withPrLinkageTurn(transactionDriver, async () => {
++					const linkageInput = preparePrLinkageInput(input, transactionDriver);
++					const evidence = derivePrPacketEvidence(linkageInput);
++					let transactionOpen = false;
++					try {
++						await beginImmediate(transactionDriver, config);
++						transactionOpen = true;
++						await assertExactLifecycleOwnership(transactionDriver, evidence, context, config, now());
++						const inferred = await transactionDriver.resolvePrLinkage(
++							{ ...linkageInput, issue_id: evidence.issue_id }, context, config,
++						);
++						assertResolvedPrLinkage(inferred, evidence);
++						const issueEvents = await transactionDriver.listKernelEvents('issue', evidence.issue_id, context, config);
++						const gateReceipts = resolveGateReceipts(issueEvents, evidence.gate_ids, linkageInput.occurred_at);
++						const trace = await transactionDriver.readTrace({
++							issue_id: evidence.issue_id,
++							pr_number: linkageInput.number,
++							repo: linkageInput.repo,
++							git_common_dir: linkageInput.git_common_dir,
++						}, context, config);
++						const linked = findPriorPr(trace.pull_requests, linkageInput);
++						if (!linked || linked.state !== 'open' || linked.head_sha !== evidence.head_sha) {
++							throw traceError('FORGE_TRACE_STALE_AUTHORITY', 'recordPrMergeAuthority requires the current open PR head');
++						}
++						const payload = buildPrMergeAuthorityPayload(linkageInput, evidence, inferred.worktree_id, gateReceipts);
++						const idempotencyKey = `pr.merge-authorized:${linked.id}:${evidence.head_sha}`;
++						const existingEvent = await transactionDriver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
++						assertCompatiblePrEvidence(existingEvent, payload);
++						let iteration;
++						if (existingEvent) {
++							iteration = { decision: 'duplicate', originalEvent: existingEvent, projection: false };
++						} else {
++							const event = await transactionDriver.insertKernelEvent({
++								entity_type: 'pr', entity_id: linked.id, event_type: 'pr.merge-authorized',
++								idempotency_key: idempotencyKey, expected_revision: 0,
++								actor: context.actor, origin: context.origin || 'cli',
++								created_at: linkageInput.occurred_at, payload,
++							}, context, config);
++							const outboxEntry = await transactionDriver.enqueueKernelProjection(
++								buildProjectionOutboxEntry(event, context.projectionTarget || 'jsonl', linkageInput.occurred_at),
++								context, config,
++							);
++							iteration = { decision: 'accept', event, outboxEntry, projection: true };
++						}
++						await transactionDriver.exec('COMMIT;', config);
++						transactionOpen = false;
++						await restoreBusyTimeout(transactionDriver, config);
++						return { link: linked, iteration };
++					} catch (error) {
++						if (transactionOpen) {
++							try { await transactionDriver.exec('ROLLBACK;', config); } catch { /* preserve original error */ }
++						}
++						await restoreBusyTimeout(transactionDriver, config);
++						throw error;
++					}
++				});
++			} finally {
++				transactionDriver.close();
++			}
++		},
++
+ 		async recordPrLinkage(input, context = {}) {
+ 			if (typeof driver.forkConnection !== 'function') {
+ 				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrLinkage requires an isolated transaction connection');
+@@ -1848,6 +1958,14 @@ function createLocalBroker(options = {}) {
+ 					...linkageInput, head_sha: evidence.head_sha, issue_id: evidence.issue_id,
+ 					worktree_id: worktreeId, registered_at: linkageInput.occurred_at,
+ 				}, context, config);
++				if (linkageInput.phase === 'merged' && context.requirePersistedMergeAuthority === true) {
++					const authorityKey = `pr.merge-authorized:${linked.id}:${evidence.head_sha}`;
++					const authority = await transactionDriver.loadKernelEventByIdempotencyKey(authorityKey, context, config);
++					assertPersistedMergeAuthority(
++						authority,
++						buildPrMergeAuthorityPayload(linkageInput, evidence, worktreeId, gateReceipts),
++					);
++				}
+ 				const idempotencyKey = `${eventType}:${linked.id}:${evidence.head_sha}`;
+ 				const existingEvent = await transactionDriver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
+ 				assertCompatiblePrEvidence(existingEvent, payload);
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 2f7aac2f..99c75466 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -32,7 +32,15 @@ const SNAPSHOT_FORMAT = 'digest-v1';
+ const SNAPSHOT_EVIDENCE_KEYS = new Set(['checks', 'threads', 'reviews', 'comments', 'degraded']);
+ const EVENT_VALIDATION_CACHES = new WeakMap();
+ const MONITOR_STATE_CACHES = new WeakMap();
+-const UNSAFE_PROVIDER_DIAGNOSTIC = /(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk_(?:live|test)_[a-z0-9]{16,}|sk-[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}|(?:^|[\\/])(?:users|home|root)[\\/]\S+)/i;
++const UNSAFE_PROVIDER_DIAGNOSTIC = [
++  /gh[pousr]_[a-z0-9]{20,}/i,
++  /github_pat_[a-z0-9_]{20,}/i,
++  /sk_(?:live|test)_[a-z0-9]{16,}/i,
++  /sk-[a-z0-9]{16,}/i,
++  /AKIA[0-9A-Z]{16}/,
++  /(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}/i,
++  /(?:^|[\\/])(?:users|home|root)[\\/]\S+/i,
++];
+ const REDACTED_PROVIDER_DIAGNOSTIC = '[provider diagnostic redacted]';
+ 
+ class FlowMonitorError extends Error {
+@@ -68,7 +76,8 @@ function boundIdentity(value) {
+ }
+ 
+ function validBoundedJobUrl(value) {
+-  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT || UNSAFE_PROVIDER_DIAGNOSTIC.test(value)) return null;
++  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT
++    || UNSAFE_PROVIDER_DIAGNOSTIC.some(pattern => pattern.test(value))) return null;
+   try {
+     const url = new URL(value);
+     return (url.protocol === 'https:' || url.protocol === 'http:')
+@@ -81,7 +90,7 @@ function validBoundedJobUrl(value) {
+ }
+ 
+ function safeProviderDiagnostic(value) {
+-  return typeof value === 'string' && UNSAFE_PROVIDER_DIAGNOSTIC.test(value)
++  return typeof value === 'string' && UNSAFE_PROVIDER_DIAGNOSTIC.some(pattern => pattern.test(value))
+     ? REDACTED_PROVIDER_DIAGNOSTIC
+     : value;
+ }
+@@ -166,6 +175,29 @@ function segmentablePendingBatchError(error) {
+     ].includes(error.message);
+ }
+ 
++function largestPendingBatch(ctx, subjectRevision, records, offset) {
++  let low = 1;
++  let high = records.length - offset - 1;
++  let accepted = null;
++  while (low <= high) {
++    const count = Math.floor((low + high) / 2);
++    const candidate = records.slice(offset, offset + count);
++    try {
++      accepted = {
++        count,
++        encoded: encodePendingBatch(ctx, subjectRevision, candidate, null),
++        records: candidate,
++        snapshot: null,
++      };
++      low = count + 1;
++    } catch (error) {
++      if (!segmentablePendingBatchError(error)) throw error;
++      high = count - 1;
++    }
++  }
++  return accepted;
++}
++
+ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+   const batches = [];
+   let offset = 0;
+@@ -178,25 +210,7 @@ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+       if (!segmentablePendingBatchError(error)) throw error;
+     }
+ 
+-    let low = 1;
+-    let high = records.length - offset - 1;
+-    let accepted = null;
+-    while (low <= high) {
+-      const count = Math.floor((low + high) / 2);
+-      const candidate = records.slice(offset, offset + count);
+-      try {
+-        accepted = {
+-          count,
+-          encoded: encodePendingBatch(ctx, subjectRevision, candidate, null),
+-          records: candidate,
+-          snapshot: null,
+-        };
+-        low = count + 1;
+-      } catch (error) {
+-        if (!segmentablePendingBatchError(error)) throw error;
+-        high = count - 1;
+-      }
+-    }
++    const accepted = largestPendingBatch(ctx, subjectRevision, records, offset);
+     if (!accepted) {
+       throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition record exceeds its durable bound');
+     }
+@@ -493,16 +507,14 @@ function monitorEventId(monitorId, sequence, type, key) {
+     .digest('hex');
+ }
+ 
+-function monitorEvent(
+-  ctx,
+-  record,
++function monitorEvent(ctx, record, {
+   snapshot,
+   subjectRevision,
+   checkpointComplete = true,
+   pendingBatch = null,
+   recordIsBounded = false,
+   batchPlan = null,
+-) {
++}) {
+   const seed = `${ctx.monitorId}:${record.seq}:${record.type}:${record.key}`;
+   const boundedRecord = recordIsBounded ? record : durableMonitorRecord(record);
+   return envelope(
+@@ -674,23 +686,23 @@ async function persistRecords(ctx, bridge, spec, {
+ }) {
+   let state = initialState;
+   const receiptIds = [];
+-  const batchEvidence = batchPlan ? null : pendingBatch || (batchRecords.length > 1
+-    ? encodePendingBatch(ctx, subjectRevision, batchRecords, snapshot)
+-    : null);
++  let batchEvidence = null;
++  if (!batchPlan && pendingBatch) batchEvidence = pendingBatch;
++  else if (!batchPlan && batchRecords.length > 1) {
++    batchEvidence = encodePendingBatch(ctx, subjectRevision, batchRecords, snapshot);
++  }
+   const prepared = [];
+   let validatedState = state;
+   for (const [index, record] of records.entries()) {
+     const checkpointComplete = batchOffset + index === batchRecords.length - 1;
+-    const event = monitorEvent(
+-      ctx,
+-      record,
+-      checkpointComplete ? snapshot : null,
++    const event = monitorEvent(ctx, record, {
++      snapshot: checkpointComplete ? snapshot : null,
+       subjectRevision,
+       checkpointComplete,
+-      checkpointComplete ? null : batchEvidence,
+-      recordsAreBounded,
+-      typeof batchPlan === 'function' ? batchPlan(batchOffset + index) : batchPlan,
+-    );
++      pendingBatch: checkpointComplete ? null : batchEvidence,
++      recordIsBounded: recordsAreBounded,
++      batchPlan: typeof batchPlan === 'function' ? batchPlan(batchOffset + index) : batchPlan,
++    });
+     const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+     const nextState = event.payload.actionability === 'advisory'
+@@ -724,7 +736,7 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+     if (batches.length === segmentCount) break;
+     segmentCount = batches.length;
+   }
+-  if (!batches || batches.length !== segmentCount || segmentCount < 2) {
++  if (batches?.length !== segmentCount || segmentCount < 2) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition plan did not converge');
+   }
+ 
+@@ -776,16 +788,13 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+   let validatedState = initialState;
+   const prepared = [];
+   for (const entry of entries) {
+-    const event = monitorEvent(
+-      ctx,
+-      entry.record,
+-      entry.snapshot,
++    const event = monitorEvent(ctx, entry.record, {
++      snapshot: entry.snapshot,
+       subjectRevision,
+-      entry.checkpointComplete,
+-      entry.pendingBatch,
+-      false,
+-      entry.batchPlan,
+-    );
++      checkpointComplete: entry.checkpointComplete,
++      pendingBatch: entry.pendingBatch,
++      batchPlan: entry.batchPlan,
++    });
+     const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+     const nextState = event.payload.actionability === 'advisory'
+@@ -826,129 +835,98 @@ async function readPlannedEvent(ctx, durableEvents, sequence, key) {
+   return event.payload.event_id === expectedId && event.payload.sequence === sequence ? event : null;
+ }
+ 
+-async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectRevision) {
++function uniqueBatchPlanReferences(pendingEvents) {
+   const references = [];
+   for (let index = pendingEvents.length - 1; index >= 0; index -= 1) {
+     const reference = pendingEvents[index].payload.bounded_payload.batch_plan;
+-    if (validBatchPlanReference(reference)
+-      && !references.some(item => item.id === reference.id)) {
++    if (validBatchPlanReference(reference) && !references.some(item => item.id === reference.id)) {
+       references.push(reference);
+     }
+   }
++  return references;
++}
++
++function validatePlanMarker(marker, reference) {
++  const value = marker.payload.bounded_payload.batch_plan;
++  if (!validBatchPlanReference(value) || value.id !== reference.id
++    || value.start_sequence !== reference.start_sequence
++    || value.segment_count !== reference.segment_count || value.committed !== true) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is inconsistent');
++  }
++}
++
++async function readPlanBatches(ctx, durableEvents, reference, subjectRevision) {
++  const batches = [];
++  for (let index = 0; index < reference.segment_count; index += 1) {
++    const segment = await readPlannedEvent(ctx, durableEvents, reference.start_sequence + index, planRecordKey(reference.id, index));
++    const value = segment?.payload.bounded_payload.batch_plan;
++    const encoded = segment?.payload.bounded_payload.pending_batch;
++    if (!segment || !validBatchPlanReference(value) || value.id !== reference.id
++      || value.start_sequence !== reference.start_sequence || value.segment_count !== reference.segment_count
++      || value.index !== index || typeof encoded !== 'string') {
++      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan segment is inconsistent');
++    }
++    batches.push(decodePendingBatch(encoded, ctx, subjectRevision));
++  }
++  return batches;
++}
++
++function validateRecoveredEvents(ctx, pendingEvents, reference, batches, records, actualStart) {
++  const actualEvents = pendingEvents.filter(event => event.payload.sequence >= actualStart);
++  const retainedOffset = actualEvents.length > 0 ? actualEvents[0].payload.sequence - actualStart : 0;
++  const remainingOffset = retainedOffset + actualEvents.length;
++  if (!Number.isSafeInteger(retainedOffset) || retainedOffset < 0 || remainingOffset > records.length) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan has no remaining checkpoint');
++  }
++  for (const [index, event] of actualEvents.entries()) {
++    const eventReference = event.payload.bounded_payload.batch_plan;
++    const recordOffset = retainedOffset + index;
++    const expectedRecord = records[recordOffset];
++    const checkpointComplete = recordOffset === records.length - 1;
++    const expectedActionability = expectedRecord.type === T.SNAPSHOT_CHECKPOINT ? 'advisory' : 'action_required';
++    const expectedSnapshot = checkpointComplete ? batches.at(-1).snapshot : null;
++    if (!validBatchPlanReference(eventReference) || eventReference.id !== reference.id
++      || eventReference.segment_index !== batchPlanSegmentIndex(batches, recordOffset)
++      || event.payload.sequence !== actualStart + recordOffset
++      || event.payload.event_id !== monitorEventId(ctx.monitorId, expectedRecord.seq, expectedRecord.type, expectedRecord.key)
++      || event.payload.type !== expectedRecord.type || event.payload.actionability !== expectedActionability
++      || event.payload.bounded_payload.checkpoint_complete !== checkpointComplete
++      || event.payload.bounded_payload.pending_batch !== undefined
++      || computeContentHash({ snapshot: event.payload.bounded_payload.snapshot ?? null }) !== computeContentHash({ snapshot: expectedSnapshot })
++      || computeContentHash(event.payload.bounded_payload.record) !== computeContentHash(expectedRecord)) {
++      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition identity is inconsistent');
++    }
++  }
++  return remainingOffset;
++}
+ 
+-  for (const reference of references) {
++async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectRevision) {
++  for (const reference of uniqueBatchPlanReferences(pendingEvents)) {
+     const markerSequence = reference.start_sequence + reference.segment_count;
+-    const referenceEvents = pendingEvents.filter(event => (
+-      event.payload.bounded_payload.batch_plan?.id === reference.id
+-    ));
++    const referenceEvents = pendingEvents.filter(event => event.payload.bounded_payload.batch_plan?.id === reference.id);
+     const committedHint = referenceEvents.some(event => (
+-      event.payload.bounded_payload.batch_plan?.committed === true
+-      || event.payload.sequence > markerSequence
++      event.payload.bounded_payload.batch_plan?.committed === true || event.payload.sequence > markerSequence
+     ));
+-    const marker = await readPlannedEvent(
+-      ctx,
+-      durableEvents,
+-      markerSequence,
+-      planRecordKey(reference.id, 'commit'),
+-    );
++    const marker = await readPlannedEvent(ctx, durableEvents, markerSequence, planRecordKey(reference.id, 'commit'));
+     if (!marker) {
+-      if (committedHint) {
+-        throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is missing');
+-      }
++      if (committedHint) throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is missing');
+       continue;
+     }
+-    const markerReference = marker.payload.bounded_payload.batch_plan;
+-    if (!validBatchPlanReference(markerReference)
+-      || markerReference.id !== reference.id
+-      || markerReference.start_sequence !== reference.start_sequence
+-      || markerReference.segment_count !== reference.segment_count
+-      || markerReference.committed !== true) {
+-      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is inconsistent');
+-    }
+-
+-    const batches = [];
+-    for (let index = 0; index < reference.segment_count; index += 1) {
+-      const segment = await readPlannedEvent(
+-        ctx,
+-        durableEvents,
+-        reference.start_sequence + index,
+-        planRecordKey(reference.id, index),
+-      );
+-      const segmentReference = segment?.payload.bounded_payload.batch_plan;
+-      const pendingBatch = segment?.payload.bounded_payload.pending_batch;
+-      if (!segment
+-        || !validBatchPlanReference(segmentReference)
+-        || segmentReference.id !== reference.id
+-        || segmentReference.start_sequence !== reference.start_sequence
+-        || segmentReference.segment_count !== reference.segment_count
+-        || segmentReference.index !== index
+-        || typeof pendingBatch !== 'string') {
+-        throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan segment is inconsistent');
+-      }
+-      batches.push(decodePendingBatch(pendingBatch, ctx, subjectRevision));
+-    }
+-    const planId = computeContentHash({
+-      monitor_id: ctx.monitorId,
+-      subject_revision: subjectRevision,
+-      segments: batches.map(batch => batch.encoded),
+-    });
+-    if (planId !== reference.id
+-      || batches.slice(0, -1).some(batch => batch.snapshot !== null)
+-      || batches.at(-1).snapshot === null) {
++    validatePlanMarker(marker, reference);
++    const batches = await readPlanBatches(ctx, durableEvents, reference, subjectRevision);
++    if (!validPrecommitPlanIdentity(ctx, batches, reference, subjectRevision)) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan identity is inconsistent');
+     }
+-
+     const records = batches.flatMap(batch => batch.records);
+     const actualStart = markerSequence + 1;
+     if (records.some((record, index) => record.seq !== actualStart + index)) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan sequence is inconsistent');
+     }
+-    const actualEvents = pendingEvents.filter(event => event.payload.sequence >= actualStart);
+-    const retainedOffset = actualEvents.length > 0
+-      ? actualEvents[0].payload.sequence - actualStart
+-      : 0;
+-    const remainingOffset = retainedOffset + actualEvents.length;
+-    if (!Number.isSafeInteger(retainedOffset) || retainedOffset < 0
+-      || remainingOffset > records.length) {
+-      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan has no remaining checkpoint');
+-    }
+-    for (const [index, event] of actualEvents.entries()) {
+-      const eventReference = event.payload.bounded_payload.batch_plan;
+-      const recordOffset = retainedOffset + index;
+-      const expectedRecord = records[recordOffset];
+-      const checkpointComplete = recordOffset === records.length - 1;
+-      const expectedActionability = expectedRecord.type === T.SNAPSHOT_CHECKPOINT
+-        ? 'advisory'
+-        : 'action_required';
+-      if (!validBatchPlanReference(eventReference)
+-        || eventReference.id !== reference.id
+-        || eventReference.segment_index !== batchPlanSegmentIndex(batches, recordOffset)
+-        || event.payload.sequence !== actualStart + recordOffset
+-        || event.payload.event_id !== monitorEventId(
+-          ctx.monitorId,
+-          expectedRecord.seq,
+-          expectedRecord.type,
+-          expectedRecord.key,
+-        )
+-        || event.payload.type !== expectedRecord.type
+-        || event.payload.actionability !== expectedActionability
+-        || event.payload.bounded_payload.checkpoint_complete !== checkpointComplete
+-        || event.payload.bounded_payload.pending_batch !== undefined
+-        || computeContentHash({ snapshot: event.payload.bounded_payload.snapshot ?? null })
+-          !== computeContentHash({ snapshot: checkpointComplete ? batches.at(-1).snapshot : null })
+-        || computeContentHash(event.payload.bounded_payload.record) !== computeContentHash(expectedRecord)) {
+-        throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition identity is inconsistent');
+-      }
+-    }
+     return {
+       records,
+-      remainingOffset,
++      remainingOffset: validateRecoveredEvents(ctx, pendingEvents, reference, batches, records, actualStart),
+       snapshot: batches.at(-1).snapshot,
+-      reference: batchPlanReference(
+-        reference.id,
+-        reference.start_sequence,
+-        reference.segment_count,
+-      ),
++      reference: batchPlanReference(reference.id, reference.start_sequence, reference.segment_count),
+       batches,
+     };
+   }
+@@ -993,34 +971,36 @@ function validPrecommitPlanIdentity(ctx, batches, reference, subjectRevision) {
+     && batches.at(-1).snapshot !== null;
+ }
+ 
++function consumeOrphanedPlan(ctx, pendingEvents, start, subjectRevision) {
++  const reference = pendingEvents[start].payload.bounded_payload.batch_plan;
++  if (!validBatchPlanReference(reference)
++    || reference.start_sequence !== pendingEvents[start].payload.sequence || reference.index !== 0) return null;
++  const batches = [];
++  let offset = start;
++  while (offset < pendingEvents.length) {
++    const event = pendingEvents[offset];
++    if (event.payload.bounded_payload.batch_plan?.id !== reference.id) break;
++    if (!validPrecommitSegmentEvent(ctx, event, reference, batches.length)) return null;
++    try {
++      batches.push(decodePendingBatch(event.payload.bounded_payload.pending_batch, ctx, subjectRevision));
++    } catch {
++      return null;
++    }
++    offset += 1;
++  }
++  if (batches.length < reference.segment_count) {
++    return batches.some(batch => batch.snapshot !== null) ? null : offset;
++  }
++  return validPrecommitPlanIdentity(ctx, batches, reference, subjectRevision) ? offset : null;
++}
++
+ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+   if (pendingEvents.length === 0) return false;
+   let offset = 0;
+   while (offset < pendingEvents.length) {
+-    const reference = pendingEvents[offset].payload.bounded_payload.batch_plan;
+-    if (!validBatchPlanReference(reference)
+-      || reference.start_sequence !== pendingEvents[offset].payload.sequence
+-      || reference.index !== 0) return false;
+-    const batches = [];
+-    while (offset < pendingEvents.length) {
+-      const event = pendingEvents[offset];
+-      const candidate = event.payload.bounded_payload.batch_plan;
+-      if (candidate?.id !== reference.id) break;
+-      const index = batches.length;
+-      const pendingBatch = event.payload.bounded_payload.pending_batch;
+-      if (!validPrecommitSegmentEvent(ctx, event, reference, index)) return false;
+-      try {
+-        batches.push(decodePendingBatch(pendingBatch, ctx, subjectRevision));
+-      } catch {
+-        return false;
+-      }
+-      offset += 1;
+-    }
+-    if (batches.length < reference.segment_count) {
+-      if (batches.some(batch => batch.snapshot !== null)) return false;
+-      continue;
+-    }
+-    if (!validPrecommitPlanIdentity(ctx, batches, reference, subjectRevision)) return false;
++    const nextOffset = consumeOrphanedPlan(ctx, pendingEvents, offset, subjectRevision);
++    if (nextOffset === null) return false;
++    offset = nextOffset;
+   }
+   return true;
+ }
+@@ -1043,6 +1023,121 @@ async function finalizePass(ctx, bridge, spec, {
+   };
+ }
+ 
++async function resolveTerminalLifecycle(ctx, deliveryState, reopenDepth) {
++  const replay = terminalReplay(deliveryState, ctx.monitorId);
++  if (!replay) return null;
++  let gathered; let current;
++  try {
++    gathered = await ctx.gather();
++    current = compactSnapshot(gathered);
++  } catch {
++    return replay;
++  }
++  const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
++  const monitorId = reopenedMonitorId(ctx.monitorId, replay.terminalReceiptId);
++  const reopenedHistory = await readAuthority({ ...ctx, monitorId });
++  if (lifecycle !== 'OPEN' && reopenedHistory.length === 0) return replay;
++  if (reopenDepth >= MAX_REOPEN_DEPTH) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Reopened monitor lifecycle exceeds its restart bound');
++  }
++  return runFlowMonitorPass({ ...ctx, monitorId, gather: async () => gathered }, reopenDepth + 1);
++}
++
++function completeCheckpointIndex(durableEvents) {
++  for (let index = durableEvents.length - 1; index >= 0; index -= 1) {
++    if (durableEvents[index].payload.bounded_payload.checkpoint_complete !== false) return index;
++  }
++  return -1;
++}
++
++async function resumeSegmentedBatch(ctx, bridge, spec, state, segmented, subjectRevision, receiptIds) {
++  const remaining = segmented.records.slice(segmented.remainingOffset);
++  const timestamp = remaining[0].ts;
++  const persisted = await persistRecords(ctx, bridge, spec, {
++    initialState: state,
++    records: remaining,
++    snapshot: segmented.snapshot,
++    subjectRevision,
++    timestamp,
++    batchRecords: segmented.records,
++    batchOffset: segmented.remainingOffset,
++    recordsAreBounded: true,
++    batchPlan: offset => ({
++      ...segmented.reference,
++      segment_index: batchPlanSegmentIndex(segmented.batches, offset),
++    }),
++  });
++  receiptIds.push(...persisted.receiptIds);
++  return finalizePass(ctx, bridge, spec, {
++    state: persisted.state, snapshot: segmented.snapshot, receiptIds, createdAt: timestamp, records: remaining,
++  });
++}
++
++function decodeRetainedBatch(ctx, pendingEvents, subjectRevision) {
++  const pendingValue = pendingEvents.at(-1).payload.bounded_payload.pending_batch;
++  const batch = decodePendingBatch(pendingValue, ctx, subjectRevision);
++  const retainedOffset = pendingEvents[0].payload.sequence - batch.records[0].seq;
++  const remainingOffset = retainedOffset + pendingEvents.length;
++  if (!Number.isSafeInteger(retainedOffset) || retainedOffset < 0 || remainingOffset >= batch.records.length) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition batch has no remaining checkpoint');
++  }
++  for (const [index, pending] of pendingEvents.entries()) {
++    const expected = batch.records[retainedOffset + index];
++    if (pending.payload.bounded_payload.pending_batch !== batch.encoded
++      || computeContentHash(pending.payload.bounded_payload.record) !== computeContentHash(expected)) {
++      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition identity is inconsistent');
++    }
++  }
++  return { batch, remainingOffset };
++}
++
++async function resumeRetainedBatch(ctx, bridge, spec, state, pendingEvents, subjectRevision, receiptIds) {
++  const { batch, remainingOffset } = decodeRetainedBatch(ctx, pendingEvents, subjectRevision);
++  const remaining = batch.records.slice(remainingOffset);
++  const timestamp = remaining[0].ts;
++  const persisted = await persistRecords(ctx, bridge, spec, {
++    initialState: state, records: remaining, snapshot: batch.snapshot, subjectRevision, timestamp,
++    batchRecords: batch.records, batchOffset: remainingOffset, pendingBatch: batch.encoded, recordsAreBounded: true,
++  });
++  receiptIds.push(...persisted.receiptIds);
++  return finalizePass(ctx, bridge, spec, {
++    state: persisted.state, snapshot: batch.snapshot, receiptIds, createdAt: timestamp, records: remaining,
++  });
++}
++
++async function persistFreshSnapshot(ctx, bridge, spec, state, previousSnapshot, durableEvents, subjectRevision, receiptIds, now) {
++  const gathered = await ctx.gather();
++  const next = compactSnapshot(gathered);
++  const previous = previousSnapshot == null ? null : comparableSnapshot(compactSnapshot(previousSnapshot));
++  const candidates = diffSnapshots(previous, comparableSnapshot(next, gathered));
++  if (candidates.length === 0 && snapshotIdentity(previousSnapshot) !== snapshotIdentity(next)) {
++    candidates.push(makeEvent(T.SNAPSHOT_CHECKPOINT, computeContentHash(next), {}));
++  }
++  if (candidates.length === 0) {
++    return finalizePass(ctx, bridge, spec, { state, snapshot: next, receiptIds, createdAt: now(), records: [] });
++  }
++  const timestamp = now();
++  const records = finalizeRecords(candidates, {
++    baseSeq: durableEvents.at(-1)?.payload.sequence ?? 0, ts: timestamp, snapshot: next,
++  });
++  if (typeof ctx.enrich === 'function') await ctx.enrich(records);
++  let persisted;
++  try {
++    persisted = await persistRecords(ctx, bridge, spec, {
++      initialState: state, records, snapshot: next, subjectRevision, timestamp,
++    });
++  } catch (error) {
++    if (!segmentablePendingBatchError(error)) throw error;
++    persisted = await persistSegmentedRecords(ctx, bridge, spec, {
++      initialState: state, records, snapshot: next, subjectRevision, timestamp,
++    });
++  }
++  receiptIds.push(...persisted.receiptIds);
++  return finalizePass(ctx, bridge, spec, {
++    state: persisted.state, snapshot: next, receiptIds, createdAt: timestamp, records: persisted.records || records,
++  });
++}
++
+ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const now = ctx.now || defaultNow;
+   const durableEvents = await readAuthority(ctx);
+@@ -1051,34 +1146,10 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   let state = reconstructMonitorState(ctx.store, spec, durableEvents);
+ 
+   const deliveryState = await readDeliveryAuthority(ctx);
+-  const replay = terminalReplay(deliveryState, ctx.monitorId);
+-  if (replay) {
+-    let gathered; let current;
+-    try {
+-      gathered = await ctx.gather();
+-      current = compactSnapshot(gathered);
+-    } catch { return replay; }
+-    const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
+-    const monitorId = reopenedMonitorId(ctx.monitorId, replay.terminalReceiptId);
+-    const reopenedHistory = await readAuthority({ ...ctx, monitorId });
+-    if (lifecycle !== 'OPEN' && reopenedHistory.length === 0) return replay;
+-    if (reopenDepth >= MAX_REOPEN_DEPTH) {
+-      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Reopened monitor lifecycle exceeds its restart bound');
+-    }
+-    return runFlowMonitorPass({
+-      ...ctx,
+-      monitorId,
+-      gather: async () => gathered,
+-    }, reopenDepth + 1);
+-  }
++  const terminal = await resolveTerminalLifecycle(ctx, deliveryState, reopenDepth);
++  if (terminal) return terminal;
+ 
+-  let checkpointIndex = -1;
+-  for (let index = durableEvents.length - 1; index >= 0; index -= 1) {
+-    if (durableEvents[index].payload.bounded_payload.checkpoint_complete !== false) {
+-      checkpointIndex = index;
+-      break;
+-    }
+-  }
++  const checkpointIndex = completeCheckpointIndex(durableEvents);
+   const previousSnapshot = checkpointIndex >= 0
+     ? durableEvents[checkpointIndex].payload.bounded_payload.snapshot ?? null
+     : null;
+@@ -1112,129 +1183,15 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   state = replayed.state;
+   const receiptIds = replayed.receiptIds;
+   if (pendingEvents.length > 0) {
+-    if (segmented) {
+-      const remaining = segmented.records.slice(segmented.remainingOffset);
+-      const timestamp = remaining[0].ts;
+-      const persisted = await persistRecords(ctx, bridge, spec, {
+-        initialState: state,
+-        records: remaining,
+-        snapshot: segmented.snapshot,
+-        subjectRevision,
+-        timestamp,
+-        batchRecords: segmented.records,
+-        batchOffset: segmented.remainingOffset,
+-        recordsAreBounded: true,
+-        batchPlan: offset => ({
+-          ...segmented.reference,
+-          segment_index: batchPlanSegmentIndex(segmented.batches, offset),
+-        }),
+-      });
+-      receiptIds.push(...persisted.receiptIds);
+-      return finalizePass(ctx, bridge, spec, {
+-        state: persisted.state,
+-        snapshot: segmented.snapshot,
+-        receiptIds,
+-        createdAt: timestamp,
+-        records: remaining,
+-      });
+-    }
++    if (segmented) return resumeSegmentedBatch(ctx, bridge, spec, state, segmented, subjectRevision, receiptIds);
+     if (orphanedPlan) {
+       // A crash before the commit marker leaves only advisory preparation events.
+       // No provider transition was accepted, so a fresh gather may safely supersede it.
+     } else {
+-    const pendingValue = pendingEvents.at(-1).payload.bounded_payload.pending_batch;
+-    const batch = decodePendingBatch(pendingValue, ctx, subjectRevision);
+-    const retainedOffset = pendingEvents[0].payload.sequence - batch.records[0].seq;
+-    const remainingOffset = retainedOffset + pendingEvents.length;
+-    if (!Number.isSafeInteger(retainedOffset) || retainedOffset < 0
+-      || remainingOffset >= batch.records.length) {
+-      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition batch has no remaining checkpoint');
++      return resumeRetainedBatch(ctx, bridge, spec, state, pendingEvents, subjectRevision, receiptIds);
+     }
+-    for (const [index, pending] of pendingEvents.entries()) {
+-      if (pending.payload.bounded_payload.pending_batch !== batch.encoded
+-        || computeContentHash(pending.payload.bounded_payload.record) !== computeContentHash(batch.records[retainedOffset + index])) {
+-        throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition identity is inconsistent');
+-      }
+-    }
+-    const remaining = batch.records.slice(remainingOffset);
+-    const timestamp = remaining[0].ts;
+-    const persisted = await persistRecords(ctx, bridge, spec, {
+-      initialState: state,
+-      records: remaining,
+-      snapshot: batch.snapshot,
+-      subjectRevision,
+-      timestamp,
+-      batchRecords: batch.records,
+-      batchOffset: remainingOffset,
+-      pendingBatch: batch.encoded,
+-      recordsAreBounded: true,
+-    });
+-    receiptIds.push(...persisted.receiptIds);
+-    return finalizePass(ctx, bridge, spec, {
+-      state: persisted.state,
+-      snapshot: batch.snapshot,
+-      receiptIds,
+-      createdAt: timestamp,
+-      records: remaining,
+-    });
+-    }
+-  }
+-
+-  const gathered = await ctx.gather();
+-  const next = compactSnapshot(gathered);
+-  const previous = previousSnapshot == null
+-    ? null
+-    : comparableSnapshot(compactSnapshot(previousSnapshot));
+-  const candidates = diffSnapshots(previous, comparableSnapshot(next, gathered));
+-  if (candidates.length === 0) {
+-    const snapshotChanged = snapshotIdentity(previousSnapshot) !== snapshotIdentity(next);
+-    if (snapshotChanged) {
+-      candidates.push(makeEvent(T.SNAPSHOT_CHECKPOINT, computeContentHash(next), {}));
+-    }
+-  }
+-  if (candidates.length === 0) {
+-    return finalizePass(ctx, bridge, spec, {
+-      state,
+-      snapshot: next,
+-      receiptIds,
+-      createdAt: now(),
+-      records: [],
+-    });
+   }
+-  const timestamp = now();
+-  const records = finalizeRecords(candidates, {
+-    baseSeq: durableEvents.at(-1)?.payload.sequence ?? 0,
+-    ts: timestamp,
+-    snapshot: next,
+-  });
+-  if (typeof ctx.enrich === 'function') await ctx.enrich(records);
+-  let persisted;
+-  try {
+-    persisted = await persistRecords(ctx, bridge, spec, {
+-      initialState: state,
+-      records,
+-      snapshot: next,
+-      subjectRevision,
+-      timestamp,
+-    });
+-  } catch (error) {
+-    if (!segmentablePendingBatchError(error)) throw error;
+-    persisted = await persistSegmentedRecords(ctx, bridge, spec, {
+-      initialState: state,
+-      records,
+-      snapshot: next,
+-      subjectRevision,
+-      timestamp,
+-    });
+-  }
+-  receiptIds.push(...persisted.receiptIds);
+-  return finalizePass(ctx, bridge, spec, {
+-    state: persisted.state,
+-    snapshot: next,
+-    receiptIds,
+-    createdAt: timestamp,
+-    records: persisted.records || records,
+-  });
++  return persistFreshSnapshot(ctx, bridge, spec, state, previousSnapshot, durableEvents, subjectRevision, receiptIds, now);
+ }
+ 
+ module.exports = { FlowMonitorError, runFlowMonitorPass };
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 2eb22f3b..7c953f8f 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -408,13 +408,64 @@ async function gatherObserved(gitCommonDir, lock, opts = {}) {
+  * true iff the kill actually happened. Never kills on a PID match alone.
+  */
+ function hasVerifiedClaim(entry, ctx) {
+-	if (!entry || entry.pid == null || entry.startedAt == null) return false;
++	if (entry?.pid == null || entry.startedAt == null) return false;
+ 	const readClaim = ctx.readClaim
+ 		|| ((e) => readClaimMarker(ctx.projectRoot, e.repo, e.pr, ctx.gitCommonDir));
+ 	const claim = readClaim(entry);
+ 	return claim != null && String(claim) === String(entry.startedAt);
+ }
+ 
++function stopLiveWatcher(entry, s, at) {
++	const phase = entry.lifecycle.state.phase;
++	if (phase === 'RUNNING') {
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-requested', at), s);
++		verifiedKill(entry, s.ctx);
++		return;
++	}
++	if (phase === 'FORCE_KILL_REQUESTED') {
++		verifiedKill(entry, s.ctx, 'SIGKILL');
++		return;
++	}
++	const cancelledAt = entry.lifecycle.state.cancelRequestedAt;
++	if (phase === 'CANCEL_REQUESTED' && Number.isSafeInteger(cancelledAt)
++		&& at - cancelledAt >= lifecycleOptions(entry).graceMs) {
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'grace-expired', at), s);
++		verifiedKill(entry, s.ctx, 'SIGKILL');
++	}
++}
++
++function acknowledgeStoppedWatcher(entry, s, at) {
++	const phase = entry.lifecycle.state.phase;
++	if (phase === 'CANCEL_REQUESTED') {
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-acknowledged', at), s);
++	} else if (phase === 'FORCE_KILL_REQUESTED') {
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'forced-kill-acknowledged', at, { signal: 'SIGKILL' }), s);
++	} else if (phase !== 'TERMINATION_ACKNOWLEDGED') {
++		return;
++	}
++	checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
++	s.removeClaim(entry);
++}
++
++function stopWatcherEntry(entry, s) {
++	const at = s.now();
++	const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
++	const alive = isAlive(entry.pid);
++	if (alive && !hasVerifiedClaim(entry, s.ctx)) {
++		s.watchers = s.watchers.filter(watcher => watcher !== entry);
++		return;
++	}
++	if (!alive && entry.lifecycle.state.phase === 'RUNNING') {
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'orphan-detected', at), s);
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'termination-acknowledged', at), s);
++		checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
++		s.removeClaim(entry);
++		return;
++	}
++	if (alive) stopLiveWatcher(entry, s, at);
++	else acknowledgeStoppedWatcher(entry, s, at);
++}
++
+ function verifiedKill(entry, ctx, signal) {
+ 	if (!entry || entry.pid == null || entry.startedAt == null) return false;
+ 	const isAlive = ctx.isAlive || shepherdLease.pidAlive;
+@@ -472,45 +523,7 @@ const ACTION_HANDLERS = {
+ 	},
+ 	stopWatcher(action, s) {
+ 		for (const entry of s.watchers.filter((w) => w.pr === action.pr.number)) {
+-			const at = s.now();
+-			const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
+-			const alive = isAlive(entry.pid);
+-			if (alive && !hasVerifiedClaim(entry, s.ctx)) {
+-				s.watchers = s.watchers.filter(watcher => watcher !== entry);
+-				continue;
+-			}
+-			if (!alive && entry.lifecycle.state.phase === 'RUNNING') {
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'orphan-detected', at), s);
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'termination-acknowledged', at), s);
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
+-				s.removeClaim(entry);
+-				continue;
+-			}
+-			if (entry.lifecycle.state.phase === 'RUNNING') {
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-requested', at), s);
+-				verifiedKill(entry, s.ctx);
+-				continue;
+-			}
+-			if (alive) {
+-				if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
+-					verifiedKill(entry, s.ctx, 'SIGKILL');
+-					continue;
+-				}
+-				const cancelledAt = entry.lifecycle.state.cancelRequestedAt;
+-				if (entry.lifecycle.state.phase === 'CANCEL_REQUESTED'
+-					&& Number.isSafeInteger(cancelledAt) && at - cancelledAt >= lifecycleOptions(entry).graceMs) {
+-					checkpointLifecycle(entry, lifecycleEvent(entry, 'grace-expired', at), s);
+-					verifiedKill(entry, s.ctx, 'SIGKILL');
+-				}
+-				continue;
+-			}
+-			if (entry.lifecycle.state.phase === 'CANCEL_REQUESTED') {
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-acknowledged', at), s);
+-			} else if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
+-				checkpointLifecycle(entry, lifecycleEvent(entry, 'forced-kill-acknowledged', at, { signal: 'SIGKILL' }), s);
+-			} else if (entry.lifecycle.state.phase !== 'TERMINATION_ACKNOWLEDGED') continue;
+-			checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
+-			s.removeClaim(entry); // clear the start-time marker so a reused PID can't match it later
++			stopWatcherEntry(entry, s);
+ 		}
+ 		s.watchers = s.watchers.filter((w) => w.pr !== action.pr.number || !w.lifecycle.state.terminal);
+ 	},
+@@ -564,32 +577,29 @@ const ACTION_HANDLERS = {
+ 	},
+ };
+ 
+-/**
+- * Dispatch a reconcile action set in order. A failed kernel upsert stops the pass so
+- * dependent retire actions retry on the next converge. Returns the updated
+- * watcher entry list (`{pr,repo,pid,startedAt}[]`) for the caller to publish via
+- * `updateWatchers`. `ctx.watchers` seeds the current set (from observed state).
+- */
+-async function execute(actions, ctx = {}) {
+-	if (!Array.isArray(actions)) {
+-		const error = new TypeError('Reconcile actions must be an array');
+-		error.code = 'INVALID_ACTIONS';
+-		throw error;
+-	}
+-	const boundedActions = actions.slice(0, MAX_ACTIONS_PER_PASS);
+-	if (actions.length > boundedActions.length && typeof ctx.recordDiagnostic === 'function') {
+-		try {
+-			ctx.recordDiagnostic({
+-				kind: 'actions-truncated', requested: actions.length, processed: boundedActions.length,
+-			});
+-		} catch { /* diagnostics must never affect convergence */ }
+-	}
++function boundedExecutableActions(actions, ctx) {
++	const executable = ctx.broker
++		? actions
++		: actions.filter(action => !['upsertPrRow', 'retire'].includes(action?.type));
++	return executable.slice(0, MAX_ACTIONS_PER_PASS);
++}
++
++function reportActionTruncation(actions, boundedActions, ctx) {
++	if (actions.length <= boundedActions.length || typeof ctx.recordDiagnostic !== 'function') return;
++	try {
++		ctx.recordDiagnostic({
++			kind: 'actions-truncated', requested: actions.length, processed: boundedActions.length,
++		});
++	} catch { /* diagnostics must never affect convergence */ }
++}
++
++function buildExecutionState(ctx) {
+ 	const now = ctx.now || (() => Date.now());
+ 	const watchers = Array.isArray(ctx.watchers)
+ 		? ctx.watchers.map(normalizeWatcher).map(entry => replayLifecycle(entry, now()))
+ 		: [];
+-	const s = {
+-		broker: ctx.broker || null, // live kernel handle threaded by the daemon; never the module namespace
++	return {
++		broker: ctx.broker || null,
+ 		spawnWatcher: ctx.spawnWatcher || startPrWatcherDetached,
+ 		writeClaim: ctx.writeClaim
+ 			|| ((e) => writeClaimMarker(ctx.projectRoot, e.repo, e.pr, e.startedAt, ctx.gitCommonDir)),
+@@ -602,19 +612,39 @@ async function execute(actions, ctx = {}) {
+ 		projectRoot: ctx.projectRoot,
+ 		gitCommonDir: ctx.gitCommonDir,
+ 		watchers,
+-		ctx, // verifiedKill reads isAlive/readClaim/kill/projectRoot off the original ctx
++		ctx,
+ 	};
++}
+ 
+-	const seedIdentities = new Set(watchers.map(processIdentity));
++function cleanupNewWatchers(s, seedIdentities) {
++	for (const entry of s.watchers.filter(watcher => !seedIdentities.has(processIdentity(watcher)))) {
++		if (verifiedKill(entry, s.ctx, 'SIGKILL')) s.removeClaim(entry);
++	}
++}
++
++/**
++ * Dispatch a reconcile action set in order. A failed kernel upsert stops the pass so
++ * dependent retire actions retry on the next converge. Returns the updated
++ * watcher entry list (`{pr,repo,pid,startedAt}[]`) for the caller to publish via
++ * `updateWatchers`. `ctx.watchers` seeds the current set (from observed state).
++ */
++async function execute(actions, ctx = {}) {
++	if (!Array.isArray(actions)) {
++		const error = new TypeError('Reconcile actions must be an array');
++		error.code = 'INVALID_ACTIONS';
++		throw error;
++	}
++	const boundedActions = boundedExecutableActions(actions, ctx);
++	reportActionTruncation(actions, boundedActions, ctx);
++	const s = buildExecutionState(ctx);
++	const seedIdentities = new Set(s.watchers.map(processIdentity));
+ 	try {
+ 		for (const action of boundedActions) {
+-			const handler = ACTION_HANDLERS[action && action.type];
++			const handler = ACTION_HANDLERS[action?.type];
+ 			if (handler && (await handler(action, s)) === false) break;
+ 		}
+ 	} catch (error) {
+-		for (const entry of s.watchers.filter(watcher => !seedIdentities.has(processIdentity(watcher)))) {
+-			if (verifiedKill(entry, s.ctx, 'SIGKILL')) s.removeClaim(entry);
+-		}
++		cleanupNewWatchers(s, seedIdentities);
+ 		throw error;
+ 	}
+ 	return s.watchers;
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 3e69ba4d..a70a9546 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -143,9 +143,9 @@ function notApplicableResult(context) {
+   const exactHeadCheckedOut = exactHeadAvailable && localHead === expectedHead;
+   if (exactHeadCheckedOut && context.cleanTree === true) return null;
+   const dirtyCheckout = exactHeadCheckedOut && context.cleanTree !== true;
+-  const summary = dirtyCheckout
+-    ? 'local checkout has uncommitted changes'
+-    : (exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable');
++  let summary = 'PR head is unavailable';
++  if (dirtyCheckout) summary = 'local checkout has uncommitted changes';
++  else if (exactHeadAvailable) summary = 'local checkout is not the PR head';
+   return {
+     status: 'INCOMPLETE',
+     blocking: true,
+@@ -186,6 +186,34 @@ async function deterministicResult(context, runDeterministic) {
+   }
+ }
+ 
++async function resolveReviewContext(context, deps) {
++  const supplied = typeof context.baseCommit === 'string' && /^[0-9a-f]{40}$/i.test(context.baseCommit);
++  if (supplied) return { context: { ...context, baseCommit: context.baseCommit.toLowerCase() } };
++  if (deps.resolveBaseCommit === false) return { context };
++  const resolveBaseCommit = typeof deps.resolveBaseCommit === 'function'
++    ? deps.resolveBaseCommit
++    : defaultResolveBaseCommit;
++  try {
++    const baseCommit = String(await resolveBaseCommit(context) || '').trim().toLowerCase();
++    if (!/^[0-9a-f]{40}$/.test(baseCommit)) throw new Error('PR base commit resolver returned an invalid commit');
++    return { context: { ...context, baseCommit } };
++  } catch (error) {
++    return { error: error?.message || String(error) };
++  }
++}
++
++function incompleteBaseResult(detail) {
++  return {
++    status: 'INCOMPLETE',
++    blocking: true,
++    providers: {
++      coderabbit: providerResult('NOT_APPLICABLE', false, detail),
++      deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
++    },
++    findings: [{ provider: 'local-preflight', detail }],
++  };
++}
++
+ async function runLocalReviewPreflight(context, deps = {}) {
+   const probeCodeRabbit = deps.probeCodeRabbit || defaultProbeCodeRabbit;
+   const runCodeRabbit = deps.runCodeRabbit || defaultRunCodeRabbit;
+@@ -194,33 +222,9 @@ async function runLocalReviewPreflight(context, deps = {}) {
+   const notApplicable = notApplicableResult(context);
+   if (notApplicable) return notApplicable;
+ 
+-  let reviewContext = context;
+-  const suppliedBaseCommit = typeof context.baseCommit === 'string'
+-    && /^[0-9a-f]{40}$/i.test(context.baseCommit);
+-  const shouldResolveBase = deps.resolveBaseCommit !== false && !suppliedBaseCommit;
+-  if (shouldResolveBase) {
+-    const resolveBaseCommit = typeof deps.resolveBaseCommit === 'function'
+-      ? deps.resolveBaseCommit
+-      : defaultResolveBaseCommit;
+-    try {
+-      const baseCommit = String(await resolveBaseCommit(context) || '').trim().toLowerCase();
+-      if (!/^[0-9a-f]{40}$/.test(baseCommit)) throw new Error('PR base commit resolver returned an invalid commit');
+-      reviewContext = { ...context, baseCommit };
+-    } catch (error) {
+-      const detail = error?.message || String(error);
+-      return {
+-        status: 'INCOMPLETE',
+-        blocking: true,
+-        providers: {
+-          coderabbit: providerResult('NOT_APPLICABLE', false, detail),
+-          deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
+-        },
+-        findings: [{ provider: 'local-preflight', detail }],
+-      };
+-    }
+-  } else if (suppliedBaseCommit) {
+-    reviewContext = { ...context, baseCommit: context.baseCommit.toLowerCase() };
+-  }
++  const resolved = await resolveReviewContext(context, deps);
++  if (resolved.error) return incompleteBaseResult(resolved.error);
++  const reviewContext = resolved.context;
+ 
+   const coderabbit = await codeRabbitResult(reviewContext, probeCodeRabbit, runCodeRabbit);
+   const deterministic = await deterministicResult(reviewContext, runDeterministic);
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index a9e8951f..f4257fef 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -45,6 +45,7 @@ function deps(overrides = {}) {
+     verifyPrIssueBinding: async () => ({ bound: true }),
+     verifyMergeGate: async () => true,
+     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
++    persistMergeDecision: async () => ({ persisted: true }),
+     recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+     env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+     fetchPrContext: async () => context(),
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index e89b6130..cb7601ef 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -64,6 +64,7 @@ function deps(overrides = {}) {
+     verifyPrIssueBinding: async () => ({ bound: true }),
+     verifyMergeGate: async () => true,
+     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
++    persistMergeDecision: async () => ({ persisted: true }),
+     recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+     env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+     fetchPrContext: async () => context(),
+@@ -94,11 +95,16 @@ describe('merge command — mandatory release authority', () => {
+     }
+   });
+ 
+-  test('records one terminal decision only after exact-head merge succeeds', async () => {
++  test('persists exact-head authority before merging and records completion afterward', async () => {
+     const order = [];
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       verifyMergeGate: async () => { order.push('gate'); return true; },
+       prepareMergeDecision: async () => { order.push('decision'); return { decisionId: 'decision-42' }; },
++      persistMergeDecision: async ({ decision }) => {
++        order.push('authority');
++        expect(decision.decisionId).toBe('decision-42');
++        return { persisted: true };
++      },
+       mergePr: async () => { order.push('merge'); return { merged: true }; },
+       recordMergeDecision: async ({ decision }) => {
+         order.push('receipt');
+@@ -107,10 +113,22 @@ describe('merge command — mandatory release authority', () => {
+       },
+     }));
+ 
+-    expect(order).toEqual(['gate', 'decision', 'merge', 'receipt']);
++    expect(order).toEqual(['gate', 'decision', 'authority', 'merge', 'receipt']);
+     expect(out).toMatchObject({ success: true, merged: true, decisionId: 'decision-42', receiptId: 'receipt-42' });
+   });
+ 
++  test('never mutates GitHub when durable merge authority cannot be persisted', async () => {
++    let mergeCalled = false;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      persistMergeDecision: async () => { throw new Error('authority store unavailable'); },
++      mergePr: async () => { mergeCalled = true; return { merged: true }; },
++    }));
++
++    expect(out).toMatchObject({ success: false, merged: false, decisionId: 'decision-1' });
++    expect(out.error).toMatch(/persist merge authority.*unavailable/i);
++    expect(mergeCalled).toBe(false);
++  });
++
+   test('provider merge metadata cannot overwrite authoritative terminal evidence', async () => {
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       mergePr: async () => ({
+@@ -371,9 +389,29 @@ describe('merge command — mandatory release authority', () => {
+ 
+     const calls = [];
+     const broker = Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async () => ({})]));
++    const authorityCalls = [];
++    broker.recordPrMergeAuthority = async (...callArgs) => {
++      authorityCalls.push(callArgs);
++      return { iteration: { decision: 'accept' } };
++    };
+     broker.recordPrLinkage = async (...callArgs) => { calls.push(callArgs); return { success: true }; };
+     broker.recordOpenedPrLinkage = async () => ({ success: true });
+     broker.readTrace = async () => [];
++    const authority = await mergeCmd.defaultPersistMergeDecision({
++      decision,
++      pr: 42,
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      projectRoot: process.cwd(),
++      buildBroker: async () => ({ broker }),
++    });
++    expect(authority).toMatchObject({ persisted: true, decisionId: decision.decisionId, expectedHead: HEAD });
++    expect(authorityCalls).toHaveLength(1);
++    expect(authorityCalls[0][0]).toMatchObject({
++      phase: 'merged', repo: 'acme/forge', number: 42, branch: 'feature/merge', work_packet: decision.packet,
++    });
++    expect(authorityCalls[0][1]).toEqual({ actor: 'release-actor', sessionId: 'release-session' });
++
+     const terminal = await mergeCmd.defaultRecordMergeDecision({
+       decision,
+       completedAt: '2026-08-01T12:00:05.000Z',
+@@ -406,7 +444,7 @@ describe('merge command — mandatory release authority', () => {
+     expect(calls[0][1]).toEqual({
+       actor: 'release-actor',
+       sessionId: 'release-session',
+-      requireExactLifecycleOwnership: true,
++      requirePersistedMergeAuthority: true,
+     });
+ 
+     calls.length = 0;
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 785b3a61..e4c9c0e1 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -85,7 +85,7 @@ describe('shepherd command handler', () => {
+         });
+       }
+       if (args.includes('repo') && args.includes('view')) {
+-        return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++        return JSON.stringify({ owner: { login: 'contributor' }, name: 'widget' });
+       }
+       return '{}';
+     };
+@@ -239,6 +239,29 @@ describe('shepherd command handler', () => {
+     expect(out.localPreflight.findings).toEqual([{ provider: 'lint', detail: 'error' }]);
+   });
+ 
++  test('fetches the authoritative base before running local review providers', async () => {
++    const order = [];
++    await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      adapter: {
++        ...STABLE_ADAPTER,
++        fetchBase: async ({ baseRef }) => { order.push(`fetch:${baseRef}`); },
++      },
++      runLocalPreflight: async () => {
++        order.push('preflight');
++        return { status: 'PASS', blocking: false, providers: {}, findings: [] };
++      },
++      runPass: async () => ({ state: 'PENDING', actions: [], reason: 'pending' }),
++      buildContext: async () => ({
++        pr: '7', owner: 'acme', repo: 'widget', base: 'master', baseRef: 'upstream/master',
++        headSha: STABLE_HEAD, localHead: STABLE_HEAD, cwd: '/work/tree',
++      }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${STABLE_HEAD}\n` : ''),
++    });
++
++    expect(order.slice(0, 2)).toEqual(['fetch:upstream/master', 'preflight']);
++  });
++
+   test('preserves an incomplete local preflight instead of reporting a pending remote result', async () => {
+     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+       ...CONVERGENCE_DEPS,
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 5a4d26fb..3bccbf46 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -209,6 +209,35 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			.toEqual([{ target: 'jsonl' }]);
+ 	});
+ 
++	test('persists exact-head merge authority before mutation and accepts its terminal receipt after lease expiry', async () => {
++		const packet = workPacket();
++		await broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet)));
++		const authorityInput = linkage('merged', packet);
++		delete authorityInput.run_receipt;
++
++		const authority = await broker.recordPrMergeAuthority(authorityInput, LIFECYCLE_CONTEXT);
++		expect(authority.iteration.decision).toBe('accept');
++		brokerNow = '2026-08-11T02:00:00.000Z';
++		const merged = await rawRecordPrLinkage(
++			linkage('merged', packet, runReceipt(packet, {}, 'merged')),
++			{ ...LIFECYCLE_CONTEXT, requirePersistedMergeAuthority: true },
++		);
++
++		expect(merged.iteration.decision).toBe('accept');
++		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace.pull_requests[0].iterations.map(event => event.type))
++			.toEqual(['pr.opened', 'pr.merge-authorized', 'pr.merged']);
++	});
++
++	test('rejects a terminal merge receipt without persisted exact-head authority', async () => {
++		const packet = workPacket();
++		await broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet)));
++		await expect(rawRecordPrLinkage(
++			linkage('merged', packet, runReceipt(packet, {}, 'merged')),
++			{ ...LIFECYCLE_CONTEXT, requirePersistedMergeAuthority: true },
++		)).rejects.toThrow(/persisted exact-head merge authority/i);
++	});
++
+ 	test('shares initialized Kernel state with an isolated linkage transaction for an in-memory database', async () => {
+ 		const memoryConfig = { databasePath: ':memory:' };
+ 		const memoryDriver = createBuiltinSQLiteDriver({});
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 6df47640..2e0afd40 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -56,6 +56,23 @@ describe('execute — watcher lifecycle', () => {
+ 			kind: 'actions-truncated', requested: 130, processed: 128,
+ 		}));
+ 	});
++	test('reserves degraded action capacity for watcher starts when the broker is unavailable', async () => {
++		const actions = [
++			...Array.from({ length: 128 }, (_, index) => ({
++				type: 'upsertPrRow', row: { number: index + 1 },
++			})),
++			{ type: 'startWatcher', pr: { repo: 'forge', number: 129 } },
++		];
++
++		const watchers = await executor.execute(actions, {
++			broker: null,
++			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000,
++			spawnWatcher: () => ({ pid: 1234 }), writeClaim: () => {}, watchers: [],
++		});
++
++		expect(watchers).toHaveLength(1);
++		expect(watchers[0]).toMatchObject({ pr: 129, repo: 'forge', pid: 1234 });
++	});
+ 	test('persists and replays the public Flow process lifecycle across daemon restarts', async () => {
+ 		const first = await executor.execute(
+ 			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+-- 
+2.51.0.windows.1
+

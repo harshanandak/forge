@@ -1,0 +1,53 @@
+From febe09f6458c323368a5a7f7a20a7e4cd1b02101 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 6 Aug 2026 13:40:50 +0530
+Subject: [PATCH] fix: sanitize mixed-case git hook variables
+
+---
+ scripts/test.js                  | 8 +++++---
+ test/scripts/test-runner.test.js | 4 ++++
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/test.js b/scripts/test.js
+index 09d8664e..270d3912 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -161,9 +161,11 @@ function detectPackageManager() {
+ function stripGitHookEnv(sourceEnv = process.env) {
+   const env = { ...sourceEnv };
+   for (const key of Object.keys(env)) {
+-    if (key === 'GIT_DIR' || key === 'GIT_WORK_TREE' || key === 'GIT_INDEX_FILE'
+-      || key === 'GIT_OBJECT_DIRECTORY' || key === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
+-      || key === 'GIT_QUARANTINE_PATH') {
++    const normalizedKey = key.toUpperCase();
++    if (normalizedKey === 'GIT_DIR' || normalizedKey === 'GIT_WORK_TREE'
++      || normalizedKey === 'GIT_INDEX_FILE' || normalizedKey === 'GIT_OBJECT_DIRECTORY'
++      || normalizedKey === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
++      || normalizedKey === 'GIT_QUARANTINE_PATH') {
+       delete env[key];
+     }
+   }
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 5b3ee779..b7576e54 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -71,12 +71,16 @@ describe('scripts/test pre-push runner', () => {
+   test('stripGitHookEnv removes git hook environment variables', () => {
+     const env = stripGitHookEnv({
+       GIT_DIR: '.git',
++      git_work_tree: '.',
++      Git_Index_File: 'mixed-case-index',
+       GIT_WORK_TREE: '.',
+       GIT_INDEX_FILE: 'index',
+       PATH: '/bin',
+     });
+ 
+     expect(env.GIT_DIR).toBeUndefined();
++    expect(env.git_work_tree).toBeUndefined();
++    expect(env.Git_Index_File).toBeUndefined();
+     expect(env.GIT_WORK_TREE).toBeUndefined();
+     expect(env.GIT_INDEX_FILE).toBeUndefined();
+     expect(env.PATH).toBe('/bin');
+-- 
+2.51.0.windows.1
+

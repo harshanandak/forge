@@ -1,0 +1,84 @@
+From 2fde2dae99dd834f41cba9ce49830490faa91fc5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 18:06:18 +0530
+Subject: [PATCH] fix(memory): preserve canonical PR authority
+
+---
+ lib/kernel/broker.js                          |  3 +++
+ packages/memory/src/pr-lifecycle-authority.js | 15 +++++++++++----
+ test/kernel/trace.test.js                     |  8 ++++++++
+ 3 files changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 797105c4..32c6c9ff 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -1829,6 +1829,9 @@ function createLocalBroker(options = {}) {
+ 				const eventType = `pr.${linkageInput.phase}`;
+ 				const payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
+ 				assertAtomicRunIdentity(await transactionDriver.loadPrEventsByRunId(evidence.run_id, context, config), payload);
++				if (priorPr && priorPr.head_sha !== evidence.head_sha) {
++					throw traceError('FORGE_TRACE_STALE_AUTHORITY', 'recordPrLinkage receipt head conflicts with current PR authority');
++				}
+ 				const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
+ 				assertTerminalPrCompatibility(terminalPr, linkageInput, evidence, worktreeId);
+ 				const linked = terminalPr ? { ok: true, ...terminalPr } : await transactionDriver.upsertPr({
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 802d240d..c175288b 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -271,13 +271,20 @@ function providerIssueRevision(issue) {
+   return revision;
+ }
+ 
++function canonicalRepositoryId(value) {
++  const repositoryId = requiredString(value, 'repository_id').trim().toLowerCase();
++  if (!/^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)+$/.test(repositoryId)) {
++    fail('PR_LIFECYCLE_INVALID_INPUT', 'repository_id must be a canonical owner/repository identifier');
++  }
++  return repositoryId;
++}
++
+ function providerHead(head, repositoryId) {
+   const value = typeof head === 'string' ? { head } : head;
+   const exactHead = value?.head ?? value?.exact_head ?? value?.target_head;
+   requiredLinkageHead(exactHead);
+-  const repo = value?.repository_id ?? value?.repository ?? repositoryId;
+-  requiredString(repo, 'repository_id');
+-  if (repositoryId && repo !== repositoryId) fail('PR_LIFECYCLE_HEAD_STALE', 'live repository does not match packet');
++  const repo = canonicalRepositoryId(value?.repository_id ?? value?.repository ?? repositoryId);
++  if (repositoryId && repo !== canonicalRepositoryId(repositoryId)) fail('PR_LIFECYCLE_HEAD_STALE', 'live repository does not match packet');
+   return { head: exactHead, repository_id: repo };
+ }
+ 
+@@ -403,7 +410,7 @@ function optionalPlainObjectField(input, field) {
+ 
+ function buildPacket(input, live) {
+   const issueId = requiredString(input.issue_id ?? input.issueId, 'issue_id');
+-  const repositoryId = requiredString(input.repository_id ?? input.repositoryId ?? live.head.repository_id, 'repository_id');
++	const repositoryId = canonicalRepositoryId(input.repository_id ?? input.repositoryId ?? live.head.repository_id);
+   const packetId = requiredString(input.packet_id ?? input.packetId ?? `packet-${issueId}-${live.issueRevision}-${live.head.head}`, 'packet_id');
+   const createdAt = input.created_at ?? input.createdAt ?? new Date().toISOString();
+   const objective = requiredString(input.objective ?? live.issue.objective ?? 'PR lifecycle operation', 'objective');
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 88cf812f..f8fbd28a 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -363,6 +363,14 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(rows).toEqual([{ issue_id: 'issue-other', head_sha: 'f'.repeat(40) }]);
+ 	});
+ 
++	test('never overwrites a newer authoritative PR head with a stale receipt', async () => {
++		await driver.upsertPr({ id: 'advanced-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
++			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: 'f'.repeat(40) }, {}, config);
++		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		expect(await driver.queryAll("SELECT head_sha FROM kernel_pr WHERE id = 'advanced-pr';", config))
++			.toEqual([{ head_sha: 'f'.repeat(40) }]);
++	});
++
+ 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
+ 		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
+ 		const receipt = runReceipt(packet);
+-- 
+2.51.0.windows.1
+

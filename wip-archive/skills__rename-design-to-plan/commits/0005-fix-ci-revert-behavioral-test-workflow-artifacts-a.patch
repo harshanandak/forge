@@ -1,0 +1,45 @@
+From 6d81e082b0f1cd31363ddc76900089e8d9a06770 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 19:11:32 +0530
+Subject: [PATCH] fix(ci): revert behavioral-test workflow artifacts (avoid
+ gh-aw recompile drift) [CodeRabbit #297]
+
+The design.md->plan.md rename touched the behavioral-test agentic workflow, but its
+.lock.yml is compiled by gh aw compile (not the raw text edit), causing sync-check
+drift. That design.md is a legacy path (detection reads both), so revert the artifacts.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .github/agentic-workflows/behavioral-test.md | 2 +-
+ .github/workflows/behavioral-test.md         | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.github/agentic-workflows/behavioral-test.md b/.github/agentic-workflows/behavioral-test.md
+index a3560411..b384e39e 100644
+--- a/.github/agentic-workflows/behavioral-test.md
++++ b/.github/agentic-workflows/behavioral-test.md
+@@ -149,7 +149,7 @@ Do not evaluate /dev, /validate, /ship, or any other stage. Score only what `/pl
+ 
+ You must produce:
+ 1. A Phase 1 Q&A exchange (at minimum 3 questions and 3 answers)
+-2. A design doc with all required sections, written to a concrete `docs/work/YYYY-MM-DD-<slug>/plan.md`
++2. A design doc with all required sections, written to a concrete `docs/work/YYYY-MM-DD-<slug>/design.md`
+    artifact path that you record as `DESIGN_DOC_PATH`
+ 3. A Phase 3 task list with TDD steps
+ 
+diff --git a/.github/workflows/behavioral-test.md b/.github/workflows/behavioral-test.md
+index a3560411..b384e39e 100644
+--- a/.github/workflows/behavioral-test.md
++++ b/.github/workflows/behavioral-test.md
+@@ -149,7 +149,7 @@ Do not evaluate /dev, /validate, /ship, or any other stage. Score only what `/pl
+ 
+ You must produce:
+ 1. A Phase 1 Q&A exchange (at minimum 3 questions and 3 answers)
+-2. A design doc with all required sections, written to a concrete `docs/work/YYYY-MM-DD-<slug>/plan.md`
++2. A design doc with all required sections, written to a concrete `docs/work/YYYY-MM-DD-<slug>/design.md`
+    artifact path that you record as `DESIGN_DOC_PATH`
+ 3. A Phase 3 task list with TDD steps
+ 
+-- 
+2.51.0.windows.1
+

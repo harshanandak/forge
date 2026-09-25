@@ -1,0 +1,79 @@
+From 616dae445ed042a24e0f4418c76775752f701791 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 25 Jun 2026 13:54:46 +0530
+Subject: [PATCH] =?UTF-8?q?revert(d20):=20scope=20default-flip=20out=20of?=
+ =?UTF-8?q?=20#234=20=E2=80=94=20selector-only,=20default=20stays=20beads?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Per maintainer decision, #234 ships the D20 CLI selector ONLY; it does not flip
+the global default issue backend. Revert the cosmetic default change from 4181edc:
+
+- createIssueService's no-arg fallback returns to createBeadsIssueBackend (was
+  createKernelIssueBackend). DEFAULT_BACKEND stays 'beads'. The Kernel remains
+  reachable opt-in via --kernel / --issue-backend kernel / FORGE_ISSUE_BACKEND=kernel.
+- Remove the release-readiness test that locked the kernel-default flip; the
+  kernel-backed-forge-issue gate's "Kernel evidence missing" signal correctly
+  returns to unsatisfied (cleared by the dedicated default-flip follow-up PR, not here).
+
+No new readiness blocker introduced (blocker set unchanged vs the branch base;
+only kernel-backed-forge-issue detail flips back to evidence-missing: yes).
+The global default → kernel flip lands in a separate follow-up PR.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/forge-issues.js            | 11 ++++++-----
+ test/release-readiness.test.js | 14 --------------
+ 2 files changed, 6 insertions(+), 19 deletions(-)
+
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 83c4f351..36743d11 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -366,11 +366,12 @@ function createKernelIssueBackend(context = {}) {
+ }
+ 
+ function createIssueService({ backend } = {}) {
+-  // Default issue backend is the Kernel (D20). Beads is opt-out via the selector
+-  // (--issue-backend beads / FORGE_ISSUE_BACKEND=beads), which resolves to an
+-  // explicit `backend` upstream in runIssueOperation; this fallback only fires for
+-  // a no-backend direct call and now defaults to the Kernel adapter.
+-  const resolvedBackend = backend || createKernelIssueBackend();
++  // Default issue backend stays Beads (D20 ships the CLI selector only). The Kernel
++  // is reachable opt-in via the selector (--kernel / --issue-backend kernel /
++  // FORGE_ISSUE_BACKEND=kernel), which resolves to an explicit `backend` upstream in
++  // runIssueOperation. This no-arg fallback fires only for a no-backend direct call.
++  // The global default → kernel flip lands in a dedicated follow-up PR.
++  const resolvedBackend = backend || createBeadsIssueBackend();
+ 
+   return {
+     async run(operation, args = [], context = {}) {
+diff --git a/test/release-readiness.test.js b/test/release-readiness.test.js
+index 43b67356..0d852ff4 100644
+--- a/test/release-readiness.test.js
++++ b/test/release-readiness.test.js
+@@ -155,20 +155,6 @@ afterEach(() => {
+   }
+ });
+ 
+-describe('default issue backend is the Kernel (D20)', () => {
+-  test('the real repo createIssueService defaults to the Kernel backend (gate detects it)', () => {
+-    // Locks the D20 default flip: createIssueService's resolvedBackend must default
+-    // to createKernelIssueBackend. The readiness gate reads lib/forge-issues.js and
+-    // clears the issue surface's "Kernel evidence missing" signal once it does.
+-    // Reverting the default to createBeadsIssueBackend regresses this assertion.
+-    const report = buildReadinessReport(repoRoot, { target: '0.1.0' });
+-    const blocker = report.blockers.find(item => item.id === 'kernel-backed-forge-issue');
+-
+-    expect(blocker).toBeDefined();
+-    expect(blocker.detail).toContain('Kernel evidence missing for issue surface: no');
+-  });
+-});
+-
+ describe('release readiness bd call-site audit', () => {
+   test('groups concrete bd, .beads, and dolt surfaces without counting generic Beads prose', () => {
+     const root = makeRepo();
+-- 
+2.51.0.windows.1
+

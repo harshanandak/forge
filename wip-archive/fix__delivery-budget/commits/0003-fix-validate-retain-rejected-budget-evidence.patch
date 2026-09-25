@@ -1,0 +1,143 @@
+From 1875a5a149414b706b96d26dc03f3be427602d0d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 15:42:44 +0530
+Subject: [PATCH] fix(validate): retain rejected budget evidence
+
+---
+ .../2026-09-18-delivery-budget/decisions.md   |  1 +
+ lib/commands/validate.js                      | 27 ++++++++++++++++---
+ scripts/test-full-suite.js                    |  6 ++---
+ test/commands/validate.test.js                | 27 ++++++++++++++++---
+ 4 files changed, 50 insertions(+), 11 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-budget/decisions.md b/docs/work/2026-09-18-delivery-budget/decisions.md
+index f85929be..be58e166 100644
+--- a/docs/work/2026-09-18-delivery-budget/decisions.md
++++ b/docs/work/2026-09-18-delivery-budget/decisions.md
+@@ -6,6 +6,7 @@ No specification gaps encountered.
+ - Reject an explicit budget that cannot fund one required lane worker before any child process starts.
+ - Normalize only an automatically selected default up to the required lane cost; never widen an operator-requested budget.
+ - Report successful runs as requested/effective and rejected runs as requested/minimum/rejected, because a rejected run has no effective execution budget.
++- Preserve rejected-budget evidence in validate failure results so callers receive the same requested/minimum/outcome structure emitted before scheduling; focused RED returned synthetic `1/1 tests failed`, while GREEN retained the structure with zero executed-test counts (1 pass, 76 filtered, 0 fail).
+ - Validate every repeated `--shards` occurrence and keep the last valid value, matching the standalone full-suite parser.
+ - Reject `--shards` for consumer repositories because their package-owned test command has no Forge resource-budget contract.
+ - Record requested and effective budgets in full-suite run output; keep validation receipt identity and schema unchanged.
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index dc8ccd8a..0a51316e 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -574,10 +574,15 @@ async function runSecurityScan() { // NOSONAR S3776
+  */
+ function parseTestCounts(output) {
+ 	const text = String(output || '');
+-	const resourceBudgetMatch = /Full suite resource budget: requested=(default|\d+) effective=(\d+)/.exec(text);
+-	const resourceBudget = resourceBudgetMatch ? {
+-		requested: resourceBudgetMatch[1] === 'default' ? null : Number(resourceBudgetMatch[1]),
+-		effective: Number(resourceBudgetMatch[2]),
++	const effectiveBudgetMatch = /Full suite resource budget: requested=(default|\d+) effective=(\d+)/.exec(text);
++	const rejectedBudgetMatch = /Full suite resource budget: requested=(\d+) minimum=(\d+) outcome=rejected/.exec(text);
++	const resourceBudget = effectiveBudgetMatch ? {
++		requested: effectiveBudgetMatch[1] === 'default' ? null : Number(effectiveBudgetMatch[1]),
++		effective: Number(effectiveBudgetMatch[2]),
++	} : rejectedBudgetMatch ? {
++		requested: Number(rejectedBudgetMatch[1]),
++		minimum: Number(rejectedBudgetMatch[2]),
++		outcome: 'rejected',
+ 	} : undefined;
+ 	const aggregateMatches = [...text.matchAll(
+ 		/Full suite aggregate: status=(PASS|FAIL|INCOMPLETE) tests=(\d+) assertions=\d+ passed=(\d+) failed=(\d+) errors=(\d+) skipped=(\d+)/g,
+@@ -685,6 +690,20 @@ function testExecutionErrorResult(error, startTime, rootDir, useFullSuite, timeo
+ 
+ 	const output = error.stdout || error.message;
+ 	const counts = parseTestCounts(output);
++	if (counts.resourceBudget?.outcome === 'rejected') {
++		return {
++			success: false,
++			testsFound: false,
++			fullSuite: useFullSuite,
++			resourceBudget: counts.resourceBudget,
++			duration: Date.now() - startTime,
++			passed: 0,
++			failed: 0,
++			total: 0,
++			message: `Full suite resource budget rejected: requested=${counts.resourceBudget.requested} minimum=${counts.resourceBudget.minimum}`,
++			output,
++		};
++	}
+ 	const passed = counts.passed;
+ 	const failed = counts.failed > 0 ? counts.failed : Math.max(1, counts.errors || 0);
+ 	const total = counts.total > 0 ? counts.total : passed + failed + counts.skipped;
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index 4f63f1e6..f51b41bc 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -490,7 +490,7 @@ function buildResourceLanePlan(allTests, shardTotal, durationMap = new Map(), op
+ // A subprocess-lane worker owns two OS processes on Windows: the shard's own bun
+ // runtime plus the bun.exe grandchild its tests spawn. Counting such a worker as
+ // one budget unit oversubscribes small runners (3 workers is ~6 processes on 4
+-// vCPU), so weight the grant by real process cost instead of by worker count.
++// vCPU), so weight the grant by the declared worker cost instead of worker count.
+ function laneWorkerCost(laneName, platform = process.platform) {
+   if (platform !== 'win32') return 1;
+   return laneName === 'unit' ? 1 : 2;
+@@ -545,8 +545,8 @@ function computeLaneGrants(lanes, options = {}) {
+     const entry = grants.get(lane);
+     entry.granted = Math.min(lane.concurrency, Math.floor(workerBudget / entry.cost));
+   }
+-  // An explicit shard count is an operator-imposed cap on total concurrent
+-  // children; reserve the budget for heavier subprocess workers first and
++  // An explicit shard count is an operator-imposed weighted worker budget;
++  // reserve it for heavier subprocess workers first and
+   // defer leftover lanes until capacity frees instead of exceeding it.
+   const ordered = [...sharedLanes].sort(
+     (left, right) => (left.name === 'subprocess' ? 0 : 1) - (right.name === 'subprocess' ? 0 : 1),
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 15ba20cb..e02bf7e6 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -997,19 +997,38 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			}
+ 		});
+ 
+-		test('keeps a non-zero full-suite exit failed when the aggregate reports zero failures', async () => {
++		test('retains rejected budget evidence without synthesizing test failures', async () => {
+ 			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-full-suite-exit-'));
+ 			try {
+ 				fs.mkdirSync(path.join(rootDir, 'scripts'));
+ 				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), '');
++				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
++					name: 'forge-workflow',
++					bin: { forge: 'bin/forge.js' },
++					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
++				}));
++				const output = 'Full suite resource budget: requested=1 minimum=2 outcome=rejected';
++				expect(parseTestCounts(output).resourceBudget).toEqual({
++					requested: 1,
++					minimum: 2,
++					outcome: 'rejected',
++				});
+ 				const exec = () => {
+ 					const error = new Error('full suite exited 1');
+-					error.stdout = 'Full suite aggregate: status=FAIL tests=10 assertions=12 passed=10 failed=0 errors=0 skipped=0';
++					error.stdout = output;
+ 					throw error;
+ 				};
+ 
+-				const result = await runAllTests(exec, rootDir);
+-				expect(result).toMatchObject({ success: false, testsFound: true, passed: 10, failed: 1, total: 10 });
++				const result = await runAllTests(exec, rootDir, 1);
++				expect(result).toMatchObject({
++					success: false,
++					testsFound: false,
++					passed: 0,
++					failed: 0,
++					total: 0,
++					resourceBudget: { requested: 1, minimum: 2, outcome: 'rejected' },
++					message: 'Full suite resource budget rejected: requested=1 minimum=2',
++				});
+ 			} finally {
+ 				fs.rmSync(rootDir, { recursive: true, force: true });
+ 			}
+-- 
+2.51.0.windows.1
+

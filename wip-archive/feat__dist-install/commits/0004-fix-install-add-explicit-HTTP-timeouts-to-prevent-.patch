@@ -1,0 +1,81 @@
+From 5fb9b546c4e52bda7d208bac34f4e8010dfa4ce4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 18:01:53 +0530
+Subject: [PATCH] fix(install): add explicit HTTP timeouts to prevent
+ indefinite hangs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Invoke-WebRequest defaults to an indefinite timeout, so a dead/unresponsive
+server would hang the checksum fetch or the main asset download instead of
+falling back to the existing warning/skip path. Add -TimeoutSec to both
+Invoke-WebRequest calls in install.ps1 (300s for the binary download, 30s
+for checksums.txt) — prefer -TimeoutSec over -ConnectionTimeoutSeconds for
+compatibility across PowerShell 5.1 and 7.x.
+
+For parity, add matching timeouts to install.sh's curl/wget calls
+(--connect-timeout/--max-time for curl, --timeout for wget) used for the
+binary download, checksums.txt fetch, and latest-release tag lookup.
+---
+ scripts/install.ps1 |  4 ++--
+ scripts/install.sh  | 12 ++++++------
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/scripts/install.ps1 b/scripts/install.ps1
+index 76136c97..c157058a 100644
+--- a/scripts/install.ps1
++++ b/scripts/install.ps1
+@@ -76,7 +76,7 @@ $Dest = Join-Path $Dir 'forge.exe'
+ $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("forge-install-" + [System.Guid]::NewGuid().ToString('N') + ".exe")
+ 
+ try {
+-	Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing
++	Invoke-WebRequest -Uri $Url -OutFile $Tmp -UseBasicParsing -TimeoutSec 300
+ } catch {
+ 	throw "forge-install: download failed from $Url - is the release published for windows-x64? ($_)"
+ }
+@@ -95,7 +95,7 @@ if ($SkipChecksum -or $env:FORGE_SKIP_CHECKSUM -eq '1') {
+ 	$expected = $null
+ 	$manifestFetched = $false
+ 	try {
+-		Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsTmp -UseBasicParsing
++		Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsTmp -UseBasicParsing -TimeoutSec 30
+ 		$manifestFetched = $true
+ 		foreach ($line in (Get-Content $SumsTmp)) {
+ 			# Lines are "<hash>  <name>" (text) or "<hash> *<name>" (binary).
+diff --git a/scripts/install.sh b/scripts/install.sh
+index cd7de772..f48be04a 100644
+--- a/scripts/install.sh
++++ b/scripts/install.sh
+@@ -148,11 +148,11 @@ fi
+ 
+ # --- downloader ------------------------------------------------------------
+ if command -v curl >/dev/null 2>&1; then
+-	DL='curl -fSL --retry 3 -o'
+-	DL_QUIET='curl -fsSL'
++	DL='curl -fSL --retry 3 --connect-timeout 10 --max-time 300 -o'
++	DL_QUIET='curl -fsSL --connect-timeout 10 --max-time 30'
+ elif command -v wget >/dev/null 2>&1; then
+-	DL='wget -O'
+-	DL_QUIET='wget -qO-'
++	DL='wget --timeout=300 -O'
++	DL_QUIET='wget --timeout=30 -qO-'
+ else
+ 	die "need either curl or wget installed to download the binary."
+ fi
+@@ -160,9 +160,9 @@ fi
+ download_to() { # url dest
+ 	# shellcheck disable=SC2086
+ 	if command -v curl >/dev/null 2>&1; then
+-		curl -fSL --retry 3 -o "$2" "$1"
++		curl -fSL --retry 3 --connect-timeout 10 --max-time 300 -o "$2" "$1"
+ 	else
+-		wget -O "$2" "$1"
++		wget --timeout=300 -O "$2" "$1"
+ 	fi
+ }
+ 
+-- 
+2.51.0.windows.1
+

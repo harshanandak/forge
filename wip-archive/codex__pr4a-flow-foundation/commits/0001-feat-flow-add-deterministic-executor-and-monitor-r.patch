@@ -1,0 +1,860 @@
+From 69093f9d6abf6e96f947a32024df3ef5d208cb9a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 06:44:43 +0530
+Subject: [PATCH] feat(flow): add deterministic executor and monitor reducer
+
+---
+ packages/flow/src/executor.js              | 210 +++++++++++++++++
+ packages/flow/src/monitor-runtime.js       | 249 +++++++++++++++++++++
+ packages/flow/test/executor.test.js        | 166 ++++++++++++++
+ packages/flow/test/monitor-runtime.test.js | 192 ++++++++++++++++
+ 4 files changed, 817 insertions(+)
+ create mode 100644 packages/flow/src/executor.js
+ create mode 100644 packages/flow/src/monitor-runtime.js
+ create mode 100644 packages/flow/test/executor.test.js
+ create mode 100644 packages/flow/test/monitor-runtime.test.js
+
+diff --git a/packages/flow/src/executor.js b/packages/flow/src/executor.js
+new file mode 100644
+index 00000000..fc793e16
+--- /dev/null
++++ b/packages/flow/src/executor.js
+@@ -0,0 +1,210 @@
++"use strict";
++
++const {
++  computeContentHash,
++  semanticIdentity,
++  validateContract,
++  validateContractStructure,
++} = require("@forge/memory-contracts");
++
++const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
++
++class FlowExecutionError extends Error {
++  constructor(code, message, details = []) {
++    super(message);
++    this.name = "FlowExecutionError";
++    this.code = code;
++    this.details = details;
++  }
++}
++
++function requiredString(value, name) {
++  if (typeof value !== "string" || value.length === 0) {
++    throw new FlowExecutionError("INVALID_EXECUTION_CONTEXT", `${name} must be a non-empty string`);
++  }
++  return value;
++}
++
++function assertPacket(workPacket, expected) {
++  if (!expected || typeof expected !== "object" || Array.isArray(expected)) {
++    throw new FlowExecutionError("INPUT_INVALID", "WorkPacket validation failed", [
++      { path: "$.live_expected", code: "MISSING_LIVE_EVIDENCE" },
++    ]);
++  }
++  const validation = validateContract(workPacket, { expected });
++  if (workPacket?.schema_id !== "forge.memory.work-packet.v1" || !validation.ok) {
++    throw new FlowExecutionError("INPUT_INVALID", "WorkPacket validation failed", validation.errors);
++  }
++}
++
++function normalizeProviderResult(result, failure) {
++  if (failure) {
++    return {
++      status: "INCOMPLETE",
++      executor: { product_id: "forge-flow", mode: "injected-provider" },
++      evidenceRefs: [],
++      validation: { status: "INCOMPLETE", code: "PROVIDER_FAILURE" },
++      cleanup: { status: "UNKNOWN" },
++      mutationsAttempted: [],
++      mutationsAuthorized: [],
++    };
++  }
++  if (!result || typeof result !== "object" || Array.isArray(result)) {
++    return {
++      status: "INCOMPLETE",
++      executor: { product_id: "forge-flow", mode: "injected-provider" },
++      evidenceRefs: [],
++      validation: { status: "INCOMPLETE", code: "INVALID_PROVIDER_RESULT" },
++      cleanup: { status: "UNKNOWN" },
++      mutationsAttempted: [],
++      mutationsAuthorized: [],
++    };
++  }
++  return {
++    status: TERMINAL_STATUSES.has(result.status) ? result.status : "INCOMPLETE",
++    executor: result.executor && typeof result.executor === "object" && !Array.isArray(result.executor)
++      ? structuredClone(result.executor)
++      : { product_id: "forge-flow", mode: "injected-provider" },
++    evidenceRefs: Array.isArray(result.evidenceRefs) ? structuredClone(result.evidenceRefs) : [],
++    validation: result.validation && typeof result.validation === "object" && !Array.isArray(result.validation)
++      ? structuredClone(result.validation)
++      : { status: "INCOMPLETE", code: "MISSING_VALIDATION" },
++    cleanup: result.cleanup && typeof result.cleanup === "object" && !Array.isArray(result.cleanup)
++      ? structuredClone(result.cleanup)
++      : { status: "UNKNOWN" },
++    mutationsAttempted: Array.isArray(result.mutationsAttempted) ? [...result.mutationsAttempted] : [],
++    mutationsAuthorized: Array.isArray(result.mutationsAuthorized) ? [...result.mutationsAuthorized] : [],
++    tokens: result.tokens,
++    retries: result.retries,
++    corrections: result.corrections,
++    activeTimeMs: result.activeTimeMs,
++    passiveTimeMs: result.passiveTimeMs,
++  };
++}
++
++function authorizeAndClassify(result, allowedMutations) {
++  const allowed = new Set(allowedMutations);
++  const unauthorized = result.mutationsAttempted.filter((mutation) => !allowed.has(mutation));
++  if (unauthorized.length > 0) {
++    result.status = "FAIL";
++    result.validation = {
++      status: "REJECTED",
++      code: "UNAUTHORIZED_MUTATION",
++      unauthorized_count: unauthorized.length,
++    };
++    result.mutationsAuthorized = result.mutationsAuthorized.filter((mutation) => allowed.has(mutation));
++    return;
++  }
++  if (result.status === "PASS" && (result.evidenceRefs.length === 0 || result.validation.status !== "PASS")) {
++    result.status = "INCOMPLETE";
++    result.validation = { status: "INCOMPLETE", code: "INCOMPLETE_EVIDENCE" };
++  }
++}
++
++function optionalInteger(target, field, value, minimum = 0) {
++  if (value === undefined) return;
++  if (!Number.isInteger(value) || value < minimum) {
++    throw new FlowExecutionError("OUTPUT_INVALID", `Provider result ${field} is invalid`);
++  }
++  target[field] = value;
++}
++
++function buildReceipt(workPacket, executionContext, result) {
++  const startedAt = requiredString(executionContext.startedAt, "startedAt");
++  const endedAt = requiredString(executionContext.endedAt, "endedAt");
++  if (Date.parse(endedAt) < Date.parse(startedAt)) {
++    throw new FlowExecutionError("INVALID_EXECUTION_CONTEXT", "endedAt must not precede startedAt");
++  }
++  const producerInstanceId = requiredString(executionContext.producerInstanceId, "producerInstanceId");
++  const payload = {
++    packet_hash: workPacket.content_hash,
++    run_id: requiredString(executionContext.runId, "runId"),
++    attempt_id: requiredString(executionContext.attemptId, "attemptId"),
++    exact_head: workPacket.payload.target_head,
++    packet_revision: workPacket.payload.packet_revision,
++    manifest_digest: workPacket.payload.capability_manifest_digest,
++    workflow_config_revision: workPacket.payload.workflow_config_revision,
++    status: result.status,
++    executor: result.executor,
++    started_at: startedAt,
++    ended_at: endedAt,
++    evidence_refs: result.evidenceRefs,
++    validation: result.validation,
++    cleanup: result.cleanup,
++    mutations_attempted: result.mutationsAttempted,
++    mutations_authorized: result.mutationsAuthorized,
++  };
++  optionalInteger(payload, "lease_epoch", executionContext.expected.leaseEpoch, 1);
++  optionalInteger(payload, "retries", result.retries);
++  optionalInteger(payload, "corrections", result.corrections);
++  optionalInteger(payload, "active_time_ms", result.activeTimeMs);
++  optionalInteger(payload, "passive_time_ms", result.passiveTimeMs);
++  if (result.tokens !== undefined) payload.tokens = structuredClone(result.tokens);
++
++  const receipt = {
++    schema_id: "forge.memory.run-receipt.v1",
++    schema_version: 1,
++    object_id: requiredString(executionContext.objectId, "objectId"),
++    created_at: endedAt,
++    producer: { product_id: "forge-flow", product_version: "0.1.0-beta.6", instance_id: producerInstanceId },
++    capabilities_used: [],
++    provenance: { source_kind: "execution", actor_class: "system", actor_id: producerInstanceId },
++    payload,
++    extensions: {},
++  };
++  receipt.content_hash = computeContentHash(receipt);
++
++  const structural = validateContractStructure(receipt);
++  const consequential = validateContract(receipt, {
++    expected: {
++      packetHash: workPacket.content_hash,
++      workflowConfigRevision: workPacket.payload.workflow_config_revision,
++      capabilityManifestDigest: workPacket.payload.capability_manifest_digest,
++      exactHead: workPacket.payload.target_head,
++      ...(executionContext.expected.leaseEpoch === undefined ? {} : { leaseEpoch: executionContext.expected.leaseEpoch }),
++    },
++  });
++  if (!structural.ok || !consequential.ok) {
++    throw new FlowExecutionError("OUTPUT_INVALID", "RunReceipt validation failed", consequential.errors);
++  }
++  return receipt;
++}
++
++function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
++  if (typeof run !== "function") throw new TypeError("run must be a function");
++  if (typeof onReceipt !== "function") throw new TypeError("onReceipt must be a function");
++  const acceptedPackets = new Map();
++
++  return Object.freeze({
++    execute(workPacket, executionContext = {}) {
++      assertPacket(workPacket, executionContext.expected);
++      const identity = semanticIdentity(workPacket);
++      const accepted = acceptedPackets.get(identity);
++      if (accepted) {
++        if (accepted.packetHash !== workPacket.content_hash) {
++          throw new FlowExecutionError("IDENTITY_CONFLICT", "WorkPacket identity conflict");
++        }
++        return structuredClone(accepted.receipt);
++      }
++
++      let providerResult;
++      let providerFailure;
++      try {
++        providerResult = run(structuredClone(workPacket));
++        if (providerResult && typeof providerResult.then === "function") {
++          throw new TypeError("run must be synchronous");
++        }
++      } catch (error) {
++        providerFailure = error;
++      }
++      const result = normalizeProviderResult(providerResult, providerFailure);
++      authorizeAndClassify(result, workPacket.payload.allowed_mutations);
++      const receipt = buildReceipt(workPacket, executionContext, result);
++      acceptedPackets.set(identity, { packetHash: workPacket.content_hash, receipt: structuredClone(receipt) });
++      onReceipt(structuredClone(receipt));
++      return receipt;
++    },
++  });
++}
++
++module.exports = { FlowExecutionError, createWorkPacketExecutor };
+diff --git a/packages/flow/src/monitor-runtime.js b/packages/flow/src/monitor-runtime.js
+new file mode 100644
+index 00000000..669ce7cb
+--- /dev/null
++++ b/packages/flow/src/monitor-runtime.js
+@@ -0,0 +1,249 @@
++"use strict";
++
++const {
++  canonicalize,
++  computeContentHash,
++  validateContract,
++  validateContractStructure,
++} = require("@forge/memory-contracts");
++
++const LIFETIMES = new Set(["session", "run", "subject"]);
++
++class MonitorRuntimeError extends Error {
++  constructor(code, message, details = []) {
++    super(message);
++    this.name = "MonitorRuntimeError";
++    this.code = code;
++    this.details = details;
++  }
++}
++
++function nonEmptyString(value, name) {
++  if (typeof value !== "string" || value.length === 0) throw new TypeError(`${name} must be a non-empty string`);
++  return value;
++}
++
++function validateSpec(spec) {
++  if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new TypeError("MonitorSpec must be an object");
++  nonEmptyString(spec.monitorId, "monitorId");
++  nonEmptyString(spec.ownerRunId, "ownerRunId");
++  nonEmptyString(spec.packetId, "packetId");
++  nonEmptyString(spec.subject?.id, "subject.id");
++  nonEmptyString(spec.subject?.revision, "subject.revision");
++  if (!Array.isArray(spec.sourceAdapters) || spec.sourceAdapters.length === 0) throw new TypeError("sourceAdapters must not be empty");
++  if (!Array.isArray(spec.deliveryTargets) || spec.deliveryTargets.length === 0) throw new TypeError("deliveryTargets must not be empty");
++  if (!LIFETIMES.has(spec.lifetime)) throw new TypeError("lifetime is invalid");
++  if (typeof spec.deadline !== "string" || Number.isNaN(Date.parse(spec.deadline))) throw new TypeError("deadline is invalid");
++  if (typeof spec.reducer !== "function" || typeof spec.terminalPredicate !== "function") throw new TypeError("reducer and terminalPredicate are required");
++  if (spec.filter !== undefined && typeof spec.filter !== "function") throw new TypeError("filter must be a function");
++  if (!Number.isInteger(spec.maxPending) || spec.maxPending < 1) throw new TypeError("maxPending must be positive");
++  if (!Number.isInteger(spec.maxRetries) || spec.maxRetries < 0) throw new TypeError("maxRetries must be non-negative");
++  if (!Number.isInteger(spec.retryBaseMs) || spec.retryBaseMs < 1) throw new TypeError("retryBaseMs must be positive");
++}
++
++function createMonitorState(spec) {
++  validateSpec(spec);
++  return {
++    monitorId: spec.monitorId,
++    ownerRunId: spec.ownerRunId,
++    lifecycle: "ACTIVE",
++    value: undefined,
++    valueDigest: undefined,
++    lastSequence: -1,
++    acknowledgementCursor: -1,
++    seenEvents: {},
++    evidenceHashes: [],
++    pending: [],
++    retryCounts: {},
++    cancellationRequested: false,
++    cancellationAcknowledged: false,
++    terminalState: undefined,
++    terminalReason: undefined,
++    processCleanup: undefined,
++    leaseCleanup: undefined,
++    undeliveredCursor: undefined,
++  };
++}
++
++function result(state, effects = [], modelTurns = 0) {
++  return { state, effects, modelTurns };
++}
++
++function terminating(state, terminalState, terminalReason, extra = {}) {
++  return result({
++    ...state,
++    ...extra,
++    lifecycle: "TERMINATING",
++    terminalState,
++    terminalReason,
++    undeliveredCursor: state.pending.length === 0 ? undefined : state.acknowledgementCursor + 1,
++  }, [{ type: "CLEANUP_PROCESS" }, { type: "CLEANUP_LEASE" }]);
++}
++
++function validateObservation(spec, event) {
++  const validation = validateContract(event, {
++    expected: { monitorId: spec.monitorId, subjectRevision: spec.subject.revision },
++  });
++  if (event?.schema_id !== "forge.memory.monitor-event.v1" || !validation.ok) {
++    throw new MonitorRuntimeError("INVALID_OBSERVATION", "MonitorEvent validation failed", validation.errors);
++  }
++  const configuredLimit = spec.securityPolicy?.maxPayloadBytes;
++  if (configuredLimit !== undefined) {
++    const bytes = Buffer.byteLength(canonicalize(event.payload.bounded_payload ?? {}), "utf8");
++    if (bytes > configuredLimit) throw new MonitorRuntimeError("INVALID_OBSERVATION", "MonitorEvent exceeds security policy");
++  }
++}
++
++function reduceObservation(spec, state, event) {
++  validateObservation(spec, event);
++  const payload = event.payload;
++  const seen = state.seenEvents[payload.event_id];
++  if (seen) {
++    if (seen.sequence !== payload.sequence || seen.contentHash !== event.content_hash) {
++      throw new MonitorRuntimeError("IDENTITY_CONFLICT", "MonitorEvent identity conflict");
++    }
++    return result(state);
++  }
++  if (payload.sequence <= state.lastSequence) {
++    throw new MonitorRuntimeError("OUT_OF_ORDER", "MonitorEvent sequence is not monotonic");
++  }
++
++  const next = structuredClone(state);
++  next.seenEvents[payload.event_id] = { sequence: payload.sequence, contentHash: event.content_hash };
++  next.evidenceHashes.push(event.content_hash);
++  next.lastSequence = payload.sequence;
++  if (spec.filter && !spec.filter(payload.bounded_payload ?? {}, event)) return result(next);
++
++  const nextValue = spec.reducer(state.value, payload.bounded_payload ?? {}, event);
++  const nextDigest = computeContentHash({ value: nextValue });
++  const changed = nextDigest !== state.valueDigest;
++  next.value = structuredClone(nextValue);
++  next.valueDigest = nextDigest;
++  if (!changed) return result(next);
++
++  const terminal = spec.terminalPredicate(nextValue, event);
++  if (terminal) {
++    const terminalState = terminal === "FAIL" || nextValue === "FAIL" ? "FAIL" : "PASS";
++    return terminating(next, terminalState, "terminal predicate satisfied");
++  }
++  if (payload.actionability === "advisory") return result(next);
++  if (next.pending.length >= spec.maxPending) {
++    return result(next, [{ type: "BACKPRESSURE", decision: "DEFER", sequence: payload.sequence }]);
++  }
++  next.pending.push({ sequence: payload.sequence, eventId: payload.event_id });
++  return result(next, [{
++    type: "DELIVER",
++    eventId: payload.event_id,
++    sequence: payload.sequence,
++    targets: [...spec.deliveryTargets],
++  }], 1);
++}
++
++function reduceAcknowledgement(state, event) {
++  if (!Number.isInteger(event.sequence) || event.sequence < state.acknowledgementCursor || event.sequence > state.lastSequence) {
++    throw new MonitorRuntimeError("INVALID_ACKNOWLEDGEMENT", "Invalid acknowledgement cursor");
++  }
++  if (event.sequence === state.acknowledgementCursor) return result(state);
++  const next = structuredClone(state);
++  next.acknowledgementCursor = event.sequence;
++  next.pending = next.pending.filter((item) => item.sequence > event.sequence);
++  return result(next);
++}
++
++function reduceDeliveryFailure(spec, state, event) {
++  if (!Number.isInteger(event.sequence) || !state.pending.some((item) => item.sequence === event.sequence)) {
++    throw new MonitorRuntimeError("INVALID_RETRY", "Retry does not reference pending delivery");
++  }
++  const next = structuredClone(state);
++  const attempts = (next.retryCounts[event.sequence] ?? 0) + 1;
++  next.retryCounts[event.sequence] = attempts;
++  if (attempts > spec.maxRetries) return terminating(next, "INCOMPLETE", "delivery retries exhausted");
++  return result(next, [{
++    type: "RETRY_DELIVERY",
++    sequence: event.sequence,
++    attempt: attempts,
++    delayMs: spec.retryBaseMs * (2 ** (attempts - 1)),
++    observedAt: nonEmptyString(event.observedAt, "observedAt"),
++  }]);
++}
++
++function reduceActive(spec, state, event) {
++  switch (event.kind) {
++    case "observation": return reduceObservation(spec, state, event.event);
++    case "acknowledge": return reduceAcknowledgement(state, event);
++    case "delivery-failed": return reduceDeliveryFailure(spec, state, event);
++    case "cancel-requested":
++      return result({ ...state, cancellationRequested: true }, [{ type: "CANCEL_SOURCE" }]);
++    case "cancel-acknowledged":
++      return terminating(state, "CANCELLED", "cancellation acknowledged", { cancellationAcknowledged: true });
++    case "deadline":
++      return Date.parse(nonEmptyString(event.observedAt, "observedAt")) < Date.parse(spec.deadline)
++        ? result(state)
++        : terminating(state, "INCOMPLETE", "deadline exceeded");
++    case "session-ended":
++      return spec.lifetime === "session" ? terminating(state, "CANCELLED", "session lifetime ended") : result(state);
++    case "run-terminal":
++      return spec.lifetime === "run" ? terminating(state, event.terminalState === "FAIL" ? "FAIL" : "PASS", "owner run terminal") : result(state);
++    case "subject-terminal":
++      return terminating(state, event.terminalState === "FAIL" ? "FAIL" : "PASS", "subject terminal");
++    case "lease-lost": return terminating(state, "INCOMPLETE", "lease lost");
++    default: throw new MonitorRuntimeError("UNKNOWN_EVENT", `Unsupported monitor event: ${event.kind}`);
++  }
++}
++
++function reduceMonitor(spec, state, event) {
++  validateSpec(spec);
++  if (!state || state.monitorId !== spec.monitorId || state.ownerRunId !== spec.ownerRunId) {
++    throw new MonitorRuntimeError("STATE_MISMATCH", "Monitor state does not match MonitorSpec");
++  }
++  if (!event || typeof event !== "object" || Array.isArray(event)) throw new MonitorRuntimeError("INVALID_EVENT", "Monitor event is invalid");
++  if (state.lifecycle === "TERMINAL") throw new MonitorRuntimeError("POST_TERMINAL_EVENT", "Monitor rejects post-terminal events");
++  if (state.lifecycle === "TERMINATING") {
++    if (event.kind !== "cleanup-complete") throw new MonitorRuntimeError("TERMINATING_EVENT", "Monitor accepts only cleanup completion while terminating");
++    if (!event.processCleanup || typeof event.processCleanup !== "object" || !event.leaseCleanup || typeof event.leaseCleanup !== "object") {
++      throw new MonitorRuntimeError("INVALID_CLEANUP", "Cleanup proof is required");
++    }
++    return result({
++      ...state,
++      lifecycle: "TERMINAL",
++      processCleanup: structuredClone(event.processCleanup),
++      leaseCleanup: structuredClone(event.leaseCleanup),
++    }, [{ type: "ISSUE_MONITOR_RECEIPT" }]);
++  }
++  return reduceActive(spec, state, event);
++}
++
++function createMonitorReceipt(spec, state, options = {}) {
++  validateSpec(spec);
++  if (state?.lifecycle !== "TERMINAL") throw new MonitorRuntimeError("NOT_TERMINAL", "Monitor is not ready for a receipt");
++  const producerInstanceId = nonEmptyString(options.producerInstanceId, "producerInstanceId");
++  const payload = {
++    monitor_id: spec.monitorId,
++    owner_run_id: spec.ownerRunId,
++    terminal_state: state.terminalState,
++    terminal_reason: state.terminalReason,
++    last_sequence: Math.max(0, state.lastSequence),
++    evidence_digest: computeContentHash({ evidence_hashes: state.evidenceHashes }),
++    cancellation_acknowledged: state.cancellationAcknowledged,
++    process_cleanup: structuredClone(state.processCleanup),
++    lease_cleanup: structuredClone(state.leaseCleanup),
++  };
++  if (state.undeliveredCursor !== undefined) payload.undelivered_cursor = state.undeliveredCursor;
++  const receipt = {
++    schema_id: "forge.memory.monitor-receipt.v1",
++    schema_version: 1,
++    object_id: nonEmptyString(options.objectId, "objectId"),
++    created_at: nonEmptyString(options.createdAt, "createdAt"),
++    producer: { product_id: "forge-flow", product_version: "0.1.0-beta.6", instance_id: producerInstanceId },
++    capabilities_used: [],
++    provenance: { source_kind: "monitor", actor_class: "system", actor_id: producerInstanceId },
++    payload,
++    extensions: {},
++  };
++  receipt.content_hash = computeContentHash(receipt);
++  const validation = validateContractStructure(receipt);
++  if (!validation.ok) throw new MonitorRuntimeError("INVALID_RECEIPT", "MonitorReceipt validation failed", validation.errors);
++  return receipt;
++}
++
++module.exports = { MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor };
+diff --git a/packages/flow/test/executor.test.js b/packages/flow/test/executor.test.js
+new file mode 100644
+index 00000000..1cfd3093
+--- /dev/null
++++ b/packages/flow/test/executor.test.js
+@@ -0,0 +1,166 @@
++"use strict";
++
++const { beforeAll, describe, expect, mock, test } = require("bun:test");
++const contracts = require("../../memory-contracts");
++
++mock.module("@forge/memory-contracts", () => contracts);
++
++const { computeContentHash, validateContractStructure } = contracts;
++let FlowExecutionError;
++let createWorkPacketExecutor;
++
++beforeAll(() => {
++  ({ FlowExecutionError, createWorkPacketExecutor } = require("../src/executor.js"));
++});
++
++function packet() {
++  const value = {
++    schema_id: "forge.memory.work-packet.v1",
++    schema_version: 1,
++    object_id: "00000000-0000-4000-8000-000000000001",
++    created_at: "2026-08-09T12:00:00.000Z",
++    producer: { product_id: "forge-memory", product_version: "0.1.0-beta.6", instance_id: "memory-1" },
++    capabilities_used: [],
++    provenance: { source_kind: "kernel", actor_class: "system", actor_id: "memory-1" },
++    payload: {
++      issue_id: "issue-1",
++      expected_issue_revision: 3,
++      packet_id: "packet-1",
++      packet_revision: 1,
++      repository_id: "github.com/example/forge",
++      target_head: "a".repeat(40),
++      objective: "execute the bounded task",
++      authority: { kind: "kernel", issue_revision: 3 },
++      allowed_mutations: ["packages/flow"],
++      workflow_config_revision: "config-1",
++      capability_manifest_digest: "c".repeat(64),
++    },
++    extensions: {},
++  };
++  value.content_hash = computeContentHash(value);
++  return value;
++}
++
++function context(overrides = {}) {
++  return {
++    expected: {
++      issueRevision: 3,
++      workflowConfigRevision: "config-1",
++      capabilityManifestDigest: "c".repeat(64),
++      exactHead: "a".repeat(40),
++    },
++    objectId: "00000000-0000-4000-8000-000000000006",
++    runId: "run-1",
++    attemptId: "attempt-1",
++    startedAt: "2026-08-09T12:01:00.000Z",
++    endedAt: "2026-08-09T12:02:00.000Z",
++    producerInstanceId: "flow-1",
++    ...overrides,
++  };
++}
++
++function successfulResult(overrides = {}) {
++  return {
++    status: "PASS",
++    executor: { product_id: "forge-flow", mode: "in-memory" },
++    evidenceRefs: [{ artifact_digest: "d".repeat(64) }],
++    validation: { status: "PASS" },
++    cleanup: { status: "PASS" },
++    mutationsAttempted: ["packages/flow"],
++    mutationsAuthorized: ["packages/flow"],
++    ...overrides,
++  };
++}
++
++describe("WorkPacket executor", () => {
++  test("validates input and emits exactly one contract-valid terminal receipt", () => {
++    const emitted = [];
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult(),
++      onReceipt: (receipt) => emitted.push(receipt),
++    });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload).toMatchObject({
++      status: "PASS",
++      packet_hash: packet().content_hash,
++      exact_head: "a".repeat(40),
++      manifest_digest: "c".repeat(64),
++    });
++    expect(validateContractStructure(receipt)).toEqual({ ok: true, errors: [] });
++    expect(receipt.content_hash).toBe(computeContentHash(receipt));
++    expect(emitted).toEqual([receipt]);
++  });
++
++  test("deduplicates an identical semantic packet without rerunning or re-emitting", () => {
++    let runs = 0;
++    let emissions = 0;
++    const executor = createWorkPacketExecutor({
++      run: () => {
++        runs += 1;
++        return successfulResult();
++      },
++      onReceipt: () => { emissions += 1; },
++    });
++    const workPacket = packet();
++
++    const first = executor.execute(workPacket, context());
++    const retry = executor.execute(structuredClone(workPacket), context());
++
++    expect(retry).toEqual(first);
++    expect(runs).toBe(1);
++    expect(emissions).toBe(1);
++  });
++
++  test("fails closed when the same packet identity carries different content", () => {
++    let runs = 0;
++    const executor = createWorkPacketExecutor({ run: () => { runs += 1; return successfulResult(); } });
++    executor.execute(packet(), context());
++    const conflicting = packet();
++    conflicting.payload.objective = "different objective";
++    conflicting.content_hash = computeContentHash(conflicting);
++
++    expect(() => executor.execute(conflicting, context())).toThrow(FlowExecutionError);
++    try {
++      executor.execute(conflicting, context());
++    } catch (error) {
++      expect(error.code).toBe("IDENTITY_CONFLICT");
++    }
++    expect(runs).toBe(1);
++  });
++
++  test("rejects stale or incomplete live authority before execution", () => {
++    let runs = 0;
++    const executor = createWorkPacketExecutor({ run: () => { runs += 1; return successfulResult(); } });
++
++    expect(() => executor.execute(packet(), context({
++      expected: { issueRevision: 4 },
++    }))).toThrow("WorkPacket validation failed");
++    expect(runs).toBe(0);
++  });
++
++  test("fails closed in a validated receipt when a provider attempts an unauthorized mutation", () => {
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult({ mutationsAttempted: ["git.push"] }),
++    });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload.status).toBe("FAIL");
++    expect(receipt.payload.validation).toMatchObject({ code: "UNAUTHORIZED_MUTATION" });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++  });
++
++  test("downgrades PASS with incomplete evidence to INCOMPLETE", () => {
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult({ evidenceRefs: [], validation: { status: "NOT_RUN" } }),
++    });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload.status).toBe("INCOMPLETE");
++    expect(receipt.payload.validation).toMatchObject({ code: "INCOMPLETE_EVIDENCE" });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++  });
++});
+diff --git a/packages/flow/test/monitor-runtime.test.js b/packages/flow/test/monitor-runtime.test.js
+new file mode 100644
+index 00000000..90b525a6
+--- /dev/null
++++ b/packages/flow/test/monitor-runtime.test.js
+@@ -0,0 +1,192 @@
++"use strict";
++
++const { beforeAll, describe, expect, mock, test } = require("bun:test");
++const contracts = require("../../memory-contracts");
++
++mock.module("@forge/memory-contracts", () => contracts);
++
++const { computeContentHash, validateContractStructure } = contracts;
++let MonitorRuntimeError;
++let createMonitorReceipt;
++let createMonitorState;
++let reduceMonitor;
++
++beforeAll(() => {
++  ({ MonitorRuntimeError, createMonitorReceipt, createMonitorState, reduceMonitor } = require("../src/monitor-runtime.js"));
++});
++
++function spec(overrides = {}) {
++  return {
++    monitorId: "monitor-1",
++    ownerRunId: "run-1",
++    packetId: "packet-1",
++    subject: { id: "subject-1", revision: "head-1" },
++    sourceAdapters: ["in-memory"],
++    deadline: "2026-08-09T12:10:00.000Z",
++    lifetime: "run",
++    deliveryTargets: ["agent-context"],
++    securityPolicy: { maxPayloadBytes: 16_384 },
++    maxPending: 2,
++    maxRetries: 2,
++    retryBaseMs: 100,
++    reducer: (_previous, observation) => observation.status,
++    terminalPredicate: (value) => value === "PASS" || value === "FAIL",
++    ...overrides,
++  };
++}
++
++function observation(sequence, status, overrides = {}) {
++  const value = {
++    schema_id: "forge.memory.monitor-event.v1",
++    schema_version: 1,
++    object_id: `00000000-0000-4000-8000-${String(sequence + 10).padStart(12, "0")}`,
++    created_at: "2026-08-09T12:01:00.000Z",
++    producer: { product_id: "forge-flow", product_version: "0.1.0-beta.6", instance_id: "monitor-1" },
++    capabilities_used: [],
++    provenance: { source_kind: "monitor", actor_class: "system", actor_id: "monitor-1" },
++    payload: {
++      monitor_id: "monitor-1",
++      event_id: `event-${sequence}`,
++      sequence,
++      subject_revision: "head-1",
++      type: "check.changed",
++      actionability: "action_required",
++      observed_at: "2026-08-09T12:01:00.000Z",
++      bounded_payload: { status },
++      ...overrides,
++    },
++    extensions: {},
++  };
++  value.content_hash = computeContentHash(value);
++  return value;
++}
++
++describe("MonitorSpec deterministic reducer", () => {
++  test("emits a delivery only for an actionable state transition", () => {
++    const monitorSpec = spec({ terminalPredicate: () => false });
++    const result = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation",
++      event: observation(0, "PENDING"),
++    });
++
++    expect(result.state).toMatchObject({ lastSequence: 0, acknowledgementCursor: -1, value: "PENDING" });
++    expect(result.effects).toEqual([expect.objectContaining({ type: "DELIVER", eventId: "event-0" })]);
++    expect(result.modelTurns).toBe(1);
++  });
++
++  test("suppresses duplicate-identical and unchanged observations without a model turn", () => {
++    const monitorSpec = spec({ terminalPredicate: () => false });
++    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation", event: observation(0, "PENDING"),
++    });
++    const duplicate = reduceMonitor(monitorSpec, first.state, {
++      kind: "observation", event: observation(0, "PENDING"),
++    });
++    const unchanged = reduceMonitor(monitorSpec, duplicate.state, {
++      kind: "observation", event: observation(1, "PENDING"),
++    });
++
++    expect(duplicate.effects).toEqual([]);
++    expect(duplicate.modelTurns).toBe(0);
++    expect(unchanged.effects).toEqual([]);
++    expect(unchanged.modelTurns).toBe(0);
++    expect(unchanged.state.lastSequence).toBe(1);
++  });
++
++  test("fails closed on conflicting duplicate identity and invalid bounded evidence", () => {
++    const monitorSpec = spec({ terminalPredicate: () => false });
++    const firstEvent = observation(0, "PENDING");
++    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), { kind: "observation", event: firstEvent });
++    const conflicting = structuredClone(firstEvent);
++    conflicting.payload.bounded_payload.status = "RUNNING";
++    conflicting.content_hash = computeContentHash(conflicting);
++
++    expect(() => reduceMonitor(monitorSpec, first.state, { kind: "observation", event: conflicting })).toThrow("identity conflict");
++    const secret = observation(1, "PENDING", { bounded_payload: { token: `ghp_${"x".repeat(24)}` } });
++    secret.content_hash = computeContentHash(secret);
++    expect(() => reduceMonitor(monitorSpec, first.state, { kind: "observation", event: secret })).toThrow("MonitorEvent validation failed");
++  });
++
++  test("advances acknowledgement cursor monotonically and releases pending delivery", () => {
++    const monitorSpec = spec({ terminalPredicate: () => false });
++    const observed = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation", event: observation(0, "PENDING"),
++    });
++    const acknowledged = reduceMonitor(monitorSpec, observed.state, { kind: "acknowledge", sequence: 0 });
++
++    expect(acknowledged.state.acknowledgementCursor).toBe(0);
++    expect(acknowledged.state.pending).toEqual([]);
++    expect(() => reduceMonitor(monitorSpec, acknowledged.state, { kind: "acknowledge", sequence: -1 })).toThrow("acknowledgement cursor");
++  });
++
++  test("makes bounded retry and backpressure decisions", () => {
++    const monitorSpec = spec({ maxPending: 1, terminalPredicate: () => false });
++    const first = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation", event: observation(0, "PENDING"),
++    });
++    const pressured = reduceMonitor(monitorSpec, first.state, {
++      kind: "observation", event: observation(1, "RUNNING"),
++    });
++    const retry = reduceMonitor(monitorSpec, pressured.state, {
++      kind: "delivery-failed", sequence: 0, observedAt: "2026-08-09T12:01:01.000Z",
++    });
++
++    expect(pressured.effects).toEqual([expect.objectContaining({ type: "BACKPRESSURE", decision: "DEFER" })]);
++    expect(pressured.modelTurns).toBe(0);
++    expect(retry.effects).toEqual([expect.objectContaining({ type: "RETRY_DELIVERY", delayMs: 100 })]);
++  });
++
++  test("waits for cancellation acknowledgement, performs cleanup, and emits a valid terminal receipt", () => {
++    const monitorSpec = spec({ terminalPredicate: () => false });
++    const requested = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), { kind: "cancel-requested" });
++    const acknowledged = reduceMonitor(monitorSpec, requested.state, {
++      kind: "cancel-acknowledged", observedAt: "2026-08-09T12:02:00.000Z",
++    });
++    const cleaned = reduceMonitor(monitorSpec, acknowledged.state, {
++      kind: "cleanup-complete",
++      processCleanup: { status: "PASS" },
++      leaseCleanup: { status: "PASS" },
++    });
++    const receipt = createMonitorReceipt(monitorSpec, cleaned.state, {
++      objectId: "00000000-0000-4000-8000-000000000011",
++      createdAt: "2026-08-09T12:02:01.000Z",
++      producerInstanceId: "monitor-1",
++    });
++
++    expect(requested.state.lifecycle).toBe("ACTIVE");
++    expect(acknowledged.state).toMatchObject({ lifecycle: "TERMINATING", cancellationAcknowledged: true });
++    expect(acknowledged.effects.map((effect) => effect.type)).toEqual(["CLEANUP_PROCESS", "CLEANUP_LEASE"]);
++    expect(cleaned.state.lifecycle).toBe("TERMINAL");
++    expect(receipt.payload).toMatchObject({ terminal_state: "CANCELLED", cancellation_acknowledged: true });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++    expect(receipt.content_hash).toBe(computeContentHash(receipt));
++  });
++
++  test("handles deadlines and declared lifetime deterministically", () => {
++    const deadlineSpec = spec({ terminalPredicate: () => false });
++    const before = reduceMonitor(deadlineSpec, createMonitorState(deadlineSpec), {
++      kind: "deadline", observedAt: "2026-08-09T12:09:59.000Z",
++    });
++    const expired = reduceMonitor(deadlineSpec, before.state, {
++      kind: "deadline", observedAt: "2026-08-09T12:10:00.000Z",
++    });
++    const sessionSpec = spec({ lifetime: "session", terminalPredicate: () => false });
++    const ended = reduceMonitor(sessionSpec, createMonitorState(sessionSpec), { kind: "session-ended" });
++
++    expect(before.state.lifecycle).toBe("ACTIVE");
++    expect(expired.state).toMatchObject({ lifecycle: "TERMINATING", terminalState: "INCOMPLETE" });
++    expect(ended.state).toMatchObject({ lifecycle: "TERMINATING", terminalState: "CANCELLED" });
++  });
++
++  test("rejects every event after terminal cleanup", () => {
++    const monitorSpec = spec({ terminalPredicate: () => false });
++    const terminating = reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "lease-lost",
++    });
++    const terminal = reduceMonitor(monitorSpec, terminating.state, {
++      kind: "cleanup-complete", processCleanup: {}, leaseCleanup: {},
++    });
++
++    expect(() => reduceMonitor(monitorSpec, terminal.state, { kind: "observation", event: observation(0, "PENDING") })).toThrow(MonitorRuntimeError);
++  });
++});
+-- 
+2.51.0.windows.1
+

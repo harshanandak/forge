@@ -1,0 +1,209 @@
+From bdcfe6674bd560096ee55958cdd89034f8d55ccf Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 02:14:59 +0530
+Subject: [PATCH] fix: scope fork merge provider authority
+
+---
+ lib/commands/merge.js                         | 27 +++++---
+ ...merge-authority-review-regressions.test.js |  6 +-
+ test/commands/merge-authority.test.js         | 66 +++++++++++++++++--
+ 3 files changed, 83 insertions(+), 16 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index b7fec881..9d4253bd 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -338,6 +338,7 @@ function terminalTraceIsIncomplete(gaps, row) {
+   if (!Array.isArray(gaps) || gaps.some(gap => terminalTraceGapKind(gap) === null)) return true;
+   const rowId = typeof row?.id === 'string' && row.id ? row.id : null;
+   return gaps.some((gap) => {
++    if (gap === 'pull_requests:overflow') return true;
+     if (rowId && gap === `pull_requests:${rowId}:unlinked_issue`) return true;
+     if (!/^iterations:[^:]+:(?:missing|incomplete|overflow)$/.test(gap)) return false;
+     return !rowId || ['missing', 'incomplete', 'overflow']
+@@ -876,9 +877,9 @@ function defaultGh(args, options = {}) {
+ }
+ 
+ /** Parse `gh ... --json` output, returning `null` on any failure (callers fail closed). */
+-function ghJson(gh, args) {
++function ghJson(gh, args, options) {
+   try {
+-    return JSON.parse(gh(args) || '{}');
++    return JSON.parse(gh(args, options) || '{}');
+   } catch (_err) {
+     return null;
+   }
+@@ -974,9 +975,20 @@ function fetchCheckRunObservations(gh, { owner, repo, head }) {
+  *
+  * @returns {object} prContext
+  */
+-async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+-  const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
+-    'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,comments,updatedAt']) || {};
++async function defaultFetchPrContext({ pr, projectRoot, gh = defaultGh, now = Date.now() }) {
++  const repoOptions = typeof projectRoot === 'string' && projectRoot ? { cwd: projectRoot } : undefined;
++  const repoIdentity = ghJson(gh, ['repo', 'view', '--json', 'owner,name,isFork,parent'], repoOptions);
++  const currentRepository = normalizeRepository(repoIdentity?.owner?.login && repoIdentity?.name
++    ? `${repoIdentity.owner.login}/${repoIdentity.name}`
++    : null);
++  const repository = repoIdentity?.isFork === true
++    ? normalizeRepository(repoIdentity?.parent?.nameWithOwner)
++    : (repoIdentity?.isFork === false ? currentRepository : null);
++  const [owner, repo] = repository ? repository.split('/') : [null, null];
++  const view = repository
++    ? (ghJson(gh, ['pr', 'view', String(pr), '--repo', repository, '--json',
++      'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,comments,updatedAt']) || {})
++    : {};
+ 
+   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : null;
+ 
+@@ -989,9 +1001,6 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     }))
+     : [];
+ 
+-  const repoIdentity = ghJson(gh, ['repo', 'view', '--json', 'owner,name']);
+-  const owner = repoIdentity && repoIdentity.owner && repoIdentity.owner.login;
+-  const repo = repoIdentity && repoIdentity.name;
+   const adapter = owner && repo
+     ? new PrStateAdapter({ gh: (_cmd, adapterArgs) => gh(adapterArgs) })
+     : null;
+@@ -1050,7 +1059,7 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+ 
+   return {
+     number: Number.isInteger(view.number) ? view.number : null,
+-    repository: owner && repo ? `${owner}/${repo}` : null,
++    repository,
+     headSha: view.headRefOid || null,
+     checks,
+     providerObservations,
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index f6687aeb..c7650954 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -80,7 +80,7 @@ function makeGh(threadPayload, viewOverrides = {}, checkRuns = null) {
+       return JSON.stringify(payload);
+     }
+     if (argv[0] === 'repo' && argv[1] === 'view') {
+-      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
++      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null });
+     }
+     if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
+       return JSON.stringify({ contexts: ['ci'], checks: [{ context: 'ci', app_id: 123 }] });
+@@ -731,8 +731,8 @@ describe('merge authority — exact reviewer regressions', () => {
+       if (argv[0] === 'repo' && argv[1] === 'view') {
+         repoReads += 1;
+         return JSON.stringify(repoReads === 1
+-          ? { owner: { login: 'acme' }, name: 'forge' }
+-          : { owner: { login: 'evil' }, name: 'other' });
++          ? { owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null }
++          : { owner: { login: 'evil' }, name: 'other', isFork: false, parent: null });
+       }
+       if (argv[0] === 'api' && argv[1] === 'graphql') graphqlArgs = argv;
+       return baseGh(argv);
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index a74f2e25..fc915130 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -342,7 +342,11 @@ describe('merge command — mandatory release authority', () => {
+   });
+ 
+   test('fails closed on incomplete retired trace gaps before provider I/O', async () => {
+-    for (const suffix of ['incomplete', 'overflow']) {
++    for (const gaps of [
++      ['iterations:pr-1:incomplete'],
++      ['iterations:pr-1:overflow'],
++      ['pull_requests:overflow'],
++    ]) {
+       let fetches = 0;
+       const injected = deps({
+         fetchPrContext: async () => { fetches += 1; return context(); },
+@@ -350,7 +354,7 @@ describe('merge command — mandatory release authority', () => {
+         buildPrBindingBroker: async () => ({
+           gitCommonDir: '/repo/.git',
+           broker: { readTrace: async () => ({
+-            gaps: [`iterations:pr-1:${suffix}`],
++            gaps,
+             pull_requests: [{
+               id: 'pr-1', repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'closed',
+               git_common_dir: '/repo/.git',
+@@ -1079,6 +1083,60 @@ describe('merge command — mandatory release authority', () => {
+     expect(exact).toMatchObject({ owned: true, sessionId: 'release-session' });
+   });
+ 
++  test('default fetch resolves a fork parent before reading PR context', async () => {
++    const seen = [];
++    const gh = (argv, options) => {
++      seen.push({ argv, options });
++      if (argv[0] === 'repo' && argv[1] === 'view') {
++        return JSON.stringify({
++          owner: { login: 'contributor' },
++          name: 'forge',
++          isFork: true,
++          parent: { nameWithOwner: 'acme/forge' },
++        });
++      }
++      if (argv[0] === 'pr' && argv[1] === 'view') {
++        return JSON.stringify({
++          number: 42,
++          headRefOid: HEAD,
++          baseRefName: null,
++          state: 'OPEN',
++          isDraft: false,
++          mergeable: 'MERGEABLE',
++          mergeStateStatus: 'CLEAN',
++          statusCheckRollup: [],
++          comments: [],
++          updatedAt: '2026-08-01T00:00:00Z',
++        });
++      }
++      if (argv[0] === 'api' && argv[1] === 'graphql') {
++        const queryArg = argv.find((arg) => String(arg).startsWith('query=')) || '';
++        if (queryArg.includes('reviews(first')) {
++          return JSON.stringify({
++            data: { repository: { pullRequest: { reviews: {
++              nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
++            } } } },
++          });
++        }
++        return JSON.stringify({
++          data: { repository: { pullRequest: { reviewThreads: {
++            nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
++          } } } },
++        });
++      }
++      throw new Error(`unexpected gh call: ${argv.join(' ')}`);
++    };
++
++    const out = await mergeCmd.defaultFetchPrContext({ pr: '42', projectRoot: '/workspace/forge', gh });
++
++    expect(out.repository).toBe('acme/forge');
++    expect(seen[0]).toEqual({
++      argv: ['repo', 'view', '--json', 'owner,name,isFork,parent'],
++      options: { cwd: '/workspace/forge' },
++    });
++    expect(seen[1].argv).toEqual(expect.arrayContaining(['pr', 'view', '42', '--repo', 'acme/forge']));
++  });
++
+   test('default fetch exposes exact head and only authoritative protection requirements', async () => {
+     const seen = [];
+     const gh = (argv) => {
+@@ -1101,7 +1159,7 @@ describe('merge command — mandatory release authority', () => {
+         });
+       }
+       if (argv[0] === 'repo' && argv[1] === 'view') {
+-        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
++        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge', isFork: false, parent: null });
+       }
+       if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
+         return JSON.stringify({
+@@ -1152,6 +1210,6 @@ describe('merge command — mandatory release authority', () => {
+       { id: 2, name: 'optional', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
+     ]);
+     expect(out.requiredCheckSource).toBe('protection');
+-    expect(seen[0].join(' ')).toContain('headRefOid');
++    expect(seen.find(argv => argv[0] === 'pr' && argv[1] === 'view').join(' ')).toContain('headRefOid');
+   });
+ });
+-- 
+2.51.0.windows.1
+

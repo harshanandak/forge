@@ -1,0 +1,105 @@
+From eb843f91bf54e605928267f57adf868afdb2219b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 02:57:49 +0530
+Subject: [PATCH] fix: close review routing gaps
+
+---
+ lib/commands/test.js                |  8 +++++---
+ lib/pr-monitor/watch-owner.js       |  2 ++
+ test/commands/test.test.js          | 14 ++++++++++++++
+ test/pr-monitor/watch-owner.test.js | 21 +++++++++++++++++++++
+ 4 files changed, 42 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index daff179a..0385714d 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -392,10 +392,12 @@ module.exports = {
+ 
+ 		// 4. --affected flag: find changed test files
+ 		if (flags['--affected'] || flags.affected) {
+-			const affectedTests = getAffectedTestFiles(projectRoot, execFileSync, fs, {
++			const diffOptions = {
+ 				sinceUpstream: flags.sinceUpstream || flags['--since-upstream'],
+-			});
+-			if (affectedTests.length > 0) {
++			};
++			const changedFiles = getChangedFiles(execFileSync, diffOptions);
++			const affectedTests = getAffectedTestFiles(projectRoot, execFileSync, fs, diffOptions);
++			if (!changedFiles.some(isFullSuiteRequiredFile) && affectedTests.length > 0) {
+ 				testArgs = ['run', 'test', ...affectedTests];
+ 			}
+ 			// If no affected tests found, fall back to running all tests
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 82304b2e..4d98930f 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -1192,6 +1192,8 @@ function invokeGate(method, input, opts) {
+ 			&& (snap.changed !== false || snap.reason !== 'read')) {
+ 			return invalidGate('corrupt');
+ 		}
++		if (method === 'watchGateRead' && !snap.ok
++			&& snap.reason === 'absent' && snap.gate != null) return invalidGate('corrupt');
+ 		if (snap.ok && snap.gate == null) return invalidGate('corrupt');
+ 		if (snap.gate == null) {
+ 			return { ok: snap.ok, changed: snap.changed, reason: snap.reason, gate: null };
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index 29414f77..147f5084 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -316,6 +316,20 @@ describe('forge test command', () => {
+ 			expect(affected).toEqual(targets);
+ 		});
+ 
++		test('runs the full suite when a shared authority file changes with a mapped test', async () => {
++			const spawnSpy = makeSpawnSync();
++			await testCommand.handler([], { affected: true }, '/fake/root', {
++				fs: makeFsStub({ existingPaths: ['/fake/root/test/commands/test.test.js'] }),
++				execFileSync: makeExecFileSync({
++					mergeBaseOutput: 'abc123',
++					gitDiffOutput: 'lib/kernel/sqlite-driver.js\ntest/commands/test.test.js\n',
++				}),
++				spawnSync: spawnSpy,
++			});
++
++			expect(spawnSpy.calls[0].args).toEqual(['run', 'test']);
++		});
++
+ 		test('maps upgrade safety support files to targeted tests', async () => {
+ 			const spawnSpy = makeSpawnSync();
+ 			await testCommand.handler([], { affected: true }, '/fake/root', {
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index e01933c4..acdf4708 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2398,6 +2398,27 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result.ok).toBe(false);
+ 	});
+ 
++	test('rejects failed gate reads that still carry authoritative state', async () => {
++		const gate = {
++			singleton: 1, state: 'complete', snapshot_hash: HASH,
++			conflict_code: null, updated_at: NOW,
++		};
++		let mutationAttempts = 0;
++		const injected = authorityOpts({
++			...driver,
++			watchGateRead: () => ({ ok: false, changed: false, reason: 'absent', gate }),
++			watchGatePublishQuarantine: () => {
++				mutationAttempts += 1;
++				return { ok: true, changed: true, reason: 'quarantined', gate };
++			},
++		});
++		expect(await owner.readMigrationGate({}, injected))
++			.toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
++		expect(await owner.publishMigrationQuarantine({ updatedAt: LATER }, injected))
++			.toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
++		expect(mutationAttempts).toBe(0);
++	});
++
+ 	test('consumes rejected async adapter promises without crashing the host', async () => {
+ 		let unhandled = 0;
+ 		const onUnhandled = () => { unhandled += 1; };
+-- 
+2.51.0.windows.1
+

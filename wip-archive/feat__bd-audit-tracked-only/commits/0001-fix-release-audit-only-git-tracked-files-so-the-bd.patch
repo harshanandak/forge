@@ -1,0 +1,137 @@
+From 9d5b6ca82b606809f6410f4f774b152ff8cf5518 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 14:56:09 +0530
+Subject: [PATCH] fix(release): audit only git-tracked files so the bd census
+ is deterministic (1d4077d8)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+auditBdCallSites walked the raw filesystem under each scan root, so an untracked file
+a concurrent test dropped under lib/ docs/ skills/ perturbed the census — the D20 bd
+kill-list artifact then read "stale" only under the parallel CI run (it passed in
+isolation). Restrict the audit to git-tracked files (git ls-files): on a clean tree
+this equals the old walk (census + committed artifact unchanged), but untracked
+working-tree pollution is now ignored, killing the flake.
+
+Test: auditBdCallSites ignores an untracked bd-referencing file under a scan root
+(census unchanged), while still counting the committed file.
+---
+ lib/release-readiness.js               | 27 +++++++++++++
+ test/release-readiness-tracked.test.js | 56 ++++++++++++++++++++++++++
+ 2 files changed, 83 insertions(+)
+ create mode 100644 test/release-readiness-tracked.test.js
+
+diff --git a/lib/release-readiness.js b/lib/release-readiness.js
+index b81cf049..590fd64c 100644
+--- a/lib/release-readiness.js
++++ b/lib/release-readiness.js
+@@ -2,6 +2,7 @@
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { execFileSync } = require('node:child_process');
+ const babelParser = require('@babel/parser');
+ 
+ const SUPPORTED_TARGET = '0.1.0';
+@@ -488,9 +489,35 @@ function addCallSites(groups, group, relativePath, lineEntries) {
+   });
+ }
+ 
++// Git-tracked repo files (repo-relative, forward-slash), or null when this isn't a git
++// repo (then callers fall back to the raw walk). Restricting the bd-audit to tracked files
++// makes the census deterministic under a dirty/parallel working tree: an untracked temp
++// file a concurrent test drops under a scan root no longer perturbs it (issue 1d4077d8).
++function trackedRepoFiles(projectRoot) {
++  try {
++    const output = execFileSync('git', ['-C', projectRoot, 'ls-files', '-z'], {
++      encoding: 'utf8',
++      maxBuffer: 64 * 1024 * 1024,
++    });
++    const tracked = new Set();
++    for (const entry of output.split('\0')) {
++      if (entry) {
++        tracked.add(normalizeRepoPath(entry));
++      }
++    }
++    return tracked;
++  } catch (_error) {
++    return null;
++  }
++}
++
+ function auditBdCallSites(projectRoot, options = {}) {
+   const roots = getScanRoots(projectRoot, options);
++  // Only audit git-tracked files, so untracked working-tree pollution (e.g. a concurrent
++  // test's temp files under a scan root) can't perturb the census (issue 1d4077d8).
++  const tracked = trackedRepoFiles(projectRoot);
+   const files = [...new Set(roots.flatMap(root => walkFiles(projectRoot, root)))]
++    .filter(relativePath => !tracked || tracked.has(normalizeRepoPath(relativePath)))
+     .sort((left, right) => left.localeCompare(right));
+   const groups = newGroupedAudit();
+ 
+diff --git a/test/release-readiness-tracked.test.js b/test/release-readiness-tracked.test.js
+new file mode 100644
+index 00000000..49996f4f
+--- /dev/null
++++ b/test/release-readiness-tracked.test.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++const { afterEach, describe, test, expect } = require('bun:test');
++const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { auditBdCallSites } = require('../lib/release-readiness');
++
++const tempDirs = [];
++
++// A throwaway git repo with one committed, bd-referencing file under `docs/`.
++function makeRepo() {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-bd-audit-'));
++  execFileSync('git', ['init', '-q'], { cwd: dir });
++  fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
++  fs.writeFileSync(path.join(dir, 'docs', 'tracked.md'), 'legacy note: run `bd list` to see issues\n');
++  execFileSync('git', ['add', '.'], { cwd: dir });
++  execFileSync(
++    'git',
++    ['-c', 'user.email=t@example.com', '-c', 'user.name=Test', 'commit', '-qm', 'seed'],
++    { cwd: dir },
++  );
++  tempDirs.push(dir);
++  return dir;
++}
++
++afterEach(() => {
++  while (tempDirs.length > 0) {
++    const dir = tempDirs.pop();
++    try {
++      fs.rmSync(dir, { recursive: true, force: true });
++    } catch {
++      /* best-effort cleanup */
++    }
++  }
++});
++
++describe('auditBdCallSites is deterministic under working-tree pollution (1d4077d8)', () => {
++  test('ignores untracked files dropped under a scan root', () => {
++    const repo = makeRepo();
++
++    const clean = auditBdCallSites(repo, { scanRoots: ['docs'] });
++    expect(clean.totalCount).toBeGreaterThan(0); // the committed file IS audited
++
++    // Simulate a concurrent test dropping an untracked, bd-referencing file under the same
++    // scan root. Pre-fix the raw fs walk counted it (census drifts → flaky "stale artifact");
++    // the tracked-only audit must ignore it.
++    fs.writeFileSync(path.join(repo, 'docs', 'pollution.md'), 'stray `bd create` call site\n');
++    const polluted = auditBdCallSites(repo, { scanRoots: ['docs'] });
++
++    expect(polluted.totalCount).toBe(clean.totalCount);
++    expect(polluted.totalFiles).toBe(clean.totalFiles);
++  });
++});
+-- 
+2.51.0.windows.1
+

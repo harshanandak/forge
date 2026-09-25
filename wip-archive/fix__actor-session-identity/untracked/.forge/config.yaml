@@ -1,0 +1,43 @@
+template:
+  kind: forge.adoptionTemplate
+  version: 0.0.16
+  profile: standard
+  description: Default Forge command flow with Kernel issue tracking and GitHub
+    mirror metadata.
+  ancestry:
+    - forge.runtimeGraph.currentCommandFlow@0.0.17
+    - forge.profile.standard@0.0.16
+workflow:
+  phases:
+    plan:
+      enabled: true
+    dev:
+      enabled: true
+    validate:
+      enabled: true
+    ship:
+      enabled: true
+  gates:
+    gate.plan-exit:
+      enabled: true
+    gate.dev-exit:
+      enabled: true
+    gate.validate-exit:
+      enabled: true
+    gate.ship-entry:
+      enabled: true
+adapters:
+  issue:
+    enabled: true
+    primary: kernel
+    mirrors:
+      - github
+  harness:
+    enabled: true
+    targets:
+      - codex
+      - claude
+      - cursor
+protectedPaths:
+  - .forge/config.yaml
+  - AGENTS.md

@@ -1,0 +1,322 @@
+From 448760cbb29a3ce32bcd32e45e9bfbfbd23641c1 Mon Sep 17 00:00:00 2001
+From: Harsha Befach <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 00:17:57 +0530
+Subject: [PATCH] fix(shepherd): block unverified legacy evidence
+
+---
+ lib/pr-monitor/reconcile-executor.js          |  76 ++++++++---
+ .../reconcile-migration-gate.test.js          | 126 +++++++++++++++++-
+ 2 files changed, 178 insertions(+), 24 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 3ef36d9b..7c37dce6 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -591,10 +591,21 @@ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 	const ctx = identity(entry);
+ 	const pid = Number(entry.pid);
+ 	const hasPid = Number.isSafeInteger(pid) && pid > 0;
+-	const pidState = hasPid ? await options.isPidAlive(pid) : false;
+-	const providerState = String(
+-		await (opts.readProviderState || defaultReadProviderState)(entry, { ...opts, projectRoot }) || '',
+-	).toLowerCase();
++	let pidState = false;
++	if (hasPid) {
++		try {
++			const observed = await options.isPidAlive(pid);
++			pidState = typeof observed === 'boolean' ? observed : null;
++		} catch { pidState = null; }
++	}
++	let providerState = '';
++	let providerReadable;
++	try {
++		providerState = String(
++			await (opts.readProviderState || defaultReadProviderState)(entry, { ...opts, projectRoot }) || '',
++		).toLowerCase();
++		providerReadable = providerState.length > 0;
++	} catch { providerReadable = false; }
+ 	const providerTerminal = ['closed', 'merged', 'terminal'].includes(providerState);
+ 	let providerVerified = false;
+ 	if (hasPid && providerState === 'open' && typeof options.verifyProviderEvidence === 'function') {
+@@ -617,6 +628,7 @@ async function collectLegacyEntryEvidence(entry, options, opts, projectRoot) {
+ 		hasPid,
+ 		pidState,
+ 		providerState,
++		providerReadable,
+ 		providerTerminal,
+ 		providerVerified,
+ 		receiptVerified,
+@@ -677,28 +689,27 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	for (let attempt = 0; attempt < MAX_MIGRATION_ATTEMPTS; attempt += 1) {
+ 		const first = await readSnapshot();
+ 		const firstHash = hashLegacySnapshot(first);
+-		if (!first || first.corrupt) {
+-			snapshot = first;
+-			snapshotHash = firstHash;
+-			break;
+-		}
+-		const consolidated = consolidateLegacyEntries(first.entries);
+-		if (first.unmappable || consolidated.unmappable) {
+-			await authority.publishMigrationConflict({
+-				snapshotHash: firstHash, conflictCode: 'legacy_identity_unmappable', updatedAt: now,
+-			}, options);
+-			return { ok: false, state: 'conflict', reason: 'legacy_identity_unmappable' };
+-		}
++		const consolidated = first && !first.corrupt
++			? consolidateLegacyEntries(first.entries)
++			: null;
+ 		const evidence = [];
+-		for (const entry of consolidated.entries) {
+-			evidence.push(await collectLegacyEntryEvidence(entry, options, opts, projectRoot));
++		if (consolidated && !first.unmappable && !consolidated.unmappable) {
++			for (const entry of consolidated.entries) {
++				evidence.push(await collectLegacyEntryEvidence(entry, options, opts, projectRoot));
++			}
+ 		}
+ 		const second = await readSnapshot();
+ 		const secondHash = hashLegacySnapshot(second);
+ 		if (firstHash === secondHash) {
+ 			snapshot = second;
+ 			snapshotHash = secondHash;
+-			verifiedEntries = evidence;
++			if (consolidated && (first.unmappable || consolidated.unmappable)) {
++				await authority.publishMigrationConflict({
++					snapshotHash, conflictCode: 'legacy_identity_unmappable', updatedAt: now,
++				}, options);
++				return { ok: false, state: 'conflict', reason: 'legacy_identity_unmappable' };
++			}
++			verifiedEntries = consolidated ? evidence : null;
+ 			break;
+ 		}
+ 		if (attempt === MAX_MIGRATION_ATTEMPTS - 1) {
+@@ -720,7 +731,8 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 	const expectedRows = [];
+ 	for (const evidence of verifiedEntries || []) {
+ 		const {
+-			entry, entryHash, ctx, pid, hasPid, pidState, providerState, providerTerminal,
++			entry, entryHash, ctx, pid, hasPid, pidState, providerState, providerReadable,
++			providerTerminal, providerVerified, receiptVerified,
+ 		} = evidence;
+ 		const operationOptions = cachedLegacyEvidenceOptions(options, evidence);
+ 		let result;
+@@ -729,23 +741,43 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 				blockReason: 'legacy_conflict', snapshotHash, legacyEvidenceHash: entryHash,
+ 				startedAt: entry.startedAt || now,
+ 			}, operationOptions);
++		} else if (pidState == null) {
++			result = await authority.markLegacyBlocked(ctx, {
++				blockReason: 'legacy_unreadable', snapshotHash, legacyEvidenceHash: entryHash,
++				startedAt: entry.startedAt || now,
++			}, operationOptions);
+ 		} else if (pidState === true) {
+ 			result = await authority.markLegacyBlocked(ctx, {
+ 				blockReason: 'legacy_live_pid', pid, snapshotHash, legacyEvidenceHash: entryHash,
+ 				startedAt: entry.startedAt || now,
+ 			}, operationOptions);
+-		} else if (entry.terminalReceiptId && providerTerminal) {
++		} else if (entry.terminalReceiptId && providerTerminal && receiptVerified) {
+ 			result = await authority.importLegacyComplete(ctx, {
+ 				snapshotHash, legacyEvidenceHash: entryHash, legacyPid: hasPid ? pid : null,
+ 				terminalReceiptId: entry.terminalReceiptId, startedAt: entry.startedAt || now,
+ 			}, operationOptions);
+-		} else if (hasPid && providerState === 'open'
++		} else if (entry.terminalReceiptId && providerTerminal) {
++			result = await authority.markLegacyBlocked(ctx, {
++				blockReason: 'legacy_receipt_unverified', terminalReceiptId: entry.terminalReceiptId,
++				snapshotHash, legacyEvidenceHash: entryHash, startedAt: entry.startedAt || now,
++			}, operationOptions);
++		} else if (!providerReadable) {
++			result = await authority.markLegacyBlocked(ctx, {
++				blockReason: 'legacy_unreadable', snapshotHash, legacyEvidenceHash: entryHash,
++				startedAt: entry.startedAt || now,
++			}, operationOptions);
++		} else if (hasPid && providerState === 'open' && providerVerified
+ 			&& typeof authority.importLegacyStarting === 'function') {
+ 			result = await authority.importLegacyStarting(ctx, {
+ 				snapshotHash, legacyEvidenceHash: entryHash, legacyPid: pid,
+ 				controllerPid: opts.controllerPid || process.pid,
+ 				providerEvidence: { state: 'open' }, startedAt: entry.startedAt || now,
+ 			}, operationOptions);
++		} else if (providerState === 'open') {
++			result = await authority.markLegacyBlocked(ctx, {
++				blockReason: hasPid ? 'legacy_unreadable' : 'legacy_lossy',
++				snapshotHash, legacyEvidenceHash: entryHash, startedAt: entry.startedAt || now,
++			}, operationOptions);
+ 		} else {
+ 			result = await authority.markLegacyBlocked(ctx, {
+ 				blockReason: providerState ? 'legacy_receipt_unverified' : 'legacy_lossy',
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index adeca58c..cef9dcd2 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -84,7 +84,13 @@ function authorityHarness(options = {}) {
+ 		},
+ 		async markLegacyBlocked(ctx, input) {
+ 			calls.push(`blocked:${key(ctx)}:${input.blockReason}`);
+-			rows.set(key(ctx), { ...ctx, phase: 'blocked', legacyEvidenceHash: input.legacyEvidenceHash });
++			rows.set(key(ctx), {
++				...ctx,
++				phase: 'blocked',
++				blockReason: input.blockReason,
++				terminalReceiptId: input.terminalReceiptId || null,
++				legacyEvidenceHash: input.legacyEvidenceHash,
++			});
+ 			return { ok: true, changed: true, record: rows.get(key(ctx)) };
+ 		},
+ 		async enumerateOwners() {
+@@ -109,6 +115,30 @@ function authorityHarness(options = {}) {
+ 	return api;
+ }
+ 
++function verifierHonoringHarness() {
++	const api = authorityHarness();
++	const importStarting = api.importLegacyStarting;
++	const importComplete = api.importLegacyComplete;
++	api.importLegacyStarting = async (ctx, input, operationOptions) => {
++		const dead = await operationOptions.isPidAlive(input.legacyPid) === false;
++		const providerVerified = await operationOptions.verifyProviderEvidence(
++			input.providerEvidence, { ...ctx, states: ['open'] },
++		) === true;
++		return dead && providerVerified
++			? importStarting(ctx, input, operationOptions)
++			: { ok: false, changed: false, reason: 'provider_evidence_invalid', record: null };
++	};
++	api.importLegacyComplete = async (ctx, input, operationOptions) => {
++		const dead = input.legacyPid == null
++			|| await operationOptions.isPidAlive(input.legacyPid) === false;
++		const receiptVerified = await operationOptions.verifyTerminalReceipt(input.terminalReceiptId, ctx) === true;
++		return dead && receiptVerified
++			? importComplete(ctx, input, operationOptions)
++			: { ok: false, changed: false, reason: 'receipt_unverified', record: null };
++	};
++	return api;
++}
++
+ function run(api, legacy, extra = {}) {
+ 	return migrateLegacyAuthority('/repo', {
+ 		authority: api,
+@@ -322,6 +352,7 @@ describe('one-release watcher authority migration gate', () => {
+ 				now: () => NOW,
+ 				isAlive: () => false,
+ 				readProviderState: async () => 'closed',
++				verifyTerminalReceipt: async () => true,
+ 			});
+ 			expect(result).toMatchObject({ ok: true, state: 'complete' });
+ 			expect(api.rows.get('acme/repo#11')).toMatchObject({
+@@ -338,7 +369,7 @@ describe('one-release watcher authority migration gate', () => {
+ 			entry('zeta/repo', 2),
+ 			entry('acme/repo', 9, { terminalReceiptId: 'receipt-9', providerState: 'closed' }),
+ 		]);
+-		const result = await run(api, legacy);
++		const result = await run(api, legacy, { verifyTerminalReceipt: async () => true });
+ 		expect(result).toMatchObject({ ok: true, state: 'complete' });
+ 		expect(api.calls.filter(value => /^(starting|complete):/.test(value))).toEqual([
+ 			'complete:acme/repo#9',
+@@ -391,6 +422,58 @@ describe('one-release watcher authority migration gate', () => {
+ 		});
+ 	}
+ 
++	test('blocks canonical terminal evidence when its durable receipt is unverified', async () => {
++		const api = verifierHonoringHarness();
++		let receiptChecks = 0;
++		const result = await run(api, snapshot([entry('acme/repo', 8, {
++			providerState: 'closed', terminalReceiptId: 'missing-receipt-8',
++		})]), {
++			verifyTerminalReceipt: async () => { receiptChecks += 1; return false; },
++		});
++		expect(result).toMatchObject({ ok: true, state: 'complete' });
++		expect(api.rows.get('acme/repo#8')).toMatchObject({
++			phase: 'blocked', blockReason: 'legacy_receipt_unverified',
++			terminalReceiptId: 'missing-receipt-8',
++		});
++		expect(api.calls.some(value => value.startsWith('complete:acme/repo#8'))).toBe(false);
++		expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
++		expect(receiptChecks).toBe(1);
++	});
++
++	test('blocks canonical open evidence when provider verification fails', async () => {
++		const api = verifierHonoringHarness();
++		let providerChecks = 0;
++		const result = await run(api, snapshot([entry('acme/repo', 9)]), {
++			ownerOptions: {
++				verifyProviderEvidence: async () => { providerChecks += 1; return false; },
++			},
++		});
++		expect(result).toMatchObject({ ok: true, state: 'complete' });
++		expect(api.rows.get('acme/repo#9')).toMatchObject({
++			phase: 'blocked', blockReason: 'legacy_unreadable',
++		});
++		expect(api.calls.some(value => value.startsWith('starting:acme/repo#9'))).toBe(false);
++		expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
++		expect(providerChecks).toBe(1);
++	});
++
++	for (const pidFailure of ['unknown', 'throw']) {
++		test(`blocks canonical evidence when its PID probe is ${pidFailure}`, async () => {
++			const api = verifierHonoringHarness();
++			const result = await run(api, snapshot([entry('acme/repo', 10)]), {
++				isAlive: () => {
++					if (pidFailure === 'throw') throw new Error('PID probe unavailable');
++					return null;
++				},
++			});
++			expect(result).toMatchObject({ ok: true, state: 'complete' });
++			expect(api.rows.get('acme/repo#10')).toMatchObject({
++				phase: 'blocked', blockReason: 'legacy_unreadable',
++			});
++			expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
++		});
++	}
++
+ 	test('coalesces duplicate legacy sources into one transaction per canonical PR', async () => {
+ 		const api = authorityHarness();
+ 		const duplicate = entry('acme/repo', 7);
+@@ -430,6 +513,45 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(api.calls).toContain('conflict:legacy_identity_unmappable');
+ 	});
+ 
++	for (const invalidKind of ['unmappable', 'corrupt']) {
++		test(`retries a transient first ${invalidKind} snapshot before publishing conflict`, async () => {
++			const api = authorityHarness();
++			const invalid = snapshot([], { [invalidKind]: true });
++			const canonical = snapshot([]);
++			const reads = [invalid, canonical, canonical, canonical, canonical];
++			const result = await migrateLegacyAuthority('/repo', {
++				authority: api,
++				now: () => NOW,
++				readLegacySnapshot: async () => structuredClone(reads.shift()),
++			});
++			expect(result).toMatchObject({ ok: true, state: 'complete' });
++			expect(api.calls.some(value => value.startsWith('conflict:'))).toBe(false);
++			expect(api.rows.size).toBe(0);
++			expect(reads).toHaveLength(0);
++		});
++
++		test(`requires two equal ${invalidKind} snapshots before publishing conflict`, async () => {
++			const api = authorityHarness();
++			let reads = 0;
++			const result = await migrateLegacyAuthority('/repo', {
++				authority: api,
++				now: () => NOW,
++				readLegacySnapshot: async () => {
++					reads += 1;
++					return snapshot([], { [invalidKind]: true });
++				},
++			});
++			expect(result).toMatchObject({
++				ok: false,
++				state: 'conflict',
++				reason: invalidKind === 'unmappable' ? 'legacy_identity_unmappable' : 'legacy_owner_conflict',
++			});
++			expect(reads).toBe(2);
++			expect(api.boundSnapshotHashes).toEqual([]);
++			expect(api.rows.size).toBe(0);
++		});
++	}
++
+ 	test('retries three unstable snapshots then fails closed', async () => {
+ 		const api = authorityHarness();
+ 		let version = 0;
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,51 @@
+From 6b5dfb564de27532982aed2169d4bafd70221bee Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 13:24:17 +0530
+Subject: [PATCH] fix(setup): guard lefthook install on binaryAvailable in
+ repair path (native fallback, no npx hang)
+
+Keep lib/commands/setup.js installGitHooks byte-consistent with bin/forge.js: only
+drive lefthook when its binary is actually present. Previously (this branch) the repair
+path unconditionally attempted `npx lefthook install`, which triggers an on-demand
+network fetch that can hang on Windows and diverged from bin/forge.js. Now, with no
+lefthook binary, it falls straight through to the native .git/hooks fallback.
+
+Verified end-to-end in a fresh git repo (no package.json, no lefthook): `forge setup`
+installs native pre-commit/pre-push hooks with the Forge sentinel, verifies enforcement
+active (native), writes no stray lefthook.yml, and the native pre-commit actually blocks
+an untested-source commit.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/setup.js | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 524d6c10..0d79012b 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2747,7 +2747,12 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+     console.warn(`  \u26A0 lefthook binary unavailable: ${lefthookStatus.message}`);
+   }
+ 
+-  try {
++  // Only drive lefthook when its binary is actually present. When it is not, fall
++  // straight through to the native .git/hooks fallback below rather than triggering an
++  // on-demand `npx lefthook` fetch \u2014 that is network-dependent and can hang on Windows,
++  // and it keeps this repair path byte-for-byte consistent with bin/forge.js.
++  if (lefthookStatus.binaryAvailable) {
++   try {
+     // Write the user-facing lefthook.yml (references only .forge/hooks/check-tdd.js and
+     // the project's own tests — never the repo's internal scripts/). Overwrite lefthook's
+     // own disposable stub so Forge's pre-commit/pre-push wiring actually lands; never
+@@ -2795,6 +2800,7 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+     console.log('  You can install manually later with: lefthook install');
+     console.log('');
+   }
++  }
+ 
+   // Native fallback: when lefthook could not be installed, wire native .git/hooks so
+   // raw git commit / git push still enforce the TDD gate — enforcement is never silently
+-- 
+2.51.0.windows.1
+

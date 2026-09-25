@@ -1,0 +1,94 @@
+From ab0dbd9981a8b49ddf31f5934252ae4e8388735c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 9 Sep 2026 12:57:40 +0530
+Subject: [PATCH] fix: fail closed on ambiguous upstream base branch
+
+---
+ scripts/protected-state-check.js      | 16 +++++++++++--
+ test/protected-state-surfaces.test.js | 34 +++++++++++++++++++++++++++
+ 2 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index b8eea4e7..1c68ecda 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -231,6 +231,10 @@ function baseRemoteProbe(_command, args) {
+ // Fail closed when the official `upstream` remote is configured but has no
+ // fetched tracking refs: falling through to `origin` would change trust domains
+ // and let fork-only content pass as already published upstream.
++// Fail closed when the base branch is ambiguous: with no authoritative HEAD
++// and both conventional defaults present, candidate order would trust main
++// even when master is the real integration branch, letting content published
++// only to the wrong branch pass as already published on the base.
+ // Returns a fully-qualified ref name, or null when it cannot be established.
+ function canonicalUpstreamRef() {
+ 	const cwd = process.cwd();
+@@ -251,12 +255,20 @@ function canonicalUpstreamRef() {
+ 	}
+ 
+ 	const candidates = [];
++	let head = null;
+ 	try {
+-		const head = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
+-		if (head) candidates.push(head);
++		const resolved = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
++		if (resolved) head = resolved;
+ 	} catch {
+ 		// no remote HEAD recorded; fall through to the resolved default branch
+ 	}
++	if (head) {
++		candidates.push(head);
++	} else {
++		const hasMain = Boolean(resolveCommit(`refs/remotes/${remote}/main`));
++		const hasMaster = Boolean(resolveCommit(`refs/remotes/${remote}/master`));
++		if (hasMain && hasMaster) return null;
++	}
+ 	candidates.push(`refs/remotes/${remote}/${resolveBaseBranch(baseRemoteProbe, process.cwd(), remote)}`);
+ 	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
+ 
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index f41367b9..e2c62eeb 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -893,4 +893,38 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+ 	}, 60_000);
++
++	test('blocks a merge carry-over when the upstream base branch is ambiguous', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			// Both conventional defaults exist with no authoritative HEAD, so
++			// candidate-order trust would pick main even when master is real.
++			runGit(work, ['checkout', '--quiet', '-B', 'main', 'master']);
++			runGit(work, ['push', '--quiet', 'origin', 'main']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			runGit(work, ['remote', 'set-head', 'origin', '-d']);
++			// Protected change published only to main (the candidate-order pick).
++			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
++			runGit(work, ['checkout', '--quiet', '-B', 'ambiguous-work', 'master']);
++			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
++			runGit(work, ['add', WORKFLOW]);
++			runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
++			runGit(work, ['push', '--quiet', 'origin', 'ambiguous-work:main']);
++			runGit(work, ['fetch', '--quiet', 'origin']);
++			// Delete HEAD after the final fetch: fetch recreates the tracking
++			// HEAD, so remove it again to keep the base genuinely ambiguous.
++			runGit(work, ['remote', 'set-head', 'origin', '-d']);
++			runGit(work, ['checkout', '--quiet', 'feature']);
++			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++			runGit(work, ['add', 'lib/safe.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'ambiguous-work']);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
+ });
+-- 
+2.51.0.windows.1
+

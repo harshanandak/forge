@@ -1,0 +1,374 @@
+From 1f1d86dd63aa0adc4aec7961466dfca6e1d38788 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 22:36:36 +0530
+Subject: [PATCH] fix: preserve PR issue linkage
+
+---
+ lib/commands/ship.js                       | 75 ++++++++++++++++++++++
+ lib/kernel/broker.js                       |  7 ++
+ lib/pr-monitor/reconcile-executor.js       | 39 ++++++++++-
+ test/commands/ship.test.js                 | 38 ++++++++++-
+ test/pr-monitor/reconcile-executor.test.js | 59 +++++++++++++++++
+ 5 files changed, 215 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 44f21049..70155e9c 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -14,8 +14,10 @@ const path = require('node:path');
+ 
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
++const { resolveGitCommonDir } = require('../kernel/broker');
+ 
+ const AUTO_SHEPHERD_RAIL = 'rail.auto_shepherd';
++const FORGE_ISSUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+ 
+ /**
+  * Whether the default-ON `rail.auto_shepherd` rail permits auto-starting the PR
+@@ -510,6 +512,61 @@ async function createPR(options) { // NOSONAR S3776
+ 	}
+ }
+ 
++function samePath(left, right) {
++	if (typeof left !== 'string' || typeof right !== 'string') return false;
++	const normalized = (value) => {
++		const resolved = path.resolve(value);
++		return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++	};
++	return normalized(left) === normalized(right);
++}
++
++async function registerShipIssueLinkage({ projectRoot, issueId, exec = execFileSync, buildDeps } = {}) {
++	if (!FORGE_ISSUE_ID.test(issueId || '')) {
++		return { success: false, error: '--issue requires a full Forge issue id.' };
++	}
++	try {
++		const branch = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], getGitExecOptions(projectRoot)).trim();
++		if (!branch || branch === 'HEAD') return { success: false, error: 'Cannot link a detached HEAD to an issue.' };
++		const gitCommonDir = resolveGitCommonDir(projectRoot, { execFileSync: exec });
++		const factory = buildDeps || (async (options) => {
++			const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++			return buildMigratedKernelIssueDeps(options);
++		});
++		const { kernelDriver: driver } = await factory({ projectRoot, gitCommonDir });
++		const issueMatches = await driver.findIssueIdsByPrefix(issueId, 6, {}, {});
++		if (!Array.isArray(issueMatches) || !issueMatches.some((row) => (row?.id ?? row) === issueId)) {
++			return { success: false, error: `Forge issue ${issueId} does not exist.` };
++		}
++		const matches = (driver.listWorktrees({ state: 'active' }) || [])
++			.filter((row) => row?.branch === branch);
++		if (matches.length > 1) return { success: false, error: `Branch ${branch} has ambiguous active worktree linkage.` };
++		const existing = matches[0] || null;
++		if (existing && (!samePath(existing.git_common_dir, gitCommonDir) || !samePath(existing.path, projectRoot))) {
++			return { success: false, error: `Branch ${branch} is registered to a different repository or worktree.` };
++		}
++		if (existing?.issue_id && existing.issue_id !== issueId) {
++			return { success: false, error: `Branch ${branch} is already linked to issue ${existing.issue_id}.` };
++		}
++		if (!existing?.issue_id) {
++			driver.registerWorktree({
++				id: existing?.id,
++				git_common_dir: gitCommonDir,
++				path: projectRoot,
++				branch,
++				actor: process.env.FORGE_ACTOR || null,
++				issue_id: issueId,
++				work_folder: existing?.work_folder ?? null,
++				registered_at: new Date().toISOString(),
++				state: 'active',
++			});
++		}
++		return { success: true, issueId };
++	} catch (error) {
++		return { success: false, error: `Failed to register PR issue linkage: ${error.message}` };
++	}
++}
++
+ /**
+  * Best-effort wake of the repository-wide singleton after a successful real ship.
+  * The shared trigger owns containment and gate checks; dry-run skips before it.
+@@ -535,6 +592,8 @@ async function executeShip(options) {
+ 		projectRoot = process.cwd(),
+ 		fireAndForget: trigger = fireAndForget,
+ 		createPr = createPR,
++		issueId = null,
++		registerIssueLink = registerShipIssueLinkage,
+ 	} = options || {};
+ 
+ 	// Validate feature slug
+@@ -587,6 +646,12 @@ async function executeShip(options) {
+ 		});
+ 		const result = await createPr({ title, body: prBody, dryRun });
+ 		if (!result.success) return result;
++		if (issueId && !dryRun) {
++			const linked = await registerIssueLink({ projectRoot, issueId, prNumber: result.prNumber, prUrl: result.prUrl });
++			if (!linked?.success) {
++				return { ...linked, prUrl: result.prUrl, prNumber: result.prNumber };
++			}
++		}
+ 		maybeTriggerShepherdAfterShip({ dryRun, projectRoot, fireAndForget: trigger });
+ 		return {
+ 			success: true,
+@@ -603,12 +668,21 @@ module.exports = {
+ 	name: 'ship',
+ 	description: 'Create a pull request from validated feature work',
+ 	handler: async (args, flags = {}, projectRoot = process.cwd(), deps = {}) => {
++		const issueArg = (args || []).find((arg) => typeof arg === 'string' && arg.startsWith('--issue='));
++		const issueIndex = (args || []).indexOf('--issue');
++		const issueId = issueArg ? issueArg.slice('--issue='.length) : (issueIndex >= 0 ? args[issueIndex + 1] : null);
++		if ((issueArg && !issueId) || (issueIndex >= 0 && (!issueId || String(issueId).startsWith('--')))) {
++			return { success: false, error: '--issue requires a value.' };
++		}
+ 		const result = await executeShip({
+ 			featureSlug: args[0],
+ 			title: args[1],
+ 			dryRun: Boolean(flags.dryRun || flags['--dry-run']),
+ 			projectRoot,
+ 			fireAndForget: deps.fireAndForget,
++			createPr: deps.createPr,
++			issueId,
++			registerIssueLink: deps.registerIssueLink,
+ 		});
+ 		if (!result.success) {
+ 			return result;
+@@ -631,6 +705,7 @@ module.exports = {
+ 	validatePRTitle,
+ 	createPR,
+ 	executeShip,
++	registerShipIssueLinkage,
+ 	getBranchReadiness,
+ 	resolveBaseRemote,
+ 	resolveBaseBranch,
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 00349f73..88fed196 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -1243,6 +1243,13 @@ function createLocalBroker(options = {}) {
+ 			return driver.listOpenPrs(gitCommonDir, context, getConfig());
+ 		},
+ 
++		// Active worktree authority used to bind a discovered PR branch back to its
++		// exact Kernel issue. Read-only and additive, like listOpenPrs.
++		async listWorktrees(filter = {}, _context = {}) {
++			requireDriverMethod(driver, 'listWorktrees');
++			return driver.listWorktrees(filter, getConfig());
++		},
++
+ 		// PR reconcile-ledger WRITE path (autonomous-shepherd design §5a). Mirror of the
+ 		// listOpenPrs wrapper: guard the driver method, delegate with getConfig(). pr rows
+ 		// are derived reconcile state (a direct idempotent upsert), not the guarded-event
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 5b4ca536..5fd1cd64 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -66,6 +66,15 @@ function resolveCanonicalRepository(runGh) {
+ 	}
+ }
+ 
++function sameGitCommonDir(left, right) {
++	if (typeof left !== 'string' || typeof right !== 'string' || !left || !right) return false;
++	const normalize = (value) => {
++		const resolved = path.resolve(value);
++		return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
++	};
++	return normalize(left) === normalize(right);
++}
++
+ /**
+  * Persist the daemon's latest lifecycle outcome beside the lease. This status
+  * file is deliberately separate from `shepherd.reconcile`: that sentinel's
+@@ -199,11 +208,19 @@ async function gatherDesired(gitCommonDir, opts = {}) {
+ 	if (!repo) return { openPrs: [], gitCommonDir, listingOk: false, repositoryOk: false };
+ 
+ 	let prRows = [];
++	let worktreeRows = [];
+ 	try {
+ 		if (broker) prRows = await broker.listOpenPrs(gitCommonDir);
+ 	} catch {
+ 		/* kernel unavailable → treat as no linkage; the GitHub-driven desired set still stands */
+ 	}
++	try {
++		if (broker && typeof broker.listWorktrees === 'function') {
++			worktreeRows = await broker.listWorktrees({ state: 'active' });
++		}
++	} catch {
++		/* older/unavailable registry → preserve the existing PR-row linkage behavior */
++	}
+ 	// Key by canonical (repo, number). A single bare-name row is accepted
+ 	// only as a one-way compatibility bridge; it is rewritten under the canonical key
+ 	// and retired by the same reconcile pass. The common-dir natural key plus an exact
+@@ -270,16 +287,34 @@ async function gatherDesired(gitCommonDir, opts = {}) {
+ 		const exact = exactRows.get(String(p.number)) || [];
+ 		return exact.length === 1 ? exact[0] : null;
+ 	};
++	const worktreesForBranch = (branch) => (Array.isArray(worktreeRows) ? worktreeRows : [])
++		.filter((row) => row && row.state === 'active' && row.branch === branch);
++	for (const pr of ghPrs) {
++		const candidates = worktreesForBranch(pr && pr.headRefName);
++		if (candidates.length === 0) continue;
++		if (candidates.length !== 1 || !sameGitCommonDir(candidates[0].git_common_dir, gitCommonDir)) {
++			return { openPrs: [], gitCommonDir, listingOk: false, repositoryOk: false };
++		}
++		const candidate = candidates[0];
++		const existing = rowForPr(pr);
++		if (
++			(existing?.issue_id != null && candidate.issue_id != null && existing.issue_id !== candidate.issue_id)
++			|| (existing?.worktree_id != null && candidate.id != null && existing.worktree_id !== candidate.id)
++		) {
++			return { openPrs: [], gitCommonDir, listingOk: false, repositoryOk: false };
++		}
++	}
+ 
+ 	const openPrs = ghPrs.map((p) => {
+ 		const row = rowForPr(p);
++		const worktree = worktreesForBranch(p.headRefName)[0] || null;
+ 		return {
+ 			repo: canonicalRepo || repo,
+ 			number: p.number,
+ 			branch: p.headRefName ?? null,
+ 			headSha: p.headRefOid ?? null,
+-			issueId: row?.issue_id ?? null,
+-			worktreeId: row?.worktree_id ?? null,
++			issueId: row?.issue_id ?? worktree?.issue_id ?? null,
++			worktreeId: row?.worktree_id ?? worktree?.id ?? null,
+ 			journalPtr: row?.journal_ptr ?? null,
+ 		};
+ 	});
+diff --git a/test/commands/ship.test.js b/test/commands/ship.test.js
+index 4b5dae4f..a822d8dc 100644
+--- a/test/commands/ship.test.js
++++ b/test/commands/ship.test.js
+@@ -1,4 +1,5 @@
+ const { describe, test, expect, setDefaultTimeout } = require('bun:test');
++const shipCommand = require('../../lib/commands/ship.js');
+ const {
+ 	extractKeyDecisions,
+ 	extractTestScenarios,
+@@ -6,10 +7,11 @@ const {
+ 	generatePRBody,
+ 	createPR,
+ 	executeShip,
++	registerShipIssueLinkage,
+ 	getBranchReadiness,
+ 	resolveBaseRemote,
+ 	resolveBaseBranch,
+-} = require('../../lib/commands/ship.js');
++} = shipCommand;
+ 
+ setDefaultTimeout(15000);
+ 
+@@ -521,6 +523,40 @@ No test scenarios section.`;
+ 	});
+ 
+ 	describe('Full ship workflow', () => {
++		test('explicit issue registration rejects an existing cross-repository branch binding', async () => {
++			const issueId = 'ef770652-8af5-4520-95b1-617208225953';
++			let writes = 0;
++			const result = await registerShipIssueLinkage({
++				projectRoot: '/repo', issueId,
++				exec: (_command, args) => args.includes('--abbrev-ref') ? 'feat/linked\n' : '/repo/.git\n',
++				buildDeps: async () => ({ kernelDriver: {
++					findIssueIdsByPrefix: async () => [{ id: issueId }],
++					listWorktrees: () => [{
++						id: 'WT-7', branch: 'feat/linked', path: '/other',
++						git_common_dir: '/other/.git', issue_id: issueId, state: 'active',
++					}],
++					registerWorktree: () => { writes += 1; },
++				} }),
++			});
++			expect(result.success).toBe(false);
++			expect(writes).toBe(0);
++		});
++
++		test('explicit --issue is registered before the shepherd wake', async () => {
++			const order = [];
++			const issueId = 'ef770652-8af5-4520-95b1-617208225953';
++			const result = await shipCommand.handler(
++				['test-feature', 'feat: linked ship', '--issue', issueId],
++				{}, '/repo', {
++					createPr: async () => ({ success: true, prUrl: 'https://github.com/owner/forge/pull/7', prNumber: 7 }),
++					registerIssueLink: async (input) => { order.push(['link', input.issueId]); return { success: true }; },
++					fireAndForget: () => { order.push(['wake']); },
++				},
++			);
++			expect(result.success).toBe(true);
++			expect(order).toEqual([['link', issueId], ['wake']]);
++		});
++
+ 		test.skip('should execute complete ship workflow', async () => {
+ 			const result = await executeShip({
+ 				featureSlug: 'test-feature',
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 5b05ea5d..5b0eb281 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -687,6 +687,65 @@ describe('daemon lifecycle diagnostics', () => {
+ // ---------------------------------------------------------------------------
+ 
+ describe('finding 1 — a failed gh listing is a no-op, never a teardown', () => {
++	test('gatherDesired links a new PR from the exact active registered worktree', async () => {
++		const desired = await executor.gatherDesired('/g', {
++			repo: 'owner/forge',
++			runGh: () => JSON.stringify([{ number: 7, headRefName: 'feat/linked', headRefOid: 'sha7' }]),
++			broker: {
++				listOpenPrs: async () => [],
++				listWorktrees: async () => [{
++					id: 'WT-7', git_common_dir: '/g', branch: 'feat/linked',
++					issue_id: 'ISSUE-7', state: 'active',
++				}],
++			},
++		});
++		expect(desired).toMatchObject({ listingOk: true });
++		expect(desired.openPrs[0]).toMatchObject({ issueId: 'ISSUE-7', worktreeId: 'WT-7' });
++	});
++
++	test('gatherDesired repairs a null PR link and preserves it across a head refresh', async () => {
++		const desired = await executor.gatherDesired('/g', {
++			repo: 'owner/forge',
++			runGh: () => JSON.stringify([{ number: 7, headRefName: 'feat/linked', headRefOid: 'new-sha' }]),
++			broker: {
++				listOpenPrs: async () => [{
++					repo: 'owner/forge', number: 7, head_sha: 'old-sha',
++					issue_id: null, worktree_id: null, state: 'open',
++				}],
++				listWorktrees: async () => [{
++					id: 'WT-7', git_common_dir: '/g', branch: 'feat/linked',
++					issue_id: 'ISSUE-7', state: 'active',
++				}],
++			},
++		});
++		expect(desired.openPrs[0]).toMatchObject({
++			headSha: 'new-sha', issueId: 'ISSUE-7', worktreeId: 'WT-7',
++		});
++	});
++
++	test('gatherDesired fails closed on ambiguous, cross-repository, or mismatched worktree linkage', async () => {
++		const baseWorktree = {
++			id: 'WT-7', git_common_dir: '/g', branch: 'feat/linked',
++			issue_id: 'ISSUE-7', state: 'active',
++		};
++		for (const { prRows = [], worktrees } of [
++			{ worktrees: [baseWorktree, { ...baseWorktree, id: 'WT-8', issue_id: 'ISSUE-8' }] },
++			{ worktrees: [{ ...baseWorktree, git_common_dir: '/other/.git' }] },
++			{ prRows: [{ repo: 'owner/forge', number: 7, issue_id: 'ISSUE-OTHER', state: 'open' }], worktrees: [baseWorktree] },
++		]) {
++			const desired = await executor.gatherDesired('/g', {
++				repo: 'owner/forge',
++				runGh: () => JSON.stringify([{ number: 7, headRefName: 'feat/linked', headRefOid: 'sha7' }]),
++				broker: {
++					listOpenPrs: async () => prRows,
++					listWorktrees: async () => worktrees,
++				},
++			});
++			expect(desired.listingOk).toBe(false);
++			expect(desired.openPrs).toEqual([]);
++		}
++	});
++
+ 	test('gatherDesired reports listingOk:false when the gh call throws', async () => {
+ 		const desired = await executor.gatherDesired('/g', {
+ 			repo: 'forge', broker: null,
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,628 @@
+From c10814b29f057feff803f5fdad149a1ac219ec18 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 16:18:15 +0530
+Subject: [PATCH] feat: persist shepherd reviewer terminal ledger
+
+---
+ lib/pr-monitor/differ.js                  |  64 ++++++++-
+ lib/pr-monitor/events.js                  | Bin 3705 -> 3991 bytes
+ lib/pr-monitor/gather.js                  |  30 +++++
+ lib/pr-monitor/monitor.js                 | 152 +++++++++++++++++++++-
+ lib/reviewer-ledger.js                    |  55 ++++++--
+ test/pr-monitor/reviewer-producer.test.js | 116 +++++++++++++++++
+ 6 files changed, 406 insertions(+), 11 deletions(-)
+ create mode 100644 test/pr-monitor/reviewer-producer.test.js
+
+diff --git a/lib/pr-monitor/differ.js b/lib/pr-monitor/differ.js
+index 11bf0c54..a172bc8b 100644
+--- a/lib/pr-monitor/differ.js
++++ b/lib/pr-monitor/differ.js
+@@ -13,7 +13,8 @@
+  * @module pr-monitor/differ
+  */
+ 
+-const { EVENT_TYPES: T, makeEvent } = require('./events');
++const { EVENT_TYPES: T, makeEvent, fingerprint } = require('./events');
++const IGNORED_REVIEW_CLASSES = new Set(['status', 'duplicate', 'neutral', 'skipped']);
+ 
+ /** Index an array of objects by a key field into a Map. */
+ function indexBy(list, field) {
+@@ -98,6 +99,61 @@ function diffReviews(prev, next, out) {
+   }
+ }
+ 
++function reviewerIdentity(event, headSha) {
++  const id = event && event.id !== undefined && event.id !== null && String(event.id).trim();
++  if (id) return `id:${id}`;
++  const persisted = event && event.identity !== undefined && event.identity !== null && String(event.identity).trim();
++  if (persisted) return persisted.startsWith('anon:') ? persisted : `id:${persisted}`;
++  return `anon:${fingerprint({
++    headSha: event?.headSha || headSha || null,
++    classification: event?.classification || event?.kind || '',
++    at: event?.at ?? null,
++    provider: event?.provider || null,
++    accountId: event?.accountId || null,
++    state: event?.state || null,
++    reason: event?.reason || null,
++  })}`;
++}
++
++/** reviewer.requested / reviewer.state / reviewer.actionable transitions. */
++function diffReviewerLedger(prev, next, out) {
++  if (!next || typeof next !== 'object' || !Array.isArray(next.reviewers)) return;
++  const prevById = indexBy(prev?.reviewers, 'id');
++  for (const reviewer of next.reviewers) {
++    if (!reviewer || typeof reviewer !== 'object' || !reviewer.id) continue;
++    const before = prevById.get(String(reviewer.id));
++    if (reviewer.requestedAt !== null && (before?.requestedAt ?? null) === null) {
++      out.push(makeEvent(T.REVIEWER_REQUESTED, `${next.headSha}:${reviewer.id}`, {
++        reviewerId: reviewer.id, provider: reviewer.provider, accountId: reviewer.accountId,
++        riskClass: reviewer.riskClass, requestedAt: reviewer.requestedAt,
++      }));
++    }
++    if (reviewer.state !== null && (before?.state ?? null) === null) {
++      out.push(makeEvent(T.REVIEWER_STATE, `${next.headSha}:${reviewer.id}:${reviewer.state}`, {
++        reviewerId: reviewer.id, provider: reviewer.provider, accountId: reviewer.accountId,
++        state: reviewer.state, at: reviewer.stateAt, reason: reviewer.stateReason || null,
++      }));
++    }
++  }
++  const previousEvents = new Set((prev?.events || []).map((event) => reviewerIdentity(event, prev?.headSha)));
++  for (const event of next.events || []) {
++    const classification = String(event?.classification || '').toLowerCase();
++    if (IGNORED_REVIEW_CLASSES.has(classification)) continue;
++    const identity = reviewerIdentity(event, next.headSha);
++    if (previousEvents.has(identity)) continue;
++    out.push(makeEvent(T.REVIEWER_ACTIONABLE, `${next.headSha}:${identity}`, {
++      id: event?.id ?? null, classification, at: event?.at ?? null, headSha: next.headSha,
++    }));
++  }
++}
++function diffReviewerBypass(prev, next, out) {
++  const before = prev?.emergencyBypass;
++  const after = next?.emergencyBypass;
++  if (!after || typeof after !== 'object') return;
++  const key = fingerprint(after);
++  if (before && fingerprint(before) === key) return;
++  out.push(makeEvent(T.REVIEWER_BYPASS, `${next.headSha}:${key}`, { audit: { ...after } }));
++}
+ /** conflict.appeared / conflict.cleared — keyed by head sha. */
+ function diffConflict(prev, next, out) {
+   if (next.conflicts === true && prev.conflicts !== true) {
+@@ -154,6 +210,8 @@ function diffBaseline(next, out) {
+     from: null, to: next.verdict ? next.verdict.state : null,
+     reason: next.verdict ? next.verdict.reason || null : null,
+   }));
++  diffReviewerLedger(null, next.reviewerLedger, out);
++  diffReviewerBypass(null, next, out);
+   if (next.prState === 'MERGED') out.push(makeEvent(T.PR_MERGED, 'MERGED', {}));
+   if (next.prState === 'CLOSED') out.push(makeEvent(T.PR_CLOSED, 'CLOSED', {}));
+   for (const d of (next.degraded || [])) {
+@@ -180,6 +238,8 @@ function diffSnapshots(prev, next) {
+   diffThreads(prev, next, out);
+   diffComments(prev, next, out);
+   diffReviews(prev, next, out);
++  diffReviewerLedger(prev.reviewerLedger, next.reviewerLedger, out);
++  diffReviewerBypass(prev, next, out);
+   diffConflict(prev, next, out);
+   diffBehind(prev, next, out);
+   diffVerdict(prev, next, out);
+@@ -192,4 +252,6 @@ module.exports = {
+   diffSnapshots,
+   allGreen,
+   indexBy,
++  diffReviewerLedger,
++  diffReviewerBypass,
+ };
+diff --git a/lib/pr-monitor/events.js b/lib/pr-monitor/events.js
+index 0ef220d92ddda08cb6a6ad98b8f80ca6f73d12de..2d27782a1c8f446f5c4e0d0eac785c32ca72d690 100644
+GIT binary patch
+delta 296
+zcmew<GhKee9G3bZ*Dz1laMz&tAlJZ9*WeIW7b^wzqSUg?)bi9Ky`t2@($wOT)D(3c
+zE(Ha2wM3{44si@|MOIf_l30?8Fs&YBb%<+_ucx1*4<2<OWsc4vp8kH0PCh6GCMK6;
+u=I13Q<sg{~QtcY%>KB4+B36acK$T9B0gl1J$V!tc3lfWqH&17I#0db7Hea>?
+
+delta 12
+UcmbO(|5Ike9G1<ySnqNI03|>LbN~PV
+
+diff --git a/lib/pr-monitor/gather.js b/lib/pr-monitor/gather.js
+index f86365fa..940d2045 100644
+--- a/lib/pr-monitor/gather.js
++++ b/lib/pr-monitor/gather.js
+@@ -18,6 +18,8 @@
+ const { gatherPrSnapshot } = require('../pr-pull');
+ const { isFailed, isGreen } = require('../pr-shepherd');
+ 
++const REVIEWER_FIELDS = ['reviewerPolicy', 'reviewerLedger', 'reviewerRequests', 'reviewerStates', 'reviewEvents', 'finalCorrectionSha', 'finalCorrectionAt', 'emergencyBypass', 'reviewerLedgerError'];
++
+ /** green | failed | pending — reuses the SAME predicates as the verdict core. */
+ function classifyCheck(check) {
+   if (isFailed(check)) return 'failed';
+@@ -66,6 +68,31 @@ function normalizeDegraded(degraded) {
+   }));
+ }
+ 
++function normalizeReviewerList(value) {
++  return (Array.isArray(value) ? value : []).filter((entry) => entry && typeof entry === 'object')
++    .map((entry) => ({ ...entry }));
++}
++
++/** Preserve only explicitly supplied reviewer evidence; never infer availability. */
++function normalizeReviewerProjection(snap, ctx = {}) {
++  const nested = snap && snap.reviewer && typeof snap.reviewer === 'object' ? snap.reviewer : {};
++  const source = (name) => {
++    if (Object.prototype.hasOwnProperty.call(nested, name)) return nested[name];
++    if (snap && Object.prototype.hasOwnProperty.call(snap, name)) return snap[name];
++    if (Object.prototype.hasOwnProperty.call(ctx, name)) return ctx[name];
++    return undefined;
++  };
++  const out = {};
++  for (const field of REVIEWER_FIELDS) {
++    const value = source(field);
++    if (value === undefined) continue;
++    if (field === 'reviewerRequests' || field === 'reviewerStates' || field === 'reviewEvents') {
++      out[field] = normalizeReviewerList(value);
++    } else out[field] = value;
++  }
++  return out;
++}
++
+ /**
+  * Conflict prediction → tri-state boolean: `true`/`false` when supported,
+  * `null` when unknown (unsupported git, unreadable ref) so the differ never
+@@ -85,6 +112,7 @@ function conflictBool(conflicts) {
+  */
+ function normalizeSnapshot(snap, ctx) {
+   const state = snap.state || {};
++  const reviewer = normalizeReviewerProjection(snap, ctx);
+   return {
+     repo: ctx.repo,
+     pr: String(ctx.pr),
+@@ -99,6 +127,7 @@ function normalizeSnapshot(snap, ctx) {
+     behind: snap.behind || 0,
+     conflicts: conflictBool(snap.conflicts),
+     degraded: normalizeDegraded(snap.degraded),
++    ...reviewer,
+   };
+ }
+ 
+@@ -119,6 +148,7 @@ async function gatherMonitorSnapshot(ctx) {
+ module.exports = {
+   gatherMonitorSnapshot,
+   normalizeSnapshot,
++  normalizeReviewerProjection,
+   classifyCheck,
+   conflictBool,
+ };
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index 2a22886c..09785166 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -11,6 +11,16 @@
+ const { finalizeEvent, eventIdentity, fingerprint } = require('./events');
+ const { diffSnapshots } = require('./differ');
+ const journal = require('./journal');
++const {
++  createReviewerLedger,
++  setFinalCorrectionSha,
++  registerReviewerRequest,
++  recordReviewerState,
++  recordReviewEvent,
++  authorizeEmergencyBypass,
++} = require('../reviewer-ledger');
++const FULL_SHA = /^[0-9a-f]{40}$/i;
++
+ 
+ /** ISO-8601 timestamp; injectable via ctx.now for deterministic tests. */
+ function defaultNow() { return new Date().toISOString(); }
+@@ -37,6 +47,139 @@ function finalizeRecords(candidates, { baseSeq, ts, snapshot }) {
+   }));
+ }
+ 
++
++function cloneValue(value) {
++  if (value === null || value === undefined) return value;
++  try { return structuredClone(value); } catch { return value; }
++}
++
++function reviewerSource(snapshot, ctx = {}) {
++  const source = snapshot && snapshot.reviewer && typeof snapshot.reviewer === 'object'
++    ? snapshot.reviewer : snapshot || {};
++  const has = (target, name) => target && Object.prototype.hasOwnProperty.call(target, name);
++  const from = (name) => {
++    if (has(source, name)) return source[name];
++    if (has(snapshot, name)) return snapshot[name];
++    if (has(ctx, name)) return ctx[name];
++    return undefined;
++  };
++  return {
++    policy: from('reviewerPolicy'), ledger: from('reviewerLedger'),
++    requests: from('reviewerRequests'), states: from('reviewerStates'), events: from('reviewEvents'),
++    finalCorrectionSha: from('finalCorrectionSha'), finalCorrectionAt: from('finalCorrectionAt'),
++    emergencyBypass: from('emergencyBypass'), reviewerLedgerError: from('reviewerLedgerError'),
++  };
++}
++
++function sortableTime(value) {
++  if (typeof value === 'number' && Number.isFinite(value)) return value;
++  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
++  return Number.isFinite(parsed) ? parsed : 0;
++}
++
++function orderedEntries(value, keyFields = []) {
++  return (Array.isArray(value) ? value : []).filter((entry) => entry && typeof entry === 'object')
++    .map((entry) => cloneValue(entry))
++    .sort((left, right) => {
++      const leftAt = sortableTime(left.at ?? left.requestedAt ?? 0);
++      const rightAt = sortableTime(right.at ?? right.requestedAt ?? 0);
++      if (leftAt !== rightAt) return leftAt - rightAt;
++      const leftKey = keyFields.map((field) => String(left[field] ?? '')).join(':');
++      const rightKey = keyFields.map((field) => String(right[field] ?? '')).join(':');
++      if (leftKey !== rightKey) return leftKey < rightKey ? -1 : 1;
++      const leftFingerprint = fingerprint(left);
++      const rightFingerprint = fingerprint(right);
++      return leftFingerprint < rightFingerprint ? -1 : leftFingerprint > rightFingerprint ? 1 : 0;
++    });
++}
++
++function fullHead(value) { return typeof value === 'string' && FULL_SHA.test(value) ? value.toLowerCase() : null; }
++function ensureReviewerLedger(previous, next, input) {
++  const head = fullHead(next.headSha);
++  if (!head) return { ledger: null, error: null };
++  if (input.ledger !== undefined) {
++    if (input.ledger === null) return { ledger: null, error: null };
++    if (typeof input.ledger !== 'object' || Array.isArray(input.ledger)) {
++      return { ledger: null, error: 'reviewer ledger snapshot is unreadable.' };
++    }
++    const explicit = cloneValue(input.ledger);
++    if (fullHead(explicit.headSha) !== head) {
++      return { ledger: null, error: 'reviewer ledger belongs to a different exact head.' };
++    }
++    explicit.headSha = head;
++    if (explicit.finalCorrectionSha !== null && explicit.finalCorrectionSha !== undefined) {
++      explicit.finalCorrectionSha = fullHead(explicit.finalCorrectionSha) || explicit.finalCorrectionSha;
++    }
++    return { ledger: explicit, error: null };
++  }
++  if (input.policy === null) return { ledger: null, error: null };
++  const prior = previous && fullHead(previous.headSha) === head ? previous.reviewerLedger : null;
++  if (prior && typeof prior === 'object') return { ledger: cloneValue(prior), error: null };
++  const policy = input.policy !== undefined ? input.policy : previous?.reviewerLedger?.policy;
++  if (!policy) return { ledger: null, error: null };
++  try {
++    return { ledger: createReviewerLedger({ policy, headSha: head }), error: null };
++  } catch (error) {
++    return { ledger: null, error: error.message };
++  }
++}
++
++function applyReviewerTransitions(ledger, input, head) {
++  if (!ledger) return { ledger: null, error: null };
++  let out = ledger;
++  let error = null;
++  const fail = (message) => { if (!error) error = message; };
++  if (input.finalCorrectionSha !== undefined && out.finalCorrectionSha === null) {
++    const correction = fullHead(input.finalCorrectionSha);
++    if (!correction || correction !== head) fail('final correction SHA is unreadable or belongs to another head.');
++    else if (input.finalCorrectionAt === undefined || input.finalCorrectionAt === null) fail('final correction timestamp is unreadable.');
++    else {
++      try { out = setFinalCorrectionSha(out, correction, input.finalCorrectionAt); } catch (caught) { fail(caught.message); }
++    }
++  }
++  for (const request of orderedEntries(input.requests, ['provider', 'accountId'])) {
++    const requestHead = request.headSha === undefined ? head : fullHead(request.headSha);
++    if (!requestHead || requestHead !== head) { fail('reviewer request belongs to an unreadable exact head.'); continue; }
++    try { out = registerReviewerRequest(out, { ...request, headSha: requestHead }); } catch (caught) { fail(caught.message); }
++  }
++  for (const state of orderedEntries(input.states, ['provider', 'accountId', 'state'])) {
++    const stateHead = state.headSha === undefined ? head : fullHead(state.headSha);
++    if (!stateHead || stateHead !== head) { fail('reviewer state belongs to an unreadable exact head.'); continue; }
++    try { out = recordReviewerState(out, { ...state, headSha: stateHead }); } catch (caught) { fail(caught.message); }
++  }
++  for (const event of orderedEntries(input.events, ['id', 'classification'])) {
++    const eventHead = event.headSha === undefined ? head : fullHead(event.headSha);
++    if (!eventHead || eventHead !== head) { fail('review event belongs to an unreadable exact head.'); continue; }
++    try { out = recordReviewEvent(out, { ...event, headSha: eventHead }); } catch (caught) { fail(caught.message); }
++  }
++  return { ledger: out, error };
++}
++function prepareReviewerSnapshot(previous, next, ctx = {}) {
++  const input = reviewerSource(next, ctx);
++  const head = fullHead(next.headSha);
++  const ensured = ensureReviewerLedger(previous, next, input);
++  let reviewerLedger = ensured.ledger;
++  let reviewerLedgerError = ensured.error || (typeof input.reviewerLedgerError === 'string' ? input.reviewerLedgerError : null);
++  if (reviewerLedger && head) {
++    const applied = applyReviewerTransitions(reviewerLedger, input, head);
++    reviewerLedger = applied.ledger;
++    reviewerLedgerError = reviewerLedgerError || applied.error;
++  }
++  let emergencyBypass;
++  if (input.emergencyBypass !== undefined) {
++    emergencyBypass = cloneValue(input.emergencyBypass);
++    try { authorizeEmergencyBypass(emergencyBypass); } catch (error) { reviewerLedgerError = reviewerLedgerError || error.message; }
++  }
++  const out = { ...next };
++  for (const field of ['reviewer', 'reviewerPolicy', 'reviewerRequests', 'reviewerStates', 'reviewEvents', 'finalCorrectionSha', 'finalCorrectionAt', 'reviewerLedger', 'reviewerLedgerError']) delete out[field];
++  if (reviewerLedgerError) reviewerLedger = null;
++  if (reviewerLedger) out.reviewerLedger = reviewerLedger;
++  else if (input.ledger === null) out.reviewerLedger = null;
++  if (emergencyBypass !== undefined) out.emergencyBypass = emergencyBypass;
++  if (reviewerLedgerError) out.reviewerLedgerError = reviewerLedgerError;
++  else delete out.reviewerLedgerError;
++  return out;
++}
+ /**
+  * The read→diff→dedup→sequence→append→snapshot critical section of a single
+  * pass. Runs ONLY while holding the journal lock (see `runMonitorPass`), so it
+@@ -52,13 +195,18 @@ function finalizeRecords(candidates, { baseSeq, ts, snapshot }) {
+  */
+ async function runMonitorPassLocked(ctx) {
+   const { dir, gather, now = defaultNow, enrich } = ctx;
+-  const next = await gather();
++  let next = await gather();
+   const prevRecord = journal.readSnapshot(dir);
+   const prev = prevRecord ? prevRecord.snapshot : null;
+   const appliedSeq = prevRecord ? prevRecord.appliedSeq || 0 : 0;
+-  const fp = fingerprint(next);
++  next = prepareReviewerSnapshot(prev, next, ctx);
+ 
+   const candidates = diffSnapshots(prev, next);
++  if (next.prState === 'MERGED' || next.prState === 'CLOSED') {
++    next = { ...next, reviewerLedger: null };
++    delete next.emergencyBypass;
++  }
++  const fp = fingerprint(next);
+   const filtered = dedupeAgainstJournal(candidates, journal.seenIdentities(dir, appliedSeq));
+ 
+   if (!filtered.length) {
+diff --git a/lib/reviewer-ledger.js b/lib/reviewer-ledger.js
+index 29eaeccc..46508054 100644
+--- a/lib/reviewer-ledger.js
++++ b/lib/reviewer-ledger.js
+@@ -210,6 +210,7 @@ function recordReviewerState(ledger, event) {
+   const reviewer = out.reviewers[index];
+   if (reviewer.requestedAt === null) throw new Error(`reviewer "${reviewer.id}" has no request on this head.`);
+   if (at < reviewer.requestedAt) throw new Error(`reviewer state for "${reviewer.id}" predates its request.`);
++  if (reviewer.state !== null) return out;
+   if (reviewer.state === state && reviewer.stateAt === at && reviewer.stateReason === (event.reason || null)) return out;
+   reviewer.state = state;
+   reviewer.stateAt = at;
+@@ -228,20 +229,37 @@ function eventClass(event) {
+   if (value === 'actionable' || value === 'finding' || value === 'findings') return 'actionable';
+   return value;
+ }
++function reviewEventIdentity(event, classification, eventHead, at) {
++  const id = event && event.id !== undefined && event.id !== null && String(event.id).trim();
++  if (id) return `id:${id}`;
++  return `anon:${evidenceFingerprint({
++    headSha: eventHead || null,
++    classification,
++    at,
++    provider: event?.provider || null,
++    accountId: event?.accountId || null,
++    state: event?.state || null,
++    reason: event?.reason || null,
++  })}`;
++}
+ 
+ function recordReviewEvent(ledger, event) {
+   const out = cloneLedger(ledger);
+   if (!event || typeof event !== 'object') throw new Error('review event must be an object.');
+   const at = asTime(event.at, 'review event timestamp');
+   const classification = eventClass(event);
+-  const eventId = event.id === undefined || event.id === null ? null : String(event.id);
++  const eventId = event.id === undefined || event.id === null ? null : String(event.id).trim() || null;
+   let eventHead = null;
+   if (event.headSha !== undefined) {
+     eventHead = asSha(event.headSha);
+     if (eventHead !== out.headSha) throw new Error('review event belongs to a different exact head.');
+   }
+-  if (eventId && out.events.some((seen) => seen.id === eventId)) return out;
+-  const recorded = { id: eventId, classification, at };
++  const identity = reviewEventIdentity(event, classification, eventHead, at);
++  if (out.events.some((seen) => {
++    const seenIdentity = seen.identity || reviewEventIdentity(seen, seen.classification, seen.headSha || null, seen.at);
++    return seenIdentity === identity;
++  })) return out;
++  const recorded = { id: eventId, identity, classification, at };
+   if (eventHead) recorded.headSha = eventHead;
+   out.events.push(recorded);
+   if (IGNORED_EVENT_CLASSES.has(classification)) return out;
+@@ -400,6 +418,7 @@ function validateReviewerLedgerSnapshot(ledger) {
+           continue;
+         }
+         if (event.id !== undefined && event.id !== null && typeof event.id !== 'string') errors.push('review event identity is invalid.');
++        if (event.identity !== undefined && (typeof event.identity !== 'string' || !event.identity.trim())) errors.push('review event dedup identity is invalid.');
+         if (typeof event.classification !== 'string' || !event.classification.trim()) errors.push('review event classification is invalid.');
+         validateTimestamp(event.at, 'review event timestamp', errors, { nullable: false });
+         if (event.headSha !== undefined) {
+@@ -536,7 +555,17 @@ function atomicPreMergeRecheck(expected, current, { emergencyBypass = false } =
+       return { ok: false, reason: `${label} evidence changed before merge.` };
+     }
+   }
+-  if (emergencyBypass) return { ok: true };
++  if (emergencyBypass) {
++    if (!validEvidence(expected.emergencyBypassFingerprint)
++      || !validEvidence(current.emergencyBypassFingerprint)) {
++      return { ok: false, reason: 'emergency bypass identity evidence is unreadable before merge.' };
++    }
++    if (expected.emergencyBypassFingerprint !== current.emergencyBypassFingerprint) {
++      return { ok: false, reason: 'emergency bypass identity changed before merge.' };
++    }
++    return { ok: true };
++  }
++
+ 
+   const expectedLedger = expected.reviewerLedger;
+   const currentLedger = current.reviewerLedger;
+@@ -568,8 +597,9 @@ function atomicPreMergeRecheck(expected, current, { emergencyBypass = false } =
+   return { ok: true };
+ }
+ 
+-function selectEvidenceFingerprint(context, field, source) {
++function selectEvidenceFingerprint(context, field, source, { failClosed = false } = {}) {
+   if (Object.prototype.hasOwnProperty.call(context, field)) return context[field];
++  if (failClosed && (source === null || source === undefined)) return null;
+   return evidenceFingerprint(source);
+ }
+ 
+@@ -590,6 +620,15 @@ function buildMergeEvidenceSnapshot(context, { issueId } = {}) {
+     reviewerLedger.fingerprint = source.reviewerLedgerFingerprint
+       ?? reviewerLedger.fingerprint ?? evidenceFingerprint(rawLedger);
+   }
++  const leaseEvidence = Object.prototype.hasOwnProperty.call(source, 'lease')
++    ? source.lease
++    : Object.prototype.hasOwnProperty.call(source, 'ownership') ? source.ownership : issueId ?? null;
++  const dependencyEvidence = Object.prototype.hasOwnProperty.call(source, 'dependencies')
++    ? source.dependencies
++    : Object.prototype.hasOwnProperty.call(source, 'dependencyState') ? source.dependencyState
++      : Object.prototype.hasOwnProperty.call(source, 'issueBinding') ? source.issueBinding : issueId ?? null;
++  const emergencyBypassFingerprint = source.emergencyBypass === undefined
++    ? null : evidenceFingerprint(source.emergencyBypass);
+   return {
+     headSha: source.headSha,
+     commentsFingerprint: selectEvidenceFingerprint(source, 'commentsFingerprint', source.comments),
+@@ -602,14 +641,14 @@ function buildMergeEvidenceSnapshot(context, { issueId } = {}) {
+       requiredChecksKnown: source.requiredChecksKnown,
+       providerObservations: source.providerObservations,
+     }),
+-    leaseFingerprint: selectEvidenceFingerprint(source, 'leaseFingerprint', source.lease ?? source.ownership ?? issueId ?? null),
++    leaseFingerprint: selectEvidenceFingerprint(source, 'leaseFingerprint', leaseEvidence, { failClosed: true }),
+     conflictFingerprint: selectEvidenceFingerprint(source, 'conflictFingerprint', {
+       conflicting: source.conflicting,
+       mergeStateStatus: source.mergeStateStatus,
+     }),
+-    dependencyFingerprint: selectEvidenceFingerprint(source, 'dependencyFingerprint', source.dependencies
+-      ?? source.dependencyState ?? source.issueBinding ?? issueId ?? null),
++    dependencyFingerprint: selectEvidenceFingerprint(source, 'dependencyFingerprint', dependencyEvidence, { failClosed: true }),
+     reviewerLedger,
++    emergencyBypassFingerprint,
+   };
+ }
+ 
+diff --git a/test/pr-monitor/reviewer-producer.test.js b/test/pr-monitor/reviewer-producer.test.js
+new file mode 100644
+index 00000000..fa993386
+--- /dev/null
++++ b/test/pr-monitor/reviewer-producer.test.js
+@@ -0,0 +1,116 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const journal = require('../../lib/pr-monitor/journal');
++const { runMonitorPass } = require('../../lib/pr-monitor/monitor');
++const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
++
++const HEAD = 'a'.repeat(40);
++const NEXT_HEAD = 'b'.repeat(40);
++const START = Date.parse('2026-08-07T10:00:00Z');
++const POLICY = {
++  reviewers: [
++    { provider: 'codex', accountId: 'sol', riskClass: 'required' },
++    { provider: 'codex', accountId: 'luna', riskClass: 'optional', unavailable: 'allow' },
++  ],
++};
++
++function snap(over = {}) {
++  return {
++    repo: 'acme-forge', pr: '493', headSha: HEAD, prState: 'OPEN', draft: false,
++    verdict: { state: 'CLEAN-MERGEABLE', reason: null },
++    checks: [], threads: [], reviews: [], comments: [], behind: 0, conflicts: false, degraded: [],
++    ...over,
++  };
++}
++
++let root; let dir;
++beforeEach(() => {
++  root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-reviewer-'));
++  dir = journal.journalDir({ root, repo: 'acme-forge', pr: '493' });
++});
++afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
++
++describe('Shepherd reviewer producer', () => {
++  test('persists the exact-head ledger and emits deterministic request/state/actionable events', async () => {
++    const source = snap({
++      reviewerPolicy: POLICY,
++      finalCorrectionSha: HEAD,
++      finalCorrectionAt: START,
++      reviewerRequests: [
++        { provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START },
++      ],
++      reviewerStates: [
++        { provider: 'codex', accountId: 'sol', headSha: HEAD, state: 'clean', at: START + 1000 },
++      ],
++      reviewEvents: [
++        { id: 'finding-1', headSha: HEAD, classification: 'actionable', at: START + 2000 },
++      ],
++      emergencyBypass: {
++        humanActor: 'release-manager', reason: 'incident window', auditId: 'audit-493', at: START,
++      },
++    });
++
++    const result = await runMonitorPass({ dir, gather: async () => source, now: () => new Date(START + 3000).toISOString() });
++    const types = result.events.map((event) => event.type);
++    expect(types).toContain(T.REVIEWER_REQUESTED);
++    expect(types).toContain(T.REVIEWER_STATE);
++    expect(types).toContain(T.REVIEWER_ACTIONABLE);
++    expect(types).toContain(T.REVIEWER_BYPASS);
++    expect(journal.readSnapshot(dir).snapshot.reviewerLedger.headSha).toBe(HEAD);
++    expect(journal.readSnapshot(dir).snapshot.reviewerLedger.reviewers[0]).toMatchObject({
++      id: 'codex:sol', requestedAt: START, state: 'clean', stateAt: START + 1000,
++    });
++    expect(journal.readSnapshot(dir).snapshot.reviewerLedger.quietWindow.startsAt).toBe(START + 2000);
++  });
++
++  test('does not duplicate id-less actionable observations and ignores status-only events', async () => {
++    const baseline = snap({
++      reviewerPolicy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++      finalCorrectionSha: HEAD, finalCorrectionAt: START,
++      reviewerRequests: [{ provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START }],
++    });
++    await runMonitorPass({ dir, gather: async () => baseline, now: () => new Date(START).toISOString() });
++
++    const observed = snap({
++      ...baseline,
++      reviewEvents: [
++        { classification: 'status', at: START + 1000 },
++        { classification: 'actionable', at: START + 2000 },
++        { classification: 'actionable', at: START + 2000 },
++      ],
++    });
++    const result = await runMonitorPass({ dir, gather: async () => observed, now: () => new Date(START + 3000).toISOString() });
++    expect(result.events.filter((event) => event.type === T.REVIEWER_ACTIONABLE)).toHaveLength(1);
++    const ledger = journal.readSnapshot(dir).snapshot.reviewerLedger;
++    expect(ledger.events).toHaveLength(2); // status + one id-less actionable
++    expect(ledger.quietWindow.resets).toHaveLength(1);
++    expect(ledger.quietWindow.resets[0].at).toBe(START + 2000);
++  });
++
++  test('starts a fresh quiet window for a new exact head and cleans reviewer state at terminal lifecycle', async () => {
++    const open = snap({
++      reviewerPolicy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++      finalCorrectionSha: HEAD, finalCorrectionAt: START,
++      reviewerRequests: [{ provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START }],
++    });
++    await runMonitorPass({ dir, gather: async () => open, now: () => new Date(START).toISOString() });
++
++    const next = snap({
++      headSha: NEXT_HEAD,
++      reviewerPolicy: open.reviewerPolicy,
++      finalCorrectionSha: NEXT_HEAD,
++      finalCorrectionAt: START + 10_000,
++      reviewerRequests: [{ provider: 'codex', accountId: 'sol', headSha: NEXT_HEAD, requestedAt: START + 10_000 }],
++      prState: 'MERGED',
++    });
++    await runMonitorPass({ dir, gather: async () => next, now: () => new Date(START + 11_000).toISOString() });
++    const terminal = journal.readSnapshot(dir).snapshot;
++    expect(terminal.headSha).toBe(NEXT_HEAD);
++    expect(terminal.reviewerLedger).toBeNull();
++  });
++});
+-- 
+2.51.0.windows.1
+

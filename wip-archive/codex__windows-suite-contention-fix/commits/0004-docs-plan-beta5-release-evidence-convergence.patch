@@ -1,0 +1,97 @@
+From 244c9eef81f6131f946c0cb7729e2f201cd4b3f9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 15:43:09 +0530
+Subject: [PATCH] docs: plan beta5 release evidence convergence
+
+---
+ .../decisions.md                              |  2 ++
+ .../2026-08-08-beta5-release-evidence/plan.md | 36 +++++++++++++++++++
+ .../tasks.md                                  | 24 +++++++++++++
+ 3 files changed, 62 insertions(+)
+ create mode 100644 docs/work/2026-08-08-beta5-release-evidence/decisions.md
+ create mode 100644 docs/work/2026-08-08-beta5-release-evidence/plan.md
+ create mode 100644 docs/work/2026-08-08-beta5-release-evidence/tasks.md
+
+diff --git a/docs/work/2026-08-08-beta5-release-evidence/decisions.md b/docs/work/2026-08-08-beta5-release-evidence/decisions.md
+new file mode 100644
+index 00000000..3ae00966
+--- /dev/null
++++ b/docs/work/2026-08-08-beta5-release-evidence/decisions.md
+@@ -0,0 +1,2 @@
++# Decisions
++
+diff --git a/docs/work/2026-08-08-beta5-release-evidence/plan.md b/docs/work/2026-08-08-beta5-release-evidence/plan.md
+new file mode 100644
+index 00000000..f08c96fe
+--- /dev/null
++++ b/docs/work/2026-08-08-beta5-release-evidence/plan.md
+@@ -0,0 +1,36 @@
++# Beta.5 release evidence convergence
++
++## Outcome
++
++One reviewable PR removes the two remaining beta.5 release blockers without publishing a release. It adds a Forge-audited path for protected workflow generation, makes npm publication consume exact-SHA full-suite evidence, and completes the executable behavioral-evaluation control plane needed to run the frozen 30/100/300 protocol.
++
++## Boundaries
++
++- Do not bump the package version, create a tag or GitHub release, or publish to npm.
++- Do not claim a model winner or let evaluation code authorize merge.
++- Do not store raw prompts, transcripts, tool payloads, secrets, or personal data.
++- Reuse the behavior of local commit `5fbb3521`, but do not cherry-pick its unsanctioned protected-workflow edit.
++- Keep unrelated failures and improvements in separate Forge issues and PRs.
++
++## Design
++
++### Protected release workflow
++
++A narrow Forge release command owns deterministic generation of the npm publish workflow. Its protected-state authorization is bound to actor, workflow surface, path, and generated-content hash so a stale record cannot permit a later raw edit. The generated workflow resolves the release tag once, verifies and publishes the same immutable SHA, consumes a successful complete-suite receipt, and fails closed on absent or mismatched evidence.
++
++### Behavioral evaluation
++
++A controlled orchestrator joins the already-merged immutable corpus and privacy-safe evidence primitives. It executes matched opaque arms, records only allow-listed attributable evidence, and returns PASS, FAIL, or INCOMPLETE. A pure scorer implements the preregistered Wilson, risk-stratified paired-bootstrap, safety-veto, latency, and token rules. The CLI exposes the frozen 30/100/300 tiers; execution produces evidence but never selects a merge outcome.
++
++## Ambiguity policy
++
++Choose the smallest reversible option that preserves fail-closed behavior and current public APIs. Any change to security authority, persistent schema, public command semantics beyond the specified flags, or release publication behavior outside exact-SHA gating is blocked for explicit review. Actual model adapters and 100/300 promotion runs remain post-merge operations, not PR acceptance.
++
++## Validation
++
++- TDD RED/GREEN evidence for every production change.
++- Focused command, protected-state, workflow, corpus/evidence, behavioral-runner, and scorecard tests.
++- Deterministic workflow generation and YAML parsing.
++- Current-base rebase, lint/type/security checks, and the supported full repository suite on the final SHA.
++- PR checks, review threads, and quiet feedback window before merge consideration.
++
+diff --git a/docs/work/2026-08-08-beta5-release-evidence/tasks.md b/docs/work/2026-08-08-beta5-release-evidence/tasks.md
+new file mode 100644
+index 00000000..f491458d
+--- /dev/null
++++ b/docs/work/2026-08-08-beta5-release-evidence/tasks.md
+@@ -0,0 +1,24 @@
++# Tasks
++
++## Task 1 - Audited exact-SHA npm publication gate
++
++Implement a Forge-owned deterministic npm workflow generator and content-bound protected-state audit record. Generate the workflow only through that API. The workflow must resolve the tag to one immutable SHA, run the complete supported release suite on it, expose an attributable success receipt, and make publish fail closed unless that exact receipt and checkout SHA match. Preserve OIDC provenance, version/tag/readiness/pack guards, and beta dist-tag behavior. Prove raw edits, stale records, missing evidence, and SHA mismatch are denied. Commit the TDD-backed result.
++
++Owned files: release command/generator, protected-state authorization/checker, npm workflow, and their focused tests. Do not touch evaluation files.
++
++## Task 2 - Behavioral evaluation runner and CLI
++
++Add the controlled behavioral runner that consumes the merged immutable corpus, executes matched opaque arms through an injected executor, evaluates each case, and appends only privacy-safe exact-SHA evidence. Wire `forge skill eval <name> --full --tier 30|100|300` without changing existing static scoring. Missing, malformed, mismatched, or partial evidence is INCOMPLETE. Models and the runner have no merge authority. Add RED/GREEN runner and CLI tests and commit.
++
++Owned files: behavioral runner, skill command, and their focused tests. Do not touch release or scorecard files.
++
++## Task 3 - Promotion scorecard and vetoes
++
++Add a pure deterministic scorer for PASS/FAIL/INCOMPLETE evidence implementing Wilson absolute intervals, case-clustered risk-stratified paired bootstrap, the preregistered safety/high-risk vetoes, and latency/token caps. Thirty cases are instrumentation-only, 100 is the decision gate, and 300 is confirmation; no winner is the default whenever evidence or thresholds are incomplete. Add RED/GREEN unit tests and commit.
++
++Owned files: scorecard module and its tests. Do not touch release, CLI, or runner files.
++
++## Task 4 - Integration, documentation, and final evidence
++
++Integrate the three commits, run cross-seam tests, update the unreleased changelog, and confirm the generated workflow matches its canonical source. Run the full validation and release-readiness commands on the final SHA. Record issue handoff and open one PR. Do not tag or publish beta.5.
++
+-- 
+2.51.0.windows.1
+

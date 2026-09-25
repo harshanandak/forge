@@ -1,0 +1,1504 @@
+From dff896a1e396dbc55de3cc6de609111e3148a754 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 19:01:31 +0530
+Subject: [PATCH] feat(dashboard): mono-brutalist reskin + multi-harness Live
+ Ops + live/phase (v3)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Aesthetic → mono / Swiss-brutalist: strict black/white/gray (no accent),
+flat (no shadows/gradients/glows), sharp corners, hard 1px rules, mono type.
+Grayscale encodings: priority = fill density, status/health = glyphs, selected
+= inverted. Light + dark both grayscale.
+
+Live Ops → multi-harness: top-line counts (actors/live-claims/worktrees/PRs),
+per-actor breakdown of what each agent is on, worktrees grouped by inferred
+surface (claude-code/worktree/t3code/ephemeral/main), open PRs, and an explicit
+seam for session_id/worktree_id/harness/region (kernel lease fields not yet in
+the CLI read surface).
+
+Live pulse: pulsing filled square on open+claimed items (board cards, epic-row
+rollup, overview, Live Ops). Lifecycle phase: 6-cell mono stepper (plan..verify)
+derived best-effort from status/claim; seam for the real currentStage field.
+
+Generator adds worktree surface + actors count + liveSeam. app.test.js covers
+isLive + lifecyclePhase + epicRollup.live (10 tests). In-browser verified:
+grayscale-only, independent column scroll, no body h-scroll.
+
+Refs: 21cc7139-b088-4e23-a69c-82840e170394
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-10-forge-dashboard/plan.md |  43 ++
+ web/dashboard/README.md                      |  27 +-
+ web/dashboard/app.js                         | 346 ++++++------
+ web/dashboard/app.test.js                    |  25 +-
+ web/dashboard/generate-snapshot.mjs          |  21 +
+ web/dashboard/index.html                     |  10 +-
+ web/dashboard/styles.css                     | 524 +++++++++----------
+ 7 files changed, 527 insertions(+), 469 deletions(-)
+
+diff --git a/docs/work/2026-07-10-forge-dashboard/plan.md b/docs/work/2026-07-10-forge-dashboard/plan.md
+index 86a9082a..bb62cd7f 100644
+--- a/docs/work/2026-07-10-forge-dashboard/plan.md
++++ b/docs/work/2026-07-10-forge-dashboard/plan.md
+@@ -140,3 +140,46 @@ Extended `generate-snapshot.mjs` to also emit `decisions`, `architecture`,
+ 
+ ### Tests
+ `app.test.js` extended to cover `epicRollup` + `epicHealth` (7 tests, all pass).
++
++---
++
++## v3 — mono/brutalist reskin + multi-harness Live Ops + live/phase (2026-07-10)
++
++Same v2 structure (multi-view shell, Kanban + toggle, Linear epics, decisions,
++plans, refresh). Three refinements:
++
++### 1. Aesthetic → mono / Swiss-brutalist
++Full `styles.css` rewrite. Strict black/white/gray (no `--accent` var exists —
++verified). Flat: no shadows/gradients/glows, sharp corners, hard 1px rules,
++mono-forward type. Grayscale encodings replace all color: priority = fill density
++(`rgba(var(--ink), α)`), status/health = glyphs (●/◐/○/✕ + label), selected =
++inverted (ink/bg swap). Light + dark both strictly grayscale.
++
++### 2. Live Ops → multi-harness / multi-region
++**Data reality:** the kernel lease table (`lib/kernel/lease-enforcer.js`) holds
++`session_id`, `worktree_id`, `actor`, `expires_at`, `agent`, but the CLI read
++surface exposes only `claimed_by` (actor) — no `forge claims/leases` command,
++and `forge board --json` reads the empty Beads projection. So Live Ops renders
++what IS real: actor (`claimed_by`) + `git worktree list` + `gh pr list`, and
++**infers** a harness `surface` from each worktree path (claude-code / worktree /
++t3code / ephemeral / main). Top-line counts (actors · live claims · worktrees ·
++PRs) + per-actor breakdown of what each agent is on + worktrees-by-surface + PRs
+++ an explicit **seam banner** for session_id/worktree_id/harness/region.
++
++### 3. Live pulse + lifecycle phase
++- `isLive(i)` = open + claimed → a pulsing filled square on board cards, epic
++  rows ("N live" rollup), overview, Live Ops. Real liveness (lease not expired)
++  is the documented seam.
++- `lifecyclePhase(i)` = best-effort plan→dev→validate→ship→review→verify from
++  status/claim → a 6-cell mono stepper on task cards + epic child rows. Seam:
++  no `currentStage` on the kernel issue record yet.
++
++### Data (generator)
++`generate-snapshot.mjs` adds `worktrees[].surface` (inferred harness),
++`counts.actors`, and a `liveSeam` (exposed vs pending fields).
++
++### Tests
++`app.test.js` extended for `isLive` + `lifecyclePhase` + `epicRollup.live`
++(10 tests, all pass). In-browser verified: 15 pulse dots, 88 phase steppers,
++priority swatches grayscale, no `--accent`, independent column scroll intact,
++body has no horizontal scroll.
+diff --git a/web/dashboard/README.md b/web/dashboard/README.md
+index be6f1633..0b801d24 100644
+--- a/web/dashboard/README.md
++++ b/web/dashboard/README.md
+@@ -1,11 +1,18 @@
+ # Forge Dashboard (read-only)
+ 
+ A self-contained, zero-build **multi-view** app that renders a **live kernel
+-snapshot** — a Linear-style work board, epic hierarchy, decisions, plans, and
+-live ops — from the real kernel (610 issues at time of writing). No framework,
++snapshot** — a work board, epic hierarchy, decisions, plans, and multi-harness
++live ops — from the real kernel (611 issues at time of writing). No framework,
+ no build step, no external assets. This is the **rail-independent read layer**;
+ real-time push is deferred to the sync rail (see the seam below).
+ 
++**Aesthetic:** mono / Swiss-brutalist. A strict three-value palette — black,
++white, gray, no hue. Flat (no shadows/gradients/glows), sharp corners, hard 1px
++rules, mono-forward type. Everything normally carried by color is encoded in
++**grayscale**: priority = fill density, status/health = glyphs (●/◐/○/✕),
++a **live claim** = a pulsing filled square, lifecycle phase = a 6-cell stepper.
++Light + dark, both strictly black/white/gray.
++
+ ## Run it (two steps)
+ 
+ ```sh
+@@ -37,7 +44,21 @@ cd web/dashboard && python -m http.server 8080   # → http://localhost:8080
+ | `#/epics` | **Epics / Initiatives** | epics + `parent_id` children | Linear-style table, expandable hierarchy, Health (on/at-risk/off-track), `done/total`, Active/Planned/Completed/All tabs |
+ | `#/decisions` | **Decisions & Architecture** | kernel `type=decision` + `forge prime` headline PDs + `docs/adr` + `docs/architecture` | ADR board with status/component/rationale |
+ | `#/plans` | **Plans & History** | `docs/work/*` | timeline of work folders grouped by month, plan/tasks/decisions tags |
+-| `#/ops` | **Live Ops** | `git worktree list` + `gh pr list` + active claims | running agents (claims), open PRs, worktrees |
++| `#/ops` | **Live Ops (multi-harness)** | kernel `claimed_by` + `git worktree list` + `gh pr list` | top-line counts (actors · live claims · worktrees · PRs); per-actor breakdown of what each agent is working on (with live pulse); worktrees grouped by inferred **surface** (Claude Code / worktree / t3code / ephemeral / main); open PRs |
++
++### Live indicators & seams
++
++- **Live pulse** — a pulsing filled square marks any open+claimed issue (an agent
++  working it now). Shown on board cards, epic rows (rolled up as "N live"), the
++  overview, and Live Ops. Best-effort: real liveness needs the lease `expires_at`.
++- **Lifecycle phase** — a 6-cell stepper (plan → dev → validate → ship → review →
++  verify) per task, derived best-effort from status/claim. **Seam:** the kernel
++  issue record has no `currentStage` field yet.
++- **Multi-harness seam** — the kernel lease table holds `session_id`,
++  `worktree_id`, `actor`, `expires_at`, but the CLI read surface exposes only
++  `claimed_by` (actor). So Live Ops renders actor + worktree + PRs and **infers**
++  the harness/surface from the worktree path. The real harness + region tag
++  arrives with the sync-rail / Phase-2 lease read.
+ 
+ Global **search** (top of sidebar, `/` to focus) spans issues + epics + decisions.
+ Every view has a **Refresh** button and an "updated <time>" stamp; a 60s
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index cd7fae57..d1de1a89 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -1,14 +1,10 @@
+-/* Forge Dashboard v2 — read-only multi-view app.
++/* Forge Dashboard v3 — read-only multi-view app, MONO/BRUTALIST skin.
+    Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT). No framework, no build.
+-   Views: overview, board (task/epic kanban), epics, decisions, plans, ops. */
++   Grayscale-only encodings: fill density (priority), glyphs (status/health),
++   a pulsing square (live claim), and a 6-cell stepper (lifecycle phase). */
+ 
+ /* ============================================================================
+  * DataSource — the LIVE-VIEW SEAM.
+- * load()  : returns a snapshot. Baked global today; re-fetch over HTTP on refresh.
+- * refresh(): re-reads data.json (cache-busted) so the manual/auto Refresh gets
+- *            fresh data after the generator re-runs. When the sync rail lands,
+- *            implement subscribe(onDelta) over the outbox feed (EventSource) and
+- *            the views update with NO render changes.
+  * ========================================================================== */
+ const DataSource = {
+   async load() {
+@@ -16,8 +12,6 @@ const DataSource = {
+     return (await fetch('data.json')).json();
+   },
+   async refetch() {
+-    // Works when served over HTTP (data.json present). Throws on file:// — caller
+-    // falls back to a full reload (which re-reads the regenerated snapshot.js).
+     const res = await fetch('data.json?ts=' + Date.now(), { cache: 'no-store' });
+     if (!res.ok) throw new Error('HTTP ' + res.status);
+     return res.json();
+@@ -32,36 +26,31 @@ const esc = (s) => (s == null ? '' : String(s).replace(/[&<>"']/g, (c) => ({ '&'
+ const clamp = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
+ 
+ const PRIO_ORDER = ['P0', 'P1', 'P2', 'P3', 'P4'];
+-const PRIO_VAR = { P0: '--p0', P1: '--p1', P2: '--p2', P3: '--p3', P4: '--p4' };
++const PRIO_ALPHA = { P0: 1, P1: 0.66, P2: 0.42, P3: 0.2, P4: 0 };
+ const TYPE_LABEL = { feature: 'feat', task: 'task', bug: 'bug', epic: 'epic', decision: 'dec', chore: 'chore' };
+-const HEALTH = {
+-  ok: { label: 'On track', v: '--ok' }, warn: { label: 'At risk', v: '--warn' },
+-  risk: { label: 'Off track', v: '--risk' }, done: { label: 'Completed', v: '--ok' },
+-  neutral: { label: '—', v: '--neutral' },
+-};
++const PHASES = ['plan', 'dev', 'validate', 'ship', 'review', 'verify'];
+ 
+ function relTime(iso) {
+   if (!iso) return '';
+   const d = new Date(iso), s = Math.round((Date.now() - d) / 1000);
+-  if (s < 60) return s + 's ago';
+-  const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
+-  const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
+-  const dd = Math.round(h / 24); if (dd < 30) return dd + 'd ago';
++  if (s < 60) return s + 's';
++  const m = Math.round(s / 60); if (m < 60) return m + 'm';
++  const h = Math.round(m / 60); if (h < 24) return h + 'h';
++  const dd = Math.round(h / 24); if (dd < 30) return dd + 'd';
+   return d.toISOString().slice(0, 10);
+ }
+ 
+ function icon(name) {
+   const p = {
+-    overview: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+-    board: '<rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="12" rx="1"/><rect x="17" y="3" width="5" height="15" rx="1"/>',
++    overview: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
++    board: '<rect x="3" y="3" width="5" height="18"/><rect x="10" y="3" width="5" height="12"/><rect x="17" y="3" width="5" height="15"/>',
+     epics: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
+     decisions: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.5 6H14a2 2 0 0 1 2 2v2"/>',
+     plans: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+     ops: '<path d="M3 12h4l2 6 4-14 2 8h6"/>',
+     doc: '<path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/>',
+-    branch: '<circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M6 8.5v7M18 8.5V11a3 3 0 0 1-3 3H6"/>',
+   }[name] || '';
+-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
++  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="square" stroke-linejoin="miter">${p}</svg>`;
+ }
+ 
+ /* ---------- state ---------- */
+@@ -72,7 +61,6 @@ const State = {
+   epicsTab: 'active', epicsExpanded: new Set(),
+   route: 'overview',
+ };
+-
+ function rebuild(snap) {
+   State.snapshot = snap;
+   const issues = (snap.issues || []).filter((i) => i && i.type !== 'zzzbogus');
+@@ -100,13 +88,26 @@ function matchesFilter(i) {
+   }
+   return true;
+ }
++// Best-effort "being worked on right now". Real liveness = kernel lease not expired
++// (session_id + expires_at) — not yet exposed by the CLI; see the Live Ops seam.
++function isLive(i) { return i.status === 'open' && !!i.claimed_by; }
++
++// Best-effort lifecycle phase. Real stage (currentStage) is not yet on the kernel
++// issue record — derived here from status/claim; seam noted in Live Ops + README.
++function lifecyclePhase(i) {
++  if (i.status === 'done') return { idx: 6, label: 'done' };
++  if (i.status === 'cancelled') return { idx: 0, label: 'cancelled' };
++  if (i.claimed_by) return { idx: 2, label: 'dev' };
++  return { idx: 1, label: 'plan' };
++}
+ function epicRollup(epic, kids) {
+   kids = kids || State.kids[epic.id] || [];
+   const total = kids.length;
+   const done = kids.filter((k) => k.status === 'done').length;
+   const blocked = kids.filter((k) => k.blocked && k.status === 'open').length;
+   const inprog = kids.filter((k) => k.claimed_by && k.status === 'open' && !k.blocked).length;
+-  return { total, done, blocked, inprog, open: total - done, ratio: total ? done / total : 0 };
++  const live = kids.filter(isLive).length;
++  return { total, done, blocked, inprog, live, open: total - done, ratio: total ? done / total : 0 };
+ }
+ function epicHealth(epic, kids) {
+   if (epic.status === 'done') return 'done';
+@@ -119,31 +120,39 @@ function epicHealth(epic, kids) {
+   return r.blocked > 0 ? 'risk' : 'warn';
+ }
+ 
+-/* ---------- shared bits ---------- */
+-const prioBadge = (p) => `<span class="badge badge--prio" style="background:var(${PRIO_VAR[p] || '--faint'})">${esc(p || '—')}</span>`;
+-const typeBadge = (t) => `<span class="badge badge--type">${esc(TYPE_LABEL[t] || t)}</span>`;
++/* ---------- grayscale encodings ---------- */
++const prioTag = (p) => `<span class="prio" title="priority ${esc(p)}"><i style="background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></i>${esc(p || '—')}</span>`;
++const typeBadge = (t) => `<span class="badge">${esc(TYPE_LABEL[t] || t)}</span>`;
++const STATUS_GLYPH = { done: '●', blocked: '✕', progress: '◐', ready: '○' };
++const HEALTH_GLYPH = { ok: '●', warn: '◐', risk: '○', done: '●', neutral: '–' };
++const HEALTH_LABEL = { ok: 'On track', warn: 'At risk', risk: 'Off track', done: 'Completed', neutral: '—' };
++const pulse = (on) => (on ? '<span class="pulse" title="active claim — being worked on now"></span>' : '');
++function phaseTag(i, dim) {
++  const ph = lifecyclePhase(i);
++  const cells = PHASES.map((_, n) => `<i class="${n < ph.idx ? 'on' : ''}"></i>`).join('');
++  return `<span class="phase ${dim ? 'dim' : ''}" title="lifecycle: ${esc(ph.label)} (best-effort — no kernel stage field yet)"><span class="steps">${cells}</span><span class="lbl">${esc(ph.label)}</span></span>`;
++}
+ const epicRef = (i) => {
+   if (!i.parent_id) return '';
+   const e = State.byId[i.parent_id]; if (!e) return '';
+-  return `<span class="epicref"><span class="dot"></span>${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 26))}</span>`;
++  return `<span class="epicref">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 24))}</span>`;
+ };
++
+ function taskCard(i) {
+-  const owner = i.claimed_by
+-    ? `<span class="kcard__owner"><span class="av">${esc(i.claimed_by.slice(0, 2))}</span>${esc(i.claimed_by)}</span>` : '';
+-  const deps = i.dependencies && i.dependencies.length ? `<span class="badge badge--soft">${i.dependencies.length} dep</span>` : '';
+-  return `<div class="kcard" style="--prio:var(${PRIO_VAR[i.priority] || '--border'})">
+-    <div class="kcard__top">${typeBadge(i.type)}${prioBadge(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
+-    <div class="kcard__title">${esc(clamp(i.title, 120))}</div>
+-    <div class="kcard__meta">${owner}${epicRef(i)}${deps}</div>
++  const owner = i.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(i.claimed_by.slice(0, 2))}</span>${esc(i.claimed_by)}</span>` : '';
++  return `<div class="kcard">
++    <div class="kcard__top">${pulse(isLive(i))}${typeBadge(i.type)}${prioTag(i.priority)}<span class="kcard__id">${esc(String(i.id).slice(0, 8))}</span></div>
++    <div class="kcard__title">${esc(clamp(i.title, 116))}</div>
++    <div class="kcard__meta">${phaseTag(i)}${owner}${epicRef(i)}</div>
+   </div>`;
+ }
+ function epicCard(e) {
+-  const r = epicRollup(e); const h = HEALTH[epicHealth(e)];
+-  return `<div class="kcard kcard--epic" data-act="focus-epic" data-id="${esc(e.id)}" style="--prio:var(${h.v})">
+-    <div class="kcard__top"><span class="hdot" style="background:var(${h.v})"></span>${prioBadge(e.priority)}<span class="kcard__id">${r.total} tasks</span></div>
+-    <div class="kcard__title">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 110))}</div>
++  const r = epicRollup(e); const hg = HEALTH_GLYPH[epicHealth(e)];
++  return `<div class="kcard kcard--epic" data-act="focus-epic" data-id="${esc(e.id)}">
++    <div class="kcard__top"><span class="glyph">${hg}</span>${prioTag(e.priority)}<span class="kcard__id">${r.total} tasks</span></div>
++    <div class="kcard__title">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 108))}</div>
+     <div class="kcard__roll"><div class="kcard__prog"><span style="width:${Math.round(r.ratio * 100)}%"></span></div>
+-      <span class="kcard__rolltext">${r.done}/${r.total || '·'}</span></div>
++      <span class="kcard__rolltext">${r.done}/${r.total || '·'}</span>${r.live ? `<span class="livecount">${pulse(true)}${r.live}</span>` : ''}</div>
+   </div>`;
+ }
+ 
+@@ -155,7 +164,7 @@ const VIEWS = [
+   { id: 'board', title: 'Work Board', flush: true, render: renderBoard },
+   { id: 'epics', title: 'Epics', flush: false, render: renderEpics },
+   { id: 'decisions', title: 'Decisions', flush: false, render: renderDecisions },
+-  { id: 'plans', title: 'Plans & History', flush: false, render: renderPlans },
++  { id: 'plans', title: 'Plans', flush: false, render: renderPlans },
+   { id: 'ops', title: 'Live Ops', flush: false, render: renderOps },
+ ];
+ 
+@@ -166,93 +175,78 @@ function renderOverview() {
+   const total = all.length, done = st('done'), open = st('open');
+   const donePct = total ? Math.round((done / total) * 100) : 0;
+   const blocked = all.filter((i) => i.blocked && i.status !== 'done').length;
+-  const active = all.filter((i) => i.claimed_by && i.status === 'open').length;
++  const live = all.filter(isLive).length;
+   const ready = all.filter((i) => columnOf(i) === 'ready').length;
+   const c = State.snapshot.counts || {};
+ 
+   const tiles = [
+-    { n: total, l: 'Total issues', s: State.snapshot.schema_version || '', v: '--accent' },
+-    { n: donePct + '%', l: 'Complete', s: done + ' done', v: '--ok' },
+-    { n: open, l: 'Open', s: ready + ' ready', v: '--st-ready' },
+-    { n: active, l: 'In progress', s: 'claimed now', v: '--st-progress' },
+-    { n: blocked, l: 'Blocked', s: 'need unblocking', v: '--st-blocked' },
+-    { n: State.epics.length, l: 'Epics', s: (c.decisions || 0) + ' decisions', v: '--accent' },
++    { n: total, l: 'Total issues', s: State.snapshot.schema_version || '' },
++    { n: donePct + '%', l: 'Complete', s: done + ' done' },
++    { n: open, l: 'Open', s: ready + ' ready' },
++    { n: live, l: 'Live now', s: c.actors + ' actors' },
++    { n: blocked, l: 'Blocked', s: 'need unblocking' },
++    { n: State.epics.length, l: 'Epics', s: (c.decisions || 0) + ' decisions' },
+   ];
+-
+   const prio = {}; PRIO_ORDER.forEach((p) => (prio[p] = 0));
+   all.forEach((i) => { if (prio[i.priority] != null) prio[i.priority]++; });
+   const types = {}; all.forEach((i) => (types[i.type] = (types[i.type] || 0) + 1));
+ 
+-  const bar = PRIO_ORDER.map((p) => `<span title="${p}: ${prio[p]}" style="width:${(prio[p] / (total || 1)) * 100}%;background:var(${PRIO_VAR[p]})"></span>`).join('');
+-  const legend = PRIO_ORDER.map((p) => `<span class="item"><span class="sw" style="background:var(${PRIO_VAR[p]})"></span>${p} <b>${prio[p]}</b></span>`).join('');
+-  const chips = Object.entries(types).sort((a, b) => b[1] - a[1])
+-    .map(([t, n]) => `<span class="item"><span class="sw" style="background:var(--surface-3)"></span>${esc(TYPE_LABEL[t] || t)} <b>${n}</b></span>`).join('');
++  const bar = PRIO_ORDER.map((p) => `<span title="${p}: ${prio[p]}" style="width:${(prio[p] / (total || 1)) * 100}%;background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></span>`).join('');
++  const legend = PRIO_ORDER.map((p) => `<span class="item"><span class="sw" style="background:rgba(var(--ink),${PRIO_ALPHA[p] ?? 0})"></span>${p} <b>${prio[p]}</b></span>`).join('');
++  const chips = Object.entries(types).sort((a, b) => b[1] - a[1]).map(([t, n]) => `<span class="item"><span class="sw"></span>${esc(TYPE_LABEL[t] || t)} <b>${n}</b></span>`).join('');
+ 
+   const recent = all.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 8)
+-    .map((i) => `<div class="pr-row"><span class="hdot" style="background:var(${i.blocked ? '--st-blocked' : i.status === 'done' ? '--st-done' : '--st-ready'})"></span>
+-      <span class="pr-title">${esc(clamp(i.title, 70))}</span><span class="pr-branch">${esc(relTime(i.updated_at))}</span></div>`).join('');
++    .map((i) => `<div class="rowline">${isLive(i) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(i)] || '○'}</span>`}<span class="t">${esc(clamp(i.title, 68))}</span><span class="when">${esc(relTime(i.updated_at))}</span></div>`).join('');
+ 
+   return `<div class="fade-in">
+-    <div class="stats">${tiles.map((t) => `<div class="stat" style="--accar:var(${t.v})"><div class="stat__num">${esc(t.n)}</div><div class="stat__label">${esc(t.l)}</div><div class="stat__sub">${esc(t.s)}</div></div>`).join('')}</div>
++    <div class="stats">${tiles.map((t) => `<div class="stat"><div class="stat__num">${esc(t.n)}</div><div class="stat__label">${esc(t.l)}</div><div class="stat__sub">${esc(t.s)}</div></div>`).join('')}</div>
+     <div class="overview-grid">
+       <div class="panel"><h3>Priority distribution</h3><div class="bar">${bar}</div><div class="legend">${legend}</div></div>
+       <div class="panel"><h3>Issue types</h3><div class="legend">${chips}</div></div>
+     </div>
+     <div class="overview-grid">
+-      <div class="panel" style="padding:0"><h3 style="padding:16px 16px 0">Recent activity</h3><div style="padding:6px 4px">${recent}</div></div>
+-      <div class="panel"><h3>Live ops</h3><div class="legend">
+-        <span class="item">Worktrees <b>${c.worktrees || 0}</b></span>
+-        <span class="item">Open PRs <b>${c.prs || 0}</b></span>
+-        <span class="item">Active claims <b>${(State.snapshot.ops && State.snapshot.ops.activeClaims.length) || 0}</b></span>
+-        <span class="item">Plans <b>${c.plans || 0}</b></span>
+-      </div><div style="margin-top:14px;color:var(--faint);font-size:12px">Jump into <a href="#/ops" style="color:var(--accent)">Live Ops →</a></div></div>
++      <div class="panel"><h3>Recent activity</h3>${recent}</div>
++      <div class="panel"><h3>Runtime</h3><div class="legend">
++        <span class="item">Live claims <b>${live}</b></span><span class="item">Actors <b>${c.actors || 0}</b></span>
++        <span class="item">Worktrees <b>${c.worktrees || 0}</b></span><span class="item">Open PRs <b>${c.prs || 0}</b></span>
++      </div><div class="rowline" style="border:none;margin-top:12px"><a href="#/ops" class="slabel">→ Live Ops</a></div></div>
+     </div>
+   </div>`;
+ }
+ 
+-/* ---- Work Board (Kanban) ---- */
++/* ---- Work Board ---- */
+ const TASK_COLS = [
+-  { key: 'ready', title: 'Ready', v: '--st-ready' },
+-  { key: 'progress', title: 'In progress', v: '--st-progress' },
+-  { key: 'blocked', title: 'Blocked', v: '--st-blocked' },
+-  { key: 'done', title: 'Done', v: '--st-done' },
++  { key: 'ready', title: 'Ready' }, { key: 'progress', title: 'In progress' },
++  { key: 'blocked', title: 'Blocked' }, { key: 'done', title: 'Done' },
+ ];
+ const EPIC_COLS = [
+-  { key: 'ok', title: 'On track', v: '--ok' },
+-  { key: 'warn', title: 'At risk', v: '--warn' },
+-  { key: 'risk', title: 'Off track', v: '--risk' },
+-  { key: 'done', title: 'Completed', v: '--ok' },
++  { key: 'ok', title: 'On track' }, { key: 'warn', title: 'At risk' },
++  { key: 'risk', title: 'Off track' }, { key: 'done', title: 'Completed' },
+ ];
+-
+ function renderBoard() {
+   const B = State.board;
+   const focus = B.epicFocus ? State.byId[B.epicFocus] : null;
+   const levelSeg = `<div class="seg">
+     <button data-act="board-level" data-level="tasks" class="${B.level === 'tasks' ? 'on' : ''}">Tasks</button>
+     <button data-act="board-level" data-level="epics" class="${B.level === 'epics' ? 'on' : ''}">Epics</button></div>`;
+-  const focusChip = focus ? `<span class="chipfilter">Epic: ${esc(clamp(focus.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 34))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
+-
++  const focusChip = focus ? `<span class="chipfilter">EPIC: ${esc(clamp(focus.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 32))}<button data-act="clear-focus" title="Clear">✕</button></span>` : '';
+   let chips = '';
+   if (B.level === 'tasks') {
+     const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'epic');
+-    chips = `<div class="controls">${types.map((t) => `<button class="btn" data-act="chip-type" data-val="${t}" style="${State.filters.type === t ? 'border-color:var(--accent);color:var(--accent)' : ''}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
+-      ${PRIO_ORDER.map((p) => `<button class="btn" data-act="chip-prio" data-val="${p}" style="${State.filters.prio === p ? 'border-color:var(--accent);color:var(--accent)' : ''}">${p}</button>`).join('')}</div>`;
++    chips = `<div class="controls">${types.map((t) => `<button class="btn ${State.filters.type === t ? 'on' : ''}" data-act="chip-type" data-val="${t}">${esc(TYPE_LABEL[t] || t)}</button>`).join('')}
++      ${PRIO_ORDER.map((p) => `<button class="btn ${State.filters.prio === p ? 'on' : ''}" data-act="chip-prio" data-val="${p}">${p}</button>`).join('')}</div>`;
+   }
+-  const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+-    <input id="boardSearch" type="search" placeholder="Filter cards…" value="${esc(State.filters.q)}"></div>`;
+-
++  const miniSearch = `<div class="minisearch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
++    <input id="boardSearch" type="search" placeholder="filter cards…" value="${esc(State.filters.q)}"></div>`;
+   const cols = B.level === 'epics' ? renderEpicColumns() : renderTaskColumns(focus);
+   return `<div class="boardbar">${levelSeg}${focusChip}${chips}${miniSearch}</div><div class="board">${cols}</div>`;
+ }
+-
+ function column(col, cards, count, key) {
+   const lim = State.board.limits[key] ?? 25;
+   const shown = cards.slice(0, lim);
+-  const more = cards.length > lim
+-    ? `<button class="kmore" data-act="more" data-col="${key}">Show ${Math.min(25, cards.length - lim)} more · ${cards.length - lim} hidden</button>` : '';
+-  const body = shown.length ? shown.join('') + more : `<div class="kempty">Nothing here.</div>`;
+-  return `<div class="kcol"><div class="kcol__head"><span class="hdot" style="background:var(${col.v})"></span>
+-    <span class="kcol__title">${esc(col.title)}</span><span class="kcol__count">${count}</span></div>
++  const more = cards.length > lim ? `<button class="kmore" data-act="more" data-col="${key}">+${cards.length - lim} more</button>` : '';
++  const body = shown.length ? shown.join('') + more : `<div class="kempty">— empty —</div>`;
++  return `<div class="kcol"><div class="kcol__head"><span class="kcol__title">${esc(col.title)}</span><span class="kcol__count">${count}</span></div>
+     <div class="kcol__body">${body}</div></div>`;
+ }
+ function renderTaskColumns(focus) {
+@@ -267,17 +261,14 @@ function renderTaskColumns(focus) {
+ }
+ function renderEpicColumns() {
+   const buckets = { ok: [], warn: [], risk: [], done: [] };
+-  State.epics.filter((e) => !State.filters.q || (e.title.toLowerCase().includes(State.filters.q.toLowerCase())))
++  State.epics.filter((e) => !State.filters.q || e.title.toLowerCase().includes(State.filters.q.toLowerCase()))
+     .forEach((e) => { const h = epicHealth(e); const key = h === 'neutral' ? 'warn' : h; (buckets[key] || buckets.warn).push(e); });
+   Object.keys(buckets).forEach((k) => buckets[k].sort((a, b) => epicRollup(b).total - epicRollup(a).total));
+   return EPIC_COLS.map((c) => column(c, buckets[c.key].map(epicCard), buckets[c.key].length, 'e_' + c.key)).join('');
+ }
+ 
+-/* ---- Epics / Initiatives table ---- */
+-const EPIC_TABS = [
+-  { id: 'active', label: 'Active' }, { id: 'planned', label: 'Planned' },
+-  { id: 'completed', label: 'Completed' }, { id: 'all', label: 'All' },
+-];
++/* ---- Epics table ---- */
++const EPIC_TABS = [{ id: 'active', label: 'Active' }, { id: 'planned', label: 'Planned' }, { id: 'completed', label: 'Completed' }, { id: 'all', label: 'All' }];
+ function epicTabMatch(e) {
+   const r = epicRollup(e);
+   switch (State.epicsTab) {
+@@ -289,60 +280,51 @@ function epicTabMatch(e) {
+ }
+ function renderEpics() {
+   const tabs = `<div class="tabs">${EPIC_TABS.map((t) => `<button data-act="epics-tab" data-tab="${t.id}" class="${State.epicsTab === t.id ? 'on' : ''}">${t.label}</button>`).join('')}</div>`;
+-  const eps = State.epics.filter(epicTabMatch)
+-    .sort((a, b) => epicRollup(b).total - epicRollup(a).total || new Date(b.updated_at) - new Date(a.updated_at));
+-
++  const eps = State.epics.filter(epicTabMatch).sort((a, b) => epicRollup(b).total - epicRollup(a).total || new Date(b.updated_at) - new Date(a.updated_at));
+   const rows = eps.map((e) => {
+-    const r = epicRollup(e); const h = HEALTH[epicHealth(e)];
++    const r = epicRollup(e); const h = epicHealth(e);
+     const kids = State.kids[e.id] || [];
+     const open = State.epicsExpanded.has(e.id);
+     const sub = (e.labels || [])[0] ? `<div class="sub">${esc(e.labels[0])}</div>` : '';
+-    const workdots = `<span class="workdots">${r.inprog ? `<span class="wd"><span class="dot" style="background:var(--st-progress)"></span>${r.inprog}</span>` : ''}${r.blocked ? `<span class="wd"><span class="dot" style="background:var(--st-blocked)"></span>${r.blocked}</span>` : ''}${!r.inprog && !r.blocked ? '<span class="wd">—</span>' : ''}</span>`;
+-    const parentRow = `<tr>
++    const active = `<span class="workdots">${r.live ? `<span class="wd">${pulse(true)}${r.live} live</span>` : ''}${r.blocked ? `<span class="wd"><span class="glyph">✕</span>${r.blocked}</span>` : ''}${!r.live && !r.blocked ? '<span class="wd">—</span>' : ''}</span>`;
++    const parent = `<tr>
+       <td><div class="rowname">
+-        <span class="chev ${kids.length ? (open ? 'open' : '') : 'leaf'}" data-act="toggle-epic" data-id="${esc(e.id)}">${kids.length ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" width="12" height="12"><path d="m9 6 6 6-6 6"/></svg>' : ''}</span>
+-        <span class="ic">${icon('epics')}</span>
+-        <span><span class="tt" data-act="focus-epic" data-id="${esc(e.id)}" style="cursor:pointer">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 68))}</span>${sub}</span>
++        <span class="chev ${kids.length ? '' : 'leaf'}" data-act="toggle-epic" data-id="${esc(e.id)}">${kids.length ? (open ? '▾' : '▸') : ''}</span>
++        <span><span class="tt" data-act="focus-epic" data-id="${esc(e.id)}" style="cursor:pointer">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 66))}</span>${sub}</span>
+       </div></td>
+       <td class="num" style="color:var(--faint)">—</td>
+-      <td><span class="health"><span class="hdot" style="background:var(${h.v})"></span>${h.label}</span></td>
+-      <td><div class="progresscell"><div class="mini"><span style="width:${Math.round(r.ratio * 100)}%;background:var(${h.v})"></span></div><span class="frac">${r.done}/${r.total || '·'}</span></div></td>
+-      <td>${workdots}</td>
++      <td><span class="health"><span class="glyph">${HEALTH_GLYPH[h]}</span><span class="slabel">${HEALTH_LABEL[h]}</span></span></td>
++      <td><div class="progresscell"><div class="mini"><span style="width:${Math.round(r.ratio * 100)}%"></span></div><span class="frac">${r.done}/${r.total || '·'}</span></div></td>
++      <td>${active}</td>
+       <td><span class="trend">${esc(relTime(e.updated_at))}</span></td></tr>`;
+-    let childRows = '';
++    let children = '';
+     if (open) {
+-      childRows = kids.slice().sort((a, b) => (a.status === 'done') - (b.status === 'done')).map((k) => `<tr class="child">
+-        <td><div class="rowname"><span class="chev leaf"></span>${typeBadge(k.type)}<span class="tt">${esc(clamp(k.title, 62))}</span></div></td>
+-        <td></td>
+-        <td><span class="health"><span class="dot" style="background:var(${k.blocked ? '--st-blocked' : k.status === 'done' ? '--st-done' : k.claimed_by ? '--st-progress' : '--st-ready'})"></span>${esc(k.blocked ? 'blocked' : k.status)}</span></td>
+-        <td>${prioBadge(k.priority)}</td>
+-        <td>${k.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(k.claimed_by.slice(0, 2))}</span></span>` : ''}</td>
++      children = kids.slice().sort((a, b) => (a.status === 'done') - (b.status === 'done')).map((k) => `<tr class="child">
++        <td><div class="rowname"><span class="chev leaf"></span>${isLive(k) ? pulse(true) : `<span class="glyph">${STATUS_GLYPH[columnOf(k)] || '○'}</span>`}<span class="tt">${esc(clamp(k.title, 58))}</span></div></td>
++        <td>${phaseTag(k, true)}</td>
++        <td><span class="slabel">${esc(k.blocked ? 'blocked' : k.status)}</span></td>
++        <td>${prioTag(k.priority)}</td>
++        <td>${k.claimed_by ? `<span class="kcard__owner"><span class="av">${esc(k.claimed_by.slice(0, 2))}</span>${esc(k.claimed_by)}</span>` : ''}</td>
+         <td><span class="trend">${esc(relTime(k.updated_at))}</span></td></tr>`).join('');
+     }
+-    return parentRow + childRows;
++    return parent + children;
+   }).join('');
+-
+   const body = eps.length ? `<div class="tblwrap"><table class="tbl">
+     <thead><tr><th>Name</th><th>Target</th><th>Health</th><th>Progress</th><th>Active</th><th>Activity</th></tr></thead>
+-    <tbody>${rows}</tbody></table></div>` : `<div class="empty-state"><h4>No epics in this tab</h4><p>Try the “All” tab.</p></div>`;
+-  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · click a row title to open it in the board</span></div>${body}</div>`;
++    <tbody>${rows}</tbody></table></div>` : `<div class="empty-state"><h4>No epics in this tab</h4><p>Try “All”.</p></div>`;
++  return `<div class="fade-in"><div class="viewhead">${tabs}<div class="topbar__spacer"></div><span class="crumb">${eps.length} initiatives · row title → open in board</span></div>${body}</div>`;
+ }
+ 
+-/* ---- Decisions + Architecture ---- */
++/* ---- Decisions ---- */
+ function renderDecisions() {
+   const decs = State.snapshot.decisions || [];
+-  const groups = [
+-    { key: 'kernel', label: 'Kernel decisions' },
+-    { key: 'headline', label: 'Architecture decisions (headline)' },
+-    { key: 'adr', label: 'ADRs' },
+-  ];
+-  const statusClass = (s) => { const l = (s || '').toLowerCase(); if (l.startsWith('accept')) return 'accepted'; if (l.startsWith('propos')) return 'proposed'; if (l.startsWith('supersed')) return 'superseded'; if (l.startsWith('deprecat')) return 'deprecated'; if (l === 'done') return 'done'; return 'open'; };
++  const groups = [{ key: 'kernel', label: 'Kernel decisions' }, { key: 'headline', label: 'Architecture decisions (headline)' }, { key: 'adr', label: 'ADRs' }];
++  const statusClass = (s) => { const l = (s || '').toLowerCase(); if (l.startsWith('accept')) return 'accepted'; if (l.startsWith('propos')) return 'proposed'; if (l.startsWith('supersed')) return 'superseded'; if (l.startsWith('deprecat')) return 'deprecated'; if (l === 'done') return 'done'; return ''; };
+   const card = (d) => `<div class="deccard">
+-    <div class="deccard__top"><span class="stbadge ${statusClass(d.status)}">${esc(d.status || 'open')}</span>${d.component ? `<span class="badge badge--soft">${esc(clamp(d.component, 28))}</span>` : ''}</div>
++    <div class="deccard__top"><span class="stbadge ${statusClass(d.status)}">${esc(d.status || 'open')}</span>${d.component ? `<span class="badge">${esc(clamp(d.component, 26))}</span>` : ''}</div>
+     <div class="deccard__title">${esc(d.title)}</div>
+     <div class="deccard__body">${esc(clamp(d.rationale || '', 320))}</div>
+     <div class="deccard__foot"><span class="deccard__id">${esc(String(d.id))}</span></div></div>`;
+-
+   let html = '<div class="fade-in">';
+   groups.forEach((g) => {
+     const items = decs.filter((d) => d.source === g.key);
+@@ -351,59 +333,75 @@ function renderDecisions() {
+   });
+   const arch = State.snapshot.architecture || [];
+   html += `<div class="section-title">Architecture docs · ${arch.length}</div>`;
+-  html += arch.length ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="ic">${icon('doc')}</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
+-    : `<div class="empty-state"><h4>No architecture docs indexed</h4><p>Add records under docs/architecture/ or docs/adr/.</p></div>`;
+-  if (!decs.length) html += `<div class="empty-state"><h4>No decisions in this snapshot</h4><p>Kernel type=decision issues and headline PDs appear here.</p></div>`;
++  html += arch.length ? `<div class="arch-list">${arch.map((a) => `<div class="arch-row"><span class="glyph">▦</span><span>${esc(a.title)}</span><span class="p">${esc(a.path)}</span></div>`).join('')}</div>`
++    : `<div class="empty-state"><h4>No architecture docs</h4><p>Add records under docs/architecture/ or docs/adr/.</p></div>`;
++  if (!decs.length) html += `<div class="empty-state"><h4>No decisions</h4><p>Kernel type=decision issues + headline PDs appear here.</p></div>`;
+   return html + '</div>';
+ }
+ 
+-/* ---- Plans & History ---- */
++/* ---- Plans ---- */
+ function renderPlans() {
+   const plans = (State.snapshot.plans || []).slice();
+   const monthLabel = (d) => d ? new Date(d + 'T00:00:00Z').toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Undated';
+   const groups = {};
+   plans.forEach((p) => { const m = p.date ? p.date.slice(0, 7) : 'zzzz'; (groups[m] = groups[m] || []).push(p); });
+   const months = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+-  const tag = (on, label) => on ? `<span class="badge badge--soft">${label}</span>` : '';
++  const tag = (on, label) => on ? `<span class="badge">${label}</span>` : '';
+   let html = `<div class="fade-in"><div class="viewhead"><span class="crumb">${plans.length} work folders · newest first</span></div>`;
+   months.forEach((m) => {
+     html += `<div class="tl-month">${esc(groups[m][0].date ? monthLabel(groups[m][0].date) : 'Undated')}</div>`;
+     groups[m].forEach((p) => {
+-      html += `<div class="tl-row">
+-        <span class="tl-date">${esc(p.date || '—')}</span>
++      html += `<div class="tl-row"><span class="tl-date">${esc(p.date || '—')}</span>
+         <div><div class="tl-title">${esc(clamp(p.title, 84))}</div><div class="tl-slug">${esc(p.slug)}</div></div>
+-        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="badge badge--soft">${p.docCount} docs</span></div>
+-      </div>`;
++        <div class="tl-tags">${tag(p.hasPlan, 'plan')}${tag(p.hasTasks, 'tasks')}${tag(p.hasDecisions, 'decisions')}<span class="badge">${p.docCount} docs</span></div></div>`;
+     });
+   });
+   return html + '</div>';
+ }
+ 
+-/* ---- Live Ops ---- */
++/* ---- Live Ops (multi-harness / multi-region) ---- */
+ function renderOps() {
+   const ops = State.snapshot.ops || { worktrees: [], prs: [], activeClaims: [] };
+   const claims = ops.activeClaims || [];
+-  const claimsHtml = claims.length ? claims.map((c) => `<div class="pr-row"><span class="kcard__owner"><span class="av">${esc((c.owner || '?').slice(0, 2))}</span></span>
+-    <span class="pr-title">${esc(clamp(c.title, 56))}</span>${prioBadge(c.priority)}<span class="pr-branch">${esc(relTime(c.updated_at))}</span></div>`).join('')
+-    : `<div class="empty-state"><h4>No active claims</h4><p>Claimed-and-open issues appear here.</p></div>`;
+-
++  const trees = ops.worktrees || [];
+   const prs = ops.prs || [];
+-  const prsHtml = prs.length ? prs.map((p) => `<div class="pr-row"><span class="pr-num">#${esc(p.number)}</span>
+-    <span class="pr-title">${esc(clamp(p.title, 60))}</span>${p.isDraft ? '<span class="badge badge--soft">draft</span>' : ''}
+-    <span class="stbadge ${p.state === 'OPEN' ? 'open' : 'done'}">${esc((p.state || '').toLowerCase())}</span></div>`).join('')
+-    : `<div class="empty-state"><h4>No open PRs</h4><p>gh pr list returned none (or gh is unavailable).</p></div>`;
++  const seam = State.snapshot.liveSeam || { exposed: [], pending: [] };
+ 
+-  const trees = ops.worktrees || [];
+-  const treeRows = trees.map((w) => `<tr><td><div class="rowname"><span class="ic">${icon('branch')}</span><span class="tt">${esc(w.branch || '(detached)')}</span></div></td>
+-    <td class="num" style="color:var(--faint)">${esc(w.head || '')}</td><td><span class="mono-path">${esc(w.path)}</span></td></tr>`).join('');
++  const actors = {};
++  claims.forEach((c) => { (actors[c.owner || '—'] = actors[c.owner || '—'] || []).push(c); });
++  const actorNames = Object.keys(actors).sort((a, b) => actors[b].length - actors[a].length);
+ 
+-  return `<div class="fade-in">
++  const top = `<div class="ops-top">
++    <div class="cell"><div class="n">${actorNames.length}</div><div class="l">Active actors</div></div>
++    <div class="cell"><div class="n">${claims.length}</div><div class="l">Live claims</div></div>
++    <div class="cell"><div class="n">${trees.length}</div><div class="l">Worktrees</div></div>
++    <div class="cell"><div class="n">${prs.length}</div><div class="l">Open PRs</div></div>
++  </div>`;
++
++  const actorCards = actorNames.length ? actorNames.map((name) => {
++    const items = actors[name];
++    const lines = items.map((c) => `<div class="opsline">${pulse(true)}<span class="t">${esc(clamp(c.title, 52))}</span>${prioTag(c.priority)}<span class="when">${esc(relTime(c.updated_at))}</span></div>`).join('');
++    return `<div class="actorcard"><div class="actorcard__head"><span class="kcard__owner"><span class="av">${esc(name.slice(0, 2))}</span></span><span class="actorcard__name">${esc(name)}</span><span class="actorcard__meta">${items.length} live</span></div>${lines}</div>`;
++  }).join('') : `<div class="empty-state"><h4>No active actors</h4><p>Claimed-and-open issues (actor = claimed_by) appear here.</p></div>`;
++
++  const prList = prs.length ? prs.map((p) => `<div class="opsline"><span class="pr-num">#${esc(p.number)}</span><span class="t">${esc(clamp(p.title, 54))}</span>${p.isDraft ? '<span class="badge">draft</span>' : ''}<span class="slabel">${esc((p.state || '').toLowerCase())}</span></div>`).join('')
++    : `<div class="empty-state"><h4>No open PRs</h4><p>gh pr list returned none.</p></div>`;
++
++  const bySurface = {};
++  trees.forEach((w) => { (bySurface[w.surface || 'other'] = bySurface[w.surface || 'other'] || []).push(w); });
++  const SURFACE_LABEL = { 'claude-code': 'Claude Code agents', worktree: 'Local worktrees', t3code: 't3code', ephemeral: 'Ephemeral / cloud', main: 'Main checkout', other: 'Other' };
++  const surfaceHtml = Object.keys(bySurface).sort((a, b) => bySurface[b].length - bySurface[a].length).map((s) => {
++    const lines = bySurface[s].map((w) => `<div class="opsline"><span class="pr-num mono" style="min-width:0">${esc(w.branch || '(detached)')}</span><span class="surface-tag">${esc(s)}</span><span class="t mono-path">${esc(w.path)}</span><span class="when">${esc(w.head || '')}</span></div>`).join('');
++    return `<div class="actorcard"><div class="actorcard__head"><span class="actorcard__name">${esc(SURFACE_LABEL[s] || s)}</span><span class="actorcard__meta">${bySurface[s].length}</span></div>${lines}</div>`;
++  }).join('');
++
++  return `<div class="fade-in">${top}
+     <div class="ops-grid">
+-      <div class="panel" style="padding:0"><h3 style="padding:16px 16px 6px">Active work · ${claims.length}</h3><div>${claimsHtml}</div></div>
+-      <div class="panel" style="padding:0"><h3 style="padding:16px 16px 6px">Open pull requests · ${prs.length}</h3><div>${prsHtml}</div></div>
++      <div><div class="section-title" style="margin-top:0">Active agents · what each is working on</div>${actorCards}</div>
++      <div><div class="section-title" style="margin-top:0">Open pull requests · ${prs.length}</div>${prList}</div>
+     </div>
+-    <div class="section-title">Git worktrees · ${trees.length}</div>
+-    <div class="tblwrap"><table class="tbl"><thead><tr><th>Branch</th><th>HEAD</th><th>Path</th></tr></thead><tbody>${treeRows}</tbody></table></div>
++    <div class="section-title">Worktrees by surface · ${trees.length}</div>${surfaceHtml}
++    <div class="seam"><b>SEAM — multi-harness/region.</b> Exposed by the CLI today: ${esc(seam.exposed.join(', '))}. Pending (present in the kernel lease table, not yet in the read surface): ${esc(seam.pending.join(', '))}. Harness/surface here is <b>inferred from the worktree path</b>; the real harness + region tag arrives with the sync-rail / Phase-2 lease read.</div>
+   </div>`;
+ }
+ 
+@@ -416,7 +414,6 @@ function route() {
+   State.route = VIEWS.some((v) => v.id === id) ? id : 'overview';
+   const v = currentView();
+   $('#viewTitle').textContent = v.title;
+-  $('#viewCrumb').textContent = '';
+   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === v.id));
+   const view = $('#view');
+   view.classList.toggle('view--flush', !!v.flush);
+@@ -426,17 +423,16 @@ function route() {
+ }
+ function afterRender() {
+   const bs = $('#boardSearch');
+-  if (bs) bs.addEventListener('input', (e) => { State.filters.q = e.target.value.trim(); rerender(); }, { once: false });
++  if (bs) bs.addEventListener('input', (e) => { State.filters.q = e.target.value.trim(); rerender(); });
+ }
+ function rerender() { const v = currentView(); const view = $('#view'); const focus = document.activeElement?.id; view.innerHTML = v.render(); afterRender(); if (focus === 'boardSearch') { const el = $('#boardSearch'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } }
+ 
+ function buildNav() {
+-  const counts = { board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length, decisions: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.worktrees || []).length };
++  const counts = { board: State.issues.filter((i) => i.type !== 'epic').length, epics: State.epics.length, decisions: (State.snapshot.decisions || []).length, plans: (State.snapshot.plans || []).length, ops: (State.snapshot.ops?.activeClaims || []).length };
+   $('#nav').innerHTML = `<div class="nav__label">Views</div>` + VIEWS.map((v) =>
+     `<a href="#/${v.id}" data-view="${v.id}">${icon(v.id)}<span>${esc(v.title)}</span>${counts[v.id] != null ? `<span class="n">${counts[v.id]}</span>` : ''}</a>`).join('');
+ }
+ 
+-/* ---- delegated actions ---- */
+ function onViewClick(e) {
+   const t = e.target.closest('[data-act]'); if (!t) return;
+   const act = t.dataset.act;
+@@ -450,7 +446,6 @@ function onViewClick(e) {
+   else if (act === 'toggle-epic') { const id = t.dataset.id; State.epicsExpanded.has(id) ? State.epicsExpanded.delete(id) : State.epicsExpanded.add(id); rerender(); }
+ }
+ 
+-/* ---- global search ---- */
+ function wireGlobalSearch() {
+   const input = $('#globalSearch'), box = $('#searchResults');
+   const run = () => {
+@@ -461,9 +456,9 @@ function wireGlobalSearch() {
+     const dec = (State.snapshot.decisions || []).filter((d) => (d.title + ' ' + d.id).toLowerCase().includes(q)).slice(0, 5);
+     const grp = (label, items, html) => items.length ? `<div class="sr-group">${label}</div>${items.map(html).join('')}` : '';
+     box.innerHTML =
+-      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="board" data-q="${esc(i.title)}">${typeBadge(i.type)}<span class="t">${esc(clamp(i.title, 52))}</span></div>`) +
+-      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="epic" data-id="${esc(e.id)}"><span class="hdot" style="background:var(${HEALTH[epicHealth(e)].v})"></span><span class="t">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 50))}</span></div>`) +
+-      grp('Decisions', dec, (d) => `<div class="sr-item" data-nav="decisions"><span class="stbadge accepted">${esc(d.status)}</span><span class="t">${esc(clamp(d.title, 46))}</span></div>`) ||
++      grp('Issues', iss, (i) => `<div class="sr-item" data-nav="board" data-q="${esc(i.title)}">${isLive(i) ? pulse(true) : typeBadge(i.type)}<span class="t">${esc(clamp(i.title, 50))}</span></div>`) +
++      grp('Epics', eps, (e) => `<div class="sr-item" data-nav="epic" data-id="${esc(e.id)}"><span class="glyph">${HEALTH_GLYPH[epicHealth(e)]}</span><span class="t">${esc(clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 48))}</span></div>`) +
++      grp('Decisions', dec, (d) => `<div class="sr-item" data-nav="decisions"><span class="badge">${esc(clamp(d.status, 8))}</span><span class="t">${esc(clamp(d.title, 44))}</span></div>`) ||
+       `<div class="sr-empty">No matches for “${esc(q)}”.</div>`;
+     box.classList.add('on');
+   };
+@@ -471,8 +466,8 @@ function wireGlobalSearch() {
+   input.addEventListener('focus', run);
+   box.addEventListener('click', (e) => {
+     const it = e.target.closest('[data-nav]'); if (!it) return;
+-    const nav = it.dataset.nav;
+     box.classList.remove('on'); input.value = '';
++    const nav = it.dataset.nav;
+     if (nav === 'board') { State.board.epicFocus = null; State.board.level = 'tasks'; State.filters.q = it.dataset.q || ''; location.hash = '#/board'; }
+     else if (nav === 'epic') { State.epicsExpanded.add(it.dataset.id); location.hash = '#/epics'; }
+     else if (nav === 'decisions') { location.hash = '#/decisions'; }
+@@ -484,55 +479,46 @@ function wireGlobalSearch() {
+   });
+ }
+ 
+-/* ---- theme / refresh / stamp ---- */
+ function wireTheme() {
+   const root = document.documentElement;
+   const saved = localStorage.getItem('forge-theme'); if (saved) root.setAttribute('data-theme', saved);
+-  const paint = () => { const dark = root.getAttribute('data-theme') !== 'light'; $('#themeLabel').textContent = dark ? 'Light' : 'Dark'; $('#themeIcon').textContent = dark ? '◐' : '◑'; };
++  const paint = () => { const dark = root.getAttribute('data-theme') !== 'light'; $('#themeLabel').textContent = dark ? 'Light' : 'Dark'; };
+   paint();
+   $('#themeToggle').addEventListener('click', () => { const dark = root.getAttribute('data-theme') !== 'light'; root.setAttribute('data-theme', dark ? 'light' : 'dark'); localStorage.setItem('forge-theme', dark ? 'light' : 'dark'); paint(); });
+ }
+ function updateStamp() {
+   const g = State.snapshot.generated_at;
+-  $('#updatedText').textContent = 'updated ' + (g ? relTime(g) : '—');
++  $('#updatedText').textContent = 'updated ' + (g ? relTime(g) + ' ago' : '—');
+   const when = g ? new Date(g) : new Date();
+-  $('#sidebarMeta').innerHTML = `snapshot ${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · read-only`;
+-  $('#brandVer').textContent = State.snapshot.status?.context?.branch ? esc(State.snapshot.status.context.branch) : 'kernel dashboard';
++  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · read-only`;
++  $('#brandVer').textContent = State.snapshot.status?.context?.branch ? esc(State.snapshot.status.context.branch) : 'kernel';
+ }
+ async function doRefresh(silent) {
+   const btn = $('#refreshBtn');
+   if (!silent) btn.classList.add('spin');
+-  try {
+-    const snap = await DataSource.refetch();
+-    rebuild(snap); buildNav(); route(); updateStamp();
+-  } catch (err) {
+-    if (!silent) { location.reload(); return; } // file:// — reload picks up regenerated snapshot.js
+-  } finally { btn.classList.remove('spin'); }
++  try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); route(); updateStamp(); }
++  catch (err) { if (!silent) { location.reload(); return; } }
++  finally { btn.classList.remove('spin'); }
+ }
+ 
+-/* ---- boot ---- */
+ async function boot() {
+   try {
+     const snap = await DataSource.load();
+     rebuild(snap);
+-    buildNav();
+-    wireTheme();
+-    wireGlobalSearch();
++    buildNav(); wireTheme(); wireGlobalSearch();
+     $('#refreshBtn').addEventListener('click', () => doRefresh(false));
+     $('#view').addEventListener('click', onViewClick);
+     $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+     window.addEventListener('hashchange', route);
+     if (!location.hash) location.hash = '#/overview';
+-    route();
+-    updateStamp();
++    route(); updateStamp();
+     setInterval(updateStamp, 15000);
+     setInterval(() => { if (document.visibilityState === 'visible') doRefresh(true); }, 60000);
+   } catch (err) {
+-    $('#view').innerHTML = `<div class="empty-state"><h4>Could not load snapshot</h4><p>${esc(err.message)}</p><p>Run <code>node web/dashboard/generate-snapshot.mjs</code> to bake it.</p></div>`;
++    $('#view').innerHTML = `<div class="empty-state"><h4>Could not load snapshot</h4><p>${esc(err.message)}</p><p>Run node web/dashboard/generate-snapshot.mjs</p></div>`;
+   }
+ }
+-
+ if (typeof document !== 'undefined') boot();
+ if (typeof module !== 'undefined' && module.exports) {
+-  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, State };
++  module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, State };
+ }
+diff --git a/web/dashboard/app.test.js b/web/dashboard/app.test.js
+index f9565d66..aaadab97 100644
+--- a/web/dashboard/app.test.js
++++ b/web/dashboard/app.test.js
+@@ -16,6 +16,25 @@ test('module exports the pure helpers without touching the DOM', () => {
+   expect(typeof app.relTime).toBe('function');
+   expect(typeof app.epicRollup).toBe('function');
+   expect(typeof app.epicHealth).toBe('function');
++  expect(typeof app.isLive).toBe('function');
++  expect(typeof app.lifecyclePhase).toBe('function');
++});
++
++test('isLive flags open + claimed issues (best-effort liveness)', () => {
++  expect(app.isLive({ status: 'open', claimed_by: 'forge' })).toBe(true);
++  expect(app.isLive({ status: 'open', claimed_by: null })).toBe(false);
++  expect(app.isLive({ status: 'done', claimed_by: 'forge' })).toBe(false);
++});
++
++test('lifecyclePhase maps status/claim to a 1..6 stage', () => {
++  expect(app.lifecyclePhase({ status: 'done' })).toEqual({ idx: 6, label: 'done' });
++  expect(app.lifecyclePhase({ status: 'open', claimed_by: 'a' })).toEqual({ idx: 2, label: 'dev' });
++  expect(app.lifecyclePhase({ status: 'open' })).toEqual({ idx: 1, label: 'plan' });
++});
++
++test('epicRollup includes a live count', () => {
++  const kids = [{ status: 'open', claimed_by: 'a' }, { status: 'open', claimed_by: 'b' }, { status: 'open' }, { status: 'done' }];
++  expect(app.epicRollup({ id: 'e' }, kids).live).toBe(2);
+ });
+ 
+ test('epicRollup counts children by state', () => {
+@@ -78,9 +97,9 @@ test('matchesFilter honours type, priority and text query', () => {
+ 
+ test('relTime produces human-readable deltas', () => {
+   const now = Date.now();
+-  expect(app.relTime(new Date(now - 30 * 1000).toISOString())).toMatch(/s ago$/);
+-  expect(app.relTime(new Date(now - 5 * 60 * 1000).toISOString())).toMatch(/m ago$/);
+-  expect(app.relTime(new Date(now - 3 * 3600 * 1000).toISOString())).toMatch(/h ago$/);
++  expect(app.relTime(new Date(now - 30 * 1000).toISOString())).toMatch(/^\d+s$/);
++  expect(app.relTime(new Date(now - 5 * 60 * 1000).toISOString())).toMatch(/^\d+m$/);
++  expect(app.relTime(new Date(now - 3 * 3600 * 1000).toISOString())).toMatch(/^\d+h$/);
+   expect(app.relTime('')).toBe('');
+ });
+ 
+diff --git a/web/dashboard/generate-snapshot.mjs b/web/dashboard/generate-snapshot.mjs
+index e082e918..b2156351 100644
+--- a/web/dashboard/generate-snapshot.mjs
++++ b/web/dashboard/generate-snapshot.mjs
+@@ -164,6 +164,17 @@ const worktrees = tryRun(() => {
+     else if (line.trim() === '' && cur.path) { trees.push(cur); cur = {}; }
+   });
+   if (cur.path) trees.push(cur);
++  // Best-effort harness/surface inference from the worktree path. The REAL
++  // harness/region tag will come from the kernel session record (see seam note).
++  const inferSurface = (p) => {
++    const s = String(p).replace(/\\/g, '/');
++    if (/\.claude\/worktrees\/agent-/.test(s)) return 'claude-code';
++    if (/[/]\.t3[/]/.test(s)) return 't3code';
++    if (/temp|scratchpad|appdata\/local\/temp/i.test(s)) return 'ephemeral';
++    if (/\.worktrees\//.test(s)) return 'worktree';
++    return 'main';
++  };
++  trees.forEach((t) => { t.surface = inferSurface(t.path); });
+   return trees;
+ }, [], 'git worktree list');
+ 
+@@ -187,6 +198,16 @@ const snapshot = {
+     issues: issues.length, decisions: decisions.length,
+     architecture: architecture.length, plans: plans.length,
+     worktrees: worktrees.length, prs: prs.length,
++    actors: [...new Set(activeClaims.map((c) => c.owner))].length,
++  },
++  // SEAM: session_id / worktree_id / harness / region live in the kernel lease
++  // table (lib/kernel/lease-enforcer.js) but are not yet exposed by the CLI read
++  // surface — only `claimed_by` (actor) is. The sync-rail / Phase-2 read API will
++  // surface full leases; until then Live Ops renders actor + worktree + PRs and
++  // infers `surface` from the worktree path.
++  liveSeam: {
++    exposed: ['claimed_by (actor)', 'git worktree list', 'gh pr list'],
++    pending: ['session_id', 'worktree_id', 'harness', 'region', 'lease expires_at'],
+   },
+   status: statusRes,
+   memory,
+diff --git a/web/dashboard/index.html b/web/dashboard/index.html
+index e2871b5f..c33bbda5 100644
+--- a/web/dashboard/index.html
++++ b/web/dashboard/index.html
+@@ -11,11 +11,7 @@
+     <!-- ============ Sidebar ============ -->
+     <aside class="sidebar" id="sidebar">
+       <div class="brand">
+-        <div class="brand__mark" aria-hidden="true">
+-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+-            <path d="M4 20h6M7 20V9M4 9l6-5 6 4-1 4M14 12l6 2-1 6-6-1z"/>
+-          </svg>
+-        </div>
++        <div class="brand__mark" aria-hidden="true">F</div>
+         <div>
+           <div class="brand__name">Forge</div>
+           <div class="brand__ver" id="brandVer">kernel dashboard</div>
+@@ -36,7 +32,7 @@
+ 
+       <div class="sidebar__foot">
+         <button class="themetoggle" id="themeToggle" type="button" aria-label="Toggle theme">
+-          <span id="themeIcon">◐</span> <span id="themeLabel">Light</span>
++          <span id="themeLabel">Light</span> mode
+         </button>
+         <div class="sidebar__meta" id="sidebarMeta">loading…</div>
+       </div>
+@@ -51,7 +47,7 @@
+         <h1 id="viewTitle">Overview</h1>
+         <span class="crumb" id="viewCrumb"></span>
+         <div class="topbar__spacer"></div>
+-        <div class="updated" id="updated"><span class="live-dot"></span><span id="updatedText">—</span></div>
++        <div class="updated" id="updated"><span class="pulse"></span><span id="updatedText">—</span></div>
+         <button class="btn" id="refreshBtn" type="button">
+           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+           Refresh
+diff --git a/web/dashboard/styles.css b/web/dashboard/styles.css
+index 55f5a195..7e697446 100644
+--- a/web/dashboard/styles.css
++++ b/web/dashboard/styles.css
+@@ -1,356 +1,328 @@
+-/* Forge Dashboard v2 — Linear-quality multi-view app.
+-   Fixed sidebar + routed views, independent-scroll Kanban, dense tables.
+-   Indigo accent, colored health/status dots. Dark default + light. */
++/* Forge Dashboard v3 — MONO / SWISS-BRUTALIST.
++   Strict three-value palette: black, white, gray. No hue, ever.
++   Flat: no shadows, no gradients, no glows, sharp corners. Hard 1px rules.
++   Grayscale encodings: fills, weight, and glyphs (●/○/◐) carry meaning — not color.
++   Light + dark, both strictly black/white/gray. */
+ 
+ :root {
+   color-scheme: dark;
+ 
+-  --font-sans: "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+-
+-  /* dark (default) */
+-  --bg: #0b0c0e;
+-  --sidebar: #0e1013;
+-  --surface: #131519;
+-  --surface-2: #181b20;
+-  --surface-3: #1e2228;
+-  --hover: #16191e;
+-  --border: #23262c;
+-  --border-soft: #1a1d22;
+-  --text: #e7e9ec;
+-  --muted: #8b9198;
+-  --faint: #5c626a;
+-
+-  --accent: #6e79e6;
+-  --accent-2: #8b93f0;
+-  --accent-ink: #ffffff;
+-  --accent-soft: rgba(110, 121, 230, 0.14);
+-
+-  /* health */
+-  --ok: #46b17b;
+-  --warn: #e6b450;
+-  --risk: #e0625f;
+-  --neutral: #6b7280;
+-
+-  /* issue status */
+-  --st-ready: #6ea8fe;
+-  --st-progress: #e6b450;
+-  --st-blocked: #e0625f;
+-  --st-done: #46b17b;
+-
+-  /* priority */
+-  --p0: #e0625f;
+-  --p1: #e6905a;
+-  --p2: #e6b450;
+-  --p3: #7f8791;
+-  --p4: #565c64;
+-
+-  --radius: 10px;
+-  --radius-sm: 7px;
+-  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 34px rgba(0,0,0,.34);
+-  --sidebar-w: 236px;
++  --mono: "Berkeley Mono", ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
++  --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
++
++  /* dark: black / white / gray only */
++  --bg: #0a0a0a;
++  --surface: #0f0f0f;
++  --surface-2: #151515;
++  --hover: #171717;
++  --line: #262626;      /* hard structural border */
++  --line-2: #333333;    /* emphasis rule */
++  --text: #ededed;      /* = --ink */
++  --muted: #9a9a9a;
++  --faint: #626262;
++  --ink: 237, 237, 237; /* rgb of --text, for alpha fills */
++  --bgc: 10, 10, 10;    /* rgb of --bg */
+ }
+ 
+ :root[data-theme="light"] {
+   color-scheme: light;
+-  --bg: #fbfbfa;
+-  --sidebar: #f6f5f3;
++  --bg: #ffffff;
+   --surface: #ffffff;
+-  --surface-2: #f5f4f2;
+-  --surface-3: #ecebe8;
+-  --hover: #f2f1ef;
+-  --border: #e5e3de;
+-  --border-soft: #eeece8;
+-  --text: #17191c;
+-  --muted: #5f656d;
+-  --faint: #969ba2;
+-
+-  --accent: #5b62d6;
+-  --accent-2: #4a51c4;
+-  --accent-ink: #ffffff;
+-  --accent-soft: rgba(91, 98, 214, 0.12);
+-
+-  --ok: #2f9e64;
+-  --warn: #c4901f;
+-  --risk: #cf4b48;
+-  --neutral: #7a828c;
+-
+-  --st-ready: #2f6bd4;
+-  --st-progress: #c4901f;
+-  --st-blocked: #cf4b48;
+-  --st-done: #2f9e64;
+-
+-  --p0: #cf4b48; --p1: #c76a2a; --p2: #b58a12; --p3: #6a727c; --p4: #9aa0a8;
+-  --shadow: 0 1px 2px rgba(20,20,20,.05), 0 12px 30px rgba(20,20,20,.08);
++  --surface-2: #f4f4f2;
++  --hover: #f2f2f0;
++  --line: #d8d8d4;
++  --line-2: #111111;
++  --text: #111111;
++  --muted: #5a5a5a;
++  --faint: #8f8f8f;
++  --ink: 17, 17, 17;
++  --bgc: 255, 255, 255;
+ }
+ 
+ * { box-sizing: border-box; }
+ html, body { height: 100%; }
+ body {
+   margin: 0;
+-  font-family: var(--font-sans);
+-  font-size: 14px;
++  font-family: var(--sans);
++  font-size: 13px;
+   background: var(--bg);
+   color: var(--text);
+   -webkit-font-smoothing: antialiased;
+-  overflow: hidden; /* the app shell owns all scrolling; body never scrolls */
++  overflow: hidden;
+ }
+ a { color: inherit; text-decoration: none; }
+-::selection { background: var(--accent-soft); }
+-::-webkit-scrollbar { width: 10px; height: 10px; }
+-::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+-::-webkit-scrollbar-thumb:hover { background: var(--border); background-clip: padding-box; }
++::selection { background: var(--text); color: var(--bg); }
++::-webkit-scrollbar { width: 12px; height: 12px; }
++::-webkit-scrollbar-thumb { background: var(--line); border: 3px solid var(--bg); }
++::-webkit-scrollbar-thumb:hover { background: var(--faint); }
++
++.mono { font-family: var(--mono); }
+ 
+ /* ===================== App shell ===================== */
+-.app { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); height: 100vh; overflow: hidden; }
++.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); height: 100vh; overflow: hidden; }
+ 
+ .sidebar {
+-  height: 100vh; overflow-y: auto; background: var(--sidebar);
+-  border-right: 1px solid var(--border-soft);
+-  display: flex; flex-direction: column; gap: 14px; padding: 16px 12px;
++  height: 100vh; overflow-y: auto; background: var(--bg);
++  border-right: 1px solid var(--line);
++  display: flex; flex-direction: column; gap: 18px; padding: 16px 14px;
+ }
+-.brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px; }
++.brand { display: flex; align-items: center; gap: 10px; }
+ .brand__mark {
+-  width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
+-  background: linear-gradient(150deg, var(--accent-2), var(--accent));
+-  color: var(--accent-ink); box-shadow: 0 4px 12px var(--accent-soft);
++  width: 26px; height: 26px; display: grid; place-items: center;
++  border: 1px solid var(--text); color: var(--text);
++  font-family: var(--mono); font-weight: 700; font-size: 15px;
+ }
+-.brand__mark svg { width: 16px; height: 16px; }
+-.brand__name { font-weight: 650; letter-spacing: -0.01em; font-size: 15px; }
+-.brand__ver { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
++.brand__name { font-family: var(--mono); font-weight: 700; letter-spacing: .18em; text-transform: uppercase; font-size: 13px; }
++.brand__ver { font-family: var(--mono); font-size: 9.5px; color: var(--faint); letter-spacing: .04em; }
+ 
+ .search { position: relative; }
+ .search input {
+-  width: 100%; padding: 7px 10px 7px 30px; font-size: 13px;
+-  background: var(--surface); border: 1px solid var(--border);
+-  border-radius: var(--radius-sm); color: var(--text); outline: none;
+-  transition: border-color .15s, box-shadow .15s;
++  width: 100%; padding: 7px 10px 7px 26px; font-size: 12px; font-family: var(--mono);
++  background: var(--bg); border: 1px solid var(--line); color: var(--text); outline: none; border-radius: 0;
+ }
+-.search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+-.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--faint); }
+-.search__kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-family: var(--font-mono); font-size: 10px; color: var(--faint); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
++.search input:focus { border-color: var(--text); }
++.search svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; color: var(--faint); }
++.search__kbd { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); font-family: var(--mono); font-size: 10px; color: var(--faint); border: 1px solid var(--line); padding: 0 4px; }
+ 
+ .searchresults {
+-  position: absolute; top: 38px; left: 0; right: 0; z-index: 40;
+-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+-  box-shadow: var(--shadow); max-height: 60vh; overflow-y: auto; padding: 6px; display: none;
++  position: absolute; top: 34px; left: 0; right: 0; z-index: 40;
++  background: var(--surface); border: 1px solid var(--text);
++  max-height: 60vh; overflow-y: auto; display: none;
+ }
+ .searchresults.on { display: block; }
+-.sr-group { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 8px 8px 4px; font-weight: 600; }
+-.sr-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
+-.sr-item:hover { background: var(--hover); }
+-.sr-item .badge { flex: 0 0 auto; }
++.sr-group { font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--faint); padding: 9px 9px 4px; border-bottom: 1px solid var(--line); }
++.sr-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; cursor: pointer; font-size: 12px; border-bottom: 1px solid var(--line); }
++.sr-item:hover { background: var(--text); color: var(--bg); }
++.sr-item:hover .badge, .sr-item:hover .glyph { color: var(--bg); border-color: var(--bg); }
+ .sr-item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+-.sr-empty { padding: 12px 8px; color: var(--faint); font-size: 12.5px; }
++.sr-empty { padding: 12px 9px; color: var(--faint); font-size: 12px; font-family: var(--mono); }
+ 
+-.nav { display: flex; flex-direction: column; gap: 1px; }
+-.nav__label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 6px 8px 4px; font-weight: 600; }
++.nav { display: flex; flex-direction: column; }
++.nav__label { font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--faint); padding: 4px 8px 8px; }
+ .nav a {
+-  display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 7px;
+-  color: var(--muted); font-size: 13.5px; font-weight: 500; transition: background .13s, color .13s;
++  display: flex; align-items: center; gap: 10px; padding: 8px; border: 1px solid transparent;
++  color: var(--muted); font-family: var(--mono); font-size: 12.5px; letter-spacing: .02em;
+ }
+-.nav a:hover { background: var(--hover); color: var(--text); }
+-.nav a.active { background: var(--surface-2); color: var(--text); }
+-.nav a svg { width: 16px; height: 16px; flex: 0 0 auto; opacity: .85; }
+-.nav a .n { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
++.nav a:hover { color: var(--text); background: var(--hover); }
++.nav a.active { color: var(--bg); background: var(--text); }
++.nav a svg { width: 15px; height: 15px; flex: 0 0 auto; }
++.nav a .n { margin-left: auto; font-size: 10.5px; opacity: .7; }
+ 
+-.sidebar__foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; padding: 8px 6px 2px; }
++.sidebar__foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+ .themetoggle {
+   display: inline-flex; align-items: center; gap: 7px; align-self: flex-start;
+-  padding: 6px 10px; border: 1px solid var(--border); background: var(--surface);
+-  color: var(--muted); border-radius: 18px; font-size: 12px; cursor: pointer;
++  padding: 6px 10px; border: 1px solid var(--line); background: var(--bg);
++  color: var(--muted); font-family: var(--mono); font-size: 11px; cursor: pointer;
+ }
+-.themetoggle:hover { color: var(--text); border-color: var(--accent); }
+-.sidebar__meta { font-family: var(--font-mono); font-size: 10px; color: var(--faint); line-height: 1.6; }
++.themetoggle:hover { color: var(--bg); background: var(--text); border-color: var(--text); }
++.sidebar__meta { font-family: var(--mono); font-size: 9.5px; color: var(--faint); line-height: 1.7; border-top: 1px solid var(--line); padding-top: 10px; }
+ 
+ /* ===================== Main + topbar ===================== */
+ .main { height: 100vh; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+ .topbar {
+-  flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+-  padding: 0 22px; height: 52px; border-bottom: 1px solid var(--border-soft);
+-  background: color-mix(in srgb, var(--bg) 86%, transparent);
++  flex: 0 0 auto; display: flex; align-items: center; gap: 14px;
++  padding: 0 20px; height: 48px; border-bottom: 1px solid var(--line);
+ }
+-.topbar h1 { font-size: 15px; font-weight: 620; margin: 0; letter-spacing: -0.01em; }
+-.topbar .crumb { color: var(--faint); font-size: 13px; }
++.topbar h1 { font-family: var(--mono); font-size: 13px; font-weight: 700; margin: 0; letter-spacing: .04em; text-transform: uppercase; }
++.topbar .crumb { color: var(--faint); font-size: 12px; font-family: var(--mono); }
+ .topbar__spacer { flex: 1; }
+-.updated { font-family: var(--font-mono); font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 6px; }
+-.updated .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
++.updated { font-family: var(--mono); font-size: 10.5px; color: var(--faint); display: flex; align-items: center; gap: 7px; }
++.updated .pulse { color: var(--text); }
+ .btn {
+   display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
+-  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+-  border-radius: var(--radius-sm); font-size: 12.5px; cursor: pointer; font-weight: 500;
+-  transition: background .13s, border-color .13s;
++  border: 1px solid var(--line); background: var(--bg); color: var(--text);
++  font-family: var(--mono); font-size: 11px; cursor: pointer; letter-spacing: .03em; text-transform: uppercase; border-radius: 0;
+ }
+-.btn:hover { background: var(--hover); border-color: var(--faint); }
+-.btn svg { width: 14px; height: 14px; }
++.btn:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
++.btn svg { width: 13px; height: 13px; }
+ .btn.spin svg { animation: spin .7s linear infinite; }
+ @keyframes spin { to { transform: rotate(360deg); } }
+ 
+-/* Controls row (tabs, toggles, filters) */
+-.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+-.tabs { display: flex; gap: 2px; background: var(--surface-2); padding: 3px; border-radius: 9px; }
+-.tabs button { padding: 5px 12px; border: none; background: transparent; color: var(--muted); border-radius: 6px; font-size: 12.5px; cursor: pointer; font-weight: 500; }
+-.tabs button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+-.seg button { padding: 5px 12px; border: none; background: var(--surface); color: var(--muted); font-size: 12.5px; cursor: pointer; font-weight: 500; }
+-.seg button + button { border-left: 1px solid var(--border); }
+-.seg button.on { background: var(--accent); color: var(--accent-ink); }
+-.chipfilter { display: inline-flex; align-items: center; gap: 7px; padding: 5px 8px 5px 11px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); border-radius: 18px; font-size: 12px; }
++.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++.tabs, .seg { display: inline-flex; border: 1px solid var(--line); }
++.tabs button, .seg button {
++  padding: 5px 13px; border: none; background: var(--bg); color: var(--muted);
++  font-family: var(--mono); font-size: 11px; cursor: pointer; text-transform: uppercase; letter-spacing: .04em;
++}
++.tabs button + button, .seg button + button { border-left: 1px solid var(--line); }
++.tabs button.on, .seg button.on { background: var(--text); color: var(--bg); }
++.chipfilter { display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px 5px 11px; border: 1px solid var(--text); font-family: var(--mono); font-size: 11px; }
+ .chipfilter button { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+ .chipfilter button:hover { color: var(--text); }
+ .minisearch { position: relative; margin-left: auto; }
+-.minisearch input { width: 220px; padding: 6px 10px 6px 28px; font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); outline: none; }
+-.minisearch input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+-.minisearch svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; color: var(--faint); }
++.minisearch input { width: 210px; padding: 6px 10px 6px 26px; font-size: 11.5px; font-family: var(--mono); background: var(--bg); border: 1px solid var(--line); color: var(--text); outline: none; border-radius: 0; }
++.minisearch input:focus { border-color: var(--text); }
++.minisearch svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; color: var(--faint); }
+ 
+-/* The routed view. Default: scrolls vertically. */
+-.view { flex: 1 1 auto; overflow-y: auto; min-height: 0; padding: 18px 22px 40px; }
+-.view--flush { padding: 0; overflow: hidden; display: flex; flex-direction: column; } /* board owns layout */
++.view { flex: 1 1 auto; overflow-y: auto; min-height: 0; padding: 18px 20px 44px; }
++.view--flush { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+ .viewhead { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+-.section-title { font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; color: var(--muted); font-family: var(--font-mono); margin: 26px 0 12px; }
+-
+-/* ===================== Badges / dots ===================== */
+-.badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 5px; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; }
+-.badge--type { background: var(--surface-3); color: var(--muted); }
+-.badge--prio { color: #fff; }
+-.badge--soft { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border-soft); text-transform: none; font-family: var(--font-sans); font-weight: 600; }
+-.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+-.hdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+-.epicref { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border-soft); padding: 1px 7px; border-radius: 20px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+-.epicref .dot { width: 6px; height: 6px; background: var(--accent); }
+-
+-/* ===================== Stat row (overview) ===================== */
+-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 11px; }
+-.stat { padding: 15px 15px 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); position: relative; overflow: hidden; }
+-.stat::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accar, var(--border)); }
+-.stat__num { font-family: var(--font-mono); font-size: 27px; font-weight: 700; letter-spacing: -0.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+-.stat__label { margin-top: 7px; font-size: 11px; color: var(--muted); letter-spacing: .03em; text-transform: uppercase; }
+-.stat__sub { margin-top: 2px; font-size: 11px; color: var(--faint); font-family: var(--font-mono); }
+-.panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 16px; }
+-.panel h3 { margin: 0 0 12px; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-family: var(--font-mono); }
+-.bar { display: flex; height: 11px; border-radius: 6px; overflow: hidden; background: var(--surface-3); }
+-.bar span { display: block; }
+-.legend { display: flex; flex-wrap: wrap; gap: 9px 15px; margin-top: 11px; }
+-.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+-.legend .sw { width: 9px; height: 9px; border-radius: 2px; }
+-.legend b { font-family: var(--font-mono); color: var(--text); font-weight: 600; }
++.section-title { font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 28px 0 12px; padding-bottom: 7px; border-bottom: 1px solid var(--line-2); }
++
++/* ===================== Grayscale encodings ===================== */
++.badge { font-family: var(--mono); font-size: 9.5px; font-weight: 700; padding: 1px 5px; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; border: 1px solid var(--line); color: var(--muted); }
++.badge--soft { border-color: var(--line); color: var(--faint); }
++
++/* priority = fill DENSITY (grayscale), never hue. P0 solid → P4 outline. */
++.prio { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: .04em; color: var(--muted); }
++.prio i { width: 9px; height: 9px; border: 1px solid var(--text); display: inline-block; flex: 0 0 auto; }
++
++/* status/health via GLYPH + label, monochrome */
++.glyph { font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--text); }
++.slabel { font-family: var(--mono); font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
++
++.epicref { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; color: var(--faint); border: 1px solid var(--line); padding: 0 6px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++
++/* LIVE pulse — filled square, opacity pulse. Black on light / white on dark. */
++.pulse { display: inline-block; width: 7px; height: 7px; background: currentColor; animation: pulse 1.05s ease-in-out infinite; flex: 0 0 auto; }
++@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
++@media (prefers-reduced-motion: reduce) { .pulse { animation: none; opacity: .85; } }
++.livecount { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--text); }
++
++/* lifecycle stepper — 6 mono cells, filled up to current */
++.phase { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 9.5px; color: var(--muted); }
++.phase .steps { display: inline-flex; gap: 2px; }
++.phase .steps i { width: 7px; height: 9px; border: 1px solid var(--text); display: inline-block; }
++.phase .steps i.on { background: var(--text); }
++.phase .lbl { text-transform: uppercase; letter-spacing: .05em; }
++.phase.dim { color: var(--faint); }
++.phase.dim .steps i { border-color: var(--faint); }
++.phase.dim .steps i.on { background: var(--faint); }
++
++/* ===================== Overview ===================== */
++.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: 1px solid var(--line); border-right: none; border-bottom: none; }
++.stat { padding: 15px 16px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
++.stat__num { font-family: var(--mono); font-size: 27px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
++.stat__label { margin-top: 9px; font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
++.stat__sub { margin-top: 3px; font-family: var(--mono); font-size: 10px; color: var(--faint); }
++.panel { border: 1px solid var(--line); padding: 16px; }
++.panel h3 { margin: 0 0 14px; font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
++.bar { display: flex; height: 14px; border: 1px solid var(--line); }
++.bar span { display: block; border-right: 1px solid var(--bg); }
++.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; }
++.legend .item { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
++.legend .sw { width: 9px; height: 9px; border: 1px solid var(--text); }
++.legend b { color: var(--text); font-weight: 700; }
+ .overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+-@media (max-width: 820px) { .overview-grid { grid-template-columns: 1fr; } }
+-
+-/* ===================== KANBAN (independent-scroll) ===================== */
+-.boardbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; }
+-.board {
+-  flex: 1 1 auto; min-height: 0; display: flex; gap: 12px;
+-  padding: 14px 22px 16px; overflow-x: auto; overflow-y: hidden;
+-}
+-.kcol {
+-  flex: 0 0 300px; display: flex; flex-direction: column; min-height: 0; height: 100%;
+-  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius);
+-}
+-.kcol__head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid var(--border-soft); }
+-.kcol__title { font-size: 12px; font-weight: 650; letter-spacing: .02em; }
+-.kcol__count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 1px 7px; border-radius: 20px; }
+-.kcol__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 9px; display: flex; flex-direction: column; gap: 8px; } /* THE independent scroll */
+-
+-.kcard { position: relative; padding: 10px 11px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); cursor: default; transition: border-color .13s, transform .1s; }
+-.kcard:hover { border-color: var(--faint); transform: translateY(-1px); }
+-.kcard::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: var(--prio, transparent); }
+-.kcard__top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+-.kcard__title { font-size: 12.5px; line-height: 1.4; font-weight: 500; }
+-.kcard__meta { display: flex; align-items: center; gap: 7px; margin-top: 8px; flex-wrap: wrap; }
+-.kcard__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-left: auto; }
+-.kcard__owner { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); font-family: var(--font-mono); }
+-.kcard__owner .av { width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-3); font-size: 8px; font-weight: 700; text-transform: uppercase; }
++@media (max-width: 820px) { .overview-grid { grid-template-columns: 1fr; } .stats { grid-template-columns: repeat(2, 1fr); } }
++.rowline { display: flex; align-items: center; gap: 9px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
++.rowline:last-child { border-bottom: none; }
++.rowline .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.rowline .when { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
++
++/* ===================== KANBAN (independent scroll) ===================== */
++.boardbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
++.board { flex: 1 1 auto; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; }
++.kcol { flex: 0 0 300px; display: flex; flex-direction: column; min-height: 0; height: 100%; border-right: 1px solid var(--line); }
++.kcol__head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
++.kcol__title { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
++.kcol__count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--muted); }
++.kcol__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 9px; }
++
++.kcard { position: relative; padding: 11px; border: 1px solid var(--line); background: var(--surface); }
++.kcard:hover { border-color: var(--text); }
++.kcard__top { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
++.kcard__title { font-size: 12.5px; line-height: 1.42; }
++.kcard__meta { display: flex; align-items: center; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
++.kcard__id { font-family: var(--mono); font-size: 9.5px; color: var(--faint); margin-left: auto; }
++.kcard__owner { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
++.kcard__owner .av { width: 16px; height: 16px; display: grid; place-items: center; border: 1px solid var(--line); font-size: 8px; text-transform: uppercase; }
+ .kcard--epic { cursor: pointer; }
+-.kcard--epic:hover { border-color: var(--accent); }
+-.kcard__roll { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+-.kcard__prog { flex: 1; height: 5px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+-.kcard__prog span { display: block; height: 100%; background: var(--ok); }
+-.kcard__rolltext { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+-.kmore { margin: 2px 0; padding: 7px; border: 1px dashed var(--border); background: transparent; color: var(--muted); border-radius: var(--radius-sm); cursor: pointer; font-size: 11.5px; font-family: var(--font-mono); }
+-.kmore:hover { color: var(--text); border-color: var(--faint); }
+-.kempty { color: var(--faint); font-size: 12px; padding: 12px 6px; font-style: italic; }
+-
+-/* ===================== Tables (epics / plans / ops) ===================== */
+-.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+-.tbl thead th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; padding: 8px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 1; }
+-.tbl tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+-.tbl tbody tr { transition: background .1s; }
++.kcard__roll { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
++.kcard__prog { flex: 1; height: 8px; border: 1px solid var(--line); display: flex; }
++.kcard__prog span { display: block; background: var(--text); }
++.kcard__rolltext { font-family: var(--mono); font-size: 9.5px; color: var(--muted); }
++.kmore { margin: 1px 0; padding: 7px; border: 1px dashed var(--line); background: transparent; color: var(--muted); cursor: pointer; font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
++.kmore:hover { color: var(--text); border-color: var(--text); }
++.kempty { color: var(--faint); font-family: var(--mono); font-size: 11px; padding: 12px 4px; }
++
++/* ===================== Tables ===================== */
++.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
++.tbl thead th { text-align: left; font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); font-weight: 700; padding: 9px 12px; border-bottom: 1px solid var(--line-2); position: sticky; top: 0; background: var(--bg); z-index: 1; }
++.tbl tbody td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+ .tbl tbody tr:hover { background: var(--hover); }
+-.tbl .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+-.tblwrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
++.tbl .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
++.tblwrap { border: 1px solid var(--line); overflow: hidden; }
+ 
+ .rowname { display: flex; align-items: center; gap: 9px; }
+-.rowname .chev { width: 16px; height: 16px; color: var(--faint); cursor: pointer; flex: 0 0 auto; transition: transform .15s; display: grid; place-items: center; }
+-.rowname .chev.open { transform: rotate(90deg); }
++.rowname .chev { width: 14px; text-align: center; color: var(--muted); cursor: pointer; flex: 0 0 auto; font-family: var(--mono); user-select: none; }
+ .rowname .chev.leaf { visibility: hidden; }
+-.rowname .ic { width: 15px; height: 15px; flex: 0 0 auto; color: var(--accent); }
+-.rowname .tt { font-weight: 550; }
+-.rowname .sub { color: var(--faint); font-size: 11.5px; font-weight: 400; margin-top: 1px; }
+-tr.child td { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+-tr.child .rowname { padding-left: 26px; }
+-tr.child .rowname .tt { font-weight: 450; font-size: 12.5px; color: var(--muted); }
+-
+-.health { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
++.rowname .tt { font-weight: 500; }
++.rowname .sub { color: var(--faint); font-family: var(--mono); font-size: 10.5px; margin-top: 2px; }
++tr.child td { background: var(--surface-2); }
++tr.child .rowname { padding-left: 22px; }
++tr.child .rowname .tt { color: var(--muted); font-size: 12px; }
++
++.health { display: inline-flex; align-items: center; gap: 7px; }
+ .progresscell { display: flex; align-items: center; gap: 9px; min-width: 120px; }
+-.progresscell .mini { flex: 1; height: 5px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+-.progresscell .mini span { display: block; height: 100%; background: var(--ok); }
+-.progresscell .frac { font-family: var(--font-mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+-.workdots { display: inline-flex; gap: 8px; align-items: center; }
+-.workdots .wd { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+-.trend { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--faint); font-family: var(--font-mono); }
+-
+-/* ===================== Decisions / ADR ===================== */
+-.deckgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+-.deccard { padding: 15px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); display: flex; flex-direction: column; gap: 9px; }
++.progresscell .mini { flex: 1; height: 8px; border: 1px solid var(--line); display: flex; }
++.progresscell .mini span { display: block; background: var(--text); }
++.progresscell .frac { font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
++.workdots { display: inline-flex; gap: 9px; align-items: center; }
++.workdots .wd { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
++.trend { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
++
++/* ===================== Decisions ===================== */
++.deckgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); border: 1px solid var(--line); border-right: none; border-bottom: none; }
++.deccard { padding: 15px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }
+ .deccard__top { display: flex; align-items: center; gap: 8px; }
+-.deccard__title { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
++.deccard__title { font-size: 13px; font-weight: 600; line-height: 1.35; }
+ .deccard__body { font-size: 12px; color: var(--muted); line-height: 1.55; }
+-.deccard__foot { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+-.deccard__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+-.stbadge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
+-.stbadge.accepted { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+-.stbadge.proposed { color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
+-.stbadge.superseded, .stbadge.deprecated { color: var(--neutral); background: color-mix(in srgb, var(--neutral) 15%, transparent); text-decoration: line-through; }
+-.stbadge.open { color: var(--st-ready); background: color-mix(in srgb, var(--st-ready) 13%, transparent); }
+-.stbadge.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+-.arch-list { display: flex; flex-direction: column; gap: 6px; }
+-.arch-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface); }
+-.arch-row .ic { color: var(--accent); width: 15px; height: 15px; flex: 0 0 auto; }
+-.arch-row .p { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); margin-left: auto; }
+-
+-/* ===================== Plans / history timeline ===================== */
+-.tl-month { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-family: var(--font-mono); margin: 22px 0 10px; }
+-.tl-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 14px; align-items: center; padding: 11px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 7px; transition: border-color .12s; }
+-.tl-row:hover { border-color: var(--border); }
+-.tl-date { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
+-.tl-title { font-weight: 520; font-size: 13px; }
+-.tl-slug { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); margin-top: 2px; }
++.deccard__foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
++.deccard__id { font-family: var(--mono); font-size: 9.5px; color: var(--faint); }
++.stbadge { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 9.5px; padding: 1px 7px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--text); color: var(--text); }
++.stbadge.proposed { border-style: dashed; color: var(--muted); border-color: var(--muted); }
++.stbadge.superseded, .stbadge.deprecated { color: var(--faint); border-color: var(--faint); text-decoration: line-through; }
++.stbadge.accepted, .stbadge.done { background: var(--text); color: var(--bg); }
++.arch-list { display: flex; flex-direction: column; border: 1px solid var(--line); }
++.arch-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
++.arch-row:last-child { border-bottom: none; }
++.arch-row .p { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-left: auto; }
++
++/* ===================== Plans ===================== */
++.tl-month { font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
++.tl-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 14px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-top: none; }
++.tl-row:first-of-type { border-top: 1px solid var(--line); }
++.tl-row:hover { background: var(--hover); }
++.tl-date { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
++.tl-title { font-weight: 500; font-size: 12.5px; }
++.tl-slug { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 2px; }
+ .tl-tags { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+ 
+-/* ===================== Ops ===================== */
++/* ===================== Live Ops ===================== */
++.ops-top { display: flex; align-items: stretch; border: 1px solid var(--line); margin-bottom: 16px; }
++.ops-top .cell { flex: 1; padding: 14px 16px; border-right: 1px solid var(--line); }
++.ops-top .cell:last-child { border-right: none; }
++.ops-top .n { font-family: var(--mono); font-size: 24px; font-weight: 700; line-height: 1; }
++.ops-top .l { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-top: 7px; }
+ .ops-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+ @media (max-width: 980px) { .ops-grid { grid-template-columns: 1fr; } }
+-.pr-row { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--border-soft); }
+-.pr-row:last-child { border-bottom: none; }
+-.pr-num { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-weight: 600; }
+-.pr-title { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+-.pr-branch { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+-.mono-path { font-family: var(--font-mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+-
+-.empty-state { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: var(--radius); background: var(--surface); }
+-.empty-state h4 { margin: 0 0 5px; font-size: 13px; color: var(--text); }
+-.empty-state p { margin: 0; font-size: 12.5px; }
+-
+-.fade-in { animation: fade .28s ease both; }
+-@keyframes fade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
++.actorcard { border: 1px solid var(--line); margin-bottom: 10px; }
++.actorcard__head { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
++.actorcard__name { font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .03em; }
++.actorcard__meta { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted); }
++.opsline { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
++.opsline:last-child { border-bottom: none; }
++.opsline .t { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
++.opsline .when { font-family: var(--mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
++.pr-num { font-family: var(--mono); font-size: 11.5px; font-weight: 700; }
++.surface-tag { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .05em; border: 1px solid var(--line); padding: 0 5px; color: var(--muted); }
++.mono-path { font-family: var(--mono); font-size: 10.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.seam { border: 1px dashed var(--line-2); padding: 11px 13px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.7; margin-top: 16px; }
++.seam b { color: var(--text); }
++
++.empty-state { padding: 26px; text-align: center; color: var(--muted); border: 1px dashed var(--line); }
++.empty-state h4 { margin: 0 0 5px; font-family: var(--mono); font-size: 12px; color: var(--text); text-transform: uppercase; letter-spacing: .05em; }
++.empty-state p { margin: 0; font-size: 12px; }
++
++.fade-in { animation: fade .2s ease both; }
++@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+ 
+-/* ===================== Responsive ===================== */
+ .topbar .menu { display: none; background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; }
+ @media (max-width: 720px) {
+   .app { grid-template-columns: 1fr; }
+-  .sidebar { position: fixed; z-index: 60; width: 260px; transform: translateX(-100%); transition: transform .2s; }
++  .sidebar { position: fixed; z-index: 60; width: 250px; transform: translateX(-100%); transition: transform .2s; }
+   .sidebar.open { transform: none; }
+   .topbar .menu { display: inline-flex; }
+-  .minisearch input { width: 150px; }
++  .minisearch input { width: 140px; }
+ }
+-- 
+2.51.0.windows.1
+

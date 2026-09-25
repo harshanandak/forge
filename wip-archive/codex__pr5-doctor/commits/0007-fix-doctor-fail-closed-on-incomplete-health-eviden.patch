@@ -1,0 +1,276 @@
+From 2d9ca17c9934e07d39ed3abf8c25b05094edd428 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 23:33:41 +0530
+Subject: [PATCH] fix(doctor): fail closed on incomplete health evidence
+
+---
+ lib/commands/doctor.js              | 53 ++++++++++++++++++++---------
+ lib/health/doctor-manifest.js       | 19 ++++++++++-
+ lib/health/doctor-runner.js         | 10 ++++--
+ test/commands/doctor-health.test.js | 41 ++++++++++++++++++++++
+ test/health/doctor-manifest.test.js | 10 ++++++
+ test/health/doctor-runner.test.js   | 27 +++++++++++++++
+ 6 files changed, 141 insertions(+), 19 deletions(-)
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index fced8cf2..06e1e1ae 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -9,8 +9,6 @@
+ // the gate guards (via buildLocalBrokerConfig, which does no I/O) and reports
+ // whether that path is safe, WITHOUT creating any file.
+ 
+-const fs = require('node:fs');
+-const path = require('node:path');
+ const { buildLocalBrokerConfig } = require('../kernel/broker');
+ const { classifyFilesystem, isUnsafeFsOverrideActive, REMEDIATION } = require('../kernel/fs-class');
+ const memoryRouter = require('../memory/router');
+@@ -151,10 +149,6 @@ function buildDoctorReport(projectRoot, deps = {}) {
+ 	};
+ }
+ 
+-function packageFile(...parts) {
+-	return path.resolve(__dirname, '..', '..', ...parts);
+-}
+-
+ function buildHealthCheckDefinitions(projectRoot, deps = {}) {
+ 	return [
+ 		{
+@@ -169,8 +163,9 @@ function buildHealthCheckDefinitions(projectRoot, deps = {}) {
+ 						missing: parity.missing,
+ 						stale: parity.stale,
+ 						malformed: parity.malformed,
++						unknownCheckIds: parity.unknownCheckIds,
+ 					},
+-					remediation: parity.valid ? '' : 'Add one Health disposition for every missing canonical command family.',
++					remediation: parity.valid ? '' : 'Add a valid Health disposition for every uncovered canonical command family.',
+ 				};
+ 			},
+ 		},
+@@ -210,14 +205,7 @@ function buildHealthCheckDefinitions(projectRoot, deps = {}) {
+ 		{
+ 			id: 'flow-runtime', version: 1, owner: 'forge.flow', scope: 'flow', default: true,
+ 			affectedCommandFamilies: affectedFamilies('flow-runtime'),
+-			run: async () => {
+-				const present = fs.existsSync(packageFile('packages', 'flow', 'package.json'));
+-				return {
+-					status: present ? 'PASS' : 'INCOMPLETE',
+-					evidence: { packagePresent: present },
+-					remediation: present ? '' : 'Install a Forge distribution containing the Flow package.',
+-				};
+-			},
++			run: async () => runFlowCheck(deps),
+ 		},
+ 		{
+ 			id: 'integrations-provider', version: 1, owner: 'forge.integrations', scope: 'integrations', default: false,
+@@ -242,6 +230,39 @@ function buildHealthCheckDefinitions(projectRoot, deps = {}) {
+ 	];
+ }
+ 
++function runFlowCheck(deps) {
++	const loadFlow = deps.loadFlow || (() => require('@forge/flow'));
++	try {
++		const flow = loadFlow();
++		if (typeof flow?.createWorkPacketExecutor !== 'function') {
++			return {
++				status: 'INCOMPLETE',
++				evidence: { runtimeState: 'unsupported-public-api' },
++				remediation: 'Install a Flow version exposing the safe createWorkPacketExecutor adapter.',
++			};
++		}
++		const adapter = flow.createWorkPacketExecutor({ run: () => ({ status: 'INCOMPLETE' }) });
++		if (!adapter || typeof adapter.execute !== 'function') {
++			return {
++				status: 'INCOMPLETE',
++				evidence: { runtimeState: 'invalid-public-adapter' },
++				remediation: 'Repair the Flow public adapter before running Flow stages.',
++			};
++		}
++		return {
++			status: 'PASS',
++			evidence: { runtimeState: 'public-adapter-ready', adapter: 'createWorkPacketExecutor' },
++			remediation: '',
++		};
++	} catch (error) {
++		return {
++			status: 'INCOMPLETE',
++			evidence: { runtimeState: 'unavailable', reason: error?.message || String(error) },
++			remediation: 'Install or repair the Flow runtime and its public dependencies.',
++		};
++	}
++}
++
+ async function runProviderCheck(deps) {
+ 	if (typeof deps.providerProbe !== 'function') {
+ 		return {
+@@ -263,7 +284,7 @@ async function runProviderCheck(deps) {
+ 	}
+ 	if (probe?.available === false) {
+ 		return {
+-			status: 'WARN',
++			status: 'INCOMPLETE',
+ 			evidence: { providerState: 'unavailable', reason: probe.reason || 'unavailable' },
+ 			remediation: 'Check provider availability and credentials outside Doctor, then retry explicitly.',
+ 		};
+diff --git a/lib/health/doctor-manifest.js b/lib/health/doctor-manifest.js
+index b38a736a..460139f7 100644
+--- a/lib/health/doctor-manifest.js
++++ b/lib/health/doctor-manifest.js
+@@ -46,6 +46,14 @@ const HEALTH_COVERAGE = Object.freeze({
+   validate: { sharedDependencyCheck: 'flow-runtime' },
+   worktree: { sharedDependencyCheck: 'filesystem-class' },
+ });
++const HEALTH_CHECK_IDS = Object.freeze([
++  'filesystem-class',
++  'flow-runtime',
++  'integrations-provider',
++  'manifest-coverage',
++  'memory-backend',
++  'release-tooling',
++]);
+ 
+ function canonicalCommandFamilies() {
+   // Lazy requires avoid a cycle while the generated manifest is loading doctor.js.
+@@ -72,12 +80,20 @@ function validateCoverageParity(options = {}) {
+   const missing = canonicalFamilies.filter(family => !Object.hasOwn(coverage, family));
+   const stale = declared.filter(family => !canonical.has(family));
+   const malformed = declared.filter(family => !hasOneDisposition(coverage[family]));
++  const checkIds = new Set(options.checkIds || HEALTH_CHECK_IDS);
++  const unknownCheckIds = declared.flatMap(family => {
++    const disposition = coverage[family];
++    const referenced = disposition?.checkId || disposition?.sharedDependencyCheck;
++    return referenced && !checkIds.has(referenced) ? [`${family}:${referenced}`] : [];
++  });
+   return {
+-    valid: missing.length === 0 && stale.length === 0 && malformed.length === 0,
++    valid: missing.length === 0 && stale.length === 0 && malformed.length === 0
++      && unknownCheckIds.length === 0,
+     canonicalFamilies,
+     missing,
+     stale,
+     malformed,
++    unknownCheckIds,
+   };
+ }
+ 
+@@ -91,6 +107,7 @@ function affectedFamilies(checkId, coverage = HEALTH_COVERAGE) {
+ 
+ module.exports = {
+   HEALTH_COVERAGE,
++  HEALTH_CHECK_IDS,
+   canonicalCommandFamilies,
+   validateCoverageParity,
+   affectedFamilies,
+diff --git a/lib/health/doctor-runner.js b/lib/health/doctor-runner.js
+index 635d05e2..9f76b9f9 100644
+--- a/lib/health/doctor-runner.js
++++ b/lib/health/doctor-runner.js
+@@ -17,6 +17,7 @@ const USER_PATH_PATTERNS = [
+   /\b[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s"'<>|]*)?/g,
+   /\/(?:Users|home)\/[^/\s]+(?:\/[^\s"']*)?/g,
+ ];
++const SENSITIVE_KEY_PATTERN = /(?:api[_-]?key|authorization|credential|password|prompt|secret|token)/i;
+ 
+ function redactString(value) {
+   let redacted = String(value).slice(0, 500);
+@@ -34,7 +35,7 @@ function sanitize(value, depth = 0) {
+ 
+ 	const output = {};
+ 	for (const key of Object.keys(value).sort().slice(0, 30)) {
+-		output[key] = /prompt/i.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
++		output[key] = SENSITIVE_KEY_PATTERN.test(key) ? '<redacted>' : sanitize(value[key], depth + 1);
+ 	}
+   return output;
+ }
+@@ -78,7 +79,7 @@ function normalizeResult(definition, raw, durationMs) {
+ 
+ async function runOne(definition, context, options, startedAt) {
+   const now = options.now || Date.now;
+-  const globalTimeoutMs = options.globalTimeoutMs || DEFAULT_GLOBAL_TIMEOUT_MS;
++  const globalTimeoutMs = options.globalTimeoutMs ?? DEFAULT_GLOBAL_TIMEOUT_MS;
+   const elapsed = Math.max(0, now() - startedAt);
+   const remaining = Math.max(1, globalTimeoutMs - elapsed);
+   const timeoutMs = Math.max(1, Math.min(
+@@ -119,6 +120,11 @@ async function runHealthChecks(definitions, context = {}, options = {}) {
+     while (nextIndex < definitions.length) {
+       const index = nextIndex;
+       nextIndex += 1;
++      const globalTimeoutMs = options.globalTimeoutMs ?? DEFAULT_GLOBAL_TIMEOUT_MS;
++      if (Math.max(0, now() - startedAt) >= globalTimeoutMs) {
++        results[index] = normalizeResult(definitions[index], timeoutResult('global-deadline'), 0);
++        continue;
++      }
+       results[index] = await runOne(definitions[index], context, options, startedAt);
+     }
+   }
+diff --git a/test/commands/doctor-health.test.js b/test/commands/doctor-health.test.js
+index c4f69e89..98e0c0c5 100644
+--- a/test/commands/doctor-health.test.js
++++ b/test/commands/doctor-health.test.js
+@@ -70,6 +70,47 @@ describe('forge doctor health report contract', () => {
+     expect(explicit.checks).toHaveLength(1);
+     expect(explicit.checks[0].id).toBe('integrations-provider');
+     expect(explicit.checks[0].evidence.providerState).toBe('unsupported');
++
++    const unavailable = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['integrations'],
++      providerProbe: async () => ({ available: false, reason: 'offline' }),
++    }));
++    expect(unavailable.status).toBe('INCOMPLETE');
++    expect(unavailable.checks[0].evidence.providerState).toBe('unavailable');
++
++    const timeout = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['integrations'],
++      providerProbe: () => new Promise(() => {}),
++      perCheckTimeoutMs: 5,
++      globalTimeoutMs: 20,
++    }));
++    expect(timeout.status).toBe('INCOMPLETE');
++    expect(timeout.checks[0].evidence.reason).toBe('timeout');
++  });
++
++  test('Flow passes only after probing its inert public runtime adapter', async () => {
++    const root = makeProjectRoot('flow-probe');
++    const inventoryOnly = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['flow'],
++      loadFlow: () => ({}),
++    }));
++    expect(inventoryOnly.status).toBe('INCOMPLETE');
++    expect(inventoryOnly.checks[0].evidence.runtimeState).toBe('unsupported-public-api');
++
++    let adapterConstructed = false;
++    const probed = await doctor.runDoctorReport(root, localDeps(root, {
++      scopes: ['flow'],
++      loadFlow: () => ({
++        createWorkPacketExecutor: ({ run }) => {
++          expect(typeof run).toBe('function');
++          adapterConstructed = true;
++          return Object.freeze({ execute() {} });
++        },
++      }),
++    }));
++    expect(adapterConstructed).toBe(true);
++    expect(probed.status).toBe('PASS');
++    expect(probed.checks[0].evidence.runtimeState).toBe('public-adapter-ready');
+   });
+ 
+   test('local filesystem fixtures pass on Windows, macOS, and Linux', async () => {
+diff --git a/test/health/doctor-manifest.test.js b/test/health/doctor-manifest.test.js
+index 4f56e5da..5d1d11fe 100644
+--- a/test/health/doctor-manifest.test.js
++++ b/test/health/doctor-manifest.test.js
+@@ -20,4 +20,14 @@ describe('Doctor health manifest', () => {
+     expect(parity.valid).toBe(false);
+     expect(parity.missing).toEqual(['future-command']);
+   });
++
++  test('rejects dispositions that reference nonexistent check ids', () => {
++    const parity = validateCoverageParity({
++      canonicalFamilies: ['doctor'],
++      coverage: { doctor: { checkId: 'not-a-health-check' } },
++      checkIds: ['manifest-coverage'],
++    });
++    expect(parity.valid).toBe(false);
++    expect(parity.unknownCheckIds).toEqual(['doctor:not-a-health-check']);
++  });
+ });

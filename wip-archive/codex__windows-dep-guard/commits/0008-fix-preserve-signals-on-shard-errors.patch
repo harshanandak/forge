@@ -1,0 +1,67 @@
+From 2b5858873dbd3845770722af678139278d849f43 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 22:23:49 +0530
+Subject: [PATCH] fix: preserve signals on shard errors
+
+---
+ scripts/test-full-suite.js           |  5 +++--
+ test/scripts/test-full-suite.test.js | 11 +++++++----
+ 2 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index 8fb5b44d..e6acf327 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -350,9 +350,10 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+         processTree,
+       })));
+     } catch {
++      const exitCode = signal ? signalExitCode(signal) : 1;
+       console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+-      console.log('Full suite exit: 1');
+-      return 1;
++      console.log('Full suite exit: ' + exitCode);
++      return exitCode;
+     }
+ 
+     const aggregate = aggregateShardReceipts(results, shardSpecs.length);
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index a294b996..d2fa063e 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -413,7 +413,7 @@ describe('scripts/test-full-suite.js', () => {
+     expect(status).toBe(1);
+   });
+ 
+-  test('runFullSuiteInParallel cleans up immediately when a shard errors and a sibling hangs', async () => {
++  test('runFullSuiteInParallel preserves a captured signal when a shard errors and a sibling hangs', async () => {
+     const cleanupSignals = [];
+     const logs = [];
+     let childIndex = 0;
+@@ -422,7 +422,10 @@ describe('scripts/test-full-suite.js', () => {
+       reserveChild: () => ({ id: 'fatal-' + childIndex }),
+       registerChild: () => true,
+       unregisterChild: () => {},
+-      installSignalHandlers: () => () => {},
++      installSignalHandlers: (handler) => {
++        handler('SIGTERM');
++        return () => {};
++      },
+       cleanup: (signal) => cleanupSignals.push(signal),
+     };
+     const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+@@ -452,9 +455,9 @@ describe('scripts/test-full-suite.js', () => {
+         }),
+       ]);
+ 
+-      expect(status).toBe(1);
++      expect(status).toBe(143);
+       expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+-      expect(logs).toContain('Full suite exit: 1');
++      expect(logs).toContain('Full suite exit: 143');
+       expect(cleanupSignals).toEqual(['SIGKILL']);
+     } finally {
+       clearTimeout(timeout);
+-- 
+2.51.0.windows.1
+

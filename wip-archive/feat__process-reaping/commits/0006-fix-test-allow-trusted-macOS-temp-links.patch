@@ -1,0 +1,134 @@
+From eefd3e482e00851acca9bbeb9594e223b4c87510 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 20:31:56 +0530
+Subject: [PATCH] fix(test): allow trusted macOS temp links
+
+---
+ scripts/process-tree.js           | 31 ++++++++++++++++--
+ test/scripts/process-tree.test.js | 53 +++++++++++++++++++++++++++++++
+ 2 files changed, 81 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index 1cdf0120..f6e91d1a 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -86,8 +86,13 @@ function inspectResource(resourcePath, fsApi = fs) {
+   }
+ }
+ 
+-function isOwnedMetadata(metadata, processApi = process, { allowSharedAncestor = false } = {}) {
+-  if (metadata && typeof metadata.isSymbolicLink === 'function' && metadata.isSymbolicLink()) return false;
++function isOwnedMetadata(metadata, processApi = process, {
++  allowSharedAncestor = false,
++  allowTrustedSymlink = false,
++} = {}) {
++  if (!allowTrustedSymlink
++    && metadata && typeof metadata.isSymbolicLink === 'function' && metadata.isSymbolicLink()) return false;
++  if (allowTrustedSymlink) return true;
+   const currentUid = typeof processApi.getuid === 'function' ? processApi.getuid() : null;
+   if (currentUid == null || typeof metadata?.uid !== 'number' || metadata.uid === currentUid) return true;
+   if (!allowSharedAncestor) return false;
+@@ -98,6 +103,22 @@ function isOwnedMetadata(metadata, processApi = process, { allowSharedAncestor =
+   return !writableByOthers || sticky;
+ }
+ 
++function isTrustedSystemSymlink(resourcePath, metadata, fsApi = fs) {
++  if (path.sep !== '/' || metadata?.uid !== 0
++    || typeof metadata?.isSymbolicLink !== 'function' || !metadata.isSymbolicLink()
++    || typeof fsApi.readlinkSync !== 'function') return false;
++  const normalizedPath = path.posix.normalize(resourcePath);
++  if (!['/var', '/tmp'].includes(normalizedPath)) return false;
++  let target;
++  try {
++    target = fsApi.readlinkSync(resourcePath);
++  } catch {
++    return false;
++  }
++  return path.posix.resolve(path.posix.dirname(normalizedPath), target)
++    === `/private${normalizedPath}`;
++}
++
+ function pathComponents(resourcePath) {
+   const absolutePath = path.resolve(resourcePath);
+   const parsed = path.parse(absolutePath);
+@@ -123,8 +144,12 @@ function isOwnedPath(resourcePath, fsApi = fs, processApi = process) {
+       missing = true;
+       continue;
+     }
++    const allowSharedAncestor = index < components.length - 1;
++    const trustedSystemSymlink = allowSharedAncestor
++      && isTrustedSystemSymlink(component, inspected.metadata, fsApi);
+     if (inspected.exists !== true || missing || !isOwnedMetadata(inspected.metadata, processApi, {
+-      allowSharedAncestor: index < components.length - 1,
++      allowSharedAncestor,
++      allowTrustedSymlink: trustedSystemSymlink,
+     })) {
+       return false;
+     }
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index 92744b91..355b7238 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -247,6 +247,59 @@ describe('scripts/process-tree.js', () => {
+     expect(chmodCalls.some(([, mode]) => mode === 0o700)).toBe(true);
+   });
+ 
++  test('accepts a macOS runner temp chain with trusted system ancestors', () => {
++    if (process.platform === 'win32') return;
++    const uid = 501;
++    const manifestDir = '/var/folders/zz/runner/T/forge-process-tree';
++    const manifestPath = path.join(manifestDir, 'run.json');
++    const nodes = new Map([
++      ['/', { uid: 0, mode: 0o755, isDirectory: () => true, isSymbolicLink: () => false }],
++      ['/var', { uid: 0, mode: 0o120777, isDirectory: () => false, isSymbolicLink: () => true }],
++      ['/var/folders', { uid: 0, mode: 0o755, isDirectory: () => true, isSymbolicLink: () => false }],
++      ['/var/folders/zz', { uid: 0, mode: 0o755, isDirectory: () => true, isSymbolicLink: () => false }],
++      [`/var/folders/zz/runner`, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false }],
++      [`/var/folders/zz/runner/T`, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false }],
++      [manifestDir, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false }],
++    ]);
++    const writes = new Map();
++    const macFs = {
++      lstatSync: (target) => {
++        if (nodes.has(target)) return nodes.get(target);
++        if (writes.has(target)) return { uid, mode: 0o600, isDirectory: () => false, isSymbolicLink: () => false };
++        const error = new Error('missing');
++        error.code = 'ENOENT';
++        throw error;
++      },
++      existsSync: (target) => nodes.has(target) || writes.has(target),
++      readlinkSync: (target) => {
++        if (target === '/var') return 'private/var';
++        throw new Error('not a symlink');
++      },
++      readFileSync: (target) => {
++        if (writes.has(target)) return writes.get(target);
++        const error = new Error('missing');
++        error.code = 'ENOENT';
++        throw error;
++      },
++      mkdirSync: (target) => {
++        nodes.set(target, { uid, mode: 0o700, isDirectory: () => true, isSymbolicLink: () => false });
++      },
++      chmodSync: () => {},
++      writeFileSync: (target, value) => writes.set(target, value),
++    };
++    const processApi = { pid: 9000, getuid: () => uid };
++    const tree = createProcessTree({
++      manifestPath,
++      token: 'mac-token',
++      fsApi: macFs,
++      processApi,
++      getProcessIdentity: () => 'owner',
++    });
++
++    expect(tree.envFor({})[MANIFEST_ENV]).toBe(manifestPath);
++    expect(readProcessManifest(manifestPath, macFs, processApi).token).toBe('mac-token');
++  });
++
+   test('rejects symlink ancestors and dangling leaves before chmod or write', () => {
+     const targetRoot = makeTempDir();
+     const targetNested = path.join(targetRoot, 'nested');
+-- 
+2.51.0.windows.1
+

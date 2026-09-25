@@ -1,0 +1,116 @@
+From 0d71bd92df70d83c4f756598fb5265f98c9d1a12 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 19:51:03 +0530
+Subject: [PATCH] fix(github): preserve safe gh failure metadata
+
+---
+ lib/github-context.js       | 25 ++++++++++++++++++++++---
+ test/github-context.test.js | 12 ++++++++----
+ 2 files changed, 30 insertions(+), 7 deletions(-)
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+index 2a17f8c5..65cc1111 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -6,6 +6,7 @@ const ACCOUNT_KEY = 'github.account';
+ const HOST = 'github.com';
+ const LOGIN_RE = /^(?=.{1,39}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+ const GITHUB_ENV_NAMES = new Set(['gh_token', 'github_token', 'gh_host']);
++const GITHUB_SECRET_ENV_NAMES = new Set(['gh_token', 'github_token']);
+ 
+ class GithubContextError extends Error {
+   constructor(code, message) {
+@@ -57,6 +58,24 @@ function safeCommandFailure(code, message) {
+   return new GithubContextError(code, message);
+ }
+ 
++function safeGithubCommandFailure(error) {
++  const text = errorText(error);
++  const failure = safeCommandFailure(
++    'GITHUB_COMMAND_FAILED',
++    /rate limit|secondary rate/.test(text)
++      ? 'The GitHub CLI command was rate limited.'
++      : 'The GitHub CLI command failed without exposing its output.',
++  );
++  const matchedStatus = text.match(/\bhttp\s+(401|403)\b/)?.[1];
++  const httpStatus = [401, 403].includes(error?.httpStatus)
++    ? error.httpStatus
++    : [401, 403].includes(error?.status) ? error.status : Number(matchedStatus) || undefined;
++  const retryAfter = Number(error?.retryAfter);
++  if (httpStatus) failure.httpStatus = httpStatus;
++  if (Number.isFinite(retryAfter) && retryAfter > 0) failure.retryAfter = retryAfter;
++  return failure;
++}
++
+ function gitConfig(projectRoot, args, options, absentIsOkay = false) {
+   try {
+     return runnerFor(options)('git', ['config', '--local', ...args], {
+@@ -209,7 +228,7 @@ function createPublicContext(status, token, baseEnv, options) {
+     login: status.login,
+   };
+   const secrets = [token, ...Object.entries(baseEnv)
+-    .filter(([key]) => GITHUB_ENV_NAMES.has(key.toLowerCase()))
++    .filter(([key]) => GITHUB_SECRET_ENV_NAMES.has(key.toLowerCase()))
+     .map(([, value]) => value)]
+     .filter((value) => typeof value === 'string' && value);
+   const environmentForChild = (additions = {}) => status.state === 'unbound'
+@@ -242,8 +261,8 @@ function createPublicContext(status, token, baseEnv, options) {
+         windowsHide: true,
+       });
+       return redactTokens(output, secrets);
+-    } catch (_error) {
+-      throw safeCommandFailure('GITHUB_COMMAND_FAILED', 'The GitHub CLI command failed without exposing its output.');
++    } catch (error) {
++      throw safeGithubCommandFailure(error);
+     }
+   };
+   Object.defineProperties(context, {
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index 975367b3..be419309 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -11,6 +11,7 @@ const {
+   validateGithubLogin,
+   writeGithubAccount,
+ } = require('../lib/github-context');
++const { classifyAuthError } = require('../lib/adapters/pr-state-adapter');
+ 
+ function fakeRunner(calls, { account = null, liveLogin = account, token = 'token-canary' } = {}) {
+   return (command, args, options = {}) => {
+@@ -183,11 +184,11 @@ describe('github context', () => {
+       if (command === 'git') return 'octo\n';
+       if (args[0] === 'auth') return 'token-canary\n';
+       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
+-      return 'token-canary\n';
++      return 'https://github.com/octo/project token-canary ambient\n';
+     };
+-    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient' } });
++    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient', GH_HOST: 'github.com' } });
+ 
+-    expect(context.runGh(['api', 'user'])).toBe('[REDACTED]\n');
++    expect(context.runGh(['api', 'user'])).toBe('https://github.com/octo/project [REDACTED] [REDACTED]\n');
+     expect(JSON.stringify(context.runGh(['api', 'user']))).not.toContain('token-canary');
+     expect({ ...process.env }).toEqual(before);
+     expect(calls.at(-1).options.env).toMatchObject({ GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
+@@ -256,7 +257,9 @@ describe('github context', () => {
+       if (command === 'git') return 'octo\n';
+       if (args[0] === 'auth') return 'token-canary\n';
+       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
+-      const error = new Error('token-canary in message');
++      const error = new Error('HTTP 403 rate limit token-canary in message');
++      error.httpStatus = 403;
++      error.retryAfter = 60;
+       error.stdout = Buffer.from('token-canary');
+       error.stderr = Buffer.from('token-canary');
+       throw error;
+@@ -270,6 +273,7 @@ describe('github context', () => {
+     }
+     expect(childError).toMatchObject({ code: 'GITHUB_COMMAND_FAILED' });
+     expect(childError.message).not.toContain('token-canary');
++    expect(classifyAuthError(childError)).toEqual({ class: 'rate-limit', retryAfter: 60 });
+     expect({ ...process.env }).toEqual(before);
+   });
+ 
+-- 
+2.51.0.windows.1
+

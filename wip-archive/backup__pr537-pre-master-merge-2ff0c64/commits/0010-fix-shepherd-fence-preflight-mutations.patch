@@ -1,0 +1,164 @@
+From 179cd6944b7478e3eea525ee2f04b344cc4684f8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:41:48 +0530
+Subject: [PATCH] fix(shepherd): fence preflight mutations
+
+---
+ lib/commands/shepherd.js       | 26 +++++++++++++++++++++++
+ lib/pr-shepherd.js             | 10 +++++++++
+ test/commands/shepherd.test.js | 38 ++++++++++++++++++++++++++++++++++
+ test/pr-shepherd.test.js       |  9 +++++++-
+ 4 files changed, 82 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 768c552c..34089d85 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -713,6 +713,32 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     }
+   }
+ 
++  if (localPreflight.blocking !== true && typeof preflightHead === 'string'
++    && /^[0-9a-f]{40}$/i.test(preflightHead)) {
++    let providerHead = null;
++    try {
++      const providerState = await adapter.readState(pr);
++      const candidate = providerState?.headSha;
++      if (typeof candidate === 'string' && /^[0-9a-f]{40}$/i.test(candidate)) {
++        providerHead = candidate.toLowerCase();
++      }
++    } catch {
++      /* unreadable provider state fails the fence below */
++    }
++    const expectedProviderHead = typeof preflightHead === 'string' ? preflightHead.toLowerCase() : null;
++    if (!providerHead || providerHead !== expectedProviderHead) {
++      localPreflight = {
++        ...localPreflight,
++        status: 'INCOMPLETE',
++        blocking: true,
++        findings: [
++          ...(Array.isArray(localPreflight.findings) ? localPreflight.findings : []),
++          { provider: 'local-preflight', detail: 'Provider head changed during local review; rerun on the exact current PR head.' },
++        ],
++      };
++    }
++  }
++
+   const result = await runPass({
+     ...ctx,
+     adapter,
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index bb6d0b56..ff866e99 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -454,6 +454,16 @@ async function runShepherdPass(ctx) {
+     });
+   }
+ 
++  if (typeof adapter.fetchBase === 'function') {
++    let fetchRead;
++    try {
++      fetchRead = await guardAuth(() => adapter.fetchBase({ baseRef, cwd }), actions);
++    } catch (err) {
++      return result('ESCALATE', { actions, reason: `Base ref fetch failed: ${err.message}` });
++    }
++    if (fetchRead.outcome) return fetchRead.outcome;
++  }
++
+   const divergenceRead = await guardAuth(
+     () => adapter.readDivergence({ baseRef, cwd, headRef: startSha }),
+     actions,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index a8c9b325..c629cd73 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -5,7 +5,16 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+ const shepherdCmd = require('../../lib/commands/shepherd');
+ const { validateCommand } = require('../../lib/commands/_registry');
+ 
++const STABLE_HEAD = 'a'.repeat(40);
++const STABLE_ADAPTER = {
++  id: 'stable-test', kind: 'pr-state', name: 'stable-test',
++  readState: async () => ({ headSha: STABLE_HEAD }),
++  readRequiredChecks: async () => [], readComments: async () => [],
++  readDivergence: async () => ({}), detectConflicts: async () => false,
++  rerunFailedChecks: async () => {}, replyToThread: async () => {},
++};
+ const CONVERGENCE_DEPS = {
++  adapter: STABLE_ADAPTER,
+   runLocalPreflight: async () => ({ status: 'PASS', blocking: false, providers: {}, findings: [] }),
+   collectConvergenceEvidence: async () => ({
+     deltas: [], deltaOverflow: false, receiptIds: [], exactHead: 'a'.repeat(40),
+@@ -242,6 +251,35 @@ describe('shepherd command handler', () => {
+     expect(out.localPreflight.findings[0].detail).toMatch(/changed during local review/i);
+   });
+ 
++  test('rechecks the provider head before allowing remote actions', async () => {
++    const oldHead = 'a'.repeat(40);
++    const newHead = 'b'.repeat(40);
++    let dryRun;
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async context => {
++        dryRun = context.dryRun;
++        return { state: 'PENDING', actions: context.dryRun ? [] : [{ type: 'rerun' }], reason: 'remote action' };
++      },
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: oldHead, localHead: oldHead,
++      }),
++      adapter: {
++        id: 'test', kind: 'pr-state', name: 'test',
++        readState: async () => ({ headSha: newHead }),
++        readRequiredChecks: async () => [], readComments: async () => [],
++        readDivergence: async () => ({}), detectConflicts: async () => false,
++        rerunFailedChecks: async () => {}, replyToThread: async () => {},
++      },
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${oldHead}\n` : ''),
++    });
++
++    expect(dryRun).toBe(true);
++    expect(out.actions).toEqual([]);
++    expect(out.localPreflight.findings[0].detail).toMatch(/provider head changed/i);
++  });
++
+   test('fails closed when the PR head changes immediately before merge handoff', async () => {
+     const oldHead = 'a'.repeat(40);
+     const newHead = 'b'.repeat(40);
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index 364d5562..0d907e33 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -35,6 +35,10 @@ function makeAdapter(spec = {}) {
+         if (spec.requiredAuthError) throw spec.requiredAuthError;
+         return spec.required === undefined ? [] : spec.required;
+       },
++      async fetchBase(args) {
++        actions.push({ type: 'fetchBase', ...args });
++        if (spec.fetchBaseError) throw spec.fetchBaseError;
++      },
+       async readDivergence(divArgs) {
+         actions.push({ type: 'readDivergence', ...divArgs });
+         if (spec.divergenceAuthError) throw spec.divergenceAuthError;
+@@ -294,14 +298,17 @@ describe('runShepherdPass — bounded pass state machine', () => {
+   });
+ 
+   // 7d — cwd from the context is threaded into the divergence read.
+-  test('ctx.cwd and the authoritative starting head are passed through to readDivergence', async () => {
++  test('fetches the authoritative base before reading divergence', async () => {
+     const { adapter, actions } = makeAdapter({
+       required: ['unit'],
+       checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+       behind: 0,
+     });
+     await runShepherdPass({ ...BASE_CTX, adapter, cwd: '/work/tree' });
++    const fetch = actions.find((a) => a.type === 'fetchBase');
+     const div = actions.find((a) => a.type === 'readDivergence');
++    expect(fetch).toEqual({ type: 'fetchBase', baseRef: 'origin/master', cwd: '/work/tree' });
++    expect(actions.indexOf(fetch)).toBeLessThan(actions.indexOf(div));
+     expect(div.cwd).toBe('/work/tree');
+     expect(div.headRef).toBe('sha-1');
+   });
+-- 
+2.51.0.windows.1
+

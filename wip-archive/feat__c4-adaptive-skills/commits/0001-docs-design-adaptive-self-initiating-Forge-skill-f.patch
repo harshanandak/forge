@@ -1,0 +1,306 @@
+From b9e80fb51ef02ca031baf98fcfeeb5e26b5bdbc3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 00:20:07 +0530
+Subject: [PATCH] docs: design adaptive self-initiating Forge skill flow
+ (2b71e189)
+
+---
+ .../design.md                                 | 286 ++++++++++++++++++
+ 1 file changed, 286 insertions(+)
+ create mode 100644 docs/work/2026-07-16-forge-adaptive-skills/design.md
+
+diff --git a/docs/work/2026-07-16-forge-adaptive-skills/design.md b/docs/work/2026-07-16-forge-adaptive-skills/design.md
+new file mode 100644
+index 00000000..7628f0a1
+--- /dev/null
++++ b/docs/work/2026-07-16-forge-adaptive-skills/design.md
+@@ -0,0 +1,286 @@
++# Design: Self-initiating, adaptive Forge skill flow
++
++**Feature:** forge-adaptive-skills
++**Date:** 2026-07-16
++**Status:** design (for team-lead review — NOT for implementation)
++**Kernel issue:** 2b71e189-43b1-4e17-89ba-fabd9175c829 (parent 64d6c458)
++**Reconciles with:** a0776e61 (skill composition/relationships), 9661e78a (ecosystem cross-check), 2ef2bca5 (skill-router)
++
++---
++
++## Problem
++
++The owner praised superpowers' skill flow in the CuraPod session and wants Forge's **own**
++skills to match its quality. Four properties made it "brilliant":
++
++1. **Self-initiation** — the right skill announces itself before any response.
++2. **Orient-first** — it understands the actual repo before opining.
++3. **Structured elicitation** — one question at a time, refuses to over-simplify, commits a design doc.
++4. **Explicit terminal state + declared next skill** — one and only one next skill, named imperatively.
++
++Forge's stage skills are strong on gates but express these four properties weakly or implicitly.
++This design makes them a **shared, explicit convention** layered onto the existing 6-stage
++workflow — an enhancement, not a replacement.
++
++Note: the superpowers `brainstorming` skill is already usable inside Forge repos today. This work
++is about Forge's own `/plan → /dev → …` skills adopting the same flow quality.
++
++---
++
++## 1. How superpowers' skill flow actually works (grounded in real files)
++
++Inspected on this machine at
++`~/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/`.
++
++### 1a. Self-initiation — the `using-superpowers` bootstrap
++`skills/using-superpowers/SKILL.md` is the engine. It is loaded at session start (the plugin's
++`CLAUDE.md` "acceptance test" requires that sending "Let's make a react todo list" auto-triggers
++`brainstorming` *before any code*). Its mechanics:
++
++- `<EXTREMELY-IMPORTANT>` "**If you think there is even a 1% chance a skill might apply … you
++  ABSOLUTELY MUST invoke the skill**" (L10–16).
++- **The Rule** (L18–24): "Invoke relevant or requested skills BEFORE any response or action —
++  including clarifying questions, exploring the codebase, or checking files." Then: "announce
++  'Using [skill] to [purpose]' and follow the skill exactly. If it has a checklist, create a todo
++  per item."
++- A **Red Flags** rationalization table (L33–50): every "let me just check files first / this is a
++  simple question / I remember this skill" thought is paired with the reality that refutes it.
++- **Skill Priority** (L26–31): process skills (brainstorming, systematic-debugging) run first and
++  set the approach; implementation skills carry it out.
++
++Self-initiation is therefore **two mechanisms working together**: (i) a bootstrap skill that
++forbids acting before invoking, and (ii) skill **descriptions that carry the trigger**, because the
++model only sees descriptions until invocation. `brainstorming`'s description *is* the trigger:
++"**You MUST use this before any creative work** - creating features, building components …"
++(`brainstorming/SKILL.md` L3).
++
++### 1b. Orient-first
++`brainstorming/SKILL.md` checklist item 1 (L24) is "**Explore project context** — check files,
++docs, recent commits", and Process L67 "Check out the current project state first". The issue
++quotes the CuraPod session's orient line (L182): "First, let me orient — understand how your
++knowledge base is actually laid out today before I offer opinions." Orientation precedes opinion.
++
++### 1c. Structured elicitation (and refusal to over-simplify)
++- **Anti-Pattern: "This Is Too Simple To Need A Design"** (L16–18) + a `<HARD-GATE>` (L12–14)
++  forbidding any implementation action until a design is presented and approved — "regardless of
++  perceived simplicity."
++- **One question at a time**, multiple-choice preferred, cover purpose/constraints/success criteria
++  (L70–73, L135–140).
++- **Propose 2–3 approaches** with a recommendation (L76–80).
++- **Present the design in sections scaled to complexity, approval after each** (L82–87).
++- Terminates in a **committed design doc** with a self-review pass (placeholder/consistency/scope/
++  ambiguity scan, L111–119) and a **user review gate** (L121–126).
++
++### 1d. Explicit terminal state + declared next skill (chaining)
++This is the signature move. Each skill declares exactly one successor:
++
++- `brainstorming` L61: "**The terminal state is invoking writing-plans.** Do NOT invoke
++  frontend-design, mcp-builder, or any other implementation skill. **The ONLY skill you invoke
++  after brainstorming is writing-plans.**" It is restated at L128–131.
++- The chain is also **machine-readable**: a `dot` **Process Flow** digraph whose terminal node is a
++  `doublecircle` labelled "Invoke writing-plans skill" (L36–59).
++- `writing-plans/SKILL.md` continues the chain: every plan starts with a header naming the
++  "**REQUIRED SUB-SKILL: superpowers:subagent-driven-development**" (L61), and the Execution Handoff
++  (L157–174) offers exactly two successors, each with a **REQUIRED SUB-SKILL** line. So
++  brainstorming → writing-plans → subagent-driven-development / executing-plans, each node naming
++  its own required next node.
++
++### 1e. Adaptive to repo conventions
++Defaults are stated but yield to the repo: `brainstorming` L107 "(User preferences for spec
++location override this default)" and `writing-plans` L19 "(User preferences for plan location
++override this default)". The issue cites L383 of the session, where the skill deferred to the
++repo's own `07-Planning/` folder over its default. Adaptivity = "here is my default, but your repo
++wins."
++
++---
++
++## 2. How Forge's current skills differ
++
++Read: `skills/plan/SKILL.md`, `skills/dev/SKILL.md`, `skills/status/SKILL.md`, `AGENTS.md`.
++
++| Property | Superpowers | Forge today | Gap |
++|---|---|---|---|
++| **Self-initiation** | `using-superpowers` bootstrap enforces "invoke before any response" + 1% rule + Red Flags | Rich trigger-carrying descriptions exist (e.g. `plan` desc lists explicit triggers), but **no bootstrap skill** forces "invoke the matching stage before acting." Relies on the harness matching a description. | **Biggest gap.** No session-start enforcer; no anti-rationalization table. |
++| **Orient-first** | brainstorming *opens* by exploring context and states findings before opining | `plan` Step 1 "Explore project context" exists, but it sits **after** ~130 lines of worktree gate + conflict-detect + pr-coordinator + team-verify machinery. `/status` is a dedicated orient skill but is a separate invocation, not an in-skill opening. | Orientation is present but **buried**; skills don't lead by stating what they found. |
++| **Structured elicitation** | one-question-at-a-time + 2–3 approaches + anti-simplification HARD-GATE | `plan` Phase 1 Step 2 "Ask clarifying questions — one at a time" and Step 3 "Propose approaches" **match well**. | Good — but **no anti-simplification gate**; nothing stops "this is too small to plan." |
++| **Terminal state + declared next skill** | imperative "the ONLY skill you invoke next is X" + doublecircle digraph node | `plan` has strong exit **HARD-GATEs** and an "Integration with Workflow" **table/ladder**, but the successor is expressed **passively** (a table row), not "the ONE next skill is `/dev`." No process-flow digraph. | Chaining exists as documentation, not as an **imperative single-successor declaration**. |
++| **Adaptive to repo** | "user preferences override this default location" idiom | Some adaptivity: D34 (external planner artifacts satisfy `/dev` entry), `.forge/config.yaml` composition, gates. | No lightweight "your repo's convention overrides my default" idiom in the skill body. |
++
++**Summary:** Forge is *stronger* than superpowers on validation gates and kernel-native state, but
++*weaker* on the four flow properties: it has no self-initiation enforcer, buries orientation behind
++machinery, lacks an anti-simplification stop, and declares successors passively.
++
++---
++
++## 3. The adaptive-flow design: the Forge Skill Flow Contract
++
++Introduce one convention — the **Skill Flow Contract** — that every Forge stage skill adopts. Four
++required elements + one cross-cutting rule. It is expressed as a small, fixed **section template**
++so it reads identically across skills (the property the owner liked: predictable, self-announcing).
++
++### Element A — Self-initiation (the `activation` bootstrap skill)
++Create a Forge analog of `using-superpowers`: a skill named **`activation`** (candidate; short,
++per the "simple command names" convention) loaded at session start. It contains:
++
++- **The Rule:** invoke the matching Forge stage/utility skill *before any response or action* —
++  including clarifying questions and file exploration.
++- **1%-style trigger:** if there is a real chance a Forge skill applies, invoke it; announce
++  "Using /<skill> to <purpose>" and, if it has a checklist, file the todos.
++- **A Forge Red-Flags table:** "let me just check `forge ready` first", "this is a one-line fix",
++  "I'll plan after I look at the code" → each refuted.
++- **Router seam:** `activation` is the front door for skill-router **2ef2bca5** — it maps the
++  request to a stage (new/unscoped → `/plan`; existing task list → `/dev`; "where am I" →
++  `/status`; bug/failure → `systematic-debugging` then a stage). This is where the router's
++  classification logic is surfaced to the model.
++- Descriptions stay trigger-carrying (already true for `plan`/`dev`/`status`); `activation` only
++  guarantees the model *consults* them first.
++
++Note the boundary vs superpowers: `using-superpowers` says process-skills-first, then
++implementation. Forge's process skill is `/plan` (which already *embeds* brainstorming-style
++elicitation), so `activation` routes "let's build X" → `/plan`, not to a separate brainstorm.
++
++### Element B — Orient-first header
++Every stage skill opens with a fixed `## Orient (before anything else)` block that runs **before**
++gates and elicitation and **states its findings before opining**:
++
++```
++## Orient (before anything else)
++1. forge recap <id>        # resume the issue's own record, if one exists
++2. bash scripts/smart-status.sh   # or /status — stage, active work, ranked issues
++3. Read the touched module + recent commits for this area
++4. STATE what you found in one paragraph BEFORE offering any opinion or asking Q1.
++   ("Here's how <area> is laid out today: …")
++```
++
++Heavy machinery (conflict-detect, pr-coordinator, team-verify, dep-guard) moves **below** Orient
++and is explicitly marked *advisory / soft-block*, so orientation is the first thing the user sees —
++fixing the "buried orientation" gap without deleting the checks.
++
++### Element C — Structured elicitation block
++A shared elicitation sub-section, reused verbatim by any skill that gathers intent (primarily
++`/plan` Phase 1):
++
++- **One question per message**, multiple-choice preferred, cover purpose / constraints / success
++  criteria / edge cases / real technical choices.
++- **Anti-simplification note** (Forge analog of superpowers' anti-pattern): *"No change is 'too
++  small to scope.' The design can be two sentences, but intent + success criteria + out-of-scope
++  must be captured and confirmed before code."* Scaled for Forge: for **Simple/Hotfix/Docs**
++  change-classes (per AGENTS.md) this collapses to a one-line intent confirmation rather than full
++  Q&A — adaptive, not bureaucratic.
++- **Propose 2–3 approaches** with a recommendation; present the design in sections scaled to
++  complexity, confirm each.
++
++### Element D — Terminal state + declared next skill
++Every skill ends with a fixed `## Terminal state → next skill` block that:
++
++- Names **exactly one** imperative successor: e.g. `plan` → *"The one skill you invoke next is
++  `/dev`. Do not jump to `/ship` or hand-implement."* `dev` → `/validate`; `validate` → `/ship`;
++  `ship` → `/review`; `review` → `/verify` (or pre-merge gate); `verify` → done/`/status`.
++- Carries a **machine-readable successor** for skill-router **2ef2bca5** and the
++  composition/relationships graph **a0776e61**: a one-line front-matter-style key
++  (`next-skill: dev`, `terminal: false`) and/or a small `dot` process-flow digraph whose terminal
++  node is the successor — the same doublecircle device superpowers uses. This makes the chain
++  **queryable** (`forge options why`, router graph) instead of prose-only.
++- Reuses Forge's existing kernel-native stage-transition comment (Stage:/Summary:/Decisions:/
++  Artifacts:/Next:) as the **evidence** that the terminal state was reached — Forge is *stronger*
++  here than superpowers, so we keep it and just add the imperative single-successor line above it.
++
++### Cross-cutting — Adaptive to repo conventions
++Each default location or policy in a skill gets the superpowers idiom: *"Default: `docs/work/…`.
++`.forge/config.yaml` or an existing repo convention overrides this default."* Skills read
++`.forge/config.yaml` for the active composition (already the v3 direction) and honor an existing
++docs/plans folder over their default — the L383 behavior the owner called out.
++
++### The contract, in one picture
++```
++activation (bootstrap, self-initiating)         [Element A]
++   │  routes request → stage skill
++   ▼
++┌─────────────── every stage skill ───────────────┐
++│ ## Orient (state findings first)      [Element B]│
++│ ## Elicit (1 Q/msg, no-too-simple)    [Element C]│  ← only intent-gathering skills
++│ ## <stage work + existing HARD-GATEs>            │
++│ ## Terminal state → next skill        [Element D]│
++│    next-skill: <one successor> + digraph         │
++└──────────────────────────────────────────────────┘
++   │  imperative single successor
++   ▼  (kernel-native Stage: transition comment = evidence)
++ next stage skill …
++```
++
++---
++
++## 4. Composition with the existing 6-stage workflow (enhancement, not replacement)
++
++The 6 stages (`/plan → /dev → /validate → /ship → /review → /verify`, plus embedded pre-merge gate,
++plus `/status` + `/shepherd` utilities) and all their HARD-GATEs **stay exactly as they are**. The
++Contract is **additive**:
++
++- **A (self-initiation)** is genuinely new: the `activation` bootstrap + router front door. It does
++  not change any stage — it ensures the correct stage *starts itself*.
++- **B (orient-first)** *reorders* content already inside `/plan` (and adds a 3-line opener to the
++  other stages), moving the existing "Explore project context" ahead of the advisory machinery.
++  Nothing is deleted.
++- **C (elicitation)** is mostly a *relabel* of `/plan` Phase 1 into the shared block + the new
++  anti-simplification note, with the Simple/Hotfix/Docs collapse so it stays proportional.
++- **D (terminal + next skill)** *upgrades* the existing "Integration with Workflow" ladder and exit
++  HARD-GATEs from passive tables to one imperative successor line + a machine-readable
++  `next-skill`/digraph. The kernel-native Stage: transition comments already in every skill become
++  the terminal-state evidence.
++- **Adaptive** hooks into `.forge/config.yaml` composition (already v3) — the Contract is one
++  composition over runtime building blocks, consistent with AGENTS.md's "not a product-wide
++  mandatory ladder."
++
++**Reconciliation with the referenced epics:**
++- **2ef2bca5 skill-router** — `activation` *is* the router's user-facing front door; `next-skill`
++  keys give the router its edges.
++- **a0776e61 skill composition/relationships** — Element D's machine-readable successor turns the
++  implicit ladder into an explicit, queryable relationship graph.
++- **9661e78a ecosystem cross-check** — the Contract is a single template applied uniformly, which
++  is exactly what a cross-check verifies (every skill has Orient / Terminal / next-skill).
++
++**Result:** the owner's four liked properties become guaranteed, uniform, and machine-checkable,
++while Forge keeps its gate/kernel strengths.
++
++---
++
++## 5. Task breakdown for implementation (proposed, for team-lead)
++
++Ordered; foundational first. Each is independently reviewable.
++
++1. **Author the Contract spec** — a short `docs/reference/skill-flow-contract.md` defining the four
++   fixed sections (Orient / Elicit / Terminal→next / adaptive idiom), the `next-skill` +
++   `terminal` metadata keys, and the digraph convention. Single source the other tasks cite.
++2. **Create the `activation` bootstrap skill** — `skills/activation/SKILL.md`: the Rule, 1% trigger,
++   Forge Red-Flags table, router mapping (request → stage). Verify it loads at session start in the
++   Claude mirror. (Coordinate with skill-router 2ef2bca5 owner.)
++3. **Add `next-skill`/`terminal` metadata + imperative Terminal block** to all 6 stage skills +
++   `/status`, `/shepherd`. Upgrade each "Integration with Workflow" table to one imperative
++   successor line; add the small process-flow digraph. (Mechanical, per-skill; Sonnet-suitable.)
++4. **Add the Orient-first header** to each stage skill; move `/plan`'s advisory machinery below it;
++   mark advisory blocks as soft-block. (Care: preserve every existing check.)
++5. **Extract the shared Elicitation block + anti-simplification note**; wire the
++   Simple/Hotfix/Docs proportional collapse to AGENTS.md change-classification.
++6. **Adaptive-convention pass** — add the "config/repo convention overrides this default" idiom to
++   every default path/policy; have skills read `.forge/config.yaml` composition.
++7. **Ecosystem cross-check gate (9661e78a)** — a lint/test asserting every stage skill has Orient,
++   a single `next-skill` (or `terminal: true`), and the Terminal block. Wire into the drift gate.
++8. **Skill-sync + mirrors** — regenerate per-agent mirrors from canonical `skills/`; confirm the
++   drift gate stays green (per AGENTS.md skill-sync learning). Update AGENTS.md docs index.
++9. **Behavioral verification** — run the superpowers-style acceptance test ("let's build X" →
++   `activation` routes to `/plan`, which orients + elicits + declares `/dev` as sole successor)
++   and record the transcript, mirroring superpowers' eval discipline.
++
++**Sequencing note:** Task 1 gates 2–6; Task 7 gates 8; Task 9 is the final acceptance. Tasks 3, 4,
++5 are per-skill fan-outs that can parallelize across worktrees once Task 1 lands.
++
++---
++
++## Open questions for team-lead
++- **Bootstrap name** — `activation` vs `flow` vs folding the Rule into existing `/status`? (Kept
++  `activation` to match the kernel issue title and keep `/status` a pure orient utility.)
++- **Digraph vs metadata-only** — adopt the full `dot` process-flow digraph in every skill, or just
++  the `next-skill:` key + prose? (Recommend metadata key always; digraph only where a skill
++  branches, e.g. `/plan --strategic`.)
++- **Scope of first PR** — ship the Contract spec + `activation` + `/plan` conversion as PR 1
++  (proves the pattern end-to-end), then fan out the remaining skills? (Recommended.)
+-- 
+2.51.0.windows.1
+

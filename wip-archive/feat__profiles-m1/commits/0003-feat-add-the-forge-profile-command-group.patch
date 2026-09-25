@@ -1,0 +1,710 @@
+From bf387e3607c487acf72f386fa7dc1846f98e13b9 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 23:59:29 +0530
+Subject: [PATCH] feat: add the forge profile command group
+
+Without a command surface the registry and the profiles are unreachable: a user
+still has to hand-edit gates, rails and protected paths one at a time to change
+how a repo ships. list/show/apply/create/save/dump/export/import/delete make the
+flip two commands and zero hand-edits, show derives the active regime rather than
+trusting a stored label, and dump prints the fully-resolved state so nothing
+about the regime is hidden.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ docs/reference/profiles.md    |  75 +++++++++
+ lib/commands/_manifest.js     |   1 +
+ lib/commands/profile.js       | 263 +++++++++++++++++++++++++++++
+ lib/settings-profiles.js      |   2 +-
+ test/commands/profile.test.js | 302 ++++++++++++++++++++++++++++++++++
+ 5 files changed, 642 insertions(+), 1 deletion(-)
+ create mode 100644 docs/reference/profiles.md
+ create mode 100644 lib/commands/profile.js
+ create mode 100644 test/commands/profile.test.js
+
+diff --git a/docs/reference/profiles.md b/docs/reference/profiles.md
+new file mode 100644
+index 00000000..825cc3c8
+--- /dev/null
++++ b/docs/reference/profiles.md
+@@ -0,0 +1,75 @@
++# Settings profiles (`forge profile`)
++
++One command flips a repo's whole operating regime. A **settings profile** is a
++named snapshot of Forge's entire settings surface — rails, gates, stage phases,
++adapters, role bindings and protected paths — applied atomically.
++
++```bash
++forge profile list                   # saved profiles, active one marked
++forge profile show                   # which regime this repo is actually in
++forge profile apply strict           # flip the whole regime
++forge profile dump                   # the fully-resolved regime, every setting
++forge profile create my-regime       # save the current regime under a name
++forge profile save [--as <name>]     # fold adjustments back into a profile
++forge profile export <name> <path>   # write a shareable bundle
++forge profile import <path>          # install a bundle on this machine
++forge profile delete <name>          # remove a user profile
++```
++
++All verbs accept `--json`.
++
++## The three starter presets
++
++| Profile | What it is for |
++| --- | --- |
++| `speed` | Pre-user speed: ship fast, review the feature not the diff, revert fast. Stage-exit gates, the plan-approval gate, the merge gate and the TDD rail are off. |
++| `strict` | Gated shipping: every stage gate on, TDD rail on, config/AGENTS/workflow files protected. |
++| `knowledge-base` | A docs repo: no `dev`/`validate` stages, citation and grounding gates on. |
++
++Presets are **data, not code** (`BUILTIN_PROFILES` in `lib/settings-profiles.js`).
++Creating a profile never requires editing Forge.
++
++## Three design rules
++
++**1. One registry.** Every profileable setting comes from
++`lib/settings-registry.js`, which **derives** its descriptors from the resolved
++runtime graph. Add a rail, gate, stage, adapter field or role to
++`lib/core/runtime-graph.js` and it is profileable on the next run with no wiring
++here. Writes go through the sparse `lib/config-writer.js` into
++`.forge/config.yaml` — the same surface `forge gate` and `forge role` write, so
++the installed hooks read one consistent signal.
++
++**2. A profile stores nothing at apply time.** `apply` writes through the
++canonical config and records no active-profile marker anywhere. `show` **derives**
++the answer by comparing resolved state to each saved profile. A hand-tuned repo
++therefore reads `custom` — honestly — instead of claiming to match a preset it no
++longer matches. `show` also names the nearest profile and the exact drift, so
++`custom` is actionable.
++
++**3. Apply is total, so flips are reversible.** A setting absent from a profile
++is reset to its package default rather than left behind. `speed` → `strict` →
++`speed` lands byte-identical to the first `speed` apply: zero residual diff, zero
++hand-edits.
++
++## Adjusting while a profile is active
++
++Toggle something (`forge gate disable gate.merge`) and the repo drops to
++`custom`. Then choose:
++
++- `forge profile save` — fold the adjustment into the profile you are closest to
++  (user profiles only; builtin presets refuse and tell you to use `--as`).
++- `forge profile save --as my-regime` — keep the original and move onto a new
++  profile.
++- do nothing — you stay on `custom`, which is the honest answer.
++
++## Where profiles live
++
++Per-user plain YAML files under `<home>/.forge/profiles/<name>.yaml`
++(`FORGE_HOME` overrides the home). A user file **shadows** a builtin of the same
++name, so presets are forkable. `export`/`import` move a regime between machines.
++
++## Not the same thing as workflow profiles
++
++`lib/workflow-profiles.js` ("workflow profiles") picks which **stage set** a user
++type runs — a different axis entirely. `forge profile` configures the settings
++surface, whatever stage set is in play. The two do not compose or conflict.
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index 62595c38..f37d1acb 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -59,6 +59,7 @@ const commands = [
+   { file: "pr.js", module: require("./pr") },
+   { file: "preflight.js", module: require("./preflight") },
+   { file: "prime.js", module: require("./prime") },
++  { file: "profile.js", module: require("./profile") },
+   { file: "push.js", module: require("./push") },
+   { file: "ready.js", module: require("./ready") },
+   { file: "recall.js", module: require("./recall") },
+diff --git a/lib/commands/profile.js b/lib/commands/profile.js
+new file mode 100644
+index 00000000..05c7b265
+--- /dev/null
++++ b/lib/commands/profile.js
+@@ -0,0 +1,263 @@
++'use strict';
++
++/**
++ * `forge profile list|show|apply|create|save|dump|export|import|delete`
++ *
++ * One command flips a repo's whole operating regime. A profile is a named
++ * snapshot of the entire settings surface (`lib/settings-registry.js`); the
++ * verbs here are a thin, honest shell over `lib/settings-profiles.js`:
++ *
++ *  - `apply` writes through the canonical `.forge/config.yaml` and stores no
++ *    marker of its own, so the flip is a real config change, not a label.
++ *  - `show` DERIVES the answer by comparing resolved state to saved profiles;
++ *    a hand-tuned repo reads `custom` (with its nearest profile and drift).
++ *  - `dump` prints the fully-resolved regime, every setting, defaults included.
++ *  - `save` folds adjustments back into the active profile, or `--as <name>`
++ *    saves them as a new one. Doing neither leaves you honestly on `custom`.
++ *
++ * Profiles are per-user files under `<home>/.forge/profiles` (override the home
++ * with `FORGE_HOME`), so a regime exports, imports and travels across machines.
++ */
++
++const {
++  listProfiles,
++  readProfile,
++  profileExists,
++  writeProfile,
++  deleteProfile,
++  applyProfile,
++  deriveActiveProfile,
++  dumpRegime,
++  saveCurrentProfile,
++  exportProfile,
++  importProfile,
++} = require('../settings-profiles');
++const { listSettings, readOverrides } = require('../settings-registry');
++
++const SUBCOMMANDS = ['list', 'show', 'apply', 'create', 'save', 'dump', 'export', 'import', 'delete'];
++
++function usage() {
++  return [
++    'Usage: forge profile <subcommand>',
++    '  forge profile list                   Saved profiles, active one marked',
++    '  forge profile show                   Which regime this repo is actually in',
++    '  forge profile apply <name>           Flip the whole regime to <name>',
++    '  forge profile create <name>          Save the current regime as <name>',
++    '  forge profile save [--as <name>]     Fold adjustments back into a profile',
++    '  forge profile dump                   Print the fully-resolved regime',
++    '  forge profile export <name> <path>   Write a shareable profile bundle',
++    '  forge profile import <path>          Install a bundle on this machine',
++    '  forge profile delete <name>          Remove a user profile',
++    'Flags: --json, --as <name>, --force',
++  ].join('\n');
++}
++
++/**
++ * Split this command's own flags out of `args`. Global `forge` flag parsing is a
++ * closed set that does not know `--json`/`--as`, so they arrive here as raw
++ * tokens; the pre-parsed `flags` object is honored too (that is how tests and
++ * any future global parsing reach the same code path).
++ */
++function parseArgs(args = [], flags = {}) {
++  const positional = [];
++  const parsed = {
++    json: flags.json === true,
++    force: flags.force === true,
++    as: typeof flags.as === 'string' ? flags.as : null,
++  };
++  for (let i = 0; i < args.length; i += 1) {
++    const token = args[i];
++    if (token === '--json') parsed.json = true;
++    else if (token === '--force') parsed.force = true;
++    else if (token === '--as') {
++      if (i + 1 >= args.length) return { error: '--as requires a profile name.' };
++      parsed.as = args[i + 1];
++      i += 1;
++    } else if (token.startsWith('--as=')) parsed.as = token.slice('--as='.length);
++    else if (token.startsWith('-')) return { error: `Unknown flag '${token}'.` };
++    else positional.push(token);
++  }
++  return { parsed, positional };
++}
++
++function ok(output) {
++  return { success: true, output };
++}
++
++function fail(error) {
++  return { success: false, error };
++}
++
++function json(value) {
++  return ok(JSON.stringify(value, null, 2));
++}
++
++function renderList(profiles, active) {
++  const lines = [`Profiles (active: ${active}):`];
++  for (const profile of profiles) {
++    const marker = profile.name === active ? '*' : ' ';
++    lines.push(`${marker} ${profile.name.padEnd(16)} ${profile.source.padEnd(8)} ${profile.description}`);
++  }
++  if (active === 'custom') {
++    lines.push('', 'This repo matches no saved profile. `forge profile show` names the nearest one.');
++  }
++  return lines.join('\n');
++}
++
++function renderShow(derived) {
++  const lines = [`Active profile: ${derived.active}`];
++  if (derived.name === null) {
++    lines.push(`Nearest profile: ${derived.nearest === null ? '(none)' : derived.nearest}`);
++    const driftIds = Object.keys(derived.drift).sort();
++    lines.push(`Drift from nearest (${driftIds.length} setting${driftIds.length === 1 ? '' : 's'}):`);
++    for (const id of driftIds) {
++      lines.push(`  ${id}: ${JSON.stringify(derived.drift[id].from)} -> ${JSON.stringify(derived.drift[id].to)}`);
++    }
++    lines.push('', 'Save it with `forge profile save --as <name>`, or apply a profile to flip back.');
++  }
++  return lines.join('\n');
++}
++
++function renderDump(dumped) {
++  const groups = new Map();
++  for (const descriptor of listSettings()) {
++    if (!groups.has(descriptor.group)) groups.set(descriptor.group, []);
++    groups.get(descriptor.group).push(descriptor);
++  }
++  const lines = [`Resolved regime (profile: ${dumped.profile})`];
++  for (const [group, descriptors] of groups) {
++    lines.push('', `[${group}]`);
++    for (const descriptor of descriptors) {
++      const value = JSON.stringify(dumped.settings[descriptor.id]);
++      const marks = [];
++      if (Object.hasOwn(dumped.overrides, descriptor.id)) marks.push('set');
++      if (descriptor.locked) marks.push('locked');
++      lines.push(`  ${descriptor.id.padEnd(28)} ${value}${marks.length > 0 ? `  (${marks.join(', ')})` : ''}`);
++    }
++  }
++  return lines.join('\n');
++}
++
++function runList({ projectRoot, parsed }) {
++  const derived = deriveActiveProfile({ projectRoot });
++  const profiles = listProfiles();
++  if (parsed.json) return json({ active: derived.active, nearest: derived.nearest, profiles });
++  return ok(renderList(profiles, derived.active));
++}
++
++function runShow({ projectRoot, parsed }) {
++  const derived = deriveActiveProfile({ projectRoot });
++  if (parsed.json) {
++    return json({
++      active: derived.active,
++      name: derived.name,
++      nearest: derived.nearest,
++      drift: derived.drift,
++    });
++  }
++  return ok(renderShow(derived));
++}
++
++function runApply({ projectRoot, positional, parsed }) {
++  const name = positional[1];
++  if (!name) return fail(`Which profile? Pass a name.\n${usage()}`);
++  const result = applyProfile({ projectRoot, name });
++  if (parsed.json) return json(result);
++  const changed = result.changed.length;
++  const reset = result.reset.length;
++  return ok(`Applied profile '${result.name}' (${result.source}): ${changed} setting${changed === 1 ? '' : 's'} set, ${reset} reset to default.`);
++}
++
++function runCreate({ projectRoot, positional, parsed }) {
++  const name = positional[1];
++  if (!name) return fail(`Which name? Pass one.\n${usage()}`);
++  if (profileExists(name) && parsed.force !== true) {
++    return fail(`Profile '${name}' already exists. Re-run with --force to overwrite it.`);
++  }
++  const settings = readOverrides({ projectRoot });
++  const filePath = writeProfile(name, { settings, description: `Saved from this repo's regime.` });
++  if (parsed.json) return json({ name, path: filePath, settings });
++  const count = Object.keys(settings).length;
++  return ok(`Created profile '${name}' from the current regime (${count} setting${count === 1 ? '' : 's'} away from defaults).\n${filePath}`);
++}
++
++function runSave({ projectRoot, parsed }) {
++  const saved = parsed.as
++    ? saveCurrentProfile({ projectRoot, mode: 'new', name: parsed.as })
++    : saveCurrentProfile({ projectRoot, mode: 'update' });
++  if (parsed.json) return json(saved);
++  return ok(`Saved the current regime into profile '${saved.name}'.\n${saved.path}`);
++}
++
++function runDump({ projectRoot, parsed }) {
++  const dumped = dumpRegime({ projectRoot });
++  if (parsed.json) return json(dumped);
++  return ok(renderDump(dumped));
++}
++
++function runExport({ positional, parsed }) {
++  const name = positional[1];
++  const dest = positional[2];
++  if (!name) return fail(`Which profile? Pass a name.\n${usage()}`);
++  if (!dest) return fail(`Where to? Pass a destination path.\n${usage()}`);
++  const written = exportProfile(name, dest);
++  if (parsed.json) return json({ name, path: written });
++  return ok(`Exported profile '${name}' to ${written}`);
++}
++
++function runImport({ positional, parsed }) {
++  const src = positional[1];
++  if (!src) return fail(`Which bundle? Pass a path.\n${usage()}`);
++  const imported = importProfile(src, { name: parsed.as || undefined });
++  if (parsed.json) return json(imported);
++  return ok(`Imported profile '${imported.name}' to ${imported.path}`);
++}
++
++function runDelete({ positional, parsed }) {
++  const name = positional[1];
++  if (!name) return fail(`Which profile? Pass a name.\n${usage()}`);
++  if (!profileExists(name)) return fail(`Unknown profile '${name}'.`);
++  if (readProfile(name).source === 'builtin') {
++    return fail(`'${name}' is a builtin preset and cannot be deleted. Shadow it instead: forge profile create ${name} --force.`);
++  }
++  const removed = deleteProfile(name);
++  if (!removed) return fail(`Nothing to delete — no user profile named '${name}'.`);
++  if (parsed.json) return json({ name, deleted: true });
++  return ok(`Deleted user profile '${name}'.`);
++}
++
++const HANDLERS = {
++  list: runList,
++  show: runShow,
++  apply: runApply,
++  create: runCreate,
++  save: runSave,
++  dump: runDump,
++  export: runExport,
++  import: runImport,
++  delete: runDelete,
++};
++
++async function handler(args = [], flags = {}, projectRoot = process.cwd()) {
++  const { parsed, positional, error } = parseArgs(args, flags);
++  if (error) return fail(`${error}\n${usage()}`);
++
++  const subcommand = positional[0];
++  if (!subcommand) return fail(usage());
++  if (!Object.hasOwn(HANDLERS, subcommand)) {
++    return fail(`Unknown subcommand '${subcommand}'. Try: ${SUBCOMMANDS.join(', ')}.\n${usage()}`);
++  }
++
++  try {
++    return HANDLERS[subcommand]({ projectRoot, positional, parsed });
++  } catch (err) {
++    return fail(err?.message ?? String(err));
++  }
++}
++
++module.exports = {
++  name: 'profile',
++  description: 'Flip the repo between saved settings profiles (speed, strict, knowledge-base, or your own)',
++  usage: usage(),
++  handler,
++};
+diff --git a/lib/settings-profiles.js b/lib/settings-profiles.js
+index 579092aa..10c694c1 100644
+--- a/lib/settings-profiles.js
++++ b/lib/settings-profiles.js
+@@ -147,7 +147,7 @@ function listProfiles({ home } = {}) {
+       if (!entry.endsWith('.yaml')) continue;
+       const name = entry.slice(0, -'.yaml'.length);
+       if (!NAME_PATTERN.test(name)) continue;
+-      let description = '';
++      let description;
+       try {
+         description = readProfile(name, { home }).description;
+       } catch {
+diff --git a/test/commands/profile.test.js b/test/commands/profile.test.js
+new file mode 100644
+index 00000000..d6b698de
+--- /dev/null
++++ b/test/commands/profile.test.js
+@@ -0,0 +1,302 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, beforeEach, describe, expect, test } = require('bun:test');
++
++const profileCommand = require('../../lib/commands/profile');
++const { resolveSettings, applySettings } = require('../../lib/settings-registry');
++
++const temps = [];
++let savedForgeHome;
++
++function makeDir(prefix) {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
++  temps.push(dir);
++  return dir;
++}
++
++function makeProject() {
++  const root = makeDir('forge-profile-cmd-');
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++/** Point the per-user profile store at a temp home so tests never touch ~/. */
++function useTempHome() {
++  const home = makeDir('forge-profile-home-');
++  process.env.FORGE_HOME = home;
++  return home;
++}
++
++beforeEach(() => {
++  savedForgeHome = process.env.FORGE_HOME;
++});
++
++afterEach(() => {
++  if (savedForgeHome === undefined) delete process.env.FORGE_HOME;
++  else process.env.FORGE_HOME = savedForgeHome;
++  for (const dir of temps.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
++});
++
++describe('forge profile — command surface', () => {
++  test('exports the command interface the registry requires', () => {
++    expect(profileCommand.name).toBe('profile');
++    expect(typeof profileCommand.description).toBe('string');
++    expect(typeof profileCommand.handler).toBe('function');
++    expect(profileCommand.usage).toContain('forge profile');
++  });
++
++  test('no subcommand prints usage rather than guessing', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler([], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toContain('forge profile');
++  });
++
++  test('an unknown subcommand names the ones that exist', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['frobnicate'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/list/);
++  });
++});
++
++describe('forge profile list', () => {
++  test('lists the three presets and marks the derived one', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    const result = await profileCommand.handler(['list'], {}, root);
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('speed');
++    expect(result.output).toContain('strict');
++    expect(result.output).toContain('knowledge-base');
++    expect(result.output).toMatch(/\*\s*speed|speed.*\(active\)/);
++  });
++
++  test('--json returns machine-readable profiles', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['list'], { json: true }, root);
++    expect(result.success).toBe(true);
++    const parsed = JSON.parse(result.output);
++    expect(parsed.profiles.map(p => p.name)).toContain('strict');
++    expect(parsed.active).toBe('custom');
++  });
++});
++
++describe('forge profile apply', () => {
++  test('flips the regime and reports what changed', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['apply', 'strict'], {}, root);
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('strict');
++    expect(resolveSettings({ projectRoot: root }).protectedPaths).toContain('AGENTS.md');
++  });
++
++  test('a bad profile name is a clean error, not a stack trace', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['apply', 'nope'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/unknown profile/i);
++  });
++
++  test('apply with no name asks for one', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['apply'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/name/i);
++  });
++
++  test('two commands flip speed -> strict -> speed with zero hand-edits', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    const first = fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8');
++    await profileCommand.handler(['apply', 'strict'], {}, root);
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    expect(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8')).toBe(first);
++  });
++});
++
++describe('forge profile show', () => {
++  test('derives the active profile instead of reading a stored marker', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'knowledge-base'], {}, root);
++    const result = await profileCommand.handler(['show'], {}, root);
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('knowledge-base');
++  });
++
++  test('says custom after a hand-edit, and names the nearest profile', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'strict'], {}, root);
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++    const result = await profileCommand.handler(['show'], { json: true }, root);
++    const parsed = JSON.parse(result.output);
++    expect(parsed.active).toBe('custom');
++    expect(parsed.nearest).toBe('strict');
++    expect(parsed.drift['gate.cite']).toEqual({ from: true, to: false });
++  });
++});
++
++describe('forge profile dump', () => {
++  test('prints the fully-resolved regime, every setting', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    const result = await profileCommand.handler(['dump'], { json: true }, root);
++    const parsed = JSON.parse(result.output);
++    expect(parsed.profile).toBe('speed');
++    expect(parsed.settings['rail.tdd_intent']).toBe(false);
++    expect(parsed.settings['rail.secret_scan']).toBe(true);
++  });
++
++  test('the text form lists settings grouped and readable', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['dump'], {}, root);
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('rail.tdd_intent');
++    expect(result.output).toContain('protectedPaths');
++  });
++});
++
++describe('forge profile create / save', () => {
++  test('create snapshots the current regime under a new name', async () => {
++    const root = makeProject();
++    const home = useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    const result = await profileCommand.handler(['create', 'my-speed'], {}, root);
++    expect(result.success).toBe(true);
++    expect(fs.existsSync(path.join(home, '.forge', 'profiles', 'my-speed.yaml'))).toBe(true);
++    const shown = await profileCommand.handler(['show'], { json: true }, root);
++    expect(['speed', 'my-speed']).toContain(JSON.parse(shown.output).active);
++  });
++
++  test('create refuses to clobber an existing profile without --force', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['create', 'mine'], {}, root);
++    const again = await profileCommand.handler(['create', 'mine'], {}, root);
++    expect(again.success).toBe(false);
++    expect(again.error).toMatch(/already exists|--force/i);
++    const forced = await profileCommand.handler(['create', 'mine'], { force: true }, root);
++    expect(forced.success).toBe(true);
++  });
++
++  test('save folds an adjustment back into the active user profile', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['create', 'mine'], {}, root);
++    await profileCommand.handler(['apply', 'mine'], {}, root);
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++
++    const saved = await profileCommand.handler(['save'], {}, root);
++    expect(saved.success).toBe(true);
++    expect(saved.output).toContain('mine');
++    const shown = await profileCommand.handler(['show'], { json: true }, root);
++    expect(JSON.parse(shown.output).active).toBe('mine');
++  });
++
++  test('save --as keeps the old profile and flips you onto the new one', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++    const saved = await profileCommand.handler(['save'], { as: 'speed-plus' }, root);
++    expect(saved.success).toBe(true);
++    const shown = await profileCommand.handler(['show'], { json: true }, root);
++    expect(JSON.parse(shown.output).active).toBe('speed-plus');
++  });
++
++  test('save into a builtin preset is refused with the fix in the message', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++    const saved = await profileCommand.handler(['save'], {}, root);
++    expect(saved.success).toBe(false);
++    expect(saved.error).toMatch(/--as/);
++  });
++
++  test('not saving leaves you honestly on custom', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['apply', 'speed'], {}, root);
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++    const shown = await profileCommand.handler(['show'], { json: true }, root);
++    expect(JSON.parse(shown.output).active).toBe('custom');
++  });
++});
++
++describe('forge profile export / import', () => {
++  test('a profile travels to another machine as a plain file', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['create', 'mine'], {}, root);
++    const bundle = path.join(makeDir('forge-profile-bundle-'), 'mine.yaml');
++
++    const exported = await profileCommand.handler(['export', 'mine', bundle], {}, root);
++    expect(exported.success).toBe(true);
++    expect(fs.existsSync(bundle)).toBe(true);
++
++    useTempHome();
++    const imported = await profileCommand.handler(['import', bundle], {}, root);
++    expect(imported.success).toBe(true);
++    const listed = await profileCommand.handler(['list'], { json: true }, root);
++    expect(JSON.parse(listed.output).profiles.map(p => p.name)).toContain('mine');
++  });
++
++  test('export needs a destination path', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['export', 'speed'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/path/i);
++  });
++});
++
++describe('forge profile delete', () => {
++  test('removes a user profile and reports when there was nothing to remove', async () => {
++    const root = makeProject();
++    useTempHome();
++    await profileCommand.handler(['create', 'mine'], {}, root);
++    const first = await profileCommand.handler(['delete', 'mine'], {}, root);
++    expect(first.success).toBe(true);
++    const second = await profileCommand.handler(['delete', 'mine'], {}, root);
++    expect(second.success).toBe(false);
++  });
++
++  test('a builtin preset cannot be deleted', async () => {
++    const root = makeProject();
++    useTempHome();
++    const result = await profileCommand.handler(['delete', 'speed'], {}, root);
++    expect(result.success).toBe(false);
++    expect(result.error).toMatch(/builtin/i);
++  });
++});
+-- 
+2.51.0.windows.1
+

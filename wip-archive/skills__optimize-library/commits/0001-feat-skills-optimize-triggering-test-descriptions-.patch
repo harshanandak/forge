@@ -1,0 +1,3161 @@
+From 25e67964d8238ef9cd514acac34919052dbc80fe Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 13:40:21 +0530
+Subject: [PATCH] feat(skills): optimize + triggering-test descriptions and add
+ evals for all 18 skills
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Brings the whole skill library to the skill-creator standard on its primary
+axis — triggering. For each of the 18 skills, rewrites the frontmatter
+description to be pushy (Claude under-triggers) and explicitly discriminating
+against sibling skills so a query routes to exactly one, and adds an
+evals/evals.json trigger set (realistic should_trigger queries + near-miss
+should_not-trigger queries drawn from sibling territory).
+
+Produced by a 3-stage multi-agent pass: audit (verify every cited forge/CLI
+flag against live --help) -> adversarial verify (independently re-check routing
+and accuracy) -> blind routing test (a judge predicts fire/no-fire over the full
+optimized description set with the answer key hidden; scored deterministically).
+All 18 skills scored 100% trigger pass-rate with 0 misroutes.
+
+Bodies are byte-identical (only the frontmatter description block changed);
+.codex mirror regenerated (checkSkillsSync inSync). A separate follow-up will
+correct CLI-command inaccuracies found in some skill BODIES (the body-fix set
+had cross-skill contradictions and Beads-vs-kernel issues that need ground-truth
+verification, so it is intentionally not bundled here).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/claim-safety/SKILL.md           | 22 +++++---
+ .codex/skills/claim-safety/evals/evals.json   | 46 +++++++++++++++++
+ .codex/skills/dev/SKILL.md                    | 16 +++++-
+ .codex/skills/dev/evals/evals.json            | 50 +++++++++++++++++++
+ .codex/skills/hermes-forge/SKILL.md           | 26 +++++++---
+ .codex/skills/hermes-forge/evals/evals.json   | 46 +++++++++++++++++
+ .codex/skills/issue-basics/SKILL.md           | 21 +++++---
+ .codex/skills/issue-basics/evals/evals.json   | 46 +++++++++++++++++
+ .codex/skills/kernel/SKILL.md                 | 26 ++++++----
+ .codex/skills/kernel/evals/evals.json         | 50 +++++++++++++++++++
+ .codex/skills/parallel-deep-research/SKILL.md | 28 +++++++----
+ .../parallel-deep-research/evals/evals.json   | 38 ++++----------
+ .codex/skills/plan/SKILL.md                   | 17 +++++--
+ .codex/skills/plan/evals/evals.json           | 42 ++++++++++++++++
+ .codex/skills/research/SKILL.md               | 23 +++++++--
+ .codex/skills/research/evals/evals.json       | 42 ++++++++++++++++
+ .codex/skills/review/SKILL.md                 | 18 ++++++-
+ .codex/skills/review/evals/evals.json         | 42 ++++++++++++++++
+ .codex/skills/rollback/SKILL.md               | 15 +++++-
+ .codex/skills/rollback/evals/evals.json       | 46 +++++++++++++++++
+ .codex/skills/shepherd/SKILL.md               | 16 +++++-
+ .codex/skills/shepherd/evals/evals.json       | 42 ++++++++++++++++
+ .codex/skills/ship/SKILL.md                   | 19 +++++--
+ .codex/skills/ship/evals/evals.json           | 42 ++++++++++++++++
+ .codex/skills/sonarcloud-analysis/SKILL.md    | 25 +++++++---
+ .../sonarcloud-analysis/evals/evals.json      | 26 ++++------
+ .codex/skills/sonarcloud/SKILL.md             | 19 ++++++-
+ .codex/skills/sonarcloud/evals/evals.json     | 46 +++++++++++++++++
+ .codex/skills/status/SKILL.md                 | 17 ++++++-
+ .codex/skills/status/evals/evals.json         | 50 +++++++++++++++++++
+ .codex/skills/triage-ready/SKILL.md           | 22 +++++---
+ .codex/skills/triage-ready/evals/evals.json   | 42 ++++++++++++++++
+ .codex/skills/validate/SKILL.md               | 13 ++++-
+ .codex/skills/validate/evals/evals.json       | 42 ++++++++++++++++
+ .codex/skills/verify/SKILL.md                 | 14 +++++-
+ .codex/skills/verify/evals/evals.json         | 50 +++++++++++++++++++
+ skills/claim-safety/SKILL.md                  | 22 +++++---
+ skills/claim-safety/evals/evals.json          | 46 +++++++++++++++++
+ skills/dev/SKILL.md                           | 16 +++++-
+ skills/dev/evals/evals.json                   | 50 +++++++++++++++++++
+ skills/hermes-forge/SKILL.md                  | 26 +++++++---
+ skills/hermes-forge/evals/evals.json          | 46 +++++++++++++++++
+ skills/issue-basics/SKILL.md                  | 21 +++++---
+ skills/issue-basics/evals/evals.json          | 46 +++++++++++++++++
+ skills/kernel/SKILL.md                        | 26 ++++++----
+ skills/kernel/evals/evals.json                | 50 +++++++++++++++++++
+ skills/parallel-deep-research/SKILL.md        | 28 +++++++----
+ .../parallel-deep-research/evals/evals.json   | 38 ++++----------
+ skills/plan/SKILL.md                          | 17 +++++--
+ skills/plan/evals/evals.json                  | 42 ++++++++++++++++
+ skills/research/SKILL.md                      | 23 +++++++--
+ skills/research/evals/evals.json              | 42 ++++++++++++++++
+ skills/review/SKILL.md                        | 18 ++++++-
+ skills/review/evals/evals.json                | 42 ++++++++++++++++
+ skills/rollback/SKILL.md                      | 15 +++++-
+ skills/rollback/evals/evals.json              | 46 +++++++++++++++++
+ skills/shepherd/SKILL.md                      | 16 +++++-
+ skills/shepherd/evals/evals.json              | 42 ++++++++++++++++
+ skills/ship/SKILL.md                          | 19 +++++--
+ skills/ship/evals/evals.json                  | 42 ++++++++++++++++
+ skills/sonarcloud-analysis/SKILL.md           | 25 +++++++---
+ skills/sonarcloud-analysis/evals/evals.json   | 26 ++++------
+ skills/sonarcloud/SKILL.md                    | 19 ++++++-
+ skills/sonarcloud/evals/evals.json            | 46 +++++++++++++++++
+ skills/status/SKILL.md                        | 17 ++++++-
+ skills/status/evals/evals.json                | 50 +++++++++++++++++++
+ skills/triage-ready/SKILL.md                  | 22 +++++---
+ skills/triage-ready/evals/evals.json          | 42 ++++++++++++++++
+ skills/validate/SKILL.md                      | 13 ++++-
+ skills/validate/evals/evals.json              | 42 ++++++++++++++++
+ skills/verify/SKILL.md                        | 14 +++++-
+ skills/verify/evals/evals.json                | 50 +++++++++++++++++++
+ 72 files changed, 2052 insertions(+), 238 deletions(-)
+ create mode 100644 .codex/skills/claim-safety/evals/evals.json
+ create mode 100644 .codex/skills/dev/evals/evals.json
+ create mode 100644 .codex/skills/hermes-forge/evals/evals.json
+ create mode 100644 .codex/skills/issue-basics/evals/evals.json
+ create mode 100644 .codex/skills/kernel/evals/evals.json
+ create mode 100644 .codex/skills/plan/evals/evals.json
+ create mode 100644 .codex/skills/research/evals/evals.json
+ create mode 100644 .codex/skills/review/evals/evals.json
+ create mode 100644 .codex/skills/rollback/evals/evals.json
+ create mode 100644 .codex/skills/shepherd/evals/evals.json
+ create mode 100644 .codex/skills/ship/evals/evals.json
+ create mode 100644 .codex/skills/sonarcloud/evals/evals.json
+ create mode 100644 .codex/skills/status/evals/evals.json
+ create mode 100644 .codex/skills/triage-ready/evals/evals.json
+ create mode 100644 .codex/skills/validate/evals/evals.json
+ create mode 100644 .codex/skills/verify/evals/evals.json
+ create mode 100644 skills/claim-safety/evals/evals.json
+ create mode 100644 skills/dev/evals/evals.json
+ create mode 100644 skills/hermes-forge/evals/evals.json
+ create mode 100644 skills/issue-basics/evals/evals.json
+ create mode 100644 skills/kernel/evals/evals.json
+ create mode 100644 skills/plan/evals/evals.json
+ create mode 100644 skills/research/evals/evals.json
+ create mode 100644 skills/review/evals/evals.json
+ create mode 100644 skills/rollback/evals/evals.json
+ create mode 100644 skills/shepherd/evals/evals.json
+ create mode 100644 skills/ship/evals/evals.json
+ create mode 100644 skills/sonarcloud/evals/evals.json
+ create mode 100644 skills/status/evals/evals.json
+ create mode 100644 skills/triage-ready/evals/evals.json
+ create mode 100644 skills/validate/evals/evals.json
+ create mode 100644 skills/verify/evals/evals.json
+
+diff --git a/.codex/skills/claim-safety/SKILL.md b/.codex/skills/claim-safety/SKILL.md
+index a74f567b..685ffd36 100644
+--- a/.codex/skills/claim-safety/SKILL.md
++++ b/.codex/skills/claim-safety/SKILL.md
+@@ -1,14 +1,20 @@
+ ---
+ name: claim-safety
+ description: >
+-  Claim a Forge issue and PROVE you own the lease before doing any work. Use
+-  whenever you (or an orchestrator/agent) are about to mutate a claimed issue —
+-  after `forge claim`, before `dev`/edit/`close`/`release`, or when two agents
+-  might contend for the same work. A claim returning ok:true does NOT prove you
+-  won the lease (a duplicate replay also returns ok:true), so this procedure adds
+-  the mandatory ownership check via `forge issue owns <id>`. Trigger on "claim an
+-  issue safely", "did I win the lease", "verify ownership", "claim conflict",
+-  "two agents same issue", or before any claimed-issue mutation.
++  Claim a Forge issue and then PROVE you hold the live lease before you touch it — the
++  ownership-verification procedure built on `forge issue owns <id>`. Use this whenever
++  actually winning the claim matters: right after `forge claim`, before you
++  `dev`/edit/`close`/`release` a claimed issue, when two agents or a subagent fan-out might
++  contend for the same work, or when you need to re-check ownership before an irreversible
++  step. Why it exists: a claim returning `ok:true` does NOT prove you won — a same-actor
++  duplicate replay also returns `ok:true`, and a live lease can be reclaimed once it expires —
++  so `forge issue owns` (exit 0 iff you hold the single, unexpired active lease) is the only
++  real proof, and you re-verify before close/release. Trigger on "claim this issue safely",
++  "did I actually win the lease", "verify/prove ownership", "claim conflict", "two agents
++  grabbed the same issue", "check I still own it before closing", or before ANY mutation of a
++  claimed issue. NOT for plain single-issue create/update/close/comment when there is no
++  ownership question (that is issue-basics), and NOT for read-only selecting or ranking the
++  next ready issue without claiming (that is triage-ready).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/claim-safety/evals/evals.json b/.codex/skills/claim-safety/evals/evals.json
+new file mode 100644
+index 00000000..80f69b17
+--- /dev/null
++++ b/.codex/skills/claim-safety/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "I just ran forge claim on forge-abc — how do I make sure the lease is really mine before I start editing?",
++    "should_trigger": true
++  },
++  {
++    "query": "Two of my agents may have grabbed the same issue at once — how do I tell which one actually holds it?",
++    "should_trigger": true
++  },
++  {
++    "query": "Before I close this ticket, confirm nobody reclaimed it while I was working.",
++    "should_trigger": true
++  },
++  {
++    "query": "My claim came back ok:true but I'm not convinced I won the race. Can I trust that?",
++    "should_trigger": true
++  },
++  {
++    "query": "Prove I own forge-42 before the subagent starts mutating it.",
++    "should_trigger": true
++  },
++  {
++    "query": "The lease might have expired mid-task — check I still own it before I release.",
++    "should_trigger": true
++  },
++  {
++    "query": "What's the next ready issue I should pick up?",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a feature issue titled 'Add CSV export'.",
++    "should_trigger": false
++  },
++  {
++    "query": "Close forge-19 with reason 'shipped in PR 88'.",
++    "should_trigger": false
++  },
++  {
++    "query": "Take forge-30 all the way through to a PR.",
++    "should_trigger": false
++  },
++  {
++    "query": "Implement the failing auth tests for this task.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/dev/SKILL.md b/.codex/skills/dev/SKILL.md
+index d395789d..a2674c07 100644
+--- a/.codex/skills/dev/SKILL.md
++++ b/.codex/skills/dev/SKILL.md
+@@ -1,6 +1,20 @@
+ ---
+ name: dev
+-description: Implements each task from the plan task list using a subagent-driven loop (implementer → spec-compliance reviewer → code-quality reviewer) with TDD and HARD-GATE enforcement. Use for the Forge dev stage when implementing planned tasks — triggers include /dev, dev stage, build the tasks, subagent TDD, implement task list.
++description: >
++  Forge DEV stage — the build engine that turns an already-approved /plan task list into
++  committed, test-backed code. Reads docs/work/<date>-<slug>/tasks.md and design.md, then
++  drives each task through a subagent loop (implementer → spec-compliance reviewer →
++  code-quality reviewer) using RED-GREEN-REFACTOR TDD, HARD-GATE evidence checks, a spec-gap
++  decision score, and per-task progress recorded on the Forge issue via `forge comment`. Use
++  when a plan and task list already exist and it is time to implement them — triggers: "/dev",
++  "start the dev stage", "build the tasks", "implement tasks.md test-first", "run the
++  implementer/reviewer TDD loop", "write the code for the planned tasks one by one", "work
++  through the task list with subagents". This is the per-task coding stage ONLY. Do NOT use it
++  for creating the design doc or task list (that is plan), for the post-build
++  type-check/lint/security/test gate (validate), for pushing the branch or opening the PR
++  (ship), for addressing PR review feedback (review), or for orchestrating several stages /
++  taking an issue end-to-end to a merged PR (smith). Reach for dev specifically when the ask
++  is to author code for tasks that are already planned.
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/dev/evals/evals.json b/.codex/skills/dev/evals/evals.json
+new file mode 100644
+index 00000000..416391f0
+--- /dev/null
++++ b/.codex/skills/dev/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "/dev",
++    "should_trigger": true
++  },
++  {
++    "query": "The plan and task list are done — start implementing the tasks one at a time, tests first.",
++    "should_trigger": true
++  },
++  {
++    "query": "Run the implementer then the spec and quality reviewer subagents over each task in tasks.md",
++    "should_trigger": true
++  },
++  {
++    "query": "Build out the task list from the design doc using red-green-refactor",
++    "should_trigger": true
++  },
++  {
++    "query": "Time to write the code for the planned tasks and TDD each one in this worktree",
++    "should_trigger": true
++  },
++  {
++    "query": "Work through tasks.md subagent by subagent until every task is committed and reviewed",
++    "should_trigger": true
++  },
++  {
++    "query": "Set up the branch, worktree, and TDD task list for this new feature",
++    "should_trigger": false
++  },
++  {
++    "query": "Type-check, lint, and run the full test suite before I open the PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Push the validated branch and open the pull request",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR has open review threads from the bots — fix each finding, reply, and mark them resolved.",
++    "should_trigger": false
++  },
++  {
++    "query": "Grab the next ready issue and drive it all the way to a merged PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Which workflow stage am I on and what work is in flight right now?",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/hermes-forge/SKILL.md b/.codex/skills/hermes-forge/SKILL.md
+index 3ddecfa0..7dd78561 100644
+--- a/.codex/skills/hermes-forge/SKILL.md
++++ b/.codex/skills/hermes-forge/SKILL.md
+@@ -1,12 +1,26 @@
+ ---
+ name: hermes-forge
+ description: >
+-  Consumption contract for the Hermes harness on a Forge project. Treat
+-  `forge orient` and `forge recap` as the authoritative, token-bounded source
+-  of project state, cite every surfaced fact by its provenance, honor the
+-  deterministic truncation policy, and write evidence or decisions back ONLY
+-  through Forge CLI commands. Hermes-native profile memory never leaks into
+-  Forge Kernel state.
++  Consumption contract for how the Hermes harness reads, cites, and writes back Forge project
++  state — Hermes is a CONSUMER of Forge, never a second source of truth. Load this whenever a
++  Hermes session runs on a Forge repo: at session start to orient, before acting on a specific
++  issue, or any time you need CURRENT project state. Always obtain state through `forge
++  orient` / `forge recap <issue-id>` — the deterministic, token-bounded JSON envelope — and
++  never reconstruct it by reading raw issue stores, design files, or kernel internals. This
++  skill governs the envelope discipline: honor the token budget (raise depth with `--budget
++  N`, don't retry blindly), treat any `truncated` section as incomplete, attribute every
++  surfaced fact to its source `path`/`authority`, and surface conflicts instead of silently
++  picking a winner. It also governs writeback: record evidence, decisions, and follow-up work
++  into the Forge Kernel ONLY through Forge CLI commands (`forge comment` / `forge update` /
++  `forge create`), and NEVER leak Hermes profile or session memory into Forge state. Trigger
++  phrases: "orient me / what's the current project state", "where did this fact come from,
++  cite it", "the orient output came back truncated", "how do I persist this decision back into
++  Forge", "is it safe to store this in kernel state". This is the Hermes⇄Forge boundary
++  contract — NOT the general Forge session router that navigates stage skills (kernel), NOT
++  the human-facing "what stage am I in / where am I" report (status), NOT everyday issue
++  create/update/close/search CRUD (issue-basics), NOT surfacing or ranking the next ready
++  issue (triage-ready), and NOT live PR monitoring (shepherd, which runs OUTSIDE Hermes and is
++  not visible through orient).
+ compatibility: >
+   Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
+   path — like every Forge skill pack (e.g. parallel-deep-research,
+diff --git a/.codex/skills/hermes-forge/evals/evals.json b/.codex/skills/hermes-forge/evals/evals.json
+new file mode 100644
+index 00000000..3f76c331
+--- /dev/null
++++ b/.codex/skills/hermes-forge/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "I just started a Hermes session on this Forge repo — get me oriented on where the project stands before I touch anything.",
++    "should_trigger": true
++  },
++  {
++    "query": "The forge orient envelope came back with the active-work section flagged truncated. Can I treat that as the full list, or do I need to pull more?",
++    "should_trigger": true
++  },
++  {
++    "query": "Before I tell the user which approach we settled on, I need to point at the exact source file and how authoritative it is — where does that decision come from?",
++    "should_trigger": true
++  },
++  {
++    "query": "I uncovered a design decision in this session that the team needs to keep. What's the correct way to write it back into Forge without dragging my Hermes notes into kernel state?",
++    "should_trigger": true
++  },
++  {
++    "query": "Default orientation is clipping the decisions section at 2000 tokens — give me more headroom.",
++    "should_trigger": true
++  },
++  {
++    "query": "Don't rebuild the project picture by grepping the design docs yourself — go through the proper bounded orient/recap surface instead.",
++    "should_trigger": true
++  },
++  {
++    "query": "Which workflow stage am I sitting in right now, and has any of my work gone stale?",
++    "should_trigger": false
++  },
++  {
++    "query": "I'm kicking off a Forge session in Claude — which stage skill do I run to start planning a new feature?",
++    "should_trigger": false
++  },
++  {
++    "query": "Watch PR #418, rerun the flaky required check if it trips, and ping me when it's ready to merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "Open a bug issue for the checkout timeout, set priority 1, and add a note about the repro steps.",
++    "should_trigger": false
++  },
++  {
++    "query": "What's the highest-priority ready issue I should pick up next?",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/issue-basics/SKILL.md b/.codex/skills/issue-basics/SKILL.md
+index 2f6efae1..2460f6d7 100644
+--- a/.codex/skills/issue-basics/SKILL.md
++++ b/.codex/skills/issue-basics/SKILL.md
+@@ -1,13 +1,20 @@
+ ---
+ name: issue-basics
+ description: >
+-  The everyday issue CRUD floor for a Forge project — create, update, claim,
+-  release, comment, close, show, list, search, and stats over the kernel via the
+-  `forge issue` verbs. This is the parity floor a team needs on day one after
+-  migrating off a Beads-style tracker, mapped one-to-one onto real `forge` verbs
+-  with their actual flags. Use for routine issue work. Trigger on "create an
+-  issue", "update an issue", "claim/close an issue", "comment on an issue", "list
+-  issues", "search issues", "reopen", or "add a label".
++  Everyday single-issue CRUD over the `forge issue` verbs — create, update, show, list,
++  search, close, reopen, comment, set priority/labels/assignee, claim or release one issue,
++  and add/remove dependency edges, plus backlog `stats`. Reach for this on ANY routine one-off
++  issue operation: "create an issue/bug/task for X", "update or edit issue <id>", "close (or
++  reopen) this issue", "comment a handoff note on <id>", "list open bugs" or "filter issues by
++  label/priority/status", "search issues for …", "bump this to P1", "reassign to alice", "mark
++  <id> blocked by <id>", "add a label". This is also the parity floor when migrating off a
++  Beads-style tracker (label/reopen/delete map onto their forge equivalents). Scope is
++  single-operation issue plumbing only. It does NOT choose, rank, or explain the next issue to
++  work on or why one is blocked (use triage-ready); it does NOT run the
++  claim-then-prove-lease-ownership safety procedure before mutating shared work (use
++  claim-safety); it does NOT drive an issue through the plan->dev->validate->ship pipeline or
++  open a PR (use smith or the individual stage skills); and it does NOT report the current
++  workflow stage or what is in flight (use status).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/issue-basics/evals/evals.json b/.codex/skills/issue-basics/evals/evals.json
+new file mode 100644
+index 00000000..00b6763b
+--- /dev/null
++++ b/.codex/skills/issue-basics/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "Open a bug ticket for the checkout 500 error and mark it P0",
++    "should_trigger": true
++  },
++  {
++    "query": "Add a note to forge-abc123 documenting why we chose JWT",
++    "should_trigger": true
++  },
++  {
++    "query": "Show me all open issues tagged backend",
++    "should_trigger": true
++  },
++  {
++    "query": "Reopen forge-77, it wasn't actually fixed",
++    "should_trigger": true
++  },
++  {
++    "query": "Add a dependency so forge-12 is blocked by forge-9",
++    "should_trigger": true
++  },
++  {
++    "query": "Claim forge-abc so I can start on it",
++    "should_trigger": true
++  },
++  {
++    "query": "What's the next ready issue I should pick up?",
++    "should_trigger": false
++  },
++  {
++    "query": "Explain why forge-55 is still blocked and what to unblock first",
++    "should_trigger": false
++  },
++  {
++    "query": "Claim this issue and confirm I hold the lease before I change anything",
++    "should_trigger": false
++  },
++  {
++    "query": "Drive forge-30 all the way through to a merged PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow right now and what's in flight?",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+index 536c746f..e1d68a66 100644
+--- a/.codex/skills/kernel/SKILL.md
++++ b/.codex/skills/kernel/SKILL.md
+@@ -1,16 +1,22 @@
+ ---
+ name: kernel
+ description: >
+-  Forge kernel surface — the umbrella index for working in a Forge project. Use
+-  at the start of any session and whenever you need to orient: it routes to the
+-  `smith` orchestrator super-skill, the per-stage workflow skills (plan, dev,
+-  validate, ship, review, verify, plus status, research, rollback, sonarcloud,
+-  shepherd) and the kernel-native skills (triage-ready, issue-basics), and
+-  documents the day-to-day issue, board, and orientation verbs of the `forge`
+-  CLI. Trigger on
+-  "what's the workflow", "what should I work on", "forge issues", "claim an
+-  issue", "project status", "orient", or when deciding between Forge issues and
+-  an ad-hoc TodoWrite list.
++  Forge kernel surface — the umbrella index and router for a Forge project. Reach for this
++  FIRST when you are orienting rather than executing: at the very start of a Forge session,
++  when you need the map of how the whole system fits together, or when you are unsure WHICH
++  skill or `forge` verb a task belongs to. It routes to the `smith` end-to-end orchestrator,
++  the per-stage ladder skills (plan, dev, validate, ship, review, verify), the utility skills
++  (status, research, rollback, sonarcloud, shepherd), and the kernel-native issue skills
++  (triage-ready, claim-safety, issue-basics) — and it is the reference for the day-to-day
++  `forge` CLI issue, board, gate, and orientation verbs. Trigger on "how does the Forge
++  workflow work", "walk me through the stage ladder", "which forge command or skill do I use
++  for X", "what are the forge issue verbs", "I'm new to this repo, how is Forge set up", "map
++  the Forge skills for me", or "should this be a Forge issue or a TodoWrite". This is the
++  meta/index layer, so hand off the actual doing: ranking or picking the next ready issue →
++  `triage-ready`; the current stage, "where am I", or active/stale work → `status`;
++  create/update/close/search a single issue → `issue-basics`; claim-then-prove-ownership
++  before mutating → `claim-safety`; drive one issue from plan to a merged PR under human gates
++  → `smith`; token-bounded project state for the Hermes harness → `hermes-forge`.
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/kernel/evals/evals.json b/.codex/skills/kernel/evals/evals.json
+new file mode 100644
+index 00000000..a5583af3
+--- /dev/null
++++ b/.codex/skills/kernel/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "I just cloned this Forge repo and I'm not sure how any of it works — give me the lay of the land: what's the workflow, what skills exist, and where do I even start?",
++    "should_trigger": true
++  },
++  {
++    "query": "There are a bunch of forge skills and I can't tell which one to use for what — lay out how they fit together and when I'd reach for each.",
++    "should_trigger": true
++  },
++  {
++    "query": "Which forge CLI command adds a dependency between two issues, and what's the verb for proving I hold a claim? Just the reference, don't run anything.",
++    "should_trigger": true
++  },
++  {
++    "query": "Is this small cleanup worth filing as a Forge issue, or should I just throw it on a TodoWrite checklist for this session?",
++    "should_trigger": true
++  },
++  {
++    "query": "Walk me through the Forge stage ladder from planning to post-merge verify and what each stage owns.",
++    "should_trigger": true
++  },
++  {
++    "query": "Give me the reference of all the day-to-day forge issue and board verbs — I want the index, not to execute a command yet.",
++    "should_trigger": true
++  },
++  {
++    "query": "What should I pick up next? Rank the ready queue and tell me the top unblocked issue and why.",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow right now, what's my active work, and has anything gone stale?",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a bug issue titled 'login times out after 30s', priority 1, and link it under the auth epic.",
++    "should_trigger": false
++  },
++  {
++    "query": "Claim forge-4h9 for me and confirm I actually hold the lease before I start editing.",
++    "should_trigger": false
++  },
++  {
++    "query": "Take forge-7c2 all the way from planning through a merged PR, pausing for my approval at the plan and the merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "In the Hermes harness, give me the token-bounded project state to work from — treat forge orient as the source of truth.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/parallel-deep-research/SKILL.md b/.codex/skills/parallel-deep-research/SKILL.md
+index 0af6f2a9..67e00830 100644
+--- a/.codex/skills/parallel-deep-research/SKILL.md
++++ b/.codex/skills/parallel-deep-research/SKILL.md
+@@ -1,17 +1,23 @@
+ ---
+ name: parallel-deep-research
+ description: >
+-  Produces comprehensive research reports that go far beyond what built-in web
+-  search can achieve. Sends research tasks to Parallel AI's pro/ultra processors
+-  which spend 3-25 minutes autonomously crawling, reading, and synthesizing dozens
+-  of sources — returning structured reports with citations. Built-in WebSearch
+-  can only run a few queries; this skill runs an entire research pipeline externally.
+-  No binary install — requires PARALLEL_API_KEY in .env.local. ALWAYS use this
+-  skill instead of doing multiple WebSearch calls when the user needs a comprehensive
+-  report, market analysis, competitive landscape, industry deep-dive, strategic
+-  recommendations, or multi-source synthesis. This is the RIGHT tool for any
+-  research task that would require more than 3-4 web searches to answer properly.
+-  Also trigger during /plan Phase 2 research and /research workflows.
++  Heavyweight EXTERNAL research reports — market, industry, competitive, and strategic —
++  delegated to Parallel AI's paid pro/ultra processors, which autonomously crawl, read, and
++  synthesize dozens of sources over 3-25 minutes and return one long structured report with
++  citations, far beyond what a handful of WebSearch calls can produce. Reach for this whenever
++  the user wants a comprehensive market analysis, competitive landscape, industry deep-dive,
++  multi-vendor/technology comparison across many sources, strategic recommendations, market
++  sizing/growth outlook, or any multi-source synthesis that would take more than 3-4 web
++  searches to answer well. Typical phrasings: "market analysis of X", "competitive landscape
++  comparing A/B/C", "industry deep-dive on...", "deep research report on...", "compare these
++  vendors at our scale", "strategic report with predictions for 2027". Requires
++  PARALLEL_API_KEY in .env.local; each run costs money and takes minutes, so it is the WRONG
++  tool for quick facts, a single-page fetch, one-URL scraping, or a small structured-field
++  extraction — use built-in WebSearch/WebFetch for those. It is also NOT the Forge RESEARCH or
++  PLAN stage itself: "run the research stage", "do Phase 2 for this feature", or
++  codebase/OWASP/DRY investigation that gets written into a design doc route to `research` and
++  `plan` — those stages may INVOKE this skill as their external research engine when a topic
++  genuinely needs dozens of sources, but a bare "run the stage" request is not this skill.
+ compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
+ metadata:
+   author: harshanandak
+diff --git a/.codex/skills/parallel-deep-research/evals/evals.json b/.codex/skills/parallel-deep-research/evals/evals.json
+index f633aabd..30c30343 100644
+--- a/.codex/skills/parallel-deep-research/evals/evals.json
++++ b/.codex/skills/parallel-deep-research/evals/evals.json
+@@ -1,62 +1,46 @@
+ [
+   {
+-    "query": "I need a comprehensive market analysis of the developer tools space — cover the top 20 players, their funding, market positioning, and where the industry is heading over the next 3-5 years. Include data from Gartner, Forrester, and any recent VC investment reports",
++    "query": "I need a comprehensive market analysis of the developer-tools space — top 20 players, their funding, market positioning, and where the industry is heading over the next 3-5 years, pulling from Gartner, Forrester, and recent VC investment reports",
+     "should_trigger": true
+   },
+   {
+-    "query": "Write a deep research report on the state of WebAssembly adoption in production — synthesize case studies from companies using WASM, performance benchmarks vs native code, ecosystem maturity analysis, and strategic recommendations for when to adopt it",
++    "query": "Write a deep research report on WebAssembly adoption in production — synthesize company case studies, performance benchmarks vs native code, ecosystem maturity, and clear recommendations for when to adopt it",
+     "should_trigger": true
+   },
+   {
+-    "query": "Our CTO wants a competitive landscape analysis comparing Convex, Supabase, Firebase, and PlanetScale for our backend rewrite. Need comprehensive feature comparison, pricing analysis at our scale (50K DAU), community health metrics, and risk assessment for each",
++    "query": "Competitive landscape comparing Convex, Supabase, Firebase, and PlanetScale for our backend rewrite — full feature comparison, pricing at 50K DAU, community-health metrics, and a per-vendor risk assessment",
+     "should_trigger": true
+   },
+   {
+-    "query": "Create a strategic report on the AI code generation market — analyze GitHub Copilot, Cursor, Claude Code, and emerging competitors. Cover adoption rates, developer satisfaction surveys, enterprise pricing trends, and predictions for 2027",
++    "query": "Give me an industry deep-dive on the observability market — Datadog vs Grafana Cloud vs New Relic across features, pricing, scalability, and OpenTelemetry support, with customer migration stories and TCO analysis for a 500-node cluster",
+     "should_trigger": true
+   },
+   {
+-    "query": "I'm doing /plan Phase 2 research — produce a comprehensive analysis of event-driven architecture patterns in microservices, covering Kafka vs RabbitMQ vs NATS, with production case studies, failure mode analysis, and recommendations for our 100K events/sec throughput requirement",
++    "query": "For our architecture decision, produce a heavily-sourced report on event-driven patterns — Kafka vs RabbitMQ vs NATS at 100K events/sec, with production case studies and failure-mode analysis",
+     "should_trigger": true
+   },
+   {
+-    "query": "Write an industry deep-dive into the observability market — compare Datadog, Grafana Cloud, and New Relic across features, pricing, scalability, and OpenTelemetry support. Include customer migration stories and TCO analysis for a 500-node cluster",
+-    "should_trigger": true
+-  },
+-  {
+-    "query": "Research and synthesize the current state of edge computing for real-time AI inference — cover hardware options, cloud provider edge offerings, latency benchmarks, and case studies from autonomous vehicles and IoT deployments",
+-    "should_trigger": true
+-  },
+-  {
+-    "query": "Quick search: what's the current price of Bitcoin and what were Anthropic's latest announcements?",
+-    "should_trigger": false
+-  },
+-  {
+-    "query": "Find the official migration guide URL for ESLint's new flat config format",
+-    "should_trigger": false
+-  },
+-  {
+-    "query": "Search for recent blog posts about Bun 2.0 features and release date",
++    "query": "Quick — what's the current price of Bitcoin and what were Anthropic's latest announcements?",
+     "should_trigger": false
+   },
+   {
+-    "query": "Go to https://stripe.com/docs/api and extract the authentication section with all the code examples",
++    "query": "Go to https://stripe.com/docs/api and extract the authentication section with all its code examples",
+     "should_trigger": false
+   },
+   {
+-    "query": "Scrape https://openai.com/pricing and extract the per-token costs for each model tier",
++    "query": "Scrape https://openai.com/pricing and pull out the per-token cost for each model tier",
+     "should_trigger": false
+   },
+   {
+-    "query": "Build a structured company profile for Databricks — return JSON with founding year, funding rounds, valuation, employee count, and tech stack",
++    "query": "Run the /research stage for the auth-refactor feature — investigate how our codebase currently handles session tokens, flag OWASP and DRY concerns, and write the findings into the design doc",
+     "should_trigger": false
+   },
+   {
+-    "query": "Fix the TypeScript compilation error in src/services/auth.ts — it's complaining about missing type for the session token",
++    "query": "Kick off the plan stage for adding rate limiting — brainstorm the design one question at a time, then set up the branch, worktree, and task list",
+     "should_trigger": false
+   },
+   {
+-    "query": "Add unit tests for the rate limiter middleware in src/middleware/rateLimit.ts",
++    "query": "Fix the TypeScript compilation error in src/services/auth.ts about the missing session-token type",
+     "should_trigger": false
+   }
+ ]
+diff --git a/.codex/skills/plan/SKILL.md b/.codex/skills/plan/SKILL.md
+index 02033433..9ab7a2b3 100644
+--- a/.codex/skills/plan/SKILL.md
++++ b/.codex/skills/plan/SKILL.md
+@@ -1,11 +1,18 @@
+ ---
+ name: plan
+ description: >
+-  Use for the Forge plan stage to capture design intent through
+-  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
+-  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
+-  starting a new feature, planning or scoping work, writing a design doc, or preparing
+-  a worktree and task list before development.
++  Forge PLAN stage — the first stop when starting a NEW feature or an unscoped piece of work.
++  Runs one-question-at-a-time brainstorming to capture design intent, writes and commits a
++  design doc, runs technical/OWASP/DRY + codebase research, then sets up the branch, worktree,
++  and a complete TDD task list ready to hand to /dev. Trigger on "let's plan X", "start or
++  scope a new feature", "brainstorm this before we build", "write a design doc", "break this
++  into tasks", or "set up a worktree and task list before coding". Reach for this even when
++  the request sounds like only design or only scoping — plan owns intent → research →
++  task-list setup as a single stage. NOT for driving a feature all the way to a merged PR
++  (that is smith), NOT for implementing the tasks once they already exist (dev), NOT for a
++  standalone deep-research pass into an already-approved design doc (research), NOT for
++  reporting where current work stands or what is stale (status), and NOT for everyday issue
++  create/list/close or picking the next ready issue (issue-basics / triage-ready).
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/plan/evals/evals.json b/.codex/skills/plan/evals/evals.json
+new file mode 100644
+index 00000000..dcc082c7
+--- /dev/null
++++ b/.codex/skills/plan/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "I want to build a rate-limiter for our public API — help me nail down the design, then break it into tasks before I write any code.",
++    "should_trigger": true
++  },
++  {
++    "query": "Let's kick off the webhook-retry feature: ask me the key decisions one at a time, write it up, and set me up to start developing.",
++    "should_trigger": true
++  },
++  {
++    "query": "Scope out adding SSO to the admin dashboard — pin down requirements and edge cases and give me an ordered TDD task list on its own branch.",
++    "should_trigger": true
++  },
++  {
++    "query": "Before anyone touches the notification service I want a real plan: a worktree, some research on the approach, and a task list /dev can just run.",
++    "should_trigger": true
++  },
++  {
++    "query": "Starting the CSV-export epic today — brainstorm the approach with me and produce a committed design doc plus tasks.",
++    "should_trigger": true
++  },
++  {
++    "query": "Grab the highest-priority ready issue and take it all the way to an open PR — plan, build, validate, ship — just pause for my approval before merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "The design doc and task list are already in docs/work; start implementing the first task with RED-GREEN-REFACTOR.",
++    "should_trigger": false
++  },
++  {
++    "query": "The design is approved and written — now go do the deep web and codebase research and append it under the Technical Research section.",
++    "should_trigger": false
++  },
++  {
++    "query": "Which stage am I on for the billing branch, and is any of my work going stale?",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a bug issue for the broken logout redirect and link it under the auth epic.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/research/SKILL.md b/.codex/skills/research/SKILL.md
+index e6e3265a..d0d698a4 100644
+--- a/.codex/skills/research/SKILL.md
++++ b/.codex/skills/research/SKILL.md
+@@ -1,10 +1,25 @@
+ ---
+ name: research
+ description: >
+-  Runs deep, parallel web and codebase research and documents findings in the design
+-  doc. Use for the Forge research stage when gathering technical research, OWASP
+-  analysis, and TDD scenarios before planning or development. Trigger keywords are
+-  research, deep research, web search, OWASP, codebase exploration, technical research.
++  Runs the Forge RESEARCH stage — the technical-investigation phase now embedded as /plan
++  Phase 2. Use it when the user wants JUST the research work for a specific feature (not the
++  whole plan flow): deep web research on best practices and known gotchas for the chosen
++  approach, an OWASP Top 10 risk pass documenting which categories apply and how they'll be
++  mitigated, DRY / blast-radius codebase exploration for existing patterns to reuse, and
++  identification of at least three TDD test scenarios — all appended under `## Technical
++  Research` in that feature's `docs/work/YYYY-MM-DD-<slug>/design.md`. Trigger on phrasings
++  like "run the research phase", "do the technical research for this feature", "run an OWASP
++  analysis on this", "explore the codebase for reusable patterns before we build", "check
++  we're not duplicating an existing helper (DRY)", "add the security + best-practices research
++  to the design doc", or "find TDD scenarios for X". If the design doc doesn't exist yet,
++  create it first, then research into it. Pick this skill over its siblings: choose `plan`
++  instead when the user is starting a feature from scratch and wants the FULL stage —
++  one-question-at-a-time design brainstorm plus branch/worktree/task-list setup — not only the
++  research; choose `parallel-deep-research` instead when the ask is an external market,
++  competitive, or industry report via Parallel AI (business analysis, vendor comparison,
++  funding/landscape), not code-level technical/OWASP/DRY research; choose `dev` or `validate`
++  instead when the user wants to implement tasks or run security scans/lint/tests against code
++  rather than research it.
+ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+ 
+diff --git a/.codex/skills/research/evals/evals.json b/.codex/skills/research/evals/evals.json
+new file mode 100644
+index 00000000..b0f850f0
+--- /dev/null
++++ b/.codex/skills/research/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "The design doc for the rate-limiter is already written — now go do the technical research: best practices, known gotchas for this approach, and drop it under Technical Research in the doc.",
++    "should_trigger": true
++  },
++  {
++    "query": "Run an OWASP Top 10 pass over this new file-upload feature and record which categories actually apply and how we'll mitigate each.",
++    "should_trigger": true
++  },
++  {
++    "query": "Before we build the caching layer, search the codebase for anything we can reuse and make sure we're not duplicating an existing helper.",
++    "should_trigger": true
++  },
++  {
++    "query": "Just do the research phase for this feature — web plus codebase investigation and at least three TDD scenarios — skip the brainstorm and the worktree setup.",
++    "should_trigger": true
++  },
++  {
++    "query": "Pull together the security and best-practices research for the OAuth integration and append it to the feature's design doc.",
++    "should_trigger": true
++  },
++  {
++    "query": "Let's plan this feature from scratch — brainstorm the design with me one question at a time, then create the branch, worktree, and task list.",
++    "should_trigger": false
++  },
++  {
++    "query": "I need a competitive landscape report comparing Datadog, Grafana Cloud, and New Relic on pricing and features for a 500-node cluster.",
++    "should_trigger": false
++  },
++  {
++    "query": "Give me a comprehensive market analysis of the vector-database space — top players, funding, and the 3-5 year outlook.",
++    "should_trigger": false
++  },
++  {
++    "query": "Start implementing task 1 with TDD — write the failing test first, then make it pass.",
++    "should_trigger": false
++  },
++  {
++    "query": "Run the security scan, lint, and full test suite before we open the PR.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/review/SKILL.md b/.codex/skills/review/SKILL.md
+index e864875f..41be40d8 100644
+--- a/.codex/skills/review/SKILL.md
++++ b/.codex/skills/review/SKILL.md
+@@ -1,6 +1,22 @@
+ ---
+ name: review
+-description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or running the pre-merge doc gate before merge.
++description: >
++  Forge REVIEW stage — the one skill that drives an already-open pull request to all-green by
++  resolving EVERY piece of feedback on it: failing GitHub Actions / CI checks, Greptile and
++  CodeRabbit inline comments and summaries, and the SonarCloud quality gate. It actively fixes
++  the code, replies to each thread, and marks it resolved until the checks pass, then runs the
++  pre-merge doc gate (CHANGELOG / README / API / AGENTS docs) and hands the PR off for MANUAL
++  merge — it never runs `gh pr merge`. Reach for it whenever a PR already has review feedback
++  or red checks to work through: "address the review comments on PR #123", "the bots flagged
++  issues / my Greptile score is low", "fix the failing checks and resolve the threads",
++  "CodeRabbit and SonarCloud left comments — sort them out", "get my PR merge-ready". This is
++  the MUTATING feedback-resolution stage — distinct from shepherd (only WATCHES an open PR's
++  checks and settle window, changes nothing), verify (POST-merge CI-on-master health check +
++  closing issues), ship (pushing the branch and opening the PR in the first place), validate
++  (PRE-PR local type/lint/test/security on your branch), and the sonarcloud /
++  sonarcloud-analysis skills (which only QUERY SonarCloud data that this stage consumes). Use
++  those for a single tool or a passive watch; use this to work a PR's whole feedback set to
++  done.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/review/evals/evals.json b/.codex/skills/review/evals/evals.json
+new file mode 100644
+index 00000000..3bca6277
+--- /dev/null
++++ b/.codex/skills/review/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "PR #204 has three red checks and a pile of Greptile comments — work through all of it and get the PR green.",
++    "should_trigger": true
++  },
++  {
++    "query": "CodeRabbit and SonarCloud both left feedback on my pull request; fix what's valid, reply to the rest, and resolve the threads.",
++    "should_trigger": true
++  },
++  {
++    "query": "The GitHub Actions build is failing on my PR and there are unresolved review threads — sort them out before I merge.",
++    "should_trigger": true
++  },
++  {
++    "query": "My Greptile confidence score is low. Address the inline comments and keep pushing fixes until the quality gate passes.",
++    "should_trigger": true
++  },
++  {
++    "query": "Handle all the reviewer feedback on the auth PR, then update the changelog and docs before we hand it off to merge.",
++    "should_trigger": true
++  },
++  {
++    "query": "Just keep an eye on PR #150 — watch the checks and review threads and ping me when it's settled and mergeable. Don't touch the code.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR is merged to master now — run the post-merge health check and close out the issue.",
++    "should_trigger": false
++  },
++  {
++    "query": "My branch passed validation; push it and open the pull request with the design-doc link.",
++    "should_trigger": false
++  },
++  {
++    "query": "Before I open a PR, run the type-check, lint, full test suite, and security scan on my branch.",
++    "should_trigger": false
++  },
++  {
++    "query": "Just pull up this PR's SonarCloud issues and quality-gate status so I can eyeball them.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/rollback/SKILL.md b/.codex/skills/rollback/SKILL.md
+index 118fdfd8..6ba7def1 100644
+--- a/.codex/skills/rollback/SKILL.md
++++ b/.codex/skills/rollback/SKILL.md
+@@ -1,6 +1,19 @@
+ ---
+ name: rollback
+-description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
++description: >
++  Safely revert or undo a change that is already committed or shipped, using non-destructive
++  `git revert` (never `reset --hard`, `push --force`, or `clean`) and auto-preserving USER
++  sections plus custom commands. Drives the interactive `bunx forge rollback` menu: undo the
++  last commit, revert a specific commit by hash, revert a merged PR (git revert -m 1), restore
++  individual files to their prior version, revert a commit range, or dry-run/preview any of
++  these first. Use when the user says roll back, revert, undo, back out, or restore — e.g.
++  "undo the last commit", "undo that change, the approach was wrong", "back out PR #123",
++  "revert the merge commit", "restore src/auth.js to before my last commit", or when a
++  shipped/merged change broke something and must be pulled back (optionally re-flagging its
++  linked Beads issue). This is the RECOVERY skill for changes already in git history. Do NOT
++  use for: replying to or fixing PR review feedback (review), monitoring an open PR's checks
++  toward merge (shepherd), the post-merge CI health check on master (verify), pushing a branch
++  or opening a PR (ship), or ordinary issue status/field edits (issue-basics).
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/rollback/evals/evals.json b/.codex/skills/rollback/evals/evals.json
+new file mode 100644
+index 00000000..ee93f0e7
+--- /dev/null
++++ b/.codex/skills/rollback/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "undo the last commit, the approach was wrong",
++    "should_trigger": true
++  },
++  {
++    "query": "back out PR #482, it's breaking production",
++    "should_trigger": true
++  },
++  {
++    "query": "restore config/database.yml to the version before my last commit",
++    "should_trigger": true
++  },
++  {
++    "query": "show me which files reverting commit a1b2c3d would touch before I actually do it",
++    "should_trigger": true
++  },
++  {
++    "query": "that merged refactor broke everything — revert the whole thing but keep the git history intact",
++    "should_trigger": true
++  },
++  {
++    "query": "what's the safe way to undo a merged pull request?",
++    "should_trigger": true
++  },
++  {
++    "query": "address the Greptile and CodeRabbit comments on my PR",
++    "should_trigger": false
++  },
++  {
++    "query": "keep watching my open PR and tell me when checks pass and it's mergeable",
++    "should_trigger": false
++  },
++  {
++    "query": "master is green after the merge — run the post-merge health check and close the issue",
++    "should_trigger": false
++  },
++  {
++    "query": "push my validated branch and open a pull request",
++    "should_trigger": false
++  },
++  {
++    "query": "set issue forge-9f2 to status review",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/shepherd/SKILL.md b/.codex/skills/shepherd/SKILL.md
+index 6ab1242e..1a0d3761 100644
+--- a/.codex/skills/shepherd/SKILL.md
++++ b/.codex/skills/shepherd/SKILL.md
+@@ -1,6 +1,20 @@
+ ---
+ name: shepherd
+-description: Runs one bounded monitor pass over a pull request — reads CI and check state, takes at most one idempotent action, then hands off; never merges and never resolves review threads. Use when polling PR checks, re-running flaky required checks, posting status replies, or escalating merge-readiness after /review.
++description: >
++  Run ONE bounded, hand-off monitor pass over an already-reviewed OPEN pull request: read the
++  CI/check rollup and the branch-protection required-check set, take at most one idempotent
++  action (re-run a flaky required check, or post a status reply to a thread), then declare
++  merge-readiness — MERGE_READY, still PENDING, or escalate — and exit. There is no in-process
++  loop; a scheduler re-invokes the pass. Use this when the user says things like "is PR #123
++  ready to merge yet?", "poll/watch the checks on my PR", "the required CI job is flaky — kick
++  off a re-run", "keep an eye on this PR until it's green", "babysit the checks after
++  /review", "shepherd PR 45", or "monitor the PR toward merge (and rebase it if it's behind,
++  with --auto-rebase)". It NEVER merges (the human merges in the GitHub UI), NEVER edits code,
++  and NEVER resolves review threads. Do NOT use it to fix or reply-and-resolve PR review
++  feedback from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR in
++  the first place — that is `ship`; nor for the post-merge "CI green on master + close issues"
++  health check — that is `verify`; nor for a general "where am I in the workflow / what's in
++  flight" report — that is `status`.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/shepherd/evals/evals.json b/.codex/skills/shepherd/evals/evals.json
+new file mode 100644
+index 00000000..2315f7b7
+--- /dev/null
++++ b/.codex/skills/shepherd/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "Is PR #212 ready to merge yet?",
++    "should_trigger": true
++  },
++  {
++    "query": "The lint check on my PR keeps failing intermittently — kick off a re-run of the failed jobs.",
++    "should_trigger": true
++  },
++  {
++    "query": "Keep an eye on pull request 88 and tell me when all the required checks pass.",
++    "should_trigger": true
++  },
++  {
++    "query": "I just wrapped up /review on this PR — babysit the checks and escalate if it isn't mergeable.",
++    "should_trigger": true
++  },
++  {
++    "query": "Shepherd PR 300 and rebase it onto master if it's behind.",
++    "should_trigger": true
++  },
++  {
++    "query": "Fix all the CodeRabbit and Greptile comments on my PR and resolve each review thread.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR just merged to master — confirm CI is green there and close the linked issue.",
++    "should_trigger": false
++  },
++  {
++    "query": "Push my validated feature branch and open a pull request from the template.",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow and what work is still in flight right now?",
++    "should_trigger": false
++  },
++  {
++    "query": "Show me the SonarCloud issues flagged on this PR.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/ship/SKILL.md b/.codex/skills/ship/SKILL.md
+index 8add533a..144c8e70 100644
+--- a/.codex/skills/ship/SKILL.md
++++ b/.codex/skills/ship/SKILL.md
+@@ -1,10 +1,21 @@
+ ---
+ name: ship
+ description: >
+-  Pushes the validated branch and opens a pull request populated from the project's
+-  PR template with full context and documentation links. Use for the Forge ship stage
+-  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
+-  gh pr create.
++  Forge SHIP stage: push the already-validated feature branch and open a pull request
++  populated from the project's OWN PR template (design-doc link, Forge issue IDs, real
++  test/commit data), then hand the PR off for MANUAL merge — this skill never merges or
++  auto-merges. Reach for it the moment /validate has passed and you want a PR on the board.
++  Triggers on phrasings like "ship it", "ship this branch", "create/open the PR", "open a pull
++  request", "push and open a PR", "gh pr create", "make/raise a PR from my current branch",
++  "checks passed, now cut the PR". It runs the branch-freshness and parallel-PR
++  merge-simulation checks, force-with-lease pushes, records the ship->review handoff, then
++  stops. This is ONE stage — route elsewhere when the ask is broader or different: the whole
++  plan->dev->validate->ship->review pipeline or "drive it to done" (smith); running
++  type-check/lint/tests/security first (validate); addressing PR review comments or resolving
++  Greptile/SonarCloud/CodeRabbit threads on an existing PR (review); babysitting an
++  already-open PR's checks toward merge (shepherd); the post-merge CI health check and closing
++  issues (verify); or reverting an already-shipped change (rollback). If the PR already
++  exists, this is not the skill.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/ship/evals/evals.json b/.codex/skills/ship/evals/evals.json
+new file mode 100644
+index 00000000..8e278650
+--- /dev/null
++++ b/.codex/skills/ship/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "Validation came back clean — go ahead and open the pull request for this branch.",
++    "should_trigger": true
++  },
++  {
++    "query": "Push my feature branch and raise a PR, and fill in our PR template with the issue and design-doc links.",
++    "should_trigger": true
++  },
++  {
++    "query": "Dev's done and all the checks passed, cut me a PR.",
++    "should_trigger": true
++  },
++  {
++    "query": "Do a gh pr create for feat/rate-limit using the repo's template, not a hand-written body.",
++    "should_trigger": true
++  },
++  {
++    "query": "Everything's green after validate — ship it, but hand it off for me to merge, don't merge it yourself.",
++    "should_trigger": true
++  },
++  {
++    "query": "Take forge-42 from planning all the way to a merge-ready PR — plan it, build it TDD, validate, then ship, checking with me at the gates.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR's picked up Greptile and CodeRabbit comments — fix them and resolve the threads.",
++    "should_trigger": false
++  },
++  {
++    "query": "Run the type-check, lint, tests and security scan before I push anything.",
++    "should_trigger": false
++  },
++  {
++    "query": "Keep watching PR #128 and ping me the moment its checks go green so I can merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR merged to master — confirm CI is green there and close the linked issue.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/sonarcloud-analysis/SKILL.md b/.codex/skills/sonarcloud-analysis/SKILL.md
+index 9c441fb9..e386aa95 100644
+--- a/.codex/skills/sonarcloud-analysis/SKILL.md
++++ b/.codex/skills/sonarcloud-analysis/SKILL.md
+@@ -1,13 +1,24 @@
+ ---
+ name: sonarcloud-analysis
+ description: >
+-  Pull issues, metrics, quality gates, and analysis data from SonarCloud. ALWAYS
+-  use this skill when the user mentions SonarCloud, asks about code quality metrics,
+-  wants to check PR quality gates, or needs to review security vulnerabilities and
+-  technical debt from static analysis. Also trigger during /review workflow when
+-  SonarCloud issues need addressing. Trigger on phrases like "SonarCloud",
+-  "quality gate", "code quality metrics", "technical debt", "coverage report",
+-  "static analysis issues", "security vulnerabilities from scan".
++  Deep-dive SonarCloud analysis through the SonarCloud REST API, run in an isolated context so
++  the raw JSON does not flood the main conversation. Pull open issues (bugs, vulnerabilities,
++  code smells), coverage and duplication metrics, quality-gate pass/fail status with the exact
++  failed thresholds, security hotspots, quality profiles, and analysis/measure history for a
++  whole project, a branch, or a specific pull request, then hand back a ranked, actionable
++  summary. Reach for this whenever the user names SonarCloud or asks about code-quality
++  metrics, technical debt, coverage numbers, a red or failing quality gate, or security
++  vulnerabilities and hotspots from static analysis — for example "what's our technical debt
++  and which files have the worst maintainability", "why is the SonarCloud gate failing on this
++  PR", "pull every BLOCKER vulnerability from the last scan with file and line", "show
++  coverage by module", or "how have our reliability and security ratings trended this month".
++  Route ELSEWHERE when: the user explicitly types the thin `/sonarcloud <query> <project>`
++  slash command for a quick single lookup (that is the sibling 'sonarcloud' command surface);
++  they want to reply to and resolve PR review threads across Greptile, CodeRabbit, or GitHub
++  Actions (that is 'review'); they want to run the local lint, type-check, test, or security
++  scanner before shipping (that is 'validate'); they want to actually implement or patch a
++  flagged issue (that is 'dev'); or they want an external market or competitor report on
++  SonarSource or DevSecOps vendors (that is 'parallel-deep-research').
+ category: Code Quality
+ tags: [sonarcloud, code-quality, issues, metrics, security]
+ context: fork
+diff --git a/.codex/skills/sonarcloud-analysis/evals/evals.json b/.codex/skills/sonarcloud-analysis/evals/evals.json
+index 586cb41d..16ab0e81 100644
+--- a/.codex/skills/sonarcloud-analysis/evals/evals.json
++++ b/.codex/skills/sonarcloud-analysis/evals/evals.json
+@@ -1,50 +1,46 @@
+ [
+   {
+-    "query": "Check the SonarCloud quality gate status for our latest PR — I want to see if there are any blockers before we can merge, especially around security vulnerabilities and code coverage",
++    "query": "Why is our quality gate red on this pull request? Break down exactly which conditions failed and by how much.",
+     "should_trigger": true
+   },
+   {
+-    "query": "Pull the SonarCloud analysis results for our project — show me all the critical and major security vulnerabilities found in the last scan, with file locations and remediation guidance",
++    "query": "How much technical debt has piled up in the codebase, and which files carry the worst maintainability rating?",
+     "should_trigger": true
+   },
+   {
+-    "query": "We're in /review and SonarCloud flagged some issues — get the full list of code smells, bugs, and vulnerabilities from the latest analysis so I can address them before the quality gate passes",
++    "query": "Give me the coverage and duplication numbers for the develop branch and flag the modules that regressed.",
+     "should_trigger": true
+   },
+   {
+-    "query": "What's our current technical debt ratio in SonarCloud? Show me the metrics dashboard — maintainability rating, reliability rating, security rating, and coverage percentage",
++    "query": "List every unresolved BLOCKER and CRITICAL vulnerability SonarCloud found, with file and line, so I know what to fix first.",
+     "should_trigger": true
+   },
+   {
+-    "query": "The SonarCloud quality gate is failing on our PR — pull the specific issues that are blocking it and show me what needs to be fixed, sorted by severity",
++    "query": "Pull the security hotspots that still need review and summarize the risk for each.",
+     "should_trigger": true
+   },
+   {
+-    "query": "Get the SonarCloud code coverage report for our project — I want to see which modules have low coverage and identify the files that need more tests before our next release",
++    "query": "Show me how our reliability and security ratings have trended over the last month of analyses.",
+     "should_trigger": true
+   },
+   {
+-    "query": "Implement a new REST API endpoint for user profile management with CRUD operations, input validation, and proper error handling",
++    "query": "/sonarcloud issues checkout-service --severity BLOCKER",
+     "should_trigger": false
+   },
+   {
+-    "query": "Search for best practices around implementing OAuth2 PKCE flow in a Node.js application",
++    "query": "Go through all the open PR review threads from Greptile and CodeRabbit, reply to each explaining the fix, and mark them resolved.",
+     "should_trigger": false
+   },
+   {
+-    "query": "Write a comprehensive market analysis of the DevSecOps tools landscape covering SAST, DAST, and SCA vendors",
++    "query": "Run lint, type-check, the test suite, and the security scanner and give me fresh output before I ship this branch.",
+     "should_trigger": false
+   },
+   {
+-    "query": "Scrape https://docs.sonarcloud.io and extract the full list of supported languages and analysis rules",
++    "query": "Fix the SQL-injection vulnerability SonarCloud flagged in login.ts and add a regression test.",
+     "should_trigger": false
+   },
+   {
+-    "query": "Build a structured company profile for SonarSource — return JSON with founding year, funding, products, and competitive positioning",
+-    "should_trigger": false
+-  },
+-  {
+-    "query": "Add proper citations to docs/research/security-audit-findings.md following our project's citation standards",
++    "query": "Produce a competitive market report comparing SonarCloud, Snyk, and Codacy for our tooling decision.",
+     "should_trigger": false
+   }
+ ]
+diff --git a/.codex/skills/sonarcloud/SKILL.md b/.codex/skills/sonarcloud/SKILL.md
+index a8dd4974..4f1bb8ca 100644
+--- a/.codex/skills/sonarcloud/SKILL.md
++++ b/.codex/skills/sonarcloud/SKILL.md
+@@ -1,6 +1,23 @@
+ ---
+ name: sonarcloud
+-description: Pulls issues, metrics, quality gates, security hotspots, and analysis history from SonarCloud via its API. Use for the Forge sonarcloud stage when querying code quality data for a project, branch, or PR — triggers on sonarcloud, code quality, issues, metrics, quality gate, hotspots, coverage.
++description: >
++  Query SonarCloud code-quality data through the `/sonarcloud` slash command — the fast,
++  in-context lookup surface for a project, branch, or (above all) a pull request. Handles the
++  named queries `issues`, `metrics`, `gate` (quality-gate pass/fail with failed conditions),
++  `health` (full report), `pr <number>`, `hotspots` (security), and `history`, plus
++  `--branch`, `--severity`, `--type`, and `--new-code` filters. Reach for this the moment the
++  user types `/sonarcloud ...`, or asks in plain language: "what does SonarCloud say about
++  this PR", "check the SonarCloud quality gate before I ship", "show SonarCloud
++  blocker/critical bugs on the develop branch", "any new-code SonarCloud issues on PR 214",
++  "SonarCloud coverage for my-project". Requires a `SONARCLOUD_TOKEN` (and organization key).
++  This skill only READS and reports SonarCloud results — it does NOT fix findings or
++  reply-to/resolve PR review threads (that is the `review` stage), and it is the lightweight
++  command surface, NOT the isolated deep-analysis session that correlates findings with local
++  source, walks analysis-history trends, or runs duplication deep-dives across many endpoints
++  (that is `sonarcloud-analysis` — send heavyweight or correlation work there). Not for local
++  SAST/security scans of your own code, and not for the Forge issue tracker ("open/ready
++  issues", `forge issue ...`) — here those bare words always mean SonarCloud, not the tracker
++  or validate stage.
+ allowed-tools: Bash, Read, Grep, Glob, WebFetch
+ ---
+ 
+diff --git a/.codex/skills/sonarcloud/evals/evals.json b/.codex/skills/sonarcloud/evals/evals.json
+new file mode 100644
+index 00000000..433984bc
+--- /dev/null
++++ b/.codex/skills/sonarcloud/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "/sonarcloud gate my-project",
++    "should_trigger": true
++  },
++  {
++    "query": "/sonarcloud pr befach-web 214 --new-code",
++    "should_trigger": true
++  },
++  {
++    "query": "What does SonarCloud say about this pull request? Just the quality gate and the blocker issues, quick.",
++    "should_trigger": true
++  },
++  {
++    "query": "Show SonarCloud bugs and vulnerabilities on the develop branch for the api project",
++    "should_trigger": true
++  },
++  {
++    "query": "Any new-code SonarCloud issues on PR 88 before I ship?",
++    "should_trigger": true
++  },
++  {
++    "query": "Pull the SonarCloud coverage and code-smell numbers for my-project so I can eyeball them",
++    "should_trigger": true
++  },
++  {
++    "query": "Open an isolated SonarCloud deep-dive: correlate every flagged vulnerability with the actual source files, walk the analysis history for coverage trends, and hand back a synthesized technical-debt report",
++    "should_trigger": false
++  },
++  {
++    "query": "SonarCloud flagged issues on PR 214 — fix them, reply to each review thread, and mark them resolved",
++    "should_trigger": false
++  },
++  {
++    "query": "Run a SAST security scan over my code and list the vulnerabilities you find",
++    "should_trigger": false
++  },
++  {
++    "query": "Show me the open issues that are ready to work on next",
++    "should_trigger": false
++  },
++  {
++    "query": "Run lint and type-check and the test suite before I ship this branch",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/status/SKILL.md b/.codex/skills/status/SKILL.md
+index 1225134c..d846ef93 100644
+--- a/.codex/skills/status/SKILL.md
++++ b/.codex/skills/status/SKILL.md
+@@ -1,6 +1,21 @@
+ ---
+ name: status
+-description: Checks the current Forge workflow stage and surfaces in-progress work, ranked ready issues, stale in-progress reconciliation, recent commits, and team context. Use for the Forge status stage when starting a session or deciding what to work on next. Triggers include status, current stage, what's in progress, where am I, and resume work.
++description: >
++  Report where the project stands right now and what work is in flight -- the Forge status
++  snapshot. Reach for this at session start or whenever the user says "/status", "where am I",
++  "what's in progress", "catch me up", "resume work", "what changed recently", or "what should
++  I pick up next". It runs forge sync, then surfaces the detected workflow stage, the user's
++  active/claimed issues, all issues ranked by composite score (priority, dependency impact,
++  type, staleness) with conflict-risk annotations, stale in-progress issues that were already
++  merged (which it reconciles by closing them), the last ~10 commits, and a forge team
++  workload/dashboard overview. Use it to ORIENT and decide the next move: it reports state and
++  points ahead -- it does not plan, run development, or claim an issue to work it (its only
++  write is closing already-merged stale issues during reconciliation). Not for: routing to a
++  specific stage skill or documenting the full issue-verb surface (that's kernel); deeply
++  ranking and EXPLAINING a single next-ready or blocked issue to hand off (triage-ready);
++  everyday create/update/list/close/comment/search issue operations (issue-basics); the Hermes
++  harness's token-bounded orient/recap state contract (hermes-forge); or the post-merge CI
++  health check that closes issues after a merge lands (verify).
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/status/evals/evals.json b/.codex/skills/status/evals/evals.json
+new file mode 100644
+index 00000000..a214aed1
+--- /dev/null
++++ b/.codex/skills/status/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "/status",
++    "should_trigger": true
++  },
++  {
++    "query": "where am I on this project right now?",
++    "should_trigger": true
++  },
++  {
++    "query": "catch me up -- what's in progress and what got merged recently?",
++    "should_trigger": true
++  },
++  {
++    "query": "I stepped away for a few days, give me the current state of the work before I dive back in",
++    "should_trigger": true
++  },
++  {
++    "query": "show me my active issues and which stage we're at",
++    "should_trigger": true
++  },
++  {
++    "query": "are there any in-progress issues that were already merged and should be closed?",
++    "should_trigger": true
++  },
++  {
++    "query": "what's the single best next issue to start, and explain why that one?",
++    "should_trigger": false
++  },
++  {
++    "query": "why is issue forge-456 blocked -- what's it waiting on?",
++    "should_trigger": false
++  },
++  {
++    "query": "route me to the correct Forge stage skill for opening a PR",
++    "should_trigger": false
++  },
++  {
++    "query": "create an issue titled 'fix flaky login test' and tag it a bug",
++    "should_trigger": false
++  },
++  {
++    "query": "the PR just merged to master -- confirm CI is green and close the linked issues",
++    "should_trigger": false
++  },
++  {
++    "query": "keep an eye on PR #88 until its checks and review threads settle",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/triage-ready/SKILL.md b/.codex/skills/triage-ready/SKILL.md
+index 7127aa8d..c66f42bf 100644
+--- a/.codex/skills/triage-ready/SKILL.md
++++ b/.codex/skills/triage-ready/SKILL.md
+@@ -1,13 +1,21 @@
+ ---
+ name: triage-ready
+ description: >
+-  Surfaces and EXPLAINS the right next work in a Forge project — read-only. Ranks
+-  the ready queue with `forge issue ready`, shows what is blocked and why with
+-  `forge issue blocked`, and summarizes the backlog with `forge issue stats`. Never
+-  uses `board` (which reads a legacy snapshot store, not the live kernel). Use when
+-  deciding what to pick up next, or to justify why an item is workable. Trigger on
+-  "what should I work on", "what's ready", "triage", "next task", "ready queue",
+-  "why is this blocked", or "pick my next issue".
++  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
++  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
++  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
++  stats`, and justifies the pick from the full record via `forge issue show` — always against
++  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
++  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
++  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
++  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
++  my next task", "top of the ready queue", "which issue should I start", "why is this issue
++  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
++  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
++  create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
++  current workflow stage or "where am I / what's in flight" (use status), not for orienting a
++  whole session or routing to stage skills (use kernel), and not for driving an issue through
++  to a merged PR (use smith).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/.codex/skills/triage-ready/evals/evals.json b/.codex/skills/triage-ready/evals/evals.json
+new file mode 100644
+index 00000000..132ebccd
+--- /dev/null
++++ b/.codex/skills/triage-ready/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "I just sat down at this repo — what's the highest-priority thing I can actually start right now?",
++    "should_trigger": true
++  },
++  {
++    "query": "Give me the top few off the ready queue and tell me why the first one is unblocked.",
++    "should_trigger": true
++  },
++  {
++    "query": "Why can't I start forge-2agy.2.2 yet? What's holding it up?",
++    "should_trigger": true
++  },
++  {
++    "query": "The backlog feels stuck — is it mostly blocked, and which one dependency would unlock the most work?",
++    "should_trigger": true
++  },
++  {
++    "query": "Pick my next task and justify the choice, don't grab it yet.",
++    "should_trigger": true
++  },
++  {
++    "query": "Claim forge-abc123 for me and confirm I actually hold the lease before I start editing.",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a P1 bug titled 'login returns 500' and add a comment linking the repro.",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow right now and what work is in flight?",
++    "should_trigger": false
++  },
++  {
++    "query": "Search every issue mentioning 'oauth' and list the open ones.",
++    "should_trigger": false
++  },
++  {
++    "query": "Take forge-xyz all the way through to a merged PR.",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/validate/SKILL.md b/.codex/skills/validate/SKILL.md
+index d1262b67..201b1cab 100644
+--- a/.codex/skills/validate/SKILL.md
++++ b/.codex/skills/validate/SKILL.md
+@@ -1,6 +1,17 @@
+ ---
+ name: validate
+-description: Runs comprehensive pre-pull-request validation for the Forge validate stage — rebases onto the base branch, then runs type checking, linting, code review, security review (OWASP Top 10), and tests, requiring fresh passing output before shipping. Use for the Forge validate stage or when asked to validate changes, run quality gates, type-check, lint, security-scan, or run the full test suite before opening a PR.
++description: >
++  Forge VALIDATE stage — the pre-pull-request quality gate. Rebases the branch onto the
++  current base branch, then runs type-checking, linting, code review, an OWASP Top 10 security
++  review plus dependency scan, and the full test suite, demanding fresh passing output in THIS
++  session before anything ships. Reach for this whenever a branch is code-complete and someone
++  says: validate my changes, run the quality gates, run the pre-PR checks, type-check and lint
++  before the PR, run the security scan, or run the full test suite before opening a PR — and
++  for the literal `/validate` command or `bun run check`. This is the gate that runs AFTER
++  code is written but BEFORE a PR exists, so discriminate carefully: it does not implement
++  features or write tests (that is `/dev`), it does not push the branch or open the PR (that
++  is `/ship`), it does not answer PR review feedback from Greptile / SonarCloud / CodeRabbit
++  (that is `/review`), and it is not the post-merge CI health check (that is `/verify`).
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/validate/evals/evals.json b/.codex/skills/validate/evals/evals.json
+new file mode 100644
+index 00000000..9e3238bb
+--- /dev/null
++++ b/.codex/skills/validate/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "Branch is code-complete — run all the pre-PR checks and make sure everything's green before I ship",
++    "should_trigger": true
++  },
++  {
++    "query": "/validate",
++    "should_trigger": true
++  },
++  {
++    "query": "Rebase onto master, then type-check, lint, and run the whole test suite so I know it's clean",
++    "should_trigger": true
++  },
++  {
++    "query": "Run the OWASP security review and full test pass on this branch before we open the PR",
++    "should_trigger": true
++  },
++  {
++    "query": "I'm at the validate stage — take my changes through the quality gates",
++    "should_trigger": true
++  },
++  {
++    "query": "Implement the next task using TDD, red-green-refactor",
++    "should_trigger": false
++  },
++  {
++    "query": "Push this validated branch and open the pull request from the template",
++    "should_trigger": false
++  },
++  {
++    "query": "Go through the Greptile and CodeRabbit comments on my PR and resolve the threads",
++    "should_trigger": false
++  },
++  {
++    "query": "It's merged now — check CI is green on master and close the issue",
++    "should_trigger": false
++  },
++  {
++    "query": "Pull the SonarCloud issues for this PR",
++    "should_trigger": false
++  }
++]
+diff --git a/.codex/skills/verify/SKILL.md b/.codex/skills/verify/SKILL.md
+index 64906ba2..e4de09f3 100644
+--- a/.codex/skills/verify/SKILL.md
++++ b/.codex/skills/verify/SKILL.md
+@@ -1,6 +1,18 @@
+ ---
+ name: verify
+-description: Post-merge health check for the Forge verify stage — confirms the merge landed on master, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
++description: >
++  Runs the Forge verify stage — the post-merge health check performed AFTER a PR has been
++  merged. Switches to master and pulls, confirms the merge actually landed (`gh pr list
++  --state merged`), checks CI is green on master after the merge, confirms any deployments are
++  up, removes the merged worktree and safe-deletes the local branch, and closes the
++  kernel/Beads issues the PR resolved (`forge close --reason=...`). Use when asked to verify a
++  merge went cleanly, confirm post-merge CI health on master, check deployments after merging,
++  clean up a merged branch or worktree, or close the issue now that its PR is merged — and
++  whenever `/verify` is invoked. This is strictly the POST-merge stage: reach for shepherd
++  instead to monitor a still-open PR toward merge, review to fix and resolve PR feedback
++  before merge, ship to push the branch and open the PR, rollback to undo an already-shipped
++  change, status to merely report the current stage without acting, and issue-basics to close
++  an issue that is unrelated to a just-merged PR.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/.codex/skills/verify/evals/evals.json b/.codex/skills/verify/evals/evals.json
+new file mode 100644
+index 00000000..f4f3a6de
+--- /dev/null
++++ b/.codex/skills/verify/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "The PR just merged — make sure master is still healthy",
++    "should_trigger": true
++  },
++  {
++    "query": "Confirm the auth-refresh change actually landed on master and CI passed after merge",
++    "should_trigger": true
++  },
++  {
++    "query": "/verify",
++    "should_trigger": true
++  },
++  {
++    "query": "Now that #89 is merged, close the issue it resolved and delete the feature branch",
++    "should_trigger": true
++  },
++  {
++    "query": "Did the deployment go out okay after we merged this?",
++    "should_trigger": true
++  },
++  {
++    "query": "Run the post-merge checks and clean up the merged worktree",
++    "should_trigger": true
++  },
++  {
++    "query": "Watch my open PR and re-run the flaky required check until it can merge",
++    "should_trigger": false
++  },
++  {
++    "query": "Fix and resolve all the Greptile and SonarCloud threads on the PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Push this validated branch and open a pull request",
++    "should_trigger": false
++  },
++  {
++    "query": "This merge broke production — revert the PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow and what's in progress right now?",
++    "should_trigger": false
++  },
++  {
++    "query": "Close forge-abc, we've decided not to do it",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/claim-safety/SKILL.md b/skills/claim-safety/SKILL.md
+index a74f567b..685ffd36 100644
+--- a/skills/claim-safety/SKILL.md
++++ b/skills/claim-safety/SKILL.md
+@@ -1,14 +1,20 @@
+ ---
+ name: claim-safety
+ description: >
+-  Claim a Forge issue and PROVE you own the lease before doing any work. Use
+-  whenever you (or an orchestrator/agent) are about to mutate a claimed issue —
+-  after `forge claim`, before `dev`/edit/`close`/`release`, or when two agents
+-  might contend for the same work. A claim returning ok:true does NOT prove you
+-  won the lease (a duplicate replay also returns ok:true), so this procedure adds
+-  the mandatory ownership check via `forge issue owns <id>`. Trigger on "claim an
+-  issue safely", "did I win the lease", "verify ownership", "claim conflict",
+-  "two agents same issue", or before any claimed-issue mutation.
++  Claim a Forge issue and then PROVE you hold the live lease before you touch it — the
++  ownership-verification procedure built on `forge issue owns <id>`. Use this whenever
++  actually winning the claim matters: right after `forge claim`, before you
++  `dev`/edit/`close`/`release` a claimed issue, when two agents or a subagent fan-out might
++  contend for the same work, or when you need to re-check ownership before an irreversible
++  step. Why it exists: a claim returning `ok:true` does NOT prove you won — a same-actor
++  duplicate replay also returns `ok:true`, and a live lease can be reclaimed once it expires —
++  so `forge issue owns` (exit 0 iff you hold the single, unexpired active lease) is the only
++  real proof, and you re-verify before close/release. Trigger on "claim this issue safely",
++  "did I actually win the lease", "verify/prove ownership", "claim conflict", "two agents
++  grabbed the same issue", "check I still own it before closing", or before ANY mutation of a
++  claimed issue. NOT for plain single-issue create/update/close/comment when there is no
++  ownership question (that is issue-basics), and NOT for read-only selecting or ranking the
++  next ready issue without claiming (that is triage-ready).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/claim-safety/evals/evals.json b/skills/claim-safety/evals/evals.json
+new file mode 100644
+index 00000000..80f69b17
+--- /dev/null
++++ b/skills/claim-safety/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "I just ran forge claim on forge-abc — how do I make sure the lease is really mine before I start editing?",
++    "should_trigger": true
++  },
++  {
++    "query": "Two of my agents may have grabbed the same issue at once — how do I tell which one actually holds it?",
++    "should_trigger": true
++  },
++  {
++    "query": "Before I close this ticket, confirm nobody reclaimed it while I was working.",
++    "should_trigger": true
++  },
++  {
++    "query": "My claim came back ok:true but I'm not convinced I won the race. Can I trust that?",
++    "should_trigger": true
++  },
++  {
++    "query": "Prove I own forge-42 before the subagent starts mutating it.",
++    "should_trigger": true
++  },
++  {
++    "query": "The lease might have expired mid-task — check I still own it before I release.",
++    "should_trigger": true
++  },
++  {
++    "query": "What's the next ready issue I should pick up?",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a feature issue titled 'Add CSV export'.",
++    "should_trigger": false
++  },
++  {
++    "query": "Close forge-19 with reason 'shipped in PR 88'.",
++    "should_trigger": false
++  },
++  {
++    "query": "Take forge-30 all the way through to a PR.",
++    "should_trigger": false
++  },
++  {
++    "query": "Implement the failing auth tests for this task.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/dev/SKILL.md b/skills/dev/SKILL.md
+index d395789d..a2674c07 100644
+--- a/skills/dev/SKILL.md
++++ b/skills/dev/SKILL.md
+@@ -1,6 +1,20 @@
+ ---
+ name: dev
+-description: Implements each task from the plan task list using a subagent-driven loop (implementer → spec-compliance reviewer → code-quality reviewer) with TDD and HARD-GATE enforcement. Use for the Forge dev stage when implementing planned tasks — triggers include /dev, dev stage, build the tasks, subagent TDD, implement task list.
++description: >
++  Forge DEV stage — the build engine that turns an already-approved /plan task list into
++  committed, test-backed code. Reads docs/work/<date>-<slug>/tasks.md and design.md, then
++  drives each task through a subagent loop (implementer → spec-compliance reviewer →
++  code-quality reviewer) using RED-GREEN-REFACTOR TDD, HARD-GATE evidence checks, a spec-gap
++  decision score, and per-task progress recorded on the Forge issue via `forge comment`. Use
++  when a plan and task list already exist and it is time to implement them — triggers: "/dev",
++  "start the dev stage", "build the tasks", "implement tasks.md test-first", "run the
++  implementer/reviewer TDD loop", "write the code for the planned tasks one by one", "work
++  through the task list with subagents". This is the per-task coding stage ONLY. Do NOT use it
++  for creating the design doc or task list (that is plan), for the post-build
++  type-check/lint/security/test gate (validate), for pushing the branch or opening the PR
++  (ship), for addressing PR review feedback (review), or for orchestrating several stages /
++  taking an issue end-to-end to a merged PR (smith). Reach for dev specifically when the ask
++  is to author code for tasks that are already planned.
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/dev/evals/evals.json b/skills/dev/evals/evals.json
+new file mode 100644
+index 00000000..416391f0
+--- /dev/null
++++ b/skills/dev/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "/dev",
++    "should_trigger": true
++  },
++  {
++    "query": "The plan and task list are done — start implementing the tasks one at a time, tests first.",
++    "should_trigger": true
++  },
++  {
++    "query": "Run the implementer then the spec and quality reviewer subagents over each task in tasks.md",
++    "should_trigger": true
++  },
++  {
++    "query": "Build out the task list from the design doc using red-green-refactor",
++    "should_trigger": true
++  },
++  {
++    "query": "Time to write the code for the planned tasks and TDD each one in this worktree",
++    "should_trigger": true
++  },
++  {
++    "query": "Work through tasks.md subagent by subagent until every task is committed and reviewed",
++    "should_trigger": true
++  },
++  {
++    "query": "Set up the branch, worktree, and TDD task list for this new feature",
++    "should_trigger": false
++  },
++  {
++    "query": "Type-check, lint, and run the full test suite before I open the PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Push the validated branch and open the pull request",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR has open review threads from the bots — fix each finding, reply, and mark them resolved.",
++    "should_trigger": false
++  },
++  {
++    "query": "Grab the next ready issue and drive it all the way to a merged PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Which workflow stage am I on and what work is in flight right now?",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/hermes-forge/SKILL.md b/skills/hermes-forge/SKILL.md
+index 3ddecfa0..7dd78561 100644
+--- a/skills/hermes-forge/SKILL.md
++++ b/skills/hermes-forge/SKILL.md
+@@ -1,12 +1,26 @@
+ ---
+ name: hermes-forge
+ description: >
+-  Consumption contract for the Hermes harness on a Forge project. Treat
+-  `forge orient` and `forge recap` as the authoritative, token-bounded source
+-  of project state, cite every surfaced fact by its provenance, honor the
+-  deterministic truncation policy, and write evidence or decisions back ONLY
+-  through Forge CLI commands. Hermes-native profile memory never leaks into
+-  Forge Kernel state.
++  Consumption contract for how the Hermes harness reads, cites, and writes back Forge project
++  state — Hermes is a CONSUMER of Forge, never a second source of truth. Load this whenever a
++  Hermes session runs on a Forge repo: at session start to orient, before acting on a specific
++  issue, or any time you need CURRENT project state. Always obtain state through `forge
++  orient` / `forge recap <issue-id>` — the deterministic, token-bounded JSON envelope — and
++  never reconstruct it by reading raw issue stores, design files, or kernel internals. This
++  skill governs the envelope discipline: honor the token budget (raise depth with `--budget
++  N`, don't retry blindly), treat any `truncated` section as incomplete, attribute every
++  surfaced fact to its source `path`/`authority`, and surface conflicts instead of silently
++  picking a winner. It also governs writeback: record evidence, decisions, and follow-up work
++  into the Forge Kernel ONLY through Forge CLI commands (`forge comment` / `forge update` /
++  `forge create`), and NEVER leak Hermes profile or session memory into Forge state. Trigger
++  phrases: "orient me / what's the current project state", "where did this fact come from,
++  cite it", "the orient output came back truncated", "how do I persist this decision back into
++  Forge", "is it safe to store this in kernel state". This is the Hermes⇄Forge boundary
++  contract — NOT the general Forge session router that navigates stage skills (kernel), NOT
++  the human-facing "what stage am I in / where am I" report (status), NOT everyday issue
++  create/update/close/search CRUD (issue-basics), NOT surfacing or ranking the next ready
++  issue (triage-ready), and NOT live PR monitoring (shepherd, which runs OUTSIDE Hermes and is
++  not visible through orient).
+ compatibility: >
+   Requires the Forge CLI (`forge`) on PATH in a Forge-initialized repo. Install
+   path — like every Forge skill pack (e.g. parallel-deep-research,
+diff --git a/skills/hermes-forge/evals/evals.json b/skills/hermes-forge/evals/evals.json
+new file mode 100644
+index 00000000..3f76c331
+--- /dev/null
++++ b/skills/hermes-forge/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "I just started a Hermes session on this Forge repo — get me oriented on where the project stands before I touch anything.",
++    "should_trigger": true
++  },
++  {
++    "query": "The forge orient envelope came back with the active-work section flagged truncated. Can I treat that as the full list, or do I need to pull more?",
++    "should_trigger": true
++  },
++  {
++    "query": "Before I tell the user which approach we settled on, I need to point at the exact source file and how authoritative it is — where does that decision come from?",
++    "should_trigger": true
++  },
++  {
++    "query": "I uncovered a design decision in this session that the team needs to keep. What's the correct way to write it back into Forge without dragging my Hermes notes into kernel state?",
++    "should_trigger": true
++  },
++  {
++    "query": "Default orientation is clipping the decisions section at 2000 tokens — give me more headroom.",
++    "should_trigger": true
++  },
++  {
++    "query": "Don't rebuild the project picture by grepping the design docs yourself — go through the proper bounded orient/recap surface instead.",
++    "should_trigger": true
++  },
++  {
++    "query": "Which workflow stage am I sitting in right now, and has any of my work gone stale?",
++    "should_trigger": false
++  },
++  {
++    "query": "I'm kicking off a Forge session in Claude — which stage skill do I run to start planning a new feature?",
++    "should_trigger": false
++  },
++  {
++    "query": "Watch PR #418, rerun the flaky required check if it trips, and ping me when it's ready to merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "Open a bug issue for the checkout timeout, set priority 1, and add a note about the repro steps.",
++    "should_trigger": false
++  },
++  {
++    "query": "What's the highest-priority ready issue I should pick up next?",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/issue-basics/SKILL.md b/skills/issue-basics/SKILL.md
+index 2f6efae1..2460f6d7 100644
+--- a/skills/issue-basics/SKILL.md
++++ b/skills/issue-basics/SKILL.md
+@@ -1,13 +1,20 @@
+ ---
+ name: issue-basics
+ description: >
+-  The everyday issue CRUD floor for a Forge project — create, update, claim,
+-  release, comment, close, show, list, search, and stats over the kernel via the
+-  `forge issue` verbs. This is the parity floor a team needs on day one after
+-  migrating off a Beads-style tracker, mapped one-to-one onto real `forge` verbs
+-  with their actual flags. Use for routine issue work. Trigger on "create an
+-  issue", "update an issue", "claim/close an issue", "comment on an issue", "list
+-  issues", "search issues", "reopen", or "add a label".
++  Everyday single-issue CRUD over the `forge issue` verbs — create, update, show, list,
++  search, close, reopen, comment, set priority/labels/assignee, claim or release one issue,
++  and add/remove dependency edges, plus backlog `stats`. Reach for this on ANY routine one-off
++  issue operation: "create an issue/bug/task for X", "update or edit issue <id>", "close (or
++  reopen) this issue", "comment a handoff note on <id>", "list open bugs" or "filter issues by
++  label/priority/status", "search issues for …", "bump this to P1", "reassign to alice", "mark
++  <id> blocked by <id>", "add a label". This is also the parity floor when migrating off a
++  Beads-style tracker (label/reopen/delete map onto their forge equivalents). Scope is
++  single-operation issue plumbing only. It does NOT choose, rank, or explain the next issue to
++  work on or why one is blocked (use triage-ready); it does NOT run the
++  claim-then-prove-lease-ownership safety procedure before mutating shared work (use
++  claim-safety); it does NOT drive an issue through the plan->dev->validate->ship pipeline or
++  open a PR (use smith or the individual stage skills); and it does NOT report the current
++  workflow stage or what is in flight (use status).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/issue-basics/evals/evals.json b/skills/issue-basics/evals/evals.json
+new file mode 100644
+index 00000000..00b6763b
+--- /dev/null
++++ b/skills/issue-basics/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "Open a bug ticket for the checkout 500 error and mark it P0",
++    "should_trigger": true
++  },
++  {
++    "query": "Add a note to forge-abc123 documenting why we chose JWT",
++    "should_trigger": true
++  },
++  {
++    "query": "Show me all open issues tagged backend",
++    "should_trigger": true
++  },
++  {
++    "query": "Reopen forge-77, it wasn't actually fixed",
++    "should_trigger": true
++  },
++  {
++    "query": "Add a dependency so forge-12 is blocked by forge-9",
++    "should_trigger": true
++  },
++  {
++    "query": "Claim forge-abc so I can start on it",
++    "should_trigger": true
++  },
++  {
++    "query": "What's the next ready issue I should pick up?",
++    "should_trigger": false
++  },
++  {
++    "query": "Explain why forge-55 is still blocked and what to unblock first",
++    "should_trigger": false
++  },
++  {
++    "query": "Claim this issue and confirm I hold the lease before I change anything",
++    "should_trigger": false
++  },
++  {
++    "query": "Drive forge-30 all the way through to a merged PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow right now and what's in flight?",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/kernel/SKILL.md b/skills/kernel/SKILL.md
+index 536c746f..e1d68a66 100644
+--- a/skills/kernel/SKILL.md
++++ b/skills/kernel/SKILL.md
+@@ -1,16 +1,22 @@
+ ---
+ name: kernel
+ description: >
+-  Forge kernel surface — the umbrella index for working in a Forge project. Use
+-  at the start of any session and whenever you need to orient: it routes to the
+-  `smith` orchestrator super-skill, the per-stage workflow skills (plan, dev,
+-  validate, ship, review, verify, plus status, research, rollback, sonarcloud,
+-  shepherd) and the kernel-native skills (triage-ready, issue-basics), and
+-  documents the day-to-day issue, board, and orientation verbs of the `forge`
+-  CLI. Trigger on
+-  "what's the workflow", "what should I work on", "forge issues", "claim an
+-  issue", "project status", "orient", or when deciding between Forge issues and
+-  an ad-hoc TodoWrite list.
++  Forge kernel surface — the umbrella index and router for a Forge project. Reach for this
++  FIRST when you are orienting rather than executing: at the very start of a Forge session,
++  when you need the map of how the whole system fits together, or when you are unsure WHICH
++  skill or `forge` verb a task belongs to. It routes to the `smith` end-to-end orchestrator,
++  the per-stage ladder skills (plan, dev, validate, ship, review, verify), the utility skills
++  (status, research, rollback, sonarcloud, shepherd), and the kernel-native issue skills
++  (triage-ready, claim-safety, issue-basics) — and it is the reference for the day-to-day
++  `forge` CLI issue, board, gate, and orientation verbs. Trigger on "how does the Forge
++  workflow work", "walk me through the stage ladder", "which forge command or skill do I use
++  for X", "what are the forge issue verbs", "I'm new to this repo, how is Forge set up", "map
++  the Forge skills for me", or "should this be a Forge issue or a TodoWrite". This is the
++  meta/index layer, so hand off the actual doing: ranking or picking the next ready issue →
++  `triage-ready`; the current stage, "where am I", or active/stale work → `status`;
++  create/update/close/search a single issue → `issue-basics`; claim-then-prove-ownership
++  before mutating → `claim-safety`; drive one issue from plan to a merged PR under human gates
++  → `smith`; token-bounded project state for the Hermes harness → `hermes-forge`.
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/kernel/evals/evals.json b/skills/kernel/evals/evals.json
+new file mode 100644
+index 00000000..a5583af3
+--- /dev/null
++++ b/skills/kernel/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "I just cloned this Forge repo and I'm not sure how any of it works — give me the lay of the land: what's the workflow, what skills exist, and where do I even start?",
++    "should_trigger": true
++  },
++  {
++    "query": "There are a bunch of forge skills and I can't tell which one to use for what — lay out how they fit together and when I'd reach for each.",
++    "should_trigger": true
++  },
++  {
++    "query": "Which forge CLI command adds a dependency between two issues, and what's the verb for proving I hold a claim? Just the reference, don't run anything.",
++    "should_trigger": true
++  },
++  {
++    "query": "Is this small cleanup worth filing as a Forge issue, or should I just throw it on a TodoWrite checklist for this session?",
++    "should_trigger": true
++  },
++  {
++    "query": "Walk me through the Forge stage ladder from planning to post-merge verify and what each stage owns.",
++    "should_trigger": true
++  },
++  {
++    "query": "Give me the reference of all the day-to-day forge issue and board verbs — I want the index, not to execute a command yet.",
++    "should_trigger": true
++  },
++  {
++    "query": "What should I pick up next? Rank the ready queue and tell me the top unblocked issue and why.",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow right now, what's my active work, and has anything gone stale?",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a bug issue titled 'login times out after 30s', priority 1, and link it under the auth epic.",
++    "should_trigger": false
++  },
++  {
++    "query": "Claim forge-4h9 for me and confirm I actually hold the lease before I start editing.",
++    "should_trigger": false
++  },
++  {
++    "query": "Take forge-7c2 all the way from planning through a merged PR, pausing for my approval at the plan and the merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "In the Hermes harness, give me the token-bounded project state to work from — treat forge orient as the source of truth.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/parallel-deep-research/SKILL.md b/skills/parallel-deep-research/SKILL.md
+index 0af6f2a9..67e00830 100644
+--- a/skills/parallel-deep-research/SKILL.md
++++ b/skills/parallel-deep-research/SKILL.md
+@@ -1,17 +1,23 @@
+ ---
+ name: parallel-deep-research
+ description: >
+-  Produces comprehensive research reports that go far beyond what built-in web
+-  search can achieve. Sends research tasks to Parallel AI's pro/ultra processors
+-  which spend 3-25 minutes autonomously crawling, reading, and synthesizing dozens
+-  of sources — returning structured reports with citations. Built-in WebSearch
+-  can only run a few queries; this skill runs an entire research pipeline externally.
+-  No binary install — requires PARALLEL_API_KEY in .env.local. ALWAYS use this
+-  skill instead of doing multiple WebSearch calls when the user needs a comprehensive
+-  report, market analysis, competitive landscape, industry deep-dive, strategic
+-  recommendations, or multi-source synthesis. This is the RIGHT tool for any
+-  research task that would require more than 3-4 web searches to answer properly.
+-  Also trigger during /plan Phase 2 research and /research workflows.
++  Heavyweight EXTERNAL research reports — market, industry, competitive, and strategic —
++  delegated to Parallel AI's paid pro/ultra processors, which autonomously crawl, read, and
++  synthesize dozens of sources over 3-25 minutes and return one long structured report with
++  citations, far beyond what a handful of WebSearch calls can produce. Reach for this whenever
++  the user wants a comprehensive market analysis, competitive landscape, industry deep-dive,
++  multi-vendor/technology comparison across many sources, strategic recommendations, market
++  sizing/growth outlook, or any multi-source synthesis that would take more than 3-4 web
++  searches to answer well. Typical phrasings: "market analysis of X", "competitive landscape
++  comparing A/B/C", "industry deep-dive on...", "deep research report on...", "compare these
++  vendors at our scale", "strategic report with predictions for 2027". Requires
++  PARALLEL_API_KEY in .env.local; each run costs money and takes minutes, so it is the WRONG
++  tool for quick facts, a single-page fetch, one-URL scraping, or a small structured-field
++  extraction — use built-in WebSearch/WebFetch for those. It is also NOT the Forge RESEARCH or
++  PLAN stage itself: "run the research stage", "do Phase 2 for this feature", or
++  codebase/OWASP/DRY investigation that gets written into a design doc route to `research` and
++  `plan` — those stages may INVOKE this skill as their external research engine when a topic
++  genuinely needs dozens of sources, but a bare "run the stage" request is not this skill.
+ compatibility: Requires PARALLEL_API_KEY in .env.local. Uses curl. Takes 3-25 minutes.
+ metadata:
+   author: harshanandak
+diff --git a/skills/parallel-deep-research/evals/evals.json b/skills/parallel-deep-research/evals/evals.json
+index f633aabd..30c30343 100644
+--- a/skills/parallel-deep-research/evals/evals.json
++++ b/skills/parallel-deep-research/evals/evals.json
+@@ -1,62 +1,46 @@
+ [
+   {
+-    "query": "I need a comprehensive market analysis of the developer tools space — cover the top 20 players, their funding, market positioning, and where the industry is heading over the next 3-5 years. Include data from Gartner, Forrester, and any recent VC investment reports",
++    "query": "I need a comprehensive market analysis of the developer-tools space — top 20 players, their funding, market positioning, and where the industry is heading over the next 3-5 years, pulling from Gartner, Forrester, and recent VC investment reports",
+     "should_trigger": true
+   },
+   {
+-    "query": "Write a deep research report on the state of WebAssembly adoption in production — synthesize case studies from companies using WASM, performance benchmarks vs native code, ecosystem maturity analysis, and strategic recommendations for when to adopt it",
++    "query": "Write a deep research report on WebAssembly adoption in production — synthesize company case studies, performance benchmarks vs native code, ecosystem maturity, and clear recommendations for when to adopt it",
+     "should_trigger": true
+   },
+   {
+-    "query": "Our CTO wants a competitive landscape analysis comparing Convex, Supabase, Firebase, and PlanetScale for our backend rewrite. Need comprehensive feature comparison, pricing analysis at our scale (50K DAU), community health metrics, and risk assessment for each",
++    "query": "Competitive landscape comparing Convex, Supabase, Firebase, and PlanetScale for our backend rewrite — full feature comparison, pricing at 50K DAU, community-health metrics, and a per-vendor risk assessment",
+     "should_trigger": true
+   },
+   {
+-    "query": "Create a strategic report on the AI code generation market — analyze GitHub Copilot, Cursor, Claude Code, and emerging competitors. Cover adoption rates, developer satisfaction surveys, enterprise pricing trends, and predictions for 2027",
++    "query": "Give me an industry deep-dive on the observability market — Datadog vs Grafana Cloud vs New Relic across features, pricing, scalability, and OpenTelemetry support, with customer migration stories and TCO analysis for a 500-node cluster",
+     "should_trigger": true
+   },
+   {
+-    "query": "I'm doing /plan Phase 2 research — produce a comprehensive analysis of event-driven architecture patterns in microservices, covering Kafka vs RabbitMQ vs NATS, with production case studies, failure mode analysis, and recommendations for our 100K events/sec throughput requirement",
++    "query": "For our architecture decision, produce a heavily-sourced report on event-driven patterns — Kafka vs RabbitMQ vs NATS at 100K events/sec, with production case studies and failure-mode analysis",
+     "should_trigger": true
+   },
+   {
+-    "query": "Write an industry deep-dive into the observability market — compare Datadog, Grafana Cloud, and New Relic across features, pricing, scalability, and OpenTelemetry support. Include customer migration stories and TCO analysis for a 500-node cluster",
+-    "should_trigger": true
+-  },
+-  {
+-    "query": "Research and synthesize the current state of edge computing for real-time AI inference — cover hardware options, cloud provider edge offerings, latency benchmarks, and case studies from autonomous vehicles and IoT deployments",
+-    "should_trigger": true
+-  },
+-  {
+-    "query": "Quick search: what's the current price of Bitcoin and what were Anthropic's latest announcements?",
+-    "should_trigger": false
+-  },
+-  {
+-    "query": "Find the official migration guide URL for ESLint's new flat config format",
+-    "should_trigger": false
+-  },
+-  {
+-    "query": "Search for recent blog posts about Bun 2.0 features and release date",
++    "query": "Quick — what's the current price of Bitcoin and what were Anthropic's latest announcements?",
+     "should_trigger": false
+   },
+   {
+-    "query": "Go to https://stripe.com/docs/api and extract the authentication section with all the code examples",
++    "query": "Go to https://stripe.com/docs/api and extract the authentication section with all its code examples",
+     "should_trigger": false
+   },
+   {
+-    "query": "Scrape https://openai.com/pricing and extract the per-token costs for each model tier",
++    "query": "Scrape https://openai.com/pricing and pull out the per-token cost for each model tier",
+     "should_trigger": false
+   },
+   {
+-    "query": "Build a structured company profile for Databricks — return JSON with founding year, funding rounds, valuation, employee count, and tech stack",
++    "query": "Run the /research stage for the auth-refactor feature — investigate how our codebase currently handles session tokens, flag OWASP and DRY concerns, and write the findings into the design doc",
+     "should_trigger": false
+   },
+   {
+-    "query": "Fix the TypeScript compilation error in src/services/auth.ts — it's complaining about missing type for the session token",
++    "query": "Kick off the plan stage for adding rate limiting — brainstorm the design one question at a time, then set up the branch, worktree, and task list",
+     "should_trigger": false
+   },
+   {
+-    "query": "Add unit tests for the rate limiter middleware in src/middleware/rateLimit.ts",
++    "query": "Fix the TypeScript compilation error in src/services/auth.ts about the missing session-token type",
+     "should_trigger": false
+   }
+ ]
+diff --git a/skills/plan/SKILL.md b/skills/plan/SKILL.md
+index 02033433..9ab7a2b3 100644
+--- a/skills/plan/SKILL.md
++++ b/skills/plan/SKILL.md
+@@ -1,11 +1,18 @@
+ ---
+ name: plan
+ description: >
+-  Use for the Forge plan stage to capture design intent through
+-  one-question-at-a-time brainstorming, run technical/OWASP/DRY research, then set up
+-  the branch, worktree, and a complete TDD task list ready for /dev. Trigger when
+-  starting a new feature, planning or scoping work, writing a design doc, or preparing
+-  a worktree and task list before development.
++  Forge PLAN stage — the first stop when starting a NEW feature or an unscoped piece of work.
++  Runs one-question-at-a-time brainstorming to capture design intent, writes and commits a
++  design doc, runs technical/OWASP/DRY + codebase research, then sets up the branch, worktree,
++  and a complete TDD task list ready to hand to /dev. Trigger on "let's plan X", "start or
++  scope a new feature", "brainstorm this before we build", "write a design doc", "break this
++  into tasks", or "set up a worktree and task list before coding". Reach for this even when
++  the request sounds like only design or only scoping — plan owns intent → research →
++  task-list setup as a single stage. NOT for driving a feature all the way to a merged PR
++  (that is smith), NOT for implementing the tasks once they already exist (dev), NOT for a
++  standalone deep-research pass into an already-approved design doc (research), NOT for
++  reporting where current work stands or what is stale (status), and NOT for everyday issue
++  create/list/close or picking the next ready issue (issue-basics / triage-ready).
+ allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/plan/evals/evals.json b/skills/plan/evals/evals.json
+new file mode 100644
+index 00000000..dcc082c7
+--- /dev/null
++++ b/skills/plan/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "I want to build a rate-limiter for our public API — help me nail down the design, then break it into tasks before I write any code.",
++    "should_trigger": true
++  },
++  {
++    "query": "Let's kick off the webhook-retry feature: ask me the key decisions one at a time, write it up, and set me up to start developing.",
++    "should_trigger": true
++  },
++  {
++    "query": "Scope out adding SSO to the admin dashboard — pin down requirements and edge cases and give me an ordered TDD task list on its own branch.",
++    "should_trigger": true
++  },
++  {
++    "query": "Before anyone touches the notification service I want a real plan: a worktree, some research on the approach, and a task list /dev can just run.",
++    "should_trigger": true
++  },
++  {
++    "query": "Starting the CSV-export epic today — brainstorm the approach with me and produce a committed design doc plus tasks.",
++    "should_trigger": true
++  },
++  {
++    "query": "Grab the highest-priority ready issue and take it all the way to an open PR — plan, build, validate, ship — just pause for my approval before merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "The design doc and task list are already in docs/work; start implementing the first task with RED-GREEN-REFACTOR.",
++    "should_trigger": false
++  },
++  {
++    "query": "The design is approved and written — now go do the deep web and codebase research and append it under the Technical Research section.",
++    "should_trigger": false
++  },
++  {
++    "query": "Which stage am I on for the billing branch, and is any of my work going stale?",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a bug issue for the broken logout redirect and link it under the auth epic.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/research/SKILL.md b/skills/research/SKILL.md
+index e6e3265a..d0d698a4 100644
+--- a/skills/research/SKILL.md
++++ b/skills/research/SKILL.md
+@@ -1,10 +1,25 @@
+ ---
+ name: research
+ description: >
+-  Runs deep, parallel web and codebase research and documents findings in the design
+-  doc. Use for the Forge research stage when gathering technical research, OWASP
+-  analysis, and TDD scenarios before planning or development. Trigger keywords are
+-  research, deep research, web search, OWASP, codebase exploration, technical research.
++  Runs the Forge RESEARCH stage — the technical-investigation phase now embedded as /plan
++  Phase 2. Use it when the user wants JUST the research work for a specific feature (not the
++  whole plan flow): deep web research on best practices and known gotchas for the chosen
++  approach, an OWASP Top 10 risk pass documenting which categories apply and how they'll be
++  mitigated, DRY / blast-radius codebase exploration for existing patterns to reuse, and
++  identification of at least three TDD test scenarios — all appended under `## Technical
++  Research` in that feature's `docs/work/YYYY-MM-DD-<slug>/design.md`. Trigger on phrasings
++  like "run the research phase", "do the technical research for this feature", "run an OWASP
++  analysis on this", "explore the codebase for reusable patterns before we build", "check
++  we're not duplicating an existing helper (DRY)", "add the security + best-practices research
++  to the design doc", or "find TDD scenarios for X". If the design doc doesn't exist yet,
++  create it first, then research into it. Pick this skill over its siblings: choose `plan`
++  instead when the user is starting a feature from scratch and wants the FULL stage —
++  one-question-at-a-time design brainstorm plus branch/worktree/task-list setup — not only the
++  research; choose `parallel-deep-research` instead when the ask is an external market,
++  competitive, or industry report via Parallel AI (business analysis, vendor comparison,
++  funding/landscape), not code-level technical/OWASP/DRY research; choose `dev` or `validate`
++  instead when the user wants to implement tasks or run security scans/lint/tests against code
++  rather than research it.
+ allowed-tools: Bash, Read, Write, Grep, Glob, WebSearch, WebFetch
+ ---
+ 
+diff --git a/skills/research/evals/evals.json b/skills/research/evals/evals.json
+new file mode 100644
+index 00000000..b0f850f0
+--- /dev/null
++++ b/skills/research/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "The design doc for the rate-limiter is already written — now go do the technical research: best practices, known gotchas for this approach, and drop it under Technical Research in the doc.",
++    "should_trigger": true
++  },
++  {
++    "query": "Run an OWASP Top 10 pass over this new file-upload feature and record which categories actually apply and how we'll mitigate each.",
++    "should_trigger": true
++  },
++  {
++    "query": "Before we build the caching layer, search the codebase for anything we can reuse and make sure we're not duplicating an existing helper.",
++    "should_trigger": true
++  },
++  {
++    "query": "Just do the research phase for this feature — web plus codebase investigation and at least three TDD scenarios — skip the brainstorm and the worktree setup.",
++    "should_trigger": true
++  },
++  {
++    "query": "Pull together the security and best-practices research for the OAuth integration and append it to the feature's design doc.",
++    "should_trigger": true
++  },
++  {
++    "query": "Let's plan this feature from scratch — brainstorm the design with me one question at a time, then create the branch, worktree, and task list.",
++    "should_trigger": false
++  },
++  {
++    "query": "I need a competitive landscape report comparing Datadog, Grafana Cloud, and New Relic on pricing and features for a 500-node cluster.",
++    "should_trigger": false
++  },
++  {
++    "query": "Give me a comprehensive market analysis of the vector-database space — top players, funding, and the 3-5 year outlook.",
++    "should_trigger": false
++  },
++  {
++    "query": "Start implementing task 1 with TDD — write the failing test first, then make it pass.",
++    "should_trigger": false
++  },
++  {
++    "query": "Run the security scan, lint, and full test suite before we open the PR.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index e864875f..41be40d8 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -1,6 +1,22 @@
+ ---
+ name: review
+-description: Processes all pull request feedback after a PR is created — GitHub Actions failures, Greptile inline comments and summary, SonarCloud quality gate, and other CI/CD checks — fixing, replying, and resolving each until every check passes. Use for the Forge review stage when handling PR review feedback, failing checks, Greptile or SonarCloud issues, or running the pre-merge doc gate before merge.
++description: >
++  Forge REVIEW stage — the one skill that drives an already-open pull request to all-green by
++  resolving EVERY piece of feedback on it: failing GitHub Actions / CI checks, Greptile and
++  CodeRabbit inline comments and summaries, and the SonarCloud quality gate. It actively fixes
++  the code, replies to each thread, and marks it resolved until the checks pass, then runs the
++  pre-merge doc gate (CHANGELOG / README / API / AGENTS docs) and hands the PR off for MANUAL
++  merge — it never runs `gh pr merge`. Reach for it whenever a PR already has review feedback
++  or red checks to work through: "address the review comments on PR #123", "the bots flagged
++  issues / my Greptile score is low", "fix the failing checks and resolve the threads",
++  "CodeRabbit and SonarCloud left comments — sort them out", "get my PR merge-ready". This is
++  the MUTATING feedback-resolution stage — distinct from shepherd (only WATCHES an open PR's
++  checks and settle window, changes nothing), verify (POST-merge CI-on-master health check +
++  closing issues), ship (pushing the branch and opening the PR in the first place), validate
++  (PRE-PR local type/lint/test/security on your branch), and the sonarcloud /
++  sonarcloud-analysis skills (which only QUERY SonarCloud data that this stage consumes). Use
++  those for a single tool or a passive watch; use this to work a PR's whole feedback set to
++  done.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/review/evals/evals.json b/skills/review/evals/evals.json
+new file mode 100644
+index 00000000..3bca6277
+--- /dev/null
++++ b/skills/review/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "PR #204 has three red checks and a pile of Greptile comments — work through all of it and get the PR green.",
++    "should_trigger": true
++  },
++  {
++    "query": "CodeRabbit and SonarCloud both left feedback on my pull request; fix what's valid, reply to the rest, and resolve the threads.",
++    "should_trigger": true
++  },
++  {
++    "query": "The GitHub Actions build is failing on my PR and there are unresolved review threads — sort them out before I merge.",
++    "should_trigger": true
++  },
++  {
++    "query": "My Greptile confidence score is low. Address the inline comments and keep pushing fixes until the quality gate passes.",
++    "should_trigger": true
++  },
++  {
++    "query": "Handle all the reviewer feedback on the auth PR, then update the changelog and docs before we hand it off to merge.",
++    "should_trigger": true
++  },
++  {
++    "query": "Just keep an eye on PR #150 — watch the checks and review threads and ping me when it's settled and mergeable. Don't touch the code.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR is merged to master now — run the post-merge health check and close out the issue.",
++    "should_trigger": false
++  },
++  {
++    "query": "My branch passed validation; push it and open the pull request with the design-doc link.",
++    "should_trigger": false
++  },
++  {
++    "query": "Before I open a PR, run the type-check, lint, full test suite, and security scan on my branch.",
++    "should_trigger": false
++  },
++  {
++    "query": "Just pull up this PR's SonarCloud issues and quality-gate status so I can eyeball them.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/rollback/SKILL.md b/skills/rollback/SKILL.md
+index 118fdfd8..6ba7def1 100644
+--- a/skills/rollback/SKILL.md
++++ b/skills/rollback/SKILL.md
+@@ -1,6 +1,19 @@
+ ---
+ name: rollback
+-description: Safely reverts changes — the last commit, a specific commit, a merged PR, individual files, or a commit range — using non-destructive git revert while preserving USER sections and custom commands. Use when an implementation must be undone, a merged PR reverted, files restored, or a change previewed before reverting (rollback, revert, undo, restore).
++description: >
++  Safely revert or undo a change that is already committed or shipped, using non-destructive
++  `git revert` (never `reset --hard`, `push --force`, or `clean`) and auto-preserving USER
++  sections plus custom commands. Drives the interactive `bunx forge rollback` menu: undo the
++  last commit, revert a specific commit by hash, revert a merged PR (git revert -m 1), restore
++  individual files to their prior version, revert a commit range, or dry-run/preview any of
++  these first. Use when the user says roll back, revert, undo, back out, or restore — e.g.
++  "undo the last commit", "undo that change, the approach was wrong", "back out PR #123",
++  "revert the merge commit", "restore src/auth.js to before my last commit", or when a
++  shipped/merged change broke something and must be pulled back (optionally re-flagging its
++  linked Beads issue). This is the RECOVERY skill for changes already in git history. Do NOT
++  use for: replying to or fixing PR review feedback (review), monitoring an open PR's checks
++  toward merge (shepherd), the post-merge CI health check on master (verify), pushing a branch
++  or opening a PR (ship), or ordinary issue status/field edits (issue-basics).
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/rollback/evals/evals.json b/skills/rollback/evals/evals.json
+new file mode 100644
+index 00000000..ee93f0e7
+--- /dev/null
++++ b/skills/rollback/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "undo the last commit, the approach was wrong",
++    "should_trigger": true
++  },
++  {
++    "query": "back out PR #482, it's breaking production",
++    "should_trigger": true
++  },
++  {
++    "query": "restore config/database.yml to the version before my last commit",
++    "should_trigger": true
++  },
++  {
++    "query": "show me which files reverting commit a1b2c3d would touch before I actually do it",
++    "should_trigger": true
++  },
++  {
++    "query": "that merged refactor broke everything — revert the whole thing but keep the git history intact",
++    "should_trigger": true
++  },
++  {
++    "query": "what's the safe way to undo a merged pull request?",
++    "should_trigger": true
++  },
++  {
++    "query": "address the Greptile and CodeRabbit comments on my PR",
++    "should_trigger": false
++  },
++  {
++    "query": "keep watching my open PR and tell me when checks pass and it's mergeable",
++    "should_trigger": false
++  },
++  {
++    "query": "master is green after the merge — run the post-merge health check and close the issue",
++    "should_trigger": false
++  },
++  {
++    "query": "push my validated branch and open a pull request",
++    "should_trigger": false
++  },
++  {
++    "query": "set issue forge-9f2 to status review",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/shepherd/SKILL.md b/skills/shepherd/SKILL.md
+index 6ab1242e..1a0d3761 100644
+--- a/skills/shepherd/SKILL.md
++++ b/skills/shepherd/SKILL.md
+@@ -1,6 +1,20 @@
+ ---
+ name: shepherd
+-description: Runs one bounded monitor pass over a pull request — reads CI and check state, takes at most one idempotent action, then hands off; never merges and never resolves review threads. Use when polling PR checks, re-running flaky required checks, posting status replies, or escalating merge-readiness after /review.
++description: >
++  Run ONE bounded, hand-off monitor pass over an already-reviewed OPEN pull request: read the
++  CI/check rollup and the branch-protection required-check set, take at most one idempotent
++  action (re-run a flaky required check, or post a status reply to a thread), then declare
++  merge-readiness — MERGE_READY, still PENDING, or escalate — and exit. There is no in-process
++  loop; a scheduler re-invokes the pass. Use this when the user says things like "is PR #123
++  ready to merge yet?", "poll/watch the checks on my PR", "the required CI job is flaky — kick
++  off a re-run", "keep an eye on this PR until it's green", "babysit the checks after
++  /review", "shepherd PR 45", or "monitor the PR toward merge (and rebase it if it's behind,
++  with --auto-rebase)". It NEVER merges (the human merges in the GitHub UI), NEVER edits code,
++  and NEVER resolves review threads. Do NOT use it to fix or reply-and-resolve PR review
++  feedback from Greptile/CodeRabbit/SonarCloud — that is `review`; nor to open/push the PR in
++  the first place — that is `ship`; nor for the post-merge "CI green on master + close issues"
++  health check — that is `verify`; nor for a general "where am I in the workflow / what's in
++  flight" report — that is `status`.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/shepherd/evals/evals.json b/skills/shepherd/evals/evals.json
+new file mode 100644
+index 00000000..2315f7b7
+--- /dev/null
++++ b/skills/shepherd/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "Is PR #212 ready to merge yet?",
++    "should_trigger": true
++  },
++  {
++    "query": "The lint check on my PR keeps failing intermittently — kick off a re-run of the failed jobs.",
++    "should_trigger": true
++  },
++  {
++    "query": "Keep an eye on pull request 88 and tell me when all the required checks pass.",
++    "should_trigger": true
++  },
++  {
++    "query": "I just wrapped up /review on this PR — babysit the checks and escalate if it isn't mergeable.",
++    "should_trigger": true
++  },
++  {
++    "query": "Shepherd PR 300 and rebase it onto master if it's behind.",
++    "should_trigger": true
++  },
++  {
++    "query": "Fix all the CodeRabbit and Greptile comments on my PR and resolve each review thread.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR just merged to master — confirm CI is green there and close the linked issue.",
++    "should_trigger": false
++  },
++  {
++    "query": "Push my validated feature branch and open a pull request from the template.",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow and what work is still in flight right now?",
++    "should_trigger": false
++  },
++  {
++    "query": "Show me the SonarCloud issues flagged on this PR.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index 8add533a..144c8e70 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -1,10 +1,21 @@
+ ---
+ name: ship
+ description: >
+-  Pushes the validated branch and opens a pull request populated from the project's
+-  PR template with full context and documentation links. Use for the Forge ship stage
+-  after /validate passes. Triggers on ship, create PR, open pull request, push branch,
+-  gh pr create.
++  Forge SHIP stage: push the already-validated feature branch and open a pull request
++  populated from the project's OWN PR template (design-doc link, Forge issue IDs, real
++  test/commit data), then hand the PR off for MANUAL merge — this skill never merges or
++  auto-merges. Reach for it the moment /validate has passed and you want a PR on the board.
++  Triggers on phrasings like "ship it", "ship this branch", "create/open the PR", "open a pull
++  request", "push and open a PR", "gh pr create", "make/raise a PR from my current branch",
++  "checks passed, now cut the PR". It runs the branch-freshness and parallel-PR
++  merge-simulation checks, force-with-lease pushes, records the ship->review handoff, then
++  stops. This is ONE stage — route elsewhere when the ask is broader or different: the whole
++  plan->dev->validate->ship->review pipeline or "drive it to done" (smith); running
++  type-check/lint/tests/security first (validate); addressing PR review comments or resolving
++  Greptile/SonarCloud/CodeRabbit threads on an existing PR (review); babysitting an
++  already-open PR's checks toward merge (shepherd); the post-merge CI health check and closing
++  issues (verify); or reverting an already-shipped change (rollback). If the PR already
++  exists, this is not the skill.
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+diff --git a/skills/ship/evals/evals.json b/skills/ship/evals/evals.json
+new file mode 100644
+index 00000000..8e278650
+--- /dev/null
++++ b/skills/ship/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "Validation came back clean — go ahead and open the pull request for this branch.",
++    "should_trigger": true
++  },
++  {
++    "query": "Push my feature branch and raise a PR, and fill in our PR template with the issue and design-doc links.",
++    "should_trigger": true
++  },
++  {
++    "query": "Dev's done and all the checks passed, cut me a PR.",
++    "should_trigger": true
++  },
++  {
++    "query": "Do a gh pr create for feat/rate-limit using the repo's template, not a hand-written body.",
++    "should_trigger": true
++  },
++  {
++    "query": "Everything's green after validate — ship it, but hand it off for me to merge, don't merge it yourself.",
++    "should_trigger": true
++  },
++  {
++    "query": "Take forge-42 from planning all the way to a merge-ready PR — plan it, build it TDD, validate, then ship, checking with me at the gates.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR's picked up Greptile and CodeRabbit comments — fix them and resolve the threads.",
++    "should_trigger": false
++  },
++  {
++    "query": "Run the type-check, lint, tests and security scan before I push anything.",
++    "should_trigger": false
++  },
++  {
++    "query": "Keep watching PR #128 and ping me the moment its checks go green so I can merge.",
++    "should_trigger": false
++  },
++  {
++    "query": "The PR merged to master — confirm CI is green there and close the linked issue.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/sonarcloud-analysis/SKILL.md b/skills/sonarcloud-analysis/SKILL.md
+index 9c441fb9..e386aa95 100644
+--- a/skills/sonarcloud-analysis/SKILL.md
++++ b/skills/sonarcloud-analysis/SKILL.md
+@@ -1,13 +1,24 @@
+ ---
+ name: sonarcloud-analysis
+ description: >
+-  Pull issues, metrics, quality gates, and analysis data from SonarCloud. ALWAYS
+-  use this skill when the user mentions SonarCloud, asks about code quality metrics,
+-  wants to check PR quality gates, or needs to review security vulnerabilities and
+-  technical debt from static analysis. Also trigger during /review workflow when
+-  SonarCloud issues need addressing. Trigger on phrases like "SonarCloud",
+-  "quality gate", "code quality metrics", "technical debt", "coverage report",
+-  "static analysis issues", "security vulnerabilities from scan".
++  Deep-dive SonarCloud analysis through the SonarCloud REST API, run in an isolated context so
++  the raw JSON does not flood the main conversation. Pull open issues (bugs, vulnerabilities,
++  code smells), coverage and duplication metrics, quality-gate pass/fail status with the exact
++  failed thresholds, security hotspots, quality profiles, and analysis/measure history for a
++  whole project, a branch, or a specific pull request, then hand back a ranked, actionable
++  summary. Reach for this whenever the user names SonarCloud or asks about code-quality
++  metrics, technical debt, coverage numbers, a red or failing quality gate, or security
++  vulnerabilities and hotspots from static analysis — for example "what's our technical debt
++  and which files have the worst maintainability", "why is the SonarCloud gate failing on this
++  PR", "pull every BLOCKER vulnerability from the last scan with file and line", "show
++  coverage by module", or "how have our reliability and security ratings trended this month".
++  Route ELSEWHERE when: the user explicitly types the thin `/sonarcloud <query> <project>`
++  slash command for a quick single lookup (that is the sibling 'sonarcloud' command surface);
++  they want to reply to and resolve PR review threads across Greptile, CodeRabbit, or GitHub
++  Actions (that is 'review'); they want to run the local lint, type-check, test, or security
++  scanner before shipping (that is 'validate'); they want to actually implement or patch a
++  flagged issue (that is 'dev'); or they want an external market or competitor report on
++  SonarSource or DevSecOps vendors (that is 'parallel-deep-research').
+ category: Code Quality
+ tags: [sonarcloud, code-quality, issues, metrics, security]
+ context: fork
+diff --git a/skills/sonarcloud-analysis/evals/evals.json b/skills/sonarcloud-analysis/evals/evals.json
+index 586cb41d..16ab0e81 100644
+--- a/skills/sonarcloud-analysis/evals/evals.json
++++ b/skills/sonarcloud-analysis/evals/evals.json
+@@ -1,50 +1,46 @@
+ [
+   {
+-    "query": "Check the SonarCloud quality gate status for our latest PR — I want to see if there are any blockers before we can merge, especially around security vulnerabilities and code coverage",
++    "query": "Why is our quality gate red on this pull request? Break down exactly which conditions failed and by how much.",
+     "should_trigger": true
+   },
+   {
+-    "query": "Pull the SonarCloud analysis results for our project — show me all the critical and major security vulnerabilities found in the last scan, with file locations and remediation guidance",
++    "query": "How much technical debt has piled up in the codebase, and which files carry the worst maintainability rating?",
+     "should_trigger": true
+   },
+   {
+-    "query": "We're in /review and SonarCloud flagged some issues — get the full list of code smells, bugs, and vulnerabilities from the latest analysis so I can address them before the quality gate passes",
++    "query": "Give me the coverage and duplication numbers for the develop branch and flag the modules that regressed.",
+     "should_trigger": true
+   },
+   {
+-    "query": "What's our current technical debt ratio in SonarCloud? Show me the metrics dashboard — maintainability rating, reliability rating, security rating, and coverage percentage",
++    "query": "List every unresolved BLOCKER and CRITICAL vulnerability SonarCloud found, with file and line, so I know what to fix first.",
+     "should_trigger": true
+   },
+   {
+-    "query": "The SonarCloud quality gate is failing on our PR — pull the specific issues that are blocking it and show me what needs to be fixed, sorted by severity",
++    "query": "Pull the security hotspots that still need review and summarize the risk for each.",
+     "should_trigger": true
+   },
+   {
+-    "query": "Get the SonarCloud code coverage report for our project — I want to see which modules have low coverage and identify the files that need more tests before our next release",
++    "query": "Show me how our reliability and security ratings have trended over the last month of analyses.",
+     "should_trigger": true
+   },
+   {
+-    "query": "Implement a new REST API endpoint for user profile management with CRUD operations, input validation, and proper error handling",
++    "query": "/sonarcloud issues checkout-service --severity BLOCKER",
+     "should_trigger": false
+   },
+   {
+-    "query": "Search for best practices around implementing OAuth2 PKCE flow in a Node.js application",
++    "query": "Go through all the open PR review threads from Greptile and CodeRabbit, reply to each explaining the fix, and mark them resolved.",
+     "should_trigger": false
+   },
+   {
+-    "query": "Write a comprehensive market analysis of the DevSecOps tools landscape covering SAST, DAST, and SCA vendors",
++    "query": "Run lint, type-check, the test suite, and the security scanner and give me fresh output before I ship this branch.",
+     "should_trigger": false
+   },
+   {
+-    "query": "Scrape https://docs.sonarcloud.io and extract the full list of supported languages and analysis rules",
++    "query": "Fix the SQL-injection vulnerability SonarCloud flagged in login.ts and add a regression test.",
+     "should_trigger": false
+   },
+   {
+-    "query": "Build a structured company profile for SonarSource — return JSON with founding year, funding, products, and competitive positioning",
+-    "should_trigger": false
+-  },
+-  {
+-    "query": "Add proper citations to docs/research/security-audit-findings.md following our project's citation standards",
++    "query": "Produce a competitive market report comparing SonarCloud, Snyk, and Codacy for our tooling decision.",
+     "should_trigger": false
+   }
+ ]
+diff --git a/skills/sonarcloud/SKILL.md b/skills/sonarcloud/SKILL.md
+index a8dd4974..4f1bb8ca 100644
+--- a/skills/sonarcloud/SKILL.md
++++ b/skills/sonarcloud/SKILL.md
+@@ -1,6 +1,23 @@
+ ---
+ name: sonarcloud
+-description: Pulls issues, metrics, quality gates, security hotspots, and analysis history from SonarCloud via its API. Use for the Forge sonarcloud stage when querying code quality data for a project, branch, or PR — triggers on sonarcloud, code quality, issues, metrics, quality gate, hotspots, coverage.
++description: >
++  Query SonarCloud code-quality data through the `/sonarcloud` slash command — the fast,
++  in-context lookup surface for a project, branch, or (above all) a pull request. Handles the
++  named queries `issues`, `metrics`, `gate` (quality-gate pass/fail with failed conditions),
++  `health` (full report), `pr <number>`, `hotspots` (security), and `history`, plus
++  `--branch`, `--severity`, `--type`, and `--new-code` filters. Reach for this the moment the
++  user types `/sonarcloud ...`, or asks in plain language: "what does SonarCloud say about
++  this PR", "check the SonarCloud quality gate before I ship", "show SonarCloud
++  blocker/critical bugs on the develop branch", "any new-code SonarCloud issues on PR 214",
++  "SonarCloud coverage for my-project". Requires a `SONARCLOUD_TOKEN` (and organization key).
++  This skill only READS and reports SonarCloud results — it does NOT fix findings or
++  reply-to/resolve PR review threads (that is the `review` stage), and it is the lightweight
++  command surface, NOT the isolated deep-analysis session that correlates findings with local
++  source, walks analysis-history trends, or runs duplication deep-dives across many endpoints
++  (that is `sonarcloud-analysis` — send heavyweight or correlation work there). Not for local
++  SAST/security scans of your own code, and not for the Forge issue tracker ("open/ready
++  issues", `forge issue ...`) — here those bare words always mean SonarCloud, not the tracker
++  or validate stage.
+ allowed-tools: Bash, Read, Grep, Glob, WebFetch
+ ---
+ 
+diff --git a/skills/sonarcloud/evals/evals.json b/skills/sonarcloud/evals/evals.json
+new file mode 100644
+index 00000000..433984bc
+--- /dev/null
++++ b/skills/sonarcloud/evals/evals.json
+@@ -0,0 +1,46 @@
++[
++  {
++    "query": "/sonarcloud gate my-project",
++    "should_trigger": true
++  },
++  {
++    "query": "/sonarcloud pr befach-web 214 --new-code",
++    "should_trigger": true
++  },
++  {
++    "query": "What does SonarCloud say about this pull request? Just the quality gate and the blocker issues, quick.",
++    "should_trigger": true
++  },
++  {
++    "query": "Show SonarCloud bugs and vulnerabilities on the develop branch for the api project",
++    "should_trigger": true
++  },
++  {
++    "query": "Any new-code SonarCloud issues on PR 88 before I ship?",
++    "should_trigger": true
++  },
++  {
++    "query": "Pull the SonarCloud coverage and code-smell numbers for my-project so I can eyeball them",
++    "should_trigger": true
++  },
++  {
++    "query": "Open an isolated SonarCloud deep-dive: correlate every flagged vulnerability with the actual source files, walk the analysis history for coverage trends, and hand back a synthesized technical-debt report",
++    "should_trigger": false
++  },
++  {
++    "query": "SonarCloud flagged issues on PR 214 — fix them, reply to each review thread, and mark them resolved",
++    "should_trigger": false
++  },
++  {
++    "query": "Run a SAST security scan over my code and list the vulnerabilities you find",
++    "should_trigger": false
++  },
++  {
++    "query": "Show me the open issues that are ready to work on next",
++    "should_trigger": false
++  },
++  {
++    "query": "Run lint and type-check and the test suite before I ship this branch",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/status/SKILL.md b/skills/status/SKILL.md
+index 1225134c..d846ef93 100644
+--- a/skills/status/SKILL.md
++++ b/skills/status/SKILL.md
+@@ -1,6 +1,21 @@
+ ---
+ name: status
+-description: Checks the current Forge workflow stage and surfaces in-progress work, ranked ready issues, stale in-progress reconciliation, recent commits, and team context. Use for the Forge status stage when starting a session or deciding what to work on next. Triggers include status, current stage, what's in progress, where am I, and resume work.
++description: >
++  Report where the project stands right now and what work is in flight -- the Forge status
++  snapshot. Reach for this at session start or whenever the user says "/status", "where am I",
++  "what's in progress", "catch me up", "resume work", "what changed recently", or "what should
++  I pick up next". It runs forge sync, then surfaces the detected workflow stage, the user's
++  active/claimed issues, all issues ranked by composite score (priority, dependency impact,
++  type, staleness) with conflict-risk annotations, stale in-progress issues that were already
++  merged (which it reconciles by closing them), the last ~10 commits, and a forge team
++  workload/dashboard overview. Use it to ORIENT and decide the next move: it reports state and
++  points ahead -- it does not plan, run development, or claim an issue to work it (its only
++  write is closing already-merged stale issues during reconciliation). Not for: routing to a
++  specific stage skill or documenting the full issue-verb surface (that's kernel); deeply
++  ranking and EXPLAINING a single next-ready or blocked issue to hand off (triage-ready);
++  everyday create/update/list/close/comment/search issue operations (issue-basics); the Hermes
++  harness's token-bounded orient/recap state contract (hermes-forge); or the post-merge CI
++  health check that closes issues after a merge lands (verify).
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/status/evals/evals.json b/skills/status/evals/evals.json
+new file mode 100644
+index 00000000..a214aed1
+--- /dev/null
++++ b/skills/status/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "/status",
++    "should_trigger": true
++  },
++  {
++    "query": "where am I on this project right now?",
++    "should_trigger": true
++  },
++  {
++    "query": "catch me up -- what's in progress and what got merged recently?",
++    "should_trigger": true
++  },
++  {
++    "query": "I stepped away for a few days, give me the current state of the work before I dive back in",
++    "should_trigger": true
++  },
++  {
++    "query": "show me my active issues and which stage we're at",
++    "should_trigger": true
++  },
++  {
++    "query": "are there any in-progress issues that were already merged and should be closed?",
++    "should_trigger": true
++  },
++  {
++    "query": "what's the single best next issue to start, and explain why that one?",
++    "should_trigger": false
++  },
++  {
++    "query": "why is issue forge-456 blocked -- what's it waiting on?",
++    "should_trigger": false
++  },
++  {
++    "query": "route me to the correct Forge stage skill for opening a PR",
++    "should_trigger": false
++  },
++  {
++    "query": "create an issue titled 'fix flaky login test' and tag it a bug",
++    "should_trigger": false
++  },
++  {
++    "query": "the PR just merged to master -- confirm CI is green and close the linked issues",
++    "should_trigger": false
++  },
++  {
++    "query": "keep an eye on PR #88 until its checks and review threads settle",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/triage-ready/SKILL.md b/skills/triage-ready/SKILL.md
+index 7127aa8d..c66f42bf 100644
+--- a/skills/triage-ready/SKILL.md
++++ b/skills/triage-ready/SKILL.md
+@@ -1,13 +1,21 @@
+ ---
+ name: triage-ready
+ description: >
+-  Surfaces and EXPLAINS the right next work in a Forge project — read-only. Ranks
+-  the ready queue with `forge issue ready`, shows what is blocked and why with
+-  `forge issue blocked`, and summarizes the backlog with `forge issue stats`. Never
+-  uses `board` (which reads a legacy snapshot store, not the live kernel). Use when
+-  deciding what to pick up next, or to justify why an item is workable. Trigger on
+-  "what should I work on", "what's ready", "triage", "next task", "ready queue",
+-  "why is this blocked", or "pick my next issue".
++  Surfaces, ranks, and EXPLAINS the single best next issue to pick up in a Forge project —
++  strictly read-only. Recomputes the live ready queue with `forge issue ready`, explains what
++  is blocked and why with `forge issue blocked`, takes the backlog pulse with `forge issue
++  stats`, and justifies the pick from the full record via `forge issue show` — always against
++  the live kernel, never `forge board` (which reflects legacy Beads runtime/snapshot state,
++  not the live kernel) and never a cached "status == ready". Recommends ONE issue with a
++  one-line reason, then hands off; it never claims, comments, closes, or otherwise mutates.
++  Use when the user asks "what should I work on", "what's next", "what's ready", "pick/triage
++  my next task", "top of the ready queue", "which issue should I start", "why is this issue
++  blocked", or "what's blocking the most work". This is the read-and-recommend skill — NOT for
++  claiming or taking ownership of the pick (use claim-safety), not for everyday issue
++  create/update/list/search/close/comment/dep CRUD (use issue-basics), not for reporting the
++  current workflow stage or "where am I / what's in flight" (use status), not for orienting a
++  whole session or routing to stage skills (use kernel), and not for driving an issue through
++  to a merged PR (use smith).
+ allowed-tools: Read, Bash(forge:*)
+ ---
+ 
+diff --git a/skills/triage-ready/evals/evals.json b/skills/triage-ready/evals/evals.json
+new file mode 100644
+index 00000000..132ebccd
+--- /dev/null
++++ b/skills/triage-ready/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "I just sat down at this repo — what's the highest-priority thing I can actually start right now?",
++    "should_trigger": true
++  },
++  {
++    "query": "Give me the top few off the ready queue and tell me why the first one is unblocked.",
++    "should_trigger": true
++  },
++  {
++    "query": "Why can't I start forge-2agy.2.2 yet? What's holding it up?",
++    "should_trigger": true
++  },
++  {
++    "query": "The backlog feels stuck — is it mostly blocked, and which one dependency would unlock the most work?",
++    "should_trigger": true
++  },
++  {
++    "query": "Pick my next task and justify the choice, don't grab it yet.",
++    "should_trigger": true
++  },
++  {
++    "query": "Claim forge-abc123 for me and confirm I actually hold the lease before I start editing.",
++    "should_trigger": false
++  },
++  {
++    "query": "Create a P1 bug titled 'login returns 500' and add a comment linking the repro.",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow right now and what work is in flight?",
++    "should_trigger": false
++  },
++  {
++    "query": "Search every issue mentioning 'oauth' and list the open ones.",
++    "should_trigger": false
++  },
++  {
++    "query": "Take forge-xyz all the way through to a merged PR.",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/validate/SKILL.md b/skills/validate/SKILL.md
+index d1262b67..201b1cab 100644
+--- a/skills/validate/SKILL.md
++++ b/skills/validate/SKILL.md
+@@ -1,6 +1,17 @@
+ ---
+ name: validate
+-description: Runs comprehensive pre-pull-request validation for the Forge validate stage — rebases onto the base branch, then runs type checking, linting, code review, security review (OWASP Top 10), and tests, requiring fresh passing output before shipping. Use for the Forge validate stage or when asked to validate changes, run quality gates, type-check, lint, security-scan, or run the full test suite before opening a PR.
++description: >
++  Forge VALIDATE stage — the pre-pull-request quality gate. Rebases the branch onto the
++  current base branch, then runs type-checking, linting, code review, an OWASP Top 10 security
++  review plus dependency scan, and the full test suite, demanding fresh passing output in THIS
++  session before anything ships. Reach for this whenever a branch is code-complete and someone
++  says: validate my changes, run the quality gates, run the pre-PR checks, type-check and lint
++  before the PR, run the security scan, or run the full test suite before opening a PR — and
++  for the literal `/validate` command or `bun run check`. This is the gate that runs AFTER
++  code is written but BEFORE a PR exists, so discriminate carefully: it does not implement
++  features or write tests (that is `/dev`), it does not push the branch or open the PR (that
++  is `/ship`), it does not answer PR review feedback from Greptile / SonarCloud / CodeRabbit
++  (that is `/review`), and it is not the post-merge CI health check (that is `/verify`).
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/validate/evals/evals.json b/skills/validate/evals/evals.json
+new file mode 100644
+index 00000000..9e3238bb
+--- /dev/null
++++ b/skills/validate/evals/evals.json
+@@ -0,0 +1,42 @@
++[
++  {
++    "query": "Branch is code-complete — run all the pre-PR checks and make sure everything's green before I ship",
++    "should_trigger": true
++  },
++  {
++    "query": "/validate",
++    "should_trigger": true
++  },
++  {
++    "query": "Rebase onto master, then type-check, lint, and run the whole test suite so I know it's clean",
++    "should_trigger": true
++  },
++  {
++    "query": "Run the OWASP security review and full test pass on this branch before we open the PR",
++    "should_trigger": true
++  },
++  {
++    "query": "I'm at the validate stage — take my changes through the quality gates",
++    "should_trigger": true
++  },
++  {
++    "query": "Implement the next task using TDD, red-green-refactor",
++    "should_trigger": false
++  },
++  {
++    "query": "Push this validated branch and open the pull request from the template",
++    "should_trigger": false
++  },
++  {
++    "query": "Go through the Greptile and CodeRabbit comments on my PR and resolve the threads",
++    "should_trigger": false
++  },
++  {
++    "query": "It's merged now — check CI is green on master and close the issue",
++    "should_trigger": false
++  },
++  {
++    "query": "Pull the SonarCloud issues for this PR",
++    "should_trigger": false
++  }
++]
+diff --git a/skills/verify/SKILL.md b/skills/verify/SKILL.md
+index 64906ba2..e4de09f3 100644
+--- a/skills/verify/SKILL.md
++++ b/skills/verify/SKILL.md
+@@ -1,6 +1,18 @@
+ ---
+ name: verify
+-description: Post-merge health check for the Forge verify stage — confirms the merge landed on master, checks CI is clean and deployments are up, cleans up the merged worktree/branch, and closes resolved issues. Use for the Forge verify stage, or when asked to verify a PR merged correctly, confirm post-merge CI health, check deployments after merge, or validate everything is healthy after merging.
++description: >
++  Runs the Forge verify stage — the post-merge health check performed AFTER a PR has been
++  merged. Switches to master and pulls, confirms the merge actually landed (`gh pr list
++  --state merged`), checks CI is green on master after the merge, confirms any deployments are
++  up, removes the merged worktree and safe-deletes the local branch, and closes the
++  kernel/Beads issues the PR resolved (`forge close --reason=...`). Use when asked to verify a
++  merge went cleanly, confirm post-merge CI health on master, check deployments after merging,
++  clean up a merged branch or worktree, or close the issue now that its PR is merged — and
++  whenever `/verify` is invoked. This is strictly the POST-merge stage: reach for shepherd
++  instead to monitor a still-open PR toward merge, review to fix and resolve PR feedback
++  before merge, ship to push the branch and open the PR, rollback to undo an already-shipped
++  change, status to merely report the current stage without acting, and issue-basics to close
++  an issue that is unrelated to a just-merged PR.
+ allowed-tools: Bash, Read, Grep, Glob
+ ---
+ 
+diff --git a/skills/verify/evals/evals.json b/skills/verify/evals/evals.json
+new file mode 100644
+index 00000000..f4f3a6de
+--- /dev/null
++++ b/skills/verify/evals/evals.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "query": "The PR just merged — make sure master is still healthy",
++    "should_trigger": true
++  },
++  {
++    "query": "Confirm the auth-refresh change actually landed on master and CI passed after merge",
++    "should_trigger": true
++  },
++  {
++    "query": "/verify",
++    "should_trigger": true
++  },
++  {
++    "query": "Now that #89 is merged, close the issue it resolved and delete the feature branch",
++    "should_trigger": true
++  },
++  {
++    "query": "Did the deployment go out okay after we merged this?",
++    "should_trigger": true
++  },
++  {
++    "query": "Run the post-merge checks and clean up the merged worktree",
++    "should_trigger": true
++  },
++  {
++    "query": "Watch my open PR and re-run the flaky required check until it can merge",
++    "should_trigger": false
++  },
++  {
++    "query": "Fix and resolve all the Greptile and SonarCloud threads on the PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Push this validated branch and open a pull request",
++    "should_trigger": false
++  },
++  {
++    "query": "This merge broke production — revert the PR",
++    "should_trigger": false
++  },
++  {
++    "query": "Where am I in the workflow and what's in progress right now?",
++    "should_trigger": false
++  },
++  {
++    "query": "Close forge-abc, we've decided not to do it",
++    "should_trigger": false
++  }
++]
+-- 
+2.51.0.windows.1
+

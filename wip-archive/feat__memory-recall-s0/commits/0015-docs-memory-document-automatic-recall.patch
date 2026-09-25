@@ -1,0 +1,64 @@
+From 22ae19d69f12ca7a195a36a777661d218802f4c6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 11:00:29 +0530
+Subject: [PATCH] docs(memory): document automatic recall
+
+---
+ CHANGELOG.md                | 4 ++++
+ README.md                   | 5 +++++
+ docs/reference/TOOLCHAIN.md | 8 ++++++++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 32414024..3f43da8c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ## [Unreleased]
+ 
++### Added
++
++- **Automatic project-local memory recall for Claude Code.** Forge now repairs and reuses its existing `SessionStart` and `UserPromptSubmit` lifecycle hooks to inject bounded Kernel memory automatically. Confirmed memories are presented as project truth; fresh suggested memories are separated and labeled for verification. Scope, staleness, supersession, and seen-key filtering happen before ranking, and privacy-safe recall telemetry records only bounded identifiers and aggregates—not prompt terms or memory bodies. (`36461e50`)
++
+ ### Changed
+ 
+ - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
+diff --git a/README.md b/README.md
+index bf484796..29f28c22 100644
+--- a/README.md
++++ b/README.md
+@@ -89,6 +89,11 @@ truth through `forge status`, `forge prime`, and `forge orient` — so a session
+ that dies at 2am resumes cleanly the next morning, on any device, with any
+ agent.
+ 
++In Claude Code, Forge also recalls relevant project-local memory automatically
++through its existing lifecycle hooks. Confirmed memories arrive as project
++truth; suggested memories are visibly separated and require verification.
++Every injected memory is scope-checked, budgeted, and provenance-labeled.
++
+ ### 🧹 A lifecycle that cleans up after itself
+ 
+ Merged a PR with squash-merge? `forge clean` still knows the worktree is done —
+diff --git a/docs/reference/TOOLCHAIN.md b/docs/reference/TOOLCHAIN.md
+index 79206a6f..42300fd5 100644
+--- a/docs/reference/TOOLCHAIN.md
++++ b/docs/reference/TOOLCHAIN.md
+@@ -140,6 +140,14 @@ Forge project memory is a **kernel-backed** read model. `lib/project-memory.js`
+ 
+ `forge remember` / `forge recall` route through this same `kernel_memories` table (via `lib/memory/router.js`), indexed by **FTS5** for token-AND BM25 recall: a `recall` query does full-text matching, and a no-query `recall` returns the newest notes plus a total count (never a full dump). Because the insights engine also writes `kernel_memories`, what it learns is recallable. Any legacy `.forge/memory/notes.jsonl` is imported once on first use, then retired. The opt-in **`graphiti`** backend is **experimental** — its config/doctor checks ship but the runtime write-through emitter is a fast-follow, so selecting it today still writes the local kernel floor. See [docs/guides/memory-backends.md](../guides/memory-backends.md).
+ 
++Claude Code setup and upgrade repair the existing Forge-owned `SessionStart` and `UserPromptSubmit` hook groups without replacing user hooks. `SessionStart` supplies a bounded project-memory digest; each submitted prompt can receive relevant FTS5-ranked memory as `additionalContext`. Other harnesses keep their documented CLI/rule/`AGENTS.md` fallback surfaces—Forge does not claim a native dynamic prompt hook where none is verified.
++
++Automatic recall is project-local. Forge derives scope from Git's canonical common directory so linked worktrees share one repository identity without crossing into another repository. Eligibility is applied before ranking: foreign scope, already-seen records, stale suggested records, and validly superseded records are excluded. Confirmed memories are authoritative project context; fresh suggested memories appear only under **Suggested memory — verify before relying**. Suggested memories outside the seven-day freshness window remain available to manual recall but are not injected automatically. User-global `.remember` data is not read because it has no authority-safe canonical project identity.
++
++Recall is bounded and fail-open: automatic prompt and session memory each have a 400-token budget, while default manual `forge recall` has a 1,200-token budget. Prompt recall has an internal 4.5-second deadline and SessionStart has a 9-second deadline, keeping them inside the 5-second and 10-second hook limits; an unavailable or slow store injects nothing rather than blocking the agent. Local 1,000-record holdouts enforce an FTS5 p95 of at most 250 ms. Linux CI timing acceptance is not claimed yet.
++
++The capped prompt shadow log stores aggregate candidate/injection counts and scores only—never prompt terms, session ids, selected memory ids, or memory bodies. The separate `memory.recall.observed` Kernel event likewise stores bounded outcomes, counts, selected ids, source/trust mixes, token estimates, elapsed time, and harness, with no prompt/query text, memory body/snippet, or correlation fingerprint.
++
+ Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions on top of the same kernel store; they do not create a new datastore. The supported categories are:
+ 
+ | Category | Key prefix | Durable backend |
+-- 
+2.51.0.windows.1
+

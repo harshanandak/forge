@@ -1,0 +1,141 @@
+From 22bce5b799f58e684eb84eb8fa484c5281488225 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 01:54:16 +0530
+Subject: [PATCH] perf(flow): validate authority events once
+
+---
+ lib/pr-monitor/flow-monitor.js       | 41 ++++++++++++++++------------
+ test/pr-monitor/flow-monitor.test.js | 15 ++++++++++
+ 2 files changed, 39 insertions(+), 17 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index bc912d6d..953502b1 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -5,6 +5,7 @@ const zlib = require('node:zlib');
+ 
+ const { computeContentHash, validateContractStructure } = require('../../packages/memory-contracts');
+ const {
++  MonitorRuntimeError,
+   createMonitorDurabilityBridge,
+   createMonitorReceipt,
+   createMonitorState,
+@@ -371,19 +372,14 @@ function envelope(schemaId, objectId, createdAt, producerId, payload) {
+   return value;
+ }
+ 
+-function parseEventRow(row, monitorId) {
++function parseEventRow(row) {
+   let event;
+   try {
+     event = typeof row?.envelope_json === 'string' ? JSON.parse(row.envelope_json) : row;
+   } catch {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is malformed');
+   }
+-  const validation = validateContractStructure(event);
+-  if (!validation.ok
+-    || event?.schema_id !== 'forge.memory.monitor-event.v1'
+-    || event.payload?.monitor_id !== monitorId
+-    || !Number.isSafeInteger(event.payload?.sequence)
+-    || (typeof row?.content_hash === 'string' && row.content_hash !== event.content_hash)) {
++  if (typeof row?.content_hash === 'string' && row.content_hash !== event?.content_hash) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is incomplete');
+   }
+   return event;
+@@ -535,7 +531,7 @@ async function recordTerminalHandoff(ctx, bridge, spec, state, snapshot, created
+   return receipt.object_id;
+ }
+ 
+-async function readAuthority(ctx) {
++async function readAuthority(ctx, spec) {
+   let tail;
+   try {
+     tail = await ctx.store.readEventTail(ctx.monitorId, { limit: MAX_HISTORY });
+@@ -546,7 +542,20 @@ async function readAuthority(ctx) {
+     || (tail.overflow && tail.events.length !== MAX_HISTORY)) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history exceeds its restart bound');
+   }
+-  const events = tail.events.map(row => parseEventRow(row, ctx.monitorId));
++  const events = tail.events.map(parseEventRow);
++  let state;
++  try {
++    state = reduceMonitorBatch(
++      spec,
++      createMonitorState(spec),
++      events.map(event => ({ kind: 'observation', event })),
++    ).state;
++  } catch (error) {
++    if (error instanceof MonitorRuntimeError) {
++      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is incomplete', { cause: error });
++    }
++    throw error;
++  }
+   const firstSequence = events[0]?.payload.sequence ?? 1;
+   if (tail.overflow && tail.truncated_before_sequence !== firstSequence) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor checkpoint boundary is invalid');
+@@ -556,7 +565,7 @@ async function readAuthority(ctx) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is not contiguous');
+     }
+   }
+-  return events;
++  return { events, state };
+ }
+ 
+ async function readDeliveryAuthority(ctx) {
+@@ -1144,14 +1153,10 @@ async function finalizePass(ctx, bridge, spec, {
+ 
+ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const now = ctx.now || defaultNow;
+-  const durableEvents = await readAuthority(ctx);
+   const subjectRevision = ctx.subjectRevision || ctx.subjectId;
+   const spec = monitorSpec(ctx, subjectRevision);
+-  let state = reduceMonitorBatch(
+-    spec,
+-    createMonitorState(spec),
+-    durableEvents.map(event => ({ kind: 'observation', event })),
+-  ).state;
++  const { events: durableEvents, state: replayedState } = await readAuthority(ctx, spec);
++  let state = replayedState;
+ 
+   const deliveryState = await readDeliveryAuthority(ctx);
+   const replay = terminalReplay(deliveryState, ctx.monitorId);
+@@ -1163,7 +1168,9 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+     } catch { return replay; }
+     const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
+     const monitorId = reopenedMonitorId(ctx.monitorId, replay.terminalReceiptId);
+-    const reopenedHistory = await readAuthority({ ...ctx, monitorId });
++    const reopenedContext = { ...ctx, monitorId };
++    const reopenedSpec = monitorSpec(reopenedContext, subjectRevision);
++    const { events: reopenedHistory } = await readAuthority(reopenedContext, reopenedSpec);
+     if (lifecycle !== 'OPEN' && reopenedHistory.length === 0) return replay;
+     if (reopenDepth >= MAX_REOPEN_DEPTH) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Reopened monitor lifecycle exceeds its restart bound');
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 3673587e..cb19dcdf 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -1263,6 +1263,21 @@ describe('Flow-backed PR monitor authority', () => {
+     }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+   });
+ 
++  test('rejects a durable row hash that disagrees with its validated envelope before provider observation', async () => {
++    const store = durableStore();
++    await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
++    const readEventTail = store.readEventTail;
++    store.readEventTail = async (...args) => {
++      const tail = await readEventTail(...args);
++      tail.events[0].content_hash = '0'.repeat(64);
++      return tail;
++    };
++
++    await expect(runFlowMonitorPass(context(store, async () => {
++      throw new Error('inconsistent durable row must not poll the provider');
++    }, async () => {}))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++  });
++
+   test('rejects malformed compact snapshot evidence as incomplete history', async () => {
+     const store = durableStore();
+     await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
+-- 
+2.51.0.windows.1
+

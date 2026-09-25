@@ -1,0 +1,315 @@
+From 9accb1f9f4a2aebea2bbf7d8748a34ba33b0cdde Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 00:40:46 +0530
+Subject: [PATCH] fix(hooks): flag-agnostic enforcement predicate +
+ config-driven protected paths (refs eda6d866)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Per review: gate each hook on a SINGLE resolved predicate so whichever flag we
+land on for the TDD off-switch drops in with no rework, and make protected-path
+config-driven end to end.
+
+- forge-native-hook.js: add isEnforcementActive('tdd'|'protected-path') — the one
+  place each enforcement kind is resolved. protected-path now builds its matcher
+  from the resolved `protectedPaths` list (config is the source of truth): unset →
+  built-in fallback set (fail toward enforcement / back-compat), [] → inert, list →
+  protect exactly those paths/globs (globToRegExp: ** spans separators, * within a
+  segment). Shell-command scan honors the same resolved matcher.
+- setup.js: describeHookEnforcement() prints the resolved TDD/protected-path state
+  after installing hooks and the header no longer over-claims "TDD enforcement" —
+  a disabled gate installs an inert hook and setup now says so.
+- Tests: predicate + glob + config-driven matching + honest-summary coverage.
+
+HELD (awaiting product decision): the TDD off-switch mechanism itself (unlock the
+L1 rail.tdd_intent vs a separate toggle). isEnforcementActive('tdd') already reads
+whichever flag lands, so no rework needed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .forge/hooks/forge-native-hook.js      | 71 ++++++++++++++++++++++----
+ lib/commands/setup.js                  | 31 ++++++++++-
+ test/forge-native-hook.test.js         | 33 ++++++++++++
+ test/setup-enforcement-honesty.test.js | 45 ++++++++++++++++
+ 4 files changed, 169 insertions(+), 11 deletions(-)
+ create mode 100644 test/setup-enforcement-honesty.test.js
+
+diff --git a/.forge/hooks/forge-native-hook.js b/.forge/hooks/forge-native-hook.js
+index 7db68608..db2e13ce 100644
+--- a/.forge/hooks/forge-native-hook.js
++++ b/.forge/hooks/forge-native-hook.js
+@@ -130,6 +130,56 @@ function resolveEnforcement(projectRoot) {
+   return { tddEnabled: !tddDisabled, protectedPaths };
+ }
+ 
++/**
++ * The SINGLE resolved predicate each hook gates on — flag-agnostic on purpose.
++ * Whatever config flag ultimately governs an enforcement kind resolves inside
++ * resolveEnforcement(); callers ask only "is this active?". This is the one place
++ * the TDD off-switch is read, so a future flag change lands here with no rework.
++ * @param {'tdd'|'protected-path'} kind
++ */
++function isEnforcementActive(kind, projectRoot) {
++  const { tddEnabled, protectedPaths } = resolveEnforcement(projectRoot);
++  if (kind === 'tdd') return tddEnabled;
++  if (kind === 'protected-path') return protectedPaths === null || protectedPaths.length > 0;
++  return true;
++}
++
++// Translate a config protectedPaths entry (a path or glob like `.github/workflows/**`)
++// into an anchored matcher. `**` spans path separators, `*` stays within one segment.
++function globToRegExp(pattern) {
++  const norm = normalize(pattern);
++  let re = '';
++  for (let i = 0; i < norm.length; i += 1) {
++    const c = norm[i];
++    if (c === '*') {
++      if (norm[i + 1] === '*') { re += '.*'; i += 1; if (norm[i + 1] === '/') i += 1; }
++      else re += '[^/]*';
++    } else if ('\\^$.|?+()[]{}'.includes(c)) {
++      re += `\\${c}`;
++    } else {
++      re += c;
++    }
++  }
++  return new RegExp(`(^|/)${re}(/|$)`);
++}
++
++/**
++ * Build the protected-path matcher from resolved config (config is the source of
++ * truth — the hardcoded PROTECTED_PATTERNS set is only the fallback when config
++ * omits protectedPaths entirely, so no gate is silently dropped):
++ *   null → unset → built-in default set (fail toward enforcement / back-compat)
++ *   []   → explicitly empty → nothing protected (inert)
++ *   list → protect exactly those paths/globs
++ */
++function buildProtectedMatcher(protectedPaths) {
++  if (protectedPaths === null) {
++    return p => Boolean(p) && PROTECTED_PATTERNS.some(re => re.test(normalize(p)));
++  }
++  if (protectedPaths.length === 0) return () => false;
++  const regexes = protectedPaths.map(globToRegExp);
++  return p => Boolean(p) && regexes.some(re => re.test(normalize(p)));
++}
++
+ /** Parse `--intent <id> --harness <id>` from an argv slice. */
+ function parseArgs(argv) {
+   const out = { intent: null, harness: null };
+@@ -162,7 +212,7 @@ function normalize(p) {
+   return String(p).replace(/\\/g, '/').replace(/^\.\//, '');
+ }
+ 
+-/** True when a path falls inside Forge's protected set. */
++/** True when a path falls inside Forge's built-in protected set (the fallback matcher). */
+ function isProtectedPath(p) {
+   if (!p) return false;
+   const n = normalize(p);
+@@ -183,13 +233,13 @@ const WRITE_INTENT_RE = /(^|[\s;|&(])(rm|mv|cp|tee|truncate|chmod|chown|ln|sed|p
+  * (rm/mv/sed/tee/redirection/...), then (2) token-scan (split on whitespace +
+  * shell operators, strip quotes) for a protected path. Never throws.
+  */
+-function commandTouchesProtectedPath(command) {
++function commandTouchesProtectedPath(command, isProtected = isProtectedPath) {
+   if (typeof command !== 'string' || !command) return false;
+   if (!WRITE_INTENT_RE.test(command)) return false;
+   const tokens = command.split(/[\s;|&<>()]+/);
+   for (const raw of tokens) {
+     const token = raw.replace(/^["']+|["']+$/g, '');
+-    if (token && !token.startsWith('-') && isProtectedPath(token)) return true;
++    if (token && !token.startsWith('-') && isProtected(token)) return true;
+   }
+   return false;
+ }
+@@ -221,14 +271,12 @@ const ENFORCEMENT_ON = Object.freeze({ tddEnabled: true, protectedPaths: null })
+  * @returns {{ decision: 'allow'|'deny', reason?: string }}
+  */
+ function decide({ intent, input, runTddCheck = runInstalledTddCheck, enforcement = ENFORCEMENT_ON }) {
+-  // A configured-but-empty protectedPaths list means the user turned protected-path
+-  // enforcement off — the hook must be inert. An unset list (null) keeps the built-in set.
+-  const protectedPathsOff = Array.isArray(enforcement.protectedPaths) && enforcement.protectedPaths.length === 0;
+-
+   if (intent === 'protected-path') {
+-    if (protectedPathsOff) return { decision: 'allow' };
++    // Config is the source of truth: matcher is built from the resolved
++    // protectedPaths list (empty → inert; unset → built-in fallback set).
++    const matchesProtected = buildProtectedMatcher(enforcement.protectedPaths);
+     const target = extractPath(input);
+-    if (isProtectedPath(target)) {
++    if (matchesProtected(target)) {
+       return {
+         decision: 'deny',
+         reason: `Forge-protected path '${normalize(target)}' — edit it through the owning Forge CLI/skill, not a raw write.`,
+@@ -239,7 +287,7 @@ function decide({ intent, input, runTddCheck = runInstalledTddCheck, enforcement
+     // so the deny-capable shell surface actually protects instead of no-oping.
+     if (!target) {
+       const command = extractCommand(input);
+-      if (commandTouchesProtectedPath(command)) {
++      if (commandTouchesProtectedPath(command, matchesProtected)) {
+         return {
+           decision: 'deny',
+           reason: 'Shell command writes to a Forge-protected path — use the owning Forge CLI/skill instead.',
+@@ -326,6 +374,9 @@ function main() {
+ module.exports = {
+   PROTECTED_PATTERNS,
+   resolveEnforcement,
++  isEnforcementActive,
++  globToRegExp,
++  buildProtectedMatcher,
+   parseArgs,
+   extractPath,
+   extractCommand,
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 4ed668fa..85a13f2f 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2772,14 +2772,42 @@ function forgeShouldWriteLefthookConfig(lefthookTarget) {
+   return activeLines.length === 0;
+ }
+ 
++// Honest, resolved-config description of what the installed hooks will actually
++// enforce (issue eda6d866). The hook scripts are installed unconditionally but are
++// INERT when their gate/rail is disabled in .forge/config.yaml, so setup must not
++// claim "enforcement active" when the resolved config says otherwise.
++function describeHookEnforcement(root = projectRoot) {
++  try {
++    const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
++    const graph = getResolvedRuntimeGraph({ projectRoot: root });
++    const tddRail = (graph.rails || []).find(rail => rail.id === 'rail.tdd_intent');
++    const tddActive = !tddRail || tddRail.enabled !== false;
++    const protectedCount = Array.isArray(graph.protectedPaths) ? graph.protectedPaths.length : 0;
++    const tdd = tddActive ? 'active' : 'disabled in config (hook inert)';
++    const pp = protectedCount > 0
++      ? `active (${protectedCount} path${protectedCount === 1 ? '' : 's'})`
++      : 'disabled in config (hook inert)';
++    return `TDD gate: ${tdd}; protected-path: ${pp}`;
++  } catch {
++    return null; // never let an honest-status line block setup
++  }
++}
++
+ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
+-  console.log('Installing git hooks (TDD enforcement)...');
++  console.log('Installing git hooks...');
+ 
+   // Install the Forge hook SCRIPTS first, unconditionally: they back BOTH the lefthook
+   // pre-commit gate AND the native harness hooks that forge setup renders regardless of
+   // whether the lefthook binary is present.
+   installForgeHookScripts();
+ 
++  // Report what the hooks will ACTUALLY enforce given the resolved config — a
++  // disabled gate/rail installs an inert hook, so say so instead of over-claiming.
++  const enforcementStatus = describeHookEnforcement();
++  if (enforcementStatus) {
++    console.log(`  Enforcement (from .forge/config.yaml): ${enforcementStatus}`);
++  }
++
+   // Skip lefthook.yml creation if binary is not available
+   const lefthookStatus = checkLefthookStatus(projectRoot);
+   if (!lefthookStatus.binaryAvailable) {
+@@ -4294,6 +4322,7 @@ module.exports = {
+   },
+ 
+   // Expose internals for testing and cross-command use
++  describeHookEnforcement,
+   checkPrerequisites,
+   setupCoreDocs,
+   displaySetupSummary,
+diff --git a/test/forge-native-hook.test.js b/test/forge-native-hook.test.js
+index 1aa57fce..b0627ae0 100644
+--- a/test/forge-native-hook.test.js
++++ b/test/forge-native-hook.test.js
+@@ -183,6 +183,39 @@ describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
+     const tdd = adapter.decide({ intent: 'tdd-gate', input: { tool_input: { command: 'git commit' } }, runTddCheck: () => 1 });
+     expect(tdd.decision).toBe('deny');
+   });
++
++  test('isEnforcementActive: single flag-agnostic predicate for each kind', () => {
++    const tddOff = makeProject('workflow:\n  gates:\n    "rail.tdd_intent":\n      enabled: false\n');
++    expect(adapter.isEnforcementActive('tdd', tddOff)).toBe(false);
++    const ppEmpty = makeProject('protectedPaths: []\n');
++    expect(adapter.isEnforcementActive('protected-path', ppEmpty)).toBe(false);
++    const none = makeProject(null);
++    expect(adapter.isEnforcementActive('tdd', none)).toBe(true);
++    expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
++  });
++});
++
++describe('config-driven protected paths (config is the source of truth)', () => {
++  test('globToRegExp: ** spans separators, * stays within a segment', () => {
++    expect(adapter.globToRegExp('.github/workflows/**').test('.github/workflows/ci.yml')).toBe(true);
++    expect(adapter.globToRegExp('*.env').test('prod.env')).toBe(true);
++    expect(adapter.globToRegExp('*.env').test('config/prod.env')).toBe(true); // (^|/) prefix
++    expect(adapter.globToRegExp('AGENTS.md').test('AGENTS-x.md')).toBe(false);
++  });
++
++  test('decide protects EXACTLY the configured list, not the hardcoded set', () => {
++    const enforcement = { tddEnabled: true, protectedPaths: ['.github/workflows/**'] };
++    // In the configured list → deny
++    expect(adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.github/workflows/ci.yml' } }, enforcement }).decision).toBe('deny');
++    // A hardcoded-set path NOT in config → allowed (config is authoritative)
++    expect(adapter.decide({ intent: 'protected-path', input: { tool_input: { file_path: '.forge/config.yaml' } }, enforcement }).decision).toBe('allow');
++  });
++
++  test('shell-command scan honors the configured matcher', () => {
++    const enforcement = { tddEnabled: true, protectedPaths: ['.forge/config.yaml'] };
++    expect(adapter.decide({ intent: 'protected-path', input: { command: 'echo x > .forge/config.yaml' }, enforcement }).decision).toBe('deny');
++    expect(adapter.decide({ intent: 'protected-path', input: { command: 'rm -rf .github' }, enforcement }).decision).toBe('allow');
++  });
+ });
+ 
+ describe('formatOutput (harness-native decision contracts)', () => {
+diff --git a/test/setup-enforcement-honesty.test.js b/test/setup-enforcement-honesty.test.js
+new file mode 100644
+index 00000000..2ab112d4
+--- /dev/null
++++ b/test/setup-enforcement-honesty.test.js
+@@ -0,0 +1,45 @@
++'use strict';
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++// `forge setup` must describe what the installed hooks will ACTUALLY enforce given
++// the resolved .forge/config.yaml — the hook scripts install unconditionally but are
++// inert when their gate/rail is disabled, so setup must not over-claim (issue eda6d866).
++const setup = require('../lib/commands/setup');
++
++let root;
++
++beforeEach(() => {
++  root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-honesty-'));
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++});
++
++afterEach(() => {
++  fs.rmSync(root, { recursive: true, force: true });
++});
++
++function writeConfig(yaml) {
++  fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), yaml, 'utf8');
++}
++
++describe('describeHookEnforcement (honest resolved-state summary)', () => {
++  test('no config → default enforcement is active', () => {
++    const desc = setup.describeHookEnforcement(root);
++    expect(desc).toContain('TDD gate: active');
++  });
++
++  test('empty protectedPaths → protected-path reported inert', () => {
++    writeConfig('protectedPaths: []\n');
++    const desc = setup.describeHookEnforcement(root);
++    expect(desc).toMatch(/protected-path: disabled in config/);
++  });
++
++  test('configured protectedPaths → protected-path reported active with count', () => {
++    writeConfig('protectedPaths:\n  - .forge/config.yaml\n  - AGENTS.md\n');
++    const desc = setup.describeHookEnforcement(root);
++    expect(desc).toMatch(/protected-path: active \(2 paths\)/);
++  });
++});
+-- 
+2.51.0.windows.1
+

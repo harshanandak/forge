@@ -1,0 +1,556 @@
+From 6110f93cd74eb6ae91193c7ab3023223e2f2fc08 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 23:39:17 +0530
+Subject: [PATCH] feat: add the one settings registry profiles read and write
+ through
+
+Without this there is no single surface a profile can snapshot: every profile
+switch would need per-setting wiring and any setting added to Forge later would
+silently fall outside profiles. The registry derives its descriptors from the
+resolved runtime graph, so new rails, gates, phases, adapters and roles are
+profileable with no changes here. Writes go through the sparse config writer and
+prune values equal to the package default, which is what makes an apply
+idempotent and a profile flip leave no residual diff.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/settings-registry.js       | 338 +++++++++++++++++++++++++++++++++
+ test/settings-registry.test.js | 181 ++++++++++++++++++
+ 2 files changed, 519 insertions(+)
+ create mode 100644 lib/settings-registry.js
+ create mode 100644 test/settings-registry.test.js
+
+diff --git a/lib/settings-registry.js b/lib/settings-registry.js
+new file mode 100644
+index 00000000..b1473e54
+--- /dev/null
++++ b/lib/settings-registry.js
+@@ -0,0 +1,338 @@
++'use strict';
++
++/**
++ * @module settings-registry
++ *
++ * The ONE registry over Forge's profileable settings surface.
++ *
++ * Why this exists: `forge profile` needs to read and write "the whole settings
++ * state" atomically. Without a single registry every profile switch would need
++ * per-setting wiring, and a setting added to Forge next month would silently
++ * fall outside profiles. So the registry is DERIVED, not hand-listed: it walks
++ * the resolved runtime graph (`lib/core/runtime-graph.js`) and emits one
++ * descriptor per toggleable primitive — every rail, gate, phase, adapter field
++ * and role binding — plus the flat `protectedPaths` list. Add a rail to the
++ * graph and it is profileable on the next run with zero changes here.
++ *
++ * Reads resolve through `getResolvedRuntimeGraph` (package defaults overlaid
++ * with `.forge/config.yaml`), so the registry never keeps its own copy of the
++ * truth. Writes go through the sparse `lib/config-writer.js` so sibling keys
++ * survive and a value equal to the package default is REMOVED rather than
++ * pinned — that is what makes `apply` idempotent and leaves no residual diff.
++ *
++ * Locked L1 rails appear in the registry (so `dump` is honest about them) but
++ * are rejected at write time, exactly as the runtime-graph resolver would.
++ */
++
++const { getDefaultRuntimeGraph, getResolvedRuntimeGraph } = require('./core/runtime-graph');
++const { loadRawConfig, setConfigOverride, removeConfigOverride } = require('./config-writer');
++
++const GROUPS = Object.freeze({
++  rail: 'rails',
++  gate: 'gates',
++  phase: 'phases',
++  adapter: 'adapters',
++  role: 'roles',
++  hygiene: 'hygiene',
++});
++
++function kindOf(value) {
++  if (typeof value === 'boolean') return 'boolean';
++  if (Array.isArray(value)) return 'stringList';
++  return 'string';
++}
++
++function descriptor({ id, keyPath, kind, label, group, defaultValue, locked = false }) {
++  return Object.freeze({ id, keyPath: Object.freeze([...keyPath]), kind, label, group, defaultValue, locked });
++}
++
++/**
++ * Build the descriptor list from the DEFAULT graph (the shape and the defaults
++ * are both package-level facts; the project config only supplies values).
++ */
++function buildRegistry() {
++  const graph = getDefaultRuntimeGraph();
++  const settings = [];
++
++  // Rails and gates share one toggle surface: `workflow.gates.<id>.enabled`.
++  // That is the surface `forge gate enable|disable` writes and the installed
++  // hooks read, so profiles must use it too rather than the parallel
++  // `rails.<key>.enabled` path (see the note in the PR body).
++  for (const rail of graph.rails) {
++    settings.push(descriptor({
++      id: rail.id,
++      keyPath: ['workflow', 'gates', rail.id, 'enabled'],
++      kind: 'boolean',
++      label: rail.label || rail.id,
++      group: GROUPS.rail,
++      defaultValue: rail.enabled !== false,
++      locked: rail.locked === true,
++    }));
++  }
++
++  for (const gate of graph.gates) {
++    settings.push(descriptor({
++      id: gate.id,
++      keyPath: ['workflow', 'gates', gate.id, 'enabled'],
++      kind: 'boolean',
++      label: gate.label || gate.id,
++      group: GROUPS.gate,
++      defaultValue: gate.enabled !== false,
++      locked: gate.locked === true,
++    }));
++  }
++
++  for (const phase of graph.phases) {
++    settings.push(descriptor({
++      id: `phase.${phase.id}`,
++      keyPath: ['workflow', 'phases', phase.id, 'enabled'],
++      kind: 'boolean',
++      label: `${phase.label || phase.id} stage enabled`,
++      group: GROUPS.phase,
++      defaultValue: phase.enabled !== false,
++      locked: phase.locked === true,
++    }));
++  }
++
++  for (const adapter of graph.adapters) {
++    settings.push(descriptor({
++      id: `adapter.${adapter.kind}.enabled`,
++      keyPath: ['adapters', adapter.kind, 'enabled'],
++      kind: 'boolean',
++      label: `${adapter.label || adapter.kind} enabled`,
++      group: GROUPS.adapter,
++      defaultValue: adapter.enabled !== false,
++      locked: adapter.locked === true,
++    }));
++    for (const [field, value] of Object.entries(adapter.config || {})) {
++      settings.push(descriptor({
++        id: `adapter.${adapter.kind}.${field}`,
++        keyPath: ['adapters', adapter.kind, field],
++        kind: kindOf(value),
++        label: `${adapter.label || adapter.kind} ${field}`,
++        group: GROUPS.adapter,
++        defaultValue: value,
++        locked: adapter.locked === true,
++      }));
++    }
++  }
++
++  for (const role of graph.roles) {
++    for (const field of ['skill', 'ideology']) {
++      settings.push(descriptor({
++        id: `role.${role.role}.${field}`,
++        keyPath: ['roles', role.role, field],
++        kind: 'string',
++        label: `${role.role} role ${field}`,
++        group: GROUPS.role,
++        defaultValue: role[field] === undefined ? null : role[field],
++      }));
++    }
++  }
++
++  settings.push(descriptor({
++    id: 'protectedPaths',
++    keyPath: ['protectedPaths'],
++    kind: 'stringList',
++    label: 'Protected path patterns',
++    group: GROUPS.hygiene,
++    defaultValue: [...(graph.protectedPaths || [])],
++  }));
++
++  return Object.freeze(settings);
++}
++
++let REGISTRY = null;
++let REGISTRY_BY_ID = null;
++
++function listSettings() {
++  if (REGISTRY === null) {
++    REGISTRY = buildRegistry();
++    REGISTRY_BY_ID = new Map(REGISTRY.map(entry => [entry.id, entry]));
++  }
++  return REGISTRY;
++}
++
++/** @returns {object|null} The descriptor for `id`, or null when unknown. */
++function getSetting(id) {
++  listSettings();
++  return REGISTRY_BY_ID.get(id) || null;
++}
++
++function cloneValue(value) {
++  return Array.isArray(value) ? [...value] : value;
++}
++
++/** The package-default value of every setting — the "zero" of every profile. */
++function defaultSettings() {
++  const out = {};
++  for (const entry of listSettings()) out[entry.id] = cloneValue(entry.defaultValue);
++  return out;
++}
++
++/**
++ * Read the value of every setting out of a resolved runtime graph.
++ * This is the read half of the registry: one function, all settings.
++ */
++function settingsFromGraph(graph) {
++  const out = {};
++  const railsAndGates = new Map([...graph.rails, ...graph.gates].map(p => [p.id, p]));
++  const phases = new Map(graph.phases.map(p => [p.id, p]));
++  const adapters = new Map(graph.adapters.map(a => [a.kind, a]));
++  const roles = new Map(graph.roles.map(r => [r.role, r]));
++
++  for (const entry of listSettings()) {
++    if (entry.group === GROUPS.rail || entry.group === GROUPS.gate) {
++      const primitive = railsAndGates.get(entry.id);
++      out[entry.id] = primitive ? primitive.enabled !== false : cloneValue(entry.defaultValue);
++    } else if (entry.group === GROUPS.phase) {
++      const primitive = phases.get(entry.id.slice('phase.'.length));
++      out[entry.id] = primitive ? primitive.enabled !== false : cloneValue(entry.defaultValue);
++    } else if (entry.group === GROUPS.adapter) {
++      const [, kind, field] = entry.id.split('.');
++      const adapter = adapters.get(kind);
++      if (!adapter) out[entry.id] = cloneValue(entry.defaultValue);
++      else if (field === 'enabled') out[entry.id] = adapter.enabled !== false;
++      else out[entry.id] = cloneValue(adapter.config ? adapter.config[field] : undefined);
++    } else if (entry.group === GROUPS.role) {
++      const [, roleId, field] = entry.id.split('.');
++      const role = roles.get(roleId);
++      const value = role ? role[field] : undefined;
++      out[entry.id] = value === undefined ? null : value;
++    } else {
++      out[entry.id] = [...(graph.protectedPaths || [])];
++    }
++  }
++  return out;
++}
++
++/**
++ * The fully-resolved current regime: package defaults overlaid with
++ * `.forge/config.yaml`. This is what `forge profile dump` prints and what
++ * `forge profile show` compares against saved profiles.
++ */
++function resolveSettings({ projectRoot = process.cwd() } = {}) {
++  return settingsFromGraph(getResolvedRuntimeGraph({ projectRoot }));
++}
++
++function valueAtKeyPath(config, keyPath) {
++  let node = config;
++  for (const segment of keyPath) {
++    if (!node || typeof node !== 'object' || !Object.hasOwn(node, segment)) {
++      return { present: false, value: undefined };
++    }
++    node = node[segment];
++  }
++  return { present: true, value: node };
++}
++
++/**
++ * Only the settings the project has EXPLICITLY set in `.forge/config.yaml`.
++ * Used to prove `apply` left no residue and to show a repo's real deltas.
++ */
++function readOverrides({ projectRoot = process.cwd() } = {}) {
++  const config = loadRawConfig(projectRoot);
++  const out = {};
++  for (const entry of listSettings()) {
++    const found = valueAtKeyPath(config, entry.keyPath);
++    if (found.present) out[entry.id] = cloneValue(found.value);
++  }
++  return out;
++}
++
++function sameValue(a, b) {
++  if (Array.isArray(a) || Array.isArray(b)) {
++    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
++    return a.every((item, index) => item === b[index]);
++  }
++  return a === b;
++}
++
++function assertKind(entry, value) {
++  if (entry.kind === 'boolean' && typeof value !== 'boolean') {
++    throw new Error(`Setting '${entry.id}' expects a boolean, got ${typeof value}.`);
++  }
++  if (entry.kind === 'stringList'
++    && (!Array.isArray(value) || value.some(item => typeof item !== 'string'))) {
++    throw new Error(`Setting '${entry.id}' expects a list of strings.`);
++  }
++  if (entry.kind === 'string' && value !== null && typeof value !== 'string') {
++    throw new Error(`Setting '${entry.id}' expects a string or null, got ${typeof value}.`);
++  }
++}
++
++/**
++ * Write a WHOLE settings snapshot through the canonical config, atomically in
++ * intent: the snapshot is validated in full before anything is written, so a
++ * bad profile never leaves the repo half-switched.
++ *
++ * Total, not sparse: a setting absent from `settings` is RESET to its package
++ * default. That is what makes switching profiles reversible with zero residue —
++ * speed -> strict -> speed lands byte-identical to the first speed apply.
++ *
++ * @param {object} options
++ * @param {string} options.projectRoot
++ * @param {Object<string, *>} options.settings - Setting id -> value.
++ * @returns {{changed: string[], reset: string[]}}
++ */
++function applySettings({ projectRoot = process.cwd(), settings = {} } = {}) {
++  // Validate everything BEFORE the first write.
++  for (const [id, value] of Object.entries(settings)) {
++    const entry = getSetting(id);
++    if (!entry) throw new Error(`Unknown setting '${id}'.`);
++    assertKind(entry, value);
++    if (entry.locked && !sameValue(value, entry.defaultValue)) {
++      throw new Error(`Setting '${id}' is locked and cannot be changed.`);
++    }
++  }
++
++  const before = readOverrides({ projectRoot });
++  const changed = [];
++  const reset = [];
++
++  for (const entry of listSettings()) {
++    const wanted = Object.hasOwn(settings, entry.id)
++      ? settings[entry.id]
++      : cloneValue(entry.defaultValue);
++    const isDefault = sameValue(wanted, entry.defaultValue)
++      || (entry.kind === 'string' && wanted === null && entry.defaultValue === null);
++
++    if (isDefault) {
++      if (Object.hasOwn(before, entry.id)) {
++        removeConfigOverride(projectRoot, entry.keyPath);
++        reset.push(entry.id);
++      }
++      continue;
++    }
++    if (!Object.hasOwn(before, entry.id) || !sameValue(before[entry.id], wanted)) {
++      changed.push(entry.id);
++    }
++    setConfigOverride(projectRoot, entry.keyPath, cloneValue(wanted));
++  }
++
++  return { changed, reset };
++}
++
++/**
++ * Settings that differ between two snapshots, as `{id: {from, to}}`.
++ * An empty object means the two regimes are the same regime.
++ */
++function diffSettings(a = {}, b = {}) {
++  const out = {};
++  for (const id of new Set([...Object.keys(a), ...Object.keys(b)])) {
++    if (!sameValue(a[id], b[id])) out[id] = { from: cloneValue(a[id]), to: cloneValue(b[id]) };
++  }
++  return out;
++}
++
++module.exports = {
++  GROUPS,
++  listSettings,
++  getSetting,
++  defaultSettings,
++  settingsFromGraph,
++  resolveSettings,
++  readOverrides,
++  applySettings,
++  diffSettings,
++};
+diff --git a/test/settings-registry.test.js b/test/settings-registry.test.js
+new file mode 100644
+index 00000000..bda51923
+--- /dev/null
++++ b/test/settings-registry.test.js
+@@ -0,0 +1,181 @@
++'use strict';
++
++/**
++ * The ONE settings registry: every profileable setting in Forge, derived from
++ * the resolved runtime graph so a setting added later is automatically
++ * profileable with no per-setting wiring.
++ */
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const YAML = require('yaml');
++
++const {
++  listSettings,
++  getSetting,
++  defaultSettings,
++  resolveSettings,
++  readOverrides,
++  applySettings,
++  diffSettings,
++} = require('../lib/settings-registry');
++
++const tempRoots = [];
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-settings-registry-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++function readConfig(root) {
++  const p = path.join(root, '.forge', 'config.yaml');
++  if (!fs.existsSync(p)) return {};
++  return YAML.parse(fs.readFileSync(p, 'utf8')) || {};
++}
++
++afterEach(() => {
++  while (tempRoots.length > 0) {
++    fs.rmSync(tempRoots.pop(), { recursive: true, force: true });
++  }
++});
++
++describe('settings registry — the profileable surface', () => {
++  test('enumerates rails, gates, phases, adapters, roles and protectedPaths', () => {
++    const settings = listSettings();
++    const ids = settings.map(s => s.id);
++    expect(ids).toContain('rail.tdd_intent');
++    expect(ids).toContain('gate.plan-exit');
++    expect(ids).toContain('phase.dev');
++    expect(ids).toContain('adapter.issue.enabled');
++    expect(ids).toContain('adapter.harness.targets');
++    expect(ids).toContain('role.plan.skill');
++    expect(ids).toContain('protectedPaths');
++    // Ids are unique — the registry is a map, not a bag.
++    expect(new Set(ids).size).toBe(ids.length);
++  });
++
++  test('every descriptor carries a keyPath, kind, group and default', () => {
++    for (const descriptor of listSettings()) {
++      expect(Array.isArray(descriptor.keyPath)).toBe(true);
++      expect(descriptor.keyPath.length).toBeGreaterThan(0);
++      expect(['boolean', 'string', 'stringList']).toContain(descriptor.kind);
++      expect(typeof descriptor.group).toBe('string');
++      expect(Object.hasOwn(descriptor, 'defaultValue')).toBe(true);
++      expect(typeof descriptor.locked).toBe('boolean');
++    }
++  });
++
++  test('locked L1 rails are present but flagged locked', () => {
++    expect(getSetting('rail.secret_scan').locked).toBe(true);
++    expect(getSetting('rail.tdd_intent').locked).toBe(false);
++  });
++
++  test('rails and gates share the one toggle surface forge gate writes', () => {
++    expect(getSetting('rail.tdd_intent').keyPath)
++      .toEqual(['workflow', 'gates', 'rail.tdd_intent', 'enabled']);
++    expect(getSetting('gate.plan-exit').keyPath)
++      .toEqual(['workflow', 'gates', 'gate.plan-exit', 'enabled']);
++  });
++
++  test('a clean repo resolves to exactly the package defaults', () => {
++    const root = makeProject();
++    expect(resolveSettings({ projectRoot: root })).toEqual(defaultSettings());
++    expect(readOverrides({ projectRoot: root })).toEqual({});
++  });
++});
++
++describe('settings registry — round trip', () => {
++  test('apply writes through the canonical config and resolve reads it back', () => {
++    const root = makeProject();
++    applySettings({
++      projectRoot: root,
++      settings: { 'rail.tdd_intent': false, 'gate.plan-exit': false, protectedPaths: ['AGENTS.md'] },
++    });
++
++    const config = readConfig(root);
++    expect(config.workflow.gates['rail.tdd_intent'].enabled).toBe(false);
++    expect(config.workflow.gates['gate.plan-exit'].enabled).toBe(false);
++    expect(config.protectedPaths).toEqual(['AGENTS.md']);
++
++    const resolved = resolveSettings({ projectRoot: root });
++    expect(resolved['rail.tdd_intent']).toBe(false);
++    expect(resolved['gate.plan-exit']).toBe(false);
++    expect(resolved.protectedPaths).toEqual(['AGENTS.md']);
++  });
++
++  test('every profileable setting survives a write/read round trip', () => {
++    const root = makeProject();
++    const snapshot = {};
++    for (const descriptor of listSettings()) {
++      if (descriptor.locked) continue;
++      if (descriptor.kind === 'boolean') snapshot[descriptor.id] = !descriptor.defaultValue;
++      else if (descriptor.kind === 'stringList') snapshot[descriptor.id] = ['round-trip'];
++      else snapshot[descriptor.id] = descriptor.defaultValue || 'plan';
++    }
++    applySettings({ projectRoot: root, settings: snapshot });
++    const resolved = resolveSettings({ projectRoot: root });
++    for (const [id, value] of Object.entries(snapshot)) {
++      expect(resolved[id]).toEqual(value);
++    }
++  });
++
++  test('applying a default value prunes the override instead of pinning it', () => {
++    const root = makeProject();
++    applySettings({ projectRoot: root, settings: { 'rail.tdd_intent': false } });
++    expect(readOverrides({ projectRoot: root })).toEqual({ 'rail.tdd_intent': false });
++    applySettings({ projectRoot: root, settings: { 'rail.tdd_intent': true } });
++    expect(readOverrides({ projectRoot: root })).toEqual({});
++  });
++
++  test('apply is atomic and total — settings absent from the snapshot reset to default', () => {
++    const root = makeProject();
++    applySettings({ projectRoot: root, settings: { 'rail.tdd_intent': false, 'gate.merge': false } });
++    applySettings({ projectRoot: root, settings: { 'gate.merge': false } });
++    const overrides = readOverrides({ projectRoot: root });
++    expect(overrides).toEqual({ 'gate.merge': false });
++  });
++
++  test('apply refuses to change a locked rail and writes nothing', () => {
++    const root = makeProject();
++    expect(() => applySettings({
++      projectRoot: root,
++      settings: { 'rail.secret_scan': false },
++    })).toThrow(/locked/i);
++    expect(readOverrides({ projectRoot: root })).toEqual({});
++  });
++
++  test('apply refuses an unknown setting id', () => {
++    const root = makeProject();
++    expect(() => applySettings({
++      projectRoot: root,
++      settings: { 'rail.does_not_exist': false },
++    })).toThrow(/unknown setting/i);
++  });
++
++  test('apply refuses a value of the wrong kind', () => {
++    const root = makeProject();
++    expect(() => applySettings({
++      projectRoot: root,
++      settings: { 'rail.tdd_intent': 'nope' },
++    })).toThrow(/boolean/i);
++  });
++});
++
++describe('settings registry — diff', () => {
++  test('reports only the settings that differ', () => {
++    const diff = diffSettings(
++      { 'rail.tdd_intent': true, 'gate.merge': true },
++      { 'rail.tdd_intent': false, 'gate.merge': true },
++    );
++    expect(diff).toEqual({ 'rail.tdd_intent': { from: true, to: false } });
++  });
++
++  test('an empty diff means the two states are identical', () => {
++    expect(diffSettings({ a: ['x'] }, { a: ['x'] })).toEqual({});
++  });
++});
+-- 
+2.51.0.windows.1
+

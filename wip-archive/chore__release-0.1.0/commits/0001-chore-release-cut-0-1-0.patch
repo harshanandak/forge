@@ -1,0 +1,86 @@
+From 636c53719a74947fd67100dab2f4d66184be8cc1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 2 Jul 2026 18:26:04 +0530
+Subject: [PATCH] chore(release): cut 0.1.0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Bump package version 0.0.11 → 0.1.0 and promote the `## [Unreleased]`
+CHANGELOG content into a dated `## [0.1.0] - 2026-07-02` section (fresh empty
+`## [Unreleased]` added above it), using Keep-a-Changelog categories.
+
+The 0.1.0 release covers the Beads→Kernel default switch plus the three PRs
+merged for this release:
+
+- #270 (Fixed): `forge export` now actually projects Kernel issues to
+  git-tracked JSONL (dispatcher broker injection + `jsonl` outbox target) — the
+  Kernel git-persistence/portability loop works end to end.
+- #269 (Changed): pre-merge is an embedded doc gate inside `/ship` and
+  `/review`, not a numbered stage or an invokable `/premerge` command.
+- #271 (Changed): packaging — exclude a stray test from the npm tarball, add
+  `engines.node >=22.16.0`, document `forge doc-gate`.
+
+No version-hardcoded tests needed updating: `forge --version` reads the version
+dynamically from package.json, and the only `0.0.11` literal in tests
+(release.test.js) is a deliberate negative test asserting an unsupported
+release-readiness target — it correctly stays as-is.
+
+Verified: `forge release check --json` → success:true, target 0.1.0, 0 blockers;
+`forge --version` → v0.1.0; release + docs-consistency tests green (32/0);
+`eslint . --max-warnings 0` clean.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md | 15 +++++++++++++--
+ package.json |  2 +-
+ 2 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index df349a9d..60ee84e0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ## [Unreleased]
+ 
+-The default issue backend changed from Beads to the built-in kernel store.
++## [0.1.0] - 2026-07-02
++
++The default issue backend changed from Beads to the built-in Kernel store, and the Kernel's git-tracked JSONL portability loop now works end to end.
++
++### Changed
++
++- **Default issue backend is now the built-in Kernel store (was Beads).** `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the Kernel issue store by default; no Beads install or initialization is required.
++- Pre-merge is presented as an embedded documentation gate inside the `/ship` and `/review` stages — not a numbered workflow stage, and not an invokable `/premerge` command. (#269)
++- Packaging: excluded a stray test file from the published npm tarball, added an `engines.node` requirement of `>=22.16.0`, and documented the `forge doc-gate` command. (#271)
++
++### Fixed
++
++- `forge export` now actually projects Kernel issues to git-tracked JSONL. The command dispatcher injects a Kernel broker for `export`, and Kernel mutations enqueue the projection-outbox marker under the `jsonl` target the export consumer drains — so the Kernel git-persistence/portability loop works end to end. (#270)
+ 
+ ### Added
+ 
+@@ -46,7 +58,6 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ #### Migration notes
+ 
+-- `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the kernel issue store by default; no Beads install or initialization is required.
+ - Existing `.beads` data is no longer read unless Beads is explicitly selected.
+ - Opt back in to Beads (precedence: highest first) with the CLI flag `--issue-backend beads`, the environment variable `FORGE_ISSUE_BACKEND=beads`, or the `.forge/config.yaml` key `issueBackend: beads`.
+ 
+diff --git a/package.json b/package.json
+index eb7679d4..1861e092 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "forge-workflow",
+-  "version": "0.0.11",
++  "version": "0.1.0",
+   "description": "Local runtime control plane for AI-assisted engineering workflows, gates, evidence, and all AI agents",
+   "bin": {
+     "forge": "bin/forge.js",
+-- 
+2.51.0.windows.1
+

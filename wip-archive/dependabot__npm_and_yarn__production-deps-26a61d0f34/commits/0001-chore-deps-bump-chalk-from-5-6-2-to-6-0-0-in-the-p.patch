@@ -1,0 +1,43 @@
+From 5ca28d12344eaf5b0e58e8efd2675f8f91c50e0e Mon Sep 17 00:00:00 2001
+From: "dependabot[bot]" <49699333+dependabot[bot]@users.noreply.github.com>
+Date: Mon, 27 Jul 2026 07:09:15 +0000
+Subject: [PATCH] chore(deps): bump chalk from 5.6.2 to 6.0.0 in the
+ production-deps group
+
+Bumps the production-deps group with 1 update: [chalk](https://github.com/chalk/chalk).
+
+
+Updates `chalk` from 5.6.2 to 6.0.0
+- [Release notes](https://github.com/chalk/chalk/releases)
+- [Commits](https://github.com/chalk/chalk/compare/v5.6.2...v6.0.0)
+
+---
+updated-dependencies:
+- dependency-name: chalk
+  dependency-version: 6.0.0
+  dependency-type: direct:production
+  update-type: version-update:semver-major
+  dependency-group: production-deps
+...
+
+Signed-off-by: dependabot[bot] <support@github.com>
+---
+ packages/skills/package.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/packages/skills/package.json b/packages/skills/package.json
+index 5c0a476b..e330a2ce 100644
+--- a/packages/skills/package.json
++++ b/packages/skills/package.json
+@@ -23,7 +23,7 @@
+   "author": "Forge Team",
+   "license": "MIT",
+   "dependencies": {
+-    "chalk": "^5.4.0",
++    "chalk": "^6.0.0",
+     "commander": "^15.0.0",
+     "inquirer": "^14.0.2",
+     "js-yaml": "^5.1.0",
+-- 
+2.51.0.windows.1
+

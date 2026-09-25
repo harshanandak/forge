@@ -1,0 +1,340 @@
+From 0e00d355a4a1e91b40b6cea7b1eb8dbd402d0203 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 14:38:28 +0530
+Subject: [PATCH] feat(ship): auto-start the constant PR monitor on ship
+ success
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add lib/pr-monitor/watch-lifecycle.js: startPrWatcherDetached spawns a detached,
+unref'd `forge shepherd watch <pr>` — non-blocking and idempotent (best-effort
+slug+watcherRunning probe skips a live watcher; the watch loop's own PID guard is
+the authoritative de-dup). It NEVER throws: a spawn/gh failure degrades to
+'not started'.
+
+Wire into ship via maybeStartPrWatcher (executeShip, after prNumber is known):
+skipped on dry-run/no-pr and wrapped so a watcher failure can NEVER fail ship.
+Extracted as a small exported seam so the guard is unit-testable without live gh.
+
+Epic c2d398e5-26cf-4963-b47a-70b4102636bb (PR-B).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/ship.js                    |  24 +++-
+ lib/pr-monitor/watch-lifecycle.js       |  90 ++++++++++++++
+ test/pr-monitor/watch-lifecycle.test.js | 148 ++++++++++++++++++++++++
+ 3 files changed, 261 insertions(+), 1 deletion(-)
+ create mode 100644 lib/pr-monitor/watch-lifecycle.js
+ create mode 100644 test/pr-monitor/watch-lifecycle.test.js
+
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 53ccb989..4d450fe6 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -12,6 +12,8 @@ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ 
++const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
++
+ function getExecOptions() {
+ 	return { encoding: 'utf8', cwd: process.cwd(), timeout: 120000 };
+ }
+@@ -482,8 +484,26 @@ async function createPR(options) { // NOSONAR S3776
+ 	}
+ }
+ 
++/**
++ * Best-effort, non-blocking auto-start of the constant PR monitor once a real PR
++ * exists. Skipped on a dry run or when no PR number is known. MUST NEVER fail
++ * ship: `startWatcher` (startPrWatcherDetached) already never throws, and this
++ * guard keeps even a surprise error from surfacing to the ship caller.
++ *
++ * @param {{ dryRun: boolean, prNumber?: string|number, startWatcher: Function }} params
++ * @returns {{ started: boolean, reason?: string }}
++ */
++function maybeStartPrWatcher({ dryRun, prNumber, startWatcher }) {
++	if (dryRun || !prNumber) return { started: false, reason: 'skipped' };
++	try {
++		return startWatcher({ prNumber, cwd: process.cwd() });
++	} catch (err) {
++		return { started: false, reason: err.message };
++	}
++}
++
+ async function executeShip(options) {
+-	const { featureSlug, title, dryRun = false } = options || {};
++	const { featureSlug, title, dryRun = false, startWatcher = startPrWatcherDetached } = options || {};
+ 
+ 	// Validate feature slug
+ 	if (!featureSlug || typeof featureSlug !== 'string' || featureSlug.trim() === '') {
+@@ -535,6 +555,7 @@ async function executeShip(options) {
+ 		});
+ 		const result = await createPR({ title, body: prBody, dryRun });
+ 		if (!result.success) return result;
++		maybeStartPrWatcher({ dryRun, prNumber: result.prNumber, startWatcher });
+ 		return {
+ 			success: true,
+ 			prUrl: result.prUrl,
+@@ -567,6 +588,7 @@ module.exports = {
+ 			output: lines.join('\n'),
+ 		};
+ 	},
++	maybeStartPrWatcher,
+ 	extractKeyDecisions,
+ 	extractTestScenarios,
+ 	getTestCoverage,
+diff --git a/lib/pr-monitor/watch-lifecycle.js b/lib/pr-monitor/watch-lifecycle.js
+new file mode 100644
+index 00000000..1eb940e7
+--- /dev/null
++++ b/lib/pr-monitor/watch-lifecycle.js
+@@ -0,0 +1,90 @@
++'use strict';
++
++/**
++ * PR-monitor lifecycle — auto-start the watch loop, detached and idempotent, on
++ * `forge ship` success. This is what makes the monitor CONSTANT without an agent
++ * having to remember to run it: the moment a PR exists, a background
++ * `forge shepherd watch <pr>` begins keeping the journal warm, and any harness
++ * re-attaches later with `forge shepherd events <pr> --since <seq>`.
++ *
++ * Contract (all guaranteed here): NEVER throws, NEVER blocks, NEVER fails ship.
++ * The detached child is `unref`'d so it cannot keep the ship process alive, and
++ * every branch is wrapped so a spawn/gh failure degrades to "not started" rather
++ * than surfacing to the caller. Stop-on-merge belongs to the watch loop's
++ * terminal pass, not here.
++ *
++ * @module pr-monitor/watch-lifecycle
++ */
++
++const path = require('node:path');
++const { spawn, execFileSync } = require('node:child_process');
++
++const journal = require('./journal');
++
++/** Absolute path to the forge CLI entrypoint (this file is lib/pr-monitor/). */
++function forgeBin() {
++  return path.join(__dirname, '..', '..', 'bin', 'forge.js');
++}
++
++/**
++ * Best-effort repo slug (the bare repo NAME, matching the shepherd's `ctx.repo`)
++ * from `git remote get-url origin`, so the idempotency check hits the same
++ * journal dir the watcher itself uses. Returns null on any failure — the caller
++ * then falls through to spawn and relies on the watch loop's own de-dup.
++ */
++function defaultResolveSlug({ cwd, exec = execFileSync }) {
++  try {
++    const url = exec('git', ['remote', 'get-url', 'origin'], {
++      cwd, encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'],
++    }).trim();
++    const match = /[/:][^/]+\/([^/]+?)(?:\.git)?$/.exec(url);
++    return match ? match[1] : null;
++  } catch {
++    return null;
++  }
++}
++
++/**
++ * Start (or no-op) a detached `forge shepherd watch <pr>`.
++ *
++ * @param {object} opts
++ * @param {string|number} opts.prNumber - the PR to watch.
++ * @param {string} [opts.cwd] - repo root (default process.cwd()).
++ * @param {Function} [opts.spawn] - child spawner (test injection).
++ * @param {Function} [opts.exec] - git runner for slug resolution (test injection).
++ * @param {object} [opts.journal] - journal module (test injection).
++ * @param {Function} [opts.resolveSlug] - slug resolver (test injection).
++ * @returns {{ started: boolean, pid?: number|null, reason?: string }} — never throws.
++ */
++function startPrWatcherDetached(opts = {}) {
++  const { prNumber, cwd = process.cwd() } = opts;
++  const spawnFn = opts.spawn || spawn;
++  const journalMod = opts.journal || journal;
++  const resolveSlug = opts.resolveSlug || defaultResolveSlug;
++  try {
++    if (!prNumber) return { started: false, reason: 'no-pr' };
++
++    const slug = resolveSlug({ cwd, exec: opts.exec });
++    if (slug) {
++      const dir = journalMod.journalDir({ root: cwd, repo: slug, pr: prNumber });
++      if (journalMod.watcherRunning(dir)) return { started: false, reason: 'already-running' };
++    }
++
++    const child = spawnFn(
++      process.execPath,
++      [forgeBin(), 'shepherd', 'watch', String(prNumber)],
++      { cwd, detached: true, stdio: 'ignore', windowsHide: true },
++    );
++    if (child && typeof child.unref === 'function') child.unref();
++    return { started: true, pid: child?.pid ?? null };
++  } catch (err) {
++    // Lifecycle auto-start must never fail ship — degrade to "not started".
++    return { started: false, reason: err.message };
++  }
++}
++
++module.exports = {
++  startPrWatcherDetached,
++  defaultResolveSlug,
++  forgeBin,
++};
+diff --git a/test/pr-monitor/watch-lifecycle.test.js b/test/pr-monitor/watch-lifecycle.test.js
+new file mode 100644
+index 00000000..ffc87c79
+--- /dev/null
++++ b/test/pr-monitor/watch-lifecycle.test.js
+@@ -0,0 +1,148 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
++const { maybeStartPrWatcher } = require('../../lib/commands/ship');
++
++/** A fake detached child: records unref() and reports a pid. */
++function fakeChild(pid = 4242) {
++  let unrefd = false;
++  return {
++    pid,
++    unref() { unrefd = true; },
++    wasUnrefd() { return unrefd; },
++  };
++}
++
++describe('startPrWatcherDetached', () => {
++  test('spawns a detached, unref\'d `shepherd watch <pr>` and returns synchronously', () => {
++    const calls = [];
++    const child = fakeChild(999);
++    const start = Date.now();
++    const res = startPrWatcherDetached({
++      prNumber: 42,
++      cwd: '/repo',
++      resolveSlug: () => null, // skip the idempotency probe → straight to spawn
++      spawn: (bin, args, opts) => { calls.push({ bin, args, opts }); return child; },
++    });
++    // Non-blocking: returns effectively immediately (no watch loop runs inline).
++    expect(Date.now() - start).toBeLessThan(500);
++    expect(res.started).toBe(true);
++    expect(res.pid).toBe(999);
++    expect(calls).toHaveLength(1);
++    expect(calls[0].args).toContain('shepherd');
++    expect(calls[0].args).toContain('watch');
++    expect(calls[0].args).toContain('42');
++    expect(calls[0].opts.detached).toBe(true);
++    expect(calls[0].opts.stdio).toBe('ignore');
++    expect(child.wasUnrefd()).toBe(true);
++  });
++
++  test('is a no-op when a live watcher already owns the PR (spawn not called)', () => {
++    let spawned = false;
++    const res = startPrWatcherDetached({
++      prNumber: 7,
++      cwd: '/repo',
++      resolveSlug: () => 'forge',
++      journal: {
++        journalDir: () => '/repo/.forge/pr-monitor/forge-7',
++        watcherRunning: () => true,
++      },
++      spawn: () => { spawned = true; return fakeChild(); },
++    });
++    expect(res.started).toBe(false);
++    expect(res.reason).toBe('already-running');
++    expect(spawned).toBe(false);
++  });
++
++  test('spawns when the slug resolves but no watcher is live yet', () => {
++    let spawned = false;
++    const res = startPrWatcherDetached({
++      prNumber: 8,
++      cwd: '/repo',
++      resolveSlug: () => 'forge',
++      journal: {
++        journalDir: () => '/repo/.forge/pr-monitor/forge-8',
++        watcherRunning: () => false,
++      },
++      spawn: () => { spawned = true; return fakeChild(1234); },
++    });
++    expect(spawned).toBe(true);
++    expect(res.started).toBe(true);
++  });
++
++  test('never throws when spawn fails — degrades to not-started', () => {
++    const res = startPrWatcherDetached({
++      prNumber: 9,
++      cwd: '/repo',
++      resolveSlug: () => null,
++      spawn: () => { throw new Error('spawn EACCES'); },
++    });
++    expect(res.started).toBe(false);
++    expect(res.reason).toMatch(/spawn EACCES/);
++  });
++
++  test('returns not-started (no spawn) when no PR number is given', () => {
++    let spawned = false;
++    const res = startPrWatcherDetached({ prNumber: undefined, spawn: () => { spawned = true; return fakeChild(); } });
++    expect(res.started).toBe(false);
++    expect(res.reason).toBe('no-pr');
++    expect(spawned).toBe(false);
++  });
++});
++
++describe('defaultResolveSlug', () => {
++  test('extracts the bare repo name from an SSH remote url', () => {
++    const slug = defaultResolveSlug({ cwd: '/repo', exec: () => 'git@github.com:harshanandak/forge.git\n' });
++    expect(slug).toBe('forge');
++  });
++
++  test('extracts the bare repo name from an HTTPS remote url', () => {
++    const slug = defaultResolveSlug({ cwd: '/repo', exec: () => 'https://github.com/harshanandak/forge\n' });
++    expect(slug).toBe('forge');
++  });
++
++  test('returns null when the git command fails', () => {
++    const slug = defaultResolveSlug({ cwd: '/repo', exec: () => { throw new Error('not a repo'); } });
++    expect(slug).toBeNull();
++  });
++});
++
++describe('maybeStartPrWatcher (ship wiring)', () => {
++  test('starts the watcher with the PR number after a real PR is created', () => {
++    const calls = [];
++    const res = maybeStartPrWatcher({
++      dryRun: false, prNumber: 373,
++      startWatcher: (opts) => { calls.push(opts); return { started: true, pid: 1 }; },
++    });
++    expect(res.started).toBe(true);
++    expect(calls).toHaveLength(1);
++    expect(calls[0].prNumber).toBe(373);
++    expect(typeof calls[0].cwd).toBe('string');
++  });
++
++  test('does NOT start on a dry run', () => {
++    let called = false;
++    const res = maybeStartPrWatcher({ dryRun: true, prNumber: 5, startWatcher: () => { called = true; } });
++    expect(called).toBe(false);
++    expect(res.started).toBe(false);
++  });
++
++  test('does NOT start when there is no PR number', () => {
++    let called = false;
++    const res = maybeStartPrWatcher({ dryRun: false, prNumber: undefined, startWatcher: () => { called = true; } });
++    expect(called).toBe(false);
++    expect(res.started).toBe(false);
++  });
++
++  test('never fails ship even if the watcher start throws', () => {
++    const res = maybeStartPrWatcher({
++      dryRun: false, prNumber: 9,
++      startWatcher: () => { throw new Error('boom'); },
++    });
++    // Swallowed → ship continues; the throw never propagates.
++    expect(res.started).toBe(false);
++    expect(res.reason).toMatch(/boom/);
++  });
++});
+-- 
+2.51.0.windows.1
+

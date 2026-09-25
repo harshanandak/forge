@@ -1,0 +1,106 @@
+From 64440b918446a3547edfe22acea74a6a81ec48fc Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:42:27 +0530
+Subject: [PATCH] fix(shepherd): preserve lease on oversized checkpoints
+
+---
+ lib/pr-monitor/shepherd-lease.js           | 13 +++++++++----
+ test/pr-monitor/reconcile-executor.test.js | 15 +++++++++++++++
+ test/pr-monitor/shepherd-lease.test.js     |  5 +++--
+ 3 files changed, 27 insertions(+), 6 deletions(-)
+
+diff --git a/lib/pr-monitor/shepherd-lease.js b/lib/pr-monitor/shepherd-lease.js
+index 2e062cad..78c08b76 100644
+--- a/lib/pr-monitor/shepherd-lease.js
++++ b/lib/pr-monitor/shepherd-lease.js
+@@ -42,6 +42,8 @@ const { resolveGitCommonDir } = require('../kernel/broker');
+ const STALE_MS = 90000;
+ const LOCK_FILE_MODE = 0o600;
+ const MAX_WATCHER_PAYLOAD_BYTES = 1024 * 1024;
++const WATCHER_UPDATE_CAPACITY_EXCEEDED = 'capacity-exceeded';
++const WATCHER_UPDATE_INVALID_PAYLOAD = 'invalid-payload';
+ 
+ /**
+  * Resolve the shared lock path. `gitCommonDir` may be injected (tests, or a
+@@ -205,8 +207,9 @@ function stopHeartbeat(timer) {
+ }
+ 
+ /**
+- * Rewrite the `watchers[]` array on OUR lock. Returns false when the lock is
+- * missing or NOT ours by `token`.
++ * Rewrite the `watchers[]` array on OUR lock. Returns false only when the lock
++ * is missing or NOT ours by `token`; payload rejection has a distinct result so
++ * callers do not mistake graceful checkpoint degradation for lease loss.
+  */
+ function updateWatchers(projectRoot, prNumbers, { gitCommonDir, token, pid = process.pid } = {}) {
+   const file = lockFilePath(projectRoot, { gitCommonDir });
+@@ -217,9 +220,9 @@ function updateWatchers(projectRoot, prNumbers, { gitCommonDir, token, pid = pro
+   try {
+     watcherBytes = Buffer.byteLength(JSON.stringify(watchers), 'utf8');
+   } catch {
+-    return false;
++    return WATCHER_UPDATE_INVALID_PAYLOAD;
+   }
+-  if (watcherBytes > MAX_WATCHER_PAYLOAD_BYTES) return false;
++  if (watcherBytes > MAX_WATCHER_PAYLOAD_BYTES) return WATCHER_UPDATE_CAPACITY_EXCEEDED;
+   held.watchers = watchers;
+   writeLock(file, held);
+   return true;
+@@ -249,6 +252,8 @@ function owns(projectRoot, { gitCommonDir, token, pid = process.pid } = {}) {
+ module.exports = {
+   STALE_MS,
+   MAX_WATCHER_PAYLOAD_BYTES,
++  WATCHER_UPDATE_CAPACITY_EXCEEDED,
++  WATCHER_UPDATE_INVALID_PAYLOAD,
+   lockFilePath,
+   pidAlive,
+   ownsLock,
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 2e0afd40..642abc00 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -678,6 +678,21 @@ describe('watcher marker cleanup + superseded-daemon stop', () => {
+ 		expect(conv.leaseLost).toBe(true);
+ 	});
+ 
++	test('convergeOnce preserves ownership when the watcher checkpoint exceeds capacity', async () => {
++		const conv = await executor.convergeOnce('/repo', {
++			gitCommonDir: '/repo/.git',
++			token: 'owner-token',
++			gatherDesired: async () => ({ openPrs: [{ repo: 'forge', number: 1, branch: 'b', headSha: 's', issueId: null, worktreeId: null, journalPtr: null }], gitCommonDir: '/repo/.git' }),
++			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
++			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
++			spawnWatcher: () => ({ pid: 1 }),
++			writeClaim: () => {},
++			updateWatchers: () => 'capacity-exceeded',
++		});
++		expect(conv.leaseLost).toBe(false);
++		expect(conv.watchers).toHaveLength(1);
++	});
++
+ 	test('daemon self-exits when superseded (updateWatchers rejects its stale token)', async () => {
+ 		let exited = false;
+ 		let released = false;
+diff --git a/test/pr-monitor/shepherd-lease.test.js b/test/pr-monitor/shepherd-lease.test.js
+index cb61b431..030ed292 100644
+--- a/test/pr-monitor/shepherd-lease.test.js
++++ b/test/pr-monitor/shepherd-lease.test.js
+@@ -134,12 +134,13 @@ describe('shepherd-lease', () => {
+     expect(readHolder().watchers).toEqual([7, 8]);
+   });
+ 
+-  test('updateWatchers rejects an aggregate watcher payload above the lock-file bound', () => {
++  test('updateWatchers distinguishes an oversized payload from lease loss', () => {
+     const held = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
+     expect(lease.updateWatchers(null, [7], opts({ token: held.token }))).toBe(true);
+     const oversized = [{ lifecycle: 'x'.repeat(lease.MAX_WATCHER_PAYLOAD_BYTES) }];
+ 
+-    expect(lease.updateWatchers(null, oversized, opts({ token: held.token }))).toBe(false);
++    expect(lease.updateWatchers(null, oversized, opts({ token: held.token })))
++      .toBe('capacity-exceeded');
+     expect(readHolder().watchers).toEqual([7]);
+   });
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,387 @@
+From ec20320c6b95787542bad4aad77e2a0113b17e39 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 17:42:22 +0530
+Subject: [PATCH] fix(memory): activate and bound lifecycle recall
+
+---
+ lib/commands/hooks.js            | 83 +++++++++++++++++++++++++++-----
+ lib/upgrade-safety.js            | 30 ++++++++++++
+ test/commands/upgrade.test.js    | 48 ++++++++++++++++++
+ test/hooks-memory-recall.test.js | 25 ++++++++++
+ test/hooks-session-start.test.js | 34 +++++++++++++
+ 5 files changed, 207 insertions(+), 13 deletions(-)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index c9d9cda1..23a265e8 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -30,7 +30,7 @@ const {
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { sessionStartCapability, userPromptSubmitCapability, sessionEndCapability } = require('../hook-renderer');
+-const { collectDigestData, buildMemoryDigest, defaultFetchIssues, defaultFetchNotes } = require('../memory-digest');
++const { buildMemoryDigest, defaultFetchIssues, defaultFetchNotes } = require('../memory-digest');
+ const { collectInbox, buildInboxNudge } = require('../inbox');
+ const { collectDigest } = require('../pr-monitor/digest');
+ const { loadDispatchText } = require('../using-forge');
+@@ -48,6 +48,41 @@ const MEMORY_RECALL_RAIL = 'rail.memory_recall';
+ const MEMORY_RECALL_CANDIDATES = 25;
+ // Cross-turn dedupe memory: how many recently-injected keys to remember per session.
+ const SEEN_KEYS_CAP = 40;
++const SESSION_START_DEADLINE_MS = 9_000;
++const PROMPT_RECALL_DEADLINE_MS = 4_500;
++
++function withinDeadline(work, fallback, deadlineMs, onTimeout) {
++  return new Promise((resolve) => {
++    const timer = setTimeout(() => {
++      if (onTimeout) onTimeout();
++      resolve(fallback);
++    }, deadlineMs);
++    Promise.resolve().then(work).then(
++      value => {
++        clearTimeout(timer);
++        resolve(value);
++      },
++      () => {
++        clearTimeout(timer);
++        resolve(fallback);
++      },
++    );
++  });
++}
++
++async function collectSessionStartData(projectRoot, opts, deadlineMs) {
++  const fetchNotes = opts.fetchNotes || defaultFetchNotes;
++  const fetchIssues = opts.fetchIssues || defaultFetchIssues;
++  const fetchInbox = opts.fetchInbox || collectInbox;
++  const bounded = work => withinDeadline(work, [], deadlineMs);
++  const [notes, ready, claimed, inbox] = await Promise.all([
++    bounded(() => fetchNotes(projectRoot, opts)),
++    bounded(() => fetchIssues(projectRoot, 'ready', opts)),
++    bounded(() => fetchIssues(projectRoot, 'in_progress', opts)),
++    bounded(() => fetchInbox(projectRoot, opts)),
++  ]);
++  return { notes, ready, claimed, inbox };
++}
+ 
+ function memoryRecallRailEnabled(projectRoot, resolveGraph = getResolvedRuntimeGraph) {
+   try {
+@@ -218,7 +253,8 @@ function formatSessionStart(harness, text) {
+  */
+ async function handleSessionStart(rest, projectRoot, opts = {}) {
+   const harness = parseHarness(rest);
+-  if (!sessionStartCapability(harness).rendered) return { success: true, output: '' };
++  const capability = sessionStartCapability(harness);
++  if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
+   try {
+     (opts.fireAndForget || fireAndForget)({ projectRoot });
+   } catch { /* the automatic trigger must never break session start */ }
+@@ -237,7 +273,11 @@ async function handleSessionStart(rest, projectRoot, opts = {}) {
+ 
+   let digestText = '';
+   try {
+-    const data = await collectDigestData(projectRoot, opts);
++    const data = await collectSessionStartData(
++      projectRoot,
++      opts,
++      opts.sessionStartDeadlineMs || SESSION_START_DEADLINE_MS,
++    );
+     const digest = buildMemoryDigest(data, opts);
+     if (!digest.empty) digestText = digest.text;
+   } catch { /* fail-open: a kernel outage must not suppress the dispatch bootstrap */ }
+@@ -279,7 +319,8 @@ function formatUserPromptSubmit(harness, text) {
+ async function handleInboxPickup(rest, projectRoot, opts = {}) {
+   try {
+     const harness = parseHarness(rest);
+-    if (!userPromptSubmitCapability(harness).rendered) return { success: true, output: '' };
++    const capability = userPromptSubmitCapability(harness);
++    if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
+     const pending = await collectInbox(projectRoot, opts);
+     const nudge = buildInboxNudge(pending);
+     if (nudge.empty) return { success: true, output: '' };
+@@ -350,10 +391,11 @@ function handleShepherdEvents(rest, projectRoot, opts = {}) {
+  *   loadSeen, saveSeen, scoreFloor, tokenBudget }.
+  * @returns {{ success: boolean, output: string }}
+  */
+-function handleMemoryRecall(rest, projectRoot, opts = {}) {
++async function runMemoryRecall(rest, projectRoot, opts = {}) {
+   try {
+     const harness = parseHarness(rest);
+-    if (!userPromptSubmitCapability(harness).rendered) return { success: true, output: '' };
++    const capability = userPromptSubmitCapability(harness);
++    if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
+ 
+     const railEnabled = opts.railEnabled || memoryRecallRailEnabled;
+     if (!railEnabled(projectRoot)) return { success: true, output: '' };
+@@ -363,7 +405,7 @@ function handleMemoryRecall(rest, projectRoot, opts = {}) {
+     if (!prompt) return { success: true, output: '' };
+ 
+     const search = opts.search
+-      || ((root, query, limit) => projectMemory.searchRankedScored(root, query, limit));
++      || ((root, query, limit, options) => projectMemory.searchRankedScored(root, query, limit, options));
+     const loadSeen = opts.loadSeen || loadSeenKeys;
+     const saveSeen = opts.saveSeen || saveSeenKeys;
+     const appendShadow = opts.appendShadow || appendShadowLog;
+@@ -372,13 +414,14 @@ function handleMemoryRecall(rest, projectRoot, opts = {}) {
+     // buildMemoryFtsMatchOr only quotes+ORs whatever tokens it receives. Passing the raw prompt
+     // to a token-AND match was the 0-recall bug (kernel issue f71784d3).
+     const tokens = meaningfulTokens(prompt);
+-    const excludeKeys = loadSeen(projectRoot, sessionId) || [];
+-    const hits = search(
++    const excludeKeys = await loadSeen(projectRoot, sessionId) || [];
++      const hits = await search(
+       projectRoot,
+       tokens.join(' '),
+       MEMORY_RECALL_CANDIDATES,
+-      { excludeKeys: excludeKeys.slice(0, 256) },
+-    ) || [];
++        { excludeKeys: excludeKeys.slice(0, 256) },
++      ) || [];
++      if (opts.deadline?.expired) return { success: true, output: '', reason: 'timeout' };
+     const scoreFloor = typeof opts.scoreFloor === 'number' ? opts.scoreFloor : DEFAULT_SCORE_FLOOR;
+     const { lines, injectedKeys } = selectInjection({
+       query: prompt,
+@@ -409,7 +452,7 @@ function handleMemoryRecall(rest, projectRoot, opts = {}) {
+ 
+     if (!lines.length) return { success: true, output: '' };
+ 
+-    saveSeen(projectRoot, sessionId, injectedKeys);
++    await saveSeen(projectRoot, sessionId, injectedKeys);
+     const fenced = lines.map(line => fenceUntrusted(line, { source: 'memory' })).join('\n');
+     return { success: true, output: formatUserPromptSubmit(harness, fenced) };
+   } catch {
+@@ -418,6 +461,19 @@ function handleMemoryRecall(rest, projectRoot, opts = {}) {
+   }
+ }
+ 
++async function handleMemoryRecall(rest, projectRoot, opts = {}) {
++  const harness = parseHarness(rest);
++  const capability = userPromptSubmitCapability(harness);
++  if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
++  const deadline = { expired: false };
++  return withinDeadline(
++    () => runMemoryRecall(rest, projectRoot, { ...opts, deadline }),
++    { success: true, output: '', reason: 'timeout' },
++    opts.promptRecallDeadlineMs || PROMPT_RECALL_DEADLINE_MS,
++    () => { deadline.expired = true; },
++  );
++}
++
+ /**
+  * `forge hooks capture --harness <h> --trigger <precompact|stop>` — the CAPTURE-on-exit hook.
+  * PreCompact (before context compaction) and Stop (turn end) fire it; it snapshots a bounded
+@@ -441,7 +497,8 @@ function handleMemoryRecall(rest, projectRoot, opts = {}) {
+ async function handleCapture(rest, projectRoot, opts = {}) {
+   try {
+     const harness = parseHarness(rest);
+-    if (!sessionEndCapability(harness).rendered) return { success: true, output: '' };
++    const capability = sessionEndCapability(harness);
++    if (!capability.rendered) return { success: true, output: '', reason: capability.reason };
+     const trigger = parseTrigger(rest);
+ 
+     const fetchIssues = opts.fetchIssues || defaultFetchIssues;
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index 160c9c49..fef9c5fb 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -8,6 +8,12 @@ const { resolvePatchIntentRecords } = require('./patch-intent');
+ const { verifyForgeLock, readForgeLock } = require('./forge-lock');
+ const { readConfigBackend, resolveIssueBackend } = require('./issue-backend');
+ const { detectBeadsJsonlSource } = require('./beads-detect');
++const {
++  FORGE_HOOK_CONTRACT,
++  HookConfigParseError,
++  mergeClaudeSettings,
++  renderHookConfig,
++} = require('./hook-renderer');
+ 
+ function checkStatus(ok) {
+   return ok ? 'pass' : 'fail';
+@@ -55,6 +61,24 @@ function buildSelfHealCandidates(projectRoot) {
+       description: 'Create missing Forge audit log file',
+     });
+   }
++  const claudeSettings = path.join(projectRoot, '.claude', 'settings.json');
++  const existing = fs.existsSync(claudeSettings) ? fs.readFileSync(claudeSettings, 'utf8') : '';
++  try {
++    if (mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT) !== existing) {
++      candidates.push({
++        id: 'claude-hooks',
++        path: '.claude/settings.json',
++        description: 'Merge missing Forge-owned Claude lifecycle hooks',
++      });
++    }
++  } catch (error) {
++    if (!(error instanceof HookConfigParseError)) throw error;
++    candidates.push({
++      id: 'claude-hooks',
++      path: '.claude/settings.json',
++      description: 'Back up malformed Claude settings before hook repair',
++    });
++  }
+   return candidates;
+ }
+ 
+@@ -235,6 +259,12 @@ function applySelfHeal(projectRoot, report) {
+     applied.push({ path: '.forge/log.jsonl' });
+   }
+ 
++  if (report.selfHealCandidates.some(candidate => candidate.id === 'claude-hooks')) {
++    const result = renderHookConfig({ harness: 'claude', targetRoot: projectRoot });
++    if (result.wrote) applied.push({ path: '.claude/settings.json' });
++    else if (result.backup) applied.push({ path: path.relative(projectRoot, result.backup) });
++  }
++
+   return {
+     refused: false,
+     applied,
+diff --git a/test/commands/upgrade.test.js b/test/commands/upgrade.test.js
+index c6b58c7f..a0801dce 100644
+--- a/test/commands/upgrade.test.js
++++ b/test/commands/upgrade.test.js
+@@ -63,6 +63,54 @@ describe('forge upgrade command', () => {
+     expect(second.output).toContain('No self-heal actions needed');
+   });
+ 
++  test('self-heal restores missing Claude lifecycle groups without replacing user hooks', async () => {
++    const root = makeRepo();
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++    fs.writeFileSync(settingsPath, JSON.stringify({
++      model: 'sonnet',
++      hooks: {
++        SessionStart: [{ hooks: [{ type: 'command', command: 'node user-welcome.js' }] }],
++      },
++    }, null, 2));
++
++    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
++    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
++    const commands = event => settings.hooks[event].flatMap(group => group.hooks.map(hook => hook.command));
++
++    expect(result.success).toBe(true);
++    expect(settings.model).toBe('sonnet');
++    expect(commands('SessionStart')).toContain('node user-welcome.js');
++    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop']) {
++      expect(commands(event).filter(command => command.includes('forge.js')).length).toBeGreaterThan(0);
++    }
++
++    await upgradeCommand.handler(['--self-heal'], {}, root);
++    const twice = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
++    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreCompact', 'Stop']) {
++      expect(twice.hooks[event].filter(group =>
++        group.hooks.some(hook => hook.command.includes('forge.js')))).toHaveLength(1);
++      const forgeCommands = twice.hooks[event]
++        .flatMap(group => group.hooks.map(hook => hook.command))
++        .filter(command => command.includes('forge.js'));
++      expect(new Set(forgeCommands).size).toBe(forgeCommands.length);
++    }
++  });
++
++  test('self-heal backs up malformed Claude settings without overwriting them', async () => {
++    const root = makeRepo();
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++    const malformed = '{ // user JSONC\n "hooks": {}\n}\n';
++    fs.writeFileSync(settingsPath, malformed);
++
++    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
++
++    expect(result.success).toBe(true);
++    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(malformed);
++    expect(fs.existsSync(`${settingsPath}.bak`)).toBe(true);
++  });
++
+   test('honors parsed kebab-case dry-run flags', async () => {
+     const root = makeRepo();
+ 
+diff --git a/test/hooks-memory-recall.test.js b/test/hooks-memory-recall.test.js
+index faccedf9..438bf3cf 100644
+--- a/test/hooks-memory-recall.test.js
++++ b/test/hooks-memory-recall.test.js
+@@ -100,6 +100,31 @@ describe('forge hooks memory-recall', () => {
+   test('non-claude harness -> injects nothing (substrate-solved, never re-solved here)', async () => {
+     const res = await hooks.handler(['memory-recall', '--harness', 'codex'], {}, '/repo', baseOpts());
+     expect(res.output).toBe('');
++    expect(res.reason).toBe('global-config');
++  });
++
++  test('fails open by its prompt deadline', async () => {
++    const startedAt = Date.now();
++    const res = await run(baseOpts({
++      search: () => new Promise(() => {}),
++      promptRecallDeadlineMs: 25,
++    }));
++    expect(Date.now() - startedAt).toBeLessThan(150);
++    expect(res).toEqual({ success: true, output: '', reason: 'timeout' });
++  });
++
++  test('a result arriving after the deadline is not marked as injected', async () => {
++    let saved = false;
++    const res = await run(baseOpts({
++      search: () => new Promise(resolve => setTimeout(() => resolve([
++        { key: 'late', value: 'late auth token memory', score: -2 },
++      ]), 40)),
++      saveSeen: () => { saved = true; },
++      promptRecallDeadlineMs: 10,
++    }));
++    await new Promise(resolve => setTimeout(resolve, 50));
++    expect(res.reason).toBe('timeout');
++    expect(saved).toBe(false);
+   });
+ 
+   test('fail-open: a throwing search never breaks the prompt', async () => {
+diff --git a/test/hooks-session-start.test.js b/test/hooks-session-start.test.js
+index dbd30164..666f94df 100644
+--- a/test/hooks-session-start.test.js
++++ b/test/hooks-session-start.test.js
+@@ -12,6 +12,39 @@ function run(args, opts) {
+ }
+ 
+ describe('forge hooks session-start (context hook — memory push)', () => {
++  test('runs independent project reads concurrently', async () => {
++    const starts = [];
++    const slow = name => async () => {
++      starts.push(name);
++      await new Promise(resolve => setTimeout(resolve, 30));
++      return [];
++    };
++    const startedAt = Date.now();
++    await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => '',
++      fetchNotes: slow('notes'),
++      fetchIssues: async (_root, kind) => slow(kind)(),
++      fetchInbox: slow('inbox'),
++      sessionStartDeadlineMs: 200,
++    });
++    expect(starts.sort()).toEqual(['in_progress', 'inbox', 'notes', 'ready']);
++    expect(Date.now() - startedAt).toBeLessThan(90);
++  });
++
++  test('fails open by its internal deadline while preserving dispatch bootstrap', async () => {
++    const never = () => new Promise(() => {});
++    const startedAt = Date.now();
++    const res = await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => 'dispatch survives',
++      fetchNotes: never,
++      fetchIssues: never,
++      fetchInbox: never,
++      sessionStartDeadlineMs: 25,
++    });
++    expect(Date.now() - startedAt).toBeLessThan(150);
++    expect(JSON.parse(res.output).hookSpecificOutput.additionalContext).toContain('dispatch survives');
++  });
++
+   test('claude emits SessionStart JSON with the digest as additionalContext', async () => {
+     const res = await run(['session-start', '--harness', 'claude'], {
+       fetchNotes: () => NOTES,
+@@ -43,6 +76,7 @@ describe('forge hooks session-start (context hook — memory push)', () => {
+     });
+     expect(res.success).toBe(true);
+     expect(res.output).toBe('');
++    expect(res.reason).toBe('delivered-via-rule-surface');
+   });
+ 
+   test('fail-open: a throwing fetcher never errors the hook', async () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,830 @@
+From f19d9d342b9a00209fb7f6369c099ce14a6b75e7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 1 Aug 2026 11:27:19 +0530
+Subject: [PATCH] docs: encode adaptive release swarm workflow
+
+---
+ .agents/skills/dev/SKILL.md                   |  24 +++
+ .agents/skills/plan/SKILL.md                  |  11 ++
+ .agents/skills/review/SKILL.md                |  35 +++--
+ .agents/skills/shepherd/SKILL.md              |  14 +-
+ .agents/skills/ship/SKILL.md                  |  22 ++-
+ .../decisions.md                              |  73 +++++++++
+ .../plan.md                                   | 143 ++++++++++++++++++
+ .../tasks.md                                  |  53 +++++++
+ skills/dev/SKILL.md                           |  24 +++
+ skills/plan/SKILL.md                          |  11 ++
+ skills/review/SKILL.md                        |  35 +++--
+ skills/shepherd/SKILL.md                      |  14 +-
+ skills/ship/SKILL.md                          |  22 ++-
+ .../release-critical-path-contract.test.js    |  66 ++++++++
+ 14 files changed, 501 insertions(+), 46 deletions(-)
+ create mode 100644 docs/work/2026-08-01-release-critical-path-swarm/decisions.md
+ create mode 100644 docs/work/2026-08-01-release-critical-path-swarm/plan.md
+ create mode 100644 docs/work/2026-08-01-release-critical-path-swarm/tasks.md
+ create mode 100644 test/skills/release-critical-path-contract.test.js
+
+diff --git a/.agents/skills/dev/SKILL.md b/.agents/skills/dev/SKILL.md
+index e79ac0ea..9083bf22 100644
+--- a/.agents/skills/dev/SKILL.md
++++ b/.agents/skills/dev/SKILL.md
+@@ -106,6 +106,30 @@ If exit code 0: proceed silently to Per-Task Loop.
+ 
+ ---
+ 
++## Adaptive worker frontier and mutation ownership
++
++Use all available bounded-worker capacity for useful independent work; refill slots as workers finish. Frontier critics are read-only. Existing designated task implementers may edit only task-owned paths in isolated worktrees; one integration owner alone stages, commits, pushes, mutates issues/threads, merges, publishes evidence, and closes lifecycle state. Never dispatch competing writers or let worker count dilute that authority.
++
++While an implementer owns the task files, parallel critics may derive adversarial tests, inspect adapter/provider shapes, model security and TOCTOU failures, or review compatibility. Freeze the reviewed bytes first and return findings in this compact contract:
++
++```text
++packet_ref: COMMIT:<full 40-character SHA> | SNAPSHOT:<sha256 of retained patch/artifacts>
++authority: PROTECTED | ADVISORY
++role: <bounded role>
++verdict: PASS | REQUEST_CHANGES
++finding: <invariant> | <severity> | <evidence> | <minimal counterexample> | <suggested test> | <mutation scope> | <confidence>
++```
++
++Only `COMMIT` + `PROTECTED` may produce shipping approval. A `SNAPSHOT` packet is immutable pre-commit exploration, remains advisory, and must retain the hashed patch/artifacts; the mutable current checkout is never a review identity.
++
++Deduplicate by invariant plus counterexample. A supported blocker wins regardless of PASS count. Mandatory roles complete; exploratory waves stop after two successive waves add no evidence-supported blocker/high/medium invariant; unsupported or low-confidence suggestions do not extend the frontier. The integration owner accepts/rejects findings with reasons and applies one converged patch set.
++
++Maintain a **changed-surface validation manifest** in the work artifacts: exact focused tests, lint targets, type/security checks, and diff checks. Do not replace it with a wildcard suite that drags in known unrelated platform/daemon failures. Preserve any broad failure as evidence; never infer a pass from timeout or partial output.
++
++The existing spec-before-quality gate still applies per task. Parallel critics supply evidence to that sequence; they do not turn quality review into a race against unfinished spec review.
++
++---
++
+ ## Per-Task Loop
+ 
+ Repeat for each task in the task list, in order:
+diff --git a/.agents/skills/plan/SKILL.md b/.agents/skills/plan/SKILL.md
+index 9fe1841f..592d8cb6 100644
+--- a/.agents/skills/plan/SKILL.md
++++ b/.agents/skills/plan/SKILL.md
+@@ -315,6 +315,16 @@ separate file):
+   test infrastructure to leverage.
+ - **TDD test scenarios** — at least 3: happy path, error/failure path, and one Phase-1 edge case.
+ 
++### Release critical-path preflight
++
++When this work will ship through a protected PR, plan for the release gate before implementation:
++
++- Build a **change-class matrix**. Generated/marker-managed content covers LF/CRLF, mixed unmanaged content, repeated-run idempotence, exact marker/footer cardinality, and trailing text. Shepherd/gate changes cover REST/GraphQL identifier shapes, created-vs-updated activity, bot identity, stale/current/full/abbreviated SHA, finding-vs-explicit-clean provider lifecycle bodies, and settle anchors.
++- Fill all available bounded-worker slots with **distinct read-only critic roles** (spec, false-clean/state machine, adversarial tests, adapter/provider fidelity, security/TOCTOU, compatibility, and operations). Refill completed slots while uncovered roles remain; low worker cost is not a reason to leave useful independent analysis serial.
++- Require each critic to return `invariant`, `severity`, concrete `evidence`, a minimal `counterexample`, `suggested_test`, `mutation_scope`, and `confidence`. A supported blocker wins regardless of PASS count; this is evidence convergence, not majority voting.
++- Mandatory roles must complete. Exploratory waves stop after two successive waves produce no new evidence-supported blocker/high/medium invariant. Collapse duplicates by invariant plus counterexample; unsupported or low-confidence suggestions do not extend the frontier.
++- Record the resulting matrix, focused validation manifest, reviewer roles, and convergence evidence in the design/work artifacts. Critics remain read-only. Existing task implementers may edit only their isolated task-owned paths; one integration owner alone stages, commits, pushes, mutates issues/threads, merges, publishes evidence, and closes lifecycle state.
++
+ If the research skill is not available in the active toolset, run the same bundle inline with
+ WebSearch/WebFetch, Grep/Glob/Read, and the Explore agent — the Phase 2 exit gate below verifies
+ the outputs regardless of who produced them.
+@@ -328,6 +338,7 @@ Do NOT begin Phase 3 (setup) until:
+ 2. At least 3 TDD test scenarios are identified
+ 3. Approach selection is confirmed (which library/pattern to use)
+ 4. If feature involves removal/rename: blast-radius search completed, all references added to task list
++5. For protected-PR work: release critical-path matrix, reviewer roles, and focused validation manifest are documented
+ </HARD-GATE>
+ ```
+ 
+diff --git a/.agents/skills/review/SKILL.md b/.agents/skills/review/SKILL.md
+index 2f53e04a..90cb52e4 100644
+--- a/.agents/skills/review/SKILL.md
++++ b/.agents/skills/review/SKILL.md
+@@ -30,11 +30,12 @@ This skill handles ALL issues that arise after creating a pull request.
+ 
+ ### Step 1: Fetch Complete PR Status
+ ```bash
+-# Get full PR details including all checks
+-gh pr view <pr-number> --json number,url,isDraft,reviews,statusCheckRollup,comments
++# Shepherd is the primary status/readiness interface.
++forge shepherd <pr-number> --bundle --json
++forge shepherd <pr-number> --pull --json
+ 
+-# Check individual status checks
+-gh pr checks <pr-number>
++# Use direct GitHub detail only to diagnose a specific operand Shepherd surfaced.
++gh pr view <pr-number> --json number,url,isDraft,reviews,statusCheckRollup,comments
+ ```
+ 
+ Review ALL status checks:
+@@ -45,6 +46,16 @@ Review ALL status checks:
+ - Vercel deployments
+ - Security scanners
+ 
++### Step 1A: Freeze the exact-head packet and harvest same-head feedback
++
++Before mutation, bind the protected review round to one immutable packet: PR, base SHA, full 40-character head SHA, exact diff, acceptance criteria, changed-surface validation evidence, and runtime/provider versions. Give parallel bounded reviewers this same packet; do not make each reviewer rediscover mutable PR state or rerun broad suites. Pre-commit snapshots may be hashed for advisory exploration, but never count as protected approval.
++
++Fill all available worker slots with distinct roles and refill them while uncovered roles remain. Findings must identify an invariant, severity, evidence, minimal counterexample, suggested test, mutation scope, and confidence. Collapse duplicates; one supported blocker outweighs any number of generic PASS votes. Unsupported or low-confidence suggestions do not extend exploratory convergence.
++
++At packet creation, enumerate every required same-head check/reviewer and each optional exploratory role. Do not push a fix for the first arriving finding while a required channel is still processing. Reach a **harvest barrier** only when every required channel is terminal for the exact head, all actionable threads/summaries are collected, and findings are classified. An unavailable required channel fails closed and escalates; it never silently counts as PASS. An unavailable optional worker may be retried once and recorded, but cannot hold the barrier forever or count as approval. Then apply one remediation batch where possible. A defect introduced by that batch still requires a new exact-head round; an uncollected old-head finding must not create an avoidable round.
++
++Persist per-round evidence: head SHA, first/last reviewer activity, accepted/rejected findings, amendment count, validation artifact paths, and why another round was necessary. More than two post-review amendments is a planning/fixture defect signal and must be recorded for retrospective improvement.
++
+ ### Step 2: Address GitHub Actions Failures
+ 
+ If any GitHub Actions workflows fail:
+@@ -310,19 +321,13 @@ git push
+ ### Step 9: Verify ALL Checks Pass
+ 
+ ```bash
+-# Check status immediately, then poll for at most 60 seconds
+-gh pr checks <pr-number>
+-
+-# If checks are still pending after 60 seconds: STOP and tell the user to return
+-# when CI finishes or new review feedback appears.
+-#
+-# Ensure all completed status checks are green:
+-# ✓ GitHub Actions workflows
+-# ✓ Review agents (no unresolved critical comments)
+-# ✓ SonarCloud quality gate
+-# ✓ Other CI/CD checks
++# Take one bounded authoritative read. The singleton daemon owns ongoing observation.
++forge shepherd <pr-number> --pull --json
++forge shepherd events <pr-number> --since <last-seq>
+ ```
+ 
++If pending, hand off to the running Shepherd daemon/event cursor; do not start a chat-owned sleep/poll loop. Return to `/review` only for actionable failures or feedback. A zero exit code is not readiness — inspect the verdict, blockers, exact head, unresolved threads, and settle evidence.
++
+ ### Step 10: Update the Forge issue
+ 
+ ```bash
+diff --git a/.agents/skills/shepherd/SKILL.md b/.agents/skills/shepherd/SKILL.md
+index de6504f5..0c42ea70 100644
+--- a/.agents/skills/shepherd/SKILL.md
++++ b/.agents/skills/shepherd/SKILL.md
+@@ -57,11 +57,19 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence
+ 
+ `--pull` is strictly read-only (dry-run pass: no rerun, no rebase, no merge, no thread resolution). It returns one bounded, actionable-only payload — `blockers[]`, classified `requiredChecks`, failed-check log `failures[]` (matrix-deduped), and every unresolved `reviewThreads[]` — so you get "everything blocking this PR + what to fix" in one call. Passing checks and satisfied policy are omitted.
+ 
++## Contradiction incidents and control-plane bootstrap
++
++Retain the complete `--bundle --json` output and runtime/provider versions before diagnosing a verdict contradiction. One immediate `--pull` reconciliation is enough. If the same exact remote head still produces an impossible or internally inconsistent verdict, treat it as a release-control-plane incident; do not normalize repeated polling. A contradiction that persists for 15 minutes is explicitly escalated with the retained operands and both installed/candidate results.
++
++Candidate Shepherd code must never authorize its own product merge. When the installed merge authority is defective, pause the product train and create an isolated control-plane break-fix PR from the stable base. Independently review, merge, verify, and activate that runtime before resuming the product lane. Comparing `forge shepherd` with a worktree CLI is useful shadow evidence, not permission to bypass the installed authority.
++
++Shepherd still **never merges**. A separate durable transition controller may consume `events --since` and lease idempotent merge → exact-merge verify → evidence → closure → next-at-bat actions, but it must recheck the exact head, ownership, reviews, threads, checks, settle, and issue state before each mutation. Until that controller is implemented and enabled, `MERGE_READY` remains a handoff, not an action.
++
+ ### Verdict vocabulary (collapsed, W-S1)
+ 
+ | Verdict | Meaning |
+ | --- | --- |
+-| `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
++| `MERGE_READY` | Required checks green, branch up to date — hand off to the repository's serialized merge authority. |
+ | `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
+ | `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
+ | `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Recovery is an **escalation, not an autonomous Tier-A rerun**: it needs a maintainer-provided `FORGE_PR_TOKEN` (contents + pull-requests + checks) to re-author the push so CI re-triggers. |
+@@ -82,12 +90,14 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence
+ 
+ ## Boundaries (kept — true of both modes)
+ 
+-- **Never merges.** No merge action, no server-side auto-merge latch. Terminates at `MERGE_READY` and hands off — a human merges in the GitHub UI.
++- **Never merges.** No merge action, no server-side auto-merge latch. Terminates at `MERGE_READY` and hands off to the repository's serialized merge authority. Where Forge merge rules are configured, that coordinator uses `forge merge --auto <pr>`; never substitute a direct GitHub CLI merge command.
+ - **Never resolves review threads.** It refreshes a single **sticky** status comment; thread *resolution* is semantic and stays with `review`.
+ - **Action ladder.** Tier-A (autonomous, idempotent): re-run a flaky **required** check (rerun-budget capped); refresh the single **sticky** status comment — an *upsert*, never an append, so the ~60s daemon loop cannot post duplicate comments. Tier-B (opt-in, default OFF): `--auto-rebase` rebases onto base and force-pushes with lease — a lease rejection is a hard-stop, never re-armed. Tier-C: everything else escalates (incl. `CI_DEAD_HEAD` recovery, which needs the maintainer `FORGE_PR_TOKEN`).
+ - **Required-check gate.** `MERGE_READY` only when the branch-protection required set is *known* and all green; if protection is unreadable, it escalates rather than guessing.
+ - **HEAD-changed abort.** Before any mutating action it re-reads the head SHA and aborts if HEAD moved.
+ 
++Until a durable transition controller is installed, one named external coordinator must own the handoff. Immediately before mutation it re-proves Kernel ownership, re-reads the exact PR head and every gate, then runs `FORGE_ACTOR=<lane-actor> forge merge --auto <pr>`. That coordinator — never Shepherd — also owns exact-merge verification, evidence, and issue closure. If no coordinator is live, stop safely at `MERGE_READY`.
++
+ ## Adjacent skills
+ 
+ - Fixing review feedback (CodeRabbit/Greptile/human comments, resolving threads) → `review`.
+diff --git a/.agents/skills/ship/SKILL.md b/.agents/skills/ship/SKILL.md
+index 2352a19b..ed7ff18c 100644
+--- a/.agents/skills/ship/SKILL.md
++++ b/.agents/skills/ship/SKILL.md
+@@ -79,6 +79,16 @@ If merge simulation finds conflicts:
+ - If `n`: exit cleanly
+ - If `y`: log override via `forge comment <id> "Ship override: creating PR despite merge conflicts"`, then continue
+ 
++### Ordered-train promotion and pre-push convergence
++
++If this branch belongs to an ordered merge train, publish it as ready for review only when it is **next-at-bat**. Parallel implementation and focused validation may continue in isolated worktrees, but an early ready PR creates knowingly stale reviews, protected checks, and settle windows after preceding merges. Prefer an unpublished branch or a draft/suppressed-review PR; if early CI is deliberately purchased, record that its cycle will be invalidated.
++
++Before first ready push, require the plan's change-class matrix, changed-surface validation manifest, and adaptive critic waves to have converged. Bind independent reviewers to the same exact-delta packet (base/head SHAs, diff, criteria, retained validation); do not spend worker time repeating broad repository discovery. One integration owner applies accepted findings.
++
++Record critical-path timestamps on the Forge issue/work artifacts: implementation-ready, first reviewed head, final head, merge-ready, merged, exact-merge verified, evidenced, and closed. Also record amendment/review rounds and control-plane incidents so queue time and mandatory gate time are not misreported as implementation time.
++
++After push, rely on the Shepherd daemon/events rather than chat-owned sleep or polling. Shepherd reports readiness and never merges; merge/verify/evidence/closure remain with the current serialized coordinator until a separately enabled durable transition controller owns those leased actions.
++
+ After PR creation completes:
+ ```bash
+ # Auto-label the newly created PR
+@@ -205,9 +215,9 @@ forge team verify 2>&1 || true
+ 
+ ## Output
+ 
+-`/ship` reports live validation status, branch freshness, Forge issue PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
++`/ship` reports live validation status, branch freshness, Forge issue PR handoff state, push status, PR URL, template sections, linked issue IDs, and the bounded Shepherd handoff state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
+ 
+-When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
++When checks are pending, ensure the Shepherd daemon owns ongoing observation, report the PR number/event cursor, and stop. Invoke `/review <pr-number>` only when Shepherd surfaces actionable failures or feedback.
+ 
+ ## Pre-merge gate (before merge)
+ 
+@@ -219,9 +229,9 @@ Pre-merge is a doc-update **gate/checkpoint**, not a separate stage — run it h
+    - `CLAUDE.md` — **USER section only** (between the USER markers); never touch other managed blocks.
+    - `AGENTS.md` (agent config, skills, or cross-agent workflow changes).
+    Commit the doc updates to the feature branch and push.
+-2. **Confirm CI is green** — doc commits re-trigger CI; poll briefly (~60s), then hand off if still pending. New review feedback → run `/review` again.
++2. **Confirm CI is green** — doc commits re-trigger CI; take one bounded `forge shepherd <pr> --pull --json` read, then hand pending observation to the daemon/events cursor. New actionable feedback → run `/review` again.
+ 3. **Sync the issue store** — `forge sync`.
+-4. **Hand off for MANUAL merge** — present the PR and stop. **Never run `gh pr merge`; never auto-merge.** The user merges in the GitHub UI, then runs `/verify`.
++4. **Hand off to serialized merge authority** — present the exact PR/head, issue ID, claimed owner, and lane actor, then stop; `/ship` never merges. The separate coordinator must immediately re-prove Kernel ownership and re-read the exact head plus every gate. Where Forge merge rules are configured it then runs `FORGE_ACTOR=<lane-actor> forge merge --auto <pr>`. Never use direct `gh pr merge`. If no coordinator is live, remain safely merge-ready. After merge, that authority runs `/verify`, publishes evidence, and closes only the matching issue.
+ 
+ ## Integration with Workflow
+ 
+@@ -245,5 +255,5 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review
+ - **Fill every section**: Even if "N/A" — empty/missing sections cause review friction
+ - **Include "Closes forge-xxx"**: Required for auto-close in /verify
+ - **Concrete data only**: Test counts, file paths, commit SHAs — not placeholder text
+-- **Poll briefly, then stop**: Check PR status for up to 60 seconds, then hand off if checks are still pending
+-- **NO auto-merge**: Always wait for /review phase
++- **No chat polling**: Take one bounded Shepherd read, then hand pending observation to the daemon/event cursor
++- **No merge in `/ship`**: Always complete review and hand off to the repository's serialized merge authority
+diff --git a/docs/work/2026-08-01-release-critical-path-swarm/decisions.md b/docs/work/2026-08-01-release-critical-path-swarm/decisions.md
+new file mode 100644
+index 00000000..5a4ba2b4
+--- /dev/null
++++ b/docs/work/2026-08-01-release-critical-path-swarm/decisions.md
+@@ -0,0 +1,73 @@
++# Release Critical-Path Swarm Decisions
++
++## D1 — Optimize discovery latency, not gate latency
++
++**Status:** Accepted
++
++Protected CI, exact-SHA review, settle, ownership, serial merge, and exact-merge verification are mandatory. Efficiency work targets late discovery, repeated head invalidation, redundant broad validation, manual observation, and non-durable continuation.
++
++## D2 — Use all available bounded-worker capacity
++
++**Status:** Accepted
++
++Low-cost workers are not conserved. Fill every available slot with a distinct bounded role and refill immediately while useful uncovered roles remain. Runtime concurrency limits are execution constraints, not target widths.
++
++## D3 — Adaptive waves replace fixed reviewer counts
++
++**Status:** Accepted
++
++Mandatory roles always complete. Exploratory waves continue until two successive waves yield no new blocker/high/medium invariant. This prevents both arbitrary under-review and endless duplicate fan-out.
++
++## D4 — Role evidence beats majority voting
++
++**Status:** Accepted
++
++A single well-supported blocker is sufficient. Ten generic PASS votes do not override a concrete counterexample. Findings are keyed by invariant, evidence, and minimal counterexample.
++
++## D5 — One integration authority owns durable mutation
++
++**Status:** Accepted
++
++Many workers inspect, model threats, derive tests, and review. Existing designated task implementers may edit only task-owned paths in isolated worktrees. One integration authority alone stages, commits, pushes, mutates issues/threads, merges, publishes evidence, and closes lifecycle state.
++
++## D6 — Harvest same-head feedback before amendment
++
++**Status:** Accepted
++
++Do not amend for the first arriving review comment while required same-head reviewers are still active. Enumerate required and optional channels at packet creation. A required unavailable channel fails closed; an optional unavailable worker gets one bounded retry but cannot hold the barrier forever or count as approval. Batch valid findings where possible. Findings introduced by remediation still require a new exact-head cycle.
++
++## D7 — Gate contradictions are control-plane incidents
++
++**Status:** Accepted
++
++After one reconciliation pull, a persistent impossible verdict is not normal PR feedback. At 15 minutes it is explicitly recorded as a control-plane incident with retained operands and runtime versions.
++
++## D8 — Candidate gate code cannot self-authorize
++
++**Status:** Accepted
++
++A broken installed merge authority is repaired in an isolated stable-base control-plane lane. That lane is independently reviewed, merged, verified, and activated before the product lane resumes.
++
++## D9 — All evidence is retained and replayable
++
++**Status:** Accepted
++
++Worker outputs, exact diffs, focused test output, provider payload shapes, and Shepherd operands are stored as artifacts. A command exit code without retained output is not sufficient evidence.
++
++## D10 — Forge skills are product authority
++
++**Status:** Accepted
++
++The efficiency contract must live in canonical `skills/*` and byte-identical `.agents/skills/*` mirrors. Updating only an assistant-local skill is insufficient for Forge users and teammates.
++
++## D11 — Review identity is immutable bytes, never a checkout label
++
++**Status:** Accepted
++
++Protected approval binds only to `COMMIT:<full 40-character SHA>`. Pre-commit exploration may bind to `SNAPSHOT:<sha256>` when the exact patch/artifacts are retained, but it is advisory. A mutable `WORKTREE` label can never identify reviewed content or satisfy a shipping gate.
++
++## D12 — Current handoff remains explicit until the controller exists
++
++**Status:** Accepted
++
++Shepherd stops at `MERGE_READY`. Until a durable transition controller is installed, one named coordinator must re-prove Kernel ownership, re-read exact head and gates, execute the actor-scoped Forge merge command, verify the exact merge, publish evidence, and close the matching issue. No live coordinator means a safe stop, not implied continuation.
+diff --git a/docs/work/2026-08-01-release-critical-path-swarm/plan.md b/docs/work/2026-08-01-release-critical-path-swarm/plan.md
+new file mode 100644
+index 00000000..588af434
+--- /dev/null
++++ b/docs/work/2026-08-01-release-critical-path-swarm/plan.md
+@@ -0,0 +1,143 @@
++# Release Critical-Path Swarm Implementation Plan
++
++> **For Hermes:** Use subagent-driven-development to execute the tasks. Fill every available bounded-worker slot, but preserve one integration writer per overlapping surface.
++
++**Goal:** Collapse the elapsed time from implementation-ready to verified merge by moving discovery before the first protected head, batching same-head feedback, and making safe transitions durable and system-owned.
++
++**Architecture:** Forge compiles each candidate head into an immutable review packet, fans it through adaptive role-based worker waves, and converges structured findings by invariant. Shepherd remains the verdict source; a separate durable transition controller leases idempotent actions after rechecking head, ownership, reviews, CI, settle, and issue state. Candidate gate code never authorizes its own merge.
++
++**Tech stack:** Forge Kernel events/claims, Shepherd bundles and journal, JavaScript/Bun tests, Markdown skills, Git/GitHub protected checks.
++
++---
++
++## Evidence and diagnosis
++
++Measured GitHub data for the S0 train:
++
++- PR #469: 2 commits; opened `2026-07-31T11:46:05Z`; merged `13:52:20Z` — about 2h06m.
++- PR #470: 4 commits; opened `14:22:01Z`; merged `17:40:03Z` — about 3h18m, including ordered-queue wait behind #469.
++- PR #471: opened `14:22:42Z`; 7 pushed commits through `19:38:24Z`; 11 review objects; last protected check completed `19:56:09Z`.
++- The prolonged #471 work after protected CI was release-control-plane diagnosis and repair, not feature implementation.
++
++The dominant latency is therefore late discovery and exact-head invalidation, not code-writing speed. Every amendment invalidates prior review, triggers protected CI, and restarts settle. Opening non-next-at-bat PRs as ready also creates deliberately stale reviews and checks.
++
++## Critical-path compiler
++
++### 1. Immutable review packet
++
++For each candidate head, retain:
++
++- repository, PR, base SHA, exact 40-character head SHA;
++- exact diff and changed-file manifest;
++- acceptance criteria and explicit invariants;
++- focused validation commands and retained output artifacts;
++- runtime/tool/provider versions;
++- captured Shepherd operand bundle and verdict;
++- configured reviewer roles and completion state.
++
++Every worker receives the same packet. No reviewer reconstructs mutable state independently unless its assigned role is live-source verification.
++
++### 2. Adaptive role waves
++
++Fill all available bounded-worker slots with distinct roles. Initial roles:
++
++1. requirements/spec compliance;
++2. adversarial state-machine and false-clean analysis;
++3. change-class edge-case and mutation-test generation;
++4. adapter/API/provider-shape fidelity;
++5. security/identity/lease/TOCTOU review;
++6. compatibility/platform/line-ending review;
++7. test-quality and false-positive/false-negative review;
++8. operational/controller recovery review;
++9. documentation/runbook/drift review;
++10. latency-critical-path and redundant-work audit.
++
++As a slot completes, refill it with the highest-value uncovered role. A wave returns structured findings:
++
++```json
++{
++  "packet_sha": "<exact head>",
++  "role": "<bounded role>",
++  "verdict": "PASS|REQUEST_CHANGES",
++  "findings": [{
++    "invariant": "<stable key>",
++    "severity": "blocker|high|medium|low",
++    "evidence": "<file/line, fixture, or retained operand>",
++    "counterexample": "<minimal failing scenario>",
++    "suggested_test": "<test name and assertion>",
++    "mutation_scope": ["<files>"],
++    "confidence": "high|medium|low"
++  }]
++}
++```
++
++Convergence is role-based, not majority voting. A single supported blocker wins. Duplicate findings collapse by invariant plus counterexample. Stop only when all mandatory roles complete and two successive exploratory waves yield no new blocker/high/medium invariant. Low-confidence duplicates do not extend the frontier.
++
++### 3. Single-writer remediation
++
++Reviewers do not mutate shared files. The Sol integration owner:
++
++- validates/deduplicates findings;
++- records accepted/rejected reasoning;
++- assigns non-overlapping patches to isolated writers only when file ownership is disjoint;
++- applies or merges one converged remediation batch;
++- regenerates the exact packet for the amended head.
++
++### 4. Review-harvest barrier
++
++Do not amend for the first arriving bot comment while configured same-head reviewers are still active. Wait for all required same-head checks/reviewers to reach terminal state, then apply one batch where possible. A finding caused by that batch still requires a new round; an uncollected old-head finding must not create an avoidable round.
++
++### 5. Shadow gate and break-fix lane
++
++Replay the retained Shepherd operand bundle through:
++
++- the installed merge-authority runtime;
++- the candidate runtime under review.
++
++If an impossible verdict persists after one reconciliation pull or 15 minutes, emit a control-plane incident. If installed authority is defective, pause the product train and use an isolated stable-base control-plane PR. That PR is independently reviewed, merged, verified, and activated before the product lane resumes. Candidate gate code cannot authorize its own merge.
++
++### 6. Durable transition controller
++
++Shepherd reports state and never merges. A separate controller:
++
++- consumes journal/events instead of chat polling;
++- keys idempotency by repository + PR + head SHA + transition;
++- acquires leases and heartbeats;
++- reclaims expired workers;
++- rechecks exact head, issue ownership, reviews, threads, checks, settle, and mergeability before every mutation;
++- drives merge → exact-merge verification → evidence → closure → next-at-bat;
++- stores actionable failure and bounded retry state.
++
++### 7. Critical-path telemetry
++
++Persist timestamps for:
++
++- queue wait;
++- implementation-ready → first reviewed head;
++- first head → final head;
++- final head → merge-ready;
++- merge-ready → merge commit;
++- merge → exact-commit verification;
++- verification → evidence and closure.
++
++Also record amendment rounds, review rounds, worker slot utilization, unique findings per wave, infrastructure failures, contradiction incidents, and time saved through speculative read-only preparation. More than two post-review amendment rounds opens a planning/fixture retrospective automatically.
++
++## Immediate skill-contract scope
++
++Update canonical Forge skills and byte-identical `.agents` mirrors:
++
++- `skills/plan/SKILL.md`: change-class preflight matrix and mandatory adversarial roles.
++- `skills/dev/SKILL.md`: full-capacity adaptive workers, structured finding contract, single-writer convergence, changed-surface manifest.
++- `skills/review/SKILL.md`: immutable packet, same-head harvest barrier, batched remediation, round metrics.
++- `skills/shepherd/SKILL.md`: retained operand bundle, shadow replay, incident threshold, non-self-bootstrap rule, controller boundary.
++- `skills/ship/SKILL.md`: next-at-bat promotion, draft/suppressed review for waiting lanes, critical-path timestamps, durable handoff.
++
++Run `node scripts/sync-agent-skills.js` to regenerate mirrors, then run targeted skill-sync and context-cost tests plus ESLint/diff checks.
++
++## Non-negotiable safety
++
++- Exact-SHA review, protected CI, resolved threads, settle, ownership, serial merge order, and exact-merge verification remain mandatory.
++- Parallelism accelerates discovery and read-only preparation; it does not distribute merge authority.
++- No direct `gh pr merge` bypass.
++- No broad test pass may be inferred from a timeout or partial run.
++- All probes and worker outputs are retained as artifacts.
+diff --git a/docs/work/2026-08-01-release-critical-path-swarm/tasks.md b/docs/work/2026-08-01-release-critical-path-swarm/tasks.md
+new file mode 100644
+index 00000000..c7d343f5
+--- /dev/null
++++ b/docs/work/2026-08-01-release-critical-path-swarm/tasks.md
+@@ -0,0 +1,53 @@
++# Release Critical-Path Swarm Tasks
++
++Issue: `4f436ee2-d51f-456e-ada2-eab6220383b1`
++Actor: `forge-release-efficiency`
++Branch: `feat/release-critical-path-swarm`
++Base: `78f2b7aae98e1e05b0e6729d6af19f5be2d65494`
++
++## Phase A — skill contract (current isolated lane)
++
++- [x] A1. Added change-class preflight and adaptive critic-wave requirements to `skills/plan/SKILL.md`.
++- [x] A2. Added full-capacity bounded-worker refill, structured findings, changed-surface validation, and single-writer convergence to `skills/dev/SKILL.md`.
++- [x] A3. Added immutable exact-head packets, terminal review-harvest barrier, batched remediation, and amendment metrics to `skills/review/SKILL.md`.
++- [x] A4. Added retained operand evidence, 15-minute contradiction incident, candidate-vs-installed shadowing, non-self-bootstrap break-fix, and durable-controller boundary to `skills/shepherd/SKILL.md` without claiming an unimplemented replay/controller command exists.
++- [x] A5. Added next-at-bat promotion, waiting-lane draft/suppressed review, critical-path timestamps, and durable controller handoff to `skills/ship/SKILL.md`.
++- [x] A6. Regenerated `.agents/skills` with `node scripts/sync-agent-skills.js`.
++- [x] A7. Added `test/skills/release-critical-path-contract.test.js` to prevent mutable review identities, distributed durable mutations, unbounded harvest waits, actorless handoffs, and Shepherd merge drift.
++- [x] A8. Targeted suite passed: 281 tests / 709 expectations across the new contract, skill sync/drift/discovery/context, stage/chain integrity, Shepherd docs/skill guard, and merge rules.
++- [x] A9. `git diff --check` passed and canonical/mirror generation is drift-free; run targeted ESLint for the new JavaScript test before amendment.
++- [x] A10. First exact-diff wave completed: three `REQUEST_CHANGES`, one unusable result. Converged mutable `WORKTREE`, distributed `OWNS:`, stale direct-merge token, unbounded harvest, and actor/ownership fallback findings into one patch.
++- [ ] A11. Amend once, rebuild the immutable packet with current hashes, and obtain fresh parallel exact-SHA PASS.
++
++## Phase B — review packet and swarm compiler
++
++- [ ] B1. Define versioned immutable review-packet schema and JSON validation.
++- [ ] B2. Define versioned worker-finding schema and invariant-based deterministic deduplication.
++- [ ] B3. Implement role frontier, full-capacity refill, mandatory-role completion, and two-empty-wave convergence.
++- [ ] B4. Persist packet, worker verdicts, wave metrics, and convergence evidence in Kernel-backed artifacts/events.
++- [ ] B5. Add fail-closed tests for stale packet SHA, duplicate counterexamples, unsupported majority PASS, and a single supported blocker.
++
++## Phase C — review harvest and latency instrumentation
++
++- [ ] C1. Model configured reviewer/check terminal state for one exact head.
++- [ ] C2. Add a harvest barrier that blocks premature remediation while required same-head reviewers remain active.
++- [ ] C3. Persist stage timestamps and amendment/review counters.
++- [ ] C4. Auto-open a planning/fixture retrospective after more than two post-review amendment rounds.
++- [ ] C5. Dogfood on two ordered PRs and report feature time separately from queue/control-plane incident time.
++
++## Phase D — shadow Shepherd and control-plane break-fix
++
++- [ ] D1. Capture one sanitized, replayable Shepherd operand bundle with runtime/provider versions.
++- [ ] D2. Replay the bundle through installed and candidate runtimes without mutation.
++- [ ] D3. Emit an incident after one reconciliation pull or 15 minutes of persistent contradiction.
++- [ ] D4. Implement an isolated stable-base control-plane hotfix procedure with independent review and runtime activation proof.
++- [ ] D5. Prove candidate gate code cannot authorize its own product merge.
++
++## Phase E — durable transition controller
++
++- [ ] E1. Define transition keys and lease/heartbeat/reclaim state machine.
++- [ ] E2. Consume Shepherd events and schedule idempotent next actions.
++- [ ] E3. Recheck exact head, ownership, reviews, threads, checks, settle, and issue state before each mutation.
++- [ ] E4. Drive merge → exact-merge verify → evidence → closure → next-at-bat.
++- [ ] E5. Add crash, timeout, duplicate-event, head-change, lease-loss, and partial-verification recovery tests.
++- [ ] E6. Dogfood with no chat-owned sleep/poll loop and retained exact evidence.
+diff --git a/skills/dev/SKILL.md b/skills/dev/SKILL.md
+index e79ac0ea..9083bf22 100644
+--- a/skills/dev/SKILL.md
++++ b/skills/dev/SKILL.md
+@@ -106,6 +106,30 @@ If exit code 0: proceed silently to Per-Task Loop.
+ 
+ ---
+ 
++## Adaptive worker frontier and mutation ownership
++
++Use all available bounded-worker capacity for useful independent work; refill slots as workers finish. Frontier critics are read-only. Existing designated task implementers may edit only task-owned paths in isolated worktrees; one integration owner alone stages, commits, pushes, mutates issues/threads, merges, publishes evidence, and closes lifecycle state. Never dispatch competing writers or let worker count dilute that authority.
++
++While an implementer owns the task files, parallel critics may derive adversarial tests, inspect adapter/provider shapes, model security and TOCTOU failures, or review compatibility. Freeze the reviewed bytes first and return findings in this compact contract:
++
++```text
++packet_ref: COMMIT:<full 40-character SHA> | SNAPSHOT:<sha256 of retained patch/artifacts>
++authority: PROTECTED | ADVISORY
++role: <bounded role>
++verdict: PASS | REQUEST_CHANGES
++finding: <invariant> | <severity> | <evidence> | <minimal counterexample> | <suggested test> | <mutation scope> | <confidence>
++```
++
++Only `COMMIT` + `PROTECTED` may produce shipping approval. A `SNAPSHOT` packet is immutable pre-commit exploration, remains advisory, and must retain the hashed patch/artifacts; the mutable current checkout is never a review identity.
++
++Deduplicate by invariant plus counterexample. A supported blocker wins regardless of PASS count. Mandatory roles complete; exploratory waves stop after two successive waves add no evidence-supported blocker/high/medium invariant; unsupported or low-confidence suggestions do not extend the frontier. The integration owner accepts/rejects findings with reasons and applies one converged patch set.
++
++Maintain a **changed-surface validation manifest** in the work artifacts: exact focused tests, lint targets, type/security checks, and diff checks. Do not replace it with a wildcard suite that drags in known unrelated platform/daemon failures. Preserve any broad failure as evidence; never infer a pass from timeout or partial output.
++
++The existing spec-before-quality gate still applies per task. Parallel critics supply evidence to that sequence; they do not turn quality review into a race against unfinished spec review.
++
++---
++
+ ## Per-Task Loop
+ 
+ Repeat for each task in the task list, in order:
+diff --git a/skills/plan/SKILL.md b/skills/plan/SKILL.md
+index 9fe1841f..592d8cb6 100644
+--- a/skills/plan/SKILL.md
++++ b/skills/plan/SKILL.md
+@@ -315,6 +315,16 @@ separate file):
+   test infrastructure to leverage.
+ - **TDD test scenarios** — at least 3: happy path, error/failure path, and one Phase-1 edge case.
+ 
++### Release critical-path preflight
++
++When this work will ship through a protected PR, plan for the release gate before implementation:
++
++- Build a **change-class matrix**. Generated/marker-managed content covers LF/CRLF, mixed unmanaged content, repeated-run idempotence, exact marker/footer cardinality, and trailing text. Shepherd/gate changes cover REST/GraphQL identifier shapes, created-vs-updated activity, bot identity, stale/current/full/abbreviated SHA, finding-vs-explicit-clean provider lifecycle bodies, and settle anchors.
++- Fill all available bounded-worker slots with **distinct read-only critic roles** (spec, false-clean/state machine, adversarial tests, adapter/provider fidelity, security/TOCTOU, compatibility, and operations). Refill completed slots while uncovered roles remain; low worker cost is not a reason to leave useful independent analysis serial.
++- Require each critic to return `invariant`, `severity`, concrete `evidence`, a minimal `counterexample`, `suggested_test`, `mutation_scope`, and `confidence`. A supported blocker wins regardless of PASS count; this is evidence convergence, not majority voting.
++- Mandatory roles must complete. Exploratory waves stop after two successive waves produce no new evidence-supported blocker/high/medium invariant. Collapse duplicates by invariant plus counterexample; unsupported or low-confidence suggestions do not extend the frontier.
++- Record the resulting matrix, focused validation manifest, reviewer roles, and convergence evidence in the design/work artifacts. Critics remain read-only. Existing task implementers may edit only their isolated task-owned paths; one integration owner alone stages, commits, pushes, mutates issues/threads, merges, publishes evidence, and closes lifecycle state.
++
+ If the research skill is not available in the active toolset, run the same bundle inline with
+ WebSearch/WebFetch, Grep/Glob/Read, and the Explore agent — the Phase 2 exit gate below verifies
+ the outputs regardless of who produced them.
+@@ -328,6 +338,7 @@ Do NOT begin Phase 3 (setup) until:
+ 2. At least 3 TDD test scenarios are identified
+ 3. Approach selection is confirmed (which library/pattern to use)
+ 4. If feature involves removal/rename: blast-radius search completed, all references added to task list
++5. For protected-PR work: release critical-path matrix, reviewer roles, and focused validation manifest are documented
+ </HARD-GATE>
+ ```
+ 
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index 2f53e04a..90cb52e4 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -30,11 +30,12 @@ This skill handles ALL issues that arise after creating a pull request.
+ 
+ ### Step 1: Fetch Complete PR Status
+ ```bash
+-# Get full PR details including all checks
+-gh pr view <pr-number> --json number,url,isDraft,reviews,statusCheckRollup,comments
++# Shepherd is the primary status/readiness interface.
++forge shepherd <pr-number> --bundle --json
++forge shepherd <pr-number> --pull --json
+ 
+-# Check individual status checks
+-gh pr checks <pr-number>
++# Use direct GitHub detail only to diagnose a specific operand Shepherd surfaced.
++gh pr view <pr-number> --json number,url,isDraft,reviews,statusCheckRollup,comments
+ ```
+ 
+ Review ALL status checks:
+@@ -45,6 +46,16 @@ Review ALL status checks:
+ - Vercel deployments
+ - Security scanners
+ 
++### Step 1A: Freeze the exact-head packet and harvest same-head feedback
++
++Before mutation, bind the protected review round to one immutable packet: PR, base SHA, full 40-character head SHA, exact diff, acceptance criteria, changed-surface validation evidence, and runtime/provider versions. Give parallel bounded reviewers this same packet; do not make each reviewer rediscover mutable PR state or rerun broad suites. Pre-commit snapshots may be hashed for advisory exploration, but never count as protected approval.
++
++Fill all available worker slots with distinct roles and refill them while uncovered roles remain. Findings must identify an invariant, severity, evidence, minimal counterexample, suggested test, mutation scope, and confidence. Collapse duplicates; one supported blocker outweighs any number of generic PASS votes. Unsupported or low-confidence suggestions do not extend exploratory convergence.
++
++At packet creation, enumerate every required same-head check/reviewer and each optional exploratory role. Do not push a fix for the first arriving finding while a required channel is still processing. Reach a **harvest barrier** only when every required channel is terminal for the exact head, all actionable threads/summaries are collected, and findings are classified. An unavailable required channel fails closed and escalates; it never silently counts as PASS. An unavailable optional worker may be retried once and recorded, but cannot hold the barrier forever or count as approval. Then apply one remediation batch where possible. A defect introduced by that batch still requires a new exact-head round; an uncollected old-head finding must not create an avoidable round.
++
++Persist per-round evidence: head SHA, first/last reviewer activity, accepted/rejected findings, amendment count, validation artifact paths, and why another round was necessary. More than two post-review amendments is a planning/fixture defect signal and must be recorded for retrospective improvement.
++
+ ### Step 2: Address GitHub Actions Failures
+ 
+ If any GitHub Actions workflows fail:
+@@ -310,19 +321,13 @@ git push
+ ### Step 9: Verify ALL Checks Pass
+ 
+ ```bash
+-# Check status immediately, then poll for at most 60 seconds
+-gh pr checks <pr-number>
+-
+-# If checks are still pending after 60 seconds: STOP and tell the user to return
+-# when CI finishes or new review feedback appears.
+-#
+-# Ensure all completed status checks are green:
+-# ✓ GitHub Actions workflows
+-# ✓ Review agents (no unresolved critical comments)
+-# ✓ SonarCloud quality gate
+-# ✓ Other CI/CD checks
++# Take one bounded authoritative read. The singleton daemon owns ongoing observation.
++forge shepherd <pr-number> --pull --json
++forge shepherd events <pr-number> --since <last-seq>
+ ```
+ 
++If pending, hand off to the running Shepherd daemon/event cursor; do not start a chat-owned sleep/poll loop. Return to `/review` only for actionable failures or feedback. A zero exit code is not readiness — inspect the verdict, blockers, exact head, unresolved threads, and settle evidence.
++
+ ### Step 10: Update the Forge issue
+ 
+ ```bash
+diff --git a/skills/shepherd/SKILL.md b/skills/shepherd/SKILL.md
+index de6504f5..0c42ea70 100644
+--- a/skills/shepherd/SKILL.md
++++ b/skills/shepherd/SKILL.md
+@@ -57,11 +57,19 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence
+ 
+ `--pull` is strictly read-only (dry-run pass: no rerun, no rebase, no merge, no thread resolution). It returns one bounded, actionable-only payload — `blockers[]`, classified `requiredChecks`, failed-check log `failures[]` (matrix-deduped), and every unresolved `reviewThreads[]` — so you get "everything blocking this PR + what to fix" in one call. Passing checks and satisfied policy are omitted.
+ 
++## Contradiction incidents and control-plane bootstrap
++
++Retain the complete `--bundle --json` output and runtime/provider versions before diagnosing a verdict contradiction. One immediate `--pull` reconciliation is enough. If the same exact remote head still produces an impossible or internally inconsistent verdict, treat it as a release-control-plane incident; do not normalize repeated polling. A contradiction that persists for 15 minutes is explicitly escalated with the retained operands and both installed/candidate results.
++
++Candidate Shepherd code must never authorize its own product merge. When the installed merge authority is defective, pause the product train and create an isolated control-plane break-fix PR from the stable base. Independently review, merge, verify, and activate that runtime before resuming the product lane. Comparing `forge shepherd` with a worktree CLI is useful shadow evidence, not permission to bypass the installed authority.
++
++Shepherd still **never merges**. A separate durable transition controller may consume `events --since` and lease idempotent merge → exact-merge verify → evidence → closure → next-at-bat actions, but it must recheck the exact head, ownership, reviews, threads, checks, settle, and issue state before each mutation. Until that controller is implemented and enabled, `MERGE_READY` remains a handoff, not an action.
++
+ ### Verdict vocabulary (collapsed, W-S1)
+ 
+ | Verdict | Meaning |
+ | --- | --- |
+-| `MERGE_READY` | Required checks green, branch up to date — hand off to a human to merge. |
++| `MERGE_READY` | Required checks green, branch up to date — hand off to the repository's serialized merge authority. |
+ | `PENDING` | A Tier-A action was taken, or checks are still running — await the next tick/pass. |
+ | `BLOCKED` | Something actionable blocks merge (failing/missing/skipped required check, conflict, behind, unresolved threads, changes requested). Read `blockers[]`. |
+ | `CI_DEAD_HEAD` | The head has no required checks running (e.g. an auto-update authored by `GITHUB_TOKEN` never re-triggered CI). Recovery is an **escalation, not an autonomous Tier-A rerun**: it needs a maintainer-provided `FORGE_PR_TOKEN` (contents + pull-requests + checks) to re-author the push so CI re-triggers. |
+@@ -82,12 +90,14 @@ forge shepherd events <pr> --since <seq>   # only the new events since sequence
+ 
+ ## Boundaries (kept — true of both modes)
+ 
+-- **Never merges.** No merge action, no server-side auto-merge latch. Terminates at `MERGE_READY` and hands off — a human merges in the GitHub UI.
++- **Never merges.** No merge action, no server-side auto-merge latch. Terminates at `MERGE_READY` and hands off to the repository's serialized merge authority. Where Forge merge rules are configured, that coordinator uses `forge merge --auto <pr>`; never substitute a direct GitHub CLI merge command.
+ - **Never resolves review threads.** It refreshes a single **sticky** status comment; thread *resolution* is semantic and stays with `review`.
+ - **Action ladder.** Tier-A (autonomous, idempotent): re-run a flaky **required** check (rerun-budget capped); refresh the single **sticky** status comment — an *upsert*, never an append, so the ~60s daemon loop cannot post duplicate comments. Tier-B (opt-in, default OFF): `--auto-rebase` rebases onto base and force-pushes with lease — a lease rejection is a hard-stop, never re-armed. Tier-C: everything else escalates (incl. `CI_DEAD_HEAD` recovery, which needs the maintainer `FORGE_PR_TOKEN`).
+ - **Required-check gate.** `MERGE_READY` only when the branch-protection required set is *known* and all green; if protection is unreadable, it escalates rather than guessing.
+ - **HEAD-changed abort.** Before any mutating action it re-reads the head SHA and aborts if HEAD moved.
+ 
++Until a durable transition controller is installed, one named external coordinator must own the handoff. Immediately before mutation it re-proves Kernel ownership, re-reads the exact PR head and every gate, then runs `FORGE_ACTOR=<lane-actor> forge merge --auto <pr>`. That coordinator — never Shepherd — also owns exact-merge verification, evidence, and issue closure. If no coordinator is live, stop safely at `MERGE_READY`.
++
+ ## Adjacent skills
+ 
+ - Fixing review feedback (CodeRabbit/Greptile/human comments, resolving threads) → `review`.
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index 2352a19b..ed7ff18c 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -79,6 +79,16 @@ If merge simulation finds conflicts:
+ - If `n`: exit cleanly
+ - If `y`: log override via `forge comment <id> "Ship override: creating PR despite merge conflicts"`, then continue
+ 
++### Ordered-train promotion and pre-push convergence
++
++If this branch belongs to an ordered merge train, publish it as ready for review only when it is **next-at-bat**. Parallel implementation and focused validation may continue in isolated worktrees, but an early ready PR creates knowingly stale reviews, protected checks, and settle windows after preceding merges. Prefer an unpublished branch or a draft/suppressed-review PR; if early CI is deliberately purchased, record that its cycle will be invalidated.
++
++Before first ready push, require the plan's change-class matrix, changed-surface validation manifest, and adaptive critic waves to have converged. Bind independent reviewers to the same exact-delta packet (base/head SHAs, diff, criteria, retained validation); do not spend worker time repeating broad repository discovery. One integration owner applies accepted findings.
++
++Record critical-path timestamps on the Forge issue/work artifacts: implementation-ready, first reviewed head, final head, merge-ready, merged, exact-merge verified, evidenced, and closed. Also record amendment/review rounds and control-plane incidents so queue time and mandatory gate time are not misreported as implementation time.
++
++After push, rely on the Shepherd daemon/events rather than chat-owned sleep or polling. Shepherd reports readiness and never merges; merge/verify/evidence/closure remain with the current serialized coordinator until a separately enabled durable transition controller owns those leased actions.
++
+ After PR creation completes:
+ ```bash
+ # Auto-label the newly created PR
+@@ -205,9 +215,9 @@ forge team verify 2>&1 || true
+ 
+ ## Output
+ 
+-`/ship` reports live validation status, branch freshness, Forge issue PR handoff state, push status, PR URL, template sections, linked issue IDs, and CI polling state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
++`/ship` reports live validation status, branch freshness, Forge issue PR handoff state, push status, PR URL, template sections, linked issue IDs, and the bounded Shepherd handoff state. Values come from the current branch, issue tracker, and GitHub response; do not copy static IDs, URLs, or branch names into this skill file.
+ 
+-When checks are still pending after the polling window, stop after reporting the PR number and direct the next session to `/review <pr-number>` once automated checks complete or new feedback appears.
++When checks are pending, ensure the Shepherd daemon owns ongoing observation, report the PR number/event cursor, and stop. Invoke `/review <pr-number>` only when Shepherd surfaces actionable failures or feedback.
+ 
+ ## Pre-merge gate (before merge)
+ 
+@@ -219,9 +229,9 @@ Pre-merge is a doc-update **gate/checkpoint**, not a separate stage — run it h
+    - `CLAUDE.md` — **USER section only** (between the USER markers); never touch other managed blocks.
+    - `AGENTS.md` (agent config, skills, or cross-agent workflow changes).
+    Commit the doc updates to the feature branch and push.
+-2. **Confirm CI is green** — doc commits re-trigger CI; poll briefly (~60s), then hand off if still pending. New review feedback → run `/review` again.
++2. **Confirm CI is green** — doc commits re-trigger CI; take one bounded `forge shepherd <pr> --pull --json` read, then hand pending observation to the daemon/events cursor. New actionable feedback → run `/review` again.
+ 3. **Sync the issue store** — `forge sync`.
+-4. **Hand off for MANUAL merge** — present the PR and stop. **Never run `gh pr merge`; never auto-merge.** The user merges in the GitHub UI, then runs `/verify`.
++4. **Hand off to serialized merge authority** — present the exact PR/head, issue ID, claimed owner, and lane actor, then stop; `/ship` never merges. The separate coordinator must immediately re-prove Kernel ownership and re-read the exact head plus every gate. Where Forge merge rules are configured it then runs `FORGE_ACTOR=<lane-actor> forge merge --auto <pr>`. Never use direct `gh pr merge`. If no coordinator is live, remain safely merge-ready. After merge, that authority runs `/verify`, publishes evidence, and closes only the matching issue.
+ 
+ ## Integration with Workflow
+ 
+@@ -245,5 +255,5 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review
+ - **Fill every section**: Even if "N/A" — empty/missing sections cause review friction
+ - **Include "Closes forge-xxx"**: Required for auto-close in /verify
+ - **Concrete data only**: Test counts, file paths, commit SHAs — not placeholder text
+-- **Poll briefly, then stop**: Check PR status for up to 60 seconds, then hand off if checks are still pending
+-- **NO auto-merge**: Always wait for /review phase
++- **No chat polling**: Take one bounded Shepherd read, then hand pending observation to the daemon/event cursor
++- **No merge in `/ship`**: Always complete review and hand off to the repository's serialized merge authority
+diff --git a/test/skills/release-critical-path-contract.test.js b/test/skills/release-critical-path-contract.test.js
+new file mode 100644
+index 00000000..f09df8de
+--- /dev/null
++++ b/test/skills/release-critical-path-contract.test.js
+@@ -0,0 +1,66 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const ROOT = path.resolve(__dirname, '../..');
++
++function skill(name) {
++  return fs.readFileSync(path.join(ROOT, 'skills', name, 'SKILL.md'), 'utf8');
++}
++
++describe('release critical-path skill contract', () => {
++  test('protected approvals bind to immutable commits; snapshots remain advisory', () => {
++    const dev = skill('dev');
++    const review = skill('review');
++
++    expect(dev).toContain('COMMIT:<full 40-character SHA>');
++    expect(dev).toContain('SNAPSHOT:<sha256');
++    expect(dev).toContain('authority: PROTECTED | ADVISORY');
++    expect(dev).toContain('Only `COMMIT` + `PROTECTED` may produce shipping approval');
++    expect(dev).not.toContain('exact candidate commit or WORKTREE');
++    expect(review).toContain('full 40-character head SHA');
++    expect(review).toContain('never count as protected approval');
++  });
++
++  test('cheap critic fan-out cannot distribute durable release mutations', () => {
++    const plan = skill('plan');
++    const dev = skill('dev');
++
++    expect(plan).toContain('Critics remain read-only');
++    expect(plan).toContain('one integration owner alone stages, commits, pushes');
++    expect(dev).toContain('Frontier critics are read-only');
++    expect(dev).toContain('one integration owner alone stages, commits, pushes');
++    expect(dev).not.toContain('unless the task list grants disjoint `OWNS:` paths');
++  });
++
++  test('review harvest enumerates required channels and fails closed without waiting forever', () => {
++    const review = skill('review');
++
++    expect(review).toContain('enumerate every required same-head check/reviewer');
++    expect(review).toContain('An unavailable required channel fails closed and escalates');
++    expect(review).toContain('An unavailable optional worker may be retried once');
++    expect(review).toContain('cannot hold the barrier forever or count as approval');
++  });
++
++  test('Shepherd remains non-merging and hands off with ownership plus actor scope', () => {
++    const shepherd = skill('shepherd');
++
++    expect(shepherd).toMatch(/\*\*Never merges\.\*\*/);
++    expect(shepherd).not.toContain('gh pr merge');
++    expect(shepherd).toContain('re-proves Kernel ownership');
++    expect(shepherd).toContain('FORGE_ACTOR=<lane-actor> forge merge --auto <pr>');
++    expect(shepherd).toContain('If no coordinator is live, stop safely at `MERGE_READY`');
++  });
++
++  test('ship emits an exact, owned, actor-scoped handoff without merging itself', () => {
++    const ship = skill('ship');
++
++    expect(ship).toContain('exact PR/head, issue ID, claimed owner, and lane actor');
++    expect(ship).toContain('re-prove Kernel ownership and re-read the exact head plus every gate');
++    expect(ship).toContain('FORGE_ACTOR=<lane-actor> forge merge --auto <pr>');
++    expect(ship).toContain('`/ship` never merges');
++    expect(ship).toContain('If no coordinator is live, remain safely merge-ready');
++  });
++});
+-- 
+2.51.0.windows.1
+

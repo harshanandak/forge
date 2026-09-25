@@ -1,0 +1,999 @@
+From 0b76346d1afb163eef15118b4719b859d8f3bf6e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 03:19:28 +0530
+Subject: [PATCH] fix: harden exact-head verdict boundaries
+
+---
+ lib/merge-rules.js              |  50 ++++--
+ lib/pr-monitor/differ.js        |  59 +++++--
+ lib/pr-monitor/verdict.js       | 276 +++++++++++++++++++++++---------
+ test/merge-rules.test.js        |  91 ++++++++++-
+ test/pr-monitor/differ.test.js  |  51 ++++++
+ test/pr-monitor/verdict.test.js |  89 +++++++++-
+ 6 files changed, 506 insertions(+), 110 deletions(-)
+
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index 398d9b9c..bf5fb8b8 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -56,6 +56,14 @@
+ 
+ const SUCCESS_CONCLUSIONS = new Set(['SUCCESS']);
+ const MS_PER_MIN = 60_000;
++const {
++  normalizePrNumber,
++  normalizeRepository,
++  normalizeSha,
++  object,
++  readArrayItems,
++  readDataProperty,
++} = require('./pr-monitor/verdict');
+ 
+ /** Coerce an epoch-ms number, a Date, or an ISO string to epoch ms (NaN if unparseable). */
+ function toMs(value) {
+@@ -227,35 +235,47 @@ function notDraft(ctx) {
+   return fail('draft status is unknown (fail-closed).');
+ }
+ 
+-function fullSha(value) {
+-  return typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value) ? value.toLowerCase() : null;
+-}
+-
+ /** Require the pure reducer's positive verdict to match the caller's immutable head lease. */
+ function verdictClean(ctx) {
+-  const verdict = ctx.verdict;
+-  const head = fullSha(ctx.headSha);
+-  const expected = fullSha(ctx.expectedHeadSha);
+-  const base = fullSha(ctx.baseSha);
+-  const expectedBase = fullSha(ctx.expectedBaseSha);
+-  if (!verdict || typeof verdict !== 'object' || Array.isArray(verdict)) {
++  const verdict = object(readDataProperty(ctx, 'verdict').value);
++  if (!verdict) {
+     return fail('current-head verdict is missing or malformed (fail-closed).');
+   }
+-  const verdictHead = fullSha(verdict.headSha);
+-  const verdictBase = fullSha(verdict.baseSha);
++  const repository = normalizeRepository(readDataProperty(ctx, 'repository').value);
++  const expectedRepository = normalizeRepository(readDataProperty(ctx, 'expectedRepository').value);
++  const prNumber = normalizePrNumber(readDataProperty(ctx, 'prNumber').value);
++  const expectedPrNumber = normalizePrNumber(readDataProperty(ctx, 'expectedPrNumber').value);
++  const head = normalizeSha(readDataProperty(ctx, 'headSha').value);
++  const expected = normalizeSha(readDataProperty(ctx, 'expectedHeadSha').value);
++  const base = normalizeSha(readDataProperty(ctx, 'baseSha').value);
++  const expectedBase = normalizeSha(readDataProperty(ctx, 'expectedBaseSha').value);
++  const verdictRepository = normalizeRepository(readDataProperty(verdict, 'repository').value);
++  const verdictPrNumber = normalizePrNumber(readDataProperty(verdict, 'prNumber').value);
++  const verdictHead = normalizeSha(readDataProperty(verdict, 'headSha').value);
++  const verdictBase = normalizeSha(readDataProperty(verdict, 'baseSha').value);
++  const verdictState = readDataProperty(verdict, 'state').value;
++  const verdictReasons = readArrayItems(readDataProperty(verdict, 'reasons').value);
+   if (!head || !expected || !base || !expectedBase || !verdictHead || !verdictBase) {
+     return fail('exact head lease, verdict head, or verdict base is missing or malformed (fail-closed).');
+   }
++  if (!repository || !expectedRepository || !prNumber || !expectedPrNumber
++    || !verdictRepository || !verdictPrNumber) {
++    return fail('repository or PR authority is missing or malformed (fail-closed).');
++  }
++  if (repository !== expectedRepository || verdictRepository !== repository
++    || prNumber !== expectedPrNumber || verdictPrNumber !== prNumber) {
++    return fail('current-head verdict does not match the exact repository and PR authority.');
++  }
+   if (head !== expected || verdictHead !== head) {
+     return fail('current-head verdict does not match the exact caller head lease.');
+   }
+   if (base !== expectedBase || verdictBase !== base) {
+     return fail('current-head verdict does not match the exact caller base lease.');
+   }
+-  if (verdict.state !== 'MERGE_READY') {
+-    return fail(`current-head verdict is ${String(verdict.state || 'INCOMPLETE')}, not MERGE_READY.`);
++  if (verdictState !== 'MERGE_READY') {
++    return fail(`current-head verdict is ${String(verdictState || 'INCOMPLETE')}, not MERGE_READY.`);
+   }
+-  if (!Array.isArray(verdict.reasons) || verdict.reasons.length > 0) {
++  if (!verdictReasons || verdictReasons.length > 0) {
+     return fail('MERGE_READY verdict carries incomplete or contradictory reasons (fail-closed).');
+   }
+   return pass();
+diff --git a/lib/pr-monitor/differ.js b/lib/pr-monitor/differ.js
+index 623a0dc5..3cfb34fa 100644
+--- a/lib/pr-monitor/differ.js
++++ b/lib/pr-monitor/differ.js
+@@ -14,7 +14,15 @@
+  */
+ 
+ const { EVENT_TYPES: T, makeEvent } = require('./events');
+-const { VERDICT_STATES, normalizeSha } = require('./verdict');
++const {
++  VERDICT_STATES,
++  normalizePrNumber,
++  normalizeRepository,
++  normalizeSha,
++  object,
++  readArrayItems,
++  readDataProperty,
++} = require('./verdict');
+ 
+ const CURRENT_VERDICT_STATES = new Set(Object.values(VERDICT_STATES));
+ 
+@@ -25,39 +33,50 @@ function compareText(left, right) {
+ }
+ 
+ function normalizedReasonCodes(verdict) {
+-  if (!Array.isArray(verdict.reasons)) return null;
++  const reasons = readArrayItems(readDataProperty(verdict, 'reasons').value);
++  if (!reasons) return null;
+   const codes = [];
+-  for (const entry of verdict.reasons) {
+-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+-      || typeof entry.code !== 'string' || !entry.code.trim()) return null;
+-    codes.push(entry.code.trim());
++  for (const entry of reasons) {
++    const code = readDataProperty(entry, 'code').value;
++    if (!object(entry) || typeof code !== 'string' || !code.trim()) return null;
++    codes.push(code.trim());
+   }
+   return [...new Set(codes)].sort(compareText);
+ }
+ 
+ function normalizeCurrentVerdict(verdict, { absent = false } = {}) {
+   if (absent && verdict == null) {
+-    return { state: null, headSha: null, baseSha: null, reasons: [] };
++    return {
++      state: null, repository: null, prNumber: null, headSha: null, baseSha: null, reasons: [],
++    };
+   }
+-  const valid = verdict && typeof verdict === 'object' && !Array.isArray(verdict)
+-    && CURRENT_VERDICT_STATES.has(verdict.state)
+-    && normalizeSha(verdict.headSha)
+-    && normalizeSha(verdict.baseSha);
++  const record = object(verdict);
++  const state = readDataProperty(record, 'state').value;
++  const repository = normalizeRepository(readDataProperty(record, 'repository').value);
++  const prNumber = normalizePrNumber(readDataProperty(record, 'prNumber').value);
++  const headSha = normalizeSha(readDataProperty(record, 'headSha').value);
++  const baseSha = normalizeSha(readDataProperty(record, 'baseSha').value);
++  const valid = record && CURRENT_VERDICT_STATES.has(state)
++    && repository && prNumber && headSha && baseSha;
+   const reasons = valid ? normalizedReasonCodes(verdict) : null;
+   if (!valid || reasons === null
+-    || (verdict.state === VERDICT_STATES.MERGE_READY && reasons.length > 0)
+-    || (verdict.state !== VERDICT_STATES.MERGE_READY && reasons.length === 0)) {
++    || (state === VERDICT_STATES.MERGE_READY && reasons.length > 0)
++    || (state !== VERDICT_STATES.MERGE_READY && reasons.length === 0)) {
+     return {
+       state: VERDICT_STATES.INCOMPLETE,
++      repository: null,
++      prNumber: null,
+       headSha: null,
+       baseSha: null,
+       reasons: ['malformed_verdict'],
+     };
+   }
+   return {
+-    state: verdict.state,
+-    headSha: normalizeSha(verdict.headSha),
+-    baseSha: normalizeSha(verdict.baseSha),
++    state,
++    repository,
++    prNumber,
++    headSha,
++    baseSha,
+     reasons,
+   };
+ }
+@@ -75,15 +94,21 @@ function diffVerdictEvidence(previous, next) {
+   const removedReasons = difference(before.reasons, after.reasons);
+   const headChanged = before.headSha !== after.headSha;
+   const baseChanged = before.baseSha !== after.baseSha;
++  const repositoryChanged = before.repository !== after.repository;
++  const prChanged = before.prNumber !== after.prNumber;
+   const stateChanged = before.state !== after.state;
+   return {
+-    changed: headChanged || baseChanged || stateChanged
++    changed: headChanged || baseChanged || repositoryChanged || prChanged || stateChanged
+       || addedReasons.length > 0 || removedReasons.length > 0,
+     headChanged,
+     stateChanged,
+     baseChanged,
++    repositoryChanged,
++    prChanged,
+     from: before.state,
+     to: after.state,
++    repository: after.repository,
++    prNumber: after.prNumber,
+     headSha: after.headSha,
+     baseSha: after.baseSha,
+     addedReasons,
+diff --git a/lib/pr-monitor/verdict.js b/lib/pr-monitor/verdict.js
+index c4e1a2e0..43add306 100644
+--- a/lib/pr-monitor/verdict.js
++++ b/lib/pr-monitor/verdict.js
+@@ -2,6 +2,8 @@
+ 
+ /** Pure, fail-closed reducer for merge evidence already normalized by adapters. */
+ 
++const { types: { isProxy } } = require('node:util');
++
+ const FULL_SHA = /^[0-9a-f]{40}$/i;
+ const HEAD_SOURCES = new Set(['same-repository', 'fork', 'external']);
+ const REVIEW_DECISIONS = new Set(['NONE', 'APPROVED', 'REVIEW_REQUIRED', 'CHANGES_REQUESTED']);
+@@ -18,7 +20,50 @@ function normalizeSha(value) {
+ }
+ 
+ function object(value) {
+-  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
++  if (!value || typeof value !== 'object') return null;
++  try {
++    return isProxy(value) || Array.isArray(value) ? null : value;
++  } catch {
++    return null;
++  }
++}
++
++function readDataProperty(value, key) {
++  if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
++    return { ok: false, value: undefined };
++  }
++  try {
++    if (isProxy(value)) return { ok: false, value: undefined };
++    const descriptor = Object.getOwnPropertyDescriptor(value, key);
++    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
++      return { ok: false, value: undefined };
++    }
++    return { ok: true, value: descriptor.value };
++  } catch {
++    return { ok: false, value: undefined };
++  }
++}
++
++function data(value, key) {
++  return readDataProperty(value, key).value;
++}
++
++function readArrayItems(value, maxItems = 10_000) {
++  try {
++    if (isProxy(value) || !Array.isArray(value)) return null;
++    const lengthRead = readDataProperty(value, 'length');
++    const length = lengthRead.value;
++    if (!lengthRead.ok || !Number.isSafeInteger(length) || length < 0 || length > maxItems) return null;
++    const items = [];
++    for (let index = 0; index < length; index += 1) {
++      const item = readDataProperty(value, String(index));
++      if (!item.ok) return null;
++      items.push(item.value);
++    }
++    return items;
++  } catch {
++    return null;
++  }
+ }
+ 
+ function normalizeRepository(value) {
+@@ -28,6 +73,10 @@ function normalizeRepository(value) {
+   return parts.length === 2 && parts.every((part) => part && !/\s/.test(part)) ? normalized : null;
+ }
+ 
++function normalizePrNumber(value) {
++  return Number.isSafeInteger(value) && value > 0 ? value : null;
++}
++
+ function reason(code, detail) {
+   return detail === undefined ? { code } : { code, detail };
+ }
+@@ -37,7 +86,7 @@ function addReason(groups, group, code, detail) {
+ }
+ 
+ function currentSurface(groups, surface, expectedHead, code) {
+-  const head = normalizeSha(surface && surface.headSha);
++  const head = normalizeSha(data(surface, 'headSha'));
+   if (!head) {
+     addReason(groups, 'incomplete', `${code}_head_invalid`);
+     return false;
+@@ -54,26 +103,35 @@ function checkKey(entry) {
+ }
+ 
+ function normalizeCheckEntry(entry) {
+-  if (!object(entry) || typeof entry.name !== 'string' || !entry.name.trim()) return null;
+-  const appId = entry.appId === null
++  const record = object(entry);
++  const name = data(record, 'name');
++  const rawAppId = data(record, 'appId');
++  if (!record || typeof name !== 'string' || !name.trim()) return null;
++  const appId = rawAppId === null
+     ? null
+-    : (Number.isSafeInteger(entry.appId) && entry.appId > 0 ? entry.appId : undefined);
++    : (Number.isSafeInteger(rawAppId) && rawAppId > 0 ? rawAppId : undefined);
+   if (appId === undefined) return null;
+-  return { ...entry, name: entry.name.trim(), appId };
++  return { name: name.trim(), appId };
+ }
+ 
+ function evaluateIdentity(input, groups) {
+-  const expectedHead = normalizeSha(input.expectedHeadSha);
+-  const expectedBase = normalizeSha(input.expectedBaseSha);
+-  const head = object(input.head);
+-  const base = object(input.base);
+-  const observedHead = normalizeSha(head && head.sha);
+-  const baseSha = normalizeSha(base && base.sha);
+-  const headRepository = normalizeRepository(head && head.repository);
+-  const baseRepository = normalizeRepository(base && base.repository);
++  const expectedHead = normalizeSha(data(input, 'expectedHeadSha'));
++  const expectedBase = normalizeSha(data(input, 'expectedBaseSha'));
++  const expectedRepository = normalizeRepository(data(input, 'expectedRepository'));
++  const expectedPrNumber = normalizePrNumber(data(input, 'expectedPrNumber'));
++  const prNumber = normalizePrNumber(data(input, 'prNumber'));
++  const head = object(data(input, 'head'));
++  const base = object(data(input, 'base'));
++  const observedHead = normalizeSha(data(head, 'sha'));
++  const baseSha = normalizeSha(data(base, 'sha'));
++  const headRepository = normalizeRepository(data(head, 'repository'));
++  const baseRepository = normalizeRepository(data(base, 'repository'));
+ 
+   if (!expectedHead) addReason(groups, 'incomplete', 'invalid_expected_head');
+   if (!expectedBase) addReason(groups, 'incomplete', 'invalid_expected_base');
++  if (!expectedRepository) addReason(groups, 'incomplete', 'invalid_expected_repository');
++  if (!expectedPrNumber) addReason(groups, 'incomplete', 'invalid_expected_pr_number');
++  if (!prNumber) addReason(groups, 'incomplete', 'invalid_pr_number');
+   if (!observedHead) addReason(groups, 'incomplete', 'invalid_observed_head');
+   if (!baseSha) addReason(groups, 'incomplete', 'invalid_base');
+   if (expectedHead && observedHead && expectedHead !== observedHead) {
+@@ -82,11 +140,17 @@ function evaluateIdentity(input, groups) {
+   if (expectedBase && baseSha && expectedBase !== baseSha) {
+     addReason(groups, 'stale', 'base_mismatch');
+   }
++  if (expectedRepository && baseRepository && expectedRepository !== baseRepository) {
++    addReason(groups, 'stale', 'repository_mismatch');
++  }
++  if (expectedPrNumber && prNumber && expectedPrNumber !== prNumber) {
++    addReason(groups, 'stale', 'pr_number_mismatch');
++  }
+ 
+   if (!headRepository || !baseRepository) {
+     addReason(groups, 'incomplete', 'repository_identity_incomplete');
+   } else {
+-    const source = head && head.source;
++    const source = data(head, 'source');
+     const sameRepository = headRepository === baseRepository;
+     if (!HEAD_SOURCES.has(source)) {
+       addReason(groups, 'incomplete', 'head_source_unknown');
+@@ -94,103 +158,133 @@ function evaluateIdentity(input, groups) {
+       || (!sameRepository && source === 'same-repository')) {
+       addReason(groups, 'incomplete', 'head_source_conflict');
+     }
+-    if (!sameRepository && head.acquired !== true) {
++    if (!sameRepository && data(head, 'acquired') !== true) {
+       addReason(groups, 'incomplete', 'external_head_not_acquired');
+     }
+   }
+ 
+-  return { expectedHead, expectedBase, observedHead, baseSha };
++  return {
++    expectedHead,
++    expectedBase,
++    expectedRepository,
++    expectedPrNumber,
++    repository: baseRepository,
++    prNumber,
++    observedHead,
++    baseSha,
++  };
+ }
+ 
+ function evaluateAncestry(input, identity, groups) {
+-  const ancestry = object(input.ancestry);
+-  if (!ancestry || ancestry.complete !== true) {
++  const ancestry = object(data(input, 'ancestry'));
++  if (!ancestry || data(ancestry, 'complete') !== true) {
+     addReason(groups, 'incomplete', 'ancestry_incomplete');
+     return;
+   }
+   currentSurface(groups, ancestry, identity.expectedHead, 'ancestry');
+-  const ancestryBase = normalizeSha(ancestry.baseSha);
++  const ancestryBase = normalizeSha(data(ancestry, 'baseSha'));
+   if (!ancestryBase) addReason(groups, 'incomplete', 'ancestry_base_invalid');
+   else if (identity.baseSha && ancestryBase !== identity.baseSha) addReason(groups, 'stale', 'ancestry_base_stale');
+   else if (identity.expectedBase && ancestryBase !== identity.expectedBase) {
+     addReason(groups, 'stale', 'ancestry_base_stale');
+   }
+ 
+-  if (typeof ancestry.containsBase !== 'boolean'
+-    || !Number.isSafeInteger(ancestry.behindBy) || ancestry.behindBy < 0
+-    || typeof ancestry.conflicting !== 'boolean') {
++  const containsBase = data(ancestry, 'containsBase');
++  const behindBy = data(ancestry, 'behindBy');
++  const conflicting = data(ancestry, 'conflicting');
++  if (typeof containsBase !== 'boolean'
++    || !Number.isSafeInteger(behindBy) || behindBy < 0
++    || typeof conflicting !== 'boolean') {
+     addReason(groups, 'incomplete', 'ancestry_malformed');
+     return;
+   }
+-  if (!ancestry.containsBase) addReason(groups, 'blocked', 'base_not_ancestor');
+-  if (ancestry.behindBy > 0) addReason(groups, 'blocked', 'head_behind_base', ancestry.behindBy);
+-  if (ancestry.conflicting) addReason(groups, 'blocked', 'merge_conflict');
++  if (!containsBase) addReason(groups, 'blocked', 'base_not_ancestor');
++  if (behindBy > 0) addReason(groups, 'blocked', 'head_behind_base', behindBy);
++  if (conflicting) addReason(groups, 'blocked', 'merge_conflict');
+ }
+ 
+ function evaluateRequiredPolicy(required, groups) {
+-  if (!Array.isArray(required)) {
++  const items = readArrayItems(required);
++  if (!items) {
+     addReason(groups, 'incomplete', 'required_policy_incomplete');
+     return null;
+   }
+-  const byName = new Map();
++  const grouped = new Map();
+   const normalized = [];
+-  for (const raw of required) {
++  for (const raw of items) {
+     const entry = normalizeCheckEntry(raw);
+     if (!entry) {
+       addReason(groups, 'incomplete', 'required_policy_malformed');
+       continue;
+     }
+-    if (byName.has(entry.name)) {
+-      addReason(groups, 'incomplete', 'required_policy_conflict', entry.name);
+-      continue;
+-    }
+-    byName.set(entry.name, entry.appId);
+-    normalized.push(entry);
++    if (!grouped.has(entry.name)) grouped.set(entry.name, []);
++    grouped.get(entry.name).push(entry);
++  }
++  for (const name of [...grouped.keys()].sort()) {
++    const entries = grouped.get(name);
++    if (entries.length !== 1) addReason(groups, 'incomplete', 'required_policy_conflict', name);
++    else normalized.push(entries[0]);
+   }
+   return normalized;
+ }
+ 
+ function evaluateCheckObservations(observations, expectedHead, groups) {
+-  if (!Array.isArray(observations)) {
++  const items = readArrayItems(observations);
++  if (!items) {
+     addReason(groups, 'incomplete', 'check_observations_incomplete');
+     return null;
+   }
+-  const byKey = new Map();
+-  for (const raw of observations) {
++  const grouped = new Map();
++  for (const raw of items) {
+     const entry = normalizeCheckEntry(raw);
+-    if (!entry || typeof raw.status !== 'string'
+-      || (raw.conclusion !== null && typeof raw.conclusion !== 'string')) {
++    const status = data(raw, 'status');
++    const conclusion = data(raw, 'conclusion');
++    if (!entry || typeof status !== 'string'
++      || (conclusion !== null && typeof conclusion !== 'string')) {
+       addReason(groups, 'incomplete', 'check_observation_malformed');
+       continue;
+     }
+-    const head = normalizeSha(raw.headSha);
++    const head = normalizeSha(data(raw, 'headSha'));
+     if (!head) addReason(groups, 'incomplete', 'check_observation_head_invalid', entry.name);
+     else if (expectedHead && head !== expectedHead) addReason(groups, 'stale', 'check_observation_stale', entry.name);
+     const normalized = {
+       ...entry,
+-      status: raw.status.toUpperCase(),
+-      conclusion: String(raw.conclusion || '').toUpperCase(),
++      status: status.toUpperCase(),
++      conclusion: String(conclusion || '').toUpperCase(),
+     };
+     const key = checkKey(normalized);
+-    if (byKey.has(key)) addReason(groups, 'incomplete', 'check_observation_conflict', entry.name);
+-    else byKey.set(key, normalized);
++    if (!grouped.has(key)) grouped.set(key, []);
++    grouped.get(key).push(normalized);
+   }
+-  return byKey;
++  const byKey = new Map();
++  const conflicts = new Set();
++  for (const key of [...grouped.keys()].sort()) {
++    const entries = grouped.get(key);
++    if (entries.length !== 1) {
++      conflicts.add(key);
++      addReason(groups, 'incomplete', 'check_observation_conflict', entries[0].name);
++    } else {
++      byKey.set(key, entries[0]);
++    }
++  }
++  return { byKey, conflicts };
+ }
+ 
+ function evaluateChecks(input, expectedHead, groups) {
+-  const checks = object(input.checks);
+-  if (!checks || checks.complete !== true) {
++  const checks = object(data(input, 'checks'));
++  if (!checks || data(checks, 'complete') !== true) {
+     addReason(groups, 'incomplete', 'checks_incomplete');
+     return;
+   }
+   currentSurface(groups, checks, expectedHead, 'checks');
+-  const required = evaluateRequiredPolicy(checks.required, groups);
+-  const observations = evaluateCheckObservations(checks.observations, expectedHead, groups);
++  const required = evaluateRequiredPolicy(data(checks, 'required'), groups);
++  const observations = evaluateCheckObservations(data(checks, 'observations'), expectedHead, groups);
+   if (!required || !observations) return;
+ 
+   for (const requirement of required) {
+-    const observation = observations.get(checkKey(requirement));
++    const key = checkKey(requirement);
++    if (observations.conflicts.has(key)) continue;
++    const observation = observations.byKey.get(key);
+     if (!observation) {
+       addReason(groups, 'blocked', 'required_check_missing', requirement.name);
+     } else if (observation.status !== 'COMPLETED' || observation.conclusion !== 'SUCCESS') {
+@@ -200,59 +294,70 @@ function evaluateChecks(input, expectedHead, groups) {
+ }
+ 
+ function evaluateReview(input, expectedHead, groups) {
+-  const review = object(input.review);
+-  if (!review || review.complete !== true) {
++  const review = object(data(input, 'review'));
++  if (!review || data(review, 'complete') !== true) {
+     addReason(groups, 'incomplete', 'review_incomplete');
+     return;
+   }
+   currentSurface(groups, review, expectedHead, 'review');
+-  if (typeof review.required !== 'boolean' || typeof review.decision !== 'string'
+-    || typeof review.conflicting !== 'boolean') {
++  const required = data(review, 'required');
++  const rawDecision = data(review, 'decision');
++  const conflicting = data(review, 'conflicting');
++  if (typeof required !== 'boolean' || typeof rawDecision !== 'string'
++    || typeof conflicting !== 'boolean') {
+     addReason(groups, 'incomplete', 'review_malformed');
+     return;
+   }
+-  const decision = review.decision.toUpperCase();
++  const decision = rawDecision.toUpperCase();
+   if (!REVIEW_DECISIONS.has(decision)) {
+     addReason(groups, 'incomplete', 'review_decision_unknown');
+     return;
+   }
+-  if (review.conflicting === true) {
++  if (conflicting) {
+     addReason(groups, 'incomplete', 'review_state_conflict');
+-  } else if (!review.required && decision === 'REVIEW_REQUIRED') {
++  } else if (!required && decision === 'REVIEW_REQUIRED') {
+     addReason(groups, 'incomplete', 'review_state_conflict');
+   } else if (decision === 'CHANGES_REQUESTED') {
+     addReason(groups, 'blocked', 'changes_requested');
+-  } else if (review.required && decision !== 'APPROVED') {
++  } else if (required && decision !== 'APPROVED') {
+     addReason(groups, 'blocked', 'approval_missing');
+   }
+ }
+ 
+ function evaluateThreads(input, expectedHead, groups) {
+-  const threads = object(input.threads);
+-  if (!threads || threads.complete !== true) {
++  const threads = object(data(input, 'threads'));
++  if (!threads || data(threads, 'complete') !== true) {
+     addReason(groups, 'incomplete', 'threads_incomplete');
+     return;
+   }
+   currentSurface(groups, threads, expectedHead, 'threads');
+-  if (!Array.isArray(threads.items)) {
++  const items = readArrayItems(data(threads, 'items'));
++  if (!items) {
+     addReason(groups, 'incomplete', 'threads_malformed');
+     return;
+   }
+   const byId = new Map();
+   let unresolved = 0;
+-  for (const thread of threads.items) {
+-    if (!object(thread) || typeof thread.id !== 'string' || !thread.id.trim()
+-      || typeof thread.resolved !== 'boolean' || typeof thread.outdated !== 'boolean') {
++  for (const thread of items) {
++    const id = data(thread, 'id');
++    const resolved = data(thread, 'resolved');
++    const outdated = data(thread, 'outdated');
++    if (!object(thread) || typeof id !== 'string' || !id.trim()
++      || typeof resolved !== 'boolean' || typeof outdated !== 'boolean') {
+       addReason(groups, 'incomplete', 'thread_malformed');
+       continue;
+     }
+-    const state = `${thread.resolved}:${thread.outdated}`;
+-    if (byId.has(thread.id)) {
+-      addReason(groups, 'incomplete', 'thread_state_conflict', thread.id);
+-      continue;
++    const normalizedId = id.trim();
++    if (!byId.has(normalizedId)) byId.set(normalizedId, []);
++    byId.get(normalizedId).push({ resolved, outdated });
++  }
++  for (const id of [...byId.keys()].sort()) {
++    const states = byId.get(id);
++    if (states.length !== 1) {
++      addReason(groups, 'incomplete', 'thread_state_conflict', id);
++    } else if (!states[0].resolved && !states[0].outdated) {
++      unresolved += 1;
+     }
+-    byId.set(thread.id, state);
+-    if (!thread.resolved && !thread.outdated) unresolved += 1;
+   }
+   if (unresolved > 0) addReason(groups, 'blocked', 'unresolved_threads', unresolved);
+ }
+@@ -264,6 +369,26 @@ function verdictState(groups) {
+   return VERDICT_STATES.MERGE_READY;
+ }
+ 
++function compareReason(left, right) {
++  const codeOrder = left.code < right.code ? -1 : (left.code > right.code ? 1 : 0);
++  if (codeOrder !== 0) return codeOrder;
++  const leftDetail = String(left.detail ?? '');
++  const rightDetail = String(right.detail ?? '');
++  return leftDetail < rightDetail ? -1 : (leftDetail > rightDetail ? 1 : 0);
++}
++
++function canonicalReasons(groups) {
++  const seen = new Set();
++  return [...groups.incomplete, ...groups.stale, ...groups.blocked]
++    .sort(compareReason)
++    .filter((item) => {
++      const key = `${item.code}\u0000${String(item.detail ?? '')}`;
++      if (seen.has(key)) return false;
++      seen.add(key);
++      return true;
++    });
++}
++
+ function evaluateCurrentHeadVerdict(input = {}) {
+   const evidence = object(input) || {};
+   const groups = { incomplete: [], stale: [], blocked: [] };
+@@ -274,14 +399,21 @@ function evaluateCurrentHeadVerdict(input = {}) {
+   evaluateThreads(evidence, identity.expectedHead, groups);
+   return {
+     state: verdictState(groups),
++    repository: identity.repository,
++    prNumber: identity.prNumber,
+     headSha: identity.observedHead,
+     baseSha: identity.baseSha,
+-    reasons: [...groups.incomplete, ...groups.stale, ...groups.blocked],
++    reasons: canonicalReasons(groups),
+   };
+ }
+ 
+ module.exports = {
+   VERDICT_STATES,
+   evaluateCurrentHeadVerdict,
++  normalizePrNumber,
++  normalizeRepository,
+   normalizeSha,
++  object,
++  readArrayItems,
++  readDataProperty,
+ };
+diff --git a/test/merge-rules.test.js b/test/merge-rules.test.js
+index 92e283fb..735ee3da 100644
+--- a/test/merge-rules.test.js
++++ b/test/merge-rules.test.js
+@@ -243,7 +243,14 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+       expectedHeadSha: head,
+       baseSha: 'a'.repeat(40),
+       expectedBaseSha: 'a'.repeat(40),
+-      verdict: { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [] },
++      repository: 'owner/repo',
++      expectedRepository: 'owner/repo',
++      prNumber: 42,
++      expectedPrNumber: 42,
++      verdict: {
++        state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
++        headSha: head, baseSha: 'a'.repeat(40), reasons: [],
++      },
+     });
+     expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+ 
+@@ -259,7 +266,10 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+ 
+   test('verdict_clean fails closed when the caller head lease is absent or malformed', () => {
+     const head = '1'.repeat(40);
+-    const verdict = { state: 'MERGE_READY', headSha: head, baseSha: 'a'.repeat(40), reasons: [] };
++    const verdict = {
++      state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
++      headSha: head, baseSha: 'a'.repeat(40), reasons: [],
++    };
+     expect(evaluateMergeRules(greenContext({ verdict, headSha: head }), ['verdict_clean']).allowed).toBe(false);
+     expect(evaluateMergeRules(greenContext({ verdict, expectedHeadSha: head }), ['verdict_clean']).allowed).toBe(false);
+     expect(evaluateMergeRules(greenContext({ verdict, headSha: 'short', expectedHeadSha: 'short' }), ['verdict_clean']).allowed).toBe(false);
+@@ -281,7 +291,14 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+       expectedHeadSha: head,
+       baseSha: base,
+       expectedBaseSha: base,
+-      verdict: { state: 'MERGE_READY', headSha: head, baseSha: base, reasons: [] },
++      repository: 'owner/repo',
++      expectedRepository: 'owner/repo',
++      prNumber: 42,
++      expectedPrNumber: 42,
++      verdict: {
++        state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
++        headSha: head, baseSha: base, reasons: [],
++      },
+     });
+     expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
+     for (const mutation of [
+@@ -293,4 +310,72 @@ describe('evaluateMergeRules — pure conditional auto-merge evaluator', () => {
+       expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
+     }
+   });
++
++  test('verdict_clean rejects cross-repository and cross-PR replay', () => {
++    const head = '1'.repeat(40);
++    const base = 'a'.repeat(40);
++    const ctx = greenContext({
++      repository: 'owner/repo',
++      expectedRepository: 'owner/repo',
++      prNumber: 42,
++      expectedPrNumber: 42,
++      headSha: head,
++      expectedHeadSha: head,
++      baseSha: base,
++      expectedBaseSha: base,
++      verdict: {
++        state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
++        headSha: head, baseSha: base, reasons: [],
++      },
++    });
++    expect(evaluateMergeRules(ctx, ['verdict_clean']).allowed).toBe(true);
++    for (const mutation of [
++      { expectedRepository: 'other/repo' },
++      { expectedPrNumber: 43 },
++      { verdict: { ...ctx.verdict, repository: 'other/repo' } },
++      { verdict: { ...ctx.verdict, prNumber: 43 } },
++    ]) {
++      expect(evaluateMergeRules({ ...ctx, ...mutation }, ['verdict_clean']).allowed).toBe(false);
++    }
++  });
++
++  test('verdict_clean is descriptor-safe for accessors and hostile or revoked proxies', () => {
++    let getterCalls = 0;
++    const head = '1'.repeat(40);
++    const base = 'a'.repeat(40);
++    const verdict = {
++      state: 'MERGE_READY', repository: 'owner/repo', prNumber: 42,
++      headSha: head, baseSha: base, reasons: [],
++    };
++    const context = greenContext({
++      repository: 'owner/repo', expectedRepository: 'owner/repo',
++      prNumber: 42, expectedPrNumber: 42,
++      headSha: head, expectedHeadSha: head, baseSha: base, expectedBaseSha: base,
++      verdict,
++    });
++
++    const accessor = { ...context };
++    Object.defineProperty(accessor, 'verdict', {
++      enumerable: true,
++      get() { getterCalls += 1; throw new Error('getter must not run'); },
++    });
++    expect(evaluateMergeRules(accessor, ['verdict_clean']).allowed).toBe(false);
++
++    const hostileContext = new Proxy(context, {
++      get() { getterCalls += 1; throw new Error('get trap must not run'); },
++      ownKeys() { getterCalls += 1; throw new Error('ownKeys trap must not run'); },
++    });
++    expect(evaluateMergeRules(hostileContext, ['verdict_clean']).allowed).toBe(false);
++
++    const hostileVerdict = new Proxy(verdict, {
++      get() { getterCalls += 1; throw new Error('nested get trap must not run'); },
++      ownKeys() { getterCalls += 1; throw new Error('nested ownKeys trap must not run'); },
++    });
++    expect(evaluateMergeRules({ ...context, verdict: hostileVerdict }, ['verdict_clean']).allowed).toBe(false);
++
++    const revoked = Proxy.revocable(context, {});
++    revoked.revoke();
++    expect(evaluateMergeRules(revoked.proxy, ['verdict_clean']).allowed).toBe(false);
++    expect(getterCalls).toBe(0);
++  });
+ });
+diff --git a/test/pr-monitor/differ.test.js b/test/pr-monitor/differ.test.js
+index 2ac74c97..b6e894c6 100644
+--- a/test/pr-monitor/differ.test.js
++++ b/test/pr-monitor/differ.test.js
+@@ -43,6 +43,8 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
+   const head2 = '2'.repeat(40);
+   const verdict = (state, headSha, codes = []) => ({
+     state,
++    repository: 'owner/repo',
++    prNumber: 42,
+     headSha,
+     baseSha: 'a'.repeat(40),
+     reasons: codes.map((code) => ({ code })),
+@@ -58,8 +60,12 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
+       headChanged: true,
+       stateChanged: true,
+       baseChanged: false,
++      repositoryChanged: false,
++      prChanged: false,
+       from: 'BLOCKED',
+       to: 'MERGE_READY',
++      repository: 'owner/repo',
++      prNumber: 42,
+       headSha: head2,
+       baseSha: 'a'.repeat(40),
+       addedReasons: [],
+@@ -89,14 +95,59 @@ describe('diffVerdictEvidence exact-current-head changes', () => {
+       headChanged: false,
+       stateChanged: false,
+       baseChanged: true,
++      repositoryChanged: false,
++      prChanged: false,
+       from: 'MERGE_READY',
+       to: 'MERGE_READY',
++      repository: 'owner/repo',
++      prNumber: 42,
+       headSha: head1,
+       baseSha: 'b'.repeat(40),
+       addedReasons: [],
+       removedReasons: [],
+     });
+   });
++
++  test('retains repository and PR identity and detects replay-only changes', () => {
++    const previous = verdict('MERGE_READY', head1);
++    const repositoryReplay = { ...previous, repository: 'other/repo' };
++    const prReplay = { ...previous, prNumber: 43 };
++    expect(diffVerdictEvidence(previous, repositoryReplay)).toMatchObject({
++      changed: true,
++      repositoryChanged: true,
++      prChanged: false,
++      repository: 'other/repo',
++      prNumber: 42,
++    });
++    expect(diffVerdictEvidence(previous, prReplay)).toMatchObject({
++      changed: true,
++      repositoryChanged: false,
++      prChanged: true,
++      repository: 'owner/repo',
++      prNumber: 43,
++    });
++  });
++
++  test('is descriptor-safe for root/nested accessors and hostile or revoked proxies', () => {
++    let getterCalls = 0;
++    const accessor = { ...verdict('MERGE_READY', head1) };
++    Object.defineProperty(accessor, 'state', {
++      enumerable: true,
++      get() { getterCalls += 1; throw new Error('getter must not run'); },
++    });
++    expect(diffVerdictEvidence(null, accessor).to).toBe('INCOMPLETE');
++
++    const hostile = new Proxy(verdict('MERGE_READY', head1), {
++      get() { getterCalls += 1; throw new Error('get trap must not run'); },
++      ownKeys() { getterCalls += 1; throw new Error('ownKeys trap must not run'); },
++    });
++    expect(diffVerdictEvidence(null, hostile).to).toBe('INCOMPLETE');
++
++    const revoked = Proxy.revocable(verdict('MERGE_READY', head1), {});
++    revoked.revoke();
++    expect(diffVerdictEvidence(null, revoked.proxy).to).toBe('INCOMPLETE');
++    expect(getterCalls).toBe(0);
++  });
+ });
+ 
+ describe('diffSnapshots — per-type transitions', () => {
+diff --git a/test/pr-monitor/verdict.test.js b/test/pr-monitor/verdict.test.js
+index c37c3de0..1149ba7d 100644
+--- a/test/pr-monitor/verdict.test.js
++++ b/test/pr-monitor/verdict.test.js
+@@ -6,13 +6,18 @@ const { VERDICT_STATES, evaluateCurrentHeadVerdict } = require('../../lib/pr-mon
+ const HEAD = '1'.repeat(40);
+ const OTHER_HEAD = '2'.repeat(40);
+ const BASE = 'a'.repeat(40);
++const REPOSITORY = 'owner/repo';
++const PR_NUMBER = 42;
+ 
+ function completeEvidence(overrides = {}) {
+   return {
+     expectedHeadSha: HEAD,
+     expectedBaseSha: BASE,
+-    head: { sha: HEAD, repository: 'owner/repo', source: 'same-repository', acquired: true },
+-    base: { sha: BASE, repository: 'owner/repo' },
++    expectedRepository: REPOSITORY,
++    expectedPrNumber: PR_NUMBER,
++    prNumber: PR_NUMBER,
++    head: { sha: HEAD, repository: REPOSITORY, source: 'same-repository', acquired: true },
++    base: { sha: BASE, repository: REPOSITORY },
+     ancestry: {
+       complete: true, headSha: HEAD, baseSha: BASE,
+       containsBase: true, behindBy: 0, conflicting: false,
+@@ -44,10 +49,22 @@ function expectState(input, state, reason) {
+ describe('evaluateCurrentHeadVerdict', () => {
+   test('authorizes only complete evidence bound to the exact expected head and base', () => {
+     expect(evaluateCurrentHeadVerdict(completeEvidence())).toEqual({
+-      state: VERDICT_STATES.MERGE_READY, headSha: HEAD, baseSha: BASE, reasons: [],
++      state: VERDICT_STATES.MERGE_READY,
++      repository: REPOSITORY,
++      prNumber: PR_NUMBER,
++      headSha: HEAD,
++      baseSha: BASE,
++      reasons: [],
+     });
+   });
+ 
++  test('binds repository and PR identity and rejects cross-authority replay', () => {
++    expectState(completeEvidence({ expectedRepository: 'other/repo' }), VERDICT_STATES.STALE, 'repository_mismatch');
++    expectState(completeEvidence({ expectedPrNumber: 43 }), VERDICT_STATES.STALE, 'pr_number_mismatch');
++    expectState(completeEvidence({ expectedRepository: undefined }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_repository');
++    expectState(completeEvidence({ prNumber: '42' }), VERDICT_STATES.INCOMPLETE, 'invalid_pr_number');
++  });
++
+   test('fails closed when the expected, observed, or base SHA is absent or malformed', () => {
+     expectState(completeEvidence({ expectedHeadSha: 'short' }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_head');
+     expectState(completeEvidence({ expectedBaseSha: 'short' }), VERDICT_STATES.INCOMPLETE, 'invalid_expected_base');
+@@ -195,4 +212,70 @@ describe('evaluateCurrentHeadVerdict', () => {
+       ...completeEvidence().review, required: false, decision: 'APPROVED',
+     } }), VERDICT_STATES.MERGE_READY);
+   });
++
++  test('is descriptor-safe for root/nested accessors and hostile or revoked proxies', () => {
++    let getterCalls = 0;
++    const accessorRoot = { ...completeEvidence() };
++    Object.defineProperty(accessorRoot, 'expectedHeadSha', {
++      enumerable: true,
++      get() { getterCalls += 1; throw new Error('getter must not run'); },
++    });
++    expect(evaluateCurrentHeadVerdict(accessorRoot).state).toBe(VERDICT_STATES.INCOMPLETE);
++
++    const hostileHead = new Proxy(completeEvidence().head, {
++      get() { getterCalls += 1; throw new Error('get trap must not run'); },
++      ownKeys() { getterCalls += 1; throw new Error('ownKeys trap must not run'); },
++    });
++    expect(evaluateCurrentHeadVerdict(completeEvidence({ head: hostileHead })).state)
++      .toBe(VERDICT_STATES.INCOMPLETE);
++
++    const hostileRoot = new Proxy(completeEvidence(), {
++      get() { getterCalls += 1; throw new Error('root get trap must not run'); },
++      ownKeys() { getterCalls += 1; throw new Error('root ownKeys trap must not run'); },
++    });
++    expect(evaluateCurrentHeadVerdict(hostileRoot).state).toBe(VERDICT_STATES.INCOMPLETE);
++
++    const nestedAccessor = { ...completeEvidence().review };
++    Object.defineProperty(nestedAccessor, 'decision', {
++      enumerable: true,
++      get() { getterCalls += 1; throw new Error('nested getter must not run'); },
++    });
++    expect(evaluateCurrentHeadVerdict(completeEvidence({ review: nestedAccessor })).state)
++      .toBe(VERDICT_STATES.INCOMPLETE);
++
++    const revoked = Proxy.revocable(completeEvidence(), {});
++    revoked.revoke();
++    expect(evaluateCurrentHeadVerdict(revoked.proxy).state).toBe(VERDICT_STATES.INCOMPLETE);
++    expect(getterCalls).toBe(0);
++  });
++
++  test('canonicalizes conflicting duplicate checks independent of input order', () => {
++    const checks = completeEvidence().checks;
++    const success = checks.observations[0];
++    const failure = { ...success, conclusion: 'FAILURE' };
++    const evaluate = (duplicates) => evaluateCurrentHeadVerdict(completeEvidence({
++      checks: { ...checks, observations: [...duplicates, checks.observations[1]] },
++    }));
++    const forward = evaluate([success, failure]);
++    const reverse = evaluate([failure, success]);
++    expect(forward).toEqual(reverse);
++    expect(forward.state).toBe(VERDICT_STATES.INCOMPLETE);
++    expect(forward.reasons.map((item) => item.code)).toContain('check_observation_conflict');
++    expect(forward.reasons.map((item) => item.code)).not.toContain('required_check_not_successful');
++    expect(forward.reasons.map((item) => item.code)).not.toContain('required_check_missing');
++  });
++
++  test('canonicalizes conflicting duplicate threads independent of input order', () => {
++    const resolved = { id: 't1', resolved: true, outdated: false };
++    const unresolved = { id: 't1', resolved: false, outdated: false };
++    const evaluate = (items) => evaluateCurrentHeadVerdict(completeEvidence({
++      threads: { ...completeEvidence().threads, items },
++    }));
++    const forward = evaluate([resolved, unresolved]);
++    const reverse = evaluate([unresolved, resolved]);
++    expect(forward).toEqual(reverse);
++    expect(forward.state).toBe(VERDICT_STATES.INCOMPLETE);
++    expect(forward.reasons.map((item) => item.code)).toContain('thread_state_conflict');
++    expect(forward.reasons.map((item) => item.code)).not.toContain('unresolved_threads');
++  });
+ });
+-- 
+2.51.0.windows.1
+

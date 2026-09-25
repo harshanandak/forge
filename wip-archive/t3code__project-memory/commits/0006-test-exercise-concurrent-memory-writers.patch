@@ -1,0 +1,55 @@
+From 22b30fac1b1ce736fceb4d486e127d925a8fbc10 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 27 Apr 2026 00:58:59 +0530
+Subject: [PATCH] test: exercise concurrent memory writers
+
+---
+ test/project-memory.test.js | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index 0870aa43..c85d3bcf 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -1,5 +1,5 @@
+ const { describe, test, expect, afterEach } = require('bun:test');
+-const { spawnSync } = require('node:child_process');
++const { spawn } = require('node:child_process');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+@@ -272,7 +272,7 @@ describe('project memory', () => {
+     expect(fs.existsSync(`${memoryFile}.lock`)).toBe(false);
+   });
+ 
+-  test('serializes concurrent writers without losing entries', () => {
++  test('serializes concurrent writers without losing entries', async () => {
+     const root = tempRoot();
+     const worker = `
+ const projectMemory = require(${JSON.stringify(workerModulePath)});
+@@ -287,11 +287,17 @@ projectMemory.write(root, {
+ });
+ `;
+ 
+-    const results = Array.from({ length: 8 }, (_unused, index) => spawnSync(
+-      process.execPath,
+-      ['-e', worker, root, String(index)],
+-      { encoding: 'utf8', timeout: 15000 }
+-    ));
++    const results = await Promise.all(Array.from({ length: 8 }, (_unused, index) => new Promise((resolve) => {
++      const child = spawn(process.execPath, ['-e', worker, root, String(index)], {
++        stdio: ['ignore', 'pipe', 'pipe'],
++      });
++      let stdout = '';
++      let stderr = '';
++
++      child.stdout.on('data', (chunk) => { stdout += chunk; });
++      child.stderr.on('data', (chunk) => { stderr += chunk; });
++      child.on('close', (status) => resolve({ status, stdout, stderr }));
++    })));
+ 
+     for (const result of results) {
+       expect(result.status).toBe(0);
+-- 
+2.51.0.windows.1
+

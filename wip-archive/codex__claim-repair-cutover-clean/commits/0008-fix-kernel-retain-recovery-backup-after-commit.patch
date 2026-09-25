@@ -1,0 +1,163 @@
+From 606e516171ac12041a4e70e3517ad36bca64ec9c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 00:51:14 +0530
+Subject: [PATCH] fix(kernel): retain recovery backup after commit
+
+---
+ docs/reference/LEGACY_CLAIM_REPAIR.md   |  6 ++++
+ lib/kernel/sqlite-driver.js             | 14 ++++----
+ test/kernel/legacy-claim-repair.test.js | 45 +++++++++++++++++++++++--
+ 3 files changed, 55 insertions(+), 10 deletions(-)
+
+diff --git a/docs/reference/LEGACY_CLAIM_REPAIR.md b/docs/reference/LEGACY_CLAIM_REPAIR.md
+index c2a09e98..3006ebbf 100644
+--- a/docs/reference/LEGACY_CLAIM_REPAIR.md
++++ b/docs/reference/LEGACY_CLAIM_REPAIR.md
+@@ -89,6 +89,12 @@ but the named backup changed during commit. Do not discard the
+ writers and investigate the named path before any restore. Repeating the same
+ approved apply returns the committed receipt without mutating rows again.
+ 
++A successful first apply also reports `receipt.recovery_path`. The tool never
++automatically unlinks this owner-only hardlink after commit because no final
++check can make a later unlink race-free. Keep it until the named backup and
++receipt have been independently verified. A human may then remove that exact
++reported recovery path after confirming that no repair process is running.
++
+ ## Restore boundary
+ 
+ Restore is deliberately not automated. Fence every Kernel writer, stop Forge
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 90ac9a43..76914dc1 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3439,12 +3439,9 @@ function removeClaimRepairBackupSidecarBlockers(blockers = []) {
+ 	}
+ }
+ 
+-function closeClaimRepairBackupFence(fence, options = {}) {
++function closeClaimRepairBackupFence(fence) {
+ 	if (!fence) return;
+ 	try { fs.closeSync(fence.fileDescriptor); } catch { /* descriptor cleanup cannot change a committed receipt */ }
+-	if (options.removeRecovery) {
+-		try { fs.rmSync(fence.recoveryPath); } catch { /* recovery-name cleanup cannot change a committed receipt */ }
+-	}
+ }
+ 
+ function assertClaimRepairReplayInput(input = {}) {
+@@ -3499,7 +3496,6 @@ function applyLegacyClaimRepairRow(runtime, db, input = {}, driverOptions = {})
+ 	let backupFence;
+ 	let sidecarBlockers = [];
+ 	let committed = false;
+-	let removeRecovery = false;
+ 	execSql(runtime, db, 'BEGIN IMMEDIATE;');
+ 	try {
+ 		const existingRow = allParams(
+@@ -3587,7 +3583,6 @@ function applyLegacyClaimRepairRow(runtime, db, input = {}, driverOptions = {})
+ 		try {
+ 			assertClaimRepairBackupFenceCurrent(backupFence, { sidecarsBlocked: true });
+ 			assertClaimRepairBackupSidecarBlockersCurrent(sidecarBlockers);
+-			removeRecovery = true;
+ 		} catch {
+ 			throw new ClaimRepairError(
+ 				'CLAIM_REPAIR_BACKUP_POSTCOMMIT_DRIFT',
+@@ -3595,7 +3590,10 @@ function applyLegacyClaimRepairRow(runtime, db, input = {}, driverOptions = {})
+ 				{ recovery_path: backupFence.recoveryPath },
+ 			);
+ 		}
+-		return receipt;
++		if (typeof driverOptions.claimRepairFaultInjector === 'function') {
++			driverOptions.claimRepairFaultInjector('after-postcommit-backup-check');
++		}
++		return { ...receipt, recovery_path: backupFence.recoveryPath };
+ 	} catch (error) {
+ 		if (!committed) {
+ 			try { execSql(runtime, db, 'ROLLBACK;'); } catch { /* preserve the original failure */ }
+@@ -3603,7 +3601,7 @@ function applyLegacyClaimRepairRow(runtime, db, input = {}, driverOptions = {})
+ 		throw error;
+ 	} finally {
+ 		removeClaimRepairBackupSidecarBlockers(sidecarBlockers);
+-		closeClaimRepairBackupFence(backupFence, { removeRecovery });
++		closeClaimRepairBackupFence(backupFence);
+ 	}
+ }
+ 
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 9536ab0d..683e9ccb 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -466,6 +466,9 @@ describe('legacy claim repair backup and apply', () => {
+ 			replayed: false,
+ 			mutations: { released: 1, reclaimable: 1, total: 2 },
+ 		});
++		expect(typeof applied.recovery_path).toBe('string');
++		expect(fs.existsSync(applied.recovery_path)).toBe(true);
++		const { recovery_path: _recoveryPath, ...durableReceipt } = applied;
+ 		const rows = await fixture.driver.queryAll('SELECT id, state FROM kernel_claims ORDER BY id;', fixture.config);
+ 		expect(rows).toEqual([
+ 			{ id: 'claim-durable', state: 'active' },
+@@ -483,7 +486,7 @@ describe('legacy claim repair backup and apply', () => {
+ 			backupPath,
+ 			actor: 'approved-operator',
+ 		}, fixture.config);
+-		expect(replay).toEqual({ ...applied, replayed: true });
++		expect(replay).toEqual({ ...durableReceipt, replayed: true });
+ 		fs.rmSync(backupPath, { force: true });
+ 		const replayWithoutBackup = await fixture.driver.applyLegacyClaimRepair({
+ 			observedAt: OBSERVED_AT,
+@@ -491,7 +494,7 @@ describe('legacy claim repair backup and apply', () => {
+ 			backupPath,
+ 			actor: 'approved-operator',
+ 		}, fixture.config);
+-		expect(replayWithoutBackup).toEqual({ ...applied, replayed: true });
++		expect(replayWithoutBackup).toEqual({ ...durableReceipt, replayed: true });
+ 		await expect(fixture.driver.applyLegacyClaimRepair({
+ 			observedAt: OBSERVED_AT,
+ 			approvedDigest: preflight.digest,
+@@ -823,6 +826,44 @@ describe('legacy claim repair backup and apply', () => {
+ 		fixture.driver.close();
+ 	});
+ 
++	test('retains the verified recovery inode when the backup changes after final verification', async () => {
++		let backupPath;
++		const fixture = await createFixture({
++			claimRepairFaultInjector(phase) {
++				if (phase !== 'after-postcommit-backup-check') return;
++				fs.rmSync(backupPath);
++				fs.writeFileSync(backupPath, 'post-verification replacement');
++			},
++		});
++		await seedMixedClaims(fixture);
++		backupPath = path.join(fixture.root, 'claims-before.sqlite');
++		const preflight = await fixture.driver.preflightLegacyClaimRepair({ observedAt: OBSERVED_AT }, fixture.config);
++		await createVerifiedClaimRepairBackup({
++			sourceDriver: fixture.driver,
++			backupPath,
++			observedAt: OBSERVED_AT,
++			openDriver: databasePath => createBuiltinSQLiteDriver({ databasePath }),
++			hardenPath,
++		});
++
++		const applied = await fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config);
++		expect(typeof applied.recovery_path).toBe('string');
++		expect(fs.existsSync(applied.recovery_path)).toBe(true);
++		expect(fs.readFileSync(applied.recovery_path).equals(fs.readFileSync(backupPath))).toBe(false);
++		await expect(fixture.driver.applyLegacyClaimRepair({
++			observedAt: OBSERVED_AT,
++			approvedDigest: preflight.digest,
++			backupPath,
++			actor: 'approved-operator',
++		}, fixture.config)).resolves.toMatchObject({ replayed: true });
++		fixture.driver.close();
++	});
++
+ 	test('rejects a backup replaced by a source alias at the commit-fence seam', async () => {
+ 		let backupPath;
+ 		let databasePath;
+-- 
+2.51.0.windows.1
+

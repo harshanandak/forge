@@ -1,0 +1,83 @@
+From 6338f1c235892f2a449fe0bce3d7368c601413d7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 1 Aug 2026 00:12:09 +0530
+Subject: [PATCH] fix: preserve forge-only smart merge sections
+
+---
+ lib/smart-merge.js       | 10 ++++++----
+ test/smart-merge.test.js | 21 +++++++++++++++++++++
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/lib/smart-merge.js b/lib/smart-merge.js
+index 7e8a3b82..fae84487 100644
+--- a/lib/smart-merge.js
++++ b/lib/smart-merge.js
+@@ -3,11 +3,12 @@
+ /**
+  * Smart merge for AGENTS.md - preserves USER sections, updates FORGE sections.
+  *
+- * Handles four cases:
++ * Handles five cases:
+  * 1. No markers at all: Wrap existing content in USER markers, append FORGE section
+  * 2. USER markers but no FORGE markers: Keep USER section, insert FORGE section
+  * 3. Both markers present: Preserve USER section, update FORGE section (existing behavior)
+- * 4. Empty existing content: Return only FORGE section (no empty USER block)
++ * 4. Forge markers only: Update FORGE section without creating a USER section
++ * 5. Empty existing content: Return only FORGE section (no empty USER block)
+  *
+  * @param {string} existingContent - The current AGENTS.md content
+  * @param {string} newContent - The new template content containing FORGE section
+@@ -20,6 +21,7 @@ function smartMergeAgentsMd(existingContent, newContent) {
+ 
+   // Check if existing content has markers
+   const hasUserMarkers = existingContent.includes('<!-- USER:START') && existingContent.includes('<!-- USER:END');
++  const hasForgeMarkers = existingContent.includes('<!-- FORGE:START') && existingContent.includes('<!-- FORGE:END');
+ 
+   let userSection;
+ 
+@@ -27,8 +29,8 @@ function smartMergeAgentsMd(existingContent, newContent) {
+     // Extract existing USER section (with markers)
+     const userMatch = (/(<!-- USER:START.*?-->[\s\S]*?<!-- USER:END -->)/).exec(existingContent);
+     userSection = userMatch ? userMatch[0] : '';
+-  } else if (existingContent.trim() === '') {
+-    // Empty existing content: no USER block at all
++  } else if (existingContent.trim() === '' || hasForgeMarkers) {
++    // Empty or Forge-only existing content has no USER section to preserve.
+     userSection = null;
+   } else {
+     // No markers: wrap entire existing content in USER markers
+diff --git a/test/smart-merge.test.js b/test/smart-merge.test.js
+index 08d5e5e4..c41b5c83 100644
+--- a/test/smart-merge.test.js
++++ b/test/smart-merge.test.js
+@@ -94,6 +94,27 @@ describe('smartMergeAgentsMd', () => {
+     });
+   });
+ 
++  describe('Forge markers only', () => {
++    it('updates Forge content without wrapping it as USER content or duplicating it', () => {
++      const existing = [
++        '# AGENTS.md',
++        '',
++        '<!-- FORGE:START - Do not edit below -->',
++        '## Old Forge Content',
++        'This is outdated.',
++        '<!-- FORGE:END -->',
++      ].join('\\n');
++
++      const result = smartMergeAgentsMd(existing, newContent);
++
++      expect(result).not.toContain('This is outdated.');
++      expect(result).toContain('Some forge content here.');
++      expect(result.match(/<!-- FORGE:START/g)).toHaveLength(1);
++      expect(result.match(/<!-- FORGE:END -->/g)).toHaveLength(1);
++      expect(result).not.toMatch(/<!-- USER:START -->[\\s\\S]*<!-- USER:END -->/);
++    });
++  });
++
+   describe('empty existing content', () => {
+     it('returns only FORGE section (no empty USER block)', () => {
+       const existing = '';
+-- 
+2.51.0.windows.1
+

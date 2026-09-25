@@ -1,0 +1,82 @@
+From 028c0d5bbc5dab7c1b7b1c6712ce76a871dfe945 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 02:50:26 +0530
+Subject: [PATCH] fix(merge): preserve provider merge timestamp
+
+---
+ lib/commands/merge.js                 | 12 ++++++++++--
+ test/commands/merge-authority.test.js |  7 ++++++-
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 2167b425..e5956efa 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -821,6 +821,13 @@ async function recoverMergedTerminal({ pr, parsed, root, prContext, ownershipAct
+   }
+   const authority = binding.mergeAuthority;
+   if (canRecoverMergeAuthority(binding, authority, ownershipActor, ownershipSessionId)) {
++    if (typeof prContext?.mergedAt !== 'string' || !Number.isFinite(Date.parse(prContext.mergedAt))) {
++      return {
++        success: false,
++        merged: true,
++        error: 'Merged PR provider timestamp is missing or invalid; recovery remains incomplete.',
++      };
++    }
+     const decision = {
+       decisionId: authority.packet.object_id,
+       packet: authority.packet,
+@@ -837,7 +844,7 @@ async function recoverMergedTerminal({ pr, parsed, root, prContext, ownershipAct
+     const terminal = await recordMergeDecision({
+       decision,
+       mergeResult: { merged: true, recovered: true },
+-      completedAt: currentTimestamp(deps.now || Date.now),
++      completedAt: currentTimestamp(prContext.mergedAt),
+       pr,
+       expectedHead: parsed.expectedHead,
+       repository,
+@@ -966,7 +973,7 @@ function fetchCheckRunObservations(gh, { owner, repo, head }) {
+  */
+ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
+-    'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,comments,updatedAt']) || {};
++    'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,comments,updatedAt,mergedAt']) || {};
+ 
+   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : null;
+ 
+@@ -1052,6 +1059,7 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     conflicting,
+     isDraft,
+     state,
++    mergedAt: typeof view.mergedAt === 'string' ? view.mergedAt : null,
+     approvals,
+     reviews,
+     reviewEvidenceReadable: adapter !== null,
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 7558361e..cf6d8243 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -233,7 +233,11 @@ describe('merge command — mandatory release authority', () => {
+       payload: {},
+     };
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+-      fetchPrContext: async () => context({ state: 'MERGED' }),
++      fetchPrContext: async () => context({
++        state: 'MERGED',
++        mergedAt: '2026-08-01T12:00:05.000Z',
++      }),
++      now: () => Date.parse('2026-08-02T12:00:05.000Z'),
+       verifyPrIssueBinding: async () => ({
+         bound: true,
+         branch: 'feature/merge',
+@@ -265,6 +269,7 @@ describe('merge command — mandatory release authority', () => {
+       pr: '42',
+       expectedHead: HEAD,
+       repository: 'acme/forge',
++      completedAt: '2026-08-01T12:00:05.000Z',
+     });
+   });
+ 
+-- 
+2.51.0.windows.1
+

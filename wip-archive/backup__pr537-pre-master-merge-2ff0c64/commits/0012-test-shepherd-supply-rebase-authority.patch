@@ -1,0 +1,28 @@
+From 47added380095d934050cd1f5dbe078b91f19c61 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 23:39:35 +0530
+Subject: [PATCH] test(shepherd): supply rebase authority
+
+---
+ test/shepherd-acceptance.test.js | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/test/shepherd-acceptance.test.js b/test/shepherd-acceptance.test.js
+index 857a90e2..43343937 100644
+--- a/test/shepherd-acceptance.test.js
++++ b/test/shepherd-acceptance.test.js
+@@ -17,7 +17,10 @@ const { runShepherdPass } = require('../lib/pr-shepherd');
+ const shepherdCmd = require('../lib/commands/shepherd');
+ 
+ const ROOT = path.resolve(__dirname, '..');
+-const BASE_CTX = { pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' };
++const BASE_CTX = {
++  pr: '123', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++  headRef: 'feature', pushRemote: 'origin',
++};
+ 
+ /** A scripted adapter whose state can change per-pass to model a real PR. */
+ function scriptedAdapter(steps) {
+-- 
+2.51.0.windows.1
+

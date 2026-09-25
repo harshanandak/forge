@@ -1,0 +1,618 @@
+From 3b108561efe075545d4e5f1e4ed67db37af539ed Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 13:57:08 +0530
+Subject: [PATCH] fix(skills): correct verified CLI-command inaccuracies in
+ skill bodies
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Follows the description+evals pass in this PR with body corrections, each
+verified against the live forge CLI / source (not the agents' first-pass
+claims, which contained cross-skill contradictions):
+
+- issue-basics: `feature` is NOT a canonical issue type — the kernel's four
+  types are task/bug/epic/decision (issue-command-contract.js). `--type` is
+  stored verbatim/unvalidated (create --type feature => ok:true), and epics/
+  decisions are excluded from the ready queue by convention, not enforced at
+  claim time (claim <epic> => ok:true). Fixed the type lists, example, and notes.
+- triage-ready: stats `data.counts` has no `in_progress` bucket (keys are
+  open/done/cancelled; claimed work stays `open`, surfaced via active_claims);
+  there is no `claimable` field in the CLI JSON.
+- kernel: `forge remember`/`forge recall` are LIVE (were mislabeled "planned");
+  only `forge knowledge search` is not on the CLI yet.
+- hermes-forge: orient sections carry no per-section `priority` field — trim
+  order is `token_budget.truncation_order`; bare `forge recap --json` requires an
+  issue id (errors without one), it does not return a legacy summary.
+- plan: `forge issue dep cycles` and `forge graph` are not real commands — use
+  `forge issue blocked` / `forge issue children <epic-id>`.
+- validate: `bun run check` runs `scripts/validate.js` (not .sh); `forge update`
+  takes no `--comment` flag, so split into `forge update --status` + `forge comment`.
+- ship/review: `forge update --comment` -> `forge comment` (the real verb).
+- verify: `gh pr view --json deployments` is an invalid field -> `statusCheckRollup`.
+- sonarcloud: removed a dead reference to a non-existent TS client path.
+- rollback: `Rollback:` commit prefix -> `chore: rollback` (matches bin/forge.js).
+
+Deferred (kernel issue 4109f471): the rollback skill's `bd update --status
+reverted` path — a Beads/kernel migration decision, not a doc edit. .codex mirror
+regenerated (inSync); skill tests green.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .codex/skills/hermes-forge/SKILL.md | 25 +++++++++++--------------
+ .codex/skills/issue-basics/SKILL.md | 18 +++++++++++-------
+ .codex/skills/kernel/SKILL.md       |  9 +++++----
+ .codex/skills/plan/SKILL.md         |  2 +-
+ .codex/skills/review/SKILL.md       |  2 +-
+ .codex/skills/rollback/SKILL.md     |  4 ++--
+ .codex/skills/ship/SKILL.md         |  2 +-
+ .codex/skills/sonarcloud/SKILL.md   |  2 +-
+ .codex/skills/triage-ready/SKILL.md | 12 ++++++++----
+ .codex/skills/validate/SKILL.md     |  7 ++++---
+ .codex/skills/verify/SKILL.md       |  2 +-
+ skills/hermes-forge/SKILL.md        | 25 +++++++++++--------------
+ skills/issue-basics/SKILL.md        | 18 +++++++++++-------
+ skills/kernel/SKILL.md              |  9 +++++----
+ skills/plan/SKILL.md                |  2 +-
+ skills/review/SKILL.md              |  2 +-
+ skills/rollback/SKILL.md            |  4 ++--
+ skills/ship/SKILL.md                |  2 +-
+ skills/sonarcloud/SKILL.md          |  2 +-
+ skills/triage-ready/SKILL.md        | 12 ++++++++----
+ skills/validate/SKILL.md            |  7 ++++---
+ skills/verify/SKILL.md              |  2 +-
+ 22 files changed, 92 insertions(+), 78 deletions(-)
+
+diff --git a/.codex/skills/hermes-forge/SKILL.md b/.codex/skills/hermes-forge/SKILL.md
+index 7dd78561..190651df 100644
+--- a/.codex/skills/hermes-forge/SKILL.md
++++ b/.codex/skills/hermes-forge/SKILL.md
+@@ -63,18 +63,16 @@ reading raw issue stores, design files, or kernel internals directly:
+ forge orient --json                # bounded project orientation (envelope)
+ forge orient --budget 4000 --json
+ forge recap <issue-id> --json      # bounded per-issue recap (envelope)
+-forge recap --json                 # legacy activity summary (NOT the envelope)
+ ```
+ 
+ `forge orient` and `forge recap <issue-id>` emit the deterministic JSON envelope
+ described below (assembly `deterministic-file-assembly-v1`). Parse the JSON; do
+ not screen-scrape the human text form.
+ 
+-> Note: bare `forge recap --json` (no issue id) returns the legacy activity
+-> summary (`generatedAt`, `issueSummary`, `reviewOutcomes`, `recentIssues`,
+-> `insights`) — it does **not** carry `schema_version`, `sections`,
+-> `token_budget`, or `assembly`. For the envelope contract, use `forge orient`
+-> or `forge recap <issue-id>`.
++> Note: `forge recap` always requires an issue id — bare `forge recap --json`
++> (no id) prints its usage and exits non-zero rather than returning a summary.
++> Use `forge orient` for project-level orientation, or `forge recap <issue-id>`
++> for a single issue; both emit the deterministic envelope.
+ 
+ ### Envelope shape
+ 
+@@ -124,14 +122,13 @@ whole payload.
+ 
+ Truncation is deterministic, never random:
+ 
+-- Non-preserved sections are allocated budget in ascending numeric `priority`
+-  order (lower `priority` first); when the budget is exhausted, the
+-  later/higher-`priority` sections are the ones trimmed. Preserved sections are
+-  kept whole and trimmed only as a last resort if the payload is still over
+-  budget. The authoritative per-section signal is each section's `truncated`
+-  flag plus its `priority`/`estimated_tokens` — not the nominal
+-  `token_budget.truncation_order` list, which is a static hint and may not match
+-  the priority-driven trim order.
++- Non-preserved sections are trimmed in the order given by
++  `token_budget.truncation_order`; when the budget is exhausted, sections later
++  in that order are trimmed first. Preserved sections are kept whole and trimmed
++  only as a last resort if the payload is still over budget. The authoritative
++  per-section signal is each section's `truncated` flag and `estimated_tokens` —
++  there is no per-section `priority` field; the overall trim order is
++  `token_budget.truncation_order`.
+ - A trimmed section ends with the literal marker
+   `[truncated deterministically by token budget]` and has `truncated: true`.
+ - `token_budget.truncated === true` means the payload as a whole was trimmed.
+diff --git a/.codex/skills/issue-basics/SKILL.md b/.codex/skills/issue-basics/SKILL.md
+index 2460f6d7..f2940ba5 100644
+--- a/.codex/skills/issue-basics/SKILL.md
++++ b/.codex/skills/issue-basics/SKILL.md
+@@ -32,7 +32,7 @@ failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
+ 
+ | Need | Command |
+ |------|---------|
+-| Create an issue | `forge issue create --title "…" --type <task\|feature\|bug\|epic>` |
++| Create an issue | `forge issue create --title "…" --type <task\|bug\|epic\|decision>` |
+ | Inspect one issue | `forge issue show <id> [--json]` |
+ | List / filter issues | `forge issue list [--status … --type … --priority … --label …] [--json]` |
+ | Full-text search | `forge issue search "…" [--json]` |
+@@ -47,15 +47,15 @@ failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
+ ## Create — the flags that matter
+ 
+ ```bash
+-forge issue create --title "Add rate limiting" --type feature \
+-  --priority P1 --label "api,security" --assignee alice \
++forge issue create --title "Add rate limiting" --type task \
++  --priority P1 --label "feature,api,security" --assignee alice \
+   --acceptance "429 returned after N req/min; covered by a test"
+ ```
+ 
+ | Flag | Meaning | Default |
+ |------|---------|---------|
+ | `--title "…"` | Human title (a bare leading positional also works) | minted id |
+-| `--type <…>` | `task` · `feature` · `bug` · `epic` · `decision` | `task` |
++| `--type <…>` | `task` · `bug` · `epic` · `decision` | `task` |
+ | `--priority <…>` | `P0`..`P4` (or bare `0`..`4`); `P0` is highest | unset |
+ | `--label "a,b"` | Comma-separated set — one flag, split on `,` (repeats do NOT accumulate) | none |
+ | `--body "…"` | Long description (`--description` is an accepted alias) | empty |
+@@ -64,8 +64,12 @@ forge issue create --title "Add rate limiting" --type feature \
+ | `--parent <id>` | Parent/epic id | none |
+ 
+ `--status` defaults to `open`. Status vocabulary: `open` · `in_progress` ·
+-`review` · `done` · `cancelled`. Epics and decisions are non-claimable (they never
+-enter the ready queue).
++`review` · `done` · `cancelled`. Unlike `--priority` and `--status` (which reject
++unknown values), `--type` is stored verbatim — a non-canonical value like
++`feature` is accepted without error but carries no kernel behaviour, so stick to
++the four canonical types. Epics and decisions are excluded from the ready queue
++(non-claimability is a queue convention, not enforcement — `forge issue claim`
++currently returns `ok:true` on them too).
+ 
+ ## Update — same field flags, plus close
+ 
+@@ -102,7 +106,7 @@ It is a canonical source you fork, not a fixed policy.
+ 
+ | Knob | Default | How to change |
+ |------|---------|---------------|
+-| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--type feature` for user-facing work, `--type bug` for regressions. |
++| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--label feature` for user-facing work (feature is a label, not a canonical type), `--type bug` for regressions. |
+ | **Default priority** | unset | Adopt a house scale (e.g. new work opens at `P2`, incidents at `P0`) and always pass `--priority`. |
+ | **Fields required on create** | `--title` only | Require `--acceptance` (and `--label`/`--assignee`) on every create so issues are actionable from birth. |
+ | **Id / reference convention** | kernel-minted ids | Standardize how you cite issues in commits/PRs (e.g. `Closes <id>`) and whether you pass an explicit `--id`. |
+diff --git a/.codex/skills/kernel/SKILL.md b/.codex/skills/kernel/SKILL.md
+index e1d68a66..1d76a2fa 100644
+--- a/.codex/skills/kernel/SKILL.md
++++ b/.codex/skills/kernel/SKILL.md
+@@ -109,11 +109,12 @@ families. Run them through Bash; never hand-edit the issue store.
+ | Search / stats | `forge issue search "…"` · `forge issue stats` |
+ | Blocked work | `forge blocked` |
+ 
+-### B — Memory / knowledge (planned)
++### B — Memory / knowledge
+ 
+-`forge remember` / `forge recall` / `forge knowledge search` are roadmap items —
+-they are **not on the CLI yet**. Do not invoke them; record durable decisions as
+-issue comments (`forge comment`) until the memory verbs land.
++`forge remember <note> [--tag <label>]... [--json]` and `forge recall` are live —
++they persist and retrieve project-memory notes from a file-backed store. Only
++`forge knowledge search` is not on the CLI yet; until it lands, capture durable
++decisions as `forge remember` notes or issue comments (`forge comment`).
+ 
+ ### C — Board / planning / admin
+ 
+diff --git a/.codex/skills/plan/SKILL.md b/.codex/skills/plan/SKILL.md
+index 9ab7a2b3..d11ac85c 100644
+--- a/.codex/skills/plan/SKILL.md
++++ b/.codex/skills/plan/SKILL.md
+@@ -515,7 +515,7 @@ If the user approves a dependency mutation, apply it explicitly (only when the t
+ bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
+ ```
+ 
+-That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
++That approval step must inspect blockers with `forge issue blocked` (and `forge issue children <epic-id>` for the epic rollup), summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
+ 
+ ### Step 6: User review
+ 
+diff --git a/.codex/skills/review/SKILL.md b/.codex/skills/review/SKILL.md
+index 41be40d8..cdabadb5 100644
+--- a/.codex/skills/review/SKILL.md
++++ b/.codex/skills/review/SKILL.md
+@@ -332,7 +332,7 @@ gh pr checks <pr-number>
+ ### Step 10: Update the Forge issue
+ 
+ ```bash
+-forge update <id> --comment "PR review complete: all issues addressed, all checks passing"
++forge comment <id> "PR review complete: all issues addressed, all checks passing"
+ forge sync
+ ```
+ 
+diff --git a/.codex/skills/rollback/SKILL.md b/.codex/skills/rollback/SKILL.md
+index 6ba7def1..6a320902 100644
+--- a/.codex/skills/rollback/SKILL.md
++++ b/.codex/skills/rollback/SKILL.md
+@@ -194,7 +194,7 @@ Rollback complete!
+ **How it works**:
+ ```bash
+ git checkout HEAD~1 -- <file1> <file2> ...
+-git commit -m "Rollback: <files>"
++git commit -m "chore: rollback <files>"
+ ```
+ 
+ **Example**:
+@@ -212,7 +212,7 @@ bunx forge rollback
+ ✓ Amended commit to preserve USER content
+ 
+ Rollback complete!
+-  Commit: q4r5s6t "Rollback: AGENTS.md, CLAUDE.md"
++  Commit: q4r5s6t "chore: rollback AGENTS.md, CLAUDE.md"
+   Files affected: 2
+ ```
+ 
+diff --git a/.codex/skills/ship/SKILL.md b/.codex/skills/ship/SKILL.md
+index 144c8e70..6413e730 100644
+--- a/.codex/skills/ship/SKILL.md
++++ b/.codex/skills/ship/SKILL.md
+@@ -95,7 +95,7 @@ bash scripts/pr-coordinator.sh stale-worktrees 2>&1 || true
+ 
+ ### Step 3: Record PR Handoff
+ ```bash
+-forge update <id> --comment "PR created: <pr-url>. Awaiting review and merge verification."
++forge comment <id> "PR created: <pr-url>. Awaiting review and merge verification."
+ forge sync
+ ```
+ 
+diff --git a/.codex/skills/sonarcloud/SKILL.md b/.codex/skills/sonarcloud/SKILL.md
+index 4f1bb8ca..9535a210 100644
+--- a/.codex/skills/sonarcloud/SKILL.md
++++ b/.codex/skills/sonarcloud/SKILL.md
+@@ -58,7 +58,7 @@ Pull code quality data from SonarCloud. Requires `SONARCLOUD_TOKEN` environment
+    - Optional filters (branch, severity, type, new-code, etc.)
+ 2. Check for `SONARCLOUD_TOKEN` environment variable. If not set, inform user.
+ 3. Check for `SONARCLOUD_ORG` environment variable or ask user for organization key.
+-4. Execute the appropriate API call using curl or the TypeScript client at `next-app/src/lib/integrations/sonarcloud.ts`
++4. Execute the appropriate API call against the SonarCloud REST API (see the API Reference section below for endpoints)
+ 5. Format and present results clearly:
+    - For issues: Group by severity/type, show file, line, message
+    - For metrics: Show as table with metric name and value
+diff --git a/.codex/skills/triage-ready/SKILL.md b/.codex/skills/triage-ready/SKILL.md
+index c66f42bf..3377726e 100644
+--- a/.codex/skills/triage-ready/SKILL.md
++++ b/.codex/skills/triage-ready/SKILL.md
+@@ -45,8 +45,10 @@ and `forge issue stats` exclusively.
+ forge issue stats --json
+ ```
+ 
+-Returns `data.counts` (open/in_progress/done/cancelled), `ready_count`,
+-`blocked_count`, and `active_claims`. A high `blocked_count` relative to
++Returns `data.counts` (`open`/`done`/`cancelled` — keys are present only when
++non-zero, and there is no `in_progress` bucket: claimed work stays in status
++`open` and is surfaced via `active_claims`), `ready_count`, `blocked_count`, and
++`active_claims`. A high `blocked_count` relative to
+ `ready_count` is your signal that dependency repair (not new work) is the real
+ bottleneck — hand off to `dependency-planning` / `backlog-hygiene`.
+ 
+@@ -99,8 +101,10 @@ or close — it is strictly read-only.
+ 
+ - **Recompute, never cache.** Readiness is derived; re-run `forge issue ready`
+   every session rather than remembering a prior "ready" verdict.
+-- **Respect non-claimable types.** Epics and decisions are `claimable:false` and
+-  will not appear in `ready`; do not hand them off as work.
++- **Respect non-claimable types.** Epics and decisions never appear in `ready`
++  (the queue surfaces only claimable types — `task`/`bug`), so do not hand them
++  off as work. There is no `claimable` field in the CLI JSON; this is behavioral,
++  not a flag you can read.
+ - **Check the envelope.** Every `--json` reply carries `ok`; on `ok:false` read
+   `error.message` and retry the query rather than guessing at state.
+ - **Read-only.** This skill runs only `stats`/`ready`/`blocked`/`show`. If a fix is
+diff --git a/.codex/skills/validate/SKILL.md b/.codex/skills/validate/SKILL.md
+index 201b1cab..81bdf743 100644
+--- a/.codex/skills/validate/SKILL.md
++++ b/.codex/skills/validate/SKILL.md
+@@ -18,7 +18,7 @@ allowed-tools: Bash, Read, Grep, Glob
+ > **Note:** Three things share the "validate" name in Forge:
+ > - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
+ > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
+-> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
++> - `bun run check` (scripts/validate.js): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
+ 
+ Run comprehensive validation including type checking, linting, code review, security review, and tests.
+ 
+@@ -80,7 +80,7 @@ reflect the true state of what will be merged.
+ 
+ ## What This Skill Does
+ 
+-**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
++**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.js`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
+ 
+ ### Step 1: Type Check
+ ```bash
+@@ -221,7 +221,8 @@ If any check fails:
+ forge create "Fix <issue-description>"
+ 
+ # Mark current issue as blocked
+-forge update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
++forge update <current-id> --status blocked
++forge comment <current-id> "Blocked by <new-issue-id>"
+ 
+ # Output what needs fixing
+ ```
+diff --git a/.codex/skills/verify/SKILL.md b/.codex/skills/verify/SKILL.md
+index e4de09f3..3194ca0a 100644
+--- a/.codex/skills/verify/SKILL.md
++++ b/.codex/skills/verify/SKILL.md
+@@ -71,7 +71,7 @@ Check if the project has a deployment target:
+ gh run list --branch master --limit 1
+ 
+ # Check Vercel deployments for the merged PR (use number from Step 2)
+-gh pr view <number> --json deployments
++gh pr view <number> --json statusCheckRollup
+ ```
+ 
+ If deployments exist:
+diff --git a/skills/hermes-forge/SKILL.md b/skills/hermes-forge/SKILL.md
+index 7dd78561..190651df 100644
+--- a/skills/hermes-forge/SKILL.md
++++ b/skills/hermes-forge/SKILL.md
+@@ -63,18 +63,16 @@ reading raw issue stores, design files, or kernel internals directly:
+ forge orient --json                # bounded project orientation (envelope)
+ forge orient --budget 4000 --json
+ forge recap <issue-id> --json      # bounded per-issue recap (envelope)
+-forge recap --json                 # legacy activity summary (NOT the envelope)
+ ```
+ 
+ `forge orient` and `forge recap <issue-id>` emit the deterministic JSON envelope
+ described below (assembly `deterministic-file-assembly-v1`). Parse the JSON; do
+ not screen-scrape the human text form.
+ 
+-> Note: bare `forge recap --json` (no issue id) returns the legacy activity
+-> summary (`generatedAt`, `issueSummary`, `reviewOutcomes`, `recentIssues`,
+-> `insights`) — it does **not** carry `schema_version`, `sections`,
+-> `token_budget`, or `assembly`. For the envelope contract, use `forge orient`
+-> or `forge recap <issue-id>`.
++> Note: `forge recap` always requires an issue id — bare `forge recap --json`
++> (no id) prints its usage and exits non-zero rather than returning a summary.
++> Use `forge orient` for project-level orientation, or `forge recap <issue-id>`
++> for a single issue; both emit the deterministic envelope.
+ 
+ ### Envelope shape
+ 
+@@ -124,14 +122,13 @@ whole payload.
+ 
+ Truncation is deterministic, never random:
+ 
+-- Non-preserved sections are allocated budget in ascending numeric `priority`
+-  order (lower `priority` first); when the budget is exhausted, the
+-  later/higher-`priority` sections are the ones trimmed. Preserved sections are
+-  kept whole and trimmed only as a last resort if the payload is still over
+-  budget. The authoritative per-section signal is each section's `truncated`
+-  flag plus its `priority`/`estimated_tokens` — not the nominal
+-  `token_budget.truncation_order` list, which is a static hint and may not match
+-  the priority-driven trim order.
++- Non-preserved sections are trimmed in the order given by
++  `token_budget.truncation_order`; when the budget is exhausted, sections later
++  in that order are trimmed first. Preserved sections are kept whole and trimmed
++  only as a last resort if the payload is still over budget. The authoritative
++  per-section signal is each section's `truncated` flag and `estimated_tokens` —
++  there is no per-section `priority` field; the overall trim order is
++  `token_budget.truncation_order`.
+ - A trimmed section ends with the literal marker
+   `[truncated deterministically by token budget]` and has `truncated: true`.
+ - `token_budget.truncated === true` means the payload as a whole was trimmed.
+diff --git a/skills/issue-basics/SKILL.md b/skills/issue-basics/SKILL.md
+index 2460f6d7..f2940ba5 100644
+--- a/skills/issue-basics/SKILL.md
++++ b/skills/issue-basics/SKILL.md
+@@ -32,7 +32,7 @@ failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
+ 
+ | Need | Command |
+ |------|---------|
+-| Create an issue | `forge issue create --title "…" --type <task\|feature\|bug\|epic>` |
++| Create an issue | `forge issue create --title "…" --type <task\|bug\|epic\|decision>` |
+ | Inspect one issue | `forge issue show <id> [--json]` |
+ | List / filter issues | `forge issue list [--status … --type … --priority … --label …] [--json]` |
+ | Full-text search | `forge issue search "…" [--json]` |
+@@ -47,15 +47,15 @@ failure. **Gate on `ok`** — do not parse `data` until you confirm `ok:true`.
+ ## Create — the flags that matter
+ 
+ ```bash
+-forge issue create --title "Add rate limiting" --type feature \
+-  --priority P1 --label "api,security" --assignee alice \
++forge issue create --title "Add rate limiting" --type task \
++  --priority P1 --label "feature,api,security" --assignee alice \
+   --acceptance "429 returned after N req/min; covered by a test"
+ ```
+ 
+ | Flag | Meaning | Default |
+ |------|---------|---------|
+ | `--title "…"` | Human title (a bare leading positional also works) | minted id |
+-| `--type <…>` | `task` · `feature` · `bug` · `epic` · `decision` | `task` |
++| `--type <…>` | `task` · `bug` · `epic` · `decision` | `task` |
+ | `--priority <…>` | `P0`..`P4` (or bare `0`..`4`); `P0` is highest | unset |
+ | `--label "a,b"` | Comma-separated set — one flag, split on `,` (repeats do NOT accumulate) | none |
+ | `--body "…"` | Long description (`--description` is an accepted alias) | empty |
+@@ -64,8 +64,12 @@ forge issue create --title "Add rate limiting" --type feature \
+ | `--parent <id>` | Parent/epic id | none |
+ 
+ `--status` defaults to `open`. Status vocabulary: `open` · `in_progress` ·
+-`review` · `done` · `cancelled`. Epics and decisions are non-claimable (they never
+-enter the ready queue).
++`review` · `done` · `cancelled`. Unlike `--priority` and `--status` (which reject
++unknown values), `--type` is stored verbatim — a non-canonical value like
++`feature` is accepted without error but carries no kernel behaviour, so stick to
++the four canonical types. Epics and decisions are excluded from the ready queue
++(non-claimability is a queue convention, not enforcement — `forge issue claim`
++currently returns `ok:true` on them too).
+ 
+ ## Update — same field flags, plus close
+ 
+@@ -102,7 +106,7 @@ It is a canonical source you fork, not a fixed policy.
+ 
+ | Knob | Default | How to change |
+ |------|---------|---------------|
+-| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--type feature` for user-facing work, `--type bug` for regressions. |
++| **Default type** | `task` (kernel default) | Decide your create convention — e.g. always pass `--label feature` for user-facing work (feature is a label, not a canonical type), `--type bug` for regressions. |
+ | **Default priority** | unset | Adopt a house scale (e.g. new work opens at `P2`, incidents at `P0`) and always pass `--priority`. |
+ | **Fields required on create** | `--title` only | Require `--acceptance` (and `--label`/`--assignee`) on every create so issues are actionable from birth. |
+ | **Id / reference convention** | kernel-minted ids | Standardize how you cite issues in commits/PRs (e.g. `Closes <id>`) and whether you pass an explicit `--id`. |
+diff --git a/skills/kernel/SKILL.md b/skills/kernel/SKILL.md
+index e1d68a66..1d76a2fa 100644
+--- a/skills/kernel/SKILL.md
++++ b/skills/kernel/SKILL.md
+@@ -109,11 +109,12 @@ families. Run them through Bash; never hand-edit the issue store.
+ | Search / stats | `forge issue search "…"` · `forge issue stats` |
+ | Blocked work | `forge blocked` |
+ 
+-### B — Memory / knowledge (planned)
++### B — Memory / knowledge
+ 
+-`forge remember` / `forge recall` / `forge knowledge search` are roadmap items —
+-they are **not on the CLI yet**. Do not invoke them; record durable decisions as
+-issue comments (`forge comment`) until the memory verbs land.
++`forge remember <note> [--tag <label>]... [--json]` and `forge recall` are live —
++they persist and retrieve project-memory notes from a file-backed store. Only
++`forge knowledge search` is not on the CLI yet; until it lands, capture durable
++decisions as `forge remember` notes or issue comments (`forge comment`).
+ 
+ ### C — Board / planning / admin
+ 
+diff --git a/skills/plan/SKILL.md b/skills/plan/SKILL.md
+index 9ab7a2b3..d11ac85c 100644
+--- a/skills/plan/SKILL.md
++++ b/skills/plan/SKILL.md
+@@ -515,7 +515,7 @@ If the user approves a dependency mutation, apply it explicitly (only when the t
+ bash scripts/dep-guard.sh apply-decision <id> <dependent-id> <depends-on-id> "<approval rationale>"
+ ```
+ 
+-That approval step must validate with `forge issue dep cycles`, show `forge graph`, summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
++That approval step must inspect blockers with `forge issue blocked` (and `forge issue children <epic-id>` for the epic rollup), summarize `forge ready`, and persist the decision via `forge update` plus `forge comment`. The Forge Kernel is the canonical machine-readable decision record; the plan docs hold only the concise summary.
+ 
+ ### Step 6: User review
+ 
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index 41be40d8..cdabadb5 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -332,7 +332,7 @@ gh pr checks <pr-number>
+ ### Step 10: Update the Forge issue
+ 
+ ```bash
+-forge update <id> --comment "PR review complete: all issues addressed, all checks passing"
++forge comment <id> "PR review complete: all issues addressed, all checks passing"
+ forge sync
+ ```
+ 
+diff --git a/skills/rollback/SKILL.md b/skills/rollback/SKILL.md
+index 6ba7def1..6a320902 100644
+--- a/skills/rollback/SKILL.md
++++ b/skills/rollback/SKILL.md
+@@ -194,7 +194,7 @@ Rollback complete!
+ **How it works**:
+ ```bash
+ git checkout HEAD~1 -- <file1> <file2> ...
+-git commit -m "Rollback: <files>"
++git commit -m "chore: rollback <files>"
+ ```
+ 
+ **Example**:
+@@ -212,7 +212,7 @@ bunx forge rollback
+ ✓ Amended commit to preserve USER content
+ 
+ Rollback complete!
+-  Commit: q4r5s6t "Rollback: AGENTS.md, CLAUDE.md"
++  Commit: q4r5s6t "chore: rollback AGENTS.md, CLAUDE.md"
+   Files affected: 2
+ ```
+ 
+diff --git a/skills/ship/SKILL.md b/skills/ship/SKILL.md
+index 144c8e70..6413e730 100644
+--- a/skills/ship/SKILL.md
++++ b/skills/ship/SKILL.md
+@@ -95,7 +95,7 @@ bash scripts/pr-coordinator.sh stale-worktrees 2>&1 || true
+ 
+ ### Step 3: Record PR Handoff
+ ```bash
+-forge update <id> --comment "PR created: <pr-url>. Awaiting review and merge verification."
++forge comment <id> "PR created: <pr-url>. Awaiting review and merge verification."
+ forge sync
+ ```
+ 
+diff --git a/skills/sonarcloud/SKILL.md b/skills/sonarcloud/SKILL.md
+index 4f1bb8ca..9535a210 100644
+--- a/skills/sonarcloud/SKILL.md
++++ b/skills/sonarcloud/SKILL.md
+@@ -58,7 +58,7 @@ Pull code quality data from SonarCloud. Requires `SONARCLOUD_TOKEN` environment
+    - Optional filters (branch, severity, type, new-code, etc.)
+ 2. Check for `SONARCLOUD_TOKEN` environment variable. If not set, inform user.
+ 3. Check for `SONARCLOUD_ORG` environment variable or ask user for organization key.
+-4. Execute the appropriate API call using curl or the TypeScript client at `next-app/src/lib/integrations/sonarcloud.ts`
++4. Execute the appropriate API call against the SonarCloud REST API (see the API Reference section below for endpoints)
+ 5. Format and present results clearly:
+    - For issues: Group by severity/type, show file, line, message
+    - For metrics: Show as table with metric name and value
+diff --git a/skills/triage-ready/SKILL.md b/skills/triage-ready/SKILL.md
+index c66f42bf..3377726e 100644
+--- a/skills/triage-ready/SKILL.md
++++ b/skills/triage-ready/SKILL.md
+@@ -45,8 +45,10 @@ and `forge issue stats` exclusively.
+ forge issue stats --json
+ ```
+ 
+-Returns `data.counts` (open/in_progress/done/cancelled), `ready_count`,
+-`blocked_count`, and `active_claims`. A high `blocked_count` relative to
++Returns `data.counts` (`open`/`done`/`cancelled` — keys are present only when
++non-zero, and there is no `in_progress` bucket: claimed work stays in status
++`open` and is surfaced via `active_claims`), `ready_count`, `blocked_count`, and
++`active_claims`. A high `blocked_count` relative to
+ `ready_count` is your signal that dependency repair (not new work) is the real
+ bottleneck — hand off to `dependency-planning` / `backlog-hygiene`.
+ 
+@@ -99,8 +101,10 @@ or close — it is strictly read-only.
+ 
+ - **Recompute, never cache.** Readiness is derived; re-run `forge issue ready`
+   every session rather than remembering a prior "ready" verdict.
+-- **Respect non-claimable types.** Epics and decisions are `claimable:false` and
+-  will not appear in `ready`; do not hand them off as work.
++- **Respect non-claimable types.** Epics and decisions never appear in `ready`
++  (the queue surfaces only claimable types — `task`/`bug`), so do not hand them
++  off as work. There is no `claimable` field in the CLI JSON; this is behavioral,
++  not a flag you can read.
+ - **Check the envelope.** Every `--json` reply carries `ok`; on `ok:false` read
+   `error.message` and retry the query rather than guessing at state.
+ - **Read-only.** This skill runs only `stats`/`ready`/`blocked`/`show`. If a fix is
+diff --git a/skills/validate/SKILL.md b/skills/validate/SKILL.md
+index 201b1cab..81bdf743 100644
+--- a/skills/validate/SKILL.md
++++ b/skills/validate/SKILL.md
+@@ -18,7 +18,7 @@ allowed-tools: Bash, Read, Grep, Glob
+ > **Note:** Three things share the "validate" name in Forge:
+ > - `/validate` (this command): default-template validation command — rebases onto the base branch, then runs type/lint/test/security checks
+ > - `forge-preflight` (formerly forge-validate): CLI tool — checks prerequisites before a stage
+-> - `bun run check` (scripts/validate.sh): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
++> - `bun run check` (scripts/validate.js): Local quality gate — runs type/lint/test/security checks only (does NOT rebase; assumes branch is already current with the base branch)
+ 
+ Run comprehensive validation including type checking, linting, code review, security review, and tests.
+ 
+@@ -80,7 +80,7 @@ reflect the true state of what will be merged.
+ 
+ ## What This Skill Does
+ 
+-**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.sh`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
++**Quick Start**: Run `bun run check` to execute the full validation pipeline (implemented in `scripts/validate.js`). The npm script is named `check`; the workflow command is `/validate`. See individual steps below for details.
+ 
+ ### Step 1: Type Check
+ ```bash
+@@ -221,7 +221,8 @@ If any check fails:
+ forge create "Fix <issue-description>"
+ 
+ # Mark current issue as blocked
+-forge update <current-id> --status blocked --comment "Blocked by <new-issue-id>"
++forge update <current-id> --status blocked
++forge comment <current-id> "Blocked by <new-issue-id>"
+ 
+ # Output what needs fixing
+ ```
+diff --git a/skills/verify/SKILL.md b/skills/verify/SKILL.md
+index e4de09f3..3194ca0a 100644
+--- a/skills/verify/SKILL.md
++++ b/skills/verify/SKILL.md
+@@ -71,7 +71,7 @@ Check if the project has a deployment target:
+ gh run list --branch master --limit 1
+ 
+ # Check Vercel deployments for the merged PR (use number from Step 2)
+-gh pr view <number> --json deployments
++gh pr view <number> --json statusCheckRollup
+ ```
+ 
+ If deployments exist:
+-- 
+2.51.0.windows.1
+

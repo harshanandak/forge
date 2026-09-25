@@ -1,0 +1,226 @@
+From 96a643cfbcd8bb2e1e63a5ddc9e559b6624bbda6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:47:29 +0530
+Subject: [PATCH] refactor(shepherd): satisfy Sonar lifecycle limits
+
+---
+ lib/pr-monitor/auto-actions.js | 119 +++++++++++++++++++--------------
+ lib/pr-monitor/reconcile.js    | Bin 10961 -> 12690 bytes
+ 2 files changed, 70 insertions(+), 49 deletions(-)
+
+diff --git a/lib/pr-monitor/auto-actions.js b/lib/pr-monitor/auto-actions.js
+index 52ecca35..b9c46bde 100644
+--- a/lib/pr-monitor/auto-actions.js
++++ b/lib/pr-monitor/auto-actions.js
+@@ -110,16 +110,40 @@ function decideUpdateBranch(payload, opts = {}) {
+   return { should: true, reason: 'otherwise-clean-behind — only blocker is behind-base; merge base in' };
+ }
+ 
++function indexFailures(failures) {
++  const byName = new Map();
++  for (const failure of failures) {
++    if (!failure?.name || byName.has(failure.name)) continue;
++    byName.set(failure.name, {
++      conclusion: String(failure.conclusion || '').toUpperCase(),
++      url: failure.jobUrl || failure.detailsUrl || null,
++    });
++  }
++  return byName;
++}
++
++function selectRerunChecks(failingNames, failuresByName) {
++  const checks = [];
++  for (const name of failingNames) {
++    const failure = failuresByName.get(name);
++    if (!failure?.conclusion) {
++      return { reason: `required check "${name}" has no known conclusion — cannot confirm flaky, fail closed` };
++    }
++    if (REAL_FAILURE_CONCLUSIONS.has(failure.conclusion)) {
++      return { reason: `required check "${name}" is a real failure (${failure.conclusion}) — never rerun` };
++    }
++    if (!INFRA_CONCLUSIONS.has(failure.conclusion)) {
++      return { reason: `required check "${name}" conclusion ${failure.conclusion} is not classified infrastructural — fail closed` };
++    }
++    checks.push({ name, conclusion: failure.conclusion, runId: runIdFromUrl(failure.url) });
++  }
++  return { checks };
++}
++
+ /**
+  * Decide whether to re-run flaky REQUIRED checks. Fires ONLY when EVERY failing
+- * required check is infrastructural (cancelled/timed-out/stale/startup-failure)
+- * with a derivable run id, and NONE is a real FAILURE/ERROR/ACTION_REQUIRED. A
+- * single real failure, an unclassifiable conclusion, a required-failing check
+- * with no matching `failures[]` entry, or a missing run id fails the WHOLE
+- * decision closed (never rerun a genuinely-broken PR, never loop on a real bug).
+- *
+- * @param {object} payload - the `--pull --json` payload.
+- * @returns {{ should: boolean, checks: Array<{name:string,conclusion:string,runId:string|null}>, runIds: string[], reason: string }}
++ * required check is infrastructural with a derivable run id, and NONE is a real
++ * failure or an unclassifiable signal.
+  */
+ function decideRerun(payload) {
+   const empty = (reason) => ({ should: false, checks: [], runIds: [], reason });
+@@ -130,26 +154,13 @@ function decideRerun(payload) {
+   const failingNames = Array.isArray(rc.failing) ? rc.failing : [];
+   if (failingNames.length === 0) return empty('no failing required checks');
+ 
+-  const failures = Array.isArray(payload.failures) ? payload.failures : [];
+-  const conclByName = new Map();
+-  const urlByName = new Map();
+-  for (const f of failures) {
+-    if (!f || !f.name) continue;
+-    if (!conclByName.has(f.name)) {
+-      conclByName.set(f.name, String(f.conclusion || '').toUpperCase());
+-      urlByName.set(f.name, f.jobUrl || f.detailsUrl || null);
+-    }
+-  }
+-
+-  const picked = [];
+-  for (const name of failingNames) {
+-    const concl = conclByName.get(name);
+-    if (!concl) return empty(`required check "${name}" has no known conclusion — cannot confirm flaky, fail closed`);
+-    if (REAL_FAILURE_CONCLUSIONS.has(concl)) return empty(`required check "${name}" is a real failure (${concl}) — never rerun`);
+-    if (!INFRA_CONCLUSIONS.has(concl)) return empty(`required check "${name}" conclusion ${concl} is not classified infrastructural — fail closed`);
+-    picked.push({ name, conclusion: concl, runId: runIdFromUrl(urlByName.get(name)) });
+-  }
++  const selection = selectRerunChecks(
++    failingNames,
++    indexFailures(Array.isArray(payload.failures) ? payload.failures : []),
++  );
++  if (selection.reason) return empty(selection.reason);
+ 
++  const picked = selection.checks;
+   const runIds = [...new Set(picked.map((p) => p.runId).filter(Boolean))];
+   if (picked.some((item) => !item.runId)) return empty('no run id derivable from failure jobUrl — fail closed');
+   return {
+@@ -223,6 +234,36 @@ function validateAutoActionAuthority(payload) {
+   return { ok: true };
+ }
+ 
++function buildAutoActionCandidates(decision, subjectRevision) {
++  const candidates = [];
++  if (decision.updateBranch.should) {
++    candidates.push({ type: 'updateBranch', key: `updateBranch:${subjectRevision}`, subjectRevision });
++  }
++  if (decision.rerunFlaky.should) {
++    const runIds = [...decision.rerunFlaky.runIds].sort((left, right) => left.localeCompare(right));
++    for (const runId of runIds) {
++      candidates.push({
++        type: 'rerunFlaky',
++        key: `rerunFlaky:${subjectRevision}:${runId}`,
++        subjectRevision,
++        runId,
++      });
++    }
++  }
++  return candidates;
++}
++
++function selectBoundedActions(candidates, history, maxActions, maxAttempts) {
++  const actions = [];
++  for (const candidate of candidates) {
++    const prior = history.get(candidate.key);
++    if (prior && (prior.state === 'pending' || prior.state === 'applied' || prior.attempts >= maxAttempts)) continue;
++    actions.push({ ...candidate, attempt: prior ? prior.attempts + 1 : 1 });
++    if (actions.length === maxActions) break;
++  }
++  return actions;
++}
++
+ /** Select a deterministic, per-head, bounded action/retry batch. */
+ function decideBoundedAutoActions(payload, opts = {}) {
+   const closed = (status, reason) => ({ status, reason, actions: [] });
+@@ -252,28 +293,8 @@ function decideBoundedAutoActions(payload, opts = {}) {
+     return closed(AUTO_ACTION_STATUS.CONFLICT, 'payload authorizes conflicting update and rerun actions');
+   }
+ 
+-  const candidates = [];
+-  if (decision.updateBranch.should) {
+-    candidates.push({ type: 'updateBranch', key: `updateBranch:${subjectRevision}`, subjectRevision });
+-  }
+-  if (decision.rerunFlaky.should) {
+-    for (const runId of [...decision.rerunFlaky.runIds].sort()) {
+-      candidates.push({
+-        type: 'rerunFlaky',
+-        key: `rerunFlaky:${subjectRevision}:${runId}`,
+-        subjectRevision,
+-        runId,
+-      });
+-    }
+-  }
+-
+-  const actions = [];
+-  for (const candidate of candidates) {
+-    const prior = history.byKey.get(candidate.key);
+-    if (prior && (prior.state === 'pending' || prior.state === 'applied' || prior.attempts >= maxAttempts)) continue;
+-    actions.push({ ...candidate, attempt: prior ? prior.attempts + 1 : 1 });
+-    if (actions.length === maxActions) break;
+-  }
++  const candidates = buildAutoActionCandidates(decision, subjectRevision);
++  const actions = selectBoundedActions(candidates, history.byKey, maxActions, maxAttempts);
+   if (actions.length === 0) {
+     return closed(AUTO_ACTION_STATUS.UNCHANGED, candidates.length === 0
+       ? 'no safe auto-action transition'
+diff --git a/lib/pr-monitor/reconcile.js b/lib/pr-monitor/reconcile.js
+index 9061f0c48600fa2363f90686602e507a96b8e424..34ab274951fbd718c53cc679469df122ab9dbcba 100644
+GIT binary patch
+delta 3477
+zcmb_e&2QX96jzH>u-kk#Urn3M<ZElEi$Mr3yKK{xq>vJlZB~UtS{8df+cnwP?%3OC
+zX;--*RdDPG2?X2_5(iLG#UBBPLr+MRxN<@Q4jhmW@WwN<w$n`sh#X?i+xLF+-kab1
+zjqhK+Q@uN@9KK>xUHSb~)pLUoEiIQ<HkOwvrH#skmF3l?GAg1?mHyhdj;<C|?z4Wr
+zyu9&hH>YX(@nHT8II6X#TMZr0MUGqbw*3YU@v2k9)mF8EHG<8+b9Ho6rQi3=P^wNn
+zSy0=FAlRqYZ~(x)wr|wW>SQq;b;E2pwwc&yu^HAq;)E^D#(_hyokN}#U~&W7usQ8N
+z`souAo_=-ocDyJYD;%kt!TOF%>9P6Pe!b^B{qtCuG<-+zDC6{us$`b<9wicJo{wF4
+zvI-U6GmEbEX6dco_v6^(eeWHz=-s~Jvkx_0k0KR?;IK(t)U6%#a{o&MZB<d68q%hG
+z;&?<y7X7k6qsp+Gh+fw-83cW4;vkPU4a2ZnFXNWMEt-B6wdsU9dZI)&yq!SvqsN}C
+zGt|l+ry~Q2_Ixz(0nhxohpBLo)PEXW{=ZV6e$5Q4bqqak0I6^?_tuJy-Ovf?rQVYn
+zcq1+3)llTNVC;x6bn6z{yh_K1-W`-wz}ji?D@A=1^qZk~Ml6ZdGJqD^7H&bA7HtjB
+z>}hsyy4m#p=rA<+MD_-b^K?3kl4GYi^4ahi`or+sF-P7Q!Nu;I#~B4UWEtg91CaHC
+zssJklaX16IC$&5s%?r%;{&Pc*>f@H<Mh-d>pkfUhacYa%0=@&5>yd33!?$o^8ia!(
+zrvf4wY2!Hhls*rK6^$ssbdWh8lc<8Ia*7SXSb@k_4DBL+?I3lIJCR}ML^^1kLIO;N
+zFgQytI)JR#5+Ir2YQnC?z_B$tbFoDdgl*H4G!*DxBkKckSH#fL`skHsWIDoz+9;3Q
+zW}}e<Jy3Y*dBmSGY+!7}O2P{}i)h2Yc3Mgsj=Qx)oLY!&P=y>K-cB@Hf&ySOoFHi8
+z6&p=KOJQr2&BBiKL1tV5NSG?{p?_q?4iP#ui9nQu&9I2+R_lAhN|U3BFmIBD-JV3d
+z>8z}#)37i5py1(Rbh~tvHp(zK&%`Z<U>MeGIdshlU+}iKJ$K0gX}l@vYVt@pv`x6E
+zl$uA7#)<3`CJ>UPEP{SL*|Q6^b7bQhpS1NFtDj)s%R$M8+uXJ=(b?ohyas>P40srI
+zY}%EeZlYqb$XwaF3`_WVs#}Y7CiQUZH8BI@nJR(dH-owcm*pjNl4X-;slgu<Sb@tG
+zDy-NJ$)^fN3kxwLKn{G55rQWj1@o*UBY%y!qwv#-%;KO@K=oZwQRE@ZNx4M4s5o}y
+zAxV<**zw3#NHCU8at&lk`Mv4E<!3f3eh9@u@@%~ehEhmUj*P!bJFR@;l)Lb!9GYF|
+zBPWWhsF>_M`phuL;47&sb?9%?PtWm71r^UCfd>L5&z^S~j-KMjHCmauI43#u@KK=n
+z80fb%Ct(<VoXNZ{RsB)5dH$l9jJP79A!`v&lNXKv;`PukX6H|d0$>becr-Z?ujwzR
+zhgP`*l%=zqGYCE3$98ln#udZen540EGHqK+I2BZSP8*}8xryBlC<xhs&v65X4#Bco
+zE_OL2Y6Tq#gb*Zki+cfEjGEI3G11tp77w3Aw3WTk$L!mt&y8TapFOt=tV({EMhdin
+z&4282cOD7(l)X(PB1|djI5z4N>I$9;6Ag9-{hfB{+{_3y#NMOq6G(JTo5)FT2fls-
+z#(iurhIx6uM#lu5*YB;4m5-DKEx7EkZ^lQ+?p9iJMf(?wl=$ie`r-82i(PU5?KlF~
+rW3!(>zYo>{=nnwxxd-RE0vwoA0CM8=C$H=S@?Yqo7w+BB77qUnAK;vr
+
+delta 2184
+zcmZ`)O>7%Q6qc$6b)BE4X`G}@lRP)Y-351ppaRvAN&f_`sG2}P1%=dId&l)8o89f~
+zIIfjMDHjfKh}4$@7bph=7f?YJH>94pAP$rx<w8%~xxfYSX8&TR;b3d#?fZY<_vUW(
+z(L3Ls(7G00ICW+b^V&c7*T~tSs<+}hOfo2eU{>I{P<j<~yf-+CZ+GXwn9gWb&kZEd
+zf6d`lxrgG9-4pwaY0UL}iNExGh~?hmm@ho($(GN|x)sbe-8td;Ovsj5wHycU^*)Ec
+z_I^*lbNHz5<NhRu%>pi%eI7qOnD2`(CK-}BelReBe;y3b?%zI;>V0>(w0|L^X*ivk
+z&1%}BVNeyaA>1@wTsm}VnAbqh`GR}GfW)@-2E+S9qrFLN;WYylc)XuZ;MKsZ1Wc?l
+z+r;$&#F4|FbVVv{F^}WVnc~=<arGOKJ>EL>5?&w747TSGI*Jp>rU_WhYnH6mnFyeS
+zpXJYVQDHNH5A(xE=v0J-#dH|WSn)jeWeeS6#}a3=AK{bieQihM*2rMn?W>{5v}A{`
+zGUZ|NfI6v~@m&50ZVgN98L_*f&t#qpPp!)~b0w!422AS9tW^LdR|wg_wb9w53#Mtd
+zb+=`%T26xny0M6lN8j&NpVO@F4re!^2yVl13RIlti?^u%R3j-R-Dz_W>ZoXOhvv8)
+zEAL7z4XG?P=x<{>vysWv8g5l`0(Ygs9s3Hev1;o<>Dl5l(-F8G?k-;xye64V_}2Xb
+zP!dK+1@fc&CJ%xJyKF<Q6y^;1Joxy>v7-R%>ybv&6U$Ptr<BIVU_Mo<2+OV3JG_{w
+zj2P%O<ExRHEO`WH%bAm+!wk2_U?8KZ?$<m4dQ^vx4-XD+k{haG`8*-4W!{X2HCv-9
+z1oOQD_@>)fsW4$EV=cs`vRGda<JXyGmxH=R(MqJMuJd%GuWe0AI%L2axzMbzxq<07
+zg1Wx8sYIG0e-TbLd}5KDQ{z1uPEn&+#mG$4rl#N~mt|T)E1p}nxd0x3ZwaZuDC-QC
+znQ)m?_64{W@!E1o(t;;<wxMbX(E=`^CcKp}qVlHjw@E7m0xz_WGE-j3Ijc&i1x>-F
+zRdE=satkWLqY!42r5@=k2pXwR?uM?eoti&g0d|{J8&Y-Lqx?jZ2Q2(L|K=4=Ta<FQ
+zHdj=<hHJALcbRRNaKW?LZJ0d$;>%{_wX^6V=rL~;uHvIfIv2veT;#O2W@dKCqG@W7
+zMVd}H(8y&pQzd*aI!4{rB6ulz475&9$+(q5GV4x_5c*|qlLl^0485WyNRMP@awT?j
+z8pg;i`%);|-zP>6g_I;>hREAci{q!~ulDQ)FmAySU6HS8(%?%W4x^e>e|Qitfh)8R
+z^d`<sW$|x#y%eK+rw?%(XvT_kdvpNef>m~Ra^rZT@HPIM)2}P=C7UWjcu10XFjqtJ
+z1nObaRf2{}Di=u4_vx`nr7<-Uxn<jt_B3j_WB9}I(SB9j2DJ6!(y8BYX<&T6iiYn_
+zzBceQyYQRIvj-Gy!{$}YFWk1~h0oU0iBpoC)>^!|h{*p}h@oCh$=wD^7Q?Py7XUx+
+k8S3reJ3c-!c2Y$sKp=^^%swZJG`aNBR^fyBshNHM0jAu(fdBvi
+
+-- 
+2.51.0.windows.1
+

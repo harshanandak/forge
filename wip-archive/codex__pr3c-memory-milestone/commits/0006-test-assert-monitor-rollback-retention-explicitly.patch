@@ -1,0 +1,35 @@
+From 6c1930a14973b059e9bfe006145f8517a1c93b86 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 15:02:28 +0530
+Subject: [PATCH] test: assert monitor rollback retention explicitly
+
+---
+ test/kernel/broker-migration-ledger.test.js | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/test/kernel/broker-migration-ledger.test.js b/test/kernel/broker-migration-ledger.test.js
+index 7c728cb3..0d197391 100644
+--- a/test/kernel/broker-migration-ledger.test.js
++++ b/test/kernel/broker-migration-ledger.test.js
+@@ -197,11 +197,13 @@ describe('Kernel broker — migration ledger', () => {
+ 			payload: { monitor_id: 'monitor-upgrade', event_id: 'event-upgrade', sequence: 0 },
+ 		}, ['terminal'], config);
+ 		for (const statement of migrations.buildMonitorDurabilityMigration().rollback) await driver.exec(statement, config);
+-
+-		for (const table of tableNames) {
+-			const rows = await driver.queryAll(`SELECT COUNT(*) AS n FROM ${table}`, config);
+-			expect(Number(rows[0].n)).toBeGreaterThanOrEqual(0);
+-		}
++		expect(await driver.queryAll('SELECT enabled FROM memory_monitor_writer_state WHERE singleton = 1', config))
++			.toEqual([{ enabled: 0 }]);
++		const retainedTables = await driver.queryAll(
++			"SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'memory_monitor_%'",
++			config,
++		);
++		expect(retainedTables.map(row => row.name).sort()).toEqual([...tableNames].sort());
+ 		expect(Number((await driver.queryAll('SELECT COUNT(*) AS n FROM memory_monitor_events', config))[0].n)).toBe(1);
+ 		await expect(driver.appendMonitorEvent({
+ 			schema_id: 'forge.memory.monitor-event.v1', content_hash: 'b'.repeat(64), created_at: '2026-08-10T00:00:00.000Z',
+-- 
+2.51.0.windows.1
+

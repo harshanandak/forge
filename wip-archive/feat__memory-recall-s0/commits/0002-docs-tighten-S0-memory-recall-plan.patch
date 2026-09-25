@@ -1,0 +1,543 @@
+From 08b8c64a8e81c4aaf47d1e0d02c8ed9954841ab7 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 23:32:38 +0530
+Subject: [PATCH] docs: tighten S0 memory recall plan
+
+---
+ docs/work/2026-07-29-memory-recall-s0/plan.md | 213 +++++++++++-------
+ .../work/2026-07-29-memory-recall-s0/tasks.md | 134 ++++++-----
+ 2 files changed, 216 insertions(+), 131 deletions(-)
+
+diff --git a/docs/work/2026-07-29-memory-recall-s0/plan.md b/docs/work/2026-07-29-memory-recall-s0/plan.md
+index 4dc8125f..4ae85506 100644
+--- a/docs/work/2026-07-29-memory-recall-s0/plan.md
++++ b/docs/work/2026-07-29-memory-recall-s0/plan.md
+@@ -10,24 +10,26 @@ Status: awaiting plan approval
+ 
+ ## Purpose
+ 
+-Make relevant project memory reach an agent automatically and safely through Forge's existing recall and hook paths. This S0 is a reliability completion: it extends `kernel_memories`, its FTS5 index, `forge recall`, `forge prime`, and the existing `SessionStart` / `UserPromptSubmit` / `PreCompact` / `Stop` commands. It does not create another memory engine or hook family.
++Make relevant project memory reach an agent automatically and safely through Forge's existing recall and hook paths. This S0 is a reliability completion: it extends `kernel_memories`, its FTS5 index, `forge recall`, `forge prime`, and the existing Claude lifecycle commands. It does not create another memory engine, hook family, schema, or cross-project memory authority.
+ 
+ ## Reproduced release failure
+ 
+ The reported miss is reproducible on the current checkout:
+ 
+-- The user-global `C:\Users\harsha_befach\.remember` store contains recent Forge-specific summaries, including the discovery failure, but `forge recall "re-invented Forge capabilities discovery problem" --json` returned zero notes.
++- The user-global `C:\Users\harsha_befach\.remember` store contains Forge-related summaries, but `forge recall "re-invented Forge capabilities discovery problem" --json` returned zero notes.
+ - Feeding the matching holdout prompt to the real Claude `hooks memory-recall` command returned zero bytes.
+-- The existing project `.claude/settings.json` contains only an older `PreToolUse` hook. It has no Forge `SessionStart`, `UserPromptSubmit`, `PreCompact`, or `Stop` entries, so the dynamic path is not activated in this upgraded checkout.
+-- Manually invoking the real `hooks session-start --harness claude` path eventually returned valid context, but took 58,882 ms and emitted 6,525 bytes. That exceeds the documented 30-second prompt-hook safety window and proves that structural unit tests alone do not establish live delivery.
++- The existing project `.claude/settings.json` contains no Forge `SessionStart`, `UserPromptSubmit`, `PreCompact`, or `Stop` entries.
++- Manually invoking `hooks session-start --harness claude` returned valid context but took 58,882 ms and emitted 6,525 bytes, beyond the documented 30-second prompt-hook safety window.
+ 
+-The focused baseline remains green: 103 tests passed across the current memory, FTS5, hook, setup, and orientation suites. The gap is therefore installation, federation, filtering, bounded live execution, and evidence rather than a missing primitive.
++The focused baseline remains green: 103 tests passed across current memory, FTS5, hook, setup, and orientation suites. The gap is activation, filtering, bounded live execution, and proof.
++
++The external `.remember` miss is intentionally not repaired in S0. Live headings such as `## 18:30 | unknown` do not carry a machine-readable canonical repository identity. Guessing from a slug, working-directory text, or worktree parent would permit cross-project leakage. S0 proves the automatic path with project-local Kernel memory only.
+ 
+ ## Success criteria
+ 
+-1. A clean setup and a safe upgrade repair install exactly one Forge-owned Claude group for each existing lifecycle event while preserving every user-owned hook.
++1. A clean setup and safe upgrade repair install exactly one Forge-owned Claude group for each existing lifecycle event while preserving every user-owned hook.
+ 2. A project-scoped confirmed-memory holdout reaches Claude `additionalContext` without the prompt naming Forge memory or running `forge recall`.
+-3. A cross-project record, an unscoped user-global record, a superseded record, and a stale suggested record never enter automatic context.
++3. Cross-project, stale suggested, and validly superseded records never enter automatic context.
+ 4. Recall results use one normalized hit shape:
+ 
+    ```text
+@@ -40,25 +42,29 @@ The focused baseline remains green: 103 tests passed across the current memory,
+    updated_at
+    ```
+ 
+-5. `kernel_memories.key` remains `memory_id`; type, scope, trust, provenance, supersession, and timestamps are derived from existing columns/tags/source metadata. No schema migration is added.
+-6. Scope and trust eligibility are applied before relevance ranking or injection. Keys named in any current record's `supersedes` list are excluded.
+-7. Human `forge remember` records are `confirmed`. Machine, insights, auto-capture, legacy external, and `.remember` records are `suggested` unless an existing explicit confirmation tag says otherwise.
+-8. Suggested context is visibly labeled as non-authoritative and requires verification; it is never rendered as confirmed project/team truth. Stale suggested context is manual-recall only.
+-9. FTS5 produces a bounded candidate pool; BM25 remains the primary relevance signal, with source/trust weight and `updated_at` used only as deterministic secondary ordering signals.
+-10. Automatic prompt memory stays at or below 400 estimated tokens. Session-start memory stays at or below 400 estimated tokens. Default human `forge recall` output stays at or below 1,200 estimated tokens.
+-11. On a representative 1,000-record local fixture, the in-process ranked recall p95 is at most 250 ms. The real prompt hook completes within 5 seconds and SessionStart completes within 10 seconds on supported Windows and Linux test hosts; either path fails open on its own deadline.
+-12. Every real retrieval attempt records a bounded `memory.recall.observed` Kernel event with outcome (`selected`, `empty`, `filtered`, `unsupported`, `timeout`, or `error`), candidate/selected counts, selected memory ids, token estimate, source mix, trust mix, elapsed time, harness, and a capped/redacted query fingerprint. Raw prompts and memory bodies are not stored in telemetry.
+-13. The deterministic holdout corpus passes all positive cases and all isolation/negative cases. Agent-behavior use is consumed by the existing integration-tail issue `d362bd71`; this issue owns retrieval and delivery evidence only.
++5. `kernel_memories.key` remains `memory_id`; the contract is derived from existing fields. No schema migration is added.
++6. Scope, trust, staleness, already-seen, and supersession eligibility are SQL predicates applied before BM25 ordering and the candidate `LIMIT`.
++7. More than one candidate-window of stronger foreign rows cannot hide an eligible local result.
++8. Trust follows one executable precedence: explicit `trust:confirmed`; auto-capture suggested; legacy import suggested; typed machine suggested; otherwise an exact human `forge remember` string confirmed; unknown forms suggested.
++9. Type follows one executable precedence: recognized `type:` tag, then recognized structured `value.category`, then `machine-record` for other structured values. Plain human strings remain `note`.
++10. Suggested context is visibly labeled as non-authoritative and requires verification. Stale suggested context is manual-recall only.
++11. FTS5 BM25 remains primary. Source/trust weight and `updated_at` are deterministic secondary signals only.
++12. Automatic prompt memory and SessionStart memory each stay at or below 400 estimated tokens. Default human `forge recall` stays at or below 1,200 estimated tokens.
++13. On a representative 1,000-record local fixture, in-process recall p95 is at most 250 ms. The real prompt hook completes within 5 seconds and SessionStart within 10 seconds; each fails open on its own deadline.
++14. Every retrieval attempt records a bounded `memory.recall.observed` event with outcome, counts, selected ids, token estimate, aggregate source/trust mix, elapsed time, and harness.
++15. Telemetry stores no prompt text, normalized prompt terms, memory bodies, or snippets. Query correlation is omitted by default; if later proven necessary, only a keyed, locally salted fingerprint is allowed, with its key/salt absent from the event.
++16. Deterministic holdouts pass positive, isolation, authority-denial, privacy, deadline, and failure cases. Agent-behavior use remains owned by integration-tail issue `d362bd71`.
+ 
+ ## Out of scope
+ 
+ Explicitly deferred:
+ 
++- User-global `.remember` federation. A producer must first emit machine-readable canonical project identity; that producer change is not part of this issue.
+ - PostgreSQL and team ACL/server authority.
+ - Memory lifecycle state machines, CAS/history, and retention/deletion APIs.
+ - Memory entity events and outbox projectors; S0 telemetry is a non-projecting project diagnostic event.
+-- Graphiti or embeddings/reranking.
+-- Deletion replay for external source projections.
++- Graphiti, embeddings, or reranking.
++- Deletion replay for external projections.
+ - Product Suite exchange.
+ - Static typed-memory instruction projection.
+ - New dashboards or insights panels.
+@@ -69,133 +75,180 @@ Explicitly deferred:
+ Extend the existing vertical path:
+ 
+ ```text
+-project-local notes / kernel_memories / eligible .remember summaries
+-        ↓ normalize with existing fields
+-scope + trust + supersession filter
++project-local notes / kernel_memories
++        ↓ normalize from existing fields
++SQL scope + trust + staleness + supersession eligibility
+         ↓
+-existing kernel_memories_fts candidate query
++existing kernel_memories_fts MATCH
+         ↓
+-BM25 + bounded secondary weights
++BM25 order + bounded candidate limit
+         ↓
+ existing applyBudget / recall packer
+         ↓
+ forge recall / forge prime / existing Claude lifecycle hooks
+         ↓
+-bounded kernel telemetry event
++bounded privacy-safe Kernel telemetry event
+ ```
+ 
+ This is the smallest safe approach because the database, FTS5 triggers, ranker, budget helper, hook renderer, and lifecycle commands already exist.
+ 
+-## Source and projection rules
++## Project identity
++
++Use a deterministic worktree-normalized project identifier derived from the canonical real path of Git's common directory:
++
++1. Resolve Git's common directory for the active worktree.
++2. Convert it to a canonical absolute real path.
++3. Normalize separators and Windows path case.
++4. Use that stable repository-local value for project eligibility and event identity.
++
++Sibling linked worktrees share the same Git common directory, while separate repositories do not. S0 must not depend on or invent a project UUID that the current store does not provide. If this identity cannot be resolved, automatic recall fails open and reports an unsupported/error outcome without widening scope.
++
++## Source and normalization rules
+ 
+ ### `kernel_memories`
+ 
+ - `key` → `memory_id`.
+-- `value_json` → `content` (existing readable structured-value rendering applies).
+-- reserved `type:` tag → `type`; otherwise `note` for string values and `machine-record` for structured values.
+-- `scope` → explicit scope. A null scope from the current per-project Kernel store is treated as the current project only, never as global/team.
+-- `source_agent`, tags, and source refs → `provenance` and trust derivation.
++- `value_json` → `content` using the existing readable renderer.
++- Recognized reserved `type:` tag → `type`.
++- Otherwise recognized structured `value.category` → `type`.
++- Otherwise structured value → `machine-record`; plain human string → `note`.
++- Explicit `scope` remains explicit. Null scope in the current per-project Kernel store means only the resolved current project, never global or team.
++- `source_agent`, tags, and source refs → provenance and trust.
+ - `updated_at` → `updated_at`.
+-- `supersedes_json` identifies older memory ids that must be excluded before ranking.
++- `supersedes_json` participates in eligibility before ranking.
+ 
+ ### Retired `.forge/memory/notes.jsonl`
+ 
+-Keep the existing one-time project-local import. Imported records are project-scoped and retain deterministic ids/content hashes and imported provenance.
++Keep the existing one-time project-local import. Imported records retain deterministic ids/content hashes and imported provenance. They are suggested unless explicitly confirmed.
+ 
+ ### User-global `.remember`
+ 
+-Read only bounded summary surfaces (`now.md` and `recent.md`), not raw transcript logs. A section is eligible only when its heading carries the current repository slug or an equivalent normalized worktree-parent slug. `unknown`, blank, or another project is filtered before indexing. Deterministic source keys make re-import an upsert. These machine-produced records start as `suggested`; old versions are superseded rather than deleted.
++Do not read, parse, import, index, or inject it in S0. Current headings do not provide an authority-safe repository identity. Even an apparently matching slug or an `unknown` section remains ineligible. A future producer-side identity contract is a prerequisite.
++
++## Trust, type, and authority
++
++Trust derivation runs in this exact order:
++
++1. Recognized explicit `trust:confirmed` tag → confirmed.
++2. Auto-capture marker → suggested unless step 1 applied.
++3. Legacy-import provenance (`forge remember (imported)`) → suggested unless step 1 applied.
++4. Typed/structured machine record or known machine producer → suggested unless step 1 applied.
++5. Otherwise-unmarked string from exact human command source `forge remember` → confirmed.
++6. Unknown or ambiguous form → suggested.
+ 
+-## Trust, staleness, and authority
++Confirmed records can enter SessionStart and prompt context when eligible and relevant. Suggested records can enter only a separate `Suggested memory — verify before relying` prompt block when strongly relevant and fresh. They never enter confirmed/session truth. Suggested records older than the existing seven-day recent window are manual-recall only. All bodies remain provenance-fenced as untrusted data after budgeting.
+ 
+-- `confirmed`: direct human `forge remember`, or an existing explicit confirmation tag.
+-- `suggested`: insights, capture hooks, structured machine values, `.remember`, and other imported machine summaries.
+-- Confirmed records can enter SessionStart and prompt-time context when scoped and relevant.
+-- Suggested records can enter only a separate `Suggested memory — verify before relying` prompt-time block when strongly relevant and fresh. They never enter the confirmed/session truth block.
+-- Suggested records older than the current seven-day recent window are manual-recall only. Confirmed records do not expire merely due to age.
+-- All bodies remain provenance-fenced as untrusted data after budgeting.
++## SQL eligibility and ranking invariant
++
++The candidate query must perform these operations in order:
++
++1. FTS `MATCH`.
++2. Same-project/null-local scope predicate.
++3. Allowed trust and suggested-freshness predicates.
++4. Already-seen exclusion.
++5. Eligible-superseder `NOT EXISTS` predicate.
++6. `ORDER BY bm25(...)` plus deterministic secondary ordering.
++7. Candidate `LIMIT`.
++
++Eligibility cannot be applied after the limit. The regression fixture must insert at least 26 stronger foreign rows—more than the current 25-row candidate cap—and prove the eligible local match is still returned.
++
++## Supersession semantics
++
++A memory is suppressed only when another row names its `memory_id` in `supersedes_json` and that superseder is itself eligible for the same normalized project under current trust/freshness rules.
++
++- A foreign, stale, malformed, or otherwise ineligible superseder cannot suppress an eligible memory.
++- A suggested superseder may suppress an eligible suggested predecessor.
++- A suggested superseder cannot suppress a confirmed predecessor.
++- A confirmed eligible superseder may suppress either trust class.
++
++This relation is evaluated in SQL before BM25 ordering and the candidate limit. Tests must explicitly prove the denial-of-memory boundaries.
+ 
+ ## Ranking and budgets
+ 
+-1. Resolve the current project identity and allowed scope.
+-2. Query a bounded FTS5 candidate pool.
+-3. Remove wrong-scope, ineligible-trust, stale-suggested, superseded, and already-seen records.
+-4. Rank with BM25 first. Trust/source weight and recency break close/equal relevance; they cannot rescue a non-match.
+-5. Pack best-first until the existing token estimator reaches the surface budget.
+-6. Emit normalized provenance/trust labels with each selected record.
++1. Query only the SQL-eligible bounded FTS5 pool.
++2. Keep BM25 primary.
++3. Use trust/source weight, recency, and `memory_id` only as deterministic secondary ordering.
++4. Pack best-first until the existing token estimator reaches the surface budget.
++5. Skip an oversized result and continue with the next eligible hit.
++6. Emit provenance and trust labels with each selected result.
+ 
+-The numeric score floor remains measurement-driven. Holdout/shadow evidence may tighten it; implementation must not guess a new corpus-wide threshold.
++The numeric score floor remains measurement-driven; implementation must not guess a new corpus-wide threshold.
+ 
+ ## Lifecycle and harness behavior
+ 
+ | Surface | Existing owner | S0 behavior |
+ |---|---|---|
+-| Claude `SessionStart` | `lib/hook-renderer.js` + `lib/commands/hooks.js` | Install/repair the existing command, parallelize bounded source reads, inject confirmed recent memory plus the existing dispatch bootstrap. |
+-| Claude `UserPromptSubmit` | existing `memory-recall` command | Read supported hook stdin, retrieve/filter/rank/budget, emit `additionalContext`, record outcome. |
+-| Claude `PreCompact` / `Stop` | existing `capture` command | Preserve current bounded/deduped capture; captured machine summaries remain suggested. |
+-| Cursor | existing rule/CLI surfaces | No fake prompt hook. Verify bounded `forge prime`/`forge recall` fallback and record the unsupported reason. |
+-| Codex | existing `AGENTS.md`/CLI surfaces | No new global/static projection in S0. Verify bounded CLI fallback and explicit dynamic-hook unsupported evidence. |
+-| Hermes | existing CLI fallback | Same fail-open, explicit unsupported evidence; no new global hook protocol. |
++| Claude `SessionStart` | `lib/hook-renderer.js` + `lib/commands/hooks.js` | Install/repair the existing command, parallelize bounded project-local reads, and inject eligible confirmed memory plus dispatch bootstrap. |
++| Claude `UserPromptSubmit` | existing `memory-recall` command | Read supported stdin, retrieve/filter/rank/budget, emit `additionalContext`, and record outcome. |
++| Claude `PreCompact` / `Stop` | existing `capture` command | Preserve bounded/deduped capture; captured machine summaries remain suggested. |
++| Cursor | existing rule/CLI surfaces | No fake prompt hook; verify bounded `forge prime`/`forge recall` fallback and record unsupported reason. |
++| Codex | existing `AGENTS.md`/CLI surfaces | No new global/static projection; verify bounded CLI fallback and dynamic-hook unsupported evidence. |
++| Hermes | existing CLI fallback | Same fail-open unsupported evidence; no new global hook protocol. |
+ 
+ ## Telemetry
+ 
+-Reuse the non-mutating event append pattern in `lib/grounding/context-events.js`: write directly to `kernel_events` without issue CAS or projection outbox. Use `entity_type=project`, the existing project UUID, and `event_type=memory.recall.observed`.
++Reuse the non-projecting append pattern in `lib/grounding/context-events.js`: write directly to `kernel_events` without issue CAS or projection outbox. Use `entity_type=project`, the deterministic worktree-normalized project identifier, and `event_type=memory.recall.observed`.
++
++Store only bounded operational fields: outcome, counts, selected memory ids, aggregate source/trust mix, token estimate, elapsed time, and harness. Store no prompt text, meaningful/normalized prompt terms, memory bodies, or snippets.
+ 
+-Payloads are bounded and privacy-preserving. Store a query hash plus capped normalized terms, never the raw prompt; ids and aggregate mixes, never memory bodies. Telemetry failure cannot suppress a valid injection or block a prompt.
++Omit query correlation by default. If implementation evidence proves it necessary, use only a keyed HMAC-style fingerprint with a local random salt/key kept outside the event payload; never use an unkeyed hash. Tests inspect serialized events and prove absence of prompt text, meaningful terms, bodies/snippets, and fingerprint key/salt. Telemetry failure cannot suppress a valid injection or block a prompt.
+ 
+ ## Security and threat pass
+ 
+ | Risk | Applies | Mitigation |
+ |---|---|---|
+-| A01 broken access/scope | Yes | Resolve project identity first; filter null/foreign/global records before rank; never infer team scope. |
+-| A02 secrets/cryptography | Yes | Do not index raw `.remember` logs; do not persist raw prompts/bodies in telemetry; keep injected content fenced. |
+-| A03 injection | Yes | Parameterized FTS, quoted tokens, provenance fences after truncation, memory treated as data. |
+-| A04 insecure design | Yes | Confirmed/suggested boundary, fail-open deadlines, no memory authority mutation from hooks. |
+-| A05 misconfiguration | Yes | Upgrade/setup activation test and visible unsupported/disabled outcomes. |
++| A01 broken access/scope | Yes | Resolve deterministic project identity first; apply scope in SQL before rank/limit; never infer team scope. |
++| A02 secrets/cryptography | Yes | Do not read `.remember`; do not persist prompt terms or memory bodies/snippets; omit correlation unless a keyed local fingerprint is necessary. |
++| A03 injection | Yes | Parameterized FTS, quoted tokens, provenance fences after truncation, and memory treated as data. |
++| A04 insecure design | Yes | Confirmed/suggested boundary, precise supersession, fail-open deadlines, no authority mutation from hooks. |
++| A05 misconfiguration | Yes | Upgrade/setup activation tests and visible unsupported/disabled outcomes. |
+ | A06 dependencies | No new risk | No dependency is added. |
+-| A07 identity | Yes | Project UUID/slug and harness session id scope dedupe/telemetry; no team identity claims. |
+-| A08 integrity | Yes | Deterministic ids, existing FTS triggers, supersession exclusion, user hooks preserved. |
+-| A09 logging | Yes | Bounded Kernel outcome event for selection, empty, filtering, timeout, unsupported, and error. |
+-| A10 outbound requests | No | S0 recall remains local/offline. |
++| A07 identity | Yes | Canonical Git common-directory identity; no invented UUID or team identity claim. |
++| A08 integrity | Yes | Deterministic ids, existing FTS triggers, eligible supersession, user hooks preserved. |
++| A09 logging | Yes | Bounded content-free Kernel outcome event. |
++| A10 outbound requests | No | S0 remains local/offline. |
+ 
+ ## Edge and failure cases
+ 
+ - Missing or malformed hook stdin: no injection; record `empty` or `error` without prompt content.
+-- Kernel locked/unavailable: deadline, fail open, retain SessionStart dispatch bootstrap when possible.
++- Kernel locked/unavailable: deadline, fail open, preserve SessionStart dispatch bootstrap when possible.
+ - FTS unavailable/corrupt: no substring or recency fallback on automatic prompt recall.
+ - Equal scores/timestamps: deterministic `memory_id` tie-break.
+-- Oversized single result: skip it and continue to the next eligible hit; never let one record starve the budget.
++- Oversized single result: skip and continue; one record cannot starve the budget.
+ - Repeated prompt/session: existing seen-key dedupe remains bounded and project/session scoped.
+-- Worktree path: normalize to the owning repository project UUID/slug so sibling worktrees share intended project memory without crossing repositories.
+-- External summary with `unknown` project: never index or inject.
+-- Unsupported harness: no fabricated success; surface the existing fallback and record `unsupported`.
++- Worktree path: normalize the canonical Git common-directory real path so sibling worktrees share project memory without crossing repositories.
++- User-global `.remember`: never read, index, or inject in S0.
++- Unsupported harness: no fabricated success; expose fallback and record `unsupported`.
+ 
+ ## TDD scenarios
+ 
+ At minimum:
+ 
+-1. Positive confirmed holdout retrieves and injects the right memory without an explicit memory command.
+-2. Foreign-project and unscoped global records are filtered before rank.
+-3. Superseded and stale suggested records are absent even when their BM25 score is strongest.
+-4. Fresh suggested memory is separately labeled and never rendered as confirmed truth.
+-5. Token budgets hold for many hits and one oversized hit.
+-6. Missing hook installation is detected and safely repaired without changing user hooks.
+-7. Kernel/FTS/telemetry failures and deadlines fail open with visible outcome evidence.
+-8. Claude receives lifecycle context; Codex/Cursor/Hermes report their real fallback/unsupported state without fake dynamic delivery.
++1. Positive confirmed project-local holdout injects the right memory without an explicit memory command.
++2. At least 26 stronger foreign rows are filtered in SQL before BM25 order/limit, leaving the eligible local result.
++3. Foreign, stale suggested, and validly superseded records remain absent even with stronger BM25 scores.
++4. Ineligible/foreign superseders cannot erase local memory; suggested superseders cannot erase confirmed memory.
++5. Type precedence preserves recognized `type:` tags, then recognized `value.category`, then `machine-record`.
++6. Fresh suggested memory is separately labeled and never rendered as confirmed truth.
++7. Token budgets hold for many hits and one oversized hit.
++8. Missing hook installation is repaired without changing user hooks.
++9. Kernel, FTS, telemetry, and deadline failures fail open with visible content-free outcomes.
++10. Serialized telemetry contains no prompt text/terms, memory bodies/snippets, or fingerprint key/salt.
++11. Claude receives lifecycle context; Codex, Cursor, and Hermes report real fallback/unsupported state.
+ 
+ ## Ambiguity policy
+ 
+-Use the `/dev` seven-dimension decision rubric. Proceed only for local representation or test-fixture details that preserve this contract. Stop below 80% confidence or whenever a choice changes trust semantics, project scope, telemetry privacy, schema, or harness support.
++Use the `/dev` seven-dimension decision rubric. Proceed only for local representation or fixture details that preserve this contract. Stop below 80% confidence or whenever a choice changes trust, project scope, supersession, telemetry privacy, schema, or harness support.
+ 
+ ## Stop conditions
+ 
+-Stop implementation and return to plan approval if the existing columns cannot express the normalized contract, `.remember` cannot prove project scope, a solution needs a new hook/engine/schema, or latency can be met only by weakening trust/scope/provenance filtering.
++Stop implementation and return to plan approval if existing columns cannot express the normalized contract, project identity cannot be derived from Git's common directory, a solution needs a new hook/engine/schema, or latency can be met only by weakening trust/scope/provenance filtering.
+ 
+ ## Planning evidence
+ 
+ - Lease proved for actor `codex-wave-364`.
+ - Branch/worktree isolation confirmed.
+-- Conflict scan found no indexed file conflict; merge simulation against `master` was clean.
+-- `dep-guard` could not read the Kernel UUID and merge-order reports a pre-existing dependency cycle; neither was mutated in this plan.
++- Conflict scan found no indexed-file conflict; merge simulation against `master` was clean.
++- `dep-guard` could not read the Kernel UUID and merge-order reports a pre-existing dependency cycle; neither was mutated.
+ - Focused baseline: 103 passed, 0 failed.
+ - No external research was used; current Forge code, Kernel state, tests, and live machine paths were the evidence sources.
+diff --git a/docs/work/2026-07-29-memory-recall-s0/tasks.md b/docs/work/2026-07-29-memory-recall-s0/tasks.md
+index 9877b192..5d6720ff 100644
+--- a/docs/work/2026-07-29-memory-recall-s0/tasks.md
++++ b/docs/work/2026-07-29-memory-recall-s0/tasks.md
+@@ -2,52 +2,58 @@
+ 
+ Issue: `36461e50-da2e-43e4-bb4a-ae58aac08591`
+ 
+-All waves are sequential. Each task is a complete RED → GREEN vertical slice. Do not begin `/dev` until the plan is approved.
++All six tasks are sequential RED → GREEN slices. Do not begin `/dev` until the plan is approved.
+ 
+-## Wave 1 — trustworthy retrieval core
++## Wave 1 — trustworthy project-local retrieval
+ 
+-### Task 1: Normalize and filter existing Kernel memory before rank
++### Task 1: Enforce normalized SQL eligibility before rank
+ 
+ OWNS: `lib/project-memory.js`, `lib/kernel/sqlite-driver.js`, `lib/memory-recall.js`, `test/project-memory.test.js`, `test/kernel/sqlite-driver-memory.test.js`, `test/memory-recall.test.js`
+ 
+ What to implement:
+ 
+ - Return the normalized hit contract from existing `kernel_memories` fields without a migration.
+-- Resolve implicit null scope only to the current per-project store.
+-- Derive confirmed/suggested trust from `source_agent` plus existing explicit tags.
+-- Exclude foreign scope, stale suggested records, and ids named by active `supersedes` metadata before ranking/injection.
+-- Keep BM25 primary; use trust/source/updated time and `memory_id` only as deterministic secondary ordering.
++- Derive a deterministic project identifier from the normalized canonical Git common-directory real path; do not invent a project UUID.
++- Resolve null scope only to the current per-project store.
++- Lock trust precedence: explicit `trust:confirmed`; auto-capture suggested; legacy import suggested; typed machine suggested; otherwise exact human `forge remember` string confirmed; unknown suggested.
++- Lock type precedence: recognized `type:` tag, then recognized structured `value.category`, then `machine-record` for other structured values.
++- Apply same-project scope, trust, suggested freshness, already-seen, and eligible-superseder predicates in SQL before BM25 order and the candidate limit.
++- Suppress a record only through an eligible same-project superseder. A suggested superseder cannot suppress a confirmed record.
++- Keep BM25 primary; use source/trust/updated time and `memory_id` only as deterministic secondary ordering.
+ 
+ TDD steps:
+ 
+-1. Write failing tests where a foreign-scope, superseded, stale-suggested, and strong-but-ineligible row currently appears.
+-2. Run the three owned suites and confirm RED assertions identify the leaked memory ids.
+-3. Implement the smallest filter/normalizer in the existing driver/facade/selection path.
+-4. Run the owned suites and confirm eligible normalized results pass while every leak stays absent.
+-5. Commit: `feat(memory): enforce scoped trusted recall hits`
++1. Add RED fixtures with at least 26 stronger foreign rows against the current 25-row cap.
++2. Add RED denial-of-memory fixtures for a foreign/ineligible superseder and a suggested superseder targeting confirmed memory.
++3. Add RED trust/type precedence fixtures, including explicit confirmation and `value.category`.
++4. Run the three owned suites and capture leaked/crowded-out ids.
++5. Implement the smallest normalizer and SQL eligibility predicate in the existing driver/facade/selection path.
++6. Re-run owned suites; prove eligibility and supersession occur before BM25 order/limit.
++7. Commit: `feat(memory): enforce scoped recall eligibility`
+ 
+-Expected output: ranked hits contain `memory_id/type/content/scope/trust_status/provenance-or-source-ref/updated_at`; ineligible rows are absent before packing.
++Expected output: normalized ranked hits contain `memory_id/type/content/scope/trust_status/provenance-or-source-ref/updated_at`; ineligible rows cannot crowd out or erase eligible memory.
+ 
+-### Task 2: Federate only safely scoped existing sources
++### Task 2: Preserve only project-local source metadata
+ 
+ OWNS: `lib/memory/router.js`, `test/memory/router.test.js`
+ 
+ What to implement:
+ 
+-- Preserve the current project-local JSONL one-time import.
+-- Add a bounded import of `.remember/now.md` and `.remember/recent.md` through the existing router and `kernel_memories`; do not read raw logs.
+-- Require a current-project/worktree-parent slug in each source section. Skip `unknown`, blank, or foreign projects.
+-- Use deterministic `kernel_memories.key` values and existing source/tags/supersedes fields. Mark imported `.remember` material suggested.
++- Keep project-local `kernel_memories` as S0's only automatic-recall authority.
++- Preserve the current one-time project-local `.forge/memory/notes.jsonl` import.
++- Retain deterministic ids/content hashes, imported provenance, suggested trust, and type metadata needed by the normalized recall path.
++- Do not read, parse, import, index, or inject user-global `.remember`. Its headings lack canonical project identity; its producer change is deferred and not owned here.
+ 
+ TDD steps:
+ 
+-1. Write a temp-home fixture containing same-project, foreign-project, and `unknown` summary sections; show that no current importer makes the same-project record recallable.
+-2. Run `test/memory/router.test.js`; confirm the same-project expectation fails.
+-3. Extend the existing import path with bounded summary parsing and deterministic upserts.
+-4. Re-run the suite; confirm only the same-project record is indexed, repeated import is idempotent, and raw logs are untouched.
+-5. Commit: `feat(memory): ingest scoped remember summaries`
++1. Add RED tests proving the retired project-local JSONL importer retains deterministic scope/trust/type metadata.
++2. Add a denial fixture proving apparently relevant `.remember` files and `unknown` headings are not consumed.
++3. Run `test/memory/router.test.js` and capture any lost metadata.
++4. Make the smallest project-local importer adjustment, with no `.remember` reader or producer change.
++5. Re-run the suite; prove project-local import remains idempotent and user-global files remain untouched.
++6. Commit: `fix(memory): preserve project-local recall metadata`
+ 
+-Expected output: eligible source summaries are FTS5-recallable with source refs; foreign/unscoped content never reaches `kernel_memories`.
++Expected output: eligible project-local imported notes are FTS5-recallable with deterministic provenance; `.remember` never reaches `kernel_memories`.
+ 
+ ## Wave 2 — bounded reader surfaces
+ 
+@@ -64,17 +70,17 @@ What to implement:
+ 
+ TDD steps:
+ 
+-1. Add failing tests with many records, one oversized record, mixed trust, and exact token assertions.
+-2. Run the owned suites and confirm current limit-only recall exceeds the new budget/label contract.
++1. Add RED tests with many records, one oversized record, mixed trust, and exact token assertions.
++2. Run the owned suites and prove current limit-only recall exceeds the budget/label contract.
+ 3. Reuse the existing estimator/budget helper and normalized records; add no second budget implementation.
+-4. Re-run the suites; confirm every surface remains inside its budget and trust/provenance labels survive truncation.
++4. Re-run the suites; prove every surface remains inside budget and labels survive truncation.
+ 5. Commit: `feat(memory): budget and label recall surfaces`
+ 
+ Expected output: CLI/prime/digest output is bounded, provenance-fenced, and visibly distinguishes confirmed from suggested memory.
+ 
+-## Wave 3 — live lifecycle reliability and evidence
++## Wave 3 — live lifecycle reliability
+ 
+-### Task 4: Repair activation and bound the existing lifecycle commands
++### Task 4: Repair activation and bound existing lifecycle commands
+ 
+ OWNS: `lib/hook-renderer.js`, `lib/commands/hooks.js`, `lib/upgrade-safety.js`, `test/hook-renderer.test.js`, `test/hooks-session-start.test.js`, `test/hooks-memory-recall.test.js`, `test/hooks-capture.test.js`, `test/setup-hooks-config.test.js`, `test/commands/upgrade.test.js`
+ 
+@@ -82,40 +88,65 @@ What to implement:
+ 
+ - Keep the existing four Claude lifecycle events and commands.
+ - Make upgrade self-heal detect and safely merge missing Forge-owned lifecycle groups, preserving user hooks and backing up malformed config.
+-- Run independent SessionStart reads concurrently under an internal deadline; preserve the dispatch bootstrap if memory/issue reads time out.
+-- Apply a bounded prompt-recall deadline and return the real unsupported/fallback reason for non-Claude harnesses.
+-- Preserve current capture dedupe and make captures suggested.
++- Run independent SessionStart project-local reads concurrently under an internal deadline; preserve dispatch bootstrap if memory/issue reads time out.
++- Apply a bounded prompt-recall deadline and return real unsupported/fallback reasons for non-Claude harnesses.
++- Preserve capture dedupe and keep captures suggested.
+ 
+ TDD steps:
+ 
+-1. Add a fixture matching the reproduced old `.claude/settings.json` and slow fetchers; confirm missing events and over-deadline behavior fail.
+-2. Run the owned suites and capture RED evidence.
+-3. Extend the current merge/self-heal and handler paths; add no new event or command.
+-4. Re-run the suites plus subprocess timing fixtures; confirm one copy per event, user hooks preserved, prompt hook ≤5 s, SessionStart ≤10 s, and fail-open behavior.
++1. Add a fixture matching the reproduced old `.claude/settings.json` and slow fetchers.
++2. Run owned suites and capture RED for missing events and over-deadline behavior.
++3. Extend current merge/self-heal and handler paths; add no new event or command.
++4. Re-run suites plus subprocess timing fixtures; prove one copy per event, user hooks preserved, prompt hook ≤5 seconds, SessionStart ≤10 seconds, and fail-open behavior.
+ 5. Commit: `fix(memory): activate and bound lifecycle recall`
+ 
+ Expected output: upgraded and fresh Claude installs have one working dynamic path; slow sources cannot consume the harness timeout.
+ 
+-### Task 5: Persist privacy-bounded recall evidence and lock holdouts
++## Wave 4 — evidence
+ 
+-OWNS: `lib/memory-recall-events.js`, `lib/commands/hooks.js`, `test/memory-recall-events.test.js`, `test/e2e/memory-recall-holdout.test.js`, `test/fixtures/memory-recall-holdouts.json`
++### Task 5: Persist privacy-bounded recall telemetry
++
++OWNS: `lib/memory-recall-events.js`, `lib/commands/hooks.js`, `test/memory-recall-events.test.js`
+ 
+ What to implement:
+ 
+ - Reuse the direct, non-projecting Kernel event append pattern for `memory.recall.observed`.
+-- Record bounded counts, selected ids, source/trust mix, tokens, elapsed time, harness, outcome, and redacted query fingerprint.
+-- Record `selected/empty/filtered/unsupported/timeout/error` without storing raw prompts or memory bodies.
+-- Add positive, confusing-neighbor, foreign-scope, superseded, stale-suggested, duplicate, oversized, disabled-rail, and kernel-failure holdouts.
++- Use the deterministic worktree-normalized project identifier, not a nonexistent UUID.
++- Record bounded counts, selected ids, aggregate source/trust mix, tokens, elapsed time, harness, and outcome.
++- Record `selected/empty/filtered/unsupported/timeout/error` without prompt text, normalized prompt terms, memory bodies, or snippets.
++- Omit query correlation by default. If evidence requires it, use only a keyed, locally salted HMAC-style fingerprint and never persist the key/salt.
++
++TDD steps:
++
++1. Add RED event tests against the real Kernel event seam for all outcomes.
++2. Add serialized-payload absence assertions for prompt text, meaningful terms, memory bodies/snippets, and fingerprint key/salt.
++3. Confirm RED because no durable bounded Kernel outcome event exists.
++4. Implement the direct best-effort event helper and call it from the existing handler.
++5. Re-run the suite; prove telemetry failure never blocks injection or a prompt.
++6. Commit: `feat(memory): record privacy-bounded recall evidence`
++
++Expected output: every retrieval path leaves bounded operational evidence without storing query or memory content.
++
++### Task 6: Lock isolation, holdout, and performance evidence
++
++OWNS: `test/e2e/memory-recall-holdout.test.js`, `test/fixtures/memory-recall-holdouts.json`
++
++What to implement:
++
++- Add project-local positive, confusing-neighbor, 26+ stronger foreign-row, superseded, stale-suggested, ineligible-superseder, suggested-over-confirmed, duplicate, oversized, disabled-rail, and Kernel-failure holdouts.
++- Prove the automatic path from project-local `forge remember` storage to Claude `additionalContext`; do not seed or consume `.remember`.
++- Lock deterministic worktree-normalized identity and type/trust precedence in end-to-end fixtures.
++- Measure latency and token budgets without combining corpus work with telemetry implementation.
+ 
+ TDD steps:
+ 
+-1. Write failing event and end-to-end holdout tests against the real Kernel/FTS5/hook seams.
+-2. Confirm RED: current shadow JSONL has no durable Kernel outcome event and the full isolation matrix is absent.
+-3. Implement the direct event helper and call it best-effort from the existing handler.
+-4. Run holdouts twice on Windows and once in the Linux CI lane; confirm deterministic selection/omission, no raw content in events, in-process FTS p95 ≤250 ms on 1,000 records, and hook budgets/deadlines.
+-5. Commit: `test(memory): prove automatic recall and telemetry`
++1. Add end-to-end holdouts against the real Kernel/FTS5/hook seams.
++2. Confirm RED for the missing isolation matrix, especially candidate-window crowd-out and denial by an ineligible superseder.
++3. Make only fixture/harness adjustments needed to exercise completed implementation; return any product gap to its earlier owning task.
++4. Run holdouts twice on Windows and once in Linux CI; prove deterministic selection/omission, in-process FTS p95 ≤250 ms on 1,000 records, and hook budgets/deadlines.
++5. Commit: `test(memory): prove automatic recall isolation`
+ 
+-Expected output: the same implicit holdout prompt selects the confirmed project memory; negative cases stay quiet; every path leaves bounded evidence.
++Expected output: the implicit holdout prompt selects confirmed project-local Kernel memory; stronger foreign rows cannot crowd it out and ineligible superseders cannot erase it.
+ 
+ ## Validation handoff after approval
+ 
+@@ -124,8 +155,9 @@ First `/dev` focus: Task 1, because every importer and hook must consume one sco
+ Validation priorities:
+ 
+ 1. Owned focused suites after every task.
+-2. Full memory/hook/setup/upgrade suite after Wave 3.
+-3. `bun test`, lint, package/install fixture, Windows/Linux timing holdouts.
+-4. Re-read telemetry and verify no prompt/body content, foreign scope, stale suggestion, or superseded id was emitted.
++2. Full memory/hook/setup/upgrade suite after Wave 4.
++3. `bun test`, lint, package/install fixture, and Windows/Linux timing holdouts.
++4. Re-read serialized telemetry and prove it contains no prompt text/terms, memory bodies/snippets, or fingerprint key/salt.
++5. Prove no foreign scope, stale suggestion, or ineligible supersession appears in automatic context.
+ 
+-Do not implement PostgreSQL/team ACL, lifecycle/CAS, memory event/outbox projection, Graphiti, deletion replay, Product Suite exchange, static projection, or dashboards in these tasks.
++Do not implement PostgreSQL/team ACL, lifecycle/CAS, memory event/outbox projection, Graphiti, deletion replay, Product Suite exchange, static projection, dashboards, or `.remember` producer/federation work in these tasks.
+-- 
+2.51.0.windows.1
+

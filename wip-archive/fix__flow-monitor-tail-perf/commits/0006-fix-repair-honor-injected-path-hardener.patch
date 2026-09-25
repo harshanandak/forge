@@ -1,0 +1,62 @@
+From 2d3ce21410d925ff30d69543fe3578fdb5e71fe3 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:18:38 +0530
+Subject: [PATCH] fix(repair): honor injected path hardener
+
+---
+ scripts/legacy-claim-repair.js          |  3 ++-
+ test/kernel/legacy-claim-repair.test.js | 24 ++++++++++++++++++++++++
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/legacy-claim-repair.js b/scripts/legacy-claim-repair.js
+index d1f0d6e4..4c07fa78 100644
+--- a/scripts/legacy-claim-repair.js
++++ b/scripts/legacy-claim-repair.js
+@@ -75,7 +75,8 @@ async function run(options, dependencies = {}) {
+ 	const createBackup = dependencies.createVerifiedClaimRepairBackup
+ 		|| createVerifiedClaimRepairBackup;
+ 	const hardenPath = dependencies.hardenPath || hardenBackupPermissions;
+-	const hardenPaths = dependencies.hardenPaths || hardenBackupPermissionsBatch;
++	const hardenPaths = dependencies.hardenPaths
++		|| (dependencies.hardenPath ? dependencies.hardenPath.batch : hardenBackupPermissionsBatch);
+ 	const sourceDriver = openDriver(options.databasePath);
+ 	try {
+ 		if (options.mode === 'dry-run') {
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 8c4ee8b4..6046d9f6 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -308,6 +308,30 @@ describe('legacy claim repair preflight', () => {
+ 		})).rejects.toMatchObject({ code: 'CLAIM_REPAIR_BACKUP_DRIFT' });
+ 	});
+ 
++	test('uses an injected single-path hardener without pairing it with the production batch', async () => {
++		const driver = {
++			async preflightLegacyClaimRepair() { return { digest: 'a'.repeat(64) }; },
++			close() {},
++		};
++		const hardenPath = () => {};
++		let received;
++		await run({
++			mode: 'dry-run',
++			databasePath: 'source.sqlite',
++			backupPath: 'backup.sqlite',
++			observedAt: OBSERVED_AT,
++		}, {
++			openDriver: () => driver,
++			hardenPath,
++			createVerifiedClaimRepairBackup: async options => {
++				received = options;
++				return { plan_digest: 'a'.repeat(64) };
++			},
++		});
++		expect(received.hardenPath).toBe(hardenPath);
++		expect(received.hardenPaths).toBeUndefined();
++	});
++
+ 	test('classifies terminal rows before expiry and emits deterministic privacy-safe counts', async () => {
+ 		const fixture = await createFixture();
+ 		await seedMixedClaims(fixture);
+-- 
+2.51.0.windows.1
+

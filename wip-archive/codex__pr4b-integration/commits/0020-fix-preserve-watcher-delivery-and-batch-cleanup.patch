@@ -1,0 +1,129 @@
+From 58cc81b88c05716d19f1ea416cd33ea4641054af Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 03:20:06 +0530
+Subject: [PATCH] fix: preserve watcher delivery and batch cleanup
+
+---
+ lib/pr-monitor/reconcile-executor.js       | 15 +++++++++++----
+ lib/pr-monitor/watch.js                    |  4 +++-
+ test/pr-monitor/reconcile-executor.test.js | 20 ++++++++++++++++++++
+ test/pr-monitor/watch.test.js              | 22 ++++++++++++++++++++++
+ 4 files changed, 56 insertions(+), 5 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 8ad87a0b..529a9130 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -456,7 +456,6 @@ const ACTION_HANDLERS = {
+ 		s.watchers.push(entry);
+ 		s.writeClaim(entry);
+ 		if (s.persistLifecycleCheckpoint(s.watchers) === false) {
+-			verifiedKill(entry, s.ctx, 'SIGKILL');
+ 			const error = new Error('Watcher lifecycle checkpoint persistence failed');
+ 			error.code = 'PROVIDER_UNAVAILABLE';
+ 			throw error;
+@@ -571,9 +570,17 @@ async function execute(actions, ctx = {}) {
+ 		ctx, // verifiedKill reads isAlive/readClaim/kill/projectRoot off the original ctx
+ 	};
+ 
+-	for (const action of boundedActions) {
+-		const handler = ACTION_HANDLERS[action && action.type];
+-		if (handler && (await handler(action, s)) === false) break;
++	const seedIdentities = new Set(watchers.map(processIdentity));
++	try {
++		for (const action of boundedActions) {
++			const handler = ACTION_HANDLERS[action && action.type];
++			if (handler && (await handler(action, s)) === false) break;
++		}
++	} catch (error) {
++		for (const entry of s.watchers.filter(watcher => !seedIdentities.has(processIdentity(watcher)))) {
++			if (verifiedKill(entry, s.ctx, 'SIGKILL')) s.removeClaim(entry);
++		}
++		throw error;
+ 	}
+ 	return s.watchers;
+ }
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index 454607f9..0b0ae210 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -152,9 +152,11 @@ function confirmHeld(pending, contra, emit) {
+  */
+ async function runWatchPass(state, ctx, emit) {
+   const monitorPass = ctx.runMonitorPass || runMonitorPass;
+-  const { events, terminalReceiptId } = await monitorPass({
++  const journalCursor = ctx.dir ? journal.lastSeq(ctx.dir) : 0;
++  const { events: rawEvents, terminalReceiptId } = await monitorPass({
+     ...ctx, dir: ctx.dir, gather: ctx.gather, now: ctx.now, enrich: ctx.enrich, lockOpts: ctx.lockOpts,
+   });
++  const events = ctx.dir ? journal.readEventsSince(ctx.dir, journalCursor) : rawEvents;
+   if (terminalReceiptId && events.length === 0) return { terminal: true };
+   const { failures, terminal, others } = partition(events);
+   const contra = contradictions(events);
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 3fa4d036..74d351f5 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -160,6 +160,26 @@ describe('execute — watcher lifecycle', () => {
+ 		expect(killed).toEqual([[1234, 'SIGKILL']]);
+ 	});
+ 
++	test('terminates every watcher spawned earlier in a batch when a later checkpoint fails', async () => {
++		let writes = 0;
++		let nextPid = 1000;
++		const killed = [];
++		await expect(executor.execute([
++			{ type: 'startWatcher', pr: { repo: 'forge', number: 41 } },
++			{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } },
++		], {
++			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
++			spawnWatcher: () => ({ pid: nextPid++ }),
++			persistLifecycleCheckpoint: () => { writes += 1; return writes < 4; },
++			writeClaim: () => {}, removeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
++			isAlive: () => true, kill: (pid, signal) => killed.push([pid, signal]),
++		})).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++
++		expect(killed.sort((a, b) => a[0] - b[0])).toEqual([
++			[1000, 'SIGKILL'], [1001, 'SIGKILL'],
++		]);
++	});
++
+ 	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
+ 		const signals = [];
+ 		const cancelling = await executor.execute(
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index cb32f2bc..92df477b 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -60,6 +60,28 @@ describe('watchLoop', () => {
+     expect(emitted.map((e) => e.type)).toContain(T.CHECK_FAILED);
+   });
+ 
++  test('streams journal-assigned compatibility sequences instead of raw Memory sequences', async () => {
++    const compatibility = {
++      seq: 2, ts: now(), type: T.VERDICT_CHANGED, key: 'state:ready',
++      repo: 'acme-forge', pr: '1', data: {},
++    };
++    const emitted = [];
++    await runWatchPass({ pending: new Map() }, {
++      dir,
++      runMonitorPass: async () => {
++        journal.appendEvents(dir, [compatibility]);
++        return {
++          events: [
++            { ...compatibility, seq: 2, type: 'monitor.checkpoint' },
++            { ...compatibility, seq: 3 },
++          ],
++        };
++      },
++    }, event => emitted.push(event));
++
++    expect(emitted).toEqual([compatibility]);
++  });
++
+   test('emits nothing after the baseline when the snapshot never changes', async () => {
+     const emitted = [];
+     const sleeps = [];
+-- 
+2.51.0.windows.1
+

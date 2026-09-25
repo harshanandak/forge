@@ -1,0 +1,828 @@
+From e0fb42cb225abac2030070229bac533796fd9fe0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 3 Jul 2026 17:10:31 +0530
+Subject: [PATCH] fix(premerge): finish internal de-stage across generators,
+ taxonomies, and release gate
+
+Pre-merge is a documentation gate embedded in /ship and /review, not a numbered
+stage or invokable /premerge command. Completes #269 downstream where residue
+still modeled pre-merge as a stage.
+
+- agents-config.js: AGENTS.md + Cursor generators emit the embedded pre-merge
+  gate instead of a /premerge stage/command.
+- plugin-catalog.js: drop STAGES.PREMERGE; changesets/release-please move to the
+  ship stage. recommend.js: drop STAGE_NAMES.premerge.
+  harness-capability-matrix.js: drop the orphan premerge subskills.
+- release-readiness.js: widen premergeEmbeddedGateStatus to certify the de-stage
+  across the generator + taxonomy surfaces; status.js uses a slash-command probe
+  so the legacy AUTHORITATIVE_STAGE_NAMES.premerge name-map (kept for
+  currentStage='premerge' round-trip) is tolerated.
+- Regenerate the D20 bd call-site kill-list: removing STAGES.PREMERGE shifts the
+  @beads/bd install line in plugin-catalog.js (102->101), and the status.js
+  reconciliation comments shift its .beads/bd lines (+10). Deterministic,
+  line-number-only update via the module renderer.
+- Tests: flip agents-md/cursor/plugin-catalog locking assertions to the
+  embedded-gate model; add release-readiness-premerge-gate certification.
+
+Legacy round-trip preserved (status-command.test.js:190, workflow/state.test.js).
+release check: success, 0 blockers.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |   4 +
+ .../bd-call-site-kill-list.md                 |   4 +-
+ lib/agents-config.js                          |  18 +-
+ lib/commands/recommend.js                     |   1 -
+ lib/commands/status.js                        |  10 +
+ lib/harness-capability-matrix.js              |   1 -
+ lib/plugin-catalog.js                         |   7 +-
+ lib/release-readiness.js                      |  39 +-
+ test/agents-md-generation.test.js             |   6 +-
+ test/cursor-config-generation.test.js         |   5 +-
+ test/plugin-catalog.test.js                   | 438 +++++++++---------
+ test/release-readiness-premerge-gate.test.js  |  72 +++
+ 12 files changed, 349 insertions(+), 256 deletions(-)
+ create mode 100644 test/release-readiness-premerge-gate.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9df09e39..70a7570f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ The default issue backend changed from Beads to the built-in kernel store.
+ 
++### Changed
++
++- Internal de-stage of pre-merge: the AGENTS.md/Cursor workflow generator, the plugin catalog, `forge recommend`, and the harness capability matrix no longer model pre-merge as a standalone `/premerge` stage or command. Pre-merge is now consistently presented as a documentation gate embedded in `/ship` and `/review`. Legacy `currentStage: 'premerge'` workflow state still round-trips on read, and the release-readiness gate now certifies the de-stage across those generator/taxonomy surfaces.
++
+ #### Migration notes
+ 
+ - `forge list`, `forge ready`, `forge show`, `forge create`, `forge close`, and the other issue wrappers now read the kernel issue store by default; no Beads install or initialization is required.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 5d3a31ee..1efa5bff 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -26,7 +26,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/plan.js (5)
+   - lines: 208 (bd), 251 (bd), 253 (bd), 267 (bd), 288 (bd)
+ - [ ] lib/commands/status.js (10)
+-  - lines: 228 (.beads), 229 (.beads), 230 (.beads), 231 (.beads), 232 (.beads), 233 (.beads), 234 (.beads), 236 (.beads), 356 (bd), 414 (bd)
++  - lines: 238 (.beads), 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 246 (.beads), 366 (bd), 424 (bd)
+ - [ ] lib/commands/test.js (5)
+   - lines: 8 (dolt), 60 (bd), 63 (bd), 67 (bd), 70 (bd)
+ - [ ] lib/commands/validate.js (1)
+@@ -65,7 +65,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/patch-intent.js (1)
+   - lines: 26 (.beads)
+ - [ ] lib/plugin-catalog.js (1)
+-  - lines: 102 (bd)
++  - lines: 101 (bd)
+ - [ ] lib/protected-path-manifest.js (2)
+   - lines: 23 (bd), 33 (bd)
+ - [ ] lib/protected-state-surfaces.js (4)
+diff --git a/lib/agents-config.js b/lib/agents-config.js
+index bdeaead9..3fda6b99 100644
+--- a/lib/agents-config.js
++++ b/lib/agents-config.js
+@@ -158,13 +158,7 @@ Address ALL PR feedback
+ - Security scan results
+ - Resolve all threads before merge
+ 
+-### /premerge
+-Merge and cleanup
+-- Update documentation
+-- Merge pull request (squash commits)
+-- Delete feature branch
+-- Archive completed work
+-- Close Beads issues
++> **Pre-merge gate** (not a numbered stage): before merge, finish docs on the feature branch, confirm CI is green, and hand off the PR. This gate is embedded in the \`/ship\` and \`/review\` stages, not a standalone command.
+ 
+ ### /verify
+ Final documentation cross-check
+@@ -375,13 +369,7 @@ Address ALL PR feedback
+ - Security scan results
+ - **IMPORTANT**: Resolve all comment threads
+ 
+-## /premerge
+-Update docs, merge PR, cleanup
+-- Update documentation
+-- Merge pull request (squash commits only)
+-- Delete feature branch
+-- Archive completed work
+-- Close Beads issues
++> **Pre-merge gate** (not a numbered stage): before merge, finish docs on the feature branch, confirm CI is green, and hand off the PR. Embedded in the \`/ship\` and \`/review\` stages, not a standalone command.
+ 
+ ## /verify
+ Final documentation verification
+@@ -925,7 +913,7 @@ bunx forge setup --profile=team --interactive
+ /validate                    # Run all checks
+ /ship                     # Create PR
+ /review                   # Address feedback
+-/premerge          # Merge after approval
++/verify                   # Post-merge verify (pre-merge gate runs in /ship + /review)
+ \`\`\`
+ 
+ ## Configuration Options
+diff --git a/lib/commands/recommend.js b/lib/commands/recommend.js
+index 4a6a9365..c1dff5cf 100644
+--- a/lib/commands/recommend.js
++++ b/lib/commands/recommend.js
+@@ -23,7 +23,6 @@ const STAGE_NAMES = {
+   validate: 'Validate',
+   ship: 'Ship',
+   review: 'Review',
+-  premerge: 'Premerge',
+ };
+ 
+ /**
+diff --git a/lib/commands/status.js b/lib/commands/status.js
+index 841cd21d..f3f5e021 100644
+--- a/lib/commands/status.js
++++ b/lib/commands/status.js
+@@ -21,6 +21,12 @@ const {
+ } = require('../workflow/state-manager');
+ const { secureExecFileSync } = require('../shell-utils.js');
+ 
++// Lifecycle progression used for status display. Stage 8 'Merge' is the merge
++// EVENT (a human GitHub action — Forge exposes no `merge` command) that lands after
++// the review stage and before post-merge /verify. Pre-merge doc/CI/handoff checks
++// are an embedded gate inside /ship and /review, not a standalone stage, so this
++// ladder never gains a premerge stage. (AUTHORITATIVE_STAGE_NAMES below still maps
++// the legacy 'premerge' id purely so historical workflow state round-trips.)
+ const WORKFLOW_STAGES = {
+ 	1: { name: 'Fresh Start', nextCommand: 'research' },
+ 	2: { name: 'Research', nextCommand: 'research' },
+@@ -33,6 +39,10 @@ const WORKFLOW_STAGES = {
+ 	9: { name: 'Verification', nextCommand: 'verify' },
+ };
+ 
++// Legacy read-path name map. `premerge` is retired as a standalone stage (it is now
++// an embedded gate in /ship and /review) but is intentionally KEPT here so a stored
++// `currentStage: 'premerge'` from a schemaVersion 1 workflow still resolves a name
++// on read — deleting it would break upgraders (see test/status-command.test.js).
+ const AUTHORITATIVE_STAGE_NAMES = {
+ 	plan: 'Planning',
+ 	dev: 'Development',
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index 35f39bac..de6b8f33 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -175,7 +175,6 @@ const STAGE_SUBSKILLS = {
+   validate: ['validate.typecheck', 'validate.lint', 'validate.tests', 'validate.security', 'validate.context'],
+   ship: ['ship.freshness', 'ship.push', 'ship.pr_body', 'ship.pr_create'],
+   review: ['review.collect_feedback', 'review.classify', 'review.fix', 'review.resolve_threads'],
+-  premerge: ['premerge.docs', 'premerge.ci', 'premerge.handoff'],
+   verify: ['verify.merge_state', 'verify.default_branch_ci', 'verify.cleanup', 'verify.issue_close'],
+ };
+ 
+diff --git a/lib/plugin-catalog.js b/lib/plugin-catalog.js
+index 835094f3..10e0f120 100644
+--- a/lib/plugin-catalog.js
++++ b/lib/plugin-catalog.js
+@@ -27,7 +27,6 @@ const STAGES = Object.freeze({
+   VALIDATE: 'validate',
+   SHIP: 'ship',
+   REVIEW: 'review',
+-  PREMERGE: 'premerge',
+ });
+ 
+ const BUDGET_MODES = Object.freeze({
+@@ -326,12 +325,12 @@ const CATALOG = Object.freeze({
+     install: { method: 'config', cmd: 'Self-hosted (qodo.ai)' },
+   },
+ 
+-  // ── Merge ──
++  // ── Release automation (ship-time) ──
+   changesets: {
+     name: 'Changesets',
+     type: 'cli',
+     tier: 'free',
+-    stage: 'premerge',
++    stage: 'ship',
+     description: 'Versioning and changelog management',
+     detectWhen: ['file:package.json'],
+     install: { method: 'npm', cmd: 'bun add -D @changesets/cli', dev: true },
+@@ -340,7 +339,7 @@ const CATALOG = Object.freeze({
+     name: 'Release Please',
+     type: 'config',
+     tier: 'free',
+-    stage: 'premerge',
++    stage: 'ship',
+     description: 'Automated release PRs by Google',
+     detectWhen: [],
+     install: { method: 'config', cmd: 'GitHub Action (google-github-actions/release-please-action)' },
+diff --git a/lib/release-readiness.js b/lib/release-readiness.js
+index 13aafa38..7cae50f3 100644
+--- a/lib/release-readiness.js
++++ b/lib/release-readiness.js
+@@ -1798,21 +1798,31 @@ function rememberRecallBlocker(projectRoot) {
+   return null;
+ }
+ 
++// Surfaces that could re-model pre-merge as a universal stage/command, each paired
++// with the pattern that flags real stage/command residue WITHOUT tripping on the
++// legacy read-path name maps we intentionally keep (so historical
++// `currentStage='premerge'` state still round-trips):
++//   - stage/command emitters (the AGENTS.md generator, status.js) are matched on the
++//     SLASH form `/premerge`, so the legacy `premerge:` map keys (no slash) are tolerated;
++//   - the pure stage taxonomies (plugin-catalog, recommend, capability matrix) are
++//     matched on any `premerge`, since none of them carry a legacy read-path.
+ function premergeEmbeddedGateStatus(projectRoot) {
+-  return [
+-    {
+-      path: 'lib/workflow/stages.js',
+-      present: /\bpremerge\b/.test(readRepoFile(projectRoot, 'lib/workflow/stages.js')),
+-    },
+-    {
+-      path: 'lib/workflow-profiles.js',
+-      present: /['"]\/premerge['"]/.test(readRepoFile(projectRoot, 'lib/workflow-profiles.js')),
+-    },
+-    {
+-      path: 'AGENTS.md',
+-      present: /premerge/i.test(readRepoFile(projectRoot, 'AGENTS.md')),
+-    },
++  const slashCommand = /\/premerge/;
++  const anyPremerge = /premerge/i;
++  const checks = [
++    ['lib/workflow/stages.js', /\bpremerge\b/],
++    ['lib/workflow-profiles.js', /['"]\/premerge['"]/],
++    ['AGENTS.md', anyPremerge],
++    ['lib/agents-config.js', slashCommand],
++    ['lib/plugin-catalog.js', anyPremerge],
++    ['lib/commands/recommend.js', anyPremerge],
++    ['lib/harness-capability-matrix.js', anyPremerge],
++    ['lib/commands/status.js', slashCommand],
+   ];
++  return checks.map(([relPath, pattern]) => ({
++    path: relPath,
++    present: pattern.test(readRepoFile(projectRoot, relPath)),
++  }));
+ }
+ 
+ function premergeEmbeddedGateBlocker(projectRoot) {
+@@ -2005,4 +2015,7 @@ module.exports = {
+   buildReadinessReport,
+   renderBdCallSiteAuditMarkdown,
+   renderReadinessReport,
++  // Exposed for the premerge-de-stage certification tests.
++  premergeEmbeddedGateStatus,
++  premergeEmbeddedGateBlocker,
+ };
+diff --git a/test/agents-md-generation.test.js b/test/agents-md-generation.test.js
+index 264fb9f5..97265143 100644
+--- a/test/agents-md-generation.test.js
++++ b/test/agents-md-generation.test.js
+@@ -40,7 +40,11 @@ describe('AGENTS.md generation', () => {
+     expect(content.includes('/validate')).toBeTruthy();
+     expect(content.includes('/ship')).toBeTruthy();
+     expect(content.includes('/review')).toBeTruthy();
+-    expect(content.includes('/premerge')).toBeTruthy();
++    // Pre-merge is an embedded documentation gate inside /ship and /review — NOT a
++    // numbered stage or a standalone /premerge command. The generated AGENTS.md must
++    // present the gate model, never emit a /premerge stage/command.
++    expect(content.includes('/premerge')).toBeFalsy();
++    expect(content).toMatch(/pre-merge gate/i);
+     expect(content.includes('/verify')).toBeTruthy();
+ 
+     // Verify it mentions supported Tier 1 agents
+diff --git a/test/cursor-config-generation.test.js b/test/cursor-config-generation.test.js
+index 21da6c39..cf806a45 100644
+--- a/test/cursor-config-generation.test.js
++++ b/test/cursor-config-generation.test.js
+@@ -47,7 +47,10 @@ describe('Cursor config generation', () => {
+     expect(content.includes('/validate')).toBeTruthy();
+     expect(content.includes('/ship')).toBeTruthy();
+     expect(content.includes('/review')).toBeTruthy();
+-    expect(content.includes('/premerge')).toBeTruthy();
++    // Pre-merge is an embedded documentation gate inside /ship and /review — NOT a
++    // numbered stage or a standalone /premerge command.
++    expect(content.includes('/premerge')).toBeFalsy();
++    expect(content).toMatch(/pre-merge gate/i);
+     expect(content.includes('/verify')).toBeTruthy();
+   });
+ 
+diff --git a/test/plugin-catalog.test.js b/test/plugin-catalog.test.js
+index 8f203180..94d772bc 100644
+--- a/test/plugin-catalog.test.js
++++ b/test/plugin-catalog.test.js
+@@ -1,218 +1,220 @@
+-const { describe, test, expect } = require('bun:test');
+-
+-const {
+-  CATALOG,
+-  TIERS,
+-  TOOL_TYPES,
+-  STAGES,
+-  BUDGET_MODES,
+-  PREREQUISITES,
+-} = require('../lib/plugin-catalog');
+-
+-describe('plugin-catalog', () => {
+-  describe('exports', () => {
+-    test('exports CATALOG, TIERS, TOOL_TYPES, STAGES, BUDGET_MODES, PREREQUISITES', () => {
+-      expect(CATALOG).toBeTruthy();
+-      expect(TIERS).toBeTruthy();
+-      expect(TOOL_TYPES).toBeTruthy();
+-      expect(STAGES).toBeTruthy();
+-      expect(BUDGET_MODES).toBeTruthy();
+-      expect(PREREQUISITES).toBeTruthy();
+-    });
+-
+-    test('CATALOG is a frozen object', () => {
+-      expect(Object.isFrozen(CATALOG)).toBeTruthy();
+-    });
+-  });
+-
+-  describe('TIERS', () => {
+-    test('has exactly 4 values: free, free-public, free-limited, paid', () => {
+-      const values = Object.values(TIERS);
+-      expect(values.length).toBe(4);
+-      expect(values.includes('free')).toBeTruthy();
+-      expect(values.includes('free-public')).toBeTruthy();
+-      expect(values.includes('free-limited')).toBeTruthy();
+-      expect(values.includes('paid')).toBeTruthy();
+-    });
+-  });
+-
+-  describe('TOOL_TYPES', () => {
+-    test('has exactly 5 values: cli, skill, mcp, config, lsp', () => {
+-      const values = Object.values(TOOL_TYPES);
+-      expect(values.length).toBe(5);
+-      expect(values.includes('cli')).toBeTruthy();
+-      expect(values.includes('skill')).toBeTruthy();
+-      expect(values.includes('mcp')).toBeTruthy();
+-      expect(values.includes('config')).toBeTruthy();
+-      expect(values.includes('lsp')).toBeTruthy();
+-    });
+-  });
+-
+-  describe('STAGES', () => {
+-    test('covers all 7 workflow stages', () => {
+-      const values = Object.values(STAGES);
+-      expect(values.length).toBe(7);
+-      expect(values.includes('research')).toBeTruthy();
+-      expect(values.includes('plan')).toBeTruthy();
+-      expect(values.includes('dev')).toBeTruthy();
+-      expect(values.includes('validate')).toBeTruthy();
+-      expect(values.includes('ship')).toBeTruthy();
+-      expect(values.includes('review')).toBeTruthy();
+-      expect(values.includes('premerge')).toBeTruthy();
+-    });
+-  });
+-
+-  describe('BUDGET_MODES', () => {
+-    test('has exactly 5 modes', () => {
+-      const keys = Object.keys(BUDGET_MODES);
+-      expect(keys.length).toBe(5);
+-      expect(keys.includes('free')).toBeTruthy();
+-      expect(keys.includes('open-source')).toBeTruthy();
+-      expect(keys.includes('startup')).toBeTruthy();
+-      expect(keys.includes('professional')).toBeTruthy();
+-      expect(keys.includes('custom')).toBeTruthy();
+-    });
+-
+-    test('free mode includes only free tier', () => {
+-      expect(BUDGET_MODES.free.includes).toEqual(['free']);
+-    });
+-
+-    test('professional mode includes all 4 tiers', () => {
+-      const prof = BUDGET_MODES.professional.includes;
+-      expect(prof.length).toBe(4);
+-      expect(prof.includes('free')).toBeTruthy();
+-      expect(prof.includes('free-public')).toBeTruthy();
+-      expect(prof.includes('free-limited')).toBeTruthy();
+-      expect(prof.includes('paid')).toBeTruthy();
+-    });
+-  });
+-
+-  describe('catalog tool entries', () => {
+-    const validTiers = Object.values(TIERS);
+-    const validTypes = Object.values(TOOL_TYPES);
+-    const validStages = Object.values(STAGES);
+-    const validInstallMethods = ['npm', 'skills', 'add-mcp', 'config', 'lsp', 'go', 'binary'];
+-
+-    test('catalog has exactly 29 tools', () => {
+-      const toolCount = Object.keys(CATALOG).length;
+-      expect(toolCount).toBe(29);
+-    });
+-
+-    test('no duplicate tool IDs', () => {
+-      const ids = Object.keys(CATALOG);
+-      const unique = new Set(ids);
+-      expect(ids.length).toBe(unique.size);
+-    });
+-
+-    test('every tool has required fields: name, type, tier, stage, detectWhen, install', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        expect(tool.name).toBeTruthy();
+-        expect(tool.type).toBeTruthy();
+-        expect(tool.tier).toBeTruthy();
+-        expect(tool.stage).toBeTruthy();
+-        expect(Array.isArray(tool.detectWhen)).toBeTruthy();
+-        expect(tool.install).toBeTruthy();
+-      }
+-    });
+-
+-    test('every tool tier is a valid TIERS value', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        expect(validTiers.includes(tool.tier)).toBeTruthy();
+-      }
+-    });
+-
+-    test('every tool type is a valid TOOL_TYPES value', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        expect(validTypes.includes(tool.type)).toBeTruthy();
+-      }
+-    });
+-
+-    test('every tool stage is a valid STAGES value', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        expect(validStages.includes(tool.stage)).toBeTruthy();
+-      }
+-    });
+-
+-    test('every tool install has a valid method', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        expect(validInstallMethods.includes(tool.install.method)).toBeTruthy();
+-      }
+-    });
+-
+-    test('every tool detectWhen is an array', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        expect(Array.isArray(tool.detectWhen)).toBeTruthy();
+-      }
+-    });
+-
+-    test('every paid tool has >= 1 free alternative', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        if (tool.tier === 'paid') {
+-          expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
+-          const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free' || alt.tier === 'free-public');
+-          expect(hasFreeAlt).toBeTruthy();
+-        }
+-      }
+-    });
+-
+-    test('every free-limited tool has >= 1 free alternative', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        if (tool.tier === 'free-limited') {
+-          expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
+-          const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free');
+-          expect(hasFreeAlt).toBeTruthy();
+-        }
+-      }
+-    });
+-
+-    test('every MCP-type tool has mcpJustified boolean', () => {
+-      for (const [, tool] of Object.entries(CATALOG)) {
+-        if (tool.type === 'mcp') {
+-          expect(typeof tool.mcpJustified).toBe('boolean');
+-        }
+-      }
+-    });
+-
+-    test('each stage has at least 1 free tool', () => {
+-      for (const stage of validStages) {
+-        const freeTools = Object.values(CATALOG).filter(
+-          (t) => t.stage === stage && t.tier === 'free'
+-        );
+-        expect(freeTools.length >= 1).toBeTruthy();
+-      }
+-    });
+-  });
+-
+-  describe('skills restructure (PR5.5)', () => {
+-    test("parallel-web-search removed from catalog (replaced by built-in WebSearch)", () => {
+-      expect(!CATALOG['parallel-web-search']).toBeTruthy();
+-      expect(!CATALOG['parallel-ai']).toBeTruthy();
+-    });
+-
+-    test("catalog has 'sonarcloud-analysis' entry (not 'sonarcloud')", () => {
+-      expect(CATALOG['sonarcloud-analysis']).toBeTruthy();
+-      expect(!CATALOG['sonarcloud']).toBeTruthy();
+-    });
+-
+-    test("sonarcloud-analysis install.cmd references harshanandak/forge", () => {
+-      const entry = CATALOG['sonarcloud-analysis'];
+-      if (!entry) return;
+-      expect(entry.install.cmd.includes('harshanandak/forge')).toBeTruthy();
+-    });
+-
+-    test("PREREQUISITES has 'parallel-cli' entry", () => {
+-      expect(PREREQUISITES['parallel-cli']).toBeTruthy();
+-    });
+-  });
+-
+-  describe('PREREQUISITES', () => {
+-    test('each prerequisite has check command and installUrl', () => {
+-      for (const [, prereq] of Object.entries(PREREQUISITES)) {
+-        expect(prereq.check).toBeTruthy();
+-        expect(typeof prereq.check).toBe('string');
+-        // installUrl can be null (e.g. curl is usually pre-installed)
+-        expect('installUrl' in prereq).toBeTruthy();
+-      }
+-    });
+-  });
+-});
++const { describe, test, expect } = require('bun:test');
++
++const {
++  CATALOG,
++  TIERS,
++  TOOL_TYPES,
++  STAGES,
++  BUDGET_MODES,
++  PREREQUISITES,
++} = require('../lib/plugin-catalog');
++
++describe('plugin-catalog', () => {
++  describe('exports', () => {
++    test('exports CATALOG, TIERS, TOOL_TYPES, STAGES, BUDGET_MODES, PREREQUISITES', () => {
++      expect(CATALOG).toBeTruthy();
++      expect(TIERS).toBeTruthy();
++      expect(TOOL_TYPES).toBeTruthy();
++      expect(STAGES).toBeTruthy();
++      expect(BUDGET_MODES).toBeTruthy();
++      expect(PREREQUISITES).toBeTruthy();
++    });
++
++    test('CATALOG is a frozen object', () => {
++      expect(Object.isFrozen(CATALOG)).toBeTruthy();
++    });
++  });
++
++  describe('TIERS', () => {
++    test('has exactly 4 values: free, free-public, free-limited, paid', () => {
++      const values = Object.values(TIERS);
++      expect(values.length).toBe(4);
++      expect(values.includes('free')).toBeTruthy();
++      expect(values.includes('free-public')).toBeTruthy();
++      expect(values.includes('free-limited')).toBeTruthy();
++      expect(values.includes('paid')).toBeTruthy();
++    });
++  });
++
++  describe('TOOL_TYPES', () => {
++    test('has exactly 5 values: cli, skill, mcp, config, lsp', () => {
++      const values = Object.values(TOOL_TYPES);
++      expect(values.length).toBe(5);
++      expect(values.includes('cli')).toBeTruthy();
++      expect(values.includes('skill')).toBeTruthy();
++      expect(values.includes('mcp')).toBeTruthy();
++      expect(values.includes('config')).toBeTruthy();
++      expect(values.includes('lsp')).toBeTruthy();
++    });
++  });
++
++  describe('STAGES', () => {
++    test('covers the 6 workflow stages (pre-merge is an embedded gate, not a stage)', () => {
++      const values = Object.values(STAGES);
++      expect(values.length).toBe(6);
++      expect(values.includes('research')).toBeTruthy();
++      expect(values.includes('plan')).toBeTruthy();
++      expect(values.includes('dev')).toBeTruthy();
++      expect(values.includes('validate')).toBeTruthy();
++      expect(values.includes('ship')).toBeTruthy();
++      expect(values.includes('review')).toBeTruthy();
++      // Pre-merge was retired as a standalone stage and re-homed as a gate embedded
++      // in ship/review, so it must NOT appear in the catalog stage taxonomy.
++      expect(values.includes('premerge')).toBeFalsy();
++    });
++  });
++
++  describe('BUDGET_MODES', () => {
++    test('has exactly 5 modes', () => {
++      const keys = Object.keys(BUDGET_MODES);
++      expect(keys.length).toBe(5);
++      expect(keys.includes('free')).toBeTruthy();
++      expect(keys.includes('open-source')).toBeTruthy();
++      expect(keys.includes('startup')).toBeTruthy();
++      expect(keys.includes('professional')).toBeTruthy();
++      expect(keys.includes('custom')).toBeTruthy();
++    });
++
++    test('free mode includes only free tier', () => {
++      expect(BUDGET_MODES.free.includes).toEqual(['free']);
++    });
++
++    test('professional mode includes all 4 tiers', () => {
++      const prof = BUDGET_MODES.professional.includes;
++      expect(prof.length).toBe(4);
++      expect(prof.includes('free')).toBeTruthy();
++      expect(prof.includes('free-public')).toBeTruthy();
++      expect(prof.includes('free-limited')).toBeTruthy();
++      expect(prof.includes('paid')).toBeTruthy();
++    });
++  });
++
++  describe('catalog tool entries', () => {
++    const validTiers = Object.values(TIERS);
++    const validTypes = Object.values(TOOL_TYPES);
++    const validStages = Object.values(STAGES);
++    const validInstallMethods = ['npm', 'skills', 'add-mcp', 'config', 'lsp', 'go', 'binary'];
++
++    test('catalog has exactly 29 tools', () => {
++      const toolCount = Object.keys(CATALOG).length;
++      expect(toolCount).toBe(29);
++    });
++
++    test('no duplicate tool IDs', () => {
++      const ids = Object.keys(CATALOG);
++      const unique = new Set(ids);
++      expect(ids.length).toBe(unique.size);
++    });
++
++    test('every tool has required fields: name, type, tier, stage, detectWhen, install', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        expect(tool.name).toBeTruthy();
++        expect(tool.type).toBeTruthy();
++        expect(tool.tier).toBeTruthy();
++        expect(tool.stage).toBeTruthy();
++        expect(Array.isArray(tool.detectWhen)).toBeTruthy();
++        expect(tool.install).toBeTruthy();
++      }
++    });
++
++    test('every tool tier is a valid TIERS value', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        expect(validTiers.includes(tool.tier)).toBeTruthy();
++      }
++    });
++
++    test('every tool type is a valid TOOL_TYPES value', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        expect(validTypes.includes(tool.type)).toBeTruthy();
++      }
++    });
++
++    test('every tool stage is a valid STAGES value', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        expect(validStages.includes(tool.stage)).toBeTruthy();
++      }
++    });
++
++    test('every tool install has a valid method', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        expect(validInstallMethods.includes(tool.install.method)).toBeTruthy();
++      }
++    });
++
++    test('every tool detectWhen is an array', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        expect(Array.isArray(tool.detectWhen)).toBeTruthy();
++      }
++    });
++
++    test('every paid tool has >= 1 free alternative', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        if (tool.tier === 'paid') {
++          expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
++          const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free' || alt.tier === 'free-public');
++          expect(hasFreeAlt).toBeTruthy();
++        }
++      }
++    });
++
++    test('every free-limited tool has >= 1 free alternative', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        if (tool.tier === 'free-limited') {
++          expect(tool.alternatives && tool.alternatives.length >= 1).toBeTruthy();
++          const hasFreeAlt = tool.alternatives.some((alt) => alt.tier === 'free');
++          expect(hasFreeAlt).toBeTruthy();
++        }
++      }
++    });
++
++    test('every MCP-type tool has mcpJustified boolean', () => {
++      for (const [, tool] of Object.entries(CATALOG)) {
++        if (tool.type === 'mcp') {
++          expect(typeof tool.mcpJustified).toBe('boolean');
++        }
++      }
++    });
++
++    test('each stage has at least 1 free tool', () => {
++      for (const stage of validStages) {
++        const freeTools = Object.values(CATALOG).filter(
++          (t) => t.stage === stage && t.tier === 'free'
++        );
++        expect(freeTools.length >= 1).toBeTruthy();
++      }
++    });
++  });
++
++  describe('skills restructure (PR5.5)', () => {
++    test("parallel-web-search removed from catalog (replaced by built-in WebSearch)", () => {
++      expect(!CATALOG['parallel-web-search']).toBeTruthy();
++      expect(!CATALOG['parallel-ai']).toBeTruthy();
++    });
++
++    test("catalog has 'sonarcloud-analysis' entry (not 'sonarcloud')", () => {
++      expect(CATALOG['sonarcloud-analysis']).toBeTruthy();
++      expect(!CATALOG['sonarcloud']).toBeTruthy();
++    });
++
++    test("sonarcloud-analysis install.cmd references harshanandak/forge", () => {
++      const entry = CATALOG['sonarcloud-analysis'];
++      if (!entry) return;
++      expect(entry.install.cmd.includes('harshanandak/forge')).toBeTruthy();
++    });
++
++    test("PREREQUISITES has 'parallel-cli' entry", () => {
++      expect(PREREQUISITES['parallel-cli']).toBeTruthy();
++    });
++  });
++
++  describe('PREREQUISITES', () => {
++    test('each prerequisite has check command and installUrl', () => {
++      for (const [, prereq] of Object.entries(PREREQUISITES)) {
++        expect(prereq.check).toBeTruthy();
++        expect(typeof prereq.check).toBe('string');
++        // installUrl can be null (e.g. curl is usually pre-installed)
++        expect('installUrl' in prereq).toBeTruthy();
++      }
++    });
++  });
++});
+diff --git a/test/release-readiness-premerge-gate.test.js b/test/release-readiness-premerge-gate.test.js
+new file mode 100644
+index 00000000..e4832660
+--- /dev/null
++++ b/test/release-readiness-premerge-gate.test.js
+@@ -0,0 +1,72 @@
++'use strict';
++
++// Certifies the premerge-embedded-gate blocker actually scans the surfaces where
++// pre-merge could be re-modeled as a standalone stage/command. Pre-D20 the gate
++// looked at only 3 files and read GREEN while residue lived in the AGENTS.md
++// generator (agents-config.js) and the stage taxonomies (plugin-catalog.js,
++// recommend.js, capability-matrix). It must also tolerate the LEGACY read-path
++// name maps that stay for round-tripping historical `currentStage='premerge'`.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { premergeEmbeddedGateBlocker } = require('../lib/release-readiness');
++
++let root;
++
++function write(rel, content) {
++  const full = path.join(root, rel);
++  fs.mkdirSync(path.dirname(full), { recursive: true });
++  fs.writeFileSync(full, content);
++}
++
++beforeEach(() => {
++  root = fs.mkdtempSync(path.join(os.tmpdir(), 'premerge-gate-'));
++});
++afterEach(() => {
++  fs.rmSync(root, { recursive: true, force: true });
++});
++
++describe('premerge embedded-gate certification', () => {
++  test('a clean repo (no premerge stage/command residue) has no blocker', () => {
++    expect(premergeEmbeddedGateBlocker(root)).toBeNull();
++  });
++
++  test('residue in the AGENTS.md generator (agents-config.js) is caught', () => {
++    write('lib/agents-config.js', 'const t = `\n### /premerge\nMerge and cleanup\n`;\n');
++    const blocker = premergeEmbeddedGateBlocker(root);
++    expect(blocker).not.toBeNull();
++    expect(blocker.evidence.map(e => e.path)).toContain('lib/agents-config.js');
++  });
++
++  test('residue in the plugin-catalog stage taxonomy is caught', () => {
++    write('lib/plugin-catalog.js', "const STAGES = { PREMERGE: 'premerge' };\n");
++    const blocker = premergeEmbeddedGateBlocker(root);
++    expect(blocker).not.toBeNull();
++    expect(blocker.evidence.map(e => e.path)).toContain('lib/plugin-catalog.js');
++  });
++
++  test('residue in recommend.js and the capability matrix is caught', () => {
++    write('lib/commands/recommend.js', "const STAGE_NAMES = { premerge: 'Premerge' };\n");
++    write('lib/harness-capability-matrix.js', "const S = { premerge: ['premerge.docs'] };\n");
++    const paths = premergeEmbeddedGateBlocker(root).evidence.map(e => e.path);
++    expect(paths).toContain('lib/commands/recommend.js');
++    expect(paths).toContain('lib/harness-capability-matrix.js');
++  });
++
++  test('a re-introduced /premerge command in status.js is caught', () => {
++    write('lib/commands/status.js', "const next = '/premerge';\n");
++    const blocker = premergeEmbeddedGateBlocker(root);
++    expect(blocker).not.toBeNull();
++    expect(blocker.evidence.map(e => e.path)).toContain('lib/commands/status.js');
++  });
++
++  test('the LEGACY status.js name map (premerge: ...) is tolerated — not a stage/command', () => {
++    // AUTHORITATIVE_STAGE_NAMES.premerge is load-bearing for legacy round-trip and
++    // must NOT trip the gate: it is a name map key (no slash-command), not a stage.
++    write('lib/commands/status.js', "const AUTHORITATIVE_STAGE_NAMES = { premerge: 'Premerge' };\n");
++    expect(premergeEmbeddedGateBlocker(root)).toBeNull();
++  });
++});
+-- 
+2.51.0.windows.1
+

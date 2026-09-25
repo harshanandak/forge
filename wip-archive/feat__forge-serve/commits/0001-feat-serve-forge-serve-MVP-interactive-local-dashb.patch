@@ -1,0 +1,1132 @@
+From 318d5119ca9521107d6e4fabaf3fb9bb32f6a699 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 17:05:41 +0530
+Subject: [PATCH] feat(serve): forge serve MVP -- interactive local dashboard
+
+Add `forge serve [--port N] [--open]`: a loopback-only companion that turns
+the static dashboard into an interactive one. The browser never mutates the
+kernel directly -- it POSTs the SAME forge verbs the CLI/agents use to
+/api/mutation, which relays them IN-PROCESS through the existing command
+dispatch (resolveCommandOpts + executeCommand). All validation stays in the
+verb/broker handlers; the server adds no parallel validator and never spawns
+an agent.
+
+Endpoints: GET /health (capability probe), GET /data.json (baked snapshot,
+background-refreshed; a mutation regenerates before responding), POST
+/api/mutation ({token,verb,args}). Verbs: issue.create/update/close/comment
+(-> broker commitGuardedAccept) + gate + role.
+
+Security: binds 127.0.0.1 only; per-run random token injected into the served
+page URL fragment and REQUIRED on every POST (constant-time compare); POST
+rejects non-loopback Host / foreign Origin (CSRF fence); token dies with the
+process, no accounts/cloud/daemon.
+
+Dashboard (web/dashboard/app.js) uses the DataSource seam to flip
+SNAPSHOT->LIVE on /health: Add-issue modal, per-issue status/priority/close/
+comment controls, and a Controls panel that RUNs gate/role while still
+offering copy. Degrades to read + copy-as-command on file:// or no server.
+
+Tested without leaving a server hanging: in-process handler routing (verb
+allowlist, real gate/role rejection + success) plus one bounded server smoke
+on port 0 that closes in afterEach. serve.js passes sonarjs cognitive-
+complexity < 15; ESLint --max-warnings 0 clean.
+
+Issue: 9f2f0320-afea-49df-98a4-cf9c5d07f0cf
+Epic: 363954dd
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-13-forge-serve/design.md | 102 +++++
+ lib/commands/_manifest.js                  |   1 +
+ lib/commands/serve.js                      | 421 +++++++++++++++++++++
+ test/commands/serve.test.js                | 169 +++++++++
+ web/dashboard/app.js                       | 268 ++++++++++++-
+ web/dashboard/styles.css                   |  18 +
+ 6 files changed, 975 insertions(+), 4 deletions(-)
+ create mode 100644 docs/work/2026-07-13-forge-serve/design.md
+ create mode 100644 lib/commands/serve.js
+ create mode 100644 test/commands/serve.test.js
+
+diff --git a/docs/work/2026-07-13-forge-serve/design.md b/docs/work/2026-07-13-forge-serve/design.md
+new file mode 100644
+index 00000000..81a33fbc
+--- /dev/null
++++ b/docs/work/2026-07-13-forge-serve/design.md
+@@ -0,0 +1,102 @@
++# `forge serve` — interactive local dashboard (Tier-1 MVP)
++
++Issue: `9f2f0320-afea-49df-98a4-cf9c5d07f0cf` (`[cockpit] Tier-2 — minimal forge serve config-intent write server`)
++Epic: `363954dd`. Grounds on `docs/work/2026-07-10-forge-dashboard/interactive-two-tier-design.md`.
++
++## Core principle
++
++**Dashboard = thin trigger. `forge` verbs = mutation engine. Server = dumb relay.**
++
++The browser never mutates the kernel directly. It fires the *same* `forge` verbs the
++CLI and agents use, through an in-process relay. **All validation lives in the verb /
++broker handlers** — the server adds no parallel validator. Zero agent/token cost: the
++server only reads SQLite/kernel + writes via the broker; it never spawns an agent.
++
++## Command
++
++`forge serve [--port N] [--open]` — `lib/commands/serve.js`.
++
++1. **Static host** for `web/dashboard/` over `http://127.0.0.1:<port>` (loopback only).
++   A secure context, so the page may `fetch` + (future) `EventSource`, unlike `file://`.
++   Missing generated bundles (`snapshot.js`, `docs.js`) return an empty `200` stub so
++   the page cleanly falls to the live `data.json` path with no console noise.
++2. **`GET /data.json`** — current snapshot. Re-runs `generate-snapshot.mjs` on demand
++   (debounced ~2s cache; falls back to the baked `data.json` if generation fails), so a
++   refetch after a mutation reflects the change.
++3. **`GET /health`** — capability probe. `{ ok, forge_serve:true, version }`. Lets
++   `app.js` flip `SNAPSHOT → LIVE`.
++4. **`POST /api/mutation`** — the write path. Body `{ token, verb, args }`.
++
++## Mutation routing (in-process, no shelling out)
++
++The server reuses the CLI's own dispatch, so validation is never duplicated:
++
++- `resolveCommandOpts(command, args, { projectRoot, env })` (`lib/commands/_resolve-command-opts.js`)
++  — assembles the kernel driver + migrated broker exactly as `bin/forge.js` does.
++- `executeCommand(commands, command, args, {}, projectRoot, { commandOpts })`
++  (`lib/commands/_registry.js`) — invokes the real handler.
++
++`verb` is whitelisted → mapped to a forge command; `args` is a string[] (built by the
++browser as an argv array). No shell is ever invoked, so issue/comment bodies are inert
++user data (the broker stores them; nothing is exec'd).
++
++| `verb`           | forge command | Handler / validation source |
++|------------------|---------------|------------------------------|
++| `issue.create`   | `create`      | `_issue.js` → broker `commitGuardedAccept` |
++| `issue.update`   | `update`      | `_issue.js` → broker |
++| `issue.close`    | `close`       | `_issue.js` → broker |
++| `issue.comment`  | `comment`     | `_issue.js` → broker |
++| `gate`           | `gate`        | `gate.js` (unknown/locked gate rejection) |
++| `role`           | `role`        | `role.js` (unknown role/skill rejection) |
++
++Issue verbs append `--json` so the handler returns the machine envelope. The handler's
++own rejection path (`{ success:false, error }` or the `forge.issue.error.v1` envelope) is
++returned verbatim as JSON — the server never reinterprets a validation failure.
++
++Hooks / skills-as-controllable (`forge control`) are out of scope; only the existing
++`gate` + `role` verbs are wired.
++
++## Security model
++
++- **Loopback bind only:** `server.listen(port, '127.0.0.1')`. Never binds a public iface.
++- **Per-run token:** minted with `crypto.randomBytes(32)` at startup, dies with the
++  process. No accounts, no cloud, no daemon.
++- **Token injected into the served page URL fragment** (`http://127.0.0.1:PORT/#token=…`).
++  `app.js` reads `location.hash`; a fragment is never sent to the server, never logged,
++  never in a `Referer` — so a foreign origin cannot learn it.
++- **Every `POST /api/mutation` requires the token** (constant-time compare). Missing/wrong
++  token → `403`. This is the CSRF / other-origin fence: a cross-site page can neither read
++  our fragment nor forge the token.
++- **Host/Origin fence:** POST rejects any request whose `Host` is not `127.0.0.1`/`localhost`
++  or whose `Origin` (when present) is not our loopback origin → `403`.
++- Reads (`/data.json`, `/health`, static) are unauthenticated but loopback-only.
++
++## Dashboard write UI (`web/dashboard/app.js`)
++
++Uses the existing `DataSource` seam (~L13-32) for capability detect + source switch — no
++churn to the render pipeline.
++
++- On boot, probe `GET /health`. Success → `LIVE` (badge `LIVE`, write UI enabled); else
++  `SNAPSHOT` (today's read + copy-as-command, badge `SNAPSHOT`). `file://` always SNAPSHOT.
++- **LIVE affordances:**
++  - **Add issue** button (topbar) → modal form (title / type / priority / body) → POST
++    `issue.create` → refetch `data.json`.
++  - **Issue detail** status + priority `<select>` controls → POST `issue.update` → refetch.
++  - **Cockpit copy-command buttons upgrade to RUN** (POST the `gate`/`role` verb) while
++    STILL offering copy.
++- After any successful POST, refetch `data.json` to reflect the change. SSE live-stream is
++  a fast-follow, not built here.
++
++## Anti-hang test strategy
++
++- Handler routing tested by **direct in-process calls** (map verb → command, assert the
++  handler's result/rejection) — no socket.
++- One **bounded server smoke**: bind `127.0.0.1:0` (ephemeral port), issue one `fetch`
++  per endpoint, then `server.close()` in a `finally`/`afterEach`. Never leave a listener
++  open. Wrapped so a hang can't strand the suite.
++
++## Out of scope (fast-follow)
++
++SSE `/events`, multi-project registry (`~/.forge/projects.json`), Phase-2 authoritative
++server, `forge control` for hooks/skills, self-scoped-only enforcement (server is
++solo/loopback so all whitelisted verbs are allowed locally).
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index f202fc48..b049600d 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -64,6 +64,7 @@ const commands = [
+   { file: "release.js", module: require("./release") },
+   { file: "remember.js", module: require("./remember") },
+   { file: "role.js", module: require("./role") },
++  { file: "serve.js", module: require("./serve") },
+   { file: "setup.js", module: require("./setup") },
+   { file: "shepherd.js", module: require("./shepherd") },
+   { file: "ship.js", module: require("./ship") },
+diff --git a/lib/commands/serve.js b/lib/commands/serve.js
+new file mode 100644
+index 00000000..c4b0c3fb
+--- /dev/null
++++ b/lib/commands/serve.js
+@@ -0,0 +1,421 @@
++'use strict';
++
++/**
++ * `forge serve [--port N] [--open]`
++ *
++ * A minimal LOCAL loopback companion that turns the static dashboard
++ * (web/dashboard/) into an interactive one. It is a DUMB RELAY: the browser
++ * never mutates the kernel directly — it fires the SAME `forge` verbs the CLI
++ * and agents use, in-process, through the existing command dispatch. ALL
++ * validation lives in the verb/broker handlers; this server adds no parallel
++ * validator.
++ *
++ * Endpoints:
++ *   GET  /health        — capability probe (app.js flips SNAPSHOT -> LIVE).
++ *   GET  /data.json     — current snapshot (regenerated on demand, debounced).
++ *   POST /api/mutation  — the write path. Body { token, verb, args }.
++ *   GET  /* (static)    — the dashboard assets.
++ *
++ * Security model (see docs/work/2026-07-13-forge-serve/design.md):
++ *   - Binds 127.0.0.1 ONLY (never a public interface).
++ *   - Per-run random token, minted at startup, injected into the served page
++ *     URL fragment (#token=…), REQUIRED on every POST (constant-time compare).
++ *   - POST also rejects any non-loopback Host / foreign Origin (CSRF fence).
++ *   - No accounts, no cloud, no daemon; the token dies with the process.
++ *   - Zero agent/token cost: reads SQLite/kernel + writes via the broker; it
++ *     NEVER spawns an agent.
++ */
++
++const http = require('node:http');
++const fs = require('node:fs');
++const path = require('node:path');
++const crypto = require('node:crypto');
++const { spawn } = require('node:child_process');
++
++// NOTE: `_registry` / `_resolve-command-opts` are require()d LAZILY at call time
++// (inside routeMutation / registry), never destructured at module top. serve.js
++// is listed in the static command manifest, so `_manifest` require()s serve.js
++// while serve.js is itself mid-load requiring `_registry` — a top-level
++// destructure would capture `_registry`'s not-yet-assigned exports (undefined).
++// A lazy require resolves the fully-initialized module every time.
++
++const COMMANDS_DIR = __dirname;
++const DEFAULT_PORT = 8730;
++const MAX_BODY = 1024 * 1024; // 1 MB — issue/comment bodies are user data.
++const SNAPSHOT_TTL_MS = 3000; // debounce background regeneration.
++const GEN_TIMEOUT_MS = 30000;
++
++// verb -> forge command. Every verb is an EXISTING handler; issue verbs append
++// --json so the handler returns the machine envelope. No shell is ever invoked,
++// so issue/comment bodies are inert user data (the broker stores them).
++const VERB_MAP = {
++  'issue.create': { command: 'create', json: true },
++  'issue.update': { command: 'update', json: true },
++  'issue.close': { command: 'close', json: true },
++  'issue.comment': { command: 'comment', json: true },
++  gate: { command: 'gate', json: false },
++  role: { command: 'role', json: false },
++};
++
++const MIME = {
++  '.html': 'text/html; charset=utf-8',
++  '.js': 'text/javascript; charset=utf-8',
++  '.mjs': 'text/javascript; charset=utf-8',
++  '.css': 'text/css; charset=utf-8',
++  '.json': 'application/json; charset=utf-8',
++  '.svg': 'image/svg+xml',
++  '.map': 'application/json; charset=utf-8',
++};
++
++// Generated bundles that index.html <script>-loads. When absent (a fresh
++// worktree gitignores them), return an empty 200 so the page cleanly falls to
++// the live /data.json path with no console error.
++const OPTIONAL_BUNDLES = new Set(['/snapshot.js', '/docs.js']);
++
++// ---------------------------------------------------------------------------
++// Arg parsing
++// ---------------------------------------------------------------------------
++
++function parseServeArgs(args = [], flags = {}) {
++  let port = Number(flags.port) || DEFAULT_PORT;
++  let open = Boolean(flags.open);
++  for (let i = 0; i < args.length; i += 1) {
++    const token = args[i];
++    if (token === '--open') open = true;
++    else if (token === '--port') { port = Number(args[i + 1]) || port; i += 1; }
++    else if (typeof token === 'string' && token.startsWith('--port=')) {
++      port = Number(token.slice('--port='.length)) || port;
++    }
++  }
++  return { port, open };
++}
++
++// ---------------------------------------------------------------------------
++// Security helpers
++// ---------------------------------------------------------------------------
++
++function mintToken() {
++  return crypto.randomBytes(32).toString('hex');
++}
++
++function verifyToken(provided, expected) {
++  if (typeof provided !== 'string' || provided.length !== expected.length) return false;
++  return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
++}
++
++function hostname(hostHeader) {
++  if (typeof hostHeader !== 'string') return '';
++  // Strip the :port; handle bare IPv6 defensively.
++  const lastColon = hostHeader.lastIndexOf(':');
++  const host = lastColon > hostHeader.indexOf(']') ? hostHeader.slice(0, lastColon) : hostHeader;
++  return host.replace(/^\[|\]$/g, '').toLowerCase();
++}
++
++const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
++
++function isLoopbackRequest(req) {
++  if (!LOOPBACK_HOSTS.has(hostname(req.headers.host))) return false;
++  const origin = req.headers.origin;
++  if (typeof origin === 'string' && origin.length > 0) {
++    try {
++      if (!LOOPBACK_HOSTS.has(new URL(origin).hostname.toLowerCase())) return false;
++    } catch {
++      return false;
++    }
++  }
++  return true;
++}
++
++// ---------------------------------------------------------------------------
++// Response helpers
++// ---------------------------------------------------------------------------
++
++function sendJson(res, status, payload) {
++  const body = JSON.stringify(payload);
++  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
++  res.end(body);
++}
++
++function sendText(res, status, text, contentType = 'text/plain; charset=utf-8') {
++  res.writeHead(status, { 'Content-Type': contentType });
++  res.end(text);
++}
++
++function readBody(req, limit = MAX_BODY) {
++  return new Promise((resolve, reject) => {
++    let size = 0;
++    const chunks = [];
++    req.on('data', (chunk) => {
++      size += chunk.length;
++      if (size > limit) {
++        reject(new Error('request body too large'));
++        req.destroy();
++        return;
++      }
++      chunks.push(chunk);
++    });
++    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
++    req.on('error', reject);
++  });
++}
++
++// ---------------------------------------------------------------------------
++// Mutation relay — reuse the CLI's own dispatch, never a parallel validator.
++// ---------------------------------------------------------------------------
++
++let SHARED_REGISTRY = null;
++function registry(deps) {
++  if (deps && deps.registry) return deps.registry;
++  const loadCommands = deps.loadCommands || require('./_registry').loadCommands;
++  if (!SHARED_REGISTRY) SHARED_REGISTRY = loadCommands(COMMANDS_DIR);
++  return SHARED_REGISTRY;
++}
++
++function validateVerbArgs(verb, args) {
++  const spec = VERB_MAP[verb];
++  if (!spec) {
++    return { error: `Unknown verb '${verb}'. Allowed: ${Object.keys(VERB_MAP).join(', ')}` };
++  }
++  if (!Array.isArray(args) || !args.every((a) => typeof a === 'string')) {
++    return { error: 'args must be an array of strings' };
++  }
++  return { spec };
++}
++
++// Route a { verb, args } envelope to the EXISTING forge command handler,
++// in-process. Returns { ok, output, error } — the handler's own success/
++// rejection is surfaced verbatim (unknown gate, locked gate, invalid role, an
++// issue-command-contract validation error).
++async function routeMutation(verb, args, projectRoot, deps = {}) {
++  const { spec, error } = validateVerbArgs(verb, args);
++  if (error) return { ok: false, error };
++
++  const argv = spec.json && !args.includes('--json') ? [...args, '--json'] : args;
++  const resolveOpts = deps.resolveCommandOpts || require('./_resolve-command-opts').resolveCommandOpts;
++  const exec = deps.executeCommand || require('./_registry').executeCommand;
++
++  const { commandOpts, args: dispatchArgs } = await resolveOpts(
++    spec.command,
++    argv,
++    { env: process.env, projectRoot },
++  );
++  const result = await exec(
++    registry(deps).commands,
++    spec.command,
++    dispatchArgs,
++    {},
++    projectRoot,
++    { commandOpts },
++  );
++  return {
++    ok: result && result.success !== false,
++    output: result && typeof result.output === 'string' ? result.output : undefined,
++    error: result ? (result.error || undefined) : 'no result',
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Snapshot (GET /data.json) — regenerate on demand, debounced.
++// ---------------------------------------------------------------------------
++
++function defaultGenerate(projectRoot, dashboardDir) {
++  return new Promise((resolve, reject) => {
++    const script = path.join(dashboardDir, 'generate-snapshot.mjs');
++    const child = spawn(process.execPath, [script], { cwd: projectRoot, stdio: 'ignore' });
++    const timer = setTimeout(() => { child.kill(); reject(new Error('snapshot generation timed out')); }, GEN_TIMEOUT_MS);
++    child.on('error', (err) => { clearTimeout(timer); reject(err); });
++    child.on('exit', (code) => {
++      clearTimeout(timer);
++      if (code === 0) resolve();
++      else reject(new Error(`snapshot generator exited ${code}`));
++    });
++  });
++}
++
++function readBakedSnapshot(dashboardDir) {
++  const dataPath = path.join(dashboardDir, 'data.json');
++  if (fs.existsSync(dataPath)) return fs.readFileSync(dataPath);
++  return Buffer.from('{}');
++}
++
++// Regenerate the snapshot (bounded, single-flight). Best-effort: a generator
++// failure keeps the last baked data.json rather than surfacing an error.
++function regenerate(ctx) {
++  const cache = ctx.snapshot;
++  if (cache.inFlight) return cache.inFlight;
++  cache.inFlight = (async () => {
++    try { await cache.generate(ctx.projectRoot, ctx.dashboardDir); } catch { /* keep baked */ }
++    cache.buffer = readBakedSnapshot(ctx.dashboardDir);
++    cache.lastGen = Date.now();
++  })().finally(() => { cache.inFlight = null; });
++  return cache.inFlight;
++}
++
++// Reads NEVER block on the heavy generator (it shells forge/git/gh): serve the
++// baked snapshot immediately and refresh in the BACKGROUND when stale. Only a
++// cold start with nothing baked does one bounded synchronous generation, so the
++// first paint isn't empty. Mutations call regenerate() directly (see
++// handleMutation) so a post-write refetch is fresh.
++async function getSnapshot(ctx) {
++  const cache = ctx.snapshot;
++  const hasBaked = cache.buffer || fs.existsSync(path.join(ctx.dashboardDir, 'data.json'));
++  if (!hasBaked) {
++    await regenerate(ctx);
++    return cache.buffer;
++  }
++  if (!cache.buffer) cache.buffer = readBakedSnapshot(ctx.dashboardDir);
++  if (Date.now() - cache.lastGen > SNAPSHOT_TTL_MS && !cache.inFlight) regenerate(ctx);
++  return cache.buffer;
++}
++
++// ---------------------------------------------------------------------------
++// Static host
++// ---------------------------------------------------------------------------
++
++function resolveStaticPath(dashboardDir, urlPath) {
++  const clean = decodeURIComponent(urlPath.split('?')[0]);
++  const rel = clean === '/' ? 'index.html' : clean.replace(/^\/+/, '');
++  const abs = path.resolve(dashboardDir, rel);
++  // Traversal guard: the resolved path must stay inside the dashboard dir.
++  if (abs !== dashboardDir && !abs.startsWith(dashboardDir + path.sep)) return null;
++  return abs;
++}
++
++function serveStatic(res, dashboardDir, urlPath) {
++  const abs = resolveStaticPath(dashboardDir, urlPath);
++  if (!abs) return sendText(res, 403, 'forbidden');
++  if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) {
++    // Absent optional bundle -> empty 200 so live mode has no console noise.
++    if (OPTIONAL_BUNDLES.has(urlPath.split('?')[0])) {
++      return sendText(res, 200, '// forge serve: live mode (bundle not baked)\n', MIME['.js']);
++    }
++    return sendText(res, 404, 'not found');
++  }
++  const type = MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream';
++  res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
++  return res.end(fs.readFileSync(abs));
++}
++
++// ---------------------------------------------------------------------------
++// Request router
++// ---------------------------------------------------------------------------
++
++async function handleMutation(req, res, ctx) {
++  if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'method not allowed' });
++  if (!isLoopbackRequest(req)) return sendJson(res, 403, { ok: false, error: 'forbidden: non-loopback request' });
++
++  let parsed;
++  try {
++    parsed = JSON.parse(await readBody(req));
++  } catch {
++    return sendJson(res, 400, { ok: false, error: 'invalid JSON body' });
++  }
++  if (!parsed || !verifyToken(parsed.token, ctx.token)) {
++    return sendJson(res, 403, { ok: false, error: 'invalid or missing token' });
++  }
++  const result = await routeMutation(parsed.verb, parsed.args || [], ctx.projectRoot, ctx.deps);
++  // On a successful write, refresh the baked snapshot BEFORE responding so the
++  // client's follow-up /data.json refetch reflects the change. Best-effort.
++  if (result.ok) { try { await regenerate(ctx); } catch { /* keep baked */ } }
++  return sendJson(res, result.ok ? 200 : 422, result);
++}
++
++async function handleRequest(req, res, ctx) {
++  const urlPath = (req.url || '/').split('?')[0];
++  if (urlPath === '/health') {
++    return sendJson(res, 200, { ok: true, forge_serve: true, version: 1 });
++  }
++  if (urlPath === '/api/mutation') {
++    return handleMutation(req, res, ctx);
++  }
++  if (urlPath === '/data.json') {
++    const buf = await getSnapshot(ctx);
++    res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
++    return res.end(buf);
++  }
++  if (req.method !== 'GET') return sendText(res, 405, 'method not allowed');
++  return serveStatic(res, ctx.dashboardDir, req.url || '/');
++}
++
++function buildContext(projectRoot, dashboardDir, token, deps = {}) {
++  return {
++    projectRoot,
++    dashboardDir,
++    token,
++    deps,
++    snapshot: {
++      buffer: null,
++      lastGen: 0,
++      inFlight: null,
++      generate: deps.generate || defaultGenerate,
++    },
++  };
++}
++
++function createServeServer(ctx) {
++  return http.createServer((req, res) => {
++    handleRequest(req, res, ctx).catch((err) => {
++      if (!res.headersSent) sendJson(res, 500, { ok: false, error: err.message });
++    });
++  });
++}
++
++// ---------------------------------------------------------------------------
++// Startup
++// ---------------------------------------------------------------------------
++
++function openBrowser(url) {
++  try {
++    if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
++    else if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
++    else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
++  } catch {
++    // Opening a browser is best-effort; the URL is always printed.
++  }
++}
++
++function startListening(server, port, token, options = {}) {
++  return new Promise((resolve, reject) => {
++    server.on('error', reject);
++    server.listen(port, '127.0.0.1', () => {
++      const actual = server.address().port;
++      const url = `http://127.0.0.1:${actual}/#token=${token}`;
++      process.stdout.write(
++        `\nforge serve — interactive dashboard (loopback only)\n  ${url}\n`
++        + '  Token dies with this process. Press Ctrl-C to stop.\n\n',
++      );
++      if (options.open) openBrowser(url);
++      const shutdown = () => server.close(() => resolve({ success: true, output: 'forge serve stopped.' }));
++      process.once('SIGINT', shutdown);
++      process.once('SIGTERM', shutdown);
++    });
++  });
++}
++
++async function handler(args, flags = {}, projectRoot = process.cwd(), _opts = {}) {
++  const { port, open } = parseServeArgs(args, flags);
++  const dashboardDir = path.join(projectRoot, 'web', 'dashboard');
++  if (!fs.existsSync(path.join(dashboardDir, 'index.html'))) {
++    return { success: false, error: `Dashboard not found at ${dashboardDir}. Run from the repo root.` };
++  }
++  const token = mintToken();
++  const ctx = buildContext(projectRoot, dashboardDir, token);
++  const server = createServeServer(ctx);
++  return startListening(server, port, token, { open });
++}
++
++module.exports = {
++  name: 'serve',
++  description: 'Serve the interactive dashboard over 127.0.0.1 (trigger forge verbs from the browser)',
++  usage: 'forge serve [--port N] [--open]',
++  handler,
++  // Exposed for tests + reuse (in-process, no socket).
++  routeMutation,
++  parseServeArgs,
++  buildContext,
++  createServeServer,
++  verifyToken,
++  isLoopbackRequest,
++  resolveStaticPath,
++  VERB_MAP,
++};
+diff --git a/test/commands/serve.test.js b/test/commands/serve.test.js
+new file mode 100644
+index 00000000..54ea8364
+--- /dev/null
++++ b/test/commands/serve.test.js
+@@ -0,0 +1,169 @@
++'use strict';
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const serve = require('../../lib/commands/serve');
++
++const tempRoots = [];
++const servers = [];
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-serve-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++function makeDashboard(snapshotJson) {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-serve-web-'));
++  tempRoots.push(dir);
++  fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><title>t</title>');
++  fs.writeFileSync(path.join(dir, 'data.json'), snapshotJson);
++  return dir;
++}
++
++// Start a listening server on an ephemeral loopback port; always tracked so
++// afterEach can close it (anti-hang: never leave a listener open).
++function listen(server) {
++  servers.push(server);
++  return new Promise((resolve) => {
++    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
++  });
++}
++
++afterEach(async () => {
++  while (servers.length) {
++    const server = servers.pop();
++    await new Promise((resolve) => server.close(resolve));
++  }
++  while (tempRoots.length) {
++    const root = tempRoots.pop();
++    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
++  }
++});
++
++describe('parseServeArgs', () => {
++  test('defaults to port 8730, open false', () => {
++    expect(serve.parseServeArgs([])).toEqual({ port: 8730, open: false });
++  });
++  test('--port and --open (space + equals forms)', () => {
++    expect(serve.parseServeArgs(['--port', '9001', '--open'])).toEqual({ port: 9001, open: true });
++    expect(serve.parseServeArgs(['--port=9002'])).toEqual({ port: 9002, open: false });
++  });
++  test('honors flags object', () => {
++    expect(serve.parseServeArgs([], { port: 4000, open: true })).toEqual({ port: 4000, open: true });
++  });
++});
++
++describe('verifyToken', () => {
++  test('accepts the exact token, rejects wrong / length-mismatched', () => {
++    const tok = 'a'.repeat(64);
++    expect(serve.verifyToken(tok, tok)).toBe(true);
++    expect(serve.verifyToken('b'.repeat(64), tok)).toBe(false);
++    expect(serve.verifyToken('short', tok)).toBe(false);
++    expect(serve.verifyToken(undefined, tok)).toBe(false);
++  });
++});
++
++describe('isLoopbackRequest', () => {
++  const req = (headers) => ({ headers });
++  test('accepts loopback host with no / loopback origin', () => {
++    expect(serve.isLoopbackRequest(req({ host: '127.0.0.1:8730' }))).toBe(true);
++    expect(serve.isLoopbackRequest(req({ host: 'localhost:8730', origin: 'http://127.0.0.1:8730' }))).toBe(true);
++  });
++  test('rejects foreign host or foreign origin', () => {
++    expect(serve.isLoopbackRequest(req({ host: 'evil.example.com' }))).toBe(false);
++    expect(serve.isLoopbackRequest(req({ host: '127.0.0.1:8730', origin: 'http://evil.example.com' }))).toBe(false);
++  });
++});
++
++describe('resolveStaticPath', () => {
++  test('maps / to index.html and blocks traversal', () => {
++    const dir = path.resolve('/tmp/dash');
++    expect(serve.resolveStaticPath(dir, '/')).toBe(path.join(dir, 'index.html'));
++    expect(serve.resolveStaticPath(dir, '/../../etc/passwd')).toBe(null);
++  });
++});
++
++describe('routeMutation — verb allowlist + argument validation', () => {
++  test('rejects an unknown verb without dispatching', async () => {
++    const res = await serve.routeMutation('rm.rf', [], makeProject());
++    expect(res.ok).toBe(false);
++    expect(res.error).toContain('Unknown verb');
++  });
++  test('rejects non-string args', async () => {
++    const res = await serve.routeMutation('issue.create', [{ evil: true }], makeProject());
++    expect(res.ok).toBe(false);
++    expect(res.error).toContain('array of strings');
++  });
++  test('maps an issue verb to its command and appends --json (injected deps)', async () => {
++    const calls = [];
++    const deps = {
++      resolveCommandOpts: async (command, argv) => { calls.push({ command, argv }); return { commandOpts: {}, args: argv }; },
++      executeCommand: async () => ({ success: true, output: '{"ok":true}' }),
++      registry: { commands: new Map() },
++    };
++    const res = await serve.routeMutation('issue.create', ['--title', 'Hello'], makeProject(), deps);
++    expect(res.ok).toBe(true);
++    expect(calls[0].command).toBe('create');
++    expect(calls[0].argv).toContain('--json');
++    expect(calls[0].argv).toContain('Hello');
++  });
++});
++
++describe('routeMutation — real gate/role handler rejection + success', () => {
++  test('gate: unknown gate id surfaces the handler rejection verbatim', async () => {
++    const res = await serve.routeMutation('gate', ['enable', 'gate.definitely_not_real'], makeProject());
++    expect(res.ok).toBe(false);
++    expect(res.error).toContain('Unknown gate');
++  });
++  test('role: unknown role surfaces the handler rejection verbatim', async () => {
++    const res = await serve.routeMutation('role', ['not-a-real-role', '--use', 'plan'], makeProject());
++    expect(res.ok).toBe(false);
++    expect(res.error).toContain('Unknown role');
++  });
++  test('gate: enabling a known gate succeeds and writes config', async () => {
++    const root = makeProject();
++    const res = await serve.routeMutation('gate', ['enable', 'gate.issue_verify'], root);
++    expect(res.ok).toBe(true);
++    expect(fs.existsSync(path.join(root, '.forge', 'config.yaml'))).toBe(true);
++  });
++});
++
++describe('bounded server smoke (starts, requests, closes)', () => {
++  test('health / data.json / optional-bundle stub / token-gated mutation', async () => {
++    const dashboardDir = makeDashboard('{"kind":"live-snapshot"}');
++    const token = 'f'.repeat(64);
++    const ctx = serve.buildContext(makeProject(), dashboardDir, token, { generate: async () => { /* no real generator */ } });
++    const server = serve.createServeServer(ctx);
++    const port = await listen(server);
++    const base = `http://127.0.0.1:${port}`;
++
++    const health = await fetch(`${base}/health`);
++    expect(health.status).toBe(200);
++    expect((await health.json()).forge_serve).toBe(true);
++
++    const data = await fetch(`${base}/data.json`);
++    expect(data.status).toBe(200);
++    expect((await data.json()).kind).toBe('live-snapshot');
++
++    const bundle = await fetch(`${base}/snapshot.js`);
++    expect(bundle.status).toBe(200); // absent optional bundle -> empty stub
++
++    const badToken = await fetch(`${base}/api/mutation`, {
++      method: 'POST', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ token: 'wrong', verb: 'gate', args: [] }),
++    });
++    expect(badToken.status).toBe(403);
++
++    const unknownVerb = await fetch(`${base}/api/mutation`, {
++      method: 'POST', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ token, verb: 'rm.rf', args: [] }),
++    });
++    expect(unknownVerb.status).toBe(422);
++    expect((await unknownVerb.json()).ok).toBe(false);
++  });
++});
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index cb1686f2..76d9bfab 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -780,6 +780,7 @@ function issueDetailHtml(i) {
+       <dt>Updated</dt><dd class="mono">${esc(relTime(i.updated_at))} ago</dd>
+     </dl>
+     ${i.body ? `<div class="detail__body">${esc(clamp(i.body, 1400))}</div>` : ''}
++    ${Serve.live ? issueWritePanel(i) : ''}
+     ${kids.length ? `<div class="section-title">Children · ${kids.length}</div><div class="cardgrid">${childCards}</div>` : ''}
+     <div class="section-title">Linked work</div>
+     <div class="linkgraph">
+@@ -1138,6 +1139,13 @@ function buildNav() {
+ }
+ 
+ // Shared action handler for clicks in both #view and the #detail overlay.
++// Route a clicked/activated [data-act] element: LIVE serve-* writes go to the
++// serve layer, everything else to the read-view handler. Keeps serve routing
++// out of handleAct's (already large) dispatch.
++function dispatchAct(t) {
++  if (t.dataset.act && t.dataset.act.startsWith('serve-')) { serveHandleAct(t); return; }
++  handleAct(t);
++}
+ function handleAct(t) {
+   const act = t.dataset.act;
+   if (act === 'open') { const k = t.dataset.kind || 'issue'; location.hash = `#/${k}/${encodeURIComponent(t.dataset.id)}`; }
+@@ -1189,7 +1197,7 @@ function fallbackCopy(text, done) {
+ }
+ function onViewClick(e) {
+   const t = e.target.closest('[data-act]'); if (!t) return;
+-  handleAct(t);
++  dispatchAct(t);
+ }
+ // Give every non-native [data-act] element button semantics so keyboard users can
+ // reach and activate cards / rows / area-nodes. Called after each innerHTML render.
+@@ -1208,7 +1216,7 @@ function onActKeydown(e) {
+   const t = e.target.closest('[data-act]'); if (!t) return;
+   if (!needsButtonSemantics(t.tagName)) return;
+   e.preventDefault(); // Space would otherwise scroll
+-  handleAct(t);
++  dispatchAct(t);
+ }
+ 
+ function wireGlobalSearch() {
+@@ -1262,7 +1270,8 @@ function updateStamp() {
+   const g = State.snapshot.generated_at;
+   $('#updatedText').textContent = 'updated ' + (g ? relTime(g) + ' ago' : '—');
+   const when = g ? new Date(g) : new Date();
+-  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · read-only`;
++  const mode = Serve.live ? 'LIVE · write' : (Serve.serverUp ? 'LIVE · read' : 'SNAPSHOT · read-only');
++  $('#sidebarMeta').innerHTML = `snapshot<br>${esc(when.toISOString().slice(0, 16).replace('T', ' '))}Z<br>${State.issues.length} issues · ${mode}`;
+   $('#brandVer').textContent = State.snapshot.status?.context?.branch ? esc(State.snapshot.status.context.branch) : 'kernel';
+ }
+ async function doRefresh(silent) {
+@@ -1275,6 +1284,7 @@ async function doRefresh(silent) {
+ 
+ async function boot() {
+   try {
++    Serve.initToken();
+     const snap = await DataSource.load();
+     rebuild(snap);
+     try { const m = localStorage.getItem('forge-board-mode'); if (m === 'table' || m === 'kanban') State.board.mode = m; } catch (_e) { /* private mode */ }
+@@ -1284,7 +1294,7 @@ async function boot() {
+     $('#view').addEventListener('keydown', onActKeydown);
+     $('#detail').addEventListener('click', (e) => {
+       if (e.target.closest('[data-act="detail-close"]')) { history.length > 1 ? history.back() : (location.hash = '#/' + (State.route || 'overview')); return; }
+-      const t = e.target.closest('[data-act]'); if (t) handleAct(t);
++      const t = e.target.closest('[data-act]'); if (t) dispatchAct(t);
+     });
+     $('#detail').addEventListener('keydown', onActKeydown);
+     $('#detail').addEventListener('keydown', trapOverlayFocus);
+@@ -1295,10 +1305,260 @@ async function boot() {
+     route(); updateStamp();
+     setInterval(updateStamp, 15000);
+     setInterval(() => { if (document.visibilityState === 'visible') doRefresh(true); }, 60000);
++    serveActivate();
+   } catch (err) {
+     $('#view').innerHTML = `<div class="empty-state"><h4>Could not load snapshot</h4><p>${esc(err.message)}</p><p>Run node web/dashboard/generate-snapshot.mjs</p></div>`;
+   }
+ }
++/* ============================================================================
++ * Serve — the LOCAL write layer (active only under `forge serve`).
++ *
++ * The dashboard NEVER mutates the kernel directly: it POSTs the SAME forge
++ * verbs the CLI runs to /api/mutation, which relays them in-process through the
++ * broker (all validation lives there). On file:// or with no server, every
++ * write affordance is hidden and the dashboard stays read + copy-as-command.
++ * ========================================================================== */
++const STATUS_OPTIONS = ['backlog', 'open', 'in_progress', 'review', 'done', 'cancelled'];
++const ISSUE_TYPES = ['task', 'bug', 'feature', 'chore', 'epic', 'decision'];
++
++const Serve = {
++  serverUp: false, // /health answered
++  token: null,     // per-run capability, delivered in the page URL fragment
++  get live() { return this.serverUp && !!this.token; }, // write-capable
++
++  // Capture the per-run token from the URL fragment ONCE, persist it for the
++  // session, then strip it from the routing hash without navigating.
++  initToken() {
++    let stored = null;
++    try { stored = sessionStorage.getItem('forge-serve-token'); } catch (_e) { /* private mode */ }
++    const hash = location.hash.slice(1);
++    const m = /(?:^|[&/])token=([a-f0-9]{16,})/.exec(hash);
++    if (m) {
++      this.token = m[1];
++      try { sessionStorage.setItem('forge-serve-token', m[1]); } catch (_e) { /* private mode */ }
++      const rest = hash.replace(/(?:^|[&])token=[a-f0-9]{16,}/, '').replace(/^[&/]+/, '');
++      history.replaceState(null, '', rest.startsWith('/') ? '#' + rest : (rest ? '#/' + rest : '#/overview'));
++    } else if (stored) {
++      this.token = stored;
++    }
++  },
++
++  async detect() {
++    try {
++      const r = await fetch('/health', { cache: 'no-store' });
++      if (r.ok) { const j = await r.json(); this.serverUp = !!(j && j.forge_serve); }
++    } catch (_e) { this.serverUp = false; }
++    return this.serverUp;
++  },
++
++  async mutate(verb, args) {
++    try {
++      const res = await fetch('/api/mutation', {
++        method: 'POST', headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ token: this.token, verb, args }),
++      });
++      const data = await res.json().catch(() => ({ ok: false, error: 'bad response' }));
++      return { status: res.status, ...data };
++    } catch (err) { return { ok: false, error: err.message }; }
++  },
++};
++
++function serveSetMsg(elId, text, kind) {
++  const el = document.getElementById(elId);
++  if (el) { el.textContent = text; el.dataset.kind = kind || ''; }
++}
++
++// Refetch the snapshot + re-render after a successful write; reopen the issue
++// detail (when given) so the change is visible immediately.
++async function serveRefresh(id) {
++  try { const snap = await DataSource.refetch(); rebuild(snap); buildNav(); State.rendered = null; }
++  catch (_e) { /* keep current state if the refetch fails */ }
++  if (id && State.byId[id]) showIssue(id); else route();
++  updateStamp();
++}
++
++async function serveApply(verb, args, id) {
++  serveSetMsg('serveMsg-' + id, 'working…', 'busy');
++  const r = await Serve.mutate(verb, args);
++  if (r.ok) { await serveRefresh(id); return true; }
++  serveSetMsg('serveMsg-' + id, 'error: ' + (r.error || 'failed'), 'err');
++  return false;
++}
++
++function serveOption(val, cur) {
++  return `<option value="${esc(val)}"${val === cur ? ' selected' : ''}>${esc(val)}</option>`;
++}
++
++// The LIVE edit block appended to an issue's detail hub: status + priority
++// (POST issue.update), Close (issue.close), and a comment box (issue.comment).
++function issueWritePanel(i) {
++  const statuses = STATUS_OPTIONS.map((s) => serveOption(s, i.status)).join('');
++  const prios = PRIO_ORDER.map((p) => serveOption(p, i.priority)).join('');
++  const closed = i.status === 'done' || i.status === 'cancelled';
++  return `<div class="section-title">Edit · live</div>
++    <div class="serve-edit">
++      <div class="serve-row">
++        <label class="serve-field">Status<select class="serve-select" data-act="serve-status" data-id="${esc(i.id)}">${statuses}</select></label>
++        <label class="serve-field">Priority<select class="serve-select" data-act="serve-prio" data-id="${esc(i.id)}">${prios}</select></label>
++        ${closed ? '' : `<button class="btn" data-act="serve-close" data-id="${esc(i.id)}">Close issue</button>`}
++      </div>
++      <div class="serve-comment">
++        <textarea class="serve-textarea" id="serveComment-${esc(i.id)}" placeholder="Add a comment (reaches the agent on this issue)…"></textarea>
++        <button class="btn" data-act="serve-comment" data-id="${esc(i.id)}">Comment</button>
++      </div>
++      <div class="serve-msg" id="serveMsg-${esc(i.id)}" role="status"></div>
++    </div>`;
++}
++
++// change-delegated: status / priority <select> edits POST issue.update.
++function onServeChange(e) {
++  const sel = e.target.closest('[data-act="serve-status"], [data-act="serve-prio"]');
++  if (!sel) return;
++  const flag = sel.dataset.act === 'serve-status' ? '--status' : '--priority';
++  serveApply('issue.update', [sel.dataset.id, flag, sel.value], sel.dataset.id);
++}
++
++// click-delegated write actions (routed from handleAct + the serve modal).
++function serveHandleAct(t) {
++  const act = t.dataset.act; const id = t.dataset.id;
++  if (act === 'serve-close') serveApply('issue.close', [id], id);
++  else if (act === 'serve-comment') serveComment(id);
++  else if (act === 'serve-create') serveCreate();
++  else if (act === 'serve-add-open') openAddIssue();
++  else if (act === 'serve-controls') openControls();
++  else if (act === 'serve-run') serveRun(t.dataset.kind);
++  else if (act === 'serve-copy') serveCopy(t.dataset.kind);
++  else if (act === 'serve-modal-close') closeServeModal();
++}
++
++function serveComment(id) {
++  const ta = document.getElementById('serveComment-' + id);
++  const body = ta ? ta.value.trim() : '';
++  if (!body) { serveSetMsg('serveMsg-' + id, 'enter a comment first', 'err'); return; }
++  serveApply('issue.comment', [id, body], id);
++}
++
++/* ---------- modal (Add issue + Controls) — dynamic, reuses .detail skin ---------- */
++function ensureServeModal() {
++  let m = document.getElementById('serveModal');
++  if (m) return m;
++  m = document.createElement('div');
++  m.id = 'serveModal'; m.className = 'detail'; m.hidden = true;
++  m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true');
++  m.innerHTML = '<div class="detail__scrim" data-act="serve-modal-close"></div>'
++    + '<div class="detail__panel" id="serveModalPanel" tabindex="-1"></div>';
++  document.body.appendChild(m);
++  m.addEventListener('click', (ev) => { const t = ev.target.closest('[data-act]'); if (t) serveHandleAct(t); });
++  return m;
++}
++function openServeModal(html) {
++  const m = ensureServeModal();
++  document.getElementById('serveModalPanel').innerHTML = html;
++  m.hidden = false; m.classList.add('on');
++}
++function closeServeModal() {
++  const m = document.getElementById('serveModal');
++  if (m) { m.classList.remove('on'); m.hidden = true; }
++}
++
++function openAddIssue() {
++  const types = ISSUE_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('');
++  const prios = PRIO_ORDER.map((p) => `<option value="${p}"${p === 'P2' ? ' selected' : ''}>${p}</option>`).join('');
++  openServeModal(`<button class="detail__close" data-act="serve-modal-close">✕ esc</button>
++    <h2 class="detail__title">New issue</h2>
++    <div class="serve-form">
++      <label class="serve-field">Title<input id="siTitle" class="serve-input" type="text" placeholder="Short summary" /></label>
++      <label class="serve-field">Type<select id="siType" class="serve-select">${types}</select></label>
++      <label class="serve-field">Priority<select id="siPrio" class="serve-select">${prios}</select></label>
++      <label class="serve-field">Parent epic id (optional)<input id="siParent" class="serve-input" type="text" placeholder="uuid" /></label>
++      <label class="serve-field">Body<textarea id="siBody" class="serve-textarea" placeholder="Details…"></textarea></label>
++      <div class="serve-row"><button class="btn btn--primary" data-act="serve-create">Create issue</button><button class="btn" data-act="serve-modal-close">Cancel</button></div>
++      <div class="serve-msg" id="serveMsg-new" role="status"></div>
++    </div>`);
++  const el = document.getElementById('siTitle'); if (el) el.focus();
++}
++
++async function serveCreate() {
++  const val = (id) => (document.getElementById(id)?.value || '').trim();
++  const title = val('siTitle');
++  if (!title) { serveSetMsg('serveMsg-new', 'title is required', 'err'); return; }
++  const args = ['--title', title, '--type', val('siType') || 'task', '--priority', val('siPrio') || 'P2'];
++  const body = val('siBody'); if (body) args.push('--body', body);
++  const parent = val('siParent'); if (parent) args.push('--parent', parent);
++  serveSetMsg('serveMsg-new', 'creating…', 'busy');
++  const r = await Serve.mutate('issue.create', args);
++  if (r.ok) { closeServeModal(); await serveRefresh(null); }
++  else serveSetMsg('serveMsg-new', 'error: ' + (r.error || 'failed'), 'err');
++}
++
++// Controls: trigger the existing gate + role verbs. Each offers Copy (the
++// forge command) AND Run (POST the verb) — the handler validates the id.
++function openControls() {
++  openServeModal(`<button class="detail__close" data-act="serve-modal-close">✕ esc</button>
++    <h2 class="detail__title">Controls</h2>
++    <div class="serve-form">
++      <div class="section-title">Gate</div>
++      <div class="serve-row">
++        <label class="serve-field">Action<select id="scGateAction" class="serve-select"><option>enable</option><option>disable</option></select></label>
++        <label class="serve-field">Gate id<input id="scGateId" class="serve-input" value="gate.issue_verify" /></label>
++      </div>
++      <div class="serve-row"><button class="btn" data-act="serve-copy" data-kind="gate">Copy</button><button class="btn btn--primary" data-act="serve-run" data-kind="gate">Run</button></div>
++      <div class="section-title">Role → skill</div>
++      <div class="serve-row">
++        <label class="serve-field">Role<input id="scRole" class="serve-input" placeholder="planner" /></label>
++        <label class="serve-field">Skill<input id="scSkill" class="serve-input" placeholder="plan" /></label>
++      </div>
++      <div class="serve-row"><button class="btn" data-act="serve-copy" data-kind="role">Copy</button><button class="btn btn--primary" data-act="serve-run" data-kind="role">Run</button></div>
++      <div class="serve-msg" id="serveMsg-ctrl" role="status"></div>
++    </div>`);
++}
++
++function serveControlSpec(kind) {
++  const v = (id) => (document.getElementById(id)?.value || '').trim();
++  if (kind === 'gate') {
++    const action = v('scGateAction') || 'enable'; const gid = v('scGateId');
++    return { verb: 'gate', args: [action, gid], cmd: `forge gate ${action} ${gid}` };
++  }
++  const role = v('scRole'); const skill = v('scSkill');
++  return { verb: 'role', args: [role, '--use', skill], cmd: `forge role ${role} --use ${skill}` };
++}
++async function serveRun(kind) {
++  const spec = serveControlSpec(kind);
++  serveSetMsg('serveMsg-ctrl', 'running…', 'busy');
++  const r = await Serve.mutate(spec.verb, spec.args);
++  serveSetMsg('serveMsg-ctrl', r.ok ? ('ok — ' + spec.cmd) : ('error: ' + (r.error || 'failed')), r.ok ? 'ok' : 'err');
++}
++function serveCopy(kind) {
++  const spec = serveControlSpec(kind);
++  try { navigator.clipboard.writeText(spec.cmd); serveSetMsg('serveMsg-ctrl', 'copied: ' + spec.cmd, 'ok'); }
++  catch (_e) { serveSetMsg('serveMsg-ctrl', 'copy failed — run manually: ' + spec.cmd, 'err'); }
++}
++
++function serveTopButton(id, act, label) {
++  const b = document.createElement('button');
++  b.id = id; b.className = 'btn'; b.type = 'button'; b.dataset.act = act; b.textContent = label;
++  b.addEventListener('click', () => serveHandleAct(b));
++  return b;
++}
++function mountServeControls() {
++  const bar = document.querySelector('.topbar');
++  if (!bar || document.getElementById('serveAddBtn')) return;
++  const ref = document.getElementById('refreshBtn');
++  bar.insertBefore(serveTopButton('serveAddBtn', 'serve-add-open', '＋ Issue'), ref);
++  bar.insertBefore(serveTopButton('serveCtlBtn', 'serve-controls', '⚙ Controls'), ref);
++}
++
++// Probe /health; when a server answers, expose the write UI. Never blocks the
++// initial read render — reads work identically with or without the server.
++async function serveActivate() {
++  await Serve.detect();
++  updateStamp();
++  if (!Serve.serverUp) return;
++  mountServeControls();
++  document.addEventListener('change', onServeChange);
++  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeServeModal(); });
++}
++
+ if (typeof document !== 'undefined') boot();
+ if (typeof module !== 'undefined' && module.exports) {
+   module.exports = { columnOf, matchesFilter, relTime, epicRollup, epicHealth, isLive, lifecyclePhase, wtSummary, renderMarkdown, isActivationKey, needsButtonSemantics, State, gateBucket, isCustomized, gateCommand, roleCommand, stageRailModel, shortId, isDefaultBinding, renderingHarnesses };
+diff --git a/web/dashboard/styles.css b/web/dashboard/styles.css
+index a68e7f99..254ece23 100644
+--- a/web/dashboard/styles.css
++++ b/web/dashboard/styles.css
+@@ -723,3 +723,21 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+ .wgrid--3 { grid-template-columns: repeat(3, 1fr); }
+ @media (max-width: 820px) { .wgrid--3 { grid-template-columns: 1fr; } }
+ .wpanel--future { border-style: dashed; opacity: .82; }
++
++/* ===================== forge serve — LIVE write UI ===================== */
++.serve-edit, .serve-form { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; }
++.serve-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
++.serve-field { display: flex; flex-direction: column; gap: 5px; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); flex: 1 1 auto; min-width: 120px; }
++.serve-input, .serve-select, .serve-textarea {
++  font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--surface);
++  border: 1px solid var(--line); border-radius: 0; padding: 7px 9px; letter-spacing: .02em; text-transform: none;
++}
++.serve-input:focus, .serve-select:focus, .serve-textarea:focus { outline: none; border-color: var(--line-2); }
++.serve-textarea { min-height: 64px; resize: vertical; width: 100%; }
++.serve-comment { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
++.btn--primary { background: var(--text); color: var(--bg); border-color: var(--text); }
++.btn--primary:hover { opacity: .82; }
++.serve-msg { font-family: var(--mono); font-size: 11px; min-height: 1.1em; letter-spacing: .02em; color: var(--muted); }
++.serve-msg[data-kind="err"] { color: #e0574f; }
++.serve-msg[data-kind="ok"] { color: var(--text); }
++.serve-msg[data-kind="busy"] { color: var(--muted); }
+-- 
+2.51.0.windows.1
+

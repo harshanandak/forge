@@ -1,0 +1,309 @@
+From 300dd26bcc737f638317cba783640f195fc7e982 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 15:04:11 +0530
+Subject: [PATCH] =?UTF-8?q?feat(dist):=20Step=203=20=E2=80=94=20CI=20cross?=
+ =?UTF-8?q?-compile=205=20targets=20+=20smoke=20tests?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add .github/workflows/build-binary.yml: single ubuntu-latest matrix job that
+cross-compiles `bun build --compile --target=<t>` for the 5 canonical targets
+(windows-x64, darwin-arm64, darwin-x64, linux-x64, linux-arm64) plus musl
+variants (linux-x64-musl, linux-arm64-musl). Bun cross-compiles all from one
+runner. Regenerates the embed manifest inside the job. Smoke-tests the native
+linux-x64 binary (--version + setup --quick + ready); other targets are
+artifact-only with a non-empty assertion. Runs parity-check.mjs as the drift
+gate. Uploads each binary as a named artifact. Triggers: workflow_dispatch,
+release tags (v*), and a 1-target compile+smoke on relevant PRs.
+
+Authored via the 'workflows' protected-state surface (hook ON + audited).
+Release upload deferred to Step 4 (50afbc47).
+
+Issue: f13b5073-3b9f-4098-bbe4-432b7bd69485
+Epic: 6f11d483-5cf0-4fce-86a4-42c82dff0897
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/build-binary.yml          | 167 ++++++++++++++++++++
+ docs/work/2026-07-13-binary-step3/design.md |  94 +++++++++++
+ 2 files changed, 261 insertions(+)
+ create mode 100644 .github/workflows/build-binary.yml
+ create mode 100644 docs/work/2026-07-13-binary-step3/design.md
+
+diff --git a/.github/workflows/build-binary.yml b/.github/workflows/build-binary.yml
+new file mode 100644
+index 00000000..40f6b8f2
+--- /dev/null
++++ b/.github/workflows/build-binary.yml
+@@ -0,0 +1,167 @@
++name: Build Binary
++
++# Step 3 of the single-binary distribution epic (6f11d483): cross-compile the
++# `bun build --compile` binary for every canonical target from ONE runner, smoke
++# test what the runner can execute, gate on npm-vs-binary parity, and upload each
++# binary as a named workflow artifact. This step does NOT publish a GitHub Release
++# (that is Step 4, 50afbc47) — it only produces + verifies + uploads artifacts.
++#
++# Bun cross-compiles all targets from a single ubuntu runner via `--target=<t>`
++# (proven locally: windows-x64 + 6 cross targets all compiled from one host), so
++# this stays a single fast matrix job instead of 5 per-OS runners.
++
++on:
++  workflow_dispatch:
++  push:
++    tags:
++      - 'v*'
++  pull_request:
++    paths:
++      - 'bin/**'
++      - 'lib/**'
++      - 'scripts/**'
++      - 'package.json'
++      - 'bunfig.toml'
++      - '.github/workflows/build-binary.yml'
++
++permissions:
++  contents: read
++
++concurrency:
++  group: build-binary-${{ github.event.pull_request.number || github.ref }}
++  cancel-in-progress: true
++
++env:
++  BUN_VERSION: 1.3.12
++
++jobs:
++  # Emit the target matrix. On PRs we compile a single target (linux-x64) to keep
++  # PR-time cost low while still catching a bundling/embedding regression early.
++  # On workflow_dispatch and release tags we build all canonical + musl targets.
++  set-matrix:
++    name: Select targets
++    runs-on: ubuntu-latest
++    outputs:
++      targets: ${{ steps.gen.outputs.targets }}
++    steps:
++      - id: gen
++        run: |
++          if [ "${{ github.event_name }}" = "pull_request" ]; then
++            echo 'targets=[{"target":"bun-linux-x64","smoke":true}]' >> "$GITHUB_OUTPUT"
++          else
++            echo 'targets=[{"target":"bun-windows-x64","smoke":false},{"target":"bun-darwin-arm64","smoke":false},{"target":"bun-darwin-x64","smoke":false},{"target":"bun-linux-x64","smoke":true},{"target":"bun-linux-arm64","smoke":false},{"target":"bun-linux-x64-musl","smoke":false},{"target":"bun-linux-arm64-musl","smoke":false}]' >> "$GITHUB_OUTPUT"
++          fi
++
++  build:
++    name: Compile ${{ matrix.target }}
++    needs: set-matrix
++    runs-on: ubuntu-latest
++    strategy:
++      fail-fast: false
++      matrix:
++        include: ${{ fromJSON(needs.set-matrix.outputs.targets) }}
++    steps:
++      - name: Checkout code
++        uses: actions/checkout@v6
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v6
++        with:
++          node-version: 24
++
++      - name: Setup Bun
++        uses: oven-sh/setup-bun@v2
++        with:
++          bun-version: ${{ env.BUN_VERSION }}
++
++      - name: Install dependencies
++        run: bun install
++
++      # Regenerate the embed manifest INSIDE the job so every target embeds freshly
++      # generated content and we never rely on the committed generated file. The
++      # generator is deterministic (stable content fingerprint), so every target in
++      # the matrix embeds byte-identical assets. The fingerprint is printed for audit.
++      - name: Regenerate embedded asset manifest
++        run: bun scripts/gen-embedded-assets.mjs
++
++      - name: Compile ${{ matrix.target }}
++        run: |
++          mkdir -p dist
++          bun build --compile --target=${{ matrix.target }} \
++            --define FORGE_COMPILED=true \
++            ./bin/forge.js \
++            --outfile "dist/forge-${{ matrix.target }}"
++
++      # Bun appends `.exe` for the windows target, so resolve the real filename.
++      - name: Assert artifact produced and non-empty
++        id: artifact
++        run: |
++          BIN=$(ls dist/forge-${{ matrix.target }}* | head -n1)
++          if [ ! -s "$BIN" ]; then
++            echo "::error::Binary $BIN is missing or empty"
++            exit 1
++          fi
++          SIZE=$(stat -c%s "$BIN")
++          echo "Produced $BIN ($SIZE bytes)"
++          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
++
++      # Smoke test only the target the runner can actually execute. ubuntu-latest is
++      # glibc x64, so bun-linux-x64 runs natively. Other targets (darwin/*, arm64,
++      # windows, musl) cannot run on this runner — they are artifact-only here and
++      # their runtime is exercised by the npm-side test matrix + downstream install.
++      - name: Smoke test (native linux-x64)
++        if: matrix.smoke
++        run: |
++          BIN="$(realpath "${{ steps.artifact.outputs.bin }}")"
++          chmod +x "$BIN"
++
++          echo "== $BIN --version =="
++          OUT="$("$BIN" --version)"
++          echo "$OUT"
++          echo "$OUT" | grep -q "Forge v" || { echo "::error::--version did not print 'Forge v'"; exit 1; }
++
++          echo "== $BIN setup --quick --yes (temp git dir) =="
++          TMP="$(mktemp -d)"
++          git -C "$TMP" init -q
++          ( cd "$TMP" && "$BIN" setup --quick --yes )
++          echo "setup --quick exit=$?"
++
++          echo "== $BIN ready (temp git dir) =="
++          ( cd "$TMP" && "$BIN" ready ) \
++            && echo "ready OK" \
++            || echo "note: 'ready' returned non-zero (expected outside a claimed-work context) — non-fatal for smoke"
++
++      - name: Upload binary artifact
++        uses: actions/upload-artifact@v7
++        with:
++          name: forge-${{ matrix.target }}
++          path: dist/forge-${{ matrix.target }}*
++          if-no-files-found: error
++          retention-days: 7
++
++  # Authoritative drift gate: parity-check self-builds the native binary via
++  # `bun run build:binary` and asserts the npm setup tree and the binary setup tree
++  # are byte-identical. A drift between npm and binary assets fails CI here. This
++  # also exercises the native binary end-to-end (it runs `setup --quick --yes`).
++  parity:
++    name: npm-vs-binary parity
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout code
++        uses: actions/checkout@v6
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v6
++        with:
++          node-version: 24
++
++      - name: Setup Bun
++        uses: oven-sh/setup-bun@v2
++        with:
++          bun-version: ${{ env.BUN_VERSION }}
++
++      - name: Install dependencies
++        run: bun install
++
++      - name: Run parity check (npm vs compiled binary)
++        run: bun scripts/parity-check.mjs
+diff --git a/docs/work/2026-07-13-binary-step3/design.md b/docs/work/2026-07-13-binary-step3/design.md
+new file mode 100644
+index 00000000..92ec2298
+--- /dev/null
++++ b/docs/work/2026-07-13-binary-step3/design.md
+@@ -0,0 +1,94 @@
++# Step 3 — CI cross-compile job: 5 targets + per-platform smoke test
++
++**Issue:** f13b5073-3b9f-4098-bbe4-432b7bd69485
++**Epic:** 6f11d483-5cf0-4fce-86a4-42c82dff0897 ([dist] Single static binary via `bun build --compile`)
++**Deliverable:** `.github/workflows/build-binary.yml`
++**Date:** 2026-07-13
++
++## Goal
++
++Produce distributable `forge` binaries for every canonical target on CI, smoke-test
++what the runner can execute, gate on npm-vs-binary parity, and upload each binary as
++a named workflow artifact. This step **produces + verifies + uploads** only. It does
++**not** wire the GitHub Release upload — that is Step 4 (50afbc47).
++
++## Key finding: Bun cross-compiles all targets from ONE runner
++
++Proven locally on a Windows host (bun 1.3.6). A single machine compiled the native
++host target **and** all six cross targets successfully:
++
++| Target | Result | Size |
++|--------|--------|------|
++| bun-windows-x64 (host `forge-bin-host.exe`) | compiled | 116 MB |
++| bun-linux-x64 | compiled | 104 MB |
++| bun-linux-arm64 | compiled | 97 MB |
++| bun-darwin-arm64 | compiled | 61 MB |
++| bun-darwin-x64 | compiled | 67 MB |
++| bun-linux-x64-musl | compiled | 97 MB |
++| bun-linux-arm64-musl | compiled | 93 MB |
++
++Each compile took ~3–5 s. **No target needs its own OS runner** — the workflow is a
++single `ubuntu-latest` matrix job that cross-compiles via `--target=<t>`. Musl
++variants are cheap, so they are included.
++
++## Architecture
++
++Three jobs:
++
++1. **`set-matrix`** — emits the target matrix as JSON. PR events → `[bun-linux-x64]`
++   only (keep PR cost low). `workflow_dispatch` + release tags → all 7 targets. The
++   `build` job consumes it via `fromJSON(needs.set-matrix.outputs.targets)`.
++2. **`build`** (matrix over targets) — checkout → setup-node/bun → `bun install` →
++   **regenerate embed manifest** (`bun scripts/gen-embedded-assets.mjs`) → compile
++   `bun build --compile --target=<t> --define FORGE_COMPILED=true ./bin/forge.js` →
++   assert artifact non-empty → smoke test (only `matrix.smoke` targets) → upload the
++   binary as artifact `forge-<target>`.
++3. **`parity`** — runs `bun scripts/parity-check.mjs`, which self-builds the native
++   binary (`bun run build:binary`) and asserts the npm setup tree and the binary
++   setup tree are byte-identical. This is the authoritative drift gate and also
++   exercises the native binary end-to-end (`setup --quick --yes`).
++
++### Why regenerate the manifest inside the job
++
++The workflow never relies on the committed `lib/embedded-assets.generated.mjs`. Each
++`build` leg regenerates it fresh. The generator is deterministic (stable content
++fingerprint — locally `56c0d68b945b31d9`), so every target in the matrix embeds
++byte-identical content. The fingerprint is printed for audit.
++
++## Triggers
++
++| Event | Targets | Smoke | Parity |
++|-------|---------|-------|--------|
++| `pull_request` (paths: bin/lib/scripts/package.json/bunfig.toml/this workflow) | bun-linux-x64 only | yes (linux-x64) | yes |
++| `workflow_dispatch` | all 7 | linux-x64 | yes |
++| `push` tag `v*` (release build) | all 7 | linux-x64 | yes |
++
++## Smoke coverage (honest gap statement)
++
++`ubuntu-latest` is glibc x64, so only **bun-linux-x64** runs natively and gets a real
++smoke test: `--version` (asserts `Forge v…`) + `setup --quick --yes` in a temp git
++dir + `ready`. All other targets (windows, darwin/arm64/x64, linux-arm64, both musl)
++**cannot execute on the runner** and are **artifact-only** here: the workflow asserts
++each produced binary exists and is non-empty, but does not run it. Their runtime is
++covered separately by the npm-side cross-OS test matrix (`test.yml`) and by downstream
++install/use. Adding real darwin/windows/arm smoke would require dedicated OS runners
++(and QEMU for arm) — deferred as a possible follow-up, not required for this step.
++
++## Local proof (commands from the workflow, run on the host)
++
++- `bun scripts/gen-embedded-assets.mjs` → `Embedded 145 asset file(s), fingerprint 56c0d68b945b31d9`
++- `bun build --compile --target=<t> …` → all 7 targets compiled (table above)
++- `./forge-bin-host.exe --version` → `Forge v0.1.0-beta.1` (exit 0)
++- `bun scripts/parity-check.mjs` → `Parity: 220 npm files vs 220 binary files. PARITY OK — byte-identical`
++
++## Conventions followed
++
++Matches existing workflows: `actions/checkout@v6`, `oven-sh/setup-bun@v2` (bun
++`1.3.12`), `actions/setup-node@v6` (node 24), `actions/upload-artifact@v7`,
++`permissions: contents: read`, `concurrency` group with cancel-in-progress, path
++filters on PR.
++
++## Out of scope (filed elsewhere)
++
++- GitHub Release upload / install script → Step 4 (50afbc47).
++- Binary bloat from embedding all of `scripts/` → 7a584ad4.
+-- 
+2.51.0.windows.1
+

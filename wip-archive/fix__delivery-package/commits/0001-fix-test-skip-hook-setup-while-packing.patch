@@ -1,0 +1,223 @@
+From 7371a8a5896d0b29681ebbef5953251e2bf93ac2 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 16:18:14 +0530
+Subject: [PATCH] fix(test): skip hook setup while packing
+
+npm 10 runs prepare during npm pack even with ignore-scripts.
+
+Skip only pack-time Lefthook setup, preserve development installs, and record bounded diagnostics.
+
+Hosted Windows proof remains pending.
+---
+ .../2026-09-18-delivery-package/decisions.md  | 31 +++++++
+ package.json                                  |  2 +-
+ .../standalone-package-smoke.test.js          | 91 +++++++++++++++++--
+ 3 files changed, 113 insertions(+), 11 deletions(-)
+ create mode 100644 docs/work/2026-09-18-delivery-package/decisions.md
+
+diff --git a/docs/work/2026-09-18-delivery-package/decisions.md b/docs/work/2026-09-18-delivery-package/decisions.md
+new file mode 100644
+index 00000000..c75168c4
+--- /dev/null
++++ b/docs/work/2026-09-18-delivery-package/decisions.md
+@@ -0,0 +1,31 @@
++# Windows standalone package installation reliability
++
++- Issue: `48386b65-4cab-4e75-9363-07a352e5997e`
++- Actor: `sol-delivery-package-20260918`
++- Authorized scope: diagnose the current Windows package smoke failure and implement only a measured root-cause fix. No push or PR.
++- Baseline: `origin/master` and branch HEAD at `bd1abbd8ab63b590fd916dad379e0a575542fcc7`; worktree clean at lane start.
++- Historical evidence: hosted Windows Node 22 root installation returned `status=null` near the 60-second test limit. This is historical evidence, not a local reproduction.
++- Local condition: Windows with Node v24.18.0, Bun 1.4.2, npm 11.16.0, and Git 2.51.0.windows.1.
++- Diagnosis rule: measure pack, install, installed CLI version, and setup independently; record bounded outputs and child termination fields. Vary one suspected cause per experiment and keep the real fresh-directory install and installed CLI journey.
++- Repeat plan: after a proven fix, run three consecutive real package journeys and report every elapsed time plus cache/network conditions. Three runs are a bounded confidence sample, not flake certification.
++
++## Diagnosis
++
++- The historical hosted job used Node v22.23.2, npm 10.9.8, and Bun 1.4.2. Its 60-second test deadline killed the active synchronous npm child: `status=null`, `signal=SIGTERM`, one dangling process killed. A 50 ms focused probe reproduced that termination signature.
++- A verified portable Node v22.23.2/npm 10.9.8 control passed only narrowly at 59,565 ms: pack 11,475 ms, install 27,701 ms, installed CLI version 8,542 ms, setup 11,120 ms. The portable runtime was isolated from machine configuration.
++- npm 10 ran the root `prepare` lifecycle during `npm pack --ignore-scripts`; the command invoked `lefthook install` while building the tarball. A tiny marker package proved that `--ignore-scripts` and `npm_config_ignore_scripts=true` do not suppress `prepare` in this runtime.
++- Same-artifact shim/direct ABBA timings were 6,580/472/582/689 ms. The warmed shim matched direct Node, so persistent shim overhead was rejected. Cold process/file-cache cost remained observable but was not changed.
++
++## Decision
++
++- Guard the existing root `prepare` command when `npm_command=pack`. Preserve normal development hook installation and the existing nonfatal diagnostic when Lefthook is unavailable.
++- Keep the existing 60-second test limit and existing child behavior. The focused helper regression injects a child timeout to prove null/`ETIMEDOUT` diagnostics without introducing a new install-budget policy.
++- Record each operation's elapsed time, status, signal, error, and the last 2,000 characters of stdout/stderr. The tarball continues to contain 663 entries and bundle `@forge/contracts`, `@forge/memory`, and `@forge/flow`.
++
++## Evidence
++
++- RED: the controlled root-prepare test proved both branches: development invoked the mock Lefthook, while pack incorrectly invoked it too. The pack assertion failed.
++- GREEN: the same test now invokes the mock Lefthook for development and skips it for pack. The child-bound test returns `status=null`, `signal=SIGTERM`, and `ETIMEDOUT` before its test deadline; a separate status-7 child proves bounded stdout and stderr preservation.
++- Post-fix exact Node 22/npm 10 sample, unchanged 60-second limit: 20,775 ms, 21,504 ms, 22,159 ms. Phase timings were pack 2,568/5,374/5,615 ms; install 6,376/6,107/7,061 ms; version 8,419/6,338/6,086 ms; setup 2,951/3,062/2,918 ms. All child statuses were zero with null signal/error.
++- The post-fix sample used a cached portable runtime and warm npm/network/filesystem state on a lightly loaded machine. A focused renderer test briefly overlapped part of the repeat window. The cold pre-fix versus warm post-fix total delta is not attributed solely to the guard, and three passes are not flake certification.
++- Hosted Windows Node 22 final-head and merged-commit checks remain required. Local Node 24 and portable Node 22 evidence does not prove hosted reliability.
+diff --git a/package.json b/package.json
+index 5bd60304..4e82ffb0 100644
+--- a/package.json
++++ b/package.json
+@@ -23,7 +23,7 @@
+     "prebuild": "node scripts/gen-command-manifest.js",
+     "lint": "eslint . --max-warnings 0",
+     "check": "node scripts/validate.js",
+-    "prepare": "lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
++    "prepare": "node -e \"process.exit(process.env.npm_command === 'pack' ? 0 : 1)\" || lefthook install || echo 'Note: lefthook not installed. Git hooks disabled. Run: bun add -d lefthook'",
+     "setup": "node ./bin/forge.js setup",
+     "help": "node ./bin/forge.js --help",
+     "gen:assets": "bun scripts/gen-embedded-assets.mjs",
+diff --git a/test/integration/standalone-package-smoke.test.js b/test/integration/standalone-package-smoke.test.js
+index 6fa57467..7df6367e 100644
+--- a/test/integration/standalone-package-smoke.test.js
++++ b/test/integration/standalone-package-smoke.test.js
+@@ -10,9 +10,28 @@ const { spawnSync } = require("node:child_process");
+ 
+ const ROOT = path.resolve(__dirname, "../..");
+ const created = [];
++const OUTPUT_LIMIT = 2000;
++
++function runOperation(label, command, args, options) {
++  console.error(`[standalone-package] ${label}: start`);
++  const started = Date.now();
++  const result = spawnSync(command, args, options);
++  const diagnostic = {
++    label,
++    elapsedMs: Date.now() - started,
++    status: result.status,
++    signal: result.signal,
++    error: result.error ? { code: result.error.code, message: result.error.message } : null,
++    stdout: String(result.stdout || "").slice(-OUTPUT_LIMIT),
++    stderr: String(result.stderr || "").slice(-OUTPUT_LIMIT),
++  };
++  result.diagnostic = diagnostic;
++  console.error(`[standalone-package] ${JSON.stringify(diagnostic)}`);
++  return result;
++}
+ 
+-function npm(args, cwd, invocation) {
+-  return spawnSync(invocation.command, [...invocation.prefix, ...args], {
++function npm(args, cwd, invocation, label) {
++  return runOperation(label, invocation.command, [...invocation.prefix, ...args], {
+     cwd,
+     encoding: "utf8",
+     env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
+@@ -26,7 +45,8 @@ function parsePackOutput(output) {
+ }
+ 
+ function pack(packageDirectory, destination, invocation) {
+-  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation);
++  const packageName = path.basename(packageDirectory) || "root";
++  const result = npm(["pack", "--json", "--ignore-scripts", "--pack-destination", destination], packageDirectory, invocation, `pack:${packageName}`);
+   expect(result.status, result.stderr).toBe(0);
+   return path.join(destination, parsePackOutput(result.stdout)[0].filename);
+ }
+@@ -80,11 +100,11 @@ function isolatedEnvironment(root, platformNode) {
+   return env;
+ }
+ 
+-function runInstalledForge(packageRoot, args, cwd, platformNode, env) {
++function runInstalledForge(packageRoot, args, cwd, platformNode, env, label) {
+   const shim = path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "forge.cmd" : "forge");
+-  if (process.platform !== "win32") return spawnSync(shim, args, { cwd, encoding: "utf8", env });
++  if (process.platform !== "win32") return runOperation(label, shim, args, { cwd, encoding: "utf8", env });
+   const command = `""${shim}" ${args.join(" ")}"`;
+-  return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
++  return runOperation(label, process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", command], {
+     cwd,
+     encoding: "utf8",
+     env,
+@@ -97,10 +117,61 @@ afterEach(() => {
+ });
+ 
+ describe("standalone product packages", () => {
++  test("bounds child operations before the test deadline and preserves diagnostics", () => {
++    const timedOut = runOperation("test:timeout", process.execPath, ["-e", "setTimeout(() => {}, 250)"], {
++      encoding: "utf8",
++      timeout: 50,
++    });
++    expect(timedOut.status).toBeNull();
++    expect(timedOut.error?.code).toBe("ETIMEDOUT");
++    expect(timedOut.diagnostic.stdout.length).toBeLessThanOrEqual(OUTPUT_LIMIT);
++
++    const nonzero = runOperation("test:nonzero", process.execPath, ["-e", `process.stdout.write("x".repeat(${OUTPUT_LIMIT + 100})); process.stderr.write("failed"); process.exit(7)`], {
++      encoding: "utf8",
++      timeout: 2000,
++    });
++    expect(nonzero.status).toBe(7);
++    expect(nonzero.diagnostic.stdout).toHaveLength(OUTPUT_LIMIT);
++    expect(nonzero.diagnostic.stderr).toBe("failed");
++  }, 3000);
++
+   test("parses npm 10 JSON after package lifecycle output", () => {
+     expect(parsePackOutput('sync hooks: ok\n[{"filename":"forge.tgz"}]\n')[0].filename).toBe("forge.tgz");
+   });
+ 
++  test("root prepare skips package packing and retains development hook setup", () => {
++    const temporary = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "forge prepare-"));
++    created.push(temporary);
++    const sentinel = path.join(temporary, "lefthook-called");
++    const mock = path.join(temporary, process.platform === "win32" ? "lefthook.cmd" : "lefthook");
++    fs.writeFileSync(mock, process.platform === "win32"
++      ? '@echo off\r\n>"%FORGE_PREPARE_SENTINEL%" echo called\r\n'
++      : '#!/bin/sh\nprintf called > "$FORGE_PREPARE_SENTINEL"\n');
++    if (process.platform !== "win32") fs.chmodSync(mock, 0o755);
++    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
++    const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "PATH";
++    const runPrepare = (npmCommand) => spawnSync(manifest.scripts.prepare, {
++      cwd: ROOT,
++      encoding: "utf8",
++      shell: true,
++      env: {
++        ...process.env,
++        [pathKey]: [temporary, process.env[pathKey]].filter(Boolean).join(path.delimiter),
++        FORGE_PREPARE_SENTINEL: sentinel,
++        npm_command: npmCommand,
++      },
++    });
++
++    const development = runPrepare("install");
++    expect(development.status, development.stderr).toBe(0);
++    expect(fs.existsSync(sentinel)).toBeTrue();
++    fs.rmSync(sentinel);
++
++    const packing = runPrepare("pack");
++    expect(packing.status, packing.stderr).toBe(0);
++    expect(fs.existsSync(sentinel)).toBeFalse();
++  });
++
+   test("packs and installs the root CLI with its runtime workspaces", () => {
+     const platformNode = resolvePlatformNode();
+     const npmInvocation = resolveNpmInvocation(platformNode);
+@@ -110,10 +181,10 @@ describe("standalone product packages", () => {
+     const env = isolatedEnvironment(path.join(temporary, "home"), platformNode);
+     const rootTarball = pack(ROOT, temporary, npmInvocation);
+ 
+-    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation);
++    const install = npm(["install", "--ignore-scripts", rootTarball], temporary, npmInvocation, "install:root");
+     expect(install.status, install.stderr).toBe(0);
+ 
+-    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env);
++    const version = runInstalledForge(temporary, ["--version"], temporary, platformNode, env, "cli:version");
+     expect(version.status, version.stderr).toBe(0);
+     expect(version.stdout).toContain("Forge v");
+ 
+@@ -121,7 +192,7 @@ describe("standalone product packages", () => {
+     fs.mkdirSync(project);
+     const init = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" });
+     expect(init.status, init.stderr).toBe(0);
+-    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env);
++    const setup = runInstalledForge(temporary, ["setup", "--quick", "--yes"], project, platformNode, env, "cli:setup");
+     expect(setup.status, `${setup.stdout}\n${setup.stderr}`).toBe(0);
+   }, 60000);
+ 
+@@ -135,7 +206,7 @@ describe("standalone product packages", () => {
+     const memoryTarball = pack(path.join(ROOT, "packages", "memory"), temporary, npmInvocation);
+     const flowTarball = pack(path.join(ROOT, "packages", "flow"), temporary, npmInvocation);
+ 
+-    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation);
++    const install = npm(["install", "--ignore-scripts", contractsTarball, memoryTarball, flowTarball], temporary, npmInvocation, "install:products");
+     expect(install.status, install.stderr).toBe(0);
+ 
+     for (const [packageName, directory] of [["contracts", "packages/contracts"], ["memory", "packages/memory"], ["flow", "packages/flow"]]) {
+-- 
+2.51.0.windows.1
+

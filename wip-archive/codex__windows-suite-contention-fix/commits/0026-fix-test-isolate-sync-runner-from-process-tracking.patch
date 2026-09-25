@@ -1,0 +1,54 @@
+From 9a17ae7ad8d230b2c9ea6297ee68320f1dc0eb36 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 02:33:41 +0530
+Subject: [PATCH] fix(test): isolate sync runner from process tracking
+
+---
+ scripts/test.js                  | 9 ++++++---
+ test/scripts/test-runner.test.js | 1 +
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/test.js b/scripts/test.js
+index 270d3912..5ebd9215 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -428,7 +428,8 @@ function runCommand(command, args, options = {}, spawn = defaultSpawn) {
+  * @returns {number} Exit status for the executed plan.
+  */
+ async function runTestExecutionPlan(plan, deps = {}) {
+-  const spawn = deps.spawn || (deps.spawnSync ? (...args) => {
++  const usesSpawnSyncAdapter = !deps.spawn && typeof deps.spawnSync === 'function';
++  const spawn = deps.spawn || (usesSpawnSyncAdapter ? (...args) => {
+     const child = new EventEmitter();
+     let result;
+     try {
+@@ -446,10 +447,12 @@ async function runTestExecutionPlan(plan, deps = {}) {
+   } : defaultSpawn);
+   const pkgManager = deps.pkgManager || detectPackageManager();
+   const env = deps.env || stripGitHookEnv(process.env);
+-  const processTree = deps.processTree || createProcessTree({
++  // The injected synchronous runner has already exited when its adapter returns,
++  // so there is no live child to register or reap through host process probes.
++  const processTree = deps.processTree || (usesSpawnSyncAdapter ? {} : createProcessTree({
+     env,
+     platform: deps.platform,
+-  });
++  }));
+   let signal = null;
+   const removeSignalHandlers = typeof processTree.installSignalHandlers === 'function'
+     ? processTree.installSignalHandlers((received) => {
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index b7576e54..b960ba52 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -481,6 +481,7 @@ describe('scripts/test pre-push runner', () => {
+     ]);
+     expect(spawnSync.calls[1].command).toBe('bun');
+     expect(spawnSync.calls[1].args).toEqual(['test', '--timeout', '15000', 'test-env/']);
++    expect(Object.keys(spawnSync.calls[0].options.env)).not.toContain('FORGE_TEST_PROCESS_MANIFEST');
+   });
+ 
+   test('runPrePushTests runs full suite when only .claude/commands/ docs changed (A0d: commands surface removed)', async () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,97 @@
+From 225ad4d2269e4ff821ff4eb5fb4a8b0942fb4c34 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 17:03:15 +0530
+Subject: [PATCH] =?UTF-8?q?fix(kernel):=20make=20findExistingLink=20state-?=
+ =?UTF-8?q?aware=20(R5=20=E2=80=94=20third=20resolver)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+backing-issue.findExistingLink (used by `forge worktree create`) still
+matched branch->issue linkage rows with no state filter — the identical
+state-blind pattern fixed in enforce-stage.js + plan.js for be18881c, but this
+THIRD resolver was missed in #393. In the reused-branch scenario a superseded
+row would be treated as the existing link, binding the OLD issue.
+
+Same one-line predicate as the other two resolvers:
+`&& (row.state === 'active' || row.state == null)`. All THREE branch->issue
+resolvers are now state-aware and consistent.
+
+Test: test/workflow/b1-linkage-followups.test.js (RED-first) — findExistingLink
+ignores a superseded row for a reused branch, still matches an active row.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/kernel/backing-issue.js                |  8 +++++++-
+ test/workflow/b1-linkage-followups.test.js | 24 ++++++++++++++++++++++
+ 2 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/backing-issue.js b/lib/kernel/backing-issue.js
+index 39793542..44952ef4 100644
+--- a/lib/kernel/backing-issue.js
++++ b/lib/kernel/backing-issue.js
+@@ -171,7 +171,12 @@ function findExistingLink(driver, { worktreePath, branch }) {
+     }
+     if (typeof driver.listWorktrees === 'function') {
+       const rows = driver.listWorktrees() || [];
+-      const match = rows.find(row => row && row.branch === branch && row.issue_id);
++      // Match ACTIVE (live) rows only: a superseded/stale registration for a
++      // reused branch name must not be treated as the existing link (be18881c —
++      // the third resolver, kept consistent with resolveActiveIssueId and
++      // currentBranchIssueFromDriver). Tolerate a null state for legacy rows.
++      const match = rows.find(row => row && row.branch === branch && row.issue_id
++        && (row.state === 'active' || row.state == null));
+       if (match) return match;
+     }
+   } catch {
+@@ -298,6 +303,7 @@ module.exports = {
+   classifyBranch,
+   deriveTitle,
+   extractEncodedIssueId,
++  findExistingLink,
+   matchesIgnoreGlob,
+   DEFAULT_PROTECTED_BRANCHES,
+   DEFAULT_IGNORE_GLOBS,
+diff --git a/test/workflow/b1-linkage-followups.test.js b/test/workflow/b1-linkage-followups.test.js
+index bba4aeaf..d67fa8d9 100644
+--- a/test/workflow/b1-linkage-followups.test.js
++++ b/test/workflow/b1-linkage-followups.test.js
+@@ -25,6 +25,7 @@ const {
+   registerBranchIssueLinkage,
+   currentBranchIssueFromDriver,
+ } = require('../../lib/commands/plan');
++const { findExistingLink } = require('../../lib/kernel/backing-issue');
+ const { createLocalBroker } = require('../../lib/kernel/broker');
+ const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
+ 
+@@ -187,4 +188,27 @@ describe('B1-followup linkage + stage-gate residuals', () => {
+     // No UUID in the branch name, so a state-aware resolver returns null.
+     expect(currentBranchIssueFromDriver(staleDriver, 'feat/slug-guard')).toBe(null);
+   });
++
++  // --- R5 -------------------------------------------------------------------
++  // The THIRD branch->issue resolver (backing-issue.findExistingLink, used by
++  // `forge worktree create`) must be state-aware like the other two, so a reused
++  // branch does not treat a superseded row's OLD issue as the existing link.
++  test('R5: findExistingLink ignores a superseded row for a reused branch', () => {
++    const staleDriver = {
++      listWorktrees: () => [
++        { branch: 'feat/reused', issue_id: 'issue-old', state: 'superseded' },
++      ],
++    };
++    expect(findExistingLink(staleDriver, { branch: 'feat/reused' })).toBe(null);
++  });
++
++  test('R5: findExistingLink still matches an ACTIVE row for the branch', () => {
++    const liveDriver = {
++      listWorktrees: () => [
++        { branch: 'feat/reused', issue_id: 'issue-new', state: 'active' },
++      ],
++    };
++    const match = findExistingLink(liveDriver, { branch: 'feat/reused' });
++    expect(match && match.issue_id).toBe('issue-new');
++  });
+ });
+-- 
+2.51.0.windows.1
+

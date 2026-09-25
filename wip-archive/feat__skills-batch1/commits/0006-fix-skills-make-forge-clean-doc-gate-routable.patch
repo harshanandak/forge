@@ -1,0 +1,40 @@
+From 599f3fdbd63987b5248abad9fc5370e634cf56e9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 15:21:31 +0530
+Subject: [PATCH] fix(skills): make forge clean + doc-gate routable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Round-3 review (Codex): coverage.json maps these commands (correctly — the new
+skills own them) but the deterministic router had no cue, so forge skill for
+could not reach them.
+- using-forge.js: worktree gains 'forge clean' anchor; gates gains 'doc-gate' /
+  'forge doc-gate' anchors. Specific command literals, no over-match.
+- verified forge clean -> worktree, doc-gate/forge doc-gate -> gates, while
+  'run validation in this worktree' still routes away. Regen worktree/gates
+  scorecards; .agents synced by hook.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/using-forge.js | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index bbc58119..a5e1ee41 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -182,8 +182,8 @@ const INTENT_RULES = Object.freeze([
+   { skill: 'claim-safety', weight: 2, keywords: ['claim an issue', 'claim the issue', 'prove ownership', 'own the lease', 'lease'] },
+   { skill: 'smith', weight: 2, keywords: ['end to end', 'end-to-end', 'drive one issue', 'plan to merged', 'whole issue', 'from plan to pr'] },
+   { skill: 'shepherd', weight: 3, keywords: ['monitor a pr', 'shepherd', 'watch the pr', 'watch my pr', 'ci status', 'poll the pr', 'pr checks', 'pr blocked', 'blocking my pr', 'blocking the pr', 'pr merging', 'pr not merging', 'ready to merge', 'merge ready', 'pr check failed', 'pr check went red', 'keep an eye on my pr', 'keep an eye on the pr', 'keep an eye on my prs', 'babysit my pr', 'babysit the pr', 'keep watching my pr', 'keep watching the pr', 'pr verdict', 'shepherd daemon', 'watch the pull request'] },
+-  { skill: 'worktree', weight: 3, keywords: ['forge worktree', 'create a worktree', 'worktree for', 'worktree list', 'isolated branch', 'isolated worktree', 'isolated checkout', 'spin up a worktree', 'work on another pr', 'merged worktrees', 'clean up merged', 'clean merged', 'orphaned worktree', 'remove the worktree', 'worktree miss', 'worktree dependencies'] },
+-  { skill: 'gates', weight: 3, keywords: ['disable the gate', 'disable a gate', 'enable a gate', 'enable the gate', 'toggle a gate', 'toggle the gate', 'tdd gate', 'disable the tdd', 'turn off tdd', 'tdd enforcement', 'tdd intent', 'kernel tracking rail', 'auto shepherd rail', 'loosen enforcement', 'approve the human gate', 'approve a human gate', 'human gate', 'forge control', 'forge gate', 'forge gate check', 'gate check', 'gate status'] },
++  { skill: 'worktree', weight: 3, keywords: ['forge worktree', 'create a worktree', 'worktree for', 'worktree list', 'isolated branch', 'isolated worktree', 'isolated checkout', 'spin up a worktree', 'work on another pr', 'merged worktrees', 'clean up merged', 'clean merged', 'orphaned worktree', 'remove the worktree', 'worktree miss', 'worktree dependencies', 'forge clean'] },
++  { skill: 'gates', weight: 3, keywords: ['disable the gate', 'disable a gate', 'enable a gate', 'enable the gate', 'toggle a gate', 'toggle the gate', 'tdd gate', 'disable the tdd', 'turn off tdd', 'tdd enforcement', 'tdd intent', 'kernel tracking rail', 'auto shepherd rail', 'loosen enforcement', 'approve the human gate', 'approve a human gate', 'human gate', 'forge control', 'forge gate', 'forge gate check', 'gate check', 'gate status', 'doc-gate', 'forge doc-gate'] },
+   { skill: 'research', weight: 2, keywords: ['research', 'best practices', 'investigate the landscape', 'deep research', 'compare libraries'] },
+   { skill: 'parallel-deep-research', weight: 2, keywords: ['market research', 'competitive research', 'competitor analysis', 'competitive analysis', 'competitive landscape', 'market landscape'] },
+   { skill: 'sonarcloud', weight: 2, keywords: ['sonarcloud', 'sonar', 'quality gate', 'code smell', 'code smells', 'cognitive complexity'] },
+-- 
+2.51.0.windows.1
+

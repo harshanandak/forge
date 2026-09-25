@@ -1,0 +1,304 @@
+From 61ed6d21cfe846d90cd452c8c1137e5a18b1ca9c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 13:43:00 +0530
+Subject: [PATCH] fix(hooks): scope merge exemptions to the canonical upstream
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                          |  2 +-
+ scripts/protected-state-check.js      | 97 +++++++++++++++++++++++----
+ test/protected-state-surfaces.test.js | 64 ++++++++++++++----
+ 3 files changed, 138 insertions(+), 25 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 41fc91d7..f2372718 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
+-- **The protected-state pre-commit check is now merge-aware.** While a merge is in progress (per-worktree `MERGE_HEAD`), a staged protected path is exempt only when its staged blob is byte-identical to that path on `HEAD`, or on a `MERGE_HEAD` that is reachable from a remote-tracking ref — content already published upstream, carried in by the merge rather than edited. A local-only merge side earns no exemption, `bun.lock` still requires its regeneration proof, paths differing from every trusted revision stay blocked, the non-merge path is unchanged, and any failed git query fails closed. (issue `f6d43eb1-249d-4d81-b679-32502ffa28c2`)
++- **The protected-state pre-commit check is now merge-aware.** While a merge is in progress (per-worktree `MERGE_HEAD`), a staged protected path is exempt only when its staged blob is byte-identical to that path on `HEAD`, or on a `MERGE_HEAD` contained in the repository's canonical upstream ref (the current branch's upstream remote, else `origin`, then that remote's default branch) — content already published on the line this repo integrates into, carried in by the merge rather than edited. A local-only branch, an untrusted contributor remote, or a hand-created `refs/remotes/*` ref earns no exemption, an unresolvable `HEAD` grants no exemption context at all, `bun.lock` still requires its regeneration proof, paths differing from every trusted revision stay blocked, the non-merge path is unchanged, and any failed git query fails closed. (issue `f6d43eb1-249d-4d81-b679-32502ffa28c2`)
+ - **The targeted PR lane's full-suite fallback now uses the lane-aware runner.** When the execution planner returns `mode=full`, the follow-up job runs `scripts/test-full-suite.js` instead of a raw `bun test test/`, so subprocess-heavy files get resource-lane separation and the worker budget the full matrix already had — closing the Windows-only spawn failures that hit only this lane.
+ - **Full-suite validation now respects the computed worker budget.** Resource-aware lanes share the reserved worker pool by default, and `forge validate` uses that runner when available, preventing mixed unit and subprocess shards from oversubscribing Windows runners. (PR #545, issue `8cb52d50-24ea-4c69-8579-b30a0f1ee467`)
+ - **Windows legacy-claim repair now preserves owner-only ACL guarantees without PowerShell transport stalls.** The operator-only repair path uses bounded, privacy-safe Windows security-descriptor verification, exact owner/DACL replacement, Unicode-safe targets, transaction-isolated async hardening, and fail-closed timeout cleanup. (#538, issue `eb2c56e8-5054-4542-8f02-3f9fe635fd2d`)
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 0eaeee30..94fb7e04 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -141,11 +141,79 @@ function objectIdForSpec(spec) {
+ 	}
+ }
+ 
+-// True when `commit` is reachable from at least one remote-tracking ref, i.e.
+-// the bytes are already published upstream and passed the gate there.
+-function isPublishedUpstream(commit) {
++// Resolve the repository's single canonical upstream ref, deterministically:
++// the current branch's configured upstream remote (else `origin`), then that
++// remote's default branch (`refs/remotes/<remote>/HEAD`, falling back to the
++// branch's configured upstream and then the conventional default names).
++// Returns a fully-qualified ref name, or null when it cannot be established.
++function canonicalUpstreamRef() {
++	let branch;
+ 	try {
+-		return gitCapture(['for-each-ref', '--count=1', '--contains', commit, '--format=%(refname)', 'refs/remotes']) !== '';
++		branch = gitCapture(['symbolic-ref', '--quiet', '--short', 'HEAD']);
++	} catch {
++		branch = '';
++	}
++
++	let remote = '';
++	if (branch) {
++		try {
++			remote = gitCapture(['config', '--get', `branch.${branch}.remote`]);
++		} catch {
++			remote = '';
++		}
++	}
++	if (!remote) remote = 'origin';
++	try {
++		const remotes = gitCapture(['remote']).split(/\r?\n/).map(line => line.trim());
++		if (!remotes.includes(remote)) return null;
++	} catch {
++		return null;
++	}
++
++	const candidates = [];
++	try {
++		const head = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
++		if (head) candidates.push(head);
++	} catch {
++		// no remote HEAD recorded; fall through to the configured upstream
++	}
++	if (branch) {
++		try {
++			const merge = gitCapture(['config', '--get', `branch.${branch}.merge`]);
++			if (merge.startsWith('refs/heads/')) {
++				candidates.push(`refs/remotes/${remote}/${merge.slice('refs/heads/'.length)}`);
++			}
++		} catch {
++			// branch has no configured upstream
++		}
++	}
++	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
++
++	for (const candidate of candidates) {
++		if (resolveCommit(candidate)) return candidate;
++	}
++	return null;
++}
++
++// True when `commit` is contained in the canonical upstream line — not merely
++// "some ref points at it". `--contains` over refs/remotes would accept an
++// untrusted contributor remote or a hand-written `git update-ref
++// refs/remotes/<anything>`; ancestry in the canonical ref is the property we
++// actually want (these bytes are already published on the branch this repo
++// integrates into, where the same gate ran).
++//
++// Honest limitation: refs under .git are locally writable, and anyone who can
++// write .git can disable this hook outright. This gate defends against
++// accidental and agent-authored protected edits and against merges from
++// untrusted contributor remotes. It is NOT a security boundary against a local
++// adversary — do not treat it as one.
++function isCanonicalUpstreamAncestor(commit, canonicalRef) {
++	if (!canonicalRef) return false;
++	try {
++		execFileSync('git', ['merge-base', '--is-ancestor', commit, canonicalRef], {
++			stdio: ['ignore', 'ignore', 'ignore'],
++		});
++		return true;
+ 	} catch {
+ 		return false;
+ 	}
+@@ -154,7 +222,7 @@ function isPublishedUpstream(commit) {
+ // A merge is in progress when the per-worktree MERGE_HEAD exists. `--git-path`
+ // resolves the correct (possibly linked-worktree) git dir. Returns null unless a
+ // merge is genuinely in progress and every recorded id resolves; `trustedSides`
+-// holds only those MERGE_HEAD commits already published on a remote-tracking ref.
++// holds only those MERGE_HEAD commits contained in the canonical upstream ref.
+ function readMergeProvenance() {
+ 	let mergeHeadPath;
+ 	try {
+@@ -176,9 +244,15 @@ function readMergeProvenance() {
+ 	if (ids.length === 0 || !ids.every(isValidGitObjectId)) return null;
+ 	const resolved = ids.map(id => resolveCommit(id));
+ 	if (resolved.some(commit => commit === null)) return null;
++	// HEAD anchors the "no net change" half of the predicate. If it cannot be
++	// resolved we know nothing about the commit being built, so there is no
++	// exemption context at all — fail closed rather than fall back to the sides.
++	const head = resolveCommit('HEAD');
++	if (!head) return null;
++	const canonicalRef = canonicalUpstreamRef();
+ 	return {
+-		head: resolveCommit('HEAD'),
+-		trustedSides: resolved.filter(commit => isPublishedUpstream(commit)),
++		head,
++		trustedSides: resolved.filter(commit => isCanonicalUpstreamAncestor(commit, canonicalRef)),
+ 	};
+ }
+ 
+@@ -187,9 +261,9 @@ function readMergeProvenance() {
+ // trusted provenance:
+ //   - staged blob === the blob at HEAD: no net change versus the branch being
+ //     committed onto, so there is no provenance question at all; or
+-//   - staged blob === the blob on a MERGE_HEAD that is reachable from a
+-//     remote-tracking ref: the bytes are already published upstream and cleared
+-//     the gate there.
++//   - staged blob === the blob on a MERGE_HEAD contained in the canonical
++//     upstream ref: the bytes are already published on the line this repo
++//     integrates into, where the same gate ran.
+ // A purely local merge side earns no exemption — otherwise anyone could smuggle a
+ // protected edit in on a local branch and merge it. The merge base is likewise not
+ // a permitted side: matching only the base means both sides were reverted, an edit.
+@@ -197,8 +271,7 @@ function readMergeProvenance() {
+ function createMergeExemption() {
+ 	const merge = readMergeProvenance();
+ 	if (!merge) return () => false;
+-	const trustedRevisions = [...(merge.head ? [merge.head] : []), ...merge.trustedSides];
+-	if (trustedRevisions.length === 0) return () => false;
++	const trustedRevisions = [merge.head, ...merge.trustedSides];
+ 	return file => {
+ 		const staged = objectIdForSpec(`:${file}`);
+ 		if (staged === null) return false;
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index d118fca6..c676383e 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -501,7 +501,8 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		fs.writeFileSync(path.join(root, relPath), content);
+ 	}
+ 
+-	// A repo with a real remote, so remote-tracking reachability is meaningful.
++	// A repo with a real origin and a recorded default branch, so the canonical
++	// upstream ref resolves the way a clone's would.
+ 	function initRepo(root) {
+ 		const remote = path.join(root, 'remote.git');
+ 		const work = path.join(root, 'work');
+@@ -515,13 +516,13 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		writeRepoFile(work, 'lib/safe.js', 'module.exports = 1;\n');
+ 		runGit(work, ['add', '.']);
+ 		runGit(work, ['commit', '--quiet', '-m', 'base']);
+-		runGit(work, ['push', '--quiet', 'origin', 'master']);
+-		runGit(work, ['fetch', '--quiet', 'origin']);
++		runGit(work, ['push', '--quiet', '-u', 'origin', 'master']);
++		runGit(work, ['remote', 'set-head', 'origin', 'master']);
+ 		return work;
+ 	}
+ 
+-	// Diverge `branch` with a workflow change, then merge it into a feature branch
+-	// without committing. `publish` decides whether that side ever reached origin.
++	// Commit a workflow change on `branch`, optionally publish it to the canonical
++	// upstream (origin/master), then merge it into a feature branch without committing.
+ 	function startMerge(work, { branch, publish }) {
+ 		runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+ 		runGit(work, ['checkout', '--quiet', '-B', branch, 'master']);
+@@ -529,7 +530,7 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		runGit(work, ['add', WORKFLOW]);
+ 		runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
+ 		if (publish) {
+-			runGit(work, ['push', '--quiet', 'origin', `${branch}:${branch}`]);
++			runGit(work, ['push', '--quiet', 'origin', `${branch}:master`]);
+ 			runGit(work, ['fetch', '--quiet', 'origin']);
+ 		}
+ 		runGit(work, ['checkout', '--quiet', 'feature']);
+@@ -547,11 +548,11 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		});
+ 	}
+ 
+-	test('allows a merge whose protected blob matches a remote-tracking-reachable MERGE_HEAD', () => {
++	test('allows a merge whose protected blob matches a MERGE_HEAD in the canonical upstream', () => {
+ 		const root = createTempDir();
+ 		try {
+ 			const work = initRepo(root);
+-			startMerge(work, { branch: 'published', publish: true });
++			startMerge(work, { branch: 'upstream-work', publish: true });
+ 			const result = runCheck(work);
+ 			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
+ 			expect(result.status).toBe(0);
+@@ -560,6 +561,30 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		}
+ 	}, 60_000);
+ 
++	test('blocks a merge whose protected blob is only reachable from a hand-created remote-tracking ref', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
++			runGit(work, ['checkout', '--quiet', '-B', 'attacker-branch', 'master']);
++			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
++			runGit(work, ['add', WORKFLOW]);
++			runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
++			// Locally forged "published" provenance: a refs/remotes ref nobody fetched.
++			runGit(work, ['update-ref', 'refs/remotes/attacker/x', 'attacker-branch']);
++			runGit(work, ['checkout', '--quiet', 'feature']);
++			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++			runGit(work, ['add', 'lib/safe.js']);
++			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'attacker-branch']);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
+ 	test('blocks a merge from a local-only branch that modified a protected path', () => {
+ 		const root = createTempDir();
+ 		try {
+@@ -577,7 +602,7 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		const root = createTempDir();
+ 		try {
+ 			const work = initRepo(root);
+-			startMerge(work, { branch: 'published', publish: true });
++			startMerge(work, { branch: 'upstream-work', publish: true });
+ 			writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n# hand edit\n');
+ 			runGit(work, ['add', WORKFLOW]);
+ 			const result = runCheck(work);
+@@ -593,17 +618,17 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		try {
+ 			const work = initRepo(root);
+ 			runGit(work, ['checkout', '--quiet', '-b', 'feature']);
+-			runGit(work, ['checkout', '--quiet', '-B', 'published', 'master']);
++			runGit(work, ['checkout', '--quiet', '-B', 'upstream-work', 'master']);
+ 			writeRepoFile(work, 'bun.lock', '{"lockfileVersion": 1}\n');
+ 			runGit(work, ['add', 'bun.lock']);
+ 			runGit(work, ['commit', '--quiet', '-m', 'lockfile change']);
+-			runGit(work, ['push', '--quiet', 'origin', 'published:published']);
++			runGit(work, ['push', '--quiet', 'origin', 'upstream-work:master']);
+ 			runGit(work, ['fetch', '--quiet', 'origin']);
+ 			runGit(work, ['checkout', '--quiet', 'feature']);
+ 			writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
+ 			runGit(work, ['add', 'lib/safe.js']);
+ 			runGit(work, ['commit', '--quiet', '-m', 'feature change']);
+-			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'published']);
++			runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'upstream-work']);
+ 			const result = runCheck(work);
+ 			expect(result.status).toBe(1);
+ 			expect(`${result.stdout}${result.stderr}`).toContain('bun.lock');
+@@ -612,6 +637,21 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		}
+ 	}, 120_000);
+ 
++	test('grants no exemption when HEAD cannot be resolved during a merge', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			startMerge(work, { branch: 'upstream-work', publish: true });
++			// Same staged bytes as the allowed case, but HEAD no longer resolves.
++			runGit(work, ['symbolic-ref', 'HEAD', 'refs/heads/gone']);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
+ 	test('still blocks a staged protected path when no merge is in progress', () => {
+ 		const root = createTempDir();
+ 		try {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,439 @@
+From 7e6638c36db962b0454f249e2b5ad8397c6ef434 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 22:44:24 +0530
+Subject: [PATCH] fix(ci): drop pr-monitor concurrency group; reconcile sticky
+ to exactly one (97e6a146)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Rework of the Fix-1 red-X close after review. cancel-in-progress:false does NOT
+stop cancellations: GitHub's queue replacement cancels a group's previously-PENDING
+run UNCONDITIONALLY, and this workflow bursts (check_suite:completed fires ~10+/push),
+so a group still left CANCELLED (red) runs. Remove the concurrency group entirely so
+nothing is ever cancelled.
+
+The only race a group guarded — two concurrent first-runs each CREATE a sticky comment
+(the upsert was find-else-create) — is now closed deterministically: new
+lib/pr-monitor/upsert-sticky.js reconciles to EXACTLY ONE by keeping the lowest-id
+marker comment, updating it, and deleting the rest; a create landing after re-list
+self-heals on the next event. Reconcile logic is unit-tested incl. a "comment appeared
+between list and create" race; a test also asserts the workflow has no concurrency key.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/pr-monitor.yml      |  44 +++----
+ lib/pr-monitor/upsert-sticky.js       | 152 +++++++++++++++++++++++
+ test/pr-monitor/upsert-sticky.test.js | 172 ++++++++++++++++++++++++++
+ 3 files changed, 343 insertions(+), 25 deletions(-)
+ create mode 100644 lib/pr-monitor/upsert-sticky.js
+ create mode 100644 test/pr-monitor/upsert-sticky.test.js
+
+diff --git a/.github/workflows/pr-monitor.yml b/.github/workflows/pr-monitor.yml
+index 470fb7fe..5e813247 100644
+--- a/.github/workflows/pr-monitor.yml
++++ b/.github/workflows/pr-monitor.yml
+@@ -29,18 +29,17 @@ permissions:
+   pull-requests: write
+   checks: write
+ 
+-# One run per PR, but do NOT cancel the in-flight one. cancel-in-progress:true
+-# left every superseded run as a CANCELLED workflow run, which GitHub surfaces as
+-# a red/non-SUCCESS check on the PR head — cosmetically alarming AND it trips
+-# merge-gate tooling (Forge's own pr-bundle) that treats any non-SUCCESS check as
+-# a failure. With cancel-in-progress:false the group SERIALIZES instead: overlapping
+-# events queue and run to a clean completion in order, and because the sticky comment
+-# is an idempotent upsert the last run still reflects the latest state. The extra
+-# runner minutes for a lightweight surface-only monitor are worth never leaving a
+-# false red X on an otherwise-green PR (kernel issue 97e6a146).
+-concurrency:
+-  group: pr-monitor-${{ github.event.pull_request.number || github.event.issue.number || github.event.check_suite.pull_requests[0].number || github.ref }}
+-  cancel-in-progress: false
++# DELIBERATELY NO `concurrency:` group. A per-PR group does NOT help here: GitHub's
++# queue replacement cancels the previously-PENDING run in a group UNCONDITIONALLY
++# (independent of cancel-in-progress), and this workflow bursts hard —
++# check_suite:completed alone fires ~10+ times per push, plus reviews/comments — so
++# a group left a trail of CANCELLED runs. Those render as red/non-SUCCESS checks on
++# the PR head, alarm humans, and trip merge-gate tooling (Forge's own pr-bundle) that
++# treats any non-SUCCESS check as a failure (kernel issue 97e6a146). Without a group,
++# nothing gets cancelled. The only race a group used to guard — two concurrent
++# first-runs both creating a sticky comment — is instead closed deterministically by
++# the reconcile-to-one upsert (lib/pr-monitor/upsert-sticky.js), which keeps the
++# lowest-id sticky and deletes the rest, converging to EXACTLY ONE per PR.
+ 
+ jobs:
+   monitor:
+@@ -149,26 +148,21 @@ jobs:
+           # jq -Rs slurps the raw markdown into a JSON string for the comment API.
+           jq -Rs '{body: .}' monitor-body.md > monitor-payload.json
+ 
+-      - name: Upsert sticky comment
++      - name: Upsert sticky comment (race-safe, exactly one)
+         if: steps.resolve.outputs.should_run == 'true'
+         env:
+           GH_TOKEN: ${{ github.token }}
+           GH_REPO: ${{ github.repository }}
+           PR: ${{ steps.resolve.outputs.pr }}
++          STICKY_PAYLOAD_FILE: monitor-payload.json
+         run: |
+           set -euo pipefail
+-          # Find our prior sticky comment by its hidden marker and UPDATE it in
+-          # place, so the monitor never spams new comments. Author-scoped by the
+-          # marker, not by actor, so it is unambiguous.
+-          CID=$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate \
+-            --jq '.[] | select(.body | contains("<!-- forge-pr-monitor -->")) | .id' | head -n1)
+-          if [ -n "$CID" ]; then
+-            gh api -X PATCH "repos/$GH_REPO/issues/comments/$CID" --input monitor-payload.json > /dev/null
+-            echo "Updated sticky comment #$CID"
+-          else
+-            gh api -X POST "repos/$GH_REPO/issues/$PR/comments" --input monitor-payload.json > /dev/null
+-            echo "Created sticky comment"
+-          fi
++          # Reconcile the PR's sticky comments to EXACTLY ONE: find prior stickies by
++          # their hidden marker, update the oldest (lowest-id) in place, and delete any
++          # duplicates a concurrent run created. Because this workflow has no
++          # concurrency group (see the top-of-file note), two first-runs could each
++          # create a sticky; the deterministic lowest-id survivor closes that race.
++          node lib/pr-monitor/upsert-sticky.js
+ 
+       - name: Publish informational (neutral) check
+         if: steps.resolve.outputs.should_run == 'true'
+diff --git a/lib/pr-monitor/upsert-sticky.js b/lib/pr-monitor/upsert-sticky.js
+new file mode 100644
+index 00000000..63507694
+--- /dev/null
++++ b/lib/pr-monitor/upsert-sticky.js
+@@ -0,0 +1,152 @@
++'use strict';
++
++/**
++ * PR-monitor sticky-comment upsert — race-safe, converges to EXACTLY ONE sticky
++ * comment per PR even under a concurrent burst of workflow runs.
++ *
++ * Why this exists: the pr-monitor workflow deliberately has NO `concurrency:`
++ * group. A per-PR group does not help — GitHub's queue replacement cancels the
++ * previously-PENDING run in a group UNCONDITIONALLY (independent of
++ * cancel-in-progress), and this workflow's triggers (check_suite:completed fires
++ * ~10+ times per push, plus reviews/comments) burst hard, so a group left a trail
++ * of CANCELLED runs that render as red/non-SUCCESS checks and tripped merge-gate
++ * tooling (kernel issue 97e6a146). Dropping the group removes the cancellations,
++ * but then two concurrent first-runs on a PR with no sticky yet would BOTH find
++ * nothing and BOTH create one → duplicate sticky comments. This module closes
++ * that race deterministically instead.
++ *
++ * Reconcile-to-one algorithm:
++ *   1. List marker comments. If none, create one, then RE-LIST (a concurrent run
++ *      may have created its own in the same burst).
++ *   2. Pick the deterministic survivor: the LOWEST comment id (oldest). Every
++ *      concurrent run picks the SAME survivor, so they never fight.
++ *   3. Update the survivor with the latest body; delete every other marker
++ *      comment. Deletes are idempotent (a 404 means a peer already removed it).
++ *
++ * A create that lands AFTER a run's re-list is self-healed by the next event:
++ * every run reconciles to one, and events keep arriving, so the PR converges to a
++ * single sticky comment.
++ *
++ * @module pr-monitor/upsert-sticky
++ */
++
++const { execFileSync } = require('node:child_process');
++
++/** Ids of comments whose body carries the sticky marker. */
++function markerCommentIds(comments, marker) {
++  return (Array.isArray(comments) ? comments : [])
++    .filter((comment) => typeof comment.body === 'string' && comment.body.includes(marker))
++    .map((comment) => comment.id);
++}
++
++/** Ascending by numeric id, so the survivor (index 0) is the oldest comment. */
++function sortIdsAscending(ids) {
++  return [...ids].sort((left, right) => Number(left) - Number(right));
++}
++
++/**
++ * Drive a client to exactly one sticky comment. `client` abstracts the GitHub
++ * calls so the reconcile logic is unit-testable without the network:
++ *   - list()        → array of { id, body }
++ *   - create()      → create a new sticky comment (body supplied by the client)
++ *   - update(id)    → overwrite comment `id` with the latest body
++ *   - remove(id)    → delete comment `id` (must tolerate an already-deleted 404)
++ *
++ * @returns {Promise<{ survivor: (number|string|null), deleted: Array<number|string> }>}
++ */
++async function upsertStickyComment({ marker }, client) {
++  let ids = markerCommentIds(await client.list(), marker);
++
++  if (ids.length === 0) {
++    await client.create();
++    // Re-list: a concurrent run may have created its own sticky in this burst.
++    ids = markerCommentIds(await client.list(), marker);
++  }
++
++  if (ids.length === 0) {
++    // The just-created comment is not visible yet (eventual consistency); its
++    // body is already correct, and the next event will reconcile if a peer raced.
++    return { survivor: null, deleted: [] };
++  }
++
++  ids = sortIdsAscending(ids);
++  const survivor = ids[0];
++  await client.update(survivor);
++
++  const deleted = [];
++  for (const id of ids.slice(1)) {
++    await client.remove(id);
++    deleted.push(id);
++  }
++
++  return { survivor, deleted };
++}
++
++/**
++ * GitHub-backed client (shells to `gh api`, like lib/pr-monitor/gather.js). Not
++ * unit-tested — the reconcile logic above is. create/update both send the same
++ * pre-rendered payload file the render step wrote, so the body is identical.
++ */
++function ghStickyClient({ repo, pr, payloadFile }) {
++  return {
++    async list() {
++      const out = execFileSync(
++        'gh',
++        ['api', `repos/${repo}/issues/${pr}/comments`, '--paginate'],
++        { encoding: 'utf8' },
++      );
++      return out.trim() ? JSON.parse(out) : [];
++    },
++    async create() {
++      execFileSync(
++        'gh',
++        ['api', '-X', 'POST', `repos/${repo}/issues/${pr}/comments`, '--input', payloadFile],
++        { stdio: 'ignore' },
++      );
++    },
++    async update(id) {
++      execFileSync(
++        'gh',
++        ['api', '-X', 'PATCH', `repos/${repo}/issues/comments/${id}`, '--input', payloadFile],
++        { stdio: 'ignore' },
++      );
++    },
++    async remove(id) {
++      try {
++        execFileSync(
++          'gh',
++          ['api', '-X', 'DELETE', `repos/${repo}/issues/comments/${id}`],
++          { stdio: 'ignore' },
++        );
++      } catch {
++        // Already gone (a concurrent run deleted it first) — the goal state holds.
++      }
++    },
++  };
++}
++
++async function main() {
++  const repo = process.env.GH_REPO;
++  const pr = process.env.PR;
++  const payloadFile = process.env.STICKY_PAYLOAD_FILE || 'monitor-payload.json';
++  const { STICKY_MARKER } = require('./render-sticky');
++
++  const client = ghStickyClient({ repo, pr, payloadFile });
++  const { survivor, deleted } = await upsertStickyComment({ marker: STICKY_MARKER }, client);
++  const survivorLabel = survivor === null ? 'created (not yet visible)' : survivor;
++  console.log(`Sticky comment reconciled to one: survivor=${survivorLabel}, deleted=${deleted.length}`);
++}
++
++if (require.main === module) {
++  main().catch((error) => {
++    console.error(error.message);
++    process.exit(1);
++  });
++}
++
++module.exports = {
++  upsertStickyComment,
++  markerCommentIds,
++  sortIdsAscending,
++  ghStickyClient,
++};
+diff --git a/test/pr-monitor/upsert-sticky.test.js b/test/pr-monitor/upsert-sticky.test.js
+new file mode 100644
+index 00000000..0095e8e8
+--- /dev/null
++++ b/test/pr-monitor/upsert-sticky.test.js
+@@ -0,0 +1,172 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++const yaml = require('js-yaml');
++
++const {
++  upsertStickyComment,
++  markerCommentIds,
++  sortIdsAscending,
++} = require('../../lib/pr-monitor/upsert-sticky');
++
++const MARKER = '<!-- forge-pr-monitor -->';
++
++// An in-memory GitHub comments store. `listQueue`, when provided, lets a test
++// script successive list() results to simulate a comment appearing between the
++// first list and the post-create re-list (the concurrent-burst race).
++function makeClient({ initial = [], listQueue = null, createId = null } = {}) {
++  const store = new Map(initial.map((comment) => [comment.id, { ...comment }]));
++  let nextId = (initial.reduce((max, comment) => Math.max(max, Number(comment.id)), 100)) + 1;
++  const calls = { create: 0, update: [], remove: [] };
++  let listCall = 0;
++
++  return {
++    store,
++    calls,
++    async list() {
++      listCall += 1;
++      if (listQueue && listQueue[listCall - 1]) {
++        // Materialize the scripted snapshot into the store so later deletes/updates hit it.
++        for (const comment of listQueue[listCall - 1]) {
++          if (!store.has(comment.id)) {
++            store.set(comment.id, { ...comment });
++          }
++        }
++        return listQueue[listCall - 1].map((comment) => ({ ...store.get(comment.id) }));
++      }
++      return [...store.values()].map((comment) => ({ ...comment }));
++    },
++    async create() {
++      calls.create += 1;
++      const id = createId !== null ? createId : nextId++;
++      store.set(id, { id, body: `${MARKER}\nfresh` });
++    },
++    async update(id) {
++      calls.update.push(id);
++      const existing = store.get(id);
++      if (existing) {
++        existing.body = `${MARKER}\nupdated`;
++      }
++    },
++    async remove(id) {
++      calls.remove.push(id);
++      store.delete(id);
++    },
++  };
++}
++
++function markerCount(client) {
++  return [...client.store.values()].filter((comment) => comment.body.includes(MARKER)).length;
++}
++
++describe('pr-monitor upsert-sticky reconcile-to-one', () => {
++  test('creates exactly one sticky when the PR has none', async () => {
++    const client = makeClient({ initial: [] });
++
++    const result = await upsertStickyComment({ marker: MARKER }, client);
++
++    expect(client.calls.create).toBe(1);
++    expect(markerCount(client)).toBe(1);
++    expect(result.deleted).toEqual([]);
++  });
++
++  test('updates the single existing sticky in place (no create, no delete)', async () => {
++    const client = makeClient({ initial: [{ id: 100, body: `${MARKER}\nold` }] });
++
++    const result = await upsertStickyComment({ marker: MARKER }, client);
++
++    expect(client.calls.create).toBe(0);
++    expect(client.calls.update).toEqual([100]);
++    expect(client.calls.remove).toEqual([]);
++    expect(markerCount(client)).toBe(1);
++    expect(result.survivor).toBe(100);
++  });
++
++  test('a comment that appears between list and create collapses to exactly one', async () => {
++    // First list: empty → this run creates. Re-list: TWO markers exist (a
++    // concurrent run created id 205 while this run created id 206). The run must
++    // keep the deterministic lowest-id survivor and delete the rest.
++    const client = makeClient({
++      createId: 206, // this run's own create
++      listQueue: [
++        [], // initial list — nothing yet
++        [
++          { id: 205, body: `${MARKER}\npeer` }, // peer created concurrently
++          { id: 206, body: `${MARKER}\nfresh` }, // this run's create, now visible
++        ], // re-list after create — both present
++      ],
++    });
++
++    const result = await upsertStickyComment({ marker: MARKER }, client);
++
++    expect(client.calls.create).toBe(1);
++    expect(result.survivor).toBe(205); // lowest id wins deterministically
++    expect(client.calls.update).toEqual([205]);
++    expect(client.calls.remove).toEqual([206]);
++    expect(markerCount(client)).toBe(1);
++  });
++
++  test('collapses multiple pre-existing stickies to one (self-heal)', async () => {
++    const client = makeClient({
++      initial: [
++        { id: 300, body: `${MARKER}\na` },
++        { id: 301, body: `${MARKER}\nb` },
++        { id: 302, body: `${MARKER}\nc` },
++      ],
++    });
++
++    const result = await upsertStickyComment({ marker: MARKER }, client);
++
++    expect(client.calls.create).toBe(0);
++    expect(result.survivor).toBe(300);
++    expect(client.calls.remove.sort()).toEqual([301, 302]);
++    expect(markerCount(client)).toBe(1);
++  });
++
++  test('ignores non-marker comments when reconciling', async () => {
++    const client = makeClient({
++      initial: [
++        { id: 400, body: 'a normal human comment' },
++        { id: 401, body: `${MARKER}\nsticky` },
++      ],
++    });
++
++    await upsertStickyComment({ marker: MARKER }, client);
++
++    expect(client.calls.remove).toEqual([]);
++    expect(client.store.has(400)).toBe(true);
++    expect(markerCount(client)).toBe(1);
++  });
++
++  test('markerCommentIds + sortIdsAscending select the oldest marker id', () => {
++    const ids = markerCommentIds(
++      [
++        { id: 9, body: 'nope' },
++        { id: 12, body: `x ${MARKER} y` },
++        { id: 7, body: `${MARKER}` },
++      ],
++      MARKER,
++    );
++    expect(sortIdsAscending(ids)).toEqual([7, 12]);
++  });
++});
++
++describe('pr-monitor workflow has no concurrency group', () => {
++  test('pr-monitor.yml declares no concurrency block (avoids GitHub run cancellations)', () => {
++    const yml = fs.readFileSync(
++      path.resolve(__dirname, '..', '..', '.github', 'workflows', 'pr-monitor.yml'),
++      'utf8',
++    );
++    const doc = yaml.load(yml);
++    // A `concurrency:` group would leave a trail of CANCELLED runs (red checks);
++    // the race it used to guard is now handled by upsert reconcile-to-one. Assert
++    // on the PARSED workflow, not raw text, so the top-of-file comment explaining
++    // the absence (which mentions the words) doesn't produce a false match.
++    expect(Object.prototype.hasOwnProperty.call(doc, 'concurrency')).toBe(false);
++    // The race-safe upsert must actually be wired into a run step.
++    const steps = doc.jobs.monitor.steps.flatMap((step) => (step.run ? [step.run] : []));
++    expect(steps.some((run) => run.includes('lib/pr-monitor/upsert-sticky.js'))).toBe(true);
++  });
++});
+-- 
+2.51.0.windows.1
+

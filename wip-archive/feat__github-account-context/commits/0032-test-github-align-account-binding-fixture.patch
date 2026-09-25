@@ -1,0 +1,34 @@
+From 751eb4094928343c67efd21612b9e19dc71ae072 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 04:51:33 +0530
+Subject: [PATCH] test(github): align account binding fixture
+
+---
+ test/commands/github.test.js | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/test/commands/github.test.js b/test/commands/github.test.js
+index 29f53ece..821fa69d 100644
+--- a/test/commands/github.test.js
++++ b/test/commands/github.test.js
+@@ -15,7 +15,7 @@ function fixture(overrides = {}) {
+     calls.push({ command, args, options });
+     if (command === 'git') {
+       if (args.join(' ') === 'config --local --get github.account') return account;
+-      if (args[2] === 'github.account') { account = args[3]; return ''; }
++      if (args[2] === '--replace-all' && args[3] === 'github.account') { account = args[4]; return ''; }
+       if (args[2] === '--unset-all') {
+         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
+         account = ''; return '';
+@@ -54,7 +54,7 @@ describe('forge github lifecycle', () => {
+     expect(f.calls[0].options.env.GH_TOKEN).toBeUndefined();
+     expect(f.calls[3].options.env.GH_TOKEN === CANARY).toBe(true);
+     expect(f.calls[3].args).toEqual(['repo', 'view', 'github.com/org/project', '--json', 'nameWithOwner']);
+-    expect(f.calls[4].args).toEqual(['config', '--local', 'github.account', 'work']);
++    expect(f.calls[4].args).toEqual(['config', '--local', '--replace-all', 'github.account', 'work']);
+     expect(JSON.stringify(result).includes(CANARY)).toBe(false);
+   });
+ 
+-- 
+2.51.0.windows.1
+

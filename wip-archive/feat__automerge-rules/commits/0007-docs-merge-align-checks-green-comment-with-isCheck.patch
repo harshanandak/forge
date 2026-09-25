@@ -1,0 +1,37 @@
+From 280b0f472d51ff2df0230c23f187159ae57945d5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 23:42:51 +0530
+Subject: [PATCH] docs(merge): align checks_green comment with isCheckGreen
+ success class
+
+CodeRabbit #289: the doc said checks must be "SUCCESS", but the evaluator
+delegates to isCheckGreen (broader green/success-class). Reworded to "green per
+isCheckGreen" so operators aren't misled.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/merge-rules.js | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/lib/merge-rules.js b/lib/merge-rules.js
+index 8fbdcf4c..e51c1aa1 100644
+--- a/lib/merge-rules.js
++++ b/lib/merge-rules.js
+@@ -124,12 +124,12 @@ function checkName(check) {
+ }
+ 
+ /**
+- * `checks_green` — every CI check must be SUCCESS. Optionally scoped:
++ * `checks_green` — every CI check must be green per `isCheckGreen`. Optionally scoped:
+  *   - bare string / no arg → ALL checks must be green (strict default).
+  *   - { ignore: ["A","B"] } → the named checks are EXEMPT; every OTHER check
+  *     must be green. `ignore: []` is identical to the bare form.
+  *   - { only: ["A"] }       → ONLY the named checks must be green (present AND
+- *     SUCCESS); all others are ignored.
++ *     green per `isCheckGreen`); all others are ignored.
+  * `ignore` + `only` together is malformed → fail-closed. Exact name match.
+  * (`required_only` — scope to the branch-protection required set — is a
+  * documented follow-up, not built here.)
+-- 
+2.51.0.windows.1
+

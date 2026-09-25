@@ -1,0 +1,108 @@
+From 2b2c7d32308bee69646cc9213d5cfb8809945764 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:29:41 +0530
+Subject: [PATCH] fix(monitor): allow final bounded recovery segment
+
+---
+ lib/pr-monitor/flow-monitor.js       | 27 +++++++++++++++++++--------
+ test/pr-monitor/flow-monitor.test.js | 13 ++++++++++++-
+ 2 files changed, 31 insertions(+), 9 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index aacaa713..eee77b48 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -39,6 +39,17 @@ class FlowMonitorError extends Error {
+   }
+ }
+ 
++function validBatchPlanSegmentCount(value) {
++  return Number.isSafeInteger(value) && value > 1 && value <= BATCH_PLAN_SEGMENT_LIMIT;
++}
++
++function appendPendingBatch(batches, batch) {
++  if (batches.length >= BATCH_PLAN_SEGMENT_LIMIT) {
++    throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition plan exceeds its segment bound');
++  }
++  batches.push(batch);
++}
++
+ function defaultNow() { return new Date().toISOString(); }
+ 
+ function boundSnapshotScalar(value, depth = 0) {
+@@ -168,7 +179,7 @@ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+   while (offset < records.length) {
+     try {
+       const encoded = encodePendingBatch(ctx, subjectRevision, records.slice(offset), snapshot);
+-      batches.push({ encoded, records: records.slice(offset), snapshot });
++      appendPendingBatch(batches, { encoded, records: records.slice(offset), snapshot });
+       break;
+     } catch (error) {
+       if (!segmentablePendingBatchError(error)) throw error;
+@@ -196,11 +207,8 @@ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+     if (!accepted) {
+       throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition record exceeds its durable bound');
+     }
+-    batches.push(accepted);
++    appendPendingBatch(batches, accepted);
+     offset += accepted.count;
+-    if (batches.length >= BATCH_PLAN_SEGMENT_LIMIT) {
+-      throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition plan exceeds its segment bound');
+-    }
+   }
+   return batches;
+ }
+@@ -220,8 +228,7 @@ function validBatchPlanReference(value) {
+     && value.format === BATCH_PLAN_FORMAT
+     && typeof value.id === 'string' && /^[a-f0-9]{64}$/.test(value.id)
+     && Number.isSafeInteger(value.start_sequence) && value.start_sequence > 0
+-    && Number.isSafeInteger(value.segment_count) && value.segment_count > 1
+-    && value.segment_count <= BATCH_PLAN_SEGMENT_LIMIT;
++    && validBatchPlanSegmentCount(value.segment_count);
+ }
+ 
+ function batchPlanSegmentIndex(batches, recordOffset) {
+@@ -1204,4 +1211,8 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   });
+ }
+ 
+-module.exports = { FlowMonitorError, runFlowMonitorPass };
++module.exports = {
++  FlowMonitorError,
++  runFlowMonitorPass,
++  _internals: { appendPendingBatch },
++};
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 32c31fc8..d3f32c3b 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -4,7 +4,7 @@ const { describe, expect, test } = require('bun:test');
+ const crypto = require('node:crypto');
+ const zlib = require('node:zlib');
+ 
+-const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
++const { _internals, runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+ const { computeContentHash } = require('../../packages/memory-contracts');
+ 
+ function snapshot(overrides = {}) {
+@@ -497,6 +497,17 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+   }, 30_000);
+ 
++  test('accepts exactly 128 recovery-plan segments and rejects a 129th', () => {
++    const batches = [];
++    for (let index = 0; index < 128; index += 1) {
++      _internals.appendPendingBatch(batches, { index });
++    }
++    expect(batches).toHaveLength(128);
++    expect(() => _internals.appendPendingBatch(batches, { index: 128 }))
++      .toThrow('Pending monitor transition plan exceeds its segment bound');
++    expect(batches).toHaveLength(128);
++  });
++
+   test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
+     const store = durableStore();
+     const checks = Array.from({ length: 128 }, (_, index) => ({
+-- 
+2.51.0.windows.1
+

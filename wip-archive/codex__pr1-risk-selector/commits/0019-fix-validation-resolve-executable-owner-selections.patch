@@ -1,0 +1,737 @@
+From eada550229c401407ebc13288f48be96f00f91d6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 16:52:13 +0530
+Subject: [PATCH] fix(validation): resolve executable owner selections
+
+---
+ lib/validation/risk-manifest.js               |  70 ++++-
+ scripts/generate-risk-manifest.js             |  12 +
+ .../risk-manifest-generator.test.js           |  15 +-
+ test/validation/risk-manifest.test.js         |  78 +++++-
+ validation/risk-manifest.source.yaml          |  69 +++++
+ validation/risk-manifest.v1.json              | 260 +++++++++++++++++-
+ validation/risk-manifest.v1.schema.json       |  40 +++
+ 7 files changed, 532 insertions(+), 12 deletions(-)
+
+diff --git a/lib/validation/risk-manifest.js b/lib/validation/risk-manifest.js
+index 9c314b21..e33c89c3 100644
+--- a/lib/validation/risk-manifest.js
++++ b/lib/validation/risk-manifest.js
+@@ -34,6 +34,34 @@ function selectorsOverlap(left, right) {
+     && (left.prefix.startsWith(right.prefix) || right.prefix.startsWith(left.prefix));
+ }
+ 
++function validateCommandReferences(entries, label, commandIds) {
++  const ids = assertUniqueIds(entries, label);
++  for (const entry of entries) {
++    assert(Array.isArray(entry.command_ids) && entry.command_ids.length > 0,
++      `${label} "${entry.id}" needs command_ids`);
++    assert(entry.command_ids.every((id) => commandIds.has(id)), `${label} "${entry.id}" references an unknown command`);
++  }
++  return ids;
++}
++
++function validateCommandRegistry(manifest) {
++  assert(Array.isArray(manifest.commands) && manifest.commands.length > 0, 'commands must be non-empty');
++  assert(Array.isArray(manifest.gates) && manifest.gates.length > 0, 'gates must be non-empty');
++  assert(Array.isArray(manifest.lanes) && manifest.lanes.length > 0, 'lanes must be non-empty');
++  const commandIds = assertUniqueIds(manifest.commands, 'command');
++  for (const command of manifest.commands) {
++    assert(typeof command.executable === 'string' && command.executable.length > 0,
++      `command "${command.id}" needs an executable`);
++    assert(Array.isArray(command.argv) && command.argv.every((argument) => typeof argument === 'string'),
++      `command "${command.id}" must use an argv array`);
++    assert(!Object.hasOwn(command, 'shell'), `command "${command.id}" cannot declare a shell string`);
++  }
++  return {
++    gateIds: validateCommandReferences(manifest.gates, 'gate', commandIds),
++    laneIds: validateCommandReferences(manifest.lanes, 'lane', commandIds),
++  };
++}
++
+ function validateManifest(manifest, { verifyHash = true } = {}) {
+   assert(manifest && typeof manifest === 'object' && !Array.isArray(manifest), 'root must be an object');
+   assert(manifest.schema_id === 'forge.validation.risk-manifest.v1', 'unsupported schema_id');
+@@ -44,6 +72,7 @@ function validateManifest(manifest, { verifyHash = true } = {}) {
+   assert(Array.isArray(manifest.risks) && manifest.risks.length > 0, 'risks must be non-empty');
+   assert(Array.isArray(manifest.owners) && manifest.owners.length > 0, 'owners must be non-empty');
+ 
++  const { gateIds, laneIds } = validateCommandRegistry(manifest);
+   const riskIds = assertUniqueIds(manifest.risks, 'risk');
+   const ownerIds = assertUniqueIds(manifest.owners, 'owner');
+   const selectors = [];
+@@ -54,6 +83,7 @@ function validateManifest(manifest, { verifyHash = true } = {}) {
+     assert(typeof risk.non_quarantinable === 'boolean', `risk "${risk.id}" must declare non_quarantinable`);
+     assert(Array.isArray(risk.gate_ids) && risk.gate_ids.length > 0,
+       `risk "${risk.id}" must own at least one gate`);
++    assert(risk.gate_ids.every((id) => gateIds.has(id)), `risk "${risk.id}" references an unknown gate`);
+   }
+ 
+   for (const owner of manifest.owners) {
+@@ -64,6 +94,10 @@ function validateManifest(manifest, { verifyHash = true } = {}) {
+     assert(Array.isArray(owner.canonical_test_ids) && owner.canonical_test_ids.length > 0,
+       `owner "${owner.id}" needs canonical_test_ids`);
+     assert(Array.isArray(owner.lanes) && owner.lanes.length > 0, `owner "${owner.id}" needs lanes`);
++    assert(owner.lanes.every((id) => laneIds.has(id)), `owner "${owner.id}" references an unknown lane`);
++    assert(Array.isArray(owner.dependent_routes), `owner "${owner.id}" needs dependent_routes`);
++    assert(Array.isArray(owner.platform_runtime_additions),
++      `owner "${owner.id}" needs platform_runtime_additions`);
+     assert(Array.isArray(owner.selectors) && owner.selectors.length > 0, `owner "${owner.id}" needs selectors`);
+     assert(Array.isArray(owner.package_roots) && owner.package_roots.length > 0,
+       `owner "${owner.id}" needs package_roots`);
+@@ -97,6 +131,9 @@ function validateManifest(manifest, { verifyHash = true } = {}) {
+ 
+   assert(manifest.unknown_owner_fallback?.lane === 'repository-baseline',
+     'unknown_owner_fallback must select repository-baseline');
++  assert(laneIds.has(manifest.unknown_owner_fallback?.lane), 'unknown_owner_fallback references an unknown lane');
++  assert(laneIds.has('contract-baseline') && laneIds.has('affected-platform-baseline'),
++    'conservative fallback lanes must be executable');
+   assert(Array.isArray(manifest.unknown_owner_fallback.required_gates)
+     && manifest.unknown_owner_fallback.required_gates.length > 0,
+   'unknown_owner_fallback must declare required_gates');
+@@ -165,6 +202,19 @@ function ownerRisks(manifest, owners) {
+   return manifest.risks.filter((risk) => ids.has(risk.id));
+ }
+ 
++function resolveCommands(manifest, gateIds, laneIds) {
++  const selectedDefinitions = [
++    ...manifest.gates.filter((gate) => gateIds.includes(gate.id)),
++    ...manifest.lanes.filter((lane) => laneIds.includes(lane.id)),
++  ];
++  const commandIds = uniqueSorted(selectedDefinitions.flatMap((definition) => definition.command_ids));
++  const commandsById = new Map(manifest.commands.map((command) => [command.id, command]));
++  return commandIds.map((id) => {
++    const command = commandsById.get(id);
++    return { id: command.id, executable: command.executable, argv: [...command.argv] };
++  });
++}
++
+ function selectValidation({ manifest, changedSurfaces }) {
+   validateManifest(manifest);
+   const surfaces = normalizeChangedSurfaces(changedSurfaces);
+@@ -199,6 +249,9 @@ function selectValidation({ manifest, changedSurfaces }) {
+     requiredGates.push('G0', 'G1', 'G3', 'G6');
+   }
+ 
++  const selectedLanes = uniqueSorted(lanes);
++  const selectedGates = uniqueSorted(requiredGates);
++
+   return {
+     schema_id: 'forge.validation.selection.v1',
+     manifest_revision: manifest.revision,
+@@ -213,10 +266,23 @@ function selectValidation({ manifest, changedSurfaces }) {
+       selector: selection.exact.selector,
+     })),
+     owner_ids: owners.map((owner) => owner.id),
++    owner_selections: owners.map((owner) => ({
++      owner_id: owner.id,
++      product: owner.product,
++      package: owner.package,
++      risk_ids: uniqueSorted(owner.risk_ids),
++      lanes: uniqueSorted(owner.lanes),
++      canonical_test_ids: uniqueSorted(owner.canonical_test_ids),
++      dependent_routes: uniqueSorted(owner.dependent_routes),
++      platform_runtime_additions: uniqueSorted(owner.platform_runtime_additions),
++    })),
+     risk_ids: uniqueSorted(risks.map((risk) => risk.id)),
+-    required_gates: uniqueSorted(requiredGates),
+-    lanes: uniqueSorted(lanes),
++    required_gates: selectedGates,
++    lanes: selectedLanes,
++    dependent_routes: uniqueSorted(owners.flatMap((owner) => owner.dependent_routes)),
++    platform_runtime_additions: uniqueSorted(owners.flatMap((owner) => owner.platform_runtime_additions)),
+     test_ids: uniqueSorted(owners.flatMap((owner) => owner.canonical_test_ids)),
++    commands: resolveCommands(manifest, selectedGates, selectedLanes),
+   };
+ }
+ 
+diff --git a/scripts/generate-risk-manifest.js b/scripts/generate-risk-manifest.js
+index ffb5c128..9f1890ec 100644
+--- a/scripts/generate-risk-manifest.js
++++ b/scripts/generate-risk-manifest.js
+@@ -33,6 +33,18 @@ function normalizeSource(source) {
+     revision: parsed.revision,
+     source_hash: sha256(canonicalSource),
+     generator_version: 'forge-risk-manifest-generator.v1',
++    commands: sortById(parsed.commands).map((command) => ({
++      ...command,
++      argv: [...command.argv],
++    })),
++    gates: sortById(parsed.gates).map((gate) => ({
++      ...gate,
++      command_ids: [...gate.command_ids].sort(compareText),
++    })),
++    lanes: sortById(parsed.lanes).map((lane) => ({
++      ...lane,
++      command_ids: [...lane.command_ids].sort(compareText),
++    })),
+     risks: sortById(parsed.risks).map((risk) => ({
+       ...risk,
+       gate_ids: [...risk.gate_ids].sort(),
+diff --git a/test/validation/risk-manifest-generator.test.js b/test/validation/risk-manifest-generator.test.js
+index a4412b72..3a0dcd85 100644
+--- a/test/validation/risk-manifest-generator.test.js
++++ b/test/validation/risk-manifest-generator.test.js
+@@ -21,12 +21,25 @@ describe('risk manifest generator', () => {
+     expect(first.endsWith('\n')).toBe(true);
+     expect(first).not.toContain('generated_at');
+     expect(first).not.toContain(process.cwd());
+-    expect(JSON.parse(first).owners.map((owner) => owner.id)).toEqual([
++    const generated = JSON.parse(first);
++    expect(generated.owners.map((owner) => owner.id)).toEqual([
+       'facade-cli',
+       'kernel-authority',
+       'memory-foundation',
+       'validation-control',
+       'workflow-runtime',
+     ]);
++    expect(generated.gates.map((gate) => gate.id)).toEqual(['G0', 'G1', 'G3', 'G4', 'G5', 'G6', 'G7']);
++    expect(generated.lanes.map((lane) => lane.id)).toEqual([
++      'affected-platform-baseline',
++      'contract-baseline',
++      'facade-package',
++      'flow-package',
++      'kernel-package',
++      'memory-package',
++      'repository-baseline',
++      'validation-selector',
++    ]);
++    expect(generated.commands.every((command) => command.executable && Array.isArray(command.argv))).toBe(true);
+   });
+ });
+diff --git a/test/validation/risk-manifest.test.js b/test/validation/risk-manifest.test.js
+index 702bd260..4f97392c 100644
+--- a/test/validation/risk-manifest.test.js
++++ b/test/validation/risk-manifest.test.js
+@@ -77,21 +77,71 @@ describe('risk-owned validation manifest', () => {
+       'contract-baseline',
+       'kernel-package',
+     ]);
++    expect(selected.dependent_routes).toEqual(['memory-contract']);
++    expect(selected.platform_runtime_additions).toEqual(['linux-sqlite', 'windows-sqlite']);
+   });
+ 
+-  test('maps public commands and contract schemas through the same ownership contract', () => {
++  test('workflow run selection carries dependent routes and every declared platform addition', () => {
+     const manifest = loadRiskManifest(MANIFEST_PATH);
+     const selected = selectValidation({
+       manifest,
+-      changedSurfaces: [
+-        { kind: 'command', value: 'forge issue list' },
+-        { kind: 'schema', value: 'forge.kernel.issue.v1' },
+-      ],
++      changedSurfaces: [{ kind: 'path', value: 'lib/workflow/run.js' }],
++    });
++
++    expect(selected.dependent_routes).toEqual(['flow-memory-contract']);
++    expect(selected.platform_runtime_additions).toEqual([
++      'linux-process',
++      'macos-process',
++      'windows-process',
++    ]);
++    expect(selected.lanes).toEqual(['flow-package']);
++    expect(selected.owner_selections).toEqual([{
++      owner_id: 'workflow-runtime',
++      product: 'flow',
++      package: 'forge-flow',
++      risk_ids: ['contract-compatibility', 'monitor-cleanup'],
++      lanes: ['flow-package'],
++      canonical_test_ids: ['test/workflow/**/*.test.js'],
++      dependent_routes: ['flow-memory-contract'],
++      platform_runtime_additions: ['linux-process', 'macos-process', 'windows-process'],
++    }]);
++  });
++
++  test('issue CLI selection resolves G7 to deterministic argv commands', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'command', value: 'forge issue list' }],
+     });
+ 
+     expect(selected.status).toBe('exact');
+-    expect(selected.owner_ids).toEqual(['facade-cli', 'kernel-authority']);
+-    expect(selected.required_gates).toEqual(['G0', 'G1', 'G4', 'G7']);
++    expect(selected.owner_ids).toEqual(['facade-cli']);
++    expect(selected.required_gates).toEqual(['G0', 'G1', 'G7']);
++    expect(selected.dependent_routes).toEqual(['installed-cli']);
++    expect(selected.platform_runtime_additions).toEqual(['windows-shell']);
++    expect(selected.commands.find((command) => command.id === 'validation.command.g7-journey')).toEqual({
++      id: 'validation.command.g7-journey',
++      executable: 'bun',
++      argv: ['test', '--timeout', '15000', 'test/e2e'],
++    });
++    expect(selected.commands.every((command) => Array.isArray(command.argv))).toBe(true);
++  });
++
++  test('kernel broker selection includes Windows and Linux runtime additions', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/kernel/broker.js' }],
++    });
++
++    expect(selected.platform_runtime_additions).toEqual(['linux-sqlite', 'windows-sqlite']);
++    expect(selected.commands.map((command) => command.id)).toEqual([
++      'validation.command.g0-static',
++      'validation.command.g1-manifest-check',
++      'validation.command.g1-selector',
++      'validation.command.g4-authority',
++      'validation.command.kernel-package',
++    ]);
+   });
+ 
+   test('fails closed to the repository baseline for an unowned changed surface', () => {
+@@ -106,6 +156,12 @@ describe('risk-owned validation manifest', () => {
+     expect(selected.owner_ids).toEqual([]);
+     expect(selected.lanes).toEqual(['repository-baseline']);
+     expect(selected.unowned_surfaces).toEqual([{ kind: 'path', value: 'experimental/unowned.js' }]);
++    expect(selected.commands.map((command) => command.id)).toEqual([
++      'validation.command.g0-static',
++      'validation.command.g1-manifest-check',
++      'validation.command.g1-selector',
++      'validation.command.repository-baseline',
++    ]);
+   });
+ 
+   test('does not claim targeted PASS when no changed surfaces were supplied', () => {
+@@ -130,6 +186,14 @@ describe('risk-owned validation manifest', () => {
+     expect(() => loadRiskManifest(overlapping)).toThrow(/selectors overlap/i);
+   });
+ 
++  test('rejects any gate or lane whose executable command cannot be resolved', () => {
++    const original = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
++    original.commands = original.commands.filter((command) => command.id !== 'validation.command.g4-authority');
++    original.manifest_hash = hashManifest(original);
++
++    expect(() => loadRiskManifest(original)).toThrow(/unknown command/i);
++  });
++
+   test('normalizes and de-duplicates changed surfaces before selection', () => {
+     const manifest = loadRiskManifest(MANIFEST_PATH);
+     const selected = selectValidation({
+diff --git a/validation/risk-manifest.source.yaml b/validation/risk-manifest.source.yaml
+index 9861dc8f..babcae71 100644
+--- a/validation/risk-manifest.source.yaml
++++ b/validation/risk-manifest.source.yaml
+@@ -1,6 +1,75 @@
+ schema_id: forge.validation.risk-manifest.v1
+ revision: 1
+ 
++commands:
++  - id: validation.command.affected-platform
++    executable: bun
++    argv: [test, --timeout, "15000", test/integration]
++  - id: validation.command.contract-baseline
++    executable: bun
++    argv: [test, --timeout, "15000", test/integration]
++  - id: validation.command.facade-package
++    executable: bun
++    argv: [test, --timeout, "15000", test/commands]
++  - id: validation.command.flow-package
++    executable: bun
++    argv: [test, --timeout, "15000", test/workflow]
++  - id: validation.command.g0-static
++    executable: bun
++    argv: [x, eslint, ., --max-warnings, "0"]
++  - id: validation.command.g1-manifest-check
++    executable: node
++    argv: [scripts/generate-risk-manifest.js, --check]
++  - id: validation.command.g1-selector
++    executable: bun
++    argv: [test, --timeout, "15000", test/validation/risk-manifest.test.js, test/validation/risk-manifest-generator.test.js]
++  - id: validation.command.g3-contract
++    executable: bun
++    argv: [test, --timeout, "15000", test/integration]
++  - id: validation.command.g4-authority
++    executable: bun
++    argv: [test, --timeout, "15000", test/kernel]
++  - id: validation.command.g5-data
++    executable: bun
++    argv: [test, --timeout, "15000", test/memory]
++  - id: validation.command.g6-platform
++    executable: bun
++    argv: [test, --timeout, "15000", test/integration]
++  - id: validation.command.g7-journey
++    executable: bun
++    argv: [test, --timeout, "15000", test/e2e]
++  - id: validation.command.kernel-package
++    executable: bun
++    argv: [test, --timeout, "15000", test/kernel]
++  - id: validation.command.memory-package
++    executable: bun
++    argv: [test, --timeout, "15000", test/memory]
++  - id: validation.command.repository-baseline
++    executable: bun
++    argv: [run, test:full:parallel]
++  - id: validation.command.validation-selector
++    executable: bun
++    argv: [test, --timeout, "15000", test/validation/risk-manifest.test.js, test/validation/risk-manifest-generator.test.js]
++
++gates:
++  - { id: G0, command_ids: [validation.command.g0-static] }
++  - { id: G1, command_ids: [validation.command.g1-manifest-check, validation.command.g1-selector] }
++  - { id: G3, command_ids: [validation.command.g3-contract] }
++  - { id: G4, command_ids: [validation.command.g4-authority] }
++  - { id: G5, command_ids: [validation.command.g5-data] }
++  - { id: G6, command_ids: [validation.command.g6-platform] }
++  - { id: G7, command_ids: [validation.command.g7-journey] }
++
++lanes:
++  - { id: affected-platform-baseline, command_ids: [validation.command.affected-platform] }
++  - { id: contract-baseline, command_ids: [validation.command.contract-baseline] }
++  - { id: facade-package, command_ids: [validation.command.facade-package] }
++  - { id: flow-package, command_ids: [validation.command.flow-package] }
++  - { id: kernel-package, command_ids: [validation.command.kernel-package] }
++  - { id: memory-package, command_ids: [validation.command.memory-package] }
++  - { id: repository-baseline, command_ids: [validation.command.repository-baseline] }
++  - { id: validation-selector, command_ids: [validation.command.validation-selector] }
++
+ risks:
+   - id: authority-integrity
+     severity: S0
+diff --git a/validation/risk-manifest.v1.json b/validation/risk-manifest.v1.json
+index 05f328a1..fe543c0a 100644
+--- a/validation/risk-manifest.v1.json
++++ b/validation/risk-manifest.v1.json
+@@ -1,6 +1,262 @@
+ {
++  "commands": [
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/integration"
++      ],
++      "executable": "bun",
++      "id": "validation.command.affected-platform"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/integration"
++      ],
++      "executable": "bun",
++      "id": "validation.command.contract-baseline"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/commands"
++      ],
++      "executable": "bun",
++      "id": "validation.command.facade-package"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/workflow"
++      ],
++      "executable": "bun",
++      "id": "validation.command.flow-package"
++    },
++    {
++      "argv": [
++        "x",
++        "eslint",
++        ".",
++        "--max-warnings",
++        "0"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g0-static"
++    },
++    {
++      "argv": [
++        "scripts/generate-risk-manifest.js",
++        "--check"
++      ],
++      "executable": "node",
++      "id": "validation.command.g1-manifest-check"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/validation/risk-manifest.test.js",
++        "test/validation/risk-manifest-generator.test.js"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g1-selector"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/integration"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g3-contract"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/kernel"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g4-authority"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/memory"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g5-data"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/integration"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g6-platform"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/e2e"
++      ],
++      "executable": "bun",
++      "id": "validation.command.g7-journey"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/kernel"
++      ],
++      "executable": "bun",
++      "id": "validation.command.kernel-package"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/memory"
++      ],
++      "executable": "bun",
++      "id": "validation.command.memory-package"
++    },
++    {
++      "argv": [
++        "run",
++        "test:full:parallel"
++      ],
++      "executable": "bun",
++      "id": "validation.command.repository-baseline"
++    },
++    {
++      "argv": [
++        "test",
++        "--timeout",
++        "15000",
++        "test/validation/risk-manifest.test.js",
++        "test/validation/risk-manifest-generator.test.js"
++      ],
++      "executable": "bun",
++      "id": "validation.command.validation-selector"
++    }
++  ],
++  "gates": [
++    {
++      "command_ids": [
++        "validation.command.g0-static"
++      ],
++      "id": "G0"
++    },
++    {
++      "command_ids": [
++        "validation.command.g1-manifest-check",
++        "validation.command.g1-selector"
++      ],
++      "id": "G1"
++    },
++    {
++      "command_ids": [
++        "validation.command.g3-contract"
++      ],
++      "id": "G3"
++    },
++    {
++      "command_ids": [
++        "validation.command.g4-authority"
++      ],
++      "id": "G4"
++    },
++    {
++      "command_ids": [
++        "validation.command.g5-data"
++      ],
++      "id": "G5"
++    },
++    {
++      "command_ids": [
++        "validation.command.g6-platform"
++      ],
++      "id": "G6"
++    },
++    {
++      "command_ids": [
++        "validation.command.g7-journey"
++      ],
++      "id": "G7"
++    }
++  ],
+   "generator_version": "forge-risk-manifest-generator.v1",
+-  "manifest_hash": "sha256:3c38e59d6ab084f6871b330e863c747e769118f2a5999d7d1787bbeae65b4d74",
++  "lanes": [
++    {
++      "command_ids": [
++        "validation.command.affected-platform"
++      ],
++      "id": "affected-platform-baseline"
++    },
++    {
++      "command_ids": [
++        "validation.command.contract-baseline"
++      ],
++      "id": "contract-baseline"
++    },
++    {
++      "command_ids": [
++        "validation.command.facade-package"
++      ],
++      "id": "facade-package"
++    },
++    {
++      "command_ids": [
++        "validation.command.flow-package"
++      ],
++      "id": "flow-package"
++    },
++    {
++      "command_ids": [
++        "validation.command.kernel-package"
++      ],
++      "id": "kernel-package"
++    },
++    {
++      "command_ids": [
++        "validation.command.memory-package"
++      ],
++      "id": "memory-package"
++    },
++    {
++      "command_ids": [
++        "validation.command.repository-baseline"
++      ],
++      "id": "repository-baseline"
++    },
++    {
++      "command_ids": [
++        "validation.command.validation-selector"
++      ],
++      "id": "validation-selector"
++    }
++  ],
++  "manifest_hash": "sha256:403354dc63f2f0cb7344bedcce8e4fba1022577ca58f3bd848bc42a970a6803a",
+   "owners": [
+     {
+       "canonical_test_ids": [
+@@ -252,7 +508,7 @@
+     }
+   ],
+   "schema_id": "forge.validation.risk-manifest.v1",
+-  "source_hash": "sha256:a804175455227f87a4f0ef6b08c790a252a8a2849539baa00379d804ce221537",
++  "source_hash": "sha256:4dde512a7669b83e5e6c87cebbac69b525ed8864d4fa95b7cd3ece91b4295fe4",
+   "unknown_owner_fallback": {
+     "lane": "repository-baseline",
+     "required_gates": [
+diff --git a/validation/risk-manifest.v1.schema.json b/validation/risk-manifest.v1.schema.json
+index 1bdf02c0..cc485a12 100644
+--- a/validation/risk-manifest.v1.schema.json
++++ b/validation/risk-manifest.v1.schema.json
+@@ -10,6 +10,9 @@
+     "source_hash",
+     "manifest_hash",
+     "generator_version",
++    "commands",
++    "gates",
++    "lanes",
+     "risks",
+     "owners",
+     "unknown_owner_fallback"
+@@ -20,6 +23,21 @@
+     "source_hash": { "$ref": "#/$defs/digest" },
+     "manifest_hash": { "$ref": "#/$defs/digest" },
+     "generator_version": { "type": "string", "minLength": 1 },
++    "commands": {
++      "type": "array",
++      "minItems": 1,
++      "items": { "$ref": "#/$defs/command" }
++    },
++    "gates": {
++      "type": "array",
++      "minItems": 1,
++      "items": { "$ref": "#/$defs/commandReference" }
++    },
++    "lanes": {
++      "type": "array",
++      "minItems": 1,
++      "items": { "$ref": "#/$defs/commandReference" }
++    },
+     "risks": {
+       "type": "array",
+       "minItems": 1,
+@@ -47,6 +65,28 @@
+       "minItems": 1,
+       "items": { "type": "string", "minLength": 1 }
+     },
++    "command": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["id", "executable", "argv"],
++      "properties": {
++        "id": { "type": "string", "minLength": 1 },
++        "executable": { "type": "string", "minLength": 1 },
++        "argv": {
++          "type": "array",
++          "items": { "type": "string" }
++        }
++      }
++    },
++    "commandReference": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["id", "command_ids"],
++      "properties": {
++        "id": { "type": "string", "minLength": 1 },
++        "command_ids": { "$ref": "#/$defs/nonEmptyStrings" }
++      }
++    },
+     "risk": {
+       "type": "object",
+       "additionalProperties": false,
+-- 
+2.51.0.windows.1
+

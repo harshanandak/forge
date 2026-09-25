@@ -1,0 +1,251 @@
+From 165e16f6a431d8c06628d1d49b8210131333f368 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 09:57:07 +0530
+Subject: [PATCH] fix(shepherd): gate the inline events pass on a complete
+ migration gate
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+pollEvents ran an inline monitor pass as soon as the Kernel owner row proved
+no watcher owned the PR, without proving the lease/owner migration gate was
+EXACTLY complete. While the gate is quarantined, conflicted, unknown or
+unreadable, legacy watchers may still be running outside Kernel authority, so
+the inline pass could duplicate one.
+
+pollEvents now calls the same shared predicate every launcher uses,
+launchGateComplete (lib/pr-monitor/watch-lifecycle.js) — not a local
+re-implementation — and fails closed with migrationGateIncomplete: true for
+every non-complete, unavailable or throwing gate read.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/monitor.js                    | 22 ++++--
+ test/commands/shepherd.test.js               |  9 ++-
+ test/pr-monitor/monitor-owner-signal.test.js | 71 ++++++++++++++++++++
+ test/pr-monitor/monitor.test.js              |  8 ++-
+ 4 files changed, 103 insertions(+), 7 deletions(-)
+
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index 3c9b9bf6..30aca57c 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -11,6 +11,7 @@
+ const { finalizeEvent, eventIdentity, fingerprint } = require('./events');
+ const { diffSnapshots } = require('./differ');
+ const journal = require('./journal');
++const { launchGateComplete } = require('./watch-lifecycle');
+ 
+ const MAX_EVENT_DELTAS = 128;
+ const ACTIVE_OWNER_PHASES = new Set(['starting', 'running', 'stop_requested', 'terminal_pending']);
+@@ -167,7 +168,8 @@ async function runMonitorPass(ctx) {
+ 
+ /**
+  * `forge shepherd events <pr> --since <seq>` core: run one inline pass when the
+- * Kernel owner row proves no watcher owns this PR, then return every journaled
++ * Kernel owner row proves no watcher owns this PR AND the shared migration gate
++ * proves EXACTLY complete, then return every journaled
+  * event with `seq > since`. PID files are compatibility evidence only and are
+  * never consulted for this decision.
+  * This is the agent-agnostic PULL surface — stdout NDJSON, nothing under .claude.
+@@ -178,7 +180,8 @@ async function runMonitorPass(ctx) {
+  * @param {number} [ctx.since]
+  * @param {() => string} [ctx.now]
+  * @param {(records: object[]) => Promise<void>|void} [ctx.enrich]
+- * @returns {Promise<{ events: object[], since: number, ranPass: boolean }>}
++ * @returns {Promise<{ events: object[], since: number, ranPass: boolean,
++ *   migrationGateIncomplete?: boolean }>}
+  */
+ async function pollEvents(ctx) {
+   const { dir, gather, since = 0 } = ctx;
+@@ -209,9 +212,19 @@ async function pollEvents(ctx) {
+   }
+   let ranPass = false;
+   let pass = null;
++  // An idle owner row is necessary but NOT sufficient: until the lease/owner
++  // migration gate is EXACTLY `complete`, legacy watchers may still be running
++  // outside Kernel authority, so an inline pass could duplicate one. Reuse the
++  // one shared predicate every launcher uses (`launchGateComplete`) rather than
++  // re-deriving "not blocked" here — partial, unknown and unreadable all fail closed.
++  let migrationGateIncomplete = false;
+   if (!authorityUnavailable && !isRunning) {
+-    pass = await runMonitorPass({ ...ctx, dir, gather, now: ctx.now, enrich: ctx.enrich });
+-    ranPass = true;
++    if (await launchGateComplete(ctx.owner || undefined, ctx.ownerOptions || {})) {
++      pass = await runMonitorPass({ ...ctx, dir, gather, now: ctx.now, enrich: ctx.enrich });
++      ranPass = true;
++    } else {
++      migrationGateIncomplete = true;
++    }
+   }
+   const readEventsSince = ctx.readEventsSince || journal.readEventsSince;
+   const available = readEventsSince(dir, since);
+@@ -222,6 +235,7 @@ async function pollEvents(ctx) {
+     since: Number(since) || 0,
+     ranPass,
+     ...(authorityUnavailable ? { authorityUnavailable: true } : {}),
++    ...(migrationGateIncomplete ? { migrationGateIncomplete: true } : {}),
+     overflow,
+     receiptIds: Array.isArray(pass?.receiptIds) ? pass.receiptIds.slice(0, MAX_EVENT_DELTAS) : [],
+     continuationPending: pass?.continuationPending === true,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index b3362235..7fc97c1d 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -12,6 +12,10 @@ const CONVERGENCE_DEPS = {
+   }),
+ };
+ 
++// Watcher authority whose lease/owner migration gate is EXACTLY complete — the
++// only state in which pollEvents may run an inline pass.
++const MIGRATED_GATE_OWNER = { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) };
++
+ describe('shepherd command handler', () => {
+   test('satisfies the _registry { name, description, handler } contract', () => {
+     expect(validateCommand(shepherdCmd)).toEqual({ valid: true });
+@@ -640,6 +644,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
+     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+       dir, gather: async () => snap(), now, isOwnerRunning: async () => false,
++      owner: MIGRATED_GATE_OWNER,
+     });
+     expect(res.success).toBe(true);
+     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
+@@ -701,7 +706,7 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+       },
+       repository: 'acme/forge',
+       ownerOptions: { driver: {} },
+-      owner: { readOwner: async () => ({ ok: true, record }) },
++      owner: { ...MIGRATED_GATE_OWNER, readOwner: async () => ({ ok: true, record }) },
+     });
+ 
+     expect(res.success).toBe(true);
+@@ -792,10 +797,12 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     // Baseline pass (green) establishes the snapshot; no check.failed yet.
+     await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+       dir, gather: async () => green, now, isOwnerRunning: async () => false, gatherPull,
++      owner: MIGRATED_GATE_OWNER,
+     });
+     // Transition to failed → check.failed emitted and enriched by the default hook.
+     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '1'], root, {
+       dir, gather: async () => failed, now, isOwnerRunning: async () => false, gatherPull,
++      owner: MIGRATED_GATE_OWNER,
+     });
+     const cf = res.events.find((e) => e.type === T.CHECK_FAILED);
+     expect(cf).toBeDefined();
+diff --git a/test/pr-monitor/monitor-owner-signal.test.js b/test/pr-monitor/monitor-owner-signal.test.js
+index 9e1a5ddc..f19db915 100644
+--- a/test/pr-monitor/monitor-owner-signal.test.js
++++ b/test/pr-monitor/monitor-owner-signal.test.js
+@@ -1,6 +1,9 @@
+ 'use strict';
+ 
+ const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
+ const journal = require('../../lib/pr-monitor/journal');
+ const { pollEvents } = require('../../lib/pr-monitor/monitor');
+ 
+@@ -50,4 +53,72 @@ describe('monitor owner signal', () => {
+ 		expect(result).toMatchObject({ ranPass: false });
+ 		expect(result.authorityUnavailable).toBeUndefined();
+ 	});
++
++	test('refuses the inline pass unless the shared migration gate proves EXACTLY complete', async () => {
++		const idleOwner = async () => ({ ok: true, record: null });
++		const gateStates = ['quarantined', 'conflict', 'pending', 'unknown', null, undefined];
++		for (const state of gateStates) {
++			let gathered = 0;
++			const result = await pollEvents({
++				dir: '/unused',
++				repo: 'acme/project',
++				pr: 7,
++				ownerOptions: { driver: {} },
++				owner: {
++					readOwner: idleOwner,
++					readMigrationGate: async () => ({ ok: true, gate: state == null ? null : { state } }),
++				},
++				gather: async () => { gathered += 1; return {}; },
++				readEventsSince: () => [],
++			});
++			expect(result).toMatchObject({ ranPass: false, migrationGateIncomplete: true });
++			expect(gathered).toBe(0);
++		}
++	});
++
++	test('fails closed when the migration gate read itself is unavailable or throws', async () => {
++		const idleOwner = async () => ({ ok: true, record: null });
++		for (const readMigrationGate of [
++			async () => ({ ok: false, reason: 'authority_unavailable', gate: null }),
++			async () => { throw new Error('gate read exploded'); },
++			undefined,
++		]) {
++			let gathered = 0;
++			const result = await pollEvents({
++				dir: '/unused',
++				repo: 'acme/project',
++				pr: 7,
++				ownerOptions: { driver: {} },
++				owner: { readOwner: idleOwner, readMigrationGate },
++				gather: async () => { gathered += 1; return {}; },
++				readEventsSince: () => [],
++			});
++			expect(result).toMatchObject({ ranPass: false, migrationGateIncomplete: true });
++			expect(gathered).toBe(0);
++		}
++	});
++
++	test('runs the inline pass once the migration gate reports complete', async () => {
++		let gathered = 0;
++		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-monitor-gate-'));
++		const result = await pollEvents({
++			dir,
++			repo: 'acme/project',
++			pr: 7,
++			ownerOptions: { driver: {} },
++			owner: {
++				readOwner: async () => ({ ok: true, record: null }),
++				readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }),
++			},
++			gather: async () => {
++				gathered += 1;
++				return { repo: 'project', pr: '7', verdict: 'GREEN', checks: [], threads: [] };
++			},
++			readEventsSince: () => [],
++			now: () => '2026-07-13T00:00:00.000Z',
++		});
++		expect(result.ranPass).toBe(true);
++		expect(result.migrationGateIncomplete).toBeUndefined();
++		expect(gathered).toBe(1);
++	});
+ });
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+index 957f7628..adaf495f 100644
+--- a/test/pr-monitor/monitor.test.js
++++ b/test/pr-monitor/monitor.test.js
+@@ -267,7 +267,11 @@ describe('pollEvents (events --since)', () => {
+   });
+ 
+   test('runs an inline pass when no watcher owns the PR', async () => {
+-    const res = await pollEvents({ dir, gather: async () => snap(), since: 0, now, isOwnerRunning: async () => false });
++    const res = await pollEvents({
++      dir, gather: async () => snap(), since: 0, now,
++      isOwnerRunning: async () => false,
++      owner: { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) },
++    });
+     expect(res.ranPass).toBe(true);
+     expect(res.events.map((e) => e.type)).toEqual([T.VERDICT_CHANGED]);
+   });
+@@ -303,7 +307,7 @@ describe('pollEvents (events --since)', () => {
+     await runMonitorPass(ctx);
+     current = snap({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+ 
+-    const res = await pollEvents({ ...ctx, since: 0, isOwnerRunning: async () => false });
++    const res = await pollEvents({ ...ctx, since: 0, isOwnerRunning: async () => false, owner: { readMigrationGate: async () => ({ ok: true, gate: { state: 'complete' } }) } });
+ 
+     expect(res.continuationPending).toBe(true);
+     expect(res.receiptIds).toHaveLength(128);
+-- 
+2.51.0.windows.1
+

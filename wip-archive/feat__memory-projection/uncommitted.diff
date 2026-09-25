@@ -1,0 +1,135 @@
+diff --git a/docs/reference/AGENT_SKILL_PARITY.md b/docs/reference/AGENT_SKILL_PARITY.md
+index 10568041..4d17149f 100644
+--- a/docs/reference/AGENT_SKILL_PARITY.md
++++ b/docs/reference/AGENT_SKILL_PARITY.md
+@@ -169,7 +169,7 @@ Known gaps intentionally left for follow-up. Tier-2 work is tracked under kernel
+ - Claude stage distribution is skills-first: the legacy `.claude/commands/` surface was removed (A0d) and the stage skill (`.claude/skills/<stage>`) is the authority — the stage graph no longer emits a command shim.
+ - **Hooks (`988ae187`)**: NO harness-native hook file is rendered for ANY harness — all lifecycle enforcement is delivered via Lefthook git hooks. The matrix marks Claude/Codex hooks `contract-only` and Cursor hooks `not-delivered` (Cursor 1.7+ exposes `.cursor/hooks.json`, not yet rendered). Native hook renderers are the deliverable.
+ - **Agents/subagents (`802aa4d8`)**: the whole domain is unimplemented — no renderer, manifest, wiring, or tests for any harness. The matrix marks every harness `not-delivered`/`unsupported`. A subagent renderer is the deliverable.
+-- **Typed memory (`dce9da46`)**: typed memory is WRITE-ONLY (`insights.js`); no generator projects a memory section into any instruction/rule file. All four typedMemory rows are marked `not-delivered`. A memory-projection renderer is the deliverable.
++- **Typed memory (`dce9da46`)**: DELIVERED. `lib/memory-projection.js` reads typed kernel memory (the local/kernel `kernel_memories` store, via the typed/project-memory API) and projects a BOUNDED, marked "Project Memory" block into the instruction surfaces at `forge setup`/refresh: AGENTS.md (read by Codex/Hermes/Cursor natively and by Claude via the CLAUDE.md shim) plus `.cursor/rules/forge-memory.mdc` for Cursor. The block is bounded by an entry-count + character budget (highest-confidence, most-recent typed entries) and is idempotent (a single marker-delimited block refreshed in place, never duplicated, never clobbering USER content). All four typedMemory rows are now `projection`. Graphiti's opt-in graph backend is a separate track; this projects the local kernel typed memory.
+ - **Codex paths (`55dfeccf`)**: `.codex/skills` is the committed staging mirror; skills install to `$CODEX_HOME/skills`. Direct Codex repo discovery uses `.agents/skills`, which Forge does not yet generate. Codex MCP is global-config-only (`$CODEX_HOME/config.toml`), so `(mcp, codex)` is `not-delivered` at project setup.
+ - **Safety domains (`1e68255c`)**: Claude permissions, `.cursorignore`, and Codex sandbox/approvals are not yet modeled in the matrix.
+ - MCP is now auto-wired project-local for both Claude (`.mcp.json`) and Cursor (`.cursor/mcp.json`) via the tested `lib/mcp-config-renderer.js`. Beads/patch-override state, marketplace trust, and extension packs remain as the matrix records them.
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 1e4dbbee..7c167776 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -55,6 +55,7 @@ const { SetupActionLog } = require('../setup-action-log');
+ const { ActionCollector } = require('../setup-utils');
+ const { renderSetupSummary } = require('../setup-summary-renderer');
+ const { smartMergeAgentsMd } = require('../smart-merge');
++const { projectMemoryIntoAgentsMd, projectMemoryIntoCursorRules } = require('../memory-projection');
+ const { checkLefthookStatus } = require('../lefthook-check');
+ const { resolveShellRuntime } = require('../runtime-health');
+ const {
+@@ -359,6 +360,38 @@ function backupMarkerlessAgentsMd() {
+   return true;
+ }
+ 
++/**
++ * Refresh the bounded, marked "Project Memory" projection in AGENTS.md from typed kernel
++ * memory. Runs after AGENTS.md is (re)written at setup/refresh. Idempotent and never fatal:
++ * a missing/empty memory store degrades to no block. Closes the typed-memory
++ * write-only gap (kernel issue dce9da46).
++ */
++function refreshAgentsMemoryProjection() {
++  try {
++    const result = projectMemoryIntoAgentsMd(projectRoot);
++    if (result.changed && result.entries > 0) {
++      console.log(`  Updated: AGENTS.md Project Memory projection (${result.entries} typed ${result.entries === 1 ? 'entry' : 'entries'})`);
++    }
++  } catch (err) {
++    addSetupNote(`Project Memory projection skipped: ${err.message}`);
++  }
++}
++
++/**
++ * Refresh the Cursor always-on memory rule (.cursor/rules/forge-memory.mdc) from typed
++ * kernel memory. Idempotent and never fatal.
++ */
++function refreshCursorMemoryProjection() {
++  try {
++    const result = projectMemoryIntoCursorRules(projectRoot);
++    if (result.changed && result.entries > 0) {
++      console.log('  Created: .cursor/rules/forge-memory.mdc (Project Memory projection)');
++    }
++  } catch (err) {
++    addSetupNote(`Cursor Project Memory projection skipped: ${err.message}`);
++  }
++}
++
+ 
+ // Helper functions
+ 
+@@ -1675,6 +1708,8 @@ async function setupCursorAgent() {
+   }
+   await generateCursorConfig(projectRoot, { overwrite: false });
+   console.log('  Created: Cursor native rules');
++  // Project typed kernel memory into Cursor's always-on rule surface (idempotent).
++  refreshCursorMemoryProjection();
+ }
+ 
+ // Helper: back up + remove a deprecated `.cursorrules` without data loss.
+@@ -2153,6 +2188,12 @@ async function installAgentsMd(skipFiles) {
+   const agentsSrc = path.join(packageDir, 'AGENTS.md');
+   const agentsDest = path.join(projectRoot, 'AGENTS.md');
+ 
++  await installAgentsMdWrite(skipFiles, agentsSrc, agentsDest);
++  // Project typed kernel memory into the freshly-written AGENTS.md (idempotent).
++  refreshAgentsMemoryProjection();
++}
++
++async function installAgentsMdWrite(skipFiles, agentsSrc, agentsDest) {
+   // Try smart merge if file exists
+   if (fs.existsSync(agentsDest)) {
+     const existingContent = fs.readFileSync(agentsDest, 'utf8');
+@@ -3120,6 +3161,9 @@ function setupAgentsMdFile(flags, skipFiles) {
+       displayProjectType(detection);
+     }
+   }
++
++  // Project typed kernel memory into the (re)written AGENTS.md (idempotent).
++  refreshAgentsMemoryProjection();
+ }
+ 
+ // Helper: Handle user-provided flags override - extracted to reduce cognitive complexity
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index dca939f8..423907f4 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -150,10 +150,10 @@ const CAPABILITY_ROWS = [
+   ]),
+   row('beads', 'state-and-memory', 'issue and audit state authority', HARNESS_IDS.map(id => [id, target('forge-owned', 'forge CLI + bd adapter')])),
+   row('typedMemory', 'state-and-memory', 'typed memory projection', [
+-    ['claude', target('not-delivered', null, { knownIssue: 'Typed memory is WRITE-ONLY (insights.js); no generator projects a memory section into any Claude instruction/rule file. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
+-    ['cursor', target('not-delivered', null, { knownIssue: 'Typed memory is write-only; no memory-projection renderer emits a Cursor memory section. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
+-    ['codex', target('not-delivered', null, { knownIssue: 'Typed memory is write-only; no memory-projection renderer emits a Codex memory section. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
+-    ['hermes', target('not-delivered', null, { knownIssue: 'Typed memory is write-only; forge recall reads notes but no renderer emits a Hermes memory section. Tracked as kernel issue dce9da46 (epic 90f2f631).' })],
++    ['claude', target('projection', 'AGENTS.md (Project Memory block, via CLAUDE.md shim)', { role: 'bounded typed-memory projection', evidence: ['S1', 'S9'] })],
++    ['cursor', target('projection', '.cursor/rules/forge-memory.mdc plus AGENTS.md', { role: 'bounded typed-memory projection', evidence: ['S3', 'S9'] })],
++    ['codex', target('projection', 'AGENTS.md (Project Memory block)', { role: 'bounded typed-memory projection', evidence: ['S9'] })],
++    ['hermes', target('projection', 'AGENTS.md via forge orient/recap', { role: 'bounded typed-memory projection consumed through the CLI', evidence: ['S9'] })],
+   ]),
+   row('patchOverrides', 'state-and-memory', 'project override source', HARNESS_IDS.map(id => [id, target('forge-owned', '.forge/patch.md')])),
+   row('marketplaceTrust', 'distribution', 'trusted distribution metadata', [
+diff --git a/test/harness-capability-matrix.test.js b/test/harness-capability-matrix.test.js
+index db3a06b2..47336cfb 100644
+--- a/test/harness-capability-matrix.test.js
++++ b/test/harness-capability-matrix.test.js
+@@ -48,8 +48,13 @@ describe('harness capability matrix', () => {
+     // Agents domain is unimplemented for every harness.
+     expect(matrix.harnesses.claude.capabilities.agents.status).toBe('not-delivered');
+     expect(matrix.harnesses.cursor.capabilities.agents.status).toBe('not-delivered');
+-    // typedMemory is write-only, no projection renderer.
+-    expect(matrix.harnesses.claude.capabilities.typedMemory.status).toBe('not-delivered');
++    // typedMemory is now PROJECTED into instruction surfaces by lib/memory-projection.js
++    // (bounded, marked "Project Memory" block). Delivered for all 4 harnesses.
++    expect(matrix.harnesses.claude.capabilities.typedMemory.status).toBe('projection');
++    expect(matrix.harnesses.cursor.capabilities.typedMemory.status).toBe('projection');
++    expect(matrix.harnesses.codex.capabilities.typedMemory.status).toBe('projection');
++    expect(matrix.harnesses.hermes.capabilities.typedMemory.status).toBe('projection');
++    expect(matrix.harnesses.cursor.capabilities.typedMemory.primarySurface).toContain('.cursor/rules/forge-memory.mdc');
+     // Codex MCP is global-config-only; not wired at project setup.
+     expect(matrix.harnesses.codex.capabilities.mcp.status).toBe('not-delivered');
+     expect(matrix.harnesses.claude.capabilities.commands.status).toBe('removed');

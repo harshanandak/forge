@@ -1,0 +1,27 @@
+From e74db41f3393008dec251fa7de8d7cae5020142b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 02:27:09 +0530
+Subject: [PATCH] test(lane): register the docs-bleed suite in the
+ canonical-docs expectation
+
+The docs-bleed gate reads AGENTS.md, so the doc-asserting derivation now
+selects it for canonical-docs pushes. Add it to the expected target list.
+---
+ test/scripts/test-runner.test.js | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index b960ba52..78e9f4e3 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -312,6 +312,7 @@ describe('scripts/test pre-push runner', () => {
+       'test/rules-sync.test.js',
+       'test/setup-workflow-removal.test.js',
+       'test/stage-naming.test.js',
++      'test/structural/agents-docs-bleed.test.js',
+       'test/workflows/size-check.test.js',
+       ...riskTargets,
+     ]);
+-- 
+2.51.0.windows.1
+

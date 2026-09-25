@@ -1,0 +1,628 @@
+From a211526e5d687de99de078bcde65449110ba696b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 22:08:33 +0530
+Subject: [PATCH] fix(memory): harden contract trust boundaries
+
+---
+ .../contract-baseline.v1.json                 |  36 +++--
+ .../fixtures/v1/feedback-secret-reject.json   |   1 +
+ .../fixtures/v1/monitor-bounds-reject.json    |   1 +
+ .../v1/monitor-receipt-privacy-reject.json    |   1 +
+ .../v1/capability-manifest.schema.json        |   2 +-
+ .../schemas/v1/claim-request.schema.json      |   2 +-
+ .../schemas/v1/context-packet.schema.json     |   2 +-
+ .../schemas/v1/delivery-receipt.schema.json   |   2 +-
+ .../schemas/v1/feedback-report.schema.json    |   2 +-
+ .../schemas/v1/lease-receipt.schema.json      |   2 +-
+ .../schemas/v1/monitor-event.schema.json      |   2 +-
+ .../schemas/v1/monitor-receipt.schema.json    |   2 +-
+ .../schemas/v1/run-receipt.schema.json        |   2 +-
+ .../schemas/v1/structured-error.schema.json   |   2 +-
+ .../schemas/v1/work-packet.schema.json        |   2 +-
+ packages/memory-contracts/src/canonical.js    | 148 +++++++++++++-----
+ packages/memory-contracts/src/definitions.js  |  34 +++-
+ packages/memory-contracts/src/schema.js       |  17 +-
+ packages/memory-contracts/src/validate.js     |  62 +++++++-
+ .../test/quality-review.test.js               | 138 ++++++++++++++++
+ 20 files changed, 390 insertions(+), 70 deletions(-)
+ create mode 100644 packages/memory-contracts/fixtures/v1/feedback-secret-reject.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/monitor-bounds-reject.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/monitor-receipt-privacy-reject.json
+ create mode 100644 packages/memory-contracts/test/quality-review.test.js
+
+diff --git a/packages/memory-contracts/contract-baseline.v1.json b/packages/memory-contracts/contract-baseline.v1.json
+index f7564246..11cdd31c 100644
+--- a/packages/memory-contracts/contract-baseline.v1.json
++++ b/packages/memory-contracts/contract-baseline.v1.json
+@@ -1,6 +1,6 @@
+ {
+   "baseline_version": 1,
+-  "generator_version": "memory-contracts-schema-gen/3",
++  "generator_version": "memory-contracts-schema-gen/4",
+   "artifacts": [
+     {
+       "path": "compatibility-matrix.v1.json",
+@@ -14,6 +14,10 @@
+       "path": "fixtures/v1/contract-inputs.v1.json",
+       "sha256": "40f28821f77ea153259a43e0ca8a5d6611f3e5e0ec4e4e47114d4cddeadac3fc"
+     },
++    {
++      "path": "fixtures/v1/feedback-secret-reject.json",
++      "sha256": "d2a8762a169617a6c98f5654e1d5265732485037e55af107018d139895b47869"
++    },
+     {
+       "path": "fixtures/v1/identity-conflict.json",
+       "sha256": "c703733d89f8adb079fb0e0ffe01ad35238d9a5f3ae725af54bca8b518fd6039"
+@@ -26,6 +30,14 @@
+       "path": "fixtures/v1/malformed-missing-required.json",
+       "sha256": "e4031505309e8b172d274ef7c4ef617e71217742ff2b7285f37859db0eea42b9"
+     },
++    {
++      "path": "fixtures/v1/monitor-bounds-reject.json",
++      "sha256": "36594e37f3707572ec73c60134f24f5fb3ae17a41d804c409fc03a83e9716c26"
++    },
++    {
++      "path": "fixtures/v1/monitor-receipt-privacy-reject.json",
++      "sha256": "e2c53bc43d727d3583f9f2da6538c127a08997fe279f9e74d585c5b95983b4bf"
++    },
+     {
+       "path": "fixtures/v1/not-executed-receipt.json",
+       "sha256": "4582002c36cca422ac1ad9a5858558234d5ed162dbe72b36665fe09ab098099f"
+@@ -64,47 +76,47 @@
+     },
+     {
+       "path": "schemas/v1/capability-manifest.schema.json",
+-      "sha256": "8f5a268c00804395a28debcffd2b493355fe4b1392ae7b15f0fab68f49f1df35"
++      "sha256": "87e7d4218ed8c3e78cbe265df056cf6da7ff4620a34fe34145502cfa7c772785"
+     },
+     {
+       "path": "schemas/v1/claim-request.schema.json",
+-      "sha256": "c583dff72478ea1c0af8b131a91fefdf10241342ae9a81b8088fbf08251a2578"
++      "sha256": "64d9ba367efa02feb719d60d073d344a4683be459da769566c0a2799fb32b086"
+     },
+     {
+       "path": "schemas/v1/context-packet.schema.json",
+-      "sha256": "b521d0c6e1dffc94615e010edca1ecdfc44aeaec598c1133fff12baa8831d1a5"
++      "sha256": "fad7e7ad54603318bdfc51b5cf3ef3c4aea5faca0aa2e688a6e9049c44becf17"
+     },
+     {
+       "path": "schemas/v1/delivery-receipt.schema.json",
+-      "sha256": "7292a6d9c1c9fad0e5cfe6974ea3c669f7a873593a7f2831595d77e8f120b693"
++      "sha256": "95be4697f4c12f4e835cf921ab59cb1c2fb563d186e50c4597e883861e34c4b3"
+     },
+     {
+       "path": "schemas/v1/feedback-report.schema.json",
+-      "sha256": "edffc7657318b80236e6bb1c502e22a3c866900b51756b6419d352dffe112044"
++      "sha256": "41f0ad0c4b6650d6ce20294e76cb9fc359f50b21bff782616119eefd76d488f4"
+     },
+     {
+       "path": "schemas/v1/lease-receipt.schema.json",
+-      "sha256": "af9646df8483c252ca46c0b8d546f9a5410ca8ac65f417cafe84da5df19765e8"
++      "sha256": "c6d192bf74321303096b5b72aa54a9253f1610ac16862f433306fcaee3212655"
+     },
+     {
+       "path": "schemas/v1/monitor-event.schema.json",
+-      "sha256": "8c881e8052205e49a0d66acf0d6000b550b709ad0a2f5c54711b2bb1dbb7b501"
++      "sha256": "a2f5bcb502ff0c8e6acfb83817407beb5502ee7abc7b83d757877074dc93b7bb"
+     },
+     {
+       "path": "schemas/v1/monitor-receipt.schema.json",
+-      "sha256": "13b0d760076a0524451e56315833c35e2821354e99824b90cbfbad4c8bc2ff2e"
++      "sha256": "a3fb441867e43ab153af9666be9f52f29444561d1476832c42a66b6d66a0da5b"
+     },
+     {
+       "path": "schemas/v1/run-receipt.schema.json",
+-      "sha256": "b4ebd9610b1389754d7ea6175eea9bc96880d6587766440044a5cd94dad4c9dd"
++      "sha256": "3c53acac7bbf0d1f247448f3ea283154ed5620811d0a3423b0003efc0367203e"
+     },
+     {
+       "path": "schemas/v1/structured-error.schema.json",
+-      "sha256": "4c86225d0a1f9ebe273cffef54d0499e1bd4d287e1c757d8019c6123080d5528"
++      "sha256": "a99b58bededc620a4091770b942c4cd829fbd6e6dbbecd0de905119c056e9715"
+     },
+     {
+       "path": "schemas/v1/work-packet.schema.json",
+-      "sha256": "b38f52b640fe4bc2799f2b00ab207742b6dd54198ebf5048c9d3d67740f9c6a2"
++      "sha256": "543f6d89e8400ebe9b8890c6d6faaabaad55762b066862be7882a564917664c7"
+     }
+   ]
+ }
+diff --git a/packages/memory-contracts/fixtures/v1/monitor-bounds-reject.json b/packages/memory-contracts/fixtures/v1/monitor-bounds-reject.json
+new file mode 100644
+index 00000000..39c56454
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/monitor-bounds-reject.json
+@@ -0,0 +1 @@
++{"fixture_id":"monitor-bounds-reject","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.monitor-event.v1"},"mutation":{"operation":"replace","path":"payload.bounded_payload","value":{"shape":"nine-level nested object; materializer repeats key child nine times"},"rehash":true},"operation":"validate-structure","expected":{"ok":false,"code":"BOUNDED_VALUE_TOO_DEEP"}}
+diff --git a/packages/memory-contracts/schemas/v1/capability-manifest.schema.json b/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+index c73186e2..579fe07f 100644
+--- a/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
++++ b/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.capability-manifest.v1","title":"CapabilityManifest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.capability-manifest.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["provider_id","manifest_revision","config_revision","executable_identity","provider_version","probe_revision","result_hash","capabilities","evaluator_status","probed_at","expires_at"],"properties":{"provider_id":{"type":"string","minLength":1},"manifest_revision":{"type":"integer","minimum":1},"config_revision":{"type":"string","minLength":1},"executable_identity":{"type":"object"},"provider_version":{"type":"string","minLength":1},"probe_revision":{"type":"string","minLength":1},"result_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"capabilities":{"type":"array","items":{"type":"object","required":["capability_id","available"],"properties":{"capability_id":{"type":"string","minLength":1},"available":{"type":"boolean"}}}},"evaluator_status":{"type":"string","enum":["approved","unavailable","quarantined"]},"probed_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.capability-manifest.v1","title":"CapabilityManifest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.capability-manifest.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["provider_id","manifest_revision","config_revision","executable_identity","provider_version","probe_revision","result_hash","capabilities","evaluator_status","probed_at","expires_at"],"properties":{"provider_id":{"type":"string","minLength":1},"manifest_revision":{"type":"integer","minimum":1},"config_revision":{"type":"string","minLength":1},"executable_identity":{"type":"object"},"provider_version":{"type":"string","minLength":1},"probe_revision":{"type":"string","minLength":1},"result_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"capabilities":{"type":"array","items":{"type":"object","required":["capability_id","available"],"properties":{"capability_id":{"type":"string","minLength":1},"available":{"type":"boolean"}}}},"evaluator_status":{"type":"string","enum":["approved","unavailable","quarantined"]},"probed_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/claim-request.schema.json b/packages/memory-contracts/schemas/v1/claim-request.schema.json
+index 240381bf..54c7a643 100644
+--- a/packages/memory-contracts/schemas/v1/claim-request.schema.json
++++ b/packages/memory-contracts/schemas/v1/claim-request.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.claim-request.v1","title":"ClaimRequest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.claim-request.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","actor_id","request_id","requested_scope","idempotency_key"],"properties":{"issue_id":{"type":"string","minLength":1},"expected_issue_revision":{"type":"integer","minimum":0},"actor_id":{"type":"string","minLength":1},"request_id":{"type":"string","minLength":1},"requested_scope":{"type":"object"},"idempotency_key":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.claim-request.v1","title":"ClaimRequest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.claim-request.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","actor_id","request_id","requested_scope","idempotency_key"],"properties":{"issue_id":{"type":"string","minLength":1},"expected_issue_revision":{"type":"integer","minimum":0},"actor_id":{"type":"string","minLength":1},"request_id":{"type":"string","minLength":1},"requested_scope":{"type":"object"},"idempotency_key":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/context-packet.schema.json b/packages/memory-contracts/schemas/v1/context-packet.schema.json
+index 7b4e4399..85ecdad8 100644
+--- a/packages/memory-contracts/schemas/v1/context-packet.schema.json
++++ b/packages/memory-contracts/schemas/v1/context-packet.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.context-packet.v1","title":"ContextPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.context-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["work_packet_hash","context_selection_revision","privacy_scope_hash","retention_class","disclosure_class"],"properties":{"work_packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"context_selection_revision":{"type":"integer","minimum":1},"privacy_scope_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"retention_class":{"type":"string","enum":["public_metadata","local_sensitive","remote_redacted","restricted"]},"disclosure_class":{"type":"string","enum":["public_metadata","local_sensitive","remote_redacted","restricted"]},"references":{"type":"array","items":{"type":"object"}},"summaries":{"type":"array","items":{"type":"object"}},"redaction_policy_revision":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.context-packet.v1","title":"ContextPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.context-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["work_packet_hash","context_selection_revision","privacy_scope_hash","retention_class","disclosure_class"],"properties":{"work_packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"context_selection_revision":{"type":"integer","minimum":1},"privacy_scope_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"retention_class":{"type":"string","enum":["public_metadata","local_sensitive","remote_redacted","restricted"]},"disclosure_class":{"type":"string","enum":["public_metadata","local_sensitive","remote_redacted","restricted"]},"references":{"type":"array","items":{"type":"object"}},"summaries":{"type":"array","items":{"type":"object"}},"redaction_policy_revision":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json b/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+index 64abae57..9ec52168 100644
+--- a/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.delivery-receipt.v1","title":"DeliveryReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.delivery-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["event_id","target","transport_tier","attempt","delivered_at","acknowledged","outcome"],"properties":{"event_id":{"type":"string","minLength":1},"target":{"type":"string","minLength":1},"transport_tier":{"type":"string","enum":["T0","T1","T2","T3","T4"]},"attempt":{"type":"integer","minimum":1},"delivered_at":{"type":"string","format":"date-time"},"acknowledged":{"type":"boolean"},"outcome":{"type":"string","enum":["delivered","pending","failed","acknowledged"]}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.delivery-receipt.v1","title":"DeliveryReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.delivery-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["event_id","target","transport_tier","attempt","delivered_at","acknowledged","outcome"],"properties":{"event_id":{"type":"string","minLength":1},"target":{"type":"string","minLength":1},"transport_tier":{"type":"string","enum":["T0","T1","T2","T3","T4"]},"attempt":{"type":"integer","minimum":1},"delivered_at":{"type":"string","format":"date-time"},"acknowledged":{"type":"boolean"},"outcome":{"type":"string","enum":["delivered","pending","failed","acknowledged"]}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/feedback-report.schema.json b/packages/memory-contracts/schemas/v1/feedback-report.schema.json
+index af162eab..6f8bdf59 100644
+--- a/packages/memory-contracts/schemas/v1/feedback-report.schema.json
++++ b/packages/memory-contracts/schemas/v1/feedback-report.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.feedback-report.v1","title":"FeedbackReport","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.feedback-report.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["report_id","product_version","contract_version","stable_error_code","affected_capability","redacted_reproduction_steps","expected_classification","actual_classification","occurrence_count","content_fingerprint","consent_event_id","redaction_policy_revision"],"properties":{"report_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"contract_version":{"type":"integer","minimum":1},"stable_error_code":{"type":"string","minLength":1},"affected_capability":{"type":"string","minLength":1},"redacted_reproduction_steps":{"type":"array","items":{"type":"string"}},"expected_classification":{"type":"string","minLength":1},"actual_classification":{"type":"string","minLength":1},"occurrence_count":{"type":"integer","minimum":1},"content_fingerprint":{"type":"string","pattern":"^[0-9a-f]{64}$"},"consent_event_id":{"type":"string","minLength":1},"redaction_policy_revision":{"type":"string","minLength":1},"proposed_fix":{"type":"string","minLength":1},"return_channel":{"type":"object"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.feedback-report.v1","title":"FeedbackReport","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.feedback-report.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["report_id","product_version","contract_version","stable_error_code","affected_capability","redacted_reproduction_steps","expected_classification","actual_classification","occurrence_count","content_fingerprint","consent_event_id","redaction_policy_revision"],"properties":{"report_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"contract_version":{"type":"integer","minimum":1},"stable_error_code":{"type":"string","minLength":1},"affected_capability":{"type":"string","minLength":1},"redacted_reproduction_steps":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":4096,"not":{"pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})|(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"}}},"expected_classification":{"type":"string","minLength":1},"actual_classification":{"type":"string","minLength":1},"occurrence_count":{"type":"integer","minimum":1},"content_fingerprint":{"type":"string","pattern":"^[0-9a-f]{64}$"},"consent_event_id":{"type":"string","minLength":1},"redaction_policy_revision":{"type":"string","minLength":1},"proposed_fix":{"type":"string","minLength":1,"maxLength":4096,"not":{"pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})|(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"}},"return_channel":{"type":"object"}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/lease-receipt.schema.json b/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+index 49c1dc57..dd95136d 100644
+--- a/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.lease-receipt.v1","title":"LeaseReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.lease-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["claim_request_id","lease_id","lease_epoch","issue_revision","actor_id","scope","expires_at","durable","authority_signature"],"properties":{"claim_request_id":{"type":"string","minLength":1},"lease_id":{"type":"string","minLength":1},"lease_epoch":{"type":"integer","minimum":1},"issue_revision":{"type":"integer","minimum":0},"actor_id":{"type":"string","minLength":1},"scope":{"type":"object"},"expires_at":{"type":"string","format":"date-time"},"durable":{"type":"boolean"},"authority_signature":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.lease-receipt.v1","title":"LeaseReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.lease-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["claim_request_id","lease_id","lease_epoch","issue_revision","actor_id","scope","expires_at","durable","authority_signature"],"properties":{"claim_request_id":{"type":"string","minLength":1},"lease_id":{"type":"string","minLength":1},"lease_epoch":{"type":"integer","minimum":1},"issue_revision":{"type":"integer","minimum":0},"actor_id":{"type":"string","minLength":1},"scope":{"type":"object"},"expires_at":{"type":"string","format":"date-time"},"durable":{"type":"boolean"},"authority_signature":{"type":"string","minLength":1}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/monitor-event.schema.json b/packages/memory-contracts/schemas/v1/monitor-event.schema.json
+index 4a938f3c..fcade0c8 100644
+--- a/packages/memory-contracts/schemas/v1/monitor-event.schema.json
++++ b/packages/memory-contracts/schemas/v1/monitor-event.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-event.v1","title":"MonitorEvent","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-event.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","event_id","sequence","subject_revision","type","actionability","observed_at"],"properties":{"monitor_id":{"type":"string","minLength":1},"event_id":{"type":"string","minLength":1},"sequence":{"type":"integer","minimum":0},"subject_revision":{"type":"string","minLength":1},"type":{"type":"string","minLength":1},"actionability":{"type":"string","enum":["advisory","action_required","terminal"]},"observed_at":{"type":"string","format":"date-time"},"bounded_payload":{"type":"object"},"artifact_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-event.v1","title":"MonitorEvent","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-event.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","event_id","sequence","subject_revision","type","actionability","observed_at"],"properties":{"monitor_id":{"type":"string","minLength":1},"event_id":{"type":"string","minLength":1},"sequence":{"type":"integer","minimum":0},"subject_revision":{"type":"string","minLength":1},"type":{"type":"string","minLength":1},"actionability":{"type":"string","enum":["advisory","action_required","terminal"]},"observed_at":{"type":"string","format":"date-time"},"bounded_payload":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"artifact_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json b/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+index c72b7134..ffde7631 100644
+--- a/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-receipt.v1","title":"MonitorReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","owner_run_id","terminal_state","terminal_reason","last_sequence","evidence_digest","cancellation_acknowledged","process_cleanup","lease_cleanup"],"properties":{"monitor_id":{"type":"string","minLength":1},"owner_run_id":{"type":"string","minLength":1},"terminal_state":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","CANCELLED"]},"terminal_reason":{"type":"string","minLength":1},"last_sequence":{"type":"integer","minimum":0},"evidence_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"cancellation_acknowledged":{"type":"boolean"},"process_cleanup":{"type":"object"},"lease_cleanup":{"type":"object"},"undelivered_cursor":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-receipt.v1","title":"MonitorReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","owner_run_id","terminal_state","terminal_reason","last_sequence","evidence_digest","cancellation_acknowledged","process_cleanup","lease_cleanup"],"properties":{"monitor_id":{"type":"string","minLength":1},"owner_run_id":{"type":"string","minLength":1},"terminal_state":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","CANCELLED"]},"terminal_reason":{"type":"string","minLength":1},"last_sequence":{"type":"integer","minimum":0},"evidence_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"cancellation_acknowledged":{"type":"boolean"},"process_cleanup":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"lease_cleanup":{"type":"object","maxProperties":64,"x-forge-max-depth":8,"x-forge-max-items":128,"x-forge-max-serialized-bytes":16384,"x-forge-secret-pattern":"(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})","x-forge-absolute-user-path-pattern":"(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)"},"undelivered_cursor":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/run-receipt.schema.json b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+index 91c5130f..2dbc8ef0 100644
+--- a/packages/memory-contracts/schemas/v1/run-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","NOT_EXECUTED"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object"},"cleanup":{"type":"object"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","NOT_EXECUTED"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object"},"cleanup":{"type":"object"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/structured-error.schema.json b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+index c9da96c6..0f40d155 100644
+--- a/packages/memory-contracts/schemas/v1/structured-error.schema.json
++++ b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"error_occurrence_id":{"type":"string","minLength":1},"code":{"type":"string","minLength":1},"terminal_classification":{"type":"string","enum":["FAIL","INCOMPLETE"]},"safe_details":{"type":"object"},"retryable":{"type":"boolean"},"evidence_refs":{"type":"array","items":{"type":"object"}}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"error_occurrence_id":{"type":"string","minLength":1},"code":{"type":"string","minLength":1},"terminal_classification":{"type":"string","enum":["FAIL","INCOMPLETE"]},"safe_details":{"type":"object"},"retryable":{"type":"boolean"},"evidence_refs":{"type":"array","items":{"type":"object"}}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/work-packet.schema.json b/packages/memory-contracts/schemas/v1/work-packet.schema.json
+index 1d247dd6..3e27d3af 100644
+--- a/packages/memory-contracts/schemas/v1/work-packet.schema.json
++++ b/packages/memory-contracts/schemas/v1/work-packet.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.work-packet.v1","title":"WorkPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.work-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","packet_id","packet_revision","repository_id","target_head","objective","authority","allowed_mutations","workflow_config_revision","capability_manifest_digest"],"properties":{"issue_id":{"type":"string","minLength":1},"expected_issue_revision":{"type":"integer","minimum":0},"packet_id":{"type":"string","minLength":1},"packet_revision":{"type":"integer","minimum":1},"repository_id":{"type":"string","minLength":1},"target_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"objective":{"type":"string","minLength":1},"authority":{"type":"object","required":["kind","issue_revision"],"properties":{"kind":{"type":"string","minLength":1},"issue_revision":{"type":"integer","minimum":0}}},"allowed_mutations":{"type":"array","items":{"type":"string"}},"workflow_config_revision":{"type":"string","minLength":1},"capability_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"prohibited_actions":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"array","items":{"type":"string"}},"constraints":{"type":"object"},"risk":{"type":"object"},"platform":{"type":"object"},"context_references":{"type":"array","items":{"type":"object"}},"expected_outputs":{"type":"array","items":{"type":"string"}},"target":{"type":"object"},"receipt_requirements":{"type":"object"},"idempotency_key":{"type":"string","minLength":1},"token_budget":{"type":"integer","minimum":1},"budget_metric":{"type":"string","enum":["provider_reported_total_tokens"]},"risk_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.work-packet.v1","title":"WorkPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.work-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","packet_id","packet_revision","repository_id","target_head","objective","authority","allowed_mutations","workflow_config_revision","capability_manifest_digest"],"properties":{"issue_id":{"type":"string","minLength":1},"expected_issue_revision":{"type":"integer","minimum":0},"packet_id":{"type":"string","minLength":1},"packet_revision":{"type":"integer","minimum":1},"repository_id":{"type":"string","minLength":1},"target_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"objective":{"type":"string","minLength":1},"authority":{"type":"object","required":["kind","issue_revision"],"properties":{"kind":{"type":"string","minLength":1},"issue_revision":{"type":"integer","minimum":0}}},"allowed_mutations":{"type":"array","items":{"type":"string"}},"workflow_config_revision":{"type":"string","minLength":1},"capability_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"prohibited_actions":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"array","items":{"type":"string"}},"constraints":{"type":"object"},"risk":{"type":"object"},"platform":{"type":"object"},"context_references":{"type":"array","items":{"type":"object"}},"expected_outputs":{"type":"array","items":{"type":"string"}},"target":{"type":"object"},"receipt_requirements":{"type":"object"},"idempotency_key":{"type":"string","minLength":1},"token_budget":{"type":"integer","minimum":1},"budget_metric":{"type":"string","enum":["provider_reported_total_tokens"]},"risk_manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},"extensions":{"type":"object","propertyNames":{"pattern":"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$"},"additionalProperties":{"type":"object","required":["impact","schema_version","value"],"properties":{"impact":{"const":"advisory"},"schema_version":{"type":"integer","minimum":1},"value":{}},"additionalProperties":false}}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/src/canonical.js b/packages/memory-contracts/src/canonical.js
+index e1d74f47..c13c17b4 100644
+--- a/packages/memory-contracts/src/canonical.js
++++ b/packages/memory-contracts/src/canonical.js
+@@ -1,73 +1,147 @@
+ "use strict";
+ 
+ const { createHash } = require("node:crypto");
++const { types } = require("node:util");
++
++const DEFAULT_LIMITS = Object.freeze({ maxDepth: 64, maxNodes: 100_000, maxBytes: 1_048_576 });
++
++class CanonicalizationError extends TypeError {
++  constructor(code, message) {
++    super(message);
++    this.name = "CanonicalizationError";
++    this.code = code;
++  }
++}
++
++function fail(code, message) {
++  throw new CanonicalizationError(code, message);
++}
+ 
+ function assertUnicode(value) {
+   for (let index = 0; index < value.length; index += 1) {
+     const code = value.charCodeAt(index);
+     if (code >= 0xd800 && code <= 0xdbff) {
+       const next = value.charCodeAt(index + 1);
+-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+-        throw new TypeError("Canonical JSON rejects unpaired UTF-16 surrogates");
+-      }
++      if (!(next >= 0xdc00 && next <= 0xdfff)) fail("CANONICAL_UNICODE", "Canonical JSON rejects unpaired UTF-16 surrogates");
+       index += 1;
+     } else if (code >= 0xdc00 && code <= 0xdfff) {
+-      throw new TypeError("Canonical JSON rejects unpaired UTF-16 surrogates");
++      fail("CANONICAL_UNICODE", "Canonical JSON rejects unpaired UTF-16 surrogates");
+     }
+   }
+ }
+ 
+-function serialize(value) {
+-  if (value === null || typeof value === "boolean") return JSON.stringify(value);
++function limits(options) {
++  const resolved = { ...DEFAULT_LIMITS, ...options };
++  for (const field of Object.keys(DEFAULT_LIMITS)) {
++    if (!Number.isInteger(resolved[field]) || resolved[field] < 1) fail("CANONICAL_INVALID_LIMIT", `${field} must be a positive integer`);
++  }
++  return resolved;
++}
++
++function append(state, text) {
++  state.bytes += Buffer.byteLength(text, "utf8");
++  if (state.bytes > state.limits.maxBytes) fail("CANONICAL_BYTE_LIMIT", "Canonical JSON byte limit exceeded");
++  return text;
++}
++
++function enter(state, depth) {
++  if (depth > state.limits.maxDepth) fail("CANONICAL_DEPTH_LIMIT", "Canonical JSON depth limit exceeded");
++  state.nodes += 1;
++  if (state.nodes > state.limits.maxNodes) fail("CANONICAL_NODE_LIMIT", "Canonical JSON node limit exceeded");
++}
++
++function descriptorsForPlainObject(value) {
++  if (types.isProxy(value)) fail("CANONICAL_PROXY", "Canonical JSON rejects Proxy inputs");
++  if (Object.getPrototypeOf(value) !== Object.prototype) fail("CANONICAL_NON_PLAIN", "Canonical JSON requires plain objects");
++  const descriptors = Object.getOwnPropertyDescriptors(value);
++  for (const key of Reflect.ownKeys(descriptors)) {
++    if (typeof key === "symbol") fail("CANONICAL_SYMBOL", "Canonical JSON rejects symbol keys");
++    const descriptor = descriptors[key];
++    if (!Object.hasOwn(descriptor, "value")) fail("CANONICAL_ACCESSOR", "Canonical JSON rejects accessors");
++    if (!descriptor.enumerable) fail("CANONICAL_NON_ENUMERABLE", "Canonical JSON rejects non-enumerable data properties");
++    assertUnicode(key);
++  }
++  return descriptors;
++}
++
++function descriptorsForArray(value) {
++  if (types.isProxy(value)) fail("CANONICAL_PROXY", "Canonical JSON rejects Proxy inputs");
++  const descriptors = Object.getOwnPropertyDescriptors(value);
++  for (const key of Reflect.ownKeys(descriptors)) {
++    if (typeof key === "symbol") fail("CANONICAL_SYMBOL", "Canonical JSON rejects symbol keys");
++    if (key === "length") continue;
++    const index = Number(key);
++    if (!Number.isInteger(index) || index < 0 || String(index) !== key || index >= value.length) fail("CANONICAL_ARRAY_PROPERTY", "Canonical JSON arrays cannot have named properties");
++    const descriptor = descriptors[key];
++    if (!Object.hasOwn(descriptor, "value")) fail("CANONICAL_ACCESSOR", "Canonical JSON rejects accessors");
++    if (!descriptor.enumerable) fail("CANONICAL_NON_ENUMERABLE", "Canonical JSON rejects non-enumerable array items");
++  }
++  return descriptors;
++}
++
++function serialize(value, state, depth) {
++  enter(state, depth);
++  if (value === null || typeof value === "boolean") return append(state, JSON.stringify(value));
+   if (typeof value === "string") {
+     assertUnicode(value);
+-    return JSON.stringify(value);
++    return append(state, JSON.stringify(value));
+   }
+   if (typeof value === "number") {
+-    if (!Number.isFinite(value)) {
+-      throw new TypeError("Canonical JSON requires finite numbers");
+-    }
+-    return JSON.stringify(value);
++    if (!Number.isFinite(value)) fail("CANONICAL_NUMBER", "Canonical JSON requires finite numbers");
++    return append(state, JSON.stringify(value));
+   }
+-  if (Array.isArray(value)) {
+-    const items = [];
+-    for (let index = 0; index < value.length; index += 1) {
+-      if (!Object.hasOwn(value, index)) {
+-        throw new TypeError("Canonical JSON rejects sparse arrays");
++  if (!value || typeof value !== "object") fail("CANONICAL_TYPE", `Canonical JSON cannot encode ${typeof value}`);
++  if (types.isProxy(value)) fail("CANONICAL_PROXY", "Canonical JSON rejects Proxy inputs");
++  if (state.active.has(value)) fail("CANONICAL_CYCLE", "Canonical JSON rejects cyclic values");
++
++  state.active.add(value);
++  try {
++    if (Array.isArray(value)) {
++      const descriptors = descriptorsForArray(value);
++      let output = append(state, "[");
++      for (let index = 0; index < value.length; index += 1) {
++        const descriptor = descriptors[String(index)];
++        if (!descriptor) fail("CANONICAL_SPARSE_ARRAY", "Canonical JSON rejects sparse arrays");
++        if (index > 0) output += append(state, ",");
++        output += serialize(descriptor.value, state, depth + 1);
+       }
+-      items.push(serialize(value[index]));
++      return output + append(state, "]");
+     }
+-    return `[${items.join(",")}]`;
+-  }
+-  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+-    const entries = Object.keys(value)
+-      .sort()
+-      .map((key) => {
+-        assertUnicode(key);
+-        return `${JSON.stringify(key)}:${serialize(value[key])}`;
+-      });
+-    return `{${entries.join(",")}}`;
++
++    const descriptors = descriptorsForPlainObject(value);
++    const keys = Object.keys(descriptors).sort();
++    let output = append(state, "{");
++    keys.forEach((key, index) => {
++      if (index > 0) output += append(state, ",");
++      output += append(state, JSON.stringify(key));
++      output += append(state, ":");
++      output += serialize(descriptors[key].value, state, depth + 1);
++    });
++    return output + append(state, "}");
++  } finally {
++    state.active.delete(value);
+   }
+-  throw new TypeError(`Canonical JSON cannot encode ${typeof value}`);
+ }
+ 
+-function canonicalize(value) {
+-  return serialize(value);
++function canonicalize(value, options = {}) {
++  const state = { limits: limits(options), nodes: 0, bytes: 0, active: new WeakSet() };
++  return serialize(value, state, 0);
+ }
+ 
+ function withoutContentHash(value) {
+-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+-    throw new TypeError("Contract object must be a JSON object");
++  if (!value || typeof value !== "object" || Array.isArray(value)) fail("CANONICAL_CONTRACT_OBJECT", "Contract object must be a plain JSON object");
++  const descriptors = descriptorsForPlainObject(value);
++  const copy = {};
++  for (const [key, descriptor] of Object.entries(descriptors)) {
++    if (key !== "content_hash") copy[key] = descriptor.value;
+   }
+-  const copy = { ...value };
+-  delete copy.content_hash;
+   return copy;
+ }
+ 
+-function computeContentHash(value) {
++function computeContentHash(value, options = {}) {
+   return createHash("sha256")
+-    .update(canonicalize(withoutContentHash(value)), "utf8")
++    .update(canonicalize(withoutContentHash(value), options), "utf8")
+     .digest("hex");
+ }
+ 
+-module.exports = { canonicalize, computeContentHash };
++module.exports = { CanonicalizationError, canonicalize, computeContentHash };
+diff --git a/packages/memory-contracts/src/definitions.js b/packages/memory-contracts/src/definitions.js
+index 265cacfa..1b279fe1 100644
+--- a/packages/memory-contracts/src/definitions.js
++++ b/packages/memory-contracts/src/definitions.js
+@@ -1,6 +1,15 @@
+ "use strict";
+ 
+-const CONTRACTS = Object.freeze({
++function deepFreeze(value, seen = new WeakSet()) {
++  if (!value || typeof value !== "object" || seen.has(value)) return value;
++  seen.add(value);
++  for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
++    if (Object.hasOwn(descriptor, "value")) deepFreeze(descriptor.value, seen);
++  }
++  return Object.freeze(value);
++}
++
++const CONTRACTS = deepFreeze({
+   "forge.memory.work-packet.v1": {
+     name: "WorkPacket",
+     identity: ["issue_id", "expected_issue_revision", "packet_id", "packet_revision", "repository_id", "target_head"],
+@@ -79,8 +88,21 @@ const OBJECT_ARRAY = Object.freeze({ type: "array", items: { type: "object" } })
+ const HASH = Object.freeze({ type: "string", pattern: "^[0-9a-f]{64}$" });
+ const HEAD = Object.freeze({ type: "string", pattern: "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" });
+ const TIMESTAMP = Object.freeze({ type: "string", format: "date-time" });
++const SECRET_PATTERN = "(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\\s*[:=]\\s*\\S{8,})";
++const ABSOLUTE_USER_PATH_PATTERN = "(?:[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+|/(?:Users|home)/[^/\\s]+/)";
++const SAFE_REDACTED_STRING = Object.freeze({ type: "string", minLength: 1, maxLength: 4096, not: { pattern: `${SECRET_PATTERN}|${ABSOLUTE_USER_PATH_PATTERN}` } });
++const SAFE_REDACTED_STEPS = Object.freeze({ type: "array", maxItems: 64, items: SAFE_REDACTED_STRING });
++const BOUNDED_OBJECT = Object.freeze({
++  type: "object",
++  maxProperties: 64,
++  "x-forge-max-depth": 8,
++  "x-forge-max-items": 128,
++  "x-forge-max-serialized-bytes": 16384,
++  "x-forge-secret-pattern": SECRET_PATTERN,
++  "x-forge-absolute-user-path-pattern": ABSOLUTE_USER_PATH_PATTERN,
++});
+ 
+-const PAYLOAD_FIELDS = Object.freeze({
++const PAYLOAD_FIELDS = deepFreeze({
+   "forge.memory.work-packet.v1": {
+     issue_id: STRING, expected_issue_revision: INTEGER, packet_id: STRING, packet_revision: POSITIVE_INTEGER,
+     repository_id: STRING, target_head: HEAD, objective: STRING,
+@@ -121,9 +143,9 @@ const PAYLOAD_FIELDS = Object.freeze({
+   },
+   "forge.memory.feedback-report.v1": {
+     report_id: STRING, product_version: STRING, contract_version: POSITIVE_INTEGER, stable_error_code: STRING,
+-    affected_capability: STRING, redacted_reproduction_steps: STRING_ARRAY, expected_classification: STRING,
++    affected_capability: STRING, redacted_reproduction_steps: SAFE_REDACTED_STEPS, expected_classification: STRING,
+     actual_classification: STRING, occurrence_count: POSITIVE_INTEGER, content_fingerprint: HASH,
+-    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: STRING, return_channel: OBJECT,
++    consent_event_id: STRING, redaction_policy_revision: STRING, proposed_fix: SAFE_REDACTED_STRING, return_channel: OBJECT,
+   },
+   "forge.memory.structured-error.v1": {
+     parent_object_hash: HASH, error_occurrence_id: STRING, code: STRING,
+@@ -133,7 +155,7 @@ const PAYLOAD_FIELDS = Object.freeze({
+   "forge.memory.monitor-event.v1": {
+     monitor_id: STRING, event_id: STRING, sequence: INTEGER, subject_revision: STRING, type: STRING,
+     actionability: { type: "string", enum: ["advisory", "action_required", "terminal"] }, observed_at: TIMESTAMP,
+-    bounded_payload: OBJECT, artifact_digest: HASH,
++    bounded_payload: BOUNDED_OBJECT, artifact_digest: HASH,
+   },
+   "forge.memory.delivery-receipt.v1": {
+     event_id: STRING, target: STRING, transport_tier: { type: "string", enum: ["T0", "T1", "T2", "T3", "T4"] },
+@@ -144,7 +166,7 @@ const PAYLOAD_FIELDS = Object.freeze({
+     monitor_id: STRING, owner_run_id: STRING,
+     terminal_state: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "CANCELLED"] }, terminal_reason: STRING,
+     last_sequence: INTEGER, evidence_digest: HASH, cancellation_acknowledged: BOOLEAN,
+-    process_cleanup: OBJECT, lease_cleanup: OBJECT, undelivered_cursor: INTEGER,
++    process_cleanup: BOUNDED_OBJECT, lease_cleanup: BOUNDED_OBJECT, undelivered_cursor: INTEGER,
+   },
+ });
+ 
+diff --git a/packages/memory-contracts/src/schema.js b/packages/memory-contracts/src/schema.js
+index a086e303..3471c507 100644
+--- a/packages/memory-contracts/src/schema.js
++++ b/packages/memory-contracts/src/schema.js
+@@ -6,7 +6,7 @@ function generateJsonSchema(schemaId) {
+   const definition = CONTRACTS[schemaId];
+   if (!definition) throw new TypeError(`Unsupported schema_id: ${schemaId}`);
+   const payloadProperties = {};
+-  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = PAYLOAD_FIELDS[schemaId][field];
++  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = structuredClone(PAYLOAD_FIELDS[schemaId][field]);
+   return {
+     $schema: "https://json-schema.org/draft/2020-12/schema",
+     $id: schemaId,
+@@ -39,7 +39,20 @@ function generateJsonSchema(schemaId) {
+       },
+       content_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+       payload: { type: "object", required: definition.required, properties: payloadProperties, additionalProperties: false },
+-      extensions: { type: "object" },
++      extensions: {
++        type: "object",
++        propertyNames: { pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$" },
++        additionalProperties: {
++          type: "object",
++          required: ["impact", "schema_version", "value"],
++          properties: {
++            impact: { const: "advisory" },
++            schema_version: { type: "integer", minimum: 1 },
++            value: {},
++          },
++          additionalProperties: false,
++        },
++      },
+     },
+     additionalProperties: false,
+   };
+diff --git a/packages/memory-contracts/src/validate.js b/packages/memory-contracts/src/validate.js
+index 4d48141f..4069b029 100644
+--- a/packages/memory-contracts/src/validate.js
++++ b/packages/memory-contracts/src/validate.js
+@@ -1,6 +1,6 @@
+ "use strict";
+ 
+-const { computeContentHash } = require("./canonical.js");
++const { canonicalize, computeContentHash } = require("./canonical.js");
+ const { CONTRACTS, PAYLOAD_FIELDS } = require("./definitions.js");
+ 
+ const ENVELOPE_FIELDS = Object.freeze([
+@@ -23,6 +23,10 @@ const LIVE_EVIDENCE_FIELDS = Object.freeze({
+   "forge.memory.delivery-receipt.v1": ["eventId", "target"],
+   "forge.memory.monitor-receipt.v1": ["monitorId", "ownerRunId"],
+ });
++const EXTENSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:[./][A-Za-z0-9][A-Za-z0-9_.-]*)+$/;
++const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,})/;
++const ABSOLUTE_USER_PATH = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/;
++const BOUNDED_LIMITS = Object.freeze({ maxDepth: 8, maxItems: 128, maxProperties: 64, maxBytes: 16_384 });
+ 
+ function error(errors, path, code) {
+   errors.push({ path, code });
+@@ -71,12 +75,15 @@ function validateExtensions(extensions, errors) {
+   if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return;
+   for (const [extensionId, extension] of Object.entries(extensions)) {
+     const path = `$.extensions[${JSON.stringify(extensionId)}]`;
++    if (!EXTENSION_ID.test(extensionId)) error(errors, path, "INVALID_EXTENSION_ID");
+     if (!extension || typeof extension !== "object" || Array.isArray(extension)) {
+       error(errors, path, "INVALID_EXTENSION");
+       continue;
+     }
+     if (extension.impact === "consequential") error(errors, path, "UNKNOWN_CONSEQUENTIAL_EXTENSION");
+-    else if (extension.impact !== "advisory" || !Number.isInteger(extension.schema_version) || extension.schema_version < 1 || !Object.hasOwn(extension, "value")) error(errors, path, "INVALID_EXTENSION");
++    const allowed = new Set(["impact", "schema_version", "value"]);
++    const hasExtra = Object.keys(extension).some((field) => !allowed.has(field));
++    if (extension.impact !== "advisory" || !Number.isInteger(extension.schema_version) || extension.schema_version < 1 || !Object.hasOwn(extension, "value") || hasExtra) error(errors, path, "INVALID_EXTENSION");
+   }
+ }
+ 
+@@ -98,11 +105,15 @@ function validateShape(value, shape, path, errors) {
+   }
+   if (shape.enum && !shape.enum.includes(value)) error(errors, path, "INVALID_ENUM");
+   if (shape.minLength !== undefined && value.length < shape.minLength) error(errors, path, "INVALID_LENGTH");
++  if (shape.maxLength !== undefined && value.length > shape.maxLength) error(errors, path, "BOUNDED_VALUE_TOO_LARGE");
+   if (shape.minimum !== undefined && value < shape.minimum) error(errors, path, "OUT_OF_RANGE");
+   if (shape.pattern && !new RegExp(shape.pattern).test(value)) error(errors, path, "INVALID_FORMAT");
++  if (shape.not?.pattern && new RegExp(shape.not.pattern).test(value)) error(errors, path, "PRIVACY_PATTERN_REJECTED");
+   if (shape.format === "date-time" && (!RFC3339_UTC.test(value) || Number.isNaN(Date.parse(value)))) error(errors, path, "INVALID_TIMESTAMP");
++  if (shape.type === "array" && shape.maxItems !== undefined && value.length > shape.maxItems) error(errors, path, "BOUNDED_VALUE_TOO_MANY_ITEMS");
+   if (shape.type === "array" && shape.items) value.forEach((item, index) => validateShape(item, shape.items, `${path}[${index}]`, errors));
+   if (shape.type === "object") {
++    if (shape.maxProperties !== undefined && Object.keys(value).length > shape.maxProperties) error(errors, path, "BOUNDED_VALUE_TOO_MANY_PROPERTIES");
+     for (const field of shape.required ?? []) {
+       if (!Object.hasOwn(value, field)) error(errors, `${path}.${field}`, "MISSING_REQUIRED");
+     }
+@@ -116,6 +127,52 @@ function validateShape(value, shape, path, errors) {
+   }
+ }
+ 
++function inspectPrivacyString(value, path, errors) {
++  if (SECRET_PATTERN.test(value)) error(errors, path, "PRIVACY_SECRET_PATTERN");
++  if (ABSOLUTE_USER_PATH.test(value)) error(errors, path, "PRIVACY_ABSOLUTE_PATH");
++}
++
++function inspectBoundedValue(value, path, errors, depth = 0) {
++  if (depth > BOUNDED_LIMITS.maxDepth) {
++    error(errors, path, "BOUNDED_VALUE_TOO_DEEP");
++    return;
++  }
++  if (typeof value === "string") {
++    inspectPrivacyString(value, path, errors);
++    return;
++  }
++  if (Array.isArray(value)) {
++    if (value.length > BOUNDED_LIMITS.maxItems) error(errors, path, "BOUNDED_VALUE_TOO_MANY_ITEMS");
++    value.forEach((item, index) => inspectBoundedValue(item, `${path}[${index}]`, errors, depth + 1));
++    return;
++  }
++  if (!value || typeof value !== "object") return;
++  const entries = Object.entries(value);
++  if (entries.length > BOUNDED_LIMITS.maxProperties) error(errors, path, "BOUNDED_VALUE_TOO_MANY_PROPERTIES");
++  entries.forEach(([field, item]) => inspectBoundedValue(item, `${path}.${field}`, errors, depth + 1));
++}
++
++function validateBoundedPrivacy(value, errors) {
++  const targets = [];
++  if (value?.schema_id === "forge.memory.feedback-report.v1") {
++    targets.push([value.payload?.redacted_reproduction_steps, "$.payload.redacted_reproduction_steps"]);
++    if (value.payload?.proposed_fix !== undefined) targets.push([value.payload.proposed_fix, "$.payload.proposed_fix"]);
++  } else if (value?.schema_id === "forge.memory.monitor-event.v1" && value.payload?.bounded_payload !== undefined) {
++    targets.push([value.payload.bounded_payload, "$.payload.bounded_payload"]);
++  } else if (value?.schema_id === "forge.memory.monitor-receipt.v1") {
++    targets.push([value.payload?.process_cleanup, "$.payload.process_cleanup"], [value.payload?.lease_cleanup, "$.payload.lease_cleanup"]);
++  }
++  for (const [target, path] of targets) {
++    if (target === undefined) continue;
++    inspectBoundedValue(target, path, errors);
++    try {
++      canonicalize(target, { maxDepth: 64, maxNodes: 100_000, maxBytes: BOUNDED_LIMITS.maxBytes });
++    } catch (failure) {
++      if (failure.code === "CANONICAL_BYTE_LIMIT") error(errors, path, "BOUNDED_VALUE_TOO_LARGE");
++    }
++  }
++}
++
+ function validateConsequentialEvidence(value, expected, errors) {
+   if (!value?.payload) return;
+   if (value.schema_id === "forge.memory.run-receipt.v1" && value.payload.status === "NOT_EXECUTED") {
+@@ -189,6 +246,7 @@ function validateContractStructure(value, options = {}) {
+     }
+   }
+   validateExtensions(value?.extensions, errors);
++  if (!errors.some((item) => item.code === "NON_CANONICAL_VALUE")) validateBoundedPrivacy(value, errors);
+   return { ok: errors.length === 0, errors };
+ }
+ 

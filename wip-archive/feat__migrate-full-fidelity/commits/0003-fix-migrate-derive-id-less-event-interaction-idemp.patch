@@ -1,0 +1,64 @@
+From a9d202d8d3c8e7a4f034bc2debd58b35ac6f5d6d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 07:43:23 +0530
+Subject: [PATCH] fix(migrate): derive id-less event/interaction idempotency
+ key from stable fields
+
+The fallback id/idempotency_key for events/interactions without a beads id
+mixed in importedAt (import time), so re-migrating the same id-less record
+generated a new id and duplicated the kernel_events row. Derive the fallback
+from stable record fields only (issue_id/kind/created_at/value/comment).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                            | 2 +-
+ lib/adapters/beads-kernel-compat.js                      | 9 +++++++--
+ 2 files changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 87ab789e..bd9759e6 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -39,7 +39,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/adapters/beads-issue-adapter.js (1)
+   - lines: 78 (bd)
+ - [ ] lib/adapters/beads-kernel-compat.js (5)
+-  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 827 (.beads)
++  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 832 (.beads)
+ - [ ] lib/audit-evidence.js (3)
+   - lines: 148 (bd), 214 (bd), 240 (bd)
+ - [ ] lib/beads-bootstrap.js (6)
+diff --git a/lib/adapters/beads-kernel-compat.js b/lib/adapters/beads-kernel-compat.js
+index 26402a44..ffeab640 100644
+--- a/lib/adapters/beads-kernel-compat.js
++++ b/lib/adapters/beads-kernel-compat.js
+@@ -653,9 +653,12 @@ function buildCloseEvent(issue, importedAt) {
+ function mapBeadsActivityEventToKernel(event = {}, importedAt) {
+   const kind = String(event.event_type || event.kind || 'event');
+   const createdAt = event.created_at || importedAt;
++  // For id-less events, derive the id/idempotency_key from STABLE record fields
++  // ONLY (never importedAt) so re-migrating the same legacy record maps to the
++  // same id and does not insert a duplicate kernel_events row.
+   const source = event.id != null && event.id !== ''
+     ? String(event.id)
+-    : `${event.issue_id ?? ''}:${kind}:${createdAt}`;
++    : `${event.issue_id ?? ''}:${kind}:${event.created_at ?? ''}:${event.old_value ?? ''}:${event.new_value ?? ''}:${event.comment ?? ''}`;
+   return {
+     id: `beads-event-${encodedIdPart(source)}`,
+     entity_type: 'issue',
+@@ -683,9 +686,11 @@ function mapBeadsActivityEventToKernel(event = {}, importedAt) {
+ function mapBeadsInteractionToKernel(interaction = {}, importedAt) {
+   const kind = String(interaction.kind || interaction.event_type || 'interaction');
+   const createdAt = interaction.created_at || importedAt;
++  // For id-less interactions, derive the id/idempotency_key from STABLE record
++  // fields ONLY (never importedAt) so re-migration is idempotent (no dup rows).
+   const source = interaction.id != null && interaction.id !== ''
+     ? String(interaction.id)
+-    : `${interaction.issue_id ?? ''}:${kind}:${createdAt}`;
++    : `${interaction.issue_id ?? ''}:${kind}:${interaction.created_at ?? ''}:${JSON.stringify(interaction.extra ?? null)}`;
+   const extra = interaction.extra && typeof interaction.extra === 'object' && !Array.isArray(interaction.extra)
+     ? interaction.extra
+     : { extra: interaction.extra ?? null };
+-- 
+2.51.0.windows.1
+

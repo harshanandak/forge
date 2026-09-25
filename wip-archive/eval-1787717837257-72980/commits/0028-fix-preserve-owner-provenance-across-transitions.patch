@@ -1,0 +1,277 @@
+From 80c31bc0308c8dcf1f569304f5042f5027b8f626 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 01:08:39 +0530
+Subject: [PATCH] fix: preserve owner provenance across transitions
+
+---
+ lib/kernel/sqlite-driver.js                 |  4 +-
+ lib/pr-monitor/watch-owner.js               | 34 ++++++--
+ test/kernel/watch-owner-transaction.test.js | 59 ++++++++++++++
+ test/pr-monitor/watch-owner.test.js         | 88 +++++++++++++++++++++
+ 4 files changed, 178 insertions(+), 7 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 1baa546a..9c35e1b2 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3200,7 +3200,9 @@ function prepareWatchOwnerMutationInput(operation, input) {
+ 	const prepared = captureWatchOwnerMutationInput(input);
+ 	if (!prepared) return null;
+ 	if (!validWatchOwnerMutationInput(operation, prepared)) return null;
+-	if (!WATCH_OWNER_EVIDENCE_BOUND_OPERATIONS.has(operation)) return Object.freeze(prepared);
++	if (!Object.prototype.hasOwnProperty.call(prepared, 'expectedSnapshot')) {
++		return Object.freeze(prepared);
++	}
+ 	const expectedSnapshot = copyWatchOwnerSnapshot(prepared.expectedSnapshot);
+ 	return expectedSnapshot === undefined ? null : Object.freeze({ ...prepared, expectedSnapshot });
+ }
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 6c6821d7..9fc73fd1 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -334,20 +334,32 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			startedAt: prior.started_at,
+ 		}, [prior.phase]);
+ 	}
+-	case 'watchOwnerRequestStop':
++	case 'watchOwnerRequestStop': {
++		const prior = input.expectedSnapshot;
++		if (!prior || !['running', 'stop_requested'].includes(prior.phase)) return false;
+ 		return validOwnerSuccess(result, record, 'stop_requested', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
++			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+ 		}, 'stop_requested', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+-	case 'watchOwnerRecordTerminal':
++	}
++	case 'watchOwnerRecordTerminal': {
++		const prior = input.expectedSnapshot;
++		if (!prior || !['running', 'stop_requested', 'terminal_pending'].includes(prior.phase)) return false;
+ 		return validOwnerSuccess(result, record, 'terminal_pending', {
+ 			generation: input.generation, watcherPid: input.watcherPid,
+ 			terminalReceiptId: input.terminalReceiptId,
++			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+ 		}, 'terminal_pending', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+-	case 'watchOwnerCompleteTerminal':
++	}
++	case 'watchOwnerCompleteTerminal': {
++		const prior = input.expectedSnapshot;
++		if (!prior || !['terminal_pending', 'complete'].includes(prior.phase)) return false;
+ 		return validOwnerSuccess(result, record, 'complete', {
+ 			generation: input.generation, watcherPid: null,
+ 			terminalReceiptId: input.terminalReceiptId,
++			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+ 		}, 'complete', true) && stampedOwnerTimestamp(result, input, record, 'updatedAt');
++	}
+ 	case 'watchOwnerAbortStarting': {
+ 		if (!input.expectedSnapshot) return false;
+ 		return result.reason === 'aborted' && result.changed === true && record === null;
+@@ -386,10 +398,12 @@ function validOwnerOperationResult(method, input, result, record) {
+ 			if (!input.expectedSnapshot) return false;
+ 			return result.reason === 'released' && result.changed === true && record === null;
+ 		}
++		const prior = input.expectedSnapshot;
++		if (!prior || prior.phase !== 'blocked') return false;
+ 		return validOwnerSuccess(result, record, 'complete', {
+ 			generation: input.generation, watcherPid: null,
+ 			terminalReceiptId: input.terminalReceiptId, blockReason: null,
+-			legacyEvidenceHash: input.legacyEvidenceHash,
++			legacyEvidenceHash: prior.legacy_evidence_hash, startedAt: prior.started_at,
+ 		}, 'complete') && stampedOwnerTimestamp(result, input, record, 'updatedAt');
+ 	}
+ 	case 'watchOwnerImportLegacyStarting':
+@@ -726,13 +740,21 @@ async function heartbeat(ctx, input, opts = {}) {
+ }
+ 
+ async function requestStop(ctx, input, opts = {}) {
+-	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerRequestStop']);
++	const boundOpts = bindAuthorityOptions(opts, ['watchOwnerRead', 'watchOwnerRequestStop']);
+ 	const capturedInput = captureMutationInput(input);
+ 	if (!capturedInput) return invalid();
+ 	input = capturedInput;
+ 	const value = mutationInput(ctx, input, boundOpts);
+ 	if (!value || !positivePid(input?.pid)) return invalid('invalid_pid');
+-	return invoke('watchOwnerRequestStop', value, { watcherPid: Number(input.pid) }, boundOpts);
++	const captured = captureAuthoritySnapshot(ctx, boundOpts);
++	if (!captured.ok) return invalid(captured.reason);
++	const prior = captured.snapshot;
++	if (!prior || !['running', 'stop_requested'].includes(prior.phase)) return invalid('phase_mismatch');
++	if (prior.generation !== value.generation) return invalid('generation_mismatch');
++	if (prior.watcher_pid !== Number(input.pid)) return invalid('pid_mismatch');
++	return invoke('watchOwnerRequestStop', value, {
++		watcherPid: Number(input.pid), expectedSnapshot: prior,
++	}, boundOpts);
+ }
+ 
+ async function recordTerminal(ctx, input, opts = {}) {
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 8e4889b1..eb3b8646 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -607,6 +607,65 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(nestedOutcome).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
+ 	});
+ 
++	test.each([
++		['bindRunning', 'watchOwnerBindRunning', 114, 115],
++		['heartbeat', 'watchOwnerHeartbeat', 116, 117],
++		['requestStop', 'watchOwnerRequestStop', 118, 119],
++	])('copies an optional %s snapshot before acquiring the writer transaction', (
++		_label, method, pr, nestedPr,
++	) => {
++		const controllerPid = 7_000 + pr;
++		const watcherPid = 8_000 + pr;
++		const started = driver.watchOwnerReserveStarting({
++			repo: 'acme/forge', pr, controllerPid, now: NOW,
++		});
++		let current = started.row;
++		if (method !== 'watchOwnerBindRunning') {
++			current = driver.watchOwnerBindRunning({
++				repo: 'acme/forge', pr, generation: current.generation,
++				controllerPid, watcherPid, now: LATER,
++			}).row;
++		}
++		const snapshot = driver.watchOwnerRead({ repo: 'acme/forge', pr }).row;
++		let nestedOutcome;
++		let nestedError;
++		const expectedSnapshot = new Proxy(snapshot, {
++			get(target, property, receiver) {
++				if (property === 'repo' && nestedOutcome === undefined && nestedError === undefined) {
++					try {
++						nestedOutcome = driver.watchOwnerReserveStarting(
++							{ repo: 'acme/forge', pr: nestedPr, controllerPid: 7_000 + nestedPr, now: NOW },
++							{ watchOwnerBusyTimeoutMs: 25 },
++						);
++					} catch (error) {
++						nestedError = error;
++					}
++				}
++				return Reflect.get(target, property, receiver);
++			},
++		});
++		const input = method === 'watchOwnerBindRunning'
++			? {
++				repo: 'acme/forge', pr, generation: current.generation,
++				controllerPid, watcherPid, now: LATER, expectedSnapshot,
++			}
++			: {
++				repo: 'acme/forge', pr, generation: current.generation,
++				watcherPid, now: '2026-08-19T08:00:02.000Z', expectedSnapshot,
++			};
++
++		const result = driver[method](input, { watchOwnerBusyTimeoutMs: 25 });
++
++		expect(result).toMatchObject({
++			ok: true, changed: true,
++			reason: method === 'watchOwnerBindRunning'
++				? 'bound'
++				: (method === 'watchOwnerHeartbeat' ? 'heartbeat' : 'stop_requested'),
++		});
++		expect(nestedError).toBeUndefined();
++		expect(nestedOutcome).toMatchObject({ ok: true, changed: true, reason: 'acquired' });
++	});
++
+ 	test('copies migration gate inputs before acquiring the writer transaction', () => {
+ 		expect(driver.watchGatePublishQuarantine({ now: NOW })).toMatchObject({ ok: true, changed: true });
+ 		const reads = { now: 0, snapshotHash: 0, conflictCode: 0 };
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 0415135d..70ec46ae 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2827,6 +2827,94 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 	});
+ 
++	test.each([
++		['legacy evidence', 982, { legacy_evidence_hash: null }],
++		['start timestamp', 983, { started_at: NOW }],
++	])('rejects active transitions that rewrite imported %s', async (_label, pr, rewritten) => {
++		const ctx = { repo: 'acme/forge', pr };
++		const completeAt = '2026-08-19T08:00:05.000Z';
++		await seedGate(ctx);
++		const imported = await owner.importLegacyStarting(ctx, {
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
++			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
++			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
++		}, authorityOpts());
++		const running = await owner.bindRunning(ctx, {
++			generation: imported.record.generation, controllerPid: CONTROLLER_PID,
++			pid: WATCHER_PID, updatedAt: NEXT,
++		}, authorityOpts());
++		expect(running.ok).toBe(true);
++
++		const stopped = await owner.requestStop(ctx, {
++			generation: running.record.generation, pid: WATCHER_PID, updatedAt: FINAL,
++		}, authorityOpts({
++			...driver,
++			watchOwnerRequestStop: () => ({
++				ok: true, changed: true, reason: 'stop_requested',
++				row: {
++					...toSnakeRow(running.record), ...rewritten,
++					phase: 'stop_requested', updated_at: FINAL,
++				},
++			}),
++		}));
++		expect(stopped).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++
++		const recorded = await owner.recordTerminal(ctx, {
++			generation: running.record.generation, pid: WATCHER_PID,
++			terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
++		}, authorityOpts({
++			...driver,
++			watchOwnerRecordTerminal: () => ({
++				ok: true, changed: true, reason: 'terminal_pending',
++				row: {
++					...toSnakeRow(running.record), ...rewritten,
++					phase: 'terminal_pending', terminal_receipt_id: RECEIPT_ID, updated_at: FINAL,
++				},
++			}),
++		}));
++		expect(recorded).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++
++		const pending = await owner.recordTerminal(ctx, {
++			generation: running.record.generation, pid: WATCHER_PID,
++			terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
++		}, authorityOpts());
++		expect(pending.ok).toBe(true);
++		const completed = await owner.completeTerminal(ctx, {
++			generation: pending.record.generation, pid: WATCHER_PID,
++			terminalReceiptId: RECEIPT_ID, updatedAt: completeAt,
++		}, authorityOpts({
++			...driver,
++			watchOwnerCompleteTerminal: () => ({
++				ok: true, changed: true, reason: 'complete',
++				row: {
++					...toSnakeRow(pending.record), ...rewritten,
++					phase: 'complete', watcher_pid: null, heartbeat_at: null, updated_at: completeAt,
++				},
++			}),
++		}));
++		expect(completed).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
++	test('rejects blocked completion that rewrites its original start timestamp', async () => {
++		const ctx = { repo: 'acme/forge', pr: 984 };
++		const prior = await seedBlocked(ctx, false);
++		const result = await owner.recheckLegacyBlocked(ctx, {
++			generation: prior.generation, action: 'complete', legacyEvidenceHash: OTHER_HASH,
++			terminalReceiptId: RECEIPT_ID, updatedAt: FINAL,
++		}, authorityOpts({
++			...driver,
++			watchOwnerRecheckLegacyBlocked: () => ({
++				ok: true, changed: true, reason: 'complete',
++				row: {
++					...toSnakeRow(prior.record), phase: 'complete', watcher_pid: null,
++					started_at: NOW, updated_at: FINAL, terminal_receipt_id: RECEIPT_ID,
++					block_reason: null,
++				},
++			}),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
+ 	test('binds a running result to the captured provenance of the starting row', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 980 };
+ 		await seedGate(ctx);
+-- 
+2.51.0.windows.1
+

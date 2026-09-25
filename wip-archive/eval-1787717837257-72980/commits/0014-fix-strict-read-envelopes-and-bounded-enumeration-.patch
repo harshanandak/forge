@@ -1,0 +1,211 @@
+From 329c364ed8d5a886ffa116186dae686959ee7954 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 00:39:31 +0530
+Subject: [PATCH] fix: strict read envelopes and bounded enumeration capture
+
+---
+ lib/kernel/sqlite-driver.js                 | 13 +++---
+ lib/pr-monitor/watch-owner.js               | 29 ++++++++----
+ test/kernel/watch-owner-transaction.test.js | 18 ++++++++
+ test/pr-monitor/watch-owner.test.js         | 49 ++++++++++++++++++++-
+ 4 files changed, 92 insertions(+), 17 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index fa192129..d52a5abe 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2782,23 +2782,22 @@ function hasExactWatchSchemaColumns(runtime, db, tableName, expectedColumns) {
+ }
+ 
+ // Triggers owned by the authority tables are forbidden outright, and so are
+-// triggers on any other table whose body writes into an authority table: an
+-// ordinary write elsewhere could erase or rewrite authority rows.
++// triggers on any other table whose body even references an authority table:
++// quoted or schema-qualified identifiers would otherwise evade write-shape
++// matching, so a mere mention fails closed.
+ function hasUnexpectedWatchAuthorityTriggers(runtime, db) {
+ 	const triggers = allParams(
+ 		runtime,
+ 		db,
+ 		"SELECT tbl_name AS tbl_name, sql FROM sqlite_master WHERE type = 'trigger'",
+ 	);
+-	const writeTargets = new RegExp(
+-		`\\b(?:insert|replace)\\s+(?:or\\s+\\w+\\s+)?(?:into\\s+)?(?:main\\.)?(${WATCH_OWNER_TABLE}|${WATCH_GATE_TABLE})\\b`
+-			+ `|\\bupdate(?:\\s+or\\s+\\w+)?\\s+(?:main\\.)?(${WATCH_OWNER_TABLE}|${WATCH_GATE_TABLE})\\b`
+-			+ `|\\bdelete\\s+from\\s+(?:main\\.)?(${WATCH_OWNER_TABLE}|${WATCH_GATE_TABLE})\\b`,
++	const authorityMention = new RegExp(
++		`(?:${WATCH_OWNER_TABLE}|${WATCH_GATE_TABLE})`,
+ 		'i',
+ 	);
+ 	return triggers.some(trigger => {
+ 		const owned = [WATCH_OWNER_TABLE, WATCH_GATE_TABLE].includes(String(trigger.tbl_name).toLowerCase());
+-		return owned || (typeof trigger.sql === 'string' && writeTargets.test(trigger.sql));
++		return owned || (typeof trigger.sql === 'string' && authorityMention.test(trigger.sql));
+ 	});
+ }
+ 
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 3aa7539a..a0333105 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -282,7 +282,9 @@ function stampedOwnerTimestamp(result, input, record, field) {
+ 
+ function validOwnerOperationResult(method, input, result, record) {
+ 	if (method === 'watchOwnerRead') {
+-		return result.changed === false && (result.reason === 'read') === (record != null);
++		return result.changed === false
++			&& (result.reason === 'read') === (record != null)
++			&& (record != null || result.reason === 'absent');
+ 	}
+ 	switch (method) {
+ 	case 'watchOwnerReserveStarting':
+@@ -472,7 +474,9 @@ function captureAuthoritySnapshot(ctx, opts) {
+ 		};
+ 		if (!snap.ok) return { ok: false, reason: snap.reason };
+ 		const probe = fromSqliteOwnerRow(snap.row);
+-		if (snap.changed !== false || (snap.reason === 'read') !== (probe != null)) {
++		if (snap.changed !== false
++			|| (snap.reason === 'read') !== (probe != null)
++			|| (probe == null && snap.reason !== 'absent')) {
+ 			return { ok: false, reason: 'corrupt' };
+ 		}
+ 		if (snap.row == null) return { ok: true, identity, snapshot: null };
+@@ -553,21 +557,30 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 		if (!result || typeof result !== 'object' || Array.isArray(result)) {
+ 			return { ok: false, changed: false, reason: 'corrupt', records: [] };
+ 		}
+-		// Snapshot once: an accessor-backed rows property must not change
+-		// between the shape check, the bounds, and record construction.
++		// Snapshot once into a bounded plain array: an accessor-backed rows
++		// property (or a retained Proxy array) must not report one length and
++		// yield different iteration contents afterwards.
+ 		const snap = {
+ 			ok: result.ok === true,
++			changed: result.changed === true,
+ 			reason: typeof result.reason === 'string' ? result.reason : '',
+ 			rows: result.rows,
+ 		};
+-		if (!Array.isArray(snap.rows)) {
++		if (snap.ok && (snap.changed !== false || snap.reason !== 'read')) {
+ 			return { ok: false, changed: false, reason: 'corrupt', records: [] };
+ 		}
+-		if (snap.rows.length > OWNER_ENUMERATION_LIMIT) {
+-			return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
++		if (!Array.isArray(snap.rows) && typeof snap.rows?.[Symbol.iterator] !== 'function') {
++			return { ok: false, changed: false, reason: 'corrupt', records: [] };
+ 		}
+-		let bytes = 0;
++		const rows = [];
+ 		for (const row of snap.rows) {
++			rows.push(row);
++			if (rows.length > OWNER_ENUMERATION_LIMIT) {
++				return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
++			}
++		}
++		let bytes = 0;
++		for (const row of rows) {
+ 			bytes += Buffer.byteLength(JSON.stringify(row), 'utf8');
+ 			if (bytes > OWNER_ENUMERATION_BYTES) {
+ 				return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 56d6aafa..8e4889b1 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -1392,4 +1392,22 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+ 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+ 	});
++
++	test('rejects cross-table triggers that reference authority tables via quoted identifiers', async () => {
++		await driver.exec(`
++			CREATE TABLE kernel_pr_watch_owner_events (
++				event TEXT NOT NULL PRIMARY KEY
++			);
++			CREATE TRIGGER purge_owners_quoted_on_event
++			AFTER INSERT ON kernel_pr_watch_owner_events
++			BEGIN
++				DELETE FROM "kernel_pr_watch_owners";
++			END;
++		`);
++		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 121 }, {
++			controllerPid: 7_121, startedAt: NOW,
++		}, { driver });
++		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
++	});
+ });
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 2a171d2d..cc930391 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -143,7 +143,7 @@ describe('watch owner SQLite authority', () => {
+ 		const readDriver = {
+ 			watchOwnerRead(input) {
+ 				capturedIdentity = input;
+-				return { ok: true, changed: false, reason: 'not_found', row: null };
++				return { ok: true, changed: false, reason: 'absent', row: null };
+ 			},
+ 		};
+ 		let changingReads = 0;
+@@ -155,7 +155,7 @@ describe('watch owner SQLite authority', () => {
+ 			pr: 41,
+ 		};
+ 		expect(await owner.readOwner(changing, { driver: readDriver })).toEqual({
+-			ok: true, changed: false, reason: 'not_found', record: null,
++			ok: true, changed: false, reason: 'absent', record: null,
+ 		});
+ 		expect(changingReads).toBe(1);
+ 		expect(capturedIdentity).toEqual({ repo: 'acme/forge', pr: 41 });
+@@ -2338,4 +2338,49 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(rowsReads).toBe(1);
+ 		expect(result).toEqual({ ok: true, changed: false, reason: 'read', records: [] });
+ 	});
++
++	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
++		const ctx = { repo: 'acme/forge', pr: 960 };
++		const result = await owner.readOwner(ctx, authorityOpts({
++			...driver,
++			watchOwnerRead: () => ({ ok: true, changed: false, reason: 'weird', row: null }),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
++	test('rejects enumeration successes with non-read envelopes', async () => {
++		const validRow = {
++			repo: 'acme/forge', pr: 961, version: 1, generation: 'generation-961', phase: 'starting',
++			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
++			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
++		};
++		const result = await owner.enumerateOwners(null, authorityOpts({
++			...driver,
++			watchOwnerList: () => ({
++				ok: true, changed: true, reason: 'acquired', rows: [validRow],
++			}),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
++	});
++
++	test('caps proxy arrays whose length lies about their iteration contents', async () => {
++		const validRow = pr => ({
++			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
++			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
++			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
++		});
++		const tricky = Object.assign([], {
++			length: 0,
++			[Symbol.iterator]: function* () {
++				for (let pr = 1; pr <= 4_097; pr += 1) yield validRow(pr);
++			},
++		});
++		expect(Array.isArray(tricky)).toBe(true);
++		expect(tricky.length).toBe(0);
++		const result = await owner.enumerateOwners(null, authorityOpts({
++			...driver,
++			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: tricky }),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
++	});
+ });
+-- 
+2.51.0.windows.1
+

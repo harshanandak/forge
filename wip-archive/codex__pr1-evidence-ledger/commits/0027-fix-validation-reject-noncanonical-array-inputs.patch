@@ -1,0 +1,70 @@
+From 946c97db50b7366126d5396f5c4e4edf8adc6282 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 18:34:17 +0530
+Subject: [PATCH] fix(validation): reject noncanonical array inputs
+
+---
+ lib/validation/evidence-ledger.js       |  3 +++
+ test/validation/evidence-ledger.test.js | 32 +++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+)
+
+diff --git a/lib/validation/evidence-ledger.js b/lib/validation/evidence-ledger.js
+index e6e3ce76..768a6ecf 100644
+--- a/lib/validation/evidence-ledger.js
++++ b/lib/validation/evidence-ledger.js
+@@ -102,6 +102,9 @@ function canonicalPrivateValue(value, label) {
+     assert(!seen.has(current), `${label} contains a cycle`);
+     seen.add(current);
+     if (Array.isArray(current)) {
++      const ownKeys = Reflect.ownKeys(current);
++      assert(ownKeys.length === current.length + 1 && ownKeys.includes('length'),
++        `${label} contains unsupported array properties`);
+       addBytes(2 + Math.max(0, current.length - 1));
+       for (let index = 0; index < current.length; index += 1) {
+         const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
+diff --git a/test/validation/evidence-ledger.test.js b/test/validation/evidence-ledger.test.js
+index c3fba8f3..8292f633 100644
+--- a/test/validation/evidence-ledger.test.js
++++ b/test/validation/evidence-ledger.test.js
+@@ -161,6 +161,38 @@ describe('immutable validation evidence ledger', () => {
+     expect(findReusableValidationReceipt([], executionInputs())).toBeNull();
+   });
+ 
++  test('rejects non-index properties on command argv', () => {
++    const argv = ['test'];
++    argv.foo = 'unkeyed-command-input';
++
++    expect(() => passReceipt(executionInputs({ command: { executable: 'bun', argv } })))
++      .toThrow(/unsupported array properties/i);
++  });
++
++  test('rejects non-index properties on test selection', () => {
++    const testSelection = ['test/validation/evidence-ledger.test.js'];
++    testSelection.foo = 'unkeyed-test-input';
++
++    expect(() => passReceipt(executionInputs({ test_selection: testSelection })))
++      .toThrow(/unsupported array properties/i);
++  });
++
++  test('rejects nested array symbols and non-index accessors without reading them', () => {
++    const symbolArray = ['safe'];
++    symbolArray[Symbol('private')] = 'unkeyed-symbol-input';
++    expect(() => passReceipt(executionInputs({ config: { values: symbolArray } })))
++      .toThrow(/unsupported array properties/i);
++
++    const accessorArray = ['safe'];
++    Object.defineProperty(accessorArray, 'private', {
++      get() {
++        throw new Error('read non-index accessor');
++      },
++    });
++    expect(() => passReceipt(executionInputs({ config: { values: accessorArray } })))
++      .toThrow(/unsupported array properties/i);
++  });
++
+   test('serializes deterministically with stable ordering and bounded private storage', () => {
+     const laterKey = passReceipt(executionInputs({ lane: 'z-lane' }));
+     const earlierKey = passReceipt(executionInputs({ lane: 'a-lane' }));
+-- 
+2.51.0.windows.1
+

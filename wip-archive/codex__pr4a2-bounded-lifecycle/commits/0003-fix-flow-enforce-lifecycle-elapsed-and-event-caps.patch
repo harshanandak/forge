@@ -1,0 +1,378 @@
+From d641ffca67f649c1466b57e34c79d532d6875bbb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 12:46:19 +0530
+Subject: [PATCH] fix(flow): enforce lifecycle elapsed and event caps
+
+---
+ packages/flow/src/bounded-loop.js            | 26 ++++++-
+ packages/flow/src/process-lifecycle.js       | 23 +++++-
+ packages/flow/test/bounded-loop.test.js      | 82 ++++++++++++++++++++
+ packages/flow/test/process-lifecycle.test.js | 47 +++++++++++
+ 4 files changed, 171 insertions(+), 7 deletions(-)
+
+diff --git a/packages/flow/src/bounded-loop.js b/packages/flow/src/bounded-loop.js
+index 96e2c0b9..f0281f43 100644
+--- a/packages/flow/src/bounded-loop.js
++++ b/packages/flow/src/bounded-loop.js
+@@ -1,5 +1,7 @@
+ "use strict";
+ 
++const { createHash } = require("node:crypto");
++
+ const MAX_ATTEMPTS = 128;
+ const MAX_ELAPSED_MS = 86_400_000;
+ const MAX_EVENTS = 256;
+@@ -16,6 +18,13 @@ const EVENT_TYPES = new Set([
+ ]);
+ const TERMINAL_STATUSES = new Set(["PASS", "FAIL", "CANCELLED", "INCOMPLETE"]);
+ const STATE_CLONE_LIMITS = Object.freeze({ maxBytes: 4_194_304, maxDepth: 8, maxNodes: 32_768 });
++const MAX_EVENT_ID_LENGTH = 128;
++const EVENT_DIGEST_BYTES = 64;
++const STATE_OVERHEAD_RESERVE_BYTES = 32_768;
++const SEEN_EVENT_ENTRY_OVERHEAD_BYTES = (MAX_EVENT_ID_LENGTH * 6) + 2 + EVENT_DIGEST_BYTES + 2 + 3;
++const EVENT_BYTE_BUDGET = Math.floor((STATE_CLONE_LIMITS.maxBytes - STATE_OVERHEAD_RESERVE_BYTES) / MAX_EVENTS)
++  - SEEN_EVENT_ENTRY_OVERHEAD_BYTES;
++const EVENT_CLONE_LIMITS = Object.freeze({ maxBytes: EVENT_BYTE_BUDGET, maxDepth: 8, maxNodes: 256 });
+ 
+ class BoundedLoopError extends Error {
+   constructor(code, message, details = {}) {
+@@ -143,6 +152,10 @@ function stableStringify(value) {
+   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+ }
+ 
++function eventDigest(event) {
++  return createHash("sha256").update(stableStringify(event), "utf8").digest("hex");
++}
++
+ function deepFreeze(value, seen = new Set()) {
+   if (!value || typeof value !== "object" || seen.has(value)) return value;
+   seen.add(value);
+@@ -215,7 +228,7 @@ function readNow(options) {
+ }
+ 
+ function normalizeEvent(rawEvent) {
+-  const event = safeClone(rawEvent);
++  const event = safeClone(rawEvent, EVENT_CLONE_LIMITS);
+   assertPlainRecord(event, "event");
+   if (typeof event.id !== "string" || event.id.length === 0 || event.id.length > 128) fail("INVALID_EVENT", "event id must be a bounded string");
+   if (!EVENT_TYPES.has(event.type)) fail("INVALID_EVENT", `unsupported bounded-loop event: ${String(event.type)}`);
+@@ -273,7 +286,7 @@ function reduceBoundedLoop(rawState, rawEvent, rawOptions = {}) {
+   const suppliedNow = optionalData(rawOptions, "now");
+   if (suppliedNow.present && typeof suppliedNow.value !== "number" && suppliedNow.value !== undefined) fail("CLOCK_INVALID", "reducer time is invalid");
+   const seen = state.seenEvents || {};
+-  const digest = stableStringify(event);
++  const digest = eventDigest(event);
+   if (Object.hasOwn(seen, event.id)) {
+     if (seen[event.id] !== digest) fail("IDENTITY_CONFLICT", "event identity conflict");
+     return cloneResult(state, []);
+@@ -303,6 +316,9 @@ function reduceBoundedLoop(rawState, rawEvent, rawOptions = {}) {
+   }
+ 
+   const invalidPhase = (expected) => fail("INVALID_TRANSITION", `${event.type} requires ${expected}`);
++  const elapsedCapReached = event.type !== "start"
++    && next.startAt !== null
++    && next.elapsedMs >= limits.maxElapsedMs;
+   let result;
+   switch (event.type) {
+     case "start":
+@@ -353,6 +369,9 @@ function reduceBoundedLoop(rawState, rawEvent, rawOptions = {}) {
+     default:
+       fail("INVALID_EVENT", `unsupported bounded-loop event: ${event.type}`);
+   }
++  if ((elapsedCapReached && !result.state.terminal) || event.type === "timeout") {
++    result = terminal(next, "INCOMPLETE", "ELAPSED_CAP", { type: "TIMEOUT", elapsedMs: next.elapsedMs });
++  }
+   return cloneResult(result.state, result.effects);
+ }
+ 
+@@ -363,7 +382,7 @@ function createBoundedLoop(rawOptions) {
+   return Object.freeze({
+     dispatch(rawEvent) {
+       const event = normalizeEvent(rawEvent);
+-      const digest = stableStringify(event);
++      const digest = eventDigest(event);
+       if (Object.hasOwn(current.seenEvents, event.id)) {
+         const existing = current.seenEvents[event.id];
+         if (existing !== digest) fail("IDENTITY_CONFLICT", "event identity conflict");
+@@ -386,6 +405,7 @@ function createBoundedLoop(rawOptions) {
+ module.exports = {
+   BoundedLoopError,
+   MAX_ATTEMPTS,
++  EVENT_BYTE_BUDGET,
+   MAX_ELAPSED_MS,
+   MAX_EVENTS,
+   MAX_HISTORY,
+diff --git a/packages/flow/src/process-lifecycle.js b/packages/flow/src/process-lifecycle.js
+index b346165a..19bc2510 100644
+--- a/packages/flow/src/process-lifecycle.js
++++ b/packages/flow/src/process-lifecycle.js
+@@ -1,5 +1,7 @@
+ "use strict";
+ 
++const { createHash } = require("node:crypto");
++
+ const MAX_ATTEMPTS = 128;
+ const MAX_ELAPSED_MS = 86_400_000;
+ const MAX_EVENTS = 256;
+@@ -20,6 +22,13 @@ const EVENT_TYPES = new Set([
+   "deadline",
+ ]);
+ const STATE_CLONE_LIMITS = Object.freeze({ maxBytes: 4_194_304, maxDepth: 8, maxNodes: 32_768 });
++const MAX_EVENT_ID_LENGTH = 128;
++const EVENT_DIGEST_BYTES = 64;
++const STATE_OVERHEAD_RESERVE_BYTES = 32_768;
++const SEEN_EVENT_ENTRY_OVERHEAD_BYTES = (MAX_EVENT_ID_LENGTH * 6) + 2 + EVENT_DIGEST_BYTES + 2 + 3;
++const EVENT_BYTE_BUDGET = Math.floor((STATE_CLONE_LIMITS.maxBytes - STATE_OVERHEAD_RESERVE_BYTES) / MAX_EVENTS)
++  - SEEN_EVENT_ENTRY_OVERHEAD_BYTES;
++const EVENT_CLONE_LIMITS = Object.freeze({ maxBytes: EVENT_BYTE_BUDGET, maxDepth: 8, maxNodes: 256 });
+ 
+ class ProcessLifecycleError extends Error {
+   constructor(code, message, details = {}) {
+@@ -140,6 +149,10 @@ function stableStringify(value) {
+   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+ }
+ 
++function eventDigest(event) {
++  return createHash("sha256").update(stableStringify(event), "utf8").digest("hex");
++}
++
+ function deepFreeze(value, seen = new Set()) {
+   if (!value || typeof value !== "object" || seen.has(value)) return value;
+   seen.add(value);
+@@ -197,7 +210,7 @@ function readNow(options) {
+ }
+ 
+ function normalizeEvent(rawEvent) {
+-  const event = safeClone(rawEvent);
++  const event = safeClone(rawEvent, EVENT_CLONE_LIMITS);
+   assertPlainRecord(event, "event");
+   if (typeof event.id !== "string" || event.id.length === 0 || event.id.length > 128) fail("INVALID_EVENT", "event id must be a bounded string");
+   if (!EVENT_TYPES.has(event.type)) fail("INVALID_EVENT", `unsupported process lifecycle event: ${String(event.type)}`);
+@@ -250,6 +263,7 @@ function createProcessState(rawOptions, now = 0) {
+ }
+ 
+ function terminalStatus(state) {
++  if (state.terminalReason === "ELAPSED_CAP") return "INCOMPLETE";
+   if (state.cancellationRequested || state.forcedKill) return "CANCELLED";
+   if (state.orphaned) return "INCOMPLETE";
+   if (state.signal !== null) return "FAIL";
+@@ -269,7 +283,7 @@ function reduceProcessLifecycle(rawState, rawEvent, rawOptions = {}) {
+     fail("INVALID_STATE", "termination acknowledgement phase requires truthful acknowledgement");
+   }
+   const seen = state.seenEvents || {};
+-  const digest = stableStringify(event);
++  const digest = eventDigest(event);
+   if (Object.hasOwn(seen, event.id)) {
+     if (seen[event.id] !== digest) fail("IDENTITY_CONFLICT", "event identity conflict");
+     return cloneResult(state, []);
+@@ -342,7 +356,7 @@ function reduceProcessLifecycle(rawState, rawEvent, rawOptions = {}) {
+     case "cancel-acknowledged":
+       if (state.phase !== "CANCEL_REQUESTED") invalidPhase("CANCEL_REQUESTED phase");
+       next.phase = "TERMINATION_ACKNOWLEDGED";
+-      next.status = "CANCELLED";
++      next.status = next.terminalReason === "ELAPSED_CAP" ? "INCOMPLETE" : "CANCELLED";
+       next.terminationAcknowledged = true;
+       result = { state: next, effects: [{ type: "REAP_CHILD" }] };
+       break;
+@@ -418,7 +432,7 @@ function createProcessLifecycle(rawOptions) {
+   return Object.freeze({
+     dispatch(rawEvent) {
+       const event = normalizeEvent(rawEvent);
+-      const digest = stableStringify(event);
++      const digest = eventDigest(event);
+       if (Object.hasOwn(current.seenEvents, event.id)) {
+         const existing = current.seenEvents[event.id];
+         if (existing !== digest) fail("IDENTITY_CONFLICT", "event identity conflict");
+@@ -439,6 +453,7 @@ function createProcessLifecycle(rawOptions) {
+ 
+ module.exports = {
+   MAX_ATTEMPTS,
++  EVENT_BYTE_BUDGET,
+   MAX_ELAPSED_MS,
+   MAX_EVENTS,
+   MAX_GRACE_MS,
+diff --git a/packages/flow/test/bounded-loop.test.js b/packages/flow/test/bounded-loop.test.js
+index ba1c58d8..dfc3eecd 100644
+--- a/packages/flow/test/bounded-loop.test.js
++++ b/packages/flow/test/bounded-loop.test.js
+@@ -4,6 +4,7 @@ const { describe, expect, test } = require("bun:test");
+ 
+ const {
+   BoundedLoopError,
++  EVENT_BYTE_BUDGET,
+   createBoundedLoop,
+   createBoundedLoopState,
+   reduceBoundedLoop,
+@@ -30,6 +31,17 @@ function event(id, type, fields = {}) {
+   return { id, type, ...fields };
+ }
+ 
++function maxLengthId(index) {
++  const prefix = String(index).padStart(3, "0");
++  return `${prefix}${"i".repeat(128 - prefix.length)}`;
++}
++
++function nearBudgetEvent(id, type) {
++  const empty = event(id, type, { metadata: { blob: "" } });
++  const blobLength = EVENT_BYTE_BUDGET - Buffer.byteLength(JSON.stringify(empty), "utf8") - 32;
++  return event(id, type, { metadata: { blob: "x".repeat(blobLength) } });
++}
++
+ function throwingProxy(value, trap) {
+   return new Proxy(value, {
+     [trap]() {
+@@ -89,6 +101,22 @@ describe("bounded loop state machine", () => {
+     expect(result.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
+   });
+ 
++  test("elapsed cap wins over a later attempt", () => {
++    const loop = createBoundedLoop(options({ clock: clockSequence([0, 101]), maxElapsedMs: 100 }));
++    loop.dispatch(event("start", "start"));
++    const result = loop.dispatch(event("late-attempt", "attempt"));
++    expect(result.effects).toEqual([{ type: "TIMEOUT", elapsedMs: 101 }]);
++    expect(result.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
++  });
++
++  test("explicit timeout terminalizes below the elapsed cap", () => {
++    const loop = createBoundedLoop(options({ clock: clockSequence([0, 10]), maxElapsedMs: 100 }));
++    loop.dispatch(event("start", "start"));
++    const result = loop.dispatch(event("early-timeout", "timeout"));
++    expect(result.effects).toEqual([{ type: "TIMEOUT", elapsedMs: 10 }]);
++    expect(result.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
++  });
++
+   test("bounds attempts, events, and history without mutating caller input", () => {
+     const loop = createBoundedLoop(options({ maxAttempts: 2, maxEvents: 3, maxHistory: 2 }));
+     const start = event("start", "start");
+@@ -219,4 +247,58 @@ describe("bounded loop state machine", () => {
+     )).toThrow(BoundedLoopError);
+     expect(getCount).toBe(0);
+   });
++
++  test("accepts the configured 256-event ceiling with fixed-size seen-event digests", () => {
++    const loop = createBoundedLoop(options({
++      clock: () => 0,
++      maxEvents: 256,
++      maxHistory: 256,
++    }));
++    loop.dispatch(nearBudgetEvent(maxLengthId(0), "start"));
++    for (let index = 1; index < 256; index += 1) {
++      loop.dispatch(nearBudgetEvent(maxLengthId(index), "tick"));
++    }
++    const snapshot = loop.snapshot();
++    expect(snapshot.eventCount).toBe(256);
++    expect(snapshot.history).toHaveLength(256);
++    expect(Object.keys(snapshot.seenEvents)).toHaveLength(256);
++    expect(Object.values(snapshot.seenEvents).every((digest) => /^[0-9a-f]{64}$/.test(digest))).toBe(true);
++    const serialized = loop.serialize();
++    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(4_194_304);
++    expect(JSON.parse(serialized)).toEqual(snapshot);
++    expect(() => loop.dispatch(nearBudgetEvent(maxLengthId(256), "tick"))).toThrow("event cap");
++  });
++
++  test("elapsed cap only overrides transitions that would remain nonterminal", () => {
++    const completed = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxElapsedMs: 100 }));
++    completed.dispatch(event("complete-start", "start"));
++    expect(completed.dispatch(event("complete", "complete")).state.status).toBe("PASS");
++
++    const failed = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxElapsedMs: 100 }));
++    failed.dispatch(event("fail-start", "start"));
++    expect(failed.dispatch(event("fail", "fail")).state.status).toBe("FAIL");
++
++    const cancelled = createBoundedLoop(options({ clock: clockSequence([0, 90, 100]), maxElapsedMs: 100 }));
++    cancelled.dispatch(event("cancel-start", "start"));
++    cancelled.dispatch(event("cancel-request", "cancel-requested"));
++    expect(cancelled.dispatch(event("cancel-ack", "cancel-acknowledged")).state.status).toBe("CANCELLED");
++
++    const timeout = createBoundedLoop(options({ clock: clockSequence([0, 10]), maxElapsedMs: 100 }));
++    timeout.dispatch(event("timeout-start", "start"));
++    expect(timeout.dispatch(event("timeout", "timeout")).state).toMatchObject({
++      status: "INCOMPLETE",
++      terminalReason: "ELAPSED_CAP",
++    });
++
++    const attemptCap = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxAttempts: 1, maxElapsedMs: 100 }));
++    attemptCap.dispatch(event("attempt-start", "start"));
++    expect(attemptCap.dispatch(event("attempt-cap", "attempt")).state.terminalReason).toBe("ATTEMPT_CAP");
++
++    const cancelCap = createBoundedLoop(options({ clock: clockSequence([0, 100]), maxElapsedMs: 100 }));
++    cancelCap.dispatch(event("cancel-cap-start", "start"));
++    expect(cancelCap.dispatch(event("cancel-cap", "cancel-requested")).state).toMatchObject({
++      status: "INCOMPLETE",
++      terminalReason: "ELAPSED_CAP",
++    });
++  });
+ });
+diff --git a/packages/flow/test/process-lifecycle.test.js b/packages/flow/test/process-lifecycle.test.js
+index 62c77c1d..2342ae85 100644
+--- a/packages/flow/test/process-lifecycle.test.js
++++ b/packages/flow/test/process-lifecycle.test.js
+@@ -3,6 +3,7 @@
+ const { describe, expect, test } = require("bun:test");
+ 
+ const {
++  EVENT_BYTE_BUDGET,
+   ProcessLifecycleError,
+   createProcessLifecycle,
+   createProcessState,
+@@ -31,6 +32,17 @@ function event(id, type, fields = {}) {
+   return { id, type, ...fields };
+ }
+ 
++function maxLengthId(index) {
++  const prefix = String(index).padStart(3, "0");
++  return `${prefix}${"i".repeat(128 - prefix.length)}`;
++}
++
++function nearBudgetEvent(id, type) {
++  const empty = event(id, type, { metadata: { blob: "" } });
++  const blobLength = EVENT_BYTE_BUDGET - Buffer.byteLength(JSON.stringify(empty), "utf8") - 32;
++  return event(id, type, { metadata: { blob: "x".repeat(blobLength) } });
++}
++
+ function throwingProxy(value, trap) {
+   return new Proxy(value, {
+     [trap]() {
+@@ -245,4 +257,39 @@ describe("process lifecycle state machine", () => {
+     expect(terminal.state.status).toBe("FAIL");
+     expect(terminal.state.status).not.toBe("PASS");
+   });
++
++  test.each(["tick", "deadline"])("elapsed cap remains INCOMPLETE through %s, acknowledgement, and reap", (eventType) => {
++    const lifecycle = startRunning({ clock: clockSequence([0, 101, 101, 101]), maxElapsedMs: 100 });
++    const capped = lifecycle.dispatch(event(`cap-${eventType}`, eventType));
++    expect(capped.state).toMatchObject({
++      phase: "CANCEL_REQUESTED",
++      status: "INCOMPLETE",
++      terminalReason: "ELAPSED_CAP",
++    });
++    const acknowledged = lifecycle.dispatch(event(`ack-${eventType}`, "cancel-acknowledged"));
++    expect(acknowledged.state.status).toBe("INCOMPLETE");
++    const terminal = lifecycle.dispatch(event(`reap-${eventType}`, "reap", { childReaped: true }));
++    expect(terminal.state).toMatchObject({ phase: "TERMINAL", status: "INCOMPLETE", terminalReason: "ELAPSED_CAP" });
++  });
++
++  test("accepts the configured 256-event ceiling with fixed-size seen-event digests", () => {
++    const lifecycle = createProcessLifecycle(options({
++      clock: () => 0,
++      maxEvents: 256,
++      maxHistory: 256,
++    }));
++    lifecycle.dispatch(nearBudgetEvent(maxLengthId(0), "start"));
++    for (let index = 1; index < 256; index += 1) {
++      lifecycle.dispatch(nearBudgetEvent(maxLengthId(index), "tick"));
++    }
++    const snapshot = lifecycle.snapshot();
++    expect(snapshot.eventCount).toBe(256);
++    expect(snapshot.history).toHaveLength(256);
++    expect(Object.keys(snapshot.seenEvents)).toHaveLength(256);
++    expect(Object.values(snapshot.seenEvents).every((digest) => /^[0-9a-f]{64}$/.test(digest))).toBe(true);
++    const serialized = lifecycle.serialize();
++    expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(4_194_304);
++    expect(JSON.parse(serialized)).toEqual(snapshot);
++    expect(() => lifecycle.dispatch(nearBudgetEvent(maxLengthId(256), "tick"))).toThrow("event cap");
++  });
+ });
+-- 
+2.51.0.windows.1
+

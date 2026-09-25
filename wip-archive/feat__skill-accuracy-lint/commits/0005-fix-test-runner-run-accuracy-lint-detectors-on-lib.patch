@@ -1,0 +1,54 @@
+From 67fe5ea5cb06a157386fe04f7ebaee85d66aac01 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 22 Jul 2026 11:10:58 +0530
+Subject: [PATCH] fix(test-runner): run accuracy-lint detectors on
+ lib/skill-eval.js edits
+
+Round-4 (Codex): lib/skill-eval.js resolved only to test/skill-eval.test.js, so
+edits to the auditCommandDocumentation / auditRouterPrecision detectors could pass
+the targeted lane without running test/skill-accuracy.test.js. Added a
+DIRECT_TEST_CANDIDATES entry mapping lib/skill-eval.js to both suites, with a
+regression test.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/test.js       | 3 +++
+ test/commands/test.test.js | 8 ++++++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index f37a0c09..a2091af3 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -36,6 +36,9 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	],
+ 	'lib/lefthook-check.js': ['test/lefthook-check.test.js', 'test/runtime-health.test.js'],
+ 	'lib/runtime-health.js': ['test/runtime-health.test.js'],
++	// skill-eval hosts the accuracy-lint detectors (auditCommandDocumentation /
++	// auditRouterPrecision), so edits there must also run their detector suite.
++	'lib/skill-eval.js': ['test/skill-eval.test.js', 'test/skill-accuracy.test.js'],
+ 	'lib/upgrade-safety.js': ['test/commands/upgrade.test.js'],
+ 	'scripts/test.js': ['test/scripts/test-runner.test.js'],
+ });
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index 0d5bc444..da29aa1d 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -617,6 +617,14 @@ describe('skill source → test mapping', () => {
+ 			.toContain('test/skill-eval.test.js');
+ 	});
+ 
++	test('maps lib/skill-eval.js to its own AND the accuracy-lint detector suite', () => {
++		// skill-eval hosts auditCommandDocumentation / auditRouterPrecision, so an edit
++		// there must run the accuracy-lint detectors, not just test/skill-eval.test.js.
++		const candidates = testCommand.getTestCandidatesForChangedFile('lib/skill-eval.js');
++		expect(candidates).toContain('test/skill-eval.test.js');
++		expect(candidates).toContain('test/skill-accuracy.test.js');
++	});
++
+ 	test('maps the committed .agents/skills/ mirror to the same suite (drift guard included)', () => {
+ 		const candidates = testCommand.getTestCandidatesForChangedFile('.agents/skills/gates/SKILL.md');
+ 		expect(candidates).toContain('test/skill-coverage.test.js');
+-- 
+2.51.0.windows.1
+

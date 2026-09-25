@@ -1,0 +1,43 @@
+From 030d81e7a7ae8a834c095afd03a6e47edb7a371c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 12:35:04 +0530
+Subject: [PATCH] test(release): isolate source head authorization
+
+---
+ test/protected-state-authority.test.js | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index cc1339c0..45834333 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -101,15 +101,24 @@ describe('protected-state Kernel authority', () => {
+ 	test('fails closed when the staged HEAD differs from or is absent on the capability', () => {
+ 		const mismatched = evaluateAuthorization(
+ 			{ ...target, sourceHead: 'b'.repeat(40) },
+-			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-head')],
++			[
++				eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-head'),
++				eventRow(PROTECTED_STATE_WRITE_COMPLETED, 'capability-head'),
++			],
+ 		);
+ 		const missing = evaluateAuthorization(
+ 			target,
+-			[eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-missing-head', { sourceHead: undefined })],
++			[
++				eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-missing-head', { sourceHead: undefined }),
++				eventRow(PROTECTED_STATE_WRITE_COMPLETED, 'capability-missing-head', { sourceHead: undefined }),
++			],
+ 		);
+ 
+ 		expect(mismatched).toMatchObject({ allowed: false, decision: 'blocked' });
++		expect(mismatched.reason).toContain('source HEAD');
+ 		expect(missing).toMatchObject({ allowed: false, decision: 'blocked' });
++		expect(missing.reason).toContain('malformed');
++		expect(missing.reason).toContain('owning command');
+ 	});
+ 
+ 	test('fails closed on cross-actor, cross-surface, and malformed issuer records', () => {
+-- 
+2.51.0.windows.1
+

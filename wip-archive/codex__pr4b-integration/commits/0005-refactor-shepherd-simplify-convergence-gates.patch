@@ -1,0 +1,388 @@
+From f3d79a1035ba28742ca9a1aba66a7bc4d5cb65cb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 20:11:20 +0530
+Subject: [PATCH] refactor(shepherd): simplify convergence gates
+
+---
+ lib/pr-monitor/flow-monitor.js       | 140 ++++++++++++++++-----------
+ lib/pr-monitor/reconcile-executor.js |  67 ++++++++-----
+ lib/pr-monitor/review-preflight.js   |  81 +++++++++-------
+ 3 files changed, 169 insertions(+), 119 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index ea3a04f4..d9b01c85 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -199,16 +199,7 @@ async function readAuthority(ctx) {
+   return events;
+ }
+ 
+-async function runFlowMonitorPass(ctx) {
+-  const now = ctx.now || defaultNow;
+-  const durableEvents = await readAuthority(ctx);
+-  const subjectRevision = ctx.subjectRevision || ctx.subjectId;
+-  const spec = monitorSpec(ctx, subjectRevision);
+-  let state = createMonitorState(spec);
+-  for (const event of durableEvents) {
+-    state = reduceMonitor(spec, state, { kind: 'observation', event }).state;
+-  }
+-
++async function readDeliveryAuthority(ctx) {
+   let deliveryState;
+   try {
+     deliveryState = await ctx.store.readDeliveryState(ctx.monitorId, { limit: MAX_HISTORY });
+@@ -218,36 +209,34 @@ async function runFlowMonitorPass(ctx) {
+   if (!deliveryState || deliveryState.overflow?.cursors || !Array.isArray(deliveryState.cursors)) {
+     throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable delivery state is incomplete');
+   }
++  return deliveryState;
++}
+ 
+-  if (deliveryState.terminal_receipt) {
+-    let terminal;
+-    try {
+-      terminal = JSON.parse(deliveryState.terminal_receipt.envelope_json);
+-    } catch {
+-      throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable terminal receipt is malformed');
+-    }
+-    const validation = validateContractStructure(terminal);
+-    if (!validation.ok
+-      || terminal?.schema_id !== 'forge.memory.monitor-receipt.v1'
+-      || terminal.payload?.monitor_id !== ctx.monitorId
+-      || typeof terminal.object_id !== 'string' || !terminal.object_id
+-      || deliveryState.terminal_receipt.content_hash !== terminal.content_hash) {
+-      throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable terminal receipt is incomplete');
+-    }
+-    return {
+-      events: [],
+-      changed: false,
+-      authority: 'memory',
+-      terminalReceiptId: terminal.object_id,
+-      receiptIds: [terminal.object_id],
+-    };
++function terminalReplay(deliveryState, monitorId) {
++  if (!deliveryState.terminal_receipt) return null;
++  let terminal;
++  try {
++    terminal = JSON.parse(deliveryState.terminal_receipt.envelope_json);
++  } catch {
++    throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable terminal receipt is malformed');
++  }
++  const validation = validateContractStructure(terminal);
++  if (!validation.ok
++    || terminal?.schema_id !== 'forge.memory.monitor-receipt.v1'
++    || terminal.payload?.monitor_id !== monitorId
++    || typeof terminal.object_id !== 'string' || !terminal.object_id
++    || deliveryState.terminal_receipt.content_hash !== terminal.content_hash) {
++    throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable terminal receipt is incomplete');
+   }
++  return {
++    events: [], changed: false, authority: 'memory',
++    terminalReceiptId: terminal.object_id,
++    receiptIds: [terminal.object_id],
++  };
++}
+ 
+-  const bridge = createMonitorDurabilityBridge({
+-    store: bridgeStore(ctx.store),
+-    deliveryTargets: [DELIVERY_TARGET],
+-    deliver: async (event) => ctx.deliverLegacy(event.payload.bounded_payload.record),
+-  });
++async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEvents, deliveryState, now) {
++  let state = initialState;
+   const receiptIds = [];
+   const cursor = deliveryState.cursors.find(item => item.target === DELIVERY_TARGET)?.sequence ?? 0;
+   if (cursor > 0 && durableEvents.some(event => event.payload.sequence === cursor)) {
+@@ -260,27 +249,14 @@ async function runFlowMonitorPass(ctx) {
+     receiptIds.push(receipt.object_id);
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: event.payload.sequence }).state;
+   }
++  return { state, receiptIds };
++}
+ 
+-  const next = await ctx.gather();
+-  const previous = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
+-  const candidates = diffSnapshots(previous, next);
+-  if (candidates.length === 0) {
+-    const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, next, now());
+-    if (terminalReceiptId) receiptIds.push(terminalReceiptId);
+-    return {
+-      events: [], changed: false, authority: 'memory', receiptIds,
+-      ...(terminalReceiptId ? { terminalReceiptId } : {}),
+-    };
+-  }
+-  const timestamp = now();
+-  const records = finalizeRecords(candidates, {
+-    baseSeq: durableEvents.length,
+-    ts: timestamp,
+-    snapshot: next,
+-  });
+-  if (typeof ctx.enrich === 'function') await ctx.enrich(records);
++async function persistRecords(ctx, bridge, spec, initialState, records, snapshot, subjectRevision, timestamp) {
++  let state = initialState;
++  const receiptIds = [];
+   for (const record of records) {
+-    const event = monitorEvent(ctx, record, next, subjectRevision);
++    const event = monitorEvent(ctx, record, snapshot, subjectRevision);
+     const transition = reduceMonitor(spec, state, { kind: 'observation', event });
+     await bridge.persistEvent(event);
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+@@ -288,12 +264,60 @@ async function runFlowMonitorPass(ctx) {
+     receiptIds.push(receipt.object_id);
+     state = reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
+   }
+-  const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, next, timestamp);
++  return { state, receiptIds };
++}
++
++async function finalizePass(ctx, bridge, spec, state, snapshot, receiptIds, createdAt, records) {
++  const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt);
+   if (terminalReceiptId) receiptIds.push(terminalReceiptId);
+   return {
+-    events: records, changed: true, authority: 'memory', receiptIds,
++    events: records,
++    changed: records.length > 0,
++    authority: 'memory',
++    receiptIds,
+     ...(terminalReceiptId ? { terminalReceiptId } : {}),
+   };
+ }
+ 
++async function runFlowMonitorPass(ctx) {
++  const now = ctx.now || defaultNow;
++  const durableEvents = await readAuthority(ctx);
++  const subjectRevision = ctx.subjectRevision || ctx.subjectId;
++  const spec = monitorSpec(ctx, subjectRevision);
++  let state = createMonitorState(spec);
++  for (const event of durableEvents) {
++    state = reduceMonitor(spec, state, { kind: 'observation', event }).state;
++  }
++
++  const deliveryState = await readDeliveryAuthority(ctx);
++  const replay = terminalReplay(deliveryState, ctx.monitorId);
++  if (replay) return replay;
++
++  const bridge = createMonitorDurabilityBridge({
++    store: bridgeStore(ctx.store),
++    deliveryTargets: [DELIVERY_TARGET],
++    deliver: async (event) => ctx.deliverLegacy(event.payload.bounded_payload.record),
++  });
++  const replayed = await redeliverOutstanding(ctx, bridge, spec, state, durableEvents, deliveryState, now);
++  state = replayed.state;
++  const receiptIds = replayed.receiptIds;
++
++  const next = await ctx.gather();
++  const previous = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
++  const candidates = diffSnapshots(previous, next);
++  if (candidates.length === 0) {
++    return finalizePass(ctx, bridge, spec, state, next, receiptIds, now(), []);
++  }
++  const timestamp = now();
++  const records = finalizeRecords(candidates, {
++    baseSeq: durableEvents.length,
++    ts: timestamp,
++    snapshot: next,
++  });
++  if (typeof ctx.enrich === 'function') await ctx.enrich(records);
++  const persisted = await persistRecords(ctx, bridge, spec, state, records, next, subjectRevision, timestamp);
++  receiptIds.push(...persisted.receiptIds);
++  return finalizePass(ctx, bridge, spec, persisted.state, next, receiptIds, timestamp, records);
++}
++
+ module.exports = { FlowMonitorError, runFlowMonitorPass };
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index d0a244b6..b31f4f7b 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -550,6 +550,40 @@ async function execute(actions, ctx = {}) {
+ 	return s.watchers;
+ }
+ 
++function checkpointWriter(opts, updateWatchers, projectRoot, gitCommonDir) {
++	if (opts.persistLifecycleCheckpoint) return opts.persistLifecycleCheckpoint;
++	if (!opts.token) return undefined;
++	return current => updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token });
++}
++
++async function executeConvergedActions(actions, seedWatchers, projectRoot, gitCommonDir, now, opts, updateWatchers) {
++	try {
++		const watchers = await execute(actions, {
++			...opts,
++			projectRoot,
++			gitCommonDir,
++			watchers: seedWatchers,
++			now,
++			persistLifecycleCheckpoint: checkpointWriter(opts, updateWatchers, projectRoot, gitCommonDir),
++		});
++		return { watchers, leaseLost: false };
++	} catch (error) {
++		if (opts.token && error?.code === 'PROVIDER_UNAVAILABLE') {
++			return { watchers: seedWatchers, leaseLost: true };
++		}
++		throw error;
++	}
++}
++
++function publishWatcherSet(watchers, projectRoot, gitCommonDir, opts, updateWatchers) {
++	if (!opts.token) return false;
++	try {
++		return updateWatchers(projectRoot, watchers, { gitCommonDir, token: opts.token }) === false;
++	} catch {
++		return false;
++	}
++}
++
+ /**
+  * One converge pass: gather → reconcile → execute → publish watchers. Used by the
+  * daemon loop and directly unit-testable with injected gather/reconcile/execute.
+@@ -583,38 +617,21 @@ async function convergeOnce(projectRoot, opts = {}) {
+ 		? observed.lease.watchers
+ 		: (opts.watchers || []);
+ 	const updateWatchers = opts.updateWatchers || shepherdLease.updateWatchers;
+-	let watchers;
+-	try {
+-		watchers = await execute(actions, {
+-			...opts,
+-			projectRoot,
+-			gitCommonDir,
+-			watchers: seedWatchers,
+-			now,
+-			persistLifecycleCheckpoint: opts.persistLifecycleCheckpoint || (opts.token
+-				? current => updateWatchers(projectRoot, current, { gitCommonDir, token: opts.token })
+-				: undefined),
+-		});
+-	} catch (error) {
+-		if (opts.token && error?.code === 'PROVIDER_UNAVAILABLE') {
+-			return { actions: [], watchers: seedWatchers, desiredCount: desired.openPrs.length, leaseLost: true };
+-		}
+-		throw error;
++	const executed = await executeConvergedActions(
++		actions, seedWatchers, projectRoot, gitCommonDir, now, opts, updateWatchers,
++	);
++	if (executed.leaseLost) {
++		return { actions: [], watchers: seedWatchers, desiredCount: desired.openPrs.length, leaseLost: true };
+ 	}
++	const { watchers } = executed;
+ 
+-	let leaseLost = false;
+-	if (opts.token) {
+-		try {
++	const leaseLost = publishWatcherSet(watchers, projectRoot, gitCommonDir, opts, updateWatchers);
+ 			// updateWatchers returns false when the lock is gone or owned by a DIFFERENT
+ 			// token — i.e. THIS daemon was superseded (its stale lease reclaimed by a newer
+ 			// one). Signal the caller to stop: a superseded daemon must not keep spawning/
+ 			// reaping watchers behind the live owner's back.
+-			const published = updateWatchers(projectRoot, watchers, { gitCommonDir, token: opts.token });
+-			if (published === false) leaseLost = true;
+-		} catch {
++
+ 			/* publishing the watcher set is best-effort — the next pass re-derives it */
+-		}
+-	}
+ 	return { actions, watchers, desiredCount: desired.openPrs.length, leaseLost };
+ }
+ 
+diff --git a/lib/pr-monitor/review-preflight.js b/lib/pr-monitor/review-preflight.js
+index 72c3a4ad..6bd990d2 100644
+--- a/lib/pr-monitor/review-preflight.js
++++ b/lib/pr-monitor/review-preflight.js
+@@ -82,51 +82,60 @@ function deterministicFindings(results) {
+     }));
+ }
+ 
+-async function runLocalReviewPreflight(context, deps = {}) {
+-  const probeCodeRabbit = deps.probeCodeRabbit || defaultProbeCodeRabbit;
+-  const runCodeRabbit = deps.runCodeRabbit || defaultRunCodeRabbit;
+-  const runDeterministic = deps.runDeterministic || defaultRunDeterministic;
+-
++function notApplicableResult(context) {
+   const exactHeadAvailable = typeof context.expectedHead === 'string'
+     && /^[0-9a-f]{40}$/i.test(context.expectedHead);
+-  if (!exactHeadAvailable || context.localHead !== context.expectedHead) {
+-    return {
+-      status: 'INCOMPLETE',
+-      blocking: false,
+-      providers: {
+-        coderabbit: providerResult(
+-          'NOT_APPLICABLE',
+-          false,
+-          exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable',
+-        ),
+-        deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
+-      },
+-      findings: [],
+-    };
+-  }
++  if (exactHeadAvailable && context.localHead === context.expectedHead) return null;
++  return {
++    status: 'INCOMPLETE',
++    blocking: false,
++    providers: {
++      coderabbit: providerResult(
++        'NOT_APPLICABLE',
++        false,
++        exactHeadAvailable ? 'local checkout is not the PR head' : 'PR head is unavailable',
++      ),
++      deterministic: { status: 'NOT_APPLICABLE', ok: false, results: [] },
++    },
++    findings: [],
++  };
++}
+ 
+-  let coderabbit;
++async function codeRabbitResult(context, probeCodeRabbit, runCodeRabbit) {
+   const probe = await probeCodeRabbit(context);
+-  if (probe?.available === true) {
+-    const review = await runCodeRabbit(context);
+-    coderabbit = review?.unavailable === true
+-      ? providerResult('UNAVAILABLE', false, review.summary || 'CLI unavailable')
+-      : providerResult(
+-        review?.ok === true ? 'PASS' : 'FAIL',
+-        review?.ok === true,
+-        review?.summary || 'local review completed',
+-        Array.isArray(review?.findings) ? review.findings : [],
+-      );
+-  } else {
+-    coderabbit = providerResult('UNAVAILABLE', false, probe?.reason || 'CLI unavailable');
++  if (probe?.available !== true) {
++    return providerResult('UNAVAILABLE', false, probe?.reason || 'CLI unavailable');
++  }
++  const review = await runCodeRabbit(context);
++  if (review?.unavailable === true) {
++    return providerResult('UNAVAILABLE', false, review.summary || 'CLI unavailable');
+   }
++  return providerResult(
++    review?.ok === true ? 'PASS' : 'FAIL',
++    review?.ok === true,
++    review?.summary || 'local review completed',
++    Array.isArray(review?.findings) ? review.findings : [],
++  );
++}
+ 
+-  let deterministic;
++async function deterministicResult(context, runDeterministic) {
+   try {
+-    deterministic = await runDeterministic(context);
++    return await runDeterministic(context);
+   } catch (error) {
+-    deterministic = { success: false, results: [], reason: error?.message || String(error) };
++    return { success: false, results: [], reason: error?.message || String(error) };
+   }
++}
++
++async function runLocalReviewPreflight(context, deps = {}) {
++  const probeCodeRabbit = deps.probeCodeRabbit || defaultProbeCodeRabbit;
++  const runCodeRabbit = deps.runCodeRabbit || defaultRunCodeRabbit;
++  const runDeterministic = deps.runDeterministic || defaultRunDeterministic;
++
++  const notApplicable = notApplicableResult(context);
++  if (notApplicable) return notApplicable;
++
++  const coderabbit = await codeRabbitResult(context, probeCodeRabbit, runCodeRabbit);
++  const deterministic = await deterministicResult(context, runDeterministic);
+   const gateResults = Array.isArray(deterministic?.results) ? deterministic.results : [];
+   const deterministicOk = deterministic?.success === true;
+   const findings = [
+-- 
+2.51.0.windows.1
+

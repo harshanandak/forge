@@ -1,0 +1,540 @@
+From 3f179763067c5b243980a353f59a7a19e642b187 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:21:20 +0530
+Subject: [PATCH] feat(memory): add backend adapter registry
+
+---
+ lib/commands/doctor.js                        |   2 +-
+ lib/memory/router.js                          | 103 +++++++++++---
+ packages/memory/index.js                      |   3 +
+ packages/memory/index.test.js                 |   9 ++
+ packages/memory/package.json                  |  18 +++
+ packages/memory/src/backend-registry.js       | 132 ++++++++++++++++++
+ packages/memory/test/backend-registry.test.js |  74 ++++++++++
+ test/commands/doctor-memory.test.js           |  12 ++
+ test/memory/router.test.js                    |  29 ++++
+ 9 files changed, 358 insertions(+), 24 deletions(-)
+ create mode 100644 packages/memory/index.js
+ create mode 100644 packages/memory/index.test.js
+ create mode 100644 packages/memory/package.json
+ create mode 100644 packages/memory/src/backend-registry.js
+ create mode 100644 packages/memory/test/backend-registry.test.js
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index d437c5f7..53ca6aa4 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -55,7 +55,7 @@ function buildMemoryCheck(projectRoot, env) {
+ 			detail: `memory backend: graphiti — served to agents via the graphiti-memory MCP server; ${reach}`,
+ 		};
+ 	} catch (err) {
+-		const backend = memoryRouter.resolveMemoryBackend({ projectRoot, env, warn: () => {} });
++		const backend = err.backend || memoryRouter.resolveMemoryBackend({ projectRoot, env, warn: () => {} });
+ 		return { id: 'memory-backend', ok: false, backend, detail: err.message };
+ 	}
+ }
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index db7c7dba..821cb7cf 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -29,11 +29,16 @@ const crypto = require('node:crypto');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const projectMemory = require('../project-memory');
++const {
++  assertBackend,
++  createMemoryBackendRegistry,
++} = require('../../packages/memory');
+ 
+ /** Supported PUBLIC backends, default first. */
+ const MEMORY_BACKENDS = ['local', 'graphiti'];
+ const DEFAULT_MEMORY_BACKEND = 'local';
+ const ENV_VAR = 'FORGE_MEMORY_BACKEND';
++const registeredMemoryBackends = new Map();
+ 
+ /** Default recall cap — newest-N, so `recall` with no query never dumps the whole store. */
+ const DEFAULT_RECALL_LIMIT = 20;
+@@ -126,7 +131,7 @@ function resolveMemoryBackend({
+   if (!value) return DEFAULT_MEMORY_BACKEND;
+ 
+   const normalized = value.toLowerCase();
+-  if (MEMORY_BACKENDS.includes(normalized)) return normalized;
++  if (MEMORY_BACKENDS.includes(normalized) || registeredMemoryBackends.has(normalized)) return normalized;
+ 
+   warn(
+     `Unknown memory backend "${value}" from ${source}; `
+@@ -135,6 +140,19 @@ function resolveMemoryBackend({
+   return DEFAULT_MEMORY_BACKEND;
+ }
+ 
++function registerMemoryBackend(name, adapter) {
++  const normalized = typeof name === 'string' ? name.trim().toLowerCase() : '';
++  if (!/^[a-z][a-z0-9-]{0,63}$/.test(normalized) || MEMORY_BACKENDS.includes(normalized)) {
++    throw new TypeError('custom memory backend must have a unique lowercase name');
++  }
++  assertBackend(adapter, normalized);
++  registeredMemoryBackends.set(normalized, adapter);
++}
++
++function unregisterMemoryBackend(name) {
++  registeredMemoryBackends.delete(String(name || '').trim().toLowerCase());
++}
++
+ /**
+  * Strict validation for the resolved backend. Unlike `resolveMemoryBackend`
+  * (which soft-falls-back), this THROWS a clear, actionable error when the
+@@ -145,6 +163,16 @@ function resolveMemoryBackend({
+  */
+ function assertMemoryConfigValid({ deps = {}, env = process.env, projectRoot, config } = {}) {
+   const memory = config || readMemoryConfig(projectRoot);
++  const signal = collectBackendSignal({ deps, env, projectRoot, config: memory });
++  const requested = signal.value && signal.value.toLowerCase();
++  if (requested && !MEMORY_BACKENDS.includes(requested) && !registeredMemoryBackends.has(requested)) {
++    const error = new Error(
++      `memory backend "${signal.value}" from ${signal.source} is not registered. `
++      + `Available backends: ${[...MEMORY_BACKENDS, ...registeredMemoryBackends.keys()].sort().join(', ')}.`,
++    );
++    error.backend = signal.value;
++    throw error;
++  }
+   const backend = resolveMemoryBackend({ deps, env, projectRoot, config: memory, warn: () => {} });
+ 
+   if (backend !== 'graphiti') {
+@@ -182,19 +210,27 @@ function assertMemoryConfigValid({ deps = {}, env = process.env, projectRoot, co
+  * never-hang guarantee — the emitter, not this seam, owns preventing that.
+  *
+  * @param {object} [emitter] - optional `{ emit(entry) }` injected by callers.
+- * @param {object} entry - the persisted local entry.
++ * @param {Function} entryProvider - returns the persisted local entry.
+  */
+-function fireAndForgetGraphitiEmit(emitter, entry) {
+-  if (!emitter || typeof emitter.emit !== 'function') return;
+-  try {
+-    // Do not await: fire-and-forget. If it returns a promise, swallow rejection.
+-    const maybePromise = emitter.emit(entry);
+-    if (maybePromise && typeof maybePromise.then === 'function') {
+-      maybePromise.then(() => {}, () => {});
+-    }
+-  } catch {
+-    // Hard fallback: the local write already succeeded. Never surface emit errors.
+-  }
++// The implementation now lives in the adapter below so synchronous failures can
++// be represented in the operation receipt while rejected promises stay consumed.
++
++function graphitiAdapter(emitter, entryProvider) {
++  const unavailable = () => [];
++  return {
++    add() {
++      if (!emitter || typeof emitter.emit !== 'function') return null;
++      const maybePromise = emitter.emit(entryProvider());
++      if (maybePromise && typeof maybePromise.then === 'function') {
++        maybePromise.then(() => {}, () => {});
++      }
++      return null;
++    },
++    recall: unavailable,
++    search: unavailable,
++    capture: unavailable,
++    digest: unavailable,
++  };
+ }
+ 
+ /**
+@@ -336,20 +372,38 @@ function migrateJsonlNotesOnce(projectRoot, options = {}) {
+  * @param {object} [options] - { tags, deps, env, config, graphitiEmitter, store }
+  * @returns {{ id: string, note: string, timestamp: string, tags: string[] }}
+  */
+-function append(projectRoot, note, options = {}) {
++function appendWithReceipt(projectRoot, note, options = {}) {
+   migrateJsonlNotesOnce(projectRoot, options);
+   const backend = resolveMemoryBackend({ ...options, projectRoot });
+-  const written = projectMemory.write(projectRoot, {
+-    key: crypto.randomUUID(),
+-    value: note,
+-    sourceAgent: REMEMBER_SOURCE_AGENT,
+-    tags: Array.isArray(options.tags) ? options.tags : [],
+-  }, options);
+-  const entry = toNote(written);
++  let entry;
++  const local = {
++    add() {
++      const written = projectMemory.write(projectRoot, {
++        key: crypto.randomUUID(),
++        value: note,
++        sourceAgent: REMEMBER_SOURCE_AGENT,
++        tags: Array.isArray(options.tags) ? options.tags : [],
++      }, options);
++      entry = toNote(written);
++      return entry;
++    },
++    recall: () => [],
++    search: () => [],
++    capture: () => null,
++    digest: () => null,
++  };
++  const registry = createMemoryBackendRegistry({ local });
+   if (backend === 'graphiti') {
+-    fireAndForgetGraphitiEmit(options.graphitiEmitter, entry);
++    registry.register('graphiti', graphitiAdapter(options.graphitiEmitter, () => entry));
++  } else if (backend !== 'local') {
++    registry.register(backend, registeredMemoryBackends.get(backend));
+   }
+-  return entry;
++  registry.select(backend);
++  return registry.add(note);
++}
++
++function append(projectRoot, note, options = {}) {
++  return appendWithReceipt(projectRoot, note, options).value;
+ }
+ 
+ /**
+@@ -395,8 +449,11 @@ module.exports = {
+   readMemoryConfig,
+   resolveMemoryBackend,
+   assertMemoryConfigValid,
++  registerMemoryBackend,
++  unregisterMemoryBackend,
+   migrateJsonlNotesOnce,
+   toNote,
+   append,
++  appendWithReceipt,
+   recall,
+ };
+diff --git a/packages/memory/index.js b/packages/memory/index.js
+new file mode 100644
+index 00000000..82eae44b
+--- /dev/null
++++ b/packages/memory/index.js
+@@ -0,0 +1,3 @@
++'use strict';
++
++module.exports = require('./src/backend-registry');
+diff --git a/packages/memory/index.test.js b/packages/memory/index.test.js
+new file mode 100644
+index 00000000..56d04353
+--- /dev/null
++++ b/packages/memory/index.test.js
+@@ -0,0 +1,9 @@
++'use strict';
++
++const { expect, test } = require('bun:test');
++const memory = require('./index');
++
++test('@forge/memory exposes the stable backend registry entrypoint', () => {
++  expect(memory.BACKEND_METHODS).toEqual(['add', 'recall', 'search', 'capture', 'digest']);
++  expect(typeof memory.createMemoryBackendRegistry).toBe('function');
++});
+diff --git a/packages/memory/package.json b/packages/memory/package.json
+new file mode 100644
+index 00000000..d8a0620c
+--- /dev/null
++++ b/packages/memory/package.json
+@@ -0,0 +1,18 @@
++{
++  "name": "@forge/memory",
++  "version": "0.1.0-beta.6",
++  "description": "Forge Memory public backend boundary",
++  "main": "index.js",
++  "type": "commonjs",
++  "files": [
++    "index.js",
++    "src"
++  ],
++  "scripts": {
++    "test": "bun test"
++  },
++  "engines": {
++    "node": ">=20.0.0"
++  },
++  "license": "MIT"
++}
+diff --git a/packages/memory/src/backend-registry.js b/packages/memory/src/backend-registry.js
+new file mode 100644
+index 00000000..073079a4
+--- /dev/null
++++ b/packages/memory/src/backend-registry.js
+@@ -0,0 +1,132 @@
++'use strict';
++
++const BACKEND_METHODS = Object.freeze(['add', 'recall', 'search', 'capture', 'digest']);
++const RECEIPT_SCHEMA_ID = 'forge.memory.operation-receipt.v1';
++const RECEIPT_SCHEMA_VERSION = 1;
++
++function assertBackendName(name) {
++  if (typeof name !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
++    throw new TypeError('memory backend name must use lowercase letters, numbers, and hyphens');
++  }
++}
++
++function assertBackend(adapter, name = 'memory') {
++  if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) {
++    throw new TypeError(`${name} memory backend must be an object`);
++  }
++  for (const method of BACKEND_METHODS) {
++    if (typeof adapter[method] !== 'function') {
++      throw new TypeError(`${name} memory backend must implement ${method}()`);
++    }
++  }
++}
++
++function errorRecord(backend, error) {
++  return {
++    backend,
++    code: 'MEMORY_BACKEND_FAILED',
++    message: error instanceof Error ? error.message : String(error),
++  };
++}
++
++function identity(value) {
++  if (value && typeof value === 'object') {
++    if (typeof value.id === 'string') return `id:${value.id}`;
++    if (typeof value.key === 'string') return `key:${value.key}`;
++  }
++  return `value:${JSON.stringify(value)}`;
++}
++
++function enrichLocalValue(localValue, enrichedValue, operation) {
++  if (!['recall', 'search', 'digest'].includes(operation)) return localValue;
++  if (!Array.isArray(localValue) || !Array.isArray(enrichedValue)) return localValue;
++  const seen = new Set(localValue.map(identity));
++  return [...localValue, ...enrichedValue.filter(item => {
++    const key = identity(item);
++    if (seen.has(key)) return false;
++    seen.add(key);
++    return true;
++  })];
++}
++
++function createMemoryBackendRegistry({ local, selected = 'local' } = {}) {
++  assertBackend(local, 'local');
++  const adapters = new Map([['local', local]]);
++  let selectedBackend = 'local';
++
++  function register(name, adapter) {
++    assertBackendName(name);
++    if (name === 'local') throw new Error('the local memory floor cannot be replaced');
++    assertBackend(adapter, name);
++    adapters.set(name, adapter);
++    return api;
++  }
++
++  function unregister(name) {
++    if (name === 'local') throw new Error('the local memory floor cannot be removed');
++    adapters.delete(name);
++    if (selectedBackend === name) selectedBackend = 'local';
++    return api;
++  }
++
++  function select(name) {
++    assertBackendName(name);
++    if (!adapters.has(name)) throw new Error(`memory backend "${name}" is not registered`);
++    selectedBackend = name;
++    return api;
++  }
++
++  function execute(operation, args) {
++    const localValue = adapters.get('local')[operation](...args);
++    const backends = [{ backend: 'local', status: 'ok' }];
++    const errors = [];
++    let value = localValue;
++
++    if (selectedBackend !== 'local') {
++      try {
++        const enrichedValue = adapters.get(selectedBackend)[operation](...args);
++        value = enrichLocalValue(localValue, enrichedValue, operation);
++        backends.push({ backend: selectedBackend, status: 'ok' });
++      } catch (error) {
++        backends.push({ backend: selectedBackend, status: 'failed' });
++        errors.push(errorRecord(selectedBackend, error));
++      }
++    }
++
++    return {
++      value,
++      receipt: {
++        schema_id: RECEIPT_SCHEMA_ID,
++        schema_version: RECEIPT_SCHEMA_VERSION,
++        operation,
++        selected_backend: selectedBackend,
++        local_floor: 'local',
++        status: errors.length === 0 ? 'ok' : 'degraded',
++        capabilities: [...BACKEND_METHODS].sort(),
++        backends,
++        errors,
++      },
++    };
++  }
++
++  const api = {
++    register,
++    unregister,
++    select,
++    selected: () => selectedBackend,
++    names: () => [...adapters.keys()].sort((a, b) => (a === 'local' ? -1 : b === 'local' ? 1 : a.localeCompare(b))),
++  };
++  for (const operation of BACKEND_METHODS) {
++    api[operation] = (...args) => execute(operation, args);
++  }
++  select(selected);
++  return Object.freeze(api);
++}
++
++module.exports = {
++  BACKEND_METHODS,
++  RECEIPT_SCHEMA_ID,
++  RECEIPT_SCHEMA_VERSION,
++  assertBackend,
++  createMemoryBackendRegistry,
++};
+diff --git a/packages/memory/test/backend-registry.test.js b/packages/memory/test/backend-registry.test.js
+new file mode 100644
+index 00000000..713582d6
+--- /dev/null
++++ b/packages/memory/test/backend-registry.test.js
+@@ -0,0 +1,74 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { BACKEND_METHODS, createMemoryBackendRegistry } = require('..');
++
++function backend(overrides = {}) {
++  return {
++    add: value => ({ id: 'local-1', value }),
++    recall: () => [{ id: 'local-1', value: 'local' }],
++    search: () => [{ id: 'local-1', value: 'local' }],
++    capture: value => ({ id: 'capture-1', value }),
++    digest: () => ({ count: 1 }),
++    ...overrides,
++  };
++}
++
++describe('@forge/memory backend registry', () => {
++  test('requires the complete stable MemoryBackend surface and defaults to local', () => {
++    expect(BACKEND_METHODS).toEqual(['add', 'recall', 'search', 'capture', 'digest']);
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    expect(registry.names()).toEqual(['local']);
++    expect(registry.selected()).toBe('local');
++    expect(registry.add('note').value).toEqual({ id: 'local-1', value: 'note' });
++  });
++
++  test('rejects incomplete adapters and unknown enabled selections', () => {
++    expect(() => createMemoryBackendRegistry({ local: { add() {} } })).toThrow(/recall/);
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    expect(() => registry.select('missing')).toThrow(/not registered/);
++  });
++
++  test('runs the local floor first and preserves its write when an enricher fails', () => {
++    const calls = [];
++    const registry = createMemoryBackendRegistry({
++      local: backend({ add: value => { calls.push('local'); return { id: 'local', value }; } }),
++    });
++    registry.register('graphiti', backend({
++      add: () => { calls.push('graphiti'); throw new Error('sidecar down'); },
++    }));
++    registry.select('graphiti');
++    const result = registry.add('durable');
++    expect(calls).toEqual(['local', 'graphiti']);
++    expect(result.value).toEqual({ id: 'local', value: 'durable' });
++    expect(result.receipt.status).toBe('degraded');
++    expect(result.receipt.errors).toEqual([{
++      backend: 'graphiti', code: 'MEMORY_BACKEND_FAILED', message: 'sidecar down',
++    }]);
++  });
++
++  test('never removes local recall results when enrichment fails', () => {
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    registry.register('graphiti', backend({ recall: () => { throw new Error('offline'); } }));
++    registry.select('graphiti');
++    const result = registry.recall({ query: 'local' });
++    expect(result.value).toEqual([{ id: 'local-1', value: 'local' }]);
++    expect(result.receipt.status).toBe('degraded');
++  });
++
++  test('emits a deterministic versioned receipt with selected backend and capabilities', () => {
++    const registry = createMemoryBackendRegistry({ local: backend() });
++    registry.register('zeta', backend());
++    registry.select('zeta');
++    const first = registry.digest();
++    const second = registry.digest();
++    expect(first.receipt).toEqual(second.receipt);
++    expect(first.receipt).toEqual({
++      schema_id: 'forge.memory.operation-receipt.v1', schema_version: 1,
++      operation: 'digest', selected_backend: 'zeta', local_floor: 'local', status: 'ok',
++      capabilities: ['add', 'capture', 'digest', 'recall', 'search'],
++      backends: [{ backend: 'local', status: 'ok' }, { backend: 'zeta', status: 'ok' }],
++      errors: [],
++    });
++  });
++});
+diff --git a/test/commands/doctor-memory.test.js b/test/commands/doctor-memory.test.js
+index eb186020..b20d7892 100644
+--- a/test/commands/doctor-memory.test.js
++++ b/test/commands/doctor-memory.test.js
+@@ -120,4 +120,16 @@ describe('forge doctor: memory backend check', () => {
+     // … but must never drag the overall doctor report to failure (fs-class governs).
+     expect(report.ok).toBe(true);
+   });
++
++  test('an unknown enabled backend is reported clearly instead of silently passing local', () => {
++    const projectRoot = makeProjectRoot();
++    writeConfig(projectRoot, 'memory:\n  backend: unavailable-provider\n');
++    const report = doctor.buildDoctorReport(projectRoot, depsFor(projectRoot));
++    const check = memoryCheck(report);
++
++    expect(check.ok).toBe(false);
++    expect(check.backend).toBe('unavailable-provider');
++    expect(check.detail).toMatch(/not registered|unknown/i);
++    expect(report.ok).toBe(true);
++  });
+ });
+diff --git a/test/memory/router.test.js b/test/memory/router.test.js
+index 77f0c344..4442028a 100644
+--- a/test/memory/router.test.js
++++ b/test/memory/router.test.js
+@@ -121,6 +121,19 @@ describe('memory-router: backend resolution', () => {
+     writeConfig(projectRoot, ':::not: valid: yaml:::\n');
+     expect(router.resolveMemoryBackend({ projectRoot, env: {} })).toBe('local');
+   });
++
++  test('custom registered backend resolves deterministically from deps over env and config', () => {
++    const projectRoot = makeProjectRoot();
++    writeConfig(projectRoot, 'memory:\n  backend: graphiti\n');
++    const adapter = { add() {}, recall() {}, search() {}, capture() {}, digest() {} };
++    router.registerMemoryBackend('custom', adapter);
++    expect(router.resolveMemoryBackend({
++      projectRoot,
++      env: { FORGE_MEMORY_BACKEND: 'graphiti' },
++      deps: { memoryBackend: 'custom' },
++    })).toBe('custom');
++    router.unregisterMemoryBackend('custom');
++  });
+ });
+ 
+ describe('memory-router: config validation', () => {
+@@ -232,6 +245,22 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
+     expect(() => router.append(projectRoot, 'note b', { store, graphitiEmitter: rejecting })).not.toThrow();
+     expect(router.recall(projectRoot, {}, { store }).total).toBe(2);
+   });
++
++  test('appendWithReceipt reports enricher failure without changing the local result', () => {
++    const projectRoot = makeProjectRoot();
++    writeConfig(projectRoot, GRAPHITI_CONFIG);
++    const store = makeStore(projectRoot);
++    const result = router.appendWithReceipt(projectRoot, 'receipt note', {
++      store,
++      graphitiEmitter: { emit: () => { throw new Error('sidecar down'); } },
++    });
++
++    expect(result.value.note).toBe('receipt note');
++    expect(result.receipt.schema_id).toBe('forge.memory.operation-receipt.v1');
++    expect(result.receipt.selected_backend).toBe('graphiti');
++    expect(result.receipt.status).toBe('degraded');
++    expect(router.recall(projectRoot, {}, { store }).total).toBe(1);
++  });
+ });
+ 
+ describe('memory-router: one-time JSONL import onto the kernel', () => {
+-- 
+2.51.0.windows.1
+

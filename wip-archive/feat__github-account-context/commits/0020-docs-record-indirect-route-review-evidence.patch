@@ -1,0 +1,41 @@
+From 7f458d06c2a4ede6d54f72f1968edfc813e1e34b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 9 Sep 2026 01:03:47 +0530
+Subject: [PATCH] docs: record indirect route review evidence
+
+---
+ docs/work/2026-09-08-github-account-context/decisions.md | 7 +++++++
+ docs/work/2026-09-08-github-account-context/tasks.md     | 2 +-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/docs/work/2026-09-08-github-account-context/decisions.md b/docs/work/2026-09-08-github-account-context/decisions.md
+index ed492705..5fd43312 100644
+--- a/docs/work/2026-09-08-github-account-context/decisions.md
++++ b/docs/work/2026-09-08-github-account-context/decisions.md
+@@ -47,3 +47,10 @@
+ - Independent spec and quality reviews found and corrected two boundary bugs before Task 4 exit: mixed-purpose Team Bash inherited ambient GitHub variables, and whole-argv global-flag stripping removed Team's documented `claim <id> --force` option.
+ - At the reviewed Task 4 head (`2c362fddb846d2cd835352b3bdbb91b8702f6a70`), Team removes ambient GitHub variables case-insensitively, normalizes Forge routing flags through one shared path, and preserves Team-owned flags verbatim.
+ - The fresh pinned-Bun 1.3.12 route proof completed with 398 pass, 4 existing skips, and 0 failures across 17 files; targeted lint, Bash syntax, manifest drift, embedded assets, Windows background spawns, and diff checks passed. Both independent reviewers returned PASS.
++
++## Task 5 review evidence
++
++- The Task 5 map expanded to the existing `lib/pr-monitor/watch-lifecycle.js` launch boundary because per-PR watcher children—not only the daemon—must re-enter the public CLI without inheriting a selected token. This is the shared root boundary for source and compiled watcher launches.
++- Bound daemon, watcher, snapshot, and browser launch environments remove ambient GitHub variables case-insensitively after one clone-local binding read. Unbound launches retain native environment behavior. The re-entered GitHub worker prepares and verifies its own context.
++- Snapshot generation prepares once internally and delegates only `gh` calls to the private runner. Full skill evaluation delegates the runner only to PR resolution and attribution; Git, Forge, browser, and evaluation-harness descendants remain separate.
++- At the reviewed Task 5 head (`f06d2260d12b9361cfab549d8eab3d740d5c68b6`), the fresh pinned-Bun 1.3.12 proof completed with 384 pass and 0 failures across 18 files; targeted lint, manifest generation, Windows background-spawn, and diff checks passed. Independent spec and quality reviewers returned PASS.
+diff --git a/docs/work/2026-09-08-github-account-context/tasks.md b/docs/work/2026-09-08-github-account-context/tasks.md
+index 4cd24a96..08bcaac6 100644
+--- a/docs/work/2026-09-08-github-account-context/tasks.md
++++ b/docs/work/2026-09-08-github-account-context/tasks.md
+@@ -54,7 +54,7 @@
+ 
+ ### Task 5: Background and indirect GitHub consumers
+ 
+-**Owns:** `lib/commands/push.js`, `lib/commands/hooks.js`, `lib/commands/serve.js`, `lib/commands/skill.js`, `lib/pr-monitor/reconcile-executor.js`, `web/dashboard/generate-snapshot.mjs`, `scripts/lib/behavioral-eval-runtime.js`, `test/commands/github-indirect-routes.test.js`
++**Owns:** `lib/commands/push.js`, `lib/commands/hooks.js`, `lib/commands/serve.js`, `lib/commands/skill.js`, `lib/pr-monitor/reconcile-executor.js`, `lib/pr-monitor/watch-lifecycle.js`, `web/dashboard/generate-snapshot.mjs`, `scripts/lib/behavioral-eval-runtime.js`, `test/commands/github-indirect-routes.test.js`, the affected focused fixture suites, and the targeted-test maps
+ 
+ 1. Write failing tests for push/session-start monitor wake, serve snapshot generation, and `skill eval --full` PR attribution.
+ 2. Let detached monitor/watch children re-enter the public Forge CLI and prepare their own clone-local context; do not inherit a selected-token environment into the worker. Prepare once inside snapshot generation and route only its actual `gh` calls through the private runner; never expose the selected environment to Git/Forge descendants, browser openers, or unrelated children.
+-- 
+2.51.0.windows.1
+

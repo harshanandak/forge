@@ -1,0 +1,256 @@
+From 3fee90a3bb50d87b3c1ebe755e72995d7ecfd8de Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 23:32:31 +0530
+Subject: [PATCH] fix(shepherd): clear review blockers
+
+---
+ lib/commands/merge.js                      | 18 +++++++--------
+ lib/commands/shepherd.js                   |  1 -
+ lib/pr-monitor/reconcile-executor.js       | 12 ++++++++--
+ lib/pr-shepherd.js                         |  6 +++++
+ test/commands/merge.test.js                |  9 +++++---
+ test/commands/shepherd.test.js             | 26 ++++++++++++++++++++++
+ test/pr-monitor/reconcile-executor.test.js | 20 +++++++++++++++++
+ test/pr-shepherd.test.js                   | 18 +++++++++++++--
+ 8 files changed, 92 insertions(+), 18 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index c03c65b6..295b17d8 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -969,16 +969,6 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
+   const gh = deps.gh || defaultGh;
+   const exactMergeIdentity = !parsed.error && parsed.expectedHead && parsed.issueId;
+-  let prContext; let prState = '';
+-  if (exactMergeIdentity) {
+-    try {
+-      prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
+-    } catch (err) {
+-      return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
+-    }
+-    prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
+-  }
+-
+   const loadConfig = deps.loadConfig || loadRawConfig;
+   let config;
+   try {
+@@ -1016,6 +1006,14 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, enabled: true, error: reason };
+   }
+ 
++  let prContext;
++  try {
++    prContext = await fetchPrContext({ pr, projectRoot: root, gh, now: deps.now || Date.now() });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to fetch PR context: ${err.message}` };
++  }
++  const prState = prContext?.state ? String(prContext.state).toUpperCase() : '';
++
+   let ownership;
+   try {
+     ownership = await verifyIssueOwnership(ownershipInput);
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 34089d85..ed0c9b20 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -126,7 +126,6 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+     pushRemote = null;
+   }
+   if (!baseRemote) throw new Error('The PR base repository has no matching local Git remote.');
+-  if (!pushRemote) throw new Error('The PR head repository has no matching local Git remote.');
+ 
+   let localHead = null;
+   try {
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 57b102c7..2eb22f3b 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -474,16 +474,24 @@ const ACTION_HANDLERS = {
+ 		for (const entry of s.watchers.filter((w) => w.pr === action.pr.number)) {
+ 			const at = s.now();
+ 			const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
+-			if (isAlive(entry.pid) && !hasVerifiedClaim(entry, s.ctx)) {
++			const alive = isAlive(entry.pid);
++			if (alive && !hasVerifiedClaim(entry, s.ctx)) {
+ 				s.watchers = s.watchers.filter(watcher => watcher !== entry);
+ 				continue;
+ 			}
++			if (!alive && entry.lifecycle.state.phase === 'RUNNING') {
++				checkpointLifecycle(entry, lifecycleEvent(entry, 'orphan-detected', at), s);
++				checkpointLifecycle(entry, lifecycleEvent(entry, 'termination-acknowledged', at), s);
++				checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
++				s.removeClaim(entry);
++				continue;
++			}
+ 			if (entry.lifecycle.state.phase === 'RUNNING') {
+ 				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-requested', at), s);
+ 				verifiedKill(entry, s.ctx);
+ 				continue;
+ 			}
+-			if (isAlive(entry.pid)) {
++			if (alive) {
+ 				if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
+ 					verifiedKill(entry, s.ctx, 'SIGKILL');
+ 					continue;
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index ff866e99..5a6d7e60 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -232,6 +232,12 @@ async function handleBehindBase({
+       reason: 'Auto-rebase requested but no rebase capability is wired. Escalating.',
+     });
+   }
++  if (!headRef || !pushRemote) {
++    return result('ESCALATE', {
++      actions,
++      reason: 'Auto-rebase requested but the PR head branch has no matching local push remote. Escalating.',
++    });
++  }
+   if (!(await headUnchanged())) {
+     return result('PENDING', {
+       actions,
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index bcbebcea..5e28ae85 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -118,7 +118,7 @@ describe('merge command — opt-in conditional auto-merge', () => {
+   test('NO-OP when merge.auto.enabled is false', async () => {
+     const root = makeProject({ merge: { auto: { enabled: false, rules: ['checks_green'] } } });
+     let mergeCalled = false;
+-    const out = await mergeCmd.handler(['7', '--auto'], {}, root, {
++    const out = await mergeCmd.handler(['7', '--auto', '--expect-head', HEAD, '--issue', '1eddb71d-f630-4584-9816-30bb3db16b8f'], {}, root, {
+       fetchPrContext: async () => { throw new Error('must not fetch when disabled'); },
+       mergePr: async () => { mergeCalled = true; },
+     });
+@@ -256,12 +256,15 @@ describe('merge command — opt-in conditional auto-merge', () => {
+   test('refuses (fail-closed) when opted in with an empty ruleset', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: [] } } });
+     let mergeCalled = false;
+-    const out = await mergeCmd.handler(['5', '--auto'], {}, root, {
+-      fetchPrContext: async () => ({}),
++    let fetched = false;
++    const out = await mergeCmd.handler(['5', '--auto', '--expect-head', HEAD, '--issue', '1eddb71d-f630-4584-9816-30bb3db16b8f'], {}, root, {
++      fetchPrContext: async () => { fetched = true; throw new Error('must not fetch without rules'); },
+       mergePr: async () => { mergeCalled = true; },
+     });
+     expect(out.success).toBe(false);
+     expect(out.merged).toBe(false);
++    expect(out.reason).toMatch(/no rules/i);
++    expect(fetched).toBe(false);
+     expect(mergeCalled).toBe(false);
+   });
+ 
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index c629cd73..785b3a61 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -113,6 +113,32 @@ describe('shepherd command handler', () => {
+     expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
+   });
+ 
++  test('defaultBuildContext permits fork PR observation without a contributor remote', async () => {
++    const gh = (_cmd, args) => {
++      if (args.includes('pr') && args.includes('view')) {
++        return JSON.stringify({
++          baseRefName: 'master',
++          headRefOid: 'a'.repeat(40),
++          headRefName: 'feature/from-fork',
++          headRepository: { name: 'widget' },
++          headRepositoryOwner: { login: 'contributor' },
++          url: 'https://github.com/acme/widget/pull/42',
++        });
++      }
++      return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++    };
++    const git = (_cmd, args) => {
++      if (args[0] === 'remote' && args.length === 1) return 'origin\n';
++      if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/widget.git\n';
++      return '';
++    };
++
++    const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
++
++    expect(ctx.headRef).toBe('feature/from-fork');
++    expect(ctx.pushRemote).toBeNull();
++  });
++
+   test('defaultBuildContext threads the worktree root through as ctx.cwd', async () => {
+     const gh = (cmd, args) => {
+       if (args.includes('pr') && args.includes('view')) {
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 8752322f..6df47640 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -143,6 +143,26 @@ describe('execute — watcher lifecycle', () => {
+ 		});
+ 	});
+ 
++	test('reaps a watcher that exited before cancellation was requested', async () => {
++		const checkpoints = [];
++		let removed = false;
++		const watchers = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
++				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
++				isAlive: () => false, removeClaim: () => { removed = true; },
++				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
++			},
++		);
++
++		expect(watchers).toEqual([]);
++		expect(removed).toBe(true);
++		expect(checkpoints.map(checkpoint => checkpoint.events.at(-1).type)).toEqual([
++			'orphan-detected', 'termination-acknowledged', 'reap',
++		]);
++	});
++
+ 	test('resumes a persisted termination acknowledgement by reaping the dead watcher', async () => {
+ 		const checkpoints = [];
+ 		const cancelling = await executor.execute(
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index 0d907e33..21e3eaa0 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -153,7 +153,7 @@ describe('runShepherdPass — bounded pass state machine', () => {
+       behind: 2,
+     });
+     await runShepherdPass({
+-      ...BASE_CTX, adapter: ok.adapter, autoRebase: true, cleanTree: true,
++      ...BASE_CTX, headRef: 'feature', pushRemote: 'origin', adapter: ok.adapter, autoRebase: true, cleanTree: true,
+     });
+     expect(ok.actions.filter((a) => a.type === 'rebase')).toHaveLength(1);
+ 
+@@ -164,13 +164,27 @@ describe('runShepherdPass — bounded pass state machine', () => {
+       leaseReject: true,
+     });
+     const leaseResult = await runShepherdPass({
+-      ...BASE_CTX, adapter: lease.adapter, autoRebase: true, cleanTree: true,
++      ...BASE_CTX, headRef: 'feature', pushRemote: 'origin', adapter: lease.adapter, autoRebase: true, cleanTree: true,
+     });
+     expect(leaseResult.state).toBe('ESCALATE');
+     // lease reject is a hard-stop: never auto-fetch-then-retry
+     expect(lease.actions.filter((a) => a.type === 'rebase')).toHaveLength(0);
+   });
+ 
++  test('auto-rebase refuses mutation when the contributor remote is unavailable', async () => {
++    const { adapter, actions } = makeAdapter({
++      required: ['unit'], checks: [{ name: 'unit', conclusion: 'SUCCESS' }], behind: 2,
++    });
++
++    const result = await runShepherdPass({
++      ...BASE_CTX, headRef: 'feature', pushRemote: null, adapter, autoRebase: true, cleanTree: true,
++    });
++
++    expect(result.state).toBe('ESCALATE');
++    expect(result.reason).toMatch(/remote/i);
++    expect(actions.some((action) => action.type === 'rebase')).toBe(false);
++  });
++
+   // 5
+   test('required set unreadable (protection 403) → ESCALATE, never MERGE_READY', async () => {
+     const { adapter } = makeAdapter({
+-- 
+2.51.0.windows.1
+

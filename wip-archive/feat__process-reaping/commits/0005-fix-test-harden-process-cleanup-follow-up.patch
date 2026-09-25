@@ -1,0 +1,478 @@
+From c5a8111feaf4f9b0f70f4e9acbe5c24dbff9bff0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 20:12:16 +0530
+Subject: [PATCH] fix(test): harden process cleanup follow-up
+
+---
+ scripts/process-tree.js           | 167 ++++++++++++++++++++++++------
+ scripts/test.js                   |   4 +-
+ test/scripts/process-tree.test.js | 101 ++++++++++++++++++
+ test/scripts/test-runner.test.js  |  14 +--
+ 4 files changed, 246 insertions(+), 40 deletions(-)
+
+diff --git a/scripts/process-tree.js b/scripts/process-tree.js
+index 050dc763..1cdf0120 100644
+--- a/scripts/process-tree.js
++++ b/scripts/process-tree.js
+@@ -64,8 +64,82 @@ function isValidManifest(manifest) {
+   );
+ }
+ 
+-function readProcessManifest(manifestPath, fsApi = fs) {
++function inspectResource(resourcePath, fsApi = fs) {
++  const stat = fsApi.lstatSync || fsApi.statSync;
++  if (typeof stat !== 'function') {
++    try {
++      return {
++        exists: typeof fsApi.existsSync === 'function' ? fsApi.existsSync(resourcePath) : true,
++        metadata: null,
++      };
++    } catch {
++      return { exists: false, metadata: null };
++    }
++  }
++  try {
++    return { exists: true, metadata: stat.call(fsApi, resourcePath) };
++  } catch (error) {
++    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
++      return { exists: false, metadata: null };
++    }
++    return { exists: null, metadata: null };
++  }
++}
++
++function isOwnedMetadata(metadata, processApi = process, { allowSharedAncestor = false } = {}) {
++  if (metadata && typeof metadata.isSymbolicLink === 'function' && metadata.isSymbolicLink()) return false;
++  const currentUid = typeof processApi.getuid === 'function' ? processApi.getuid() : null;
++  if (currentUid == null || typeof metadata?.uid !== 'number' || metadata.uid === currentUid) return true;
++  if (!allowSharedAncestor) return false;
++  const mode = metadata?.mode;
++  if (typeof mode !== 'number') return false;
++  const writableByOthers = (mode & 0o022) !== 0;
++  const sticky = (mode & 0o1000) !== 0;
++  return !writableByOthers || sticky;
++}
++
++function pathComponents(resourcePath) {
++  const absolutePath = path.resolve(resourcePath);
++  const parsed = path.parse(absolutePath);
++  const components = [parsed.root];
++  let current = parsed.root;
++  for (const segment of absolutePath.slice(parsed.root.length).split(path.sep)) {
++    if (!segment) continue;
++    current = path.join(current, segment);
++    components.push(current);
++  }
++  return components;
++}
++
++function isOwnedPath(resourcePath, fsApi = fs, processApi = process) {
++  if (typeof resourcePath !== 'string' || resourcePath.length === 0) return false;
++  const stat = fsApi.lstatSync || fsApi.statSync;
++  if (typeof stat !== 'function') return true;
++  let missing = false;
++  const components = pathComponents(resourcePath);
++  for (const [index, component] of components.entries()) {
++    const inspected = inspectResource(component, fsApi);
++    if (inspected.exists === false) {
++      missing = true;
++      continue;
++    }
++    if (inspected.exists !== true || missing || !isOwnedMetadata(inspected.metadata, processApi, {
++      allowSharedAncestor: index < components.length - 1,
++    })) {
++      return false;
++    }
++  }
++  return true;
++}
++
++function isOwnedManifestPath(manifestPath, fsApi = fs, processApi = process) {
++  return isOwnedPath(path.dirname(manifestPath), fsApi, processApi)
++    && isOwnedPath(manifestPath, fsApi, processApi);
++}
++
++function readProcessManifest(manifestPath, fsApi = fs, processApi = process) {
+   if (typeof manifestPath !== 'string' || manifestPath.length === 0) return null;
++  if (!isOwnedManifestPath(manifestPath, fsApi, processApi)) return null;
+   try {
+     const manifest = JSON.parse(fsApi.readFileSync(manifestPath, 'utf8'));
+     return isValidManifest(manifest) ? manifest : null;
+@@ -74,8 +148,31 @@ function readProcessManifest(manifestPath, fsApi = fs) {
+   }
+ }
+ 
+-function writeProcessManifest(manifestPath, manifest, fsApi = fs) {
+-  fsApi.mkdirSync(path.dirname(manifestPath), { recursive: true });
++function writeProcessManifest(manifestPath, manifest, fsApi = fs, processApi = process) {
++  const manifestDir = path.dirname(manifestPath);
++  if (!isOwnedPath(manifestPath, fsApi, processApi)) {
++    throw new Error('process manifest path is not owned by the current user');
++  }
++  let directory = inspectResource(manifestDir, fsApi);
++  if (directory.exists === null) throw new Error('process manifest directory cannot be inspected');
++  if (directory.exists === false) {
++    fsApi.mkdirSync(manifestDir, { recursive: true, mode: 0o700 });
++    directory = inspectResource(manifestDir, fsApi);
++  }
++  if (directory.exists !== true
++    || !isOwnedPath(manifestDir, fsApi, processApi)
++    || (typeof directory.metadata?.isDirectory === 'function' && !directory.metadata.isDirectory())) {
++    throw new Error('process manifest directory is not a user-owned directory');
++  }
++  if (typeof fsApi.chmodSync === 'function') {
++    if (!isOwnedPath(manifestDir, fsApi, processApi)) {
++      throw new Error('process manifest directory is not a user-owned directory');
++    }
++    fsApi.chmodSync(manifestDir, 0o700);
++  }
++  if (!isOwnedPath(manifestPath, fsApi, processApi)) {
++    throw new Error('process manifest path is not owned by the current user');
++  }
+   fsApi.writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
+ }
+ 
+@@ -226,7 +323,7 @@ function createProcessTree(options = {}) {
+     || environmentManifestPath
+     || path.join(manifestDir, `run-${normalizePid(processApi.pid) || process.pid}-${token}.json`);
+   const markerExists = pathExists(manifestPath, fsApi);
+-  const existing = readProcessManifest(manifestPath, fsApi);
++  const existing = readProcessManifest(manifestPath, fsApi, processApi);
+   // An environment-provided path may belong to another run. Treat that as
+   // unverifiable and fail closed; never overwrite or reap another run's marker.
+   const usable = !markerExists || (existing && existing.token === token);
+@@ -244,7 +341,7 @@ function createProcessTree(options = {}) {
+ 
+   if (usable) {
+     try {
+-      writeProcessManifest(manifestPath, manifest, fsApi);
++      writeProcessManifest(manifestPath, manifest, fsApi, processApi);
+     } catch {
+       // A missing/unwritable marker makes ownership unverifiable. All cleanup
+       // operations remain fail-closed, and the caller still receives its normal
+@@ -257,14 +354,14 @@ function createProcessTree(options = {}) {
+ 
+   function currentManifest() {
+     if (!usable || !manifest) return null;
+-    const latest = readProcessManifest(manifestPath, fsApi);
++    const latest = readProcessManifest(manifestPath, fsApi, processApi);
+     return latest && latest.token === token ? latest : null;
+   }
+ 
+   function persist(next) {
+     if (!next || !usable || !manifest) return false;
+     try {
+-      writeProcessManifest(manifestPath, next, fsApi);
++      writeProcessManifest(manifestPath, next, fsApi, processApi);
+       manifest = next;
+       return true;
+     } catch {
+@@ -406,12 +503,24 @@ function createProcessTree(options = {}) {
+       if (killOwnedEntry(entry, signal)) killed.push(entry.pid);
+     }
+ 
++    const verifiedCache = new Map();
++    const aliveCache = new Map();
++    const verifiedOnce = (entry, manifestForEntry) => {
++      if (!verifiedCache.has(entry.id)) {
++        verifiedCache.set(entry.id, isVerifiableEntry(manifestForEntry, entry));
++      }
++      return verifiedCache.get(entry.id);
++    };
++    const aliveOnce = (entry) => {
++      if (!aliveCache.has(entry.id)) aliveCache.set(entry.id, isEntryAlive(entry));
++      return aliveCache.get(entry.id);
++    };
+     let finalManifest = currentManifest();
+     if (finalManifest) {
+       const liveEntries = finalManifest.children.filter((entry) => !(
+         entry.status === 'running'
+-        && !isVerifiableEntry(finalManifest, entry)
+-        && !isEntryAlive(entry)
++        && !verifiedOnce(entry, finalManifest)
++        && !aliveOnce(entry)
+       ));
+       if (liveEntries.length !== finalManifest.children.length) {
+         persist({ ...finalManifest, children: liveEntries });
+@@ -419,21 +528,21 @@ function createProcessTree(options = {}) {
+       }
+     }
+     const hasUnverifiableLiveEntry = finalManifest?.children.some(
+-      (entry) => entry.status === 'running' && !isVerifiableEntry(finalManifest, entry)
+-        && isEntryAlive(entry),
++      (entry) => entry.status === 'running' && !verifiedOnce(entry, finalManifest)
++        && aliveOnce(entry),
+     );
+     const hasLiveRunningEntry = finalManifest?.children.some(
+       (entry) => entry.status === 'running'
+-        && isVerifiableEntry(finalManifest, entry)
+-        && isEntryAlive(entry),
++        && verifiedOnce(entry, finalManifest)
++        && aliveOnce(entry),
+     );
+     const hasOutstandingReservation = finalManifest?.children.some(
+       (entry) => entry.status === 'reserved',
+     );
+     const hasFailedLiveEntry = finalManifest?.children.some(
+       (entry) => entry.status === 'running'
+-        && isVerifiableEntry(finalManifest, entry)
+-        && isEntryAlive(entry)
++        && verifiedOnce(entry, finalManifest)
++        && aliveOnce(entry)
+         && !killed.includes(entry.pid),
+     );
+     const safeToRemove = finalManifest
+@@ -474,6 +583,13 @@ function createProcessTree(options = {}) {
+     // can reap descendants while the reservation is still verifiable.
+     const identity = pid ? captureIdentity(pid) : null;
+     const retained = pid && identity ? retainReservation(identity) : false;
++    const finalizeAbort = (result) => {
++      if (pid && !retained) retainReservation(identity);
++      cleanup('SIGKILL');
++      unregisterChild(reservation);
++      cleanup('SIGKILL');
++      return result;
++    };
+     const groupResult = retained ? cleanup(signal) : { killed: [] };
+     if (pid && groupResult.killed.includes(pid)) {
+       unregisterChild(reservation);
+@@ -490,13 +606,7 @@ function createProcessTree(options = {}) {
+       killSucceeded = false;
+     }
+ 
+-    if (killSucceeded || !pid) {
+-      if (pid && !retained) retainReservation(identity);
+-      cleanup('SIGKILL');
+-      unregisterChild(reservation);
+-      cleanup('SIGKILL');
+-      return killSucceeded;
+-    }
++    if (killSucceeded || !pid) return finalizeAbort(killSucceeded);
+ 
+     const alive = (() => {
+       try {
+@@ -505,13 +615,7 @@ function createProcessTree(options = {}) {
+         return true;
+       }
+     })();
+-    if (!alive) {
+-      if (!retained) retainReservation(identity);
+-      cleanup('SIGKILL');
+-      unregisterChild(reservation);
+-      cleanup('SIGKILL');
+-      return killSucceeded;
+-    }
++    if (!alive) return finalizeAbort(killSucceeded);
+ 
+     if (!retained) retainReservation(identity);
+     if (currentManifest()?.children.some((entry) => entry.pid === pid && entry.status === 'running')) {
+@@ -557,7 +661,7 @@ function createProcessTree(options = {}) {
+ function reapProcessManifest(manifestPath, options = {}) {
+   const fsApi = options.fsApi || fs;
+   const processApi = options.processApi || process;
+-  const existing = readProcessManifest(manifestPath, fsApi);
++  const existing = readProcessManifest(manifestPath, fsApi, processApi);
+   if (!existing) return { killed: [], reaped: false };
+ 
+   const ownerPid = normalizePid(existing.owner.pid);
+@@ -591,7 +695,9 @@ function reapProcessManifest(manifestPath, options = {}) {
+ 
+ function reconcileProcessManifests(options = {}) {
+   const fsApi = options.fsApi || fs;
++  const processApi = options.processApi || process;
+   const manifestDir = options.manifestDir || DEFAULT_MANIFEST_DIR;
++  if (!isOwnedPath(manifestDir, fsApi, processApi)) return { reaped: 0 };
+   let entries;
+   try {
+     entries = fsApi.readdirSync(manifestDir, { withFileTypes: true });
+@@ -608,6 +714,7 @@ function reconcileProcessManifests(options = {}) {
+     const result = reapProcessManifest(manifestPath, {
+       ...options,
+       fsApi,
++      processApi,
+       manifestDir,
+       reconcile: false,
+     });
+diff --git a/scripts/test.js b/scripts/test.js
+index 1496c19a..09d8664e 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -349,8 +349,7 @@ function classifyPushTests(projectRoot, execFileSync = defaultExecFileSync) {
+  * @returns {Promise<number>} Process exit status, or 1 when no status is reported.
+  */
+ function runCommand(command, args, options = {}, spawn = defaultSpawn) {
+-  const { processTree, ...spawnOptions } = options;
+-  const timeout = spawnOptions.timeout;
++  const { processTree, timeout, killSignal: _killSignal, ...spawnOptions } = options;
+   return new Promise((resolve, reject) => {
+     let child;
+     let settled = false;
+@@ -410,7 +409,6 @@ function runCommand(command, args, options = {}, spawn = defaultSpawn) {
+     timer = timeout > 0 ? setTimeout(() => {
+       processTree?.cleanup?.('SIGKILL');
+       try { child.kill?.('SIGKILL'); } catch { /* best effort */ }
+-      processTree?.cleanup?.('SIGKILL');
+       finish(TIMEOUT_EXIT_CODE);
+     }, timeout) : null;
+     if (!child.once) {
+diff --git a/test/scripts/process-tree.test.js b/test/scripts/process-tree.test.js
+index 0ef9809c..92744b91 100644
+--- a/test/scripts/process-tree.test.js
++++ b/test/scripts/process-tree.test.js
+@@ -209,6 +209,107 @@ describe('scripts/process-tree.js', () => {
+     expect(JSON.parse(fs.readFileSync(foreignPath, 'utf8'))).toEqual(foreign);
+   });
+ 
++  test('restricts manifests to user-owned paths and creates private directories', () => {
++    const manifestPath = path.join(makeTempDir(), 'foreign.json');
++    fs.writeFileSync(manifestPath, JSON.stringify({
++      version: MANIFEST_VERSION,
++      token: 'foreign-token',
++      owner: { pid: 9001, identity: 'foreign-owner', startedAt: '2026-08-03T00:00:00.000Z' },
++      children: [],
++    }));
++    const foreignFs = Object.create(fs);
++    foreignFs.lstatSync = (target) => ({ ...fs.lstatSync(target), uid: 999 });
++    const processApi = { pid: 9000, getuid: () => 100 };
++    const rejected = createProcessTree({
++      manifestPath,
++      token: 'new-token',
++      fsApi: foreignFs,
++      processApi,
++      getProcessIdentity: () => 'owner',
++    });
++    expect(rejected.envFor({ [MANIFEST_ENV]: manifestPath, [TOKEN_ENV]: 'new-token' })[MANIFEST_ENV])
++      .toBeUndefined();
++    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).token).toBe('foreign-token');
++
++    const chmodCalls = [];
++    const modeFs = Object.create(fs);
++    modeFs.chmodSync = (...args) => {
++      chmodCalls.push(args);
++      return fs.chmodSync(...args);
++    };
++    createProcessTree({
++      manifestPath: path.join(makeTempDir(), 'private.json'),
++      token: 'private-token',
++      fsApi: modeFs,
++      processApi: { pid: 9000 },
++      getProcessIdentity: () => 'owner',
++    });
++    expect(chmodCalls.some(([, mode]) => mode === 0o700)).toBe(true);
++  });
++
++  test('rejects symlink ancestors and dangling leaves before chmod or write', () => {
++    const targetRoot = makeTempDir();
++    const targetNested = path.join(targetRoot, 'nested');
++    fs.mkdirSync(targetNested);
++    const linkRoot = makeTempDir();
++    const linkedDir = path.join(linkRoot, 'linked');
++    fs.symlinkSync(targetRoot, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
++    const ancestorManifestPath = path.join(linkedDir, 'nested', 'run.json');
++    const targetMode = fs.statSync(targetNested).mode;
++    const chmodCalls = [];
++    const writes = [];
++    const readdirCalls = [];
++    const guardedFs = Object.create(fs);
++    guardedFs.chmodSync = (target, mode) => {
++      chmodCalls.push({ target, mode });
++      return fs.chmodSync(target, mode);
++    };
++    guardedFs.writeFileSync = (...args) => {
++      writes.push(args);
++      return fs.writeFileSync(...args);
++    };
++    guardedFs.readdirSync = (...args) => {
++      readdirCalls.push(args);
++      return fs.readdirSync(...args);
++    };
++
++    const ancestorTree = createProcessTree({
++      manifestPath: ancestorManifestPath,
++      token: 'symlink-ancestor-token',
++      fsApi: guardedFs,
++      processApi: { pid: 9000 },
++      getProcessIdentity: () => 'owner',
++    });
++    expect(ancestorTree.envFor({ [MANIFEST_ENV]: ancestorManifestPath })[MANIFEST_ENV]).toBeUndefined();
++    expect(chmodCalls).toHaveLength(0);
++    expect(writes).toHaveLength(0);
++    expect(fs.statSync(targetNested).mode).toBe(targetMode);
++    expect(fs.existsSync(path.join(targetNested, 'run.json'))).toBe(false);
++    expect(reconcileProcessManifests({
++      manifestDir: path.join(linkedDir, 'nested'),
++      fsApi: guardedFs,
++      processApi: { pid: 9000 },
++    })).toEqual({ reaped: 0 });
++    expect(readdirCalls).toHaveLength(0);
++
++    const danglingPath = path.join(makeTempDir(), 'dangling.json');
++    fs.symlinkSync(
++      path.join(makeTempDir(), 'missing.json'),
++      danglingPath,
++      process.platform === 'win32' ? 'junction' : 'file',
++    );
++    const danglingTree = createProcessTree({
++      manifestPath: danglingPath,
++      token: 'dangling-leaf-token',
++      fsApi: guardedFs,
++      processApi: { pid: 9000 },
++      getProcessIdentity: () => 'owner',
++    });
++    expect(danglingTree.envFor({ [MANIFEST_ENV]: danglingPath })[MANIFEST_ENV]).toBeUndefined();
++    expect(chmodCalls).toHaveLength(0);
++    expect(writes).toHaveLength(0);
++  });
++
+   test('captures identity before abort and reaps the owned process group first', () => {
+     const manifestPath = path.join(makeTempDir(), 'run.json');
+     const groupKills = [];
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 1e3098c5..5b3ee779 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -595,7 +595,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(spawnSync.calls[0].args).toEqual(['scripts/test-full-suite.js']);
+   });
+ 
+-  test('every spawned test lane carries a wall-clock timeout so a hung test cannot block the push forever', async () => {
++  test('spawns lanes without delegating timeout control to child_process', async () => {
+     const spawnSync = makeSpawnSync(0);
+     await runPrePushTests(repoRoot, {
+       env: { PATH: process.env.PATH || '' },
+@@ -608,8 +608,8 @@ describe('scripts/test pre-push runner', () => {
+ 
+     expect(spawnSync.calls.length).toBeGreaterThan(0);
+     for (const call of spawnSync.calls) {
+-      expect(call.options.timeout).toBe(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+-      expect(call.options.killSignal).toBe('SIGKILL');
++      expect(call.options.timeout).toBeUndefined();
++      expect(call.options.killSignal).toBeUndefined();
+     }
+   });
+ 
+@@ -626,7 +626,8 @@ describe('scripts/test pre-push runner', () => {
+ 
+     expect(spawnSync.calls.length).toBeGreaterThan(0);
+     for (const call of spawnSync.calls) {
+-      expect(call.options.timeout).toBe(5000);
++      expect(call.options.timeout).toBeUndefined();
++      expect(call.options.killSignal).toBeUndefined();
+     }
+   });
+ 
+@@ -651,9 +652,8 @@ describe('scripts/test pre-push runner', () => {
+       (call) => call.command === 'node' && call.args[0] === 'scripts/test-full-suite.js'
+     );
+     expect(fullSuiteCall).toBeTruthy();
+-    expect(fullSuiteCall.options.timeout).toBe(DEFAULT_FULL_SUITE_TIMEOUT_MS);
+-    expect(fullSuiteCall.options.timeout).toBeGreaterThan(DEFAULT_TEST_COMMAND_TIMEOUT_MS);
+-    expect(fullSuiteCall.options.killSignal).toBe('SIGKILL');
++    expect(fullSuiteCall.options.timeout).toBeUndefined();
++    expect(fullSuiteCall.options.killSignal).toBeUndefined();
+   });
+ 
+   test('resolveFullSuiteTimeoutMs defaults to the validation-aligned budget and honors valid overrides', () => {
+-- 
+2.51.0.windows.1
+

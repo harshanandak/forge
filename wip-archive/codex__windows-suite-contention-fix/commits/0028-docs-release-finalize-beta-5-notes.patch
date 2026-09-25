@@ -1,0 +1,96 @@
+From d5761d52727bb8cc0e648ec6b31a179e92c6b5c1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 02:40:38 +0530
+Subject: [PATCH] docs(release): finalize beta.5 notes
+
+---
+ CHANGELOG.md              | 23 +++++++++++++++++++++++
+ docs/guides/MIGRATION.md  |  6 +++---
+ docs/reference/RELEASE.md |  6 +++---
+ 3 files changed, 29 insertions(+), 6 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 63b64754..321378f2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -28,6 +28,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ - Added portable `invocation: model|user` skill metadata with omission defaulting to `model`; `ship`, `review`, and `rollback` are now explicitly user-invoked while canonical and generated skill projections remain byte-identical. (#467, `588e6973`)
+ - Documented why Litestream remains a disaster-recovery candidate rather than Forge's multi-machine authority; self-hosted libSQL remains the Phase 2 server target. (#463, `746d839d`)
+ 
++### Fixed
++
++- **Windows full-suite drive classification no longer launches a redundant PowerShell probe for every child process.** Persistent mappings still use the bounded `net use` probe; an unclassified non-system drive now fails open as unknown instead of being mislabeled fixed. (#496, issue `1efe5de9-6bfb-448f-8575-624577b829f2`)
++- **Injected synchronous pre-push runners no longer create real process-tracking state.** Targeted-mode unit execution keeps its command and edge-suite assertions while avoiding the Windows process-tree setup that pushed the test beyond Bun's 15-second limit. (issue `54b54219-7cbc-4262-9461-a77112a7c49b`)
++
++## [0.1.0-beta.4] - 2026-07-24
++
++The **Kernel-only authority and autonomous Shepherd wave** removed the remaining live Beads runtime path while expanding Forge's portable skill and PR-monitoring surfaces.
++
++### Added
++
++- Reasoning-driven skill invocation, sub-skill composition, static skill evaluation, and dedicated setup, portability, worktree, and gate skills. (#417-#419, #429-#434)
++- Kernel-backed PR authority, singleton Shepherd leases, reconciliation, daemon execution, and cross-harness triggering guidance. (#420-#428)
++- Query-relevant project-memory recall for supported agent sessions. (#440-#441)
++
++### Changed
++
++- Issue commands, status, and dashboards now use the Forge Kernel exclusively; the live Beads backend and dashboard surfaces were retired. (#435-#439)
++
++### Fixed
++
++- Targeted pre-push selection recognizes Forge CLI surfaces, and Shepherd background processes stay hidden and derive required checks consistently on Windows and CI. (#420-#421, #438)
++
+ ## [0.1.0-beta.3] - 2026-07-17
+ 
+ The **adoption-unblocking wave** — the changes beta testers hit on their very first real session. `forge ship`, the hook-enforcement verdict, and `forge worktree create` no longer dead-end a fresh or in-flight branch, and the PR shepherd now arms itself for any agent. Every change below was adversarially reviewed before merge.
+diff --git a/docs/guides/MIGRATION.md b/docs/guides/MIGRATION.md
+index 37f5e5c7..314fbc39 100644
+--- a/docs/guides/MIGRATION.md
++++ b/docs/guides/MIGRATION.md
+@@ -1,6 +1,6 @@
+ # Migration Guide
+ 
+-Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.0.11 public framing.
++Use this guide when moving older Forge docs, habits, or installed scaffolding toward the v0.1.0-beta.5 public framing.
+ 
+ ## What Changed
+ 
+@@ -39,8 +39,8 @@ forge setup --agents claude,cursor
+ 
+ ## Version Labels
+ 
+-- `0.0.11` is the package version for this public docs/readiness release.
+-- `0.0.10` is the previous published package version.
++- `0.1.0-beta.5` is the current prerelease package version.
++- `0.1.0-beta.4` is the previous prerelease package version.
+ - Internal labels such as `0.0.19` or `v3` describe roadmap slices or historical codenames. Do not present them as current package versions.
+ 
+ ## Safe Upgrade Path
+diff --git a/docs/reference/RELEASE.md b/docs/reference/RELEASE.md
+index a44b18b8..2680ebc8 100644
+--- a/docs/reference/RELEASE.md
++++ b/docs/reference/RELEASE.md
+@@ -2,9 +2,9 @@
+ 
+ This page documents release readiness. Package publishing still requires the explicit publish step after merge.
+ 
+-## v0.0.11 Boundary
++## v0.1.0-beta.5 Boundary
+ 
+-v0.0.11 is the public documentation and positioning package release. The release branch bumps package metadata to `0.0.11`; publish only after the release PR is merged, tagged, and validated.
++v0.1.0-beta.5 is the current prerelease boundary. The release branch declares `0.1.0-beta.5`; publish only after the release PR is merged, tagged, and validated on that exact SHA.
+ 
+ Keep these release steps explicit:
+ 
+@@ -43,7 +43,7 @@ Release notes should include:
+ - adapter compatibility
+ - DeepWiki refresh checklist
+ 
+-The v0.0.11 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
++The v0.1.0-beta.5 release notes live in [CHANGELOG.md](../../CHANGELOG.md).
+ 
+ ## Rollback
+ 
+-- 
+2.51.0.windows.1
+

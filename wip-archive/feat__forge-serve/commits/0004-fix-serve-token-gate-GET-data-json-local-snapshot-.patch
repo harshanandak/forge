@@ -1,0 +1,135 @@
+From 8820d9ee4c4efe0e9dafdfa448dfa68117f65256 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 18:22:23 +0530
+Subject: [PATCH] fix(serve): token-gate GET /data.json (local snapshot
+ disclosure)
+
+GET /data.json served the full issue/message snapshot to ANY local
+user/process without the token. Require the same fence POST /api/mutation
+uses: loopback-only + valid per-run token (constant-time compare) via an
+X-Forge-Token header or ?token= query param. /health stays token-free.
+
+Client: DataSource attaches the per-run token (Serve.token) on the
+data.json/docs.json fetches; on file:// snapshot mode there is no token and
+headers are ignored, so it is a no-op there and the static dashboard still
+loads.
+
+Adds tests: /data.json without token -> 403, wrong token -> 403, correct
+token via header -> 200, and via ?token= query -> 200.
+
+Note: no .forge/ token/journal file is written (token is in-memory, dies
+with the process), so no POSIX-perms change applies; DACL hardening tracked
+in issue 8eabd92c.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/serve.js       | 21 +++++++++++++++++++++
+ test/commands/serve.test.js | 16 +++++++++++++++-
+ web/dashboard/app.js        | 12 +++++++++---
+ 3 files changed, 45 insertions(+), 4 deletions(-)
+
+diff --git a/lib/commands/serve.js b/lib/commands/serve.js
+index 8aa549d7..9fd0b93d 100644
+--- a/lib/commands/serve.js
++++ b/lib/commands/serve.js
+@@ -126,6 +126,20 @@ function isLoopbackRequest(req) {
+   return true;
+ }
+ 
++// Extract the per-run token from a GET request: prefer the `X-Forge-Token`
++// header, fall back to a `?token=` query param. The served page holds the token
++// in its URL fragment and attaches it on the data fetch. Mirrors the POST path,
++// which reads the token from the JSON body.
++function readRequestToken(req) {
++  const header = req.headers['x-forge-token'];
++  if (typeof header === 'string' && header.length > 0) return header;
++  try {
++    return new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('token') || '';
++  } catch {
++    return '';
++  }
++}
++
+ // ---------------------------------------------------------------------------
+ // Response helpers
+ // ---------------------------------------------------------------------------
+@@ -352,6 +366,13 @@ async function handleRequest(req, res, ctx) {
+     return handleMutation(req, res, ctx);
+   }
+   if (urlPath === '/data.json') {
++    // The snapshot carries the FULL issue/message data, so an unauthenticated
++    // read by any other local user/process is a real disclosure. Gate it with
++    // the SAME fence as POST /api/mutation: loopback-only + valid per-run token
++    // (constant-time compare). /health stays token-free (capability probe only).
++    if (!isLoopbackRequest(req) || !verifyToken(readRequestToken(req), ctx.token)) {
++      return sendJson(res, 403, { ok: false, error: 'forbidden: invalid or missing token' });
++    }
+     const buf = await getSnapshot(ctx);
+     res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+     return res.end(buf);
+diff --git a/test/commands/serve.test.js b/test/commands/serve.test.js
+index f7d8d304..9f0c3cba 100644
+--- a/test/commands/serve.test.js
++++ b/test/commands/serve.test.js
+@@ -174,10 +174,24 @@ describe('bounded server smoke (starts, requests, closes)', () => {
+     expect(health.status).toBe(200);
+     expect((await health.json()).forge_serve).toBe(true);
+ 
+-    const data = await fetch(`${base}/data.json`);
++    // /data.json is token-gated: no token -> 403.
++    const noToken = await fetch(`${base}/data.json`);
++    expect(noToken.status).toBe(403);
++    expect((await noToken.json()).ok).toBe(false);
++
++    // Wrong token -> 403.
++    const wrongToken = await fetch(`${base}/data.json`, { headers: { 'X-Forge-Token': 'wrong' } });
++    expect(wrongToken.status).toBe(403);
++
++    // Correct token via header -> 200.
++    const data = await fetch(`${base}/data.json`, { headers: { 'X-Forge-Token': token } });
+     expect(data.status).toBe(200);
+     expect((await data.json()).kind).toBe('live-snapshot');
+ 
++    // Correct token via ?token= query param -> 200 (parity with the header path).
++    const dataQ = await fetch(`${base}/data.json?token=${token}`);
++    expect(dataQ.status).toBe(200);
++
+     const bundle = await fetch(`${base}/snapshot.js`);
+     expect(bundle.status).toBe(200); // absent optional bundle -> empty stub
+ 
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+index 76d9bfab..5f4f4d55 100644
+--- a/web/dashboard/app.js
++++ b/web/dashboard/app.js
+@@ -11,19 +11,25 @@
+  * DataSource — the LIVE-VIEW SEAM.
+  * ========================================================================== */
+ const DataSource = {
++  // In LIVE mode the server gates /data.json (and docs.json) on the per-run
++  // token, so attach it. On file:// / baked-snapshot mode there is no token and
++  // headers are ignored, so this is a harmless no-op there.
++  _authHeaders() {
++    return Serve.token ? { 'X-Forge-Token': Serve.token } : {};
++  },
+   async load() {
+     if (window.FORGE_SNAPSHOT) return window.FORGE_SNAPSHOT;
+-    return (await fetch('data.json')).json();
++    return (await fetch('data.json', { headers: this._authHeaders() })).json();
+   },
+   async refetch() {
+     const ts = '?ts=' + Date.now();
+-    const res = await fetch('data.json' + ts, { cache: 'no-store' });
++    const res = await fetch('data.json' + ts, { cache: 'no-store', headers: this._authHeaders() });
+     if (!res.ok) throw new Error('HTTP ' + res.status);
+     const snap = await res.json();
+     // Refresh the baked markdown too, so edited/new work-folder docs aren't stale
+     // until a full reload. Best-effort: an old snapshot.js bundle may predate docs.json.
+     try {
+-      const dres = await fetch('docs.json' + ts, { cache: 'no-store' });
++      const dres = await fetch('docs.json' + ts, { cache: 'no-store', headers: this._authHeaders() });
+       if (dres.ok) window.FORGE_DOCS = await dres.json();
+     } catch (_err) { /* keep the bootstrap docs if the twin is unavailable */ }
+     return snap;
+-- 
+2.51.0.windows.1
+

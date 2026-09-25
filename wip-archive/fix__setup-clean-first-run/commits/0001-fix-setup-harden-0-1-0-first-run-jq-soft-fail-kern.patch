@@ -1,0 +1,437 @@
+From ff857ee63a142bec3d48e08436bb736abcfb2aa5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 01:09:00 +0530
+Subject: [PATCH] fix(setup): harden 0.1.0 first-run (jq soft-fail, kernel
+ brand, init nudge, AGENTS.md backup)
+
+Focused setup-hardening for a clean-box first run:
+
+1. jq is no longer a fatal prerequisite. checkPrerequisites downgrades a
+   missing jq from an error to a warning so `npx forge setup` completes on a
+   clean box (esp. Windows); workflow helper scripts that need jq degrade or
+   defer. checkPrerequisites now returns a structured { errors, warnings, ok }
+   so embedding agents can inspect state instead of only observing a process
+   exit. Genuinely-fatal prereqs (git, node, required gh) still hard-exit.
+   (kernel 01468e44)
+
+2. Kernel-brand the issue-store surfaces. Setup STEP 2 now reads
+   "Issue tracking (Forge Kernel) - zero-install, git-backed" to match the
+   Issue Store prompt, and the standard adoption profile's generated
+   .forge/config.yaml sets adapters.issue.primary to kernel. (kernel 5021a1f8)
+
+3. Complete first-run. Plain interactive, --agents, quick, and legacy
+   interactive setup never wrote .forge/config.yaml; they now print a
+   prominent "NEXT: run `forge init`" step (skipped when config already
+   exists). (kernel 5bdc91d3, partial)
+
+4. Guard markerless AGENTS.md. The non-interactive quick path overwrote an
+   existing markerless (pre-Forge) AGENTS.md unconditionally; it now snapshots
+   the file to AGENTS.md.bak and warns before overwrite. (kernel a5399f3d)
+
+Tests: new test/setup-hardening.test.js covers the jq soft-fail contract,
+kernel primary in adoption profiles, the init next-step nudge, and the
+AGENTS.md backup guard; setup-runtime-flags jq test updated to the new
+non-fatal contract.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ lib/adoption-profiles.js         |   4 +-
+ lib/commands/setup.js            |  80 +++++++++++++++-
+ test/setup-hardening.test.js     | 159 +++++++++++++++++++++++++++++++
+ test/setup-runtime-flags.test.js |  18 ++--
+ 4 files changed, 249 insertions(+), 12 deletions(-)
+ create mode 100644 test/setup-hardening.test.js
+
+diff --git a/lib/adoption-profiles.js b/lib/adoption-profiles.js
+index 8fdbb064..7d500e77 100644
+--- a/lib/adoption-profiles.js
++++ b/lib/adoption-profiles.js
+@@ -20,7 +20,7 @@ function issueAdapter(enabled) {
+ 
+   return {
+     enabled: true,
+-    primary: 'beads',
++    primary: 'kernel',
+     mirrors: ['github'],
+   };
+ }
+@@ -58,7 +58,7 @@ const PROFILE_CONFIGS = Object.freeze({
+     }),
+   },
+   standard: {
+-    description: 'Default Forge command flow with Beads/GitHub issue tracking metadata.',
++    description: 'Default Forge command flow with Kernel issue tracking and GitHub mirror metadata.',
+     config: adoptionConfig({
+       gatesEnabled: true,
+       issueEnabled: true,
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 328e6e04..f05d0d10 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -248,7 +248,11 @@ function checkPrerequisites(options = {}) {
+   if (jqVersion) {
+     console.log(`  âœ“ ${jqVersion.split('\n')[0]}`);
+   } else if (requireJq) {
+-    errors.push('jq - Install from https://jqlang.org/download/');
++    // jq is optional at setup time. Some workflow helper scripts shell out to jq,
++    // but they degrade or defer when it is absent — a clean box (esp. Windows)
++    // must not abort setup just because jq is not installed yet. Surface a
++    // warning instead of a fatal error (kernel issue 01468e44).
++    warnings.push('jq not found - some workflow helper scripts will be skipped until you install it (https://jqlang.org/download/)');
+   }
+ 
+   // Detect package manager
+@@ -274,13 +278,65 @@ function checkPrerequisites(options = {}) {
+   console.log('');
+   console.log(`  Package manager: ${PKG_MANAGER}`);
+ 
+-  return { errors, warnings };
++  // Return a structured result so embedding agents can inspect prerequisite
++  // state instead of only observing a process exit. Genuinely-fatal prereqs
++  // (git, node version, required gh) still hard-exit above; soft prereqs like
++  // jq surface via `warnings` while `ok` stays true.
++  return { errors, warnings, ok: errors.length === 0 };
+ }
+ 
+ function requiresGithubCliForSetup(selectedAgents) {
+   return needsWorkflowRuntimeAssets(selectedAgents);
+ }
+ 
++/**
++ * After agent setup, `.forge/config.yaml` may not exist yet — only the
++ * --minimal/--standard/--full routes run `forge init`. Point the user at
++ * `forge init` so first-run always ends with a clear next step that creates
++ * the workflow config (gates + change classification). No-op when the config
++ * already exists (kernel issue 5bdc91d3).
++ */
++function printForgeInitNextStep() {
++  const configPath = path.join(projectRoot, '.forge', 'config.yaml');
++  if (fs.existsSync(configPath)) {
++    return;
++  }
++  console.log('');
++  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
++  console.log('▶  NEXT: run `forge init` to configure your workflow');
++  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
++  console.log('');
++  console.log('  forge init   # creates .forge/config.yaml');
++  console.log('');
++  console.log('  Sets up workflow gates and change classification.');
++  console.log('  Safe to re-run (existing config is preserved).');
++  console.log('');
++}
++
++/**
++ * Guard against silent data loss when a non-interactive setup path overwrites
++ * an existing AGENTS.md that predates Forge's USER/FORGE merge markers. Old
++ * hand-edited files have no markers, so a plain copy would clobber them with no
++ * way to recover. Before that happens, snapshot the file to AGENTS.md.bak and
++ * warn (kernel issue a5399f3d). Returns true when a backup was written.
++ */
++function backupMarkerlessAgentsMd() {
++  const agentsPath = path.join(projectRoot, 'AGENTS.md');
++  if (!fs.existsSync(agentsPath)) {
++    return false;
++  }
++  const existingContent = fs.readFileSync(agentsPath, 'utf8');
++  const hasUserMarkers = existingContent.includes('<!-- USER:START');
++  const hasForgeMarkers = existingContent.includes('<!-- FORGE:START');
++  if (hasUserMarkers || hasForgeMarkers) {
++    return false;
++  }
++  const backupPath = path.join(projectRoot, 'AGENTS.md.bak');
++  fs.writeFileSync(backupPath, existingContent, 'utf8');
++  console.log('  ⚠ Existing AGENTS.md has no Forge markers - backed up to AGENTS.md.bak before overwrite');
++  return true;
++}
++
+ 
+ // Helper functions
+ 
+@@ -2282,6 +2338,9 @@ async function _interactiveSetup() {
+   // Final Summary
+   // =============================================
+   displaySetupSummary(selectedAgents);
++
++  // First-run completeness: point at `forge init` when config is still absent (5bdc91d3).
++  printForgeInitNextStep();
+ }
+ 
+ // Parse CLI flags
+@@ -2695,7 +2754,7 @@ async function setupProjectTools(rl, question) {
+   console.log('');
+   console.log('Forge recommends three tools for enhanced workflows:');
+   console.log('');
+-  console.log('• Beads - Git-backed issue tracking');
++  console.log('• Issue tracking (Forge Kernel) - zero-install, git-backed');
+   console.log('  Persists tasks across sessions, tracks dependencies.');
+   console.log('  Command: forge ready, forge create, forge close');
+   console.log('');
+@@ -2902,8 +2961,11 @@ async function quickSetup(selectedAgents, skipExternal) {
+   });
+   console.log('');
+ 
+-  // Copy AGENTS.md (actionLog tracks it via copyFile)
++  // Copy AGENTS.md (actionLog tracks it via copyFile). Quick mode is
++  // non-interactive and overwrites unconditionally, so back up a markerless
++  // (pre-Forge) AGENTS.md first to avoid silent data loss (kernel issue a5399f3d).
+   const agentsSrc = path.join(packageDir, 'AGENTS.md');
++  backupMarkerlessAgentsMd();
+   copyFile(agentsSrc, 'AGENTS.md');
+   console.log('');
+ 
+@@ -2948,6 +3010,8 @@ async function quickSetup(selectedAgents, skipExternal) {
+   console.log('');
+   console.log(renderSetupSummary(actionLog, selectedAgents, VERBOSE_MODE, { status: getSetupSummaryStatus() }));
+   printSetupNotes();
++  // First-run completeness: point at `forge init` when config is still absent (5bdc91d3).
++  printForgeInitNextStep();
+   console.log('');
+ }
+ 
+@@ -3244,6 +3308,10 @@ async function interactiveSetupWithFlags(flags) {
+ 
+   // Display final summary (delegated to helper)
+   displaySetupSummary(selectedAgents);
++
++  // First-run is only complete once workflow config exists — nudge `forge init`
++  // when it does not (this path never writes .forge/config.yaml). (5bdc91d3)
++  printForgeInitNextStep();
+ }
+ 
+ // Main
+@@ -3475,6 +3543,8 @@ async function executeSetup(config) {
+   console.log('');
+   console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE, { status: getSetupSummaryStatus() }));
+   printSetupNotes();
++  // First-run completeness: point at `forge init` when config is still absent (5bdc91d3).
++  printForgeInitNextStep();
+   console.log('');
+ }
+ 
+@@ -3874,6 +3944,8 @@ module.exports = {
+   checkPrerequisites,
+   setupCoreDocs,
+   displaySetupSummary,
++  printForgeInitNextStep,
++  backupMarkerlessAgentsMd,
+   setupAgent,
+   quickSetup,
+   interactiveSetupWithFlags,
+diff --git a/test/setup-hardening.test.js b/test/setup-hardening.test.js
+new file mode 100644
+index 00000000..b1805430
+--- /dev/null
++++ b/test/setup-hardening.test.js
+@@ -0,0 +1,159 @@
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const setupCommand = require('../lib/commands/setup');
++const { buildAdoptionConfig } = require('../lib/adoption-profiles');
++
++const tempDirs = [];
++
++function makeTempDir() {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-setup-hardening-'));
++  tempDirs.push(dir);
++  return dir;
++}
++
++/** Run a callback with console.log captured and projectRoot pinned to `root`. */
++function withCapturedRoot(root, callback) {
++  const originalLog = console.log;
++  const originalWarn = console.warn;
++  const { projectRoot: previousRoot } = setupCommand._getState();
++  const lines = [];
++  console.log = (...parts) => lines.push(parts.join(' '));
++  console.warn = (...parts) => lines.push(parts.join(' '));
++  try {
++    if (root) setupCommand._setState({ projectRoot: root });
++    const result = callback();
++    return { result, output: lines.join('\n') };
++  } finally {
++    console.log = originalLog;
++    console.warn = originalWarn;
++    setupCommand._setState({ projectRoot: previousRoot });
++  }
++}
++
++afterEach(() => {
++  while (tempDirs.length > 0) {
++    const dir = tempDirs.pop();
++    try {
++      fs.rmSync(dir, { recursive: true, force: true });
++    } catch { /* best effort cleanup */ }
++  }
++});
++
++describe('checkPrerequisites: jq is a soft (non-fatal) prerequisite', () => {
++  const gitOnlyRunner = (command) => (command === 'git --version' ? 'git version 2.42.0' : '');
++
++  test('missing jq does not exit; setup can proceed with a warning', () => {
++    const originalExit = process.exit;
++    const originalLog = console.log;
++    let exited = false;
++    process.exit = () => { exited = true; throw new Error('process.exit should not be called on the jq path'); };
++    console.log = () => {};
++
++    let result;
++    try {
++      result = setupCommand.checkPrerequisites({
++        requireGithubCli: false,
++        requireJq: true,
++        commandRunner: gitOnlyRunner,
++      });
++    } finally {
++      process.exit = originalExit;
++      console.log = originalLog;
++    }
++
++    expect(exited).toBe(false);
++    expect(result.ok).toBe(true);
++    expect(result.errors.some(e => /jq/i.test(e))).toBe(false);
++    expect(result.warnings.some(w => /jq/i.test(w))).toBe(true);
++  });
++
++  test('genuinely-fatal prerequisite (missing git) still hard-exits with structured errors', () => {
++    const originalExit = process.exit;
++    const originalLog = console.log;
++    process.exit = (code) => { throw new Error(`process.exit:${code}`); };
++    console.log = () => {};
++
++    try {
++      expect(() => setupCommand.checkPrerequisites({
++        requireGithubCli: false,
++        requireJq: true,
++        commandRunner: () => '', // git missing too
++      })).toThrow(/process\.exit:1/);
++    } finally {
++      process.exit = originalExit;
++      console.log = originalLog;
++    }
++  });
++});
++
++describe('adoption profiles brand the issue adapter as the Forge Kernel', () => {
++  test('standard profile issue adapter primary is kernel with github mirror', () => {
++    const issue = buildAdoptionConfig('standard').adapters.issue;
++    expect(issue.enabled).toBe(true);
++    expect(issue.primary).toBe('kernel');
++    expect(issue.mirrors).toEqual(['github']);
++  });
++
++  test('full profile issue adapter primary is kernel', () => {
++    expect(buildAdoptionConfig('full').adapters.issue.primary).toBe('kernel');
++  });
++
++  test('minimal profile leaves issue tracking disabled', () => {
++    const issue = buildAdoptionConfig('minimal').adapters.issue;
++    expect(issue.enabled).toBe(false);
++    expect(issue.primary).toBe('none');
++  });
++});
++
++describe('printForgeInitNextStep completes first-run guidance', () => {
++  test('prints the forge init next step when .forge/config.yaml is absent', () => {
++    const root = makeTempDir();
++    const { output } = withCapturedRoot(root, () => setupCommand.printForgeInitNextStep());
++    expect(output).toContain('forge init');
++    expect(output).toContain('.forge/config.yaml');
++  });
++
++  test('is a no-op when workflow config already exists', () => {
++    const root = makeTempDir();
++    fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++    fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), 'workflow: {}\n', 'utf8');
++    const { output } = withCapturedRoot(root, () => setupCommand.printForgeInitNextStep());
++    expect(output).toBe('');
++  });
++});
++
++describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
++  test('backs up a markerless AGENTS.md before overwrite', () => {
++    const root = makeTempDir();
++    const original = '# My hand-written AGENTS\n\nCustom project rules.\n';
++    fs.writeFileSync(path.join(root, 'AGENTS.md'), original, 'utf8');
++
++    const { result, output } = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
++
++    expect(result).toBe(true);
++    const backupPath = path.join(root, 'AGENTS.md.bak');
++    expect(fs.existsSync(backupPath)).toBe(true);
++    expect(fs.readFileSync(backupPath, 'utf8')).toBe(original);
++    expect(output).toContain('AGENTS.md.bak');
++  });
++
++  test('does not back up an AGENTS.md that already has Forge markers', () => {
++    const root = makeTempDir();
++    fs.writeFileSync(path.join(root, 'AGENTS.md'), '<!-- FORGE:START -->\nmanaged\n<!-- FORGE:END -->\n', 'utf8');
++
++    const { result } = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
++
++    expect(result).toBe(false);
++    expect(fs.existsSync(path.join(root, 'AGENTS.md.bak'))).toBe(false);
++  });
++
++  test('is a no-op when no AGENTS.md exists', () => {
++    const root = makeTempDir();
++    const { result } = withCapturedRoot(root, () => setupCommand.backupMarkerlessAgentsMd());
++    expect(result).toBe(false);
++    expect(fs.existsSync(path.join(root, 'AGENTS.md.bak'))).toBe(false);
++  });
++});
+diff --git a/test/setup-runtime-flags.test.js b/test/setup-runtime-flags.test.js
+index 8661ba27..f13463e9 100644
+--- a/test/setup-runtime-flags.test.js
++++ b/test/setup-runtime-flags.test.js
+@@ -298,18 +298,21 @@ describe('setup runtime flags', () => {
+     expect(result.warnings).toContain('gh (GitHub CLI) - Install from https://cli.github.com (required later for GitHub-integrated workflow steps)');
+   });
+ 
+-  serialTest('checkPrerequisites requires jq when setup is preparing workflow-capable installs', () => {
++  serialTest('checkPrerequisites treats missing jq as a soft warning, not a fatal exit', () => {
+     const originalExit = process.exit;
+     const originalLog = console.log;
+     const logLines = [];
++    let exited = false;
+ 
+-    process.exit = (code) => {
+-      throw new Error(`process.exit:${code}`);
++    process.exit = () => {
++      exited = true;
++      throw new Error('process.exit should not be called on the jq path');
+     };
+     console.log = (...parts) => logLines.push(parts.join(' '));
+ 
++    let result;
+     try {
+-      expect(() => setupCommand.checkPrerequisites({
++      result = setupCommand.checkPrerequisites({
+         requireGithubCli: false,
+         requireJq: true,
+         commandRunner: (command) => {
+@@ -318,13 +321,16 @@ describe('setup runtime flags', () => {
+           }
+           return '';
+         },
+-      })).toThrow(/process\.exit:1/);
++      });
+     } finally {
+       process.exit = originalExit;
+       console.log = originalLog;
+     }
+ 
+-    expect(logLines.join('\n')).toContain('jq - Install from https://jqlang.org/download/');
++    expect(exited).toBe(false);
++    expect(result.ok).toBe(true);
++    expect(result.errors.some(err => /jq/i.test(err))).toBe(false);
++    expect(result.warnings.some(warn => /jq/i.test(warn))).toBe(true);
+   });
+ 
+   serialTest('checkPrerequisites reports the kernel issue store without requiring a bd CLI', () => {
+-- 
+2.51.0.windows.1
+

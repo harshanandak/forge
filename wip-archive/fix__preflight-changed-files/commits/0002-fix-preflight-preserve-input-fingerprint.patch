@@ -1,0 +1,120 @@
+From df319cdc700db8a7446cf6e7a360f14c944aa29a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 00:22:17 +0530
+Subject: [PATCH] fix(preflight): preserve input fingerprint
+
+---
+ lib/preflight/runner.js         |  5 +++++
+ test/commands/preflight.test.js | 20 ++++++++++++++++++++
+ test/preflight/runner.test.js   | 13 ++++++++++++-
+ 3 files changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/lib/preflight/runner.js b/lib/preflight/runner.js
+index 5f002e64..0f368927 100644
+--- a/lib/preflight/runner.js
++++ b/lib/preflight/runner.js
+@@ -19,6 +19,7 @@
+  * @typedef {Object} GateOutcome
+  * @property {boolean} ok       - Whether the gate passed.
+  * @property {string} [summary] - Short human-readable result line.
++ * @property {string} [inputFingerprint] - Exact input snapshot tested by the gate.
+  *
+  * @typedef {Object} Gate
+  * @property {string} name
+@@ -30,6 +31,7 @@
+  * @property {boolean} skipped
+  * @property {string} summary
+  * @property {number} [durationMs]
++ * @property {string} [inputFingerprint]
+  */
+ 
+ /**
+@@ -66,6 +68,9 @@ async function executeGate(gate) {
+     skipped,
+     summary: outcome?.summary || '',
+     durationMs,
++    ...(typeof outcome?.inputFingerprint === 'string'
++      ? { inputFingerprint: outcome.inputFingerprint }
++      : {}),
+   };
+ }
+ 
+diff --git a/test/commands/preflight.test.js b/test/commands/preflight.test.js
+index a4216a83..2b55460d 100644
+--- a/test/commands/preflight.test.js
++++ b/test/commands/preflight.test.js
+@@ -1,7 +1,9 @@
+ 'use strict';
+ 
++const crypto = require('node:crypto');
+ const { describe, test, expect } = require('bun:test');
+ const preflight = require('../../lib/commands/preflight');
++const { buildGates } = require('../../lib/preflight/gates');
+ 
+ describe('forge preflight command — contract', () => {
+   test('exports a valid registry command interface', () => {
+@@ -33,6 +35,24 @@ describe('forge preflight command — contract', () => {
+     expect(lines.join('\n')).toContain('preflight FAILED');
+   });
+ 
++  test('returns the exact input fingerprint supplied by an executed gate', async () => {
++    const inputFingerprint = crypto.createHash('sha256').update('[]').digest('hex');
++    const res = await preflight.handler([], {}, '/x', {
++      log: () => {},
++      resolveChangedFiles: () => [],
++      buildGates: (options) => buildGates({
++        ...options,
++        deps: {
++          eslint: () => ({ ok: true }),
++          structural: () => ({ ok: true }),
++          sonar: () => ({ ok: true }),
++        },
++      }),
++    });
++
++    expect(res.results[3].inputFingerprint).toBe(inputFingerprint);
++  });
++
+   test('--all flag forces whole-tree scope through to buildGates', async () => {
+     let received;
+     await preflight.handler([], { '--all': true }, '/x', {
+diff --git a/test/preflight/runner.test.js b/test/preflight/runner.test.js
+index 421c37ab..fb279f57 100644
+--- a/test/preflight/runner.test.js
++++ b/test/preflight/runner.test.js
+@@ -24,6 +24,7 @@ describe('runGates — fast-fail gate runner', () => {
+     expect(results[0]).toMatchObject({ name: 'a', ok: true, skipped: false });
+     expect(results[1]).toMatchObject({ name: 'b', ok: false, skipped: false });
+     expect(results[2]).toMatchObject({ name: 'c', skipped: true });
++    expect(results[2]).not.toHaveProperty('inputFingerprint');
+   });
+ 
+   test('a throwing gate is caught and treated as a failure', async () => {
+@@ -54,13 +55,23 @@ describe('runGates — fast-fail gate runner', () => {
+ describe('runGates — skipped outcome honored (B2)', () => {
+   test('a skipped gate passes through and later gates still run', async () => {
+     const ran = [];
++    const inputFingerprint = 'b'.repeat(64);
+     const gates = [
+-      { name: 'a', run: async () => ({ ok: true, skipped: true, summary: 'not applicable' }) },
++      {
++        name: 'a',
++        run: async () => ({
++          ok: true,
++          skipped: true,
++          summary: 'not applicable',
++          inputFingerprint,
++        }),
++      },
+       { name: 'b', run: async () => { ran.push('b'); return { ok: true, summary: 'ok' }; } },
+     ];
+     const { ok, results } = await runGates(gates);
+     expect(ok).toBe(true);
+     expect(results[0].skipped).toBe(true);
++    expect(results[0].inputFingerprint).toBe(inputFingerprint);
+     expect(ran).toContain('b');
+   });
+ 
+-- 
+2.51.0.windows.1
+

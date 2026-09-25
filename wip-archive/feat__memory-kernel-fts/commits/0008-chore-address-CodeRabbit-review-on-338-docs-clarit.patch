@@ -1,0 +1,214 @@
+From e30050d814118453f4ab92c323a8bfb77ba2fc9b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 13:43:58 +0530
+Subject: [PATCH] chore: address CodeRabbit review on #338 (docs clarity +
+ shared test helper)
+
+- docs(memory-backends): clarify the default no-query recall shows only human
+  `remember` notes (insights records are recallable via a query or `--all`);
+  reconcile the Graphiti MCP-cleanup note (`forge setup` writes the graphiti-memory
+  entry when Graphiti is enabled, so it isn't always user-added).
+- test: extract the duplicated makeProjectRoot + rmrfWithRetry helpers from
+  recall.test.js and remember.test.js into a shared test/helpers/kernel-project-root.js
+  (per-suite factory preserves the configurable tmp prefix + cleanup retries).
+---
+ docs/guides/memory-backends.md      | 10 ++++---
+ test/commands/recall.test.js        | 31 ++------------------
+ test/commands/remember.test.js      | 33 ++-------------------
+ test/helpers/kernel-project-root.js | 45 +++++++++++++++++++++++++++++
+ 4 files changed, 57 insertions(+), 62 deletions(-)
+ create mode 100644 test/helpers/kernel-project-root.js
+
+diff --git a/docs/guides/memory-backends.md b/docs/guides/memory-backends.md
+index 9bdf8010..238650fc 100644
+--- a/docs/guides/memory-backends.md
++++ b/docs/guides/memory-backends.md
+@@ -43,8 +43,9 @@ SQLite store under `.git/forge/`), indexed by **FTS5** for token-AND BM25 recall
+ No services, no network, no keys. This is what ships and what most projects
+ should use. `recall` with no query returns the newest notes plus a total count;
+ a query does full-text BM25 matching (every token must appear, in any order). The
+-same kernel table also holds what `forge insights` learns, so those records are
+-recallable too. (An older flat `.forge/memory/notes.jsonl` is imported once on
++same kernel table also holds what `forge insights` learns; those records are
++recallable with a query or `--all` (the default no-query listing shows only your
++`remember` notes). (An older flat `.forge/memory/notes.jsonl` is imported once on
+ first use, then retired.)
+ 
+ ## Opt into Graphiti (knowledge-graph memory)
+@@ -177,5 +178,6 @@ local kernel store as a safety floor, so a note is never lost.
+ 
+ Remove `memory.backend` (and the `memory.graphiti` block) from
+ `.forge/config.yaml` — the router falls straight back to `local`. Your local
+-kernel notes were never touched. If you manually added a `graphiti-memory` entry
+-to your agent's MCP config, delete it too (Forge did not write one).
++kernel notes were never touched. If a `graphiti-memory` entry is in your agent's
++MCP config — whether `forge setup` wrote it when you enabled Graphiti, or you
++added it by hand — delete it too.
+diff --git a/test/commands/recall.test.js b/test/commands/recall.test.js
+index d44a0444..c54ea2bb 100644
+--- a/test/commands/recall.test.js
++++ b/test/commands/recall.test.js
+@@ -1,38 +1,15 @@
+ 'use strict';
+ 
+ const { afterEach, describe, test, expect } = require('bun:test');
+-const { execFileSync } = require('node:child_process');
+-const fs = require('node:fs');
+-const os = require('node:os');
+-const path = require('node:path');
+ 
+ const recall = require('../../lib/commands/recall');
+ const remember = require('../../lib/commands/remember');
+ const projectMemory = require('../../lib/project-memory');
+-
+-const tempDirs = [];
++const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
+ 
+ // recall reads the kernel store, whose default path resolves from the git common dir — so
+ // each temp project is a throwaway git repo. Notes are seeded through the real remember path.
+-function makeProjectRoot() {
+-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-recall-cmd-'));
+-  execFileSync('git', ['init', '-q'], { cwd: dir });
+-  tempDirs.push(dir);
+-  return dir;
+-}
+-
+-function rmrfWithRetry(dir) {
+-  for (let attempt = 0; attempt < 5; attempt += 1) {
+-    try {
+-      fs.rmSync(dir, { recursive: true, force: true });
+-      return;
+-    } catch (error) {
+-      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
+-      const until = Date.now() + 100;
+-      while (Date.now() < until) { /* brief spin before retry */ }
+-    }
+-  }
+-}
++const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-recall-cmd-');
+ 
+ async function seed(projectRoot, note) {
+   await remember.handler([note], {}, projectRoot);
+@@ -40,9 +17,7 @@ async function seed(projectRoot, note) {
+ 
+ afterEach(() => {
+   projectMemory.closeAll();
+-  while (tempDirs.length > 0) {
+-    rmrfWithRetry(tempDirs.pop());
+-  }
++  cleanup();
+ });
+ 
+ describe('forge recall command', () => {
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index edd5409d..5a172d93 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -1,40 +1,15 @@
+ 'use strict';
+ 
+ const { afterEach, describe, test, expect } = require('bun:test');
+-const { execFileSync } = require('node:child_process');
+-const fs = require('node:fs');
+-const os = require('node:os');
+-const path = require('node:path');
+ 
+ const remember = require('../../lib/commands/remember');
+ const recall = require('../../lib/commands/recall');
+ const projectMemory = require('../../lib/project-memory');
+-
+-const tempDirs = [];
++const { createKernelProjectRoots } = require('../helpers/kernel-project-root');
+ 
+ // remember/recall now persist to the kernel store, whose default path resolves from the git
+ // common dir — so each temp project is a throwaway git repo. Notes land in .git/forge.
+-function makeProjectRoot() {
+-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-remember-cmd-'));
+-  execFileSync('git', ['init', '-q'], { cwd: dir });
+-  tempDirs.push(dir);
+-  return dir;
+-}
+-
+-// Windows can hold a transient WAL lock on the just-written kernel DB; close cached stores
+-// first, then retry the rm.
+-function rmrfWithRetry(dir) {
+-  for (let attempt = 0; attempt < 5; attempt += 1) {
+-    try {
+-      fs.rmSync(dir, { recursive: true, force: true });
+-      return;
+-    } catch (error) {
+-      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
+-      const until = Date.now() + 100;
+-      while (Date.now() < until) { /* brief spin before retry */ }
+-    }
+-  }
+-}
++const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-remember-cmd-');
+ 
+ // The persisted notes, newest-first, as recall renders them (JSON mode → { notes, ... }).
+ async function recalledNotes(projectRoot) {
+@@ -44,9 +19,7 @@ async function recalledNotes(projectRoot) {
+ 
+ afterEach(() => {
+   projectMemory.closeAll();
+-  while (tempDirs.length > 0) {
+-    rmrfWithRetry(tempDirs.pop());
+-  }
++  cleanup();
+ });
+ 
+ describe('forge remember command', () => {
+diff --git a/test/helpers/kernel-project-root.js b/test/helpers/kernel-project-root.js
+new file mode 100644
+index 00000000..4bf60026
+--- /dev/null
++++ b/test/helpers/kernel-project-root.js
+@@ -0,0 +1,45 @@
++'use strict';
++
++const { execFileSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++// Retire a temp dir, tolerating the Windows EBUSY/EPERM lag right after a SQLite
++// handle closes (retry a few times with a brief spin, then give up quietly).
++function rmrfWithRetry(dir) {
++  for (let attempt = 0; attempt < 5; attempt += 1) {
++    try {
++      fs.rmSync(dir, { recursive: true, force: true });
++      return;
++    } catch (error) {
++      if (attempt === 4 || (error.code !== 'EBUSY' && error.code !== 'EPERM')) return;
++      const until = Date.now() + 100;
++      while (Date.now() < until) { /* brief spin before retry */ }
++    }
++  }
++}
++
++// Per-suite factory: each test file gets its own tracked list of throwaway git-repo
++// project roots (the kernel store path resolves from the git common dir), plus a
++// cleanup that drains them. `prefix` names the tmp dirs so leaks are attributable.
++function createKernelProjectRoots(prefix) {
++  const tempDirs = [];
++
++  function makeProjectRoot() {
++    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
++    execFileSync('git', ['init', '-q'], { cwd: dir });
++    tempDirs.push(dir);
++    return dir;
++  }
++
++  function cleanup() {
++    while (tempDirs.length > 0) {
++      rmrfWithRetry(tempDirs.pop());
++    }
++  }
++
++  return { makeProjectRoot, cleanup };
++}
++
++module.exports = { createKernelProjectRoots, rmrfWithRetry };
+-- 
+2.51.0.windows.1
+

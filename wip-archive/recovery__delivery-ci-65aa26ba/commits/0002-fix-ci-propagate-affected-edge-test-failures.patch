@@ -1,0 +1,136 @@
+From 65aa26ba9fb05908e496f13f6db1619d89aa309e Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 16:39:49 +0530
+Subject: [PATCH] fix(ci): propagate affected edge test failures
+
+---
+ .github/workflows/test.yml                    |  2 +-
+ docs/work/2026-09-18-delivery-ci/decisions.md |  8 +++
+ lib/workflow-templates/test.yml               |  2 +-
+ test/ci-workflow.test.js                      | 61 +++++++++++++++++++
+ 4 files changed, 71 insertions(+), 2 deletions(-)
+ create mode 100644 docs/work/2026-09-18-delivery-ci/decisions.md
+
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index cd5fd0bf..c488565e 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -395,7 +395,7 @@ jobs:
+         run: bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml
+       - name: Run affected edge-case tests
+         if: steps.affected.outputs.run_test_env == 'true'
+-        run: node --test test-env/**/*.test.js || true
++        run: bun test --timeout 15000 test-env/
+       - name: Build followup profile
+         run: node scripts/test-profile.js --input-dir test-results --output test-results/followup-${{ matrix.label }}.profile.json --label followup-${{ matrix.label }} --integration-skipped true
+       - name: Publish followup summary
+diff --git a/docs/work/2026-09-18-delivery-ci/decisions.md b/docs/work/2026-09-18-delivery-ci/decisions.md
+new file mode 100644
+index 00000000..33d19774
+--- /dev/null
++++ b/docs/work/2026-09-18-delivery-ci/decisions.md
+@@ -0,0 +1,8 @@
++# Delivery CI decisions
++
++## D1: Preserve the affected-test boundary and propagate its result
++
++- Replace the masked Node test command with the repository's established Bun command: `bun test --timeout 15000 test-env/`.
++- Keep the existing `run_test_env` condition and whole-directory selection so all edge-case tests remain covered.
++- Prove the failure chain at both executable boundaries: a failing Bun child returns nonzero, and the aggregate gate rejects `followup-tests=failure`.
++- Edit the canonical workflow template and generate `.github/workflows/test.yml` only through the protected test-workflow writer.
+diff --git a/lib/workflow-templates/test.yml b/lib/workflow-templates/test.yml
+index 207ddb90..6a8de6c0 100644
+--- a/lib/workflow-templates/test.yml
++++ b/lib/workflow-templates/test.yml
+@@ -395,7 +395,7 @@ jobs:
+         run: bun test --timeout 15000 test/e2e/ --reporter=junit --reporter-outfile test-results/followup-e2e.xml
+       - name: Run affected edge-case tests
+         if: steps.affected.outputs.run_test_env == 'true'
+-        run: node --test test-env/**/*.test.js || true
++        run: bun test --timeout 15000 test-env/
+       - name: Build followup profile
+         run: node scripts/test-profile.js --input-dir test-results --output test-results/followup-${{ matrix.label }}.profile.json --label followup-${{ matrix.label }} --integration-skipped true
+       - name: Publish followup summary
+diff --git a/test/ci-workflow.test.js b/test/ci-workflow.test.js
+index b139fa69..d53f0b83 100644
+--- a/test/ci-workflow.test.js
++++ b/test/ci-workflow.test.js
+@@ -1,7 +1,13 @@
+ const fs = require('node:fs');
++const os = require('node:os');
+ const path = require('node:path');
++const { spawnSync } = require('node:child_process');
+ const { describe, test, expect } = require('bun:test');
+ 
++const bashExecutable = process.platform === 'win32'
++  ? path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')
++  : 'bash';
++
+ describe('CI Workflow Configuration', () => {
+   const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'test.yml');
+   const workflowContent = fs.readFileSync(workflowPath, 'utf-8').replace(/\r\n/g, '\n');
+@@ -64,6 +70,61 @@ describe('CI Workflow Configuration', () => {
+       expect(workflowContent.includes('name: Run affected e2e tests')).toBe(true);
+       expect(workflowContent.includes('name: Run affected edge-case tests')).toBe(true);
+     });
++
++    test('affected edge-case failures reach the required CI Gate', () => {
++      const lines = workflowContent.split('\n');
++      const stepIndex = lines.findIndex((line) => line.includes('name: Run affected edge-case tests'));
++      const nextStepIndex = lines.findIndex((line, index) => index > stepIndex && line.includes('name: Build followup profile'));
++      expect(stepIndex).toBeGreaterThan(-1);
++      expect(nextStepIndex).toBeGreaterThan(stepIndex);
++      const stepBody = lines.slice(stepIndex, nextStepIndex).map((line) => line.trim());
++
++      expect(stepBody).toContain("if: steps.affected.outputs.run_test_env == 'true'");
++      const runLine = stepBody.find((line) => line.startsWith('run: '));
++      expect(runLine).toBe('run: bun test --timeout 15000 test-env/');
++      const [executable, ...args] = runLine.slice('run: '.length).split(' ');
++      expect(executable).toBe('bun');
++
++      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ci-edge-failure-'));
++      try {
++        const testEnv = path.join(root, 'test-env');
++        fs.mkdirSync(testEnv);
++        fs.writeFileSync(path.join(testEnv, 'failing.test.js'), [
++          "const { expect, test } = require('bun:test');",
++          "test('deliberate CI failure', () => expect('failure').toBe('success'));",
++          '',
++        ].join('\n'));
++        const child = spawnSync(process.execPath, args, {
++          cwd: root,
++          encoding: 'utf8',
++        });
++
++        expect(child.error).toBeUndefined();
++        expect(child.status).not.toBe(0);
++      } finally {
++        fs.rmSync(root, { recursive: true, force: true });
++      }
++
++      const aggregateIndex = lines.findIndex((line) => line.includes('name: Aggregate lane results'));
++      const runIndex = lines.findIndex((line, index) => index > aggregateIndex && line.trim() === 'run: |');
++      expect(aggregateIndex).toBeGreaterThan(-1);
++      expect(runIndex).toBeGreaterThan(aggregateIndex);
++      let scriptEnd = runIndex + 1;
++      while (scriptEnd < lines.length && (lines[scriptEnd].startsWith('          ') || lines[scriptEnd] === '')) {
++        scriptEnd += 1;
++      }
++      const aggregateScript = lines.slice(runIndex + 1, scriptEnd)
++        .map((line) => line.slice(10))
++        .join('\n');
++      const gate = spawnSync(bashExecutable, ['-c', aggregateScript], {
++        encoding: 'utf8',
++        env: { ...process.env, RESULTS: 'followup-tests=failure\n' },
++      });
++
++      expect(gate.error).toBeUndefined();
++      expect(gate.status).toBe(1);
++      expect(`${gate.stdout}${gate.stderr}`).toContain("Lane 'followup-tests' finished as 'failure'");
++    }, 15_000);
+   });
+ 
+   describe('Fast PR Lane', () => {
+-- 
+2.51.0.windows.1
+

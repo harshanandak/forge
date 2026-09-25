@@ -1,0 +1,100 @@
+From 3bdbf00bb6c9018349a936a9e40a30b8ae578c77 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 18:58:03 +0530
+Subject: [PATCH] fix(windows): avoid redundant PowerShell drive probes
+
+---
+ lib/kernel/fs-class.js       | 23 +++++++++--------------
+ test/kernel/fs-class.test.js | 22 +++++++++++++---------
+ 2 files changed, 22 insertions(+), 23 deletions(-)
+
+diff --git a/lib/kernel/fs-class.js b/lib/kernel/fs-class.js
+index d365d272..f5e32e6d 100644
+--- a/lib/kernel/fs-class.js
++++ b/lib/kernel/fs-class.js
+@@ -317,10 +317,13 @@ function parseDisplayRoot(stdout) {
+ }
+ 
+ // Windows: detect whether a drive letter is a mapped network drive.
+-// FAIL-SAFE FALLBACK (locked decision G1, option a): try `net use`, then a
+-// PowerShell DisplayRoot fallback; on ANY probe failure (including a timeout-
+-// induced throw, per BLOCKER 1) the caller treats the result as 'unknown'.
+-// Probes use arg ARRAYS (no shell) so they remain injection-free.
++// `net use` is authoritative for mapped drive letters. A successful no-match
++// means the drive is fixed, so do not launch a second PowerShell process for
++// every kernel child. Under a heavily sharded suite those redundant
++// Get-PSDrive processes contend for the host's PowerShell/Git resources and can
++// leave a shard blocked indefinitely. A probe failure still propagates to the
++// gatherer, which maps it to the fail-safe `unknown`/warn classification.
++// The probe uses an arg ARRAY (no shell) so it remains injection-free.
+ function defaultProbeDriveType(driveLetter, deps = {}) {
+ 	const exec = deps.execFileSync || execFileSync;
+ 
+@@ -330,16 +333,8 @@ function defaultProbeDriveType(driveLetter, deps = {}) {
+ 		return 'network';
+ 	}
+ 
+-	// Secondary: PowerShell DisplayRoot — non-empty for network-backed PSDrives.
+-	const psLetter = String(driveLetter).replace(':', '');
+-	const psCmd =
+-		`(Get-PSDrive -Name '${psLetter}' -ErrorAction SilentlyContinue).DisplayRoot`;
+-	const psOut = exec('powershell', ['-NoProfile', '-Command', psCmd], WIN_PROBE_EXEC_OPTIONS);
+-	if (parseDisplayRoot(psOut) === 'network') {
+-		return 'network';
+-	}
+-
+-	// Letter exists, no network backing detected → fixed.
++	// `net use` completed successfully without listing this letter. Treat it as
++	// fixed rather than starting a redundant PowerShell Get-PSDrive subprocess.
+ 	return 'fixed';
+ }
+ 
+diff --git a/test/kernel/fs-class.test.js b/test/kernel/fs-class.test.js
+index 54163e8c..f6630139 100644
+--- a/test/kernel/fs-class.test.js
++++ b/test/kernel/fs-class.test.js
+@@ -699,17 +699,25 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
+ });
+ 
+ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
+-	test('B1: both net use and PowerShell execs pass timeout=1500 + killSignal SIGKILL', () => {
++	test('does not launch PowerShell after a successful net use miss', () => {
++		const seenFiles = [];
++		const fakeExec = (file) => {
++			seenFiles.push(file);
++			if (file === 'powershell') throw new Error('PowerShell fallback must not run after net use succeeds');
++			return '';
++		};
++		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('fixed');
++		expect(seenFiles).toEqual(['net']);
++	}, T);
++
++	test('B1: net use exec passes timeout=1500 + killSignal SIGKILL', () => {
+ 		const seenOptions = [];
+ 		const fakeExec = (_file, _args, options) => {
+ 			seenOptions.push(options);
+-			// Return empty so net use misses and the PowerShell fallback also runs,
+-			// exercising BOTH exec calls in one probe.
+ 			return '';
+ 		};
+ 		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
+-		// Both probes ran (net use, then PowerShell DisplayRoot).
+-		expect(seenOptions).toHaveLength(2);
++		expect(seenOptions).toHaveLength(1);
+ 		for (const options of seenOptions) {
+ 			expect(options.timeout).toBe(1500);
+ 			expect(options.killSignal).toBe('SIGKILL');
+@@ -774,10 +782,6 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
+ 		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('network');
+ 	}, T);
+ 
+-	test('M5: defaultProbeDriveType returns network when PowerShell DisplayRoot is non-empty', () => {
+-		const fakeExec = (file) => (file === 'net' ? '' : '\\\\nas\\share\r\n');
+-		expect(defaultProbeDriveType('Z:', { execFileSync: fakeExec })).toBe('network');
+-	}, T);
+ });
+ 
+ describe('classifyFilesystem — end-to-end with injected probes', () => {
+-- 
+2.51.0.windows.1
+

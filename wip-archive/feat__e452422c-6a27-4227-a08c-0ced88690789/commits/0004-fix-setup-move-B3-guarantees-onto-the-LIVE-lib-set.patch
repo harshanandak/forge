@@ -1,0 +1,434 @@
+From 485d6b77515a9d4000b9a54daa5eb5068209eebc Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 15:50:17 +0530
+Subject: [PATCH] fix(setup): move B3 guarantees onto the LIVE lib setup path
+
+Adversarial review found 2 of B3's 3 guarantees had landed on bin/forge.js's LEGACY/DEAD
+installGitHooks/autoInstallLefthook (the registry command in lib/commands/setup.js wins the
+dispatcher and returns before bin's inline setup branch runs). Move/repair them on the live path:
+
+- F1a LOUD FAILURE (live): lib installGitHooks now takes { loud }. quickSetup + executeSetup
+  call it loud -> banner + process.exitCode=1 when a git repo's hooks end up inert (was: one
+  console.warn + exit 0). Mid-stage repairRuntimeReadiness stays quiet.
+- F1b ANCESTOR GUARD (live): lib autoInstallLefthook now skips the package-manager lefthook
+  install when projectRoot has no package.json (kernel 22e33dbf) - native hooks back enforcement.
+- F2 INIT FALLBACK: ensureGitHooksInstalled no longer early-returns on a missing package.json,
+  so `forge init` on a bare repo runs the native .git/hooks fallback instead of getting zero hooks.
+- F3 core.hooksPath: resolveGitHooksDir now asks `git rev-parse --path-format=absolute --git-path
+  hooks` first (honors core.hooksPath / husky / global config), filesystem logic as fallback - so
+  verify checks (and native install writes to) the dir git actually executes. Kills a false-pass.
+
+Tests: retargeted setup-native-fallback-wiring.test.js at lib/commands/setup.js (was asserting the
+dead bin functions) + added 3 real end-to-end runs of the actual `forge setup` handler: (a) inert
+git repo exits NON-ZERO + loud; (b) `forge setup --yes` bare repo installs native hooks, no pkg-mgr
+install; (c) `forge setup --quick` bare repo hits the ancestor guard. Fixed the lefthook-wiring
+docstring that mislabeled bin as the live path.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/setup.js                     |  55 +++++--
+ lib/lefthook-wiring.js                    |  52 +++++--
+ test/setup-native-fallback-wiring.test.js | 172 ++++++++++++++++++----
+ 3 files changed, 232 insertions(+), 47 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 0d79012b..fe77aa3c 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -72,6 +72,7 @@ const {
+   forgeShouldWriteLefthookConfig,
+   installNativeGitHooks,
+   verifyHooksActive,
++  resolveGitHooksDir,
+ } = require('../lefthook-wiring');
+ const { resolveShellRuntime } = require('../runtime-health');
+ const {
+@@ -2733,7 +2734,12 @@ function installForgeHookScripts() {
+ // kept shipping the broken behaviour. They are imported at the top of this file and
+ // re-exported below for the existing test surface.
+ 
+-function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
++function installGitHooks(options = {}) { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
++  // loud=true (the `forge setup` / `forge init` handlers) surfaces an inert-hooks
++  // result as a HARD failure — a banner + non-zero exit — so setup never ends green
++  // with TDD enforcement silently off (B3). loud=false (mid-stage repairRuntimeReadiness)
++  // only warns, since it can run inside another command's flow.
++  const loud = options.loud === true;
+   console.log('Installing git hooks (TDD enforcement)...');
+ 
+   // Install the Forge hook SCRIPTS first, unconditionally: they back BOTH the lefthook
+@@ -2820,6 +2826,25 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+   const verdict = verifyHooksActive(projectRoot);
+   if (verdict.active) {
+     console.log(`  ✓ Git hook enforcement active (${verdict.method}).`);
++  } else if (loud && resolveGitHooksDir(projectRoot)) {
++    // In a git repo but enforcement is inert — the exact silent-inert bug B3 kills.
++    // Fail LOUDLY and non-zero so `forge setup` never ends green with hooks off.
++    // (A non-git dir has nothing to hook into, so it only warns — see the else.)
++    const addCmd = PKG_MANAGER === 'bun'
++      ? 'bun add -d'
++      : PKG_MANAGER === 'npm'
++        ? 'npm install --save-dev'
++        : `${PKG_MANAGER} add -D`;
++    console.error('');
++    console.error('  ============================================================');
++    console.error('  ⚠ TDD ENFORCEMENT IS NOT ACTIVE');
++    console.error(`     ${verdict.reason || 'no pre-commit hook is installed'}.`);
++    console.error('     `forge ship` will block until hooks are active. To fix:');
++    console.error(`       ${addCmd} lefthook  &&  npx lefthook install`);
++    console.error('     (or re-run `forge setup` in the repo root).');
++    console.error('  ============================================================');
++    console.error('');
++    process.exitCode = 1;
+   } else {
+     console.warn(`  ⚠ TDD enforcement is NOT active: ${verdict.reason || 'no pre-commit hook installed'}.`);
+   }
+@@ -3157,6 +3182,16 @@ function autoInstallLefthook() { // NOSONAR — Extracted as-is from bin/forge.j
+     return;
+   }
+ 
++  // Not in package.json at all. GUARD (kernel 22e33dbf): with no package.json in
++  // projectRoot, `<pkg-mgr> install lefthook` resolves against the nearest ANCESTOR
++  // package.json and installs into the WRONG project (or fails). Skip it — installGitHooks
++  // then wires native .git/hooks, which need no package.json, so enforcement is still live.
++  if (!fs.existsSync(path.join(projectRoot, 'package.json'))) {
++    console.log('  ℹ No package.json here — skipping lefthook install (would target an ancestor); native hooks will back enforcement.');
++    console.log('');
++    return;
++  }
++
+   // Not in package.json at all — full install
+   console.log('📦 Installing lefthook for git hooks...');
+   try {
+@@ -3266,10 +3301,10 @@ async function autoMigrateBeadsToKernel(opts = {}) {
+ // `forge init` lightweight for bare/non-node repos and avoids surprise installs.
+ // Restores mutated module state afterward.
+ async function ensureGitHooksInstalled(targetRoot = projectRoot) {
+-  if (!fs.existsSync(path.join(targetRoot, 'package.json'))) {
+-    return { installed: false, reason: 'no-package-json' };
+-  }
+-
++  // No early bail on a missing package.json (kernel 22e33dbf / B3): the native
++  // .git/hooks fallback needs no package.json, so `forge init` on a bare repo must
++  // still wire enforcement instead of silently skipping it. autoInstallLefthook
++  // guards the package-manager install itself for the no-package.json case.
+   const previousRoot = projectRoot;
+   const previousInteractive = NON_INTERACTIVE;
+   const previousPkgManager = PKG_MANAGER;
+@@ -3339,9 +3374,10 @@ async function quickSetup(selectedAgents, skipExternal) {
+   // Detect Husky and migrate before installing Lefthook hooks
+   await handleHuskyMigration();
+ 
+-  // Install git hooks for TDD enforcement
++  // Install git hooks for TDD enforcement. LOUD: this is the `forge setup` handler,
++  // so an inert-hooks result must fail non-zero (B3), not end green.
+   console.log('');
+-  installGitHooks();
++  installGitHooks({ loud: true });
+ 
+   // Configure external services with defaults (unless skipped)
+   configureDefaultExternalServices(skipExternal);
+@@ -3862,9 +3898,10 @@ async function executeSetup(config) {
+   // Detect Husky and migrate before installing Lefthook hooks
+   await handleHuskyMigration();
+ 
+-  // Install git hooks for TDD enforcement
++  // Install git hooks for TDD enforcement. LOUD: this is the `forge setup` handler,
++  // so an inert-hooks result must fail non-zero (B3), not end green.
+   console.log('');
+-  installGitHooks();
++  installGitHooks({ loud: true });
+ 
+   // Auto-import an existing Beads store into the Kernel (idempotent, CLI-free)
+   await autoMigrateBeadsToKernel();
+diff --git a/lib/lefthook-wiring.js b/lib/lefthook-wiring.js
+index 19857bdb..dce9e10e 100644
+--- a/lib/lefthook-wiring.js
++++ b/lib/lefthook-wiring.js
+@@ -1,11 +1,14 @@
+ /**
+  * Shared lefthook / git-hook wiring for `forge setup` and `forge init`.
+  *
+- * Single source of truth used by BOTH the live setup path (bin/forge.js) and the
+- * repair path (lib/commands/setup.js). Previously these two copies had diverged:
+- * the shadow-config fix landed only in lib/commands/setup.js while `forge setup`
+- * kept running bin/forge.js's stale copy, so a fresh `forge setup` left TDD
+- * enforcement SILENTLY INERT (kernel e452422c / c713fce7 / 22e33dbf, beta blocker B3).
++ * Single source of truth for the hook-wiring primitives. The LIVE `forge setup` /
++ * `forge init` path is the registry command in lib/commands/setup.js (it wins in the
++ * dispatcher and returns before bin/forge.js's inline setup branch is ever reached; the
++ * bin copy is LEGACY/DEAD — see the banner at bin/forge.js "LEGACY / DEAD SETUP PATH").
++ * The mid-stage repair path (enforce-stage → repairRuntimeReadiness) also consumes these
++ * primitives. Earlier the shadow-config fix landed only in one copy while `forge setup`
++ * ran a stale copy, leaving a fresh `forge setup` with TDD enforcement SILENTLY INERT
++ * (kernel e452422c / c713fce7 / 22e33dbf, beta blocker B3) — hence one shared module.
+  *
+  * Responsibilities:
+  *   - Provide the REAL user-facing lefthook.yml (never lefthook's commented example).
+@@ -22,6 +25,7 @@
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { execFileSync } = require('node:child_process');
+ 
+ // Sentinel embedded in every native hook Forge writes. Lets verifyHooksActive
+ // distinguish a Forge-managed hook from a lefthook-managed one or a user's own.
+@@ -86,17 +90,45 @@ function forgeShouldWriteLefthookConfig(lefthookTarget) {
+ }
+ 
+ /**
+- * Resolve the directory git actually reads hooks from for a given project root,
+- * WITHOUT spawning git (so it is testable and cross-platform).
++ * Resolve the directory git ACTUALLY reads hooks from for a given project root.
+  *
+- * - Normal repo: `.git` is a directory → `<root>/.git/hooks`.
+- * - Linked worktree: `.git` is a file `gitdir: <path>`; hooks live in the common
+- *   git dir (resolved via the worktree's `commondir` file) → `<common>/hooks`.
++ * Asks git first (`git rev-parse --git-path hooks`), which is authoritative: it
++ * honors `core.hooksPath` (husky, a global config, etc.), so verify checks — and the
++ * native installer writes to — the directory git will really execute. Without this a
++ * project with `core.hooksPath` set would get hooks written to `.git/hooks` that git
++ * never runs, and verify would falsely report ACTIVE (a silent-inert false pass, B3).
++ *
++ * Falls back to a pure-filesystem resolution when git is unavailable or the path is not
++ * a git repo — keeps the function testable against synthetic `.git` layouts:
++ *   - Normal repo: `.git` is a directory → `<root>/.git/hooks`.
++ *   - Linked worktree: `.git` is a file `gitdir: <path>`; hooks live in the common git
++ *     dir (resolved via the worktree's `commondir` file) → `<common>/hooks`.
+  *
+  * @param {string} projectRoot - Absolute path to the project root.
+  * @returns {string|null} Absolute hooks dir, or null when not a git repo.
+  */
+ function resolveGitHooksDir(projectRoot) {
++  return resolveHooksDirViaGit(projectRoot) || resolveGitHooksDirFromFs(projectRoot);
++}
++
++// Authoritative resolution via git (honors core.hooksPath). One fast spawn; returns
++// null on any failure (git missing, not a repo) so the filesystem fallback can run.
++function resolveHooksDirViaGit(projectRoot) {
++  try {
++    const out = execFileSync(
++      'git',
++      ['-C', projectRoot, 'rev-parse', '--path-format=absolute', '--git-path', 'hooks'],
++      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
++    ).trim();
++    return out || null;
++  } catch {
++    return null;
++  }
++}
++
++// Pure-filesystem fallback (no git spawn). Does NOT see core.hooksPath — only used when
++// git could not answer.
++function resolveGitHooksDirFromFs(projectRoot) {
+   const gitPath = path.join(projectRoot, '.git');
+   let stat;
+   try {
+diff --git a/test/setup-native-fallback-wiring.test.js b/test/setup-native-fallback-wiring.test.js
+index ceef2b02..cdfcf03e 100644
+--- a/test/setup-native-fallback-wiring.test.js
++++ b/test/setup-native-fallback-wiring.test.js
+@@ -1,22 +1,31 @@
+ 'use strict';
+ 
+-// B3: the LIVE `forge setup` path is bin/forge.js's installGitHooks/autoInstallLefthook
+-// (executeSetup -> installGitHooks). It must delegate to the shared lib/lefthook-wiring
+-// module so that: a REAL lefthook.yml is written (not the repo's dev config nor the
+-// stock example), a native `.git/hooks` fallback runs when the lefthook binary is
+-// unavailable, setup verifies hooks are actually active, and lefthook is never
+-// npm-installed into an ancestor package.json (kernel 22e33dbf).
++// B3: the LIVE `forge setup` / `forge init` path is the REGISTRY COMMAND in
++// lib/commands/setup.js — it wins in the dispatcher and returns before bin/forge.js's
++// inline setup branch is ever reached (that bin copy is LEGACY/DEAD, see the banner in
++// bin/forge.js "LEGACY / DEAD SETUP PATH"). So the B3 guarantees must live on the lib
++// path: a REAL lefthook.yml (not the repo dev config nor the stock example), a native
++// `.git/hooks` fallback when the lefthook binary is unavailable, a LOUD non-zero failure
++// when enforcement ends up inert in a git repo, and never npm-installing lefthook into an
++// ancestor package.json (kernel 22e33dbf).
+ //
+-// bin/forge.js is a CLI entrypoint (not a requireable module), so — matching the
+-// existing setup-shared-helper / cross-platform-install suites — these are
+-// source-level assertions that lock the wiring in place. The behavioural contract of
+-// the helpers themselves is covered by test/lefthook-wiring.test.js.
++// Two layers of coverage:
++//  1. Source-level assertions locking the wiring into the live lib functions.
++//  2. Real end-to-end runs of the actual `forge setup` handler (the only way to prove the
++//     live dispatch path, not a dead copy, does the right thing).
+ 
+ const fs = require('node:fs');
++const os = require('node:os');
+ const path = require('node:path');
++const { spawnSync } = require('node:child_process');
+ const { describe, test, expect } = require('bun:test');
+ 
+-const forgeSource = fs.readFileSync(path.join(__dirname, '..', 'bin', 'forge.js'), 'utf8');
++const { FORGE_NATIVE_HOOK_SENTINEL } = require('../lib/lefthook-wiring');
++
++const SETUP_SRC = fs.readFileSync(
++  path.join(__dirname, '..', 'lib', 'commands', 'setup.js'),
++  'utf8'
++);
+ 
+ function bodyOf(source, signature) {
+   const start = source.indexOf(signature);
+@@ -30,33 +39,140 @@ function bodyOf(source, signature) {
+   return source.substring(start, end === Infinity ? source.length : end);
+ }
+ 
+-describe('bin/forge.js delegates hook wiring to lib/lefthook-wiring (B3)', () => {
++describe('lib/commands/setup.js (LIVE path) delegates hook wiring to lib/lefthook-wiring (B3)', () => {
+   test('requires the shared lefthook-wiring module', () => {
+-    expect(forgeSource).toContain("require('../lib/lefthook-wiring')");
++    expect(SETUP_SRC).toContain("require('../lefthook-wiring')");
+   });
+ 
+-  test('installGitHooks writes the REAL user lefthook.yml, not the repo dev config', () => {
+-    const body = bodyOf(forgeSource, 'function installGitHooks()');
++  test('installGitHooks writes the REAL user lefthook.yml + native fallback + verify', () => {
++    const body = bodyOf(SETUP_SRC, 'function installGitHooks(options');
+     expect(body).toContain('FORGE_USER_LEFTHOOK_YML');
+     expect(body).toContain('forgeShouldWriteLefthookConfig');
+-    // The old bug: copying the repo's own dev lefthook.yml (with scripts/*) to users.
+-    expect(body).not.toContain("path.join(packageDir, 'lefthook.yml')");
++    expect(body).toContain('installNativeGitHooks');
++    expect(body).toContain('verifyHooksActive');
+   });
+ 
+-  test('installGitHooks installs a native .git/hooks fallback', () => {
+-    const body = bodyOf(forgeSource, 'function installGitHooks()');
+-    expect(body).toContain('installNativeGitHooks');
++  test('installGitHooks fails LOUDLY (non-zero exit) when loud + inert in a git repo', () => {
++    const body = bodyOf(SETUP_SRC, 'function installGitHooks(options');
++    expect(body).toContain('loud');
++    expect(body).toContain('process.exitCode = 1');
+   });
+ 
+-  test('installGitHooks verifies hooks are actually active (no silent no-op)', () => {
+-    const body = bodyOf(forgeSource, 'function installGitHooks()');
+-    expect(body).toContain('verifyHooksActive');
++  test('the setup handlers (quickSetup/executeSetup) call installGitHooks LOUD', () => {
++    // Both user-facing handlers must opt into the hard-failure behavior.
++    const loudCalls = SETUP_SRC.match(/installGitHooks\(\{ loud: true \}\)/g) || [];
++    expect(loudCalls.length).toBeGreaterThanOrEqual(2);
++  });
++
++  test('autoInstallLefthook refuses to install lefthook without a local package.json (22e33dbf)', () => {
++    const body = bodyOf(SETUP_SRC, 'function autoInstallLefthook()');
++    // Guards on projectRoot/package.json before the package-manager install so it never
++    // resolves against an ancestor.
++    expect(body).toContain("path.join(projectRoot, 'package.json')");
+   });
+ 
+-  test('autoInstallLefthook refuses to npm-install lefthook without a local package.json', () => {
+-    const body = bodyOf(forgeSource, 'function autoInstallLefthook()');
+-    // Must guard on a package.json in projectRoot before running the package-manager
+-    // add/install, so npm/bun never resolves the install against an ancestor (22e33dbf).
+-    expect(body).toContain('package.json');
++  test('ensureGitHooksInstalled no longer bails on a missing package.json (F2)', () => {
++    const body = bodyOf(SETUP_SRC, 'async function ensureGitHooksInstalled(');
++    // The old early return { reason: "no-package-json" } would skip the native fallback
++    // on `forge init` in a bare repo — it must be gone.
++    expect(body).not.toContain("reason: 'no-package-json'");
+   });
+ });
++
++// ---------------------------------------------------------------------------------------
++// End-to-end: drive the ACTUAL `forge setup` handler (proves the live dispatch, not a
++// dead copy). These spawn a real subprocess and are slower; each has its own timeout.
++// ---------------------------------------------------------------------------------------
++
++const FORGE_BIN = path.join(__dirname, '..', 'bin', 'forge.js');
++
++function gitInit(dir) {
++  spawnSync('git', ['init'], { cwd: dir, encoding: 'utf8' });
++  spawnSync('git', ['config', 'user.email', 't@t.co'], { cwd: dir });
++  spawnSync('git', ['config', 'user.name', 't'], { cwd: dir });
++}
++
++function runForgeSetup(repo) {
++  return spawnSync(
++    process.execPath,
++    [FORGE_BIN, 'setup', '--yes', '--path', repo],
++    { cwd: repo, encoding: 'utf8', timeout: 90000, env: { ...process.env, INIT_CWD: repo } }
++  );
++}
++
++const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
++
++describe('forge setup — LIVE handler end-to-end (B3)', () => {
++  test('(a) git repo where hooks stay inert → exits NON-ZERO and LOUD', () => {
++    if (!gitAvailable) return; // git required
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-live-inert-'));
++    try {
++      gitInit(repo);
++      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# demo\n');
++      // A pre-existing FOREIGN pre-commit hook (neither Forge- nor lefthook-managed).
++      // The native installer must preserve it (skip), so with no lefthook binary present
++      // enforcement stays inert — and the setup handler must fail loudly + non-zero.
++      const hooksDir = path.join(repo, '.git', 'hooks');
++      fs.mkdirSync(hooksDir, { recursive: true });
++      fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\necho custom user hook\n');
++
++      const res = runForgeSetup(repo);
++      const out = (res.stdout || '') + (res.stderr || '');
++      expect(res.status).not.toBe(0);
++      expect(out).toContain('TDD ENFORCEMENT IS NOT ACTIVE');
++      // The user's hook is preserved, never clobbered.
++      expect(fs.readFileSync(path.join(hooksDir, 'pre-commit'), 'utf8')).toContain('custom user hook');
++    } finally {
++      fs.rmSync(repo, { recursive: true, force: true });
++    }
++  }, 120000);
++
++  test('(b) bare repo (no package.json) → no pkg-mgr lefthook install, native hooks wired', () => {
++    if (!gitAvailable) return; // git required
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-live-bare-'));
++    try {
++      gitInit(repo);
++      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# demo\n');
++
++      const res = runForgeSetup(repo);
++      const out = (res.stdout || '') + (res.stderr || '');
++
++      // Native fallback wired the real pre-commit (carries the Forge sentinel).
++      const preCommit = path.join(repo, '.git', 'hooks', 'pre-commit');
++      expect(fs.existsSync(preCommit)).toBe(true);
++      expect(fs.readFileSync(preCommit, 'utf8')).toContain(FORGE_NATIVE_HOOK_SENTINEL);
++
++      // No package-manager lefthook install happened: the install banner never printed
++      // and no package.json was fabricated in (or an ancestor of) the bare repo.
++      expect(out).not.toContain('Installing lefthook for git hooks');
++      expect(fs.existsSync(path.join(repo, 'package.json'))).toBe(false);
++    } finally {
++      fs.rmSync(repo, { recursive: true, force: true });
++    }
++  }, 120000);
++
++  test('(c) --quick in a bare repo hits the ancestor-package.json guard, not a pkg-mgr install', () => {
++    if (!gitAvailable) return; // git required
++    // quickSetup (unlike executeSetup) DOES call autoInstallLefthook — the path where the
++    // 22e33dbf ancestor-resolution bug lived. The guard must fire and native hooks wire.
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-live-quick-'));
++    try {
++      gitInit(repo);
++      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# demo\n');
++
++      const res = spawnSync(
++        process.execPath,
++        [FORGE_BIN, 'setup', '--quick', '--agents', 'claude', '--path', repo],
++        { cwd: repo, encoding: 'utf8', timeout: 90000, env: { ...process.env, INIT_CWD: repo } }
++      );
++      const out = (res.stdout || '') + (res.stderr || '');
++      expect(out).toContain('skipping lefthook install');
++      expect(out).not.toContain('Installing lefthook for git hooks');
++      const preCommit = path.join(repo, '.git', 'hooks', 'pre-commit');
++      expect(fs.readFileSync(preCommit, 'utf8')).toContain(FORGE_NATIVE_HOOK_SENTINEL);
++      expect(fs.existsSync(path.join(repo, 'package.json'))).toBe(false);
++    } finally {
++      fs.rmSync(repo, { recursive: true, force: true });
++    }
++  }, 120000);
++});
+-- 
+2.51.0.windows.1
+

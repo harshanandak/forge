@@ -1,0 +1,81 @@
+From a95361fd42d693a30ab79622001bcf2ae4790d8b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 23:28:14 +0530
+Subject: [PATCH] fix(kernel): preserve isolated sqlite connections
+
+---
+ lib/kernel/sqlite-driver.js | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 93d782e7..6972f2f8 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1391,7 +1391,10 @@ function parseTraceEvent(row) {
+ 		issue_revision: payload.issue_revision ?? null,
+ 		head_sha: payload.head_sha ?? null,
+ 		work_packet_hash: payload.work_packet_hash ?? null,
++		work_packet_identity: payload.work_packet_identity ?? null,
+ 		run_receipt_hash: payload.run_receipt_hash ?? null,
++		run_id: payload.run_id ?? null,
++		attempt_id: payload.attempt_id ?? null,
+ 		risk_manifest_digest: payload.risk_manifest_digest ?? null,
+ 		gate_receipts: payload.gate_receipts ?? null,
+ 		url: payload.url ?? null,
+@@ -1405,6 +1408,7 @@ function isCompleteTraceIteration(event) {
+ 		&& Number.isInteger(event.issue_revision) && event.issue_revision >= 0
+ 		&& /^[0-9a-f]{40}$/.test(event.head_sha)
+ 		&& /^[0-9a-f]{64}$/.test(event.work_packet_hash)
++		&& typeof event.work_packet_identity === 'string' && event.work_packet_identity.length > 0
+ 		&& /^[0-9a-f]{64}$/.test(event.run_receipt_hash)
+ 		&& /^[0-9a-f]{64}$/.test(event.risk_manifest_digest)
+ 		&& Array.isArray(event.gate_receipts) && event.gate_receipts.length > 0
+@@ -3655,7 +3659,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		return db;
+ 	}
+ 
+-	return {
++	const driver = {
+ 		runtime: {
+ 			id: runtime.id,
+ 			databaseClassName: runtime.databaseClassName,
+@@ -3663,6 +3667,16 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			experimental: runtime.experimental,
+ 		},
+ 		databasePath: configuredDatabasePath,
++		forkConnection(config = {}) {
++			const databasePath = resolveDatabasePath(config);
++			if (databasePath === ':memory:') {
++				const fork = Object.create(driver);
++				Object.defineProperty(fork, 'close', { value() {} });
++				Object.defineProperty(fork, 'transactionQueueKey', { value: driver });
++				return fork;
++			}
++			return createDriver(runtime, databasePath, driverOptions);
++		},
+ 		async exec(statement, config) {
+ 			execSql(runtime, getDatabase(config), statement);
+ 		},
+@@ -3845,6 +3859,11 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		async loadKernelEventByIdempotencyKey(idempotencyKey, _context = {}, config = {}) {
+ 			return loadKernelEventByIdempotencyKeyRow(runtime, getDatabase(config), idempotencyKey);
+ 		},
++		async loadPrEventsByRunId(runId, _context = {}, config = {}) {
++			return allParams(runtime, getDatabase(config),
++				"SELECT * FROM kernel_events WHERE entity_type = 'pr' AND json_extract(payload_json, '$.run_id') = ? ORDER BY created_at ASC, rowid ASC",
++				[runId]);
++		},
+ 		async insertKernelConflict(conflict, _context = {}, config = {}) {
+ 			return insertKernelConflictRow(runtime, getDatabase(config), conflict);
+ 		},
+@@ -4112,6 +4131,7 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 			usageEvidenceSchemaEnsured = false;
+ 		},
+ 	};
++	return driver;
+ }
+ 
+ function assertCapability(runtime, capability, detail) {
+-- 
+2.51.0.windows.1
+

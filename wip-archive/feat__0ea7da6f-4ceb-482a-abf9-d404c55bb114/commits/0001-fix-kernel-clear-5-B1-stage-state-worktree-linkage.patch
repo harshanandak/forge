@@ -1,0 +1,403 @@
+From dfba8f3d229d3b234821c5c010d801f177b8de9a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 16:43:47 +0530
+Subject: [PATCH] fix(kernel): clear 5 B1 stage-state/worktree-linkage
+ residuals
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Follow-ups deferred from the merged B1 PR #380 (children of beta epic
+068374e5). One coherent change across the linkage registry and the stage
+completion gate.
+
+R1 (0ea7da6f): kernel_worktrees was keyed by PATH with update-in-place, so
+two plan-first features from the SAME checkout clobbered each other's
+linkage. upsertWorktreeRow now keys the idempotent lookup by (path, branch)
+so each branch keeps its own row.
+
+be18881c: a reused/deleted-and-recreated branch name could rebind to the OLD
+issue because the resolver ignored row state. A new active registration now
+supersedes prior active rows for the same branch, and the branch resolvers
+(resolveActiveIssueId, currentBranchIssueFromDriver) match ACTIVE rows only.
+
+R2 (9a1e39c1): re-entering an earlier stage (dev) now invalidates downstream
+'done' stages (validate) so ship re-requires a fresh validate after rework.
+
+R3 (e86effdf): registerBranchIssueLinkage no longer swallows a failed linkage
+write silently — it warns via the F6 defaultStageWarn stderr pattern.
+
+R4 (d25c18ba): the F4c cross-issue guard's branch resolver is now state-aware,
+so a superseded/stale linkage row no longer triggers a false split-state
+conflict.
+
+Tests: test/workflow/b1-linkage-followups.test.js (RED-first, all 6 green).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/plan.js                       |  19 ++-
+ lib/kernel/sqlite-driver.js                |  38 ++++-
+ lib/workflow/enforce-stage.js              |  29 +++-
+ test/workflow/b1-linkage-followups.test.js | 190 +++++++++++++++++++++
+ 4 files changed, 271 insertions(+), 5 deletions(-)
+ create mode 100644 test/workflow/b1-linkage-followups.test.js
+
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index 5f190672..ac9bafee 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -517,7 +517,12 @@ function currentBranchIssueFromDriver(driver, currentBranch) {
+ 	if (driver && typeof driver.listWorktrees === 'function') {
+ 		try {
+ 			const rows = driver.listWorktrees() || [];
+-			const match = rows.find(row => row && row.branch === currentBranch && row.issue_id);
++			// Only an ACTIVE (live) linkage row binds the branch: a superseded/stale
++			// registration for a reused branch name must not trigger a false split-state
++			// conflict against the OLD issue (R4/be18881c). Tolerate a null state for
++			// rows written before the state column was populated.
++			const match = rows.find(row => row && row.branch === currentBranch && row.issue_id
++				&& (row.state === 'active' || row.state == null));
+ 			if (match) return match.issue_id;
+ 		} catch {
+ 			// fall through to branch-name parsing
+@@ -553,6 +558,9 @@ async function detectBranchIssueConflict(options, explicitIssueId) {
+ async function registerBranchIssueLinkage(options, branch, issueId) {
+ 	if (!branch || !issueId) return;
+ 	const cwd = options.projectRoot || process.cwd();
++	// F6 defaultStageWarn pattern: write to stderr so a dropped linkage never
++	// pollutes machine-readable stdout, yet leaves a trace even under FORGE_JSON=1.
++	const warn = options.warn || (message => process.stderr.write(`${message}\n`));
+ 	await withPlanDriver(options, driver => {
+ 		if (!driver || typeof driver.registerWorktree !== 'function') return;
+ 		try {
+@@ -566,8 +574,11 @@ async function registerBranchIssueLinkage(options, branch, issueId) {
+ 				registered_at: new Date().toISOString(),
+ 				state: 'active',
+ 			});
+-		} catch {
+-			// best-effort: linkage failure must not fail plan
++		} catch (error) {
++			// Best-effort: linkage failure must not fail plan, but it must NOT be
++			// silent (R3) — otherwise ship later fail-closes with no signal at plan
++			// time about the dropped branch->issue linkage.
++			warn(`[forge] could not register branch->issue linkage for ${branch} -> ${issueId}: ${error.message}`);
+ 		}
+ 	});
+ }
+@@ -1122,4 +1133,6 @@ module.exports = {
+ 	applyYAGNIFilter,
+ 	executePlan,
+ 	issueBackendLabel,
++	registerBranchIssueLinkage,
++	currentBranchIssueFromDriver,
+ };
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index be31aa8a..565d47ea 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1113,8 +1113,41 @@ function loadWorktreeRowByPath(runtime, db, worktreePath) {
+ 	return rows[0] || null;
+ }
+ 
++// The idempotent upsert key. `forge plan` registers MULTIPLE branches from ONE
++// checkout (same absolute path), so keying by path ALONE made a second plan-first
++// feature UPDATE-in-place over the first branch's row and dead-end its ship (R1).
++// Key by (path, branch) so each branch keeps its own row; fall back to path-only
++// when no branch is supplied (worktree flows use distinct paths, so behavior there
++// is unchanged).
++function loadWorktreeRowByPathAndBranch(runtime, db, worktreePath, branch) {
++	if (!worktreePath) return null;
++	if (!branch) return loadWorktreeRowByPath(runtime, db, worktreePath);
++	const rows = safeAll(
++		runtime,
++		db,
++		'SELECT * FROM kernel_worktrees WHERE path = ? AND branch = ? ORDER BY registered_at DESC LIMIT 1',
++		[worktreePath, branch],
++	);
++	return rows[0] || null;
++}
++
++// A git branch is checked out in exactly ONE worktree, so a NEW active registration
++// for a branch supersedes any prior ACTIVE row carrying that same branch under a
++// different id (be18881c): a reused/deleted-and-recreated branch must not keep a
++// stale binding to the OLD issue. Marking those rows state='superseded' lets the
++// active-only branch resolver skip them regardless of their timestamp.
++function supersedePriorBranchRegistrations(runtime, db, branch, keepId) {
++	if (!branch) return;
++	runParams(
++		runtime,
++		db,
++		"UPDATE kernel_worktrees SET state = 'superseded' WHERE branch = ? AND state = 'active' AND id != ?",
++		[branch, keepId || ''],
++	);
++}
++
+ function upsertWorktreeRow(runtime, db, input) {
+-	const existing = loadWorktreeRowByPath(runtime, db, input.path);
++	const existing = loadWorktreeRowByPathAndBranch(runtime, db, input.path, input.branch);
+ 	const row = {
+ 		id: input.id || existing?.id || randomUUID(),
+ 		git_common_dir: input.git_common_dir,
+@@ -1142,6 +1175,9 @@ function upsertWorktreeRow(runtime, db, input) {
+ 			KERNEL_WORKTREE_COLUMNS.map(column => row[column]),
+ 		);
+ 	}
++	if (row.state === 'active') {
++		supersedePriorBranchRegistrations(runtime, db, row.branch, row.id);
++	}
+ 	return row;
+ }
+ 
+diff --git a/lib/workflow/enforce-stage.js b/lib/workflow/enforce-stage.js
+index 5e5aa53a..f65a15e4 100644
+--- a/lib/workflow/enforce-stage.js
++++ b/lib/workflow/enforce-stage.js
+@@ -68,6 +68,27 @@ function findLatestStageRun(driver, issueId, stage) {
+   }
+ }
+ 
++// (Re-)entering an earlier stage invalidates the work that followed it: any
++// DOWNSTREAM stage previously recorded 'done' is reopened to 'active' so a gated
++// stage (ship/review) re-requires a fresh completion (R2 — the dev<->validate
++// rework loop must not let a stale validate=done pass ship). Reuses the idempotent
++// 'start' write, which keeps the row's id + original started_at but clears its
++// done status. Stages the entered stage does not precede (and non-'done' rows) are
++// left untouched, so forward progression records nothing extra.
++function invalidateDownstreamStages(driver, issueId, stageId, warn) {
++  const index = STAGE_PATH.indexOf(stageId);
++  if (index < 0) {
++    return;
++  }
++  for (let next = index + 1; next < STAGE_PATH.length; next += 1) {
++    const downstream = STAGE_PATH[next];
++    const run = findLatestStageRun(driver, issueId, downstream);
++    if (run?.status === 'done') {
++      recordStageRunSafe(driver, issueId, downstream, 'start', warn);
++    }
++  }
++}
++
+ // Decide whether entering stageId is allowed given ONLY the kernel's recorded
+ // stage history (used when no inline/file workflow state exists):
+ //   - Stateless stages (plan/dev/validate/verify) are always re-entrant, so the
+@@ -123,7 +144,12 @@ async function resolveActiveIssueId(driver, branch) {
+   try {
+     if (typeof driver.listWorktrees === 'function') {
+       const rows = driver.listWorktrees() || [];
+-      const match = rows.find(row => row && row.branch === branch && row.issue_id);
++      // Match only ACTIVE (live) linkage rows, newest first (listWorktrees orders
++      // registered_at DESC). A stale/superseded registration for a reused branch
++      // name must not rebind stage state to the OLD issue (be18881c). Tolerate a
++      // null state for rows written before the state column was populated.
++      const match = rows.find(row => row && row.branch === branch && row.issue_id
++        && (row.state === 'active' || row.state == null));
+       if (match) {
+         return match.issue_id;
+       }
+@@ -391,6 +417,7 @@ async function enforceStageEntry({
+   const finish = (result) => {
+     if (kernelActive) {
+       recordStageRunSafe(driver, issueId, stageId, 'start', warn);
++      invalidateDownstreamStages(driver, issueId, stageId, warn);
+       result.recordCompletion = () => recordStageRunSafe(driver, issueId, stageId, 'complete', warn);
+     }
+     return result;
+diff --git a/test/workflow/b1-linkage-followups.test.js b/test/workflow/b1-linkage-followups.test.js
+new file mode 100644
+index 00000000..bba4aeaf
+--- /dev/null
++++ b/test/workflow/b1-linkage-followups.test.js
+@@ -0,0 +1,190 @@
++'use strict';
++
++// B1-followup cluster (R1, R2, R3, R4, be18881c) — residuals deferred from the
++// merged B1 PR #380. Each test is RED-first against the pre-fix code:
++//   R1 (0ea7da6f): two plan-first features from the SAME checkout must not
++//     clobber each other's branch->issue linkage (path-keyed upsert bug).
++//   be18881c:      a REUSED branch name must resolve to the LIVE issue, not a
++//     stale registration (listWorktrees match ignored row state).
++//   R2 (9a1e39c1): re-entering dev after validate=done must invalidate validate
++//     so ship re-requires a fresh validate (stale-validate pass-through).
++//   R3 (e86effdf): a failed branch->issue linkage write must warn (no silent swallow).
++//   R4 (d25c18ba): the F4c cross-issue guard's branch resolver must be state-aware
++//     (a superseded/stale linkage row must NOT bind the branch).
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  enforceStageEntry,
++  resolveActiveIssueId,
++} = require('../../lib/workflow/enforce-stage');
++const {
++  registerBranchIssueLinkage,
++  currentBranchIssueFromDriver,
++} = require('../../lib/commands/plan');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++const TIMEOUT = 15000;
++const HEALTHY = { healthy: true, hardStop: false, diagnostics: [] };
++
++describe('B1-followup linkage + stage-gate residuals', () => {
++  let tmpDir;
++  let driver;
++  let broker;
++  let projectRoot;
++  const issueId = 'forge-b1-followup-1';
++
++  beforeEach(async () => {
++    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'b1-followup-'));
++    projectRoot = tmpDir;
++    const dbPath = path.join(tmpDir, 'kernel.sqlite');
++    driver = createBuiltinSQLiteDriver({ databasePath: dbPath });
++    broker = createLocalBroker({
++      projectRoot: tmpDir,
++      execFileSync: () => path.join(tmpDir, '.git'),
++      databasePath: dbPath,
++      driver,
++    });
++    await broker.initialize();
++    await broker.runIssueOperation(
++      'create',
++      ['--id', issueId, '--title', 'B1 followup', '--type', 'task'],
++      { now: '2026-07-14T00:00:00.000Z', actor: 'tester' },
++    );
++  });
++
++  afterEach(() => {
++    if (driver) driver.close();
++    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
++  });
++
++  // --- R1 -------------------------------------------------------------------
++  test('R1: two branches registered from the SAME path both keep their linkage', async () => {
++    const sharedPath = path.join(tmpDir, 'checkout');
++    driver.registerWorktree({
++      path: sharedPath,
++      git_common_dir: path.join(sharedPath, '.git'),
++      branch: 'feat/alpha',
++      issue_id: 'issue-alpha',
++      state: 'active',
++      registered_at: '2026-07-14T01:00:00.000Z',
++    });
++    driver.registerWorktree({
++      path: sharedPath,
++      git_common_dir: path.join(sharedPath, '.git'),
++      branch: 'feat/beta',
++      issue_id: 'issue-beta',
++      state: 'active',
++      registered_at: '2026-07-14T02:00:00.000Z',
++    });
++
++    // The second registration must NOT clobber the first: switching back to the
++    // earlier branch must still resolve to its own issue.
++    expect(await resolveActiveIssueId(driver, 'feat/alpha')).toBe('issue-alpha');
++    expect(await resolveActiveIssueId(driver, 'feat/beta')).toBe('issue-beta');
++  }, TIMEOUT);
++
++  // --- be18881c -------------------------------------------------------------
++  test('be18881c: a reused branch name resolves to the LIVE issue, not the stale one', async () => {
++    // Old worktree registered feat/foo -> issue-old, then that worktree was
++    // deleted and feat/foo recreated (different path) for issue-new. The stale
++    // row even carries a NEWER timestamp, so a state-blind newest-first match
++    // would wrongly pick it.
++    driver.registerWorktree({
++      path: path.join(tmpDir, 'wt-old'),
++      git_common_dir: path.join(tmpDir, 'wt-old', '.git'),
++      branch: 'feat/foo',
++      issue_id: 'issue-old',
++      state: 'active',
++      registered_at: '2026-07-14T10:00:00.000Z',
++    });
++    driver.registerWorktree({
++      path: path.join(tmpDir, 'wt-new'),
++      git_common_dir: path.join(tmpDir, 'wt-new', '.git'),
++      branch: 'feat/foo',
++      issue_id: 'issue-new',
++      state: 'active',
++      registered_at: '2026-07-14T09:00:00.000Z',
++    });
++
++    expect(await resolveActiveIssueId(driver, 'feat/foo')).toBe('issue-new');
++  }, TIMEOUT);
++
++  // --- R2 -------------------------------------------------------------------
++  test('R2: rework in dev after validate=done re-requires validate before ship', async () => {
++    const drive = (stage) => enforceStageEntry({
++      commandName: stage,
++      projectRoot,
++      kernelDriver: driver,
++      activeIssueId: issueId,
++      health: HEALTHY,
++    });
++
++    for (const stage of ['plan', 'dev', 'validate']) {
++      const step = await drive(stage);
++      expect(step.allowed).toBe(true);
++      step.recordCompletion();
++    }
++
++    // Rework: re-enter dev AFTER validate completed. This must invalidate the
++    // stale validate=done row.
++    const devAgain = await drive('dev');
++    expect(devAgain.allowed).toBe(true);
++    devAgain.recordCompletion();
++
++    // ship must now be BLOCKED until validate is re-run.
++    await expect(drive('ship')).rejects.toThrow(/validate to be completed/i);
++
++    // Re-run validate → ship reachable again.
++    const revalidate = await drive('validate');
++    expect(revalidate.allowed).toBe(true);
++    revalidate.recordCompletion();
++
++    const ship = await drive('ship');
++    expect(ship.allowed).toBe(true);
++    expect(ship.stage).toBe('ship');
++  }, TIMEOUT);
++
++  // --- R3 -------------------------------------------------------------------
++  test('R3: a failed branch->issue linkage write warns (never swallowed silently)', async () => {
++    const warnings = [];
++    const throwingDriver = {
++      registerWorktree() {
++        throw new Error('simulated linkage write failure');
++      },
++    };
++
++    await registerBranchIssueLinkage(
++      { kernelDriver: throwingDriver, projectRoot: tmpDir, warn: (m) => warnings.push(m) },
++      'feat/linkage-fail',
++      'issue-xyz',
++    );
++
++    expect(warnings.length).toBeGreaterThan(0);
++    expect(warnings.join('\n')).toMatch(/linkage/i);
++  }, TIMEOUT);
++
++  // --- R4 -------------------------------------------------------------------
++  test('R4: cross-issue guard resolver consults the ACTIVE linkage row for a slug branch', () => {
++    const activeDriver = {
++      listWorktrees: () => [
++        { branch: 'feat/slug-guard', issue_id: 'issue-A', state: 'active' },
++      ],
++    };
++    expect(currentBranchIssueFromDriver(activeDriver, 'feat/slug-guard')).toBe('issue-A');
++  });
++
++  test('R4: a superseded/stale linkage row must NOT bind the branch', () => {
++    const staleDriver = {
++      listWorktrees: () => [
++        { branch: 'feat/slug-guard', issue_id: 'issue-A', state: 'superseded' },
++      ],
++    };
++    // No UUID in the branch name, so a state-aware resolver returns null.
++    expect(currentBranchIssueFromDriver(staleDriver, 'feat/slug-guard')).toBe(null);
++  });
++});
+-- 
+2.51.0.windows.1
+

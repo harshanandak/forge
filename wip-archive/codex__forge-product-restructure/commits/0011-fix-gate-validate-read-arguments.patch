@@ -1,0 +1,115 @@
+From d892e6340037b0852fc33882113e2b769a5bcf9f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 15:28:25 +0530
+Subject: [PATCH] fix(gate): validate read arguments
+
+---
+ lib/commands/gate.js                  | 39 ++++++++++++++++++++++++---
+ test/commands/gate-events-cli.test.js | 22 +++++++++++++++
+ 2 files changed, 58 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/gate.js b/lib/commands/gate.js
+index 4de87dc5..e195e19b 100644
+--- a/lib/commands/gate.js
++++ b/lib/commands/gate.js
+@@ -88,7 +88,11 @@ function parseDecisionInput(action, rawArgs, flags) {
+   const seen = new Set();
+   for (let index = 2; index < rawArgs.length; index += 1) {
+     const token = rawArgs[index];
+-    if (token === '--json') continue;
++    if (token === '--json') {
++      if (seen.has('json')) return { ok: false, error: 'Duplicate --json flag.' };
++      seen.add('json');
++      continue;
++    }
+     const match = /^(--ttl|--reason)(?:=(.*))?$/.exec(token);
+     if (!match) {
+       const kind = token.startsWith('--') ? 'Unknown flag' : 'Unexpected argument';
+@@ -114,6 +118,28 @@ function parseDecisionInput(action, rawArgs, flags) {
+   return { ok: true, issueId, gateId, ttl, reason };
+ }
+ 
++function parseReadInput(action, rawArgs) {
++  const operandCount = action === 'status' ? 1 : 2;
++  const issueId = rawArgs[0];
++  const gateId = operandCount === 2 ? rawArgs[1] : undefined;
++  if (!issueId || issueId.startsWith('--') || (operandCount === 2 && (!gateId || gateId.startsWith('--')))) {
++    const missing = action === 'status' ? 'issue id' : 'issue id or gate id';
++    return { ok: false, error: `Missing ${missing}.\n${usage()}` };
++  }
++
++  let jsonSeen = false;
++  for (const token of rawArgs.slice(operandCount)) {
++    if (token === '--json') {
++      if (jsonSeen) return { ok: false, error: 'Duplicate --json flag.' };
++      jsonSeen = true;
++      continue;
++    }
++    const kind = token.startsWith('--') ? 'Unknown flag' : 'Unexpected argument';
++    return { ok: false, error: `${kind} '${token}'.\n${usage()}` };
++  }
++  return { ok: true, issueId, gateId };
++}
++
+ function gateJsonResult(action, result, context = {}) {
+   const event = result.event ?? null;
+   const envelope = {
+@@ -312,9 +338,15 @@ async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {})
+   if (EVENT_ACTIONS.has(action)) {
+     let result;
+     if (action === 'status') {
+-      result = await handleStatus(rest[0], flags, projectRoot, opts);
++      const input = parseReadInput(action, rest);
++      result = input.ok
++        ? await handleStatus(input.issueId, flags, projectRoot, opts)
++        : { success: false, issueId: rest[0], error: input.error };
+     } else if (action === 'check') {
+-      result = await handleCheck(rest[0], rest[1], projectRoot, opts);
++      const input = parseReadInput(action, rest);
++      result = input.ok
++        ? await handleCheck(input.issueId, input.gateId, projectRoot, opts)
++        : { success: false, issueId: rest[0], approved: false, error: input.error };
+     } else {
+       result = await handleDecision(action, rest[0], rest[1], flags, rest, projectRoot, opts);
+     }
+@@ -336,5 +368,6 @@ module.exports = {
+   handler,
+   parseGateTtl,
+   parseDecisionInput,
++  parseReadInput,
+   gateJsonResult,
+ };
+diff --git a/test/commands/gate-events-cli.test.js b/test/commands/gate-events-cli.test.js
+index 6f8445e1..f22c834f 100644
+--- a/test/commands/gate-events-cli.test.js
++++ b/test/commands/gate-events-cli.test.js
+@@ -99,4 +99,26 @@ describe('real forge gate CLI JSON and global flags', () => {
+       approved: false,
+     });
+   });
++
++  test('status and check reject unknown flags, extra operands, and duplicate JSON flags', () => {
++    const root = tempRoots[0];
++    const invalid = [
++      [['gate', 'status', ISSUE_ID, '--bogus', '--json', '--path', root], 'gate.status'],
++      [['gate', 'status', ISSUE_ID, 'extra', '--json', '--path', root], 'gate.status'],
++      [['gate', 'status', ISSUE_ID, '--json', '--json', '--path', root], 'gate.status'],
++      [['gate', 'check', ISSUE_ID, 'gate.merge', '--bogus', '--json', '--path', root], 'gate.check'],
++      [['gate', 'check', ISSUE_ID, 'gate.merge', 'extra', '--json', '--path', root], 'gate.check'],
++      [['gate', 'check', ISSUE_ID, 'gate.merge', '--json', '--json', '--path', root], 'gate.check'],
++    ];
++
++    for (const [args, command] of invalid) {
++      const result = run(__dirname, args);
++      expect(result.status).toBe(1);
++      expect(parseJson(result.stdout)).toMatchObject({
++        schema_version: 'forge.gate.v1',
++        command,
++        ok: false,
++      });
++    }
++  });
+ });
+-- 
+2.51.0.windows.1
+

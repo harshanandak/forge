@@ -1,0 +1,274 @@
+From abbc8450adee3176f8d877a292f007ed8d053488 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:55:17 +0530
+Subject: [PATCH] fix(monitor): sanitize durable provider evidence
+
+---
+ lib/commands/shepherd.js             | 10 ++--
+ lib/pr-monitor/flow-monitor.js       | 46 +++++++++++-----
+ test/commands/shepherd.test.js       | 62 +++++++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js | 80 ++++++++++++++++++++++++----
+ 4 files changed, 171 insertions(+), 27 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 4f083c3e..5d26fa62 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -35,6 +35,7 @@ const { gatherPullSignal, renderPullSummary } = require('../pr-pull');
+ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+ const { validatePrStateAdapter } = require('../pr-state-validator');
+ const { gatherMonitorSnapshot } = require('../pr-monitor/gather');
++const { privacySafeIdentity } = require('../pr-monitor/flow-monitor');
+ const { pollEvents } = require('../pr-monitor/monitor');
+ const { watchLoop } = require('../pr-monitor/watch');
+ const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
+@@ -49,7 +50,7 @@ const DEFAULT_RERUN_BUDGET = 3;
+ const MAX_MONITOR_ID_LENGTH = 128;
+ 
+ function rootMonitorId(owner, repo, pr) {
+-  const raw = `pr:${owner}/${repo}:${pr}`;
++  const raw = privacySafeIdentity(`pr:${privacySafeIdentity(`${owner}/${repo}`)}:${pr}`);
+   if (raw.length <= MAX_MONITOR_ID_LENGTH) return raw;
+   return `pr:${crypto.createHash('sha256').update(raw).digest('hex')}`;
+ }
+@@ -265,12 +266,13 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+       let kernel;
+       try {
+         kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
++        const repositoryIdentity = privacySafeIdentity(`${ctx.owner}/${ctx.repo}`);
+         authority = {
+           store: createMonitorStore(kernel.kernelDriver),
+           monitorId: rootMonitorId(ctx.owner, ctx.repo, ctx.pr),
+-          ownerRunId: `shepherd:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+-          packetId: `shepherd-packet:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+-          subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
++          ownerRunId: privacySafeIdentity(`shepherd:${repositoryIdentity}:${ctx.pr}`),
++          packetId: privacySafeIdentity(`shepherd-packet:${repositoryIdentity}:${ctx.pr}`),
++          subjectId: privacySafeIdentity(`${repositoryIdentity}#${ctx.pr}`),
+           close: async () => kernel.kernelBroker?.close?.(),
+         };
+       } catch (error) {
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index eee77b48..8f2836c7 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -30,6 +30,7 @@ const SNAPSHOT_FORMAT = 'digest-v1';
+ const SNAPSHOT_EVIDENCE_KEYS = new Set(['checks', 'threads', 'reviews', 'comments', 'degraded']);
+ const UNSAFE_PROVIDER_DIAGNOSTIC = /(?:gh[pousr]_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk_(?:live|test)_[a-z0-9]{16,}|sk-[a-z0-9]{16,}|AKIA[0-9A-Z]{16}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}|(?:^|[\\/])(?:users|home|root)[\\/]\S+)/i;
+ const REDACTED_PROVIDER_DIAGNOSTIC = '[provider diagnostic redacted]';
++const PRIVATE_MONITOR_SCAN_LIMIT = 16_384;
+ 
+ class FlowMonitorError extends Error {
+   constructor(code, message, options) {
+@@ -50,10 +51,20 @@ function appendPendingBatch(batches, batch) {
+   batches.push(batch);
+ }
+ 
++function encodePrivateSafeBase64(value) {
++  const substitutions = { '-': '.', _: '~', A: '!', a: '*' };
++  return value.toString('base64url').replace(/[-_Aa]/g, character => substitutions[character]);
++}
++
++function decodePrivateSafeBase64(value) {
++  const substitutions = { '.': '-', '~': '_', '!': 'A', '*': 'a' };
++  return Buffer.from(value.replace(/[.~!*]/g, character => substitutions[character]), 'base64url');
++}
++
+ function defaultNow() { return new Date().toISOString(); }
+ 
+ function boundSnapshotScalar(value, depth = 0) {
+-  if (typeof value === 'string') return value.slice(0, SNAPSHOT_TEXT_LIMIT);
++  if (typeof value === 'string') return safeProviderDiagnostic(value).slice(0, SNAPSHOT_TEXT_LIMIT);
+   if (value === null || typeof value !== 'object') return value;
+   if (depth >= 4) return null;
+   if (Array.isArray(value)) {
+@@ -62,7 +73,7 @@ function boundSnapshotScalar(value, depth = 0) {
+   }
+   return Object.fromEntries(Object.entries(value)
+     .slice(0, SNAPSHOT_OBJECT_KEY_LIMIT)
+-    .map(([key, item]) => [key, boundSnapshotScalar(item, depth + 1)]));
++    .map(([key, item]) => [boundIdentity(key), boundSnapshotScalar(item, depth + 1)]));
+ }
+ 
+ function identityToken(value) {
+@@ -70,12 +81,17 @@ function identityToken(value) {
+ }
+ 
+ function boundIdentity(value) {
+-  if (typeof value !== 'string' || value.length <= SNAPSHOT_TEXT_LIMIT) return value;
++  if (typeof value !== 'string'
++    || (value.length <= SNAPSHOT_TEXT_LIMIT && !unsafeProviderString(value))) return value;
+   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
+ }
+ 
++function privacySafeIdentity(value) {
++  return unsafeProviderString(value) ? boundIdentity(value) : value;
++}
++
+ function validBoundedJobUrl(value) {
+-  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT || UNSAFE_PROVIDER_DIAGNOSTIC.test(value)) return null;
++  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT || unsafeProviderString(value)) return null;
+   try {
+     const url = new URL(value);
+     return (url.protocol === 'https:' || url.protocol === 'http:')
+@@ -88,11 +104,16 @@ function validBoundedJobUrl(value) {
+ }
+ 
+ function safeProviderDiagnostic(value) {
+-  return typeof value === 'string' && UNSAFE_PROVIDER_DIAGNOSTIC.test(value)
++  return unsafeProviderString(value)
+     ? REDACTED_PROVIDER_DIAGNOSTIC
+     : value;
+ }
+ 
++function unsafeProviderString(value) {
++  return typeof value === 'string'
++    && (value.length > PRIVATE_MONITOR_SCAN_LIMIT || UNSAFE_PROVIDER_DIAGNOSTIC.test(value));
++}
++
+ function boundMonitorRecord(record) {
+   const safeError = safeProviderDiagnostic(record.data?.error);
+   const safeRecord = safeError !== record.data?.error
+@@ -112,7 +133,7 @@ function boundMonitorRecord(record) {
+ function durableMonitorRecord(record) {
+   return {
+     ...boundMonitorRecord(record),
+-    ...(typeof record.repo === 'string' ? { repo: record.repo } : {}),
++    ...(typeof record.repo === 'string' ? { repo: privacySafeIdentity(record.repo) } : {}),
+   };
+ }
+ 
+@@ -134,7 +155,7 @@ function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
+   if (Buffer.byteLength(serialized) > PENDING_BATCH_OUTPUT_LIMIT) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its recovery bound');
+   }
+-  const encoded = zlib.gzipSync(serialized, { level: 9 }).toString('base64url');
++  const encoded = encodePrivateSafeBase64(zlib.gzipSync(serialized, { level: 9 }));
+   if (encoded.length > PENDING_BATCH_LIMIT) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its durable bound');
+   }
+@@ -146,7 +167,7 @@ function decodePendingBatch(value, ctx, subjectRevision) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition batch is missing');
+   }
+   try {
+-    const decoded = JSON.parse(zlib.gunzipSync(Buffer.from(value, 'base64url'), {
++    const decoded = JSON.parse(zlib.gunzipSync(decodePrivateSafeBase64(value), {
+       maxOutputLength: PENDING_BATCH_OUTPUT_LIMIT,
+     }));
+     const { batch_id: batchId, ...core } = decoded || {};
+@@ -267,7 +288,7 @@ function compactSnapshot(value) {
+   const evidenceJson = JSON.stringify(evidence);
+   const durableScalar = {
+     ...compact,
+-    ...(typeof source.repo === 'string' ? { repo: source.repo } : {}),
++    ...(typeof source.repo === 'string' ? { repo: privacySafeIdentity(source.repo) } : {}),
+     _snapshotFormat: SNAPSHOT_FORMAT,
+   };
+   return {
+@@ -275,7 +296,7 @@ function compactSnapshot(value) {
+     _snapshotIdentity: crypto.createHash('sha256')
+       .update(JSON.stringify({ snapshot: durableScalar, evidence }))
+       .digest('hex'),
+-    _snapshotEvidence: zlib.gzipSync(evidenceJson, { level: 9 }).toString('base64url'),
++    _snapshotEvidence: encodePrivateSafeBase64(zlib.gzipSync(evidenceJson, { level: 9 })),
+   };
+ }
+ 
+@@ -289,7 +310,7 @@ function comparableSnapshot(compact, source = null) {
+   if (compact?._snapshotFormat !== SNAPSHOT_FORMAT) return compact;
+   let evidence;
+   try {
+-    evidence = JSON.parse(zlib.gunzipSync(Buffer.from(compact._snapshotEvidence, 'base64url')));
++    evidence = JSON.parse(zlib.gunzipSync(decodePrivateSafeBase64(compact._snapshotEvidence)));
+   } catch {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor snapshot evidence is malformed');
+   }
+@@ -1213,6 +1234,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+ 
+ module.exports = {
+   FlowMonitorError,
++  privacySafeIdentity,
+   runFlowMonitorPass,
+-  _internals: { appendPendingBatch },
++  _internals: { appendPendingBatch, decodePrivateSafeBase64, encodePrivateSafeBase64 },
+ };
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 735055bf..c1601e1d 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -357,6 +357,25 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     };
+   }
+ 
++  function publicMonitorDriver(appended) {
++    return {
++      appendMonitorEvent: async (event) => { appended.push(event); return { idempotent: false }; },
++      getMonitorEvent: async eventId => {
++        const event = appended.find(item => item.payload.event_id === eventId);
++        return event ? { envelope_json: JSON.stringify(event), content_hash: event.content_hash } : null;
++      },
++      readMonitorEventTail: async () => ({
++        events: [], overflow: false, truncated_before_sequence: null,
++      }),
++      readMonitorDeliveryState: async () => ({
++        cursors: [], outbox: [], terminal_receipt: null,
++        overflow: { cursors: false, outbox: false },
++      }),
++      recordMonitorDeliveryReceipt: async () => ({ idempotent: false }),
++      recordMonitorTerminalReceipt: async () => ({ idempotent: false }),
++    };
++  }
++
+   let root; let dir;
+   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-verb-')); dir = journal.journalDir({ root, repo: 'r', pr: '1' }); });
+   afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+@@ -409,6 +428,49 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(closed).toBe(true);
+   });
+ 
++  test('hashes a private-shaped repository token across every Memory authority identity', async () => {
++    const repo = `ghp_${'a'.repeat(20)}`;
++    const appended = [];
++    const driver = publicMonitorDriver(appended);
++    const built = await shepherdCmd.buildMonitorContext('7', root, {
++      forceAuthority: true,
++      gather: async () => snap(),
++      buildContext: async () => ({
++        pr: '7', owner: 'acme', repo, base: 'master', baseRef: 'origin/master',
++      }),
++      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
++      resolveGitCommonDir: () => path.join(root, '.git'),
++      buildKernelDeps: async () => ({ kernelDriver: driver, kernelBroker: { close: async () => {} } }),
++    });
++
++    for (const identity of [built.monitorId, built.ownerRunId, built.packetId, built.subjectId]) {
++      expect(identity).not.toContain(repo);
++      expect(identity).toMatch(/sha256:[0-9a-f]{64}/);
++    }
++    const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
++    await runFlowMonitorPass({ ...built, deliverLegacy: async () => {}, now });
++    expect(appended).toHaveLength(1);
++  });
++
++  test('sanitizes complete Memory authority identities after composing repository and PR', async () => {
++    const appended = [];
++    const driver = publicMonitorDriver(appended);
++    const built = await shepherdCmd.buildMonitorContext('12345678', root, {
++      forceAuthority: true,
++      gather: async () => snap(),
++      buildContext: async () => ({
++        pr: '12345678', owner: 'acme', repo: 'token', base: 'master', baseRef: 'origin/master',
++      }),
++      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
++      resolveGitCommonDir: () => path.join(root, '.git'),
++      buildKernelDeps: async () => ({ kernelDriver: driver, kernelBroker: { close: async () => {} } }),
++    });
++
++    const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
++    await runFlowMonitorPass({ ...built, deliverLegacy: async () => {}, now });
++    expect(appended).toHaveLength(1);
++  });
++
+   test('falls back to the per-root journal when Memory authority initialization fails', async () => {
+     let attempted = 0;
+     const built = await shepherdCmd.buildMonitorContext('7', root, {

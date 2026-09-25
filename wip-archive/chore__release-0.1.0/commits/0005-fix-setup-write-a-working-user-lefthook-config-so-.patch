@@ -1,0 +1,208 @@
+From 1ef749cd065e980fc6bd2d600be97737975e0a89 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 17:37:43 +0530
+Subject: [PATCH] fix(setup): write a working user lefthook config so the
+ workflow is reachable after init
+
+Fresh forge init/setup left stage commands dead-ended on HOOKS_NOT_ACTIVE: lefthook's
+postinstall drops a fully-commented stub lefthook.yml, which blocked Forge's copy
+(guarded by a bare existence check), and the config Forge shipped referenced repo-internal
+scripts/ a user project never has. Now Forge writes a minimal user config (pre-commit ->
+.forge/hooks/check-tdd.js, pre-push -> npm test --if-present), overwriting only a
+disposable stub and never a real config. Verified end-to-end: init -> hooks install ->
+forge plan unblocked -> a real commit passes the TDD gate. (kernel c713fce7)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                               |  1 +
+ lib/commands/setup.js                      | 60 ++++++++++++++---
+ test/commands/lefthook-user-config.test.js | 78 ++++++++++++++++++++++
+ 3 files changed, 131 insertions(+), 8 deletions(-)
+ create mode 100644 test/commands/lefthook-user-config.test.js
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ed944c13..980af40f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -23,6 +23,7 @@ First public release. The default issue backend changed from Beads to the built-
+ 
+ ### Fixed
+ 
++- **The core workflow is now reachable out of the box after `forge init` / `forge setup`.** Previously, lefthook's own postinstall dropped a fully-commented stub `lefthook.yml` that blocked Forge from writing a real config, so `forge plan` / `dev` / `ship` all dead-ended on `HOOKS_NOT_ACTIVE: missing required hooks: pre-commit, pre-push`. Forge now writes a minimal user-facing lefthook config wiring the self-contained TDD gate (`.forge/hooks/check-tdd.js`) on pre-commit and the project's own tests on pre-push — referencing only files a user project actually has (never Forge's repo-internal `scripts/`) — and overwrites the disposable stub while never clobbering a real config. (#334)
+ - `forge export` now actually projects Kernel issues to git-tracked JSONL. The command dispatcher injects a Kernel broker for `export`, and Kernel mutations enqueue the projection-outbox marker under the `jsonl` target the export consumer drains — so the Kernel git-persistence/portability loop works end to end. (#270)
+ - First-run hint from `forge status` pointed at a nonexistent docs topic (`forge docs workflow`); it now points at `forge docs setup`. (#334)
+ - Removed stale "Beads" wording from live `forge --help` output — the `board` and `test` command descriptions now reference the kernel. (#334)
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index fbcba2bd..87d47c83 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2631,6 +2631,48 @@ function installForgeHookScripts() {
+   }
+ }
+ 
++// The lefthook.yml Forge writes into a USER project. The repo's own dev lefthook.yml
++// references repo-internal scripts (scripts/branch-protection.js, lint.js, test.js, …)
++// that a user's project never has, so shipping it to users produced hooks that fail on
++// the first commit. This minimal config references only what every Forge project gets:
++// the self-contained TDD gate (.forge/hooks/check-tdd.js) on pre-commit, and the
++// project's own test script (no-op when absent) on pre-push. Both hooks exist, so the
++// HOOKS_NOT_ACTIVE gate is satisfied and the workflow is reachable out of the box.
++const FORGE_USER_LEFTHOOK_YML = `# Forge git hooks — installed by \`forge setup\` / \`forge init\`.
++# pre-commit enforces the TDD gate; pre-push runs your test script if you have one.
++# Edit freely to add your own checks — Forge only replaces a fully-commented stub.
++
++pre-commit:
++  commands:
++    forge-tdd:
++      run: node .forge/hooks/check-tdd.js
++
++pre-push:
++  commands:
++    tests:
++      run: npm test --if-present
++`;
++
++// A fresh \`lefthook install\` (run by lefthook's own npm postinstall) drops a stock
++// EXAMPLE lefthook.yml with every hook commented out. That disposable stub used to block
++// Forge from writing its config, leaving pre-commit/pre-push unwired so every stage
++// command dead-ended on HOOKS_NOT_ACTIVE right after \`forge init\` (kernel c713fce7).
++// Overwrite a missing file or such a stub, but never clobber a lefthook.yml that already
++// has active (uncommented) jobs — a user's real config, or Forge's own once written.
++function forgeShouldWriteLefthookConfig(lefthookTarget) {
++  let content;
++  try {
++    content = fs.readFileSync(lefthookTarget, 'utf8');
++  } catch {
++    return true; // no existing file → write Forge's config
++  }
++  const activeLines = content
++    .split(/\r?\n/)
++    .map((line) => line.trim())
++    .filter((line) => line.length > 0 && !line.startsWith('#'));
++  return activeLines.length === 0;
++}
++
+ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
+   console.log('Installing git hooks (TDD enforcement)...');
+ 
+@@ -2650,16 +2692,16 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+     return;
+   }
+ 
+-  // Check if lefthook.yml exists (it should, as it's in the package)
+-  const lefthookConfig = path.join(packageDir, 'lefthook.yml');
+-
+   try {
+-    // Copy lefthook.yml to project root
++    // Write the user-facing lefthook.yml (references only .forge/hooks/check-tdd.js and
++    // the project's own tests — never the repo's internal scripts/). Overwrite lefthook's
++    // own disposable stub so Forge's pre-commit/pre-push wiring actually lands; never
++    // clobber a config that already has active jobs (kernel c713fce7).
+     const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
+-    if (!fs.existsSync(lefthookTarget)) {
+-      if (copyFile(lefthookConfig, 'lefthook.yml')) {
+-        console.log('  ✓ Created lefthook.yml');
+-      }
++    if (forgeShouldWriteLefthookConfig(lefthookTarget)) {
++      fs.writeFileSync(lefthookTarget, FORGE_USER_LEFTHOOK_YML, 'utf8');
++      actionLog.add('lefthook.yml', 'created');
++      console.log('  ✓ Created lefthook.yml');
+     }
+ 
+     // (The Forge hook scripts — check-tdd.js + forge-native-hook.js — are installed
+@@ -4173,6 +4215,8 @@ module.exports = {
+   autoSetupToolsInQuickMode,
+   autoMigrateBeadsToKernel,
+   ensureGitHooksInstalled,
++  forgeShouldWriteLefthookConfig,
++  FORGE_USER_LEFTHOOK_YML,
+   setupClaudeMcpConfig,
+   setupCursorMcpConfig,
+   setupClaudePermissions,
+diff --git a/test/commands/lefthook-user-config.test.js b/test/commands/lefthook-user-config.test.js
+new file mode 100644
+index 00000000..52fbdc18
+--- /dev/null
++++ b/test/commands/lefthook-user-config.test.js
+@@ -0,0 +1,78 @@
++'use strict';
++
++// Regression coverage for kernel c713fce7: a fresh `forge init` used to leave the core
++// workflow unreachable (HOOKS_NOT_ACTIVE) because lefthook's own postinstall drops a
++// fully-commented stub lefthook.yml that blocked Forge from writing a real config, and
++// the config Forge did ship referenced repo-internal scripts a user project never has.
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  forgeShouldWriteLefthookConfig,
++  FORGE_USER_LEFTHOOK_YML,
++} = require('../../lib/commands/setup');
++
++function writeTemp(content) {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-lefthook-'));
++  const file = path.join(dir, 'lefthook.yml');
++  fs.writeFileSync(file, content, 'utf8');
++  return { dir, file };
++}
++
++describe('forgeShouldWriteLefthookConfig', () => {
++  test('writes when no lefthook.yml exists', () => {
++    const missing = path.join(os.tmpdir(), 'forge-nope', 'lefthook.yml');
++    expect(forgeShouldWriteLefthookConfig(missing)).toBe(true);
++  });
++
++  test('overwrites lefthook\'s fully-commented stock stub', () => {
++    const stub = [
++      '# EXAMPLE USAGE:',
++      '#',
++      '# pre-commit:',
++      '#   commands:',
++      '#     lint:',
++      '#       run: yarn lint',
++      '',
++    ].join('\n');
++    const { dir, file } = writeTemp(stub);
++    try {
++      expect(forgeShouldWriteLefthookConfig(file)).toBe(true);
++    } finally {
++      fs.rmSync(dir, { recursive: true, force: true });
++    }
++  });
++
++  test('never clobbers a config that already has active jobs', () => {
++    const { dir, file } = writeTemp(FORGE_USER_LEFTHOOK_YML);
++    try {
++      expect(forgeShouldWriteLefthookConfig(file)).toBe(false);
++    } finally {
++      fs.rmSync(dir, { recursive: true, force: true });
++    }
++    // A user's own hand-authored config is likewise preserved.
++    const userCfg = writeTemp('pre-commit:\n  commands:\n    mine:\n      run: make check\n');
++    try {
++      expect(forgeShouldWriteLefthookConfig(userCfg.file)).toBe(false);
++    } finally {
++      fs.rmSync(userCfg.dir, { recursive: true, force: true });
++    }
++  });
++});
++
++describe('FORGE_USER_LEFTHOOK_YML', () => {
++  test('wires both hooks the HOOKS_NOT_ACTIVE gate requires', () => {
++    expect(FORGE_USER_LEFTHOOK_YML).toMatch(/^pre-commit:/m);
++    expect(FORGE_USER_LEFTHOOK_YML).toMatch(/^pre-push:/m);
++  });
++
++  test('references only files a user project actually has — never repo-internal scripts/', () => {
++    expect(FORGE_USER_LEFTHOOK_YML).toContain('.forge/hooks/check-tdd.js');
++    // The repo's dev config referenced scripts/branch-protection.js, lint.js, test.js …
++    // which a user never gets; shipping those to users is the bug this guards against.
++    expect(FORGE_USER_LEFTHOOK_YML).not.toContain('scripts/');
++  });
++});
+-- 
+2.51.0.windows.1
+

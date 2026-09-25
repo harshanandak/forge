@@ -1,0 +1,117 @@
+From 1732abd9b4aa48e842d32721f3438cb2b619ff6f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 07:43:42 +0530
+Subject: [PATCH] fix(flow): consume rejected callback thenables
+
+---
+ packages/flow/src/executor.js              |  7 ++++++-
+ packages/flow/src/monitor-runtime.js       |  9 +++++++++
+ packages/flow/test/executor.test.js        | 20 ++++++++++++++++++++
+ packages/flow/test/monitor-runtime.test.js | 22 ++++++++++++++++++++++
+ 4 files changed, 57 insertions(+), 1 deletion(-)
+
+diff --git a/packages/flow/src/executor.js b/packages/flow/src/executor.js
+index 1268001a..84892968 100644
+--- a/packages/flow/src/executor.js
++++ b/packages/flow/src/executor.js
+@@ -251,7 +251,12 @@ function createWorkPacketExecutor({ run, onReceipt = () => {} } = {}) {
+       }
+       acceptedPackets.set(identity, { packetHash: workPacket.content_hash, receipt: structuredClone(receipt) });
+       try {
+-        onReceipt(structuredClone(receipt));
++        const observation = onReceipt(structuredClone(receipt));
++        if (observation !== null
++          && (typeof observation === "object" || typeof observation === "function")
++          && typeof observation.then === "function") {
++          Promise.resolve(observation).catch(() => {});
++        }
+       } catch {
+         // Receipt observation is secondary and cannot change the accepted execution result.
+       }
+diff --git a/packages/flow/src/monitor-runtime.js b/packages/flow/src/monitor-runtime.js
+index 1e86de03..6aee48b1 100644
+--- a/packages/flow/src/monitor-runtime.js
++++ b/packages/flow/src/monitor-runtime.js
+@@ -149,6 +149,15 @@ function callbackBoolean(name, callback, ...args) {
+   } catch {
+     throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
+   }
++  try {
++    if (decision !== null
++      && (typeof decision === "object" || typeof decision === "function")
++      && typeof decision.then === "function") {
++      Promise.resolve(decision).catch(() => {});
++    }
++  } catch {
++    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
++  }
+   if (typeof decision !== "boolean") {
+     throw new MonitorRuntimeError("INVALID_CALLBACK_DECISION", `${name} must return a synchronous boolean`);
+   }
+diff --git a/packages/flow/test/executor.test.js b/packages/flow/test/executor.test.js
+index 13198d00..9f4b1b6f 100644
+--- a/packages/flow/test/executor.test.js
++++ b/packages/flow/test/executor.test.js
+@@ -130,6 +130,26 @@ describe("WorkPacket executor", () => {
+     expect(emissions).toBe(1);
+   });
+ 
++  test("consumes a rejected asynchronous receipt observer", async () => {
++    let rejectionConsumed = false;
++    const rejection = Promise.reject(new Error("observer unavailable"));
++    const consume = rejection.catch.bind(rejection);
++    rejection.catch = (handler) => {
++      rejectionConsumed = true;
++      return consume(handler);
++    };
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult(),
++      onReceipt: () => rejection,
++    });
++
++    const receipt = executor.execute(packet(), context());
++    await Promise.resolve();
++
++    expect(receipt.payload.status).toBe("PASS");
++    expect(rejectionConsumed).toBe(true);
++  });
++
+   test("fails closed when the same packet identity carries different content", () => {
+     let runs = 0;
+     const executor = createWorkPacketExecutor({ run: () => { runs += 1; return successfulResult(); } });
+diff --git a/packages/flow/test/monitor-runtime.test.js b/packages/flow/test/monitor-runtime.test.js
+index 0d0bfd46..f52c2405 100644
+--- a/packages/flow/test/monitor-runtime.test.js
++++ b/packages/flow/test/monitor-runtime.test.js
+@@ -88,6 +88,28 @@ describe("MonitorSpec deterministic reducer", () => {
+     })).toThrow("synchronous boolean");
+   });
+ 
++  test.each(["filter", "terminalPredicate"])("consumes a rejected asynchronous %s decision", async (callbackName) => {
++    let rejectionConsumed = false;
++    const rejection = {
++      then(_resolve, reject) {
++        rejectionConsumed = true;
++        reject(new Error(`${callbackName} unavailable`));
++      },
++    };
++    const monitorSpec = spec({
++      terminalPredicate: callbackName === "terminalPredicate" ? () => rejection : () => false,
++      ...(callbackName === "filter" ? { filter: () => rejection } : {}),
++    });
++
++    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation",
++      event: observation(0, "PENDING"),
++    })).toThrow("synchronous boolean");
++    await Promise.resolve();
++    await Promise.resolve();
++    expect(rejectionConsumed).toBe(true);
++  });
++
+   test.each([
+     ["source adapter item", { sourceAdapters: [42] }],
+     ["delivery target item", { deliveryTargets: [""] }],
+-- 
+2.51.0.windows.1
+

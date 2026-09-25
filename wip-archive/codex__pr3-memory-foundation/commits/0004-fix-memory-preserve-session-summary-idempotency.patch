@@ -1,0 +1,82 @@
+From aa19bd0b5b41c5ea07a9313135a51a3debc6cf66 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:10:55 +0530
+Subject: [PATCH] fix(memory): preserve session summary idempotency
+
+---
+ .../decisions.md                               | 14 ++++++++++++++
+ lib/commands/remember.js                       |  8 ++++++--
+ test/commands/remember.test.js                 | 18 ++++++++++++++++++
+ 3 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-08-09-forge-product-restructure/decisions.md b/docs/work/2026-08-09-forge-product-restructure/decisions.md
+index 901cb7a1..05d6ec58 100644
+--- a/docs/work/2026-08-09-forge-product-restructure/decisions.md
++++ b/docs/work/2026-08-09-forge-product-restructure/decisions.md
+@@ -19,3 +19,17 @@
+ **Route**: BLOCKED
+ **Choice made**: Do not integrate the unused PR 1 trace commits. Move the production linkage outcome to PR 4B after PR 2 freezes the Memory-owned evidence contract, then wire ship/merge using the validated immutable receipt. Keep the Kernel primitive branch available for rebasing rather than inventing evidence.
+ **Status**: RESOLVED
++
++## Decision 3
++
++**Date**: 2026-08-10
++**Task**: PR 3 Memory foundation — durable monitor event, delivery receipt, cursor, and terminal receipt storage
++**Gap**: The approved plan fixes the public `MonitorEvent`, `DeliveryReceipt`, and `MonitorReceipt` contracts and requires durable, idempotent sequence/cursor behavior, but it does not specify the physical storage model, table ownership, uniqueness keys, acknowledgement transaction, migration rollback, or whether the existing Kernel event/projection outbox may be reused. Implementing schema or migration code now would invent a persistent authority contract.
++**Score**: 12/14; mandatory override — persistent schema/data model and rollback boundary
++**Route**: BLOCKED (schema slice only)
++**Alternatives**:
++1. Reuse `kernel_events` plus the existing projection outbox/dead-letter tables. This avoids a migration, but those tables currently model Kernel authority events and JSONL projection delivery; their target/status model does not prove per-monitor sequence cursors, acknowledgements, terminal receipts, or transport delivery semantics.
++2. Add Memory-owned monitor event, delivery receipt/cursor, terminal receipt, and feedback report tables. This gives explicit query and uniqueness semantics, but the approved plan does not define the keys, acknowledgement transaction, retention indexes, or rollback contract required to create them safely.
++3. Keep the public `@forge/memory` interface storage-agnostic, append validated monitor contracts through an adapter backed by existing Kernel primitives only where their semantics are proven, and defer any new physical schema until a follow-up decision freezes keys, transactions, indexes, and rollback. This is the smallest safe migration path but cannot claim the full durable monitor-storage outcome yet.
++**Choice made**: Stop only the monitor schema/migration slice. Continue non-dependent recall, retention, read-attention, and session-summary work. Recommend alternative 3, subject to an approved schema decision proving whether existing primitives satisfy every sequence/cursor/receipt invariant; do not create tables or migrations from inference.
++**Status**: PENDING-DEVELOPER-INPUT
+diff --git a/lib/commands/remember.js b/lib/commands/remember.js
+index 09d72c0e..dd23478e 100644
+--- a/lib/commands/remember.js
++++ b/lib/commands/remember.js
+@@ -119,8 +119,12 @@ async function handler(args, _flags, projectRoot) {
+   ];
+   let entry;
+   if (hashTag) {
+-    const recent = memoryRouter.recall(projectRoot, { limit: 100 }).notes;
+-    entry = recent.find(note => Array.isArray(note.tags) && note.tags.includes(hashTag));
++    const matches = memoryRouter.recall(projectRoot, {
++      query: contentHash,
++      limit: 2,
++      all: true,
++    }).notes;
++    entry = matches.find(note => Array.isArray(note.tags) && note.tags.includes(hashTag));
+   }
+   if (!entry) entry = memoryRouter.append(projectRoot, body, { tags: allTags });
+ 
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index f35428c1..73aaabdd 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -151,4 +151,22 @@ describe('forge remember command', () => {
+       content_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+     });
+   });
++
++  test('session-summary idempotency is not limited to the newest 100 memories', async () => {
++    const projectRoot = makeProjectRoot();
++    const args = ['--session-summary', '--what', 'implemented hook', '--json'];
++    const first = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
++    for (let index = 0; index < 101; index += 1) {
++      projectMemory.write(projectRoot, {
++        key: `newer-${index}`,
++        value: `newer note ${index}`,
++        sourceAgent: 'forge remember',
++        tags: [],
++        timestamp: `2099-08-09T00:${String(index % 60).padStart(2, '0')}:00.000Z`,
++      });
++    }
++
++    const repeated = JSON.parse((await remember.handler(args, {}, projectRoot)).output);
++    expect(repeated.id).toBe(first.id);
++  });
+ });
+-- 
+2.51.0.windows.1
+

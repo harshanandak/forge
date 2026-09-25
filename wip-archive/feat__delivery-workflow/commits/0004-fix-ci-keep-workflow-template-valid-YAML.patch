@@ -1,0 +1,137 @@
+From 2d5e4297d9307e984b636f629deb06daf4a1df24 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 18:09:21 +0530
+Subject: [PATCH] fix(ci): keep workflow template valid YAML
+
+---
+ CHANGELOG.md                    |  2 +-
+ lib/test-workflow.js            |  2 +-
+ lib/workflow-templates/test.yml | 16 ++++++++--------
+ test/test-workflow.test.js      |  2 ++
+ 4 files changed, 12 insertions(+), 10 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ef75e9c2..26959f35 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Added
+ 
+-- **Deterministic full generation for the test workflow.** `forge release generate-test-workflow --expect-head <sha>` renders `.github/workflows/test.yml` from its canonical staged template and Bun pin under an exact actor, worktree, source-HEAD, path, operation, and content-bound authorization. Bun pin updates delegate this workflow to the same renderer, preventing partial pin replacement from authorizing unrelated CI changes. (issue `a541c8ca-579d-4b8e-9bfd-7980b7547302`)
++- **Deterministic full generation for the test workflow.** `forge release generate-test-workflow --expect-head <sha>` renders `.github/workflows/test.yml` from its canonical staged template and Bun pin under an exact actor, worktree, source-HEAD, path, operation, and content-bound authorization. Bun pin updates delegate this workflow to the same renderer, preventing partial pin replacement from authorizing unrelated CI changes. (PR #567; issue `a541c8ca-579d-4b8e-9bfd-7980b7547302`)
+ - **Optional transparent GitHub account routing per clone.** `forge github use <login> --auto` extends the existing secure account binding to shell-resolved `gh` and HTTPS Git commands when Forge's router is first on PATH, so concurrent terminals and harness shells can use different native GitHub CLI accounts without per-launch wrapping. Unbound and non-enabled clones pass through unchanged; local-only commands and `gh auth` remain native, while network-capable aliases and extensions inherit the selected account. V1 is public `github.com` only; built-in destination conflicts and non-public targets fail closed, and arbitrary user-installed code remains outside Forge's wrong-destination guarantee. The machine-local router registry must refuse uninstall while another verified clone remains enabled and must never store credentials. Release acceptance requires the installed PATH chain and warm median targets of 250 ms for unbound/local-only routing and 1,000 ms for bound `gh` and helper resolution. Forge never stores a token. (PR #563; issue `8168bee5-b74e-44e5-8fd8-1b9ccb917c1d`)
+ 
+ ## [0.1.0-beta.7] - 2026-09-11
+diff --git a/lib/test-workflow.js b/lib/test-workflow.js
+index 25a4c5cb..df16a542 100644
+--- a/lib/test-workflow.js
++++ b/lib/test-workflow.js
+@@ -24,7 +24,7 @@ const { verifyExpectedHead } = require('./npm-publish-workflow');
+ 
+ const TEST_WORKFLOW_PATH = '.github/workflows/test.yml';
+ const TEST_WORKFLOW_TEMPLATE_PATH = 'lib/workflow-templates/test.yml';
+-const BUN_VERSION_TOKEN = '{{BUN_VERSION}}';
++const BUN_VERSION_TOKEN = '__BUN_VERSION__';
+ const BUN_VERSION_TOKEN_COUNT = 8;
+ 
+ function renderTestWorkflow(template, bunVersion) {
+diff --git a/lib/workflow-templates/test.yml b/lib/workflow-templates/test.yml
+index 207ddb90..a641fa67 100644
+--- a/lib/workflow-templates/test.yml
++++ b/lib/workflow-templates/test.yml
+@@ -114,7 +114,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -158,7 +158,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -200,7 +200,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -240,7 +240,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -318,7 +318,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -427,7 +427,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -483,7 +483,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Ensure test-results directory
+@@ -523,7 +523,7 @@ jobs:
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@v2
+         with:
+-          bun-version: {{BUN_VERSION}}
++          bun-version: __BUN_VERSION__
+       - name: Install dependencies
+         run: bun install
+       - name: Setup test fixtures
+diff --git a/test/test-workflow.test.js b/test/test-workflow.test.js
+index 675cbf17..0ae91a4e 100644
+--- a/test/test-workflow.test.js
++++ b/test/test-workflow.test.js
+@@ -6,6 +6,7 @@ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+ const { spawnSync } = require('node:child_process');
++const yaml = require('js-yaml');
+ const { hashProtectedContent } = require('../lib/protected-state-surfaces');
+ const protectedStateAuthority = require('../lib/protected-state-authority');
+ const {
+@@ -89,6 +90,7 @@ describe('canonical test workflow renderer', () => {
+ 		const version = /^bun@(\d+\.\d+\.\d+)$/.exec(require('../package.json').packageManager)[1];
+ 
+ 		expect(template.toString('utf8').split(BUN_VERSION_TOKEN)).toHaveLength(9);
++		expect(() => yaml.load(template.toString('utf8'))).not.toThrow();
+ 		expect(renderTestWorkflow(template, version)).toEqual(current);
+ 	});
+ 
+-- 
+2.51.0.windows.1
+

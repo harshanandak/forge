@@ -1,0 +1,379 @@
+From 5a5f2cc76c1e7d45b1654514291d5645865cba9b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 15:54:56 +0530
+Subject: [PATCH] fix(kernel): populate session_id/worktree_id/expires_at on
+ claim leases (d71a824b)
+
+The claim write path left session_id, worktree_id, and expires_at null on
+every lease, so the dashboard's live session/worktree/liveness badges (PR #357)
+had nothing real to render.
+
+Wire the three fields end-to-end:
+- worktree_id: resolved at the CLI boundary (lib/forge-issues.js) from
+  FORGE_WORKTREE_ID or the current worktree dir name (detectWorktree), threaded
+  as context.worktreeId for the claim op only (worktree detection shells to git).
+- session_id: already flowed from FORGE_SESSION_ID; confirmed + covered by tests.
+- expires_at: new DEFAULT_LEASE_TTL_MS (8h) in lease-enforcer; the boundary passes
+  context.leaseTtlMs, the claim event carries lease_ttl_ms, and buildClaimRow
+  derives expires_at = claimed_at + ttl when no explicit --expires. FORGE_LEASE_TTL_MS
+  overrides; 0/invalid opts out to a null (never-expiring) lease.
+
+Broker-direct callers (and all existing null-default tests) carry no ttl, so the
+historical null=never-expires default is byte-identical for them.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/forge-issues.js                           | 44 +++++++++++++
+ lib/kernel/broker.js                          |  5 ++
+ lib/kernel/lease-enforcer.js                  | 33 +++++++++-
+ test/forge-issues.test.js                     | 51 ++++++++++++++++
+ test/kernel/lease-enforcer.test.js            | 61 +++++++++++++++++++
+ test/kernel/sqlite-driver-claims-read.test.js | 34 +++++++++++
+ 6 files changed, 227 insertions(+), 1 deletion(-)
+
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 35952a29..5261604c 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -10,6 +10,8 @@ const { createGitHubProjectionPlan } = require('./issue-sync/project-github');
+ const { createLocalBroker, buildLocalBrokerConfig } = require('./kernel/broker');
+ const { createBuiltinSQLiteDriver } = require('./kernel/sqlite-driver');
+ const { shouldUseKernelBroker } = require('./issue-backend');
++const { detectWorktree } = require('./detect-worktree');
++const { DEFAULT_LEASE_TTL_MS } = require('./kernel/lease-enforcer');
+ 
+ const OPERATION_TO_BD = {
+   create: 'create',
+@@ -496,6 +498,39 @@ function resolveIssueActor(env = {}) {
+   return undefined;
+ }
+ 
++// Resolve the worktree_id stamped onto a claim lease (kernel d71a824b) so the dashboard
++// can show WHICH worktree holds a lease (the kernel DB is shared across all worktrees of
++// a repo). Precedence: FORGE_WORKTREE_ID (explicit override) -> the current worktree's
++// directory name (git-common-dir/registry-derived via detectWorktree) -> undefined.
++// Best-effort: any failure (not a git repo, git unavailable) yields undefined, so the
++// lease's worktree_id is simply null — never a thrown error on the claim path.
++function resolveWorktreeId(projectRoot, env = {}, deps = {}) {
++  const override = typeof env.FORGE_WORKTREE_ID === 'string' ? env.FORGE_WORKTREE_ID.trim() : '';
++  if (override) return override;
++  try {
++    const detect = deps.detectWorktree || detectWorktree;
++    const info = detect(projectRoot);
++    if (info && typeof info.currentWorktree === 'string' && info.currentWorktree) {
++      return path.basename(info.currentWorktree);
++    }
++  } catch {
++    // best-effort: worktree_id is an optional presence signal, never a hard failure
++  }
++  return undefined;
++}
++
++// Resolve the lease TTL (ms) applied to a claim when the caller pins no explicit
++// --expires. FORGE_LEASE_TTL_MS overrides the DEFAULT_LEASE_TTL_MS constant; an explicit
++// 0 / negative / non-numeric value is an OPT-OUT (returns null → never-expiring lease,
++// the historical default), preserving the null-expiry capability from the CLI.
++function resolveLeaseTtlMs(env = {}) {
++  const raw = env.FORGE_LEASE_TTL_MS;
++  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_LEASE_TTL_MS;
++  const ttl = Number(raw);
++  if (!Number.isFinite(ttl) || ttl <= 0) return null;
++  return ttl;
++}
++
+ // Graceful Beads→Kernel fallback (issue 7f09ae93). When the resolved backend is
+ // Beads but Beads is NOT initialized in this project AND a Forge Kernel store
+ // already exists at `<gitCommonDir>/forge/kernel.sqlite`, route the operation to
+@@ -600,11 +635,20 @@ async function runIssueOperation(operation, rawArgs, projectRoot, deps = {}) {
+   const sessionId = typeof actorEnv.FORGE_SESSION_ID === 'string' && actorEnv.FORGE_SESSION_ID.trim()
+     ? actorEnv.FORGE_SESSION_ID.trim()
+     : undefined;
++  // The worktree id and lease TTL only shape a claim's lease row, so resolve them ONLY
++  // for the claim op — worktree detection shells out to git, and running it on every read
++  // (list/show/ready) would be pure cost. leaseTtlMs=null (explicit opt-out) is omitted so
++  // the broker keeps a null (never-expiring) lease.
++  const isClaim = operation === 'claim';
++  const worktreeId = isClaim ? resolveWorktreeId(projectRoot, actorEnv, deps) : undefined;
++  const leaseTtlMs = isClaim ? resolveLeaseTtlMs(actorEnv) : undefined;
+   const result = await service.run(operation, rawArgs, {
+     projectRoot,
+     deps,
+     ...(actor ? { actor } : {}),
+     ...(sessionId ? { sessionId } : {}),
++    ...(worktreeId ? { worktreeId } : {}),
++    ...(leaseTtlMs ? { leaseTtlMs } : {}),
+     // Kernel mutations enqueue a projection-outbox "dirty marker" that `forge export`
+     // (the D16 git-JSONL portability projection) drains under target 'jsonl'. The
+     // broker's legacy primitive default is 'beads', so without steering the target
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index bcecab93..238bed42 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -640,6 +640,11 @@ function buildClaimMutationEvent(operation, flags, actor, origin, context, args
+ 		origin,
+ 		session_id: sessionId,
+ 		worktree_id: context.worktreeId ?? null,
++		// Carry the lease TTL (ms) so buildClaimRow can derive expires_at = claimed_at + ttl
++		// when no explicit --expires is given. Absent/non-positive → null expiry (never
++		// expires), matching the historical broker-direct default. The CLI boundary
++		// (lib/forge-issues.js) supplies context.leaseTtlMs; broker-direct callers omit it.
++		lease_ttl_ms: context.leaseTtlMs ?? null,
+ 		payload,
+ 	};
+ }
+diff --git a/lib/kernel/lease-enforcer.js b/lib/kernel/lease-enforcer.js
+index 576bd1a8..9a8db5f8 100644
+--- a/lib/kernel/lease-enforcer.js
++++ b/lib/kernel/lease-enforcer.js
+@@ -2,6 +2,32 @@
+ 
+ const { normalizePayload } = require('./evaluators');
+ 
++// Default lease TTL (kernel d71a824b): how long a claim lease stays live before it
++// is eligible for expiry-reclaim, when the caller does not pin an explicit
++// expires_at (--expires). This is the ONE place the lease duration lives, reused by
++// the CLI boundary (lib/forge-issues.js) to stamp a real expires_at so the dashboard's
++// liveness layer has something to compute against. 8 hours: long enough to outlast a
++// normal agent work session (no heartbeat/renewal exists yet, so a shorter window
++// would risk expiring mid-work and letting another agent reclaim → silent double-work),
++// short enough that a dead agent's lease frees within a working day. Callers that
++// bypass the boundary (broker-direct, tests) carry no ttl and keep the historical
++// null default (never expires).
++const DEFAULT_LEASE_TTL_MS = 8 * 60 * 60 * 1000;
++
++// Compute a lease expires_at from claimed_at (`now`) + a TTL in milliseconds. Returns
++// null (never expires) for an absent/non-positive/non-finite ttl or an unparseable
++// `now`, so a missing ttl is byte-identical to the historical null default. The result
++// is always the canonical Date#toISOString form isValidExpiresAt requires (…mmmZ), so
++// lexicographic comparison in isLeaseExpired stays chronological.
++function computeLeaseExpiry(now, ttlMs) {
++	if (ttlMs === null || ttlMs === undefined) return null;
++	const ttl = Number(ttlMs);
++	if (!Number.isFinite(ttl) || ttl <= 0) return null;
++	const base = Date.parse(now);
++	if (Number.isNaN(base)) return null;
++	return new Date(base + ttl).toISOString();
++}
++
+ // Pure claim-lease enforcement helpers (task 9.5.10). No I/O — the broker
+ // performs all reads/writes and the DB partial UNIQUE index
+ // (idx_kernel_claims_active_lease) is the hard race-safe guarantee. These
+@@ -58,7 +84,10 @@ function buildClaimRow(event, now) {
+ 		session_id: event.session_id ?? null,
+ 		worktree_id: event.worktree_id ?? null,
+ 		claimed_at: now,
+-		expires_at: payload.expires_at ?? null,
++		// An explicit expires_at (from --expires) wins; otherwise derive from the event's
++		// lease_ttl_ms + claimed_at so the CLI boundary can stamp a real expiry. No ttl on
++		// the event → null (never expires), preserving the historical broker-direct default.
++		expires_at: payload.expires_at ?? computeLeaseExpiry(now, event.lease_ttl_ms),
+ 	};
+ }
+ 
+@@ -107,8 +136,10 @@ function buildClaimConflict(event, activeClaim, reason = 'claim_conflict') {
+ }
+ 
+ module.exports = {
++	DEFAULT_LEASE_TTL_MS,
+ 	buildClaimConflict,
+ 	buildClaimRow,
++	computeLeaseExpiry,
+ 	isLeaseExpired,
+ 	isValidExpiresAt,
+ 	planClaimAcquisition,
+diff --git a/test/forge-issues.test.js b/test/forge-issues.test.js
+index 73bd6a44..8a554fc6 100644
+--- a/test/forge-issues.test.js
++++ b/test/forge-issues.test.js
+@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
++const { DEFAULT_LEASE_TTL_MS } = require('../lib/kernel/lease-enforcer');
+ 
+ describe('forge issue service contract', () => {
+   test('exports service factory and operation runner', () => {
+@@ -212,6 +213,56 @@ describe('forge issue service contract', () => {
+     }]);
+   });
+ 
++  test('threads session_id, worktree_id, and lease TTL into the claim mutation context (kernel d71a824b)', async () => {
++    const { runIssueOperation } = require('../lib/forge-issues');
++    let captured;
++    await runIssueOperation('claim', ['issue-1'], '/repo', {
++      createService: () => ({
++        async run(operation, args, context) {
++          captured = context;
++          return { success: true, ok: true };
++        },
++      }),
++      // Env drives session_id + the worktree override; detectWorktree is injected so the
++      // test never shells out to git. Default TTL applies (no FORGE_LEASE_TTL_MS).
++      env: { FORGE_SESSION_ID: 'sess-boundary', FORGE_WORKTREE_ID: 'wt-boundary' },
++    });
++    expect(captured.sessionId).toBe('sess-boundary');
++    expect(captured.worktreeId).toBe('wt-boundary');
++    expect(captured.leaseTtlMs).toBe(DEFAULT_LEASE_TTL_MS);
++  });
++
++  test('a read op (show) does NOT resolve a worktree id or lease TTL (claim-only cost)', async () => {
++    const { runIssueOperation } = require('../lib/forge-issues');
++    let captured;
++    await runIssueOperation('show', ['issue-1'], '/repo', {
++      createService: () => ({
++        async run(operation, args, context) {
++          captured = context;
++          return { success: true };
++        },
++      }),
++      env: { FORGE_WORKTREE_ID: 'wt-boundary' },
++    });
++    expect(captured.worktreeId).toBeUndefined();
++    expect(captured.leaseTtlMs).toBeUndefined();
++  });
++
++  test('FORGE_LEASE_TTL_MS=0 opts out of expiry (null lease), omitting leaseTtlMs from context', async () => {
++    const { runIssueOperation } = require('../lib/forge-issues');
++    let captured;
++    await runIssueOperation('claim', ['issue-1'], '/repo', {
++      createService: () => ({
++        async run(operation, args, context) {
++          captured = context;
++          return { success: true, ok: true };
++        },
++      }),
++      env: { FORGE_WORKTREE_ID: 'wt-boundary', FORGE_LEASE_TTL_MS: '0' },
++    });
++    expect(captured.leaseTtlMs).toBeUndefined();
++  });
++
+   test('top-level operation runner forwards injected Windows platform and PATH overrides', async () => {
+     const { runIssueOperation } = require('../lib/forge-issues');
+     const calls = [];
+diff --git a/test/kernel/lease-enforcer.test.js b/test/kernel/lease-enforcer.test.js
+index 74f86cf8..3bd3187f 100644
+--- a/test/kernel/lease-enforcer.test.js
++++ b/test/kernel/lease-enforcer.test.js
+@@ -1,6 +1,9 @@
+ const { describe, expect, test } = require('bun:test');
+ 
+ const {
++	DEFAULT_LEASE_TTL_MS,
++	buildClaimRow,
++	computeLeaseExpiry,
+ 	isLeaseExpired,
+ 	isValidExpiresAt,
+ 	planClaimAcquisition,
+@@ -134,6 +137,64 @@ describe('lease-enforcer planClaimAcquisition', () => {
+ 	});
+ });
+ 
++describe('lease-enforcer computeLeaseExpiry', () => {
++	test('derives claimed_at + ttl in canonical ISO form', () => {
++		const expiry = computeLeaseExpiry(NOW, 60 * 60 * 1000);
++		expect(expiry).toBe('2026-06-18T01:00:00.000Z');
++		expect(isValidExpiresAt(expiry)).toBe(true);
++	});
++
++	test('returns null for an absent, zero, negative, or non-finite ttl (never expires)', () => {
++		expect(computeLeaseExpiry(NOW, null)).toBeNull();
++		expect(computeLeaseExpiry(NOW, undefined)).toBeNull();
++		expect(computeLeaseExpiry(NOW, 0)).toBeNull();
++		expect(computeLeaseExpiry(NOW, -5)).toBeNull();
++		expect(computeLeaseExpiry(NOW, Number.NaN)).toBeNull();
++	});
++
++	test('returns null when claimed_at is unparseable', () => {
++		expect(computeLeaseExpiry('not-a-date', 1000)).toBeNull();
++	});
++
++	test('DEFAULT_LEASE_TTL_MS is a positive finite duration', () => {
++		expect(Number.isFinite(DEFAULT_LEASE_TTL_MS)).toBe(true);
++		expect(DEFAULT_LEASE_TTL_MS).toBeGreaterThan(0);
++	});
++});
++
++describe('lease-enforcer buildClaimRow expires_at derivation', () => {
++	test('derives expires_at from the event lease_ttl_ms + claimed_at when no explicit expires_at', () => {
++		const event = claimEvent({ payload: { issue_id: 'issue-1' }, lease_ttl_ms: 60 * 60 * 1000 });
++		const row = buildClaimRow(event, NOW);
++		expect(row.expires_at).toBe('2026-06-18T01:00:00.000Z');
++		expect(row.claimed_at).toBe(NOW);
++	});
++
++	test('an explicit expires_at (from --expires) wins over the ttl', () => {
++		const event = claimEvent({
++			payload: { issue_id: 'issue-1', expires_at: '2026-06-18T02:30:00.000Z' },
++			lease_ttl_ms: 60 * 60 * 1000,
++		});
++		expect(buildClaimRow(event, NOW).expires_at).toBe('2026-06-18T02:30:00.000Z');
++	});
++
++	test('no ttl and no explicit expires_at keeps the historical null (never-expiring) default', () => {
++		const event = claimEvent({ payload: { issue_id: 'issue-1' } });
++		expect(buildClaimRow(event, NOW).expires_at).toBeNull();
++	});
++
++	test('carries session_id and worktree_id through from the event', () => {
++		const event = claimEvent({
++			payload: { issue_id: 'issue-1' },
++			session_id: 'sess-1',
++			worktree_id: 'wt-1',
++		});
++		const row = buildClaimRow(event, NOW);
++		expect(row.session_id).toBe('sess-1');
++		expect(row.worktree_id).toBe('wt-1');
++	});
++});
++
+ describe('lease-enforcer buildClaimConflict', () => {
+ 	test('falls back to an empty payload when payload_json is malformed (no throw)', () => {
+ 		const event = claimEvent({ payload: undefined, payload_json: '{bad-json' });
+diff --git a/test/kernel/sqlite-driver-claims-read.test.js b/test/kernel/sqlite-driver-claims-read.test.js
+index fdc11140..17905313 100644
+--- a/test/kernel/sqlite-driver-claims-read.test.js
++++ b/test/kernel/sqlite-driver-claims-read.test.js
+@@ -87,6 +87,40 @@ describe('Kernel SQLite driver — claims read op (active leases)', () => {
+ 		expect(claim.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+ 	});
+ 
++	test('derives expires_at from the lease TTL (claimed_at + leaseTtlMs) and reads it back (kernel d71a824b)', async () => {
++		await createIssue('clm-ttl', 'TtlLease');
++		const ttlMs = 60 * 60 * 1000; // 1h
++		await broker.runIssueOperation(
++			'claim',
++			['--issue', 'clm-ttl'],
++			{ now, actor: 'alice', sessionId: 'sess-ttl', worktreeId: 'wt-ttl', leaseTtlMs: ttlMs },
++		);
++
++		// Read while the lease is still live (well before now + 1h).
++		const res = await driver.issueOperation('claims', [], { now: '2026-06-20T00:30:00.000Z' }, config);
++		expect(res.data.count).toBe(1);
++		const claim = res.data.claims[0];
++		expect(claim.session_id).toBe('sess-ttl');
++		expect(claim.worktree_id).toBe('wt-ttl');
++		// claimed_at + 1h, canonical ISO — not null.
++		expect(claim.expires_at).toBe('2026-06-20T01:00:00.000Z');
++
++		// After the TTL elapses the lease is no longer reported live.
++		const expired = await driver.issueOperation('claims', [], { now: '2026-06-20T02:00:00.000Z' }, config);
++		expect(expired.data.count).toBe(0);
++	});
++
++	test('an explicit --expires still wins over the lease TTL', async () => {
++		await createIssue('clm-exp', 'ExplicitExpiry');
++		await broker.runIssueOperation(
++			'claim',
++			['--issue', 'clm-exp', '--expires', '2026-06-20T00:05:00.000Z'],
++			{ now, actor: 'alice', leaseTtlMs: 60 * 60 * 1000 },
++		);
++		const res = await driver.issueOperation('claims', [], { now: '2026-06-20T00:01:00.000Z' }, config);
++		expect(res.data.claims[0].expires_at).toBe('2026-06-20T00:05:00.000Z');
++	});
++
+ 	test('excludes released leases (state != active)', async () => {
+ 		await createIssue('clm-b', 'Beta');
+ 		await broker.runIssueOperation('claim', ['--issue', 'clm-b'], { now, actor: 'alice' });
+-- 
+2.51.0.windows.1
+

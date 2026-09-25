@@ -1,0 +1,752 @@
+From cdd08b1c4a1bdd1130dbcdb5e9299f74be54f77c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 12:52:25 +0530
+Subject: [PATCH] feat(shepherd): wire contained automatic triggers
+
+---
+ lib/commands/hooks.js                         |  8 +-
+ lib/commands/push.js                          | 64 +++------------
+ lib/commands/ship.js                          | 45 +++++------
+ lib/pr-monitor/reconcile-executor.js          | 26 ++++--
+ test/hooks-session-start.test.js              |  2 +-
+ test/pr-monitor/arm-on-push.test.js           | 74 -----------------
+ .../auto-trigger-containment.test.js          | 28 +++++++
+ test/pr-monitor/auto-trigger-wiring.test.js   | 81 +++++++++++++++++++
+ test/pr-monitor/reconcile-executor.test.js    |  8 +-
+ .../ship-auto-shepherd-rail.test.js           | 56 ++++++-------
+ test/pr-monitor/watch-lifecycle.test.js       | 33 ++++----
+ 11 files changed, 215 insertions(+), 210 deletions(-)
+ create mode 100644 test/pr-monitor/auto-trigger-containment.test.js
+ create mode 100644 test/pr-monitor/auto-trigger-wiring.test.js
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index e7d3062a..2260a360 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -38,6 +38,7 @@ const projectMemory = require('../project-memory');
+ const { parseHookInput, selectInjection, meaningfulTokens, DEFAULT_TOKEN_BUDGET, DEFAULT_SCORE_FLOOR } = require('../memory-recall');
+ const { fenceUntrusted } = require('../untrusted-content');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
++const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ 
+ // Default-ON rail; `forge gate disable rail.memory_recall` turns tier-2 off. Mirrors
+ // autoShepherdRailEnabled (lib/commands/ship.js): absent id = enabled, fail-open to true.
+@@ -218,10 +219,9 @@ function formatSessionStart(harness, text) {
+ async function handleSessionStart(rest, projectRoot, opts = {}) {
+   const harness = parseHarness(rest);
+   if (!sessionStartCapability(harness).rendered) return { success: true, output: '' };
+-
+-  // NOTE: the autonomous-shepherd session-start trigger is deferred to W-S4c along with the
+-  // per-command dispatch trigger — both need a firing-policy + containment design (a naive
+-  // trigger spawns a session-outliving daemon that breaks test isolation).
++  try {
++    (opts.fireAndForget || fireAndForget)({ projectRoot });
++  } catch { /* the automatic trigger must never break session start */ }
+ 
+   // The using-forge dispatch bootstrap is injected FIRST so Forge skills auto-trigger from turn
+   // one (the Superpowers mechanism): a reasoning-driven system, not just harness description
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index 749ffab7..47a9a9d5 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -5,8 +5,7 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ const forgeToken = require('../../scripts/check-forge-token');
+ const { QUICK_LANE_ENV_VAR, QUICK_LANE_VALUE } = require('../../scripts/test');
+-const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
+-const { autoShepherdRailEnabled } = require('./ship');
++const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ 
+ const isWindows = process.platform === 'win32';
+ 
+@@ -114,51 +113,20 @@ async function autoFileBackingIssueForPush(projectRoot, execFn, deps = {}) {
+ }
+ 
+ /**
+- * Resolve the OPEN PR number for the current branch via `gh pr view`. Returns
+- * null when there is no PR, gh is unavailable, or anything errors (fail-open).
+- * NEVER throws.
+- *
+- * @param {function} execFn - execFileSync or mock
+- * @returns {number|null}
+- */
+-function resolveOpenPrNumber(execFn) {
+-	try {
+-		const out = execFn('gh', ['pr', 'view', '--json', 'number', '-q', '.number'], {
+-			encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'],
+-		});
+-		const n = Number.parseInt(String(out).trim(), 10);
+-		return Number.isInteger(n) && n > 0 ? n : null;
+-	} catch (_err) { /* intentional: no open PR / gh missing → arm nothing */ // NOSONAR S2486
+-		return null;
+-	}
+-}
+-
+-/**
+- * Best-effort, NON-BLOCKING arm of the constant PR watcher after a successful
+- * push, when an OPEN PR exists for the current branch. This closes the gap where
+- * PRs not born from `forge ship` (gh pr create, the GitHub UI, an earlier push)
+- * never got a watcher. Gated by the default-ON `rail.auto_shepherd`, idempotent
+- * via the watch loop's own PID/journal lock, and reusing the same
+- * `startPrWatcherDetached` as ship. MUST NEVER throw into or fail the push: a
+- * disabled rail, no PR, a gh error, or a spawn error all degrade to
+- * `{ armed: false }`.
++ * Best-effort wake of the repository-wide singleton after a successful push.
++ * The shared trigger owns all containment and gate checks and never selects a
++ * per-PR watcher here.
+  *
+  * @param {object} params
+- * @returns {{ armed: boolean, reason?: string, prNumber?: number }}
++ * @returns {{ armed: boolean, reason?: string }}
+  */
+-function maybeArmWatcherAfterPush({
++function maybeTriggerShepherdAfterPush({
+ 	projectRoot,
+-	execFn,
+-	startWatcher = startPrWatcherDetached,
+-	railEnabled = autoShepherdRailEnabled,
+-	prLookup = resolveOpenPrNumber,
++	fireAndForget: trigger = fireAndForget,
+ }) {
+ 	try {
+-		if (!railEnabled(projectRoot)) return { armed: false, reason: 'rail.auto_shepherd disabled' };
+-		const prNumber = prLookup(execFn);
+-		if (!prNumber) return { armed: false, reason: 'no-open-pr' };
+-		const res = startWatcher({ prNumber, cwd: projectRoot });
+-		return { armed: !!(res && res.started), reason: res && res.reason, prNumber };
++		trigger({ projectRoot });
++		return { armed: true };
+ 	} catch (err) {
+ 		return { armed: false, reason: err.message };
+ 	}
+@@ -327,15 +295,10 @@ module.exports = {
+ 			};
+ 		}
+ 
+-		// Arm the constant PR watcher for this branch's open PR (best-effort,
+-		// gated by rail.auto_shepherd, never fails the push). Covers PRs not born
+-		// from `forge ship`.
+-		maybeArmWatcherAfterPush({
++		// Wake the repository-wide singleton after a successful push.
++		maybeTriggerShepherdAfterPush({
+ 			projectRoot,
+-			execFn,
+-			startWatcher: deps?.startWatcher,
+-			railEnabled: deps?.railEnabled,
+-			prLookup: deps?.prLookup,
++			fireAndForget: deps?.fireAndForget,
+ 		});
+ 
+ 		return {
+@@ -351,7 +314,6 @@ module.exports = {
+ 	_internal: {
+ 		autoFileBackingIssueForPush,
+ 		buildPushEnv,
+-		maybeArmWatcherAfterPush,
+-		resolveOpenPrNumber,
++		maybeTriggerShepherdAfterPush,
+ 	},
+ };
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 42b4bf19..44f21049 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -12,7 +12,7 @@ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+-const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
++const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ 
+ const AUTO_SHEPHERD_RAIL = 'rail.auto_shepherd';
+@@ -511,34 +511,31 @@ async function createPR(options) { // NOSONAR S3776
+ }
+ 
+ /**
+- * Best-effort, non-blocking auto-start of the constant PR monitor once a real PR
+- * exists. Skipped on a dry run or when no PR number is known. MUST NEVER fail
+- * ship: `startWatcher` (startPrWatcherDetached) already never throws, and this
+- * guard keeps even a surprise error from surfacing to the ship caller.
++ * Best-effort wake of the repository-wide singleton after a successful real ship.
++ * The shared trigger owns containment and gate checks; dry-run skips before it.
+  *
+- * Gated by the default-ON `rail.auto_shepherd` rail: when a maintainer has
+- * disabled it (`forge gate disable rail.auto_shepherd`), the watcher is skipped
+- * so the auto-start is honestly toggleable. The rail check is fail-open and
+- * wrapped in the same try/catch, so neither a disabled rail nor a config-read
+- * error ever fails ship.
+- *
+- * @param {{ dryRun: boolean, prNumber?: string|number, startWatcher: Function, railEnabled?: Function }} params
++ * @param {{ dryRun: boolean, projectRoot?: string, fireAndForget?: Function }} params
+  * @returns {{ started: boolean, reason?: string }}
+  */
+-function maybeStartPrWatcher({ dryRun, prNumber, startWatcher, railEnabled = autoShepherdRailEnabled }) {
+-	if (dryRun || !prNumber) return { started: false, reason: 'skipped' };
++function maybeTriggerShepherdAfterShip({ dryRun, projectRoot = process.cwd(), fireAndForget: trigger = fireAndForget }) {
++	if (dryRun) return { started: false, reason: 'skipped' };
+ 	try {
+-		if (!railEnabled(process.cwd())) {
+-			return { started: false, reason: 'rail.auto_shepherd disabled' };
+-		}
+-		return startWatcher({ prNumber, cwd: process.cwd() });
++		trigger({ projectRoot, dryRun });
++		return { started: true };
+ 	} catch (err) {
+ 		return { started: false, reason: err.message };
+ 	}
+ }
+ 
+ async function executeShip(options) {
+-	const { featureSlug, title, dryRun = false, startWatcher = startPrWatcherDetached, railEnabled = autoShepherdRailEnabled } = options || {};
++	const {
++		featureSlug,
++		title,
++		dryRun = false,
++		projectRoot = process.cwd(),
++		fireAndForget: trigger = fireAndForget,
++		createPr = createPR,
++	} = options || {};
+ 
+ 	// Validate feature slug
+ 	if (!featureSlug || typeof featureSlug !== 'string' || featureSlug.trim() === '') {
+@@ -588,9 +585,9 @@ async function executeShip(options) {
+ 			testScenarios,
+ 			coverage,
+ 		});
+-		const result = await createPR({ title, body: prBody, dryRun });
++		const result = await createPr({ title, body: prBody, dryRun });
+ 		if (!result.success) return result;
+-		maybeStartPrWatcher({ dryRun, prNumber: result.prNumber, startWatcher, railEnabled });
++		maybeTriggerShepherdAfterShip({ dryRun, projectRoot, fireAndForget: trigger });
+ 		return {
+ 			success: true,
+ 			prUrl: result.prUrl,
+@@ -605,11 +602,13 @@ async function executeShip(options) {
+ module.exports = {
+ 	name: 'ship',
+ 	description: 'Create a pull request from validated feature work',
+-	handler: async (args, flags = {}) => {
++	handler: async (args, flags = {}, projectRoot = process.cwd(), deps = {}) => {
+ 		const result = await executeShip({
+ 			featureSlug: args[0],
+ 			title: args[1],
+ 			dryRun: Boolean(flags.dryRun || flags['--dry-run']),
++			projectRoot,
++			fireAndForget: deps.fireAndForget,
+ 		});
+ 		if (!result.success) {
+ 			return result;
+@@ -623,7 +622,7 @@ module.exports = {
+ 			output: lines.join('\n'),
+ 		};
+ 	},
+-	maybeStartPrWatcher,
++	maybeTriggerShepherdAfterShip,
+ 	autoShepherdRailEnabled,
+ 	extractKeyDecisions,
+ 	extractTestScenarios,
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index d163acbc..55d5c8a1 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -7,12 +7,11 @@
+  * debounce guard. This module is the thin, side-effecting dispatcher over them:
+  * it gathers the two state sets (GitHub via `gh`, kernel via the broker), runs the
+  * actions `reconcile()` emits (spawn/stop/reap watchers, upsert/retire kernel_pr
+- * rows), owns the SINGLETON DAEMON lease lifecycle, and provides the per-command
+- * `fireAndForget()` trigger wired into `bin/forge.js`.
++ * rows), owns the SINGLETON DAEMON lease lifecycle, and provides the approved-seam
++ * `fireAndForget()` trigger used by session-start, push, and ship.
+  *
+  * The NON-BLOCKING / ERROR-SWALLOWING contract is paramount: `fireAndForget()`
+- * MUST never throw and never affect the command that triggered it (it is called
+- * from a `finally` in the dispatch chokepoint). Every spawn is modeled on
++ * MUST never throw and never affect the command that triggered it. Every spawn is modeled on
+  * `watch-lifecycle.startPrWatcherDetached` (detached, `stdio:'ignore'`,
+  * `windowsHide:true`, `.unref()`, no-op `'error'` listener) so a failed launch
+  * degrades to "not started" rather than crashing.
+@@ -488,10 +487,13 @@ function launchDaemon(ctx = {}) {
+ 	}
+ 	const spawnFn = ctx.spawnProcess || spawn;
+ 	try {
++		const commonRoot = path.basename(ctx.gitCommonDir || '').toLowerCase() === '.git'
++			? path.dirname(ctx.gitCommonDir)
++			: ctx.projectRoot;
+ 		const child = spawnFn(
+ 			process.execPath,
+ 			[forgeBin(), 'shepherd', 'daemon'],
+-			{ cwd: ctx.projectRoot, detached: true, stdio: 'ignore', windowsHide: true },
++			{ cwd: commonRoot, detached: true, stdio: 'ignore', windowsHide: true },
+ 		);
+ 		if (child && typeof child.on === 'function') child.on('error', () => {});
+ 		if (child && typeof child.unref === 'function') child.unref();
+@@ -570,7 +572,7 @@ function emptyEnum(gitCommonDir) {
+ }
+ 
+ /**
+- * The per-command / session-start trigger. Runs the `tick()` debounce; the hot
++ * The session-start / successful-push / successful-ship trigger. Runs the `tick()` debounce; the hot
+  * path (a fresh daemon lease) short-circuits in-process with a single lock read
+  * and no spawn. Only on the cold (G3) path does it ARBITRATE via the O_EXCL lease:
+  * the acquire-winner launches the singleton daemon (which does the real
+@@ -586,16 +588,24 @@ function emptyEnum(gitCommonDir) {
+  */
+ function fireAndForget(ctx = {}) {
+ 	try {
++		const env = ctx.env || process.env;
+ 		// Operator kill-switch (agent-agnostic): a set FORGE_SHEPHERD_DISABLE turns the
+ 		// autonomous trigger fully inert — no lease, no enumeration, no daemon spawn.
+-		if (process.env.FORGE_SHEPHERD_DISABLE) return;
++		if (
++			env.FORGE_SHEPHERD_DISABLE
++			|| env.NODE_ENV === 'test'
++			|| env.BUN_ENV === 'test'
++			|| env.CI
++			|| env.GITHUB_ACTIONS
++			|| env.GITLAB_CI
++		) return;
+ 		const projectRoot = ctx.projectRoot;
+ 		if (!projectRoot) return;
+ 		// A dry-run must have ZERO side effects, and the trigger must CREATE NOTHING in an
+ 		// uninitialized / setup-or-init TARGET repo (no-lazy-create invariant, same as prime).
+ 		// Both guards run BEFORE any git/lock touch so `setup --dry-run` / `init` stay
+ 		// side-effect- AND output-clean (kernelInitialized is silent). Checked here, not the
+-		// caller, so every trigger site (dispatch, session-start) is covered uniformly.
++		// caller, so every approved trigger site is covered uniformly.
+ 		if (ctx.dryRun) return;
+ 		if (!(ctx.kernelInitialized || kernelInitialized)(projectRoot)) return;
+ 		// Config kill-switch (same gate ship/push/adopt honor): a maintainer who ran
+diff --git a/test/hooks-session-start.test.js b/test/hooks-session-start.test.js
+index 880106a4..dbd30164 100644
+--- a/test/hooks-session-start.test.js
++++ b/test/hooks-session-start.test.js
+@@ -8,7 +8,7 @@ const NOTES = [{ note: 'Kernel is the single source of truth', timestamp: '2026-
+ const READY = [{ id: 'r1', title: 'Wire auto-file rail' }];
+ 
+ function run(args, opts) {
+-  return hooks.handler(args, {}, '/root', opts);
++  return hooks.handler(args, {}, '/root', { fireAndForget: () => {}, ...opts });
+ }
+ 
+ describe('forge hooks session-start (context hook — memory push)', () => {
+diff --git a/test/pr-monitor/arm-on-push.test.js b/test/pr-monitor/arm-on-push.test.js
+index 6255b3c5..f33c432b 100644
+--- a/test/pr-monitor/arm-on-push.test.js
++++ b/test/pr-monitor/arm-on-push.test.js
+@@ -2,82 +2,8 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ 
+-const push = require('../../lib/commands/push');
+ const shepherd = require('../../lib/commands/shepherd');
+ 
+-const { maybeArmWatcherAfterPush } = push._internal;
+-
+-// Gap 1 (epic c2d398e5, refs cf8361bc): arm the constant PR watcher on ANY open
+-// PR, not just `forge ship`. `forge push` arms the current branch's open PR;
+-// `forge shepherd watch --adopt` arms every open PR. Both reuse the existing
+-// startPrWatcherDetached, are gated by rail.auto_shepherd, and NEVER throw into
+-// the push/adopt path.
+-
+-describe('maybeArmWatcherAfterPush (forge push wiring)', () => {
+-  test('arms the watcher when the rail is on and an open PR exists', () => {
+-    const calls = [];
+-    const r = maybeArmWatcherAfterPush({
+-      projectRoot: '/r', execFn: () => '',
+-      startWatcher: (opts) => { calls.push(opts); return { started: true, pid: 1 }; },
+-      railEnabled: () => true,
+-      prLookup: () => 42,
+-    });
+-    expect(r.armed).toBe(true);
+-    expect(r.prNumber).toBe(42);
+-    expect(calls).toHaveLength(1);
+-    expect(calls[0].prNumber).toBe(42);
+-    expect(calls[0].cwd).toBe('/r');
+-  });
+-
+-  test('skips when there is no open PR for the branch', () => {
+-    let called = false;
+-    const r = maybeArmWatcherAfterPush({
+-      projectRoot: '/r', execFn: () => '',
+-      startWatcher: () => { called = true; return { started: true }; },
+-      railEnabled: () => true,
+-      prLookup: () => null,
+-    });
+-    expect(called).toBe(false);
+-    expect(r.armed).toBe(false);
+-    expect(r.reason).toBe('no-open-pr');
+-  });
+-
+-  test('skips when rail.auto_shepherd is disabled', () => {
+-    let called = false;
+-    const r = maybeArmWatcherAfterPush({
+-      projectRoot: '/r', execFn: () => '',
+-      startWatcher: () => { called = true; return { started: true }; },
+-      railEnabled: () => false,
+-      prLookup: () => 42,
+-    });
+-    expect(called).toBe(false);
+-    expect(r.armed).toBe(false);
+-    expect(r.reason).toMatch(/rail\.auto_shepherd/);
+-  });
+-
+-  test('never throws when the PR lookup throws — push must survive', () => {
+-    const r = maybeArmWatcherAfterPush({
+-      projectRoot: '/r', execFn: () => '',
+-      startWatcher: () => ({ started: true }),
+-      railEnabled: () => true,
+-      prLookup: () => { throw new Error('gh boom'); },
+-    });
+-    expect(r.armed).toBe(false);
+-    expect(r.reason).toMatch(/gh boom/);
+-  });
+-
+-  test('never throws when the watcher spawn throws', () => {
+-    const r = maybeArmWatcherAfterPush({
+-      projectRoot: '/r', execFn: () => '',
+-      startWatcher: () => { throw new Error('spawn boom'); },
+-      railEnabled: () => true,
+-      prLookup: () => 7,
+-    });
+-    expect(r.armed).toBe(false);
+-    expect(r.reason).toMatch(/spawn boom/);
+-  });
+-});
+-
+ describe('forge shepherd watch --adopt', () => {
+   test('arms a detached watcher for every open PR', async () => {
+     const calls = [];
+diff --git a/test/pr-monitor/auto-trigger-containment.test.js b/test/pr-monitor/auto-trigger-containment.test.js
+new file mode 100644
+index 00000000..e96102a4
+--- /dev/null
++++ b/test/pr-monitor/auto-trigger-containment.test.js
+@@ -0,0 +1,28 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const { fireAndForget } = require('../../lib/pr-monitor/reconcile-executor');
++
++describe('automatic singleton trigger containment', () => {
++	test.each([
++		['CI', { env: { CI: '1' } }],
++		['test', { env: { NODE_ENV: 'test' } }],
++		['dry-run', { env: {}, dryRun: true }],
++		['uninitialized', { env: {}, initialized: false }],
++		['operator disabled', { env: { FORGE_SHEPHERD_DISABLE: '1' } }],
++		['rail disabled', { env: {}, rail: false }],
++	])('%s context is inert before lease/process work', (_name, scenario) => {
++		let acquired = false;
++		fireAndForget({
++			projectRoot: '/repo',
++			gitCommonDir: '/repo/.git',
++			env: scenario.env,
++			dryRun: scenario.dryRun,
++			kernelInitialized: () => scenario.initialized !== false,
++			railEnabled: () => scenario.rail !== false,
++			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
++			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
++		});
++		expect(acquired).toBe(false);
++	});
++});
+diff --git a/test/pr-monitor/auto-trigger-wiring.test.js b/test/pr-monitor/auto-trigger-wiring.test.js
+new file mode 100644
+index 00000000..b5b80607
+--- /dev/null
++++ b/test/pr-monitor/auto-trigger-wiring.test.js
+@@ -0,0 +1,81 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { describe, test, expect } = require('bun:test');
++
++const hooks = require('../../lib/commands/hooks');
++const push = require('../../lib/commands/push');
++const { executeShip, maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
++
++function successfulPushDeps(fireAndForget) {
++	return {
++		execFileSync: () => '',
++		spawnSync: () => ({ status: 0 }),
++		existsSync: () => true,
++		log: () => {},
++		writeForgeToken: () => {},
++		fireAndForget,
++	};
++}
++
++describe('automatic singleton trigger wiring', () => {
++	test('successful session-start triggers once', async () => {
++		const calls = [];
++		const result = await hooks.handler(['session-start', '--harness', 'claude'], {}, '/repo', {
++			fireAndForget: (ctx) => calls.push(ctx),
++			loadDispatchText: () => 'dispatch',
++			fetchNotes: () => [],
++			fetchIssues: () => [],
++		});
++		expect(result.success).toBe(true);
++		expect(calls).toEqual([{ projectRoot: '/repo' }]);
++	});
++
++	test('successful push triggers once', async () => {
++		const calls = [];
++		const result = await push.handler([], {}, '/repo', successfulPushDeps((ctx) => calls.push(ctx)));
++		expect(result.success).toBe(true);
++		expect(calls).toEqual([{ projectRoot: '/repo' }]);
++	});
++
++	test('successful non-dry-run ship triggers once', async () => {
++		const calls = [];
++		const result = await executeShip({
++			featureSlug: 'auto-trigger-fixture',
++			title: 'feat: auto trigger fixture',
++			dryRun: false,
++			projectRoot: '/repo',
++			fireAndForget: (ctx) => calls.push(ctx),
++			createPr: async () => ({
++				success: true,
++				prUrl: 'https://github.com/owner/repo/pull/42',
++				prNumber: 42,
++			}),
++		});
++		expect(result.success).toBe(true);
++		expect(calls).toEqual([{ projectRoot: '/repo', dryRun: false }]);
++	});
++
++	test('dry-run ship does not trigger', () => {
++		let called = false;
++		const result = maybeTriggerShepherdAfterShip({
++			dryRun: true,
++			projectRoot: '/repo',
++			fireAndForget: () => { called = true; },
++		});
++		expect(result.started).toBe(false);
++		expect(called).toBe(false);
++	});
++
++	test('ordinary hooks and command dispatch have no automatic trigger', async () => {
++		let called = false;
++		await hooks.handler(['inbox-pickup', '--harness', 'cursor'], {}, '/repo', {
++			fireAndForget: () => { called = true; },
++		});
++		expect(called).toBe(false);
++
++		const source = fs.readFileSync(path.join(__dirname, '..', '..', 'bin', 'forge.js'), 'utf8');
++		expect(source).not.toMatch(/fireAndForget\s*\(/);
++	});
++});
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 240983b6..44e233f2 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -253,6 +253,7 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
+ 		expect(() => executor.fireAndForget({
+ 			projectRoot: '/repo',
+ 			gitCommonDir: '/repo/.git',
++			env: {},
+ 			kernelInitialized: () => true, // reach the tick so the throw-swallow is actually exercised
+ 			tick: () => { throw new Error('boom in tick'); },
+ 		})).not.toThrow();
+@@ -280,6 +281,7 @@ describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
+ 		const ctx = {
+ 			projectRoot: repo,
+ 			gitCommonDir,
++			env: {},
+ 			kernelInitialized: () => true, // bypass the no-lazy-create guard for this arbitration test
+ 			acquire,
+ 			release: () => {}, // keep the winner's lock in place so the loser truly loses
+@@ -420,10 +422,12 @@ describe('launchDaemon — capability classification + detached spawn options',
+ 			unref: () => { unrefed = true; },
+ 		};
+ 		const res = executor.launchDaemon({
+-			projectRoot: '/repo',
++			projectRoot: '/repo/.worktrees/feature',
++			gitCommonDir: '/repo/.git',
+ 			spawnProcess: (_bin, _args, o) => { opts = o; return fakeChild; },
+ 		});
+ 		expect(res.via).toBe('detached');
++		expect(opts.cwd).toBe('/repo');
+ 		expect(opts.detached).toBe(true);
+ 		expect(opts.stdio).toBe('ignore');
+ 		expect(opts.windowsHide).toBe(true); // containment: never flash a console
+@@ -613,6 +617,7 @@ describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', ()
+ 		let acquired = false; const launches = [];
+ 		executor.fireAndForget({
+ 			projectRoot: '/repo', gitCommonDir: '/g',
++			env: {},
+ 			kernelInitialized: () => true, // isolate the RAIL gate — else the kernel guard short-circuits first (vacuous pass)
+ 			railEnabled: () => false,
+ 			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
+@@ -628,6 +633,7 @@ describe('finding 8 — fireAndForget respects the rail.auto_shepherd gate', ()
+ 		let acquired = false;
+ 		executor.fireAndForget({
+ 			projectRoot: '/repo', gitCommonDir: '/g',
++			env: {},
+ 			kernelInitialized: () => true, // isolate the RAIL gate from the kernel-exists guard
+ 			railEnabled: () => true,
+ 			acquire: () => { acquired = true; return { ok: false }; },
+diff --git a/test/pr-monitor/ship-auto-shepherd-rail.test.js b/test/pr-monitor/ship-auto-shepherd-rail.test.js
+index acf86170..c4616bb3 100644
+--- a/test/pr-monitor/ship-auto-shepherd-rail.test.js
++++ b/test/pr-monitor/ship-auto-shepherd-rail.test.js
+@@ -2,15 +2,14 @@
+ 
+ const { describe, test, expect } = require('bun:test');
+ 
+-const { maybeStartPrWatcher, autoShepherdRailEnabled } = require('../../lib/commands/ship');
++const { maybeTriggerShepherdAfterShip, autoShepherdRailEnabled } = require('../../lib/commands/ship');
+ const { getDefaultRuntimeGraph } = require('../../lib/core/runtime-graph');
+ 
+ // rail.auto_shepherd (issue cf8361bc / epic c2d398e5): the default-ON, UNLOCKED
+-// rail that governs whether `forge ship` auto-starts the detached
+-// `forge shepherd watch <pr>` monitor. Toggle via `forge gate disable
++// rail that governs whether the shared singleton trigger launches. Toggle via `forge gate disable
+ // rail.auto_shepherd`. These tests pin: (1) the rail is registered default-ON +
+ // unlocked; (2) the resolver-backed check is fail-OPEN (default-ON on any error);
+-// (3) maybeStartPrWatcher honors the rail while never failing ship.
++// (3) the ship seam delegates to the shared trigger without failing ship.
+ 
+ describe('rail.auto_shepherd registration', () => {
+   test('is a default-ON, unlocked rail in the runtime graph', () => {
+@@ -43,47 +42,42 @@ describe('autoShepherdRailEnabled — fail-open resolver check', () => {
+   });
+ });
+ 
+-describe('maybeStartPrWatcher — rail gating', () => {
+-  test('starts the watcher when the rail is enabled and a PR exists', () => {
++describe('maybeTriggerShepherdAfterShip — rail gating', () => {
++  test('delegates rail gating to the shared singleton trigger', () => {
+     const calls = [];
+-    const res = maybeStartPrWatcher({
+-      dryRun: false, prNumber: 42,
+-      startWatcher: (opts) => { calls.push(opts); return { started: true, pid: 7 }; },
+-      railEnabled: () => true,
++    const res = maybeTriggerShepherdAfterShip({
++      dryRun: false, projectRoot: '/root',
++      fireAndForget: (opts) => calls.push(opts),
+     });
+     expect(res.started).toBe(true);
+     expect(calls).toHaveLength(1);
+-    expect(calls[0].prNumber).toBe(42);
++    expect(calls[0]).toEqual({ projectRoot: '/root', dryRun: false });
+   });
+ 
+-  test('does NOT start when the rail is disabled', () => {
++  test('does not duplicate the rail check outside the shared trigger', () => {
+     let called = false;
+-    const res = maybeStartPrWatcher({
+-      dryRun: false, prNumber: 42,
+-      startWatcher: () => { called = true; return { started: true }; },
+-      railEnabled: () => false,
++    const res = maybeTriggerShepherdAfterShip({
++      dryRun: false, projectRoot: '/root',
++      fireAndForget: () => { called = true; },
+     });
+-    expect(called).toBe(false);
+-    expect(res.started).toBe(false);
+-    expect(res.reason).toMatch(/rail\.auto_shepherd/);
++    expect(called).toBe(true);
++    expect(res.started).toBe(true);
+   });
+ 
+-  test('rail is not even consulted on a dry run / missing PR (skip wins first)', () => {
+-    let railChecked = false;
+-    const res = maybeStartPrWatcher({
+-      dryRun: true, prNumber: 5,
+-      startWatcher: () => ({ started: true }),
+-      railEnabled: () => { railChecked = true; return true; },
++  test('dry-run skips before the shared trigger is called', () => {
++    let called = false;
++    const res = maybeTriggerShepherdAfterShip({
++      dryRun: true, projectRoot: '/root',
++      fireAndForget: () => { called = true; },
+     });
+     expect(res.started).toBe(false);
+-    expect(railChecked).toBe(false);
++    expect(called).toBe(false);
+   });
+ 
+-  test('never fails ship even if the rail check throws', () => {
+-    const res = maybeStartPrWatcher({
+-      dryRun: false, prNumber: 9,
+-      startWatcher: () => ({ started: true }),
+-      railEnabled: () => { throw new Error('boom'); },
++  test('never fails ship even if the shared trigger throws', () => {
++    const res = maybeTriggerShepherdAfterShip({
++      dryRun: false, projectRoot: '/root',
++      fireAndForget: () => { throw new Error('boom'); },
+     });
+     expect(res.started).toBe(false);
+     expect(res.reason).toMatch(/boom/);
+diff --git a/test/pr-monitor/watch-lifecycle.test.js b/test/pr-monitor/watch-lifecycle.test.js
+index 97ee857b..b49657b6 100644
+--- a/test/pr-monitor/watch-lifecycle.test.js
++++ b/test/pr-monitor/watch-lifecycle.test.js
+@@ -4,7 +4,7 @@ const { describe, test, expect } = require('bun:test');
+ const { EventEmitter } = require('node:events');
+ 
+ const { startPrWatcherDetached, defaultResolveSlug } = require('../../lib/pr-monitor/watch-lifecycle');
+-const { maybeStartPrWatcher } = require('../../lib/commands/ship');
++const { maybeTriggerShepherdAfterShip } = require('../../lib/commands/ship');
+ 
+ /** A fake detached child: records unref() and reports a pid. */
+ function fakeChild(pid = 4242) {
+@@ -124,37 +124,36 @@ describe('defaultResolveSlug', () => {
+   });
+ });
+ 
+-describe('maybeStartPrWatcher (ship wiring)', () => {
+-  test('starts the watcher with the PR number after a real PR is created', () => {
++describe('maybeTriggerShepherdAfterShip (ship wiring)', () => {
++  test('triggers the singleton after a real PR is created', () => {
+     const calls = [];
+-    const res = maybeStartPrWatcher({
+-      dryRun: false, prNumber: 373,
+-      startWatcher: (opts) => { calls.push(opts); return { started: true, pid: 1 }; },
++    const res = maybeTriggerShepherdAfterShip({
++      dryRun: false, projectRoot: '/repo',
++      fireAndForget: (opts) => calls.push(opts),
+     });
+     expect(res.started).toBe(true);
+     expect(calls).toHaveLength(1);
+-    expect(calls[0].prNumber).toBe(373);
+-    expect(typeof calls[0].cwd).toBe('string');
++    expect(calls[0]).toEqual({ projectRoot: '/repo', dryRun: false });
+   });
+ 
+   test('does NOT start on a dry run', () => {
+     let called = false;
+-    const res = maybeStartPrWatcher({ dryRun: true, prNumber: 5, startWatcher: () => { called = true; } });
++    const res = maybeTriggerShepherdAfterShip({ dryRun: true, projectRoot: '/repo', fireAndForget: () => { called = true; } });
+     expect(called).toBe(false);
+     expect(res.started).toBe(false);
+   });
+ 
+-  test('does NOT start when there is no PR number', () => {
++  test('does not select a PR before triggering', () => {
+     let called = false;
+-    const res = maybeStartPrWatcher({ dryRun: false, prNumber: undefined, startWatcher: () => { called = true; } });
+-    expect(called).toBe(false);
+-    expect(res.started).toBe(false);
++    const res = maybeTriggerShepherdAfterShip({ dryRun: false, projectRoot: '/repo', fireAndForget: () => { called = true; } });
++    expect(called).toBe(true);
++    expect(res.started).toBe(true);
+   });
+ 
+-  test('never fails ship even if the watcher start throws', () => {
+-    const res = maybeStartPrWatcher({
+-      dryRun: false, prNumber: 9,
+-      startWatcher: () => { throw new Error('boom'); },
++  test('never fails ship even if the singleton trigger throws', () => {
++    const res = maybeTriggerShepherdAfterShip({
++      dryRun: false, projectRoot: '/repo',
++      fireAndForget: () => { throw new Error('boom'); },
+     });
+     // Swallowed → ship continues; the throw never propagates.
+     expect(res.started).toBe(false);
+-- 
+2.51.0.windows.1
+

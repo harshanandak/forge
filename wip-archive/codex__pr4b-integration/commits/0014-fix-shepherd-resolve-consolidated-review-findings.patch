@@ -1,0 +1,414 @@
+From d20cc29767c0dbab96438f9799f9077db9a8976d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 02:05:22 +0530
+Subject: [PATCH] fix(shepherd): resolve consolidated review findings
+
+---
+ lib/commands/merge.js                      | 15 ++++++++++---
+ lib/commands/shepherd.js                   |  3 ++-
+ lib/pr-monitor/flow-monitor.js             | 10 +++++++--
+ lib/pr-monitor/reconcile-executor.js       | 16 ++++++++++++--
+ lib/pr-monitor/watch.js                    |  4 +++-
+ lib/pr-shepherd.js                         | 19 +++++++++++++---
+ test/commands/merge-authority.test.js      | 25 ++++++++++++++++++++++
+ test/commands/shepherd.test.js             | 19 ++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js       | 18 +++++++++++++++-
+ test/pr-monitor/reconcile-executor.test.js | 24 +++++++++++++++++++++
+ test/pr-monitor/watch.test.js              |  8 ++++++-
+ test/pr-shepherd.test.js                   |  1 +
+ test/shepherd-acceptance.test.js           |  2 ++
+ 13 files changed, 150 insertions(+), 14 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 0fd9f3b9..5cf20b4f 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -351,8 +351,9 @@ async function defaultPrepareMergeDecision({
+   };
+ }
+ 
+-async function defaultRecordMergeDecision({ decision, pr, expectedHead, repository, projectRoot, buildBroker }) {
++async function defaultRecordMergeDecision({ decision, mergeResult, pr, expectedHead, repository, projectRoot, buildBroker }) {
+   if (!decision?.packet || !decision?.binding) throw new Error('Merge decision evidence is unavailable.');
++  const recovered = mergeResult?.recovered === true;
+   const receipt = contractEnvelope(
+     'forge.memory.run-receipt.v1',
+     uuidFromSeed(`merge-receipt:${decision.packet.content_hash}`),
+@@ -367,13 +368,13 @@ async function defaultRecordMergeDecision({ decision, pr, expectedHead, reposito
+       manifest_digest: decision.packet.payload.capability_manifest_digest,
+       workflow_config_revision: decision.packet.payload.workflow_config_revision,
+       status: 'PASS',
+-      executor: { product_id: 'forge', mode: 'guarded-exact-head' },
++      executor: { product_id: 'forge', mode: recovered ? 'guarded-exact-head-recovery' : 'guarded-exact-head' },
+       started_at: decision.occurredAt,
+       ended_at: decision.occurredAt,
+       evidence_refs: [{ kind: 'pr', repository, pr_number: Number(pr), head_sha: expectedHead }],
+       validation: { status: 'PASS', decision_id: decision.decisionId },
+       cleanup: { status: 'NOT_REQUIRED' },
+-      mutations_attempted: ['pr.merged'],
++      mutations_attempted: recovered ? [] : ['pr.merged'],
+       mutations_authorized: ['pr.merged'],
+     },
+   );
+@@ -1158,6 +1159,14 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   } catch (err) {
+     return { success: false, merged: false, decisionId: decision.decisionId, error: `Merge failed: ${err.message}` };
+   }
++  if (mergeResult?.merged !== true) {
++    return {
++      success: false,
++      merged: false,
++      decisionId: decision.decisionId,
++      error: `Merge failed: ${mergeResult?.reason || 'provider did not confirm the merge'}`,
++    };
++  }
+ 
+   const recordMergeDecision = deps.recordMergeDecision || defaultRecordMergeDecision;
+   let terminal;
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 73e66d46..89540f1a 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -628,7 +628,8 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const collectEvidence = deps.collectConvergenceEvidence || collectConvergenceEvidence;
+   let evidence;
+   try {
+-    evidence = await collectEvidence({ args, pr, projectRoot, context: ctx, adapter, deps });
++    const evidenceContext = result.expectedHead ? { ...ctx, headSha: result.expectedHead } : ctx;
++    evidence = await collectEvidence({ args, pr, projectRoot, context: evidenceContext, adapter, deps });
+   } catch (error) {
+     return {
+       success: false,
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 338064e0..54648f16 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -45,6 +45,10 @@ function identityToken(value) {
+   return crypto.createHash('sha256').update(String(value ?? '')).digest('base64url').slice(0, 12);
+ }
+ 
++function reopenedMonitorId(monitorId, terminalReceiptId) {
++  return `pr-reopen:${crypto.createHash('sha256').update(`${monitorId}:${terminalReceiptId}`).digest('hex')}`;
++}
++
+ function compactSnapshot(value) {
+   if (value?._snapshotFormat === SNAPSHOT_FORMAT) return value;
+   const source = value && typeof value === 'object' ? value : {};
+@@ -401,10 +405,12 @@ async function runFlowMonitorPass(ctx) {
+     let current;
+     try { current = compactSnapshot(await ctx.gather()); } catch { return replay; }
+     const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
+-    if (lifecycle !== 'OPEN') return replay;
++    const monitorId = reopenedMonitorId(ctx.monitorId, replay.terminalReceiptId);
++    const reopenedHistory = await readAuthority({ ...ctx, monitorId });
++    if (lifecycle !== 'OPEN' && reopenedHistory.length === 0) return replay;
+     return runFlowMonitorPass({
+       ...ctx,
+-      monitorId: `${ctx.monitorId}:after:${replay.terminalReceiptId}`,
++      monitorId,
+       gather: async () => current,
+     });
+   }
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 440c2173..3ca9797e 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -500,7 +500,15 @@ const ACTION_HANDLERS = {
+ 			return;
+ 		}
+ 		const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
+-		if (isAlive(entry.pid) || entry.lifecycle.state.phase !== 'ORPHANED') return;
++		if (isAlive(entry.pid)) {
++			const orphanedAt = entry.lifecycle.state.lastAt;
++			if (entry.lifecycle.state.phase === 'ORPHANED'
++				&& Number.isSafeInteger(orphanedAt) && at - orphanedAt >= lifecycleOptions(entry).graceMs) {
++				verifiedKill(entry, s.ctx, 'SIGKILL');
++			}
++			return;
++		}
++		if (entry.lifecycle.state.phase !== 'ORPHANED') return;
+ 		checkpointLifecycle(entry, lifecycleEvent(entry, 'termination-acknowledged', at), s);
+ 		checkpointLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true }), s);
+ 		s.removeClaim(entry);
+@@ -535,7 +543,11 @@ const ACTION_HANDLERS = {
+  * `updateWatchers`. `ctx.watchers` seeds the current set (from observed state).
+  */
+ async function execute(actions, ctx = {}) {
+-	if (!Array.isArray(actions)) throw new TypeError('Reconcile actions must be an array');
++	if (!Array.isArray(actions)) {
++		const error = new TypeError('Reconcile actions must be an array');
++		error.code = 'INVALID_ACTIONS';
++		throw error;
++	}
+ 	const boundedActions = actions.slice(0, MAX_ACTIONS_PER_PASS);
+ 	const now = ctx.now || (() => Date.now());
+ 	const watchers = Array.isArray(ctx.watchers)
+diff --git a/lib/pr-monitor/watch.js b/lib/pr-monitor/watch.js
+index c41f5d5c..454607f9 100644
+--- a/lib/pr-monitor/watch.js
++++ b/lib/pr-monitor/watch.js
+@@ -151,9 +151,11 @@ function confirmHeld(pending, contra, emit) {
+  * @returns {Promise<{ terminal: boolean }>} terminal=true → stop the loop.
+  */
+ async function runWatchPass(state, ctx, emit) {
+-  const { events } = await runMonitorPass({
++  const monitorPass = ctx.runMonitorPass || runMonitorPass;
++  const { events, terminalReceiptId } = await monitorPass({
+     ...ctx, dir: ctx.dir, gather: ctx.gather, now: ctx.now, enrich: ctx.enrich, lockOpts: ctx.lockOpts,
+   });
++  if (terminalReceiptId && events.length === 0) return { terminal: true };
+   const { failures, terminal, others } = partition(events);
+   const contra = contradictions(events);
+   const heldNames = new Set(state.pending.keys());
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index 413ba329..c6080995 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -211,7 +211,7 @@ async function handleFailedRequired({
+  * @returns {Promise<object>} decision envelope.
+  */
+ async function handleBehindBase({
+-  behind, autoRebase, cleanTree, adapter, baseRef, headUnchanged, actions,
++  behind, autoRebase, cleanTree, adapter, baseRef, expectedHead, headUnchanged, actions,
+ }) {
+   if (!autoRebase) {
+     return result('ESCALATE', {
+@@ -240,10 +240,22 @@ async function handleBehindBase({
+     });
+   }
+   try {
+-    await adapter.rebaseOntoBase({ baseRef });
++    const rebaseResult = await adapter.rebaseOntoBase({ baseRef, expectedHead });
++    const verifiedHead = rebaseResult?.previousHead === expectedHead
++      && typeof rebaseResult?.headSha === 'string'
++      && /^[0-9a-f]{40}$/i.test(rebaseResult.headSha)
++      ? rebaseResult.headSha.toLowerCase()
++      : null;
++    if (!verifiedHead) {
++      return result('ESCALATE', {
++        actions,
++        reason: 'Rebase completed without a lease-bound post-action head; refusing convergence handoff.',
++      });
++    }
+     actions.push({ type: 'rebase', baseRef });
+     return result('PENDING', {
+       actions,
++      expectedHead: verifiedHead,
+       reason: 'Rebased onto base and force-pushed with lease. Awaiting CI on the next scheduled pass.',
+     });
+   } catch (error) {
+@@ -478,7 +490,8 @@ async function runShepherdPass(ctx) {
+   // never rebase — force autoRebase off so the branch-behind path only escalates. ---
+   if (behind > 0) {
+     return handleBehindBase({
+-      behind, autoRebase: dryRun ? false : autoRebase, cleanTree, adapter, baseRef, headUnchanged, actions,
++      behind, autoRebase: dryRun ? false : autoRebase, cleanTree, adapter, baseRef,
++      expectedHead: startSha, headUnchanged, actions,
+     });
+   }
+ 
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index ac75bf5c..62f344c0 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -119,6 +119,16 @@ describe('merge command — mandatory release authority', () => {
+     expect(receipts).toBe(0);
+   });
+ 
++  test('never writes terminal linkage when the provider does not confirm the merge', async () => {
++    let receipts = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      mergePr: async () => ({ merged: false, reason: 'blocked by branch protection' }),
++      recordMergeDecision: async () => { receipts += 1; return { receiptId: 'receipt-x' }; },
++    }));
++    expect(out).toMatchObject({ success: false, merged: false });
++    expect(receipts).toBe(0);
++  });
++
+   test('requires the human merge gate before preparing evidence or mutating GitHub', async () => {
+     let decisions = 0;
+     let merges = 0;
+@@ -208,6 +218,21 @@ describe('merge command — mandatory release authority', () => {
+       sessionId: 'release-session',
+       requireExactLifecycleOwnership: true,
+     });
++
++    calls.length = 0;
++    await mergeCmd.defaultRecordMergeDecision({
++      decision,
++      mergeResult: { merged: true, recovered: true },
++      pr: 42,
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      projectRoot: process.cwd(),
++      buildBroker: async () => ({ broker }),
++    });
++    expect(calls[0][0].run_receipt.payload).toMatchObject({
++      executor: { mode: 'guarded-exact-head-recovery' },
++      mutations_attempted: [],
++    });
+   });
+ 
+   test('requires one full expected head and issue before ownership or provider I/O', async () => {
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 59e10111..8828a38e 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -158,6 +158,25 @@ describe('shepherd command handler', () => {
+     expect(out.reason).toMatch(/head changed/i);
+     expect(out.handoff).toBeUndefined();
+   });
++
++  test('uses the pass-verified post-rebase head for convergence evidence', async () => {
++    const oldHead = 'a'.repeat(40);
++    const newHead = 'b'.repeat(40);
++    let evidenceHead;
++    const out = await shepherdCmd.handler(['7', '--auto-rebase'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async () => ({ state: 'PENDING', actions: [{ type: 'rebase' }], expectedHead: newHead }),
++      collectConvergenceEvidence: async ({ context }) => {
++        evidenceHead = context.headSha;
++        return { deltas: [], deltaOverflow: false, receiptIds: [], exactHead: context.headSha };
++      },
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master', headSha: oldHead,
++      }),
++    });
++    expect(out.success).toBe(true);
++    expect(evidenceHead).toBe(newHead);
++  });
+ });
+ 
+ describe('forge shepherd events — the agent-agnostic monitor pull surface', () => {
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 615026db..7df08199 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -296,7 +296,23 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(closed.terminalReceiptId).toBeString();
+     expect(reopened.terminalReceiptId).toBeUndefined();
+     expect(reopened.changed).toBe(true);
+-    expect(store.events.some(event => event.payload.monitor_id.includes(':after:'))).toBe(true);
++    expect(store.events.some(event => event.payload.monitor_id !== ctx.monitorId)).toBe(true);
++  });
++
++  test('continues a reopened lifecycle through a later merged terminal receipt with a bounded id', async () => {
++    const store = durableStore();
++    let next = snapshot({ state: 'CLOSED' });
++    const ctx = context(store, async () => next, async () => {});
++    ctx.monitorId = `pr:${'x'.repeat(90)}:42`;
++    const closed = await runFlowMonitorPass(ctx);
++    next = snapshot({ state: 'OPEN' });
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ state: 'MERGED' });
++    const merged = await runFlowMonitorPass(ctx);
++
++    expect(merged.terminalReceiptId).toBeString();
++    expect(merged.terminalReceiptId).not.toBe(closed.terminalReceiptId);
++    expect(Math.max(...store.events.map(event => event.payload.monitor_id.length))).toBeLessThanOrEqual(128);
+   });
+ 
+   test('rejects a content-corrupted terminal receipt instead of replaying authority', async () => {
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 114d6008..7c74873d 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -37,6 +37,9 @@ test('claim markers share one path across worktrees with the same common dir', (
+ });
+ 
+ describe('execute — watcher lifecycle', () => {
++	test('rejects non-array actions with a distinct validation code', async () => {
++		await expect(executor.execute(null)).rejects.toMatchObject({ code: 'INVALID_ACTIONS' });
++	});
+ 	test('processes oversized action sets in bounded resumable batches', async () => {
+ 		let writes = 0;
+ 		const actions = Array.from({ length: 130 }, (_, index) => ({
+@@ -258,6 +261,27 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
+ 		expect(kills).toEqual([999]);
+ 	});
+ 
++	test('a live orphan escalates to SIGKILL after its grace deadline and is reaped after exit', async () => {
++		const kills = [];
++		const action = [{ type: 'reapOrphan', pid: 999, startedAt: 't1' }];
++		const common = {
++			projectRoot: '/repo', readClaim: () => 't1',
++			kill: (pid, signal) => kills.push([pid, signal || 'SIGTERM']), broker: {},
++		};
++		let watchers = await executor.execute(action, {
++			...common, watchers: [{ ...baseEntry }], now: () => 1_000, isAlive: () => true,
++		});
++		watchers = await executor.execute(action, {
++			...common, watchers, now: () => 31_001, isAlive: () => true,
++		});
++		watchers = await executor.execute(action, {
++			...common, watchers, now: () => 31_002, isAlive: () => false,
++		});
++
++		expect(kills).toEqual([[999, 'SIGTERM'], [999, 'SIGKILL']]);
++		expect(watchers).toEqual([]);
++	});
++
+ 	test('legacy/null startedAt → never killed (unverifiable)', async () => {
+ 		const kills = [];
+ 		await executor.execute(
+diff --git a/test/pr-monitor/watch.test.js b/test/pr-monitor/watch.test.js
+index ab282cb1..cb32f2bc 100644
+--- a/test/pr-monitor/watch.test.js
++++ b/test/pr-monitor/watch.test.js
+@@ -7,7 +7,7 @@ const path = require('node:path');
+ 
+ const journal = require('../../lib/pr-monitor/journal');
+ const {
+-  watchLoop, jitter, defaultSleep, defaultClaim, releaseClaim, DEFAULT_INTERVAL_MS,
++  watchLoop, runWatchPass, jitter, defaultSleep, defaultClaim, releaseClaim, DEFAULT_INTERVAL_MS,
+ } = require('../../lib/pr-monitor/watch');
+ const { EVENT_TYPES: T } = require('../../lib/pr-monitor/events');
+ 
+@@ -38,6 +38,12 @@ beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'prmon-w-')); di
+ afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+ 
+ describe('watchLoop', () => {
++  test('stops immediately when durable Memory replays a terminal receipt', async () => {
++    const result = await runWatchPass({ pending: new Map() }, {
++      runMonitorPass: async () => ({ events: [], terminalReceiptId: 'receipt-terminal' }),
++    }, () => {});
++    expect(result).toEqual({ terminal: true });
++  });
+   test('streams a confirmed check.failed as an emitted event on change', async () => {
+     const green = snap({ checks: [{ name: 'ci', class: 'green' }] });
+     const failed = snap({ checks: [{ name: 'ci', class: 'failed' }] });
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index 93b6cc15..364d5562 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -53,6 +53,7 @@ function makeAdapter(spec = {}) {
+           throw err;
+         }
+         actions.push({ type: 'rebase', ...args });
++        return { previousHead: args.expectedHead, headSha: spec.rebasedHead || 'b'.repeat(40) };
+       },
+     },
+   };
+diff --git a/test/shepherd-acceptance.test.js b/test/shepherd-acceptance.test.js
+index a94720e9..272ebecf 100644
+--- a/test/shepherd-acceptance.test.js
++++ b/test/shepherd-acceptance.test.js
+@@ -56,6 +56,7 @@ function scriptedAdapter(steps) {
+           const err = new Error('lease'); err.leaseRejected = true; throw err;
+         }
+         actions.push({ type: 'rebase', ...a });
++        return { previousHead: a.expectedHead, headSha: cur().rebasedHead || 'b'.repeat(40) };
+       },
+       async readComments() { return cur().comments || []; },
+     },
+@@ -98,6 +99,7 @@ describe('shepherd acceptance §5', () => {
+     ]);
+     const okRes = await runShepherdPass({ ...BASE_CTX, adapter: ok.adapter, autoRebase: true, cleanTree: true });
+     expect(okRes.state).toBe('PENDING');
++    expect(okRes.expectedHead).toBe('b'.repeat(40));
+     expect(ok.actions.filter((a) => a.type === 'rebase')).toHaveLength(1);
+ 
+     const lease = scriptedAdapter([
+-- 
+2.51.0.windows.1
+

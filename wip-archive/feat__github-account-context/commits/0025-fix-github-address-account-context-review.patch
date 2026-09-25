@@ -1,0 +1,108 @@
+From bc91d8deae001bee751e53025933275bac404987 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 19:06:21 +0530
+Subject: [PATCH] fix(github): address account context review
+
+---
+ lib/github-context.js                           | 2 +-
+ test/commands/github-route-matrix.test.js       | 6 +++++-
+ test/commands/github.test.js                    | 8 ++++----
+ test/github-context.test.js                     | 2 +-
+ test/integration/github-account-context.test.js | 2 +-
+ 5 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+index 7acf0ff7..2a17f8c5 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -97,7 +97,7 @@ function writeGithubAccount(projectRoot, login, options = {}) {
+ 
+ function unsetGithubAccount(projectRoot, options = {}) {
+   try {
+-    runnerFor(options)('git', ['config', '--local', '--unset', ACCOUNT_KEY], {
++    runnerFor(options)('git', ['config', '--local', '--unset-all', ACCOUNT_KEY], {
+       cwd: projectRoot,
+       encoding: 'utf8',
+       stdio: ['ignore', 'pipe', 'pipe'],
+diff --git a/test/commands/github-route-matrix.test.js b/test/commands/github-route-matrix.test.js
+index 973e4713..55df5776 100644
+--- a/test/commands/github-route-matrix.test.js
++++ b/test/commands/github-route-matrix.test.js
+@@ -405,7 +405,10 @@ describe('foreground GitHub account route matrix', () => {
+     fs.chmodSync(runtime, 0o700);
+     const entry = compiled ? '' : path.join(temp, 'installed space', 'bin', 'forge.js').replace(/\\/g, '/');
+     const args = ['api', 'value with spaces', '$(literal);&', '--help', ''];
+-    const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : '/usr/bin/bash';
++    const candidates = process.platform === 'win32'
++      ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe', 'bash.exe']
++      : ['/bin/bash', '/usr/bin/bash', '/opt/homebrew/bin/bash', 'bash'];
++    const bash = candidates.find(candidate => !path.isAbsolute(candidate) || fs.existsSync(candidate));
+     const result = spawnSync(bash, ['-c', 'exec "$GH_CMD" "$@"', 'bridge', ...args], {
+       encoding: 'utf8', input: 'bridge stdin\n',
+       env: {
+@@ -414,6 +417,7 @@ describe('foreground GitHub account route matrix', () => {
+         FORGE_GITHUB_RUNTIME: runtime.replace(/\\/g, '/'), FORGE_GITHUB_ENTRY: entry,
+       },
+     });
++    expect(result.error).toBeUndefined();
+     expect(result.status).toBe(23);
+     expect(result.stdout.replace(/\r/g, '')).toBe([...(compiled ? [] : [entry]), 'github', 'run', '--', 'gh', ...args, 'bridge stdin', ''].join('\n'));
+     expect(result.stderr.replace(/\r/g, '')).toBe('bridge stderr\n');
+diff --git a/test/commands/github.test.js b/test/commands/github.test.js
+index f5d210ed..a28bce8b 100644
+--- a/test/commands/github.test.js
++++ b/test/commands/github.test.js
+@@ -16,7 +16,7 @@ function fixture(overrides = {}) {
+     if (command === 'git') {
+       if (args.join(' ') === 'config --local --get github.account') return account;
+       if (args[2] === 'github.account') { account = args[3]; return ''; }
+-      if (args[2] === '--unset') {
++      if (args[2] === '--unset-all') {
+         if (!account) throw Object.assign(new Error(CANARY), { status: 5 });
+         account = ''; return '';
+       }
+@@ -107,12 +107,12 @@ describe('forge github lifecycle', () => {
+     expect(result.output.includes(CANARY)).toBe(false);
+   });
+ 
+-  test('unset is idempotent and touches only the local key', async () => {
+-    const f = fixture();
++  test('unset is idempotent and removes every local value', async () => {
++    const f = fixture({ account: ['personal', 'work'] });
+     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
+     expect((await handler(['unset'], {}, '/repo', f.options)).success).toBe(true);
+     expect(f.account()).toBe('');
+-    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset github.account')).toBe(true);
++    expect(f.calls.every(c => c.command === 'git' && c.args.join(' ') === 'config --local --unset-all github.account')).toBe(true);
+   });
+ 
+   test('help, malformed commands, and missing launcher delimiter perform no context work', async () => {
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index a28f9da9..975367b3 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -46,7 +46,7 @@ describe('github context', () => {
+ 
+     expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'], options: { cwd: '/repo' } });
+     expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'], options: { cwd: '/repo' } });
+-    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset', 'github.account'], options: { cwd: '/repo' } });
++    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset-all', 'github.account'], options: { cwd: '/repo' } });
+   });
+ 
+   test('unbound preparation performs one local lookup and no gh or environment work', () => {
+diff --git a/test/integration/github-account-context.test.js b/test/integration/github-account-context.test.js
+index 51510586..a18f56c3 100644
+--- a/test/integration/github-account-context.test.js
++++ b/test/integration/github-account-context.test.js
+@@ -27,7 +27,7 @@ function environment(root) {
+     GH_TOKEN: canaries[2], GITHUB_TOKEN: canaries[2], GH_HOST: 'wrong.example' };
+ }
+ function repository(login) {
+-  const root = sandboxes.makeSandbox();
++  const root = fs.realpathSync(sandboxes.makeSandbox());
+   if (login) execFileSync('git', ['config', '--local', 'github.account', login], {
+     cwd: root, env: environment(root), stdio: 'pipe', windowsHide: true, timeout: 10000,
+   });
+-- 
+2.51.0.windows.1
+

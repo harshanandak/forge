@@ -1,0 +1,184 @@
+From bdb3df09c9d139279a999689360b33a09927044f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 18:06:23 +0530
+Subject: [PATCH] chore(skills): refresh invocation scorecards
+
+---
+ .agents/skills/review/evals/scorecard.json    |  6 +++---
+ .agents/skills/rollback/evals/scorecard.json  |  6 +++---
+ .agents/skills/ship/evals/scorecard.json      |  6 +++---
+ .../decisions.md                              | 21 ++++++++++++++++++-
+ skills/review/evals/scorecard.json            |  6 +++---
+ skills/rollback/evals/scorecard.json          |  6 +++---
+ skills/ship/evals/scorecard.json              |  6 +++---
+ 7 files changed, 38 insertions(+), 19 deletions(-)
+
+diff --git a/.agents/skills/review/evals/scorecard.json b/.agents/skills/review/evals/scorecard.json
+index 04faa941..ded6db34 100644
+--- a/.agents/skills/review/evals/scorecard.json
++++ b/.agents/skills/review/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 988,
++      "desc_chars": 261,
+       "body_lines": 476,
+-      "score": 4
++      "score": 40
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 71
++  "composite": 82
+ }
+diff --git a/.agents/skills/rollback/evals/scorecard.json b/.agents/skills/rollback/evals/scorecard.json
+index e3308763..b22363cb 100644
+--- a/.agents/skills/rollback/evals/scorecard.json
++++ b/.agents/skills/rollback/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 965,
++      "desc_chars": 266,
+       "body_lines": 95,
+-      "score": 43
++      "score": 78
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 83
++  "composite": 93
+ }
+diff --git a/.agents/skills/ship/evals/scorecard.json b/.agents/skills/ship/evals/scorecard.json
+index 5116d658..67cf4499 100644
+--- a/.agents/skills/ship/evals/scorecard.json
++++ b/.agents/skills/ship/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 993,
++      "desc_chars": 254,
+       "body_lines": 237,
+-      "score": 28
++      "score": 64
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 78
++  "composite": 89
+ }
+diff --git a/docs/work/2026-07-29-skill-invocation-metadata/decisions.md b/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+index 2c30ce92..9a3ee5e1 100644
+--- a/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
++++ b/docs/work/2026-07-29-skill-invocation-metadata/decisions.md
+@@ -1,3 +1,22 @@
+ # Skill Invocation Metadata Decisions
+ 
+-No decision gates have fired.
++## Decision 1: Regenerate derived skill scorecards
++
++- Gap: Task 3 changed the approved `ship`, `review`, and `rollback` descriptions, but the
++  plan did not include their deterministic canonical and mirror `scorecard.json` artifacts.
++- Score:
++  1. Files beyond the current task: 2
++  2. Function signature or public export: 0
++  3. Shared module used by other tasks: 0
++  4. Persistent data or schema: 0
++  5. Unplanned user-visible behavior: 0
++  6. Auth, permissions, or data exposure: 0
++  7. Hard to reverse: 0
++  Total: 2/14
++- Mandatory overrides: none.
++- Route: PROCEED.
++- Decision: Run the existing deterministic `forge skill eval --static` generator, then
++  regenerate the committed `.agents/skills` mirror. Do not hand-edit scorecards or change
++  scorer behavior.
++- Evidence: The focused freshness test reported only the three changed skills as stale in
++  both canonical and mirror locations.
+diff --git a/skills/review/evals/scorecard.json b/skills/review/evals/scorecard.json
+index 04faa941..ded6db34 100644
+--- a/skills/review/evals/scorecard.json
++++ b/skills/review/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 988,
++      "desc_chars": 261,
+       "body_lines": 476,
+-      "score": 4
++      "score": 40
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 71
++  "composite": 82
+ }
+diff --git a/skills/rollback/evals/scorecard.json b/skills/rollback/evals/scorecard.json
+index e3308763..b22363cb 100644
+--- a/skills/rollback/evals/scorecard.json
++++ b/skills/rollback/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 965,
++      "desc_chars": 266,
+       "body_lines": 95,
+-      "score": 43
++      "score": 78
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 83
++  "composite": 93
+ }
+diff --git a/skills/ship/evals/scorecard.json b/skills/ship/evals/scorecard.json
+index 5116d658..67cf4499 100644
+--- a/skills/ship/evals/scorecard.json
++++ b/skills/ship/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 993,
++      "desc_chars": 254,
+       "body_lines": 237,
+-      "score": 28
++      "score": 64
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 78
++  "composite": 89
+ }
+-- 
+2.51.0.windows.1
+

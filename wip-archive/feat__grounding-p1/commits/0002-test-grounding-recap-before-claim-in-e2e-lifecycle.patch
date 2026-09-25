@@ -1,0 +1,50 @@
+From c1ca536cab41e0c828f6b59ba5fe8505a9755ccf Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 18:34:20 +0530
+Subject: [PATCH] test(grounding): recap before claim in e2e lifecycles
+ (gate.read_first)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The kernel-default and fresh-clone e2e flows claimed a real issue right after
+creating it; gate.read_first now requires the issue be read first. Insert a
+`forge recap <id>` before each `forge claim <id>` — the correct new contract
+(recap's output is the load-the-doc action). Refs e037a559.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/e2e/fresh-clone-no-beads.test.js | 1 +
+ test/e2e/kernel-default-cli.test.js   | 4 ++++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/test/e2e/fresh-clone-no-beads.test.js b/test/e2e/fresh-clone-no-beads.test.js
+index 028f4964..29b4171d 100644
+--- a/test/e2e/fresh-clone-no-beads.test.js
++++ b/test/e2e/fresh-clone-no-beads.test.js
+@@ -152,6 +152,7 @@ describe('fresh clone, no Beads — full Forge issue lifecycle on the builtin ke
+         expect(typeof issueId).toBe('string');
+         expect(issueId.length).toBeGreaterThan(0);
+ 
++        forge(['recap', issueId]); // grounding (gate.read_first): read the issue before claiming it
+         forge(['claim', issueId, '--json']);
+         forge(['comment', issueId, 'Acceptance run: fresh-clone lifecycle in progress', '--json']);
+         forge(['close', issueId, '--reason=fresh-clone acceptance complete', '--json']);
+diff --git a/test/e2e/kernel-default-cli.test.js b/test/e2e/kernel-default-cli.test.js
+index 83540c09..e1139f38 100644
+--- a/test/e2e/kernel-default-cli.test.js
++++ b/test/e2e/kernel-default-cli.test.js
+@@ -200,6 +200,10 @@ describe('kernel is the DEFAULT issue backend — full CLI dogfood (no --kernel
+       const id = extractId(runForgeDefault(repo, ['create', '--title', 'gap issue', '--type', 'task']).stdout);
+       expect(id).toBeTruthy();
+ 
++      // grounding (gate.read_first): reading the issue is now a precondition of
++      // claiming it, so recap first (its output is the load-the-doc action).
++      runForgeDefault(repo, ['recap', id]);
++
+       // claim — the de-beading spine (#241) implemented the real kernel claim
+       // handler (fixed the invalid_claim_scope gap). No --kernel flag, so this
+       // proves the DEFAULT path now claims successfully.
+-- 
+2.51.0.windows.1
+

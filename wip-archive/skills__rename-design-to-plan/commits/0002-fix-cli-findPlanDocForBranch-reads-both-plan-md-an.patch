@@ -1,0 +1,41 @@
+From e7b4d3cbe041dba72c5468cb71eb24698abec994 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 18:53:52 +0530
+Subject: [PATCH] fix(cli): findPlanDocForBranch reads both plan.md and legacy
+ design.md [KA1 follow-up]
+
+The design.md->plan.md rename over-reached into legacy detection. Make it read both:
+- findWorkPlanDoc accepts plan.md OR design.md work-folder docs.
+- legacyPlanMatchesSlug strips -plan as well as -design (docs/plans legacy naming).
+Fixes the test/cli/forge-cmd.js legacy-detection test that failed in CI.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ bin/forge-cmd.js | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/bin/forge-cmd.js b/bin/forge-cmd.js
+index f5ef7ff5..709dc28f 100644
+--- a/bin/forge-cmd.js
++++ b/bin/forge-cmd.js
+@@ -40,7 +40,7 @@ function findWorkPlanDoc(dir, slug) {
+ 			const found = findWorkPlanDoc(entryPath, slug);
+ 			if (found) return found;
+ 		}
+-		if (entry.isFile() && (entry.name === 'plan.md' || entry.name === 'tasks.md')) {
++		if (entry.isFile() && (entry.name === 'plan.md' || entry.name === 'design.md' || entry.name === 'tasks.md')) {
+ 			const workDirName = dir.split(/[\\/]/).pop() || '';
+ 			const workSlug = workDirName.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+ 			if (workSlug === slug) {
+@@ -56,7 +56,7 @@ function legacyPlanMatchesSlug(fileName, slug) {
+ 	const legacySlug = fileName
+ 		.replace(/\.md$/, '')
+ 		.replace(/^\d{4}-\d{2}-\d{2}-/, '')
+-		.replace(/-(?:design|tasks|decisions)$/, '');
++		.replace(/-(?:design|plan|tasks|decisions)$/, '');
+ 	return legacySlug === slug;
+ }
+ 
+-- 
+2.51.0.windows.1
+

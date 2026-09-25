@@ -1,0 +1,48 @@
+From f60ca67a6af5079b3877017b75068ae679573482 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 07:06:08 +0530
+Subject: [PATCH] chore(release): regenerate D20 bd-audit artifact for shifted
+ line numbers
+
+This PR's bin/forge.js edits (per-command --help, bare-forge, setup-help) and
+lib/commands/status.js edits (one-glance view) added lines, shifting the exact
+bd/.beads reference line numbers the D20 kill-list artifact records. The audit
+records line numbers per file, so the real `forge release check` gate flagged
+the artifact stale even though ZERO bd/.beads/dolt tokens were added.
+
+Deterministic snapshot refresh via renderBdCallSiteAuditMarkdown(auditBdCallSites):
+only the bin/forge.js and lib/commands/status.js line-number lists move; counts
+are unchanged (26 and 10). `forge release check --target 0.1.0` now passes with 0
+blockers and test/commands/release.test.js is green. Authorized by team-lead
+(line-shift is caused by this PR's owned-file edits, so the regen is in-scope).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                                 | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 97090c6c..4ca8d459 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -16,7 +16,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ ## command
+ 
+ - [ ] bin/forge.js (26)
+-  - lines: 2235 (bd), 2237 (bd), 2383 (bd), 2785 (bd), 2794 (bd), 2807 (bd), 2820 (.beads), 2840 (bd), 2842 (bd), 2844 (bd), 2879 (bd), 2903 (bd), 2989 (bd), 3033 (bd), 3057 (bd), 3063 (bd), 3067 (bd), 3072 (bd), 3078 (bd), 3088 (bd), 3220 (bd), 3225 (bd), 3236 (bd), 3303 (bd), 3996 (bd), 4476 (bd)
++  - lines: 2235 (bd), 2237 (bd), 2383 (bd), 2815 (bd), 2824 (bd), 2837 (bd), 2850 (.beads), 2870 (bd), 2872 (bd), 2874 (bd), 2909 (bd), 2933 (bd), 3019 (bd), 3063 (bd), 3087 (bd), 3093 (bd), 3097 (bd), 3102 (bd), 3108 (bd), 3118 (bd), 3250 (bd), 3255 (bd), 3266 (bd), 3333 (bd), 4034 (bd), 4532 (bd)
+ - [ ] lib/commands/_resolve-command-opts.js (2)
+   - lines: 8 (bd), 10 (bd)
+ - [ ] lib/commands/dev.js (1)
+@@ -26,7 +26,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/plan.js (9)
+   - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 738 (bd), 773 (bd)
+ - [ ] lib/commands/status.js (10)
+-  - lines: 238 (.beads), 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 246 (.beads), 366 (bd), 424 (bd)
++  - lines: 239 (.beads), 240 (.beads), 241 (.beads), 242 (.beads), 243 (.beads), 244 (.beads), 245 (.beads), 247 (.beads), 367 (bd), 426 (bd)
+ - [ ] lib/commands/test.js (5)
+   - lines: 8 (dolt), 60 (bd), 63 (bd), 67 (bd), 70 (bd)
+ - [ ] lib/commands/validate.js (1)
+-- 
+2.51.0.windows.1
+

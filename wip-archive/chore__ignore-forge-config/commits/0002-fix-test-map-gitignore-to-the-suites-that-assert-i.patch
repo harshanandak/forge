@@ -1,0 +1,73 @@
+From a8fb021673f60e98822c9cbc90706a288cba34cd Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 14:06:22 +0530
+Subject: [PATCH] fix(test): map .gitignore to the suites that assert its
+ content
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The classifier already knows .gitignore, but with no DIRECT_TEST_CANDIDATES
+entry it resolves zero tests, and zero-resolved falls back to the full suite —
+so a one-line ignore addition pays the ~6-minute full lane, which is also
+nondeterministic on Windows right now (three consecutive runs failed 14/13/13
+in scripts/process-tree tests that pass standalone; evidence on kernel issue
+b7a20a71).
+
+Five suites genuinely read the repo .gitignore and assert its content; they are
+now the targeted lane for it. The runner's own classification test gains the
+five files in its expected targets.
+
+Same shape as the CODING_STANDARDS.md mapping in #534.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/commands/test.js             | 10 ++++++++++
+ test/scripts/test-runner.test.js |  5 +++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 873b2a4e..ab233a7c 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -47,6 +47,16 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/doc-assertions.test.js',
+ 		'test/scripts/doc-asserting-tests.test.js',
+ 	],
++	// The suites that assert the repo .gitignore's actual content. The path is
++	// already known to the classifier, so without candidates here it resolves
++	// zero tests and a one-line ignore addition pays the full-suite lane.
++	'.gitignore': [
++		'test/check-forge-token.test.js',
++		'test/cleanup/dropped-agent-config.test.js',
++		'test/coverage-config.test.js',
++		'test/eval/eval-history.test.js',
++		'test/freshness-token.test.js',
++	],
+ 	'lib/lefthook-check.js': ['test/lefthook-check.test.js', 'test/runtime-health.test.js'],
+ 	'lib/runtime-health.js': ['test/runtime-health.test.js'],
+ 	// skill-eval hosts the accuracy-lint detectors (auditCommandDocumentation /
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 18a83b02..af58036c 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -192,11 +192,16 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.runFullSuite).toBe(false);
+     expect(plan.hasUnmappedFiles).toBe(false);
+     expect(plan.testTargets).toEqual([
++      'test/check-forge-token.test.js',
++      'test/cleanup/dropped-agent-config.test.js',
+       'test/cleanup/dropped-agent-docs.test.js',
++      'test/coverage-config.test.js',
+       'test/doc-assertions.test.js',
+       'test/docs-consistency.test.js',
+       'test/embedded-assets-drift.test.js',
++      'test/eval/eval-history.test.js',
+       'test/forge-commands.test.js',
++      'test/freshness-token.test.js',
+       'test/lefthook-check.test.js',
+       'test/runtime-health.test.js',
+       'test/scripts/preflight.test.js',
+-- 
+2.51.0.windows.1
+

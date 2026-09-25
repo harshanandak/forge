@@ -1,0 +1,47 @@
+From 20a8c3d83b9dfca88e127a7d5e3fbcd3d0983684 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 16:36:37 +0530
+Subject: [PATCH] fix(migrate): satisfy SonarCloud on the sidecar-gap scan
+ (a7e1443c)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two no-behavior-change nits flagged on #391:
+- S2486: move the `// NOSONAR S2486` onto the `} catch (_err) {` line itself
+  (Sonar raises the empty-catch rule on the catch clause, not the body).
+- S2871: give `Array.prototype.sort` an explicit comparator —
+  `.sort((a, b) => a.localeCompare(b))` — for deterministic sidecar ordering.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/adapters/beads-kernel-compat.js | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/adapters/beads-kernel-compat.js b/lib/adapters/beads-kernel-compat.js
+index 1ee0a0b9..81debe22 100644
+--- a/lib/adapters/beads-kernel-compat.js
++++ b/lib/adapters/beads-kernel-compat.js
+@@ -118,8 +118,8 @@ function detectUnmigratedSidecars(beadsDir) {
+     let entries;
+     try {
+       entries = fs.readdirSync(dir);
+-    } catch (_err) {
+-      /* intentional: an unreadable candidate dir contributes no sidecars */ // NOSONAR S2486
++    } catch (_err) { // NOSONAR S2486
++      // intentional: an unreadable candidate dir contributes no sidecars
+       continue;
+     }
+     for (const entry of entries) {
+@@ -128,7 +128,7 @@ function detectUnmigratedSidecars(beadsDir) {
+       }
+     }
+   }
+-  return [...unmigrated].sort();
++  return [...unmigrated].sort((a, b) => a.localeCompare(b));
+ }
+ 
+ function loadBeadsSnapshotFromDirectory(beadsDir) {
+-- 
+2.51.0.windows.1
+

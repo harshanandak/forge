@@ -1,0 +1,169 @@
+From 32b0db819a32de7bdc2ebc4c457e28d1c3bb9207 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 22:36:29 +0530
+Subject: [PATCH] fix(flow): validate monitor bridge inputs before provider
+ calls
+
+---
+ packages/flow/src/monitor-durability.js       | 34 ++++++++--
+ packages/flow/test/monitor-durability.test.js | 67 +++++++++++++++++++
+ 2 files changed, 94 insertions(+), 7 deletions(-)
+
+diff --git a/packages/flow/src/monitor-durability.js b/packages/flow/src/monitor-durability.js
+index 44b206b8..04c78a1f 100644
+--- a/packages/flow/src/monitor-durability.js
++++ b/packages/flow/src/monitor-durability.js
+@@ -4,10 +4,12 @@ const { types } = require("node:util");
+ const {
+   canonicalize,
+   computeContentHash,
++  validateContractStructure,
+ } = require("@forge/memory-contracts");
+ 
+ const MAX_EVENTS_PER_RECEIPT = 4096;
+ const MAX_INPUT_BYTES = 1_048_576;
++const MAX_MONITOR_ID_LENGTH = 128;
+ const SHA256 = /^[0-9a-f]{64}$/;
+ const TARGET = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+ 
+@@ -55,11 +57,28 @@ function snapshotCanonical(value, label) {
+   }
+ }
+ 
++function assertMonitorId(value) {
++  const snapshot = snapshotCanonical(value, "monitorId");
++  if (typeof snapshot !== "string" || snapshot.length === 0 || snapshot.length > MAX_MONITOR_ID_LENGTH) {
++    fail("INPUT_INVALID", "monitorId must be a bounded canonical string");
++  }
++  return snapshot;
++}
++
+ function assertEnvelope(value, schemaId) {
+   const snapshot = snapshotCanonical(value, schemaId);
+-  const computedHash = snapshot && typeof snapshot === "object"
+-    ? computeContentHash(snapshot)
+-    : undefined;
++  let validation;
++  try {
++    validation = validateContractStructure(snapshot);
++  } catch {
++    fail("INPUT_INVALID", `${schemaId} structure validation failed`);
++  }
++  if (!validation?.ok) {
++    fail("INPUT_INVALID", `${schemaId} structure validation failed`, {
++      errors: validation?.errors,
++    });
++  }
++  const computedHash = computeContentHash(snapshot);
+   if (
+     !snapshot ||
+     typeof snapshot !== "object" ||
+@@ -73,6 +92,9 @@ function assertEnvelope(value, schemaId) {
+       computedHash,
+     });
+   }
++  if (schemaId === "forge.memory.monitor-event.v1" || schemaId === "forge.memory.monitor-receipt.v1") {
++    assertMonitorId(snapshot.payload.monitor_id);
++  }
+   return snapshot;
+ }
+ 
+@@ -181,15 +203,13 @@ function createMonitorDurabilityBridge(options) {
+     },
+ 
+     async acknowledgeDelivery(monitorId, receipt, config = {}) {
+-      if (typeof monitorId !== "string" || monitorId.length === 0) {
+-        fail("INPUT_INVALID", "monitorId is required for delivery acknowledgement");
+-      }
++      const safeMonitorId = assertMonitorId(monitorId);
+       const safeReceipt = assertEnvelope(receipt, "forge.memory.delivery-receipt.v1");
+       const safeConfig = snapshotCanonical(config, "monitor acknowledgement config");
+       if (!targets.includes(safeReceipt.payload.target)) {
+         fail("INPUT_INVALID", "Delivery receipt target is outside the monitor targets");
+       }
+-      const rows = assertRows(await providerCall(() => listEvents(monitorId, safeConfig)), monitorId);
++      const rows = assertRows(await providerCall(() => listEvents(safeMonitorId, safeConfig)), safeMonitorId);
+       const event = rows.find((row) => row.event_id === safeReceipt.payload.event_id);
+       if (!event) fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
+       const persistence = await providerCall(() => recordDeliveryReceipt(safeReceipt, safeConfig));
+diff --git a/packages/flow/test/monitor-durability.test.js b/packages/flow/test/monitor-durability.test.js
+index 6856c7ee..78d28036 100644
+--- a/packages/flow/test/monitor-durability.test.js
++++ b/packages/flow/test/monitor-durability.test.js
+@@ -236,6 +236,73 @@ describe('monitor durability bridge', () => {
+     expect(driver.state.events.size).toBe(0);
+   });
+ 
++  test('rejects hash-consistent structurally invalid events and receipts before provider calls', async () => {
++    const driver = createDurableDriver();
++    const deliver = mock(async () => undefined);
++    const validEvent = monitorEvent();
++    const invalidEventPayload = { ...validEvent.payload };
++    delete invalidEventPayload.actionability;
++    const invalidEvent = envelope(validEvent.schema_id, validEvent.object_id, invalidEventPayload);
++
++    await expect(bridge(driver, deliver).persistEvent(invalidEvent)).rejects.toMatchObject({
++      code: 'INPUT_INVALID',
++    });
++    expect(driver.state.events.size).toBe(0);
++    expect(deliver).not.toHaveBeenCalled();
++
++    await bridge(driver).persistEvent(validEvent);
++    let listCalls = 0;
++    const originalList = driver.listMonitorEvents;
++    driver.listMonitorEvents = (...args) => {
++      listCalls += 1;
++      return originalList.call(driver, ...args);
++    };
++
++    const validDelivery = deliveryReceipt(validEvent);
++    const invalidDeliveryPayload = { ...validDelivery.payload };
++    delete invalidDeliveryPayload.event_id;
++    const invalidDelivery = envelope(validDelivery.schema_id, validDelivery.object_id, invalidDeliveryPayload);
++    await expect(bridge(driver).acknowledgeDelivery('monitor-1', invalidDelivery)).rejects.toMatchObject({
++      code: 'INPUT_INVALID',
++    });
++
++    const validTerminal = terminalReceipt([validEvent]);
++    const invalidTerminalPayload = { ...validTerminal.payload };
++    delete invalidTerminalPayload.owner_run_id;
++    const invalidTerminal = envelope(validTerminal.schema_id, validTerminal.object_id, invalidTerminalPayload);
++    await expect(bridge(driver).recordTerminalReceipt(invalidTerminal)).rejects.toMatchObject({
++      code: 'INPUT_INVALID',
++    });
++
++    expect(listCalls).toBe(0);
++    expect(driver.state.deliveryReceipts.size).toBe(0);
++    expect(driver.state.terminals.size).toBe(0);
++  });
++
++  test('rejects monitor IDs that are not bounded before append or list provider calls', async () => {
++    const driver = createDurableDriver();
++    const longMonitorId = 'm'.repeat(129);
++    const deliver = mock(async () => undefined);
++    await expect(bridge(driver, deliver).persistEvent(monitorEvent({ monitorId: longMonitorId })))
++      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
++    expect(driver.state.events.size).toBe(0);
++    expect(deliver).not.toHaveBeenCalled();
++
++    const validEvent = monitorEvent();
++    await bridge(driver).persistEvent(validEvent);
++    let listCalls = 0;
++    const originalList = driver.listMonitorEvents;
++    driver.listMonitorEvents = (...args) => {
++      listCalls += 1;
++      return originalList.call(driver, ...args);
++    };
++    await expect(bridge(driver).acknowledgeDelivery(longMonitorId, deliveryReceipt(validEvent)))
++      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
++    await expect(bridge(driver).recordTerminalReceipt(terminalReceipt([validEvent], { monitorId: longMonitorId })))
++      .rejects.toMatchObject({ code: 'INPUT_INVALID' });
++    expect(listCalls).toBe(0);
++  });
++
+   test('reports delivery failure without hiding that the event is already durable', async () => {
+     const driver = createDurableDriver();
+     const deliver = mock(async () => {
+-- 
+2.51.0.windows.1
+

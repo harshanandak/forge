@@ -1,0 +1,473 @@
+From 00ad15941041d8a1a5b61c478a88c7207cdeeaa2 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 17:24:04 +0530
+Subject: [PATCH] fix(monitor): harden segmented recovery validation
+
+---
+ lib/pr-monitor/flow-monitor.js       | 156 +++++++++++++++++++-----
+ test/pr-monitor/flow-monitor.test.js | 172 ++++++++++++++++++++++++++-
+ 2 files changed, 293 insertions(+), 35 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 40703883..e94025b2 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -157,6 +157,15 @@ function decodePendingBatch(value, ctx, subjectRevision) {
+   }
+ }
+ 
++function segmentablePendingBatchError(error) {
++  return error instanceof FlowMonitorError
++    && error.code === 'INVALID_OBSERVATION'
++    && [
++      'Pending monitor transition batch exceeds its recovery bound',
++      'Pending monitor transition batch exceeds its durable bound',
++    ].includes(error.message);
++}
++
+ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+   const batches = [];
+   let offset = 0;
+@@ -166,11 +175,7 @@ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+       batches.push({ encoded, records: records.slice(offset), snapshot });
+       break;
+     } catch (error) {
+-      if (!(error instanceof FlowMonitorError)
+-        || error.code !== 'INVALID_OBSERVATION'
+-        || error.message !== 'Pending monitor transition batch exceeds its durable bound') {
+-        throw error;
+-      }
++      if (!segmentablePendingBatchError(error)) throw error;
+     }
+ 
+     let low = 1;
+@@ -188,11 +193,7 @@ function splitPendingBatches(ctx, subjectRevision, records, snapshot) {
+         };
+         low = count + 1;
+       } catch (error) {
+-        if (!(error instanceof FlowMonitorError)
+-          || error.code !== 'INVALID_OBSERVATION'
+-          || error.message !== 'Pending monitor transition batch exceeds its durable bound') {
+-          throw error;
+-        }
++        if (!segmentablePendingBatchError(error)) throw error;
+         high = count - 1;
+       }
+     }
+@@ -908,16 +909,34 @@ async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectR
+       : 0;
+     const remainingOffset = retainedOffset + actualEvents.length;
+     if (!Number.isSafeInteger(retainedOffset) || retainedOffset < 0
+-      || remainingOffset >= records.length) {
++      || remainingOffset > records.length) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan has no remaining checkpoint');
+     }
+     for (const [index, event] of actualEvents.entries()) {
+       const eventReference = event.payload.bounded_payload.batch_plan;
++      const recordOffset = retainedOffset + index;
++      const expectedRecord = records[recordOffset];
++      const checkpointComplete = recordOffset === records.length - 1;
++      const expectedActionability = expectedRecord.type === T.SNAPSHOT_CHECKPOINT
++        ? 'advisory'
++        : 'action_required';
+       if (!validBatchPlanReference(eventReference)
+         || eventReference.id !== reference.id
+-        || eventReference.segment_index !== batchPlanSegmentIndex(batches, retainedOffset + index)
+-        || event.payload.sequence !== actualStart + retainedOffset + index
+-        || computeContentHash(event.payload.bounded_payload.record) !== computeContentHash(records[retainedOffset + index])) {
++        || eventReference.segment_index !== batchPlanSegmentIndex(batches, recordOffset)
++        || event.payload.sequence !== actualStart + recordOffset
++        || event.payload.event_id !== monitorEventId(
++          ctx.monitorId,
++          expectedRecord.seq,
++          expectedRecord.type,
++          expectedRecord.key,
++        )
++        || event.payload.type !== expectedRecord.type
++        || event.payload.actionability !== expectedActionability
++        || event.payload.bounded_payload.checkpoint_complete !== checkpointComplete
++        || event.payload.bounded_payload.pending_batch !== undefined
++        || computeContentHash({ snapshot: event.payload.bounded_payload.snapshot ?? null })
++          !== computeContentHash({ snapshot: checkpointComplete ? batches.at(-1).snapshot : null })
++        || computeContentHash(event.payload.bounded_payload.record) !== computeContentHash(expectedRecord)) {
+         throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition identity is inconsistent');
+       }
+     }
+@@ -936,6 +955,67 @@ async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectR
+   return null;
+ }
+ 
++function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
++  if (pendingEvents.length === 0) return false;
++  let offset = 0;
++  while (offset < pendingEvents.length) {
++    const reference = pendingEvents[offset].payload.bounded_payload.batch_plan;
++    if (!validBatchPlanReference(reference)
++      || reference.start_sequence !== pendingEvents[offset].payload.sequence
++      || reference.index !== 0) return false;
++    const batches = [];
++    while (offset < pendingEvents.length) {
++      const event = pendingEvents[offset];
++      const candidate = event.payload.bounded_payload.batch_plan;
++      if (candidate?.id !== reference.id) break;
++      const index = batches.length;
++      const pendingBatch = event.payload.bounded_payload.pending_batch;
++      const record = event.payload.bounded_payload.record;
++      const key = planRecordKey(reference.id, index);
++      if (event.payload.actionability !== 'advisory'
++        || !validBatchPlanReference(candidate)
++        || candidate.start_sequence !== reference.start_sequence
++        || candidate.segment_count !== reference.segment_count
++        || candidate.index !== index
++        || index >= reference.segment_count
++        || candidate.committed === true
++        || event.payload.sequence !== reference.start_sequence + index
++        || event.payload.event_id !== monitorEventId(
++          ctx.monitorId,
++          event.payload.sequence,
++          T.SNAPSHOT_CHECKPOINT,
++          key,
++        )
++        || event.payload.type !== T.SNAPSHOT_CHECKPOINT
++        || event.payload.bounded_payload.snapshot !== null
++        || event.payload.bounded_payload.checkpoint_complete !== false
++        || record?.type !== T.SNAPSHOT_CHECKPOINT
++        || record?.key !== boundIdentity(key)
++        || record?.seq !== event.payload.sequence
++        || typeof pendingBatch !== 'string') return false;
++      try {
++        batches.push(decodePendingBatch(pendingBatch, ctx, subjectRevision));
++      } catch {
++        return false;
++      }
++      offset += 1;
++    }
++    if (batches.length < reference.segment_count) {
++      if (batches.some(batch => batch.snapshot !== null)) return false;
++      continue;
++    }
++    const planId = computeContentHash({
++      monitor_id: ctx.monitorId,
++      subject_revision: subjectRevision,
++      segments: batches.map(batch => batch.encoded),
++    });
++    if (planId !== reference.id
++      || batches.slice(0, -1).some(batch => batch.snapshot !== null)
++      || batches.at(-1).snapshot === null) return false;
++  }
++  return true;
++}
++
+ async function finalizePass(ctx, bridge, spec, {
+   state,
+   snapshot,
+@@ -983,17 +1063,6 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+     }, reopenDepth + 1);
+   }
+ 
+-  const bridge = createMonitorDurabilityBridge({
+-    store: bridgeStore(ctx.store),
+-    deliveryTargets: [DELIVERY_TARGET],
+-    deliver: async (event) => event.payload.actionability === 'advisory'
+-      ? undefined
+-      : ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id),
+-  });
+-  const replayed = await redeliverOutstanding(ctx, bridge, spec, state, durableEvents, deliveryState, now);
+-  state = replayed.state;
+-  const receiptIds = replayed.receiptIds;
+-
+   let checkpointIndex = -1;
+   for (let index = durableEvents.length - 1; index >= 0; index -= 1) {
+     if (durableEvents[index].payload.bounded_payload.checkpoint_complete !== false) {
+@@ -1005,8 +1074,35 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+     ? durableEvents[checkpointIndex].payload.bounded_payload.snapshot ?? null
+     : null;
+   const pendingEvents = durableEvents.slice(checkpointIndex + 1);
++  const deliveryCursor = deliveryState.cursors.find(item => item.target === DELIVERY_TARGET)?.sequence ?? 0;
++  const unacknowledgedPlanEvents = durableEvents.filter(event => (
++    event.payload.sequence > deliveryCursor && event.payload.bounded_payload.batch_plan
++  ));
++  const recoveryEvents = pendingEvents.some(event => event.payload.bounded_payload.batch_plan)
++    ? pendingEvents
++    : unacknowledgedPlanEvents;
++  const segmented = recoveryEvents.length > 0
++    ? await readSegmentedRecovery(ctx, durableEvents, recoveryEvents, subjectRevision)
++    : null;
++  const hasBatchPlan = recoveryEvents.some(event => event.payload.bounded_payload.batch_plan);
++  const orphanedPlan = !segmented && hasBatchPlan
++    && recoveryEvents === pendingEvents
++    && validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision);
++  if (!segmented && hasBatchPlan && !orphanedPlan) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan is inconsistent');
++  }
++
++  const bridge = createMonitorDurabilityBridge({
++    store: bridgeStore(ctx.store),
++    deliveryTargets: [DELIVERY_TARGET],
++    deliver: async (event) => event.payload.actionability === 'advisory'
++      ? undefined
++      : ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id),
++  });
++  const replayed = await redeliverOutstanding(ctx, bridge, spec, state, durableEvents, deliveryState, now);
++  state = replayed.state;
++  const receiptIds = replayed.receiptIds;
+   if (pendingEvents.length > 0) {
+-    const segmented = await readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectRevision);
+     if (segmented) {
+       const remaining = segmented.records.slice(segmented.remainingOffset);
+       const timestamp = remaining[0].ts;
+@@ -1033,7 +1129,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+         records: remaining,
+       });
+     }
+-    if (pendingEvents.some(event => event.payload.bounded_payload.batch_plan)) {
++    if (orphanedPlan) {
+       // A crash before the commit marker leaves only advisory preparation events.
+       // No provider transition was accepted, so a fresh gather may safely supersede it.
+     } else {
+@@ -1113,11 +1209,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+       timestamp,
+     });
+   } catch (error) {
+-    if (!(error instanceof FlowMonitorError)
+-      || error.code !== 'INVALID_OBSERVATION'
+-      || error.message !== 'Pending monitor transition batch exceeds its durable bound') {
+-      throw error;
+-    }
++    if (!segmentablePendingBatchError(error)) throw error;
+     persisted = await persistSegmentedRecords(ctx, bridge, spec, {
+       initialState: state,
+       records,
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index db10e191..8dfe209c 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const { describe, expect, test } = require('bun:test');
++const crypto = require('node:crypto');
+ const zlib = require('node:zlib');
+ 
+ const { runFlowMonitorPass } = require('../../lib/pr-monitor/flow-monitor');
+@@ -351,11 +352,22 @@ describe('Flow-backed PR monitor authority', () => {
+         actual.payload.bounded_payload.batch_plan.id = '0'.repeat(64);
+         actual.content_hash = computeContentHash(actual);
+       },
++      (events) => {
++        for (const event of events.filter(item => item.payload.bounded_payload.batch_plan)) {
++          event.payload.bounded_payload.batch_plan.id = 'invalid';
++          event.content_hash = computeContentHash(event);
++        }
++      },
+       (events) => {
+         const actual = events.find(event => event.payload.type === 'check.failed');
+         actual.payload.sequence += 1;
+         actual.content_hash = computeContentHash(actual);
+       },
++      (events) => {
++        const actual = events.find(event => event.payload.type === 'check.failed');
++        actual.payload.actionability = 'advisory';
++        actual.content_hash = computeContentHash(actual);
++      },
+       (events) => {
+         const markerIndex = events.findIndex(event => event.payload.bounded_payload.batch_plan?.committed === true);
+         events.splice(markerIndex, 1);
+@@ -379,16 +391,54 @@ describe('Flow-backed PR monitor authority', () => {
+     retainedActual.at(-1).payload.bounded_payload.snapshot = null;
+     retainedActual.at(-1).content_hash = computeContentHash(retainedActual.at(-1));
+     missingPlan.events.push(...retainedActual);
+-    missingPlan.setCursor('legacy-journal', retainedActual.at(-1).payload.sequence);
++    missingPlan.setCursor('legacy-journal', retainedActual[0].payload.sequence - 1);
+     missingPlan.getEvent = undefined;
++    const leaked = [];
+     await expect(runFlowMonitorPass(context(
+       missingPlan,
+       async () => { throw new Error('committed plan loss must not gather'); },
+-      async () => {},
++      async record => leaked.push(record),
+     ))).rejects.toMatchObject({
+       code: 'MONITOR_HISTORY_INCOMPLETE',
+       message: 'Durable monitor transition plan marker is missing',
+     });
++    expect(leaked).toHaveLength(0);
++
++    const finalTampered = durableStore();
++    finalTampered.events.push(...structuredClone(store.events));
++    const finalEvent = finalTampered.events.at(-1);
++    finalTampered.setCursor('legacy-journal', finalEvent.payload.sequence - 1);
++    finalEvent.payload.actionability = 'advisory';
++    finalEvent.content_hash = computeContentHash(finalEvent);
++    const finalLeaks = [];
++    await expect(runFlowMonitorPass(context(
++      finalTampered,
++      async () => { throw new Error('unacknowledged final plan event must be proven before gather'); },
++      async record => finalLeaks.push(record),
++    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++    expect(finalLeaks).toHaveLength(0);
++  }, 30_000);
++
++  test('segments a transition that exceeds the decoded recovery bound before compression', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    ctx.enrich = async records => {
++      for (const [index, record] of records.entries()) {
++        record.repo = `owner/${index}-${'x'.repeat(3_000)}`;
++      }
++    };
++
++    await runFlowMonitorPass(ctx);
++
++    const segments = store.events.filter(event => event.payload.bounded_payload.pending_batch);
++    expect(segments.length).toBeGreaterThan(1);
++    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+   }, 30_000);
+ 
+   test('supersedes an orphaned pre-commit recovery plan with a fresh observation', async () => {
+@@ -404,13 +454,16 @@ describe('Flow-backed PR monitor authority', () => {
+     next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
+ 
+     const appendEvent = store.appendEvent.bind(store);
++    let interruptions = 0;
+     store.appendEvent = async (...args) => {
+-      if (args[0].payload.bounded_payload.batch_plan?.index === 1) {
++      if (args[0].payload.bounded_payload.batch_plan?.index === 1 && interruptions < 2) {
++        interruptions += 1;
+         throw new Error('pre-commit plan interruption');
+       }
+       return appendEvent(...args);
+     };
+     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+     store.appendEvent = appendEvent;
+ 
+     const resumed = await runFlowMonitorPass(ctx);
+@@ -420,6 +473,119 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+   }, 30_000);
+ 
++  test('rejects a complete pre-commit plan whose identity was rewritten', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 128 }, (_, index) => ({
++      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
++      class: 'green',
++    }));
++    let next = snapshot({ checks });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    const appendEvent = store.appendEvent.bind(store);
++    store.appendEvent = async (...args) => {
++      if (args[0].payload.bounded_payload.batch_plan?.committed === true) {
++        throw new Error('commit marker interruption');
++      }
++      return appendEvent(...args);
++    };
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    store.appendEvent = appendEvent;
++
++    const replacementId = '0'.repeat(64);
++    for (const event of store.events.filter(item => Number.isSafeInteger(
++      item.payload.bounded_payload.batch_plan?.index,
++    ))) {
++      const index = event.payload.bounded_payload.batch_plan.index;
++      const key = `batch-plan:${replacementId}:${index}`;
++      event.payload.bounded_payload.batch_plan.id = replacementId;
++      event.payload.bounded_payload.record.key = `sha256:${crypto.createHash('sha256').update(key).digest('hex')}`;
++      event.payload.event_id = crypto.createHash('sha256')
++        .update(`${ctx.monitorId}:${event.payload.sequence}:${event.payload.type}:${key}`)
++        .digest('hex');
++      event.content_hash = computeContentHash(event);
++    }
++    let gathers = 0;
++    await expect(runFlowMonitorPass(context(
++      store,
++      async () => { gathers += 1; return next; },
++      async () => {},
++    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++    expect(gathers).toBe(0);
++  }, 30_000);
++
++  test('recovers exactly once across every segmented persistence boundary', async () => {
++    const checks = Array.from({ length: 128 }, (_, index) => ({
++      name: Array.from({ length: 4 }, (_value, salt) => computeContentHash({ index, salt })).join(''),
++      class: 'green',
++    }));
++    const failed = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++
++    const probe = durableStore();
++    let probeNext = snapshot({ checks });
++    const probeCtx = context(probe, async () => probeNext, async () => {});
++    await runFlowMonitorPass(probeCtx);
++    probeNext = failed;
++    await runFlowMonitorPass(probeCtx);
++    const probeSegments = probe.events.filter(event => Number.isSafeInteger(
++      event.payload.bounded_payload.batch_plan?.index,
++    ));
++    const probeMarker = probe.events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
++    const segmentLengths = probeSegments.map(event => JSON.parse(zlib.gunzipSync(Buffer.from(
++      event.payload.bounded_payload.pending_batch,
++      'base64url',
++    ))).records.length);
++    const actualStart = probeMarker.payload.sequence + 1;
++    let boundary = 0;
++    const transitionSequences = segmentLengths.map(length => {
++      const sequence = actualStart + boundary;
++      boundary += length;
++      return sequence;
++    });
++    const failureSequences = [...new Set([
++      ...probeSegments.map(event => event.payload.sequence),
++      probeMarker.payload.sequence,
++      ...transitionSequences,
++      actualStart + boundary - 1,
++    ])];
++
++    for (const failureSequence of failureSequences) {
++      const store = durableStore();
++      let next = snapshot({ checks });
++      const delivered = [];
++      const ctx = context(store, async () => next, async record => delivered.push(record));
++      await runFlowMonitorPass(ctx);
++      next = failed;
++      const appendEvent = store.appendEvent.bind(store);
++      let interrupted = false;
++      store.appendEvent = async (...args) => {
++        if (!interrupted && args[0].payload.sequence === failureSequence) {
++          interrupted = true;
++          throw new Error(`storage failure at sequence ${failureSequence}`);
++        }
++        return appendEvent(...args);
++      };
++      await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++      const committed = store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true);
++      if (!committed) expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(0);
++      store.appendEvent = appendEvent;
++      if (committed) {
++        ctx.gather = async () => { throw new Error('committed transition recovery must precede provider state'); };
++      }
++
++      await runFlowMonitorPass(ctx);
++      const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
++      expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
++      expect(actualEvents).toHaveLength(128);
++      expect(new Set(actualEvents.map(event => event.payload.sequence)).size).toBe(128);
++      expect(actualEvents.slice(0, -1).every(event => (
++        event.payload.bounded_payload.checkpoint_complete === false
++      ))).toBe(true);
++      expect(actualEvents.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
++    }
++  }, 120_000);
++
+   test('recovers a retained suffix of an accepted transition batch', async () => {
+     const store = durableStore();
+     const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
+-- 
+2.51.0.windows.1
+

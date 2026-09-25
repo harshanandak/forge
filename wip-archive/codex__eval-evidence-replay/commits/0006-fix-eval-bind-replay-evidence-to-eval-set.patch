@@ -1,0 +1,337 @@
+From 21b49ec0dc5909d4814d5088fe4d943fef259120 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 6 Aug 2026 18:09:58 +0530
+Subject: [PATCH] fix(eval): bind replay evidence to eval set
+
+---
+ scripts/lib/eval-evidence.js    |  49 +++++++++++++--
+ scripts/lib/eval-runner.js      |   4 +-
+ scripts/run-command-eval.js     |   3 +-
+ test/eval/eval-evidence.test.js |  31 ++++++++-
+ test/eval/eval-pipeline.test.js | 107 +++++++++++++++-----------------
+ 5 files changed, 125 insertions(+), 69 deletions(-)
+
+diff --git a/scripts/lib/eval-evidence.js b/scripts/lib/eval-evidence.js
+index bc85bc64..0b7a4010 100644
+--- a/scripts/lib/eval-evidence.js
++++ b/scripts/lib/eval-evidence.js
+@@ -10,6 +10,7 @@ const EVIDENCE_KIND = 'eval.evidence';
+ const EVENT_TYPE = 'eval.evidence.recorded';
+ const HEX_40 = /^[0-9a-f]{40}$/;
+ const HEX_64 = /^[0-9a-f]{64}$/;
++const HASH_FIELDS = ['eval_set', 'prompt', 'skill', 'tool'];
+ 
+ const CASE_FIELDS = [
+   'issue_id', 'pr', 'head_sha', 'model', 'effort', 'role', 'hashes',
+@@ -54,8 +55,11 @@ function validateEvidence(evidence) {
+   if (!HEX_40.test(evidence.head_sha)) throw new Error('evidence.head_sha must be a full 40-character commit SHA');
+   for (const field of ['model', 'effort', 'role']) assertString(evidence[field], `evidence.${field}`);
+ 
+-  assertExactFields(evidence.hashes, ['prompt', 'skill', 'tool'], 'evidence.hashes');
+-  for (const field of ['prompt', 'skill', 'tool']) {
++  const hashFields = Object.hasOwn(evidence.hashes, 'eval_set')
++    ? HASH_FIELDS
++    : HASH_FIELDS.filter((field) => field !== 'eval_set');
++  assertExactFields(evidence.hashes, hashFields, 'evidence.hashes');
++  for (const field of hashFields) {
+     if (!HEX_64.test(evidence.hashes[field])) {
+       throw new Error(`evidence.hashes.${field} must be a 64-character lowercase SHA-256 hash`);
+     }
+@@ -94,6 +98,34 @@ function createEvalEvidence(evidence) {
+   };
+ }
+ 
++function buildEvalReplayPayload(evalSet) {
++  assertObject(evalSet, 'evalSet');
++  if (!Array.isArray(evalSet.queries)) throw new Error('evalSet.queries must be an array');
++  return {
++    command: evalSet.command,
++    queries: evalSet.queries.map((query) => ({
++      name: query.name,
++      prompt: query.prompt,
++      setup: query.setup ?? null,
++      teardown: query.teardown ?? null,
++      assertions: query.assertions,
++    })),
++  };
++}
++
++function buildEvalEvidenceHashes(inputs) {
++  assertExactFields(inputs, ['evalSet', 'skill', 'tool'], 'hash inputs');
++  assertString(inputs.skill, 'hash inputs.skill');
++  assertString(inputs.tool, 'hash inputs.tool');
++  const payload = buildEvalReplayPayload(inputs.evalSet);
++  return {
++    eval_set: contentHash(stableStringify(payload)),
++    prompt: contentHash(stableStringify(payload.queries.map((query) => query.prompt))),
++    skill: contentHash(inputs.skill),
++    tool: contentHash(inputs.tool),
++  };
++}
++
+ function verifyEvalEvidence(envelope) {
+   assertExactFields(envelope, ['schema_version', 'kind', 'evidence', 'content_hash'], 'envelope');
+   if (envelope.schema_version !== SCHEMA_VERSION) throw new Error(`Unsupported evidence schema version '${envelope.schema_version}'`);
+@@ -107,10 +139,13 @@ function verifyEvalEvidence(envelope) {
+ 
+ function verifyEvalReplay(envelope, inputs) {
+   const evidence = verifyEvalEvidence(envelope);
+-  assertExactFields(inputs, ['prompt', 'skill', 'tool'], 'replay.inputs');
+-  for (const field of ['prompt', 'skill', 'tool']) {
+-    if (typeof inputs[field] !== 'string') throw new Error(`replay.inputs.${field} must be a string`);
+-    if (contentHash(inputs[field]) !== evidence.hashes[field]) throw new Error(`${field} hash drift detected`);
++  assertExactFields(inputs, ['evalSet', 'skill', 'tool'], 'replay.inputs');
++  if (!Object.hasOwn(evidence.hashes, 'eval_set')) {
++    throw new Error('replay evidence is missing the eval_set hash');
++  }
++  const expected = buildEvalEvidenceHashes(inputs);
++  for (const field of HASH_FIELDS) {
++    if (expected[field] !== evidence.hashes[field]) throw new Error(field + ' hash drift detected');
+   }
+   return evidence;
+ }
+@@ -169,6 +204,8 @@ module.exports = {
+   EVIDENCE_KIND,
+   EVENT_TYPE,
+   createEvalEvidence,
++  buildEvalReplayPayload,
++  buildEvalEvidenceHashes,
+   verifyEvalEvidence,
+   verifyEvalReplay,
+   appendEvalEvidence,
+diff --git a/scripts/lib/eval-runner.js b/scripts/lib/eval-runner.js
+index f2245dd6..25ae06da 100644
+--- a/scripts/lib/eval-runner.js
++++ b/scripts/lib/eval-runner.js
+@@ -12,6 +12,8 @@ const path = require('path');
+ const fs = require('fs');
+ const { execFileSync, execSync } = require('node:child_process');
+ 
++const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
++
+ // ── active worktree tracking (cleanup on crash) ─────────────────────
+ // Tracks active eval worktrees so we can clean up on process exit/crash.
+ // Prevents orphaned eval-* branches when interrupted.
+@@ -124,7 +126,7 @@ function getWorktreesDir() {
+  */
+ async function createEvalWorktree(headSha) {
+   if (headSha !== undefined) {
+-    if (!/^[0-9a-f]{40}$/.test(headSha)) {
++    if (!FULL_COMMIT_SHA.test(headSha)) {
+       throw new Error('Eval replay requires a full 40-character commit SHA');
+     }
+     try {
+diff --git a/scripts/run-command-eval.js b/scripts/run-command-eval.js
+index 9061eb8b..94d4e0da 100644
+--- a/scripts/run-command-eval.js
++++ b/scripts/run-command-eval.js
+@@ -21,7 +21,6 @@ const {
+ const { gradeTranscript } = require('./lib/grading');
+ const { saveEvalResult } = require('./lib/eval-storage');
+ const { verifyEvalReplay } = require('./lib/eval-evidence');
+-const { stableStringify } = require('../lib/kernel/evaluators');
+ 
+ // ---------------------------------------------------------------------------
+ // parseArgs
+@@ -127,7 +126,7 @@ async function runEvalPipeline(evalSetPath, options = {}) {
+       if (!Object.hasOwn(replay.inputs, field)) throw new Error(`replay.inputs.${field} is required`);
+     }
+     replayEvidence = verifyEvalReplay(replay.envelope, {
+-      prompt: stableStringify(queries.map(query => query.prompt)),
++      evalSet,
+       skill: replay.inputs.skill,
+       tool: replay.inputs.tool,
+     });
+diff --git a/test/eval/eval-evidence.test.js b/test/eval/eval-evidence.test.js
+index 87175dc3..c477c46e 100644
+--- a/test/eval/eval-evidence.test.js
++++ b/test/eval/eval-evidence.test.js
+@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
+ 
+ const {
+   createEvalEvidence,
++  buildEvalEvidenceHashes,
+   verifyEvalEvidence,
+   verifyEvalReplay,
+   appendEvalEvidence,
+@@ -102,10 +103,36 @@ describe('eval evidence', () => {
+     expect(() => verifyEvalEvidence(envelope)).toThrow(/content hash mismatch/i);
+   });
+ 
+-  test('strictly allows only transient prompt, skill, and tool contents for replay', () => {
++  test('builds one deterministic replay hash for the execution and scoring inputs', () => {
++    const evalSet = {
++      command: '/status',
++      queries: [{
++        name: 'basic',
++        prompt: 'show status',
++        setup: null,
++        teardown: 'true',
++        assertions: [{ type: 'standard', check: 'branch' }],
++      }],
++    };
++    const first = buildEvalEvidenceHashes({ evalSet, skill: 'skill', tool: 'tool' });
++    const reordered = {
++      queries: [{
++        assertions: [{ check: 'branch', type: 'standard' }],
++        teardown: 'true',
++        prompt: 'show status',
++        setup: null,
++        name: 'basic',
++      }],
++      command: '/status',
++    };
++    expect(buildEvalEvidenceHashes({ evalSet: reordered, skill: 'skill', tool: 'tool' })).toEqual(first);
++    expect(first.eval_set).toMatch(/^[0-9a-f]{64}$/);
++  });
++
++  test('strictly allows only canonical replay inputs', () => {
+     const envelope = createEvalEvidence(validCase());
+     expect(() => verifyEvalReplay(envelope, {
+-      prompt: 'current prompt',
++      evalSet: {},
+       skill: 'current skill',
+       tool: 'current tool',
+       secret: 'not allowed',
+diff --git a/test/eval/eval-pipeline.test.js b/test/eval/eval-pipeline.test.js
+index e3df617b..921d896b 100644
+--- a/test/eval/eval-pipeline.test.js
++++ b/test/eval/eval-pipeline.test.js
+@@ -4,9 +4,7 @@ const path = require('path');
+ const os = require('os');
+ const { execSync } = require('node:child_process');
+ const { runEvalPipeline, parseArgs } = require('../../scripts/run-command-eval');
+-const { createEvalEvidence } = require('../../scripts/lib/eval-evidence');
+-const { contentHash } = require('../../lib/file-hash');
+-const { stableStringify } = require('../../lib/kernel/evaluators');
++const { createEvalEvidence, buildEvalEvidenceHashes } = require('../../scripts/lib/eval-evidence');
+ 
+ // ---------------------------------------------------------------------------
+ // Helpers
+@@ -116,11 +114,7 @@ function validReplay(evalSet) {
+       model: 'model-a',
+       effort: 'high',
+       role: 'implementation',
+-      hashes: {
+-        prompt: contentHash(stableStringify(evalSet.queries.map(query => query.prompt))),
+-        skill: contentHash(inputs.skill),
+-        tool: contentHash(inputs.tool),
+-      },
++      hashes: buildEvalEvidenceHashes({ evalSet, skill: inputs.skill, tool: inputs.tool }),
+       started_at: '2026-08-05T10:00:00.000Z',
+       ended_at: '2026-08-05T10:00:03.000Z',
+       active_ms: 2000,
+@@ -179,51 +173,52 @@ describe('runEvalPipeline', () => {
+     }
+   });
+ 
+-  test('rejects actual eval-set prompt drift before worktree creation or command execution', async () => {
+-    const recordedEvalSet = minimalEvalSet();
+-    const driftedEvalSet = minimalEvalSet();
+-    driftedEvalSet.queries[0].prompt = 'changed prompt';
+-    const evalSetPath = writeTmpEvalSet(driftedEvalSet);
+-    const tmpDir = makeTmpDir();
+-    let executed = false;
+-    const envelope = createEvalEvidence({
+-      issue_id: '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3',
+-      pr: 484,
+-      head_sha: 'a'.repeat(40),
+-      model: 'model-a',
+-      effort: 'high',
+-      role: 'implementation',
+-      hashes: {
+-        prompt: contentHash(stableStringify(recordedEvalSet.queries.map(query => query.prompt))),
+-        skill: contentHash('recorded skill'),
+-        tool: contentHash('recorded tool'),
+-      },
+-      started_at: '2026-08-05T10:00:00.000Z',
+-      ended_at: '2026-08-05T10:00:03.000Z',
+-      active_ms: 2000,
+-      passive_ms: 1000,
+-      tokens: { input: 100, output: 25, cached: 5 },
+-      retries: 0,
+-      compactions: 0,
+-      gates: [{ name: 'tests', passed: true }],
+-    });
+-
+-    await expect(runEvalPipeline(evalSetPath, {
+-      replay: {
+-        envelope,
+-        inputs: { skill: 'recorded skill', tool: 'recorded tool' },
+-      },
+-      _skipWorktree: true,
+-      _executeOverride: async (...args) => {
+-        executed = true;
+-        return fakeExecute(...args);
+-      },
+-      _invokeGrader: fakeGraderPass,
+-      _basePath: tmpDir,
+-    })).rejects.toThrow(/prompt hash drift/i);
+-
+-    expect(executed).toBe(false);
+-    expect(fs.readdirSync(tmpDir)).toHaveLength(0);
++  test('rejects command and query execution/scoring drift before worktree or command', async () => {
++    const drifts = [
++      (evalSet) => { evalSet.command = '/changed'; },
++      (evalSet) => { evalSet.queries[0].name = 'changed-name'; },
++      (evalSet) => { evalSet.queries[0].prompt = 'changed prompt'; },
++      (evalSet) => { evalSet.queries[0].setup = 'echo changed'; },
++      (evalSet) => { evalSet.queries[0].teardown = 'echo changed'; },
++      (evalSet) => { evalSet.queries[0].assertions[0].check = 'changed check'; },
++    ];
++    for (const mutate of drifts) {
++      const recordedEvalSet = minimalEvalSet();
++      const driftedEvalSet = JSON.parse(JSON.stringify(recordedEvalSet));
++      mutate(driftedEvalSet);
++      const evalSetPath = writeTmpEvalSet(driftedEvalSet);
++      const tmpDir = makeTmpDir();
++      let executed = false;
++      const envelope = createEvalEvidence({
++        issue_id: '02f5ea90-4a1a-462f-9b22-54eb5d37f6b3',
++        pr: 484,
++        head_sha: 'a'.repeat(40),
++        model: 'model-a',
++        effort: 'high',
++        role: 'implementation',
++        hashes: buildEvalEvidenceHashes({ evalSet: recordedEvalSet, skill: 'recorded skill', tool: 'recorded tool' }),
++        started_at: '2026-08-05T10:00:00.000Z',
++        ended_at: '2026-08-05T10:00:03.000Z',
++        active_ms: 2000,
++        passive_ms: 1000,
++        tokens: { input: 100, output: 25, cached: 5 },
++        retries: 0,
++        compactions: 0,
++        gates: [{ name: 'tests', passed: true }],
++      });
++      await expect(runEvalPipeline(evalSetPath, {
++        replay: { envelope, inputs: { skill: 'recorded skill', tool: 'recorded tool' } },
++        _skipWorktree: true,
++        _executeOverride: async (...args) => {
++          executed = true;
++          return fakeExecute(...args);
++        },
++        _invokeGrader: fakeGraderPass,
++        _basePath: tmpDir,
++      })).rejects.toThrow(/eval_set hash drift/);
++      expect(executed).toBe(false);
++      expect(fs.readdirSync(tmpDir)).toHaveLength(0);
++    }
+   });
+ 
+   test('cannot replay by echoing recorded hashes as current input contents', async () => {
+@@ -238,11 +233,7 @@ describe('runEvalPipeline', () => {
+       model: 'model-a',
+       effort: 'high',
+       role: 'implementation',
+-      hashes: {
+-        prompt: contentHash(stableStringify(evalSet.queries.map(query => query.prompt))),
+-        skill: contentHash('recorded skill'),
+-        tool: contentHash('recorded tool'),
+-      },
++      hashes: buildEvalEvidenceHashes({ evalSet, skill: 'recorded skill', tool: 'recorded tool' }),
+       started_at: '2026-08-05T10:00:00.000Z',
+       ended_at: '2026-08-05T10:00:03.000Z',
+       active_ms: 2000,
+-- 
+2.51.0.windows.1
+

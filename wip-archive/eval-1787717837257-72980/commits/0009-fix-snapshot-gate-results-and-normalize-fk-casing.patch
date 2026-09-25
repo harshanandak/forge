@@ -1,0 +1,111 @@
+From 39a9a6a0fee379f4a75b0f822f9483d3a5c46fbe Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 22:57:52 +0530
+Subject: [PATCH] fix: snapshot gate results and normalize fk casing
+
+---
+ lib/kernel/sqlite-driver.js                 |  2 +-
+ lib/pr-monitor/watch-owner.js               | 20 +++++++++++++++-----
+ test/kernel/watch-owner-transaction.test.js | 15 +++++++++++++++
+ test/pr-monitor/watch-owner.test.js         | 19 +++++++++++++++++++
+ 4 files changed, 50 insertions(+), 6 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 07c57fdf..5cc0d8e0 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2801,7 +2801,7 @@ function hasInboundWatchOwnerForeignKeys(runtime, db) {
+ 	);
+ 	for (const { name } of tables) {
+ 		const references = allParams(runtime, db, `PRAGMA foreign_key_list("${name.replace(/"/g, '""')}")`);
+-		if (references.some(reference => reference.table === WATCH_OWNER_TABLE)) return true;
++		if (references.some(reference => String(reference.table).toLowerCase() === WATCH_OWNER_TABLE)) return true;
+ 	}
+ 	return false;
+ }
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 487e3850..b7c3b520 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -867,11 +867,21 @@ function invokeGate(method, input, opts) {
+ 		const result = operation(input, opts.databaseConfig || {});
+ 		if (result && typeof result.then === 'function') return invalidGate('invalid_operation');
+ 		if (!result || typeof result !== 'object' || Array.isArray(result)) return invalidGate('corrupt');
+-		if (result.ok === true && result.gate == null) return invalidGate('corrupt');
+-		if (result.gate == null) return result;
+-		const gate = copyMigrationGate(result.gate);
+-		if (!gate || (result.ok === true && !gateMatchesMutation(method, input, gate))) return invalidGate('corrupt');
+-		return { ...result, gate };
++		// Snapshot once: accessor-backed results must not flip between
++		// validation and the returned envelope.
++		const snap = {
++			ok: result.ok === true,
++			changed: result.changed === true,
++			reason: typeof result.reason === 'string' ? result.reason : '',
++			gate: result.gate,
++		};
++		if (snap.ok && snap.gate == null) return invalidGate('corrupt');
++		if (snap.gate == null) {
++			return { ok: snap.ok, changed: snap.changed, reason: snap.reason, gate: null };
++		}
++		const gate = copyMigrationGate(snap.gate);
++		if (!gate || (snap.ok && !gateMatchesMutation(method, input, gate))) return invalidGate('corrupt');
++		return { ok: snap.ok, changed: snap.changed, reason: snap.reason, gate };
+ 	} catch (error) {
+ 		return { ok: false, changed: false,
+ 			reason: error?.code === 'AUTHORITY_UNAVAILABLE' ? 'authority_unavailable' : 'store_error', gate: null };
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 95dbb90c..20d59efa 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -1301,4 +1301,19 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+ 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+ 	});
++
++	test('rejects inbound foreign-key cascades declared with different identifier casing', async () => {
++		await driver.exec(`
++			CREATE TABLE watcher_refs_kernel (
++				extra TEXT NOT NULL PRIMARY KEY,
++				repo TEXT NOT NULL,
++				pr INTEGER NOT NULL,
++				FOREIGN KEY (repo, pr) REFERENCES KERNEL_PR_WATCH_OWNERS (repo, pr) ON DELETE CASCADE
++			);
++		`);
++		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 117 }, {
++			controllerPid: 7_117, startedAt: NOW,
++		}, { driver });
++		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
++	});
+ });
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 872e4d80..09ba441f 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2224,4 +2224,23 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		}));
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
+ 	});
++
++	test('snapshots accessor-backed gate results before validating success', async () => {
++		let okReads = 0;
++		const flipping = {
++			get ok() {
++				okReads += 1;
++				return okReads > 1;
++			},
++			changed: true,
++			reason: 'quarantined',
++			gate: { singleton: 1, state: 'quarantined', snapshot_hash: null, conflict_code: null, updated_at: NOW },
++		};
++		const result = await owner.publishMigrationQuarantine({ updatedAt: NOW }, authorityOpts({
++			...driver,
++			watchGatePublishQuarantine: () => flipping,
++		}));
++		expect(okReads).toBe(1);
++		expect(result.ok).toBe(false);
++	});
+ });
+-- 
+2.51.0.windows.1
+

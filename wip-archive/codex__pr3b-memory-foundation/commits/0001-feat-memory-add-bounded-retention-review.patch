@@ -1,0 +1,342 @@
+From 136ba9c461c128b1b0c5282cea87ac36fc7bd95d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:51:08 +0530
+Subject: [PATCH] feat(memory): add bounded retention review
+
+---
+ lib/commands/hooks.js        |  11 +++-
+ lib/commands/memory.js       |  32 +++++++++-
+ lib/memory/hygiene.js        | 117 +++++++++++++++++++++++++++++++++++
+ test/commands/memory.test.js |  20 +++++-
+ test/hooks-capture.test.js   |  21 +++++++
+ test/memory/hygiene.test.js  |  40 ++++++++++++
+ 6 files changed, 235 insertions(+), 6 deletions(-)
+ create mode 100644 lib/memory/hygiene.js
+ create mode 100644 test/memory/hygiene.test.js
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 3627b489..2d776992 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -213,12 +213,17 @@ const CAPTURE_TAGS = ['type:session-summary', CAPTURE_AUTO_TAG];
+  * @returns {string}
+  */
+ function buildCaptureNote(trigger, issues) {
+-  const capped = issues.slice(0, CAPTURE_ISSUE_CAP);
+-  const lines = capped.map(issue => {
++  const stableIssues = [...new Map(issues.map(issue => {
++    const id = String((issue && issue.id) || '');
+     const title = String((issue && (issue.title || issue.id)) || 'untitled').replace(/\s+/g, ' ').trim();
++    return [`${id}\0${title}`, { id, title }];
++  })).values()].sort((left, right) => `${left.id}\0${left.title}`.localeCompare(`${right.id}\0${right.title}`));
++  const capped = stableIssues.slice(0, CAPTURE_ISSUE_CAP);
++  const lines = capped.map(issue => {
++    const title = issue.title;
+     return `- ${title.length > CAPTURE_TITLE_CAP ? `${title.slice(0, CAPTURE_TITLE_CAP)}…` : title}`;
+   });
+-  const more = issues.length > capped.length ? `\n- …and ${issues.length - capped.length} more` : '';
++  const more = stableIssues.length > capped.length ? `\n- …and ${stableIssues.length - capped.length} more` : '';
+   const body = lines.length
+     ? `Session boundary (${trigger}) — in-progress:\n${lines.join('\n')}${more}`
+     : `Session boundary (${trigger}) — no in-progress issues.`;
+diff --git a/lib/commands/memory.js b/lib/commands/memory.js
+index 93f4067d..9632c0dc 100644
+--- a/lib/commands/memory.js
++++ b/lib/commands/memory.js
+@@ -4,6 +4,26 @@ const remember = require('./remember');
+ const recall = require('./recall');
+ const insights = require('./insights');
+ const { stripGlobalFlags } = require('../global-flags');
++const projectMemory = require('../project-memory');
++const { reviewMemories } = require('../memory/hygiene');
++
++function renderReview(review) {
++  const lines = [`Memory hygiene: ${review.findings.length} finding(s), ${review.scanned}/${review.total} scanned.`];
++  for (const finding of review.findings) {
++    lines.push(`${finding.review_id}  ${finding.kind}${finding.claim ? `  ${finding.claim}` : `  ${finding.count} equivalent records`}`);
++  }
++  if (review.truncated) lines.push('Results truncated by the bounded review limits.');
++  return lines.join('\n');
++}
++
++async function reviewHandler(args, flags, projectRoot, opts = {}) {
++  const listMemories = opts.listMemories || projectMemory.list;
++  const review = reviewMemories(await listMemories(projectRoot, opts));
++  return {
++    success: true,
++    output: args.includes('--json') || flags.json ? JSON.stringify(review, null, 2) : renderReview(review),
++  };
++}
+ 
+ // One memorable surface over the EXISTING memory commands (kernel issue 25362344): every
+ // subcommand delegates to the standalone remember/recall/insights handlers — the same
+@@ -29,9 +49,17 @@ const SUBCOMMANDS = {
+     handler: insights.handler,
+     summary: 'Detect recurring evidence patterns and suggest follow-ups (= forge insights)',
+   },
++  review: {
++    handler: reviewHandler,
++    summary: 'Report bounded duplicate and explicit-contradiction findings with stable review ids',
++  },
++  doctor: {
++    handler: reviewHandler,
++    summary: 'Alias for memory review',
++  },
+ };
+ 
+-const usage = 'Usage: forge memory <add|recall|search|insights> [args]';
++const usage = 'Usage: forge memory <add|recall|search|insights|review|doctor> [args]';
+ 
+ function renderHelp() {
+   const width = Math.max(...Object.keys(SUBCOMMANDS).map(name => name.length));
+@@ -75,7 +103,7 @@ async function handler(args, flags, projectRoot, opts) {
+ module.exports = {
+   name: 'memory',
+   description:
+-    'Unified memory surface: forge memory add|recall|search|insights (wraps remember/recall/insights)',
++    'Unified memory surface: add, recall, search, insights, and bounded hygiene review',
+   usage,
+   handler,
+ };
+diff --git a/lib/memory/hygiene.js b/lib/memory/hygiene.js
+new file mode 100644
+index 00000000..dcf3cd28
+--- /dev/null
++++ b/lib/memory/hygiene.js
+@@ -0,0 +1,117 @@
++'use strict';
++
++const { createHash } = require('node:crypto');
++
++const DEFAULT_ENTRY_LIMIT = 200;
++const DEFAULT_FINDING_LIMIT = 50;
++const VOLATILE_FIELDS = new Set([
++  'id', 'key', 'memory_id', 'created_at', 'updated_at', 'timestamp', 'revision',
++  'createdAt', 'updatedAt',
++]);
++
++function normalizeText(value) {
++  return String(value)
++    .normalize('NFKC')
++    .toLowerCase()
++    .replace(/[’']/g, "'")
++    .replace(/[^\p{L}\p{N}'\s]/gu, ' ')
++    .replace(/\s+/g, ' ')
++    .trim();
++}
++
++function canonicalize(value) {
++  if (typeof value === 'string') return normalizeText(value);
++  if (Array.isArray(value)) {
++    return value.map(canonicalize).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
++  }
++  if (!value || typeof value !== 'object') return value;
++  return Object.fromEntries(Object.keys(value)
++    .filter(key => !VOLATILE_FIELDS.has(key))
++    .sort()
++    .map(key => [key, canonicalize(value[key])]));
++}
++
++function payloadFor(entry) {
++  if (entry && Object.hasOwn(entry, 'note')) return entry.note;
++  if (entry && Object.hasOwn(entry, 'value')) return entry.value;
++  return entry;
++}
++
++function fingerprint(value) {
++  return createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
++}
++
++function reviewId(kind, parts) {
++  const digest = createHash('sha256')
++    .update(`${kind}\0${[...parts].sort().join('\0')}`)
++    .digest('hex')
++    .slice(0, 16);
++  return `memory-${kind}-${digest}`;
++}
++
++function claimFor(entry) {
++  const payload = payloadFor(entry);
++  if (typeof payload !== 'string') return null;
++  let text = normalizeText(payload);
++  let negative = false;
++  const match = text.match(/^(?:do not|don't|never)\s+(.+)$/);
++  if (match) {
++    negative = true;
++    text = match[1];
++  }
++  return text ? { basis: text, negative } : null;
++}
++
++function reviewMemories(entries, options = {}) {
++  const source = Array.isArray(entries) ? entries : [];
++  const entryLimit = Math.max(1, Math.min(options.entryLimit || DEFAULT_ENTRY_LIMIT, DEFAULT_ENTRY_LIMIT));
++  const findingLimit = Math.max(1, Math.min(options.findingLimit || DEFAULT_FINDING_LIMIT, DEFAULT_FINDING_LIMIT));
++  const selected = source.slice(0, entryLimit);
++  const findings = [];
++
++  const duplicateGroups = new Map();
++  for (const entry of selected) {
++    const payload = payloadFor(entry);
++    const canonical = JSON.stringify(canonicalize(payload));
++    const group = duplicateGroups.get(canonical) || [];
++    group.push(fingerprint(payload));
++    duplicateGroups.set(canonical, group);
++  }
++  for (const [canonical, members] of duplicateGroups) {
++    if (members.length < 2) continue;
++    findings.push({
++      review_id: reviewId('duplicate', [canonical]),
++      kind: 'duplicate',
++      count: members.length,
++      members: [...new Set(members)].sort(),
++    });
++  }
++
++  const claims = new Map();
++  for (const entry of selected) {
++    const claim = claimFor(entry);
++    if (!claim) continue;
++    const sides = claims.get(claim.basis) || { positive: [], negative: [] };
++    sides[claim.negative ? 'negative' : 'positive'].push(fingerprint(payloadFor(entry)));
++    claims.set(claim.basis, sides);
++  }
++  for (const [basis, sides] of claims) {
++    if (!sides.positive.length || !sides.negative.length) continue;
++    findings.push({
++      review_id: reviewId('contradiction', [basis]),
++      kind: 'contradiction',
++      claim: basis,
++      members: [...new Set([...sides.positive, ...sides.negative])].sort(),
++    });
++  }
++
++  findings.sort((a, b) => a.review_id.localeCompare(b.review_id));
++  return {
++    total: source.length,
++    scanned: selected.length,
++    truncated: source.length > selected.length || findings.length > findingLimit,
++    findings: findings.slice(0, findingLimit),
++  };
++}
++
++module.exports = { reviewMemories };
+diff --git a/test/commands/memory.test.js b/test/commands/memory.test.js
+index b41f2f55..5d04fbb7 100644
+--- a/test/commands/memory.test.js
++++ b/test/commands/memory.test.js
+@@ -36,7 +36,7 @@ describe('forge memory command surface (25362344)', () => {
+     const projectRoot = makeProjectRoot();
+     const result = await memory.handler([], {}, projectRoot);
+     expect(result.success).toBe(true);
+-    for (const sub of ['add', 'recall', 'search', 'insights']) {
++    for (const sub of ['add', 'recall', 'search', 'insights', 'review']) {
+       expect(result.output).toContain(sub);
+     }
+   });
+@@ -103,6 +103,24 @@ describe('forge memory command surface (25362344)', () => {
+     expect(result.output.length).toBeGreaterThan(0);
+   });
+ 
++  test('memory review reports bounded duplicate and contradiction findings as JSON', async () => {
++    const projectRoot = makeProjectRoot();
++    const entries = [
++      { note: 'Use Bun for installs', timestamp: '2026-08-01' },
++      { note: 'use bun for installs', timestamp: '2026-08-02' },
++      { note: 'Do not use Bun for installs', timestamp: '2026-08-03' },
++    ];
++    const result = await memory.handler(['review', '--json'], {}, projectRoot, {
++      listMemories: () => entries,
++    });
++
++    expect(result.success).toBe(true);
++    const parsed = JSON.parse(result.output);
++    expect(parsed.scanned).toBe(3);
++    expect(parsed.findings.map(finding => finding.kind).sort()).toEqual(['contradiction', 'duplicate']);
++    expect(parsed.findings.every(finding => /^memory-(duplicate|contradiction)-[a-f0-9]{16}$/.test(finding.review_id))).toBe(true);
++  });
++
+   test('back-compat: forge remember still works as a standalone alias', async () => {
+     const projectRoot = makeProjectRoot();
+     const result = await remember.handler(['legacy path still works'], {}, projectRoot);
+diff --git a/test/hooks-capture.test.js b/test/hooks-capture.test.js
+index 4690bc14..51b011e5 100644
+--- a/test/hooks-capture.test.js
++++ b/test/hooks-capture.test.js
+@@ -64,6 +64,27 @@ describe('forge hooks capture (context hook — capture on exit)', () => {
+     expect(store.writes).toHaveLength(1);
+   });
+ 
++  test('dedupe: equivalent captures ignore issue ordering and volatile fields', async () => {
++    const store = recordingStore();
++    const base = { append: store.append, fetchNotes: store.fetchNotes };
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
++      ...base,
++      fetchIssues: () => [
++        { id: 'i2', title: 'Fix head-branch bug', updated_at: 'old', revision: 1 },
++        { id: 'i1', title: 'Wire auto-file rail', updated_at: 'old', revision: 1 },
++      ],
++    });
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
++      ...base,
++      fetchIssues: () => [
++        { revision: 99, updated_at: 'new', title: 'Wire auto-file rail', id: 'i1' },
++        { revision: 99, updated_at: 'new', title: 'Fix head-branch bug', id: 'i2' },
++      ],
++    });
++
++    expect(store.writes).toHaveLength(1);
++  });
++
+   test('a changed in-progress set DOES write a fresh capture (not deduped)', async () => {
+     const store = recordingStore();
+     const base = { append: store.append, fetchNotes: store.fetchNotes };
+diff --git a/test/memory/hygiene.test.js b/test/memory/hygiene.test.js
+new file mode 100644
+index 00000000..75b2a0ff
+--- /dev/null
++++ b/test/memory/hygiene.test.js
+@@ -0,0 +1,40 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { reviewMemories } = require('../../lib/memory/hygiene');
++
++describe('memory hygiene review', () => {
++  test('duplicate ids are stable across input, object-key, and volatile-field ordering', () => {
++    const first = reviewMemories([
++      { id: 'new-id', updated_at: '2026-08-10', value: { why: 'fast', what: 'Use Bun' } },
++      { id: 'old-id', updated_at: '2026-01-01', value: { what: 'Use Bun', why: 'fast' } },
++    ]);
++    const second = reviewMemories([
++      { updated_at: 'tomorrow', id: 'changed-a', value: { what: 'Use Bun', why: 'fast' } },
++      { value: { why: 'fast', what: 'Use Bun' }, id: 'changed-b', updated_at: 'yesterday' },
++    ].reverse());
++
++    expect(first.findings).toHaveLength(1);
++    expect(first.findings[0].kind).toBe('duplicate');
++    expect(first.findings[0].review_id).toBe(second.findings[0].review_id);
++  });
++
++  test('explicit positive and negative claims produce a stable contradiction id', () => {
++    const first = reviewMemories([{ note: 'Use Bun for installs' }, { note: 'Do not use Bun for installs' }]);
++    const second = reviewMemories([{ timestamp: 'volatile', note: 'do NOT use bun for installs.' }, { note: 'use bun for installs' }]);
++
++    expect(first.findings).toHaveLength(1);
++    expect(first.findings[0].kind).toBe('contradiction');
++    expect(first.findings[0].review_id).toBe(second.findings[0].review_id);
++  });
++
++  test('review is bounded before pair analysis and caps findings', () => {
++    const entries = Array.from({ length: 12 }, () => ({ note: 'same claim' }));
++    const review = reviewMemories(entries, { entryLimit: 5, findingLimit: 1 });
++
++    expect(review.scanned).toBe(5);
++    expect(review.total).toBe(12);
++    expect(review.truncated).toBe(true);
++    expect(review.findings).toHaveLength(1);
++  });
++});
+-- 
+2.51.0.windows.1
+

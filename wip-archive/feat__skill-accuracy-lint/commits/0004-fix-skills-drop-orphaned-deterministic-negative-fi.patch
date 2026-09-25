@@ -1,0 +1,83 @@
+From 8fd8749434ab5ed0837882426bc85d764beab981 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 22 Jul 2026 10:40:33 +0530
+Subject: [PATCH] fix(skills): drop orphaned deterministic negative fixtures
+ (lint round-3)
+
+Codex: the 'SonarCloud gate status for this PR' gates fixture I added in commit 1
+was orphaned once round-2 switched PRECISION_CASES to a cleaner query, and that
+exact wording routes to 'status' (the bare 'status' keyword out-scores sonarcloud).
+The deterministic collision guards now live entirely in PRECISION_CASES (the test),
+so evals.json should carry only positive + genuinely-semantic negatives. Removed
+both deterministic negatives I had added (gates SonarCloud, worktree PR); reverted
+those evals to their #430 state. The latent bare-'status' over-match (a W5-tier
+disambiguation, not cleanly fixable deterministically without breaking /status) is
+tracked in 5b1f4816.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .agents/skills/gates/evals/evals.json    | 4 ----
+ .agents/skills/worktree/evals/evals.json | 4 ----
+ skills/gates/evals/evals.json            | 4 ----
+ skills/worktree/evals/evals.json         | 4 ----
+ 4 files changed, 16 deletions(-)
+
+diff --git a/.agents/skills/gates/evals/evals.json b/.agents/skills/gates/evals/evals.json
+index aa025f30..8176c4eb 100644
+--- a/.agents/skills/gates/evals/evals.json
++++ b/.agents/skills/gates/evals/evals.json
+@@ -34,9 +34,5 @@
+   {
+     "query": "Run the tests and lint before I push.",
+     "should_trigger": false
+-  },
+-  {
+-    "query": "SonarCloud gate status for this PR",
+-    "should_trigger": false
+   }
+ ]
+diff --git a/.agents/skills/worktree/evals/evals.json b/.agents/skills/worktree/evals/evals.json
+index b75cac84..7a230569 100644
+--- a/.agents/skills/worktree/evals/evals.json
++++ b/.agents/skills/worktree/evals/evals.json
+@@ -34,9 +34,5 @@
+   {
+     "query": "Watch my PR and tell me why it isn't merging.",
+     "should_trigger": false
+-  },
+-  {
+-    "query": "Open a pull request from the worktree for this feature.",
+-    "should_trigger": false
+   }
+ ]
+diff --git a/skills/gates/evals/evals.json b/skills/gates/evals/evals.json
+index aa025f30..8176c4eb 100644
+--- a/skills/gates/evals/evals.json
++++ b/skills/gates/evals/evals.json
+@@ -34,9 +34,5 @@
+   {
+     "query": "Run the tests and lint before I push.",
+     "should_trigger": false
+-  },
+-  {
+-    "query": "SonarCloud gate status for this PR",
+-    "should_trigger": false
+   }
+ ]
+diff --git a/skills/worktree/evals/evals.json b/skills/worktree/evals/evals.json
+index b75cac84..7a230569 100644
+--- a/skills/worktree/evals/evals.json
++++ b/skills/worktree/evals/evals.json
+@@ -34,9 +34,5 @@
+   {
+     "query": "Watch my PR and tell me why it isn't merging.",
+     "should_trigger": false
+-  },
+-  {
+-    "query": "Open a pull request from the worktree for this feature.",
+-    "should_trigger": false
+   }
+ ]
+-- 
+2.51.0.windows.1
+

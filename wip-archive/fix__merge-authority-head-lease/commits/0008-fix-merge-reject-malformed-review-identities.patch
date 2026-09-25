@@ -1,0 +1,168 @@
+From b5faafda36b5b374728057184e2a3c67a9ba1c32 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 2 Aug 2026 16:17:38 +0530
+Subject: [PATCH] fix(merge): reject malformed review identities
+
+---
+ .../decisions.md                              |  2 ++
+ .../tasks.md                                  |  2 ++
+ lib/adapters/pr-state-adapter.js              | 19 +++++++++-----
+ lib/commands/merge.js                         |  2 +-
+ test/commands/merge.test.js                   | 26 +++++++++++++++++++
+ test/pr-state-adapter.test.js                 | 20 ++++++++++++++
+ 6 files changed, 63 insertions(+), 8 deletions(-)
+
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+index c37e78c0..f6378ae5 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -52,6 +52,8 @@ Candidate `7e7fa0cb2193db6c10b9a55b11844dde7e8eaf9a` is rejected after a predece
+ 
+ Candidate `23f5854f069ccfb22324d1266f132b930745a9a3` is rejected after its agent-agnostic lane proved the merge path consumed timestamps but discarded normalized actor, state, and commit-head evidence. The GraphQL adapter now accepts only provider-defined review states and full 40-character commit OIDs, selects latest review state by submission time while retaining maximum activity across all reviews per author, and exposes complete normalized evidence to merge authority. Both initial and fresh mandatory gates now require readable review evidence, recognized actor types, valid timestamps, known states, exact-head binding for every active latest review, and no `CHANGES_REQUESTED` or `PENDING` latest state. `DISMISSED` review history is non-authorizing and may remain bound to an earlier head. These rules are mechanism-based and vendor-neutral.
+ 
++Candidate `0b79eba52b99d37ec1579ffb2a15c20721e83d13` is rejected after exact-delta review found that pre-validation string coercion could turn object IDs into `"[object Object]"` and normalize a `[bot]` login to an empty author, silently dropping a blocking review. Review IDs and logins must now be nonempty strings before normalization, normalized authors must remain nonempty, and review evidence is marked readable only when repository identity allowed the GraphQL collection to run.
++
+ ## Bounded residuals
+ 
+ GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+index 2d0d7e8d..785756e9 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -39,6 +39,8 @@
+ - [x] Move settle authority to fully paginated, agent-agnostic GraphQL review evidence; require creation/update/submission timestamps and retain latest activity per author.
+ - [x] Reconcile exact-SHA review of `23f5854f069ccfb22324d1266f132b930745a9a3`: reject because merge authority discarded normalized actor/state/commit-head review evidence.
+ - [x] Make complete normalized review evidence a mandatory initial/fresh exact-head gate; reject unknown states, malformed OIDs, stale active reviews, changes requested, and pending reviews without vendor-specific handling.
++- [x] Reconcile exact-SHA review of `0b79eba52b99d37ec1579ffb2a15c20721e83d13`: reject pre-validation identity coercion and falsely readable skipped review collection.
++- [x] Require typed nonempty review IDs/logins before normalization, nonempty canonical authors after normalization, and truthful review-evidence readability.
+ - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+ - [ ] Push/open PR only after PASS.
+ - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 9c9bc949..0af3b0e2 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -661,11 +661,17 @@ class PrStateAdapter {
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviews,
+       (r) => {
+-        const id = r.id ? String(r.id) : '';
+-        const author = String(r.author?.login || '').toLowerCase();
+-        if (!id) throw new Error('Review is missing stable GraphQL id');
+-        if (!author) throw new Error(`Review ${id} is missing author identity`);
+-        if (!GITHUB_ACTOR_TYPENAMES.has(String(r.author?.__typename || ''))) {
++        if (typeof r.id !== 'string' || !r.id) {
++          throw new Error('Review is missing stable GraphQL id');
++        }
++        const id = r.id;
++        if (typeof r.author?.login !== 'string' || !r.author.login) {
++          throw new Error(`Review ${id} is missing author identity`);
++        }
++        const author = r.author.login.toLowerCase().replace(/\[bot\]$/, '');
++        if (!author) throw new Error(`Review ${id} has empty normalized author identity`);
++        if (typeof r.author?.__typename !== 'string'
++          || !GITHUB_ACTOR_TYPENAMES.has(r.author.__typename)) {
+           throw new Error(`Review ${id} has missing or malformed actor type`);
+         }
+         const state = typeof r.state === 'string' ? r.state.toUpperCase() : '';
+@@ -679,7 +685,7 @@ class PrStateAdapter {
+         }
+         return {
+           id,
+-          author: author.replace(/\[bot\]$/, ''),
++          author,
+           authorTypename: r.author.__typename,
+           state,
+           createdAt: r.createdAt,
+@@ -696,7 +702,6 @@ class PrStateAdapter {
+     const latestSubmission = new Map();
+     const latestActivity = new Map();
+     for (const r of all) {
+-      if (!r.author) continue;
+       const submitted = Date.parse(r.submittedAt);
+       if (!Number.isFinite(submitted)) {
+         throw new Error(`Review ${r.id} has malformed submission timestamp`);
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 4595f7b1..eb0cc400 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -616,7 +616,7 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     state,
+     approvals,
+     reviews,
+-    reviewEvidenceReadable: true,
++    reviewEvidenceReadable: adapter !== null,
+     comments,
+     lastActivityAt,
+     now,
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 2fb719e6..7bdf45b0 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -63,6 +63,32 @@ afterEach(() => {
+ });
+ 
+ describe('merge command — opt-in conditional auto-merge', () => {
++  test('default fetch marks review evidence unreadable when repository identity is unavailable', async () => {
++    const gh = (args) => {
++      const joined = args.join(' ');
++      if (joined.startsWith('pr view')) {
++        return JSON.stringify({
++          number: 42,
++          headRefOid: HEAD,
++          baseRefName: 'master',
++          state: 'OPEN',
++          isDraft: false,
++          mergeable: 'MERGEABLE',
++          mergeStateStatus: 'CLEAN',
++          statusCheckRollup: [],
++          comments: [],
++          updatedAt: '2026-08-02T12:00:00Z',
++        });
++      }
++      if (joined.startsWith('repo view')) return JSON.stringify({});
++      return '';
++    };
++
++    const context = await mergeCmd.defaultFetchPrContext({ pr: '42', gh });
++    expect(context.reviews).toEqual([]);
++    expect(context.reviewEvidenceReadable).toBe(false);
++  });
++
+   test('satisfies the _registry { name, description, handler } contract', () => {
+     expect(validateCommand(mergeCmd)).toEqual({ valid: true });
+     expect(mergeCmd.name).toBe('merge');
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index d731cb3c..405ab318 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -784,6 +784,26 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     }
+   });
+ 
++  test('readReviews rejects malformed stable ids and authors before normalization', async () => {
++    for (const identity of [
++      { id: { value: 'R-OBJECT' }, author: { __typename: 'Bot', login: 'review-agent[bot]' } },
++      { id: 'R-EMPTY-AUTHOR', author: { __typename: 'Bot', login: '[bot]' } },
++    ]) {
++      const page = JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++        pageInfo: { hasNextPage: false, endCursor: null },
++        nodes: [{
++          ...identity,
++          state: 'CHANGES_REQUESTED',
++          createdAt: '2026-07-12T08:59:00Z', updatedAt: '2026-07-12T09:00:00Z',
++          submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'a'.repeat(40) }, body: '',
++        }],
++      } } } } });
++      const { run } = makeRunner([['reviews(first', page]]);
++      const adapter = new PrStateAdapter({ gh: run, git: run });
++      await expect(adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/review/i);
++    }
++  });
++
+   test('readHeadCommitTime parses the head commit committedDate to epoch ms', async () => {
+     const iso = '2026-07-12T10:00:00Z';
+     const { run, calls } = makeRunner([['.commits[-1].committedDate', iso]]);
+-- 
+2.51.0.windows.1
+

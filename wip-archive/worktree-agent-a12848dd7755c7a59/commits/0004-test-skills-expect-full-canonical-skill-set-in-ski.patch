@@ -1,0 +1,56 @@
+From 3649aa2b1162dae3c1e8c5c3e6c4977440cc304a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 27 Jun 2026 13:17:21 +0530
+Subject: [PATCH] test(skills): expect full canonical skill set in
+ skills-structure
+
+skills/ now holds 12 stage skills + kernel umbrella + 3 packaged skills
+(16 dirs) since the stage-skill ports landed. PR-A0.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ test/skills-structure.test.js | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/test/skills-structure.test.js b/test/skills-structure.test.js
+index 6972e775..cc2e8ee2 100644
+--- a/test/skills-structure.test.js
++++ b/test/skills-structure.test.js
+@@ -108,10 +108,33 @@ describe('skills/ directory structure', () => {
+   });
+ 
+   describe('skills/ contains only expected directories', () => {
++    // Canonical skill set after the skills-only migration: the 12 workflow stage
++    // skills + the `kernel` umbrella (ported from the removed .claude/commands/
++    // surface) plus the three packaged skills. These are the single source of
++    // truth; agent harness dirs are generated from them by `skills sync` / setup.
++    const expectedSkillDirs = [
++      'dev',
++      'plan',
++      'premerge',
++      'research',
++      'review',
++      'rollback',
++      'shepherd',
++      'ship',
++      'sonarcloud',
++      'status',
++      'validate',
++      'verify',
++      'kernel',
++      'hermes-forge',
++      'parallel-deep-research',
++      'sonarcloud-analysis',
++    ];
++
+     test('skills/ contains exactly the expected skill directories', () => {
+       const dirs = fs.readdirSync(path.join(ROOT, 'skills'))
+         .filter(d => fs.statSync(path.join(ROOT, 'skills', d)).isDirectory());
+-      expect(dirs.sort()).toEqual(['hermes-forge', 'parallel-deep-research', 'sonarcloud-analysis'].sort());
++      expect(dirs.sort()).toEqual(expectedSkillDirs.sort());
+     });
+   });
+ });
+-- 
+2.51.0.windows.1
+

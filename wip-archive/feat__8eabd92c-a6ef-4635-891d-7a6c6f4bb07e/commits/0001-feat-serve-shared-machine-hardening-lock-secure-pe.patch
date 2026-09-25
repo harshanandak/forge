@@ -1,0 +1,851 @@
+From 529a07c36a424c6415b427db886d2fcfaa00d82f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 11:21:08 +0530
+Subject: [PATCH] =?UTF-8?q?feat(serve):=20shared-machine=20hardening=20?=
+ =?UTF-8?q?=E2=80=94=20lock,=20secure=20perms,=20hash-chained=20journal=20?=
+ =?UTF-8?q?(B5)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three cheap ALWAYS controls for `forge serve` on a multi-user box, plus the
+B5a security-model doc-drift fix.
+
+- serve.lock single-instance guard: exclusive-create lock with dead-PID stale
+  reclaim + clean release on SIGINT/SIGTERM/exit — a second `forge serve` for
+  the same project can no longer silently port-squat.
+- securePath(): lock/journal created 0o600 and their dir 0o700 at creation,
+  plus a loud startup audit for group/other-readable sensitive paths. Windows
+  chmod is a documented best-effort no-op (NTFS ACLs, not POSIX mode bits); the
+  audit prints an honest caveat instead of a false alarm.
+- Hash-chained mutation journal (.forge/serve/journal.jsonl): every mutation
+  attempt carries sha256(prevHash || record); verifyJournal() detects any edited
+  or deleted past record. Wired into handleMutation (best-effort, never fails a
+  response).
+- New authoritative docs/work/2026-07-13-forge-serve/security-model.md: endpoint
+  auth matrix showing GET /data.json is token-gated (corrects the stale
+  "unauthenticated gap"), plus the by-design note that local actor/origin is
+  advisory coordination metadata, never authenticated.
+
+State lives under .forge/serve/ so the shared .forge/ config dir is never
+re-chmod'd. Kernel remains the sole mutation authority — forward-compatible with
+the hosted/sync tier.
+
+Issues: 8eabd92c (serve hardening), d3c47131 (B5a doc-drift).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../2026-07-13-forge-serve/security-model.md  | 117 ++++++++
+ lib/commands/_serve-security.js               | 270 ++++++++++++++++++
+ lib/commands/serve.js                         |  83 +++++-
+ test/commands/_serve-security.test.js         | 213 ++++++++++++++
+ test/commands/serve.test.js                   |  34 +++
+ 5 files changed, 711 insertions(+), 6 deletions(-)
+ create mode 100644 docs/work/2026-07-13-forge-serve/security-model.md
+ create mode 100644 lib/commands/_serve-security.js
+ create mode 100644 test/commands/_serve-security.test.js
+
+diff --git a/docs/work/2026-07-13-forge-serve/security-model.md b/docs/work/2026-07-13-forge-serve/security-model.md
+new file mode 100644
+index 00000000..eb864759
+--- /dev/null
++++ b/docs/work/2026-07-13-forge-serve/security-model.md
+@@ -0,0 +1,117 @@
++# `forge serve` — security model
++
++Issue: `8eabd92c-a6ef-4635-891d-7a6c6f4bb07e` (serve hardening) · doc-drift fix
++`d3c47131-a675-4b18-9210-6ae6702e4904` (B5a). Companion to
++[design.md](design.md); this file is the authoritative security ground-truth for
++`lib/commands/serve.js`.
++
++## Threat model
++
++`forge serve` is a **local, loopback-only** companion that turns the static
++dashboard into an interactive one. It has **no accounts, no cloud, no daemon**;
++the process and its per-run token die together. The realistic adversaries are:
++
++1. **A remote / cross-origin web page** trying to reach the server or forge a
++   write (drive-by CSRF, DNS-rebinding).
++2. **Another local user or process on a shared machine** trying to read the
++   snapshot (issue/message data) or the token, or to squat the port.
++3. **A local actor tampering with the after-the-fact record** of what the server
++   did (editing/deleting journal history to hide a mutation).
++
++It is explicitly **not** a multi-tenant auth boundary. On a single-user machine
++the loopback + token fence is the whole story; the controls below raise the
++floor on a *shared* box without pretending to be authentication.
++
++## Endpoint authentication matrix
++
++The per-run token is `crypto.randomBytes(32)`, minted at startup, delivered only
++in the served page's URL **fragment** (`#token=…`, never sent to the server in a
++request line, `Referer`, or log), and compared in constant time
++(`crypto.timingSafeEqual`). Every gated request must also pass the loopback
++Host/Origin fence.
++
++| Endpoint | Method | Loopback fence | Token required | Rationale |
++|----------|--------|:--------------:|:--------------:|-----------|
++| `/health` | GET | yes | **no** | Capability probe only — flips the page SNAPSHOT→LIVE; discloses nothing. |
++| `/data.json` | GET | yes | **yes** | Carries the FULL issue/message snapshot — a real disclosure. Gated by the SAME fence as the write path (loopback + constant-time token). See `serve.js` `handleRequest` (`/data.json` branch). |
++| `/api/mutation` | POST | yes | **yes** | The write path. Body `{ token, verb, args }`; wrong/missing token → 403. |
++| `/*` static assets | GET | yes (bind) | no | Inert dashboard files (HTML/JS/CSS) under a traversal-safe path resolver. |
++
++> **Corrected (B5a).** An earlier draft of this model listed `GET /data.json`
++> reads as an **open unauthenticated gap**. That is stale: the shipped code
++> token-gates `/data.json` with the same loopback + constant-time-token fence as
++> `POST /api/mutation` (`lib/commands/serve.js`, the `/data.json` branch of
++> `handleRequest`; regression-tested in `test/commands/serve.test.js`). The
++> snapshot is **not** world-readable over the socket.
++
++## Local actor / origin is advisory, never authenticated
++
++The mutation journal records an `actor: "local"` and the request `origin`. **This
++is advisory coordination metadata, not an authenticated identity.** A loopback
++request is authorized solely by possession of the per-run token; the server does
++no OS-level peer-credential check (SO_PEERCRED / named-pipe SID) and cannot prove
++*which* local user or process sent a request. Treat `actor`/`origin` as a hint
++for human coordination on a dev box — never as tamper-proof provenance, and never
++as an authorization input. This keeps the model honest and forward-compatible
++with the hosted/sync tier, where the **kernel is the authority** and real
++identity is established server-side, not inferred from a local socket.
++
++## The three ALWAYS controls (`lib/commands/_serve-security.js`)
++
++Cheap, always-on hardening for the shared-machine case. State lives under
++`.forge/serve/` (owner-only) so the shared `.forge/` config dir is never
++re-chmod'd out from under other tooling.
++
++### 1. `serve.lock` single-instance guard
++
++`acquireLock()` exclusively creates `.forge/serve/serve.lock` (`open(..,'wx')`)
++holding `{ pid, port, startedAt }`. A second `forge serve` for the same project
++finds a **live** holder and is refused (prevents a rogue second server / port
++squat). A **stale** lock (holder PID no longer alive, via `process.kill(pid,0)`)
++is reclaimed. `releaseLock()` deletes the lock only if it is ours (matching PID),
++wired to `SIGINT`/`SIGTERM`/`exit` so the lock is released cleanly. Reclaim is
++best-effort and not hardened against a simultaneous double-reclaim race —
++acceptable for a loopback dev-server guard.
++
++### 2. `securePath()` — owner-only perms at creation + startup audit
++
++Lock and journal files are created `0o600` and their directory `0o700` **at
++creation** (mode on `open`/`mkdir`, re-`chmod`'d to be certain). At startup the
++server **audits** those paths and warns loudly if any is group/other-readable.
++
++**Windows honesty:** `chmod` on Windows only toggles the read-only bit — it does
++**not** change NTFS ACLs — and `fs.stat().mode` does not reflect ACLs. So on
++Windows `securePath()` is a best-effort no-op (`applied:false`) and the audit
++does **not** raise false alarms from meaningless mode bits; it prints a one-line
++caveat recommending a single-user profile instead. On POSIX the `0o600`/`0o700`
++bits are real and test-asserted.
++
++### 3. Hash-chained tamper-evident journal
++
++Every mutation attempt (accepted **or** rejected) is appended to
++`.forge/serve/journal.jsonl`. Each record embeds `prevHash` and carries
++`hash = sha256(prevHash ‖ JSON(record-without-hash))`, genesis = 64 zeros.
++`verifyJournal()` re-walks the chain from genesis; **editing** a past record
++breaks its `hash`, and **deleting** one breaks the following record's `prevHash`
++— either returns `{ ok:false, brokenAt, reason }`. This makes silent
++after-the-fact edits of serve's action history detectable. (It is integrity, not
++secrecy or non-repudiation: a local actor who can rewrite the file can also
++recompute a fresh valid chain — the guarantee is that *partial* tampering that
++leaves later records intact is always caught.)
++
++## Forward compatibility (hosted / sync tier)
++
++These controls are strictly local and additive. They do not introduce a second
++authority: the kernel/broker remains the sole mutation authority (the server is a
++dumb in-process relay). When the hosted/sync tier lands, real identity and
++authenticated provenance are established server-side by the kernel; the local
++journal remains a useful local integrity record but never claims to be that
++authority.
++
++## Test coverage
++
++- `test/commands/_serve-security.test.js` — lock (first/blocked/stale-reclaim/
++  release), perms-at-creation + audit (POSIX asserts real mode bits; Windows
++  asserts best-effort/no-throw), hash-chain append + tamper/delete detection.
++- `test/commands/serve.test.js` — `/data.json` token gate (regression for B5a),
++  and every mutation attempt journaled + tamper-detected end-to-end.
+diff --git a/lib/commands/_serve-security.js b/lib/commands/_serve-security.js
+new file mode 100644
+index 00000000..715f8ab2
+--- /dev/null
++++ b/lib/commands/_serve-security.js
+@@ -0,0 +1,270 @@
++'use strict';
++
++/**
++ * Shared-machine hardening for `forge serve` — three cheap "ALWAYS" controls.
++ *
++ * `forge serve` binds loopback only and token-gates every read/write, but on a
++ * multi-user box the process still lives in a shared filesystem. These controls
++ * raise the floor without adding accounts, a daemon, or cloud:
++ *
++ *   1. serve.lock — a single-instance guard so a second `forge serve` for the
++ *      SAME project can't silently start and port-squat. Stale locks (dead PID)
++ *      are reclaimed; a live holder blocks. Released cleanly on exit.
++ *   2. securePath() — create the lock/journal and their directory owner-only
++ *      (files 0o600, dirs 0o700) AT CREATION, plus a startup audit that warns
++ *      loudly if a sensitive path is group/other-readable.
++ *   3. A hash-chained mutation journal — each appended record carries
++ *      sha256(prevHash ‖ record), so an attacker cannot silently edit or delete
++ *      a past entry without breaking the chain. verifyJournal() proves it.
++ *
++ * Windows honesty: chmod on Windows only toggles the read-only bit — it does NOT
++ * change NTFS ACLs — and `fs.stat().mode` does not reflect ACLs. So on Windows
++ * securePath() is a best-effort no-op (reported as `applied:false`) and the
++ * audit refuses to raise false alarms from meaningless mode bits (it flags the
++ * platform caveat instead). The lock + hash-chain logic is platform-independent.
++ *
++ * State lives under `.forge/serve/` (owner-only) so we never re-chmod the shared
++ * `.forge/` config directory out from under other tooling.
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++const crypto = require('node:crypto');
++
++const SECRET_FILE_MODE = 0o600;
++const SECRET_DIR_MODE = 0o700;
++const GENESIS_HASH = '0'.repeat(64);
++const IS_WINDOWS = process.platform === 'win32';
++
++// ---------------------------------------------------------------------------
++// Paths
++// ---------------------------------------------------------------------------
++
++function serveStateDir(projectRoot) {
++  return path.join(projectRoot, '.forge', 'serve');
++}
++function lockPath(projectRoot) {
++  return path.join(serveStateDir(projectRoot), 'serve.lock');
++}
++function journalPath(projectRoot) {
++  return path.join(serveStateDir(projectRoot), 'journal.jsonl');
++}
++
++// ---------------------------------------------------------------------------
++// 2. Perms — securePath / writeSecret / ensureSecureDir + startup audit
++// ---------------------------------------------------------------------------
++
++// Tighten an existing path to owner-only. POSIX: real chmod. Windows: chmod only
++// flips the read-only bit (ACLs untouched), so we report applied:false — the
++// caller and the security doc treat Windows perms as best-effort.
++function securePath(target, { dir = false } = {}) {
++  const mode = dir ? SECRET_DIR_MODE : SECRET_FILE_MODE;
++  try {
++    fs.chmodSync(target, mode);
++    return { ok: true, applied: !IS_WINDOWS, mode };
++  } catch (err) {
++    return { ok: false, applied: false, error: err.message };
++  }
++}
++
++// Create/overwrite a file with owner-only perms AT CREATION. The `mode` option
++// governs the perms for a NEW file; an existing file keeps its perms on write,
++// so we chmod afterwards to be certain it is tight either way.
++function writeSecret(target, data) {
++  ensureSecureDir(path.dirname(target));
++  fs.writeFileSync(target, data, { mode: SECRET_FILE_MODE });
++  securePath(target);
++}
++
++// Create a directory owner-only (recursive). Tighten it afterwards in case it
++// already existed with looser perms that we own.
++function ensureSecureDir(dir) {
++  fs.mkdirSync(dir, { recursive: true, mode: SECRET_DIR_MODE });
++  securePath(dir, { dir: true });
++}
++
++// Inspect one path: does it exist, and is it group/other-readable? On Windows
++// the mode bits are meaningless for ACLs, so we never mark it world-readable —
++// we surface `platformCaveat:true` so the caller can print an honest note.
++function auditPath(target) {
++  let st;
++  try {
++    st = fs.statSync(target);
++  } catch {
++    return { path: target, exists: false, worldReadable: false, platformCaveat: IS_WINDOWS };
++  }
++  const mode = st.mode & 0o777;
++  const worldReadable = !IS_WINDOWS && (mode & 0o077) !== 0;
++  return { path: target, exists: true, mode, worldReadable, platformCaveat: IS_WINDOWS };
++}
++
++// Audit a set of sensitive paths. `ok:false` when any existing path is
++// group/other-readable (POSIX). Callers warn loudly on the offenders.
++function auditPaths(targets) {
++  const results = targets.map(auditPath);
++  const offenders = results.filter((r) => r.exists && r.worldReadable);
++  return { ok: offenders.length === 0, offenders, results };
++}
++
++// ---------------------------------------------------------------------------
++// 1. serve.lock — single-instance guard
++// ---------------------------------------------------------------------------
++
++function readLock(file) {
++  try {
++    return JSON.parse(fs.readFileSync(file, 'utf8'));
++  } catch {
++    return null;
++  }
++}
++
++// Is `pid` a live process? `process.kill(pid, 0)` sends no signal but throws
++// ESRCH when the pid is gone. EPERM means it exists but isn't ours — still live.
++function pidAlive(pid) {
++  if (!Number.isInteger(pid) || pid <= 0) return false;
++  try {
++    process.kill(pid, 0);
++    return true;
++  } catch (err) {
++    return err.code === 'EPERM';
++  }
++}
++
++// Try to claim the single-instance lock for this project.
++//   -> { ok:true, file }            first claim
++//   -> { ok:true, file, reclaimed } stale lock (dead holder) reclaimed
++//   -> { ok:false, held }           a LIVE holder already owns it (blocked)
++// `pid` / `isAlive` are injectable for testing; production uses the real pid and
++// a real liveness probe.
++function acquireLock(projectRoot, { pid = process.pid, port = null, isAlive = pidAlive } = {}) {
++  const file = lockPath(projectRoot);
++  ensureSecureDir(path.dirname(file));
++  const payload = JSON.stringify({ pid, port, startedAt: new Date().toISOString() });
++
++  try {
++    // Exclusive create: EEXIST if a lock is already present.
++    const fd = fs.openSync(file, 'wx', SECRET_FILE_MODE);
++    try {
++      fs.writeSync(fd, payload);
++    } finally {
++      fs.closeSync(fd);
++    }
++    securePath(file);
++    return { ok: true, file };
++  } catch (err) {
++    if (err.code !== 'EEXIST') throw err;
++  }
++
++  // A lock exists. If a DIFFERENT process still holds it and is alive, block.
++  const held = readLock(file);
++  if (held && held.pid !== pid && isAlive(held.pid)) {
++    return { ok: false, held };
++  }
++  // Otherwise it is stale (dead holder, unreadable, or already ours) — reclaim.
++  // NOTE: reclaim is best-effort and not itself atomic across a simultaneous
++  // double-reclaim race; acceptable for a cheap loopback dev-server guard.
++  fs.writeFileSync(file, payload, { mode: SECRET_FILE_MODE });
++  securePath(file);
++  return { ok: true, file, reclaimed: true };
++}
++
++// Release ONLY if the lock is ours (matching pid), so a reclaimed/foreign lock
++// is never deleted out from under its owner.
++function releaseLock(projectRoot, { pid = process.pid } = {}) {
++  const file = lockPath(projectRoot);
++  try {
++    const held = readLock(file);
++    if (held && held.pid === pid) fs.rmSync(file, { force: true });
++  } catch {
++    /* best effort — a failed release just leaves a stale lock to be reclaimed */
++  }
++}
++
++// ---------------------------------------------------------------------------
++// 3. Hash-chained tamper-evident journal
++// ---------------------------------------------------------------------------
++
++// hash = sha256(prevHash ‖ JSON(record-without-hash)). The prevHash is embedded
++// in the record too, so both a payload edit and a record deletion break verify.
++function recordHash(prevHash, record) {
++  return crypto.createHash('sha256').update(`${prevHash}\n${JSON.stringify(record)}`).digest('hex');
++}
++
++function readLines(file) {
++  try {
++    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
++  } catch {
++    return null;
++  }
++}
++
++function lastHash(lines) {
++  if (!lines || !lines.length) return GENESIS_HASH;
++  try {
++    return JSON.parse(lines[lines.length - 1]).hash || GENESIS_HASH;
++  } catch {
++    return GENESIS_HASH;
++  }
++}
++
++// Append a tamper-evident record. `entry` is arbitrary JSON (e.g. { verb, ok,
++// actor, origin }). Returns { seq, hash }. Best-effort perms on first create.
++function appendJournal(projectRoot, entry) {
++  const file = journalPath(projectRoot);
++  ensureSecureDir(path.dirname(file));
++  const existed = fs.existsSync(file);
++  const lines = existed ? readLines(file) : [];
++  const prevHash = lastHash(lines);
++  const seq = lines ? lines.length : 0;
++  // Key order is fixed (seq, ts, prevHash, ...entry) so the stored record,
++  // minus its hash, re-serializes identically at verify time.
++  const record = { seq, ts: new Date().toISOString(), prevHash, ...entry };
++  const hash = recordHash(prevHash, record);
++  fs.appendFileSync(file, `${JSON.stringify({ ...record, hash })}\n`, { mode: SECRET_FILE_MODE });
++  if (!existed) securePath(file);
++  return { seq, hash };
++}
++
++// Re-walk the chain from genesis. Returns { ok:true, entries } or
++// { ok:false, brokenAt, reason } at the first record that fails to verify.
++function verifyJournal(projectRoot) {
++  const file = journalPath(projectRoot);
++  const lines = readLines(file);
++  if (lines === null) return { ok: true, entries: 0, empty: true };
++  let prevHash = GENESIS_HASH;
++  for (let i = 0; i < lines.length; i += 1) {
++    let parsed;
++    try {
++      parsed = JSON.parse(lines[i]);
++    } catch {
++      return { ok: false, brokenAt: i, reason: 'unparseable record' };
++    }
++    const { hash, ...rest } = parsed;
++    if (rest.prevHash !== prevHash) {
++      return { ok: false, brokenAt: i, reason: 'prevHash mismatch (record inserted or deleted)' };
++    }
++    if (recordHash(prevHash, rest) !== hash) {
++      return { ok: false, brokenAt: i, reason: 'hash mismatch (record edited)' };
++    }
++    prevHash = hash;
++  }
++  return { ok: true, entries: lines.length, head: prevHash };
++}
++
++module.exports = {
++  serveStateDir,
++  lockPath,
++  journalPath,
++  securePath,
++  writeSecret,
++  ensureSecureDir,
++  auditPath,
++  auditPaths,
++  acquireLock,
++  releaseLock,
++  readLock,
++  pidAlive,
++  appendJournal,
++  verifyJournal,
++  GENESIS_HASH,
++};
+diff --git a/lib/commands/serve.js b/lib/commands/serve.js
+index ca142dfa..3ccd459f 100644
+--- a/lib/commands/serve.js
++++ b/lib/commands/serve.js
+@@ -32,6 +32,11 @@ const path = require('node:path');
+ const crypto = require('node:crypto');
+ const { spawn } = require('node:child_process');
+ 
++// Shared-machine hardening (single-instance lock, owner-only perms + audit,
++// hash-chained mutation journal). No dependency on serve.js, so a top-level
++// require is safe (unlike _registry — see the lazy-require note below).
++const security = require('./_serve-security');
++
+ // NOTE: `_registry` / `_resolve-command-opts` are require()d LAZILY at call time
+ // (inside routeMutation / registry), never destructured at module top. serve.js
+ // is listed in the static command manifest, so `_manifest` require()s serve.js
+@@ -351,6 +356,19 @@ async function handleMutation(req, res, ctx) {
+     return sendJson(res, 403, { ok: false, error: 'invalid or missing token' });
+   }
+   const result = await routeMutation(parsed.verb, parsed.args || [], ctx.projectRoot, ctx.deps);
++  // Tamper-evident audit trail: record EVERY mutation attempt (accepted or
++  // rejected) into the hash-chained journal. The `actor`/`origin` are advisory
++  // coordination metadata only — loopback requests are not authenticated beyond
++  // the per-run token, so this records WHAT the server did, not a proven WHO.
++  // Best-effort: a journal write must never break the response.
++  try {
++    security.appendJournal(ctx.projectRoot, {
++      verb: typeof parsed.verb === 'string' ? parsed.verb : null,
++      ok: Boolean(result.ok),
++      actor: 'local',
++      origin: typeof req.headers.origin === 'string' ? req.headers.origin : null,
++    });
++  } catch { /* journal is best-effort; never fail the mutation on it */ }
+   // On a successful write, refresh the baked snapshot BEFORE responding so the
+   // client's follow-up /data.json refetch reflects the change. Best-effort.
+   if (result.ok) { try { await regenerate(ctx); } catch { /* keep baked */ } }
+@@ -434,12 +452,21 @@ function openBrowser(url) {
+   }
+ }
+ 
+-// Register signal handlers that close the server and resolve the handler's
+-// promise, so `forge serve` exits cleanly on Ctrl-C.
+-function installServeShutdown(server, resolve) {
+-  const shutdown = () => server.close(() => resolve({ success: true, output: 'forge serve stopped.' }));
++// Register signal handlers that release the single-instance lock, close the
++// server, and resolve the handler's promise, so `forge serve` exits cleanly on
++// Ctrl-C without leaving a stale lock behind. `onClose` releases the lock.
++function installServeShutdown(server, resolve, onClose = () => {}) {
++  let done = false;
++  const shutdown = () => {
++    if (done) return; // SIGINT then SIGTERM must not double-release/close.
++    done = true;
++    try { onClose(); } catch { /* best effort */ }
++    server.close(() => resolve({ success: true, output: 'forge serve stopped.' }));
++  };
+   process.once('SIGINT', shutdown);
+   process.once('SIGTERM', shutdown);
++  // Last-ditch release if the process exits some other way (uncaught, exit()).
++  process.once('exit', () => { try { onClose(); } catch { /* best effort */ } });
+ }
+ 
+ // Print the loopback URL (token in the fragment), optionally open a browser, and
+@@ -451,7 +478,7 @@ function announceServe(server, token, options, resolve) {
+     + '  Token dies with this process. Press Ctrl-C to stop.\n\n',
+   );
+   if (options.open) openBrowser(url);
+-  installServeShutdown(server, resolve);
++  installServeShutdown(server, resolve, options.onClose);
+ }
+ 
+ function startListening(server, port, token, options = {}) {
+@@ -461,16 +488,60 @@ function startListening(server, port, token, options = {}) {
+   });
+ }
+ 
++// Startup path audit: warn LOUDLY if the serve state dir / lock / journal are
++// group- or other-readable on a shared box (POSIX). On Windows the mode bits do
++// not reflect ACLs, so we print an honest one-line caveat instead of a false
++// alarm. Never blocks startup — hardening is advisory, not a gate.
++function auditServePaths(projectRoot) {
++  const audit = security.auditPaths([
++    security.serveStateDir(projectRoot),
++    security.lockPath(projectRoot),
++    security.journalPath(projectRoot),
++  ]);
++  if (!audit.ok) {
++    const paths = audit.offenders.map((o) => o.path).join(', ');
++    process.stderr.write(
++      `\n⚠  forge serve: sensitive path(s) are readable by other users: ${paths}\n`
++      + '   On a shared machine another local user could read the token/journal.\n'
++      + '   Tighten perms (chmod 700 .forge/serve) or run on a single-user box.\n\n',
++    );
++  } else if (audit.results.some((r) => r.exists && r.platformCaveat)) {
++    process.stderr.write(
++      'note: forge serve stores its lock/journal under .forge/serve. On Windows,'
++      + ' file perms are enforced by NTFS ACLs, not POSIX mode bits — keep the'
++      + ' project on a single-user profile for the strongest isolation.\n',
++    );
++  }
++}
++
+ async function handler(args, flags = {}, projectRoot = process.cwd(), _opts = {}) {
+   const { port, open } = parseServeArgs(args, flags);
+   const dashboardDir = path.join(projectRoot, 'web', 'dashboard');
+   if (!fs.existsSync(path.join(dashboardDir, 'index.html'))) {
+     return { success: false, error: `Dashboard not found at ${dashboardDir}. Run from the repo root.` };
+   }
++
++  // Single-instance guard: refuse to start a rogue second server for this
++  // project (a live holder blocks; a stale lock from a dead PID is reclaimed).
++  const lock = security.acquireLock(projectRoot, { port });
++  if (!lock.ok) {
++    return {
++      success: false,
++      error: `forge serve is already running for this project (pid ${lock.held.pid}`
++        + `${lock.held.port ? `, port ${lock.held.port}` : ''}). Stop it before starting another, `
++        + 'or a second server would silently port-squat. If that process is dead, remove '
++        + `${security.lockPath(projectRoot)}.`,
++    };
++  }
++  auditServePaths(projectRoot);
++
+   const token = mintToken();
+   const ctx = buildContext(projectRoot, dashboardDir, token);
+   const server = createServeServer(ctx);
+-  return startListening(server, port, token, { open });
++  return startListening(server, port, token, {
++    open,
++    onClose: () => security.releaseLock(projectRoot),
++  });
+ }
+ 
+ module.exports = {
+diff --git a/test/commands/_serve-security.test.js b/test/commands/_serve-security.test.js
+new file mode 100644
+index 00000000..19b2caa8
+--- /dev/null
++++ b/test/commands/_serve-security.test.js
+@@ -0,0 +1,213 @@
++'use strict';
++
++// Tests for the three ALWAYS shared-machine controls that harden `forge serve`
++// on a multi-user box (see docs/work/2026-07-13-forge-serve/security-model.md):
++//   1. serve.lock single-instance guard (stale-PID reclaim + clean release)
++//   2. securePath() owner-only perms-at-creation + a startup world-readable audit
++//   3. a hash-chained, tamper-evident mutation journal + verify()
++//
++// POSIX asserts the real 0o600/0o700 mode bits; on Windows chmod only flips the
++// read-only bit and st.mode does not reflect ACLs, so those assertions are
++// gated behind `POSIX` and the Windows path only asserts "does not throw / is
++// flagged best-effort". The hash-chain + lock logic is platform-independent and
++// asserted everywhere.
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const sec = require('../../lib/commands/_serve-security');
++
++const POSIX = process.platform !== 'win32';
++const tempRoots = [];
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-serve-sec-'));
++  tempRoots.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++afterEach(() => {
++  while (tempRoots.length) {
++    const root = tempRoots.pop();
++    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
++  }
++});
++
++// ---------------------------------------------------------------------------
++// 2. securePath / writeSecret / auditPaths
++// ---------------------------------------------------------------------------
++
++describe('securePath — owner-only perms at creation', () => {
++  test('writeSecret creates a file that is not group/other readable (POSIX)', () => {
++    const root = makeProject();
++    const target = path.join(root, '.forge', 'secret.txt');
++    sec.writeSecret(target, 'top secret');
++    expect(fs.readFileSync(target, 'utf8')).toBe('top secret');
++    if (POSIX) {
++      const mode = fs.statSync(target).mode & 0o777;
++      expect(mode & 0o077).toBe(0); // no group/other bits
++      expect(mode & 0o600).toBe(0o600); // owner rw
++    }
++  });
++
++  test('ensureSecureDir creates an owner-only directory (POSIX)', () => {
++    const root = makeProject();
++    const dir = path.join(root, '.forge', 'serve');
++    sec.ensureSecureDir(dir);
++    expect(fs.existsSync(dir)).toBe(true);
++    if (POSIX) {
++      const mode = fs.statSync(dir).mode & 0o777;
++      expect(mode & 0o077).toBe(0);
++    }
++  });
++
++  test('securePath on Windows is a documented best-effort no-op (never throws)', () => {
++    const root = makeProject();
++    const target = path.join(root, '.forge', 'wintest.txt');
++    fs.writeFileSync(target, 'x');
++    const res = sec.securePath(target);
++    expect(res.ok).toBe(true);
++    if (!POSIX) expect(res.applied).toBe(false); // ACLs unaffected by chmod
++  });
++});
++
++describe('auditPaths — startup world-readable check', () => {
++  test('flags a group/other-readable sensitive file (POSIX)', () => {
++    const root = makeProject();
++    const target = path.join(root, '.forge', 'leaky.txt');
++    fs.writeFileSync(target, 'x', { mode: 0o644 });
++    if (POSIX) fs.chmodSync(target, 0o644);
++    const audit = sec.auditPaths([target]);
++    if (POSIX) {
++      expect(audit.ok).toBe(false);
++      expect(audit.offenders.map((o) => o.path)).toContain(target);
++    } else {
++      // Windows: mode bits do not reflect ACLs, so we do not raise false alarms.
++      expect(audit.results[0].platformCaveat).toBe(true);
++    }
++  });
++
++  test('a securely-created file is not flagged (POSIX)', () => {
++    const root = makeProject();
++    const target = path.join(root, '.forge', 'tight.txt');
++    sec.writeSecret(target, 'x');
++    const audit = sec.auditPaths([target]);
++    if (POSIX) expect(audit.ok).toBe(true);
++  });
++
++  test('a missing path is simply not an offender', () => {
++    const root = makeProject();
++    const audit = sec.auditPaths([path.join(root, '.forge', 'nope.txt')]);
++    expect(audit.ok).toBe(true);
++    expect(audit.results[0].exists).toBe(false);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// 1. serve.lock single-instance guard
++// ---------------------------------------------------------------------------
++
++describe('serve.lock single-instance guard', () => {
++  test('first acquire succeeds and writes a lock file', () => {
++    const root = makeProject();
++    const res = sec.acquireLock(root, { pid: 1111, port: 8730, isAlive: () => true });
++    expect(res.ok).toBe(true);
++    expect(fs.existsSync(sec.lockPath(root))).toBe(true);
++    if (POSIX) expect(fs.statSync(sec.lockPath(root)).mode & 0o077).toBe(0);
++  });
++
++  test('a second live instance is BLOCKED (no silent port-squat)', () => {
++    const root = makeProject();
++    const first = sec.acquireLock(root, { pid: 1111, port: 8730, isAlive: () => true });
++    expect(first.ok).toBe(true);
++    const second = sec.acquireLock(root, { pid: 2222, port: 8731, isAlive: () => true });
++    expect(second.ok).toBe(false);
++    expect(second.held.pid).toBe(1111);
++    expect(second.held.port).toBe(8730);
++  });
++
++  test('a stale lock (dead PID) is reclaimed', () => {
++    const root = makeProject();
++    const first = sec.acquireLock(root, { pid: 1111, port: 8730, isAlive: () => false });
++    expect(first.ok).toBe(true);
++    // pid 1111 is "dead" -> a new instance reclaims it.
++    const second = sec.acquireLock(root, { pid: 2222, port: 8731, isAlive: () => false });
++    expect(second.ok).toBe(true);
++    expect(second.reclaimed).toBe(true);
++    expect(sec.readLock(sec.lockPath(root)).pid).toBe(2222);
++  });
++
++  test('releaseLock removes only our own lock', () => {
++    const root = makeProject();
++    sec.acquireLock(root, { pid: 1111, isAlive: () => true });
++    // A different pid must not delete our lock.
++    sec.releaseLock(root, { pid: 9999 });
++    expect(fs.existsSync(sec.lockPath(root))).toBe(true);
++    sec.releaseLock(root, { pid: 1111 });
++    expect(fs.existsSync(sec.lockPath(root))).toBe(false);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// 3. Hash-chained tamper-evident journal
++// ---------------------------------------------------------------------------
++
++describe('hash-chained mutation journal', () => {
++  test('append links each record to the previous hash; verify passes', () => {
++    const root = makeProject();
++    const a = sec.appendJournal(root, { verb: 'gate', ok: true });
++    const b = sec.appendJournal(root, { verb: 'issue.create', ok: true });
++    const c = sec.appendJournal(root, { verb: 'issue.close', ok: false });
++    expect(a.seq).toBe(0);
++    expect(b.seq).toBe(1);
++    expect(c.seq).toBe(2);
++    const v = sec.verifyJournal(root);
++    expect(v.ok).toBe(true);
++    expect(v.entries).toBe(3);
++    if (POSIX) expect(fs.statSync(sec.journalPath(root)).mode & 0o077).toBe(0);
++  });
++
++  test('an empty / absent journal verifies as ok', () => {
++    const root = makeProject();
++    const v = sec.verifyJournal(root);
++    expect(v.ok).toBe(true);
++    expect(v.entries).toBe(0);
++  });
++
++  test('editing a past record BREAKS the chain (tamper detected)', () => {
++    const root = makeProject();
++    sec.appendJournal(root, { verb: 'gate', ok: true });
++    sec.appendJournal(root, { verb: 'issue.create', ok: true });
++    sec.appendJournal(root, { verb: 'issue.close', ok: true });
++
++    const file = sec.journalPath(root);
++    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
++    const tampered = JSON.parse(lines[1]);
++    tampered.verb = 'role'; // silently rewrite the middle record's payload
++    lines[1] = JSON.stringify(tampered);
++    fs.writeFileSync(file, lines.join('\n') + '\n');
++
++    const v = sec.verifyJournal(root);
++    expect(v.ok).toBe(false);
++    expect(v.brokenAt).toBe(1);
++  });
++
++  test('deleting a past record BREAKS the chain (prevHash mismatch)', () => {
++    const root = makeProject();
++    sec.appendJournal(root, { verb: 'gate', ok: true });
++    sec.appendJournal(root, { verb: 'issue.create', ok: true });
++    sec.appendJournal(root, { verb: 'issue.close', ok: true });
++
++    const file = sec.journalPath(root);
++    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
++    lines.splice(1, 1); // drop the middle record
++    fs.writeFileSync(file, lines.join('\n') + '\n');
++
++    const v = sec.verifyJournal(root);
++    expect(v.ok).toBe(false);
++    expect(v.brokenAt).toBe(1);
++  });
++});
+diff --git a/test/commands/serve.test.js b/test/commands/serve.test.js
+index 9f0c3cba..f2cbbde4 100644
+--- a/test/commands/serve.test.js
++++ b/test/commands/serve.test.js
+@@ -6,6 +6,7 @@ const path = require('node:path');
+ const { afterEach, describe, expect, test } = require('bun:test');
+ 
+ const serve = require('../../lib/commands/serve');
++const security = require('../../lib/commands/_serve-security');
+ 
+ const tempRoots = [];
+ const servers = [];
+@@ -208,4 +209,37 @@ describe('bounded server smoke (starts, requests, closes)', () => {
+     expect(unknownVerb.status).toBe(422);
+     expect((await unknownVerb.json()).ok).toBe(false);
+   });
++
++  test('every mutation attempt is recorded in the hash-chained journal', async () => {
++    const projectRoot = makeProject();
++    const dashboardDir = makeDashboard('{"kind":"live-snapshot"}');
++    const token = 'c'.repeat(64);
++    const ctx = serve.buildContext(projectRoot, dashboardDir, token, { generate: async () => {} });
++    const server = serve.createServeServer(ctx);
++    const port = await listen(server);
++    const base = `http://127.0.0.1:${port}`;
++
++    // One accepted (real gate) + one rejected (unknown verb) — both journaled.
++    await fetch(`${base}/api/mutation`, {
++      method: 'POST', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ token, verb: 'gate', args: ['enable', 'gate.issue_verify'] }),
++    });
++    await fetch(`${base}/api/mutation`, {
++      method: 'POST', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ token, verb: 'rm.rf', args: [] }),
++    });
++
++    const verified = security.verifyJournal(projectRoot);
++    expect(verified.ok).toBe(true);
++    expect(verified.entries).toBe(2);
++
++    // Tampering with a journalled record must be detectable.
++    const file = security.journalPath(projectRoot);
++    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
++    const first = JSON.parse(lines[0]);
++    first.ok = !first.ok; // flip the recorded outcome
++    lines[0] = JSON.stringify(first);
++    fs.writeFileSync(file, lines.join('\n') + '\n');
++    expect(security.verifyJournal(projectRoot).ok).toBe(false);
++  });
+ });
+-- 
+2.51.0.windows.1
+

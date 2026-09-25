@@ -1,0 +1,55 @@
+From c8810932784dbf84146f1e33562640e8b93f1862 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:45:14 +0530
+Subject: [PATCH] fix(memory): verify Graphiti entrypoint type
+
+---
+ lib/commands/doctor.js              |  9 ++++++++-
+ test/commands/doctor-memory.test.js | 11 +++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index 23bb2883..d33f3bf1 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -52,7 +52,14 @@ function buildMemoryCheck(projectRoot, env) {
+ 			}
+ 		}
+ 		const entrypointPath = path.join(resolvedServerPath, 'main.py');
+-		const entrypointExists = serverPathIsDirectory && fs.existsSync(entrypointPath);
++		let entrypointExists = false;
++		if (serverPathIsDirectory) {
++			try {
++				entrypointExists = fs.statSync(entrypointPath).isFile();
++			} catch {
++				entrypointExists = false;
++			}
++		}
+ 		const serverReady = serverPathExists && serverPathIsDirectory && entrypointExists;
+ 		let reach;
+ 		if (!serverPathExists) {
+diff --git a/test/commands/doctor-memory.test.js b/test/commands/doctor-memory.test.js
+index 6c437a89..3498025f 100644
+--- a/test/commands/doctor-memory.test.js
++++ b/test/commands/doctor-memory.test.js
+@@ -129,6 +129,17 @@ describe('forge doctor: memory backend check', () => {
+     expect(check.ok).toBe(false);
+     expect(check.serverPathIsDirectory).toBe(true);
+     expect(check.entrypointExists).toBe(false);
++
++    const directoryEntrypoint = path.join(projectRoot, 'directory-entrypoint-server');
++    fs.mkdirSync(path.join(directoryEntrypoint, 'main.py'), { recursive: true });
++    writeConfig(
++      projectRoot,
++      `memory:\n  backend: graphiti\n  graphiti:\n    mcpServerPath: ${directoryEntrypoint.replace(/\\/g, '/')}\n`,
++    );
++    check = memoryCheck(doctor.buildDoctorReport(projectRoot, depsFor(projectRoot)));
++    expect(check.ok).toBe(false);
++    expect(check.serverPathIsDirectory).toBe(true);
++    expect(check.entrypointExists).toBe(false);
+   });
+ 
+   test('graphiti configured but the server path is missing warns (ok:false) yet keeps the report ok', () => {
+-- 
+2.51.0.windows.1
+

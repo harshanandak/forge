@@ -1,0 +1,83 @@
+From 2202f77e9cf4cabfc6fa17e44d8092d3a155fc49 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 15:23:48 +0530
+Subject: [PATCH] fix: authorize staged CLAUDE pointer bytes
+
+---
+ lib/commands/setup.js                  | 21 ++++++++++++++++++++-
+ test/setup-claude-pointer-head.test.js | 15 +++++++++++++++
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index c7fce780..865153ca 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -194,6 +194,24 @@ function normalizeClaudePointerContent(content) {
+   return Buffer.from(String(content || '').replace(/\r\n/g, '\n'));
+ }
+ 
++/**
++ * Read the exact staged CLAUDE.md bytes that the protected-state hook will hash.
++ * @param {string} cwd - Repository working directory
++ * @param {Function} commandRunner - execFileSync-compatible runner for tests
++ * @returns {Buffer} Staged bytes, or the worktree bytes when the file is untracked
++ */
++function readStagedClaudePointerContent(cwd = projectRoot, commandRunner = execFileSync) {
++  try {
++    return commandRunner('git', ['show', ':CLAUDE.md'], {
++      cwd,
++      encoding: null,
++      stdio: 'pipe',
++    });
++  } catch (_error) {
++    return fs.readFileSync(path.join(cwd, 'CLAUDE.md'));
++  }
++}
++
+ /**
+  * Detect package manager
+  */
+@@ -2103,7 +2121,7 @@ async function createAgentLinkFile(agent, symlinkOnly = false) {
+ 
+   try {
+     const sourceHead = resolveCurrentSourceHead();
+-    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'));
++    const content = readStagedClaudePointerContent();
+     const actor = process.env.FORGE_PROTECTED_STATE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'unknown';
+     const authorization = await issueGeneratedHarnessClaudeAuthorization(projectRoot, {
+       actor,
+@@ -4594,6 +4612,7 @@ module.exports = {
+   backupAndRemoveLegacyCursorRules,
+   resolveCurrentSourceHead,
+   normalizeClaudePointerContent,
++  readStagedClaudePointerContent,
+ 
+   // State accessors for testing
+   _getState: () => ({ projectRoot, FORCE_MODE, VERBOSE_MODE, NON_INTERACTIVE, SYMLINK_ONLY, PKG_MANAGER }),
+diff --git a/test/setup-claude-pointer-head.test.js b/test/setup-claude-pointer-head.test.js
+index fd8ffbf5..4326dc11 100644
+--- a/test/setup-claude-pointer-head.test.js
++++ b/test/setup-claude-pointer-head.test.js
+@@ -32,4 +32,19 @@ describe('CLAUDE.md pointer authorization source head', () => {
+ 
+ 		expect(sourceHead).toBe('');
+ 	});
++
++	test('reads the exact staged pointer bytes for authorization', () => {
++		let call;
++		const content = setupCommand.readStagedClaudePointerContent('C:\\repo', (file, args, options) => {
++			call = { file, args, options };
++			return Buffer.from('@AGENTS.md\n');
++		});
++
++		expect(content).toEqual(Buffer.from('@AGENTS.md\n'));
++		expect(call).toEqual({
++			file: 'git',
++			args: ['show', ':CLAUDE.md'],
++			options: { cwd: 'C:\\repo', encoding: null, stdio: 'pipe' },
++		});
++	});
+ });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,166 @@
+From 5869818e4876a0684478a336b2aee244386d12c5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 13:57:57 +0530
+Subject: [PATCH] fix: contain upgrade hook self-heal writes
+
+---
+ lib/hook-renderer.js          | 12 ++++++++++++
+ lib/upgrade-safety.js         |  5 +++++
+ test/commands/upgrade.test.js | 27 +++++++++++++++++++++++++++
+ test/hook-renderer.test.js    | 28 ++++++++++++++++++++++++++++
+ 4 files changed, 72 insertions(+)
+
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index 9491915b..af4c6134 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -41,6 +41,7 @@
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { backupFile } = require('./mcp-config-renderer');
++const { assertNoAncestorSymlinkEscape, assertNoSymlinkEscape } = require('./protected-state-surfaces');
+ 
+ const HARNESS_HOOK_FILES = {
+   claude: '.claude/settings.json',
+@@ -558,6 +559,13 @@ const MERGERS = {
+   cursor: mergeCursorHooks,
+ };
+ 
++function assertSafeHookConfigPath(targetRoot, filePath) {
++  const escape =
++    assertNoAncestorSymlinkEscape(targetRoot, filePath) ||
++    assertNoSymlinkEscape(targetRoot, filePath);
++  if (escape) throw new Error(`Refusing to render hook config: ${escape.reason}`);
++}
++
+ /**
+  * Render (merge) Forge's native hooks into one harness's native config on disk.
+  * Read → merge → write. Unparseable existing file → BACKED UP + left untouched
+@@ -584,7 +592,9 @@ function renderHookConfig({ harness, targetRoot, contract = FORGE_HOOK_CONTRACT
+   if (!merge || !rel) throw new Error(`Unknown hook harness: ${harness}`);
+ 
+   const filePath = path.join(targetRoot, rel);
++  assertSafeHookConfigPath(targetRoot, filePath);
+   fs.mkdirSync(path.dirname(filePath), { recursive: true });
++  assertSafeHookConfigPath(targetRoot, filePath);
+   const existed = fs.existsSync(filePath);
+   const existing = existed ? fs.readFileSync(filePath, 'utf-8') : '';
+ 
+@@ -593,12 +603,14 @@ function renderHookConfig({ harness, targetRoot, contract = FORGE_HOOK_CONTRACT
+     merged = merge(existing, contract);
+   } catch (err) {
+     if (err instanceof HookConfigParseError && existed) {
++      assertSafeHookConfigPath(targetRoot, filePath);
+       const backup = backupHookConfig(filePath);
+       return { file: filePath, existed, skipped: true, wrote: false, backup };
+     }
+     throw err;
+   }
+ 
++  assertSafeHookConfigPath(targetRoot, filePath);
+   fs.writeFileSync(filePath, merged, 'utf-8');
+   return { file: filePath, existed, skipped: false, wrote: true };
+ }
+diff --git a/lib/upgrade-safety.js b/lib/upgrade-safety.js
+index 8b299498..fc83a33a 100644
+--- a/lib/upgrade-safety.js
++++ b/lib/upgrade-safety.js
+@@ -14,6 +14,7 @@ const {
+   HookConfigParseError,
+   renderHookConfig,
+ } = require('./hook-renderer');
++const { assertNoAncestorSymlinkEscape, assertNoSymlinkEscape } = require('./protected-state-surfaces');
+ 
+ function checkStatus(ok) {
+   return ok ? 'pass' : 'fail';
+@@ -64,6 +65,10 @@ function buildSelfHealCandidates(projectRoot) {
+   const claudeDir = path.join(projectRoot, '.claude');
+   if (fs.existsSync(claudeDir)) {
+     const claudeSettings = path.join(claudeDir, 'settings.json');
++    const unsafePath =
++      assertNoAncestorSymlinkEscape(projectRoot, claudeSettings) ||
++      assertNoSymlinkEscape(projectRoot, claudeSettings);
++    if (unsafePath) return candidates;
+     const existing = fs.existsSync(claudeSettings) ? fs.readFileSync(claudeSettings, 'utf8') : '';
+     try {
+       if (!hasForgeClaudeHooks(existing, FORGE_HOOK_CONTRACT)) {
+diff --git a/test/commands/upgrade.test.js b/test/commands/upgrade.test.js
+index 44ca2fd8..dae1a5d1 100644
+--- a/test/commands/upgrade.test.js
++++ b/test/commands/upgrade.test.js
+@@ -180,6 +180,33 @@ describe('forge upgrade command', () => {
+     expect(fs.existsSync(`${settingsPath}.bak.1`)).toBe(false);
+   });
+ 
++  test('self-heal does not inspect or rewrite Claude settings symlinked outside the project', async () => {
++    const root = makeRepo();
++    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-upgrade-outside-'));
++    tempRoots.push(outside);
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    const outsideSettings = path.join(outside, 'settings.json');
++    const original = '{"model":"outside"}\n';
++    fs.writeFileSync(outsideSettings, original);
++    try {
++      if (process.platform === 'win32') {
++        fs.symlinkSync(outside, path.dirname(settingsPath), 'junction');
++      } else {
++        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++        fs.symlinkSync(outsideSettings, settingsPath);
++      }
++    } catch (error) {
++      if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
++      throw error;
++    }
++
++    const result = await upgradeCommand.handler(['--self-heal'], {}, root);
++
++    expect(result.success).toBe(true);
++    expect(result.output).not.toContain('Merge missing Forge-owned Claude lifecycle hooks');
++    expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
++  });
++
+   test('honors parsed kebab-case dry-run flags', async () => {
+     const root = makeRepo();
+ 
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index c3a2e597..c0c28f0c 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -320,6 +320,34 @@ describe('renderHookConfig — malformed project config safety', () => {
+       fs.rmSync(root, { recursive: true, force: true });
+     }
+   });
++
++  test('refuses a settings file symlinked outside the project', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-'));
++    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-renderer-outside-'));
++    const settingsPath = path.join(root, '.claude', 'settings.json');
++    const outsideSettings = path.join(outside, 'settings.json');
++    const original = '{"model":"outside"}\n';
++    try {
++      fs.writeFileSync(outsideSettings, original);
++      try {
++        if (process.platform === 'win32') {
++          fs.symlinkSync(outside, path.dirname(settingsPath), 'junction');
++        } else {
++          fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
++          fs.symlinkSync(outsideSettings, settingsPath);
++        }
++      } catch (error) {
++        if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error.code)) return;
++        throw error;
++      }
++
++      expect(() => renderHookConfig({ harness: 'claude', targetRoot: root })).toThrow(/symlink|outside project/i);
++      expect(fs.readFileSync(outsideSettings, 'utf8')).toBe(original);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++      fs.rmSync(outside, { recursive: true, force: true });
++    }
++  });
+ });
+ 
+ describe('mergeClaudeSettings (read -> merge -> write, preserve user config)', () => {
+-- 
+2.51.0.windows.1
+

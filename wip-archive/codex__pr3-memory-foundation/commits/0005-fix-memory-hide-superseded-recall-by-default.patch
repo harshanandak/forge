@@ -1,0 +1,127 @@
+From af3cd874185a2a040047e93eb580bb79ec463fa8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:08:48 +0530
+Subject: [PATCH] fix(memory): hide superseded recall by default
+
+---
+ lib/kernel/sqlite-driver.js              | 29 ++++++++++++----
+ test/kernel/sqlite-driver-memory.test.js | 42 ++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+), 7 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 943115fc..8a4ab5c9 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2175,6 +2175,15 @@ function searchMemoryRows(runtime, db, query) {
+ function memoryReadFilter(options = {}, table = 'kernel_memories') {
+ 	const predicates = [];
+ 	const params = [];
++	if (options.includeSuperseded !== true) {
++		predicates.push(`(COALESCE(${table}.scope, ''), ${table}.key) NOT IN (
++			SELECT COALESCE(superseder.scope, ''), superseded.value
++			FROM kernel_memories superseder,
++				json_each(COALESCE(superseder.supersedes_json, '[]')) superseded
++			WHERE superseded.type = 'text'
++				AND superseder.key != superseded.value
++		)`);
++	}
+ 	if (Array.isArray(options.agents) && options.agents.length > 0) {
+ 		predicates.push(`${table}.source_agent IN (${options.agents.map(() => '?').join(', ')})`);
+ 		params.push(...options.agents);
+@@ -2244,7 +2253,10 @@ function searchMemoryRowsRanked(runtime, db, query, limit, options = {}) {
+ 	if (!match) {
+ 		return recentMemoryRows(runtime, db, capped, options);
+ 	}
+-	const { clause, params } = memoryReadFilter({ kind: options.kind }, 'm');
++	const { clause, params } = memoryReadFilter({
++		kind: options.kind,
++		includeSuperseded: options.includeSuperseded,
++	}, 'm');
+ 	const kindPredicate = clause ? clause.replace(/^ WHERE /, ' AND ') : '';
+ 	return allParams(
+ 		runtime,
+@@ -2305,6 +2317,14 @@ function searchMemoryRowsRankedScored(runtime, db, query, limit, options = {}) {
+ 		: '';
+ 	const confirmed = confirmedMemorySql('m');
+ 	const supersederConfirmed = confirmedMemorySql('s');
++	const supersessionPredicate = options.includeSuperseded === true
++		? ''
++		: `AND NOT EXISTS (
++			SELECT 1
++			FROM eligible_superseders superseder
++			WHERE superseder.memory_key = m.key
++			AND (superseder.is_confirmed = 1 OR NOT ${confirmed})
++		)`;
+ 	// Expand eligible supersession edges once. A correlated json_each scan repeated the
+ 	// entire memory table for every FTS candidate and dominated the 1,000-row prompt path.
+ 	// Recall temporarily waits less than the connection default so a real lock cannot outlive
+@@ -2335,12 +2355,7 @@ function searchMemoryRowsRankedScored(runtime, db, query, limit, options = {}) {
+ 			AND ${projectMemoryScopeSql('m')}
+ 			AND (${confirmed} OR m.updated_at >= ?)
+ 			${seenSql}
+-			AND NOT EXISTS (
+-				SELECT 1
+-				FROM eligible_superseders superseder
+-				WHERE superseder.memory_key = m.key
+-				AND (superseder.is_confirmed = 1 OR NOT ${confirmed})
+-			)
++			${supersessionPredicate}
+ 			ORDER BY bm25(kernel_memories_fts),
+ 				CASE WHEN ${confirmed} THEN 0 ELSE 1 END,
+ 				m.source_agent ASC, m.updated_at DESC, m.key ASC
+diff --git a/test/kernel/sqlite-driver-memory.test.js b/test/kernel/sqlite-driver-memory.test.js
+index d500fddd..29ea764f 100644
+--- a/test/kernel/sqlite-driver-memory.test.js
++++ b/test/kernel/sqlite-driver-memory.test.js
+@@ -448,6 +448,48 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
+ 		expect(driver.recentMemories(2).map(entry => entry.key)).toEqual(['c', 'b']);
+ 	});
+ 
++	test('hides superseded memories by default and recovers them explicitly across reads', () => {
++		const driver = makeDriver();
++		const projectId = 'c:/repo/.git';
++		driver.recordMemory({
++			key: 'policy-old',
++			value: 'auth policy legacy',
++			sourceAgent: 'forge remember',
++			scope: projectId,
++			tags: [],
++			timestamp: '2026-01-01T00:00:00.000Z',
++		});
++		driver.recordMemory({
++			key: 'policy-new',
++			value: 'auth policy current',
++			sourceAgent: 'forge remember',
++			scope: projectId,
++			tags: [],
++			supersedes: ['policy-old'],
++			timestamp: '2026-02-01T00:00:00.000Z',
++		});
++
++		expect(driver.recentMemories(10).map(entry => entry.key)).toEqual(['policy-new']);
++		expect(driver.countMemories()).toBe(1);
++		expect(driver.searchMemoriesRanked('auth policy', 10).map(entry => entry.key))
++			.toEqual(['policy-new']);
++		expect(driver.searchMemoriesRankedScored('auth policy', 10, {
++			projectId,
++			now: '2026-02-02T00:00:00.000Z',
++		}).map(entry => entry.memory_id)).toEqual(['policy-new']);
++
++		expect(driver.recentMemories(10, { includeSuperseded: true }).map(entry => entry.key))
++			.toEqual(['policy-new', 'policy-old']);
++		expect(driver.countMemories({ includeSuperseded: true })).toBe(2);
++		expect(driver.searchMemoriesRanked('auth policy', 10, { includeSuperseded: true })
++			.map(entry => entry.key).sort()).toEqual(['policy-new', 'policy-old']);
++		expect(driver.searchMemoriesRankedScored('auth policy', 10, {
++			projectId,
++			now: '2026-02-02T00:00:00.000Z',
++			includeSuperseded: true,
++		}).map(entry => entry.memory_id).sort()).toEqual(['policy-new', 'policy-old']);
++	});
++
+ 	// The SCORED variant exists for the per-turn auto-recall hook, which needs the raw
+ 	// bm25 score to apply a relevance FLOOR (inject nothing when nothing clears the bar).
+ 	// Ordinal rank alone can't do that — it would always surface top-N even for junk.
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,83 @@
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index cd0f2797..f359816e 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -80,6 +80,14 @@ function safeProviderDiagnostic(value) {
+     : value;
+ }
+ 
++function encodeOpaqueEvidence(value) {
++  return value.toString('base64url').match(/.{1,12}/g)?.join('.') || '';
++}
++
++function decodeOpaqueEvidence(value) {
++  return Buffer.from(String(value).replaceAll('.', ''), 'base64url');
++}
++
+ function boundMonitorRecord(record) {
+   const safeError = safeProviderDiagnostic(record.data?.error);
+   const safeRecord = safeError !== record.data?.error
+@@ -121,7 +129,7 @@ function encodePendingBatch(ctx, subjectRevision, records, snapshot) {
+   if (Buffer.byteLength(serialized) > PENDING_BATCH_OUTPUT_LIMIT) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its recovery bound');
+   }
+-  const encoded = zlib.gzipSync(serialized, { level: 9 }).toString('base64url');
++  const encoded = encodeOpaqueEvidence(zlib.gzipSync(serialized, { level: 9 }));
+   if (encoded.length > PENDING_BATCH_LIMIT) {
+     throw new FlowMonitorError('INVALID_OBSERVATION', 'Pending monitor transition batch exceeds its durable bound');
+   }
+@@ -133,7 +141,7 @@ function decodePendingBatch(value, ctx, subjectRevision) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Pending monitor transition batch is missing');
+   }
+   try {
+-    const decoded = JSON.parse(zlib.gunzipSync(Buffer.from(value, 'base64url'), {
++    const decoded = JSON.parse(zlib.gunzipSync(decodeOpaqueEvidence(value), {
+       maxOutputLength: PENDING_BATCH_OUTPUT_LIMIT,
+     }));
+     const { batch_id: batchId, ...core } = decoded || {};
+@@ -186,7 +194,7 @@ function compactSnapshot(value) {
+     _snapshotIdentity: crypto.createHash('sha256')
+       .update(JSON.stringify({ snapshot: durableScalar, evidence }))
+       .digest('hex'),
+-    _snapshotEvidence: zlib.gzipSync(evidenceJson, { level: 9 }).toString('base64url'),
++    _snapshotEvidence: encodeOpaqueEvidence(zlib.gzipSync(evidenceJson, { level: 9 })),
+   };
+ }
+ 
+@@ -200,7 +208,7 @@ function comparableSnapshot(compact, source = null) {
+   if (compact?._snapshotFormat !== SNAPSHOT_FORMAT) return compact;
+   let evidence;
+   try {
+-    evidence = JSON.parse(zlib.gunzipSync(Buffer.from(compact._snapshotEvidence, 'base64url')));
++    evidence = JSON.parse(zlib.gunzipSync(decodeOpaqueEvidence(compact._snapshotEvidence)));
+   } catch {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor snapshot evidence is malformed');
+   }
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index d31a71d9..57bd42cf 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -194,7 +194,7 @@ describe('Flow-backed PR monitor authority', () => {
+     const before = store.events.length;
+     const event = store.events.at(-1);
+     const evidence = zlib.gunzipSync(Buffer.from(
+-      event.payload.bounded_payload.snapshot._snapshotEvidence, 'base64url',
++      event.payload.bounded_payload.snapshot._snapshotEvidence.replaceAll('.', ''), 'base64url',
+     ));
+     event.payload.bounded_payload.snapshot._snapshotEvidence = zlib.gzipSync(evidence, { level: 1 }).toString('base64url');
+     event.content_hash = computeContentHash(event);
+@@ -390,9 +390,14 @@ describe('Flow-backed PR monitor authority', () => {
+ 
+     const durable = store.events.find(event => event.payload.type === 'monitor.degraded')
+       ?.payload.bounded_payload.record.data.error;
++    const opaqueEvidence = [
++      store.events[0].payload.bounded_payload.pending_batch,
++      store.events.at(-1).payload.bounded_payload.snapshot._snapshotEvidence,
++    ];
+     const legacy = delivered.find(record => record.type === 'monitor.degraded')?.data.error;
+     expect(durable).toBe('[provider diagnostic redacted]');
+     expect(legacy).toBe('[provider diagnostic redacted]');
++    expect(opaqueEvidence.every(value => value.split('.').every(chunk => chunk.length <= 12))).toBe(true);
+   });
+ 
+   test('preserves valid enriched job URLs longer than the generic snapshot text bound', async () => {

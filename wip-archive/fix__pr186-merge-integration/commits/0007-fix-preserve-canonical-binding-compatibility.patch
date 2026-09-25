@@ -1,0 +1,52 @@
+From 2c18ac828ee74edc13de8f2dd1d293899107e831 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 17:47:22 +0530
+Subject: [PATCH] fix: preserve canonical binding compatibility
+
+---
+ lib/commands/merge.js                                    | 2 +-
+ test/commands/merge-authority-review-regressions.test.js | 8 ++++++--
+ 2 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 425fad2d..4473b249 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -315,7 +315,7 @@ function selectPrBindingRow(rows, repository, number, gitCommonDir = null, issue
+   if (matches.length === 0) return { missing: true, error: 'Kernel PR linkage is missing.' };
+   const conflicting = issueId && matches.some(row => row.issue_id != null && row.issue_id !== issueId);
+   const linked = issueId ? matches.filter(row => row.issue_id === issueId) : matches;
+-  if (conflicting || (linked.length === 0 && matches.length > 1)) {
++  if (matches.length > 1 && (conflicting || linked.length === 0)) {
+     return { error: 'Kernel PR linkage is ambiguous.' };
+   }
+   const row = linked.length > 1
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index ba3ccfa4..e10c97d0 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -474,7 +474,9 @@ describe('merge authority — exact reviewer regressions', () => {
+   test('injected Kernel binding drivers remain caller-owned', async () => {
+     let closes = 0;
+     const driver = { close() { closes += 1; } };
+-    const broker = { listOpenPrs: async () => [{ repo: 'acme/forge', number: 42, state: 'open', issue_id: ISSUE }] };
++    const broker = { listOpenPrs: async () => [{
++      repo: 'acme/forge', number: 42, state: 'open', issue_id: ISSUE, git_common_dir: 'C:/repo/.git',
++    }] };
+     const result = await mergeCmd.defaultVerifyPrIssueBinding({
+       issueId: ISSUE,
+       pr: '42',
+@@ -564,7 +566,9 @@ describe('merge authority — exact reviewer regressions', () => {
+       prContext: context(),
+       buildBroker: async () => ({
+         gitCommonDir: '/repo/.git',
+-        broker: { listOpenPrs: async () => rows },
++        broker: {
++          listOpenPrs: async () => rows.map(row => ({ git_common_dir: '/repo/.git', ...row })),
++        },
+         driver: { close() {} },
+       }),
+     });
+-- 
+2.51.0.windows.1
+

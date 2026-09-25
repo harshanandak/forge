@@ -1,0 +1,245 @@
+From f12f1cf2f47e71d7986e78b93e1140e1f57169a0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 16:52:53 +0530
+Subject: [PATCH] fix(memory): bind opened linkage to live ownership
+
+---
+ lib/kernel/broker.js                          | 30 +++++++++++++++++--
+ packages/memory/src/authority-provider.js     |  2 +-
+ packages/memory/src/pr-lifecycle-authority.js |  9 ++++--
+ .../memory/test/authority-provider.test.js    |  7 +++--
+ .../test/pr-lifecycle-authority.test.js       |  4 +++
+ test/kernel/trace.test.js                     | 23 ++++++++++++++
+ 6 files changed, 67 insertions(+), 8 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 0686f553..b8049574 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -8,7 +8,7 @@ const { types: { isProxy } } = require('node:util');
+ const { buildConflict, evaluateKernelEvent, normalizePayload, stableStringify } = require('./evaluators');
+ const { CONFLICT_SIGNAL, classifyConflictSignal } = require('./conflict-signal');
+ const { buildKernelMigrationPlan } = require('./migrations');
+-const { buildClaimConflict, isValidExpiresAt, planClaimAcquisition } = require('./lease-enforcer');
++const { buildClaimConflict, isLeaseExpired, isValidExpiresAt, planClaimAcquisition } = require('./lease-enforcer');
+ const {
+ 	ISSUE_COMMAND_EXIT_CODES,
+ 	ISSUE_COMMAND_SCHEMA_VERSION,
+@@ -455,6 +455,7 @@ function assertCompatiblePrEvidence(existingEvent, payload) {
+ const PR_LINKAGE_DRIVER_METHODS = [
+ 	'exec', 'resolvePrLinkage', 'upsertPr', 'retirePr', 'readTrace',
+ 	'listKernelEvents', 'loadKernelEventByIdempotencyKey', 'insertKernelEvent', 'enqueueKernelProjection',
++	'loadActiveKernelClaim', 'loadKernelEntity',
+ ];
+ 
+ function preparePrLinkageInput(input, driver) {
+@@ -533,6 +534,7 @@ function assertTerminalPrEvent(terminalPr, existingEvent) {
+ function assertAtomicPrEvidence(trace, input, evidence) {
+ 	if (input.phase !== 'opened') return;
+ 	if ((trace.gaps || []).some(gap => gap === 'pull_requests:overflow'
++		|| /^pull_requests:.*:unlinked_issue$/.test(gap)
+ 		|| /^iterations:.*:(?:missing|incomplete|overflow)$/.test(gap))) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage cannot prove complete semantic identity evidence');
+ 	}
+@@ -551,6 +553,21 @@ function assertAtomicPrEvidence(trace, input, evidence) {
+ 	}
+ }
+ 
++async function assertExactLifecycleOwnership(driver, evidence, context, config) {
++	if (typeof context.actor !== 'string' || !context.actor || typeof context.sessionId !== 'string' || !context.sessionId) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordOpenedPrLinkage requires exact actor and session authority');
++	}
++	const [issue, claim] = await Promise.all([
++		driver.loadKernelEntity('issue', evidence.issue_id, context, config),
++		driver.loadActiveKernelClaim(evidence.issue_id, context, config),
++	]);
++	const now = context.now || new Date().toISOString();
++	if (!issue || isTerminalStatus(issue.status) || !claim || claim.state !== 'active'
++		|| claim.actor !== context.actor || claim.session_id !== context.sessionId || isLeaseExpired(claim, now)) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordOpenedPrLinkage claimant no longer owns the live issue');
++	}
++}
++
+ function isDatabaseLocked(error) {
+ 	return /database is locked|SQLITE_BUSY/i.test(String(error?.message || error));
+ }
+@@ -1734,11 +1751,15 @@ function createLocalBroker(options = {}) {
+ 			const config = getConfig();
+ 			await beginImmediate(driver, config);
+ 			try {
++				if (context.requireExactLifecycleOwnership === true) {
++					await assertExactLifecycleOwnership(driver, evidence, context, config);
++				}
+ 				const inferred = await driver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
+ 				assertResolvedPrLinkage(inferred, evidence);
+ 				const issueEvents = await driver.listKernelEvents('issue', evidence.issue_id, context, config);
+ 				const gateReceipts = resolveGateReceipts(issueEvents, evidence.gate_ids, linkageInput.occurred_at);
+-				const issueRows = await driver.readTrace({ issue_id: evidence.issue_id }, context, config);
++				const issueRows = await driver.readTrace({ issue_id: evidence.issue_id, pr_number: linkageInput.number,
++					repo: linkageInput.repo, git_common_dir: linkageInput.git_common_dir }, context, config);
+ 				assertAtomicPrEvidence(issueRows, linkageInput, evidence);
+ 				const priorPr = findPriorPr(issueRows.pull_requests, linkageInput);
+ 				const worktreeId = inferred.worktree_id;
+@@ -1784,6 +1805,11 @@ function createLocalBroker(options = {}) {
+ 			}
+ 		},
+ 
++		async recordOpenedPrLinkage(input, context = {}) {
++			if (input?.phase !== 'opened') throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordOpenedPrLinkage requires opened phase');
++			return this.recordPrLinkage(input, { ...context, requireExactLifecycleOwnership: true });
++		},
++
+ 		async readTrace(target, context = {}) {
+ 			if (!target || (!target.issue_id && target.pr_number === undefined)) {
+ 				throw new Error('readTrace requires issue_id or pr_number');
+diff --git a/packages/memory/src/authority-provider.js b/packages/memory/src/authority-provider.js
+index 92dcad8f..c55a7a11 100644
+--- a/packages/memory/src/authority-provider.js
++++ b/packages/memory/src/authority-provider.js
+@@ -20,7 +20,7 @@ const MEMORY_AUTHORITY_METHODS = Object.freeze([
+ // Optional PR lifecycle operations are intentionally separate from the mandatory
+ // Memory authority surface. Legacy brokers keep the exact historical provider
+ // keys; lifecycle consumers opt into the pair atomically.
+-const MEMORY_PR_LIFECYCLE_METHODS = Object.freeze(['recordPrLinkage', 'readTrace']);
++const MEMORY_PR_LIFECYCLE_METHODS = Object.freeze(['recordPrLinkage', 'recordOpenedPrLinkage', 'readTrace']);
+ 
+ function assertMemoryAuthorityProvider(provider, label = 'Memory authority provider') {
+   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 513d9a81..0bcbe61f 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -45,6 +45,7 @@ const PR_LIFECYCLE_PROVIDER_METHODS = Object.freeze([
+   'listReadyWork',
+   'runIssueOperation',
+   'recordPrLinkage',
++  'recordOpenedPrLinkage',
+   'readTrace',
+ ]);
+ 
+@@ -769,7 +770,7 @@ function stableResult(kind, packet, receipt, linkage) {
+ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier, timeoutMs = DEFAULT_PROVIDER_TIMEOUT_MS } = {}) {
+   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError('PR lifecycle authority requires a public provider object');
+   validateProviderTimeout(timeoutMs);
+-  for (const method of ['runIssueOperation', 'recordPrLinkage', 'readTrace']) {
++  for (const method of ['runIssueOperation', 'recordPrLinkage', 'recordOpenedPrLinkage', 'readTrace']) {
+     if (typeof provider[method] !== 'function') throw new TypeError(`PR lifecycle provider must implement ${method}()`);
+   }
+   if (!liveProbes || typeof liveProbes !== 'object' || Array.isArray(liveProbes)) throw new TypeError('liveProbes must be an object');
+@@ -850,7 +851,7 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+     const durable = durableAcceptance(trace, packet, receipt);
+     if (durable) assertTraceLinkage(trace, linkage, packet, receipt);
+     else {
+-      await callMethod(provider, 'recordPrLinkage', [{
++      await callMethod(provider, 'recordOpenedPrLinkage', [{
+         phase: 'opened',
+         git_common_dir: target.git_common_dir,
+         repo: linkage.repository_id,
+@@ -860,7 +861,9 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+         occurred_at: receipt.payload.ended_at ?? receipt.created_at,
+         work_packet: packet,
+         run_receipt: receipt,
+-      }], 'PR linkage', { sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true });
++      }, { actor: packet.provenance.actor_id, sessionId: input.session_id ?? input.sessionId }], 'PR linkage', {
++        sanitize: true, allowGitCommonDir: true, timeoutMs, reconcileOnTimeout: true,
++      });
+       const persistedTrace = await readLifecycleTrace(provider, linkage, timeoutMs, target.git_common_dir);
+       assertTraceLinkage(persistedTrace, linkage, packet, receipt);
+     }
+diff --git a/packages/memory/test/authority-provider.test.js b/packages/memory/test/authority-provider.test.js
+index 6b3c221b..a6618c46 100644
+--- a/packages/memory/test/authority-provider.test.js
++++ b/packages/memory/test/authority-provider.test.js
+@@ -67,14 +67,17 @@ describe('Memory authority provider', () => {
+     const calls = [];
+     const broker = brokerStub(calls);
+     broker.recordPrLinkage = async (...args) => { calls.push({ method: 'recordPrLinkage', args }); return { ok: true }; };
++    broker.recordOpenedPrLinkage = async (...args) => { calls.push({ method: 'recordOpenedPrLinkage', args }); return { ok: true }; };
+     broker.readTrace = async (...args) => { calls.push({ method: 'readTrace', args }); return { ok: true }; };
+     const provider = createMemoryAuthorityProvider({ broker });
+ 
+-    expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS, 'recordPrLinkage', 'readTrace']);
++    expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS, 'recordPrLinkage', 'recordOpenedPrLinkage', 'readTrace']);
+     await provider.recordPrLinkage({ phase: 'opened' }, { actor: 'agent-1' });
++    await provider.recordOpenedPrLinkage({ phase: 'opened' }, { actor: 'agent-1' });
+     await provider.readTrace({ issue_id: 'issue-1' }, { actor: 'agent-1' });
+-    expect(calls.slice(-2)).toEqual([
++    expect(calls.slice(-3)).toEqual([
+       { method: 'recordPrLinkage', args: [{ phase: 'opened' }, { actor: 'agent-1' }] },
++      { method: 'recordOpenedPrLinkage', args: [{ phase: 'opened' }, { actor: 'agent-1' }] },
+       { method: 'readTrace', args: [{ issue_id: 'issue-1' }, { actor: 'agent-1' }] },
+     ]);
+   });
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index c98cb8c3..50f7c486 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -117,6 +117,7 @@ function provider(overrides = {}) {
+   const base = {
+     runIssueOperation: async () => null,
+     recordPrLinkage: async (value) => { durable = value; return { ok: true }; },
++    recordOpenedPrLinkage: async (value) => { durable = value; return { ok: true }; },
+     readTrace: async () => {
+       if (!durable) return { pull_requests: [] };
+       if (durable.packet.payload.target?.pr_number) return { pull_requests: [{
+@@ -145,6 +146,7 @@ function provider(overrides = {}) {
+       : durable;
+     return result;
+   };
++  base.recordOpenedPrLinkage = base.recordPrLinkage;
+   return base;
+ }
+ 
+@@ -173,6 +175,7 @@ describe('public PR lifecycle authority', () => {
+       'listReadyWork',
+       'runIssueOperation',
+       'recordPrLinkage',
++      'recordOpenedPrLinkage',
+       'readTrace',
+     ]);
+   });
+@@ -259,6 +262,7 @@ describe('public PR lifecycle authority', () => {
+         provider: {
+           runIssueOperation: async () => null,
+           recordPrLinkage: async () => null,
++          recordOpenedPrLinkage: async () => null,
+           readTrace: async () => ({ pull_requests: [] }),
+           readIssue: async () => new Promise(() => {}),
+         },
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index c5af0b34..2d33e144 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -216,6 +216,29 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		}
+ 	});
+ 
++	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
++		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
++			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
++		const context = { actor: 'agent-1', sessionId: 'session-1', now: '2026-08-11T00:10:00.000Z' };
++		await expect(broker.recordOpenedPrLinkage(linkage(), context)).resolves.toHaveProperty('iteration');
++		await driver.updateKernelClaimState('claim-1', 'released', {}, config);
++		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		await driver.insertKernelClaim({ id: 'claim-2', issue_id: 'issue-trace', actor: 'agent-2', session_id: 'session-2',
++			state: 'active', claimed_at: '2026-08-11T00:11:00.000Z', expires_at: '2026-08-11T00:12:00.000Z' }, {}, config);
++		await expect(broker.recordOpenedPrLinkage(linkage(), context)).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		await expect(broker.recordOpenedPrLinkage(linkage(), { actor: 'agent-2', sessionId: 'session-2', now: '2026-08-11T00:13:00.000Z' }))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++	});
++
++	test('rejects a foreign issue PR binding inside the linkage transaction', async () => {
++		await driver.exec("INSERT INTO kernel_issues (id, title, created_at, updated_at) VALUES ('issue-other', 'Other', '2026-08-11T00:00:00.000Z', '2026-08-11T00:00:00.000Z');", config);
++		await driver.upsertPr({ id: 'foreign-pr', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 514,
++			issue_id: 'issue-other', worktree_id: 'worktree-other', branch, head_sha: 'f'.repeat(40) }, {}, config);
++		await expect(broker.recordPrLinkage(linkage())).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		const rows = await driver.queryAll('SELECT issue_id, head_sha FROM kernel_pr WHERE id = \'foreign-pr\';', config);
++		expect(rows).toEqual([{ issue_id: 'issue-other', head_sha: 'f'.repeat(40) }]);
++	});
++
+ 	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
+ 		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
+ 		const receipt = runReceipt(packet);
+-- 
+2.51.0.windows.1
+

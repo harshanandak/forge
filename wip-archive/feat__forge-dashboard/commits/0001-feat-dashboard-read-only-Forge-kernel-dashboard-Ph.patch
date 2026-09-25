@@ -1,0 +1,1376 @@
+From 2685eb6bc4cf7e5bf7b7edd48b3f0afef7f979ca Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 18:20:17 +0530
+Subject: [PATCH] feat(dashboard): read-only Forge kernel dashboard (Phase 1)
+
+First working Forge screen: a self-contained, zero-build local dashboard
+that renders a live kernel snapshot (611 real issues). Health strip, work
+board (ready/in-progress/blocked/done), epics, decisions, and recent
+activity + memory. Baked snapshot (snapshot.js global) opens via double-
+click, no server. DataSource seam left for the sync-rail live feed.
+
+Snapshot (snapshot.js/data.json) is a generated artifact (gitignored);
+rebuild with node web/dashboard/generate-snapshot.mjs. Pure board/filter
+logic unit-tested (app.test.js, 5 tests).
+
+Refs: 21cc7139-b088-4e23-a69c-82840e170394
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ docs/work/2026-07-10-forge-dashboard/plan.md |  93 ++++
+ web/dashboard/.gitignore                     |   3 +
+ web/dashboard/README.md                      |  64 +++
+ web/dashboard/app.js                         | 397 ++++++++++++++++
+ web/dashboard/app.test.js                    |  76 ++++
+ web/dashboard/generate-snapshot.mjs          |  81 ++++
+ web/dashboard/index.html                     | 120 +++++
+ web/dashboard/styles.css                     | 454 +++++++++++++++++++
+ 8 files changed, 1288 insertions(+)
+ create mode 100644 docs/work/2026-07-10-forge-dashboard/plan.md
+ create mode 100644 web/dashboard/.gitignore
+ create mode 100644 web/dashboard/README.md
+ create mode 100644 web/dashboard/app.js
+ create mode 100644 web/dashboard/app.test.js
+ create mode 100644 web/dashboard/generate-snapshot.mjs
+ create mode 100644 web/dashboard/index.html
+ create mode 100644 web/dashboard/styles.css
+
+diff --git a/docs/work/2026-07-10-forge-dashboard/plan.md b/docs/work/2026-07-10-forge-dashboard/plan.md
+new file mode 100644
+index 00000000..160f7dcd
+--- /dev/null
++++ b/docs/work/2026-07-10-forge-dashboard/plan.md
+@@ -0,0 +1,93 @@
++# Forge Dashboard — Read-Only Kernel Screen (Phase 1)
++
++Issue: 21cc7139-b088-4e23-a69c-82840e170394 (EPIC: Forge front-end / dashboard — read-only)
++Branch: feat/forge-dashboard
++Date: 2026-07-10
++
++## Goal
++
++Ship the FIRST working Forge "screen": a self-contained, local, read-only dashboard
++that renders a LIVE kernel snapshot (the real 611-issue kernel, not placeholders).
++Rail-independent — no live/real-time sync (that waits for the sync rail). This proves
++the read layer and the information architecture before any server work.
++
++## Kernel read data (verified 2026-07-10)
++
++Source commands (all `--json` where available):
++
++- `forge issue list --json` → `{ ok, schema_version, command, data: { issues: [...] } }`
++  - Per-issue fields: `id, title, body, type, status, priority, rank, revision,
++    blocked, claimed_by, parent_id, labels[], dependencies[], dependents[],
++    blocked_by[], created_at, updated_at, acceptance_criteria, design, notes,
++    assignee, created_by, closed_at, close_reason, metadata`
++- `forge status --json` → `{ context: { branch, inWorktree, worktreePath,
++  mainWorktree, workingTree }, personal: { activeAssigned[], ready[] }, ... }`
++- `forge recall --json` → `[]` (memory currently empty)
++
++### Real distribution (the snapshot renders THIS)
++
++- TOTAL: **611** issues
++- status: done 367, open 237, cancelled 7
++- type: task 414, bug 110, feature 43, epic 36, decision 6, chore 1, (1 bogus)
++- priority: P0 55, P1 190, P2 297, P3 61, P4 8
++- actively claimed (open + claimed_by): 15
++- blocked: 47 · with-parent: 42 · with-labels: 298 · with-deps: 294
++- epics: 36 total, only 5 have children via `parent_id` (linkage is sparse)
++- decisions: 6 issues of `type=decision` (no separate `forge decision` command exists)
++
++## Information architecture (summary-first, importance-weighted)
++
++Single page, top-to-bottom by decreasing decision-value:
++
++1. **Health strip (hero)** — the "is the kernel healthy?" glance:
++   totals, done %, open, blocked, actively-claimed, ready; priority distribution
++   bar; type distribution chips. Big numerals, monospace.
++2. **Work Board** — the core operational view. Four columns derived client-side:
++   - **Ready** = open, not blocked, not claimed (matches `issue ready`)
++   - **In Progress** = open + `claimed_by` set
++   - **Blocked** = open + `blocked`
++   - **Done** = status done (capped, newest first)
++   Cards: type badge, priority badge, title, epic/label chips, owner. Global
++   search + type/priority filters. Each column caps rendered cards with "show more"
++   (611 issues → never dump the DOM).
++3. **Epics** — 36 epics with status/priority and child rollup where present.
++4. **Decisions** — the 6 `type=decision` issues with a body excerpt (the "why").
++5. **Recent activity + memory** — recently-updated issues as a timeline; a memory
++   panel that reads `recall` (graceful empty-state today).
++
++## Build
++
++Zero-build vanilla SPA under `web/dashboard/`:
++
++- `index.html` — structure + section landmarks
++- `styles.css` — design system (tokens, light/dark, responsive)
++- `app.js` — render + filter/search + `DataSource` seam
++- `snapshot.js` — generated `window.FORGE_SNAPSHOT = {...}` (opens via double-click,
++  no server, no fetch/CORS)
++- `data.json` — same snapshot as machine-readable JSON (for tooling / future fetch)
++- `generate-snapshot.mjs` — Node generator: shells `forge issue list/status --json`,
++  writes `snapshot.js` + `data.json`
++- `README.md` — regenerate + open steps
++
++Aesthetic: foundry/kernel theme — neutral zinc surfaces, single ember accent,
++monospace for numerals + IDs, refined not generic. Light + dark (prefers-color-scheme
+++ toggle). Responsive down to mobile.
++
++## Deferred: live view (propose, do not build)
++
++A clear `DataSource` seam in `app.js` (a single async `load()` today reading the
++baked snapshot). The sync-rail outbox feed will later push real-time deltas here.
++
++Proposed live stack (for orchestrator to confirm):
++
++- **Option A (near-term, local):** a tiny local server (`node`/Bun) that shells
++  `forge --json` on an interval or on-demand and serves `data.json` + a
++  `/events` SSE endpoint fed by the sync-rail outbox. Dashboard swaps its
++  `DataSource` from baked-snapshot to `fetch('/data.json')` + `EventSource('/events')`.
++  Lowest lift; reuses the exact CLI contract this snapshot already consumes.
++- **Option B (Phase-2, server authority):** when the kernel gains serialized
++  server authority (per PD-20260606-sqlite-local-authority), expose a read API on
++  that server and subscribe to its outbox directly. Multi-machine/team-safe.
++
++Recommendation: ship A behind the same `DataSource` interface now-ish; graduate to
++B when the Phase-2 kernel server lands. No dashboard rewrite either way.
+diff --git a/web/dashboard/.gitignore b/web/dashboard/.gitignore
+new file mode 100644
+index 00000000..33c55bef
+--- /dev/null
++++ b/web/dashboard/.gitignore
+@@ -0,0 +1,3 @@
++# Generated kernel snapshot — rebuild with: node web/dashboard/generate-snapshot.mjs
++snapshot.js
++data.json
+diff --git a/web/dashboard/README.md b/web/dashboard/README.md
+new file mode 100644
+index 00000000..962df13c
+--- /dev/null
++++ b/web/dashboard/README.md
+@@ -0,0 +1,64 @@
++# Forge Dashboard (read-only, Phase 1)
++
++The first Forge "screen": a self-contained, local dashboard that renders a **live
++kernel snapshot** — work board, epics, decisions, health and recent activity — from
++the real kernel (611 issues at time of writing). No framework, no build step, no
++external assets. This is the **rail-independent read layer**; live/real-time sync is
++deferred to the sync rail (see the seam below).
++
++## Run it (two steps)
++
++```sh
++# 1. Bake a fresh snapshot from the live kernel
++node web/dashboard/generate-snapshot.mjs
++
++# 2. Open the dashboard — just double-click it, no server needed
++#    Windows:
++start web/dashboard/index.html
++#    macOS:   open web/dashboard/index.html
++#    Linux:   xdg-open web/dashboard/index.html
++```
++
++The snapshot is baked into `snapshot.js` as a browser global, so `index.html` works
++directly from `file://` — no local server, no CORS.
++
++*(Optional)* To serve over HTTP instead (uses `data.json` via `fetch`):
++
++```sh
++cd web/dashboard && python -m http.server 8080   # → http://localhost:8080
++```
++
++## What it shows (all real kernel data)
++
++| View | Source | Notes |
++|------|--------|-------|
++| **Health** | derived from `issue list` | totals, % complete, open/ready/in-progress/blocked, priority + type distribution |
++| **Work board** | `issue list` | Ready / In progress / Blocked / Done, derived per-issue; search + type/priority filters; capped render with "show more" |
++| **Epics** | `type=epic` (36) | status, priority, child rollup where `parent_id` linkage exists |
++| **Decisions** | `type=decision` (6) | title + body excerpt (the "why") |
++| **Activity + memory** | recent `updated_at` + `recall` | timeline of recent changes; memory panel (empty-state until `recall` returns entries) |
++
++## Files
++
++- `index.html` — structure and section landmarks
++- `styles.css` — design system (tokens, light/dark, responsive)
++- `app.js` — render + filter/search + the `DataSource` live-view seam
++- `generate-snapshot.mjs` — Node generator; shells `forge issue list/status/recall --json`
++- `snapshot.js` — **generated** `window.FORGE_SNAPSHOT` global (git-ignorable)
++- `data.json` — **generated** same payload, machine-readable
++
++## Live view — deferred (the seam)
++
++`app.js` reads all data through a single `DataSource` object. Today `load()` returns
++the baked snapshot. When the **sync rail** lands, swap `load()` to `fetch('data.json')`
++and implement `subscribe(onDelta)` over the outbox feed (`EventSource('/events')`) —
++**no render code changes**.
++
++Proposed live stack (for orchestrator to confirm — see `docs/work/2026-07-10-forge-dashboard/plan.md`):
++
++- **Option A (near-term):** tiny local Node/Bun server shells `forge --json` and serves
++  `data.json` + an SSE `/events` endpoint fed by the sync-rail outbox. Lowest lift.
++- **Option B (Phase-2):** read API on the serialized kernel server (per
++  `PD-20260606-sqlite-local-authority`); team/multi-machine safe.
++
++Ship A behind the existing `DataSource` interface; graduate to B with no rewrite.
+diff --git a/web/dashboard/app.js b/web/dashboard/app.js
+new file mode 100644
+index 00000000..5fa07c25
+--- /dev/null
++++ b/web/dashboard/app.js
+@@ -0,0 +1,397 @@
++/* Forge Dashboard — read-only render layer.
++   Consumes a baked kernel snapshot (window.FORGE_SNAPSHOT). No framework, no build. */
++
++/* ============================================================================
++ * DataSource — the LIVE-VIEW SEAM.
++ * Today: returns the baked snapshot synchronously wrapped in a promise.
++ * LATER (sync rail): swap `load()` to fetch('data.json') and subscribe to the
++ * outbox feed via EventSource('/events'), calling onDelta() to patch state.
++ * The rest of the app only depends on this interface, so the live upgrade needs
++ * no render changes. See docs/work/2026-07-10-forge-dashboard/plan.md.
++ * ========================================================================== */
++const DataSource = {
++  async load() {
++    if (window.FORGE_SNAPSHOT) return window.FORGE_SNAPSHOT;
++    // Fallback path for when the page is served over HTTP with only data.json.
++    const res = await fetch('data.json');
++    return res.json();
++  },
++  // TODO(sync-rail): subscribe(onDelta) { new EventSource('/events')... }
++  subscribe() { /* no-op until the sync rail lands */ },
++};
++
++/* ---------- small helpers ---------- */
++const $ = (sel, root = document) => root.querySelector(sel);
++const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
++const esc = (s) => (s == null ? '' : String(s));
++const clamp = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
++
++const PRIO_ORDER = ['P0', 'P1', 'P2', 'P3', 'P4'];
++const PRIO_VAR = { P0: '--p0', P1: '--p1', P2: '--p2', P3: '--p3', P4: '--p4' };
++const TYPE_LABEL = { feature: 'feat', task: 'task', bug: 'bug', epic: 'epic', decision: 'dec', chore: 'chore' };
++
++function relTime(iso) {
++  if (!iso) return '';
++  const d = new Date(iso), now = Date.now();
++  const s = Math.round((now - d) / 1000);
++  if (s < 60) return s + 's ago';
++  const m = Math.round(s / 60); if (m < 60) return m + 'm ago';
++  const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
++  const days = Math.round(h / 24); if (days < 30) return days + 'd ago';
++  return d.toISOString().slice(0, 10);
++}
++
++/* ---------- global state ---------- */
++const State = {
++  snapshot: null,
++  issues: [],
++  filters: { q: '', type: null, prio: null },
++  limits: { ready: 12, progress: 12, blocked: 12, done: 10 },
++};
++
++/* ---------- board derivation ---------- */
++function columnOf(i) {
++  if (i.status === 'done') return 'done';
++  if (i.status === 'cancelled') return null;
++  if (i.blocked) return 'blocked';
++  if (i.claimed_by) return 'progress';
++  return 'ready';
++}
++
++function matchesFilter(i) {
++  const f = State.filters;
++  if (f.type && i.type !== f.type) return false;
++  if (f.prio && i.priority !== f.prio) return false;
++  if (f.q) {
++    const q = f.q.toLowerCase();
++    const hay = (i.title + ' ' + i.id + ' ' + (i.claimed_by || '') + ' ' + (i.labels || []).join(' ')).toLowerCase();
++    if (!hay.includes(q)) return false;
++  }
++  return true;
++}
++
++/* ---------- renderers ---------- */
++function renderStats() {
++  const all = State.issues;
++  const by = (fn) => all.reduce((a, i) => (a[fn(i)] = (a[fn(i)] || 0) + 1, a), {});
++  const st = by((i) => i.status);
++  const done = st.done || 0, open = st.open || 0;
++  const total = all.length;
++  const donePct = total ? Math.round((done / total) * 100) : 0;
++  const blocked = all.filter((i) => i.blocked && i.status !== 'done').length;
++  const active = all.filter((i) => i.claimed_by && i.status === 'open').length;
++  const ready = all.filter((i) => columnOf(i) === 'ready').length;
++
++  const tiles = [
++    { n: total, l: 'Total issues', sub: State.snapshot.schema_version || '', hero: true },
++    { n: donePct + '%', l: 'Complete', sub: done + ' done', v: '--done' },
++    { n: open, l: 'Open', sub: ready + ' ready', v: '--ready' },
++    { n: active, l: 'In progress', sub: 'claimed now', v: '--progress' },
++    { n: blocked, l: 'Blocked', sub: 'need unblocking', v: '--blocked' },
++  ];
++  const wrap = $('#stats'); wrap.innerHTML = '';
++  tiles.forEach((t, idx) => {
++    const s = el('div', 'stat' + (t.hero ? ' stat--hero' : ''));
++    if (t.v) s.style.setProperty('--accar', `var(${t.v})`);
++    s.style.animation = `rise .4s ${idx * 0.04}s both`;
++    s.append(el('div', 'stat__num', t.n), el('div', 'stat__label', t.l), el('div', 'stat__sub', t.sub));
++    wrap.append(s);
++  });
++  $('#healthCount').textContent = `${total} issues · snapshot`;
++}
++
++function renderMeters() {
++  const all = State.issues;
++  const prio = {}; PRIO_ORDER.forEach((p) => (prio[p] = 0));
++  all.forEach((i) => { if (prio[i.priority] != null) prio[i.priority]++; });
++  const total = all.length || 1;
++  const bar = $('#prioBar'); bar.innerHTML = '';
++  const legend = $('#prioLegend'); legend.innerHTML = '';
++  PRIO_ORDER.forEach((p) => {
++    const seg = el('span'); seg.style.width = (prio[p] / total) * 100 + '%';
++    seg.style.background = `var(${PRIO_VAR[p]})`; seg.title = `${p}: ${prio[p]}`;
++    bar.append(seg);
++    const item = el('div', 'item');
++    const sw = el('span', 'swatch'); sw.style.background = `var(${PRIO_VAR[p]})`;
++    item.append(sw, document.createTextNode(p + ' '), Object.assign(el('b'), { textContent: prio[p] }));
++    legend.append(item);
++  });
++
++  const types = {}; all.forEach((i) => (types[i.type] = (types[i.type] || 0) + 1));
++  const chips = $('#typeChips'); chips.innerHTML = '';
++  Object.entries(types).sort((a, b) => b[1] - a[1]).forEach(([t, n]) => {
++    if (t === 'zzzbogus') return;
++    const c = el('div', 'typechip');
++    c.append(document.createTextNode((TYPE_LABEL[t] || t) + ' '), Object.assign(el('b'), { textContent: n }));
++    chips.append(c);
++  });
++}
++
++function card(i) {
++  const c = el('div', 'card');
++  c.style.setProperty('--prio', `var(${PRIO_VAR[i.priority] || '--border'})`);
++  const top = el('div', 'card__top');
++  const tb = el('span', 'badge badge--type', TYPE_LABEL[i.type] || i.type);
++  const pb = el('span', 'badge badge--prio', i.priority || '—');
++  pb.style.background = `var(${PRIO_VAR[i.priority] || '--faint'})`;
++  const id = el('span', 'card__id', String(i.id).slice(0, 8));
++  top.append(tb, pb, id);
++  c.append(top, el('div', 'card__title', clamp(i.title, 120)));
++
++  const meta = el('div', 'card__meta');
++  if (i.claimed_by) {
++    const o = el('span', 'card__owner');
++    const av = el('span', 'av', i.claimed_by.slice(0, 2));
++    o.append(av, document.createTextNode(i.claimed_by));
++    meta.append(o);
++  }
++  (i.labels || []).slice(0, 2).forEach((l) => meta.append(el('span', 'chip', l)));
++  if (i.dependencies && i.dependencies.length) meta.append(el('span', 'chip', `${i.dependencies.length} dep`));
++  if (meta.childNodes.length) c.append(meta);
++  return c;
++}
++
++const COLS = [
++  { key: 'ready', title: 'Ready', v: '--ready' },
++  { key: 'progress', title: 'In progress', v: '--progress' },
++  { key: 'blocked', title: 'Blocked', v: '--blocked' },
++  { key: 'done', title: 'Done', v: '--done' },
++];
++
++function renderBoard() {
++  const buckets = { ready: [], progress: [], blocked: [], done: [] };
++  State.issues.forEach((i) => {
++    if (!matchesFilter(i)) return;
++    const col = columnOf(i); if (col) buckets[col].push(i);
++  });
++  buckets.done.sort((a, b) => new Date(b.closed_at || b.updated_at) - new Date(a.closed_at || a.updated_at));
++  const rank = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
++  ['ready', 'progress', 'blocked'].forEach((k) =>
++    buckets[k].sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || new Date(b.updated_at) - new Date(a.updated_at)));
++
++  const host = $('#boardCols'); host.innerHTML = '';
++  let shown = 0;
++  COLS.forEach(({ key, title, v }) => {
++    const col = el('div', 'col');
++    const head = el('div', 'col__head');
++    const dot = el('span', 'col__dot'); dot.style.background = `var(${v})`;
++    head.append(dot, el('span', 'col__title', title));
++    head.append(Object.assign(el('span', 'col__count'), { textContent: buckets[key].length }));
++    col.append(head);
++    const list = el('div', 'col__list');
++    const lim = State.limits[key];
++    const items = buckets[key];
++    if (!items.length) list.append(el('div', 'empty', 'Nothing here.'));
++    items.slice(0, lim).forEach((i, idx) => { const c = card(i); c.style.animationDelay = (idx * 0.015) + 's'; list.append(c); shown++; });
++    if (items.length > lim) {
++      const btn = el('button', 'more', `Show ${Math.min(20, items.length - lim)} more (${items.length - lim} hidden)`);
++      btn.onclick = () => { State.limits[key] += 20; renderBoard(); };
++      list.append(btn);
++    }
++    col.append(list);
++    host.append(col);
++  });
++  $('#boardCount').textContent = `${shown} shown · ${State.issues.filter(matchesFilter).length} match`;
++}
++
++function renderFilters() {
++  const types = [...new Set(State.issues.map((i) => i.type))].filter((t) => t && t !== 'zzzbogus');
++  const tf = $('#typeFilters'); tf.innerHTML = '';
++  types.forEach((t) => {
++    const b = el('button', '', TYPE_LABEL[t] || t);
++    b.onclick = () => { State.filters.type = State.filters.type === t ? null : t; syncFilterUI(); renderBoard(); };
++    b.dataset.type = t; tf.append(b);
++  });
++  const pf = $('#prioFilters'); pf.innerHTML = '';
++  PRIO_ORDER.forEach((p) => {
++    const b = el('button', '', p);
++    b.onclick = () => { State.filters.prio = State.filters.prio === p ? null : p; syncFilterUI(); renderBoard(); };
++    b.dataset.prio = p; pf.append(b);
++  });
++}
++function syncFilterUI() {
++  document.querySelectorAll('#typeFilters button').forEach((b) => b.classList.toggle('on', b.dataset.type === State.filters.type));
++  document.querySelectorAll('#prioFilters button').forEach((b) => b.classList.toggle('on', b.dataset.prio === State.filters.prio));
++}
++
++function renderEpics() {
++  const kids = {};
++  State.issues.forEach((i) => { if (i.parent_id) (kids[i.parent_id] = kids[i.parent_id] || []).push(i); });
++  const epics = State.issues.filter((i) => i.type === 'epic')
++    .sort((a, b) => (a.status === 'done') - (b.status === 'done') || new Date(b.updated_at) - new Date(a.updated_at));
++  $('#epicCount').textContent = `${epics.length}`;
++  const grid = $('#epicGrid'); grid.innerHTML = '';
++  epics.forEach((e) => {
++    const box = el('div', 'epic');
++    const top = el('div', 'epic__top');
++    const pb = el('span', 'badge badge--prio', e.priority || '—');
++    pb.style.background = `var(${PRIO_VAR[e.priority] || '--faint'})`;
++    top.append(pb, el('span', 'badge badge--type', e.status));
++    box.append(top, el('div', 'epic__title', clamp(e.title.replace(/^\[?EPIC\]?:?\s*/i, ''), 90)));
++    const ch = kids[e.id] || [];
++    if (ch.length) {
++      const done = ch.filter((c) => c.status === 'done').length;
++      const roll = el('div', 'epic__roll');
++      const pg = el('div', 'epic__prog'); const span = el('span'); span.style.width = (done / ch.length * 100) + '%'; pg.append(span);
++      roll.append(pg, el('span', 'epic__rolltext', `${done}/${ch.length}`));
++      box.append(roll);
++    } else {
++      box.append(el('div', 'epic__rolltext', 'no linked children'));
++    }
++    grid.append(box);
++  });
++}
++
++function renderDecisions() {
++  const decs = State.issues.filter((i) => i.type === 'decision')
++    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
++  $('#decCount').textContent = `${decs.length}`;
++  const grid = $('#decGrid'); grid.innerHTML = '';
++  if (!decs.length) { grid.append(el('div', 'empty', 'No decision records in this snapshot.')); return; }
++  decs.forEach((d) => {
++    const box = el('div', 'decision');
++    const top = el('div', 'decision__top');
++    top.append(el('span', 'badge badge--type', 'decision'), el('span', 'badge badge--type', d.status));
++    box.append(top, el('div', 'decision__title', d.title));
++    const body = (d.body || '').replace(/^#+\s.*$/gm, '').replace(/\n{2,}/g, '\n').trim();
++    box.append(el('div', 'decision__body', clamp(body, 340)));
++    box.append(el('div', 'decision__id', String(d.id)));
++    grid.append(box);
++  });
++}
++
++function renderActivity() {
++  const recent = State.issues.slice()
++    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 14);
++  const tl = $('#timeline'); tl.innerHTML = '';
++  const stColor = { done: '--done', open: '--ready', cancelled: '--faint' };
++  recent.forEach((i) => {
++    const row = el('div', 'tl');
++    row.style.setProperty('--st', `var(${(i.blocked ? '--blocked' : stColor[i.status]) || '--faint'})`);
++    row.append(el('span', 'tl__time', relTime(i.updated_at)));
++    const t = el('span', 'tl__title');
++    const b = el('span', 'badge badge--type', TYPE_LABEL[i.type] || i.type);
++    t.append(b, document.createTextNode(clamp(i.title, 74)));
++    row.append(t);
++    tl.append(row);
++  });
++
++  const mem = Array.isArray(State.snapshot.memory) ? State.snapshot.memory : [];
++  const mp = $('#memPanel'); mp.innerHTML = '';
++  if (mem.length) {
++    mp.classList.remove('mempanel'); mp.className = 'timeline';
++    mem.slice(0, 12).forEach((m) => {
++      const row = el('div', 'tl');
++      row.append(el('span', 'tl__time', relTime(m.created_at || m.updated_at)));
++      row.append(el('span', 'tl__title', clamp(m.text || m.content || m.title || JSON.stringify(m), 80)));
++      mp.append(row);
++    });
++  } else {
++    mp.innerHTML = `
++      <div class="mp-ic">
++        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="30" height="30">
++          <path d="M12 3a4 4 0 0 1 4 4v1a4 4 0 0 1 0 8v1a4 4 0 0 1-8 0v-1a4 4 0 0 1 0-8V7a4 4 0 0 1 4-4Z"/>
++        </svg></div>
++      <h4>Kernel memory is empty</h4>
++      <p><code>forge recall</code> returned no entries yet. Recalled facts will
++      stream here as the kernel records them.</p>`;
++  }
++}
++
++function renderFooter() {
++  const s = State.snapshot;
++  $('#footer').innerHTML =
++    `snapshot ${esc(s.generated_at)} · ${State.issues.length} issues · source: ${esc(s.source || 'forge --json')}` +
++    `<div class="live-todo">LIVE-VIEW SEAM · This is a baked read-only snapshot. ` +
++    `The sync-rail outbox feed will later push real-time deltas through <code>DataSource</code> ` +
++    `(fetch data.json + EventSource /events) with no render changes. See plan.md.</div>`;
++}
++
++function renderSnapMeta() {
++  const s = State.snapshot;
++  const when = s.generated_at ? new Date(s.generated_at) : new Date();
++  $('#snapmeta').innerHTML =
++    `<b>snapshot</b><br>${when.toISOString().slice(0, 16).replace('T', ' ')} UTC<br>` +
++    `<b>${State.issues.length}</b> issues · read-only`;
++  $('#brandTag').textContent = (s.status?.context?.branch) ? 'branch ' + s.status.context.branch : 'kernel dashboard';
++}
++
++/* ---------- interactions ---------- */
++function wireSearch() {
++  let t;
++  $('#search').addEventListener('input', (e) => {
++    clearTimeout(t);
++    t = setTimeout(() => {
++      State.filters.q = e.target.value.trim();
++      State.limits = { ready: 12, progress: 12, blocked: 12, done: 10 };
++      renderBoard();
++    }, 120);
++  });
++}
++
++function wireTheme() {
++  const root = document.documentElement;
++  const saved = localStorage.getItem('forge-theme');
++  if (saved) root.setAttribute('data-theme', saved);
++  const paint = () => {
++    const dark = root.getAttribute('data-theme') !== 'light';
++    $('#themeLabel').textContent = dark ? 'Light' : 'Dark';
++    $('#themeIcon').textContent = dark ? '◐' : '◑';
++  };
++  paint();
++  $('#themeToggle').addEventListener('click', () => {
++    const dark = root.getAttribute('data-theme') !== 'light';
++    root.setAttribute('data-theme', dark ? 'light' : 'dark');
++    localStorage.setItem('forge-theme', dark ? 'light' : 'dark');
++    paint();
++  });
++}
++
++function wireScrollSpy() {
++  const links = [...document.querySelectorAll('#nav a')];
++  const map = new Map(links.map((a) => [a.getAttribute('href').slice(1), a]));
++  const obs = new IntersectionObserver((entries) => {
++    entries.forEach((en) => {
++      if (en.isIntersecting) {
++        links.forEach((l) => l.classList.remove('active'));
++        map.get(en.target.id)?.classList.add('active');
++      }
++    });
++  }, { rootMargin: '-20% 0px -70% 0px' });
++  ['health', 'board', 'epics', 'decisions', 'activity'].forEach((id) => {
++    const s = document.getElementById(id); if (s) obs.observe(s);
++  });
++}
++
++/* ---------- boot ---------- */
++async function boot() {
++  try {
++    const snap = await DataSource.load();
++    State.snapshot = snap;
++    State.issues = (snap.issues || []).filter((i) => i && i.type !== 'zzzbogus');
++    renderSnapMeta();
++    renderStats();
++    renderMeters();
++    renderFilters();
++    renderBoard();
++    renderEpics();
++    renderDecisions();
++    renderActivity();
++    renderFooter();
++    wireSearch();
++    wireTheme();
++    wireScrollSpy();
++  } catch (err) {
++    document.querySelector('.main').innerHTML =
++      `<div style="padding:40px;color:var(--muted)"><h2>Could not load snapshot</h2>
++       <p>${esc(err.message)}</p><p>Run <code>node web/dashboard/generate-snapshot.mjs</code> to bake it.</p></div>`;
++  }
++}
++
++// Run in the browser; stay inert (and unit-testable) under Node/Bun.
++if (typeof document !== 'undefined') boot();
++
++// Export the pure, DOM-free logic for tests (see app.test.js).
++if (typeof module !== 'undefined' && module.exports) {
++  module.exports = { columnOf, matchesFilter, relTime, State };
++}
+diff --git a/web/dashboard/app.test.js b/web/dashboard/app.test.js
+new file mode 100644
+index 00000000..fd750332
+--- /dev/null
++++ b/web/dashboard/app.test.js
+@@ -0,0 +1,76 @@
++// Tests for the dashboard's pure, DOM-free logic (board derivation, filtering,
++// relative time) plus the baked snapshot's integrity. Runs under `bun test`.
++import { test, expect } from 'bun:test';
++import { createRequire } from 'node:module';
++import { existsSync, readFileSync } from 'node:fs';
++import { dirname, join } from 'node:path';
++import { fileURLToPath } from 'node:url';
++
++const here = dirname(fileURLToPath(import.meta.url));
++const require = createRequire(import.meta.url);
++const app = require(join(here, 'app.js'));
++
++test('module exports the pure helpers without touching the DOM', () => {
++  expect(typeof app.columnOf).toBe('function');
++  expect(typeof app.matchesFilter).toBe('function');
++  expect(typeof app.relTime).toBe('function');
++});
++
++test('columnOf routes each issue to exactly one board column', () => {
++  expect(app.columnOf({ status: 'done' })).toBe('done');
++  expect(app.columnOf({ status: 'cancelled' })).toBe(null); // excluded
++  expect(app.columnOf({ status: 'open', blocked: true })).toBe('blocked');
++  expect(app.columnOf({ status: 'open', claimed_by: 'agent' })).toBe('progress');
++  expect(app.columnOf({ status: 'open' })).toBe('ready');
++  // blocked takes precedence over a claim
++  expect(app.columnOf({ status: 'open', blocked: true, claimed_by: 'a' })).toBe('blocked');
++});
++
++test('matchesFilter honours type, priority and text query', () => {
++  const issue = { title: 'Fix broker conflict', id: 'abc123', type: 'bug', priority: 'P0', claimed_by: 'forge', labels: ['kernel'] };
++  app.State.filters = { q: '', type: null, prio: null };
++  expect(app.matchesFilter(issue)).toBe(true);
++
++  app.State.filters = { q: '', type: 'feature', prio: null };
++  expect(app.matchesFilter(issue)).toBe(false); // wrong type
++
++  app.State.filters = { q: '', type: 'bug', prio: 'P0' };
++  expect(app.matchesFilter(issue)).toBe(true);
++
++  app.State.filters = { q: 'broker', type: null, prio: null };
++  expect(app.matchesFilter(issue)).toBe(true); // title match
++
++  app.State.filters = { q: 'kernel', type: null, prio: null };
++  expect(app.matchesFilter(issue)).toBe(true); // label match
++
++  app.State.filters = { q: 'nonexistent-xyz', type: null, prio: null };
++  expect(app.matchesFilter(issue)).toBe(false);
++
++  app.State.filters = { q: '', type: null, prio: null }; // reset shared state
++});
++
++test('relTime produces human-readable deltas', () => {
++  const now = Date.now();
++  expect(app.relTime(new Date(now - 30 * 1000).toISOString())).toMatch(/s ago$/);
++  expect(app.relTime(new Date(now - 5 * 60 * 1000).toISOString())).toMatch(/m ago$/);
++  expect(app.relTime(new Date(now - 3 * 3600 * 1000).toISOString())).toMatch(/h ago$/);
++  expect(app.relTime('')).toBe('');
++});
++
++test('baked snapshot, when generated, is well-formed', () => {
++  const path = join(here, 'data.json');
++  if (!existsSync(path)) return; // generated artifact; absent on a fresh clone / CI
++  const snap = JSON.parse(readFileSync(path, 'utf8'));
++  expect(Array.isArray(snap.issues)).toBe(true);
++  expect(snap.issues.length).toBeGreaterThan(0);
++  expect(typeof snap.generated_at).toBe('string');
++  const first = snap.issues[0];
++  ['id', 'title', 'type', 'status', 'priority'].forEach((k) => expect(first).toHaveProperty(k));
++
++  // Every non-cancelled issue lands in exactly one column.
++  const buckets = { ready: 0, progress: 0, blocked: 0, done: 0, none: 0 };
++  snap.issues.forEach((i) => { const c = app.columnOf(i); buckets[c || 'none']++; });
++  const placed = buckets.ready + buckets.progress + buckets.blocked + buckets.done;
++  const cancelled = snap.issues.filter((i) => i.status === 'cancelled').length;
++  expect(placed + cancelled).toBe(snap.issues.length);
++});
+diff --git a/web/dashboard/generate-snapshot.mjs b/web/dashboard/generate-snapshot.mjs
+new file mode 100644
+index 00000000..4c0435cd
+--- /dev/null
++++ b/web/dashboard/generate-snapshot.mjs
+@@ -0,0 +1,81 @@
++#!/usr/bin/env node
++// Forge Dashboard — snapshot generator (read-only).
++//
++// Shells the Forge CLI (`forge issue list/status --json`) and bakes the result
++// into `snapshot.js` (a browser global, so index.html opens by double-click with
++// NO server) and `data.json` (machine-readable, same payload).
++//
++// Usage:  node web/dashboard/generate-snapshot.mjs
++// Run from anywhere inside the repo/worktree; it locates bin/forge.js by walking up.
++
++import { execFileSync } from 'node:child_process';
++import { existsSync, writeFileSync } from 'node:fs';
++import { dirname, join, resolve } from 'node:path';
++import { fileURLToPath } from 'node:url';
++
++const HERE = dirname(fileURLToPath(import.meta.url));
++
++function findRepoRoot(start) {
++  let dir = start;
++  for (let i = 0; i < 8; i++) {
++    if (existsSync(join(dir, 'bin', 'forge.js'))) return dir;
++    const up = resolve(dir, '..');
++    if (up === dir) break;
++    dir = up;
++  }
++  throw new Error('Could not locate bin/forge.js above ' + start);
++}
++
++const ROOT = findRepoRoot(HERE);
++const FORGE = join(ROOT, 'bin', 'forge.js');
++
++function forge(args) {
++  const out = execFileSync(process.execPath, [FORGE, ...args], {
++    cwd: ROOT,
++    encoding: 'utf8',
++    maxBuffer: 64 * 1024 * 1024,
++  });
++  return JSON.parse(out);
++}
++
++function safe(args, fallback) {
++  try {
++    return forge(args);
++  } catch (err) {
++    console.warn(`  ! forge ${args.join(' ')} failed: ${err.message.split('\n')[0]}`);
++    return fallback;
++  }
++}
++
++console.log('Forge dashboard snapshot');
++console.log('  repo:', ROOT);
++
++const listRes = forge(['issue', 'list', '--json']);
++const issues = listRes?.data?.issues ?? [];
++console.log(`  issues: ${issues.length}`);
++
++const statusRes = safe(['status', '--json'], null);
++const recallRes = safe(['recall', '--json'], []);
++const recall = Array.isArray(recallRes) ? recallRes : recallRes?.data ?? [];
++
++const snapshot = {
++  generated_at: new Date().toISOString(),
++  schema_version: listRes?.schema_version ?? null,
++  source: 'forge issue list --json + forge status --json + forge recall --json',
++  counts: { issues: issues.length },
++  status: statusRes,
++  memory: recall,
++  issues,
++};
++
++const json = JSON.stringify(snapshot);
++writeFileSync(join(HERE, 'data.json'), JSON.stringify(snapshot, null, 2));
++writeFileSync(
++  join(HERE, 'snapshot.js'),
++  `/* AUTO-GENERATED by generate-snapshot.mjs — do not edit by hand. */\n` +
++    `window.FORGE_SNAPSHOT = ${json};\n`,
++);
++
++console.log('  wrote: web/dashboard/snapshot.js');
++console.log('  wrote: web/dashboard/data.json');
++console.log(`  done @ ${snapshot.generated_at}`);
+diff --git a/web/dashboard/index.html b/web/dashboard/index.html
+new file mode 100644
+index 00000000..cbda9797
+--- /dev/null
++++ b/web/dashboard/index.html
+@@ -0,0 +1,120 @@
++<!doctype html>
++<html lang="en" data-theme="dark">
++<head>
++  <meta charset="utf-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1" />
++  <title>Forge — Kernel Dashboard</title>
++  <link rel="stylesheet" href="styles.css" />
++</head>
++<body>
++  <div class="app">
++    <!-- Left rail -->
++    <aside class="rail">
++      <div class="brand">
++        <div class="brand__mark" aria-hidden="true">
++          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
++               stroke-linecap="round" stroke-linejoin="round">
++            <path d="M4 20h6M7 20V9M4 9l6-5 6 4-1 4M14 12l6 2-1 6-6-1z"/>
++          </svg>
++        </div>
++        <div>
++          <div class="brand__name">Forge</div>
++          <div class="brand__tag" id="brandTag">kernel dashboard</div>
++        </div>
++      </div>
++
++      <nav class="nav" id="nav">
++        <a href="#health" class="active"><span class="dot" style="background:var(--accent)"></span> Health</a>
++        <a href="#board"><span class="dot" style="background:var(--ready)"></span> Work board</a>
++        <a href="#epics"><span class="dot" style="background:var(--progress)"></span> Epics</a>
++        <a href="#decisions"><span class="dot" style="background:var(--accent-2)"></span> Decisions</a>
++        <a href="#activity"><span class="dot" style="background:var(--done)"></span> Activity</a>
++      </nav>
++
++      <div class="rail__foot">
++        <button class="themetoggle" id="themeToggle" type="button" aria-label="Toggle theme">
++          <span id="themeIcon">◐</span> <span id="themeLabel">Light</span>
++        </button>
++        <div class="snapmeta" id="snapmeta">loading snapshot…</div>
++      </div>
++    </aside>
++
++    <!-- Main -->
++    <main class="main">
++      <header class="masthead">
++        <h1>Kernel <span class="accent">dashboard</span></h1>
++        <p id="masthead-sub">A read-only view of the live Forge kernel — work board,
++          epics, decisions and recent activity from a baked snapshot.</p>
++      </header>
++
++      <!-- 1. Health -->
++      <section id="health">
++        <div class="section-head">
++          <h2>Health</h2><span class="count" id="healthCount"></span><span class="rule"></span>
++        </div>
++        <div class="stats" id="stats"></div>
++        <div class="meters">
++          <div class="meter">
++            <h3>Priority distribution</h3>
++            <div class="bar" id="prioBar"></div>
++            <div class="legend" id="prioLegend"></div>
++          </div>
++          <div class="meter">
++            <h3>Issue types</h3>
++            <div class="typechips" id="typeChips"></div>
++          </div>
++        </div>
++      </section>
++
++      <!-- 2. Work board -->
++      <section id="board">
++        <div class="section-head">
++          <h2>Work board</h2><span class="count" id="boardCount"></span><span class="rule"></span>
++        </div>
++        <div class="toolbar">
++          <label class="search">
++            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
++                 stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
++            <input id="search" type="search" placeholder="Search 611 issues by title, id, owner…" autocomplete="off" />
++          </label>
++          <div class="filters" id="typeFilters"></div>
++          <div class="filters" id="prioFilters"></div>
++        </div>
++        <div class="board" id="boardCols"></div>
++      </section>
++
++      <!-- 3. Epics -->
++      <section id="epics">
++        <div class="section-head">
++          <h2>Epics</h2><span class="count" id="epicCount"></span><span class="rule"></span>
++        </div>
++        <div class="cards-grid" id="epicGrid"></div>
++      </section>
++
++      <!-- 4. Decisions -->
++      <section id="decisions">
++        <div class="section-head">
++          <h2>Decisions</h2><span class="count" id="decCount"></span><span class="rule"></span>
++        </div>
++        <div class="cards-grid" id="decGrid"></div>
++      </section>
++
++      <!-- 5. Activity + memory -->
++      <section id="activity">
++        <div class="section-head">
++          <h2>Recent activity &amp; memory</h2><span class="rule"></span>
++        </div>
++        <div class="split">
++          <div class="timeline" id="timeline"></div>
++          <div class="mempanel" id="memPanel"></div>
++        </div>
++        <div class="footer" id="footer"></div>
++      </section>
++    </main>
++  </div>
++
++  <!-- Baked kernel snapshot (window.FORGE_SNAPSHOT). Regenerate: node generate-snapshot.mjs -->
++  <script src="snapshot.js"></script>
++  <script src="app.js"></script>
++</body>
++</html>
+diff --git a/web/dashboard/styles.css b/web/dashboard/styles.css
+new file mode 100644
+index 00000000..c30ea393
+--- /dev/null
++++ b/web/dashboard/styles.css
+@@ -0,0 +1,454 @@
++/* Forge Dashboard — foundry/kernel aesthetic.
++   Neutral steel surfaces, a single molten-ember accent, mono-forward display.
++   Dark is the hero; light fully supported. Zero external assets. */
++
++:root {
++  color-scheme: dark;
++
++  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
++    "Helvetica Neue", sans-serif;
++  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code",
++    "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
++
++  /* dark (default) */
++  --bg: #0d0e10;
++  --bg-grid: rgba(255, 255, 255, 0.014);
++  --surface: #15171a;
++  --surface-2: #1b1e22;
++  --surface-3: #22262b;
++  --border: #292d33;
++  --border-soft: #21252a;
++  --text: #e7e9ec;
++  --muted: #969ca3;
++  --faint: #666c73;
++
++  --accent: #ff6a2b;
++  --accent-2: #ff8f5e;
++  --accent-ink: #1a0d05;
++  --accent-glow: rgba(255, 106, 43, 0.16);
++
++  --ready: #6ea8fe;
++  --progress: #f0a83a;
++  --blocked: #f2555a;
++  --done: #45c07a;
++
++  --p0: #f2555a;
++  --p1: #ff8f3a;
++  --p2: #f0c04a;
++  --p3: #7f8791;
++  --p4: #5a616a;
++
++  --radius: 12px;
++  --radius-sm: 8px;
++  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
++  --maxw: 1400px;
++}
++
++:root[data-theme="light"] {
++  color-scheme: light;
++  --bg: #f5f4f1;
++  --bg-grid: rgba(0, 0, 0, 0.018);
++  --surface: #ffffff;
++  --surface-2: #f3f2ee;
++  --surface-3: #e9e8e2;
++  --border: #e3e1da;
++  --border-soft: #ecebe4;
++  --text: #191b1d;
++  --muted: #5c626b;
++  --faint: #8a9099;
++
++  --accent: #e0531c;
++  --accent-2: #c74712;
++  --accent-ink: #fff5ef;
++  --accent-glow: rgba(224, 83, 28, 0.12);
++
++  --ready: #2f6bd4;
++  --progress: #c07a12;
++  --blocked: #d13b41;
++  --done: #2b9a5b;
++
++  --p0: #d13b41;
++  --p1: #d16a1a;
++  --p2: #b58a12;
++  --p3: #6a727c;
++  --p4: #9aa0a8;
++
++  --shadow: 0 1px 2px rgba(20, 20, 20, 0.06), 0 10px 30px rgba(20, 20, 20, 0.07);
++}
++
++* { box-sizing: border-box; }
++
++html { scroll-behavior: smooth; }
++
++body {
++  margin: 0;
++  font-family: var(--font-sans);
++  background: var(--bg);
++  background-image:
++    linear-gradient(var(--bg-grid) 1px, transparent 1px),
++    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
++  background-size: 44px 44px;
++  color: var(--text);
++  -webkit-font-smoothing: antialiased;
++  line-height: 1.45;
++}
++
++a { color: inherit; }
++
++::selection { background: var(--accent-glow); }
++
++/* ---------- Layout shell ---------- */
++
++.app {
++  display: grid;
++  grid-template-columns: 248px minmax(0, 1fr);
++  max-width: var(--maxw);
++  margin: 0 auto;
++  min-height: 100vh;
++}
++
++.rail {
++  position: sticky;
++  top: 0;
++  align-self: start;
++  height: 100vh;
++  padding: 22px 18px;
++  border-right: 1px solid var(--border-soft);
++  display: flex;
++  flex-direction: column;
++  gap: 22px;
++  background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
++}
++
++.brand { display: flex; align-items: center; gap: 11px; }
++.brand__mark {
++  width: 34px; height: 34px; border-radius: 9px;
++  display: grid; place-items: center;
++  background: radial-gradient(120% 120% at 30% 20%, var(--accent-2), var(--accent));
++  box-shadow: 0 0 0 1px var(--border), 0 6px 18px var(--accent-glow);
++  color: var(--accent-ink);
++  font-weight: 800;
++}
++.brand__mark svg { width: 19px; height: 19px; }
++.brand__name {
++  font-family: var(--font-mono);
++  font-weight: 700;
++  letter-spacing: 0.14em;
++  text-transform: uppercase;
++  font-size: 14px;
++}
++.brand__tag {
++  font-size: 10.5px;
++  color: var(--faint);
++  letter-spacing: 0.05em;
++  margin-top: 2px;
++}
++
++.nav { display: flex; flex-direction: column; gap: 2px; }
++.nav a {
++  display: flex; align-items: center; gap: 10px;
++  padding: 8px 11px;
++  border-radius: var(--radius-sm);
++  text-decoration: none;
++  color: var(--muted);
++  font-size: 13.5px;
++  font-weight: 500;
++  transition: background 0.15s, color 0.15s;
++}
++.nav a:hover { color: var(--text); background: var(--surface-2); }
++.nav a.active { color: var(--text); background: var(--surface-2); }
++.nav a.active::before {
++  content: ""; width: 3px; height: 15px; border-radius: 3px;
++  background: var(--accent); margin-left: -3px;
++}
++.nav a .dot { width: 7px; height: 7px; border-radius: 50%; }
++
++.rail__foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
++.snapmeta {
++  font-family: var(--font-mono);
++  font-size: 10.5px;
++  color: var(--faint);
++  line-height: 1.7;
++}
++.snapmeta b { color: var(--muted); font-weight: 600; }
++
++.themetoggle {
++  display: inline-flex; align-items: center; gap: 8px;
++  align-self: flex-start;
++  padding: 7px 12px;
++  border: 1px solid var(--border);
++  background: var(--surface-2);
++  color: var(--muted);
++  border-radius: 20px;
++  font-size: 12px; cursor: pointer;
++  transition: border-color 0.15s, color 0.15s;
++}
++.themetoggle:hover { color: var(--text); border-color: var(--accent); }
++
++/* ---------- Main ---------- */
++
++.main { padding: 30px clamp(18px, 3vw, 40px) 80px; min-width: 0; }
++
++.masthead { margin-bottom: 26px; }
++.masthead h1 {
++  margin: 0;
++  font-family: var(--font-mono);
++  font-size: clamp(24px, 3vw, 33px);
++  letter-spacing: -0.01em;
++  font-weight: 700;
++}
++.masthead h1 .accent { color: var(--accent); }
++.masthead p { margin: 6px 0 0; color: var(--muted); font-size: 14px; max-width: 60ch; }
++
++section { scroll-margin-top: 20px; margin-bottom: 40px; }
++.section-head {
++  display: flex; align-items: baseline; gap: 12px;
++  margin: 0 0 14px;
++}
++.section-head h2 {
++  margin: 0; font-size: 13px; font-weight: 700;
++  letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
++  font-family: var(--font-mono);
++}
++.section-head .count { font-family: var(--font-mono); font-size: 12px; color: var(--faint); }
++.section-head .rule { flex: 1; height: 1px; background: var(--border-soft); }
++
++/* ---------- Health strip ---------- */
++
++.stats {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
++  gap: 12px;
++  margin-bottom: 16px;
++}
++.stat {
++  position: relative;
++  padding: 16px 16px 14px;
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  background: var(--surface);
++  overflow: hidden;
++}
++.stat::after {
++  content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
++  background: var(--accar, var(--border));
++}
++.stat--hero { background: linear-gradient(150deg, var(--surface-2), var(--surface)); }
++.stat--hero::after { background: var(--accent); }
++.stat__num {
++  font-family: var(--font-mono);
++  font-size: 30px; font-weight: 700; letter-spacing: -0.02em;
++  line-height: 1; font-variant-numeric: tabular-nums;
++}
++.stat__label {
++  margin-top: 8px; font-size: 11.5px; color: var(--muted);
++  letter-spacing: 0.04em; text-transform: uppercase;
++}
++.stat__sub { margin-top: 3px; font-size: 11px; color: var(--faint); font-family: var(--font-mono); }
++
++.meters { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
++@media (max-width: 720px) { .meters { grid-template-columns: 1fr; } }
++.meter {
++  padding: 15px 16px; border: 1px solid var(--border);
++  border-radius: var(--radius); background: var(--surface);
++}
++.meter h3 {
++  margin: 0 0 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
++  text-transform: uppercase; color: var(--muted); font-family: var(--font-mono);
++}
++.bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-3); }
++.bar span { display: block; transition: width 0.6s cubic-bezier(.2,.7,.2,1); }
++.legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 12px; }
++.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
++.legend .swatch { width: 9px; height: 9px; border-radius: 2px; }
++.legend .item b { font-family: var(--font-mono); color: var(--text); font-weight: 600; }
++
++.typechips { display: flex; flex-wrap: wrap; gap: 8px; }
++.typechip {
++  display: inline-flex; align-items: center; gap: 7px;
++  padding: 6px 11px; border: 1px solid var(--border);
++  border-radius: 20px; background: var(--surface); font-size: 12.5px; color: var(--muted);
++}
++.typechip b { font-family: var(--font-mono); color: var(--text); font-weight: 600; }
++
++/* ---------- Toolbar ---------- */
++
++.toolbar {
++  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
++  margin-bottom: 16px;
++}
++.search {
++  position: relative; flex: 1; min-width: 210px;
++}
++.search input {
++  width: 100%; padding: 9px 12px 9px 34px;
++  background: var(--surface); border: 1px solid var(--border);
++  border-radius: var(--radius-sm); color: var(--text);
++  font-size: 13.5px; font-family: var(--font-sans);
++  outline: none; transition: border-color 0.15s, box-shadow 0.15s;
++}
++.search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
++.search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--faint); }
++
++.filters { display: flex; gap: 6px; flex-wrap: wrap; }
++.filters button {
++  padding: 7px 12px; border: 1px solid var(--border);
++  background: var(--surface); color: var(--muted);
++  border-radius: 20px; font-size: 12px; cursor: pointer; font-family: var(--font-mono);
++  transition: all 0.15s;
++}
++.filters button:hover { color: var(--text); border-color: var(--faint); }
++.filters button.on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600; }
++
++/* ---------- Board ---------- */
++
++.board {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 14px;
++}
++@media (max-width: 1080px) { .board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
++@media (max-width: 620px) { .board { grid-template-columns: 1fr; } }
++
++.col { min-width: 0; }
++.col__head {
++  display: flex; align-items: center; gap: 8px;
++  padding: 0 4px 10px; margin-bottom: 4px;
++  border-bottom: 1px solid var(--border-soft);
++}
++.col__dot { width: 9px; height: 9px; border-radius: 50%; }
++.col__title { font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
++.col__count {
++  margin-left: auto; font-family: var(--font-mono); font-size: 11.5px;
++  color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: 20px;
++}
++.col__list { display: flex; flex-direction: column; gap: 9px; padding-top: 10px; }
++
++.card {
++  position: relative;
++  padding: 12px 13px 12px 15px;
++  border: 1px solid var(--border);
++  border-radius: var(--radius-sm);
++  background: var(--surface);
++  cursor: default;
++  transition: border-color 0.15s, transform 0.12s, box-shadow 0.15s;
++  animation: rise 0.4s both;
++}
++.card:hover { border-color: var(--faint); transform: translateY(-1px); box-shadow: var(--shadow); }
++.card::before {
++  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
++  border-radius: 3px; background: var(--prio, var(--border));
++}
++.card__top { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
++.card__title { font-size: 13px; line-height: 1.4; font-weight: 500; }
++.card__meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
++.card__owner {
++  display: inline-flex; align-items: center; gap: 5px;
++  font-size: 11px; color: var(--muted); font-family: var(--font-mono);
++}
++.card__owner .av {
++  width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center;
++  background: var(--surface-3); font-size: 8.5px; color: var(--text); font-weight: 700; text-transform: uppercase;
++}
++.card__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-left: auto; }
++
++.badge {
++  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
++  padding: 2px 6px; border-radius: 5px; letter-spacing: 0.03em;
++  text-transform: uppercase; white-space: nowrap;
++}
++.badge--type { background: var(--surface-3); color: var(--muted); }
++.badge--prio { color: #fff; }
++.chip {
++  font-size: 10.5px; color: var(--muted); background: var(--surface-2);
++  padding: 2px 7px; border-radius: 5px; border: 1px solid var(--border-soft);
++  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
++}
++
++.more {
++  margin-top: 4px; padding: 8px; width: 100%;
++  border: 1px dashed var(--border); background: transparent; color: var(--muted);
++  border-radius: var(--radius-sm); cursor: pointer; font-size: 12px; font-family: var(--font-mono);
++  transition: all 0.15s;
++}
++.more:hover { color: var(--text); border-color: var(--faint); }
++.empty { color: var(--faint); font-size: 12.5px; padding: 14px 4px; font-style: italic; }
++
++/* ---------- Epics / Decisions / Activity ---------- */
++
++.cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
++
++.epic {
++  padding: 14px; border: 1px solid var(--border); border-radius: var(--radius);
++  background: var(--surface); display: flex; flex-direction: column; gap: 9px;
++}
++.epic__top { display: flex; align-items: center; gap: 8px; }
++.epic__title { font-size: 13.5px; font-weight: 600; line-height: 1.4; }
++.epic__roll { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
++.epic__prog { flex: 1; height: 6px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
++.epic__prog span { display: block; height: 100%; background: var(--done); }
++.epic__rolltext { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
++
++.decision {
++  padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
++  background:
++    radial-gradient(140% 100% at 100% 0%, var(--accent-glow), transparent 55%),
++    var(--surface);
++}
++.decision__top { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
++.decision__title { font-size: 14px; font-weight: 650; line-height: 1.35; }
++.decision__body { font-size: 12.5px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; }
++.decision__id { font-family: var(--font-mono); font-size: 10px; color: var(--faint); margin-top: 10px; }
++
++.timeline { position: relative; padding-left: 22px; }
++.timeline::before {
++  content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px;
++  background: var(--border);
++}
++.tl {
++  position: relative; padding: 7px 0 7px 4px; display: flex; gap: 12px; align-items: baseline;
++}
++.tl::before {
++  content: ""; position: absolute; left: -19px; top: 12px;
++  width: 9px; height: 9px; border-radius: 50%; background: var(--surface);
++  border: 2px solid var(--st, var(--faint));
++}
++.tl__time { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); min-width: 84px; }
++.tl__title { font-size: 12.5px; color: var(--text); }
++.tl__title .badge { margin-right: 6px; }
++
++.mempanel {
++  padding: 20px; border: 1px dashed var(--border); border-radius: var(--radius);
++  background: var(--surface); text-align: center;
++}
++.mempanel .mp-ic { width: 30px; height: 30px; margin: 0 auto 10px; color: var(--faint); }
++.mempanel h4 { margin: 0 0 4px; font-size: 13px; }
++.mempanel p { margin: 0; color: var(--muted); font-size: 12.5px; }
++
++.split { display: grid; grid-template-columns: 1.5fr 1fr; gap: 16px; align-items: start; }
++@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
++
++.footer {
++  margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--border-soft);
++  font-size: 11.5px; color: var(--faint); font-family: var(--font-mono); line-height: 1.7;
++}
++.footer .live-todo {
++  margin-top: 8px; padding: 10px 12px; border-left: 2px solid var(--accent);
++  background: var(--surface); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
++  color: var(--muted);
++}
++
++@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
++
++/* ---------- Mobile rail ---------- */
++@media (max-width: 860px) {
++  .app { grid-template-columns: 1fr; }
++  .rail {
++    position: static; height: auto; flex-direction: row; flex-wrap: wrap;
++    align-items: center; gap: 14px; border-right: none; border-bottom: 1px solid var(--border-soft);
++  }
++  .rail__foot { margin: 0 0 0 auto; flex-direction: row; align-items: center; }
++  .snapmeta { display: none; }
++  .nav { flex-direction: row; flex-wrap: wrap; }
++  .nav a.active::before { display: none; }
++}
+-- 
+2.51.0.windows.1
+

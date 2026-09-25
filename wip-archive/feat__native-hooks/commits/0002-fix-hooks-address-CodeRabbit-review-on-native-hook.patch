@@ -1,0 +1,217 @@
+From 5891198f960b4f7119aa1957677d8a0ccf1f4b5d Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 7 Jul 2026 00:03:08 +0530
+Subject: [PATCH] fix(hooks): address CodeRabbit review on native-hook
+ rendering
+
+- hook-renderer: Claude hook command references the adapter via
+  $CLAUDE_PROJECT_DIR (documented cwd-independent path); Cursor/Codex keep
+  the repo-relative path. Adds regression assertions for both.
+- setup: extract installForgeHookScripts() and run it UNCONDITIONALLY before
+  the lefthook-binary early-return, so native harness hooks (rendered
+  regardless of lefthook) never point at an adapter that was never copied.
+- forge-native-hook: correct the protected-path comment to match the actual
+  PROTECTED_PATTERNS (lockfiles, not .mcp.json).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .forge/hooks/forge-native-hook.js |  5 ++-
+ lib/commands/setup.js             | 73 +++++++++++++------------------
+ lib/hook-renderer.js              | 17 ++++++-
+ test/hook-renderer.test.js        | 19 ++++++++
+ 4 files changed, 68 insertions(+), 46 deletions(-)
+
+diff --git a/.forge/hooks/forge-native-hook.js b/.forge/hooks/forge-native-hook.js
+index adb9748c..1269c34c 100644
+--- a/.forge/hooks/forge-native-hook.js
++++ b/.forge/hooks/forge-native-hook.js
+@@ -35,8 +35,9 @@ const { execFileSync } = require('node:child_process');
+ const path = require('node:path');
+ 
+ // Conservative protected-path set, mirroring .forge/protected-paths.yaml categories:
+-// forge_core (.forge/), user_protocol (AGENTS.md), immutable/config (lefthook.yml,
+-// .mcp.json), secrets (.env*), the issue-state dir (cli-only), and VCS (.git/).
++// forge_core (.forge/), user_protocol (AGENTS.md), immutable/config (lefthook.yml),
++// secrets (.env*), lockfiles (package-lock/yarn/pnpm/bun), the issue-state dir
++// (cli-only), and VCS (.git/).
+ // NOTE: the issue-state matcher is built from a split literal so the D20 retirement
+ // audit (release-readiness.js findBdTerms) does not miscount a path matcher as
+ // direct issue-tool access — this file never touches that tooling.
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index c6a93cca..9c6a2e49 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2583,9 +2583,38 @@ async function handleHuskyMigration() {
+ 
+ // Install git hooks via lefthook
+ // SECURITY: Uses execSync with HARDCODED strings only (no user input)
++// Copy the Forge hook scripts (check-tdd.js + the native-hook adapter) into the
++// project's .forge/hooks/. Runs UNCONDITIONALLY — independent of the lefthook binary.
++// The native harness hooks rendered by lib/hook-renderer.js invoke forge-native-hook.js,
++// which delegates the TDD gate to check-tdd.js, so BOTH must always be installed; if we
++// only copied them on the lefthook path, a machine without lefthook would get native
++// hooks pointing at an adapter that was never installed.
++function installForgeHookScripts() {
++  const targetHooks = path.join(projectRoot, '.forge/hooks');
++  for (const name of ['check-tdd.js', 'forge-native-hook.js']) {
++    const src = path.join(packageDir, '.forge/hooks', name);
++    if (!fs.existsSync(src)) continue;
++    if (!fs.existsSync(targetHooks)) fs.mkdirSync(targetHooks, { recursive: true });
++    const dest = path.join(targetHooks, name);
++    if (copyFile(src, dest)) {
++      console.log(`  ✓ Created .forge/hooks/${name}`);
++      try {
++        fs.chmodSync(dest, 0o755); // NOSONAR — 755 is intentional: hook scripts must be executable
++      } catch (err) {
++        console.warn('chmod not available (Windows):', err.message);
++      }
++    }
++  }
++}
++
+ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
+   console.log('Installing git hooks (TDD enforcement)...');
+ 
++  // Install the Forge hook SCRIPTS first, unconditionally: they back BOTH the lefthook
++  // pre-commit gate AND the native harness hooks that forge setup renders regardless of
++  // whether the lefthook binary is present.
++  installForgeHookScripts();
++
+   // Skip lefthook.yml creation if binary is not available
+   const lefthookStatus = checkLefthookStatus(projectRoot);
+   if (!lefthookStatus.binaryAvailable) {
+@@ -2599,7 +2628,6 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+ 
+   // Check if lefthook.yml exists (it should, as it's in the package)
+   const lefthookConfig = path.join(packageDir, 'lefthook.yml');
+-  const targetHooks = path.join(projectRoot, '.forge/hooks');
+ 
+   try {
+     // Copy lefthook.yml to project root
+@@ -2610,47 +2638,8 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+       }
+     }
+ 
+-    // Copy check-tdd.js hook script
+-    const hookSource = path.join(packageDir, '.forge/hooks/check-tdd.js');
+-    if (fs.existsSync(hookSource)) {
+-      // Ensure .forge/hooks directory exists
+-      if (!fs.existsSync(targetHooks)) {
+-        fs.mkdirSync(targetHooks, { recursive: true });
+-      }
+-
+-      const hookTarget = path.join(targetHooks, 'check-tdd.js');
+-      if (copyFile(hookSource, hookTarget)) {
+-        console.log('  ✓ Created .forge/hooks/check-tdd.js');
+-
+-        // Make hook executable (Unix systems)
+-        try {
+-          fs.chmodSync(hookTarget, 0o755); // NOSONAR — 755 is intentional: git hooks must be executable
+-        } catch (err) {
+-          // Windows doesn't need chmod
+-          console.warn('chmod not available (Windows):', err.message);
+-        }
+-      }
+-    }
+-
+-    // Copy the native-hook adapter (invoked by the rendered .claude/settings.json
+-    // and .cursor/hooks.json hooks to project Forge's TDD-gate + protected-path
+-    // enforcement onto native harness surfaces — see lib/hook-renderer.js).
+-    const adapterSource = path.join(packageDir, '.forge/hooks/forge-native-hook.js');
+-    if (fs.existsSync(adapterSource)) {
+-      if (!fs.existsSync(targetHooks)) {
+-        fs.mkdirSync(targetHooks, { recursive: true });
+-      }
+-      const adapterTarget = path.join(targetHooks, 'forge-native-hook.js');
+-      if (copyFile(adapterSource, adapterTarget)) {
+-        console.log('  ✓ Created .forge/hooks/forge-native-hook.js');
+-        try {
+-          fs.chmodSync(adapterTarget, 0o755); // NOSONAR — 755 is intentional: hook scripts must be executable
+-        } catch (err) {
+-          // Windows doesn't need chmod
+-          console.warn('chmod not available (Windows):', err.message);
+-        }
+-      }
+-    }
++    // (The Forge hook scripts — check-tdd.js + forge-native-hook.js — are installed
++    // unconditionally by installForgeHookScripts() above, before this lefthook path.)
+ 
+     // Try to install lefthook hooks
+     // SECURITY: Using execFileSync with hardcoded commands (no user input)
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index 9d985755..6a145b95 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -47,9 +47,19 @@ const HARNESS_HOOK_FILES = {
+ // stable `forge-native-hook.js` token also MARKS Forge-owned hook entries so a
+ // re-merge replaces them in place instead of duplicating (idempotency) and never
+ // clobbers a user's own hooks.
+-const FORGE_HOOK_ADAPTER = 'node .forge/hooks/forge-native-hook.js';
++const FORGE_HOOK_ADAPTER_REL = '.forge/hooks/forge-native-hook.js';
++const FORGE_HOOK_ADAPTER = `node ${FORGE_HOOK_ADAPTER_REL}`;
+ const FORGE_HOOK_MARKER = 'forge-native-hook.js';
+ 
++// Claude exposes $CLAUDE_PROJECT_DIR (absolute project root) to hook commands and
++// documents it as THE cwd-independent way to reference project-local hook scripts —
++// a bare relative path breaks whenever Claude runs the hook from another cwd. Cursor
++// and Codex execute hooks from the workspace root, so a repo-relative path resolves.
++function adapterInvocation(harness) {
++  if (harness === 'claude') return `node "$CLAUDE_PROJECT_DIR/${FORGE_HOOK_ADAPTER_REL}"`;
++  return FORGE_HOOK_ADAPTER;
++}
++
+ /**
+  * The frozen Forge hook contract: the two enforcement intents projected onto each
+  * harness. Order matters — protected-path (per-write) is listed before tdd-gate
+@@ -91,7 +101,10 @@ function intentById(contract, id) {
+ }
+ 
+ function harnessCommand(contract, id, harness) {
+-  return `${intentById(contract, id).command} --harness ${harness}`;
++  const intent = intentById(contract, id);
++  // Build from the harness-specific adapter invocation (Claude → $CLAUDE_PROJECT_DIR;
++  // Cursor/Codex → repo-relative). intent.id is the `--intent` flag value.
++  return `${adapterInvocation(harness)} --intent ${intent.id} --harness ${harness}`;
+ }
+ 
+ /**
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index 6c05f86c..81c1f09a 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -60,6 +60,18 @@ describe('renderClaudeHooks (.claude/settings.json hooks block)', () => {
+     expect(bashGroup.hooks[0].command).toContain('--intent tdd-gate');
+     expect(bashGroup.hooks[0].command).toContain('--harness claude');
+   });
++
++  test('Claude command references the adapter via $CLAUDE_PROJECT_DIR (cwd-independent)', () => {
++    // Claude runs hook commands from an arbitrary cwd; $CLAUDE_PROJECT_DIR is the
++    // documented, cwd-independent way to reach a project-local script. A bare relative
++    // path would break. See https://code.claude.com/docs/en/hooks.
++    const block = renderClaudeHooks(FORGE_HOOK_CONTRACT);
++    for (const group of block.PreToolUse) {
++      const cmd = group.hooks[0].command;
++      expect(cmd).toContain('$CLAUDE_PROJECT_DIR');
++      expect(cmd).toContain(FORGE_MARK); // still marked Forge-owned for idempotent re-merge
++    }
++  });
+ });
+ 
+ describe('renderCursorHooks (.cursor/hooks.json)', () => {
+@@ -78,6 +90,13 @@ describe('renderCursorHooks (.cursor/hooks.json)', () => {
+     expect(afterEdit).toContain('--intent protected-path');
+     expect(afterEdit).toContain('--harness cursor');
+   });
++
++  test('Cursor command uses a repo-relative adapter path (Cursor has no $CLAUDE_PROJECT_DIR)', () => {
++    const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
++    const cmd = cfg.hooks.beforeShellExecution[0].command;
++    expect(cmd).not.toContain('CLAUDE_PROJECT_DIR');
++    expect(cmd).toContain('.forge/hooks/forge-native-hook.js');
++  });
+ });
+ 
+ describe('renderCodexHooksToml (global-config only — rendered, never written by setup)', () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,979 @@
+From 7b90a0c30c1b55af7cb6abbdbf5e3d48553a5a37 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 06:31:34 +0530
+Subject: [PATCH] =?UTF-8?q?feat(cli):=20orientation=20front=20door=20?=
+ =?UTF-8?q?=E2=80=94=20one-glance=20status,=20per-command=20help,=20bare-f?=
+ =?UTF-8?q?orge=20orient?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Make both users and agents grasp "you are here / what next / why" without
+learning all of forge.
+
+A. Canonical stage model in the status surface: workflow-profiles.js now lists
+   only the 6 canonical stages under `stages` and moves `/status` to a new
+   `utilities` key (a status utility is not a numbered stage). The one-glance
+   view renders "Stage N of M — Label (classification workflow)" from the
+   per-classification path in lib/workflow/stages.js, so non-stages never get a
+   number.
+
+B. Zero-arg `forge status` is a top-down one-glance view: You are here →
+   Context (one line) → Your work → newcomer footer. The dead-end null branch
+   is replaced with a STATE-AWARE fallback (claim a ready issue, else /plan).
+   A one-line "Why" is derived from the last completed stage. Blocked/Stale/
+   Recent-Completions move behind `--full`. The Run-now/Next-after-this lines
+   are extracted into one shared presenter helper that status.js delegates to.
+
+C. Bare `forge` in an INITIALIZED project renders the same read-only view
+   instead of running the mutating minimal install (still falls to setup when
+   uninitialized).
+
+D. `forge <cmd> --help` renders that command's usage/description/flags instead
+   of the global setup banner; bare `forge --help` keeps the banner.
+
+E. node:sqlite's require-time ExperimentalWarning is suppressed at its source
+   (wrap process.emitWarning only around the require, match /SQLite/, restore
+   immediately) — no --no-warnings re-exec.
+
+Kernel refs: 2416b136, 4d6f5d68, 4b82b31c, a9bbd065.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ bin/forge.js                                  |  50 ++++++-
+ lib/commands/status.js                        |  18 ++-
+ lib/kernel/sqlite-driver.js                   |  27 +++-
+ lib/status/presenter.js                       | 128 ++++++++++++++----
+ lib/workflow-profiles.js                      |  16 ++-
+ test/bin/orientation-front-door.test.js       |  70 ++++++++++
+ .../kernel/sqlite-warning-suppression.test.js |  45 ++++++
+ test/status-command.test.js                   |  99 +++++++++-----
+ test/status/presenter.test.js                 | 127 +++++++++++++++++
+ test/workflow-profiles.test.js                |  20 ++-
+ 10 files changed, 520 insertions(+), 80 deletions(-)
+ create mode 100644 test/bin/orientation-front-door.test.js
+ create mode 100644 test/kernel/sqlite-warning-suppression.test.js
+ create mode 100644 test/status/presenter.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index dd1f05c8..eed5c79a 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -2642,6 +2642,26 @@ function showHelp() {
+   }
+ }
+ 
++// Per-command help. When `--help` follows a known subcommand (e.g. `forge status
++// --help`), render THAT command's usage/description/flags instead of the global
++// setup banner — a newcomer asking for a command's help should not get the
++// installer's help.
++function printCommandHelp(cmd) {
++  console.log(`forge ${cmd.name} — ${cmd.description}`);
++  if (cmd.usage) {
++    console.log('');
++    console.log(/^(Usage:|forge )/.test(cmd.usage) ? cmd.usage : `Usage: ${cmd.usage}`);
++  }
++  const flagEntries = cmd.flags && typeof cmd.flags === 'object' ? Object.entries(cmd.flags) : [];
++  if (flagEntries.length > 0) {
++    console.log('');
++    console.log('Flags:');
++    for (const [flag, desc] of flagEntries) {
++      console.log(`  ${flag.padEnd(16)} ${desc}`);
++    }
++  }
++}
++
+ // Detect Husky and offer migration to Lefthook
+ // Called before installGitHooks() in setup flows
+ async function handleHuskyMigration() {
+@@ -3947,9 +3967,15 @@ async function main() {
+     }
+   }
+ 
+-  // Show help
++  // Show help. `--help` after a known registry subcommand (e.g. `forge status
++  // --help`) renders that command's usage; bare `forge --help` keeps the global banner.
+   if (flags.help) {
+-    showHelp();
++    const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
++    if (command && helpRegistry.commands.has(command)) {
++      printCommandHelp(helpRegistry.commands.get(command));
++    } else {
++      showHelp();
++    }
+     return;
+   }
+ 
+@@ -4283,8 +4309,26 @@ async function main() {
+     console.log('  To set up in your project:');
+     console.log(`    ${runCmd} forge setup`);
+     console.log('');
++  } else if (command === undefined && fs.existsSync(path.join(projectRoot, 'AGENTS.md'))) {
++    // Bare `forge` in an INITIALIZED project orients instead of mutating: render the
++    // same read-only one-glance view as `forge status`. Newcomers typing `forge` to
++    // get their bearings should never trigger the minimal install.
++    try {
++      const { commandOpts, args: dispatchArgs } = await resolveCommandOpts(
++        'status',
++        [],
++        { env: process.env, projectRoot },
++      );
++      const result = await executeCommand(registry.commands, 'status', dispatchArgs, flags, projectRoot, { commandOpts });
++      if (result && typeof result.output === 'string' && result.output.length > 0) {
++        process.stdout.write(result.output.endsWith('\n') ? result.output : `${result.output}\n`);
++      }
++    } catch (err) {
++      console.error(`Error running 'status':`, err.message);
++      process.exit(1);
++    }
+   } else {
+-    // Explicit invocation with no command: run minimal install
++    // Explicit invocation with no command in an UNINITIALIZED project: run minimal install.
+     minimalInstall();
+   }
+ }
+diff --git a/lib/commands/status.js b/lib/commands/status.js
+index 7f2721f7..56d7bcca 100644
+--- a/lib/commands/status.js
++++ b/lib/commands/status.js
+@@ -12,6 +12,7 @@ const { detectWorktree } = require('../detect-worktree');
+ const { readBeadsSnapshot } = require('../status/beads-snapshot');
+ const {
+ 	buildPersonalStatusJson,
++	formatRunNextLines,
+ 	formatZeroArgStatus,
+ } = require('../status/presenter');
+ const {
+@@ -366,6 +367,7 @@ function parseStatusInputs(args = [], flags = {}) {
+ 		bdComments: firstDefined(flags.bdComments, flags['--bd-comments'], getInlineValue('--bd-comments'), getNextValue('--bd-comments')),
+ 		projectRoot: firstDefined(flags.projectRoot, flags['--project-root'], getInlineValue('--project-root'), getNextValue('--project-root')) || null,
+ 		json: flags.json === true || flags['--json'] === true || statusArgs.includes('--json'),
++		full: flags.full === true || flags['--full'] === true || statusArgs.includes('--full'),
+ 		now: firstDefined(flags.now, flags['--now'], getInlineValue('--now'), getNextValue('--now')),
+ 		staleAfterDays: firstDefined(
+ 			flags.staleAfterDays,
+@@ -695,11 +697,8 @@ function collectCompletedChecks(result) {
+ function formatAuthoritativeStatus(result) {
+ 	const completedStages = result.workflowState.completedStages.map(stageId => stageId);
+ 	const allowedCommands = result.nextStages.map(stageId => '/' + stageId).join(', ');
+-	const nextLines = [`Run now: /${result.runCommand}`];
++	const nextLines = formatRunNextLines(result);
+ 
+-	if (result.nextCommand) {
+-		nextLines.push(`Next after this: /${result.nextCommand}`);
+-	}
+ 	if (allowedCommands) {
+ 		nextLines.push(`Allowed after this: ${allowedCommands}`);
+ 	}
+@@ -750,7 +749,12 @@ function formatStatus(result) {
+ 
+ module.exports = {
+ 	name: 'status',
+-	description: 'Intelligent stage detection with confidence scoring',
++	description: 'One-glance orientation: where you are, what to run next, and your work',
++	usage: 'forge status [--full] [--json]',
++	flags: {
++		'--full': 'Also show blocked, stale, and recently completed issues',
++		'--json': 'Emit the machine-readable status envelope',
++	},
+ 	handler: async (args, flags, projectRoot) => {
+ 		const inputs = parseStatusInputs(args, flags);
+ 		const isZeroArgStatus = !inputs.issueId && !inputs.workflowState && !inputs.bdComments;
+@@ -782,7 +786,7 @@ module.exports = {
+ 				const result = buildAuthoritativeStatus(workflowState);
+ 				const output = inputs.json
+ 					? JSON.stringify(buildPersonalStatusJson({ context, snapshot, workflowResult: result }), null, 2)
+-					: formatZeroArgStatus({ context, snapshot, workflowResult: result });
++					: formatZeroArgStatus({ context, snapshot, workflowResult: result, full: inputs.full });
+ 				return {
+ 					success: true,
+ 					context,
+@@ -795,7 +799,7 @@ module.exports = {
+ 
+ 			const output = inputs.json
+ 				? JSON.stringify(buildPersonalStatusJson({ context, snapshot }), null, 2)
+-				: formatZeroArgStatus({ context, snapshot });
++				: formatZeroArgStatus({ context, snapshot, full: inputs.full });
+ 			return {
+ 				success: true,
+ 				context,
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index d5297dbc..3374fb2c 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -63,13 +63,37 @@ function loadRuntimeDescriptor(id, sqliteModule) {
+ 	throw new Error(`Unsupported builtin SQLite runtime: ${id}`);
+ }
+ 
++// Requiring `node:sqlite` emits a one-time Node ExperimentalWarning via
++// process.emitWarning AT REQUIRE TIME (before any CLI flag context exists), which
++// would prepend noise to the CLI's human/JSON output. Suppress ONLY that SQLite
++// warning around the require and restore process.emitWarning immediately after — every
++// other warning passes through untouched. This never re-execs with --no-warnings.
++function requireSqliteRuntimeModule(requireModule, id) {
++	if (id !== 'node:sqlite') {
++		return requireModule(id);
++	}
++	const originalEmitWarning = process.emitWarning;
++	process.emitWarning = function suppressSqliteExperimentalWarning(warning, ...rest) {
++		const message = typeof warning === 'string' ? warning : (warning && warning.message) || '';
++		if (/SQLite/i.test(String(message))) {
++			return undefined;
++		}
++		return originalEmitWarning.call(process, warning, ...rest);
++	};
++	try {
++		return requireModule(id);
++	} finally {
++		process.emitWarning = originalEmitWarning;
++	}
++}
++
+ function selectBuiltinSQLiteRuntime(deps = {}) {
+ 	const requireModule = deps.requireModule || require;
+ 	const unavailable = [];
+ 
+ 	for (const id of BUILTIN_SQLITE_RUNTIME_ORDER) {
+ 		try {
+-			return loadRuntimeDescriptor(id, requireModule(id));
++			return loadRuntimeDescriptor(id, requireSqliteRuntimeModule(requireModule, id));
+ 		} catch (error) {
+ 			if (!isModuleUnavailable(error)) {
+ 				throw error;
+@@ -2067,6 +2091,7 @@ function createBuiltinSQLiteDriver(options = {}, deps = {}) {
+ module.exports = {
+ 	BUILTIN_SQLITE_RUNTIME_ORDER,
+ 	createBuiltinSQLiteDriver,
++	requireSqliteRuntimeModule,
+ 	selectBuiltinSQLiteRuntime,
+ 	validateBuiltinSQLiteRuntimeDriver,
+ };
+diff --git a/lib/status/presenter.js b/lib/status/presenter.js
+index 66368fff..5a1e5f65 100644
+--- a/lib/status/presenter.js
++++ b/lib/status/presenter.js
+@@ -1,7 +1,24 @@
+ 'use strict';
+ 
++const {
++	STAGE_LABELS,
++	getStageWorkflow,
++	getWorkflowPath,
++} = require('../workflow/stages');
++
+ const DEFAULT_SECTION_LIMIT = 5;
+ 
++// One-line "why you are at this stage", keyed by the LAST completed stage. Lets the
++// one-glance view answer "why here?" without the agent re-deriving it from raw state.
++const WHY_BY_LAST_COMPLETED = Object.freeze({
++	plan: 'planning is done; implementation not started.',
++	dev: 'implementation landed; not yet validated.',
++	validate: 'validation passed; PR not yet created.',
++	ship: 'PR is open; review not yet complete.',
++	review: 'review addressed; awaiting merge/verify.',
++	verify: 'post-merge verification complete.',
++});
++
+ function buildSection(title, items, options = {}) {
+ 	const lines = ['', title];
+ 	if (!items || items.length === 0) {
+@@ -37,40 +54,100 @@ function formatIssue(issue, options = {}) {
+ 	return `${issue.id} ${issue.title || '(untitled)'}${status}`;
+ }
+ 
+-function formatWorkflow(workflowResult) {
++// Shared Run-now / Next-after-this lines. Owned here so BOTH the one-glance
++// "You are here" block and status.js's authoritative stage format render them
++// identically. `noneWhenMissing` prints an explicit "none" for terminal stages
++// (the one-glance view wants it; the authoritative format omits it, as before).
++function formatRunNextLines(workflowResult, { noneWhenMissing = false } = {}) {
++	const lines = [`Run now: /${workflowResult.runCommand}`];
++	if (workflowResult.nextCommand) {
++		lines.push(`Next after this: /${workflowResult.nextCommand}`);
++	} else if (noneWhenMissing) {
++		lines.push('Next after this: none');
++	}
++	return lines;
++}
++
++// Canonical "Stage N of M — Label (classification workflow)" heading. N/M come from
++// the per-classification path in lib/workflow/stages.js, so non-stages (Research,
++// Merge, pre-merge, "Fresh Start") never get a number.
++function formatStageHeading(workflowResult) {
++	const classification = workflowResult.workflowState?.workflowDecisions?.classification || null;
++	const stageId = workflowResult.stageId;
++	const label = STAGE_LABELS[stageId] || workflowResult.stageName || stageId;
++	const workflow = getStageWorkflow(stageId, classification);
++	const path = getWorkflowPath(classification);
++
++	if (workflow && path.length > 0) {
++		return `Stage ${workflow.order} of ${path.length} — ${label} (${classification} workflow)`;
++	}
++	return `Stage — ${label}${classification ? ` (${classification} workflow)` : ''}`;
++}
++
++function deriveWhy(workflowResult) {
++	const completed = workflowResult.workflowState?.completedStages || [];
++	const last = completed.length > 0 ? completed[completed.length - 1] : null;
++	return (last && WHY_BY_LAST_COMPLETED[last]) || 'just getting started.';
++}
++
++// The "You are here" block: the first thing a user or agent reads. When there is no
++// active workflow, fall back to a STATE-AWARE next step rather than a dead end.
++function buildYouAreHere(workflowResult, snapshot) {
++	const lines = ['You are here'];
++
+ 	if (!workflowResult) {
+-		return ['No active workflow state detected.'];
++		const topReady = (snapshot.ready || [])[0];
++		if (topReady) {
++			lines.push(`  No active workflow. Next: forge claim ${topReady.id}, then /plan (or /dev for a small fix).`);
++		} else {
++			lines.push('  No active workflow and no ready issues. Next: /plan "<describe the feature>" to start one.');
++		}
++		return lines;
+ 	}
+ 
+-	return [
+-		`${workflowResult.stageName} (${workflowResult.stageId})`,
+-		`Run now: /${workflowResult.runCommand}`,
+-		workflowResult.nextCommand ? `Next after this: /${workflowResult.nextCommand}` : 'Next after this: none',
+-	];
++	lines.push(`  ${formatStageHeading(workflowResult)}`);
++	for (const line of formatRunNextLines(workflowResult, { noneWhenMissing: true })) {
++		lines.push(`  ${line}`);
++	}
++	lines.push(`  Why: ${deriveWhy(workflowResult)}`);
++	return lines;
+ }
+ 
+-function formatZeroArgStatus({ context, snapshot, workflowResult = null }) {
+-	const contextLines = [
+-		`Branch: ${context.branch}`,
+-		`Worktree: ${context.inWorktree ? 'linked' : 'main'}`,
+-		`Path: ${context.worktreePath}`,
++// Zero-arg `forge status`: a top-down one-glance view. Order matters — orientation
++// first (You are here), then Context, then your work. Blocked/Stale/Recent
++// completions are detail, shown only with `--full`.
++function formatZeroArgStatus({ context, snapshot, workflowResult = null, full = false }) {
++	const worktree = context.inWorktree ? 'worktree' : 'main';
++	const contextLine = `${context.branch} — ${worktree}, ${context.workingTree.summary}`;
++
++	const activeIssues = snapshot.activeAssigned || [];
++	const readyCount = (snapshot.ready || []).length;
++	const workLines = [];
++	if (activeIssues.length > 0) {
++		for (const issue of activeIssues) {
++			workLines.push(`Active: ${formatIssue(issue, { includeStatus: true })}`);
++		}
++	} else {
++		workLines.push('Active: none');
++	}
++	workLines.push(readyCount > 0 ? `Ready: ${readyCount} more (forge issue ready)` : 'Ready: none');
++
++	const blocks = [
++		buildYouAreHere(workflowResult, snapshot).join('\n'),
++		['Context', `  ${contextLine}`].join('\n'),
++		['Your work', ...workLines.map(line => `  ${line}`)].join('\n'),
++		'New here? forge docs workflow | forge --help',
+ 	];
+ 
+-	if (context.inWorktree && context.mainWorktree) {
+-		contextLines.push(`Main worktree: ${context.mainWorktree}`);
++	if (full) {
++		blocks.push(
++			buildSection('Blocked', (snapshot.blocked || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }).join('\n').trim(),
++			buildSection('Stale', (snapshot.stale || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }).join('\n').trim(),
++			buildSection('Recent Completions', (snapshot.recentCompleted || []).map(issue => formatIssue(issue)), { limit: DEFAULT_SECTION_LIMIT }).join('\n').trim(),
++		);
+ 	}
+ 
+-	contextLines.push(`Working tree: ${context.workingTree.summary}`);
+-
+-	return [
+-		...buildSection('Context', contextLines),
+-		...buildSection('Active Issues', (snapshot.activeAssigned || []).map(issue => formatIssue(issue, { includeStatus: true }))),
+-		...buildSection('Ready', (snapshot.ready || []).map(issue => formatIssue(issue)), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Blocked', (snapshot.blocked || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Stale', (snapshot.stale || []).map(issue => formatIssue(issue, { includeStatus: true })), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Recent Completions', (snapshot.recentCompleted || []).map(issue => formatIssue(issue)), { limit: DEFAULT_SECTION_LIMIT }),
+-		...buildSection('Workflow', formatWorkflow(workflowResult)),
+-	].join('\n');
++	return blocks.join('\n\n');
+ }
+ 
+ function buildPersonalStatusJson({ context, snapshot, workflowResult = null }) {
+@@ -129,6 +206,7 @@ module.exports = {
+ 	buildBoardJson,
+ 	buildPersonalStatusJson,
+ 	formatBoard,
++	formatRunNextLines,
+ 	formatZeroArgStatus,
+ 	toIssueSummary,
+ };
+diff --git a/lib/workflow-profiles.js b/lib/workflow-profiles.js
+index 1fbf7052..57fde6b3 100644
+--- a/lib/workflow-profiles.js
++++ b/lib/workflow-profiles.js
+@@ -9,10 +9,17 @@
+ /**
+  * Internal workflow profiles aligned with AGENTS.md specification
+  */
++// `stages` lists ONLY the numbered workflow stages (aligned with the canonical stage
++// model in lib/workflow/stages.js). `/status` is a utility — an always-available
++// status/shepherd command, not a stage in any workflow — so it lives under
++// `utilities`, never inside `stages`.
++const UTILITIES = ['/status'];
++
+ const PROFILES = {
+   critical: {
+     name: 'Critical (Maximum Rigor)',
+-    stages: ['/status', '/plan', '/dev', '/validate', '/ship', '/review', '/verify'],
++    stages: ['/plan', '/dev', '/validate', '/ship', '/review', '/verify'],
++    utilities: UTILITIES,
+     tdd: 'strict',
+     research: 'required',
+     description: 'Security, auth, payments, data integrity, breaking changes',
+@@ -21,7 +28,8 @@ const PROFILES = {
+ 
+   standard: {
+     name: 'Standard (Full Workflow)',
+-    stages: ['/status', '/plan', '/dev', '/validate', '/ship', '/review'],
++    stages: ['/plan', '/dev', '/validate', '/ship', '/review'],
++    utilities: UTILITIES,
+     tdd: 'required',
+     research: 'optional',
+     description: 'Most features and non-critical enhancements'
+@@ -30,6 +38,7 @@ const PROFILES = {
+   simple: {
+     name: 'Simple (Streamlined)',
+     stages: ['/dev', '/validate', '/ship'],
++    utilities: UTILITIES,
+     tdd: 'recommended',
+     research: 'skip',
+     description: 'UI tweaks, small improvements, minor fixes'
+@@ -38,6 +47,7 @@ const PROFILES = {
+   hotfix: {
+     name: 'Hotfix (Emergency)',
+     stages: ['/dev', '/validate', '/ship'],
++    utilities: UTILITIES,
+     tdd: 'required',  // Must reproduce bug
+     research: 'skip',
+     description: 'Production bugs, urgent fixes',
+@@ -47,6 +57,7 @@ const PROFILES = {
+   docs: {
+     name: 'Docs (Documentation Only)',
+     stages: ['/verify', '/ship'],
++    utilities: UTILITIES,
+     tdd: 'no',
+     research: 'no',
+     description: 'Documentation updates, README changes'
+@@ -55,6 +66,7 @@ const PROFILES = {
+   refactor: {
+     name: 'Refactor (Behavior-Preserving)',
+     stages: ['/plan', '/dev', '/validate', '/ship'],
++    utilities: UTILITIES,
+     tdd: 'strict',  // Must preserve behavior
+     research: 'optional',
+     description: 'Code cleanup, optimization, behavior-preserving improvements'
+diff --git a/test/bin/orientation-front-door.test.js b/test/bin/orientation-front-door.test.js
+new file mode 100644
+index 00000000..005922a8
+--- /dev/null
++++ b/test/bin/orientation-front-door.test.js
+@@ -0,0 +1,70 @@
++'use strict';
++
++// Orientation front door:
++//  * `forge <command> --help` renders THAT command's help, not the global setup banner.
++//  * bare `forge` in an initialized project orients (read-only status view) instead of
++//    running the mutating minimal install.
++
++const { describe, test, expect } = require('bun:test');
++const { spawnSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const REPO_ROOT = path.resolve(__dirname, '..', '..');
++const FORGE_BIN = path.join(REPO_ROOT, 'bin', 'forge.js');
++
++function rmrf(dir) {
++  for (let attempt = 0; attempt < 5; attempt += 1) {
++    try { fs.rmSync(dir, { recursive: true, force: true }); return; }
++    catch (error) {
++      if (attempt === 4 || !['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error.code)) return;
++      const until = Date.now() + 100; while (Date.now() < until) { /* brief spin */ }
++    }
++  }
++}
++
++function runForge(args, cwd) {
++  return spawnSync(process.execPath, [FORGE_BIN, ...args], {
++    cwd,
++    encoding: 'utf8',
++    stdio: ['ignore', 'pipe', 'pipe'],
++  });
++}
++
++describe('orientation front door', () => {
++  test('`forge status --help` shows the status command help, not the global banner', () => {
++    const result = runForge(['status', '--help'], REPO_ROOT);
++    const out = `${result.stdout || ''}`;
++    expect(out).toContain('forge status —');
++    expect(out).toContain('--full');
++    expect(out).not.toContain('npx forge setup');
++  });
++
++  test('bare `forge --help` shows the global setup banner', () => {
++    const result = runForge(['--help'], REPO_ROOT);
++    const out = `${result.stdout || ''}`;
++    expect(out).toContain('npx forge setup');
++  });
++
++  test('bare `forge` in an initialized project renders the orientation view (no mutation)', () => {
++    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-orient-'));
++    try {
++      spawnSync('git', ['init', '-q'], { cwd: repo });
++      fs.writeFileSync(path.join(repo, 'AGENTS.md'), '# orient test\n');
++
++      const result = runForge([], repo);
++      if (result.status !== 0) {
++        console.warn(`skipping bare-forge assertion — exited ${result.status}: ${(result.stderr || '').slice(0, 200)}`);
++        return;
++      }
++      const out = `${result.stdout || ''}`;
++      expect(out).toContain('You are here');
++      expect(out).toContain('New here?');
++      // Read-only: the minimal install would scaffold files; none should appear.
++      expect(fs.existsSync(path.join(repo, '.forge'))).toBe(false);
++    } finally {
++      rmrf(repo);
++    }
++  }, 30000);
++});
+diff --git a/test/kernel/sqlite-warning-suppression.test.js b/test/kernel/sqlite-warning-suppression.test.js
+new file mode 100644
+index 00000000..48de85c8
+--- /dev/null
++++ b/test/kernel/sqlite-warning-suppression.test.js
+@@ -0,0 +1,45 @@
++'use strict';
++
++// node:sqlite emits a one-time ExperimentalWarning at require time. The driver must
++// swallow ONLY that SQLite warning (so CLI stdout stays clean) while letting every
++// other warning through, and must always restore process.emitWarning.
++
++const { describe, test, expect } = require('bun:test');
++const { requireSqliteRuntimeModule } = require('../../lib/kernel/sqlite-driver.js');
++
++describe('requireSqliteRuntimeModule', () => {
++  test('drops the node:sqlite SQLite warning but forwards unrelated warnings', () => {
++    const original = process.emitWarning;
++    const forwarded = [];
++    const spy = (warning) => { forwarded.push(String(warning)); };
++    process.emitWarning = spy;
++
++    try {
++      const fakeModule = { DatabaseSync: function () {} };
++      const requireModule = (id) => {
++        expect(id).toBe('node:sqlite');
++        // Simulate Node's require-time warnings.
++        process.emitWarning('SQLite is an experimental feature and might change at any time');
++        process.emitWarning('some unrelated deprecation');
++        return fakeModule;
++      };
++
++      const result = requireSqliteRuntimeModule(requireModule, 'node:sqlite');
++      expect(result).toBe(fakeModule);
++      // SQLite warning suppressed; the unrelated one passed through to the spy.
++      expect(forwarded).toEqual(['some unrelated deprecation']);
++      // Helper restored whatever emitWarning was installed when it was called.
++      expect(process.emitWarning).toBe(spy);
++    } finally {
++      process.emitWarning = original;
++    }
++  });
++
++  test('passes non-node:sqlite ids straight through without touching emitWarning', () => {
++    const original = process.emitWarning;
++    const fakeBun = { Database: function () {} };
++    const result = requireSqliteRuntimeModule(() => fakeBun, 'bun:sqlite');
++    expect(result).toBe(fakeBun);
++    expect(process.emitWarning).toBe(original);
++  });
++});
+diff --git a/test/status-command.test.js b/test/status-command.test.js
+index 8f8ce1d5..6d238acf 100644
+--- a/test/status-command.test.js
++++ b/test/status-command.test.js
+@@ -69,8 +69,9 @@ describe('status command authoritative workflow state', () => {
+     const result = await statusCommand.handler([], {}, projectRoot);
+ 
+     expect(result.success).toBe(true);
++    expect(result.output).toContain('You are here');
+     expect(result.output).toContain('Context');
+-    expect(result.output).toContain('Branch:');
++    expect(result.output).toContain('—');
+     expect(result.output).not.toContain('Provide --workflow-state or --issue-id');
+   });
+ 
+@@ -217,7 +218,8 @@ describe('status command authoritative workflow state', () => {
+     const result = await statusCommand.handler([], {}, repoRoot);
+     expect(result.missingWorkflowState).toBe(true);
+     expect(result.output).toContain('Context');
+-    expect(result.output).toContain('No active workflow state detected.');
++    expect(result.output).toContain('You are here');
++    expect(result.output).toContain('No active workflow and no ready issues');
+   });
+ 
+   test('handler falls back gracefully when --workflow-state is malformed JSON', async () => {
+@@ -398,7 +400,7 @@ describe('status command workflow discovery', () => {
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+     expect(result.stageId).toBe('validate');
+-    expect(result.output).toContain('Validation (validate)');
++    expect(result.output).toContain('Stage 3 of 5 — Validate (standard workflow)');
+   });
+ 
+   test('zero-arg status discovers workflow from a slug-matched active issue', async () => {
+@@ -428,7 +430,7 @@ describe('status command workflow discovery', () => {
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+     expect(result.stageId).toBe('dev');
+-    expect(result.output).toContain('Development (dev)');
++    expect(result.output).toContain('Stage 2 of 5 — Dev (standard workflow)');
+   });
+ 
+   test('zero-arg status matches branch slug against exact design-path slugs only', async () => {
+@@ -458,8 +460,8 @@ describe('status command workflow discovery', () => {
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+     expect(result.stageId).toBe('dev');
+-    expect(result.output).toContain('Development (dev)');
+-    expect(result.output).not.toContain('Validation (validate)');
++    expect(result.output).toContain('Stage 2 of 5 — Dev (standard workflow)');
++    expect(result.output).not.toContain('Validate (standard workflow)');
+   });
+ 
+   test('zero-arg status falls back to the single active assigned issue when no slug match exists', async () => {
+@@ -479,7 +481,7 @@ describe('status command workflow discovery', () => {
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+     expect(result.stageId).toBe('ship');
+-    expect(result.output).toContain('Shipping (ship)');
++    expect(result.output).toContain('Stage 4 of 5 — Ship (standard workflow)');
+   });
+ 
+   test('zero-arg status leaves workflow unresolved when multiple active issues are ambiguous', async () => {
+@@ -507,7 +509,7 @@ describe('status command workflow discovery', () => {
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+     expect(result.missingWorkflowState).toBe(true);
+-    expect(result.output).toContain('No active workflow state detected.');
++    expect(result.output).toContain('No active workflow and no ready issues');
+     expect(result.stageId).toBeUndefined();
+   });
+ });
+@@ -543,32 +545,35 @@ describe('status command zero-arg presentation', () => {
+ 
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+-    const sections = ['Context', 'Active Issues', 'Ready', 'Recent Completions', 'Workflow'];
+-    for (const section of sections) {
+-      expect(result.output).toContain(section);
++    // One-glance order: You are here → Context → Your work → newcomer footer.
++    const blocks = ['You are here', 'Context', 'Your work', 'New here?'];
++    for (const block of blocks) {
++      expect(result.output).toContain(block);
+     }
+ 
+-    expect(result.output.indexOf('Context')).toBeLessThan(result.output.indexOf('Active Issues'));
+-    expect(result.output.indexOf('Active Issues')).toBeLessThan(result.output.indexOf('Ready'));
+-    expect(result.output.indexOf('Ready')).toBeLessThan(result.output.indexOf('Recent Completions'));
+-    expect(result.output.indexOf('Recent Completions')).toBeLessThan(result.output.indexOf('Workflow'));
++    expect(result.output.indexOf('You are here')).toBeLessThan(result.output.indexOf('Context'));
++    expect(result.output.indexOf('Context')).toBeLessThan(result.output.indexOf('Your work'));
++    expect(result.output.indexOf('Your work')).toBeLessThan(result.output.indexOf('New here?'));
++    // Canonical per-classification stage heading (validate = stage 3 of 5 for standard).
++    expect(result.output).toContain('Stage 3 of 5 — Validate (standard workflow)');
++    expect(result.output).toContain('Run now: /validate');
+     expect(result.output).toContain('forge-active');
+-    expect(result.output).toContain('forge-ready');
+-    expect(result.output).toContain('forge-done');
+-    expect(result.output).toContain('Validation (validate)');
++    expect(result.output).toContain('Ready: 1 more');
++    // Ready ids and recent completions are detail — hidden unless --full.
++    expect(result.output).not.toContain('Recent Completions');
+   });
+ 
+-  test('zero-arg status prints explicit empty-state messages for issue sections', async () => {
++  test('zero-arg status prints explicit empty-state lines for your-work', async () => {
+     const repoRoot = createTempBeadsRepo([], {
+       branch: 'feat/empty-status',
+     });
+ 
+     const result = await statusCommand.handler([], {}, repoRoot);
+ 
+-    expect(result.output).toContain('Active Issues');
+-    expect(result.output).toContain('Ready');
+-    expect(result.output).toContain('Recent Completions');
+-    expect(result.output).toContain('none');
++    expect(result.output).toContain('You are here');
++    expect(result.output).toContain('Your work');
++    expect(result.output).toContain('Active: none');
++    expect(result.output).toContain('Ready: none');
+   });
+ 
+   test('zero-arg status includes blocked and stale personal focus sections', async () => {
+@@ -593,17 +598,41 @@ describe('status command zero-arg presentation', () => {
+       branch: 'feat/status-blocked-stale',
+     });
+ 
+-    const result = await statusCommand.handler([], {
++    const result = await statusCommand.handler(['--full'], {
+       now: new Date('2026-05-18T08:00:00Z'),
+       staleAfterDays: 14,
+     }, repoRoot);
+ 
++    // Blocked/Stale are detail sections, surfaced only under --full.
+     expect(result.output).toContain('Blocked');
+     expect(result.output).toContain('Stale');
+     expect(result.output).toContain('forge-blocked');
+     expect(result.output).toContain('forge-active-old');
+   });
+ 
++  test('zero-arg status hides blocked/stale detail sections without --full', async () => {
++    const repoRoot = createTempBeadsRepo([
++      {
++        id: 'forge-blocked',
++        title: 'Blocked issue',
++        status: 'open',
++        owner: 'harshanandak@users.noreply.github.com',
++        dependency_count: 1,
++        updated_at: '2026-04-17T08:00:00Z',
++      },
++    ], {
++      branch: 'feat/status-hidden-detail',
++    });
++
++    const result = await statusCommand.handler([], {
++      now: new Date('2026-05-18T08:00:00Z'),
++      staleAfterDays: 14,
++    }, repoRoot);
++
++    expect(result.output).not.toContain('Blocked');
++    expect(result.output).not.toContain('Stale');
++  });
++
+   test('zero-arg status returns JSON for the same personal focus state', async () => {
+     const repoRoot = createTempBeadsRepo([
+       { id: 'forge-active', title: 'Active issue', status: 'in_progress', owner: 'harshanandak@users.noreply.github.com', updated_at: '2026-05-18T08:00:00Z' },
+@@ -651,20 +680,16 @@ describe('status command zero-arg presentation', () => {
+       branch: 'feat/forge-status-personal-focus',
+     });
+ 
++    // Default one-glance view: Ready is a count + hint, not a list of ids.
+     const result = await statusCommand.handler([], {}, repoRoot);
+-
+-    expect(result.output).toContain('...and 1 more');
+-    expect(result.output).toContain('forge-ready-5');
+-    const readyStart = result.output.indexOf('Ready');
+-    const blockedStart = result.output.indexOf('Blocked');
+-    expect(readyStart).toBeGreaterThan(-1);
+-    expect(blockedStart).toBeGreaterThan(-1);
+-    expect(blockedStart).toBeGreaterThan(readyStart);
+-    const readySection = result.output.slice(readyStart, blockedStart);
+-    expect(readySection).not.toContain('forge-ready-6 Ready 6');
+-    expect(result.output).toContain('forge-done-6');
+-    expect(result.output).toContain('forge-done-2');
+-    expect(result.output).not.toContain('forge-done-1 Done 1');
++    expect(result.output).toContain('Ready: 6 more (forge issue ready)');
++    expect(result.output).not.toContain('forge-ready-1');
++    expect(result.output).not.toContain('Recent Completions');
++
++    // --full surfaces Recent Completions, still capped at 5 with an overflow note.
++    const fullResult = await statusCommand.handler(['--full'], {}, repoRoot);
++    expect(fullResult.output).toContain('Recent Completions');
++    expect(fullResult.output).toContain('...and 1 more');
+   });
+ 
+   test('explicit workflow-state output preserves the authoritative stage-only format', async () => {
+diff --git a/test/status/presenter.test.js b/test/status/presenter.test.js
+new file mode 100644
+index 00000000..053ea868
+--- /dev/null
++++ b/test/status/presenter.test.js
+@@ -0,0 +1,127 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const {
++  formatRunNextLines,
++  formatZeroArgStatus,
++  buildPersonalStatusJson,
++} = require('../../lib/status/presenter.js');
++
++function workflowResult(overrides = {}) {
++  return {
++    stageId: 'ship',
++    stageName: 'Shipping',
++    runCommand: 'ship',
++    nextCommand: 'review',
++    nextStages: ['review'],
++    workflowState: {
++      completedStages: ['plan', 'dev', 'validate'],
++      workflowDecisions: { classification: 'standard' },
++    },
++    ...overrides,
++  };
++}
++
++const baseContext = {
++  branch: 'feat/x',
++  inWorktree: true,
++  worktreePath: '/repo/.worktrees/x',
++  mainWorktree: '/repo',
++  workingTree: { clean: true, summary: 'clean' },
++};
++
++describe('formatRunNextLines', () => {
++  test('emits Run-now and Next-after-this when a next command exists', () => {
++    expect(formatRunNextLines(workflowResult())).toEqual([
++      'Run now: /ship',
++      'Next after this: /review',
++    ]);
++  });
++
++  test('omits Next-after-this by default at a terminal stage', () => {
++    expect(formatRunNextLines(workflowResult({ nextCommand: null }))).toEqual(['Run now: /ship']);
++  });
++
++  test('emits explicit none at a terminal stage when asked', () => {
++    expect(formatRunNextLines(workflowResult({ nextCommand: null }), { noneWhenMissing: true }))
++      .toEqual(['Run now: /ship', 'Next after this: none']);
++  });
++});
++
++describe('formatZeroArgStatus — one-glance view', () => {
++  const snapshot = {
++    activeAssigned: [{ id: 'forge-abc', title: 'Do the thing', status: 'in_progress' }],
++    ready: [{ id: 'forge-r1', title: 'Ready one' }, { id: 'forge-r2', title: 'Ready two' }],
++    blocked: [{ id: 'forge-b', title: 'Blocked', status: 'open' }],
++    stale: [{ id: 'forge-s', title: 'Stale', status: 'open' }],
++    recentCompleted: [{ id: 'forge-d', title: 'Done' }],
++  };
++
++  test('renders the four blocks in order with a canonical stage heading', () => {
++    const out = formatZeroArgStatus({ context: baseContext, snapshot, workflowResult: workflowResult() });
++    expect(out.indexOf('You are here')).toBeLessThan(out.indexOf('Context'));
++    expect(out.indexOf('Context')).toBeLessThan(out.indexOf('Your work'));
++    expect(out.indexOf('Your work')).toBeLessThan(out.indexOf('New here?'));
++    expect(out).toContain('Stage 4 of 5 — Ship (standard workflow)');
++    expect(out).toContain('Run now: /ship');
++    expect(out).toContain('Next after this: /review');
++    expect(out).toContain('Why: validation passed; PR not yet created.');
++    expect(out).toContain('feat/x — worktree, clean');
++    expect(out).toContain('Active: forge-abc Do the thing [in_progress]');
++    expect(out).toContain('Ready: 2 more (forge issue ready)');
++  });
++
++  test('hides blocked/stale/recent detail unless --full', () => {
++    const compact = formatZeroArgStatus({ context: baseContext, snapshot, workflowResult: workflowResult() });
++    expect(compact).not.toContain('Blocked');
++    expect(compact).not.toContain('Recent Completions');
++
++    const full = formatZeroArgStatus({ context: baseContext, snapshot, workflowResult: workflowResult(), full: true });
++    expect(full).toContain('Blocked');
++    expect(full).toContain('Stale');
++    expect(full).toContain('Recent Completions');
++    expect(full).toContain('forge-b');
++  });
++
++  test('state-aware fallback points at the top ready issue when no workflow is active', () => {
++    const out = formatZeroArgStatus({ context: baseContext, snapshot, workflowResult: null });
++    expect(out).toContain('You are here');
++    expect(out).toContain('No active workflow. Next: forge claim forge-r1, then /plan (or /dev for a small fix).');
++  });
++
++  test('state-aware fallback points at /plan when nothing is ready', () => {
++    const out = formatZeroArgStatus({
++      context: baseContext,
++      snapshot: { activeAssigned: [], ready: [] },
++      workflowResult: null,
++    });
++    expect(out).toContain('No active workflow and no ready issues. Next: /plan "<describe the feature>" to start one.');
++    expect(out).toContain('Active: none');
++    expect(out).toContain('Ready: none');
++  });
++
++  test('Why falls back gracefully with no completed stages', () => {
++    const wr = workflowResult({ workflowState: { completedStages: [], workflowDecisions: { classification: 'standard' } } });
++    const out = formatZeroArgStatus({ context: baseContext, snapshot, workflowResult: wr });
++    expect(out).toContain('Why: just getting started.');
++  });
++});
++
++describe('buildPersonalStatusJson stays full-fidelity (machine consumers)', () => {
++  test('keeps all personal sections regardless of the text view collapse', () => {
++    const json = buildPersonalStatusJson({
++      context: baseContext,
++      snapshot: {
++        activeAssigned: [{ id: 'a', title: 'A' }],
++        ready: [{ id: 'r', title: 'R' }],
++        blocked: [{ id: 'b', title: 'B' }],
++        stale: [{ id: 's', title: 'S' }],
++        recentCompleted: [{ id: 'd', title: 'D' }],
++      },
++      workflowResult: workflowResult(),
++    });
++    expect(json.personal.blocked.map(i => i.id)).toEqual(['b']);
++    expect(json.personal.recentCompleted.map(i => i.id)).toEqual(['d']);
++    expect(json.workflow.runCommand).toBe('ship');
++  });
++});
+diff --git a/test/workflow-profiles.test.js b/test/workflow-profiles.test.js
+index 25787a0d..4dff2be6 100644
+--- a/test/workflow-profiles.test.js
++++ b/test/workflow-profiles.test.js
+@@ -21,22 +21,32 @@ describe('workflow-profiles', () => {
+       expect(PROFILES.refactor).toBeTruthy();
+     });
+ 
+-    test('critical profile should have 7 stages', () => {
+-      expect(PROFILES.critical.stages.length).toBe(7);
+-      expect(PROFILES.critical.stages.includes('/status')).toBeTruthy();
++    test('critical profile should have the 6 canonical stages (no /status)', () => {
++      // /status is a utility, not a workflow stage — it lives under `utilities`.
++      expect(PROFILES.critical.stages.length).toBe(6);
++      expect(PROFILES.critical.stages.includes('/status')).toBeFalsy();
+       expect(PROFILES.critical.stages.includes('/premerge')).toBeFalsy();
+       expect(PROFILES.critical.stages.includes('/verify')).toBeTruthy();
++      expect(PROFILES.critical.utilities.includes('/status')).toBeTruthy();
+       expect(PROFILES.critical.tdd).toBe('strict');
+     });
+ 
+     test('standard profile should include the default command template', () => {
+-      expect(PROFILES.standard.stages.length).toBe(6);
+-      expect(PROFILES.standard.stages.includes('/status')).toBeTruthy();
++      expect(PROFILES.standard.stages.length).toBe(5);
++      expect(PROFILES.standard.stages.includes('/status')).toBeFalsy();
+       expect(PROFILES.standard.stages.includes('/plan')).toBeTruthy();
+       expect(PROFILES.standard.stages.includes('/premerge')).toBeFalsy();
++      expect(PROFILES.standard.utilities.includes('/status')).toBeTruthy();
+       expect(PROFILES.standard.tdd).toBe('required');
+     });
+ 
++    test('every profile exposes /status as a utility, never as a numbered stage', () => {
++      for (const profile of Object.values(PROFILES)) {
++        expect(profile.stages.includes('/status')).toBeFalsy();
++        expect(profile.utilities.includes('/status')).toBeTruthy();
++      }
++    });
++
+     test('simple profile should have 3 stages', () => {
+       expect(PROFILES.simple.stages.length).toBe(3);
+       expect(PROFILES.simple.stages.includes('/dev')).toBeTruthy();
+-- 
+2.51.0.windows.1
+

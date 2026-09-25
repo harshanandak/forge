@@ -1,0 +1,883 @@
+From ee87308051745e03e634d6639154bb5373bd160a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 20 Jul 2026 16:19:53 +0530
+Subject: [PATCH] feat(pr-monitor): W-S4b reconcile executor + daemon +
+ dispatch trigger
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds the impure half of the autonomous shepherd reconciler (design §3/§4),
+consuming the merged W-S4a pure reconcile() + tick() debounce:
+
+- reconcile-executor.js: gatherDesired (gh∩kernel), gatherObserved, execute
+  (start/stop/reap watchers, upsert/retire kernel_pr rows), singleton daemon
+  lifecycle (acquire→heartbeat→converge→self-retire), and the non-blocking,
+  error-swallowing fireAndForget trigger.
+- watchers[] enriched to {pr,repo,pid,startedAt}; orphan reaping re-verifies
+  start-time BEFORE any process.kill (pid-reuse fail-safe: never kill on a PID
+  match alone; null/legacy/mismatched marker → drop silently).
+- bin/forge.js: fires the trigger from a finally on the dispatch try, wrapped in
+  a bare catch so a throwing tick can never touch the command result/exit code.
+- hooks.js: session-start sibling trigger (fail-open).
+- shepherd.js: 'daemon' subcommand runs the singleton.
+- FORGE_SHEPHERD_DISABLE operator kill-switch.
+
+Tests: dispatch-safety (throwing tick swallowed), orphan-reap start-time
+verify (mismatch→no kill / match→one kill), killed-watcher respawn, hand-opened
+PR self-registration (zero user invocation), daemon acquire{ok:false}→exit,
+cold-tick lease-winner-only-launches. Spawn/kill/gh all injected — zero real
+processes in tests.
+
+Refs: 12988ba0-feb9-43eb-b1b7-cce1ae70fc30
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                               |  10 +
+ lib/commands/hooks.js                      |   8 +
+ lib/commands/shepherd.js                   |  26 ++
+ lib/pr-monitor/reconcile-executor.js       | 443 +++++++++++++++++++++
+ test/pr-monitor/reconcile-dispatch.test.js |  42 ++
+ test/pr-monitor/reconcile-executor.test.js | 240 +++++++++++
+ 6 files changed, 769 insertions(+)
+ create mode 100644 lib/pr-monitor/reconcile-executor.js
+ create mode 100644 test/pr-monitor/reconcile-dispatch.test.js
+ create mode 100644 test/pr-monitor/reconcile-executor.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index e1bbe910..b7cd209b 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4158,6 +4158,16 @@ async function main() {
+     } catch (err) {
+       console.error(`Error running '${command}':`, err.message);
+       process.exit(1);
++    } finally {
++      // Autonomous-shepherd per-command trigger (W-S4b). Fires the debounce tick so
++      // a live daemon converges PRs without any explicit user invocation. HARD
++      // CONTRACT: non-blocking (no await), error-swallowing (bare catch), and it
++      // NEVER touches `result` or the exit code — a throw here can never break the
++      // command that ran. The hot path is a single lock read; only a cold tick with
++      // no live daemon spawns (detached, off the command's critical path).
++      try {
++        require('../lib/pr-monitor/reconcile-executor').fireAndForget({ projectRoot });
++      } catch { /* never affect the command result or exit code */ }
+     }
+     return;
+   }
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index ff9d4eeb..edffc0ff 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -119,6 +119,14 @@ async function handleSessionStart(rest, projectRoot, opts = {}) {
+   const harness = parseHarness(rest);
+   if (!sessionStartCapability(harness).rendered) return { success: true, output: '' };
+ 
++  // Autonomous-shepherd session-start seam (W-S4b, design §3b): a SIBLING reconcile
++  // trigger so a fresh session converges its open PRs even before the first command
++  // arrives. Same non-blocking, error-swallowing `fireAndForget` as the per-command
++  // dispatch trigger; it NEVER affects the emitted SessionStart context (fail-open).
++  try {
++    (opts.fireShepherdTick || require('../pr-monitor/reconcile-executor').fireAndForget)({ projectRoot });
++  } catch { /* a shepherd-trigger failure must never break session start */ }
++
+   // The using-forge dispatch bootstrap is injected FIRST so Forge skills auto-trigger from turn
+   // one (the Superpowers mechanism): a reasoning-driven system, not just harness description
+   // matching. It is a deterministic file read that survives a kernel outage. The memory digest
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 67f4c304..96580a34 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -37,6 +37,7 @@ const { gatherMonitorSnapshot } = require('../pr-monitor/gather');
+ const { pollEvents } = require('../pr-monitor/monitor');
+ const { watchLoop } = require('../pr-monitor/watch');
+ const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
++const reconcileExecutor = require('../pr-monitor/reconcile-executor');
+ const monitorJournal = require('../pr-monitor/journal');
+ const { EVENT_TYPES: T } = require('../pr-monitor/events');
+ const { autoShepherdRailEnabled } = require('./ship');
+@@ -387,6 +388,28 @@ async function handleWatch(args, projectRoot, deps = {}) {
+   };
+ }
+ 
++/**
++ * `forge shepherd daemon` — the SINGLETON reconcile daemon (W-S4b). It acquires
++ * the machine-wide shepherd lease for this repo (exiting immediately if a live
++ * daemon already owns it), heartbeats, and converges the PR world every ~60s:
++ * self-registering hand-opened PRs, restarting killed watchers, reaping verified
++ * orphans, retiring merged/closed PRs. It self-retires (releases the lease, kills
++ * its verified children, exits) once no PRs remain open. Launched detached by the
++ * per-command `fireAndForget` trigger — not meant to be run by hand.
++ *
++ * @param {string} projectRoot
++ * @param {object} [deps] - injected for tests (acquire/heartbeat/gather/etc.).
++ * @returns {Promise<object>} result envelope.
++ */
++async function handleDaemon(projectRoot, deps = {}) {
++  const res = await reconcileExecutor.runDaemon(projectRoot, { ...deps });
++  if (!res.ok) {
++    // A live foreign daemon owns the lease — this invocation is a clean no-op.
++    return { success: true, started: false, reason: res.reason || 'foreign-lease' };
++  }
++  return { success: true, started: true };
++}
++
+ /**
+  * Command handler.
+  *
+@@ -408,6 +431,9 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   if (positional[0] === 'watch') {
+     return handleWatch(args, projectRoot, deps);
+   }
++  if (positional[0] === 'daemon') {
++    return handleDaemon(projectRoot, deps);
++  }
+ 
+   const pr = positional[0];
+ 
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+new file mode 100644
+index 00000000..b20450e4
+--- /dev/null
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -0,0 +1,443 @@
++'use strict';
++
++/**
++ * The IMPURE half of the autonomous shepherd reconciler (W-S4b, design §3/§4).
++ *
++ * W-S4a shipped the pure `reconcile(desired, observed, now)` and the `tick()`
++ * debounce guard. This module is the thin, side-effecting dispatcher over them:
++ * it gathers the two state sets (GitHub via `gh`, kernel via the broker), runs the
++ * actions `reconcile()` emits (spawn/stop/reap watchers, upsert/retire kernel_pr
++ * rows), owns the SINGLETON DAEMON lease lifecycle, and provides the per-command
++ * `fireAndForget()` trigger wired into `bin/forge.js`.
++ *
++ * The NON-BLOCKING / ERROR-SWALLOWING contract is paramount: `fireAndForget()`
++ * MUST never throw and never affect the command that triggered it (it is called
++ * from a `finally` in the dispatch chokepoint). Every spawn is modeled on
++ * `watch-lifecycle.startPrWatcherDetached` (detached, `stdio:'ignore'`,
++ * `windowsHide:true`, `.unref()`, no-op `'error'` listener) so a failed launch
++ * degrades to "not started" rather than crashing.
++ *
++ * SAFETY INVARIANTS (guarded by tests):
++ *   - Orphan reaping NEVER `process.kill`s on a PID match alone. It re-verifies at
++ *     kill time: the pid must be alive AND the journal start-time marker for that
++ *     PR must still exist AND equal the watcher entry's `startedAt`. A null/legacy
++ *     startedAt, or an absent/mismatched marker, means "do not kill" (PID reuse
++ *     fail-safe) — the stale entry is dropped silently.
++ *   - The singleton is arbitrated by the O_EXCL shepherd lease: a daemon that loses
++ *     `acquire` exits immediately and spawns nothing.
++ *   - Watcher launch classification branches on CAPABILITY presence
++ *     (`ctx.harness.hasBgShell`), NEVER on harness name; uncertain → detached.
++ *
++ * @module pr-monitor/reconcile-executor
++ */
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { spawn } = require('node:child_process');
++
++const shepherdLease = require('./shepherd-lease');
++const journal = require('./journal');
++const { reconcile: defaultReconcile } = require('./reconcile');
++const { tick: defaultTick } = require('./reconcile-tick');
++const { startPrWatcherDetached, defaultResolveSlug, forgeBin } = require('./watch-lifecycle');
++const brokerMod = require('../kernel/broker');
++
++const { STALE_MS } = shepherdLease;
++
++/** Normalize a lease watcher entry to the W-S4b `{pr, repo, pid, startedAt}` shape. */
++function normalizeWatcher(entry) {
++	if (typeof entry === 'number') return { pr: entry, repo: null, pid: null, startedAt: null };
++	return {
++		pr: entry.pr,
++		repo: entry.repo ?? null,
++		pid: entry.pid ?? null,
++		startedAt: entry.startedAt ?? null,
++	};
++}
++
++/** File that records a watcher's spawn-time ISO stamp for kill-time re-verification. */
++function claimPath(dir) {
++	return path.join(dir, 'watch.startedat');
++}
++
++/**
++ * Write the start-time marker for `(repo, pr)` into its journal dir. This is the
++ * kill-time re-verification token — orphan reaping refuses to kill a pid unless
++ * this marker still equals the watcher entry's `startedAt`.
++ */
++function writeClaimMarker(projectRoot, repo, pr, startedAt) {
++	if (repo == null || pr == null || startedAt == null) return;
++	try {
++		const dir = journal.journalDir({ root: projectRoot, repo, pr });
++		fs.writeFileSync(claimPath(dir), String(startedAt));
++	} catch {
++		/* best-effort — a missing marker just means the pid is treated as unverifiable (never reaped) */
++	}
++}
++
++/** Read the start-time marker for `(repo, pr)`, or null when absent/unreadable. */
++function readClaimMarker(projectRoot, repo, pr) {
++	if (repo == null || pr == null) return null;
++	try {
++		const dir = journal.journalDir({ root: projectRoot, repo, pr });
++		return fs.readFileSync(claimPath(dir), 'utf8').trim();
++	} catch {
++		return null;
++	}
++}
++
++/**
++ * Gather the DESIRED open-PR set: GitHub's open PRs (`gh pr list`) enriched with
++ * kernel linkage (issue/worktree/journal) where a `kernel_pr` row already exists.
++ * A hand-opened PR with no kernel row is still included (issue_id/worktree_id
++ * null) so the reconciler self-registers it — zero user invocation. External
++ * fields (branch names) are stored raw and NEVER evaluated.
++ */
++async function gatherDesired(gitCommonDir, opts = {}) {
++	const runGh = opts.runGh || ((args) => require('node:child_process').execFileSync('gh', args, {
++		encoding: 'utf8', timeout: 30000, windowsHide: true,
++	}));
++	const broker = opts.broker || brokerMod;
++	const repo = opts.repo || defaultResolveSlug({ cwd: opts.projectRoot || process.cwd() });
++
++	let ghPrs = [];
++	try {
++		const raw = runGh(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,headRefOid']);
++		const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
++		if (Array.isArray(parsed)) ghPrs = parsed;
++	} catch {
++		ghPrs = [];
++	}
++
++	let prRows = [];
++	try {
++		prRows = await broker.listOpenPrs(gitCommonDir);
++	} catch {
++		/* kernel unavailable → treat as no linkage; the GitHub-driven desired set still stands */
++	}
++	const rowByNumber = new Map((Array.isArray(prRows) ? prRows : []).map((r) => [r.number, r]));
++
++	const openPrs = ghPrs.map((p) => {
++		const row = rowByNumber.get(p.number);
++		return {
++			repo,
++			number: p.number,
++			branch: p.headRefName ?? null,
++			headSha: p.headRefOid ?? null,
++			issueId: row?.issue_id ?? null,
++			worktreeId: row?.worktree_id ?? null,
++			journalPtr: row?.journal_ptr ?? null,
++		};
++	});
++	return { openPrs, gitCommonDir };
++}
++
++/**
++ * Gather the OBSERVED state: kernel `kernel_pr` rows, the lease watcher set, and
++ * which of those watcher pids are actually alive (probed via `pidAlive`).
++ */
++async function gatherObserved(gitCommonDir, lock, opts = {}) {
++	const broker = opts.broker || brokerMod;
++	const isAlive = opts.isAlive || shepherdLease.pidAlive;
++	const now = (opts.now || (() => Date.now()))();
++
++	let prRows = [];
++	try {
++		prRows = await broker.listOpenPrs(gitCommonDir);
++	} catch {
++		/* kernel unavailable → observe an empty kernel set; reconcile still converges watchers */
++	}
++
++	const watchers = (lock && Array.isArray(lock.watchers) ? lock.watchers : []).map(normalizeWatcher);
++	const liveWatcherPids = watchers
++		.filter((w) => w.pid != null && isAlive(w.pid))
++		.map((w) => ({ pid: w.pid, startedAt: w.startedAt ?? null }));
++
++	const beat = lock ? Date.parse(lock.heartbeatAt) : NaN;
++	const leaseFresh = Number.isFinite(beat) && (now - beat) < STALE_MS;
++
++	return { lease: lock || null, leaseFresh, prRows: Array.isArray(prRows) ? prRows : [], liveWatcherPids };
++}
++
++/**
++ * Kill a watcher pid ONLY after re-verifying start-time (design risk #4). Returns
++ * true iff the kill actually happened. Never kills on a PID match alone.
++ */
++function verifiedKill(entry, ctx) {
++	if (!entry || entry.pid == null || entry.startedAt == null) return false;
++	const isAlive = ctx.isAlive || shepherdLease.pidAlive;
++	if (!isAlive(entry.pid)) return false;
++	const readClaim = ctx.readClaim || ((e) => readClaimMarker(ctx.projectRoot, e.repo, e.pr));
++	const claim = readClaim(entry);
++	if (claim == null || String(claim) !== String(entry.startedAt)) return false;
++	try {
++		(ctx.kill || process.kill)(entry.pid);
++	} catch {
++		return false;
++	}
++	return true;
++}
++
++/**
++ * Dispatch a reconcile action set. Idempotent and order-free. Returns the updated
++ * watcher entry list (`{pr,repo,pid,startedAt}[]`) for the caller to publish via
++ * `updateWatchers`. `ctx.watchers` seeds the current set (from observed state).
++ */
++async function execute(actions, ctx = {}) {
++	const broker = ctx.broker || brokerMod;
++	const spawnWatcher = ctx.spawnWatcher || startPrWatcherDetached;
++	const writeClaim = ctx.writeClaim || ((e) => writeClaimMarker(ctx.projectRoot, e.repo, e.pr, e.startedAt));
++	const now = ctx.now || (() => Date.now());
++	let watchers = Array.isArray(ctx.watchers) ? ctx.watchers.map(normalizeWatcher) : [];
++
++	for (const action of (Array.isArray(actions) ? actions : [])) {
++		if (action.type === 'startWatcher') {
++			const startedAt = new Date(now()).toISOString();
++			const repo = action.pr.repo ?? ctx.repo ?? null;
++			const res = spawnWatcher({ prNumber: action.pr.number, cwd: ctx.projectRoot });
++			const pid = res && res.pid != null ? res.pid : null;
++			const entry = { pr: action.pr.number, repo, pid, startedAt };
++			watchers.push(entry);
++			if (pid != null) writeClaim(entry);
++		} else if (action.type === 'stopWatcher') {
++			for (const entry of watchers.filter((w) => w.pr === action.pr.number)) {
++				verifiedKill(entry, ctx);
++			}
++			watchers = watchers.filter((w) => w.pr !== action.pr.number);
++		} else if (action.type === 'reapOrphan') {
++			const entry = watchers.find((w) => w.pid === action.pid && w.startedAt === action.startedAt);
++			verifiedKill(entry, ctx);
++			watchers = watchers.filter((w) => !(w.pid === action.pid && w.startedAt === action.startedAt));
++		} else if (action.type === 'upsertPrRow') {
++			try {
++				await broker.upsertPr(action.row);
++			} catch {
++				/* derived reconcile state — a failed upsert retries on the next converge */
++			}
++		} else if (action.type === 'retire') {
++			try {
++				await broker.retirePr(
++					{ git_common_dir: ctx.gitCommonDir, repo: action.pr.repo, number: action.pr.number },
++					{ state: 'closed', retired_at: new Date(now()).toISOString() },
++				);
++			} catch {
++				/* retried on the next converge */
++			}
++		}
++	}
++	return watchers;
++}
++
++/**
++ * One converge pass: gather → reconcile → execute → publish watchers. Used by the
++ * daemon loop and directly unit-testable with injected gather/reconcile/execute.
++ * Returns `{ actions, watchers, desiredCount }`.
++ */
++async function convergeOnce(projectRoot, opts = {}) {
++	const gitCommonDir = opts.gitCommonDir;
++	const reconcile = opts.reconcile || defaultReconcile;
++	const now = opts.now || (() => Date.now());
++	const lock = opts.lock !== undefined ? opts.lock : null; // daemon threads the live lock in; default null
++
++	const desired = opts.gatherDesired
++		? await opts.gatherDesired()
++		: await gatherDesired(gitCommonDir, { ...opts, projectRoot });
++	const observed = opts.gatherObserved
++		? await opts.gatherObserved()
++		: await gatherObserved(gitCommonDir, lock, { ...opts, now });
++
++	const { actions } = reconcile(desired, observed, now());
++	const seedWatchers = observed.lease && Array.isArray(observed.lease.watchers)
++		? observed.lease.watchers
++		: (opts.watchers || []);
++	const watchers = await execute(actions, {
++		...opts,
++		projectRoot,
++		gitCommonDir,
++		watchers: seedWatchers,
++		now,
++	});
++
++	const updateWatchers = opts.updateWatchers || shepherdLease.updateWatchers;
++	if (opts.token) {
++		try {
++			updateWatchers(projectRoot, watchers, { gitCommonDir, token: opts.token });
++		} catch {
++			/* publishing the watcher set is best-effort — the next pass re-derives it */
++		}
++	}
++	return { actions, watchers, desiredCount: desired.openPrs.length };
++}
++
++/**
++ * The singleton daemon: acquire the lease (exit if a live foreign owner holds it),
++ * heartbeat, converge on a cadence, self-retire when no PRs remain. `opts.once`
++ * runs a single converge (for tests); otherwise an interval loop + signal handlers.
++ */
++async function runDaemon(projectRoot, opts = {}) {
++	const gitCommonDir = opts.gitCommonDir || brokerMod.resolveGitCommonDir(projectRoot);
++	const acquire = opts.acquire || shepherdLease.acquire;
++	const startHeartbeat = opts.startHeartbeat || shepherdLease.startHeartbeat;
++	const stopHeartbeat = opts.stopHeartbeat || shepherdLease.stopHeartbeat;
++	const release = opts.release || shepherdLease.release;
++
++	const res = acquire(projectRoot, { gitCommonDir });
++	if (!res.ok) {
++		// A live, fresh foreign daemon owns this repo — exit immediately, spawn nothing.
++		return { ok: false, reason: 'foreign-lease' };
++	}
++	const token = res.token;
++	const heartbeat = startHeartbeat(projectRoot, { gitCommonDir, token });
++
++	const convergeArgs = { ...opts, gitCommonDir, token };
++
++	const retire = async () => {
++		try {
++			release(projectRoot, { gitCommonDir, token });
++		} finally {
++			stopHeartbeat(heartbeat);
++		}
++	};
++
++	if (opts.once) {
++		const conv = await convergeOnce(projectRoot, convergeArgs);
++		if (conv.desiredCount === 0) await retire();
++		return { ok: true, token, ...conv };
++	}
++
++	const intervalMs = opts.intervalMs || 60000;
++	let stopped = false;
++	const timer = setInterval(async () => {
++		if (stopped) return;
++		try {
++			const conv = await convergeOnce(projectRoot, convergeArgs);
++			if (conv.desiredCount === 0) {
++				stopped = true;
++				clearInterval(timer);
++				await retire();
++				if (opts.exit !== false) process.exit(0);
++			}
++		} catch {
++			/* a bad converge pass never crashes the daemon — the next tick retries */
++		}
++	}, intervalMs);
++	// The converge timer is intentionally left REF'd so it keeps the daemon process
++	// alive between passes (the heartbeat timer is unref'd inside startHeartbeat).
++
++	const onSignal = async () => { await retire(); if (opts.exit !== false) process.exit(0); };
++	process.on('SIGINT', onSignal);
++	process.on('SIGTERM', onSignal);
++
++	return { ok: true, token, heartbeat, timer };
++}
++
++/**
++ * Launch the singleton daemon. Classify the execution home by CAPABILITY presence
++ * (`ctx.harness.hasBgShell`), NEVER by harness name; uncertain → detached spawn
++ * modeled on `startPrWatcherDetached`. Never throws.
++ */
++function launchDaemon(ctx = {}) {
++	const harness = ctx.harness || {};
++	if (harness.hasBgShell && typeof harness.runBgShell === 'function') {
++		try {
++			harness.runBgShell([forgeBin(), 'shepherd', 'daemon']);
++			return { launched: true, via: 'bg-shell' };
++		} catch {
++			/* fall through to the detached fail-safe */
++		}
++	}
++	const spawnFn = ctx.spawnProcess || spawn;
++	try {
++		const child = spawnFn(
++			process.execPath,
++			[forgeBin(), 'shepherd', 'daemon'],
++			{ cwd: ctx.projectRoot, detached: true, stdio: 'ignore', windowsHide: true },
++		);
++		if (child && typeof child.on === 'function') child.on('error', () => {});
++		if (child && typeof child.unref === 'function') child.unref();
++		return { launched: true, via: 'detached', pid: child && child.pid != null ? child.pid : null };
++	} catch {
++		return { launched: false };
++	}
++}
++
++/** Empty enumeration for a cold-tick loser that lost the lease race (backs off). */
++function emptyEnum(gitCommonDir) {
++	return {
++		desired: { openPrs: [], gitCommonDir },
++		observed: { lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] },
++	};
++}
++
++/**
++ * The per-command / session-start trigger. Runs the `tick()` debounce; the hot
++ * path (a fresh daemon lease) short-circuits in-process with a single lock read
++ * and no spawn. Only on the cold (G3) path does it ARBITRATE via the O_EXCL lease:
++ * the acquire-winner launches the singleton daemon (which does the real
++ * `gh pr list` enumeration + converge), and a loser backs off — no spawn. The
++ * arbitration lease is released immediately after launch so the spawned daemon can
++ * take sole ownership; the daemon's own `acquire` is the final singleton authority,
++ * so even a race that double-launches still yields exactly one live daemon.
++ *
++ * The gh enumeration deliberately lives in the DAEMON, not here, so this trigger
++ * NEVER runs a blocking subprocess on the command's critical path.
++ *
++ * CONTRACT: never throws, never blocks (no await), never affects the command.
++ */
++function fireAndForget(ctx = {}) {
++	try {
++		// Operator kill-switch (agent-agnostic): a set FORGE_SHEPHERD_DISABLE turns the
++		// autonomous trigger fully inert — no lease, no enumeration, no daemon spawn.
++		if (process.env.FORGE_SHEPHERD_DISABLE) return;
++		const projectRoot = ctx.projectRoot;
++		if (!projectRoot) return;
++		let gitCommonDir = ctx.gitCommonDir;
++		if (!gitCommonDir) {
++			try {
++				gitCommonDir = brokerMod.resolveGitCommonDir(projectRoot);
++			} catch {
++				return;
++			}
++		}
++		const acquire = ctx.acquire || shepherdLease.acquire;
++		const release = ctx.release || shepherdLease.release;
++		const launch = ctx.launch || launchDaemon;
++		const tickFn = ctx.tick || defaultTick;
++
++		let token = null;
++		const enumerate = () => {
++			// COLD path only: arbitrate the singleton. The O_EXCL acquire is the atomic
++			// arbiter — exactly one concurrent trigger wins; the rest get {ok:false}.
++			const res = acquire(projectRoot, { gitCommonDir });
++			if (res.ok) token = res.token;
++			return emptyEnum(gitCommonDir);
++		};
++		const execute = () => {
++			if (token == null) return; // loser: no daemon launch
++			try {
++				launch({ ...ctx, projectRoot, gitCommonDir });
++			} finally {
++				// Hand the lease off to the spawned daemon by releasing our arbitration hold.
++				try { release(projectRoot, { gitCommonDir, token }); } catch { /* best effort */ }
++			}
++		};
++
++		tickFn({ gitCommonDir, now: ctx.now, enumerate, execute, minInterval: ctx.minInterval });
++	} catch {
++		/* NEVER affect the command result or exit code */
++	}
++}
++
++module.exports = {
++	normalizeWatcher,
++	writeClaimMarker,
++	readClaimMarker,
++	gatherDesired,
++	gatherObserved,
++	verifiedKill,
++	execute,
++	convergeOnce,
++	runDaemon,
++	launchDaemon,
++	fireAndForget,
++};
+diff --git a/test/pr-monitor/reconcile-dispatch.test.js b/test/pr-monitor/reconcile-dispatch.test.js
+new file mode 100644
+index 00000000..2826f527
+--- /dev/null
++++ b/test/pr-monitor/reconcile-dispatch.test.js
+@@ -0,0 +1,42 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { spawnSync } = require('node:child_process');
++
++const REPO_ROOT = path.resolve(__dirname, '..', '..');
++const FORGE_BIN = path.join(REPO_ROOT, 'bin', 'forge.js');
++
++describe('bin/forge.js dispatch-safety — the shepherd trigger never affects the command', () => {
++	test('STRUCTURAL: the trigger fires from a `finally` and is wrapped in a bare catch (a throwing tick can never break the command)', () => {
++		const src = fs.readFileSync(FORGE_BIN, 'utf8');
++		// The trigger call exists.
++		expect(src).toContain('reconcile-executor');
++		expect(src).toContain('fireAndForget');
++		// It lives in a finally on the dispatch try, and is wrapped so a throw is swallowed.
++		const idx = src.indexOf('fireAndForget');
++		const around = src.slice(Math.max(0, idx - 900), idx + 200);
++		expect(around).toMatch(/finally\s*\{/);
++		expect(around).toMatch(/try\s*\{[\s\S]*fireAndForget[\s\S]*\}\s*catch/);
++		// No `await` on the trigger — it must be non-blocking.
++		expect(around).not.toMatch(/await[^\n]*fireAndForget/);
++	});
++
++	test('RUNTIME: a normal command still exits cleanly with the trigger attached (hermetic — non-git temp dir, no daemon spawn)', () => {
++		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws4b-dispatch-'));
++		// `hooks session-start --harness nope` is a registry command that fail-opens to
++		// empty output and exit 0. In a non-git dir the trigger's gitCommonDir resolve
++		// throws and fireAndForget early-returns — so no lease, no daemon spawn.
++		const res = spawnSync(process.execPath, [FORGE_BIN, 'hooks', 'session-start', '--harness', 'nope'], {
++			cwd: dir, encoding: 'utf8', timeout: 30000, windowsHide: true,
++			// Kill-switch keeps the trigger fully inert so the run spawns no daemon.
++			env: { ...process.env, FORGE_SHEPHERD_DISABLE: '1' },
++		});
++		try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
++		expect(res.status).toBe(0);
++		// The trigger must not leak its own errors onto the command's streams.
++		expect(String(res.stderr)).not.toMatch(/reconcile-executor|fireAndForget/);
++	});
++});
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+new file mode 100644
+index 00000000..52eabf48
+--- /dev/null
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -0,0 +1,240 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const os = require('node:os');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const executor = require('../../lib/pr-monitor/reconcile-executor');
++const shepherdLease = require('../../lib/pr-monitor/shepherd-lease');
++
++function tmpRepo() {
++	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws4b-exec-'));
++	return dir;
++}
++
++describe('execute — watcher lifecycle', () => {
++	test('startWatcher spawns a watcher and records a {pr,repo,pid,startedAt} entry + start-time marker', async () => {
++		const spawned = [];
++		const claims = [];
++		const watchers = await executor.execute(
++			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42, branch: 'feat', headSha: 'sha1' } }],
++			{
++				projectRoot: '/repo',
++				repo: 'forge',
++				now: () => Date.parse('2026-07-20T00:00:00.000Z'),
++				spawnWatcher: (o) => { spawned.push(o); return { started: true, pid: 1234 }; },
++				writeClaim: (e) => claims.push(e),
++				watchers: [],
++			},
++		);
++		expect(spawned).toHaveLength(1);
++		expect(spawned[0].prNumber).toBe(42);
++		expect(watchers).toHaveLength(1);
++		expect(watchers[0]).toEqual({ pr: 42, repo: 'forge', pid: 1234, startedAt: '2026-07-20T00:00:00.000Z' });
++		expect(claims).toHaveLength(1);
++		expect(claims[0].startedAt).toBe('2026-07-20T00:00:00.000Z');
++	});
++
++	test('hand-opened PR (kernel has no row) → upsertPrRow writes a kernel_pr row (issue/worktree null) AND a watcher starts, ZERO user invocation', async () => {
++		const upserts = [];
++		let spawnedPr = null;
++		// Drive purely from a converge tick: reconcile sees a desired PR absent from
++		// kernel and with no live watcher, so it self-registers + starts a watcher.
++		const conv = await executor.convergeOnce('/repo', {
++			gitCommonDir: '/repo/.git',
++			repo: 'forge',
++			now: () => 1000,
++			gatherDesired: async () => ({
++				openPrs: [{ repo: 'forge', number: 77, branch: 'hand', headSha: 'shaX', issueId: null, worktreeId: null, journalPtr: null }],
++				gitCommonDir: '/repo/.git',
++			}),
++			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
++			broker: { upsertPr: async (row) => { upserts.push(row); return { ok: true }; }, retirePr: async () => ({ ok: true }) },
++			spawnWatcher: (o) => { spawnedPr = o.prNumber; return { started: true, pid: 5 }; },
++			writeClaim: () => {},
++		});
++		expect(upserts).toHaveLength(1);
++		expect(upserts[0].number).toBe(77);
++		expect(upserts[0].issue_id ?? null).toBeNull();
++		expect(upserts[0].worktree_id ?? null).toBeNull();
++		expect(spawnedPr).toBe(77);
++		expect(conv.desiredCount).toBe(1);
++	});
++
++	test('killed watcher → next converge emits startWatcher and the executor respawns (self-healing)', async () => {
++		let spawnCount = 0;
++		const conv = await executor.convergeOnce('/repo', {
++			gitCommonDir: '/repo/.git',
++			repo: 'forge',
++			now: () => 2000,
++			// Desired PR #9 open; lease says a watcher existed (pid 999) but it is NOT
++			// among liveWatcherPids (it was killed) → reconcile must restart it.
++			gatherDesired: async () => ({
++				openPrs: [{ repo: 'forge', number: 9, branch: 'b', headSha: 's', issueId: null, worktreeId: null, journalPtr: null }],
++				gitCommonDir: '/repo/.git',
++			}),
++			gatherObserved: async () => ({
++				lease: { watchers: [{ pr: 9, repo: 'forge', pid: 999, startedAt: 't' }] },
++				leaseFresh: true,
++				prRows: [{ repo: 'forge', number: 9, head_sha: 's', state: 'open' }],
++				liveWatcherPids: [],
++			}),
++			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
++			spawnWatcher: () => { spawnCount += 1; return { started: true, pid: 111 }; },
++			writeClaim: () => {},
++		});
++		expect(spawnCount).toBe(1);
++		expect(conv.actions.some((a) => a.type === 'startWatcher' && a.pr.number === 9)).toBe(true);
++	});
++});
++
++describe('verifiedKill — orphan reaping start-time re-verification (risk #4)', () => {
++	const baseEntry = { pr: 5, repo: 'forge', pid: 999, startedAt: 't1' };
++
++	test('MISMATCH: pid alive but journal marker startedAt differs → kill is NOT called', async () => {
++		const kills = [];
++		await executor.execute(
++			[{ type: 'reapOrphan', pid: 999, startedAt: 't1' }],
++			{
++				projectRoot: '/repo',
++				watchers: [{ ...baseEntry }],
++				isAlive: () => true,
++				readClaim: () => 't2', // marker says a DIFFERENT start time → PID reuse
++				kill: (pid) => kills.push(pid),
++				broker: {},
++			},
++		);
++		expect(kills).toHaveLength(0);
++	});
++
++	test('MATCH: pid alive AND marker startedAt equals watcher entry → kill called exactly once', async () => {
++		const kills = [];
++		await executor.execute(
++			[{ type: 'reapOrphan', pid: 999, startedAt: 't1' }],
++			{
++				projectRoot: '/repo',
++				watchers: [{ ...baseEntry }],
++				isAlive: () => true,
++				readClaim: () => 't1', // marker matches
++				kill: (pid) => kills.push(pid),
++				broker: {},
++			},
++		);
++		expect(kills).toEqual([999]);
++	});
++
++	test('legacy/null startedAt → never killed (unverifiable)', async () => {
++		const kills = [];
++		await executor.execute(
++			[{ type: 'reapOrphan', pid: 999, startedAt: null }],
++			{
++				projectRoot: '/repo',
++				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: null }],
++				isAlive: () => true,
++				readClaim: () => null,
++				kill: (pid) => kills.push(pid),
++				broker: {},
++			},
++		);
++		expect(kills).toHaveLength(0);
++	});
++
++	test('absent marker → never killed', async () => {
++		const kills = [];
++		await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo',
++				watchers: [{ ...baseEntry }],
++				isAlive: () => true,
++				readClaim: () => null, // no marker on disk
++				kill: (pid) => kills.push(pid),
++				broker: {},
++			},
++		);
++		expect(kills).toHaveLength(0);
++	});
++});
++
++describe('runDaemon — singleton lease lifecycle', () => {
++	test('acquire {ok:false} (live foreign lease) → daemon exits, spawns NOTHING, no heartbeat', async () => {
++		let heartbeatStarted = false;
++		let converged = false;
++		const res = await executor.runDaemon('/repo', {
++			gitCommonDir: '/repo/.git',
++			acquire: () => ({ ok: false, held: { pid: 4242 } }),
++			startHeartbeat: () => { heartbeatStarted = true; return {}; },
++			once: true,
++			gatherDesired: async () => { converged = true; return { openPrs: [], gitCommonDir: '/repo/.git' }; },
++		});
++		expect(res.ok).toBe(false);
++		expect(res.reason).toBe('foreign-lease');
++		expect(heartbeatStarted).toBe(false);
++		expect(converged).toBe(false);
++	});
++
++	test('acquire winner with no open PRs → converges once then self-retires (release + stopHeartbeat)', async () => {
++		let released = false;
++		let heartbeatStopped = false;
++		const res = await executor.runDaemon('/repo', {
++			gitCommonDir: '/repo/.git',
++			once: true,
++			acquire: () => ({ ok: true, token: 'tok-1' }),
++			startHeartbeat: () => ({ id: 'hb' }),
++			stopHeartbeat: () => { heartbeatStopped = true; },
++			release: (_root, { token }) => { released = token === 'tok-1'; },
++			gatherDesired: async () => ({ openPrs: [], gitCommonDir: '/repo/.git' }),
++			gatherObserved: async () => ({ lease: null, leaseFresh: false, prRows: [], liveWatcherPids: [] }),
++			broker: { upsertPr: async () => ({ ok: true }), retirePr: async () => ({ ok: true }) },
++			updateWatchers: () => true,
++		});
++		expect(res.ok).toBe(true);
++		expect(released).toBe(true);
++		expect(heartbeatStopped).toBe(true);
++	});
++});
++
++describe('fireAndForget — dispatch safety + cold-tick arbitration', () => {
++	test('a throwing tick is swallowed — fireAndForget never throws (dispatch-safety contract)', () => {
++		expect(() => executor.fireAndForget({
++			projectRoot: '/repo',
++			gitCommonDir: '/repo/.git',
++			tick: () => { throw new Error('boom in tick'); },
++		})).not.toThrow();
++	});
++
++	test('missing projectRoot → no-op, never throws', () => {
++		expect(() => executor.fireAndForget({})).not.toThrow();
++	});
++
++	test('cold-tick: two concurrent triggers, one lease → only the acquire-winner launches; the loser backs off', () => {
++		const repo = tmpRepo();
++		const gitCommonDir = repo;
++		const launches = [];
++		let pidSeq = 1000;
++		// Real O_EXCL lease as the atomic arbiter; distinct pids per trigger so the
++		// second sees a live FOREIGN owner (same-process pid would look like "ours").
++		const acquire = (root, o) => shepherdLease.acquire(root, { ...o, pid: (pidSeq += 1), isAlive: () => true });
++		// Passthrough tick isolates the acquire race (bypasses G1/G2 sentinel timing).
++		const passthroughTick = ({ enumerate, execute }) => {
++			const { desired, observed } = enumerate();
++			const { reconcile } = require('../../lib/pr-monitor/reconcile');
++			const { actions } = reconcile(desired, observed, Date.now());
++			execute(actions);
++		};
++		const ctx = {
++			projectRoot: repo,
++			gitCommonDir,
++			acquire,
++			release: () => {}, // keep the winner's lock in place so the loser truly loses
++			launch: (c) => launches.push(c),
++			tick: passthroughTick,
++		};
++		executor.fireAndForget(ctx); // winner
++		executor.fireAndForget(ctx); // loser (fresh foreign lock present)
++
++		expect(launches).toHaveLength(1);
++		fs.rmSync(repo, { recursive: true, force: true });
++	});
++});
+-- 
+2.51.0.windows.1
+

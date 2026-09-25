@@ -1,0 +1,107 @@
+From 164ae3a6aa267e542db66ce36fb908a336206c65 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 15:14:12 +0530
+Subject: [PATCH] fix: preserve exact CLAUDE pointer line endings
+
+---
+ lib/commands/setup.js                  |  3 ++-
+ lib/protected-state-authority.js       | 12 ++++++++----
+ test/protected-state-authority.test.js | 14 ++++++++++++++
+ 3 files changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index acad0795..c7fce780 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2103,7 +2103,7 @@ async function createAgentLinkFile(agent, symlinkOnly = false) {
+ 
+   try {
+     const sourceHead = resolveCurrentSourceHead();
+-    const content = normalizeClaudePointerContent(fs.readFileSync(path.join(projectRoot, 'CLAUDE.md')));
++    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'));
+     const actor = process.env.FORGE_PROTECTED_STATE_ACTOR || process.env.FORGE_ACTOR || process.env.USER || process.env.USERNAME || 'unknown';
+     const authorization = await issueGeneratedHarnessClaudeAuthorization(projectRoot, {
+       actor,
+@@ -2117,6 +2117,7 @@ async function createAgentLinkFile(agent, symlinkOnly = false) {
+     const completion = await completeGeneratedHarnessClaudeAuthorization(projectRoot, {
+       actor,
+       capabilityId: authorization.capabilityId,
++      content,
+       sourceHead,
+     });
+     if (!completion.success) {
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index ad86caef..8918e4a9 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -419,9 +419,11 @@ async function completeNpmPublishWorkflowAuthorization(projectRoot, params = {},
+ }
+ 
+ const CLAUDE_POINTER_CONTENT = Buffer.from('@AGENTS.md\n');
++const CLAUDE_POINTER_CRLF_CONTENT = Buffer.from('@AGENTS.md\r\n');
+ 
+ function isExactClaudePointer(content) {
+-	return Buffer.from(content || '').equals(CLAUDE_POINTER_CONTENT);
++	const bytes = Buffer.from(content || '');
++	return bytes.equals(CLAUDE_POINTER_CONTENT) || bytes.equals(CLAUDE_POINTER_CRLF_CONTENT);
+ }
+ 
+ async function issueGeneratedHarnessClaudeAuthorization(projectRoot, params = {}, options = {}) {
+@@ -431,11 +433,12 @@ async function issueGeneratedHarnessClaudeAuthorization(projectRoot, params = {}
+ 			error: 'Root CLAUDE.md authorization requires exact @AGENTS.md pointer bytes and a full 40- or 64-character source HEAD.',
+ 		};
+ 	}
++	const content = Buffer.from(params.content || CLAUDE_POINTER_CONTENT);
+ 	return issueProtectedStateAuthorization(projectRoot, {
+ 		actor: params.actor,
+ 		surface: 'generated_harness',
+ 		path: 'CLAUDE.md',
+-		content: CLAUDE_POINTER_CONTENT,
++		content,
+ 		operation: 'generate_claude_import',
+ 		viaForgeApi: true,
+ 		sourceCommand: CLAUDE_SETUP_SOURCE_COMMAND,
+@@ -444,12 +447,13 @@ async function issueGeneratedHarnessClaudeAuthorization(projectRoot, params = {}
+ }
+ 
+ async function completeGeneratedHarnessClaudeAuthorization(projectRoot, params = {}, options = {}) {
+-	if (!isValidGitObjectId(params.sourceHead) || !params.capabilityId) {
++	const content = Buffer.from(params.content || CLAUDE_POINTER_CONTENT);
++	if (!isValidGitObjectId(params.sourceHead) || !params.capabilityId || !isExactClaudePointer(content)) {
+ 		return { success: false, error: 'Root CLAUDE.md completion requires a capability id and full 40- or 64-character source HEAD.' };
+ 	}
+ 	const actor = params.actor;
+ 	const normalizedPath = 'CLAUDE.md';
+-	const contentHash = hashProtectedContent(CLAUDE_POINTER_CONTENT);
++	const contentHash = hashProtectedContent(content);
+ 	const worktreeScope = options.worktreeScope || resolveWorktreeScope(projectRoot, options.deps);
+ 	const entityId = authorizationEntityId(worktreeScope, normalizedPath);
+ 	const kernel = await resolveOwnedKernel(projectRoot, options.deps);
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index 3d70ad4e..6bf689ff 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -244,6 +244,20 @@ describe('protected-state Kernel authority', () => {
+ 		expect(evaluateAuthorization(target, rows)).toMatchObject({ allowed: true, sourceHead });
+ 	});
+ 
++	test('accepts an exact CRLF pointer when the staged bytes preserve CRLF', () => {
++		const content = '@AGENTS.md\r\n';
++		const target = { ...claudePointerTarget, content };
++		const rows = [
++			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'crlf-capability', { content }),
++			claudePointerEvent(PROTECTED_STATE_WRITE_COMPLETED, 'crlf-capability', { content }),
++		];
++
++		expect(evaluateAuthorization(target, rows)).toMatchObject({
++			allowed: true,
++			contentHash: hashProtectedContent(content),
++		});
++	});
++
+ 	test('denies a pre-write authorization until the owning writer records completion', () => {
+ 		const decision = evaluateAuthorization(target, [
+ 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
+-- 
+2.51.0.windows.1
+

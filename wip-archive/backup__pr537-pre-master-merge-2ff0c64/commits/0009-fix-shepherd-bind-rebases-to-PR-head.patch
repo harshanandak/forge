@@ -1,0 +1,254 @@
+From 5bc03bf229779970f5840e6ed0b94456556f2c9c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:26:57 +0530
+Subject: [PATCH] fix(shepherd): bind rebases to PR head
+
+---
+ lib/adapters/pr-state-adapter.js | 26 +++++++++++--------
+ lib/commands/shepherd.js         | 44 ++++++++++++++++++++++----------
+ lib/pr-shepherd.js               |  8 +++---
+ test/commands/shepherd.test.js   |  5 ++++
+ test/pr-state-adapter.test.js    | 27 +++++++++++++++++---
+ 5 files changed, 79 insertions(+), 31 deletions(-)
+
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index a2d3f60d..b65d93d0 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -399,7 +399,7 @@ class PrStateAdapter {
+   }
+ 
+   /** Rebase the checked-out PR head and force-push only under its exact prior-head lease. */
+-  async rebaseOntoBase({ baseRef, expectedHead }) {
++  async rebaseOntoBase({ baseRef, expectedHead, headRef, pushRemote }) {
+     const fullHead = String(expectedHead || '').toLowerCase();
+     if (!/^[0-9a-f]{40}$/.test(fullHead)) throw new Error('Rebase requires one exact expected head.');
+     const opts = this._cwd ? { cwd: this._cwd } : undefined;
+@@ -409,16 +409,20 @@ class PrStateAdapter {
+       error.leaseRejected = true;
+       throw error;
+     }
+-    const upstream = this._git(
+-      'git',
+-      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'],
+-      opts,
+-    ).trim();
+-    const slash = upstream.indexOf('/');
+-    if (slash <= 0 || slash === upstream.length - 1) throw new Error('The PR branch has no pushable upstream.');
+-    const remote = upstream.slice(0, slash);
+-    const branch = upstream.slice(slash + 1);
+-    this._git('git', ['rebase', baseRef], opts);
++    const branch = String(headRef || '');
++    const remote = String(pushRemote || '');
++    if (!remote || !/^[A-Za-z0-9._-]+$/.test(remote)) throw new Error('The PR head remote is invalid.');
++    this._git('git', ['check-ref-format', '--branch', branch], opts);
++    try {
++      this._git('git', ['rebase', baseRef], opts);
++    } catch (error) {
++      try {
++        this._git('git', ['rebase', '--abort'], opts);
++      } catch (abortError) {
++        error.abortError = abortError;
++      }
++      throw error;
++    }
+     const headSha = this._git('git', ['rev-parse', 'HEAD'], opts).trim().toLowerCase();
+     if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('Rebase did not produce one exact head.');
+     try {
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 200bcc5f..768c552c 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -63,6 +63,23 @@ function rootMonitorId(owner, repo, pr) {
+ // COMPLETELY silent — no console window, ever. See kernel issue 931e7924.
+ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', timeout: 30000, windowsHide: true });
+ 
++function repositoryFromRemoteUrl(url) {
++  const match = String(url || '').trim().match(/(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/i);
++  return match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
++}
++
++function findRepositoryRemote(git, repository) {
++  if (!repository) return null;
++  const remotes = git('git', ['remote']).split(/\s+/).filter(Boolean);
++  return remotes.find((remote) => {
++    try {
++      return repositoryFromRemoteUrl(git('git', ['remote', 'get-url', remote])) === repository;
++    } catch {
++      return false;
++    }
++  }) || null;
++}
++
+ /**
+  * Resolve owner/repo and base branch for the shepherd pass.
+  *
+@@ -77,7 +94,8 @@ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', tim
+  * @returns {Promise<{ pr: string, owner: string, repo: string, base: string, baseRef: string, cwd?: string }>}
+  */
+ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+-  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName,headRefOid,url']);
++  const prJson = gh('gh', ['pr', 'view', String(pr), '--json',
++    'baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,url']);
+   const prInfo = JSON.parse(prJson || '{}');
+   const base = prInfo.baseRefName || 'master';
+   const headSha = typeof prInfo.headRefOid === 'string' && /^[0-9a-f]{40}$/i.test(prInfo.headRefOid)
+@@ -91,26 +109,24 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+ 
+   const match = String(prInfo.url || '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/i);
+   const baseRepository = match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
+-  let baseRemote;
++  const headOwner = prInfo.headRepositoryOwner?.login;
++  const headName = prInfo.headRepository?.name;
++  const headRepository = headOwner && headName ? `${headOwner}/${headName}`.toLowerCase() : baseRepository;
++  let baseRemote; let pushRemote;
+   try {
+-    const remotes = git('git', ['remote']).split(/\s+/).filter(Boolean);
+     if (baseRepository) {
+-      baseRemote = remotes.find((remote) => {
+-        try {
+-          const url = git('git', ['remote', 'get-url', remote]).trim();
+-          const remoteMatch = url.match(/(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/i);
+-          return remoteMatch && `${remoteMatch[1]}/${remoteMatch[2]}`.toLowerCase() === baseRepository;
+-        } catch {
+-          return false;
+-        }
+-      }) || null;
++      baseRemote = findRepositoryRemote(git, baseRepository);
++      pushRemote = findRepositoryRemote(git, headRepository);
+     } else {
+-      [baseRemote] = remotes;
++      [baseRemote] = git('git', ['remote']).split(/\s+/).filter(Boolean);
++      pushRemote = baseRemote;
+     }
+   } catch (_err) {
+     baseRemote = null;
++    pushRemote = null;
+   }
+   if (!baseRemote) throw new Error('The PR base repository has no matching local Git remote.');
++  if (!pushRemote) throw new Error('The PR head repository has no matching local Git remote.');
+ 
+   let localHead = null;
+   try {
+@@ -127,6 +143,8 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+     base,
+     baseRef: `${baseRemote}/${base}`,
+     headSha,
++    headRef: prInfo.headRefName || null,
++    pushRemote,
+     localHead,
+     ...(projectRoot ? { cwd: projectRoot } : {}),
+   };
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index 65a70eb2..bb6d0b56 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -211,7 +211,7 @@ async function handleFailedRequired({
+  * @returns {Promise<object>} decision envelope.
+  */
+ async function handleBehindBase({
+-  behind, autoRebase, cleanTree, adapter, baseRef, expectedHead, headUnchanged, actions,
++  behind, autoRebase, cleanTree, adapter, baseRef, expectedHead, headRef, pushRemote, headUnchanged, actions,
+ }) {
+   if (!autoRebase) {
+     return result('ESCALATE', {
+@@ -240,7 +240,7 @@ async function handleBehindBase({
+     });
+   }
+   try {
+-    const rebaseResult = await adapter.rebaseOntoBase({ baseRef, expectedHead });
++    const rebaseResult = await adapter.rebaseOntoBase({ baseRef, expectedHead, headRef, pushRemote });
+     const verifiedHead = rebaseResult?.previousHead === expectedHead
+       && typeof rebaseResult?.headSha === 'string'
+       && /^[0-9a-f]{40}$/i.test(rebaseResult.headSha)
+@@ -387,6 +387,8 @@ async function runShepherdPass(ctx) {
+     repo,
+     base,
+     baseRef,
++    headRef,
++    pushRemote,
+     cwd,
+     adapter,
+     autoRebase = false,
+@@ -491,7 +493,7 @@ async function runShepherdPass(ctx) {
+   if (behind > 0) {
+     return handleBehindBase({
+       behind, autoRebase: dryRun ? false : autoRebase, cleanTree, adapter, baseRef,
+-      expectedHead: startSha, headUnchanged, actions,
++      expectedHead: startSha, headRef, pushRemote, headUnchanged, actions,
+     });
+   }
+ 
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 75797fc9..a8c9b325 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -69,6 +69,9 @@ describe('shepherd command handler', () => {
+         return JSON.stringify({
+           baseRefName: 'release/2.0',
+           headRefOid: 'a'.repeat(40),
++          headRefName: 'feature/safe-rebase',
++          headRepository: { name: 'widget' },
++          headRepositoryOwner: { login: 'contributor' },
+           url: 'https://github.com/acme/widget/pull/42',
+         });
+       }
+@@ -93,6 +96,8 @@ describe('shepherd command handler', () => {
+     expect(ctx.base).toBe('release/2.0');
+     expect(ctx.baseRef).toBe('upstream/release/2.0');
+     expect(ctx.headSha).toBe('a'.repeat(40));
++    expect(ctx.headRef).toBe('feature/safe-rebase');
++    expect(ctx.pushRemote).toBe('fork');
+     expect(ctx.owner).toBe('acme');
+     expect(ctx.repo).toBe('widget');
+     // It MUST consult the PR, not just `gh repo view` defaultBranchRef.
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index ac868c52..511897c4 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -858,14 +858,13 @@ describe('PrStateAdapter — lease-bound rebase', () => {
+         headReads += 1;
+         return `${headReads === 1 ? previousHead : nextHead}\n`;
+       }
+-      if (args.join(' ') === 'rev-parse --abbrev-ref --symbolic-full-name @{upstream}') {
+-        return 'origin/feature\n';
+-      }
+       return '';
+     };
+     const adapter = new PrStateAdapter({ gh: () => '', git, cwd: '/wt' });
+ 
+-    const result = await adapter.rebaseOntoBase({ baseRef: 'upstream/master', expectedHead: previousHead });
++    const result = await adapter.rebaseOntoBase({
++      baseRef: 'upstream/master', expectedHead: previousHead, headRef: 'feature', pushRemote: 'origin',
++    });
+ 
+     expect(result).toEqual({ previousHead, headSha: nextHead });
+     expect(calls).toContainEqual({ cmd: 'git', args: ['rebase', 'upstream/master'], opts: { cwd: '/wt' } });
+@@ -880,4 +879,24 @@ describe('PrStateAdapter — lease-bound rebase', () => {
+       opts: { cwd: '/wt' },
+     });
+   });
++
++  test('aborts a conflicted rebase before returning the original failure', async () => {
++    const previousHead = 'a'.repeat(40);
++    const calls = [];
++    const conflict = new Error('conflict');
++    const git = (cmd, args, opts) => {
++      calls.push({ cmd, args, opts });
++      if (args.join(' ') === 'rev-parse HEAD') return `${previousHead}\n`;
++      if (args[0] === 'check-ref-format') return '';
++      if (args[0] === 'rebase' && args[1] === 'upstream/master') throw conflict;
++      return '';
++    };
++    const adapter = new PrStateAdapter({ gh: () => '', git, cwd: '/wt' });
++
++    await expect(adapter.rebaseOntoBase({
++      baseRef: 'upstream/master', expectedHead: previousHead, headRef: 'feature', pushRemote: 'origin',
++    })).rejects.toBe(conflict);
++    expect(calls).toContainEqual({ cmd: 'git', args: ['rebase', '--abort'], opts: { cwd: '/wt' } });
++    expect(calls.some(({ args }) => args[0] === 'push')).toBe(false);
++  });
+ });
+-- 
+2.51.0.windows.1
+

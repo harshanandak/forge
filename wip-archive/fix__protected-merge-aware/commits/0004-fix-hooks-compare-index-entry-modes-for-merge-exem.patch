@@ -1,0 +1,154 @@
+From 0a59b769addf44a227eb415e44eb489f322fed2b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 13:52:12 +0530
+Subject: [PATCH] fix(hooks): compare index entry modes for merge exemptions
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                          |  2 +-
+ scripts/protected-state-check.js      | 62 ++++++++++++++++++++-------
+ test/protected-state-surfaces.test.js | 15 +++++++
+ 3 files changed, 63 insertions(+), 16 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f2372718..73c77de8 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
+-- **The protected-state pre-commit check is now merge-aware.** While a merge is in progress (per-worktree `MERGE_HEAD`), a staged protected path is exempt only when its staged blob is byte-identical to that path on `HEAD`, or on a `MERGE_HEAD` contained in the repository's canonical upstream ref (the current branch's upstream remote, else `origin`, then that remote's default branch) — content already published on the line this repo integrates into, carried in by the merge rather than edited. A local-only branch, an untrusted contributor remote, or a hand-created `refs/remotes/*` ref earns no exemption, an unresolvable `HEAD` grants no exemption context at all, `bun.lock` still requires its regeneration proof, paths differing from every trusted revision stay blocked, the non-merge path is unchanged, and any failed git query fails closed. (issue `f6d43eb1-249d-4d81-b679-32502ffa28c2`)
++- **The protected-state pre-commit check is now merge-aware.** While a merge is in progress (per-worktree `MERGE_HEAD`), a staged protected path is exempt only when its full staged index entry (mode, object type and object id) is identical to that path's entry on `HEAD`, or on a `MERGE_HEAD` contained in the repository's canonical upstream ref (the current branch's upstream remote, else `origin`, then that remote's default branch) — content already published on the line this repo integrates into, carried in by the merge rather than edited. A local-only branch, an untrusted contributor remote, or a hand-created `refs/remotes/*` ref earns no exemption, an unresolvable `HEAD` grants no exemption context at all, `bun.lock` still requires its regeneration proof, paths differing from every trusted revision stay blocked, the non-merge path is unchanged, and any failed git query fails closed. (issue `f6d43eb1-249d-4d81-b679-32502ffa28c2`)
+ - **The targeted PR lane's full-suite fallback now uses the lane-aware runner.** When the execution planner returns `mode=full`, the follow-up job runs `scripts/test-full-suite.js` instead of a raw `bun test test/`, so subprocess-heavy files get resource-lane separation and the worker budget the full matrix already had — closing the Windows-only spawn failures that hit only this lane.
+ - **Full-suite validation now respects the computed worker budget.** Resource-aware lanes share the reserved worker pool by default, and `forge validate` uses that runner when available, preventing mixed unit and subprocess shards from oversubscribing Windows runners. (PR #545, issue `8cb52d50-24ea-4c69-8579-b30a0f1ee467`)
+ - **Windows legacy-claim repair now preserves owner-only ACL guarantees without PowerShell transport stalls.** The operator-only repair path uses bounded, privacy-safe Windows security-descriptor verification, exact owner/DACL replacement, Unicode-safe targets, transaction-isolated async hardening, and fail-closed timeout cleanup. (#538, issue `eb2c56e8-5054-4542-8f02-3f9fe635fd2d`)
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 94fb7e04..51d1d6a2 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -107,7 +107,8 @@ function getCurrentHead() {
+ 	}
+ }
+ 
+-const ABSENT_OBJECT = 'absent';
++const ABSENT_ENTRY = 'absent';
++const LINE_SPLIT = /\r?\n/;
+ 
+ function gitCapture(args) {
+ 	return execFileSync('git', args, {
+@@ -127,18 +128,49 @@ function resolveCommit(revision) {
+ 	}
+ }
+ 
+-// Object id of `<spec>` (e.g. `:path`, `<sha>:path`).
+-// Returns ABSENT_OBJECT when the path is provably missing from an existing tree,
+-// and null when the answer is unknown — callers must fail closed on null.
+-function objectIdForSpec(spec) {
++// Git prints the mode but not the type for index entries; derive it so index and
++// tree entries normalise to the same shape.
++function objectTypeForMode(mode) {
++	if (mode === '160000') return 'commit';
++	if (mode === '040000' || mode === '40000') return 'tree';
++	return 'blob';
++}
++
++// Normalised `<mode> <type> <oid>` for the staged index entry, ABSENT_ENTRY when
++// the path is not in the index, or null when the answer is unknown. A conflicted
++// path yields several stage lines and therefore null — fail closed.
++// The mode matters: blob equality alone would exempt a real 100644 -> 100755
++// index change on a protected path.
++function stagedEntry(file) {
++	let output;
+ 	try {
+-		const id = gitCapture(['rev-parse', '--verify', '--quiet', spec]);
+-		if (isValidGitObjectId(id)) return id;
+-		return id === '' ? ABSENT_OBJECT : null;
+-	} catch (error) {
+-		if (error && error.status === 1 && !String(error.stderr || '').trim()) return ABSENT_OBJECT;
++		output = gitCapture(['ls-files', '--stage', '--', `:(literal)${file}`]);
++	} catch {
++		return null;
++	}
++	if (output === '') return ABSENT_ENTRY;
++	const lines = output.split(LINE_SPLIT).filter(Boolean);
++	if (lines.length !== 1) return null;
++	const match = /^([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) [0-3]\t/.exec(lines[0]);
++	if (!match) return null;
++	return `${match[1]} ${objectTypeForMode(match[1])} ${match[2]}`;
++}
++
++// Same normalised shape for `<revision>:<file>`, so the comparison covers mode
++// and object type as well as content.
++function revisionEntry(revision, file) {
++	let output;
++	try {
++		output = gitCapture(['ls-tree', revision, '--', `:(literal)${file}`]);
++	} catch {
+ 		return null;
+ 	}
++	if (output === '') return ABSENT_ENTRY;
++	const lines = output.split(LINE_SPLIT).filter(Boolean);
++	if (lines.length !== 1) return null;
++	const match = /^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40}|[0-9a-f]{64})\t/.exec(lines[0]);
++	if (!match) return null;
++	return `${match[1]} ${match[2]} ${match[3]}`;
+ }
+ 
+ // Resolve the repository's single canonical upstream ref, deterministically:
+@@ -259,9 +291,9 @@ function readMergeProvenance() {
+ // Exemption predicate. While a merge is in progress, a staged protected path is
+ // exempt only when the committer introduced no net change AND the content has
+ // trusted provenance:
+-//   - staged blob === the blob at HEAD: no net change versus the branch being
++//   - staged entry (mode + object) === the entry at HEAD: no net change versus the branch being
+ //     committed onto, so there is no provenance question at all; or
+-//   - staged blob === the blob on a MERGE_HEAD contained in the canonical
++//   - staged entry === the entry on a MERGE_HEAD contained in the canonical
+ //     upstream ref: the bytes are already published on the line this repo
+ //     integrates into, where the same gate ran.
+ // A purely local merge side earns no exemption — otherwise anyone could smuggle a
+@@ -273,11 +305,11 @@ function createMergeExemption() {
+ 	if (!merge) return () => false;
+ 	const trustedRevisions = [merge.head, ...merge.trustedSides];
+ 	return file => {
+-		const staged = objectIdForSpec(`:${file}`);
++		const staged = stagedEntry(file);
+ 		if (staged === null) return false;
+ 		return trustedRevisions.some(revision => {
+-			const revisionObject = objectIdForSpec(`${revision}:${file}`);
+-			return revisionObject !== null && revisionObject === staged;
++			const entry = revisionEntry(revision, file);
++			return entry !== null && entry === staged;
+ 		});
+ 	};
+ }
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index c676383e..f85826b9 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -637,6 +637,21 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 		}
+ 	}, 120_000);
+ 
++	test('blocks a mode-only change to a protected path carried in by a merge', () => {
++		const root = createTempDir();
++		try {
++			const work = initRepo(root);
++			startMerge(work, { branch: 'upstream-work', publish: true });
++			// Same blob as the trusted merge side, different mode.
++			runGit(work, ['update-index', '--chmod=+x', WORKFLOW]);
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
+ 	test('grants no exemption when HEAD cannot be resolved during a merge', () => {
+ 		const root = createTempDir();
+ 		try {
+-- 
+2.51.0.windows.1
+

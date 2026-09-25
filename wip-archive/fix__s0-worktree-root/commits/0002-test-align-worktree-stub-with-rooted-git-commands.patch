@@ -1,0 +1,41 @@
+From 8cdd9760fe7a2547e0a3db294f883c3f481d545e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 21:19:59 +0530
+Subject: [PATCH] test: align worktree stub with rooted git commands
+
+---
+ docs/work/2026-07-31-s0-worktree-root/decisions.md | 2 +-
+ test/commands/worktree-deps.test.js                | 5 +++--
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/docs/work/2026-07-31-s0-worktree-root/decisions.md b/docs/work/2026-07-31-s0-worktree-root/decisions.md
+index 4bef9d6c..6c780366 100644
+--- a/docs/work/2026-07-31-s0-worktree-root/decisions.md
++++ b/docs/work/2026-07-31-s0-worktree-root/decisions.md
+@@ -1,6 +1,6 @@
+ # Decisions log
+ 
+-- 2026-07-31: Treat as a Simple bug fix. No broad plan or full-suite run is needed; use the required TDD regression plus focused command tests and relevant checks.
++- 2026-07-31: Treat as a Simple bug fix. Use the required TDD regression plus focused command tests and relevant checks for lane development; this does not waive the protected full-suite CI gate.
+ - 2026-07-31: Keep the regression in the real-git base-focused test file because it already exercises actual worktree creation and controls temporary repositories.
+ - 2026-07-31: Prefer explicit `git -C <projectRoot>` arguments over `process.chdir()` in production. This avoids ambient cwd dependence and is compatible with Git Bash on Windows because `execFileSync` still receives an argument vector without a shell.
+ - 2026-07-31: Do not alter package metadata, shared workflow files, or unrelated command implementations.
+diff --git a/test/commands/worktree-deps.test.js b/test/commands/worktree-deps.test.js
+index 0e18a89a..1c43accc 100644
+--- a/test/commands/worktree-deps.test.js
++++ b/test/commands/worktree-deps.test.js
+@@ -263,8 +263,9 @@ describe('forge worktree create — verifies the install and self-heals a stale
+       fs.rmSync(f.worktreePath, { recursive: true, force: true });
+       const addingGitStub = (cmd, args) => {
+         if (cmd === 'git' && args.includes('--show-toplevel')) return Buffer.from(`${f.projectRoot}\n`);
+-        if (cmd === 'git' && args[0] === 'branch' && args[1] === '--list') return Buffer.from('');
+-        if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
++        if (cmd === 'git' && args.includes('branch') && args.includes('--list')) return Buffer.from('');
++        const worktreeIndex = args.indexOf('worktree');
++        if (cmd === 'git' && worktreeIndex >= 0 && args[worktreeIndex + 1] === 'add') {
+           fs.mkdirSync(f.worktreePath, { recursive: true });
+           fs.writeFileSync(path.join(f.worktreePath, 'package.json'), JSON.stringify({ name: 'wt', dependencies: { 'left-pad': '^1.0.0' } }));
+         }
+-- 
+2.51.0.windows.1
+

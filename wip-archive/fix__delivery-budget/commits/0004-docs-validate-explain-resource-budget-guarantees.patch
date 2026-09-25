@@ -1,0 +1,50 @@
+From 274e92dd777b5e8f8a906b931ed69e3428bdb4ca Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 15:44:43 +0530
+Subject: [PATCH] docs(validate): explain resource budget guarantees
+
+---
+ CHANGELOG.md                 |  1 +
+ docs/reference/VALIDATION.md | 14 ++++++++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index d721c4fa..d2a47fcd 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Fixed
+ 
++- **Canonical validation exposes an honest full-suite resource budget.** `forge validate --shards N` forwards a positive integer budget to the Forge scheduler. Windows budgets that cannot fund a required worker fail before test workers start; automatic defaults normalize visibly. Requested/effective or rejection evidence is retained without changing required tests, deadlines, or receipt identity. (issue `e0cb0671-735c-4980-944b-286d6f78fe48`)
+ - **Standalone package smoke installs identify packed packages before npm builds the install tree.** The fixture now carries each package name from the same successful `npm pack --json` result into its local tarball specification, avoiding npm's redundant add-request name discovery while preserving tarball extraction, bundled workspaces, installed identity checks, CLI version/setup coverage, and the existing deadlines. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
+ - **Exact version queries avoid loading the command graph.** Direct `forge --version` and `forge -V` print the packaged version before loading command modules, reducing cold startup during standalone installation checks. Imported helpers and mixed command arguments keep their existing behavior. (issue `6b432d06-5ab3-4188-8814-0ae056430cac`)
+ - **The workflow projection hook test avoids a duplicate Git scan.** It retains the real commit-hook rejection and verifies the exact projection mismatch and zero authority consumption through existing fixture readers, without changing test deadlines or production authorization. (issue `e70683d6-f8df-471b-b859-a6dacb69825c`)
+diff --git a/docs/reference/VALIDATION.md b/docs/reference/VALIDATION.md
+index 7a218607..414dca2c 100644
+--- a/docs/reference/VALIDATION.md
++++ b/docs/reference/VALIDATION.md
+@@ -19,6 +19,20 @@ bun run check
+ 
+ Security audit behavior distinguishes blocking high/critical vulnerabilities from lower-severity warnings.
+ 
++## Canonical Validation Resource Budget
++
++In a Forge source checkout, run the receipt-producing command from a clean, committed worktree:
++
++```bash
++forge validate --shards 2
++```
++
++`--shards N` accepts a positive integer resource budget for the full-suite scheduler. Unit workers cost one unit; on Windows, subprocess and exclusive workers cost two. An explicit budget below a required worker's cost fails before test workers start. Omitting the flag selects an automatic budget, which may increase to the minimum needed to run every lane. Output records the requested and effective budget, or the requested and minimum budget on rejection.
++
++These weights govern Forge's lane workers; they do not impose an operating-system limit on every process a test may create. The budget changes scheduling, not required test coverage or deadlines. Consumer repositories cannot use this flag because their test commands do not implement Forge's scheduler contract.
++
++A successful full validation can be reused by the next unchanged `forge push` under the existing receipt checks. Changing the source or validation inputs requires fresh evidence.
++
+ ## Supporting Commands
+ 
+ ```bash
+-- 
+2.51.0.windows.1
+

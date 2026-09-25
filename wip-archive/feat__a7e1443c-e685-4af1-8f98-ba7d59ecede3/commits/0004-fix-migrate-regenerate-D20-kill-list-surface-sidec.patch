@@ -1,0 +1,185 @@
+From 3eda38d078c30690c1be512b37bcca8dd0d7c18a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 17:04:10 +0530
+Subject: [PATCH] fix(migrate): regenerate D20 kill-list + surface sidecar-scan
+ failures (a7e1443c)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two fixes for #391 CI + review:
+
+1. Green the release-readiness gate. Removing the implicit auto-migrate machinery
+   lowered the D20 `bd` call-site counts (command 76→71; migrate.js 22→17), so the
+   checked-in `bd-call-site-kill-list.md` audit artifact went stale and failed the
+   `d20-audit-artifact-current` blocker cross-platform. Regenerated it from the
+   canonical generator (renderBdCallSiteAuditMarkdown(auditBdCallSites(root))) so it
+   matches the current tree.
+
+2. CodeRabbit (beads-kernel-compat.js:123, Data Integrity, Major): the sidecar scan
+   swallowed EVERY readdirSync failure as "no sidecars", so an EACCES/ENOTDIR scan
+   error could hide sidecars silently — the exact data-loss class this migrator
+   closes. detectUnmigratedSidecars now swallows only ENOENT (an absent candidate dir
+   is normal) and returns real scan errors, which importBeadsSnapshot surfaces as a
+   `sidecar-scan.<dir>` gap. TDD: a `.beads/backup` that is a FILE (ENOTDIR) now
+   yields an honest gap instead of a silent skip.
+
+Compat 28→ suite + release-readiness (64) green; eslint clean.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                 |  8 ++---
+ lib/adapters/beads-kernel-compat.js           | 36 +++++++++++++++----
+ test/adapters/beads-kernel-compat.test.js     | 21 +++++++++++
+ 3 files changed, 55 insertions(+), 10 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 34d4dc39..e1cd4b12 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -7,7 +7,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ 
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+-| command | 76 | 8 |
++| command | 71 | 8 |
+ | runtime | 245 | 32 |
+ | docs | 395 | 47 |
+ | skills | 1 | 1 |
+@@ -21,8 +21,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 8 (bd), 10 (bd)
+ - [ ] lib/commands/dev.js (1)
+   - lines: 466 (bd)
+-- [ ] lib/commands/migrate.js (22)
+-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 305 (.beads), 309 (bd, dolt), 310 (bd, dolt), 314 (.beads), 326 (bd, .beads), 472 (.beads), 473 (.beads), 474 (.beads), 475 (.beads)
++- [ ] lib/commands/migrate.js (17)
++  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 311 (.beads), 312 (.beads), 313 (.beads), 314 (.beads)
+ - [ ] lib/commands/plan.js (9)
+   - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 979 (bd), 1016 (bd)
+ - [ ] lib/commands/status.js (10)
+@@ -39,7 +39,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/adapters/beads-issue-adapter.js (1)
+   - lines: 78 (bd)
+ - [ ] lib/adapters/beads-kernel-compat.js (5)
+-  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 832 (.beads)
++  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 899 (.beads)
+ - [ ] lib/audit-evidence.js (3)
+   - lines: 148 (bd), 214 (bd), 240 (bd)
+ - [ ] lib/beads-setup.js (41)
+diff --git a/lib/adapters/beads-kernel-compat.js b/lib/adapters/beads-kernel-compat.js
+index 81debe22..f6237f00 100644
+--- a/lib/adapters/beads-kernel-compat.js
++++ b/lib/adapters/beads-kernel-compat.js
+@@ -109,17 +109,26 @@ const HANDLED_SIDECARS = new Set([
+ 
+ // Scan the same locations readBeadsSidecar reads (the dir itself, a `backup/` subdir, and the
+ // parent) for *.jsonl files this migrator does NOT map. Returns their sorted, de-duplicated
+-// basenames so importBeadsSnapshot can surface each as a `sidecar.<name>` field-gap — closing
+-// the "an unknown/config sidecar was dropped without a word" data-loss class.
++// basenames (`unmigrated`) so importBeadsSnapshot can surface each as a `sidecar.<name>`
++// field-gap — closing the "an unknown/config sidecar was dropped without a word" data-loss
++// class — plus any `scanErrors`: a candidate dir ABSENT from disk (ENOENT) is expected and
++// swallowed, but a REAL scan failure (EACCES/ENOTDIR/…) could hide sidecars silently, so it is
++// reported too rather than masquerading as "no sidecars".
+ function detectUnmigratedSidecars(beadsDir) {
+   const dirs = [beadsDir, path.join(beadsDir, 'backup'), path.dirname(beadsDir)];
+   const unmigrated = new Set();
++  const scanErrors = [];
+   for (const dir of dirs) {
+     let entries;
+     try {
+       entries = fs.readdirSync(dir);
+-    } catch (_err) { // NOSONAR S2486
+-      // intentional: an unreadable candidate dir contributes no sidecars
++    } catch (err) {
++      // A missing candidate dir is the normal case (not every layout has a backup/ subdir);
++      // only ENOENT is safe to swallow. Any other error is a real scan failure that may hide
++      // sidecars — record it so importBeadsSnapshot can surface an honest gap.
++      if (err && err.code !== 'ENOENT') {
++        scanErrors.push({ dir, code: err.code || 'EUNKNOWN' });
++      }
+       continue;
+     }
+     for (const entry of entries) {
+@@ -128,7 +137,10 @@ function detectUnmigratedSidecars(beadsDir) {
+       }
+     }
+   }
+-  return [...unmigrated].sort((a, b) => a.localeCompare(b));
++  return {
++    unmigrated: [...unmigrated].sort((a, b) => a.localeCompare(b)),
++    scanErrors,
++  };
+ }
+ 
+ function loadBeadsSnapshotFromDirectory(beadsDir) {
+@@ -136,6 +148,7 @@ function loadBeadsSnapshotFromDirectory(beadsDir) {
+     throw new TypeError('beadsDir must be a directory path');
+   }
+ 
++  const { unmigrated, scanErrors } = detectUnmigratedSidecars(beadsDir);
+   return {
+     beadsDir,
+     issues: readBeadsSidecar(beadsDir, 'issues.jsonl'),
+@@ -144,7 +157,8 @@ function loadBeadsSnapshotFromDirectory(beadsDir) {
+     events: readBeadsSidecar(beadsDir, 'events.jsonl'),
+     interactions: readBeadsSidecar(beadsDir, 'interactions.jsonl'),
+     labels: readBeadsSidecar(beadsDir, 'labels.jsonl'),
+-    unmigratedSidecars: detectUnmigratedSidecars(beadsDir),
++    unmigratedSidecars: unmigrated,
++    sidecarScanErrors: scanErrors,
+   };
+ }
+ 
+@@ -768,6 +782,16 @@ function importBeadsSnapshot(snapshot = {}, options = {}) {
+   for (const sidecar of Array.isArray(snapshot.unmigratedSidecars) ? snapshot.unmigratedSidecars : []) {
+     addGap(gaps, seenGaps, `sidecar.${sidecar}`, 'present in the Beads store but has no Kernel target — not migrated');
+   }
++  // A directory the sidecar scan could not read (EACCES/ENOTDIR/…, but NOT a merely-absent dir)
++  // might hide sidecars; surface it so the loss is never silent.
++  for (const scanError of Array.isArray(snapshot.sidecarScanErrors) ? snapshot.sidecarScanErrors : []) {
++    addGap(
++      gaps,
++      seenGaps,
++      `sidecar-scan.${path.basename(scanError.dir)}`,
++      `could not scan ${scanError.dir} for unmapped sidecars (${scanError.code}) — any sidecars there were not migrated`,
++    );
++  }
+   const kernel = {
+     issues: sourceIssues.map(issue => mapBeadsIssueToKernel(issue, importedAt, gaps, seenGaps)),
+     dependencies: collectDependencies(normalizedSnapshot)
+diff --git a/test/adapters/beads-kernel-compat.test.js b/test/adapters/beads-kernel-compat.test.js
+index 2923cd1e..56db4b07 100644
+--- a/test/adapters/beads-kernel-compat.test.js
++++ b/test/adapters/beads-kernel-compat.test.js
+@@ -579,6 +579,27 @@ describe('Beads Kernel compatibility adapter', () => {
+ 		expect(snapshot.unmigratedSidecars).not.toContain('interactions.jsonl');
+ 	});
+ 
++	test('surfaces a real sidecar-scan failure (ENOTDIR) as an honest gap, not a silent skip', () => {
++		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-scan-fail-'));
++		const beadsDir = path.join(tmpDir, '.beads');
++		fs.mkdirSync(beadsDir);
++		fs.writeFileSync(path.join(beadsDir, 'issues.jsonl'), '');
++		// Make the `backup/` scan CANDIDATE a FILE — readdirSync throws ENOTDIR, a real
++		// scan failure that could hide sidecars. A missing candidate (ENOENT) is fine to
++		// swallow; a real error must be surfaced, never silently treated as "no sidecars".
++		fs.writeFileSync(path.join(beadsDir, 'backup'), 'not a directory');
++		try {
++			const snapshot = loadBeadsSnapshotFromDirectory(beadsDir);
++			const result = importBeadsSnapshot(snapshot, { importedAt: IMPORTED_AT });
++
++			const scanGap = result.report.gaps.find(entry => entry.field.startsWith('sidecar-scan.'));
++			expect(scanGap).toBeDefined();
++			expect(scanGap.reason).toMatch(/could not scan|ENOTDIR/i);
++		} finally {
++			fs.rmSync(tmpDir, { recursive: true, force: true });
++		}
++	});
++
+ 	test('imports label sidecars and issue notes with explicit fidelity coverage', () => {
+ 		const snapshot = {
+ 			issues: [{
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,373 @@
+From 830cdd094df3b12c75c2ebd14467b1744f1ce024 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 18 Jul 2026 14:07:24 +0530
+Subject: [PATCH] feat(skills): per-harness agent-agnostic dispatch delivery
+ (W1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Make W1 auto-trigger truly agent-agnostic by delivering the using-forge dispatch
+bootstrap on each harness's native always-on surface, by SURFACE TYPE (never
+harness-name branching).
+
+- Fix the FALSE capability matrix: hook-renderer SESSION_START_SUPPORT claimed
+  Cursor has "no-session-start-surface" (wrong — Cursor auto-applies rules every
+  session). Reasons are now honest and name the delivery surface: cursor
+  delivered-via-rule-surface, codex delivered-via-agents-md, hermes
+  delivered-via-cli-fallback. New BOOTSTRAP_DELIVERY data table (claude=hook,
+  cursor=rule, codex=agents-md, hermes=cli-fallback). Refresh S15/S7 matrix docs.
+- AGENTS.md generator (agents-config.generateAgentsMdContent): add a thin "Skill
+  Dispatch" pointer to using-forge + `forge skill for` — the always-on carrier for
+  Codex (native AGENTS.md), Claude (CLAUDE.md @AGENTS.md), Hermes (forge orient).
+  Satisfies follow-up f954b2b9 via the sanctioned generator path (no protected
+  AGENTS.md hand-edit). Full 1%-rule stays only in the skill (no duplication).
+- Cursor rule surface: NEW canonical rules/using-forge.md (alwaysApply:true thin
+  pointer) + CURSOR_RULE_FILES entry → renders .cursor/rules/using-forge.mdc.
+- Parity test (mechanism, not identity): iterates delivery SURFACES, asserts the
+  dispatch pointer on each; loops HARNESS_IDS asserting every rendered:false
+  harness has a real bootstrap surface or the explicit cli-fallback marker; drift
+  assertion added to the rules gate so the fanned-out copies can't lose the pointer.
+
+Deferred to epic 90f2f631 (noted): rendering the actual Cursor .cursor/hooks.json
+sessionStart / Codex [hooks] SessionStart — rule + AGENTS.md carriers suffice now
+and avoid triple-inject.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/agents-config.js               |  5 ++
+ lib/harness-capability-matrix.js   |  4 +-
+ lib/hook-renderer.js               | 34 +++++++++---
+ lib/rules-sync.js                  |  4 ++
+ rules/using-forge.md               | 22 ++++++++
+ test/hook-renderer.test.js         | 24 +++++++--
+ test/rules-sync.test.js            | 21 ++++++--
+ test/skill-dispatch-parity.test.js | 86 ++++++++++++++++++++++++++++++
+ 8 files changed, 182 insertions(+), 18 deletions(-)
+ create mode 100644 rules/using-forge.md
+ create mode 100644 test/skill-dispatch-parity.test.js
+
+diff --git a/lib/agents-config.js b/lib/agents-config.js
+index dc2c3d82..d87ea368 100644
+--- a/lib/agents-config.js
++++ b/lib/agents-config.js
+@@ -93,6 +93,10 @@ Forge currently supports Claude Code, Codex, and Cursor. Hermes support is plann
+ - **Codex** - OpenAI's CLI agent, skills-based workflow
+ - **Cursor** - IDE-integrated, native Plan/Ask/Debug modes
+ 
++## Skill Dispatch (auto-trigger)
++
++Before ANY response — including clarifying questions or exploring the codebase — if there is even a 1% chance a Forge skill applies, invoke it, then announce \`Using [skill] to [purpose]\`. Consult the \`using-forge\` dispatch skill (\`skills/using-forge/SKILL.md\`) for the 1%-rule and routing table, or run \`forge skill for "<situation>"\` for the deterministic best-fit skill. This is agent-agnostic — never branch on harness identity.
++
+ ## Quick Start
+ 
+ \`\`\`bash
+@@ -962,6 +966,7 @@ Choose based on server documentation.
+ module.exports = {
+   detectProjectMetadata,
+   generateAgentsMd,
++  generateAgentsMdContent,
+   generateCursorConfig,
+   generateArchitectureDoc,
+   generateConfigurationDoc,
+diff --git a/lib/harness-capability-matrix.js b/lib/harness-capability-matrix.js
+index c06cac2e..d4ee74f4 100644
+--- a/lib/harness-capability-matrix.js
++++ b/lib/harness-capability-matrix.js
+@@ -33,7 +33,7 @@ const SOURCE_ROWS = [
+   ['S4', 'Cursor MCP', 'https://docs.cursor.com/context/model-context-protocol', 'Cursor connects external tools and data sources through MCP using stdio, SSE, and streamable HTTP transports.'],
+   ['S5', 'Codex skills', 'https://developers.openai.com/codex/skills', 'Codex skills package instructions, resources, and scripts; Codex scans .agents/skills from cwd up to the repo root for repo-scope discovery. Forge installs the global $CODEX_HOME/skills from the canonical skills/ source AND commits the repo-local .agents/skills mirror (kept in sync with skills/ by a pre-commit hook + drift gate) for teammate-clone discovery.'],
+   ['S6', 'Codex MCP', 'https://developers.openai.com/codex/mcp', 'Codex configures MCP servers in config.toml and supports plugin-provided MCP servers.'],
+-  ['S7', 'Codex hooks', 'https://developers.openai.com/codex/hooks', 'Codex hooks run deterministic scripts during lifecycle events.'],
++  ['S7', 'Codex hooks', 'https://developers.openai.com/codex/hooks', 'Codex hooks run deterministic scripts during lifecycle events; they live in GLOBAL $CODEX_HOME/config.toml so project setup does not render them. Codex instead reads the committed project-local AGENTS.md every session, which is the always-on carrier for Forge instruction/policy including the using-forge skill-dispatch pointer (see S9).'],
+   ['S8', 'Codex plugins and marketplaces', 'https://developers.openai.com/codex/plugins/build', 'Codex plugins can package skills, apps, MCP servers, hooks, and marketplace metadata.'],
+   ['S9', 'AGENTS.md standard', 'https://agents.md/', 'AGENTS.md provides repository instructions for coding agents.'],
+   ['S10', 'Cursor Agent Skills', 'https://docs.cursor.com/en/agent/skills', 'Cursor reads on-demand Agent Skills from .cursor/skills/<name>/SKILL.md; Forge populates them at setup from the canonical skills/ source.'],
+@@ -41,7 +41,7 @@ const SOURCE_ROWS = [
+   ['S12', 'Cursor ignore files', 'https://cursor.com/docs/reference/ignore-file', 'Cursor reads project-local .cursorignore (blocks AI access + indexing) and .cursorindexingignore (index-only), gitignore-style; .gitignore and common secret/lock files are ignored by default.'],
+   ['S13', 'Codex sandbox and approvals config', 'https://developers.openai.com/codex/config-reference', 'Codex config.toml sets sandbox_mode (read-only/workspace-write/danger-full-access) and approval_policy (untrusted/on-request/never); a project-local .codex/config.toml is honored ONLY when the project is trusted in the GLOBAL $CODEX_HOME/config.toml (projects.<path>.trust_level).'],
+   ['S14', 'Claude Code hooks', 'https://code.claude.com/docs/en/hooks', 'Claude Code hooks live in .claude/settings.json under a `hooks` block; a PreToolUse matcher group (e.g. "Write|Edit"/"Bash") runs a command that can deny the tool call via hookSpecificOutput.permissionDecision.'],
+-  ['S15', 'Cursor hooks', 'https://cursor.com/docs/hooks', 'Cursor 1.7+ reads project-local .cursor/hooks.json ({ version: 1, hooks }); only before* events (beforeShellExecution/beforeReadFile/beforeMCPExecution) can deny — there is no pre-edit deny event, so afterFileEdit is observational.'],
++  ['S15', 'Cursor hooks', 'https://cursor.com/docs/hooks', 'Cursor 1.7+ reads project-local .cursor/hooks.json ({ version: 1, hooks }); only before* events (beforeShellExecution/beforeReadFile/beforeMCPExecution) can deny — there is no pre-edit deny event, so afterFileEdit is observational. Cursor hooks are therefore NOT the session-context path: Cursor auto-injects always-apply .cursor/rules/*.mdc (alwaysApply:true) every session (see S3), which is the always-on carrier for the using-forge skill-dispatch pointer.'],
+   ['S16', 'Hermes Agent event hooks', 'https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks/', 'Hermes (NousResearch) shell hooks are declared in a `hooks:` block in the GLOBAL ~/.hermes/config.yaml; each matcher/command entry runs as a subprocess over a JSON-stdin/stdout wire protocol, and a pre_tool_call hook CAN deny a tool call ({action:block, message} — it also accepts the Claude-Code {decision:block, reason} shape).'],
+ ];
+ 
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index 9b7074f0..37485cec 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -91,16 +91,33 @@ const FORGE_SHEPHERD_EVENTS_MARKER = 'hooks shepherd-events';
+ // the merge replaces exactly Forge's group and preserves the user's.
+ const FORGE_CAPTURE_CONTEXT_MARKER = `${FORGE_CLI} hooks capture`;
+ 
+-// Per-harness SessionStart context-injection capability. Honest capability matrix —
+-// only Claude exposes a native session-start surface that can inject additionalContext.
+-// Cursor's 1.7 hooks are deny-oriented (no session-start context surface); Codex and
+-// Hermes hooks live in GLOBAL home config that project setup never writes. We NEVER
+-// fake parity: each non-Claude harness carries an explicit, tested skip reason.
++// Per-harness SessionStart HOOK-render capability. This constant governs ONE thing: whether
++// Forge renders a harness-native SessionStart *hook* that injects additionalContext. Only Claude
++// exposes that surface, so only Claude is rendered:true. Every other harness is rendered:false
++// with an HONEST reason naming WHERE the same dispatch bootstrap is delivered instead — because
++// the bootstrap is NOT Claude-only, it just travels a different always-on surface per harness
++// (see BOOTSTRAP_DELIVERY below): Cursor auto-applies an always-on rule (.cursor/rules/*.mdc,
++// alwaysApply:true); Codex reads the committed project-local AGENTS.md every session; Hermes
++// consumes it through the forge CLI (forge prime/orient + forge skill for). We NEVER fake parity
++// and NEVER branch on harness identity at runtime — delivery is keyed by SURFACE TYPE.
+ const SESSION_START_SUPPORT = Object.freeze({
+   claude: Object.freeze({ rendered: true }),
+-  cursor: Object.freeze({ rendered: false, reason: 'no-session-start-surface' }),
+-  codex: Object.freeze({ rendered: false, reason: 'global-config' }),
+-  hermes: Object.freeze({ rendered: false, reason: 'global-config' }),
++  cursor: Object.freeze({ rendered: false, reason: 'delivered-via-rule-surface' }),
++  codex: Object.freeze({ rendered: false, reason: 'delivered-via-agents-md' }),
++  hermes: Object.freeze({ rendered: false, reason: 'delivered-via-cli-fallback' }),
++});
++
++// Where the using-forge dispatch BOOTSTRAP reaches each harness EVERY session. Data, not
++// identity-branching: the parity gate iterates this so no harness is silently left with no
++// auto-surface. Only Claude's is a native SessionStart hook; the rest are equally always-on
++// surfaces (a Cursor always-apply rule, the committed AGENTS.md for Codex, the forge CLI as an
++// honest fallback for Hermes). All four ALSO carry the full using-forge SKILL.md via the synced
++// skill mirrors. 'cli-fallback' is the explicit honest-fallback marker (no faked native surface).
++const BOOTSTRAP_DELIVERY = Object.freeze({
++  claude: 'session-start-hook',
++  cursor: 'always-apply-rule',
++  codex: 'agents-md',
++  hermes: 'cli-fallback',
+ });
+ 
+ // Per-harness UserPromptSubmit context-injection capability (the near-real-time inbox
+@@ -525,6 +542,7 @@ module.exports = {
+   FORGE_INBOX_CONTEXT_MARKER,
+   FORGE_CAPTURE_CONTEXT_MARKER,
+   SESSION_START_SUPPORT,
++  BOOTSTRAP_DELIVERY,
+   USER_PROMPT_SUBMIT_SUPPORT,
+   SESSION_END_SUPPORT,
+   sessionStartCapability,
+diff --git a/lib/rules-sync.js b/lib/rules-sync.js
+index e5296455..57d6dc4c 100644
+--- a/lib/rules-sync.js
++++ b/lib/rules-sync.js
+@@ -48,6 +48,10 @@ const CURSOR_RULE_FILES = {
+   security: 'security-scanning.mdc',
+   documentation: 'documentation.mdc',
+   'kernel-tracking': 'kernel-tracking.mdc',
++  // The using-forge dispatch pointer as an always-apply Cursor rule — Cursor's native
++  // always-on carrier for the skill auto-trigger bootstrap (parallels the Claude SessionStart
++  // hook and the committed AGENTS.md for Codex). Thin pointer; full policy stays in the skill.
++  'using-forge': 'using-forge.mdc',
+ };
+ 
+ const CANONICAL_RULE_NAMES = Object.keys(CURSOR_RULE_FILES);
+diff --git a/rules/using-forge.md b/rules/using-forge.md
+new file mode 100644
+index 00000000..39159fb0
+--- /dev/null
++++ b/rules/using-forge.md
+@@ -0,0 +1,22 @@
++---
++description: "Always: before any response, if a Forge skill could apply, invoke it (or run forge skill for)"
++alwaysApply: true
++globs: []
++---
++
++# Using Forge (skill dispatch — auto-trigger)
++
++**Before ANY response or action** — including clarifying questions, exploring the
++codebase, or checking files — if there is even a **1% chance** a Forge skill
++applies to what you are doing, invoke that skill first. Then announce
++`Using [skill] to [purpose]` and follow it.
++
++- Not sure which skill fits? Run `forge skill for "<what you are about to do>"`
++  for the deterministic best-fit, or read the routing table in the dispatch skill.
++- Common routes: build/scope a feature -> plan; implement a task -> dev; fix a
++  failing test -> dev (debug first); run checks/lint/tests -> validate; open a PR
++  -> ship; address review feedback -> review; where am I -> status.
++
++This rule is a **thin pointer**. The full 1%-rule, red-flags table, subagent
++escape hatch, and routing table live ONLY in `skills/using-forge/SKILL.md` (the
++canonical dispatch skill) — do not duplicate that policy here.
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index f7b98d54..2e8e0432 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -7,6 +7,7 @@ const {
+   HARNESS_HOOK_FILES,
+   FORGE_CONTEXT_MARKER,
+   SESSION_START_SUPPORT,
++  BOOTSTRAP_DELIVERY,
+   SESSION_END_SUPPORT,
+   sessionStartCapability,
+   sessionEndCapability,
+@@ -119,17 +120,30 @@ describe('SessionStart context injection (memory push)', () => {
+     expect(cmd).toContain('forge.js');
+   });
+ 
+-  test('capability matrix is honest — only Claude renders; others carry a skip reason', () => {
++  test('capability matrix is honest — only Claude renders a hook; others name where the bootstrap is delivered', () => {
+     expect(sessionStartCapability('claude')).toEqual({ rendered: true });
+-    expect(sessionStartCapability('cursor')).toEqual({ rendered: false, reason: 'no-session-start-surface' });
+-    expect(sessionStartCapability('codex')).toEqual({ rendered: false, reason: 'global-config' });
+-    expect(sessionStartCapability('hermes')).toEqual({ rendered: false, reason: 'global-config' });
++    // rendered:false does NOT mean "no auto-surface" — the reason names the delivery surface.
++    expect(sessionStartCapability('cursor')).toEqual({ rendered: false, reason: 'delivered-via-rule-surface' });
++    expect(sessionStartCapability('codex')).toEqual({ rendered: false, reason: 'delivered-via-agents-md' });
++    expect(sessionStartCapability('hermes')).toEqual({ rendered: false, reason: 'delivered-via-cli-fallback' });
+     expect(sessionStartCapability('nope')).toEqual({ rendered: false, reason: 'unknown-harness' });
+     // The exported matrix matches the capability function (single source).
+     expect(SESSION_START_SUPPORT.claude.rendered).toBe(true);
+   });
+ 
+-  test('Cursor does NOT fake a session-start surface (no context hook rendered)', () => {
++  test('every non-rendered harness has a real bootstrap delivery surface (no orphaned harness)', () => {
++    for (const harness of Object.keys(SESSION_START_SUPPORT)) {
++      if (SESSION_START_SUPPORT[harness].rendered) continue;
++      // A rendered:false harness MUST name a delivery surface in BOOTSTRAP_DELIVERY —
++      // a real always-on surface OR the explicit 'cli-fallback' honest-fallback marker.
++      expect(BOOTSTRAP_DELIVERY[harness]).toBeTruthy();
++    }
++    // claude's delivery is its native hook; the honest fallback marker is Hermes only.
++    expect(BOOTSTRAP_DELIVERY.claude).toBe('session-start-hook');
++    expect(BOOTSTRAP_DELIVERY.hermes).toBe('cli-fallback');
++  });
++
++  test('Cursor does NOT render a session-start HOOK (bootstrap is delivered via its rule surface instead)', () => {
+     const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
+     const allCommands = Object.values(cfg.hooks).flat().map(h => h.command).join('\n');
+     expect(allCommands).not.toContain('session-start');
+diff --git a/test/rules-sync.test.js b/test/rules-sync.test.js
+index de7c7f5b..c5f335f2 100644
+--- a/test/rules-sync.test.js
++++ b/test/rules-sync.test.js
+@@ -34,16 +34,31 @@ describe('rules sync drift detection', () => {
+     expect(result.issues).toHaveLength(0);
+   });
+ 
+-  test('canonical source defines the five policy rules', () => {
++  test('canonical source defines the six policy rules', () => {
+     expect(CANONICAL_RULE_NAMES).toEqual([
+-      'workflow', 'tdd', 'security', 'documentation', 'kernel-tracking',
++      'workflow', 'tdd', 'security', 'documentation', 'kernel-tracking', 'using-forge',
+     ]);
+     const rules = listCanonicalRules(repoRoot);
+     expect(rules.map((r) => r.name).sort()).toEqual(
+-      ['documentation', 'kernel-tracking', 'security', 'tdd', 'workflow'],
++      ['documentation', 'kernel-tracking', 'security', 'tdd', 'using-forge', 'workflow'],
+     );
+   });
+ 
++  // The using-forge dispatch pointer is Cursor's always-on carrier for the skill auto-trigger
++  // bootstrap — the rule-surface analogue of Claude's SessionStart hook and Codex's committed
++  // AGENTS.md. The drift gate keeps this fanned-out copy from silently losing the pointer.
++  test('using-forge renders to the Cursor native surface (always-apply dispatch pointer)', () => {
++    expect(CURSOR_RULE_FILES['using-forge']).toBe('using-forge.mdc');
++    const [rule] = listCanonicalRules(repoRoot, { only: ['using-forge'] });
++    expect(rule.alwaysApply).toBe('true');
++    const cursor = renderCursorRule(rule);
++    expect(cursor.includes('alwaysApply: true')).toBe(true);
++    expect(cursor).toContain('forge skill for');
++    expect(cursor).toContain('1%');
++    // Thin pointer: defers to the authoritative skill source, no duplicated policy.
++    expect(cursor).toContain('skills/using-forge/SKILL.md');
++  });
++
+   // The always-on kernel-tracking rule must render to EVERY port: a native
+   // `.cursor/rules/kernel-tracking.mdc` for Cursor, and the AGENTS.md projection
+   // for Claude/Codex/Hermes. It ingrains "nothing discussed goes missing —
+diff --git a/test/skill-dispatch-parity.test.js b/test/skill-dispatch-parity.test.js
+new file mode 100644
+index 00000000..df9200bd
+--- /dev/null
++++ b/test/skill-dispatch-parity.test.js
+@@ -0,0 +1,86 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const path = require('node:path');
++
++const { generateAgentsMdContent } = require('../lib/agents-config');
++const { renderCursorRuleMap, CURSOR_RULE_FILES } = require('../lib/rules-sync');
++const { loadDispatchText } = require('../lib/using-forge');
++const { SESSION_START_SUPPORT, BOOTSTRAP_DELIVERY } = require('../lib/hook-renderer');
++const { HARNESS_IDS } = require('../lib/harness-capability-matrix');
++
++const repoRoot = path.resolve(__dirname, '..');
++
++// The canonical dispatch-pointer markers that MUST appear on every always-on delivery surface.
++// Both are present in the skill body, the Cursor rule, and the generated AGENTS.md — so a drift
++// in any one generator (dropping the pointer) fails here.
++const POINTER_MARKERS = ['forge skill for', '1%'];
++
++// Delivery is described by SURFACE TYPE, never by harness name — this table drives the parity
++// assertions without any harness-name branching in product code.
++const DELIVERY_SURFACES = [
++  {
++    id: 'agents-file',
++    render: () => generateAgentsMdContent({ name: 'x', testCommand: 'bun test', buildCommand: 'bun run build' }),
++  },
++  {
++    id: 'rule',
++    render: () => renderCursorRuleMap(repoRoot)[CURSOR_RULE_FILES['using-forge']],
++  },
++  {
++    id: 'skill-hook',
++    // The Claude SessionStart hook injects exactly this text (lib/commands/hooks.js), so asserting
++    // the skill body carries the pointer covers the hook surface without spawning the hook.
++    render: () => loadDispatchText(repoRoot),
++  },
++];
++
++describe('skill-dispatch parity across delivery surfaces (mechanism, not identity)', () => {
++  test.each(DELIVERY_SURFACES.map(s => [s.id, s]))('%s surface carries the dispatch pointer', (_id, surface) => {
++    const rendered = surface.render();
++    expect(typeof rendered).toBe('string');
++    expect(rendered.length).toBeGreaterThan(0);
++    for (const marker of POINTER_MARKERS) {
++      expect(rendered).toContain(marker);
++    }
++  });
++
++  test('the using-forge Cursor rule is always-apply (auto-injected every session)', () => {
++    const rule = renderCursorRuleMap(repoRoot)[CURSOR_RULE_FILES['using-forge']];
++    expect(rule).toContain('alwaysApply: true');
++  });
++
++  test('the AGENTS.md generator names the dispatch skill by path (Codex/Claude/Hermes carrier)', () => {
++    const md = generateAgentsMdContent({ name: 'x', testCommand: 'bun test', buildCommand: 'bun run build' });
++    expect(md).toContain('skills/using-forge/SKILL.md');
++    expect(md).toContain('Skill Dispatch');
++  });
++});
++
++describe('every harness has a bootstrap delivery surface (no orphaned harness, no faked parity)', () => {
++  test('BOOTSTRAP_DELIVERY covers every known harness', () => {
++    for (const harness of HARNESS_IDS) {
++      expect(BOOTSTRAP_DELIVERY[harness]).toBeTruthy();
++    }
++  });
++
++  test('each SessionStart-hook rendered:false harness still has a real surface or the honest-fallback marker', () => {
++    const HONEST_FALLBACK = 'cli-fallback';
++    const REAL_SURFACES = ['always-apply-rule', 'agents-md', 'session-start-hook'];
++    for (const harness of HARNESS_IDS) {
++      const support = SESSION_START_SUPPORT[harness];
++      if (support && support.rendered) continue; // Claude renders the native hook.
++      const delivery = BOOTSTRAP_DELIVERY[harness];
++      // Non-null delivery that is either a real always-on surface OR the explicit honest fallback.
++      expect([...REAL_SURFACES, HONEST_FALLBACK]).toContain(delivery);
++      // And the honest reason string must not imply "no surface".
++      expect(support.reason).not.toBe('no-session-start-surface');
++    }
++  });
++
++  test('only Hermes uses the honest CLI fallback; Cursor and Codex have real always-on surfaces', () => {
++    expect(BOOTSTRAP_DELIVERY.hermes).toBe('cli-fallback');
++    expect(BOOTSTRAP_DELIVERY.cursor).toBe('always-apply-rule');
++    expect(BOOTSTRAP_DELIVERY.codex).toBe('agents-md');
++  });
++});
+-- 
+2.51.0.windows.1
+

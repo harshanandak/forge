@@ -1,0 +1,533 @@
+From 43febafd8a1d317d9d7c08f968412bf0a23ad58c Mon Sep 17 00:00:00 2001
+From: Harsha Befach <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 00:10:27 +0530
+Subject: [PATCH] fix(shepherd): fence launches on migration gate
+
+---
+ lib/commands/shepherd.js                      |  25 ++-
+ lib/commands/test.js                          |   2 +
+ lib/pr-monitor/watch-lifecycle.js             |  22 ++
+ test/commands/test.test.js                    |   2 +
+ test/pr-monitor/arm-on-push.test.js           |   6 +
+ test/pr-monitor/shepherd-watch.test.js        |  22 +-
+ test/pr-monitor/watch-lifecycle.test.js       |   1 +
+ test/pr-monitor/watch-owner-cutover.test.js   |   7 +
+ .../watch-owner-launch-contention.test.js     |   3 +
+ .../watch-owner-launch-gate.test.js           | 188 ++++++++++++++++++
+ test/scripts/test-runner.test.js              |   2 +
+ 11 files changed, 269 insertions(+), 11 deletions(-)
+ create mode 100644 test/pr-monitor/watch-owner-launch-gate.test.js
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 76b2b529..6f99a62f 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -38,7 +38,7 @@ const { gatherMonitorSnapshot } = require('../pr-monitor/gather');
+ const { privacySafeIdentity } = require('../pr-monitor/flow-monitor');
+ const { pollEvents } = require('../pr-monitor/monitor');
+ const { watchLoop } = require('../pr-monitor/watch');
+-const { startPrWatcherDetached } = require('../pr-monitor/watch-lifecycle');
++const { startPrWatcherDetached, launchGateComplete } = require('../pr-monitor/watch-lifecycle');
+ const watchOwner = require('../pr-monitor/watch-owner');
+ const reconcileExecutor = require('../pr-monitor/reconcile-executor');
+ const monitorJournal = require('../pr-monitor/journal');
+@@ -516,11 +516,13 @@ async function handleAdopt(projectRoot, deps = {}) {
+   try {
+     for (const pr of prs) {
+       try {
++        const owner = deps.owner || watchOwner;
++        if (!await launchGateComplete(owner, ownerOptions)) continue;
+         const res = await startWatcher({
+           prNumber: pr,
+           cwd: projectRoot,
+           repository,
+-          owner: deps.owner || watchOwner,
++          owner,
+           ownerOptions,
+           providerEvidence: { state: 'OPEN', repository, pr },
+         });
+@@ -564,11 +566,19 @@ async function handleWatch(args, projectRoot, deps = {}) {
+   const ownerOptions = built.ownerOptions || deps.ownerOptions || {};
+   let generation = suppliedGeneration;
+   let controllerPid = suppliedGeneration ? suppliedControllerPid : process.pid;
++  let reservedHere = false;
+   if (suppliedGeneration && (!Number.isSafeInteger(suppliedControllerPid) || suppliedControllerPid <= 0)) {
+     await built.close?.();
+     return { success: false, error: 'Watcher controller identity is invalid' };
+   }
+   if (!generation) {
++    if (!await launchGateComplete(owner, ownerOptions)) {
++      await built.close?.();
++      return {
++        success: true, started: false, passes: 0, stopped: false,
++        reason: 'migration-gate-incomplete',
++      };
++    }
+     let reserved = await owner.reserveStarting(identity, { controllerPid }, ownerOptions);
+     if (!reserved?.ok && reserved?.record?.phase === 'complete' && built.prState === 'OPEN') {
+       reserved = await owner.reserveReopened(identity, {
+@@ -589,6 +599,17 @@ async function handleWatch(args, projectRoot, deps = {}) {
+       };
+     }
+     generation = reserved.record.generation;
++    reservedHere = true;
++  }
++  if (!await launchGateComplete(owner, ownerOptions)) {
++    if (reservedHere) {
++      await owner.abortStarting(identity, { generation, controllerPid }, ownerOptions);
++    }
++    await built.close?.();
++    return {
++      success: true, started: false, passes: 0, stopped: false,
++      reason: 'migration-gate-incomplete',
++    };
+   }
+   const loop = deps.watchLoop || watchLoop;
+   // Injected signal (tests) suppresses real process handlers; otherwise wire them.
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index a9145f38..3e25b1db 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -65,6 +65,7 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'lib/commands/shepherd.js': [
+ 		'test/commands/shepherd.test.js',
+ 		'test/pr-monitor/watch-owner-launch-contention.test.js',
++		'test/pr-monitor/watch-owner-launch-gate.test.js',
+ 	],
+ 	'lib/kernel/sqlite-driver.js': [
+ 		'test/kernel/sqlite-driver.test.js',
+@@ -89,6 +90,7 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 	'lib/pr-monitor/watch-lifecycle.js': [
+ 		'test/pr-monitor/watch-lifecycle.test.js',
+ 		'test/pr-monitor/watch-owner-launch-contention.test.js',
++		'test/pr-monitor/watch-owner-launch-gate.test.js',
+ 	],
+ 	'lib/pr-monitor/shepherd-lease.js': [
+ 		'test/pr-monitor/shepherd-lease.test.js',
+diff --git a/lib/pr-monitor/watch-lifecycle.js b/lib/pr-monitor/watch-lifecycle.js
+index c0bf991b..9f794d5a 100644
+--- a/lib/pr-monitor/watch-lifecycle.js
++++ b/lib/pr-monitor/watch-lifecycle.js
+@@ -23,6 +23,16 @@ const watchOwner = require('./watch-owner');
+ 
+ const CANONICAL_REPOSITORY = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
+ 
++async function launchGateComplete(owner = watchOwner, ownerOptions = {}) {
++  if (typeof owner?.readMigrationGate !== 'function') return false;
++  try {
++    const result = await owner.readMigrationGate({}, ownerOptions);
++    return result?.ok === true && result.gate?.state === 'complete';
++  } catch {
++    return false;
++  }
++}
++
+ /** Absolute path to the forge CLI entrypoint (this file is lib/pr-monitor/). */
+ function forgeBin() {
+   return path.join(__dirname, '..', '..', 'bin', 'forge.js');
+@@ -74,6 +84,9 @@ async function startPrWatcherDetached(opts = {}) {
+       || (opts.reservation == null && typeof owner.reserveStarting !== 'function')) {
+       return { started: false, reason: 'authority-unavailable' };
+     }
++    if (!await launchGateComplete(owner, opts.ownerOptions || {})) {
++      return { started: false, reason: 'migration-gate-incomplete' };
++    }
+ 
+     const identity = { repo: repository, pr };
+     if (opts.reservation != null) {
+@@ -106,6 +119,14 @@ async function startPrWatcherDetached(opts = {}) {
+     if (!reservation?.ok || !reservation.record) {
+       return { started: false, reason: reservation?.reason || 'authority-unavailable' };
+     }
++    if (!await launchGateComplete(owner, opts.ownerOptions || {})) {
++      if (opts.reservation == null) {
++        await owner.abortStarting(identity, {
++          generation: reservation.record.generation, controllerPid,
++        }, opts.ownerOptions || {});
++      }
++      return { started: false, reason: 'migration-gate-incomplete' };
++    }
+ 
+     const child = spawnFn(
+       process.execPath,
+@@ -160,6 +181,7 @@ async function startPrWatcherDetached(opts = {}) {
+ 
+ module.exports = {
+   startPrWatcherDetached,
++  launchGateComplete,
+   defaultResolveSlug,
+   forgeBin,
+ };
+diff --git a/test/commands/test.test.js b/test/commands/test.test.js
+index 5f579ac8..968419d4 100644
+--- a/test/commands/test.test.js
++++ b/test/commands/test.test.js
+@@ -296,6 +296,7 @@ describe('forge test command', () => {
+ 			['lib/commands/shepherd.js', [
+ 				'test/commands/shepherd.test.js',
+ 				'test/pr-monitor/watch-owner-launch-contention.test.js',
++				'test/pr-monitor/watch-owner-launch-gate.test.js',
+ 			]],
+ 			['lib/kernel/schema.js', [
+ 				'test/kernel/composite-primary-key-schema.test.js',
+@@ -330,6 +331,7 @@ describe('forge test command', () => {
+ 			['lib/pr-monitor/watch-lifecycle.js', [
+ 				'test/pr-monitor/watch-lifecycle.test.js',
+ 				'test/pr-monitor/watch-owner-launch-contention.test.js',
++				'test/pr-monitor/watch-owner-launch-gate.test.js',
+ 			]],
+ 			['lib/pr-monitor/shepherd-lease.js', [
+ 				'test/pr-monitor/shepherd-lease-election-only.test.js',
+diff --git a/test/pr-monitor/arm-on-push.test.js b/test/pr-monitor/arm-on-push.test.js
+index 66a4b64f..f2be8015 100644
+--- a/test/pr-monitor/arm-on-push.test.js
++++ b/test/pr-monitor/arm-on-push.test.js
+@@ -8,6 +8,9 @@ function adoptDeps(overrides = {}) {
+   return {
+     resolveRepository: () => 'harshanandak/forge',
+     ownerOptions: { driver: {} },
++    owner: {
++      readMigrationGate: async () => ({ ok: true, changed: false, reason: 'read', gate: { state: 'complete' } }),
++    },
+     ...overrides,
+   };
+ }
+@@ -21,6 +24,9 @@ describe('forge shepherd watch --adopt', () => {
+       resolveRepository: () => 'harshanandak/forge',
+       listOpenPrs: (repository) => { listed.push(repository); return [41, 42]; },
+       ownerOptions,
++      owner: {
++        readMigrationGate: async () => ({ ok: true, changed: false, reason: 'read', gate: { state: 'complete' } }),
++      },
+       startWatcher: async (opts) => {
+         starts.push(opts);
+         return { started: true };
+diff --git a/test/pr-monitor/shepherd-watch.test.js b/test/pr-monitor/shepherd-watch.test.js
+index 0789a23a..0ea4dbcf 100644
+--- a/test/pr-monitor/shepherd-watch.test.js
++++ b/test/pr-monitor/shepherd-watch.test.js
+@@ -5,6 +5,17 @@ const { describe, test, expect } = require('bun:test');
+ const shepherd = require('../../lib/commands/shepherd');
+ 
+ function authorityDeps(overrides = {}) {
++  const { owner: ownerOverrides = {}, ...rest } = overrides;
++  const owner = {
++    readMigrationGate: async () => ({ ok: true, changed: false, reason: 'read', gate: { state: 'complete' } }),
++    reserveStarting: async () => ({
++      ok: true,
++      changed: true,
++      reason: 'acquired',
++      record: { generation: 'generation-1', startedAt: '2026-08-19T12:00:00.000Z' },
++    }),
++    ...ownerOverrides,
++  };
+   return {
+     repository: 'acme/forge',
+     dir: '/tmp/watch',
+@@ -12,15 +23,8 @@ function authorityDeps(overrides = {}) {
+     enrich: () => {},
+     store: {},
+     ownerOptions: { driver: {} },
+-    owner: {
+-      reserveStarting: async () => ({
+-        ok: true,
+-        changed: true,
+-        reason: 'acquired',
+-        record: { generation: 'generation-1', startedAt: '2026-08-19T12:00:00.000Z' },
+-      }),
+-    },
+-    ...overrides,
++    ...rest,
++    owner,
+   };
+ }
+ 
+diff --git a/test/pr-monitor/watch-lifecycle.test.js b/test/pr-monitor/watch-lifecycle.test.js
+index b559c810..09b00d92 100644
+--- a/test/pr-monitor/watch-lifecycle.test.js
++++ b/test/pr-monitor/watch-lifecycle.test.js
+@@ -24,6 +24,7 @@ function ownerHarness(reservation = {}) {
+     terminalReceiptId: null, blockReason: null, legacyEvidenceHash: null,
+   };
+   return {
++    readMigrationGate: async () => ({ ok: true, changed: false, reason: 'read', gate: { state: 'complete' } }),
+     reserveStarting: async () => ({ ok: true, changed: true, reason: 'acquired', record, ...reservation }),
+     abortStarting: async () => ({ ok: true, changed: true, reason: 'aborted', record: null }),
+   };
+diff --git a/test/pr-monitor/watch-owner-cutover.test.js b/test/pr-monitor/watch-owner-cutover.test.js
+index fa964daf..6b9307de 100644
+--- a/test/pr-monitor/watch-owner-cutover.test.js
++++ b/test/pr-monitor/watch-owner-cutover.test.js
+@@ -7,6 +7,9 @@ const { watchLoop } = require('../../lib/pr-monitor/watch');
+ const shepherd = require('../../lib/commands/shepherd');
+ 
+ const NOW = '2026-08-19T12:00:00.000Z';
++const readCompleteGate = async () => ({
++	ok: true, changed: false, reason: 'read', gate: { state: 'complete' },
++});
+ 
+ function ownerRecord(overrides = {}) {
+ 	return {
+@@ -28,6 +31,7 @@ describe('watch owner production cutover', () => {
+ 			controllerPid: 101,
+ 			repository: 'HarshaNandak/Forge',
+ 			owner: {
++				readMigrationGate: readCompleteGate,
+ 				reserveStarting: async (identity, input) => {
+ 					order.push(['reserve', identity, input]);
+ 					return { ok: true, changed: true, reason: 'acquired', record: ownerRecord() };
+@@ -64,6 +68,7 @@ describe('watch owner production cutover', () => {
+ 			controllerPid: 101,
+ 			reservation: { ok: true, changed: true, reason: 'recovered', record },
+ 			owner: {
++				readMigrationGate: readCompleteGate,
+ 				reserveStarting: async () => { reserveCalls += 1; throw new Error('must not reserve'); },
+ 				abortStarting: async () => ({ ok: true }),
+ 			},
+@@ -92,6 +97,7 @@ describe('watch owner production cutover', () => {
+ 				ok: true, changed: true, reason: 'recovered', record: ownerRecord(overrides),
+ 			},
+ 			owner: {
++				readMigrationGate: readCompleteGate,
+ 				abortStarting: async () => ({ ok: true }),
+ 			},
+ 			spawn: () => { spawnCalls += 1; return { pid: 203, on() {}, unref() {} }; },
+@@ -133,6 +139,7 @@ describe('watch owner production cutover', () => {
+ 		const order = [];
+ 		let loopContext;
+ 		const owner = {
++			readMigrationGate: readCompleteGate,
+ 			reserveStarting: async (identity, input) => {
+ 				order.push(['reserve', identity, input]);
+ 				return { ok: true, changed: true, reason: 'acquired', record: ownerRecord({ controllerPid: process.pid }) };
+diff --git a/test/pr-monitor/watch-owner-launch-contention.test.js b/test/pr-monitor/watch-owner-launch-contention.test.js
+index 1d097d5d..34e315ea 100644
+--- a/test/pr-monitor/watch-owner-launch-contention.test.js
++++ b/test/pr-monitor/watch-owner-launch-contention.test.js
+@@ -20,6 +20,9 @@ function contentionAuthority(expectedReservations) {
+   const contendersReady = new Promise((resolve) => { releaseContenders = resolve; });
+ 
+   return {
++    async readMigrationGate() {
++      return { ok: true, changed: false, reason: 'read', gate: { state: 'complete' } };
++    },
+     async reserveStarting(identity, input) {
+       const arrival = arrivals;
+       arrivals += 1;
+diff --git a/test/pr-monitor/watch-owner-launch-gate.test.js b/test/pr-monitor/watch-owner-launch-gate.test.js
+new file mode 100644
+index 00000000..dbcbea4a
+--- /dev/null
++++ b/test/pr-monitor/watch-owner-launch-gate.test.js
+@@ -0,0 +1,188 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const shepherd = require('../../lib/commands/shepherd');
++const { startPrWatcherDetached } = require('../../lib/pr-monitor/watch-lifecycle');
++
++const REPOSITORY = 'acme/forge';
++const PR = 42;
++const STARTED_AT = '2026-08-20T00:00:00.000Z';
++const BLOCKED_GATES = [
++  ['absent', { ok: false, changed: false, reason: 'absent', gate: null }],
++  ['quarantined', { ok: true, changed: false, reason: 'read', gate: { state: 'quarantined' } }],
++  ['conflict', { ok: true, changed: false, reason: 'read', gate: { state: 'conflict' } }],
++  ['corrupt', { ok: false, changed: false, reason: 'corrupt', gate: null }],
++  ['unavailable', { ok: false, changed: false, reason: 'authority_unavailable', gate: null }],
++];
++const COMPLETE_GATE = {
++  ok: true, changed: false, reason: 'read', gate: { state: 'complete' },
++};
++
++function ownerHarness(gateResult) {
++  const counters = { gateReads: 0, reservations: 0, spawns: 0, binds: 0 };
++  return {
++    counters,
++    owner: {
++      readMigrationGate: async () => {
++        counters.gateReads += 1;
++        return gateResult;
++      },
++      reserveStarting: async (identity, input) => {
++        counters.reservations += 1;
++        return {
++          ok: true,
++          changed: true,
++          reason: 'acquired',
++          record: {
++            repo: identity.repo,
++            pr: identity.pr,
++            generation: 'store-generation-1',
++            phase: 'starting',
++            controllerPid: input.controllerPid,
++            watcherPid: null,
++            startedAt: STARTED_AT,
++            updatedAt: STARTED_AT,
++            heartbeatAt: null,
++            terminalReceiptId: null,
++            blockReason: null,
++            legacyEvidenceHash: null,
++          },
++        };
++      },
++      abortStarting: async () => ({ ok: true, changed: true, reason: 'aborted', record: null }),
++    },
++  };
++}
++
++function fakeSpawn(counters, pid = 9200) {
++  return () => {
++    counters.spawns += 1;
++    return { pid, on() {}, unref() {} };
++  };
++}
++
++async function runDirect(gateResult) {
++  const harness = ownerHarness(gateResult);
++  const result = await shepherd.handleWatch(['watch', String(PR)], '/repo', {
++    repository: REPOSITORY,
++    dir: '/journal',
++    gather: async () => ({}),
++    store: {},
++    owner: harness.owner,
++    ownerOptions: { driver: {} },
++    signal: { aborted: false },
++    watchLoop: async () => {
++      harness.counters.binds += 1;
++      return { started: true, passes: 0, stopped: false };
++    },
++  });
++  return { ...harness, result };
++}
++
++async function runAdopt(gateResult) {
++  const harness = ownerHarness(gateResult);
++  const result = await shepherd.handleWatch(['watch', '--adopt'], '/repo', {
++    railEnabled: () => true,
++    resolveRepository: () => REPOSITORY,
++    listOpenPrs: () => [PR],
++    owner: harness.owner,
++    ownerOptions: { driver: {} },
++    startWatcher: options => startPrWatcherDetached({
++      ...options,
++      spawn: fakeSpawn(harness.counters),
++    }),
++  });
++  return { ...harness, result };
++}
++
++async function runPreReservedAndChild(gateResult) {
++  const harness = ownerHarness(gateResult);
++  const reservation = {
++    ok: true,
++    changed: true,
++    reason: 'acquired',
++    record: {
++      repo: REPOSITORY,
++      pr: PR,
++      generation: 'store-generation-1',
++      phase: 'starting',
++      controllerPid: 9001,
++      watcherPid: null,
++      startedAt: STARTED_AT,
++      updatedAt: STARTED_AT,
++      heartbeatAt: null,
++      terminalReceiptId: null,
++      blockReason: null,
++      legacyEvidenceHash: null,
++    },
++  };
++  const lifecycle = await startPrWatcherDetached({
++    prNumber: PR,
++    repository: REPOSITORY,
++    controllerPid: 9001,
++    reservation,
++    owner: harness.owner,
++    ownerOptions: { driver: {} },
++    spawn: fakeSpawn(harness.counters),
++  });
++  const child = await shepherd.handleWatch([
++    'watch', String(PR), '--repo', REPOSITORY, '--generation', 'store-generation-1',
++    '--controller-pid', '9001', '--started-at', STARTED_AT,
++  ], '/repo', {
++    dir: '/journal',
++    gather: async () => ({}),
++    store: {},
++    owner: harness.owner,
++    ownerOptions: { driver: {} },
++    signal: { aborted: false },
++    watchLoop: async () => {
++      harness.counters.binds += 1;
++      return { started: true, passes: 0, stopped: false };
++    },
++  });
++  return { ...harness, lifecycle, child };
++}
++
++describe('watch owner migration launch gate', () => {
++  test.each(BLOCKED_GATES)('direct watch blocks %s gate before reservation or bind', async (_state, gate) => {
++    const { counters, result } = await runDirect(gate);
++    expect(counters).toEqual(expect.objectContaining({ reservations: 0, spawns: 0, binds: 0 }));
++    expect(result).toEqual(expect.objectContaining({ started: false }));
++  });
++
++  test.each(BLOCKED_GATES)('adopt blocks %s gate before reservation or spawn', async (_state, gate) => {
++    const { counters, result } = await runAdopt(gate);
++    expect(counters).toEqual(expect.objectContaining({ reservations: 0, spawns: 0, binds: 0 }));
++    expect(result).toEqual(expect.objectContaining({ adopted: [], total: 1 }));
++  });
++
++  test.each(BLOCKED_GATES)('pre-reserved lifecycle and child block %s gate before spawn or bind', async (_state, gate) => {
++    const { counters, lifecycle, child } = await runPreReservedAndChild(gate);
++    expect(counters).toEqual(expect.objectContaining({ reservations: 0, spawns: 0, binds: 0 }));
++    expect(lifecycle).toEqual(expect.objectContaining({ started: false }));
++    expect(child).toEqual(expect.objectContaining({ started: false }));
++  });
++
++  test('complete gate permits direct reservation and bind', async () => {
++    const { counters, result } = await runDirect(COMPLETE_GATE);
++    expect(counters.gateReads).toBeGreaterThan(0);
++    expect(counters).toEqual(expect.objectContaining({ reservations: 1, spawns: 0, binds: 1 }));
++    expect(result).toEqual(expect.objectContaining({ started: true }));
++  });
++
++  test('complete gate permits adopt reservation and spawn', async () => {
++    const { counters, result } = await runAdopt(COMPLETE_GATE);
++    expect(counters.gateReads).toBeGreaterThan(0);
++    expect(counters).toEqual(expect.objectContaining({ reservations: 1, spawns: 1, binds: 0 }));
++    expect(result).toEqual(expect.objectContaining({ adopted: [PR], total: 1 }));
++  });
++
++  test('complete gate permits pre-reserved spawn and child bind without a second reservation', async () => {
++    const { counters, lifecycle, child } = await runPreReservedAndChild(COMPLETE_GATE);
++    expect(counters.gateReads).toBeGreaterThan(0);
++    expect(counters).toEqual(expect.objectContaining({ reservations: 0, spawns: 1, binds: 1 }));
++    expect(lifecycle).toEqual(expect.objectContaining({ started: true }));
++    expect(child).toEqual(expect.objectContaining({ started: true }));
++  });
++});
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 7a52cb8c..47313f96 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -254,6 +254,7 @@ describe('scripts/test pre-push runner', () => {
+     ['lib/commands/shepherd.js', [
+       'test/commands/shepherd.test.js',
+       'test/pr-monitor/watch-owner-launch-contention.test.js',
++      'test/pr-monitor/watch-owner-launch-gate.test.js',
+     ]],
+     ['lib/kernel/schema.js', [
+       'test/kernel/composite-primary-key-schema.test.js',
+@@ -288,6 +289,7 @@ describe('scripts/test pre-push runner', () => {
+     ['lib/pr-monitor/watch-lifecycle.js', [
+       'test/pr-monitor/watch-lifecycle.test.js',
+       'test/pr-monitor/watch-owner-launch-contention.test.js',
++      'test/pr-monitor/watch-owner-launch-gate.test.js',
+     ]],
+     ['lib/pr-monitor/shepherd-lease.js', [
+       'test/pr-monitor/shepherd-lease-election-only.test.js',
+-- 
+2.51.0.windows.1
+

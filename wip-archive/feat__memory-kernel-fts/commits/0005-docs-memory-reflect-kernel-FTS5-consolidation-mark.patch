@@ -1,0 +1,219 @@
+From 7c54d2806d921f24e687c5b5058d51a22f09095a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 18:27:26 +0530
+Subject: [PATCH] docs(memory): reflect kernel+FTS5 consolidation; mark
+ graphiti experimental
+
+Updates help text and guides now that remember/recall are kernel-backed:
+command descriptions and doctor detail drop the stale 'JSONL/file-backed'
+wording for 'kernel store, FTS5-indexed'; TOOLCHAIN.md and the memory
+backends guide describe the FTS5 recall path, the insights->recall link and
+the one-time JSONL import, and mark the graphiti backend experimental until
+its runtime emitter ships.
+
+Issue: 9c8060f8-f4ec-47f4-b923-5e247c5bcdfd
+---
+ docs/guides/memory-backends.md      | 29 ++++++++++++++++++++---------
+ docs/reference/TOOLCHAIN.md         |  2 ++
+ lib/commands/doctor.js              |  2 +-
+ lib/commands/recall.js              |  2 +-
+ lib/commands/remember.js            |  2 +-
+ test/commands/doctor-memory.test.js |  3 +++
+ test/commands/recall.test.js        | 24 ++++++++++++++++++++++++
+ test/commands/remember.test.js      |  2 ++
+ 8 files changed, 54 insertions(+), 12 deletions(-)
+
+diff --git a/docs/guides/memory-backends.md b/docs/guides/memory-backends.md
+index c9dc9e83..9bdf8010 100644
+--- a/docs/guides/memory-backends.md
++++ b/docs/guides/memory-backends.md
+@@ -12,14 +12,20 @@ backend is chosen by `memory.backend` in `.forge/config.yaml`:
+ 
+ | Backend | Storage | Needs | When |
+ |---|---|---|---|
+-| **`local`** (default) | flat JSONL at `.forge/memory/notes.jsonl` | nothing — offline, instant | always the floor |
+-| **`graphiti`** | temporal **knowledge graph** over MCP | graph DB + LLM | evolving, relational, temporal recall |
++| **`local`** (default) | kernel `kernel_memories` table, FTS5-indexed | nothing — offline, instant | always the floor |
++| **`graphiti`** _(experimental)_ | temporal **knowledge graph** over MCP | graph DB + LLM | evolving, relational, temporal recall |
+ 
+ `local` and `graphiti` are the only public `memory.backend` values.
+ 
+ > **The local backend is the default and the guaranteed offline floor.** You do
+ > not need to configure anything to use `forge remember` / `forge recall`. The
+ > Graphiti backend is strictly **opt-in** and never changes the default path.
++>
++> **`graphiti` is experimental — its runtime emitter is not yet shipped.**
++> Selecting it today still writes the local kernel floor (the graph emit is a
++> best-effort no-op), so `recall` always reads back from the kernel. The config
++> and `forge doctor` reachability checks work; the write-through emit is a
++> fast-follow.
+ 
+ Precedence for selecting the backend:
+ `FORGE_MEMORY_BACKEND` env → `memory.backend` in config → `local`.
+@@ -32,9 +38,14 @@ forge doctor            # reports the memory backend (+ graphiti reachability, n
+ 
+ ## Local (default) — nothing to set up
+ 
+-Notes are appended to `.forge/memory/notes.jsonl`, committed with your repo, and
+-searched by case-insensitive substring across note text and tags. No services,
+-no network, no keys. This is what ships and what most projects should use.
++Notes persist to the kernel `kernel_memories` table (the per-repo Forge Kernel
++SQLite store under `.git/forge/`), indexed by **FTS5** for token-AND BM25 recall.
++No services, no network, no keys. This is what ships and what most projects
++should use. `recall` with no query returns the newest notes plus a total count;
++a query does full-text BM25 matching (every token must appear, in any order). The
++same kernel table also holds what `forge insights` learns, so those records are
++recallable too. (An older flat `.forge/memory/notes.jsonl` is imported once on
++first use, then retired.)
+ 
+ ## Opt into Graphiti (knowledge-graph memory)
+ 
+@@ -148,7 +159,7 @@ Once wired, **agents** call the graph directly over MCP:
+ The **`memory` skill** ([`skills/memory/SKILL.md`](../../skills/memory/SKILL.md))
+ teaches agents when and how to use these. `forge remember` / `forge recall` keep
+ working from the CLI — when the graph backend is selected they still write to the
+-local JSONL store as a safety floor, so a note is never lost.
++local kernel store as a safety floor, so a note is never lost.
+ 
+ ## Privacy & cost (read before enabling)
+ 
+@@ -159,12 +170,12 @@ local JSONL store as a safety floor, so a note is never lost.
+   writes are billable and take from sub-second to a couple of seconds. Prefer
+   async ingest; retrieval is cheap.
+ - **Ops:** you run and maintain a graph DB + the (experimental) Graphiti MCP
+-  server. This is a real jump from "append a line to a JSONL file" — which is
+-  exactly why it is opt-in and the local backend stays the default.
++  server. This is a real jump from "write a note to the local kernel store" —
++  which is exactly why it is opt-in and the local backend stays the default.
+ 
+ ## Turning it off
+ 
+ Remove `memory.backend` (and the `memory.graphiti` block) from
+ `.forge/config.yaml` — the router falls straight back to `local`. Your local
+-JSONL notes were never touched. If you manually added a `graphiti-memory` entry
++kernel notes were never touched. If you manually added a `graphiti-memory` entry
+ to your agent's MCP config, delete it too (Forge did not write one).
+diff --git a/docs/reference/TOOLCHAIN.md b/docs/reference/TOOLCHAIN.md
+index d053cffe..79206a6f 100644
+--- a/docs/reference/TOOLCHAIN.md
++++ b/docs/reference/TOOLCHAIN.md
+@@ -138,6 +138,8 @@ bash scripts/beads-migrate-to-dolt.sh --help
+ 
+ Forge project memory is a **kernel-backed** read model. `lib/project-memory.js` persists memories in the per-repo Forge Kernel store (the `kernel_memories` table, via the built-in SQLite driver) — it does **not** call `bd`. No Beads install is required for `forge remember` / `forge recall`.
+ 
++`forge remember` / `forge recall` route through this same `kernel_memories` table (via `lib/memory/router.js`), indexed by **FTS5** for token-AND BM25 recall: a `recall` query does full-text matching, and a no-query `recall` returns the newest notes plus a total count (never a full dump). Because the insights engine also writes `kernel_memories`, what it learns is recallable. Any legacy `.forge/memory/notes.jsonl` is imported once on first use, then retired. The opt-in **`graphiti`** backend is **experimental** — its config/doctor checks ship but the runtime write-through emitter is a fast-follow, so selecting it today still writes the local kernel floor. See [docs/guides/memory-backends.md](../guides/memory-backends.md).
++
+ Typed memory helpers in `lib/memory/typed-api.js` add category and provenance conventions on top of the same kernel store; they do not create a new datastore. The supported categories are:
+ 
+ | Category | Key prefix | Durable backend |
+diff --git a/lib/commands/doctor.js b/lib/commands/doctor.js
+index 22f70390..d437c5f7 100644
+--- a/lib/commands/doctor.js
++++ b/lib/commands/doctor.js
+@@ -34,7 +34,7 @@ function buildMemoryCheck(projectRoot, env) {
+ 				id: 'memory-backend',
+ 				ok: true,
+ 				backend,
+-				detail: `memory backend: ${backend} (local JSONL store, offline)`,
++				detail: `memory backend: ${backend} (local kernel store, FTS5-indexed, offline)`,
+ 			};
+ 		}
+ 		const serverPath = graphiti.mcpServerPath;
+diff --git a/lib/commands/recall.js b/lib/commands/recall.js
+index 4403bde4..e9314036 100644
+--- a/lib/commands/recall.js
++++ b/lib/commands/recall.js
+@@ -83,7 +83,7 @@ async function handler(args, _flags, projectRoot) {
+ 
+ module.exports = {
+   name: 'recall',
+-  description: 'Retrieve project-memory notes from the file-backed store',
++  description: 'Retrieve project-memory notes from the kernel-backed memory store',
+   usage,
+   flags: {
+     '--limit': 'Cap the number of notes returned',
+diff --git a/lib/commands/remember.js b/lib/commands/remember.js
+index a758470b..4a9d1306 100644
+--- a/lib/commands/remember.js
++++ b/lib/commands/remember.js
+@@ -64,7 +64,7 @@ async function handler(args, _flags, projectRoot) {
+ 
+ module.exports = {
+   name: 'remember',
+-  description: 'Persist a project-memory note to a file-backed store',
++  description: 'Persist a project-memory note to the kernel-backed memory store',
+   usage,
+   flags: {
+     '--tag': 'Attach a search label (repeatable)',
+diff --git a/test/commands/doctor-memory.test.js b/test/commands/doctor-memory.test.js
+index 1bb3af4e..eb186020 100644
+--- a/test/commands/doctor-memory.test.js
++++ b/test/commands/doctor-memory.test.js
+@@ -50,6 +50,9 @@ describe('forge doctor: memory backend check', () => {
+     expect(check).toBeDefined();
+     expect(check.backend).toBe('local');
+     expect(check.ok).toBe(true);
++    // The default local store is the kernel table, not the retired flat JSONL file.
++    expect(check.detail).toContain('kernel');
++    expect(check.detail).not.toContain('JSONL');
+   });
+ 
+   test('graphiti selected but unconfigured is reported (ok:false) but does not fail the overall report', () => {
+diff --git a/test/commands/recall.test.js b/test/commands/recall.test.js
+index ce99cacf..fa09cf4e 100644
+--- a/test/commands/recall.test.js
++++ b/test/commands/recall.test.js
+@@ -53,6 +53,8 @@ describe('forge recall command', () => {
+     expect(typeof recall.handler).toBe('function');
+     expect(recall.usage).toContain('recall');
+     expect(recall.usage).toContain('[query]');
++    // The store is the kernel table now, not a flat file.
++    expect(recall.description).toContain('kernel');
+   });
+ 
+   test('lists all stored notes when no query is given', async () => {
+@@ -114,6 +116,28 @@ describe('forge recall command', () => {
+     expect(parsed).toHaveLength(2);
+   });
+ 
++  test('surfaces an insights-written kernel_memories row (insights -> recall connection)', async () => {
++    const projectRoot = makeProjectRoot();
++    // Mimic `forge insights`: a skill record written straight to kernel_memories (object
++    // value + insights tags), NOT through `remember`. recall reads the same table.
++    projectMemory.write(projectRoot, {
++      key: 'insights:skill.cand-42',
++      value: { candidateId: 'cand-42', status: 'accepted', note: 'recurring lint gate' },
++      sourceAgent: 'forge insights',
++      tags: ['insights', 'accepted'],
++    });
++
++    // Discoverable by its tokens via FTS...
++    const byToken = await recall.handler(['accepted'], {}, projectRoot);
++    expect(byToken.success).toBe(true);
++    expect(byToken.output).toContain('cand-42');
++
++    // ...and present in the default (no-query) newest-first listing.
++    const listing = await recall.handler(['--json'], {}, projectRoot);
++    const notes = JSON.parse(listing.output);
++    expect(notes.some(note => note.note.includes('cand-42'))).toBe(true);
++  });
++
+   test('does not treat the -p global flag as part of the query (kernel c1e090ff)', async () => {
+     const projectRoot = makeProjectRoot();
+     await seed(projectRoot, 'ship the fix');
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index 77195c1c..5fca9b8d 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -57,6 +57,8 @@ describe('forge remember command', () => {
+     expect(typeof remember.handler).toBe('function');
+     expect(remember.usage).toContain('remember');
+     expect(remember.usage).toContain('<note>');
++    // The store is the kernel table now, not a flat file.
++    expect(remember.description).toContain('kernel');
+   });
+ 
+   test('persists a note and reports success', async () => {
+-- 
+2.51.0.windows.1
+

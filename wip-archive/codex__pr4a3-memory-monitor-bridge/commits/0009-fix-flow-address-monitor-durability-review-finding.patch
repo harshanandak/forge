@@ -1,0 +1,133 @@
+From 3cc46f24f9434b98aaee8608148a8d7ceb6827d2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 05:01:32 +0530
+Subject: [PATCH] fix(flow): address monitor durability review findings
+
+---
+ packages/flow/src/monitor-durability.js       | 19 +++++---
+ packages/flow/test/monitor-durability.test.js | 45 +++++++++++++++++++
+ 2 files changed, 57 insertions(+), 7 deletions(-)
+
+diff --git a/packages/flow/src/monitor-durability.js b/packages/flow/src/monitor-durability.js
+index 6fd5d6a5..e15dca19 100644
+--- a/packages/flow/src/monitor-durability.js
++++ b/packages/flow/src/monitor-durability.js
+@@ -179,9 +179,14 @@ async function providerCall(operation) {
+   }
+ }
+ 
+-function assertRows(value, monitorId, limit = MAX_EVIDENCE_HISTORY) {
++function assertRows(
++  value,
++  monitorId,
++  limit = MAX_EVIDENCE_HISTORY,
++  code = "INCOMPLETE_TERMINAL_EVIDENCE",
++) {
+   if (!Array.isArray(value) || value.length > limit) {
+-    fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is unavailable or exceeds its bound");
++    fail(code, "Monitor event history is unavailable or exceeds its bound");
+   }
+   const rows = value.map((row) => {
+     if (
+@@ -193,13 +198,13 @@ function assertRows(value, monitorId, limit = MAX_EVIDENCE_HISTORY) {
+       typeof row.event_id !== "string" ||
+       !SHA256.test(row.content_hash)
+     ) {
+-      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is incomplete");
++      fail(code, "Monitor event history is incomplete");
+     }
+     return row;
+   });
+   for (let index = 1; index < rows.length; index += 1) {
+     if (rows[index].sequence <= rows[index - 1].sequence) {
+-      fail("INCOMPLETE_TERMINAL_EVIDENCE", "Monitor event history is not monotonic");
++      fail(code, "Monitor event history is not monotonic");
+     }
+   }
+   return rows;
+@@ -215,7 +220,7 @@ function assertEvent(value, monitorId, eventId) {
+   ) {
+     fail("INPUT_INVALID", "Delivery receipt references an unknown monitor event");
+   }
+-  const [event] = assertRows([snapshot], monitorId, 1);
++  const [event] = assertRows([snapshot], monitorId, 1, "INPUT_INVALID");
+   return event;
+ }
+ 
+@@ -362,7 +367,7 @@ function createMonitorDurabilityBridge(options) {
+       const deliveryState = assertDeliveryState(
+         await providerCall(() => readDeliveryState(
+           safeMonitorId,
+-          { limit: targets.length },
++          { limit: MAX_EVIDENCE_HISTORY },
+           safeConfig,
+         )),
+         safeMonitorId,
+@@ -386,7 +391,7 @@ function createMonitorDurabilityBridge(options) {
+       const deliveryState = assertDeliveryState(
+         await providerCall(() => readDeliveryState(
+           monitorId,
+-          { limit: targets.length },
++          { limit: MAX_EVIDENCE_HISTORY },
+           safeConfig,
+         )),
+         monitorId,
+diff --git a/packages/flow/test/monitor-durability.test.js b/packages/flow/test/monitor-durability.test.js
+index 964efd12..edba135e 100644
+--- a/packages/flow/test/monitor-durability.test.js
++++ b/packages/flow/test/monitor-durability.test.js
+@@ -453,6 +453,51 @@ describe('monitor durability bridge', () => {
+     expect(driver.state.eventReads).toBe(2);
+   });
+ 
++  test('classifies a malformed acknowledgement event as invalid delivery input', async () => {
++    const driver = createDurableDriver();
++    const event = monitorEvent();
++    await bridge(driver).persistEvent(event);
++    const getMonitorEvent = driver.getMonitorEvent.bind(driver);
++    driver.getMonitorEvent = (eventId) => ({
++      ...getMonitorEvent(eventId),
++      sequence: 'not-an-integer',
++    });
++
++    await expect(
++      bridge(driver).acknowledgeDelivery('monitor-1', deliveryReceipt(event)),
++    ).rejects.toMatchObject({ code: 'INPUT_INVALID' });
++    expect(driver.state.deliveryReceipts.size).toBe(0);
++  });
++
++  test('reads retained delivery state with a bound independent of current targets', async () => {
++    const driver = createDurableDriver();
++    const event = monitorEvent();
++    await bridge(driver).persistEvent(event);
++    driver.state.cursors.set('monitor-1:retired-target-a', 0);
++    driver.state.cursors.set('monitor-1:retired-target-b', 0);
++    const readMonitorDeliveryState = driver.readMonitorDeliveryState.bind(driver);
++    const limits = [];
++    driver.readMonitorDeliveryState = (monitorId, options = {}) => {
++      limits.push(options.limit);
++      const snapshot = readMonitorDeliveryState(monitorId);
++      const cursors = snapshot.cursors.slice(0, options.limit);
++      return {
++        ...snapshot,
++        cursors,
++        overflow: {
++          ...snapshot.overflow,
++          cursors: snapshot.cursors.length > options.limit,
++        },
++      };
++    };
++    const monitorBridge = bridge(driver);
++
++    await monitorBridge.acknowledgeDelivery('monitor-1', deliveryReceipt(event));
++    await monitorBridge.recordTerminalReceipt(terminalReceipt([event]));
++
++    expect(limits).toEqual([128, 128]);
++  });
++
+   test('records one terminal receipt across restarts and rejects a conflicting terminal', async () => {
+     const driver = createDurableDriver();
+     const events = [monitorEvent({ sequence: 0 }), monitorEvent({ sequence: 1 })];
+-- 
+2.51.0.windows.1
+

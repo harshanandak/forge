@@ -1,0 +1,166 @@
+From 34a83593154d7d2c68057e8641f19d0236778028 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 09:01:07 +0530
+Subject: [PATCH] fix: close monitor privacy and lifecycle gaps
+
+---
+ lib/pr-monitor/flow-monitor.js             |  3 ++-
+ lib/pr-monitor/reconcile-executor.js       | 24 ++++++++++++++++------
+ test/pr-monitor/flow-monitor.test.js       | 18 ++++++++++++++++
+ test/pr-monitor/reconcile-executor.test.js |  6 ++++--
+ 4 files changed, 42 insertions(+), 9 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index abd4f8e7..96562116 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -57,7 +57,7 @@ function boundIdentity(value) {
+ }
+ 
+ function validBoundedJobUrl(value) {
+-  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT) return null;
++  if (typeof value !== 'string' || value.length > JOB_URL_LIMIT || UNSAFE_PROVIDER_DIAGNOSTIC.test(value)) return null;
+   try {
+     const url = new URL(value);
+     return url.protocol === 'https:' || url.protocol === 'http:' ? value : null;
+@@ -77,6 +77,7 @@ function boundMonitorRecord(record) {
+   }
+   const jobUrl = validBoundedJobUrl(record.data?.jobUrl);
+   if (jobUrl) bounded.data.jobUrl = jobUrl;
++  else if (bounded.data) delete bounded.data.jobUrl;
+   return bounded;
+ }
+ 
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 8e0c4e53..0cbf38d2 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -407,14 +407,18 @@ async function gatherObserved(gitCommonDir, lock, opts = {}) {
+  * Kill a watcher pid ONLY after re-verifying start-time (design risk #4). Returns
+  * true iff the kill actually happened. Never kills on a PID match alone.
+  */
+-function verifiedKill(entry, ctx, signal) {
++function hasVerifiedClaim(entry, ctx) {
+ 	if (!entry || entry.pid == null || entry.startedAt == null) return false;
+-	const isAlive = ctx.isAlive || shepherdLease.pidAlive;
+-	if (!isAlive(entry.pid)) return false;
+ 	const readClaim = ctx.readClaim
+ 		|| ((e) => readClaimMarker(ctx.projectRoot, e.repo, e.pr, ctx.gitCommonDir));
+ 	const claim = readClaim(entry);
+-	if (claim == null || String(claim) !== String(entry.startedAt)) return false;
++	return claim != null && String(claim) === String(entry.startedAt);
++}
++
++function verifiedKill(entry, ctx, signal) {
++	if (!entry || entry.pid == null || entry.startedAt == null) return false;
++	const isAlive = ctx.isAlive || shepherdLease.pidAlive;
++	if (!isAlive(entry.pid) || !hasVerifiedClaim(entry, ctx)) return false;
+ 	try {
+ 		const kill = ctx.kill || process.kill;
+ 		if (signal) kill(entry.pid, signal);
+@@ -469,12 +473,16 @@ const ACTION_HANDLERS = {
+ 	stopWatcher(action, s) {
+ 		for (const entry of s.watchers.filter((w) => w.pr === action.pr.number)) {
+ 			const at = s.now();
++			const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
++			if (isAlive(entry.pid) && !hasVerifiedClaim(entry, s.ctx)) {
++				s.watchers = s.watchers.filter(watcher => watcher !== entry);
++				continue;
++			}
+ 			if (entry.lifecycle.state.phase === 'RUNNING') {
+ 				checkpointLifecycle(entry, lifecycleEvent(entry, 'cancel-requested', at), s);
+ 				verifiedKill(entry, s.ctx);
+ 				continue;
+ 			}
+-			const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
+ 			if (isAlive(entry.pid)) {
+ 				const cancelledAt = entry.lifecycle.state.cancelRequestedAt;
+ 				if (entry.lifecycle.state.phase === 'CANCEL_REQUESTED'
+@@ -498,12 +506,16 @@ const ACTION_HANDLERS = {
+ 		const entry = s.watchers.find((w) => w.pid === action.pid && w.startedAt === action.startedAt);
+ 		if (!entry) return;
+ 		const at = s.now();
++		const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
++		if (isAlive(entry.pid) && !hasVerifiedClaim(entry, s.ctx)) {
++			s.watchers = s.watchers.filter(watcher => watcher !== entry);
++			return;
++		}
+ 		if (entry.lifecycle.state.phase === 'RUNNING') {
+ 			checkpointLifecycle(entry, lifecycleEvent(entry, 'orphan-detected', at), s);
+ 			verifiedKill(entry, s.ctx);
+ 			return;
+ 		}
+-		const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
+ 		if (isAlive(entry.pid)) {
+ 			const orphanedAt = entry.lifecycle.state.lastAt;
+ 			if (entry.lifecycle.state.phase === 'ORPHANED'
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 7d25921e..c8168e2e 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -314,6 +314,24 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBe(jobUrl);
+   });
+ 
++  test('omits credential-bearing enriched job URLs before durable and legacy persistence', async () => {
++    const store = durableStore();
++    let next = snapshot({ checks: [{ name: 'ci', class: 'green' }] });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: [{ name: 'ci', class: 'failed' }] });
++    ctx.enrich = async records => {
++      records.find(record => record.type === 'check.failed').data.jobUrl = 'https://ci.example/job/1?token=supersecret123';
++    };
++
++    await runFlowMonitorPass(ctx);
++
++    const failure = delivered.find(record => record.type === 'check.failed');
++    expect(failure.data.jobUrl).toBeUndefined();
++    expect(store.events.at(-1).payload.bounded_payload.record.data.jobUrl).toBeUndefined();
++  });
++
+   test('preserves long repository identity in bounded durable and compatibility records', async () => {
+     const store = durableStore();
+     const repo = `owner/${'repository'.repeat(10)}`;
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index 707b29f6..eb552241 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -336,7 +336,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
+ 
+ 	test('MISMATCH: pid alive but journal marker startedAt differs → kill is NOT called', async () => {
+ 		const kills = [];
+-		await executor.execute(
++		const watchers = await executor.execute(
+ 			[{ type: 'reapOrphan', pid: 999, startedAt: 't1' }],
+ 			{
+ 				projectRoot: '/repo',
+@@ -348,6 +348,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
+ 			},
+ 		);
+ 		expect(kills).toHaveLength(0);
++		expect(watchers).toEqual([]);
+ 	});
+ 
+ 	test('MATCH: pid alive AND marker startedAt equals watcher entry → kill called exactly once', async () => {
+@@ -405,7 +406,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
+ 
+ 	test('absent marker → never killed', async () => {
+ 		const kills = [];
+-		await executor.execute(
++		const watchers = await executor.execute(
+ 			[{ type: 'stopWatcher', pr: { number: 5 } }],
+ 			{
+ 				projectRoot: '/repo',
+@@ -417,6 +418,7 @@ describe('verifiedKill — orphan reaping start-time re-verification (risk #4)',
+ 			},
+ 		);
+ 		expect(kills).toHaveLength(0);
++		expect(watchers).toEqual([]);
+ 	});
+ });
+ 
+-- 
+2.51.0.windows.1
+

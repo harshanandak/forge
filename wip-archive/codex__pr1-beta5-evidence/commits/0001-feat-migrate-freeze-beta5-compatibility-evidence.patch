@@ -1,0 +1,1012 @@
+From bf165edf6b04b7528cf1a8d5e970ab092a0d4e20 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 17:26:43 +0530
+Subject: [PATCH] feat(migrate): freeze beta5 compatibility evidence
+
+---
+ lib/beta5-compatibility-evidence.js           | 551 ++++++++++++++++++
+ lib/fixtures/beta5-corpus/v1/README.md        |   9 +
+ .../v1/contract/command-contract.json         |  26 +
+ .../v1/contract/package-contract.json         |  13 +
+ .../v1/contract/workflow-stage-matrix.json    |   8 +
+ lib/fixtures/beta5-corpus/v1/manifest.json    |  25 +
+ .../beta5-corpus/v1/state/comments.jsonl      |   1 +
+ .../beta5-corpus/v1/state/config.yaml         |   6 +
+ .../beta5-corpus/v1/state/dependencies.jsonl  |   1 +
+ .../beta5-corpus/v1/state/issues.jsonl        |   2 +
+ lib/fixtures/beta5-corpus/v1/state/kernel.sql |  19 +
+ test/beta5-compatibility-evidence.test.js     | 244 ++++++++
+ 12 files changed, 905 insertions(+)
+ create mode 100644 lib/beta5-compatibility-evidence.js
+ create mode 100644 lib/fixtures/beta5-corpus/v1/README.md
+ create mode 100644 lib/fixtures/beta5-corpus/v1/contract/command-contract.json
+ create mode 100644 lib/fixtures/beta5-corpus/v1/contract/package-contract.json
+ create mode 100644 lib/fixtures/beta5-corpus/v1/contract/workflow-stage-matrix.json
+ create mode 100644 lib/fixtures/beta5-corpus/v1/manifest.json
+ create mode 100644 lib/fixtures/beta5-corpus/v1/state/comments.jsonl
+ create mode 100644 lib/fixtures/beta5-corpus/v1/state/config.yaml
+ create mode 100644 lib/fixtures/beta5-corpus/v1/state/dependencies.jsonl
+ create mode 100644 lib/fixtures/beta5-corpus/v1/state/issues.jsonl
+ create mode 100644 lib/fixtures/beta5-corpus/v1/state/kernel.sql
+ create mode 100644 test/beta5-compatibility-evidence.test.js
+
+diff --git a/lib/beta5-compatibility-evidence.js b/lib/beta5-compatibility-evidence.js
+new file mode 100644
+index 00000000..77ecc86b
+--- /dev/null
++++ b/lib/beta5-compatibility-evidence.js
+@@ -0,0 +1,551 @@
++'use strict';
++
++const crypto = require('node:crypto');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { selectBuiltinSQLiteRuntime } = require('./kernel/sqlite-driver');
++
++const BETA5_VERSION = '0.1.0-beta.5';
++const BETA5_RELEASE_COMMIT = 'ebeb4e5b31fc2dacdf23c5936c02fb2656990f49';
++const BETA5_CORPUS_ROOT = path.join(__dirname, 'fixtures', 'beta5-corpus', 'v1');
++const KERNEL_COUNT_TABLES = Object.freeze({
++  issues: 'kernel_issues',
++  comments: 'kernel_comments',
++  dependencies: 'kernel_dependencies',
++  claims: 'kernel_claims',
++  runs: 'kernel_stage_runs',
++  projections: 'kernel_projections',
++  worktrees: 'kernel_worktrees',
++  events: 'kernel_events',
++});
++const REQUIRED_KERNEL_TABLES = Object.freeze(['kernel_migrations', ...Object.values(KERNEL_COUNT_TABLES)]);
++
++function sha256(bytes) {
++  return crypto.createHash('sha256').update(bytes).digest('hex');
++}
++
++function isSafeRelativePath(relativePath) {
++  return typeof relativePath === 'string'
++    && relativePath.length > 0
++    && !path.isAbsolute(relativePath)
++    && !relativePath.split(/[\\/]/).includes('..');
++}
++
++function aggregateHash(files) {
++  const canonical = [...files]
++    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
++    .map(file => `${file.path}\0${file.sha256}\n`)
++    .join('');
++  return sha256(canonical);
++}
++
++function listCorpusFiles(root, relativeDirectory = '') {
++  const directory = path.join(root, relativeDirectory);
++  const files = [];
++  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
++    const relativePath = path.join(relativeDirectory, entry.name);
++    if (entry.isDirectory()) {
++      files.push(...listCorpusFiles(root, relativePath));
++    } else {
++      files.push(relativePath.replaceAll('\\', '/'));
++    }
++  }
++  return files.sort();
++}
++
++function validateCorpusMetadata(manifest) {
++  const reasons = [];
++  if (manifest.schema_version !== 'forge.beta5-corpus.v1') reasons.push('schema_version_mismatch');
++  if (manifest.release_version !== BETA5_VERSION) reasons.push('release_version_mismatch');
++  if (manifest.release_commit !== BETA5_RELEASE_COMMIT) reasons.push('release_commit_mismatch');
++  if (!Array.isArray(manifest.files) || manifest.files.length === 0) reasons.push('file_manifest_empty');
++  const sourceBlobs = manifest.source_blobs && typeof manifest.source_blobs === 'object'
++    ? Object.entries(manifest.source_blobs)
++    : [];
++  const invalidSource = sourceBlobs.some(([source, blob]) => !isSafeRelativePath(source)
++    || !/^[a-f0-9]{40}$/.test(blob));
++  if (sourceBlobs.length !== 4 || invalidSource) reasons.push('source_provenance_invalid');
++  return { reasons, sourceBlobs };
++}
++
++function observeCorpusEntry(corpusRoot, entry) {
++  if (!isSafeRelativePath(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256 || '')) {
++    return { reason: `invalid_entry:${String(entry.path)}` };
++  }
++  const root = path.resolve(corpusRoot);
++  const filePath = path.resolve(root, entry.path);
++  if (!filePath.startsWith(`${root}${path.sep}`)) return { reason: `path_escape:${entry.path}` };
++  try {
++    const stat = fs.lstatSync(filePath);
++    if (!stat.isFile() || stat.isSymbolicLink()) return { reason: `not_regular_file:${entry.path}` };
++    const observed = { path: entry.path, sha256: sha256(fs.readFileSync(filePath)) };
++    return observed.sha256 === entry.sha256
++      ? { observed }
++      : { observed, reason: `hash_mismatch:${entry.path}` };
++  } catch (_error) {
++    return { reason: `missing_file:${entry.path}` };
++  }
++}
++
++function findUnmanifestedFiles(corpusRoot, manifestFiles) {
++  try {
++    const declared = new Set(manifestFiles.map(entry => entry.path));
++    return listCorpusFiles(corpusRoot)
++      .filter(relativePath => relativePath !== 'manifest.json' && !declared.has(relativePath))
++      .map(relativePath => `unmanifested_file:${relativePath}`);
++  } catch (_error) {
++    return ['corpus_inventory_unreadable'];
++  }
++}
++
++function verifyBeta5Corpus(corpusRoot = BETA5_CORPUS_ROOT) {
++  let manifest;
++  try {
++    manifest = JSON.parse(fs.readFileSync(path.join(corpusRoot, 'manifest.json'), 'utf8'));
++  } catch (_error) {
++    return { status: 'FAIL', reasons: ['manifest_unreadable'] };
++  }
++
++  const manifestFiles = Array.isArray(manifest.files) ? manifest.files : [];
++  const metadata = validateCorpusMetadata(manifest);
++  const observations = manifestFiles.map(entry => observeCorpusEntry(corpusRoot, entry));
++  const observedFiles = observations.flatMap(result => result.observed ? [result.observed] : []);
++  const reasons = [
++    ...metadata.reasons,
++    ...observations.flatMap(result => result.reason ? [result.reason] : []),
++    ...findUnmanifestedFiles(corpusRoot, manifestFiles),
++  ];
++
++  const observedContentHash = aggregateHash(observedFiles);
++  if (observedFiles.length === manifest.files?.length && observedContentHash !== manifest.content_hash) {
++    reasons.push('content_hash_mismatch');
++  }
++
++  return {
++    status: reasons.length === 0 ? 'PASS' : 'FAIL',
++    version: manifest.release_version || null,
++    releaseCommit: manifest.release_commit || null,
++    corpusVersion: manifest.corpus_version || null,
++    fileCount: observedFiles.length,
++    sourceBlobCount: metadata.sourceBlobs.length,
++    contentHash: observedContentHash,
++    reasons: [...new Set(reasons)].sort(),
++  };
++}
++
++function inspectJsonl(filePath) {
++  if (!fs.existsSync(filePath)) return { status: 'PASS', present: false, records: 0 };
++  try {
++    const stat = fs.lstatSync(filePath);
++    if (!stat.isFile() || stat.isSymbolicLink()) {
++      return { status: 'INCOMPLETE', present: true, reason: 'not_regular_file' };
++    }
++    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(line => line.trim());
++    for (const line of lines) JSON.parse(line);
++    return { status: 'PASS', present: true, records: lines.length };
++  } catch (_error) {
++    return { status: 'INCOMPLETE', present: true, reason: 'unreadable_or_malformed' };
++  }
++}
++
++function inspectPackage(filePath) {
++  if (!fs.existsSync(filePath)) return { status: 'PASS', present: false, beta5Declared: false };
++  try {
++    const value = JSON.parse(fs.readFileSync(filePath, 'utf8'));
++    const declared = [value.version, value.dependencies?.['forge-workflow'], value.devDependencies?.['forge-workflow']]
++      .filter(Boolean);
++    return { status: 'PASS', present: true, beta5Declared: declared.includes(BETA5_VERSION) };
++  } catch (_error) {
++    return { status: 'INCOMPLETE', present: true, reason: 'unreadable_or_malformed' };
++  }
++}
++
++function inspectPresence(filePath) {
++  if (!fs.existsSync(filePath)) return { status: 'PASS', present: false };
++  try {
++    const stat = fs.lstatSync(filePath);
++    return stat.isFile() && !stat.isSymbolicLink()
++      ? { status: 'PASS', present: true, bytes: stat.size }
++      : { status: 'INCOMPLETE', present: true, reason: 'not_regular_file' };
++  } catch (_error) {
++    return { status: 'INCOMPLETE', present: true, reason: 'unreadable' };
++  }
++}
++
++function openReadOnlyDatabase(runtime, databasePath) {
++  if (runtime.id === 'bun:sqlite') {
++    return new runtime.module.Database(databasePath, { readonly: true, create: false, strict: true });
++  }
++  if (runtime.id === 'node:sqlite') {
++    return new runtime.module.DatabaseSync(databasePath, { readOnly: true });
++  }
++  throw new Error(`Unsupported builtin SQLite runtime: ${runtime.id}`);
++}
++
++function queryAll(runtime, database, sql) {
++  return runtime.id === 'bun:sqlite' ? database.query(sql).all() : database.prepare(sql).all();
++}
++
++function queryOne(runtime, database, sql) {
++  return queryAll(runtime, database, sql)[0] || {};
++}
++
++function closeDatabase(database) {
++  if (database && typeof database.close === 'function') database.close();
++}
++
++function hasSqliteHeader(filePath) {
++  const descriptor = fs.openSync(filePath, 'r');
++  const header = Buffer.alloc(16);
++  try {
++    fs.readSync(descriptor, header, 0, header.length, 0);
++  } finally {
++    fs.closeSync(descriptor);
++  }
++  return header.toString('utf8') === 'SQLite format 3\0';
++}
++
++function countKernelRows(runtime, database) {
++  return Object.fromEntries(Object.entries(KERNEL_COUNT_TABLES).map(([label, table]) => [
++    label,
++    Number(queryOne(runtime, database, `SELECT COUNT(*) AS count FROM "${table}";`).count || 0),
++  ]));
++}
++
++function inspectKernel(filePath) {
++  if (!fs.existsSync(filePath)) return { status: 'PASS', present: false, unknowns: [] };
++  let database;
++  try {
++    const stat = fs.lstatSync(filePath);
++    if (!stat.isFile() || stat.isSymbolicLink()) {
++      return { status: 'INCOMPLETE', present: true, reason: 'not_regular_file', unknowns: ['kernel_schema'] };
++    }
++    if (!hasSqliteHeader(filePath)) {
++      return { status: 'INCOMPLETE', present: true, reason: 'unrecognized_database', unknowns: ['kernel_schema'] };
++    }
++    const runtime = selectBuiltinSQLiteRuntime();
++    database = openReadOnlyDatabase(runtime, filePath);
++    const tableNames = new Set(queryAll(
++      runtime,
++      database,
++      "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;",
++    ).map(row => String(row.name)));
++    const missingTables = REQUIRED_KERNEL_TABLES.filter(table => !tableNames.has(table));
++    const integrity = String(queryOne(runtime, database, 'PRAGMA quick_check;').quick_check || 'unknown');
++    const migrationIds = tableNames.has('kernel_migrations')
++      ? queryAll(runtime, database, 'SELECT id FROM kernel_migrations ORDER BY id;').map(row => String(row.id))
++      : [];
++    const unknowns = [];
++    if (missingTables.length > 0) unknowns.push('missing_required_tables');
++    if (integrity !== 'ok') unknowns.push('integrity_check');
++    if (migrationIds.length === 0) unknowns.push('migration_version');
++    return {
++      status: unknowns.length === 0 ? 'PASS' : 'INCOMPLETE',
++      present: true,
++      schemaVersion: migrationIds.at(-1) || null,
++      migrationCount: migrationIds.length,
++      counts: missingTables.length === 0 ? countKernelRows(runtime, database) : null,
++      additionalTableCount: Math.max(0, tableNames.size - REQUIRED_KERNEL_TABLES.length),
++      unknowns,
++    };
++  } catch (_error) {
++    return { status: 'INCOMPLETE', present: true, reason: 'unreadable_or_unsupported', unknowns: ['kernel_schema'] };
++  } finally {
++    closeDatabase(database);
++  }
++}
++
++function buildPrivacySafeInventory(projectRoot) {
++  const surfaces = {
++    package: inspectPackage(path.join(projectRoot, 'package.json')),
++    config: inspectPresence(path.join(projectRoot, '.forge', 'config.yaml')),
++    project: inspectPresence(path.join(projectRoot, '.forge', 'project.json')),
++    issues: inspectJsonl(path.join(projectRoot, '.forge', 'issues.jsonl')),
++    kernel: inspectKernel(path.join(projectRoot, '.forge', 'kernel.sqlite')),
++  };
++  const unknowns = [];
++  if (surfaces.package.status === 'INCOMPLETE') unknowns.push('package_contract');
++  if (surfaces.package.status === 'PASS' && !surfaces.package.beta5Declared) unknowns.push('beta5_install_contract');
++  if (surfaces.config.status === 'INCOMPLETE') unknowns.push('config_shape');
++  if (surfaces.project.status === 'INCOMPLETE') unknowns.push('project_marker');
++  if (surfaces.issues.status === 'INCOMPLETE') unknowns.push('issue_records');
++  if (surfaces.kernel.status === 'INCOMPLETE') unknowns.push(...surfaces.kernel.unknowns);
++  return {
++    schemaVersion: 'forge.beta5-inventory.v1',
++    status: unknowns.length === 0 ? 'PASS' : 'INCOMPLETE',
++    surfaces,
++    unknowns: [...new Set(unknowns)].sort(),
++  };
++}
++
++function isContained(rootIdentity, candidateIdentity) {
++  const relative = path.relative(rootIdentity, candidateIdentity);
++  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
++}
++
++function recordStateEntry(rootIdentity, absolutePath, relativePath, files, reasons) {
++  const stat = fs.lstatSync(absolutePath);
++  if (stat.isSymbolicLink()) {
++    reasons.push('state_tree_contains_link');
++    return;
++  }
++  const identity = fs.realpathSync.native(absolutePath);
++  if (!isContained(rootIdentity, identity)) {
++    reasons.push('state_tree_outside_root');
++    return;
++  }
++  if (stat.isDirectory()) {
++    for (const entry of fs.readdirSync(absolutePath).sort()) {
++      recordStateEntry(rootIdentity, path.join(absolutePath, entry), path.join(relativePath, entry), files, reasons);
++    }
++    return;
++  }
++  if (!stat.isFile()) {
++    reasons.push('state_tree_unsupported_entry');
++    return;
++  }
++  files.push({ path: relativePath.replaceAll('\\', '/'), sha256: sha256(fs.readFileSync(absolutePath)) });
++}
++
++function buildStateTreeManifest(projectRoot) {
++  const reasons = [];
++  const files = [];
++  try {
++    const rootStat = fs.lstatSync(projectRoot);
++    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
++      return { status: 'INCOMPLETE', fileCount: 0, hash: sha256(''), files, reasons: ['state_root_not_directory'] };
++    }
++    const rootIdentity = fs.realpathSync.native(projectRoot);
++    for (const relativePath of ['.forge', 'package.json']) {
++      const absolutePath = path.join(projectRoot, relativePath);
++      if (fs.existsSync(absolutePath)) {
++        recordStateEntry(rootIdentity, absolutePath, relativePath, files, reasons);
++      }
++    }
++  } catch (_error) {
++    reasons.push('state_tree_unreadable');
++  }
++  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
++  return {
++    status: reasons.length === 0 ? 'PASS' : 'INCOMPLETE',
++    fileCount: files.length,
++    hash: aggregateHash(files),
++    files,
++    reasons: [...new Set(reasons)].sort(),
++  };
++}
++
++function isKernelSidecar(relativePath) {
++  return /^\.forge\/kernel\.sqlite(?:-(?:wal|shm))?$/.test(relativePath);
++}
++
++function copyManifestFiles(sourceRoot, destinationRoot, files) {
++  for (const file of files) {
++    const target = path.join(destinationRoot, file.path);
++    fs.mkdirSync(path.dirname(target), { recursive: true });
++    fs.copyFileSync(path.join(sourceRoot, file.path), target, fs.constants.COPYFILE_EXCL);
++  }
++}
++
++function normalizeSqlValue(value) {
++  if (typeof value === 'bigint') return value.toString();
++  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return Buffer.from(value).toString('hex');
++  return value;
++}
++
++function normalizeSqlRow(row) {
++  return Object.fromEntries(Object.keys(row).sort().map(key => [key, normalizeSqlValue(row[key])]));
++}
++
++function kernelSemanticSignature(databasePath) {
++  const runtime = selectBuiltinSQLiteRuntime();
++  const database = openReadOnlyDatabase(runtime, databasePath);
++  try {
++    const integrity = String(queryOne(runtime, database, 'PRAGMA quick_check;').quick_check || 'unknown');
++    const schemaRows = queryAll(
++      runtime,
++      database,
++      "SELECT name, type, sql FROM sqlite_master WHERE name LIKE 'kernel_%' ORDER BY type, name;",
++    ).map(normalizeSqlRow);
++    const presentTables = new Set(schemaRows.filter(row => row.type === 'table').map(row => row.name));
++    const content = [];
++    const counts = {};
++    for (const table of REQUIRED_KERNEL_TABLES) {
++      if (!presentTables.has(table)) continue;
++      const rows = queryAll(runtime, database, `SELECT * FROM "${table}";`)
++        .map(normalizeSqlRow)
++        .map(row => JSON.stringify(row))
++        .sort();
++      counts[table] = rows.length;
++      content.push(`${table}\0${rows.join('\n')}\n`);
++    }
++    return {
++      integrity,
++      schemaHash: sha256(JSON.stringify(schemaRows)),
++      contentHash: sha256(content.join('')),
++      counts,
++    };
++  } finally {
++    closeDatabase(database);
++  }
++}
++
++async function createKernelBackup(sourcePath, backupPath) {
++  const runtime = selectBuiltinSQLiteRuntime();
++  const database = openReadOnlyDatabase(runtime, sourcePath);
++  try {
++    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
++    if (runtime.id === 'bun:sqlite') {
++      if (typeof database.serialize !== 'function') throw new Error('bun sqlite backup unavailable');
++      fs.writeFileSync(backupPath, database.serialize(), { flag: 'wx' });
++      return;
++    }
++    if (typeof runtime.module.backup === 'function') {
++      await runtime.module.backup(database, backupPath);
++      return;
++    }
++    if (typeof database.backup === 'function') {
++      await database.backup(backupPath);
++      return;
++    }
++    throw new Error('node sqlite backup unavailable');
++  } finally {
++    closeDatabase(database);
++  }
++}
++
++function validateProofRoots(sourceRoot, proofRoot) {
++  try {
++    const sourceStat = fs.lstatSync(sourceRoot);
++    const proofStat = fs.lstatSync(proofRoot);
++    const tempStat = fs.lstatSync(os.tmpdir());
++    if (sourceStat.isSymbolicLink() || proofStat.isSymbolicLink() || tempStat.isSymbolicLink()) {
++      return 'proof_root_link_refused';
++    }
++    if (!sourceStat.isDirectory() || !proofStat.isDirectory() || !tempStat.isDirectory()) {
++      return 'proof_root_unavailable';
++    }
++    const source = fs.realpathSync.native(sourceRoot);
++    const proof = fs.realpathSync.native(proofRoot);
++    const temporary = fs.realpathSync.native(os.tmpdir());
++    if (!isContained(temporary, proof) || proof === temporary) return 'proof_root_not_temporary';
++    if (isContained(source, proof) || isContained(proof, source)) return 'proof_root_overlaps_source';
++    if (fs.readdirSync(proofRoot).length > 0) return 'proof_destination_not_empty';
++    return null;
++  } catch (_error) {
++    return 'proof_root_unavailable';
++  }
++}
++
++function compareKernelSignatures(source, restored) {
++  return {
++    integrity: source.integrity === 'ok' && restored.integrity === 'ok' ? 'ok' : 'failed',
++    schemaHashMatched: source.schemaHash === restored.schemaHash,
++    contentHashMatched: source.contentHash === restored.contentHash,
++    countsMatched: JSON.stringify(source.counts) === JSON.stringify(restored.counts),
++  };
++}
++
++async function proveBackupRestore(sourceRoot, proofRoot) {
++  const rootError = validateProofRoots(sourceRoot, proofRoot);
++  if (rootError) return { status: 'FAIL', reason: rootError, files: [] };
++  const sourceManifest = buildStateTreeManifest(sourceRoot);
++  if (sourceManifest.status !== 'PASS') {
++    return { status: 'INCOMPLETE', reason: 'source_tree_incomplete', files: [] };
++  }
++  if (sourceManifest.fileCount === 0) return { status: 'INCOMPLETE', reason: 'no_known_state_files', files: [] };
++  const backupRoot = path.join(proofRoot, 'backup');
++  const restoreRoot = path.join(proofRoot, 'restore');
++  const ordinaryFiles = sourceManifest.files.filter(file => !isKernelSidecar(file.path));
++  const kernelRelativePath = '.forge/kernel.sqlite';
++  const hasKernel = sourceManifest.files.some(file => file.path === kernelRelativePath);
++  try {
++    copyManifestFiles(sourceRoot, backupRoot, ordinaryFiles);
++    let sourceKernelSignature = null;
++    if (hasKernel) {
++      sourceKernelSignature = kernelSemanticSignature(path.join(sourceRoot, kernelRelativePath));
++      await createKernelBackup(path.join(sourceRoot, kernelRelativePath), path.join(backupRoot, kernelRelativePath));
++    }
++    const backupFiles = ordinaryFiles.map(file => file.path);
++    if (hasKernel) backupFiles.push(kernelRelativePath);
++    copyManifestFiles(backupRoot, restoreRoot, backupFiles.map(filePath => ({ path: filePath })));
++    const sourceHash = aggregateHash(ordinaryFiles);
++    const backupHash = aggregateHash(ordinaryFiles.map(file => ({
++      path: file.path,
++      sha256: sha256(fs.readFileSync(path.join(backupRoot, file.path))),
++    })));
++    const restoreHash = aggregateHash(ordinaryFiles.map(file => ({
++      path: file.path,
++      sha256: sha256(fs.readFileSync(path.join(restoreRoot, file.path))),
++    })));
++    const kernel = hasKernel
++      ? compareKernelSignatures(sourceKernelSignature, kernelSemanticSignature(path.join(restoreRoot, kernelRelativePath)))
++      : null;
++    const kernelMatches = !kernel || (kernel.integrity === 'ok' && kernel.schemaHashMatched
++      && kernel.contentHashMatched && kernel.countsMatched);
++    const fileBytesMatched = sourceHash === backupHash && backupHash === restoreHash;
++    return {
++      status: fileBytesMatched && kernelMatches ? 'PASS' : 'FAIL',
++      reason: fileBytesMatched && kernelMatches ? null : 'backup_restore_mismatch',
++      files: ordinaryFiles.map(file => file.path),
++      fileBytesMatched,
++      backupHash,
++      restoreHash,
++      kernel,
++    };
++  } catch (_error) {
++    return { status: 'FAIL', reason: 'backup_restore_io_failure', files: ordinaryFiles.map(file => file.path) };
++  }
++}
++
++function summarizeTreeManifest(manifest) {
++  return {
++    status: manifest.status,
++    fileCount: manifest.fileCount,
++    hash: manifest.hash,
++    reasons: manifest.reasons,
++  };
++}
++
++async function runBeta5MigrationDryRun(projectRoot, options = {}) {
++  const before = buildStateTreeManifest(projectRoot);
++  const corpus = verifyBeta5Corpus(options.corpusRoot || BETA5_CORPUS_ROOT);
++  const inventory = buildPrivacySafeInventory(projectRoot);
++  const backup = options.proofRoot
++    ? await proveBackupRestore(projectRoot, options.proofRoot)
++    : { status: 'INCOMPLETE', reason: 'proof_root_not_provided', files: [] };
++  const after = buildStateTreeManifest(projectRoot);
++  const sourceMutated = before.hash !== after.hash || before.fileCount !== after.fileCount;
++  const reasons = [];
++  if (corpus.status === 'FAIL') reasons.push('corpus_integrity_failed');
++  if (inventory.status === 'INCOMPLETE') reasons.push('inventory_incomplete');
++  if (before.status === 'INCOMPLETE' || after.status === 'INCOMPLETE') reasons.push('source_tree_incomplete');
++  if (backup.status === 'FAIL') reasons.push('backup_restore_failed');
++  if (backup.status === 'INCOMPLETE') reasons.push('backup_restore_incomplete');
++  if (sourceMutated) reasons.push('source_mutated');
++  const failed = corpus.status === 'FAIL' || backup.status === 'FAIL' || sourceMutated;
++  const incomplete = inventory.status === 'INCOMPLETE' || backup.status === 'INCOMPLETE'
++    || before.status === 'INCOMPLETE' || after.status === 'INCOMPLETE';
++  return {
++    schemaVersion: 'forge.beta5-migration-dry-run.v1',
++    status: failed ? 'FAIL' : incomplete ? 'INCOMPLETE' : 'PASS',
++    corpus,
++    inventory,
++    backup,
++    sourceTree: { before: summarizeTreeManifest(before), after: summarizeTreeManifest(after) },
++    sourceMutated,
++    reasons,
++  };
++}
++
++module.exports = {
++  BETA5_CORPUS_ROOT,
++  BETA5_RELEASE_COMMIT,
++  BETA5_VERSION,
++  buildPrivacySafeInventory,
++  buildStateTreeManifest,
++  proveBackupRestore,
++  runBeta5MigrationDryRun,
++  verifyBeta5Corpus,
++};
+diff --git a/lib/fixtures/beta5-corpus/v1/README.md b/lib/fixtures/beta5-corpus/v1/README.md
+new file mode 100644
+index 00000000..8793aa23
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/README.md
+@@ -0,0 +1,9 @@
++# Forge 0.1.0-beta.5 compatibility corpus v1
++
++This immutable corpus is derived from release commit
++`ebeb4e5b31fc2dacdf23c5936c02fb2656990f49`. Contract snapshots retain only
++public package, binary, command, alias, and workflow facts. State rows are
++synthetic and contain no user, device, prompt, tool-log, or repository data.
++
++`manifest.json` hashes every corpus member. Change requires a new corpus
++version; never rewrite v1 after it becomes release evidence.
+diff --git a/lib/fixtures/beta5-corpus/v1/contract/command-contract.json b/lib/fixtures/beta5-corpus/v1/contract/command-contract.json
+new file mode 100644
+index 00000000..a9ec6dd1
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/contract/command-contract.json
+@@ -0,0 +1,26 @@
++{
++  "commands": ["adapter", "add", "audit", "blocked", "claim", "claims", "clean", "close", "comment", "control", "create", "dev", "doc-gate", "doctor", "explain", "export", "gate", "hooks", "inbox", "init", "insights", "issue", "issues", "lint", "list", "memory", "merge", "migrate", "new", "options", "orient", "orphans", "patch", "plan", "pr", "preflight", "prime", "push", "ready", "recall", "recap", "recommend", "release", "remember", "role", "serve", "setup", "shepherd", "ship", "show", "skill", "stage", "stale", "status", "sync", "team", "test", "update", "upgrade", "validate", "worktree"],
++  "aliases": {
++    "blocked": { "canonical": "issue blocked", "visible": false },
++    "claim": { "canonical": "issue claim", "visible": false },
++    "claims": { "canonical": "issue claims", "visible": false },
++    "close": { "canonical": "issue close", "visible": false },
++    "create": { "canonical": "issue create", "visible": false },
++    "doc-gate": { "canonical": "gate doc", "visible": false },
++    "insights": { "canonical": "memory insights", "visible": true },
++    "issues": { "canonical": "issue list", "visible": false },
++    "lint": { "canonical": "issue lint", "visible": false },
++    "list": { "canonical": "issue list", "visible": false },
++    "merge": { "canonical": "pr merge", "visible": false },
++    "orphans": { "canonical": "issue orphans", "visible": false },
++    "preflight": { "canonical": "pr preflight", "visible": true },
++    "ready": { "canonical": "issue ready", "visible": false },
++    "recall": { "canonical": "memory recall", "visible": true },
++    "remember": { "canonical": "memory add", "visible": true },
++    "shepherd": { "canonical": "pr shepherd", "visible": false },
++    "ship": { "canonical": "pr ship", "visible": true },
++    "show": { "canonical": "issue show", "visible": false },
++    "stale": { "canonical": "issue stale", "visible": false },
++    "update": { "canonical": "issue update", "visible": false }
++  }
++}
+diff --git a/lib/fixtures/beta5-corpus/v1/contract/package-contract.json b/lib/fixtures/beta5-corpus/v1/contract/package-contract.json
+new file mode 100644
+index 00000000..6be43ac9
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/contract/package-contract.json
+@@ -0,0 +1,13 @@
++{
++  "name": "forge-workflow",
++  "version": "0.1.0-beta.5",
++  "release_commit": "ebeb4e5b31fc2dacdf23c5936c02fb2656990f49",
++  "binaries": {
++    "forge": "bin/forge.js",
++    "forge-workflow": "bin/forge.js",
++    "forge-preflight": "bin/forge-preflight.js"
++  },
++  "engines": {
++    "node": ">=22.16.0"
++  }
++}
+diff --git a/lib/fixtures/beta5-corpus/v1/contract/workflow-stage-matrix.json b/lib/fixtures/beta5-corpus/v1/contract/workflow-stage-matrix.json
+new file mode 100644
+index 00000000..20399ec8
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/contract/workflow-stage-matrix.json
+@@ -0,0 +1,8 @@
++{
++  "critical": ["plan", "dev", "validate", "ship", "review", "verify"],
++  "standard": ["plan", "dev", "validate", "ship", "review"],
++  "refactor": ["plan", "dev", "validate", "ship"],
++  "simple": ["dev", "validate", "ship"],
++  "hotfix": ["dev", "validate", "ship"],
++  "docs": ["verify", "ship"]
++}
+diff --git a/lib/fixtures/beta5-corpus/v1/manifest.json b/lib/fixtures/beta5-corpus/v1/manifest.json
+new file mode 100644
+index 00000000..8b8f7ffd
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/manifest.json
+@@ -0,0 +1,25 @@
++{
++  "schema_version": "forge.beta5-corpus.v1",
++  "corpus_version": 1,
++  "release_version": "0.1.0-beta.5",
++  "release_commit": "ebeb4e5b31fc2dacdf23c5936c02fb2656990f49",
++  "source_blobs": {
++    "package.json": "6f3f112341cd50e0e76fad615beb007b9e6dff2c",
++    "lib/commands/_manifest.js": "62595c38b66b139244ca1f54cb034f67d849247d",
++    "lib/commands/_aliases.js": "2b16d61d1cdb9ef3e594b5a5093206d05844b460",
++    "lib/workflow/stages.js": "0b7ae32bddcbb9bd6dd52a07ca22e43364621918"
++  },
++  "hash_algorithm": "sha256",
++  "content_hash": "abfa1a73c9590069267fe03785883b21e34665168b55d628395a456be4a88082",
++  "files": [
++    { "path": "README.md", "sha256": "3cfcc78856e397f2cfd3fee9fa2fffb630e27ea3e76ee8d8b5d9a77cb366a709" },
++    { "path": "contract/command-contract.json", "sha256": "8b4f885091fa8afe72b7b5a5a8039869c871f4fb1dc3344728b2c4322f491a84" },
++    { "path": "contract/package-contract.json", "sha256": "a65280ede51d62c1913140c83b40e6c3312c991c7a173e7a9ad52d3d5ea0fd47" },
++    { "path": "contract/workflow-stage-matrix.json", "sha256": "2aadafdb5f5c1817c8289dd6134d034e3ccc6579438935520bd3c6b90401e5bf" },
++    { "path": "state/comments.jsonl", "sha256": "ae4f694f207a11a22b6798943cc6d07487d1dc2be83a78ceadad947a3ff40113" },
++    { "path": "state/config.yaml", "sha256": "0b877d9180cf14951657254b50cd771e131970e92582a7c0337f36418a35e1c0" },
++    { "path": "state/dependencies.jsonl", "sha256": "52320d34a6dd702396ea292f3f10fce7f9e31f545f473e12c18b1aae1ac0aee8" },
++    { "path": "state/issues.jsonl", "sha256": "579f2455b2c4c23c93a584990153356ba7cc633af8b74c6284edf622217e064d" },
++    { "path": "state/kernel.sql", "sha256": "f053d579b777355c4d6f6042174435dde291dc41bce2150050c05c8d43834145" }
++  ]
++}
+diff --git a/lib/fixtures/beta5-corpus/v1/state/comments.jsonl b/lib/fixtures/beta5-corpus/v1/state/comments.jsonl
+new file mode 100644
+index 00000000..8bbefdb3
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/state/comments.jsonl
+@@ -0,0 +1 @@
++{"id":"synthetic-comment-1","issue_id":"synthetic-issue-1","body":"Synthetic comment","actor":"fixture"}
+diff --git a/lib/fixtures/beta5-corpus/v1/state/config.yaml b/lib/fixtures/beta5-corpus/v1/state/config.yaml
+new file mode 100644
+index 00000000..7b61c9e1
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/state/config.yaml
+@@ -0,0 +1,6 @@
++workflow:
++  profile: default
++gates:
++  gate.issue_verify: true
++rails:
++  rail.kernel_tracking: true
+diff --git a/lib/fixtures/beta5-corpus/v1/state/dependencies.jsonl b/lib/fixtures/beta5-corpus/v1/state/dependencies.jsonl
+new file mode 100644
+index 00000000..5073a11a
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/state/dependencies.jsonl
+@@ -0,0 +1 @@
++{"issue_id":"synthetic-issue-1","depends_on_id":"synthetic-issue-2","type":"blocks"}
+diff --git a/lib/fixtures/beta5-corpus/v1/state/issues.jsonl b/lib/fixtures/beta5-corpus/v1/state/issues.jsonl
+new file mode 100644
+index 00000000..ae56d228
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/state/issues.jsonl
+@@ -0,0 +1,2 @@
++{"id":"synthetic-issue-1","title":"Synthetic compatibility issue","status":"open","revision":2}
++{"id":"synthetic-issue-2","title":"Synthetic dependency","status":"done","revision":1}
+diff --git a/lib/fixtures/beta5-corpus/v1/state/kernel.sql b/lib/fixtures/beta5-corpus/v1/state/kernel.sql
+new file mode 100644
+index 00000000..3830278d
+--- /dev/null
++++ b/lib/fixtures/beta5-corpus/v1/state/kernel.sql
+@@ -0,0 +1,19 @@
++PRAGMA user_version = 1;
++CREATE TABLE kernel_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
++CREATE TABLE kernel_issues (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, entity_revision INTEGER NOT NULL);
++CREATE TABLE kernel_comments (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, body TEXT NOT NULL, actor TEXT NOT NULL);
++CREATE TABLE kernel_dependencies (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, blocks_issue_id TEXT NOT NULL);
++CREATE TABLE kernel_claims (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, actor TEXT NOT NULL, state TEXT NOT NULL);
++CREATE TABLE kernel_worktrees (id TEXT PRIMARY KEY, path TEXT NOT NULL, branch TEXT NOT NULL, state TEXT NOT NULL);
++CREATE TABLE kernel_stage_runs (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL);
++CREATE TABLE kernel_projections (id TEXT PRIMARY KEY, target TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, status TEXT NOT NULL);
++CREATE TABLE kernel_events (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL);
++INSERT INTO kernel_migrations VALUES ('001_initial_kernel_schema', '2026-08-09T00:00:00.000Z');
++INSERT INTO kernel_issues VALUES ('synthetic-issue-1', 'Synthetic issue', 'open', 2);
++INSERT INTO kernel_comments VALUES ('synthetic-comment-1', 'synthetic-issue-1', 'Synthetic comment', 'fixture');
++INSERT INTO kernel_dependencies VALUES ('synthetic-dependency-1', 'synthetic-issue-1', 'synthetic-issue-2');
++INSERT INTO kernel_claims VALUES ('synthetic-claim-1', 'synthetic-issue-1', 'fixture', 'active');
++INSERT INTO kernel_worktrees VALUES ('synthetic-worktree-1', '/synthetic/worktree', 'fixture/branch', 'active');
++INSERT INTO kernel_stage_runs VALUES ('synthetic-run-1', 'synthetic-issue-1', 'dev', 'done');
++INSERT INTO kernel_projections VALUES ('synthetic-projection-1', 'jsonl', 'issue', 'synthetic-issue-1', 'delivered');
++INSERT INTO kernel_events VALUES ('synthetic-event-1', 'issue', 'synthetic-issue-1', 'issue.updated');
+diff --git a/test/beta5-compatibility-evidence.test.js b/test/beta5-compatibility-evidence.test.js
+new file mode 100644
+index 00000000..fc1493e0
+--- /dev/null
++++ b/test/beta5-compatibility-evidence.test.js
+@@ -0,0 +1,244 @@
++const { describe, expect, test } = require('bun:test');
++const crypto = require('node:crypto');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  BETA5_CORPUS_ROOT,
++  buildStateTreeManifest,
++  buildPrivacySafeInventory,
++  proveBackupRestore,
++  runBeta5MigrationDryRun,
++  verifyBeta5Corpus,
++} = require('../lib/beta5-compatibility-evidence');
++
++function sha256File(filePath) {
++  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
++}
++
++function materializeKernelState(root) {
++  const { Database } = require('bun:sqlite');
++  const databasePath = path.join(root, '.forge', 'kernel.sqlite');
++  const sql = fs.readFileSync(path.join(BETA5_CORPUS_ROOT, 'state', 'kernel.sql'), 'utf8');
++  const database = new Database(databasePath, { create: true });
++  try {
++    database.exec(sql);
++  } finally {
++    database.close();
++  }
++  return databasePath;
++}
++
++function makeBeta5State(options = {}) {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-state-'));
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
++    name: 'fixture-project',
++    devDependencies: { 'forge-workflow': '0.1.0-beta.5' },
++  }, null, 2));
++  fs.writeFileSync(path.join(root, '.forge', 'config.yaml'), 'workflow:\n  profile: default\n');
++  fs.writeFileSync(path.join(root, '.forge', 'issues.jsonl'), [
++    JSON.stringify({ id: 'synthetic-1', title: 'Private title is never inventoried', status: 'open' }),
++    JSON.stringify({ id: 'synthetic-2', title: 'Another private title', status: 'done' }),
++  ].join('\n') + '\n');
++  if (options.kernel) materializeKernelState(root);
++  return root;
++}
++
++describe('beta.5 compatibility evidence', () => {
++  test('verifies the immutable, versioned corpus and its content hashes', () => {
++    const result = verifyBeta5Corpus();
++
++    expect(result.status).toBe('PASS');
++    expect(result.version).toBe('0.1.0-beta.5');
++    expect(result.releaseCommit).toBe('ebeb4e5b31fc2dacdf23c5936c02fb2656990f49');
++    expect(result.fileCount).toBeGreaterThanOrEqual(5);
++    expect(result.contentHash).toMatch(/^[a-f0-9]{64}$/);
++    expect(result.sourceBlobCount).toBe(4);
++  });
++
++  test('rejects unmanifested corpus files instead of silently extending immutable evidence', () => {
++    const copied = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-corpus-extra-'));
++    fs.cpSync(BETA5_CORPUS_ROOT, copied, { recursive: true });
++    fs.writeFileSync(path.join(copied, 'extra.json'), '{}');
++
++    const result = verifyBeta5Corpus(copied);
++
++    expect(result.status).toBe('FAIL');
++    expect(result.reasons).toContain('unmanifested_file:extra.json');
++  });
++
++  test('fails closed when a corpus member does not match its manifest hash', () => {
++    const copied = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-corpus-'));
++    fs.cpSync(BETA5_CORPUS_ROOT, copied, { recursive: true });
++    fs.appendFileSync(path.join(copied, 'contract', 'package-contract.json'), '\ncorrupt');
++
++    const result = verifyBeta5Corpus(copied);
++
++    expect(result.status).toBe('FAIL');
++    expect(result.reasons).toContain('hash_mismatch:contract/package-contract.json');
++  });
++
++  test('inventories only privacy-safe state shape and records explicit unknowns', () => {
++    const root = makeBeta5State();
++    fs.writeFileSync(path.join(root, '.forge', 'kernel.sqlite'), 'not-a-real-database');
++
++    const inventory = buildPrivacySafeInventory(root);
++    const serialized = JSON.stringify(inventory);
++
++    expect(inventory.status).toBe('INCOMPLETE');
++    expect(inventory.surfaces.issues).toMatchObject({ status: 'PASS', records: 2 });
++    expect(inventory.surfaces.kernel).toMatchObject({ status: 'INCOMPLETE', reason: 'unrecognized_database' });
++    expect(inventory.unknowns).toContain('kernel_schema');
++    expect(serialized).not.toContain('Private title');
++    expect(serialized).not.toContain(root);
++    expect(serialized).not.toContain(os.hostname());
++  });
++
++  test('inventories recognized Kernel schema and representative state through read-only SQLite', () => {
++    const root = makeBeta5State({ kernel: true });
++    const before = sha256File(path.join(root, '.forge', 'kernel.sqlite'));
++
++    const inventory = buildPrivacySafeInventory(root);
++
++    expect(inventory.status).toBe('PASS');
++    expect(inventory.surfaces.kernel).toMatchObject({
++      status: 'PASS',
++      schemaVersion: '001_initial_kernel_schema',
++      migrationCount: 1,
++      counts: {
++        issues: 1,
++        comments: 1,
++        dependencies: 1,
++        claims: 1,
++        runs: 1,
++        projections: 1,
++        worktrees: 1,
++      },
++      unknowns: [],
++    });
++    expect(sha256File(path.join(root, '.forge', 'kernel.sqlite'))).toBe(before);
++    expect(JSON.stringify(inventory)).not.toContain('Synthetic issue');
++  });
++
++  test('proves backup and restore in an isolated destination without changing source bytes', async () => {
++    const root = makeBeta5State();
++    const before = sha256File(path.join(root, '.forge', 'issues.jsonl'));
++    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-proof-'));
++
++    const proof = await proveBackupRestore(root, workspace);
++
++    expect(proof.status).toBe('PASS');
++    expect(proof.files).toEqual(['.forge/config.yaml', '.forge/issues.jsonl', 'package.json']);
++    expect(proof.backupHash).toBe(proof.restoreHash);
++    expect(sha256File(path.join(root, '.forge', 'issues.jsonl'))).toBe(before);
++    expect(fs.existsSync(path.join(workspace, 'backup', '.forge', 'issues.jsonl'))).toBe(true);
++    expect(fs.existsSync(path.join(workspace, 'restore', '.forge', 'issues.jsonl'))).toBe(true);
++  });
++
++  test('refuses non-temporary destinations and proves a Kernel backup semantically', async () => {
++    const root = makeBeta5State({ kernel: true });
++    const nonTemporary = await proveBackupRestore(root, process.cwd());
++    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-sqlite-proof-'));
++    const sqlite = await proveBackupRestore(root, workspace);
++
++    expect(nonTemporary).toMatchObject({ status: 'FAIL', reason: 'proof_root_not_temporary' });
++    expect(sqlite).toMatchObject({
++      status: 'PASS',
++      fileBytesMatched: true,
++      kernel: {
++        integrity: 'ok',
++        schemaHashMatched: true,
++        contentHashMatched: true,
++        countsMatched: true,
++      },
++    });
++    expect(fs.existsSync(path.join(workspace, 'restore', '.forge', 'kernel.sqlite'))).toBe(true);
++  });
++
++  test('snapshots the complete supported state tree and refuses links or junctions', () => {
++    const root = makeBeta5State({ kernel: true });
++    for (const relativePath of [
++      '.forge/comments.jsonl',
++      '.forge/dependencies.jsonl',
++      '.forge/runs/run.json',
++      '.forge/projections/issues.jsonl',
++      '.forge/worktrees.jsonl',
++    ]) {
++      const filePath = path.join(root, relativePath);
++      fs.mkdirSync(path.dirname(filePath), { recursive: true });
++      fs.writeFileSync(filePath, '{}\n');
++    }
++
++    const clean = buildStateTreeManifest(root);
++    const external = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-external-'));
++    fs.symlinkSync(external, path.join(root, '.forge', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
++    const linked = buildStateTreeManifest(root);
++
++    expect(clean.status).toBe('PASS');
++    expect(clean.files.map(file => file.path)).toEqual(expect.arrayContaining([
++      '.forge/comments.jsonl',
++      '.forge/dependencies.jsonl',
++      '.forge/kernel.sqlite',
++      '.forge/projections/issues.jsonl',
++      '.forge/runs/run.json',
++      '.forge/worktrees.jsonl',
++      'package.json',
++    ]));
++    expect(linked).toMatchObject({ status: 'INCOMPLETE', reasons: ['state_tree_contains_link'] });
++  });
++
++  test('returns deterministic PASS and proves the dry-run never mutates its full source tree', async () => {
++    const root = makeBeta5State({ kernel: true });
++    const proofRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-dry-run-'));
++    const before = sha256File(path.join(root, '.forge', 'issues.jsonl'));
++
++    const first = await runBeta5MigrationDryRun(root, { proofRoot });
++    fs.rmSync(proofRoot, { recursive: true, force: true });
++    fs.mkdirSync(proofRoot, { recursive: true });
++    const second = await runBeta5MigrationDryRun(root, { proofRoot });
++
++    expect(first.status).toBe('PASS');
++    expect(first).toEqual(second);
++    expect(first.sourceMutated).toBe(false);
++    expect(first.sourceTree.before).toEqual(first.sourceTree.after);
++    expect(first.sourceTree.before.fileCount).toBeGreaterThanOrEqual(4);
++    expect(sha256File(path.join(root, '.forge', 'issues.jsonl'))).toBe(before);
++  });
++
++  test('returns deterministic FAIL when the immutable corpus cannot be trusted', async () => {
++    const root = makeBeta5State();
++    const copied = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-bad-corpus-'));
++    fs.cpSync(BETA5_CORPUS_ROOT, copied, { recursive: true });
++    fs.appendFileSync(path.join(copied, 'state', 'issues.jsonl'), '{}\n');
++    const proofRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-fail-proof-'));
++
++    const result = await runBeta5MigrationDryRun(root, { corpusRoot: copied, proofRoot });
++
++    expect(result.status).toBe('FAIL');
++    expect(result.reasons).toContain('corpus_integrity_failed');
++    expect(result.sourceMutated).toBe(false);
++  });
++
++  test('returns INCOMPLETE for unknown state instead of inventing compatibility evidence', async () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-beta5-unknown-'));
++    fs.writeFileSync(path.join(root, 'package.json'), '{broken');
++
++    const result = await runBeta5MigrationDryRun(root);
++
++    expect(result.status).toBe('INCOMPLETE');
++    expect(result.reasons).toContain('inventory_incomplete');
++    expect(result.sourceMutated).toBe(false);
++  });
++
++  test('does not call an unrelated package a beta.5-compatible state', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-not-beta5-'));
++    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'other-project' }));
++
++    const inventory = buildPrivacySafeInventory(root);
++
++    expect(inventory.status).toBe('INCOMPLETE');
++    expect(inventory.unknowns).toContain('beta5_install_contract');
++  });
++});
+-- 
+2.51.0.windows.1
+

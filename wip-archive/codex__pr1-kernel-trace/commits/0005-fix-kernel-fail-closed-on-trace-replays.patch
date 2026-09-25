@@ -1,0 +1,298 @@
+From 34e75c0efc5923dbd3e395bb5841e45ed3528958 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 14:32:14 +0530
+Subject: [PATCH] fix(kernel): fail closed on trace replays
+
+---
+ lib/kernel/broker.js        | 86 ++++++++++++++++++++++++--------
+ lib/kernel/sqlite-driver.js | 21 +++-----
+ test/kernel/trace.test.js   | 99 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 171 insertions(+), 35 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index ba7a2c79..b6f0008b 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -4,7 +4,7 @@ const { execFileSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const { randomUUID } = require('node:crypto');
+-const { buildConflict, evaluateKernelEvent, normalizePayload } = require('./evaluators');
++const { buildConflict, evaluateKernelEvent, normalizePayload, stableStringify } = require('./evaluators');
+ const { CONFLICT_SIGNAL, classifyConflictSignal } = require('./conflict-signal');
+ const { buildKernelMigrationPlan } = require('./migrations');
+ const { buildClaimConflict, isValidExpiresAt, planClaimAcquisition } = require('./lease-enforcer');
+@@ -185,6 +185,15 @@ function assertValidPrEvidence(input) {
+ 	}
+ }
+ 
++function assertCompatiblePrEvidence(existingEvent, payload) {
++	if (!existingEvent
++		|| stableStringify(normalizePayload(existingEvent)) === stableStringify(payload)) return;
++	const conflict = new Error('INCOMPLETE: conflicting evidence for idempotency key');
++	conflict.code = 'FORGE_TRACE_EVIDENCE_CONFLICT';
++	conflict.status = 'INCOMPLETE';
++	throw conflict;
++}
++
+ // The migration ledger records which migration ids have been applied so initialize()
+ // applies each migration AT MOST ONCE — no full re-run, no blanket duplicate-error
+ // swallow. The ledger table is broker-managed bookkeeping (created before the plan is
+@@ -1294,6 +1303,8 @@ function createLocalBroker(options = {}) {
+ 			requireDriverMethod(driver, 'resolvePrLinkage');
+ 			requireDriverMethod(driver, 'upsertPr');
+ 			requireDriverMethod(driver, 'retirePr');
++			requireDriverMethod(driver, 'readTrace');
++			requireDriverMethod(driver, 'loadKernelEventByIdempotencyKey');
+ 			const config = getConfig();
+ 			const inferred = await driver.resolvePrLinkage(input, context, config);
+ 			if (!inferred.issue_id || inferred.issue_revision === null) {
+@@ -1306,37 +1317,72 @@ function createLocalBroker(options = {}) {
+ 			if (input.issue_revision !== inferred.issue_revision) {
+ 				throw new Error(`recordPrLinkage stale issue revision: expected ${input.issue_revision}, actual ${inferred.issue_revision}`);
+ 			}
+-			const linked = await driver.upsertPr({
++			const priorRows = await driver.readTrace({
++				pr_number: input.number,
++				repo: input.repo,
++				git_common_dir: input.git_common_dir,
++			}, context, config);
++			const priorPr = priorRows.pull_requests.find(candidate => (
++				candidate.git_common_dir === input.git_common_dir
++				&& candidate.repo === input.repo
++				&& Number(candidate.number) === Number(input.number)
++			)) || null;
++			const issueId = input.issue_id ?? inferred.issue_id;
++			const worktreeId = input.worktree_id ?? inferred.worktree_id ?? priorPr?.worktree_id ?? null;
++			const eventType = `pr.${input.phase}`;
++			const payload = {
++				issue_id: issueId,
++				issue_revision: input.issue_revision,
++				worktree_id: worktreeId,
++				repo: input.repo,
++				number: input.number,
++				url: input.url ?? null,
++				head_sha: input.head_sha,
++				work_packet_hash: input.work_packet_hash,
++				risk_manifest_digest: input.risk_manifest_digest,
++				gate_receipts: input.gate_receipts,
++			};
++
++			const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
++			if (terminalPr) {
++				const conflicts = input.head_sha !== priorPr.head_sha
++					|| (input.branch != null && input.branch !== priorPr.branch)
++					|| issueId !== priorPr.issue_id
++					|| (worktreeId != null && worktreeId !== priorPr.worktree_id)
++					|| (input.journal_ptr != null && input.journal_ptr !== priorPr.journal_ptr);
++				if (conflicts) throw new Error('recordPrLinkage terminal PR linkage conflict');
++			}
++
++			const existingEventKey = priorPr ? `${eventType}:${priorPr.id}:${input.head_sha}` : null;
++			const existingEvent = existingEventKey
++				? await driver.loadKernelEventByIdempotencyKey(existingEventKey, context, config)
++				: null;
++			assertCompatiblePrEvidence(existingEvent, payload);
++			if (terminalPr && !existingEvent) {
++				throw new Error('recordPrLinkage terminal PR linkage conflict');
++			}
++
++			const linked = terminalPr
++				? { ok: true, ...terminalPr }
++				: await driver.upsertPr({
+ 				...input,
+-				issue_id: input.issue_id ?? inferred.issue_id,
+-				worktree_id: input.worktree_id ?? inferred.worktree_id,
++				issue_id: issueId,
++				worktree_id: worktreeId,
+ 				registered_at: input.occurred_at,
+-				preserve_terminal: true,
+ 			}, context, config);
+-			const eventType = `pr.${input.phase}`;
+ 			const event = await runGuardedEventImpl({
+ 				entity_type: 'pr',
+ 				entity_id: linked.id,
+ 				event_type: eventType,
+-				idempotency_key: `${eventType}:${linked.id}:${input.head_sha || 'headless'}`,
++				idempotency_key: `${eventType}:${linked.id}:${input.head_sha}`,
+ 				expected_revision: 0,
+ 				actor: context.actor || 'forge',
+ 				origin: context.origin || 'cli',
+ 				created_at: input.occurred_at || new Date().toISOString(),
+-				payload: {
+-					issue_id: linked.issue_id ?? null,
+-					issue_revision: input.issue_revision ?? inferred.issue_revision ?? null,
+-					worktree_id: linked.worktree_id ?? null,
+-					repo: linked.repo,
+-					number: linked.number,
+-					url: input.url ?? null,
+-					head_sha: input.head_sha ?? null,
+-					work_packet_hash: input.work_packet_hash ?? null,
+-					risk_manifest_digest: input.risk_manifest_digest ?? null,
+-					gate_receipts: input.gate_receipts ?? null,
+-				},
++				payload,
+ 			}, context);
+-			if (input.phase === 'merged') {
++			assertCompatiblePrEvidence(event.originalEvent, payload);
++			if (input.phase === 'merged' && !terminalPr) {
+ 				await driver.retirePr({
+ 					git_common_dir: linked.git_common_dir,
+ 					repo: linked.repo,
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index f3ec6062..8958f674 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2463,8 +2463,6 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		// ON CONFLICT on the unique idx_pr_common_dir_repo_number: a re-upsert updates the
+ 		// mutable columns and coalesces soft links (a later null never clobbers an existing
+ 		// issue_id/worktree_id). registered_at is set on INSERT only; state defaults 'open'.
+-		// Existing callers retain reopen behavior. The trace writer opts into
+-		// preserve_terminal so a delayed opened replay cannot regress merged/closed state.
+ 		async upsertPr(row, _context = {}, config = {}) {
+ 			const id = row.id || randomUUID();
+ 			const registeredAt = row.registered_at || new Date().toISOString();
+@@ -2483,17 +2481,12 @@ function createDriver(runtime, configuredDatabasePath) {
+ 					-- head-only refresh that omits journalPtr never severs the ledger↔journal
+ 					-- link with NULL. (Codex review, PR #426.)
+ 					journal_ptr = coalesce(excluded.journal_ptr, kernel_pr.journal_ptr),
+-					-- Existing reconcile callers keep REOPEN semantics. The trace seam passes
+-					-- preserve_terminal so a delayed/replayed opened event cannot regress a
+-					-- terminal row or clear its retirement evidence.
+-					state = CASE
+-						WHEN ? = 1 AND kernel_pr.state IN ('merged', 'closed') THEN kernel_pr.state
+-						ELSE 'open'
+-					END,
+-					retired_at = CASE
+-						WHEN ? = 1 AND kernel_pr.state IN ('merged', 'closed') THEN kernel_pr.retired_at
+-						ELSE NULL
+-					END,
++					-- REOPEN semantics: upsertPr is only ever called for PRs GitHub reports as
++					-- OPEN, so re-registering a previously retired row (a reopened PR) must flip
++					-- it back to open and clear retired_at — else listOpenPrs (state='open') would
++					-- keep the reopened PR invisible forever. (Codex review, PR #426.)
++					state = 'open',
++					retired_at = NULL,
+ 					-- A new commit INVALIDATES the prior verdict: when the head advances to a
+ 					-- different non-null sha, clear verdict/source/at so a verdict computed
+ 					-- against the OLD head is never presented as fresh for the new head (and the
+@@ -2515,8 +2508,6 @@ function createDriver(runtime, configuredDatabasePath) {
+ 					row.journal_ptr ?? null,
+ 					state,
+ 					registeredAt,
+-					row.preserve_terminal ? 1 : 0,
+-					row.preserve_terminal ? 1 : 0,
+ 				],
+ 			);
+ 			const persisted = allParams(
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 527b3d46..cb676f2f 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -271,4 +271,103 @@ describe('Kernel trace backbone', () => {
+ 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+ 		expect(await driver.queryAll('SELECT * FROM kernel_outbox;', config)).toEqual([]);
+ 	});
++
++	test('rejects delayed conflicting opened events without replacing terminal PR authority', async () => {
++		const gitCommonDir = path.join(root, '.git');
++		const now = '2026-08-09T14:00:00.000Z';
++		for (const [index, terminalState] of ['merged', 'closed'].entries()) {
++			const issueId = `issue-terminal-${terminalState}`;
++			const worktreeId = `worktree-terminal-${terminalState}`;
++			const branch = `codex/terminal-${terminalState}`;
++			const number = 510 + index;
++			await driver.exec(
++				`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++				 VALUES ('${issueId}', '${issueId}', '${now}', '${now}');`,
++				config,
++			);
++			driver.registerWorktree({
++				id: worktreeId,
++				git_common_dir: gitCommonDir,
++				path: path.join(root, '.worktrees', terminalState),
++				branch,
++				issue_id: issueId,
++				registered_at: now,
++			}, config);
++			const opened = {
++				phase: 'opened',
++				git_common_dir: gitCommonDir,
++				repo: 'owner/forge',
++				number,
++				branch,
++				...validEvidence(),
++				occurred_at: now,
++			};
++			await broker.recordPrLinkage(opened);
++			if (terminalState === 'merged') {
++				await broker.recordPrLinkage({ ...opened, phase: 'merged' });
++			} else {
++				await broker.retirePr({ git_common_dir: gitCommonDir, repo: 'owner/forge', number }, {
++					state: 'closed',
++					retired_at: '2026-08-09T14:05:00.000Z',
++				});
++			}
++			await broker.updatePrVerdict({ git_common_dir: gitCommonDir, repo: 'owner/forge', number }, {
++				verdict: 'CLEAN-MERGEABLE',
++				verdict_source: 'local',
++				verdict_at: '2026-08-09T14:06:00.000Z',
++				head_sha: FULL_HEAD_SHA,
++			});
++			const before = (await driver.queryAll(`SELECT * FROM kernel_pr WHERE number = ${number};`, config))[0];
++			await broker.recordPrLinkage({
++				...opened,
++				phase: terminalState === 'merged' ? 'merged' : 'opened',
++				occurred_at: '2026-08-09T14:10:00.000Z',
++			});
++			const afterExactReplay = (await driver.queryAll(`SELECT * FROM kernel_pr WHERE number = ${number};`, config))[0];
++			expect(afterExactReplay).toEqual(before);
++			await expect(broker.recordPrLinkage({
++				...opened,
++				branch: `codex/delayed-${terminalState}`,
++				head_sha: 'd'.repeat(40),
++				issue_id: issueId,
++				worktree_id: worktreeId,
++			})).rejects.toThrow('terminal PR linkage conflict');
++			const after = (await driver.queryAll(`SELECT * FROM kernel_pr WHERE number = ${number};`, config))[0];
++			expect(after).toEqual(before);
++		}
++	});
++
++	test('same semantic iteration key with different evidence is INCOMPLETE and unchanged', async () => {
++		const now = '2026-08-09T15:00:00.000Z';
++		await driver.exec(
++			`INSERT INTO kernel_issues (id, title, created_at, updated_at)
++			 VALUES ('issue-idempotency-conflict', 'Conflict issue', '${now}', '${now}');`,
++			config,
++		);
++		const input = {
++			phase: 'opened',
++			git_common_dir: path.join(root, '.git'),
++			repo: 'owner/forge',
++			number: 520,
++			issue_id: 'issue-idempotency-conflict',
++			...validEvidence(),
++			occurred_at: now,
++		};
++		await broker.recordPrLinkage({ ...input, number: 519 });
++		await broker.recordPrLinkage(input);
++		await expect(broker.recordPrLinkage(input)).resolves.toBeDefined();
++		const beforePr = await driver.queryAll('SELECT * FROM kernel_pr;', config);
++		const beforeEvents = await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config);
++		const beforeOutbox = await driver.queryAll('SELECT * FROM kernel_outbox;', config);
++
++		await expect(broker.recordPrLinkage({
++			...input,
++			work_packet_hash: 'e'.repeat(64),
++			risk_manifest_digest: 'f'.repeat(64),
++			gate_receipts: ['gate-receipt-conflicting'],
++		})).rejects.toThrow('INCOMPLETE: conflicting evidence for idempotency key');
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual(beforePr);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual(beforeEvents);
++		expect(await driver.queryAll('SELECT * FROM kernel_outbox;', config)).toEqual(beforeOutbox);
++	});
+ });
+-- 
+2.51.0.windows.1
+

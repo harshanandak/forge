@@ -1,0 +1,80 @@
+From c42d33d7389c52af525064ba9906c77e296cf727 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 3 Jul 2026 17:14:34 +0530
+Subject: [PATCH] test: make non-registry verify enforcement test deterministic
+ (kernel-native)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CI failure (ubuntu-only) in test/forge-cli-registry.test.js: the test emptied
+PATH to force `forge verify` to hard-stop on missing runtime prerequisites and
+asserted "blocked by runtime prerequisites:". Under the new kernel-native gate,
+bd is no longer a runtime prerequisite on the default kernel backend, so on
+ubuntu (bd absent; gh/jq resolved via the POSIX default path even with PATH="")
+the runtime gate now CLEARS and `verify` instead hits the stage-transition rule
+("Stage verify is blocked from ship"). macOS/Windows still hard-stopped (gh/jq
+not on their default search path), so it only failed on ubuntu.
+
+Fix: drop the PATH-emptying trick and assert that enforceStageEntry blocks the
+invocation via EITHER gate it owns — the runtime-health gate or the
+stage-transition rule. Both messages come only from enforceStageEntry, so this
+still proves stage enforcement runs for non-registry stage commands, but without
+depending on the ambient runtime (bd/gh/jq presence) — deterministic on every
+platform.
+
+Verified: passes with a normal PATH and with bd stripped from PATH; the ubuntu
+transition-block branch is confirmed by the CI log. No lib change, so the D20
+bd-call-site audit artifact stays current (release check: 0 blockers).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ test/forge-cli-registry.test.js | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/test/forge-cli-registry.test.js b/test/forge-cli-registry.test.js
+index da969e5f..acf16778 100644
+--- a/test/forge-cli-registry.test.js
++++ b/test/forge-cli-registry.test.js
+@@ -190,8 +190,19 @@ describe('CLI Registry Integration', () => {
+ 
+   describe('non-registry stage enforcement', () => {
+     test('forge verify still invokes stage enforcement outside the registry', () => {
++      // `verify` is not a registry command — it is handled by the stageId fallthrough
++      // in bin/forge.js. This proves enforceStageEntry still runs for it.
++      //
++      // enforceStageEntry blocks this invocation via one of two gates, both of which it
++      // owns: the runtime-health gate (a prerequisite is missing) OR the stage-transition
++      // rule (entering `verify` from `ship` skips `review` and needs an override). Which
++      // one fires depends on the ambient runtime, so we accept either — the point is only
++      // that enforcement ran. We deliberately do NOT force a missing `bd` here: under the
++      // default kernel backend bd is no longer a runtime prerequisite, which made the old
++      // PATH-emptying assertion non-deterministic across CI runners (bd absent on ubuntu
++      // cleared the runtime gate and reached the transition check instead).
+       const workflowState = JSON.stringify({
+-        id: 'bd-test',
++        id: 'verify-transition-test',
+         currentStage: 'ship',
+         completedStages: ['plan', 'dev', 'validate'],
+         skippedStages: [],
+@@ -199,13 +210,14 @@ describe('CLI Registry Integration', () => {
+       });
+ 
+       const { stdout, stderr, status } = runForge(
+-        ['verify', '--workflow-state', workflowState],
+-        { PATH: '', Path: '' }
++        ['verify', '--workflow-state', workflowState]
+       );
+       const combined = stdout + stderr;
+ 
+       expect(status).toBe(1);
+-      expect(combined).toContain("Error running 'verify': Stage verify blocked by runtime prerequisites:");
++      expect(combined).toMatch(
++        /Stage verify (is blocked from ship|blocked by runtime prerequisites)/
++      );
+     });
+   });
+ });
+-- 
+2.51.0.windows.1
+

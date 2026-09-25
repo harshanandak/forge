@@ -1,0 +1,953 @@
+From 50862278183ad39c6907a5649c0283817451d4e9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 18:17:42 +0530
+Subject: [PATCH] feat(grounding): P1 fail-closed gate.read_first blocks unread
+ claims
+
+Register rail.grounding (master, unlocked, default-ON) + gate.read_first +
+gate.cite in DEFAULT_GRAPH following the gate.issue_verify shape (phase-less,
+unlocked, default-ON, toggled via workflow.gates). forge recap/show append a
+context.loaded kernel event (pure append via insertKernelEvent, gate-events
+pattern) with {actor, session, cmd, budget}. forge claim <id> HARD-BLOCKS
+(exit 6) when the issue exists but has no fresh context.loaded event this
+session/24h-window; the block message is the exact remedy `forge recap <id>
+first`, so the cheapest path through the gate is the correct behavior.
+
+The gate is inert for issues absent from the consulted kernel (a real claim on
+a non-existent issue fails on its own) and fail-open on kernel-unavailable, so
+existing claim tests are unaffected. gate.cite is registered but its scanner is
+P3. Session Tier-1 (harness id) is honored when present; the 24h window is the
+agnostic floor. rail.grounding / gate.read_first disabled -> allow, logged.
+
+Adversarial tests first (red): claim-without-recap blocks; recap-then-claim
+passes; both toggles off -> allow; context.loaded append-only + idempotent per
+window + survives across processes.
+
+Refs e037a559-d3a9-4bfa-8ac2-346e61f48999 (epic 6ef96e92-848e-4360-9c81-456b6b151e51).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/_issue.js                 |  34 ++++
+ lib/commands/recap.js                  |  22 ++-
+ lib/core/runtime-graph.js              |  26 +++
+ lib/grounding/context-events.js        | 226 +++++++++++++++++++++++++
+ lib/grounding/read-first.js            | 112 ++++++++++++
+ test/commands/read-first-claim.test.js | 110 ++++++++++++
+ test/grounding/context-events.test.js  | 142 ++++++++++++++++
+ test/grounding/read-first.test.js      | 136 +++++++++++++++
+ 8 files changed, 804 insertions(+), 4 deletions(-)
+ create mode 100644 lib/grounding/context-events.js
+ create mode 100644 lib/grounding/read-first.js
+ create mode 100644 test/commands/read-first-claim.test.js
+ create mode 100644 test/grounding/context-events.test.js
+ create mode 100644 test/grounding/read-first.test.js
+
+diff --git a/lib/commands/_issue.js b/lib/commands/_issue.js
+index 74371b58..8d5ec782 100644
+--- a/lib/commands/_issue.js
++++ b/lib/commands/_issue.js
+@@ -13,6 +13,8 @@ const {
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ const { renderIssueEnvelope } = require('../issue-render');
+ const { recordStageTransition } = require('../workflow/stage-transition');
++const { checkReadFirst } = require('../grounding/read-first');
++const { recordContextLoaded } = require('../grounding/context-events');
+ 
+ // The Forge issue command surface. Each subcommand routes through the shared
+ // runIssueOperation, which selects the active backend (Kernel by --kernel /
+@@ -732,6 +734,21 @@ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+ 
+   const opts = withResolvedIssueBackend(projectRoot, rawOpts);
+ 
++  // gate.read_first (grounding, epic 6ef96e92): HARD-BLOCK `forge claim <id>`
++  // until the issue has been read this session/window (a `context.loaded` kernel
++  // event exists — appended by `forge recap`/`forge show`). Fail-closed: the
++  // cheapest path through the gate is the correct behavior, since the remedy
++  // (`forge recap <id>`) also injects the context. Consulted here at the command
++  // boundary exactly like gate.issue_verify; rail.grounding/gate.read_first
++  // disabled -> allow (logged). Read commands never gate; only `claim` in P1.
++  if (subcommand === 'claim') {
++    const issueId = normalizeArgs(args).find((arg) => !arg.startsWith('--'));
++    if (issueId) {
++      const block = await checkReadFirst(projectRoot, issueId, opts);
++      if (block) return block;
++    }
++  }
++
+   // Both backends are reached through the same runIssueOperation seam. Naming the
+   // injected local `runIssueOperation` keeps the dispatch a literal call to a binding
+   // named `runIssueOperation` (the kernel-evidence gate is syntactic) while still
+@@ -774,6 +791,23 @@ async function runIssueSubcommand(subcommand, args, projectRoot, rawOpts = {}) {
+   // read hides an unmigrated legacy issue store (kernel issue a5399f3d). The hint
+   // text lives in lib/beads-nudge.js so this hot path stays token-free.
+   maybeWarnUnmigratedBeads(subcommand, result, projectRoot, rawOpts);
++  // Grounding (gate.read_first): a successful `forge show <id>` counts as reading
++  // the issue, so append a `context.loaded` event. Best-effort and awaited (a
++  // fire-and-forget append could lose the event when the CLI process exits); a
++  // failure here never fails the read.
++  if (subcommand === 'show' && result && result.ok === true) {
++    const shownId = normalizeArgs(args).find((arg) => !arg.startsWith('--'));
++    if (shownId) {
++      const deps = (opts.kernelBroker && opts.kernelDriver)
++        ? { kernelBroker: opts.kernelBroker, kernelDriver: opts.kernelDriver }
++        : undefined;
++      try {
++        await recordContextLoaded(projectRoot, {
++          issueId: shownId, cmd: 'show', session: opts.session, env: opts.env, deps, now: opts.now,
++        });
++      } catch { /* best-effort: never fail a read on grounding bookkeeping */ }
++    }
++  }
+   // Contract output is opt-in for the human-first reads: an explicit --json flag
+   // or FORGE_JSON=1 in the environment (for scripts that cannot alter argv).
+   const jsonRequested = normalizeArgs(args).includes('--json')
+diff --git a/lib/commands/recap.js b/lib/commands/recap.js
+index 921c591b..3d41d38c 100644
+--- a/lib/commands/recap.js
++++ b/lib/commands/recap.js
+@@ -4,6 +4,7 @@ const {
+   buildIssueRecap,
+   formatOrientationText,
+ } = require('../orientation');
++const { recordContextLoaded } = require('../grounding/context-events');
+ 
+ const usage = 'Usage: forge recap <issue> [--budget N] [--json]';
+ 
+@@ -35,7 +36,7 @@ function readIssueArg(args) {
+ 
+ // `forge recap <issue>` summarizes a single issue from the deterministic
+ // orientation source assembly — it is issue-scoped, not a project-wide recap.
+-async function handler(args, _flags, projectRoot) {
++async function handler(args, _flags, projectRoot, opts = {}) {
+   const issueId = readIssueArg(args);
+   if (!issueId) {
+     // Use `error` (not `output`) so the CLI dispatcher prints the usage line
+@@ -44,9 +45,22 @@ async function handler(args, _flags, projectRoot) {
+     return { success: false, error: usage };
+   }
+ 
+-  const recap = buildIssueRecap(projectRoot, issueId, {
+-    budgetTokens: readOption(args, '--budget', undefined),
+-  });
++  const budget = readOption(args, '--budget', undefined);
++  const recap = buildIssueRecap(projectRoot, issueId, { budgetTokens: budget });
++
++  // Grounding (gate.read_first): a successful recap IS the load-the-doc action,
++  // so append a `context.loaded` event that unblocks a later `forge claim <id>`.
++  // Best-effort and awaited so the event is durable before the CLI process exits;
++  // a bookkeeping failure never fails the recap render.
++  const deps = (opts.kernelBroker && opts.kernelDriver)
++    ? { kernelBroker: opts.kernelBroker, kernelDriver: opts.kernelDriver }
++    : undefined;
++  try {
++    await recordContextLoaded(projectRoot, {
++      issueId, cmd: 'recap', budget, session: opts.session, env: opts.env, deps, now: opts.now,
++    });
++  } catch { /* best-effort: never fail a recap on grounding bookkeeping */ }
++
+   return {
+     success: true,
+     output: args.includes('--json') ? `${JSON.stringify(recap, null, 2)}\n` : formatOrientationText(recap),
+diff --git a/lib/core/runtime-graph.js b/lib/core/runtime-graph.js
+index 16db7827..611f6440 100644
+--- a/lib/core/runtime-graph.js
++++ b/lib/core/runtime-graph.js
+@@ -412,6 +412,27 @@ const RESOLVED_RUNTIME_GRAPH = {
+       label: 'Issue write verification (check-after-write)',
+       requires: [],
+     }),
++    // Grounding gates (epic 6ef96e92, design docs/work/2026-07-16-grounding-
++    // enforcement/design.md) — the first gates that DENY (fd4c03b3's first real
++    // payment). gate.read_first: acting on an issue requires having read it —
++    // consulted fail-closed at the `forge claim` boundary against a
++    // `context.loaded` kernel event (lib/grounding/context-events.js), remedy
++    // `forge recap <id>`. gate.cite: shipped artifacts must cite their sources —
++    // registered here (togglable) but its scanner lands in P3; it denies nothing
++    // yet. Both phase-less, default-ON, UNLOCKED, same toggle surface as
++    // gate.issue_verify (`forge gate disable gate.read_first`). Master switch is
++    // the unlocked rail.grounding below. `requires: []` — the context.loaded
++    // event (not evidence) is the exit condition.
++    Gate({
++      id: 'gate.read_first',
++      label: 'Read the issue before acting on it',
++      requires: [],
++    }),
++    Gate({
++      id: 'gate.cite',
++      label: 'Cite sources in shipped artifacts',
++      requires: [],
++    }),
+   ],
+   evidence: [
+     Evidence({
+@@ -452,6 +473,11 @@ const RESOLVED_RUNTIME_GRAPH = {
+     { key: 'signed_commits', label: 'Signed commits', description: 'Preserve commit provenance requirements where configured.' },
+     { key: 'schema_integrity', label: 'Schema integrity', description: 'Keep runtime graph and config schemas internally consistent.' },
+     { key: 'kernel_tracking', label: 'Kernel issue tracking', description: 'Every issue, idea, bug, and decision discussed is filed to the Forge Kernel.', locked: false },
++    // grounding — the one-switch master toggle over gate.read_first + gate.cite.
++    // UNLOCKED, default-ON (like kernel_tracking): a maintainer may opt out via
++    // `forge gate disable rail.grounding`, which the read_first consult treats as
++    // "allow, logged". Ingrains "read the documented source before acting; cite it".
++    { key: 'grounding', label: 'Documented-grounding enforcement', description: 'Read the issue before acting on it; cite sources in shipped artifacts.', locked: false },
+   ].map(def => Rail({ id: `rail.${def.key}`, ...def })),
+   adapters: [
+     Adapter({
+diff --git a/lib/grounding/context-events.js b/lib/grounding/context-events.js
+new file mode 100644
+index 00000000..7a81fc57
+--- /dev/null
++++ b/lib/grounding/context-events.js
+@@ -0,0 +1,226 @@
++'use strict';
++
++/**
++ * @module grounding/context-events
++ *
++ * The state primitive behind gate.read_first: "this issue's context was loaded"
++ * recorded as a durable kernel EVENT, structurally identical to gate.approved
++ * (lib/gate-events.js). `forge recap`/`forge show` append a `context.loaded`
++ * event to the issue's stream on a successful render; `forge claim` refuses to
++ * proceed until such an event exists for the issue this session/window.
++ *
++ * Mechanism (mirrors gate-events, deliberately): a PURE APPEND via the driver
++ * primitives (`insertKernelEvent` + `listKernelEvents`), NOT the guarded
++ * issue-mutation pipeline — context.loaded does not mutate the issue, so it must
++ * not participate in the issue-revision CAS. Idempotency is enforced by a
++ * window-bucketed key (so a re-read inside the freshness window mints no
++ * duplicate, but a re-read in the NEXT window mints a fresh event that clears a
++ * re-block) plus the unique idempotency index catching a concurrent race.
++ *
++ * Config-surface note: whether the gate is enabled lives in the runtime graph +
++ * `.forge/config.yaml`; this module only records/reads the events.
++ */
++
++const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++const { resolveIssueActor } = require('../forge-issues');
++
++const CONTEXT_LOADED_EVENT = 'context.loaded';
++const ISSUE_ENTITY_TYPE = 'issue';
++const CONTEXT_EVENT_ORIGIN = 'cli';
++// Tier-2 agnostic freshness floor: a stale-but-loaded issue re-blocks after this
++// window; one `forge recap` clears it. Overridable via
++// `workflow.gates.gate.read_first.window` at the call site (P2).
++const DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000;
++
++/**
++ * Resolve the kernel driver + config. Tests inject a shared, already-migrated
++ * kernel via `deps`; the CLI path builds a fresh one for the short-lived process
++ * (same shape as gate-events' resolveGateKernel).
++ */
++async function resolveGroundingKernel(projectRoot, deps = {}) {
++  if (deps.kernelBroker && deps.kernelDriver) {
++    return { broker: deps.kernelBroker, driver: deps.kernelDriver, config: deps.kernelBroker.config };
++  }
++  const built = await buildMigratedKernelIssueDeps({ projectRoot });
++  return { broker: built.kernelBroker, driver: built.kernelDriver, config: built.kernelBroker.config };
++}
++
++/** Coarse window bucket for a timestamp — the roll-over that makes re-reads fresh. */
++function windowBucket(nowMs, windowMs) {
++  return Math.floor(nowMs / windowMs);
++}
++
++/**
++ * Idempotency key for a context.loaded event. Scoped to issue + scope
++ * (session id when present, else actor) + window bucket so a re-read inside the
++ * window is idempotent, while the next window mints a fresh event.
++ */
++function contextLoadedIdempotencyKey(issueId, scope, bucket) {
++  return `${CONTEXT_LOADED_EVENT}:${issueId}:${scope}:${bucket}`;
++}
++
++/** Shape a stored kernel_events row into the context-event view callers consume. */
++function parseContextEvent(row) {
++  let payload;
++  try {
++    payload = row.payload_json ? JSON.parse(row.payload_json) : {};
++  } catch {
++    payload = {};
++  }
++  const view = {
++    event_type: row.event_type,
++    actor: row.actor,
++    created_at: row.created_at,
++  };
++  if (payload.session !== undefined) view.session = payload.session;
++  if (payload.cmd !== undefined) view.cmd = payload.cmd;
++  if (payload.budget !== undefined) view.budget = payload.budget;
++  return view;
++}
++
++function isIdempotencyRace(error) {
++  const message = error && error.message ? String(error.message) : '';
++  return /UNIQUE constraint failed/i.test(message) && /idempotency_key/i.test(message);
++}
++
++/**
++ * Record that an issue's context was loaded. Idempotent per issue+scope+window.
++ * Validates the issue exists (no orphan events).
++ *
++ * @param {string} projectRoot
++ * @param {Object} params
++ * @param {string} params.issueId
++ * @param {string} [params.cmd] - the command that loaded the context (recap|show).
++ * @param {string} [params.session] - harness session id (Tier-1 scoping) when known.
++ * @param {number|string} [params.budget]
++ * @param {Object} [params.env] - env source for actor resolution.
++ * @param {Object} [params.deps] - injected { kernelBroker, kernelDriver }.
++ * @param {string} [params.now] - ISO timestamp (defaults to now).
++ * @param {number} [params.windowMs] - freshness window (defaults to 24h).
++ * @returns {Promise<{ ok: boolean, duplicate?: boolean, issueMissing?: boolean, event?: Object, actor?: string }>}
++ */
++async function recordContextLoaded(projectRoot, params = {}) {
++  const { issueId, cmd, session, budget, env, deps, now, windowMs } = params;
++  const actor = resolveIssueActor(env || process.env) || 'forge';
++  const { driver, config } = await resolveGroundingKernel(projectRoot, deps);
++
++  const entity = await driver.loadKernelEntity(ISSUE_ENTITY_TYPE, issueId, {}, config);
++  if (!entity) {
++    return { ok: false, issueMissing: true, actor };
++  }
++
++  const nowIso = now || new Date().toISOString();
++  const win = Number.isFinite(windowMs) ? windowMs : DEFAULT_WINDOW_MS;
++  const bucket = windowBucket(Date.parse(nowIso), win);
++  const scope = session || actor;
++  const idempotencyKey = contextLoadedIdempotencyKey(issueId, scope, bucket);
++
++  const existing = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
++  if (existing) {
++    return { ok: true, duplicate: true, event: parseContextEvent(existing), actor };
++  }
++
++  const payload = { actor };
++  if (typeof session === 'string' && session.length > 0) payload.session = session;
++  if (typeof cmd === 'string' && cmd.length > 0) payload.cmd = cmd;
++  if (budget !== undefined) payload.budget = budget;
++
++  const event = {
++    entity_type: ISSUE_ENTITY_TYPE,
++    entity_id: issueId,
++    event_type: CONTEXT_LOADED_EVENT,
++    idempotency_key: idempotencyKey,
++    expected_revision: 0,
++    actor,
++    origin: CONTEXT_EVENT_ORIGIN,
++    payload,
++    created_at: nowIso,
++  };
++
++  try {
++    const inserted = await driver.insertKernelEvent(event, {}, config);
++    return { ok: true, duplicate: false, event: parseContextEvent(inserted), actor };
++  } catch (error) {
++    if (isIdempotencyRace(error)) {
++      const winner = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
++      return { ok: true, duplicate: true, event: winner ? parseContextEvent(winner) : parseContextEvent(event), actor };
++    }
++    throw error;
++  }
++}
++
++/**
++ * List every context.loaded event on an issue, oldest first.
++ *
++ * @returns {Promise<Array<{ event_type: string, actor: string, created_at: string, session?: string, cmd?: string }>>}
++ */
++async function listContextLoadedEvents(projectRoot, issueId, options = {}) {
++  const { driver, config } = await resolveGroundingKernel(projectRoot, options.deps);
++  const rows = await driver.listKernelEvents(ISSUE_ENTITY_TYPE, issueId, {}, config);
++  return (rows || [])
++    .filter(row => row.event_type === CONTEXT_LOADED_EVENT)
++    .map(parseContextEvent);
++}
++
++/**
++ * True iff the issue has a context.loaded event that satisfies scoping:
++ * - Tier-1 (session given): an event stamped with the SAME session.
++ * - Tier-2 (no session): an event newer than the freshness window.
++ *
++ * @param {string} projectRoot
++ * @param {string} issueId
++ * @param {{ session?: string, windowMs?: number, now?: string, deps?: Object }} [options]
++ * @returns {Promise<boolean>}
++ */
++async function hasFreshContextLoaded(projectRoot, issueId, options = {}) {
++  const { session, windowMs, now, deps } = options;
++  const events = await listContextLoadedEvents(projectRoot, issueId, { deps });
++  return eventsSatisfyFreshness(events, { session, windowMs, now });
++}
++
++/** Shared freshness predicate over an already-listed event set. */
++function eventsSatisfyFreshness(events, { session, windowMs, now } = {}) {
++  if (!events || events.length === 0) return false;
++  if (typeof session === 'string' && session.length > 0) {
++    return events.some(event => event.session === session);
++  }
++  const nowMs = now ? Date.parse(now) : Date.now();
++  const win = Number.isFinite(windowMs) ? windowMs : DEFAULT_WINDOW_MS;
++  return events.some(event => {
++    const ts = Date.parse(event.created_at);
++    return Number.isFinite(ts) && (nowMs - ts) <= win;
++  });
++}
++
++/**
++ * The gate.read_first verdict for an issue, resolving the kernel ONCE:
++ * - 'missing': the issue does not exist in the consulted kernel. The gate is
++ *   INERT — grounding a phantom issue is meaningless and the real claim will
++ *   fail on its own; this is also what keeps unit doubles (fake runner, no real
++ *   store) from being false-blocked. No bypass for a REAL issue: a claim on a
++ *   non-existent issue fails regardless.
++ * - 'loaded': a context.loaded event satisfies session/window scoping -> allow.
++ * - 'unread': the issue exists but has no fresh context.loaded event -> BLOCK.
++ *
++ * @returns {Promise<'missing'|'loaded'|'unread'>}
++ */
++async function readFirstVerdict(projectRoot, issueId, options = {}) {
++  const { session, windowMs, now, deps } = options;
++  const { driver, config } = await resolveGroundingKernel(projectRoot, deps);
++  const entity = await driver.loadKernelEntity(ISSUE_ENTITY_TYPE, issueId, {}, config);
++  if (!entity) return 'missing';
++  const rows = await driver.listKernelEvents(ISSUE_ENTITY_TYPE, issueId, {}, config);
++  const events = (rows || []).filter(row => row.event_type === CONTEXT_LOADED_EVENT).map(parseContextEvent);
++  return eventsSatisfyFreshness(events, { session, windowMs, now }) ? 'loaded' : 'unread';
++}
++
++module.exports = {
++  CONTEXT_LOADED_EVENT,
++  DEFAULT_WINDOW_MS,
++  contextLoadedIdempotencyKey,
++  parseContextEvent,
++  recordContextLoaded,
++  listContextLoadedEvents,
++  hasFreshContextLoaded,
++  readFirstVerdict,
++};
+diff --git a/lib/grounding/read-first.js b/lib/grounding/read-first.js
+new file mode 100644
+index 00000000..a04a1dbe
+--- /dev/null
++++ b/lib/grounding/read-first.js
+@@ -0,0 +1,112 @@
++'use strict';
++
++/**
++ * @module grounding/read-first
++ *
++ * gate.read_first — the first gate that DENIES (fd4c03b3's first real payment):
++ * acting on an issue requires having read it. Consulted at the `forge claim`
++ * chokepoint (P1) exactly like gate.issue_verify is consulted at the _issue.js
++ * boundary (isIssueVerifyEnabled). Fail-closed: no context.loaded event for the
++ * issue this session/window -> a block result whose remedy IS the load action
++ * (`forge recap <id>`), so the cheapest path through the gate is the correct
++ * behavior. Disabling rail.grounding (master) or gate.read_first allows the
++ * action (logged), same toggle surface as rail.kernel_tracking.
++ */
++
++const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
++const { readFirstVerdict } = require('./context-events');
++
++const GROUNDING_RAIL_ID = 'rail.grounding';
++const READ_FIRST_GATE_ID = 'gate.read_first';
++
++/**
++ * The block message. Contract: exit != 0, remedy is one copy-pastable command,
++ * and running that command both satisfies the gate AND injects the context.
++ */
++function buildReadFirstBlockMessage(issueId) {
++  return [
++    `✗ ${READ_FIRST_GATE_ID}: issue ${issueId} has not been read this session.`,
++    `  Run: forge recap ${issueId} first`,
++    `  Then retry. (Override: forge gate disable ${READ_FIRST_GATE_ID} — logged.)`,
++  ].join('\n');
++}
++
++/**
++ * Resolve whether grounding + read_first are BOTH enabled. Mirrors
++ * isIssueVerifyEnabled: an injected opts.resolveRuntimeGraph wins (tests); an
++ * unresolvable config (lint errors) yields `unknown` so the caller can fail-open
++ * on a broken config rather than bricking claim.
++ *
++ * @returns {{ enabled: boolean, disabledPrimitive?: string, unknown?: boolean }}
++ */
++function resolveReadFirstEnabled(projectRoot, opts = {}) {
++  const resolveGraph = opts.resolveRuntimeGraph || getResolvedRuntimeGraph;
++  let graph;
++  try {
++    graph = resolveGraph({ projectRoot });
++  } catch {
++    return { enabled: false, unknown: true };
++  }
++  const rail = (graph.rails || []).find(candidate => candidate.id === GROUNDING_RAIL_ID);
++  const gate = (graph.gates || []).find(candidate => candidate.id === READ_FIRST_GATE_ID);
++  const railOn = rail ? rail.enabled !== false : true;
++  const gateOn = gate ? gate.enabled !== false : true;
++  if (!railOn) return { enabled: false, disabledPrimitive: GROUNDING_RAIL_ID };
++  if (!gateOn) return { enabled: false, disabledPrimitive: READ_FIRST_GATE_ID };
++  return { enabled: true };
++}
++
++/**
++ * Consult gate.read_first for an issue. Returns `null` when the action is
++ * allowed (gate off, or a fresh context.loaded event exists), or a block result
++ * `{ success:false, error, exitCode }` when the issue has not been read.
++ *
++ * @param {string} projectRoot
++ * @param {string} issueId
++ * @param {Object} [opts] - { resolveRuntimeGraph, kernelBroker, kernelDriver, session, windowMs, now }
++ * @returns {Promise<null | { success: false, error: string, exitCode: number }>}
++ */
++async function checkReadFirst(projectRoot, issueId, opts = {}) {
++  const state = resolveReadFirstEnabled(projectRoot, opts);
++  if (!state.enabled) {
++    // Disabled (or unresolvable config) -> allow. Log the deliberate skip.
++    if (state.disabledPrimitive) {
++      console.error(`forge: ${state.disabledPrimitive} disabled — claim on ${issueId} allowed without grounding check.`);
++    }
++    return null;
++  }
++
++  const deps = (opts.kernelBroker && opts.kernelDriver)
++    ? { kernelBroker: opts.kernelBroker, kernelDriver: opts.kernelDriver }
++    : undefined;
++
++  let verdict;
++  try {
++    verdict = await readFirstVerdict(projectRoot, issueId, {
++      session: opts.session,
++      windowMs: opts.windowMs,
++      now: opts.now,
++      deps,
++    });
++  } catch {
++    // Kernel unavailable (broken env) -> fail-open, like issue_verify on a
++    // config error. In production the project kernel resolves; the enforced
++    // path is the normal one.
++    return null;
++  }
++
++  // 'missing' -> the issue is not in the consulted kernel; the gate is inert (a
++  // real claim on a non-existent issue fails on its own — no grounding bypass).
++  // 'loaded' -> a fresh context.loaded event exists. Both allow.
++  if (verdict !== 'unread') return null;
++
++  return { success: false, error: buildReadFirstBlockMessage(issueId), exitCode: 6 };
++}
++
++module.exports = {
++  GROUNDING_RAIL_ID,
++  READ_FIRST_GATE_ID,
++  buildReadFirstBlockMessage,
++  resolveReadFirstEnabled,
++  checkReadFirst,
++};
+diff --git a/test/commands/read-first-claim.test.js b/test/commands/read-first-claim.test.js
+new file mode 100644
+index 00000000..bab1e4ab
+--- /dev/null
++++ b/test/commands/read-first-claim.test.js
+@@ -0,0 +1,110 @@
++'use strict';
++
++// Adversarial integration: the exact failure this gate exists to prevent.
++// `forge claim <id>` with NO prior `forge recap` MUST be blocked (nonzero exit);
++// `forge recap <id>` then `forge claim <id>` MUST pass. Disabling rail.grounding
++// or gate.read_first lets the claim through. The claim runner is faked (same seam
++// as issue-verify.test.js) so the assertions target the gate, not SQLite; the
++// context.loaded state is recorded into a real injected :memory: kernel.
++
++const { describe, test, expect } = require('bun:test');
++
++const { runIssueSubcommand } = require('../../lib/commands/_issue');
++const recapCommand = require('../../lib/commands/recap');
++const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-factory');
++
++const ROOT = '/unused-because-deps-are-injected';
++
++async function freshKernel() {
++  return buildMigratedKernelIssueDeps({ databasePath: ':memory:' });
++}
++async function seedIssue(kernel, id) {
++  const res = await kernel.kernelBroker.runIssueOperation(
++    'create', ['--id', id, '--title', 'unit', '--type', 'task'], { actor: 'seed', origin: 'test' },
++  );
++  expect(res.ok).toBe(true);
++  return res.data.id;
++}
++
++// A fake claim runner: returns a success envelope so a PASSED gate reaches a
++// successful claim. gate.issue_verify is disabled in the injected graph so no
++// read-back is attempted.
++function fakeClaimRunner() {
++  return async (operation, _args, _projectRoot, _deps) => ({
++    ok: true,
++    schema_version: 'forge.issue.v1',
++    command: operation,
++    data: { id: 'x', status: 'in_progress', revision: 1 },
++    next_commands: [],
++  });
++}
++
++const GRAPH_ON = () => ({
++  rails: [{ id: 'rail.grounding', enabled: true }],
++  gates: [{ id: 'gate.read_first', enabled: true }, { id: 'gate.issue_verify', enabled: false }],
++});
++
++function claimOpts(kernel, extra = {}) {
++  return {
++    issueBackend: 'kernel',
++    env: { FORGE_ACTOR: 'alice' },
++    runIssueOperation: fakeClaimRunner(),
++    kernelBroker: kernel.kernelBroker,
++    kernelDriver: kernel.kernelDriver,
++    resolveRuntimeGraph: GRAPH_ON,
++    ...extra,
++  };
++}
++
++describe('gate.read_first hard-blocks forge claim', () => {
++  test('claim WITHOUT a prior recap is blocked (nonzero exit, remedy in message)', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'claim-noread');
++
++    const result = await runIssueSubcommand('claim', [issue], ROOT, claimOpts(kernel));
++
++    expect(result.success).toBe(false);
++    expect(result.exitCode).toBeGreaterThan(0);
++    expect(result.error).toContain(`forge recap ${issue}`);
++  });
++
++  test('recap THEN claim passes (recap records context.loaded, gate clears)', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'claim-afterread');
++    const now = '2026-07-16T12:00:00.000Z';
++
++    // forge recap <id> -> appends context.loaded to the injected kernel.
++    const recap = await recapCommand.handler([issue], {}, ROOT, {
++      kernelBroker: kernel.kernelBroker,
++      kernelDriver: kernel.kernelDriver,
++      env: { FORGE_ACTOR: 'alice' },
++      now,
++    });
++    expect(recap.success).toBe(true);
++
++    const result = await runIssueSubcommand('claim', [issue], ROOT, claimOpts(kernel, { now }));
++    expect(result.success).not.toBe(false);
++  });
++
++  test('rail.grounding disabled -> claim allowed without a recap', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'claim-railoff');
++    const graphOff = () => ({
++      rails: [{ id: 'rail.grounding', enabled: false }],
++      gates: [{ id: 'gate.read_first', enabled: true }, { id: 'gate.issue_verify', enabled: false }],
++    });
++    const result = await runIssueSubcommand('claim', [issue], ROOT, claimOpts(kernel, { resolveRuntimeGraph: graphOff }));
++    expect(result.success).not.toBe(false);
++  });
++
++  test('gate.read_first disabled -> claim allowed without a recap', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'claim-gateoff');
++    const graphOff = () => ({
++      rails: [{ id: 'rail.grounding', enabled: true }],
++      gates: [{ id: 'gate.read_first', enabled: false }, { id: 'gate.issue_verify', enabled: false }],
++    });
++    const result = await runIssueSubcommand('claim', [issue], ROOT, claimOpts(kernel, { resolveRuntimeGraph: graphOff }));
++    expect(result.success).not.toBe(false);
++  });
++});
+diff --git a/test/grounding/context-events.test.js b/test/grounding/context-events.test.js
+new file mode 100644
+index 00000000..93b8c0b9
+--- /dev/null
++++ b/test/grounding/context-events.test.js
+@@ -0,0 +1,142 @@
++'use strict';
++
++// Unit coverage for the grounding context.loaded event store (lib/grounding/
++// context-events.js). "This issue's context was loaded" is a pure append to the
++// issue's kernel event stream — structurally identical to gate.approved
++// (lib/gate-events.js): durable, idempotent, resume-safe, survives across
++// processes. This is the state primitive gate.read_first denies against.
++
++const { describe, expect, test } = require('bun:test');
++
++const {
++  CONTEXT_LOADED_EVENT,
++  contextLoadedIdempotencyKey,
++  recordContextLoaded,
++  listContextLoadedEvents,
++  hasFreshContextLoaded,
++  DEFAULT_WINDOW_MS,
++} = require('../../lib/grounding/context-events');
++const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-factory');
++
++const UNUSED_ROOT = '/unused-because-deps-are-injected';
++
++async function freshKernel() {
++  return buildMigratedKernelIssueDeps({ databasePath: ':memory:' });
++}
++
++async function seedIssue(kernel, id) {
++  const res = await kernel.kernelBroker.runIssueOperation(
++    'create',
++    ['--id', id, '--title', 'unit', '--type', 'task'],
++    { actor: 'seed', origin: 'test' },
++  );
++  expect(res.ok).toBe(true);
++  return res.data.id;
++}
++
++function deps(kernel) {
++  return { kernelBroker: kernel.kernelBroker, kernelDriver: kernel.kernelDriver };
++}
++
++describe('grounding context-events module', () => {
++  test('CONTEXT_LOADED_EVENT is the kernel event type', () => {
++    expect(CONTEXT_LOADED_EVENT).toBe('context.loaded');
++  });
++
++  test('contextLoadedIdempotencyKey scopes to issue+scope+window-bucket', () => {
++    expect(contextLoadedIdempotencyKey('i1', 'alice', 42))
++      .toBe('context.loaded:i1:alice:42');
++  });
++
++  test('recordContextLoaded appends a context.loaded event with the resolved actor', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'ctx-basic');
++
++    const result = await recordContextLoaded(UNUSED_ROOT, {
++      issueId: issue,
++      cmd: 'recap',
++      env: { FORGE_ACTOR: 'alice' },
++      deps: deps(kernel),
++    });
++
++    expect(result.ok).toBe(true);
++    expect(result.duplicate).toBe(false);
++    expect(result.actor).toBe('alice');
++    expect(result.event.event_type).toBe(CONTEXT_LOADED_EVENT);
++    expect(result.event.cmd).toBe('recap');
++  });
++
++  test('recordContextLoaded is idempotent within a window bucket', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'ctx-idem');
++    const now = '2026-07-16T12:00:00.000Z';
++    const params = {
++      issueId: issue,
++      cmd: 'recap',
++      env: { FORGE_ACTOR: 'alice' },
++      deps: deps(kernel),
++      now,
++    };
++
++    const first = await recordContextLoaded(UNUSED_ROOT, params);
++    const second = await recordContextLoaded(UNUSED_ROOT, params);
++    expect(first.duplicate).toBe(false);
++    expect(second.duplicate).toBe(true);
++
++    const events = await listContextLoadedEvents(UNUSED_ROOT, issue, { deps: deps(kernel) });
++    expect(events.filter(e => e.event_type === CONTEXT_LOADED_EVENT)).toHaveLength(1);
++  });
++
++  test('recordContextLoaded reports a missing issue instead of an orphan event', async () => {
++    const kernel = await freshKernel();
++    const result = await recordContextLoaded(UNUSED_ROOT, {
++      issueId: 'ghost',
++      env: { FORGE_ACTOR: 'alice' },
++      deps: deps(kernel),
++    });
++    expect(result.ok).toBe(false);
++    expect(result.issueMissing).toBe(true);
++  });
++
++  test('hasFreshContextLoaded is false before, true after a recap in the window', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'ctx-fresh');
++    const now = '2026-07-16T12:00:00.000Z';
++
++    expect(await hasFreshContextLoaded(UNUSED_ROOT, issue, { now, deps: deps(kernel) })).toBe(false);
++
++    await recordContextLoaded(UNUSED_ROOT, {
++      issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'alice' }, deps: deps(kernel), now,
++    });
++
++    expect(await hasFreshContextLoaded(UNUSED_ROOT, issue, { now, deps: deps(kernel) })).toBe(true);
++  });
++
++  test('hasFreshContextLoaded re-blocks once the event is older than the window', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'ctx-stale');
++    const loadedAt = '2026-07-15T12:00:00.000Z';
++    await recordContextLoaded(UNUSED_ROOT, {
++      issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'alice' }, deps: deps(kernel), now: loadedAt,
++    });
++
++    // 25h later, with a 24h window -> stale -> re-blocks.
++    const later = '2026-07-16T13:00:00.000Z';
++    expect(await hasFreshContextLoaded(UNUSED_ROOT, issue, {
++      now: later, windowMs: DEFAULT_WINDOW_MS, deps: deps(kernel),
++    })).toBe(false);
++  });
++
++  test('hasFreshContextLoaded honors Tier-1 session scoping when a session is given', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'ctx-session');
++    const now = '2026-07-16T12:00:00.000Z';
++    await recordContextLoaded(UNUSED_ROOT, {
++      issueId: issue, cmd: 'recap', session: 'sess-A', env: { FORGE_ACTOR: 'alice' }, deps: deps(kernel), now,
++    });
++
++    // Same session -> pass; a different session -> blocked (even though fresh).
++    expect(await hasFreshContextLoaded(UNUSED_ROOT, issue, { session: 'sess-A', now, deps: deps(kernel) })).toBe(true);
++    expect(await hasFreshContextLoaded(UNUSED_ROOT, issue, { session: 'sess-B', now, deps: deps(kernel) })).toBe(false);
++  });
++});
+diff --git a/test/grounding/read-first.test.js b/test/grounding/read-first.test.js
+new file mode 100644
+index 00000000..bd2a1a15
+--- /dev/null
++++ b/test/grounding/read-first.test.js
+@@ -0,0 +1,136 @@
++'use strict';
++
++// Unit coverage for the gate.read_first consultation (lib/grounding/read-first.js)
++// and the P1 registration of rail.grounding + gate.read_first + gate.cite in the
++// runtime graph. checkReadFirst is fail-closed: no context.loaded event for the
++// issue this session/window -> a block result with the exact remedy command.
++// rail.grounding OR gate.read_first disabled -> allow (logged).
++
++const { describe, expect, test } = require('bun:test');
++const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
++const { tmpdir } = require('node:os');
++const path = require('node:path');
++
++const { getDefaultRuntimeGraph, getResolvedRuntimeGraph } = require('../../lib/core/runtime-graph');
++const { checkReadFirst, buildReadFirstBlockMessage } = require('../../lib/grounding/read-first');
++const { recordContextLoaded } = require('../../lib/grounding/context-events');
++const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-factory');
++
++const UNUSED_ROOT = '/unused-because-deps-are-injected';
++
++async function freshKernel() {
++  return buildMigratedKernelIssueDeps({ databasePath: ':memory:' });
++}
++async function seedIssue(kernel, id) {
++  const res = await kernel.kernelBroker.runIssueOperation(
++    'create', ['--id', id, '--title', 'unit', '--type', 'task'], { actor: 'seed', origin: 'test' },
++  );
++  expect(res.ok).toBe(true);
++  return res.data.id;
++}
++function deps(kernel) {
++  return { kernelBroker: kernel.kernelBroker, kernelDriver: kernel.kernelDriver };
++}
++
++describe('grounding primitive registration (runtime graph)', () => {
++  test('rail.grounding is a default-ON, UNLOCKED master rail', () => {
++    const graph = getDefaultRuntimeGraph();
++    const rail = graph.rails.find(r => r.id === 'rail.grounding');
++    expect(rail).toBeDefined();
++    expect(rail.enabled).toBe(true);
++    expect(rail.locked).toBe(false);
++  });
++
++  test('gate.read_first and gate.cite are default-ON, UNLOCKED, phase-less gates', () => {
++    const graph = getDefaultRuntimeGraph();
++    for (const id of ['gate.read_first', 'gate.cite']) {
++      const gate = graph.gates.find(g => g.id === id);
++      expect(gate).toBeDefined();
++      expect(gate.enabled).toBe(true);
++      expect(gate.locked).toBe(false);
++      expect(gate.phase).toBeUndefined();
++      expect(gate.requires).toEqual([]);
++    }
++  });
++
++  test('workflow.gates toggles disable rail.grounding and gate.read_first (zero new toggle code)', () => {
++    const root = mkdtempSync(path.join(tmpdir(), 'forge-grounding-'));
++    try {
++      mkdirSync(path.join(root, '.forge'), { recursive: true });
++      writeFileSync(
++        path.join(root, '.forge', 'config.yaml'),
++        'workflow:\n  gates:\n    gate.read_first:\n      enabled: false\n    rail.grounding:\n      enabled: false\n',
++      );
++      const graph = getResolvedRuntimeGraph({ projectRoot: root });
++      expect(graph.gates.find(g => g.id === 'gate.read_first').enabled).toBe(false);
++      expect(graph.rails.find(r => r.id === 'rail.grounding').enabled).toBe(false);
++    } finally {
++      rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
++
++describe('checkReadFirst consultation (fail-closed)', () => {
++  const graphOn = () => ({
++    rails: [{ id: 'rail.grounding', enabled: true }],
++    gates: [{ id: 'gate.read_first', enabled: true }],
++  });
++
++  test('blocks with the exact remedy command when the issue was never read', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'rf-block');
++    const block = await checkReadFirst(UNUSED_ROOT, issue, {
++      ...deps(kernel), resolveRuntimeGraph: graphOn,
++    });
++    expect(block).not.toBeNull();
++    expect(block.success).toBe(false);
++    expect(block.exitCode).toBeGreaterThan(0);
++    expect(block.error).toContain(`forge recap ${issue}`);
++    expect(block.error).toContain('first');
++  });
++
++  test('allows after a context.loaded event exists for the issue in the window', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'rf-allow');
++    const now = '2026-07-16T12:00:00.000Z';
++    await recordContextLoaded(UNUSED_ROOT, {
++      issueId: issue, cmd: 'recap', env: { FORGE_ACTOR: 'alice' }, deps: deps(kernel), now,
++    });
++    const block = await checkReadFirst(UNUSED_ROOT, issue, {
++      ...deps(kernel), resolveRuntimeGraph: graphOn, now,
++    });
++    expect(block).toBeNull();
++  });
++
++  test('rail.grounding disabled -> allow (returns null)', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'rf-rail-off');
++    const graphRailOff = () => ({
++      rails: [{ id: 'rail.grounding', enabled: false }],
++      gates: [{ id: 'gate.read_first', enabled: true }],
++    });
++    const block = await checkReadFirst(UNUSED_ROOT, issue, {
++      ...deps(kernel), resolveRuntimeGraph: graphRailOff,
++    });
++    expect(block).toBeNull();
++  });
++
++  test('gate.read_first disabled -> allow (returns null)', async () => {
++    const kernel = await freshKernel();
++    const issue = await seedIssue(kernel, 'rf-gate-off');
++    const graphGateOff = () => ({
++      rails: [{ id: 'rail.grounding', enabled: true }],
++      gates: [{ id: 'gate.read_first', enabled: false }],
++    });
++    const block = await checkReadFirst(UNUSED_ROOT, issue, {
++      ...deps(kernel), resolveRuntimeGraph: graphGateOff,
++    });
++    expect(block).toBeNull();
++  });
++
++  test('buildReadFirstBlockMessage contains the copy-pastable remedy', () => {
++    const msg = buildReadFirstBlockMessage('abc123');
++    expect(msg).toContain('gate.read_first');
++    expect(msg).toContain('forge recap abc123 first');
++  });
++});
+-- 
+2.51.0.windows.1
+

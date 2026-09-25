@@ -1,0 +1,91 @@
+From a146e244fc275337f8e85f274976460c42adcdca Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 16:00:31 +0530
+Subject: [PATCH] fix(shepherd): gate every legacy owner-row mutation on live
+ lease ownership
+
+The lease-loss check only ran after bindMigrationSnapshot and after each
+markLegacyBlocked / importLegacyComplete / importLegacyStarting call, so a
+controller whose lease was reclaimed during the preceding await could still
+bind the snapshot and write owner rows before returning lease_lost.
+
+Recheck holdsLease() before the snapshot bind and at the top of every
+per-entry mutation, returning lease_lost without writing. The existing
+post-checks stay.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ lib/pr-monitor/reconcile-executor.js          |  5 +++
+ .../reconcile-migration-gate.test.js          | 33 +++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index 740f2804..af7e2b29 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -911,6 +911,10 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 		}, options);
+ 		return { ok: false, state: 'conflict', reason: 'legacy_owner_conflict' };
+ 	}
++	// Ownership is rechecked BEFORE every mutation, not only after: a lease reclaimed
++	// during the preceding await must not be able to bind a snapshot or write a single
++	// owner row on the way to reporting lease_lost.
++	if (!holdsLease()) return { ok: false, state: 'quarantined', reason: 'lease_lost' };
+ 	const bound = await authority.bindMigrationSnapshot({ snapshotHash, updatedAt: now }, options);
+ 	if (!bound?.ok) return { ok: false, state: 'conflict', reason: bound?.reason || 'snapshot_mismatch' };
+ 	if (verifiedEntries?.some(entry => !entry.providerReadable)) {
+@@ -923,6 +927,7 @@ async function migrateLegacyAuthority(projectRoot, opts = {}) {
+ 			entry, entryHash, ctx, pid, hasPid, pidState, providerState, providerReadable,
+ 			providerTerminal, providerVerified, receiptVerified,
+ 		} = evidence;
++		if (!holdsLease()) return { ok: false, state: 'quarantined', reason: 'lease_lost' };
+ 		const operationOptions = cachedLegacyEvidenceOptions(options, evidence);
+ 		let result;
+ 		if (entry.lifecycleConflict) {
+diff --git a/test/pr-monitor/reconcile-migration-gate.test.js b/test/pr-monitor/reconcile-migration-gate.test.js
+index f580f2c0..12efddac 100644
+--- a/test/pr-monitor/reconcile-migration-gate.test.js
++++ b/test/pr-monitor/reconcile-migration-gate.test.js
+@@ -1094,6 +1094,39 @@ describe('one-release watcher authority migration gate', () => {
+ 		expect(api.rows.size).toBe(0);
+ 	});
+ 
++	test('never writes an owner row after the lease is reclaimed mid-migration', async () => {
++		// The lease is live through evidence collection and the snapshot bind, then a
++		// concurrent trigger reclaims it. Every owner-row mutation must be gated on
++		// ownership BEFORE it runs, so this controller writes nothing at all.
++		const mutations = ['starting:', 'complete:', 'blocked:'];
++		const api = authorityHarness();
++		let leaseChecks = 0;
++		const result = await run(api, snapshot([entry('acme/repo', 7), entry('acme/repo', 8)]), {
++			token: 'lease-token',
++			gitCommonDir: '/repo/.git',
++			stampLease: () => true,
++			ownsLease: () => { leaseChecks += 1; return leaseChecks <= 2; },
++		});
++		expect(result).toMatchObject({ ok: false, state: 'quarantined', reason: 'lease_lost' });
++		expect(api.calls).toContain('bind');
++		expect(api.calls.filter(value => mutations.some(prefix => value.startsWith(prefix)))).toEqual([]);
++		expect(api.calls).not.toContain('complete-gate');
++		expect(api.rows.size).toBe(0);
++
++		// And a lease lost before the bind never binds the snapshot either.
++		const earlier = authorityHarness();
++		let earlierChecks = 0;
++		const earlierResult = await run(earlier, snapshot([entry('acme/repo', 7)]), {
++			token: 'lease-token',
++			gitCommonDir: '/repo/.git',
++			stampLease: () => true,
++			ownsLease: () => { earlierChecks += 1; return earlierChecks <= 1; },
++		});
++		expect(earlierResult).toMatchObject({ ok: false, state: 'quarantined', reason: 'lease_lost' });
++		expect(earlier.calls).not.toContain('bind');
++		expect(earlier.rows.size).toBe(0);
++	});
++
+ 	test('treats a legacy PID whose process started after the legacy marker as reused, not live', async () => {
+ 		const api = authorityHarness();
+ 		const legacy = snapshot([entry('acme/repo', 7, { pid: 107, startedAt: '2026-08-19T00:00:00.000Z' })]);
+-- 
+2.51.0.windows.1
+

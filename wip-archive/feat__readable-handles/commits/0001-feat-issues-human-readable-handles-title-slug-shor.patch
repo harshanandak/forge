@@ -1,0 +1,268 @@
+From 1826cdcb6dc20d43051a3472233540a1443c23c0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 9 Jul 2026 10:41:22 +0530
+Subject: [PATCH] feat(issues): human-readable handles (title-slug + short-id)
+ for at-a-glance tracking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Opaque UUIDs make it hard to tell what an issue is or track where an agent is across
+sub/dependency tasks. Adds issueHandle() = <title-slug>-<8char-short-id> (e.g.
+add-oauth-login-56a3a16d): shown in forge ready/list (ID column) and write confirmations
+at a TTY. Resolvable — forge show <handle> / <short-id> / even a stale slug + right id all
+resolve, because the resolver reads the trailing 8-hex short id (slug is display sugar).
+Canonical id stays the full UUID; short legacy/imported ids (forge-2a3bc9, <8 hex) pass
+through unchanged with no extra lookup. Verified end-to-end. (kernel 1db53c60)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CHANGELOG.md                             |  1 +
+ lib/issue-render.js                      | 32 ++++++++++++++++----
+ lib/kernel/issue-id-resolver.js          | 27 +++++++++++++++--
+ test/commands/issue-human-output.test.js |  4 ++-
+ test/issue-render.test.js                | 38 +++++++++++++++++++++---
+ test/kernel/issue-id-resolver.test.js    | 28 +++++++++++++++++
+ 6 files changed, 116 insertions(+), 14 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9895a35a..8c02d6fa 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -32,6 +32,7 @@ First public release. The default issue backend changed from Beads to the built-
+ 
+ ### Added
+ 
++- **Human-readable issue handles: `<title-slug>-<short-id>` (e.g. `add-oauth-login-56a3a16d`).** Opaque UUIDs make it hard to tell what an issue is or track where an agent is across sub/dependency tasks. `forge ready`/`list` now show a readable handle in the ID column, and issue writes confirm with it (`✓ Created add-oauth-login-56a3a16d`) at an interactive terminal. The handle is **resolvable** — `forge show add-oauth-login-56a3a16d`, `forge show 56a3a16d`, or even a stale slug with the right id all resolve to the same issue (the resolver reads the trailing 8-char short id; the slug is display sugar). The canonical id stays the full UUID; short legacy/imported ids (`forge-2a3bc9`) pass through unchanged. (kernel 1db53c60)
+ - **Lease-ownership verification: `forge issue owns <id>`.** A claim returning `ok:true` does not by itself prove you won the lease — a same-key duplicate replay also returns `ok:true` (echoing the current call's `claim_id`), and a live lease can be reclaimed on expiry. The new Kernel read exits `0` iff the resolving actor (`FORGE_ACTOR` → `FORGE_SESSION_ID` → default `forge`) holds the **single active claim** and that lease has **not expired**; otherwise it exits non-zero (conflict, code `4`) with a clear "you do not own the lease for `<id>` (held by `<actor>`)" message. `--json` emits `{ ok:true, data:{ owned, claimed_by, expired, actor, expires_at } }`. It is a strict READ (never mutates state) and is Kernel-only (the Beads passthrough returns a clear kernel-only error). The new `claim-safety` skill packages the reusable procedure — claim → `owns` → work → re-verify before `close`/`release` — and is registered in the `kernel` umbrella skill. (kernel eea2f9ce, builds on d71a824b)
+ - **Kernel linkage backbone: `forge worktree create` now records the issue → worktree → work-folder chain, and orientation reads it instead of guessing.** Previously `kernel_worktrees` was schema-only (0 writes, always empty), so the kernel stored none of the linkage and orientation resolved the active work-folder by a filesystem heuristic ("most-complete folder wins") that breaks silently under parallel features. Now `forge worktree create <slug> [--issue <id>] [--work-folder <path>]` writes an idempotent `kernel_worktrees` row (keyed by absolute worktree path) linking `path`/`branch`/`issue_id`/`work_folder`/`git_common_dir`, and drops a machine-readable `.forge-issue` marker in the work-folder so a folder resolves to its issue deterministically. `orientation.discoverWorkFolder` and the new `forge worktree list` READ this linkage from the kernel (row `work_folder`, else `issue_id` → marker scan), falling back to the folder heuristic only when no row exists. Migration `007_kernel_worktrees_linkage_columns` adds the two nullable columns (backward-compatible; a missing/un-migrated kernel degrades to the heuristic, so a repo with no reachable kernel still gets a usable worktree). (kernel 727289e2-be51-4833-adb1-03484fadc99d)
+ - Two kernel-native canonical skills, registered through the `kernel` umbrella index and mirrored into the generated agent skill dirs by `skills-sync`. `triage-ready` is a read-only "what should I work on" skill that ranks and *explains* the derived ready queue via `forge issue ready` / `blocked` / `stats` (never `board`, which reads a legacy snapshot store), justifies why the top pick is workable and why the runners-up are blocked, and hands the pick off without mutating the store. `issue-basics` is the everyday CRUD floor over the `forge issue` verbs (create/update/claim/release/comment/close/show/list/search/stats) with the real flags, plus the migration disposition for `label` (→ `--label "a,b"`), `reopen` (→ `update --status open`), and `delete` (unsupported by the append-only kernel — use `close`). Both carry an explicit `## Fork points` section so users can re-carve filters, ranking, staleness windows, and create conventions.
+diff --git a/lib/issue-render.js b/lib/issue-render.js
+index d5f26658..1bacb07d 100644
+--- a/lib/issue-render.js
++++ b/lib/issue-render.js
+@@ -17,6 +17,26 @@ function shortId(id) {
+   return UUID_RE.test(id) ? id.slice(0, 8) : id;
+ }
+ 
++// Human-readable display handle: `<title-slug>-<short-id>` (kernel 1db53c60), e.g.
++// "Add OAuth login" → "add-oauth-login-56a3a16d". The slug (first few title words) makes
++// a queue scannable at a glance; the short-id keeps it unique and resolvable — `forge show
++// <handle>` works because the resolver reads the trailing hex. The canonical id stays the
++// full UUID; the handle is display + lookup sugar, recomputed from the current title.
++function issueHandle(issue) {
++  const id = issue && issue.id != null ? String(issue.id) : '';
++  const short = shortId(id);
++  const title = issue && typeof issue.title === 'string' ? issue.title : '';
++  const slug = title
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, '-')
++    .replace(/^-+|-+$/g, '')
++    .split('-')
++    .filter(Boolean)
++    .slice(0, 4)
++    .join('-');
++  return slug ? `${slug}-${short}` : short;
++}
++
+ // gate.issue_verify (kernel 5f928cd0) attaches verified/mismatches to mutation
+ // envelopes. Human mode must surface — never hide — a failed or unconfirmed
+ // read-back, mirroring the JSON envelope's verified/mismatches keys.
+@@ -67,7 +87,7 @@ function renderIssueList(envelope, { emptyMessage = 'No issues found.' } = {}) {
+     lines.push(...renderTable(
+       ['ID', 'TYPE', 'STATUS', 'PRIORITY', 'TITLE'],
+       issues.map(issue => [
+-        shortId(issue.id),
++        issueHandle(issue),
+         issue.type ?? '-',
+         issue.status ?? '-',
+         issue.priority ?? '-',
+@@ -162,11 +182,10 @@ const MUTATION_VERBS = {
+ function renderIssueMutation(subcommand, envelope) {
+   const issue = envelope && envelope.data && typeof envelope.data === 'object' ? envelope.data : {};
+   const verb = MUTATION_VERBS[subcommand] || 'Updated';
+-  const id = issue.id ? String(issue.id) : '(issue)';
+-  let headline = `✓ ${verb} ${id}`;
+-  if (typeof issue.title === 'string' && issue.title.trim() !== '') {
+-    headline += `  ${issue.title.trim()}`;
+-  }
++  // Use the readable handle (slug-shortid) so a stream of confirmations stays scannable,
++  // consistent with `forge list`/`ready` (kernel 1db53c60).
++  const handle = issueHandle(issue) || '(issue)';
++  let headline = `✓ ${verb} ${handle}`;
+   if (issue.status) {
+     headline += `  [${issue.status}]`;
+   }
+@@ -193,6 +212,7 @@ function renderIssueEnvelope(subcommand, envelope) {
+ 
+ module.exports = {
+   shortId,
++  issueHandle,
+   renderIssueList,
+   renderIssueShow,
+   renderIssueMutation,
+diff --git a/lib/kernel/issue-id-resolver.js b/lib/kernel/issue-id-resolver.js
+index da987ad3..3a1eb095 100644
+--- a/lib/kernel/issue-id-resolver.js
++++ b/lib/kernel/issue-id-resolver.js
+@@ -94,11 +94,32 @@ function ambiguousError(token, candidates) {
+ async function resolveIssueId(token, lookup) {
+ 	if (typeof token !== 'string' || token.length === 0) return { id: token };
+ 	if (FULL_UUID_PATTERN.test(token)) return { id: token };
+-	const isPrefix = HEX_PREFIX_PATTERN.test(token);
+-	const isShortHex = !isPrefix && SHORT_HEX_PATTERN.test(token);
++
++	// A non-hex token is either a legacy/imported id (must pass through so the store
++	// resolves it exactly) or a human display handle `<title-slug>-<short-id>` (kernel
++	// 1db53c60). Only the handle form is rewritten to its trailing short-id — and only
++	// after confirming the whole token is not itself a stored id, so `forge-abc123`-style
++	// imported ids keep resolving exactly.
++	let ref = token;
++	if (!HEX_PREFIX_PATTERN.test(token) && !SHORT_HEX_PATTERN.test(token)) {
++		// The display handle's short-id is always the 8-char UUID prefix (shortId), so a
++		// handle ends in >= 8 trailing hex. Requiring 8+ (not 6+) keeps short legacy/Beads
++		// suffixes like `forge-2a3bc9` a plain passthrough with no lookup.
++		const handle = /-([0-9a-f]{8,})$/i.exec(token);
++		if (!handle) return { id: token };
++		const whole = (await lookup(token.toLowerCase(), 2)) || [];
++		const wholeExact = whole.find(
++			candidate => candidate && typeof candidate.id === 'string' && candidate.id.toLowerCase() === token.toLowerCase(),
++		);
++		if (wholeExact) return { id: wholeExact.id };
++		ref = handle[1];
++	}
++
++	const isPrefix = HEX_PREFIX_PATTERN.test(ref);
++	const isShortHex = !isPrefix && SHORT_HEX_PATTERN.test(ref);
+ 	if (!isPrefix && !isShortHex) return { id: token };
+ 
+-	const needle = token.toLowerCase();
++	const needle = ref.toLowerCase();
+ 	const candidates = (await lookup(needle, MAX_AMBIGUOUS_CANDIDATES + 1)) || [];
+ 	const exact = candidates.find(
+ 		candidate => candidate && typeof candidate.id === 'string' && candidate.id.toLowerCase() === needle,
+diff --git a/test/commands/issue-human-output.test.js b/test/commands/issue-human-output.test.js
+index 315e00b9..9b515f3f 100644
+--- a/test/commands/issue-human-output.test.js
++++ b/test/commands/issue-human-output.test.js
+@@ -157,7 +157,9 @@ describe('human-first default output (ready/list/show)', () => {
+     });
+ 
+     expect(result.output).toContain('✓ Created');
+-    expect(result.output).toContain(UUID);
++    // The confirmation uses the readable handle `<slug>-<short-id>` (kernel 1db53c60),
++    // so it carries the 8-char short id rather than the full UUID.
++    expect(result.output).toContain(`x-${UUID.slice(0, 8)}`);
+     expect(() => JSON.parse(result.output)).toThrow(); // not JSON in interactive mode
+   });
+ 
+diff --git a/test/issue-render.test.js b/test/issue-render.test.js
+index 067b749a..e09e4ac2 100644
+--- a/test/issue-render.test.js
++++ b/test/issue-render.test.js
+@@ -9,6 +9,7 @@ const { describe, test, expect } = require('bun:test');
+ 
+ const {
+   shortId,
++  issueHandle,
+   renderIssueList,
+   renderIssueShow,
+   renderIssueMutation,
+@@ -197,13 +198,13 @@ describe('renderIssueEnvelope dispatch', () => {
+ });
+ 
+ describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gated in _issue.js)', () => {
+-  test('create renders a confirmation with the id (and title/status when present)', () => {
++  test('create renders a confirmation with the readable handle + status', () => {
+     const out = renderIssueMutation('create', envelope('issue.create', {
+       id: UUID_A, title: 'Wire the thing', status: 'open',
+     }));
+     expect(out).toContain('✓ Created');
+-    expect(out).toContain(UUID_A);
+-    expect(out).toContain('Wire the thing');
++    // Readable handle: title-slug + 8-char short id (kernel 1db53c60).
++    expect(out).toContain('wire-the-thing-a9bbd065');
+     expect(out).toContain('[open]');
+     expect(out).not.toContain('schema_version'); // no raw contract JSON
+   });
+@@ -218,7 +219,8 @@ describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gate
+   test('renderIssueEnvelope routes mutations to the mutation renderer', () => {
+     const out = renderIssueEnvelope('claim', envelope('issue.claim', { id: UUID_A }));
+     expect(out).toContain('✓ Claimed');
+-    expect(out).toContain(UUID_A);
++    // No title in the envelope → handle degrades to the 8-char short id.
++    expect(out).toContain('a9bbd065');
+   });
+ 
+   test('surfaces check-after-write verification lines when present', () => {
+@@ -230,3 +232,31 @@ describe('renderIssueMutation (842a8be7: human confirmation for writes, TTY-gate
+     expect(out.toLowerCase()).toContain('verif'); // verification note rendered, not dropped
+   });
+ });
++
++describe('issueHandle (1db53c60: title-slug + short-id, e.g. add-oauth-login-56a3a16d)', () => {
++  test('builds <slug>-<8char> from title + id', () => {
++    expect(issueHandle({ id: UUID_A, title: 'Add OAuth login' })).toBe('add-oauth-login-a9bbd065');
++  });
++
++  test('caps the slug to the first four title words', () => {
++    expect(issueHandle({ id: UUID_A, title: 'One two three four five six' }))
++      .toBe('one-two-three-four-a9bbd065');
++  });
++
++  test('strips punctuation and collapses separators', () => {
++    expect(issueHandle({ id: UUID_A, title: '  Fix: the (weird)  thing!! ' }))
++      .toBe('fix-the-weird-thing-a9bbd065');
++  });
++
++  test('degrades to the bare short id when there is no usable title', () => {
++    expect(issueHandle({ id: UUID_A })).toBe('a9bbd065');
++    expect(issueHandle({ id: UUID_A, title: '!!! ***' })).toBe('a9bbd065');
++  });
++
++  test('renderIssueList shows the handle in the ID column', () => {
++    const out = renderIssueList(envelope('issue.list', {
++      issues: [{ id: UUID_A, title: 'Add OAuth login', type: 'feature', status: 'open', priority: 'P2' }],
++    }));
++    expect(out).toContain('add-oauth-login-a9bbd065');
++  });
++});
+diff --git a/test/kernel/issue-id-resolver.test.js b/test/kernel/issue-id-resolver.test.js
+index a8fc7ec8..800da7d6 100644
+--- a/test/kernel/issue-id-resolver.test.js
++++ b/test/kernel/issue-id-resolver.test.js
+@@ -288,3 +288,31 @@ describe('issue-id resolver — broker boundary (kernel end-to-end)', () => {
+     expect(closed.output).toContain(UUID_C);
+   });
+ });
++
++describe('issue-id resolver — human handles (1db53c60)', () => {
++  test('resolves a <slug>-<short-id> handle by its trailing 8-char short id', async () => {
++    const lookup = fakeLookup([{ id: UUID_A, title: 'Add OAuth login' }]);
++    const result = await resolveIssueId('add-oauth-login-e79a1b2c', lookup);
++    expect(result).toEqual({ id: UUID_A });
++  });
++
++  test('ignores a stale/wrong slug — only the trailing short id matters', async () => {
++    const lookup = fakeLookup([{ id: UUID_A, title: 'Renamed thing' }]);
++    const result = await resolveIssueId('whatever-old-name-e79a1b2c', lookup);
++    expect(result).toEqual({ id: UUID_A });
++  });
++
++  test('prefers an exact match on the whole token (imported handle-shaped ids)', async () => {
++    const imported = 'legacy-2a3bc9de';
++    const lookup = fakeLookup([{ id: imported, title: 'imported' }]);
++    const result = await resolveIssueId(imported, lookup);
++    expect(result).toEqual({ id: imported });
++  });
++
++  test('a short (<8) hex suffix is NOT treated as a handle (no lookup)', async () => {
++    const lookup = fakeLookup([]);
++    const result = await resolveIssueId('forge-2a3bc9', lookup);
++    expect(result).toEqual({ id: 'forge-2a3bc9' });
++    expect(lookup.calls.length).toBe(0);
++  });
++});
+-- 
+2.51.0.windows.1
+

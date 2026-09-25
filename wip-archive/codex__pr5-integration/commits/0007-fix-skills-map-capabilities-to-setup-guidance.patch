@@ -1,0 +1,180 @@
+From 065be8593d0cc71611a4562bbe9eae0b2ae77165 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 12 Sep 2026 17:12:15 +0530
+Subject: [PATCH] fix(skills): map capabilities to setup guidance
+
+---
+ .agents/skills/setup/SKILL.md             | 34 ++++++++++++++---------
+ .agents/skills/setup/evals/scorecard.json |  8 +++---
+ skills/coverage.json                      |  1 +
+ skills/setup/SKILL.md                     | 34 ++++++++++++++---------
+ skills/setup/evals/scorecard.json         |  8 +++---
+ 5 files changed, 51 insertions(+), 34 deletions(-)
+
+diff --git a/.agents/skills/setup/SKILL.md b/.agents/skills/setup/SKILL.md
+index d71d6206..2ef884ec 100644
+--- a/.agents/skills/setup/SKILL.md
++++ b/.agents/skills/setup/SKILL.md
+@@ -1,18 +1,15 @@
+ ---
+ name: setup
+ description: >
+-  Forge install & setup lifecycle. `forge setup` interactively configures Forge for your
+-  coding agents; `forge init [--profile minimal|standard|full]` writes the
+-  adoption config in a fresh repo; `forge doctor` reports whether the kernel DB is on a
+-  cloud/network path; `forge upgrade [--dry-run]` previews + self-heals upgrade readiness;
+-  `forge hooks install --global` installs native hooks; `forge reset --soft|--hard --force`
+-  and `forge reinstall --force` undo/redo the install; `forge recommend` lists suggested
+-  tools. Use when the user says "install/set up forge", "init forge", "adoption profile",
+-  "forge doctor", "upgrade forge", "install the hooks globally", or "reset/reinstall forge".
+-  Footguns: setup is interactive — pass `--yes` in automation; `doctor` only checks the
+-  kernel-DB filesystem class, NOT general health; `upgrade` self-heals Forge state, NOT the
+-  npm package; reset/reinstall need `--force`. NOT toggling a gate/rail (gates), NOT
+-  orienting in a set-up repo (status), NOT installing project deps (dev).
++  Forge install and setup lifecycle. Configure agents with `forge setup`; initialize an adoption
++  profile with `forge init`; diagnose the installation with `forge doctor`; report installed
++  products and behavior-probed harness support with `forge capabilities --json`; preview repairs
++  with `forge upgrade`; install global hooks; reset or reinstall; and recommend tools. Use when the user asks
++  "install Forge", "set up Forge", "adoption profile", "Forge doctor", "what capabilities are
++  available", "upgrade Forge", "install hooks globally", or "reset Forge". Setup is interactive,
++  so pass `--yes` in automation. Scoped Doctor checks fail closed while its default preserves
++  legacy exit behavior. Not for gate toggles (gates), project work state (status), or project
++  dependencies (dev).
+ allowed-tools: Bash, Read, Grep, Glob
+ terminal: true
+ ---
+@@ -65,7 +62,18 @@ forge doctor            # is the kernel DB on a cloud-synced / network path? (re
+ forge doctor --json     # machine-readable
+ ```
+ 
+-`forge doctor` is **narrow**: it reports the filesystem class of the Forge kernel database path (local / cloud-synced / network) so you can catch the reliability footgun of running the DB on OneDrive/Dropbox/a network share. It is **not** a general health check.
++`forge doctor` keeps its legacy filesystem result while the manifest-driven report also checks
++the requested Health scope. An unavailable or malformed explicitly requested check fails closed;
++optional product checks do not change the legacy default exit behavior.
++
++Inspect installed products and behavior-probed harness support without activating them:
++
++```bash
++forge capabilities --json
++```
++
++Treat unprobed, stale, or unavailable capabilities as unavailable. The report does not infer
++semantic support from a harness name or help text.
+ 
+ # Upgrade readiness
+ 
+diff --git a/.agents/skills/setup/evals/scorecard.json b/.agents/skills/setup/evals/scorecard.json
+index af953ca3..bfe30bf6 100644
+--- a/.agents/skills/setup/evals/scorecard.json
++++ b/.agents/skills/setup/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 1021,
+-      "body_lines": 92,
+-      "score": 41
++      "desc_chars": 779,
++      "body_lines": 103,
++      "score": 52
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 82
++  "composite": 86
+ }
+diff --git a/skills/coverage.json b/skills/coverage.json
+index bc3b4694..903f8262 100644
+--- a/skills/coverage.json
++++ b/skills/coverage.json
+@@ -27,6 +27,7 @@
+     "update": "issue-basics",
+     "list": "issue-basics",
+     "skill": "using-forge",
++    "capabilities": "setup",
+ 
+     "worktree": "worktree",
+     "clean": "worktree",
+diff --git a/skills/setup/SKILL.md b/skills/setup/SKILL.md
+index d71d6206..2ef884ec 100644
+--- a/skills/setup/SKILL.md
++++ b/skills/setup/SKILL.md
+@@ -1,18 +1,15 @@
+ ---
+ name: setup
+ description: >
+-  Forge install & setup lifecycle. `forge setup` interactively configures Forge for your
+-  coding agents; `forge init [--profile minimal|standard|full]` writes the
+-  adoption config in a fresh repo; `forge doctor` reports whether the kernel DB is on a
+-  cloud/network path; `forge upgrade [--dry-run]` previews + self-heals upgrade readiness;
+-  `forge hooks install --global` installs native hooks; `forge reset --soft|--hard --force`
+-  and `forge reinstall --force` undo/redo the install; `forge recommend` lists suggested
+-  tools. Use when the user says "install/set up forge", "init forge", "adoption profile",
+-  "forge doctor", "upgrade forge", "install the hooks globally", or "reset/reinstall forge".
+-  Footguns: setup is interactive — pass `--yes` in automation; `doctor` only checks the
+-  kernel-DB filesystem class, NOT general health; `upgrade` self-heals Forge state, NOT the
+-  npm package; reset/reinstall need `--force`. NOT toggling a gate/rail (gates), NOT
+-  orienting in a set-up repo (status), NOT installing project deps (dev).
++  Forge install and setup lifecycle. Configure agents with `forge setup`; initialize an adoption
++  profile with `forge init`; diagnose the installation with `forge doctor`; report installed
++  products and behavior-probed harness support with `forge capabilities --json`; preview repairs
++  with `forge upgrade`; install global hooks; reset or reinstall; and recommend tools. Use when the user asks
++  "install Forge", "set up Forge", "adoption profile", "Forge doctor", "what capabilities are
++  available", "upgrade Forge", "install hooks globally", or "reset Forge". Setup is interactive,
++  so pass `--yes` in automation. Scoped Doctor checks fail closed while its default preserves
++  legacy exit behavior. Not for gate toggles (gates), project work state (status), or project
++  dependencies (dev).
+ allowed-tools: Bash, Read, Grep, Glob
+ terminal: true
+ ---
+@@ -65,7 +62,18 @@ forge doctor            # is the kernel DB on a cloud-synced / network path? (re
+ forge doctor --json     # machine-readable
+ ```
+ 
+-`forge doctor` is **narrow**: it reports the filesystem class of the Forge kernel database path (local / cloud-synced / network) so you can catch the reliability footgun of running the DB on OneDrive/Dropbox/a network share. It is **not** a general health check.
++`forge doctor` keeps its legacy filesystem result while the manifest-driven report also checks
++the requested Health scope. An unavailable or malformed explicitly requested check fails closed;
++optional product checks do not change the legacy default exit behavior.
++
++Inspect installed products and behavior-probed harness support without activating them:
++
++```bash
++forge capabilities --json
++```
++
++Treat unprobed, stale, or unavailable capabilities as unavailable. The report does not infer
++semantic support from a harness name or help text.
+ 
+ # Upgrade readiness
+ 
+diff --git a/skills/setup/evals/scorecard.json b/skills/setup/evals/scorecard.json
+index af953ca3..bfe30bf6 100644
+--- a/skills/setup/evals/scorecard.json
++++ b/skills/setup/evals/scorecard.json
+@@ -3,9 +3,9 @@
+   "fixtures": "present",
+   "static": {
+     "token_cost": {
+-      "desc_chars": 1021,
+-      "body_lines": 92,
+-      "score": 41
++      "desc_chars": 779,
++      "body_lines": 103,
++      "score": 52
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 82
++  "composite": 86
+ }
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,112 @@
+From 93a21c2d4ee0f1359fa78c319fca187ee231cd86 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 17:42:43 +0530
+Subject: [PATCH] test(workflows): isolate hook timing proof
+
+---
+ .../decisions.md                              |  8 +++++
+ .../2026-09-19-workflow-hook-timing/tasks.md  | 10 ++++++
+ test/bun-workflow-pins.test.js                | 34 ++++++++++++++++---
+ 3 files changed, 47 insertions(+), 5 deletions(-)
+ create mode 100644 docs/work/2026-09-19-workflow-hook-timing/decisions.md
+ create mode 100644 docs/work/2026-09-19-workflow-hook-timing/tasks.md
+
+diff --git a/docs/work/2026-09-19-workflow-hook-timing/decisions.md b/docs/work/2026-09-19-workflow-hook-timing/decisions.md
+new file mode 100644
+index 00000000..44678753
+--- /dev/null
++++ b/docs/work/2026-09-19-workflow-hook-timing/decisions.md
+@@ -0,0 +1,8 @@
++# Workflow hook timing decisions
++
++- Keep the real `protected-state-check.js` subprocess because it is the commit-boundary integration proof.
++- Use the authority function's existing reader seams for the second assertion. The full hook already reads the real Git projection; repeating that scan adds Windows subprocess cost without adding coverage.
++- Preserve the staged template bytes, unchanged generated workflow bytes, rejected result, and zero kernel read/write assertions.
++- Do not change production code, timeouts, retry behavior, workflow artifacts, manifests, or dependencies.
++- Measured on a quiet host: fixture setup 325 ms, staging 44 ms, real hook 1,084 ms, duplicate direct authority scan 873 ms, and cleanup 11 ms. Isolate only the duplicate scan because canonical saturation expanded the unchanged test beyond its 15-second deadline.
++- Independent spec review and root quality review passed with the real hook, exact fixture state, intended mismatch reason, and zero kernel activity intact.
+diff --git a/docs/work/2026-09-19-workflow-hook-timing/tasks.md b/docs/work/2026-09-19-workflow-hook-timing/tasks.md
+new file mode 100644
+index 00000000..6bae0e06
+--- /dev/null
++++ b/docs/work/2026-09-19-workflow-hook-timing/tasks.md
+@@ -0,0 +1,10 @@
++# Workflow hook timing tasks
++
++Issue: `e70683d6-f8df-471b-b859-a6dacb69825c`
++
++- [x] Reproduce the same-version template projection check at `origin/master`.
++- [x] Measure fixture, hook, and direct authority phases without changing deadlines.
++- [x] Remove only duplicated test-fixture work while preserving the end-to-end hook rejection, exact generated workflow assertion, and zero authority consumption.
++- [x] Run the named regression and affected test file, then complete source reviews before handoff.
++
++Evidence: canonical RED timed out at 15.271718 seconds; named GREEN passed 1/1 in 1.69 seconds at the unchanged 15-second deadline; the retained affected-file run passed 20/20 in 21.45 seconds.
+diff --git a/test/bun-workflow-pins.test.js b/test/bun-workflow-pins.test.js
+index 98e224b5..cd016f89 100644
+--- a/test/bun-workflow-pins.test.js
++++ b/test/bun-workflow-pins.test.js
+@@ -857,10 +857,14 @@ describe('Forge-owned Bun workflow pins', () => {
+ 	});
+ 
+ 	test('the commit hook rejects a same-version template change without its exact generated workflow', async () => {
+-		const { root, run } = createSameVersionProjectionFixture();
++		const { root, run, template } = createSameVersionProjectionFixture();
+ 		try {
+ 			fs.appendFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH), '# staged template change\n');
+ 			expect(run(['add', TEST_WORKFLOW_TEMPLATE_PATH]).status).toBe(0);
++			const sourceHead = run(['rev-parse', 'HEAD']).stdout.trim();
++			const packageManifest = fs.readFileSync(path.join(root, 'package.json'));
++			const indexedTemplate = fs.readFileSync(path.join(root, TEST_WORKFLOW_TEMPLATE_PATH));
++			const indexedWorkflow = fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH));
+ 			const hook = spawnSync(process.execPath, [path.join(repoRoot, 'scripts', 'protected-state-check.js')], {
+ 				cwd: root,
+ 				encoding: 'utf8',
+@@ -871,13 +875,27 @@ describe('Forge-owned Bun workflow pins', () => {
+ 			expect(`${hook.stdout}${hook.stderr}`).toContain(TEST_WORKFLOW_PATH);
+ 			let kernelReads = 0;
+ 			let kernelWrites = 0;
+-			const rejected = protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
++			let projectionReads = 0;
++			const rejected = await protectedStateAuthority.authorizeAndConsumeProtectedStateWrites(root, [{
+ 				actor: 'test-workflow-template-batch',
+ 				path: TEST_WORKFLOW_PATH,
+ 				surface: 'workflows',
+-				content: fs.readFileSync(path.join(root, TEST_WORKFLOW_PATH)),
+-				sourceHead: run(['rev-parse', 'HEAD']).stdout.trim(),
++				content: indexedWorkflow,
++				sourceHead,
+ 			}], {
++				sourceHead,
++				readSourcePackageManifest: () => packageManifest,
++				readIndexedPackageManifest: () => packageManifest,
++				readTestWorkflowProjection: () => {
++					projectionReads += 1;
++					return {
++						sourcePackage: packageManifest,
++						indexedPackage: packageManifest,
++						sourceTemplate: template,
++						indexedTemplate,
++						indexedWorkflow,
++					};
++				},
+ 				deps: {
+ 					kernelBroker: { config: {} },
+ 					kernelDriver: {
+@@ -886,7 +904,13 @@ describe('Forge-owned Bun workflow pins', () => {
+ 					},
+ 				},
+ 			});
+-			expect(await rejected).toMatchObject({ success: false });
++			expect(rejected).toMatchObject({
++				success: false,
++				batchDecision: {
++					reason: `${TEST_WORKFLOW_PATH} does not match the staged canonical template for Bun 1.4.2.`,
++				},
++			});
++			expect(projectionReads).toBe(1);
+ 			expect(kernelReads).toBe(0);
+ 			expect(kernelWrites).toBe(0);
+ 		} finally {
+-- 
+2.51.0.windows.1
+

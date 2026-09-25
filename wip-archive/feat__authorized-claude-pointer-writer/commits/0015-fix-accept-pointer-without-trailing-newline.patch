@@ -1,0 +1,51 @@
+From b84f68c9a04f7f26a633e991d5c484d733031d67 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 18 Aug 2026 16:32:12 +0530
+Subject: [PATCH] fix: accept pointer without trailing newline
+
+---
+ lib/protected-state-authority.js       |  2 +-
+ test/protected-state-authority.test.js | 14 ++++++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 8918e4a9..3ec6d997 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -423,7 +423,7 @@ const CLAUDE_POINTER_CRLF_CONTENT = Buffer.from('@AGENTS.md\r\n');
+ 
+ function isExactClaudePointer(content) {
+ 	const bytes = Buffer.from(content || '');
+-	return bytes.equals(CLAUDE_POINTER_CONTENT) || bytes.equals(CLAUDE_POINTER_CRLF_CONTENT);
++	return bytes.equals(Buffer.from('@AGENTS.md')) || bytes.equals(CLAUDE_POINTER_CONTENT) || bytes.equals(CLAUDE_POINTER_CRLF_CONTENT);
+ }
+ 
+ async function issueGeneratedHarnessClaudeAuthorization(projectRoot, params = {}, options = {}) {
+diff --git a/test/protected-state-authority.test.js b/test/protected-state-authority.test.js
+index 6bf689ff..5b291431 100644
+--- a/test/protected-state-authority.test.js
++++ b/test/protected-state-authority.test.js
+@@ -258,6 +258,20 @@ describe('protected-state Kernel authority', () => {
+ 		});
+ 	});
+ 
++	test('accepts an exact pointer without a final newline', () => {
++		const content = '@AGENTS.md';
++		const target = { ...claudePointerTarget, content };
++		const rows = [
++			claudePointerEvent(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'no-newline-capability', { content }),
++			claudePointerEvent(PROTECTED_STATE_WRITE_COMPLETED, 'no-newline-capability', { content }),
++		];
++
++		expect(evaluateAuthorization(target, rows)).toMatchObject({
++			allowed: true,
++			contentHash: hashProtectedContent(content),
++		});
++	});
++
+ 	test('denies a pre-write authorization until the owning writer records completion', () => {
+ 		const decision = evaluateAuthorization(target, [
+ 			eventRow(PROTECTED_STATE_AUTHORIZATION_ISSUED, 'capability-pre-write'),
+-- 
+2.51.0.windows.1
+

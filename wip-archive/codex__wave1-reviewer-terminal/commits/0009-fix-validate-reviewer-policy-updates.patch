@@ -1,0 +1,47 @@
+From 08065d974ee1baaa4eae182f8502d141b7e1afcc Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 16:30:54 +0530
+Subject: [PATCH] fix: validate reviewer policy updates
+
+---
+ lib/pr-monitor/monitor.js | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index d82e3fd1..71ab10d5 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -13,6 +13,7 @@ const { diffSnapshots } = require('./differ');
+ const journal = require('./journal');
+ const {
+   createReviewerLedger,
++  normalizeReviewerPolicy,
+   setFinalCorrectionSha,
+   registerReviewerRequest,
+   recordReviewerState,
+@@ -113,9 +114,20 @@ function ensureReviewerLedger(previous, next, input) {
+     return { ledger: explicit, error: null };
+   }
+   if (input.policy === null) return { ledger: null, error: null };
++  let requestedPolicy = null;
++  if (input.policy !== undefined) {
++    try {
++      requestedPolicy = normalizeReviewerPolicy(input.policy);
++    } catch (error) {
++      return { ledger: null, error: error.message };
++    }
++  }
+   const prior = previous && fullHead(previous.headSha) === head ? previous.reviewerLedger : null;
+-  if (prior && typeof prior === 'object') return { ledger: cloneValue(prior), error: null };
+-  const policy = input.policy !== undefined ? input.policy : previous?.reviewerLedger?.policy;
++  if (prior && typeof prior === 'object'
++    && (!requestedPolicy || fingerprint(requestedPolicy) === fingerprint(prior.policy))) {
++    return { ledger: cloneValue(prior), error: null };
++  }
++  const policy = requestedPolicy || previous?.reviewerLedger?.policy;
+   if (!policy) return { ledger: null, error: null };
+   try {
+     return { ledger: createReviewerLedger({ policy, headSha: head }), error: null };
+-- 
+2.51.0.windows.1
+

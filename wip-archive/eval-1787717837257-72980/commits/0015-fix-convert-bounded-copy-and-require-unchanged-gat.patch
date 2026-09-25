@@ -1,0 +1,86 @@
+From 2e1a3189adf703e1dc0c6411c6504f2d5f2b1d38 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 01:18:20 +0530
+Subject: [PATCH] fix: convert bounded copy and require unchanged gate reads
+
+---
+ lib/pr-monitor/watch-owner.js       |  6 ++++-
+ test/pr-monitor/watch-owner.test.js | 38 +++++++++++++++++++++++++++++
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index a0333105..a053de29 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -587,7 +587,7 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 			}
+ 		}
+ 		const records = [];
+-		for (const row of snap.rows) {
++		for (const row of rows) {
+ 			const record = fromSqliteOwnerRow(row);
+ 			if (validateRecord(record)) return { ok: false, changed: false, reason: 'corrupt', records: [] };
+ 			records.push(record);
+@@ -924,6 +924,10 @@ function invokeGate(method, input, opts) {
+ 			reason: typeof result.reason === 'string' ? result.reason : '',
+ 			gate: result.gate,
+ 		};
++		if (method === 'watchGateRead' && snap.ok
++			&& (snap.changed !== false || snap.reason !== 'read')) {
++			return invalidGate('corrupt');
++		}
+ 		if (snap.ok && snap.gate == null) return invalidGate('corrupt');
+ 		if (snap.gate == null) {
+ 			return { ok: snap.ok, changed: snap.changed, reason: snap.reason, gate: null };
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index cc930391..9e29c860 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2339,6 +2339,44 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result).toEqual({ ok: true, changed: false, reason: 'read', records: [] });
+ 	});
+ 
++	test('converts enumeration records from the bounded copy, not the source iterable', async () => {
++		const validRow = pr => ({
++			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
++			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
++			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
++		});
++		const stateful = {
++			passes: 0,
++			[Symbol.iterator]() {
++				this.passes += 1;
++				const pass = this.passes;
++				return (function* () {
++					if (pass === 1) yield validRow(1);
++					else for (let pr = 2; pr <= 4_098; pr += 1) yield validRow(pr);
++				})();
++			},
++		};
++		const result = await owner.enumerateOwners(null, authorityOpts({
++			...driver,
++			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: stateful }),
++		}));
++		expect(result).toMatchObject({ ok: true, changed: false, reason: 'read' });
++		expect(result.records).toHaveLength(1);
++	});
++
++	test('rejects gate-read successes with mutating envelopes', async () => {
++		await seedGate({ repo: 'acme/forge', pr: 962 });
++		const result = await owner.readMigrationGate({}, authorityOpts({
++			...driver,
++			watchGateRead: () => ({
++				ok: true, changed: true, reason: 'acquired',
++				gate: { singleton: 1, state: 'quarantined', snapshot_hash: HASH, conflict_code: null, updated_at: NOW },
++			}),
++		}));
++		expect(result.gate).toBeNull();
++		expect(result.ok).toBe(false);
++	});
++
+ 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 960 };
+ 		const result = await owner.readOwner(ctx, authorityOpts({
+-- 
+2.51.0.windows.1
+

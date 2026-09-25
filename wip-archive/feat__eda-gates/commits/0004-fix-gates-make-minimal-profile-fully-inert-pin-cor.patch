@@ -1,0 +1,150 @@
+From cf08b8998af4fb19fe8e5a063a88f464404983f1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 10:49:51 +0530
+Subject: [PATCH] fix(gates): make minimal profile fully inert + pin
+ corrupt-config fallback (refs eda6d866)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three closers on the config-honest enforcement work:
+- minimal profile: protectedPaths [] (was ['.forge/config.yaml']) so the
+  protected-path guard has nothing to fire on — minimal is now zero enforcement,
+  not "everything off except a lone config guard".
+- test: corrupt/unparseable .forge/config.yaml FAILS TOWARD enforcement via the
+  __raw/rawKeyDisabled fallback (TDD stays ON, protectedPaths -> built-in set),
+  pinning both the native-hook and check-tdd gates.
+- init.js: tdd_intent moved out of the immutable layer1Rails.rails floor into a
+  separate toggleableRails list — cosmetic, so the display no longer implies it is
+  a non-negotiable L1 rail.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/adoption-profiles.js       |  6 +++++-
+ lib/commands/init.js           |  7 ++++++-
+ test/adoption-profiles.test.js | 25 +++++++++++++++++++++++++
+ test/check-tdd-config.test.js  |  9 +++++++++
+ test/forge-native-hook.test.js | 14 ++++++++++++++
+ 5 files changed, 59 insertions(+), 2 deletions(-)
+
+diff --git a/lib/adoption-profiles.js b/lib/adoption-profiles.js
+index d06f28b8..8b0ffc01 100644
+--- a/lib/adoption-profiles.js
++++ b/lib/adoption-profiles.js
+@@ -60,7 +60,11 @@ const PROFILE_CONFIGS = Object.freeze({
+       gatesEnabled: false,
+       issueEnabled: false,
+       harnessTargets: [],
+-      protectedPaths: ['.forge/config.yaml'],
++      // Minimal = zero active enforcement, so there is nothing left to guard: with the
++      // gates disabled and the TDD rail off, the protected-path guard has no enforcement
++      // surface to protect. Leaving it empty keeps `init --minimal` fully inert instead of
++      // contradicting itself by still guarding config.yaml.
++      protectedPaths: [],
+       // Minimal = no active enforcement: the TDD pre-commit rail is off (it is a
+       // strong default, not a hard floor), so `init --minimal` installs inert hooks.
+       disabledRails: ['rail.tdd_intent'],
+diff --git a/lib/commands/init.js b/lib/commands/init.js
+index 93a19f6c..1abf1b62 100644
+--- a/lib/commands/init.js
++++ b/lib/commands/init.js
+@@ -335,13 +335,18 @@ function renderDayOneConfigYaml({ profile, classification, harnessTargets, rails
+   config.workflow.classification = { default: classification };
+   config.layer1Rails = {
+     confirmed: railsConfirmed,
++    // The immutable Layer 1 floor: locked rails that cannot be toggled off.
+     rails: [
+-      'tdd_intent',
+       'secret_scan',
+       'branch_protection',
+       'signed_commits',
+       'schema_integrity',
+     ],
++    // tdd_intent is a strong DEFAULT rail, not an immutable L1 floor: it is unlocked
++    // (locked:false) and honestly toggleable via `forge gate disable rail.tdd_intent`
++    // (the minimal profile ships it off). Listed separately so this display never
++    // implies it is a non-negotiable Layer 1 rail (issue eda6d866).
++    toggleableRails: ['tdd_intent'],
+   };
+   config.adapters = config.adapters || {};
+   config.adapters.harness = {
+diff --git a/test/adoption-profiles.test.js b/test/adoption-profiles.test.js
+index 5e5f31d3..85ab6398 100644
+--- a/test/adoption-profiles.test.js
++++ b/test/adoption-profiles.test.js
+@@ -70,4 +70,29 @@ describe('adoption profiles', () => {
+     expect(tddEnabled('standard')).toBe(true);
+     expect(tddEnabled('full')).toBe(true);
+   });
++
++  test('minimal leaves protectedPaths empty (protected-path guard inert); standard/full guard paths', () => {
++    // minimal = zero active enforcement, so the protected-path guard has nothing to
++    // fire on. isEnforcementActive('protected-path') is inert only when the resolved
++    // protectedPaths is an empty list — a lone config.yaml entry would keep the guard
++    // active and contradict "minimal = fully inert" (issue eda6d866).
++    const { getResolvedRuntimeGraph } = require('../lib/core/runtime-graph');
++    const {
++      isEnforcementActive,
++    } = require('../.forge/hooks/forge-native-hook.js');
++    const resolved = (profile) => {
++      const root = makeProject(renderAdoptionConfigYaml(profile));
++      return {
++        protectedPaths: getResolvedRuntimeGraph({ projectRoot: root }).protectedPaths,
++        protectedPathActive: isEnforcementActive('protected-path', root),
++      };
++    };
++
++    const minimal = resolved('minimal');
++    expect(minimal.protectedPaths).toEqual([]);
++    expect(minimal.protectedPathActive).toBe(false); // guard does NOT fire under minimal
++
++    expect(resolved('standard').protectedPaths.length).toBeGreaterThan(0);
++    expect(resolved('full').protectedPaths.length).toBeGreaterThan(0);
++  });
+ });
+diff --git a/test/check-tdd-config.test.js b/test/check-tdd-config.test.js
+index 5c897cf7..9ca167e5 100644
+--- a/test/check-tdd-config.test.js
++++ b/test/check-tdd-config.test.js
+@@ -54,4 +54,13 @@ describe('isTddEnabled (config-honest pre-commit gate)', () => {
+     writeConfig('workflow:\n  gates:\n    "gate.plan-exit":\n      enabled: false\n');
+     expect(isTddEnabled(root)).toBe(true);
+   });
++
++  test('unparseable config => FAILS TOWARD enforcement (true) via raw-scan fallback', () => {
++    // An unterminated flow sequence makes YAML.parse throw, so isTddEnabled falls to
++    // the conservative raw-text scan. The corrupt text has no `rail.tdd_intent`/
++    // `tdd_intent` block with `enabled: false`, so the gate a user did not disable is
++    // never silently dropped — corrupt config keeps TDD ON (issue eda6d866).
++    writeConfig("protectedPaths: ['.forge/config.yaml'\n");
++    expect(isTddEnabled(root)).toBe(true);
++  });
+ });
+diff --git a/test/forge-native-hook.test.js b/test/forge-native-hook.test.js
+index b0627ae0..e7628991 100644
+--- a/test/forge-native-hook.test.js
++++ b/test/forge-native-hook.test.js
+@@ -193,6 +193,20 @@ describe('config-honest enforcement (disabled gate/rail => inert hook)', () => {
+     expect(adapter.isEnforcementActive('tdd', none)).toBe(true);
+     expect(adapter.isEnforcementActive('protected-path', none)).toBe(true); // unset → built-in set active
+   });
++
++  test('unparseable config FAILS TOWARD enforcement (__raw fallback: TDD ON, protectedPaths built-in)', () => {
++    // An unterminated flow sequence makes YAML.parse throw, so loadConfigObject
++    // returns { __raw }. It contains neither a `rail.tdd_intent ... enabled: false`
++    // block nor a literal `protectedPaths: []`, so the raw-scan must NOT silently
++    // drop either gate: corrupt config keeps TDD ON and protected-path on the
++    // built-in set (protectedPaths === null), never inert (issue eda6d866).
++    const corrupt = makeProject("protectedPaths: ['.forge/config.yaml'\n");
++    const e = adapter.resolveEnforcement(corrupt);
++    expect(e.tddEnabled).toBe(true);
++    expect(e.protectedPaths).toBe(null); // → built-in PROTECTED_PATTERNS, not silently disabled
++    expect(adapter.isEnforcementActive('tdd', corrupt)).toBe(true);
++    expect(adapter.isEnforcementActive('protected-path', corrupt)).toBe(true);
++  });
+ });
+ 
+ describe('config-driven protected paths (config is the source of truth)', () => {
+-- 
+2.51.0.windows.1
+

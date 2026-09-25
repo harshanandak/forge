@@ -1,0 +1,117 @@
+From 011a025b6ee4abde6966268f612e88bfb8850e1c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 22:37:44 +0530
+Subject: [PATCH] fix: fence evidence reads and inbound authority cascades
+
+---
+ lib/kernel/sqlite-driver.js                 | 19 +++++++++++++++++++
+ lib/pr-monitor/watch-owner.js               |  5 +++++
+ test/kernel/watch-owner-transaction.test.js | 15 +++++++++++++++
+ test/pr-monitor/watch-owner.test.js         | 15 +++++++++++++++
+ 4 files changed, 54 insertions(+)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index a685bb2e..07c57fdf 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2790,6 +2790,22 @@ function hasUnexpectedWatchAuthorityTriggers(runtime, db) {
+ 	).length > 0;
+ }
+ 
++// Inbound ON DELETE CASCADE foreign keys would make abort/release delete rows
++// in unrelated tables (or vice versa), so any referencing table fails closed.
++function hasInboundWatchOwnerForeignKeys(runtime, db) {
++	const tables = allParams(
++		runtime,
++		db,
++		"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN (?, ?)",
++		[WATCH_OWNER_TABLE, WATCH_GATE_TABLE],
++	);
++	for (const { name } of tables) {
++		const references = allParams(runtime, db, `PRAGMA foreign_key_list("${name.replace(/"/g, '""')}")`);
++		if (references.some(reference => reference.table === WATCH_OWNER_TABLE)) return true;
++	}
++	return false;
++}
++
+ function assertWatchOwnerSchema(runtime, db) {
+ 	const rows = allParams(
+ 		runtime,
+@@ -2806,6 +2822,9 @@ function assertWatchOwnerSchema(runtime, db) {
+ 		|| hasUnexpectedWatchAuthorityTriggers(runtime, db)) {
+ 		throw watchOwnerStoreError('AUTHORITY_UNAVAILABLE', 'Watcher authority schema does not match the Kernel migration');
+ 	}
++	if (hasInboundWatchOwnerForeignKeys(runtime, db)) {
++		throw watchOwnerStoreError('AUTHORITY_UNAVAILABLE', 'Watcher authority rows are referenced by an inbound foreign key cascade');
++	}
+ }
+ 
+ const activeWatchOwnerConnections = new WeakSet();
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index 46078755..487e3850 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -453,7 +453,12 @@ function captureAuthoritySnapshot(ctx, opts) {
+ 	try {
+ 		const result = operation(identity, opts.databaseConfig || {});
+ 		if (result && typeof result.then === 'function') return { ok: false, reason: 'invalid_operation' };
++		if (!result || typeof result !== 'object' || Array.isArray(result)) return { ok: false, reason: 'corrupt' };
+ 		if (!result.ok) return { ok: false, reason: result.reason };
++		const probe = fromSqliteOwnerRow(result.row);
++		if (result.changed !== false || (result.reason === 'read') !== (probe != null)) {
++			return { ok: false, reason: 'corrupt' };
++		}
+ 		if (result.row == null) return { ok: true, identity, snapshot: null };
+ 		if (typeof result.row !== 'object' || Array.isArray(result.row)) {
+ 			return { ok: false, reason: 'corrupt' };
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 0962828a..95dbb90c 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -1286,4 +1286,19 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(restorationAttempts).toBe(1);
+ 		expect(closes).toBe(1);
+ 	});
++	test('rejects inbound foreign-key cascades referencing watcher authority rows', async () => {
++		await driver.exec(`
++			CREATE TABLE kernel_pr_watch_owner_extras (
++				extra TEXT NOT NULL PRIMARY KEY,
++				repo TEXT NOT NULL,
++				pr INTEGER NOT NULL,
++				FOREIGN KEY (repo, pr) REFERENCES kernel_pr_watch_owners (repo, pr) ON DELETE CASCADE
++			);
++		`);
++		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 116 }, {
++			controllerPid: 7_116, startedAt: NOW,
++		}, { driver });
++		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
++	});
+ });
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 17a070a6..872e4d80 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2209,4 +2209,19 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(result.ok).toBe(false);
+ 		expect(result.record).toBeNull();
+ 	});
++
++	test('rejects evidence snapshots built from envelopes that cannot be reads', async () => {
++		const ctx = { repo: 'acme/forge', pr: 957 };
++		const prior = await seedLifecycle(ctx, 'running');
++		const result = await owner.recordTerminal(ctx, {
++			generation: prior.generation, pid: WATCHER_PID, terminalReceiptId: RECEIPT_ID, updatedAt: NEXT,
++		}, authorityOpts({
++			...driver,
++			watchOwnerRead: () => ({ ok: true, changed: true, reason: 'read', row: toSnakeRow(prior.record) }),
++			watchOwnerRecordTerminal: () => {
++				throw new Error('mutation must not run on an invalid evidence read');
++			},
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
+ });
+-- 
+2.51.0.windows.1
+

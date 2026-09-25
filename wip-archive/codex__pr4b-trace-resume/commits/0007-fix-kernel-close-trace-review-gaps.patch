@@ -1,0 +1,305 @@
+From 21e5accd05929e8c29734e8d46349cff4cff274b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 02:03:04 +0530
+Subject: [PATCH] fix(kernel): close trace review gaps
+
+---
+ lib/kernel/broker.js              |  16 ++++-
+ lib/kernel/sqlite-driver.js       |  19 +++++-
+ packages/memory/index.js          |   2 +-
+ test/kernel/trace.test.js         | 104 +++++++++++++++++++++++++++++-
+ test/memory/monitor-store.test.js |  34 +++++++---
+ 5 files changed, 160 insertions(+), 15 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 2fe36176..cfa50b4e 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -284,6 +284,9 @@ function derivePrEvidence(input) {
+ 		|| !Number.isInteger(packetPayload.expected_issue_revision) || packetPayload.expected_issue_revision < 0
+ 		|| packetPayload.authority?.issue_revision !== packetPayload.expected_issue_revision
+ 		|| typeof packetPayload.repository_id !== 'string' || !packetPayload.repository_id
++		|| !Number.isSafeInteger(packetPayload.packet_revision) || packetPayload.packet_revision < 0
++		|| !TRACE_SHA256.test(packetPayload.capability_manifest_digest)
++		|| typeof packetPayload.workflow_config_revision !== 'string' || !packetPayload.workflow_config_revision
+ 		|| !TRACE_FULL_HEAD.test(packetPayload.target_head)
+ 		|| !TRACE_SHA256.test(packetPayload.risk_manifest_digest)) {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage WorkPacket authority binding is incomplete');
+@@ -341,18 +344,27 @@ function parseTracePayload(row) {
+ 	}
+ }
+ 
++function isNewerGateCandidate(candidate, current) {
++	return !current || candidate.eventAtMs > current.eventAtMs
++		|| (candidate.eventAtMs === current.eventAtMs && candidate.order > current.order);
++}
++
+ function resolveGateReceipts(events, gateIds, occurredAt) {
+ 	const occurredAtMs = Date.parse(occurredAt);
+ 	if (!Number.isFinite(occurredAtMs)) {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage occurred_at must be a valid timestamp');
+ 	}
+ 	const gateEvents = new Map();
+-	for (const event of events) {
++	for (const [order, event] of events.entries()) {
+ 		if (!['gate.approved', 'gate.rejected'].includes(event.event_type)) continue;
+ 		const eventAtMs = Date.parse(event.created_at);
+ 		if (!Number.isFinite(eventAtMs) || eventAtMs > occurredAtMs) continue;
+ 		const payload = parseTracePayload(event);
+-		if (gateIds.includes(payload.gate)) gateEvents.set(payload.gate, { event, payload });
++		const candidate = { event, payload, eventAtMs, order };
++		if (gateIds.includes(payload.gate) && isNewerGateCandidate(candidate, gateEvents.get(payload.gate))) {
++			// listKernelEvents supplies rowid order for equal timestamps; later rows win explicitly.
++			gateEvents.set(payload.gate, candidate);
++		}
+ 	}
+ 	return gateIds.map(gateId => {
+ 		const latest = gateEvents.get(gateId);
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index f0b69a92..3c74e8f3 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1438,6 +1438,20 @@ function loadSelectedTracePr(runtime, db, target) {
+ 	return matches[0] || null;
+ }
+ 
++function appendSelectedTracePr(pullRequests, selectedPr, issueId, gaps) {
++	if (!selectedPr || pullRequests.some(row => row.id === selectedPr.id)) return pullRequests;
++	if (issueId && selectedPr.issue_id !== issueId) {
++		gaps.push(`pull_requests:${selectedPr.id}:unlinked_issue`);
++	}
++	const retained = pullRequests.length >= TRACE_MAX_PULL_REQUESTS
++		? pullRequests.slice(0, TRACE_MAX_PULL_REQUESTS - 1)
++		: pullRequests;
++	if (retained.length < pullRequests.length && !gaps.includes('pull_requests:overflow')) {
++		gaps.push('pull_requests:overflow');
++	}
++	return [...retained, selectedPr];
++}
++
+ function loadTraceRows(runtime, db, target = {}) {
+ 	const gaps = [];
+ 	const selectedPr = loadSelectedTracePr(runtime, db, target);
+@@ -1458,7 +1472,7 @@ function loadTraceRows(runtime, db, target = {}) {
+ 		pullRequests = pullRequests.slice(0, TRACE_MAX_PULL_REQUESTS);
+ 		gaps.push('pull_requests:overflow');
+ 	}
+-	if (selectedPr && !pullRequests.some(row => row.id === selectedPr.id)) pullRequests = [selectedPr];
++	pullRequests = appendSelectedTracePr(pullRequests, selectedPr, issueId, gaps);
+ 
+ 	let worktree = null;
+ 	const preferredWorktreeId = selectedPr?.worktree_id || pullRequests.find(row => row.worktree_id)?.worktree_id;
+@@ -3259,6 +3273,9 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 				'SELECT * FROM kernel_pr WHERE git_common_dir = ? AND repo = ? AND number = ? LIMIT 1',
+ 				[row.git_common_dir, row.repo, row.number],
+ 			)[0];
++			if (!persisted) {
++				throw new Error(`Kernel SQLite driver upsertPr: no kernel_pr row after upsert for ${row.repo}#${row.number}`);
++			}
+ 			return { ok: true, ...persisted };
+ 		},
+ 		async resolvePrLinkage(input, _context = {}, config = {}) {
+diff --git a/packages/memory/index.js b/packages/memory/index.js
+index 92fc5f09..5b757f80 100644
+--- a/packages/memory/index.js
++++ b/packages/memory/index.js
+@@ -18,7 +18,7 @@ const MAX_PRIVATE_SCAN_LENGTH = 16_384;
+ 
+ class MonitorStoreError extends Error {
+   constructor(code, message, options = {}) {
+-    super(message, options.cause ? { cause: options.cause } : undefined);
++    super(message, Object.hasOwn(options, 'cause') ? { cause: options.cause } : undefined);
+     this.name = 'MonitorStoreError';
+     this.code = code;
+   }
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index bc3f5d8f..39b8276f 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -231,6 +231,35 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
+ 	});
+ 
++	test('rejects omitted or invalid WorkPacket bindings before writes', async () => {
++		function omitMatchingBinding(packetField, receiptField) {
++			let packet = workPacket();
++			delete packet.payload[packetField];
++			packet = rehash(packet);
++			let receipt = runReceipt(workPacket());
++			receipt.payload.packet_hash = packet.content_hash;
++			delete receipt.payload[receiptField];
++			return { packet, receipt: rehash(receipt) };
++		}
++
++		const invalid = [
++			(() => { const packet = workPacket({ packet_revision: -1 }); return { packet, receipt: runReceipt(packet) }; })(),
++			(() => { const packet = workPacket({ packet_revision: Number.MAX_SAFE_INTEGER + 1 }); return { packet, receipt: runReceipt(packet) }; })(),
++			(() => { const packet = workPacket({ capability_manifest_digest: 'not-a-sha256' }); return { packet, receipt: runReceipt(packet) }; })(),
++			(() => { const packet = workPacket({ workflow_config_revision: '' }); return { packet, receipt: runReceipt(packet) }; })(),
++			omitMatchingBinding('packet_revision', 'packet_revision'),
++			omitMatchingBinding('capability_manifest_digest', 'manifest_digest'),
++			omitMatchingBinding('workflow_config_revision', 'workflow_config_revision'),
++		];
++
++		for (const { packet, receipt } of invalid) {
++			await expect(broker.recordPrLinkage(linkage('opened', packet, receipt)))
++				.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		}
++		expect(await driver.queryAll('SELECT * FROM kernel_pr;', config)).toEqual([]);
++		expect(await driver.queryAll("SELECT * FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([]);
++	});
++
+ 	test('binds hash-valid WorkPacket repository authority to the normalized linkage repository', async () => {
+ 		const crossRepoPacket = workPacket({ repository_id: 'owner/repository-a' });
+ 		await expect(broker.recordPrLinkage(linkage('opened', crossRepoPacket, runReceipt(crossRepoPacket), {
+@@ -260,6 +289,50 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([GATE_RECEIPT]);
+ 	});
+ 
++	test('selects the newest eligible gate event independent of returned row order', async () => {
++		const renewedReceipt = 'gate.approved:issue-trace:gate.merge:newest';
++		await driver.insertKernelEvent({
++			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
++			idempotency_key: 'gate.rejected:issue-trace:gate.merge:older', expected_revision: 0,
++			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
++			created_at: '2026-08-11T00:05:00.000Z',
++		}, {}, config);
++		await driver.insertKernelEvent({
++			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
++			idempotency_key: renewedReceipt, expected_revision: 0,
++			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
++			created_at: '2026-08-11T00:05:30.000Z',
++		}, {}, config);
++		const listKernelEvents = driver.listKernelEvents.bind(driver);
++		driver.listKernelEvents = async (...args) => (await listKernelEvents(...args)).reverse();
++
++		await broker.recordPrLinkage(linkage());
++
++		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([renewedReceipt]);
++	});
++
++	test('uses stable driver order to break equal-time gate event ties', async () => {
++		const renewedReceipt = 'gate.approved:issue-trace:gate.merge:equal-time';
++		await driver.insertKernelEvent({
++			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
++			idempotency_key: 'gate.rejected:issue-trace:gate.merge:equal-time', expected_revision: 0,
++			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 1 },
++			created_at: '2026-08-11T00:05:00.000Z',
++		}, {}, config);
++		await driver.insertKernelEvent({
++			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
++			idempotency_key: renewedReceipt, expected_revision: 0,
++			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
++			created_at: '2026-08-11T00:05:00.000Z',
++		}, {}, config);
++
++		await broker.recordPrLinkage(linkage());
++
++		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace.pull_requests[0].iterations[0].gate_receipts).toEqual([renewedReceipt]);
++	});
++
+ 	test('keeps an exact T1 replay idempotent after T2 rejection and renewed approval', async () => {
+ 		const packet = workPacket();
+ 		const opened = linkage('opened', packet, runReceipt(packet));
+@@ -278,11 +351,11 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.approved',
+ 			idempotency_key: renewedReceipt, expected_revision: 0,
+ 			actor: 'maintainer', origin: 'test', payload: { gate: GATE_ID, expires_at: null, generation: 2 },
+-			created_at: '2026-08-11T00:10:00.000Z',
++			created_at: '2026-08-11T00:10:01.000Z',
+ 		}, {}, config);
+ 		await broker.recordPrLinkage(opened);
+ 		await broker.recordPrLinkage(linkage('merged', packet, runReceipt(packet, {}, 'merged'), {
+-			occurred_at: '2026-08-11T00:10:00.000Z',
++			occurred_at: '2026-08-11T00:10:02.000Z',
+ 		}));
+ 
+ 		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
+@@ -399,6 +472,33 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		});
+ 	});
+ 
++	test('preserves issue PRs when a selected PR is unlinked and reports the gap', async () => {
++		await driver.upsertPr({
++			id: 'pr-linked', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 600,
++			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
++		}, {}, config);
++		await driver.upsertPr({
++			id: 'pr-unlinked', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 601,
++			issue_id: null, worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
++		}, {}, config);
++
++		const trace = await broker.readTrace({
++			issue_id: 'issue-trace', pr_number: 601, repo: 'owner/forge', git_common_dir: gitCommonDir,
++		});
++		expect(trace.pull_requests.map(pr => pr.id)).toEqual(['pr-linked', 'pr-unlinked']);
++		expect(trace.gaps).toContain('pull_requests:pr-unlinked:unlinked_issue');
++	});
++
++	test('fails immediately when an upsert read-back finds no persisted PR row', async () => {
++		await driver.exec(`CREATE TRIGGER remove_pr_after_insert AFTER INSERT ON kernel_pr
++			BEGIN DELETE FROM kernel_pr WHERE id = NEW.id; END;`, config);
++
++		await expect(driver.upsertPr({
++			id: 'pr-removed', git_common_dir: gitCommonDir, repo: 'owner/forge', number: 602,
++			issue_id: 'issue-trace', worktree_id: 'worktree-trace', branch, head_sha: HEAD_SHA,
++		}, {}, config)).rejects.toThrow('no kernel_pr row after upsert for owner/forge#602');
++	});
++
+ 	test('reports interrupted PR upserts and incomplete iterations as explicit trace gaps', async () => {
+ 		const partial = await driver.upsertPr({
+ 			id: 'pr-partial',
+diff --git a/test/memory/monitor-store.test.js b/test/memory/monitor-store.test.js
+index 9b3b371c..074b77fc 100644
+--- a/test/memory/monitor-store.test.js
++++ b/test/memory/monitor-store.test.js
+@@ -476,19 +476,35 @@ await (async () => {
+ 	test('exposes typed and coded public stale, conflict, terminal, and unavailable failures', async () => {
+ 		const { driver, store } = await makeStore();
+ 		await store.appendEvent(monitorEvent(0), ['terminal']);
+-		await expect(store.appendEvent(monitorEvent(0, { type: 'changed' }), ['terminal']))
+-			.rejects.toMatchObject({ name: 'MonitorConflictError', code: 'MONITOR_EVENT_CONFLICT' });
++		const conflict = await store.appendEvent(monitorEvent(0, { type: 'changed' }), ['terminal']).catch(error => error);
++		expect(conflict).toBeInstanceOf(MonitorConflictError);
++		expect(conflict.code).toBe('MONITOR_EVENT_CONFLICT');
+ 		await store.appendEvent(monitorEvent(1, { event_id: 'event-2' }), ['terminal']);
+ 		await store.recordDeliveryReceipt(deliveryReceipt({ event_id: 'event-2', attempt: 2 }));
+-		await expect(store.recordDeliveryReceipt(deliveryReceipt()))
+-			.rejects.toBeInstanceOf(MonitorStaleError);
++		const stale = await store.recordDeliveryReceipt(deliveryReceipt()).catch(error => error);
++		expect(stale).toBeInstanceOf(MonitorStaleError);
++		expect(stale.code).toBe('MONITOR_STALE_CURSOR');
+ 		await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 }));
+-		await expect(store.appendEvent(monitorEvent(2, { event_id: 'event-3' }), ['terminal']))
+-			.rejects.toBeInstanceOf(MonitorTerminalError);
++		const terminal = await store.appendEvent(monitorEvent(2, { event_id: 'event-3' }), ['terminal']).catch(error => error);
++		expect(terminal).toBeInstanceOf(MonitorTerminalError);
++		expect(terminal.code).toBe('MONITOR_TERMINAL');
+ 
+ 		await driver.exec('UPDATE memory_monitor_writer_state SET enabled = 0 WHERE singleton = 1;');
+-		await expect(store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })))
+-			.rejects.toBeInstanceOf(MonitorUnavailableError);
+-		expect(MonitorConflictError).toBeInstanceOf(Function);
++		const unavailable = await store.recordTerminalReceipt(monitorReceipt({ last_sequence: 1 })).catch(error => error);
++		expect(unavailable).toBeInstanceOf(MonitorUnavailableError);
++		expect(unavailable.code).toBe('MONITOR_UNAVAILABLE');
++	});
++
++	test('preserves falsy public driver rejection causes', async () => {
++		for (const cause of [undefined, null, false, 0, '']) {
++			const store = createMonitorStore({
++				async appendMonitorEvent() { throw cause; },
++			});
++			const error = await store.appendEvent(monitorEvent(), ['terminal']).catch(rejection => rejection);
++			expect(error).toBeInstanceOf(MonitorUnavailableError);
++			expect(error.code).toBe('MONITOR_UNAVAILABLE');
++			expect(Object.hasOwn(error, 'cause')).toBe(true);
++			expect(error.cause).toBe(cause);
++		}
+ 	});
+ });
+-- 
+2.51.0.windows.1
+

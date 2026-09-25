@@ -1,0 +1,60 @@
+From 6790ea7c71407c9d648d0475c7e80be04b412129 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 01:54:59 +0530
+Subject: [PATCH] fix(kernel): preserve canonical receipt ordering
+
+---
+ lib/kernel/broker.js      |  9 ++++++++-
+ test/kernel/trace.test.js | 13 +++++++++++++
+ 2 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index c48a60ae..2fe36176 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -209,10 +209,17 @@ function assertBoundedReceiptValue(value, state, depth = 0) {
+ 	}
+ }
+ 
++// Contract hashes use ECMAScript's default UTF-16 code-unit key order, not locale collation.
++function compareCanonicalReceiptKeys(left, right) {
++	if (left < right) return -1;
++	if (left > right) return 1;
++	return 0;
++}
++
+ function canonicalReceiptStringify(value) {
+ 	if (value === null || typeof value !== 'object') return JSON.stringify(value);
+ 	if (Array.isArray(value)) return `[${value.map(canonicalReceiptStringify).join(',')}]`;
+-	return `{${Object.keys(value).sort((left, right) => left.localeCompare(right))
++	return `{${Object.keys(value).sort(compareCanonicalReceiptKeys)
+ 		.map(key => `${JSON.stringify(key)}:${canonicalReceiptStringify(value[key])}`)
+ 		.join(',')}}`;
+ }
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 02d222d8..bc3f5d8f 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -196,6 +196,19 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE entity_type = 'pr';", config)).toEqual([{ n: 2 }]);
+ 	});
+ 
++	test('accepts producer-canonical hashes with mixed-case receipt keys', async () => {
++		const packet = workPacket({ constraints: { Z: 'upper', a: 'lower' } });
++		const receipt = runReceipt(packet);
++
++		await broker.recordPrLinkage(linkage('opened', packet, receipt));
++
++		const trace = await broker.readTrace({ issue_id: 'issue-trace' });
++		expect(trace.pull_requests[0].iterations[0]).toMatchObject({
++			work_packet_hash: packet.content_hash,
++			run_receipt_hash: receipt.content_hash,
++		});
++	});
++
+ 	test('fails closed on stale, non-PASS, mismatched, or inactive receipt authority before writes', async () => {
+ 		const stale = workPacket({ expected_issue_revision: 1, authority: { kind: 'kernel', issue_revision: 1 } });
+ 		await expect(broker.recordPrLinkage(linkage('opened', stale, runReceipt(stale)))).rejects.toMatchObject({ code: 'FORGE_TRACE_STALE_AUTHORITY' });
+-- 
+2.51.0.windows.1
+

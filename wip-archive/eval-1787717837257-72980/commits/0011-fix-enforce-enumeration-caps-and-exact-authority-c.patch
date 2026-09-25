@@ -1,0 +1,196 @@
+From df4e708e08f1bd7e5420140be189f871931c92b8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Fri, 21 Aug 2026 23:50:02 +0530
+Subject: [PATCH] fix: enforce enumeration caps and exact authority constraints
+
+---
+ lib/kernel/sqlite-driver.js                 | 14 +++++-
+ lib/pr-monitor/watch-owner.js               | 28 +++++++++---
+ test/kernel/watch-owner-transaction.test.js | 28 ++++++++++++
+ test/pr-monitor/watch-owner.test.js         | 47 +++++++++++++++++++++
+ 4 files changed, 111 insertions(+), 6 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 2a16fc78..a00c7d9f 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2811,6 +2811,17 @@ function hasForbiddenWatchOwnerForeignKeys(runtime, db) {
+ 	return false;
+ }
+ 
++// Extra uniqueness constraints (e.g. UNIQUE(repo) ON CONFLICT REPLACE) let a
++// later insert silently delete an earlier authority row, so anything beyond
++// the migration's primary-key indexes fails closed.
++function hasUnexpectedWatchAuthorityIndexes(runtime, db) {
++	for (const table of [WATCH_OWNER_TABLE, WATCH_GATE_TABLE]) {
++		const indexes = allParams(runtime, db, `PRAGMA index_list("${table}")`);
++		if (indexes.some(index => index.origin !== 'pk')) return true;
++	}
++	return false;
++}
++
+ function assertWatchOwnerSchema(runtime, db) {
+ 	const rows = allParams(
+ 		runtime,
+@@ -2824,7 +2835,8 @@ function assertWatchOwnerSchema(runtime, db) {
+ 	}
+ 	if (!hasExactWatchSchemaColumns(runtime, db, WATCH_OWNER_TABLE, WATCH_OWNER_SCHEMA_COLUMNS)
+ 		|| !hasExactWatchSchemaColumns(runtime, db, WATCH_GATE_TABLE, WATCH_GATE_SCHEMA_COLUMNS)
+-		|| hasUnexpectedWatchAuthorityTriggers(runtime, db)) {
++		|| hasUnexpectedWatchAuthorityTriggers(runtime, db)
++		|| hasUnexpectedWatchAuthorityIndexes(runtime, db)) {
+ 		throw watchOwnerStoreError('AUTHORITY_UNAVAILABLE', 'Watcher authority schema does not match the Kernel migration');
+ 	}
+ 	if (hasForbiddenWatchOwnerForeignKeys(runtime, db)) {
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index b8379182..a5afee77 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -33,6 +33,11 @@ const MUTATION_INPUT_FIELDS = [
+ ];
+ const CAPTURED_INPUT = Symbol('capturedMutationInput');
+ const BOUND_OPTIONS = new WeakSet();
++// Mirror of the builtin driver's enumeration caps (lib/kernel/sqlite-driver.js
++// WATCH_OWNER_ENUMERATION_LIMIT/BYTES) so alternate adapters cannot allocate
++// without bound through the public enumerateOwners API.
++const OWNER_ENUMERATION_LIMIT = 4_096;
++const OWNER_ENUMERATION_BYTES = 4 * 1024 * 1024;
+ 
+ function utf8Length(value) {
+ 	return typeof value === 'string' ? Buffer.byteLength(value, 'utf8') : -1;
+@@ -254,14 +259,17 @@ function mintedOwnerGeneration(input, record) {
+ 
+ // Import inserts mint a fresh generation while its idempotent replay keeps the
+ // original row, so the required relation to the prior snapshot flips by path.
+-// expectedSnapshot fields are the raw snake_case driver row (deliberate).
++// An idempotent replay without a captured prior row is impossible: replaying
++// requires that a row was previously imported. expectedSnapshot fields are the
++// raw snake_case driver row (deliberate).
+ function importedOwnerGeneration(result, input, record) {
+ 	const priorGeneration = input.expectedSnapshot?.generation;
+-	if (priorGeneration == null) return true;
+ 	if (!record) return false;
+-	return result.reason === 'idempotent'
+-		? Object.is(record.generation, priorGeneration)
+-		: !Object.is(record.generation, priorGeneration);
++	if (result.reason === 'idempotent') {
++		return priorGeneration != null && Object.is(record.generation, priorGeneration);
++	}
++	if (priorGeneration == null) return true;
++	return !Object.is(record.generation, priorGeneration);
+ }
+ 
+ // A transitioned row must carry the submitted timestamp — an unchanged row
+@@ -545,6 +553,16 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 		if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.rows)) {
+ 			return { ok: false, changed: false, reason: 'corrupt', records: [] };
+ 		}
++		if (result.rows.length > OWNER_ENUMERATION_LIMIT) {
++			return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
++		}
++		let bytes = 0;
++		for (const row of result.rows) {
++			bytes += Buffer.byteLength(JSON.stringify(row), 'utf8');
++			if (bytes > OWNER_ENUMERATION_BYTES) {
++				return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
++			}
++		}
+ 		const records = [];
+ 		for (const row of result.rows) {
+ 			const record = fromSqliteOwnerRow(row);
+diff --git a/test/kernel/watch-owner-transaction.test.js b/test/kernel/watch-owner-transaction.test.js
+index 5161ad3b..88735ed9 100644
+--- a/test/kernel/watch-owner-transaction.test.js
++++ b/test/kernel/watch-owner-transaction.test.js
+@@ -1348,4 +1348,32 @@ describe('watch owner dedicated SQLite transaction', () => {
+ 		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
+ 		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
+ 	});
++
++	test('rejects extra uniqueness constraints on the authority tables', async () => {
++		await driver.exec('DROP TABLE kernel_pr_watch_owners;');
++		await driver.exec(`
++			CREATE TABLE kernel_pr_watch_owners (
++				repo TEXT NOT NULL,
++				pr INTEGER NOT NULL,
++				version INTEGER NOT NULL,
++				generation TEXT NOT NULL,
++				phase TEXT NOT NULL,
++				controller_pid INTEGER,
++				watcher_pid INTEGER,
++				started_at TEXT NOT NULL,
++				updated_at TEXT NOT NULL,
++				heartbeat_at TEXT,
++				terminal_receipt_id TEXT,
++				block_reason TEXT,
++				legacy_evidence_hash TEXT,
++				PRIMARY KEY (repo, pr),
++				UNIQUE (repo) ON CONFLICT REPLACE
++			);
++		`);
++		const result = await owner.reserveStarting({ repo: 'acme/forge', pr: 119 }, {
++			controllerPid: 7_119, startedAt: NOW,
++		}, { driver });
++		expect(result).toEqual({ ok: false, changed: false, reason: 'authority_unavailable', record: null });
++		expect(await driver.queryAll('SELECT * FROM kernel_pr_watch_owners')).toEqual([]);
++	});
+ });
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index d14b28da..2711c87c 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2268,4 +2268,51 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(okReads).toBe(1);
+ 		expect(result.ok).toBe(false);
+ 	});
++
++	test('rejects idempotent import claims made without a captured prior row', async () => {
++		const ctx = { repo: 'acme/forge', pr: 959 };
++		await seedGate(ctx);
++		const result = await owner.importLegacyStarting(ctx, {
++			snapshotHash: HASH, legacyEvidenceHash: OTHER_HASH,
++			legacyPid: LEGACY_PID, controllerPid: CONTROLLER_PID,
++			providerEvidence: { state: 'OPEN' }, startedAt: LATER,
++		}, authorityOpts({
++			...driver,
++			watchOwnerImportLegacyStarting: () => ({
++				ok: true, changed: false, reason: 'idempotent',
++				row: {
++					repo: 'acme/forge', pr: 959, version: 1, generation: 'generation-959', phase: 'starting',
++					controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: LATER, updated_at: LATER,
++					heartbeat_at: null, terminal_receipt_id: null, block_reason: null,
++					legacy_evidence_hash: OTHER_HASH,
++				},
++			}),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', record: null });
++	});
++
++	test('rejects enumeration results that exceed the public count and byte caps', async () => {
++		const validRow = pr => ({
++			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
++			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
++			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
++		});
++		const overflowRows = Array.from({ length: 4_097 }, (_, index) => validRow(index + 1));
++		const overflow = await owner.enumerateOwners(null, authorityOpts({
++			...driver,
++			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows: overflowRows }),
++		}));
++		expect(overflow).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
++
++		const hugeRow = { ...validRow(1), generation: 'g'.repeat(128) };
++		const rows = Array.from({ length: 40_000 }, () => hugeRow);
++		let bytes = 0;
++		for (const row of rows) bytes += Buffer.byteLength(JSON.stringify(row), 'utf8');
++		expect(bytes).toBeGreaterThan(4 * 1024 * 1024);
++		const byteOverflow = await owner.enumerateOwners(null, authorityOpts({
++			...driver,
++			watchOwnerList: () => ({ ok: true, changed: false, reason: 'read', rows }),
++		}));
++		expect(byteOverflow).toEqual({ ok: false, changed: false, reason: 'enumeration_overflow', records: [] });
++	});
+ });
+-- 
+2.51.0.windows.1
+

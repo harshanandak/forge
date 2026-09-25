@@ -1,0 +1,76 @@
+From 0aae6803786fee6f92cfa33c1fef5a3f7e9c3115 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 01:48:21 +0530
+Subject: [PATCH] fix(shepherd): reject lookalike remote hosts
+
+---
+ lib/commands/shepherd.js       | 16 ++++++++++++++--
+ test/commands/shepherd.test.js | 25 +++++++++++++++++++++++++
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index dbe91055..0f56482a 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -64,8 +64,20 @@ function rootMonitorId(owner, repo, pr) {
+ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', timeout: 30000, windowsHide: true });
+ 
+ function repositoryFromRemoteUrl(url) {
+-  const match = /(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(String(url || '').trim());
+-  return match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
++  const value = String(url || '').trim();
++  const scpMatch = /^(?:[^@/:\s]+@)?github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(value);
++  if (scpMatch) return `${scpMatch[1]}/${scpMatch[2]}`.toLowerCase();
++
++  try {
++    const parsed = new URL(value);
++    if (parsed.hostname.toLowerCase() !== 'github.com' || parsed.search || parsed.hash) return null;
++    const parts = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
++    if (parts.length !== 2 || parts.some(part => !part)) return null;
++    const repository = parts[1].replace(/\.git$/i, '');
++    return repository ? `${parts[0]}/${repository}`.toLowerCase() : null;
++  } catch {
++    return null;
++  }
+ }
+ 
+ function findRepositoryRemote(git, repository, { push = false } = {}) {
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index d1072033..49dce8a3 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -185,6 +185,31 @@ describe('shepherd command handler', () => {
+     expect(ctx.pushRemote).toBeNull();
+   });
+ 
++  for (const hostilePushUrl of [
++    'https://notgithub.com/contributor/widget.git',
++    'https://evil.example/github.com/contributor/widget.git',
++  ]) {
++    test(`defaultBuildContext rejects lookalike GitHub push URL ${hostilePushUrl}`, async () => {
++      const gh = (_cmd, args) => args.includes('pr')
++        ? JSON.stringify({
++          baseRefName: 'master', headRefName: 'feature/safe-rebase', headRefOid: 'a'.repeat(40),
++          headRepository: { name: 'widget' }, headRepositoryOwner: { login: 'contributor' },
++          url: 'https://github.com/acme/widget/pull/42',
++        })
++        : JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++      const git = (_cmd, args) => {
++        if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
++        const remote = args.at(-1);
++        if (remote === 'upstream') return 'https://github.com/acme/widget.git\n';
++        if (remote === 'fork') return `${hostilePushUrl}\n`;
++        return '';
++      };
++
++      const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
++      expect(ctx.pushRemote).toBeNull();
++    });
++  }
++
+   test('defaultBuildContext permits fork PR observation without a contributor remote', async () => {
+     const gh = (_cmd, args) => {
+       if (args.includes('pr') && args.includes('view')) {
+-- 
+2.51.0.windows.1
+

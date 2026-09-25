@@ -1,0 +1,87 @@
+From 8cc858d95fb864d9a14306124fd46876adf0de95 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 06:41:26 +0530
+Subject: [PATCH] fix(cli): setup --help documents adoption profiles +
+ cross-refs forge init (5bdc91d3)
+
+`forge setup --help` now points at `forge init` for the adoption profile
+(`--minimal|--standard|--full`, i.e. `--profile`), `--classification`, and the
+`.forge/config.yaml` gate+classification config it writes. These profile flags
+belong to `forge init` (setup only reads them for `--dry-run` preview), so they
+are documented there rather than mis-listed as setup's own flags. The real,
+still-handled setup flags (`--type/--budget/--interview/--merge`) are kept as-is.
+
+Also exclude `setup` from the new per-command --help routing: the global banner
+IS setup's detailed help, so `forge setup --help` must keep showing it instead
+of the terse registry line (fixes a regression from the routing change).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ bin/forge.js                            | 16 ++++++++++++++--
+ test/bin/orientation-front-door.test.js | 14 ++++++++++++++
+ 2 files changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/bin/forge.js b/bin/forge.js
+index eed5c79a..09e988fc 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -2631,6 +2631,16 @@ function showHelp() {
+   console.log('Also works with bun:');
+   console.log('  bunx forge setup --quick');
+   console.log('');
++  // Adoption profile + gate/classification config is owned by `forge init`, not
++  // `forge setup`. The --minimal/--standard/--full profile flags are `forge init`
++  // shortcuts (setup only reads them for `--dry-run` preview), so point there.
++  console.log('Adoption profile, gates & classification (configured by `forge init`, not setup):');
++  console.log('  forge init --minimal | --standard | --full   # adoption-profile shortcut');
++  console.log('                                               # (or: --profile minimal|standard|full)');
++  console.log('  forge init --classification critical|standard|refactor');
++  console.log('  `forge init` writes `.forge/config.yaml` (gate + classification config).');
++  console.log('  Run `forge init --help` for all profile/classification/harness flags.');
++  console.log('');
+ 
+   // Append auto-discovered registry commands
+   const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+@@ -3968,10 +3978,12 @@ async function main() {
+   }
+ 
+   // Show help. `--help` after a known registry subcommand (e.g. `forge status
+-  // --help`) renders that command's usage; bare `forge --help` keeps the global banner.
++  // --help`) renders that command's usage; bare `forge --help` keeps the global
++  // banner. `setup` is special-cased OUT: the global banner IS setup's detailed
++  // help, so `forge setup --help` must keep showing it (not the terse registry line).
+   if (flags.help) {
+     const helpRegistry = loadCommands(path.join(__dirname, '..', 'lib', 'commands'));
+-    if (command && helpRegistry.commands.has(command)) {
++    if (command && command !== 'setup' && helpRegistry.commands.has(command)) {
+       printCommandHelp(helpRegistry.commands.get(command));
+     } else {
+       showHelp();
+diff --git a/test/bin/orientation-front-door.test.js b/test/bin/orientation-front-door.test.js
+index 005922a8..c43004bd 100644
+--- a/test/bin/orientation-front-door.test.js
++++ b/test/bin/orientation-front-door.test.js
+@@ -47,6 +47,20 @@ describe('orientation front door', () => {
+     expect(out).toContain('npx forge setup');
+   });
+ 
++  test('`forge setup --help` cross-references forge init for adoption profiles + .forge/config.yaml', () => {
++    const result = runForge(['setup', '--help'], REPO_ROOT);
++    const out = `${result.stdout || ''}`;
++    // The profile flags belong to `forge init` — documented there, not as setup flags.
++    expect(out).toContain('forge init --minimal | --standard | --full');
++    expect(out).toContain('--classification critical|standard|refactor');
++    expect(out).toContain('.forge/config.yaml');
++    // Real, still-handled setup flags stay documented.
++    expect(out).toContain('--type');
++    expect(out).toContain('--merge');
++    expect(out).toContain('--interview');
++    expect(out).toContain('--budget');
++  });
++
+   test('bare `forge` in an initialized project renders the orientation view (no mutation)', () => {
+     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-orient-'));
+     try {
+-- 
+2.51.0.windows.1
+

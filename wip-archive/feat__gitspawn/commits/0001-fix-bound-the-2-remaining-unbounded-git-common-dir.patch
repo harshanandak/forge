@@ -1,0 +1,313 @@
+From a2f2cad0083b326d741170e2de1f25b753937453 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 15:32:52 +0530
+Subject: [PATCH] fix: bound the 2 remaining unbounded git-common-dir spawns
+ (6ca8c00b)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+lib/detect-worktree.js and lib/beads-bootstrap.js each spawned
+`git rev-parse --git-common-dir` (plus sibling git calls in
+detect-worktree) with no timeout, carrying the same Windows-hang risk
+that #356 fixed in the Kernel broker's resolveGitCommonDir.
+
+Apply the same pattern to both sites:
+- Bound every git spawn with a 30s timeout (GIT_SPAWN_TIMEOUT_MS /
+  GIT_COMMON_DIR_TIMEOUT_MS) — generous enough to tolerate a slow
+  loaded CI runner while still failing fast on a true wedge.
+- Make failures non-fatal: on ETIMEDOUT, any git failure, or empty
+  output, degrade gracefully with a console.warn instead of throwing.
+  detect-worktree falls back to { inWorktree: false }; beads-bootstrap
+  falls back to treating projectRoot as its own main worktree.
+
+Both functions accept an injectable warn dependency (matching the
+existing _exec/_fs test-injection convention) so tests can assert on
+the fallback path without touching real git.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ lib/beads-bootstrap.js       | 37 ++++++++++++------
+ lib/detect-worktree.js       | 32 +++++++++++-----
+ test/beads-bootstrap.test.js | 73 +++++++++++++++++++++++++++++++++++-
+ test/detect-worktree.test.js | 34 +++++++++++++++++
+ 4 files changed, 155 insertions(+), 21 deletions(-)
+
+diff --git a/lib/beads-bootstrap.js b/lib/beads-bootstrap.js
+index 7b22b6a7..7993f349 100644
+--- a/lib/beads-bootstrap.js
++++ b/lib/beads-bootstrap.js
+@@ -5,14 +5,15 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ const { safeBeadsInit } = require('./beads-setup');
+ 
++// Same class of risk as ba388d01 / #356's Kernel broker fix: an unbounded
++// `git rev-parse --git-common-dir` spawn can hang on Windows/Node. Bound it so
++// it fails fast (ETIMEDOUT) instead of wedging worktree bootstrap forever.
++const GIT_COMMON_DIR_TIMEOUT_MS = 30000;
++
+ function isIgnorableFsError(error) {
+   return ['EACCES', 'ENOENT', 'ENOTDIR', 'EPERM'].includes(error?.code);
+ }
+ 
+-function isRecoverableCommandError(error) {
+-  return error?.code === 'ENOENT' || typeof error?.status === 'number';
+-}
+-
+ function hasBackupJsonl(backupDir, fsApi) {
+   try {
+     return fsApi.readdirSync(backupDir).some((entry) => entry.endsWith('.jsonl'));
+@@ -24,19 +25,32 @@ function hasBackupJsonl(backupDir, fsApi) {
+   }
+ }
+ 
+-function resolveMainWorktree(projectRoot, exec) {
++function resolveMainWorktree(projectRoot, exec, deps = {}) {
++  const warn = deps.warn || ((message) => console.warn(message));
++
+   try {
+     const commonDir = exec('git', ['rev-parse', '--git-common-dir'], {
+       cwd: projectRoot,
+       encoding: 'utf8',
+-      stdio: 'pipe'
++      stdio: 'pipe',
++      timeout: GIT_COMMON_DIR_TIMEOUT_MS,
+     }).trim();
+-    return path.resolve(projectRoot, commonDir, '..');
+-  } catch (err) {
+-    if (isRecoverableCommandError(err)) {
++
++    if (!commonDir) {
++      warn(`[forge] git rev-parse --git-common-dir returned an empty path for ${projectRoot}; `
++        + `falling back to ${projectRoot}`);
+       return projectRoot;
+     }
+-    throw err;
++
++    return path.resolve(projectRoot, commonDir, '..');
++  } catch (err) {
++    // A timed-out (ETIMEDOUT), missing-git (ENOENT), or otherwise-failing spawn
++    // MUST NOT crash worktree bootstrap. Degrade gracefully to treating
++    // projectRoot as its own main worktree — correct for the common
++    // non-worktree case, and a working fallback beats a hard failure.
++    warn(`[forge] git rev-parse --git-common-dir failed (${err.code || err.message}); `
++      + `falling back to ${projectRoot}`);
++    return projectRoot;
+   }
+ }
+ 
+@@ -201,7 +215,8 @@ function bootstrapBeads(projectRoot, options = {}) {
+   const fsApi = options._fs || fs;
+   const platform = options._platform || process.platform;
+   const runSafeBeadsInit = options._safeBeadsInit || safeBeadsInit;
+-  const mainProjectRoot = options.mainProjectRoot || resolveMainWorktree(projectRoot, exec);
++  const mainProjectRoot = options.mainProjectRoot
++    || resolveMainWorktree(projectRoot, exec, { warn: options._warn });
+   const beadsSource = path.resolve(mainProjectRoot, '.beads');
+   const beadsDest = path.resolve(projectRoot, '.beads');
+ 
+diff --git a/lib/detect-worktree.js b/lib/detect-worktree.js
+index 3e21e281..cc58af35 100644
+--- a/lib/detect-worktree.js
++++ b/lib/detect-worktree.js
+@@ -3,29 +3,39 @@
+ const { execFileSync } = require('child_process');
+ const path = require('path');
+ 
++// This synchronous git spawn can hang on Windows/Node (same class of issue as
++// ba388d01 / #356's Kernel broker fix). A bounded `timeout` makes each spawn
++// fail fast (ETIMEDOUT) instead of hanging forever; git normally answers these
++// in milliseconds, so 30s only guards against a pathological wedge.
++const GIT_SPAWN_TIMEOUT_MS = 30000;
++
+ /**
+  * Detect if the current directory is inside a git worktree.
+  * Uses git rev-parse --git-dir vs --git-common-dir — they differ in worktrees.
+  *
+  * @param {string} [cwd=process.cwd()] - Directory to check
++ * @param {object} [deps] - Injectable dependencies for testing (execFileSync, warn)
+  * @returns {{ inWorktree: boolean, branch?: string, mainWorktree?: string, currentWorktree?: string }}
+  */
+-function detectWorktree(cwd = process.cwd()) {
++function detectWorktree(cwd = process.cwd(), deps = {}) {
++  const exec = deps.execFileSync || execFileSync;
++  const warn = deps.warn || ((message) => console.warn(message));
++
+   try {
+-    const gitDir = execFileSync('git', ['rev-parse', '--git-dir'], {
+-      encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe']
++    const gitDir = exec('git', ['rev-parse', '--git-dir'], {
++      encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: GIT_SPAWN_TIMEOUT_MS
+     }).trim();
+ 
+-    const gitCommonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+-      encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe']
++    const gitCommonDir = exec('git', ['rev-parse', '--git-common-dir'], {
++      encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: GIT_SPAWN_TIMEOUT_MS
+     }).trim();
+ 
+     // Resolve to absolute paths for reliable comparison
+     const absGitDir = path.resolve(cwd, gitDir);
+     const absCommonDir = path.resolve(cwd, gitCommonDir);
+ 
+-    const branch = execFileSync('git', ['branch', '--show-current'], {
+-      encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe']
++    const branch = exec('git', ['branch', '--show-current'], {
++      encoding: 'utf8', cwd, stdio: ['pipe', 'pipe', 'pipe'], timeout: GIT_SPAWN_TIMEOUT_MS
+     }).trim();
+     const mainWorktree = path.resolve(absCommonDir, '..');
+     const currentWorktree = path.resolve(cwd);
+@@ -37,8 +47,12 @@ function detectWorktree(cwd = process.cwd()) {
+     }
+ 
+     return { inWorktree: false, branch, mainWorktree, currentWorktree };
+-  } catch (_err) {
+-    // Not in a git repo or git not available
++  } catch (err) {
++    // Not in a git repo, git not available, or a spawn that hung past the
++    // bound (ETIMEDOUT) — none of these should crash the caller. Degrade
++    // gracefully to the same shape callers already handle.
++    warn(`[forge] git worktree detection failed (${err.code || err.message}); `
++      + 'falling back to { inWorktree: false }');
+     return { inWorktree: false };
+   }
+ }
+diff --git a/test/beads-bootstrap.test.js b/test/beads-bootstrap.test.js
+index ef60841c..e4fb6f0d 100644
+--- a/test/beads-bootstrap.test.js
++++ b/test/beads-bootstrap.test.js
+@@ -2,7 +2,7 @@
+ 
+ const path = require('node:path');
+ const { describe, test, expect } = require('bun:test');
+-const { bootstrapBeads, isRecoverableBeadsError } = require('../lib/beads-bootstrap');
++const { bootstrapBeads, isRecoverableBeadsError, resolveMainWorktree } = require('../lib/beads-bootstrap');
+ 
+ function createMockSafeBeadsInit() {
+   return (root, options) => {
+@@ -360,6 +360,77 @@ describe('bootstrapBeads', () => {
+   });
+ });
+ 
++describe('resolveMainWorktree', () => {
++  test('degrades gracefully to projectRoot when the git spawn times out', () => {
++    const warnCalls = [];
++    const timeoutError = new Error('spawnSync git ETIMEDOUT');
++    timeoutError.code = 'ETIMEDOUT';
++    const throwingExec = () => {
++      throw timeoutError;
++    };
++
++    const result = resolveMainWorktree('/worktree', throwingExec, {
++      warn: (message) => warnCalls.push(message),
++    });
++
++    expect(result).toBe('/worktree');
++    expect(warnCalls).toHaveLength(1);
++    expect(warnCalls[0]).toContain('ETIMEDOUT');
++  });
++
++  test('degrades gracefully to projectRoot on empty git output', () => {
++    const warnCalls = [];
++    const emptyExec = () => '';
++
++    const result = resolveMainWorktree('/worktree', emptyExec, {
++      warn: (message) => warnCalls.push(message),
++    });
++
++    expect(result).toBe('/worktree');
++    expect(warnCalls).toHaveLength(1);
++  });
++
++  test('bounds the git spawn with a timeout option', () => {
++    let seenOptions;
++    const fakeExec = (_cmd, _args, options) => {
++      seenOptions = options;
++      return '.git';
++    };
++
++    resolveMainWorktree('/worktree', fakeExec);
++
++    expect(typeof seenOptions.timeout).toBe('number');
++    expect(seenOptions.timeout).toBeGreaterThan(0);
++  });
++
++  test('bootstrapBeads falls back instead of throwing when git rev-parse times out', () => {
++    const warnCalls = [];
++    const timeoutError = new Error('spawnSync git ETIMEDOUT');
++    timeoutError.code = 'ETIMEDOUT';
++    const mockExec = (cmd, args) => {
++      if (cmd === 'git' && args[0] === 'rev-parse') {
++        throw timeoutError;
++      }
++      throw new Error(`unexpected exec ${cmd}`);
++    };
++    const mockFs = {
++      // mainProjectRoot falls back to projectRoot itself, so beadsSource === beadsDest
++      existsSync: () => false,
++    };
++
++    const result = bootstrapBeads('/worktree', {
++      _exec: mockExec,
++      _fs: mockFs,
++      _platform: 'linux',
++      _warn: (message) => warnCalls.push(message),
++    });
++
++    expect(result).toEqual({ success: true, strategy: 'in-place', warning: null });
++    expect(warnCalls).toHaveLength(1);
++    expect(warnCalls[0]).toContain('ETIMEDOUT');
++  });
++});
++
+ describe('isRecoverableBeadsError', () => {
+   test('matches missing database errors for metadata-driven database prefixes', () => {
+     expect(isRecoverableBeadsError(new Error('database forge-shared-db not found'))).toBe(true);
+diff --git a/test/detect-worktree.test.js b/test/detect-worktree.test.js
+index a46b04b4..ad5dbd8b 100644
+--- a/test/detect-worktree.test.js
++++ b/test/detect-worktree.test.js
+@@ -52,6 +52,40 @@ describe('detectWorktree', () => {
+     expect(typeof result.inWorktree).toBe('boolean');
+   });
+ 
++  test('degrades gracefully to { inWorktree: false } when the git spawn times out', () => {
++    const warnCalls = [];
++    const timeoutError = new Error('spawnSync git ETIMEDOUT');
++    timeoutError.code = 'ETIMEDOUT';
++    const throwingExec = () => {
++      throw timeoutError;
++    };
++
++    const result = detectWorktree('/some/dir', {
++      execFileSync: throwingExec,
++      warn: (message) => warnCalls.push(message),
++    });
++
++    expect(result).toEqual({ inWorktree: false });
++    expect(warnCalls).toHaveLength(1);
++    expect(warnCalls[0]).toContain('ETIMEDOUT');
++  });
++
++  test('bounds each git spawn with a timeout option', () => {
++    const seenOptions = [];
++    const fakeExec = (_cmd, _args, options) => {
++      seenOptions.push(options);
++      return 'main';
++    };
++
++    detectWorktree('/some/dir', { execFileSync: fakeExec });
++
++    expect(seenOptions.length).toBeGreaterThan(0);
++    for (const options of seenOptions) {
++      expect(typeof options.timeout).toBe('number');
++      expect(options.timeout).toBeGreaterThan(0);
++    }
++  });
++
+   test('returns { inWorktree: false } from the main repo root', () => {
+     // The main forge repo (not the worktree) — find it via git-common-dir
+     const { execFileSync } = require('child_process');
+-- 
+2.51.0.windows.1
+

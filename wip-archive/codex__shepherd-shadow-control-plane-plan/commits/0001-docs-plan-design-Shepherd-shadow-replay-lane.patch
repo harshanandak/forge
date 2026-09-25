@@ -1,0 +1,381 @@
+From 4f0c77c17d7098880126c53196132e75b9f94375 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 05:05:51 +0530
+Subject: [PATCH] docs(plan): design Shepherd shadow replay lane
+
+---
+ .../decisions.md                              |  32 ++++
+ .../plan.md                                   | 138 ++++++++++++++
+ .../tasks.md                                  | 176 ++++++++++++++++++
+ 3 files changed, 346 insertions(+)
+ create mode 100644 docs/work/2026-08-11-shepherd-shadow-control-plane/decisions.md
+ create mode 100644 docs/work/2026-08-11-shepherd-shadow-control-plane/plan.md
+ create mode 100644 docs/work/2026-08-11-shepherd-shadow-control-plane/tasks.md
+
+diff --git a/docs/work/2026-08-11-shepherd-shadow-control-plane/decisions.md b/docs/work/2026-08-11-shepherd-shadow-control-plane/decisions.md
+new file mode 100644
+index 00000000..dfd66459
+--- /dev/null
++++ b/docs/work/2026-08-11-shepherd-shadow-control-plane/decisions.md
+@@ -0,0 +1,32 @@
++# Decision log — Shepherd shadow replay and control-plane break-fix
++
++Status legend: `PROPOSED` requires the human design checkpoint; `LOCKED` follows existing project authority and is not reopened by implementation.
++
++| ID | Status | Decision | Why / consequence |
++|---|---|---|---|
++| D1 | LOCKED | The installed trusted runtime remains the sole canonical Shepherd/action authority. | Candidate output is evidence only and cannot project Kernel verdicts, select/execute actions, merge, resolve threads, close issues, or activate itself. |
++| D2 | LOCKED | Both runtimes replay one immutable retained operand bundle. | Separate live reads are non-deterministic and can confuse head/network drift with a code contradiction. |
++| D3 | PROPOSED | Capture the exact bounded `computeVerdict` operands in `forge.shepherd-replay.v1`. | Reuses the existing canonical computation and avoids a second verdict model or lossy presentation replay. |
++| D4 | PROPOSED | Candidate runs as a constrained stdin/stdout child with no authority dependencies. | Gives runtime-version isolation while keeping GitHub, Kernel, journal, action, merge, and activation capabilities outside candidate reach. |
++| D5 | PROPOSED | Agreement requires equal canonical verdict and equal verdict-evidence hash. | Verdict-only comparison could hide behavior drift that will become a later contradiction. Human rendering is intentionally ignored. |
++| D6 | PROPOSED | Open an incident after the next complete reconciliation confirms the mismatch, or after 15 minutes, whichever is first. | Matches P0 acceptance while suppressing a single transient observation. Incomplete evidence neither confirms nor clears. |
++| D7 | PROPOSED | Key observations/incidents by repo, PR, exact head, bundle hash, schema, installed runtime, and candidate runtime. | Prevents stale time/count carryover and makes replay evidence reproducible. |
++| D8 | PROPOSED | Use the existing git-common-dir per-PR journal and lock for MVP state/bundle retention; no new Kernel table. | Smallest root-cause delivery. It preserves one canonical `kernel_pr` verdict authority and uses already-tested serialization. |
++| D9 | PROPOSED | Bound replay at 1 MiB, candidate output at 64 KiB, candidate time at 10 seconds, and retention at 64 bundles/64 MiB per PR. | Keeps daemon latency/disk/memory predictable. Measurements may lower limits; raising them requires a reviewed test. |
++| D10 | LOCKED | Shadow failure is `INCOMPLETE`, never clean agreement, but does not replace canonical installed operation. | Fail closed on the shadow claim without turning candidate availability into a repo-wide outage. An open incident may freeze only its exact lane. |
++| D11 | PROPOSED | Stable-base break-fix verification/activation is a second stack sharing only S0, with explicit human activation. | It can be reviewed in parallel, cannot be self-approved by candidate code, and does not block comparator delivery. |
++| D12 | LOCKED | The incident-specific hotfix branches from recorded last-known-good `trustedBaseSha`, not from the blocked product branch. | Breaks circularity and keeps the repair independently reviewable/mergeable/verifiable. |
++| D13 | LOCKED | Existing exact-head, issue lease, PR linkage, protected checks, review threads, settle, and merge rules remain authoritative. | No shadow feature may weaken or duplicate the merge gate. |
++| D14 | PROPOSED | Normal user experience is silent; incident UX is JSON-first with a concise freeze scope and copyable replay/break-fix commands. | Maximizes signal and reduces operator reconstruction time without PR comment/label noise. |
++| D15 | LOCKED | Retained evidence excludes secrets, environment, raw logs, arbitrary comment bodies, and absolute local paths. | Replay requires verdict operands, not sensitive or high-cardinality diagnostic content. |
++| D16 | LOCKED | S0, S1, S2, and H0 have exclusive file ownership; S1 and H0 may proceed in parallel after S0. | Avoids conflicting stacked PRs while shortening the critical path. |
++
++## Human checkpoint record
++
++Pending approval of D3-D9, D11, and D14. Until approved:
++
++- no production code is implemented;
++- no implementation PR is pushed or opened;
++- the issue remains in the plan stage/in progress;
++- this planning worktree and lease are retained for resumption.
++
+diff --git a/docs/work/2026-08-11-shepherd-shadow-control-plane/plan.md b/docs/work/2026-08-11-shepherd-shadow-control-plane/plan.md
+new file mode 100644
+index 00000000..4f7e95e8
+--- /dev/null
++++ b/docs/work/2026-08-11-shepherd-shadow-control-plane/plan.md
+@@ -0,0 +1,138 @@
++# Shepherd shadow replay and non-circular control-plane break-fix
++
++Issue: `2c4dff71-4cb0-4530-be49-ebb2cb281039`  
++Type: P0 standard/control-plane reliability  
++Planning base: `964e3daf94f20391062e3cf642c34b4bd193cda4`
++
++## Purpose
++
++Make Shepherd control-plane changes observable before they become authoritative. The installed trusted runtime and a candidate runtime must evaluate the same retained, privacy-bounded operand bundle. A disagreement that survives one fresh reconciliation, or remains for 15 minutes, becomes a durable control-plane incident. Candidate code is shadow-only: it cannot project the canonical verdict, select or execute an auto-action, merge, close an issue, or activate itself.
++
++When the incident points to a control-plane defect, the operator gets a short, stable-base break-fix lane: freeze the affected product lane, branch the hotfix from an explicitly pinned trusted base, review it independently, merge it with the existing exact-head gates, verify the installed artifact against retained bundles, explicitly activate that verified artifact, then resume the product lane.
++
++## Existing seams and constraints
++
++- `lib/pr-pull.js` owns the canonical normalized PR read and `computeVerdict`; the replay contract must capture the exact operands passed to that pure computation rather than invent a second verdict model.
++- `lib/pr-monitor/gather.js` derives monitor snapshots from the same read, and `lib/pr-monitor/journal.js` already provides append-only, git-common-dir-scoped event storage and serialized journal writes.
++- `lib/pr-monitor/auto-actions.js` separately decides bounded Tier-A actions from canonical evidence. Shadow output must never enter this module.
++- `lib/pr-monitor/reconcile-executor.js` owns daemon convergence and the live Shepherd lease. It is the only appropriate integration point for a post-reconciliation comparison.
++- `lib/kernel/sqlite-driver.js` gives the canonical `kernel_pr` row freshest-head precedence. This increment must not add a second verdict authority or widen the Kernel schema unless a later task proves the journal cannot satisfy retention.
++- `lib/commands/merge.js` independently rechecks exact head, issue lease, live protected checks, threads, PR/issue binding, and configured rules. Shadow or incident state is evidence only and cannot bypass or replace those checks.
++- Existing safety stays intact: Shepherd never merges or resolves review threads; Tier-A remains bounded and required-check-only; unreadable or torn evidence fails closed.
++- Planning and implementation stay isolated from dirty/untracked files in the primary checkout.
++
++## Selected design
++
++### 1. Versioned replay envelope
++
++Capture a deterministic `forge.shepherd-replay.v1` envelope immediately around the existing `computeVerdict` call. It contains:
++
++- subject: repository, PR number, exact base ref/SHA when available, exact head SHA, and capture time;
++- evaluator inputs: only the normalized, bounded operands consumed by `computeVerdict`, including required-check policy, observations, threads/reviews, conflict/divergence, lifecycle and settle-clock inputs;
++- provenance: controller runtime identity, Forge package version, source commit if resolvable, schema version, and a SHA-256 content hash over canonical JSON;
++- completeness: explicit unreadable/torn surfaces and cap/truncation markers.
++
++The envelope excludes tokens, environment values, raw CI logs, arbitrary comment bodies, and filesystem paths. IDs/names already necessary for verdict reasoning remain bounded and fenced as untrusted data. Unknown fields, invalid timestamps, excessive cardinality, missing exact head, hash mismatch, or unsupported schema make replay `INCOMPLETE`; they never produce a clean/authoritative result. At least one valid bundle per active incident is retained atomically under the existing git-common-dir Shepherd journal root. Retention is bounded by count and bytes.
++
++### 2. Pure dual-runtime replay
++
++The trusted controller evaluates the envelope locally with the installed evaluator and invokes the candidate through a constrained child-process adapter. The child receives only the immutable envelope on stdin and may return only a bounded schema `{schemaVersion, runtime, bundleHash, verdict, evidenceHash}` on stdout. It gets no GitHub token, Kernel handle, journal write path, merge arguments, or action history.
++
++The trusted controller validates runtime identity, exact bundle hash, enum membership, output size, timeout, and exit status. It computes the comparison itself. Candidate timeout, crash, malformed output, mismatched hash, or unsupported schema is `INCOMPLETE`, not agreement. Agreement is exact canonical-verdict equality plus the stable hash of verdict-relevant evidence; presentation text is ignored.
++
++### 3. Persistent contradiction incidents
++
++Comparison state is a pure transition machine keyed by `repo + PR + head + bundleHash + installedRuntime + candidateRuntime`.
++
++- First contradiction: append `shadow.contradiction_observed`, retain the bundle, and request one normal fresh reconciliation. No incident yet.
++- Same contradiction on the next complete reconciliation: append one idempotent `control_plane.incident_opened` immediately.
++- If no complete reconciliation arrives, a trusted-controller tick at or after first-observed + 15 minutes opens the same incident.
++- Agreement before either threshold appends `shadow.contradiction_cleared` and resets that key.
++- Head/runtime/schema changes end the old observation as stale and start a new key; they never carry elapsed time across subjects.
++- Incomplete evidence neither clears nor confirms a contradiction. It retains the first-observed time, emits bounded diagnostics, and remains fail-closed.
++
++The incident record contains reproduction command, bundle path/hash, exact runtimes, installed/candidate verdicts, timestamps, subject SHA, and state (`open`, `verified`, `activated`, `closed`). It contains no raw secret or log body. Append and transition occur under the existing per-PR journal lock so duplicate daemon ticks are idempotent.
++
++Canonical operation continues from the installed verdict unless an incident policy explicitly freezes the affected product lane. Candidate output is never passed to kernel verdict projection or `decideBoundedAutoActions`.
++
++### 4. Stable-base break-fix and activation
++
++An open incident yields an operator-oriented, machine-readable break-fix receipt and instructions:
++
++1. Freeze only the affected repo/PR/head product lane; other disjoint lanes continue.
++2. Select and record `trustedBaseSha` from the currently installed, last-known-good controller. Create a dedicated hotfix worktree from that exact SHA with a separate Forge issue/lease.
++3. Scope the hotfix to the incident's control-plane files and retained replay test. The product branch is never the hotfix base and cannot approve/review itself.
++4. Ship through an independent reviewer and existing protected CI/exact-head merge path. The candidate runtime remains shadow-only throughout review.
++5. From the trusted controller, verify the merged artifact/package identity against the retained bundle corpus. Verification must show deterministic replay and no contradictions; failure or unreadable provenance blocks activation.
++6. A human invokes activation from the trusted controller and supplies the verified artifact identity plus receipt. Activation rechecks that controller identity differs from the candidate under test, that the artifact is merged/reachable from the declared stable line, that verification matches the exact artifact and bundle hashes, and that the incident is still current.
++7. After activation, a fresh installed-runtime reconciliation must agree. Only then mark the incident closed and resume the frozen product lane.
++
++The activation surface records a receipt; it does not merge the hotfix, mutate GitHub review threads, or weaken branch protection. Candidate processes cannot create a valid receipt because only the trusted controller owns the journal lock and validates the expected controller/artifact identities. If provenance cannot distinguish trusted controller from candidate, activation refuses.
++
++## Operator experience
++
++The normal happy path remains quiet: no extra comments, labels, or prompts when installed and candidate agree. `forge shepherd <pr> --pull --json` remains compatible.
++
++On first disagreement, one concise local event shows the two runtime identities, exact head, bundle hash, and that a reconciliation is pending. On incident, output leads with the freeze scope and a copyable replay command, then the stable-base hotfix/verify/activate sequence. The operator does not need to reconstruct GitHub queries or compare logs manually. JSON output is authoritative; human text is a projection.
++
++## Performance and boundedness
++
++- Capture reuses the already-read canonical operands; it performs no second GitHub read.
++- Installed replay is pure and in-process. Candidate replay is one bounded subprocess per newly observed bundle/runtime pair, cached by content key.
++- Default limits: 1 MiB envelope, 64 KiB candidate output, 10-second candidate timeout, 64 retained bundles or 64 MiB per PR (whichever comes first). Final constants may be reduced by focused benchmarks, never raised without a test.
++- The daemon does not block action convergence on a shadow timeout; it records `INCOMPLETE` and canonical installed behavior proceeds unless an open incident freezes that exact lane.
++- Journal reads for transition state are tail/index bounded; implementation must not rescan an unbounded NDJSON history on every tick.
++
++## Security and privacy review
++
++- Authorization (OWASP A01): trusted installed controller retains all write/action/activation authority; candidate has none.
++- Insecure design (A04): exact subject/runtime/hash keys, one-reconciliation/15-minute thresholds, and fail-closed provenance prevent self-approval and stale carryover.
++- Integrity (A08): canonical serialization and content hashes bind operands, outputs, verification, and activation receipts.
++- Logging (A09): durable, bounded incident events include reproduction provenance without secrets or raw log/comment bodies.
++- Untrusted candidate output is size-capped, parsed as data, enum-validated, never interpolated into a shell, and fenced in human output.
++
++## Rejected approaches
++
++- Letting the candidate write the canonical Kernel verdict or trigger reruns: circular authority and unsafe.
++- Comparing current GitHub reads made separately by each runtime: network/head drift would create false contradictions and non-reproducible evidence.
++- Replaying the presentation bundle or rendered summary: those are lossy projections, not the canonical verdict operands.
++- Opening an incident on the first mismatch: too noisy for transient runtime/load differences; the specified reconciliation/15-minute barrier preserves urgency without alert churn.
++- Adding a second database/table immediately: the existing append-only journal, lock, and bounded local retention are sufficient for MVP; schema growth can follow measured need.
++- Auto-merging or auto-activating the hotfix: violates the independent human/protected-gate checkpoint.
++
++## Delivery topology
++
++Two stacks share only the contract PR, then proceed without overlapping file ownership:
++
++```text
++S0 replay contract
++├── S1 shadow comparator + incident state machine
++│   └── S2 Shepherd capture/daemon/operator integration
++└── H0 stable-base break-fix verification + activation receipt
++```
++
++- **S0** is small and foundational; merge first.
++- **S1** and **H0** may be reviewed and merged in parallel after S0 because they own disjoint files.
++- **S2** stacks only on S1 and wires the existing Shepherd seams. It does not own H0 files.
++- An incident-specific production hotfix is a separate branch from the pinned trusted base, not another commit in S0/S1/S2/H0.
++
++## Acceptance and release gates
++
++1. A retained envelope replays byte-for-byte deterministically and produces the same canonical verdict/evidence hash across installed invocations.
++2. Candidate agreement is quiet and never changes canonical verdict/action output.
++3. A mismatch opens exactly one incident after the next complete reconciliation or at 15 minutes, whichever happens first.
++4. Malformed, oversized, stale-head, timeout, hash-mismatch, null/invalid clock, unreadable policy, and unknown-schema cases fail closed without action.
++5. Candidate code cannot access action/merge/Kernel/activation dependencies and cannot create or validate its own activation receipt.
++6. Hotfix verification binds exact stable base, merged artifact, bundle corpus, controller identity, and activation receipt; product-lane resume requires fresh installed-runtime agreement.
++7. Existing Shepherd, PR-monitor, merge, Kernel PR-write, strict lint, generated-manifest, Windows paths/line endings, and package-smoke suites remain green.
++8. No production implementation begins until the human accepts the trust boundary, thresholds, retention limits, and stacked delivery topology below.
++
++## Human design checkpoint
++
++Approve or amend these four decisions before `/dev`:
++
++1. Candidate is subprocess-isolated, read-only, and never authoritative.
++2. Incident threshold is **one subsequent complete reconciliation OR 15 minutes**, whichever comes first.
++3. MVP persistence uses the existing bounded per-PR journal rather than a new Kernel table.
++4. Activation remains an explicit human checkpoint executed by a distinct trusted controller against a merged, verified artifact.
++
+diff --git a/docs/work/2026-08-11-shepherd-shadow-control-plane/tasks.md b/docs/work/2026-08-11-shepherd-shadow-control-plane/tasks.md
+new file mode 100644
+index 00000000..90752cb0
+--- /dev/null
++++ b/docs/work/2026-08-11-shepherd-shadow-control-plane/tasks.md
+@@ -0,0 +1,176 @@
++# TDD task list — Shepherd shadow replay and control-plane break-fix
++
++No task is authorized until the human design checkpoint in `plan.md` is approved. Every implementation task starts by re-proving the Forge issue lease. No task may weaken or bypass hooks, tests, protected CI, exact-head checks, review threads, or merge authority.
++
++## Ownership and stack map
++
++| Stack | Dependency | Owner files | Parallel rule |
++|---|---|---|---|
++| S0 replay contract | exact base `964e3daf...` | `lib/pr-monitor/replay-envelope.js`, `test/pr-monitor/replay-envelope.test.js`, `test/fixtures/pr-monitor/replay/**` | Sole prerequisite; merge first |
++| S1 comparator/incidents | S0 | `lib/pr-monitor/shadow-replay.js`, `lib/pr-monitor/contradiction-incident.js`, `test/pr-monitor/shadow-replay.test.js`, `test/pr-monitor/contradiction-incident.test.js` | Parallel with H0 after S0 |
++| S2 Shepherd integration | S1 | `lib/pr-pull.js`, `lib/commands/shepherd.js`, `lib/pr-monitor/reconcile-executor.js`, `test/pr-pull.test.js`, `test/commands/shepherd.test.js`, `test/pr-monitor/reconcile-executor.test.js`, `docs/reference/shepherd.md` | One integration owner; no parallel edits to these files |
++| H0 stable-base break-fix | S0 | `lib/control-plane-breakfix.js`, `lib/commands/shepherd-breakfix.js`, `lib/commands/_manifest.js`, `test/control-plane-breakfix.test.js`, `test/commands/shepherd-breakfix.test.js`, `test/structural/command-manifest.test.js`, `docs/reference/control-plane-breakfix.md` | Parallel with S1; does not touch Shepherd integration files |
++
++An incident-specific hotfix owns only the files named by that incident and is created from its recorded `trustedBaseSha`; it never edits the product branch. If its ownership overlaps an active stack, pause the overlapping stack and rebase after hotfix activation rather than accepting concurrent edits.
++
++## Task 0 — Re-prove authority and establish baseline
++
++**OWNS:** no production files.
++
++- Re-prove `forge issue owns 2c4dff71-4cb0-4530-be49-ebb2cb281039` for the implementation actor and confirm the worktree/base SHA.
++- Confirm the primary checkout's dirty/untracked files remain untouched.
++- Run the existing focused baseline: PR pull, Shepherd command, PR-monitor, merge command, and Kernel PR-write tests; then strict lint.
++- Record exact commands, counts, duration, and any pre-existing platform flake in the issue before RED.
++- Stop rather than repair an unrelated baseline failure under this issue.
++
++Expected: baseline passes or the issue records a concrete external blocker; no files changed.
++
++## S0 / Task 1 — RED: replay-envelope contract
++
++**OWNS:** `test/pr-monitor/replay-envelope.test.js`, `test/fixtures/pr-monitor/replay/**`.
++
++Write failing tests for:
++
++- canonical key ordering and identical bytes/hash from semantically identical inputs;
++- exact repo/PR/head/runtime/schema binding;
++- explicit completeness/truncation metadata;
++- rejection of missing head, malformed timestamps, non-finite values, unknown schema/fields, hash mismatch, over-cardinality, and >1 MiB payload;
++- privacy fixture proving tokens, env, raw logs, comment bodies, and absolute paths are absent;
++- Windows CRLF/path inputs normalize identically.
++
++Run only this test and capture the expected module-not-found/assertion failure.
++
++## S0 / Task 2 — GREEN: replay-envelope implementation
++
++**OWNS:** `lib/pr-monitor/replay-envelope.js`.
++
++Implement the minimal pure builder/parser/canonical serializer/hash validator. Reuse Node crypto and existing untrusted-content helpers; add no dependency. Keep limits exported for tests. Run Task 1 tests, strict lint on owned files, and pack smoke. Commit S0 as one reviewable PR candidate.
++
++Expected: deterministic v1 envelope tests pass; malformed input is `INCOMPLETE`, never thrown through the daemon.
++
++## S1 / Task 3 — RED/GREEN: bounded dual-runtime comparator
++
++**OWNS:** `lib/pr-monitor/shadow-replay.js`, `test/pr-monitor/shadow-replay.test.js`.
++
++RED cases: exact agreement, verdict mismatch, evidence-hash mismatch, stale bundle hash, wrong runtime identity, timeout, crash, oversized/malformed stdout, unknown verdict, stderr noise, and shell-metacharacter payloads. Prove the candidate dependency object exposes no GitHub, Kernel, journal, merge, or action capability.
++
++GREEN implementation: trusted local evaluation plus injectable/spawned candidate adapter; stdin/stdout only; argv array with no shell; 10-second/64-KiB caps; result enum `AGREE | CONTRADICT | INCOMPLETE`. Cache key is bundle hash plus both runtime identities. Candidate output never calls action or projection code.
++
++Expected: comparator tests and strict lint pass with deterministic results.
++
++## S1 / Task 4 — RED/GREEN: contradiction incident transition machine
++
++**OWNS:** `lib/pr-monitor/contradiction-incident.js`, `test/pr-monitor/contradiction-incident.test.js`.
++
++RED cases use injected clocks and ordered events:
++
++- first contradiction requests reconciliation without incident;
++- same complete contradiction on the next reconciliation opens exactly once;
++- 14:59 does not open and 15:00 does;
++- agreement clears before threshold;
++- incomplete replay neither clears nor confirms;
++- new head/runtime/schema/bundle key cannot inherit time or counts;
++- duplicate/reordered events are idempotent;
++- invalid, regressing, null, offset, or absurd clocks fail closed;
++- terminal incident state cannot be reopened without a new key.
++
++GREEN implementation: a pure reducer and bounded state projection only. It performs no I/O and knows nothing about GitHub/actions/merge. Commit S1 independently.
++
++Expected: transition tests pass; branch coverage covers every threshold and stale-key path.
++
++## H0 / Task 5 — RED/GREEN: stable-base verification and activation receipt
++
++**OWNS:** `lib/control-plane-breakfix.js`, `test/control-plane-breakfix.test.js`.
++
++RED cases:
++
++- exact trusted controller, trusted base, merged/reachable artifact, bundle corpus, verification hashes, issue/incident identity, and fresh installed agreement produce a pending human activation receipt;
++- controller == candidate, artifact not merged/reachable, artifact/hash drift, stale incident/head, missing bundle, contradiction, incomplete verification, replay timeout, expired receipt, or invalid clock refuses;
++- candidate-supplied receipt/identity is rejected;
++- reusing a receipt is idempotent and cannot activate a different artifact;
++- resume is impossible before a post-activation installed reconciliation agrees.
++
++GREEN implementation: pure receipt construction/validation and activation state transition with injected provenance/reachability readers. No merge call and no shell interpolation.
++
++Expected: H0 core tests pass; candidate cannot self-authorize in dependency-shape and behavior tests.
++
++## H0 / Task 6 — RED/GREEN: operator break-fix command
++
++**OWNS:** `lib/commands/shepherd-breakfix.js`, `lib/commands/_manifest.js`, `test/commands/shepherd-breakfix.test.js`, `test/structural/command-manifest.test.js`, `docs/reference/control-plane-breakfix.md`.
++
++RED cases cover `inspect`, `verify`, `activate`, and `resume` JSON contracts; exact required arguments; clean error text; human confirmation requirement for activation; controller/candidate path and commit distinction; read-only dry run; Windows paths; and no merge/thread/action mutation.
++
++GREEN implementation auto-discovers the command through the generated static manifest, reads/writes receipts under the existing trusted journal root, uses atomic writes/locks, and emits concise copyable next commands. It delegates all trust decisions to Task 5. Activation is explicit and human-gated.
++
++Expected: command/manifest/doc tests pass; H0 can merge independently after S0.
++
++## S2 / Task 7 — RED: capture exact canonical verdict operands
++
++**OWNS:** `test/pr-pull.test.js`.
++
++Add tests proving one canonical gather supplies both authoritative verdict and replay envelope from exactly the same immutable operands, with no second GitHub read. Cover complete, torn-head, unreadable required policy, conflicts, pending/check failure, threads/review, draft, settle window, malformed time, and offset time. Existing public payload remains backward compatible unless an explicit capture option is supplied.
++
++Run focused test and capture failure before implementation.
++
++## S2 / Task 8 — GREEN: opt-in capture without API drift
++
++**OWNS:** `lib/pr-pull.js`.
++
++Extract/name the exact `computeVerdict` operand object once, freeze/copy it before computation, and pass it to the S0 envelope builder only when capture is requested. Do not duplicate rank logic or add network reads. Default `gatherPullSignal` shape and summary remain unchanged.
++
++Expected: Task 7 plus full PR-pull tests pass; performance fixture shows no added GitHub calls.
++
++## S2 / Task 9 — RED/GREEN: Shepherd replay operator surface
++
++**OWNS:** `lib/commands/shepherd.js`, `test/commands/shepherd.test.js`.
++
++Add tests then implement opt-in capture/replay flags with stable JSON contracts. Plain Shepherd behavior stays unchanged. Replay is dry-run/read-only, uses the trusted comparator, refuses unsupported/malformed bundles, and never passes candidate output to `runPass`, auto-actions, merge, thread resolution, or Kernel projection.
++
++Expected: one retained bundle replays identically; mismatch output names exact runtimes/head/hash and the pending reconciliation; existing command tests pass.
++
++## S2 / Task 10 — RED/GREEN: daemon reconciliation and incident persistence
++
++**OWNS:** `lib/pr-monitor/reconcile-executor.js`, `test/pr-monitor/reconcile-executor.test.js`.
++
++RED cases prove:
++
++- comparison runs after one complete canonical reconciliation and outside action selection;
++- one fresh reconciliation/15-minute thresholds open one journal incident;
++- per-PR journal lock makes concurrent ticks idempotent;
++- stale head, lease loss, listing failure, incomplete evidence, candidate timeout, journal corruption, and process restart fail closed;
++- shadow latency does not block canonical watcher/action convergence;
++- incident freeze is scoped to the exact repo/PR/head and other PRs continue.
++
++GREEN implementation stores bounded state/events and retained envelopes under the current journal root. Use tail/index-bounded reads and atomic writes. Do not alter `kernel_pr` schema or canonical verdict writes.
++
++Expected: daemon tests pass, including injected concurrency and Windows file-lock cases.
++
++## S2 / Task 11 — Documentation and proportional validation
++
++**OWNS:** `docs/reference/shepherd.md`.
++
++Document quiet happy path, replay/incident JSON, privacy/retention limits, freeze scope, reproduction, stable-base break-fix handoff, and explicit activation/resume gate.
++
++Run:
++
++- all S0/S1/S2/H0 focused tests;
++- full `test/pr-monitor`, PR-pull, Shepherd, merge, Kernel PR-write, command-manifest suites;
++- strict ESLint (`--max-warnings 0`) on all changed JS;
++- generated-file/skill drift checks;
++- Windows Node 20/22 targeted tests where available;
++- `bun pack` install/CLI smoke from a clean temp repo;
++- full suite before ship.
++
++Record test counts/durations, exact base/head, bundle/hash/runtime fixture, and diff stats in the issue. Any real regression is fixed in the owning stack; an unrelated flake gets its own Kernel issue and is not hidden by reruns or exemptions.
++
++## Task 12 — Independent reviews and activation drill
++
++**OWNS:** no code; review evidence only.
++
++- Security reviewer: challenge candidate isolation, shell safety, secret exclusion, provenance, clocks, tampering, and receipt replay.
++- Quality reviewer: challenge deterministic replay, thresholds, bounded I/O, API compatibility, and Windows behavior.
++- Control-plane reviewer independent of the candidate author: verify candidate code cannot authorize itself.
++- Run a disposable drill: retained bundle agreement, forced contradiction, incident at next reconciliation and at 15 minutes, stable-base hotfix receipt, failed self-activation, successful human activation, fresh installed agreement, scoped lane resume.
++
++Expected: no P1/P2 blockers, all review threads resolved by `/review`, and exact-SHA evidence ready for the human merge/activation checkpoints.
++
+-- 
+2.51.0.windows.1
+

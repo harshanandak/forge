@@ -1,0 +1,72 @@
+From b7f573de39d14638da661b72380e30f42faa8875 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 00:30:08 +0530
+Subject: [PATCH] fix(preflight): preserve filename whitespace
+
+---
+ lib/preflight/gates.js       |  2 +-
+ test/preflight/gates.test.js | 22 +++++++++++++++++++++-
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/lib/preflight/gates.js b/lib/preflight/gates.js
+index 474068bd..edaa6d6b 100644
+--- a/lib/preflight/gates.js
++++ b/lib/preflight/gates.js
+@@ -41,7 +41,7 @@ function statusSummary(result, okMsg, failMsg) {
+ function normalizeChangedFiles(files) {
+   if (!Array.isArray(files)) return Object.freeze([]);
+   return Object.freeze([...new Set(
+-    files.map((file) => String(file).trim().replaceAll('\\', '/')).filter(Boolean),
++    files.map((file) => String(file).replaceAll('\\', '/')).filter((file) => file !== ''),
+   )].sort());
+ }
+ 
+diff --git a/test/preflight/gates.test.js b/test/preflight/gates.test.js
+index f9e5adff..06ecfbcf 100644
+--- a/test/preflight/gates.test.js
++++ b/test/preflight/gates.test.js
+@@ -1,5 +1,6 @@
+ 'use strict';
+ 
++const crypto = require('node:crypto');
+ const path = require('node:path');
+ const { describe, test, expect } = require('bun:test');
+ const {
+@@ -132,7 +133,7 @@ describe('runAffectedTests — real runner (injected)', () => {
+     let received;
+     const first = runAffectedTests({
+       projectRoot: '/x',
+-      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js', '  '],
++      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js', ''],
+       resolveTests: (changedFiles) => {
+         received = changedFiles;
+         return [];
+@@ -156,6 +157,25 @@ describe('runAffectedTests — real runner (injected)', () => {
+     expect(changed.inputFingerprint).not.toBe(first.inputFingerprint);
+   });
+ 
++  test('preserves whitespace-bearing Git filenames through selection and fingerprinting', () => {
++    const filename = ' test/fixture.test.js ';
++    let received;
++    const spaced = runAffectedTests({
++      projectRoot: '/x',
++      changedFiles: [filename],
++      resolveTests: (changedFiles) => {
++        received = changedFiles;
++        return [];
++      },
++    });
++    const expectedFingerprint = crypto.createHash('sha256')
++      .update(JSON.stringify([filename]))
++      .digest('hex');
++
++    expect(received).toEqual([filename]);
++    expect(spaced.inputFingerprint).toBe(expectedFingerprint);
++  });
++
+   test('default selection maps the supplied snapshot without resolving Git again', () => {
+     const calls = [];
+     const projectRoot = path.resolve(__dirname, '../..');
+-- 
+2.51.0.windows.1
+

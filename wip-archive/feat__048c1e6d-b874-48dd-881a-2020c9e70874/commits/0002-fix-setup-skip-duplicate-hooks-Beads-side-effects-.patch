@@ -1,0 +1,112 @@
+From 6e101abeb637fa084a150e0e0234e8f5398b1871 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 12:27:14 +0530
+Subject: [PATCH] fix(setup): skip duplicate hooks/Beads side effects in
+ finalizeWorkflowConfig
+
+CodeRabbit (PR #368): quickSetup and executeSetup already install git hooks
+and migrate Beads before finalize, so the init call redid that work + emitted
+warning noise. finalizeWorkflowConfig now accepts hooksAlreadyInstalled and
+threads no-op installHooks/autoMigrateBeads deps into init from those two
+paths (new defaultRunInit helper). Interactive paths, which do NOT pre-install
+hooks, keep init's default side effects so hooks still get installed. Adds
+tests for both branches.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/setup.js        | 24 ++++++++++++++++++++----
+ test/setup-hardening.test.js | 21 +++++++++++++++++++++
+ 2 files changed, 41 insertions(+), 4 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 33cc2ced..4ed668fa 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -351,9 +351,10 @@ async function finalizeWorkflowConfig(options = {}) {
+   if (fs.existsSync(configPath)) {
+     return;
+   }
+-  const runInit = options.runInit || ((root) => initCommand.handler(['--yes'], {}, root));
++  const skipSideEffects = options.hooksAlreadyInstalled === true;
++  const runInit = options.runInit || defaultRunInit;
+   try {
+-    const result = await runInit(projectRoot);
++    const result = await runInit(projectRoot, skipSideEffects);
+     if (!result || result.success === false) {
+       printForgeInitNextStep();
+       return;
+@@ -368,6 +369,19 @@ async function finalizeWorkflowConfig(options = {}) {
+   }
+ }
+ 
++/**
++ * Default init runner for finalizeWorkflowConfig. When `skipSideEffects` is set
++ * (setup paths that already installed git hooks and migrated Beads), pass no-op
++ * deps so init only writes `.forge/config.yaml` instead of re-doing that work —
++ * avoids duplicate side effects and warning noise (CodeRabbit on PR #368).
++ */
++function defaultRunInit(root, skipSideEffects) {
++  const deps = skipSideEffects
++    ? { installHooks: () => {}, autoMigrateBeads: () => {} }
++    : {};
++  return initCommand.handler(['--yes'], {}, root, deps);
++}
++
+ /**
+  * Guard against silent data loss when a non-interactive setup path overwrites
+  * an existing AGENTS.md that predates Forge's USER/FORGE merge markers. Old
+@@ -3356,7 +3370,8 @@ async function quickSetup(selectedAgents, skipExternal) {
+   console.log(renderSetupSummary(actionLog, selectedAgents, VERBOSE_MODE, { status: getSetupSummaryStatus() }));
+   printSetupNotes();
+   // One-step onboarding: run `forge init` when config is still absent (ac0b38c7).
+-  await finalizeWorkflowConfig();
++  // Hooks + Beads already handled above, so init skips those side effects.
++  await finalizeWorkflowConfig({ hooksAlreadyInstalled: true });
+   console.log('');
+ }
+ 
+@@ -3881,7 +3896,8 @@ async function executeSetup(config) {
+   console.log(renderSetupSummary(actionLog, agents, VERBOSE_MODE, { status: getSetupSummaryStatus() }));
+   printSetupNotes();
+   // One-step onboarding: run `forge init` when config is still absent (ac0b38c7).
+-  await finalizeWorkflowConfig();
++  // Hooks + Beads already handled above, so init skips those side effects.
++  await finalizeWorkflowConfig({ hooksAlreadyInstalled: true });
+   console.log('');
+ }
+ 
+diff --git a/test/setup-hardening.test.js b/test/setup-hardening.test.js
+index 73ea39b4..1fe56ff9 100644
+--- a/test/setup-hardening.test.js
++++ b/test/setup-hardening.test.js
+@@ -197,6 +197,27 @@ describe('finalizeWorkflowConfig runs init as part of setup (ac0b38c7)', () => {
+       setupCommand.finalizeWorkflowConfig({ runInit: () => ({ success: false }) }));
+     expect(output).toContain('forge init');
+   });
++
++  test('skips init side effects when caller already installed hooks/Beads', async () => {
++    const root = makeTempDir();
++    let skipArg;
++    await withCapturedRootAsync(root, () =>
++      setupCommand.finalizeWorkflowConfig({
++        hooksAlreadyInstalled: true,
++        runInit: (_r, skip) => { skipArg = skip; return { success: true }; },
++      }));
++    expect(skipArg).toBe(true);
++  });
++
++  test('does NOT skip init side effects on interactive paths (hooks not pre-installed)', async () => {
++    const root = makeTempDir();
++    let skipArg;
++    await withCapturedRootAsync(root, () =>
++      setupCommand.finalizeWorkflowConfig({
++        runInit: (_r, skip) => { skipArg = skip; return { success: true }; },
++      }));
++    expect(skipArg).toBe(false);
++  });
+ });
+ 
+ describe('backupMarkerlessAgentsMd guards non-interactive overwrites', () => {
+-- 
+2.51.0.windows.1
+

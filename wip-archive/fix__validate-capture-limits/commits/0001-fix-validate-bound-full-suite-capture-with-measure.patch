@@ -1,0 +1,162 @@
+From df5f44e5fabe4c7645317685923db8b5e382aa46 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 9 Sep 2026 03:09:00 +0530
+Subject: [PATCH] fix(validate): bound full-suite capture with measured
+ headroom
+
+---
+ lib/commands/validate.js       | 19 ++++++---
+ test/commands/validate.test.js | 70 +++++++++++++++++++++++++++++++++-
+ 2 files changed, 81 insertions(+), 8 deletions(-)
+
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index ec2deb77..9f4bdf85 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -44,10 +44,12 @@ const CONFLICT_DIVIDER_PATTERN = /^=======$/;
+ const CONFLICT_END_PATTERN = /^>>>>>>>.*$/;
+ const GIT_CONFLICT_SCAN_MAX_BUFFER = 16 * 1024 * 1024;
+ const VALIDATION_COMMAND_TIMEOUT_MS = 600000;
+-const VALIDATION_COMMAND_TIMEOUT_MINUTES = Math.round(VALIDATION_COMMAND_TIMEOUT_MS / 60000);
++// Match the full-suite runner's measured headroom; its verbose output exceeds 1 MiB.
++const FULL_SUITE_TIMEOUT_MS = 25 * 60 * 1000;
++const FULL_SUITE_MAX_BUFFER = 16 * 1024 * 1024;
+ 
+-function validationTimeoutMessage(label) {
+-	return `${label} timed out after ${VALIDATION_COMMAND_TIMEOUT_MINUTES} minutes`;
++function validationTimeoutMessage(label, timeoutMs = VALIDATION_COMMAND_TIMEOUT_MS) {
++	return `${label} timed out after ${Math.round(timeoutMs / 60000)} minutes`;
+ }
+ 
+ function listConflictScanFiles(rootDir) {
+@@ -608,9 +610,14 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 	const useFullSuite = isForgeCheckout(rootDir);
+ 	const command = useFullSuite ? 'node' : 'bun';
+ 	const args = useFullSuite ? ['scripts/test-full-suite.js'] : ['test', '--timeout', '30000'];
++	const execOptions = getExecOptions(rootDir);
++	if (useFullSuite) {
++		execOptions.timeout = FULL_SUITE_TIMEOUT_MS;
++		execOptions.maxBuffer = FULL_SUITE_MAX_BUFFER;
++	}
+ 
+ 	try {
+-		const result = exec(command, args, getExecOptions(rootDir));  // NOSONAR S4036 - fixed CLI commands, no user input, developer tool context
++		const result = exec(command, args, execOptions);  // NOSONAR S4036 - fixed CLI commands, no user input, developer tool context
+ 
+ 		const { status, passed, failed, errors = 0, skipped, total, testsFound } = parseTestCounts(result);
+ 		const success = failed === 0 && errors === 0 && (status === undefined || status === 'PASS');
+@@ -644,14 +651,14 @@ async function runAllTests(exec = execFileSync, rootDir = process.cwd()) {
+ 		};
+ 	} catch (error) {
+ 		// Check for timeout
+-		if (error.killed && error.signal === 'SIGTERM') {
++		if (error.code === 'ETIMEDOUT' || (error.killed && error.signal === 'SIGTERM')) {
+ 			return {
+ 				success: false,
+ 				duration: Date.now() - startTime,
+ 				passed: 0,
+ 				failed: 0,
+ 				total: 0,
+-				message: validationTimeoutMessage('Test execution'),
++				message: validationTimeoutMessage('Test execution', execOptions.timeout),
+ 			};
+ 		}
+ 
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index b9a7ab70..db684894 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -88,7 +88,7 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			}
+ 		});
+ 
+-		test('uses a long enough subprocess timeout for the full local suite', () => {
++		test('keeps ordinary validation commands bounded and preserves the external Bun fallback', () => {
+ 			const source = fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'commands', 'validate.js'), 'utf8');
+ 			expect(source).toMatch(/VALIDATION_COMMAND_TIMEOUT_MS\s*=\s*600000/);
+ 			expect(source).toMatch(/timeout:\s*VALIDATION_COMMAND_TIMEOUT_MS/);
+@@ -96,6 +96,72 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			expect(source).toMatch(/\[\s*'test'\s*,\s*'--timeout'\s*,\s*'30000'\s*\]/);
+ 			expect(source).not.toContain('timed out after 2 minutes');
+ 		});
++
++		test('reserves measured full-suite headroom and bounded output capacity only for the Forge runner', async () => {
++			const rootDir = path.resolve(__dirname, '..', '..');
++			let options;
++			const result = await runAllTests((_command, _args, opts) => {
++				options = opts;
++				return 'Full suite aggregate: status=PASS tests=1 assertions=1 passed=1 failed=0 errors=0 skipped=0';
++			}, rootDir);
++			expect(result.success).toBe(true);
++			expect(options).toEqual({
++				encoding: 'utf8', cwd: rootDir, timeout: 25 * 60 * 1000, maxBuffer: 16 * 1024 * 1024,
++			});
++		});
++
++		test('does not expand the lint execution limits', async () => {
++			let options;
++			await runLint((_command, _args, opts) => { options = opts; return ''; });
++			expect(options).toEqual({ encoding: 'utf8', cwd: process.cwd(), timeout: 600000 });
++		});
++
++		test.each([0, 1])('captures verbose full-suite output and its final verdict without truncation (exit %s)', async (exitCode) => {
++			const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-validate-verbose-'));
++			const aggregate = exitCode === 0
++				? 'Full suite aggregate: status=PASS tests=5 assertions=8 passed=5 failed=0 errors=0 skipped=0'
++				: 'Full suite aggregate: status=FAIL tests=5 assertions=8 passed=3 failed=2 errors=0 skipped=0';
++			const paddingBytes = 2 * 1024 * 1024;
++			let captured = '';
++			try {
++				fs.mkdirSync(path.join(rootDir, 'scripts'));
++				fs.writeFileSync(path.join(rootDir, 'package.json'), JSON.stringify({
++					name: 'forge-workflow', bin: { forge: 'bin/forge.js' },
++					scripts: { 'test:full:parallel': 'node scripts/test-full-suite.js' },
++				}));
++				fs.writeFileSync(path.join(rootDir, 'scripts', 'test-full-suite.js'), [
++					"const fs = require('node:fs');",
++					`fs.writeSync(1, 'x'.repeat(${paddingBytes}) + '\\n');`,
++					`fs.writeSync(2, 'y'.repeat(${paddingBytes}) + '\\n');`,
++					`fs.writeSync(1, ${JSON.stringify(aggregate + '\n')});`,
++					`process.exitCode = ${exitCode};`,
++				].join('\n'));
++				const result = await runAllTests((command, args, options) => {
++					try {
++						captured = execFileSync(command, args, { ...options, stdio: 'pipe' });
++						return captured;
++					} catch (error) {
++						captured = error.stdout || '';
++						throw error;
++					}
++				}, rootDir);
++				expect(result.success).toBe(exitCode === 0);
++				expect(result.failed).toBe(exitCode === 0 ? 0 : 2);
++				expect(result.total).toBe(5);
++				expect(Buffer.byteLength(captured)).toBe(paddingBytes + 1 + Buffer.byteLength(aggregate) + 1);
++				expect(captured.endsWith(aggregate + '\n')).toBe(true);
++			} finally {
++				fs.rmSync(rootDir, { recursive: true, force: true });
++			}
++		});
++
++		test('reports the full-suite timeout using its selected limit without waiting', async () => {
++			const result = await runAllTests(() => {
++				throw Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
++			}, path.resolve(__dirname, '..', '..'));
++			expect(result.success).toBe(false);
++			expect(result.message).toBe('Test execution timed out after 25 minutes');
++		});
+ 	});
+ 
+ 	describe('Full validate orchestration', () => {
+@@ -588,7 +654,7 @@ describe('Validate Command - Validation Orchestration', () => {
+ 
+ 				expect(calls[0][0]).toBe('bun');
+ 				expect(calls[0][1]).toEqual(['test', '--timeout', '30000']);
+-				expect(calls[0][2].cwd).toBe(rootDir);
++				expect(calls[0][2]).toEqual({ encoding: 'utf8', cwd: rootDir, timeout: 600000 });
+ 			} finally {
+ 				fs.rmSync(rootDir, { recursive: true, force: true });
+ 			}
+-- 
+2.51.0.windows.1
+

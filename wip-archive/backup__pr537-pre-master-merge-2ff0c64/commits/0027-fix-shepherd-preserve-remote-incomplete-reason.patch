@@ -1,0 +1,61 @@
+From fbd023aa1f8730ff038b32d73f8dd15687874427 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:18:44 +0530
+Subject: [PATCH] fix(shepherd): preserve remote incomplete reason
+
+---
+ lib/commands/shepherd.js       |  8 ++++----
+ test/commands/shepherd.test.js | 18 ++++++++++++++++++
+ 2 files changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index cc917307..f3ae0493 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -885,10 +885,10 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     effectiveState = localPreflight.status === 'INCOMPLETE' ? 'INCOMPLETE' : 'PENDING';
+   }
+   let effectiveReason = confirmedResult.reason;
+-  if (effectiveState === 'INCOMPLETE') {
+-    effectiveReason = 'Local review preflight is incomplete; merge readiness is not established.';
+-  } else if (effectiveState !== confirmedResult.state) {
+-    effectiveReason = 'Local review preflight is blocking merge readiness.';
++  if (effectiveState !== confirmedResult.state) {
++    effectiveReason = effectiveState === 'INCOMPLETE'
++      ? 'Local review preflight is incomplete; merge readiness is not established.'
++      : 'Local review preflight is blocking merge readiness.';
+   }
+ 
+   // Surface the pass outcome so the monitor is legible when run interactively or
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 49dce8a3..a5d7a999 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -374,6 +374,24 @@ describe('shepherd command handler', () => {
+     expect(out.reason).toMatch(/local review preflight is incomplete/i);
+   });
+ 
++  test('preserves the remote reason when the pass is already incomplete', async () => {
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runLocalPreflight: async () => ({
++        status: 'PASS', blocking: false, providers: {}, findings: [],
++      }),
++      runPass: async () => ({
++        state: 'INCOMPLETE', actions: [], reason: 'Remote evidence is unavailable',
++      }),
++      buildContext: async () => ({ pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master' }),
++    });
++
++    expect(out).toMatchObject({
++      state: 'INCOMPLETE', reason: 'Remote evidence is unavailable', success: false,
++    });
++    expect(out.remoteState).toBeUndefined();
++  });
++
+   test('fails closed when the checkout changes while local providers are running', async () => {
+     const oldHead = 'a'.repeat(40);
+     const newHead = 'b'.repeat(40);
+-- 
+2.51.0.windows.1
+

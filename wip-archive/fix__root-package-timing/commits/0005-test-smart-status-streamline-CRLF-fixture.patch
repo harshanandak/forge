@@ -1,0 +1,289 @@
+From 22d7bb7d4974f6e7e1030cc23398ca3ba92fc75e Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 19 Sep 2026 19:19:57 +0530
+Subject: [PATCH] test(smart-status): streamline CRLF fixture
+
+---
+ CHANGELOG.md                                  |  1 +
+ .../decisions.md                              | 42 ++++++++++++
+ .../tasks.md                                  | 28 ++++++++
+ test/scripts/smart-status.basics.test.js      | 65 +++++++++++++++++--
+ test/scripts/smart-status.helpers.js          | 41 ++++++++++--
+ 5 files changed, 168 insertions(+), 9 deletions(-)
+ create mode 100644 docs/work/2026-09-19-smart-status-crlf-fixture/decisions.md
+ create mode 100644 docs/work/2026-09-19-smart-status-crlf-fixture/tasks.md
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 7233b598..53b5b732 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ - **The workflow projection hook test avoids a duplicate Git scan.** It retains the real commit-hook rejection and verifies the exact projection mismatch and zero authority consumption through existing fixture readers, without changing test deadlines or production authorization. (issue `e70683d6-f8df-471b-b859-a6dacb69825c`)
+ - **Segmented Flow monitor checkpoints no longer repeat full-tail compression searches.** Recovery planning bounds records once and adapts from the last accepted segment width while preserving payload limits, ordered records, integrity metadata, terminal snapshot placement, and fail-closed interrupted-plan recovery. (issues `9eb98ac0-ebe1-4604-a57a-5fefadad6682`, `6648ef9b-381a-4a19-ad9a-06341e62676f`)
+ - **The failed full-suite child regression now selects only its test gate.** Its synthetic validation fixture still proves fail-closed classification and stale receipt deletion without running unrelated repository checks. (issue `3ce7c502-ccaf-46e6-af12-961ff5ffd2e7`)
++- **The smart-status CRLF fixture avoids a redundant wrapper on compatible Windows jq executables.** It verifies genuine CRLF bytes before selecting native jq, preserves the CRLF-producing fallback for LF-only commands and non-Windows hosts, and propagates jq failures through that wrapper without changing the 20-second test deadline or production status behavior. (issue `c8ece1ef-e410-45b8-98bc-ca184fa4f828`)
+ - **The test workflow template marker no longer resembles a credential assignment.** Internal renderer code now describes `__BUN_VERSION__` as a placeholder, so the shipped-library secret scan accepts the deterministic workflow writer without weakening its detection rules or changing generated workflow bytes. (issue `0acc4a68-ab0a-4008-83bf-6e954d075007`)
+ 
+ ## [0.1.0-beta.7] - 2026-09-11
+diff --git a/docs/work/2026-09-19-smart-status-crlf-fixture/decisions.md b/docs/work/2026-09-19-smart-status-crlf-fixture/decisions.md
+new file mode 100644
+index 00000000..16ac17c6
+--- /dev/null
++++ b/docs/work/2026-09-19-smart-status-crlf-fixture/decisions.md
+@@ -0,0 +1,42 @@
++# Smart-status CRLF fixture decisions
++
++## Decision 1
++
++**Date**: 2026-09-19
++**Task**: Task 1 — Preserve CRLF coverage with fewer Windows processes
++**Gap**: None. The approved scope requires native Windows jq only after genuine CRLF byte proof, with a wrapper fallback elsewhere.
++**Score**: 0/14
++**Route**: PROCEED
++**Choice made**: Probe the resolved jq with fixed `-n 1` arguments. Select it directly only on Windows when it exits zero, emits nonempty output, and ends in `0D0A`; otherwise create the CRLF wrapper. Pass the returned command via `JQ_CMD`.
++**Status**: RESOLVED
++
++## Decision 2
++
++**Date**: 2026-09-19
++**Task**: Task 1 — Preserve CRLF coverage with fewer Windows processes
++**Gap**: None. The wrapper's `jq | awk` pipeline was observed returning success after jq failed.
++**Score**: 0/14
++**Route**: PROCEED
++**Choice made**: Enable Bash `pipefail` inside the generated wrapper so the existing pipeline preserves the upstream jq failure without changing production scripts.
++**Status**: RESOLVED
++
++## Decision 3
++
++**Date**: 2026-09-19
++**Task**: Task 1 — Preserve CRLF coverage with fewer Windows processes
++**Gap**: A Windows executable named jq is not guaranteed to emit CRLF; the first regression incorrectly equated Windows with direct selection.
++**Score**: 0/14
++**Route**: PROCEED
++**Choice made**: Compare selection with the resolved command's actual nonempty trailing bytes and add an LF-only injected jq case. The helper must choose the wrapper whenever the direct probe does not end in `0D0A`, including on Windows.
++**Status**: RESOLVED
++
++## Evidence
++
++- RED — wrapper failure propagation: expected exit `7`, received `0`; 0/1 passed, 445 ms case and 822 ms file.
++- RED — native selection: expected proven Windows direct selection, received no selection metadata; 0/1 passed, 571.8 ms case and 970 ms file.
++- Focused GREEN — LF-only fallback: 1/1 passed in 696 ms; emitted exact bytes `31 0D 0A` through the wrapper.
++- Focused GREEN — actual-byte selection: 1/1 passed in 901 ms; nonempty output ended in `0D0A` before direct Windows selection.
++- Focused GREEN — wrapper failure propagation: 1/1 passed in 471 ms; jq exit `7` remained exit `7`.
++- Focused GREEN — full arithmetic behavior: 1/1 passed in 2.58 seconds with the unchanged 20-second deadline and existing assertions.
++- Affected file: 7/7 tests and 20 assertions passed in 4.13 seconds.
++- Focused ESLint: both changed JavaScript files passed with zero lint errors or warnings; Node emitted the repository's module-type performance warning for `eslint.config.js`.
+diff --git a/docs/work/2026-09-19-smart-status-crlf-fixture/tasks.md b/docs/work/2026-09-19-smart-status-crlf-fixture/tasks.md
+new file mode 100644
+index 00000000..cb35008e
+--- /dev/null
++++ b/docs/work/2026-09-19-smart-status-crlf-fixture/tasks.md
+@@ -0,0 +1,28 @@
++# Smart-status CRLF fixture tasks
++
++Issue: `c8ece1ef-e410-45b8-98bc-ca184fa4f828`
++
++## Task 1: Preserve CRLF coverage with fewer Windows processes
++
++**Files:** `test/scripts/smart-status.helpers.js`, `test/scripts/smart-status.basics.test.js`
++
++**Scope:** Select the resolved native jq executable on Windows only after a bounded raw-byte probe proves successful, nonempty output ending in CRLF. Otherwise create the existing CRLF-producing wrapper. Pass the selected command through `JQ_CMD`, preserve the full smart-status arithmetic assertions and the unchanged 20-second case deadline, and clean only temporary directories created by the helper.
++
++**TDD:**
++
++1. Add a focused regression proving the selected command emits nonempty output ending in exact `0D0A` bytes and uses native jq on Windows only after that proof.
++2. Add a focused regression with a deliberately failing jq executable; demonstrate RED because the current `jq | awk` wrapper returns success.
++3. Add the minimal native selection and wrapper failure propagation.
++4. Run each changed fixture regression and the existing full smart-status CRLF arithmetic case sequentially. Record counts and elapsed time.
++
++**Acceptance:** Native Windows coverage uses genuine jq CRLF output without the per-call wrapper; non-Windows retains genuine CRLF wrapper output; upstream jq failure is nonzero; the full script case remains strict and passes inside 20 seconds; production files are unchanged.
++
++## Task 2: Document the fixture reliability fix
++
++**Files:** `CHANGELOG.md`, `docs/work/2026-09-19-smart-status-crlf-fixture/decisions.md`
++
++Record the Windows fixture optimization, failure propagation, focused RED/GREEN evidence, and the limits of the proof. Do not claim the isolated pass proves host contention or resolves every smart-status timing path.
++
++## Status
++
++Implementation and focused validation are complete. Independent spec and quality review remain pending; no commit has been created.
+diff --git a/test/scripts/smart-status.basics.test.js b/test/scripts/smart-status.basics.test.js
+index 1f9ecc2d..c299e9d4 100644
+--- a/test/scripts/smart-status.basics.test.js
++++ b/test/scripts/smart-status.basics.test.js
+@@ -1,21 +1,26 @@
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
++const { spawnSync } = require('node:child_process');
+ const { describe, test, expect, setDefaultTimeout } = require('bun:test');
+ 
+ const {
+-  BASH_PATH_ENV,
+   SCRIPT,
+   cleanupTmpDir,
+   createCrLfJqWrapper,
+   createMockForge,
+   daysAgo,
++  resolveBashCommand,
+   runSmartStatus,
+   toBashPath,
+ } = require('./smart-status.helpers');
+ 
+ setDefaultTimeout(20000);
+ 
++function runJqFixture(commandPath) {
++  return spawnSync(resolveBashCommand(), ['-c', '"$1" -n 1', '_', toBashPath(commandPath)]);
++}
++
+ describe('smart-status.sh', () => {
+   test('script file exists', () => {
+     expect(fs.existsSync(SCRIPT)).toBe(true);
+@@ -36,6 +41,58 @@ describe('smart-status.sh', () => {
+     expect(result.stderr).not.toContain(';');
+   });
+ 
++  test('selects a jq command that emits genuine CRLF bytes', () => {
++    const fixture = createCrLfJqWrapper();
++    try {
++      const directResult = runJqFixture(fixture.realJq);
++      const directHasCrLf = directResult.status === 0
++        && directResult.stdout.length > 0
++        && Array.from(directResult.stdout.subarray(-2)).join(',') === '13,10';
++      const result = runJqFixture(fixture.jqCommand);
++      expect(result.status).toBe(0);
++      expect(result.stdout.length).toBeGreaterThan(0);
++      expect(Array.from(result.stdout.subarray(-2))).toEqual([0x0d, 0x0a]);
++      expect(fixture.usesNativeJq).toBe(process.platform === 'win32' && directHasCrLf);
++      if (fixture.usesNativeJq) expect(fixture.jqCommand).toBe(fixture.realJq);
++    } finally {
++      if (fixture.tmpDir) cleanupTmpDir(fixture.tmpDir);
++    }
++  });
++
++  test('wraps an LF-only jq command to preserve genuine CRLF output', () => {
++    const lfOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-lf-jq-'));
++    const lfOnlyJq = path.join(lfOnlyDir, 'jq');
++    fs.writeFileSync(lfOnlyJq, '#!/usr/bin/env bash\nprintf "1\\n"\n', { mode: 0o755 });
++    const fixture = createCrLfJqWrapper({ realJq: toBashPath(lfOnlyJq) });
++    try {
++      const result = runJqFixture(fixture.jqCommand);
++      expect(fixture.usesNativeJq).toBe(false);
++      expect(result.status).toBe(0);
++      expect(Array.from(result.stdout)).toEqual([0x31, 0x0d, 0x0a]);
++    } finally {
++      if (fixture.tmpDir) cleanupTmpDir(fixture.tmpDir);
++      cleanupTmpDir(lfOnlyDir);
++    }
++  });
++
++  test('propagates jq failures from the CRLF wrapper', () => {
++    const failingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-failing-jq-'));
++    const failingJq = path.join(failingDir, 'jq');
++    fs.writeFileSync(failingJq, '#!/usr/bin/env bash\nexit 7\n', { mode: 0o755 });
++    const fixture = createCrLfJqWrapper({
++      forceWrapper: true,
++      realJq: toBashPath(failingJq),
++    });
++    try {
++      const result = runJqFixture(fixture.jqCommand);
++      expect(result.status).toBe(7);
++      expect(result.stdout.length).toBe(0);
++    } finally {
++      if (fixture.tmpDir) cleanupTmpDir(fixture.tmpDir);
++      cleanupTmpDir(failingDir);
++    }
++  });
++
+   test('strips CRLF from jq output so arithmetic comparisons do not warn', () => {
+     const mockData = {
+       issues: [
+@@ -43,11 +100,11 @@ describe('smart-status.sh', () => {
+       ],
+     };
+     const { tmpDir: bdTmpDir, forgeScript: bdScript } = createMockForge(mockData);
+-    const { tmpDir: jqTmpDir } = createCrLfJqWrapper();
++    const jqFixture = createCrLfJqWrapper();
+     try {
+       const result = runSmartStatus([], {
+         FORGE_CMD: toBashPath(bdScript),
+-        PATH: `${toBashPath(jqTmpDir)}:${BASH_PATH_ENV}`,
++        JQ_CMD: jqFixture.jqCommand,
+         NO_COLOR: '1',
+       });
+       expect(result.status).toBe(0);
+@@ -55,7 +112,7 @@ describe('smart-status.sh', () => {
+       expect(result.stdout).toContain('crlf');
+     } finally {
+       cleanupTmpDir(bdTmpDir);
+-      cleanupTmpDir(jqTmpDir);
++      if (jqFixture.tmpDir) cleanupTmpDir(jqFixture.tmpDir);
+     }
+   });
+ });
+diff --git a/test/scripts/smart-status.helpers.js b/test/scripts/smart-status.helpers.js
+index 2ed9d86b..92180fbc 100644
+--- a/test/scripts/smart-status.helpers.js
++++ b/test/scripts/smart-status.helpers.js
+@@ -199,9 +199,7 @@ function cleanupTmpDir(tmpDir) {
+   }
+ }
+ 
+-function createCrLfJqWrapper() {
+-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-jq-'));
+-  const wrapperPath = path.join(tmpDir, 'jq');
++function resolveRealJq() {
+   if (!cachedRealJq) {
+     const probe = spawnSync(resolveBashCommand(), ['-lc', 'command -v jq'], {
+       encoding: 'utf8',
+@@ -210,12 +208,45 @@ function createCrLfJqWrapper() {
+       || (probe.stdout || '').split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+       || 'jq';
+   }
++
++  return cachedRealJq;
++}
++
++function hasTrailingCrLf(output) {
++  return output.length >= 2
++    && output[output.length - 2] === 0x0d
++    && output[output.length - 1] === 0x0a;
++}
++
++function createCrLfJqWrapper({ forceWrapper = false, realJq = resolveRealJq() } = {}) {
++  if (process.platform === 'win32' && !forceWrapper) {
++    const probe = spawnSync(resolveBashCommand(), ['-c', '"$1" -n 1', '_', toBashPath(realJq)]);
++    if (probe.status === 0 && probe.stdout.length > 0 && hasTrailingCrLf(probe.stdout)) {
++      return {
++        jqCommand: realJq,
++        realJq,
++        tmpDir: null,
++        usesNativeJq: true,
++        wrapperPath: null,
++      };
++    }
++  }
++
++  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smart-status-jq-'));
++  const wrapperPath = path.join(tmpDir, 'jq');
+   const scriptContent = `#!/usr/bin/env bash
+-REAL_JQ="${cachedRealJq}"
++set -o pipefail
++REAL_JQ="${realJq}"
+ "$REAL_JQ" "$@" | awk '{ printf "%s\\r\\n", $0 }'
+ `;
+   fs.writeFileSync(wrapperPath, scriptContent, { mode: 0o755 });
+-  return { tmpDir, wrapperPath };
++  return {
++    jqCommand: wrapperPath,
++    realJq,
++    tmpDir,
++    usesNativeJq: false,
++    wrapperPath,
++  };
+ }
+ 
+ function daysAgo(n) {
+-- 
+2.51.0.windows.1
+

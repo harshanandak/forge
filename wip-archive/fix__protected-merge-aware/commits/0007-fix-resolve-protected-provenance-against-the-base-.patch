@@ -1,0 +1,518 @@
+From 490e174a09b9c4284e9074ed94615b59e5f73730 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 18:11:34 +0530
+Subject: [PATCH] fix: resolve protected provenance against the base remote
+
+canonicalUpstreamRef() picked the feature branch's tracking remote. In a
+fork-style checkout that is the contributor-owned `origin`, so a protected
+change merged from the fork's default branch satisfied the ancestry check
+even though it was never published to the official repository.
+
+Extract Forge's existing base-remote resolver (upstream preferred over
+origin) out of lib/commands/ship.js into lib/base-remote.js and reuse it
+from the pre-commit check, so both surfaces agree on what the base is.
+ship.js re-exports the same functions, so there is one implementation.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/base-remote.js                    | 128 ++++++++++++++++++++++++++
+ lib/commands/ship.js                  |  67 +-------------
+ scripts/protected-state-check.js      |  48 ++++------
+ test/base-remote.test.js              | 104 +++++++++++++++++++++
+ test/protected-state-surfaces.test.js |  74 +++++++++++++++
+ 5 files changed, 325 insertions(+), 96 deletions(-)
+ create mode 100644 lib/base-remote.js
+ create mode 100644 test/base-remote.test.js
+
+diff --git a/lib/base-remote.js b/lib/base-remote.js
+new file mode 100644
+index 00000000..3865b139
+--- /dev/null
++++ b/lib/base-remote.js
+@@ -0,0 +1,128 @@
++'use strict';
++
++const { execFileSync } = require('node:child_process');
++
++const BASE_REMOTE_CANDIDATES = ['upstream', 'origin'];
++const DEFAULT_BRANCH_CANDIDATES = ['main', 'master'];
++const GIT_PROBE_TIMEOUT_MS = 120000;
++
++/**
++ * Quiet git probe options. `stdio: 'pipe'` keeps failed probes from leaking to
++ * the terminal — these are speculative queries, not user-facing commands.
++ *
++ * @param {string} cwd - Working directory for the probe.
++ * @returns {object} execFileSync options.
++ */
++function getQuietProbeOptions(cwd) {
++	return { encoding: 'utf8', cwd, timeout: GIT_PROBE_TIMEOUT_MS, stdio: 'pipe' };
++}
++
++/**
++ * Resolve `refs/remotes/<remote>/HEAD` to the ref it points at, verifying the
++ * target actually exists.
++ *
++ * @param {Function} [exec] - Injected execFileSync.
++ * @param {string} [cwd] - Repository directory.
++ * @param {string} remoteName - Remote to probe.
++ * @returns {string|null} Fully-qualified ref, or null.
++ */
++function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remoteName) {
++	try {
++		const symbolicRef = exec('git', ['symbolic-ref', `refs/remotes/${remoteName}/HEAD`], getQuietProbeOptions(cwd)).trim();
++		if (!symbolicRef) {
++			return null;
++		}
++		exec('git', ['rev-parse', '--verify', symbolicRef], getQuietProbeOptions(cwd));
++		return symbolicRef;
++	} catch (_error) {
++		return null;
++	}
++}
++
++/**
++ * True when the remote has fetched tracking refs we can treat as a base:
++ * a recorded HEAD, or one of the conventional default branches.
++ *
++ * @param {Function} [exec] - Injected execFileSync.
++ * @param {string} [cwd] - Repository directory.
++ * @param {string} remoteName - Remote to probe.
++ * @returns {boolean} Whether a usable tracking base exists.
++ */
++function remoteHasTrackingBase(exec = execFileSync, cwd = process.cwd(), remoteName) {
++	if (resolveRemoteHeadTarget(exec, cwd, remoteName)) {
++		return true;
++	}
++
++	for (const candidate of DEFAULT_BRANCH_CANDIDATES) {
++		try {
++			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietProbeOptions(cwd));
++			return true;
++		} catch (_error) {
++			// Probe next candidate.
++		}
++	}
++
++	return false;
++}
++
++/**
++ * Resolve the remote that owns the integration base. `upstream` wins over
++ * `origin` so a fork-style checkout resolves the official repository rather
++ * than the contributor's fork.
++ *
++ * @param {Function} [exec] - Injected execFileSync.
++ * @param {string} [cwd] - Repository directory.
++ * @returns {string} Remote name ('origin' when nothing else qualifies).
++ */
++function resolveBaseRemote(exec = execFileSync, cwd = process.cwd()) {
++	for (const candidate of BASE_REMOTE_CANDIDATES) {
++		try {
++			exec('git', ['remote', 'get-url', candidate], getQuietProbeOptions(cwd));
++			if (remoteHasTrackingBase(exec, cwd, candidate)) {
++				return candidate;
++			}
++		} catch (_error) {
++			// Probe next candidate.
++		}
++	}
++
++	return 'origin';
++}
++
++/**
++ * Resolve the base remote's default branch name.
++ *
++ * @param {Function} [exec] - Injected execFileSync.
++ * @param {string} [cwd] - Repository directory.
++ * @param {string} [remoteName] - Remote to probe; defaults to the base remote.
++ * @returns {string} Branch name ('master' when nothing else resolves).
++ */
++function resolveBaseBranch(exec = execFileSync, cwd = process.cwd(), remoteName = resolveBaseRemote(exec, cwd)) {
++	const symbolicRef = resolveRemoteHeadTarget(exec, cwd, remoteName);
++	if (symbolicRef) {
++		const match = new RegExp(`^refs/remotes/${remoteName}/(.+)$`).exec(symbolicRef);
++		if (match && match[1]) {
++			return match[1];
++		}
++	}
++
++	for (const candidate of DEFAULT_BRANCH_CANDIDATES) {
++		try {
++			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietProbeOptions(cwd));
++			return candidate;
++		} catch (_error) {
++			// Probe next candidate.
++		}
++	}
++
++	return 'master';
++}
++
++module.exports = {
++	BASE_REMOTE_CANDIDATES,
++	DEFAULT_BRANCH_CANDIDATES,
++	resolveRemoteHeadTarget,
++	remoteHasTrackingBase,
++	resolveBaseRemote,
++	resolveBaseBranch,
++};
+diff --git a/lib/commands/ship.js b/lib/commands/ship.js
+index 44f21049..b0862a72 100644
+--- a/lib/commands/ship.js
++++ b/lib/commands/ship.js
+@@ -14,6 +14,7 @@ const path = require('node:path');
+ 
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
++const { resolveBaseRemote, resolveBaseBranch } = require('../base-remote');
+ 
+ const AUTO_SHEPHERD_RAIL = 'rail.auto_shepherd';
+ 
+@@ -65,72 +66,6 @@ function getQuietGitExecOptions(cwd = process.cwd()) {
+ 	return { ...getGitExecOptions(cwd), stdio: 'pipe' };
+ }
+ 
+-function resolveRemoteHeadTarget(exec = execFileSync, cwd = process.cwd(), remoteName) {
+-	try {
+-		const symbolicRef = exec('git', ['symbolic-ref', `refs/remotes/${remoteName}/HEAD`], getQuietGitExecOptions(cwd)).trim();
+-		if (!symbolicRef) {
+-			return null;
+-		}
+-		exec('git', ['rev-parse', '--verify', symbolicRef], getQuietGitExecOptions(cwd));
+-		return symbolicRef;
+-	} catch (_error) {
+-		return null;
+-	}
+-}
+-
+-function remoteHasTrackingBase(exec = execFileSync, cwd = process.cwd(), remoteName) {
+-	if (resolveRemoteHeadTarget(exec, cwd, remoteName)) {
+-		return true;
+-	}
+-
+-	for (const candidate of ['main', 'master']) {
+-		try {
+-			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietGitExecOptions(cwd));
+-			return true;
+-		} catch (_error) {
+-			// Probe next candidate.
+-		}
+-	}
+-
+-	return false;
+-}
+-
+-function resolveBaseRemote(exec = execFileSync, cwd = process.cwd()) {
+-	for (const candidate of ['upstream', 'origin']) {
+-		try {
+-			exec('git', ['remote', 'get-url', candidate], getQuietGitExecOptions(cwd));
+-			if (remoteHasTrackingBase(exec, cwd, candidate)) {
+-				return candidate;
+-			}
+-		} catch (_error) {
+-			// Probe next candidate.
+-		}
+-	}
+-
+-	return 'origin';
+-}
+-
+-function resolveBaseBranch(exec = execFileSync, cwd = process.cwd(), remoteName = resolveBaseRemote(exec, cwd)) {
+-	const symbolicRef = resolveRemoteHeadTarget(exec, cwd, remoteName);
+-	if (symbolicRef) {
+-		const match = new RegExp(`^refs/remotes/${remoteName}/(.+)$`).exec(symbolicRef);
+-		if (match && match[1]) {
+-			return match[1];
+-		}
+-	}
+-
+-	for (const candidate of ['main', 'master']) {
+-		try {
+-			exec('git', ['rev-parse', '--verify', `refs/remotes/${remoteName}/${candidate}`], getQuietGitExecOptions(cwd));
+-			return candidate;
+-		} catch (_error) {
+-			// Probe next candidate.
+-		}
+-	}
+-
+-	return 'master';
+-}
+-
+ function refreshBaseReference(exec = execFileSync, cwd = process.cwd(), remoteName, baseBranch) {
+ 	exec(
+ 		'git',
+diff --git a/scripts/protected-state-check.js b/scripts/protected-state-check.js
+index 84d013c6..16d0ba06 100644
+--- a/scripts/protected-state-check.js
++++ b/scripts/protected-state-check.js
+@@ -12,6 +12,7 @@ const {
+ 	isValidGitObjectId,
+ } = require('../lib/protected-state-authority');
+ const { verifyBunLockfileRegeneration } = require('../lib/bun-lockfile-proof');
++const { resolveBaseRemote, resolveBaseBranch } = require('../lib/base-remote');
+ const realStagedFiles = new Set();
+ const deletedFiles = new Set();
+ 
+@@ -212,28 +213,24 @@ function revisionEntry(revision, file) {
+ 	return `${match[1]} ${match[2]} ${match[3]}`;
+ }
+ 
++// Adapter so the shared base-remote resolver runs through this script's
++// pathspec-scrubbed git probe. The resolver ignores the options object it is
++// handed here; the env scrub and quiet stdio come from `gitCapture`.
++function baseRemoteProbe(_command, args) {
++	return gitCapture(args);
++}
++
+ // Resolve the repository's single canonical upstream ref, deterministically:
+-// the current branch's configured upstream remote (else `origin`), then that
+-// remote's default branch (`refs/remotes/<remote>/HEAD`, falling back to the
+-// branch's configured upstream and then the conventional default names).
++// the *base* remote (`upstream` preferred over `origin`, the same resolution
++// `/ship` uses to pick a PR base), then that remote's default branch
++// (`refs/remotes/<remote>/HEAD`, falling back to the conventional default
++// names). Deliberately NOT the current branch's tracking remote: in a
++// fork-style checkout the feature branch tracks the contributor-owned fork, and
++// trusting it would let a change merged from the fork's default branch pass as
++// "already published on the base" when it never reached the official repo.
+ // Returns a fully-qualified ref name, or null when it cannot be established.
+ function canonicalUpstreamRef() {
+-	let branch;
+-	try {
+-		branch = gitCapture(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+-	} catch {
+-		branch = '';
+-	}
+-
+-	let remote = '';
+-	if (branch) {
+-		try {
+-			remote = gitCapture(['config', '--get', `branch.${branch}.remote`]);
+-		} catch {
+-			remote = '';
+-		}
+-	}
+-	if (!remote) remote = 'origin';
++	const remote = resolveBaseRemote(baseRemoteProbe, process.cwd());
+ 	try {
+ 		const remotes = gitCapture(['remote']).split(/\r?\n/).map(line => line.trim());
+ 		if (!remotes.includes(remote)) return null;
+@@ -246,18 +243,9 @@ function canonicalUpstreamRef() {
+ 		const head = gitCapture(['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`]);
+ 		if (head) candidates.push(head);
+ 	} catch {
+-		// no remote HEAD recorded; fall through to the configured upstream
+-	}
+-	if (branch) {
+-		try {
+-			const merge = gitCapture(['config', '--get', `branch.${branch}.merge`]);
+-			if (merge.startsWith('refs/heads/')) {
+-				candidates.push(`refs/remotes/${remote}/${merge.slice('refs/heads/'.length)}`);
+-			}
+-		} catch {
+-			// branch has no configured upstream
+-		}
++		// no remote HEAD recorded; fall through to the resolved default branch
+ 	}
++	candidates.push(`refs/remotes/${remote}/${resolveBaseBranch(baseRemoteProbe, process.cwd(), remote)}`);
+ 	candidates.push(`refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`);
+ 
+ 	for (const candidate of candidates) {
+diff --git a/test/base-remote.test.js b/test/base-remote.test.js
+new file mode 100644
+index 00000000..d96bde98
+--- /dev/null
++++ b/test/base-remote.test.js
+@@ -0,0 +1,104 @@
++const { describe, test, expect } = require('bun:test');
++
++const {
++	resolveBaseRemote,
++	resolveBaseBranch,
++	resolveRemoteHeadTarget,
++	remoteHasTrackingBase,
++} = require('../lib/base-remote');
++const ship = require('../lib/commands/ship');
++
++function fakeExec(responses) {
++	return (command, args, options) => {
++		expect(command).toBe('git');
++		expect(options && options.stdio).toBe('pipe');
++		const key = args.join(' ');
++		if (!Object.prototype.hasOwnProperty.call(responses, key)) {
++			throw new Error(`Unexpected git command: ${key}`);
++		}
++		const value = responses[key];
++		if (value instanceof Error) throw value;
++		return value;
++	};
++}
++
++describe('lib/base-remote', () => {
++	test('prefers upstream over origin as the base remote', () => {
++		const exec = fakeExec({
++			'remote get-url upstream': 'https://github.com/base/repo.git\n',
++			'symbolic-ref refs/remotes/upstream/HEAD': 'refs/remotes/upstream/main\n',
++			'rev-parse --verify refs/remotes/upstream/main': 'refs/remotes/upstream/main\n',
++		});
++
++		expect(resolveBaseRemote(exec, '/repo')).toBe('upstream');
++	});
++
++	test('falls back to origin when upstream has no fetched tracking refs', () => {
++		const exec = fakeExec({
++			'remote get-url upstream': 'https://github.com/base/repo.git\n',
++			'symbolic-ref refs/remotes/upstream/HEAD': new Error('no HEAD'),
++			'rev-parse --verify refs/remotes/upstream/main': new Error('missing'),
++			'rev-parse --verify refs/remotes/upstream/master': new Error('missing'),
++			'remote get-url origin': 'https://github.com/fork/repo.git\n',
++			'symbolic-ref refs/remotes/origin/HEAD': 'refs/remotes/origin/master\n',
++			'rev-parse --verify refs/remotes/origin/master': 'refs/remotes/origin/master\n',
++		});
++
++		expect(resolveBaseRemote(exec, '/repo')).toBe('origin');
++	});
++
++	test('falls back to origin when no remote qualifies', () => {
++		const exec = fakeExec({
++			'remote get-url upstream': new Error('no upstream'),
++			'remote get-url origin': new Error('no origin'),
++		});
++
++		expect(resolveBaseRemote(exec, '/repo')).toBe('origin');
++	});
++
++	test('resolves the base branch from the remote HEAD', () => {
++		const exec = fakeExec({
++			'symbolic-ref refs/remotes/upstream/HEAD': 'refs/remotes/upstream/release/2026\n',
++			'rev-parse --verify refs/remotes/upstream/release/2026': 'refs/remotes/upstream/release/2026\n',
++		});
++
++		expect(resolveBaseBranch(exec, '/repo', 'upstream')).toBe('release/2026');
++	});
++
++	test('falls back to master when the base branch cannot be resolved', () => {
++		const exec = fakeExec({
++			'symbolic-ref refs/remotes/upstream/HEAD': new Error('no HEAD'),
++			'rev-parse --verify refs/remotes/upstream/main': new Error('missing'),
++			'rev-parse --verify refs/remotes/upstream/master': new Error('missing'),
++		});
++
++		expect(resolveBaseBranch(exec, '/repo', 'upstream')).toBe('master');
++	});
++
++	test('reports a missing remote HEAD as null and no tracking base', () => {
++		const exec = fakeExec({
++			'symbolic-ref refs/remotes/origin/HEAD': new Error('no HEAD'),
++			'rev-parse --verify refs/remotes/origin/main': new Error('missing'),
++			'rev-parse --verify refs/remotes/origin/master': new Error('missing'),
++		});
++
++		expect(resolveRemoteHeadTarget(exec, '/repo', 'origin')).toBeNull();
++		expect(remoteHasTrackingBase(exec, '/repo', 'origin')).toBe(false);
++	});
++
++	// One implementation, two surfaces: `/ship` picks the PR base with these, and
++	// scripts/protected-state-check.js resolves merge provenance with them. If they
++	// ever diverge, a fork-published protected change could pass the ancestry gate.
++	test('ship re-exports the shared resolver rather than duplicating it', () => {
++		expect(ship.resolveBaseRemote).toBe(resolveBaseRemote);
++		expect(ship.resolveBaseBranch).toBe(resolveBaseBranch);
++	});
++
++	test('the protected-state check consumes the shared resolver', () => {
++		const fs = require('node:fs');
++		const path = require('node:path');
++		const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'protected-state-check.js'), 'utf8');
++		expect(source).toContain("require('../lib/base-remote')");
++		expect(source).toContain('resolveBaseRemote(');
++	});
++});
+diff --git a/test/protected-state-surfaces.test.js b/test/protected-state-surfaces.test.js
+index 9082d0b8..95285694 100644
+--- a/test/protected-state-surfaces.test.js
++++ b/test/protected-state-surfaces.test.js
+@@ -802,4 +802,78 @@ describe('scripts/protected-state-check.js merge awareness', () => {
+ 			fs.rmSync(root, { recursive: true, force: true });
+ 		}
+ 	}, 60_000);
++
++	// A fork-style checkout: `origin` is the contributor-owned fork the feature
++	// branch tracks, `upstream` is the official repository the PR merges into.
++	// Provenance must be resolved against `upstream`, never the tracking remote.
++	function initForkRepo(root) {
++		const upstreamRemote = path.join(root, 'upstream.git');
++		const forkRemote = path.join(root, 'fork.git');
++		const work = path.join(root, 'work');
++		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', upstreamRemote]);
++		runGit(root, ['init', '--bare', '--quiet', '--initial-branch=master', forkRemote]);
++		runGit(root, ['init', '--quiet', '--initial-branch=master', work]);
++		runGit(work, ['config', 'user.email', 'test@example.com']);
++		runGit(work, ['config', 'user.name', 'Test']);
++		runGit(work, ['config', 'commit.gpgsign', 'false']);
++		runGit(work, ['remote', 'add', 'origin', forkRemote]);
++		runGit(work, ['remote', 'add', 'upstream', upstreamRemote]);
++		writeRepoFile(work, WORKFLOW, 'name: base\n');
++		writeRepoFile(work, 'lib/safe.js', 'module.exports = 1;\n');
++		runGit(work, ['add', '.']);
++		runGit(work, ['commit', '--quiet', '-m', 'base']);
++		runGit(work, ['push', '--quiet', 'upstream', 'master']);
++		runGit(work, ['push', '--quiet', 'origin', 'master']);
++		runGit(work, ['remote', 'set-head', 'origin', 'master']);
++		runGit(work, ['remote', 'set-head', 'upstream', 'master']);
++		return work;
++	}
++
++	// Change a protected path on `fork-work`, publish it to the fork's default
++	// branch, optionally publish it to the official repo too, then merge it into a
++	// feature branch that tracks the fork.
++	function startForkMerge(work, { publishUpstream }) {
++		runGit(work, ['checkout', '--quiet', '-B', 'fork-work', 'master']);
++		writeRepoFile(work, WORKFLOW, 'name: base\njobs: {}\n');
++		runGit(work, ['add', WORKFLOW]);
++		runGit(work, ['commit', '--quiet', '-m', 'workflow change']);
++		runGit(work, ['push', '--quiet', 'origin', 'fork-work:master']);
++		if (publishUpstream) {
++			runGit(work, ['push', '--quiet', 'upstream', 'fork-work:master']);
++		}
++		runGit(work, ['fetch', '--quiet', '--all']);
++		runGit(work, ['checkout', '--quiet', '-b', 'feature', 'master']);
++		// The feature branch tracks the contributor's fork, not the official repo.
++		runGit(work, ['push', '--quiet', '-u', 'origin', 'feature']);
++		writeRepoFile(work, 'lib/safe.js', 'module.exports = 2;\n');
++		runGit(work, ['add', 'lib/safe.js']);
++		runGit(work, ['commit', '--quiet', '-m', 'feature change']);
++		runGit(work, ['merge', '--no-commit', '--no-ff', '--quiet', 'fork-work']);
++	}
++
++	test('blocks a fork-published protected change absent from the upstream base remote', () => {
++		const root = createTempDir();
++		try {
++			const work = initForkRepo(root);
++			startForkMerge(work, { publishUpstream: false });
++			const result = runCheck(work);
++			expect(result.status).toBe(1);
++			expect(`${result.stdout}${result.stderr}`).toContain(WORKFLOW);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
++
++	test('allows the same fork merge once the change is published to the upstream base remote', () => {
++		const root = createTempDir();
++		try {
++			const work = initForkRepo(root);
++			startForkMerge(work, { publishUpstream: true });
++			const result = runCheck(work);
++			expect(`${result.stdout}${result.stderr}`).not.toContain('Protected state edit detected');
++			expect(result.status).toBe(0);
++		} finally {
++			fs.rmSync(root, { recursive: true, force: true });
++		}
++	}, 60_000);
+ });
+-- 
+2.51.0.windows.1
+

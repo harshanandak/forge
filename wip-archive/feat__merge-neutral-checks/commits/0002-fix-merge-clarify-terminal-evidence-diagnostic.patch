@@ -1,0 +1,47 @@
+From c36609d409f1ae780f454c2f1afc258df5ac0252 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 16:56:08 +0530
+Subject: [PATCH] fix(merge): clarify terminal evidence diagnostic
+
+Issue: 5d639f8f-febb-4648-b481-7cdbde56627c
+---
+ lib/commands/merge.js       | 4 ++--
+ test/commands/merge.test.js | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 0a2dfa85..da1d57ea 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -428,13 +428,13 @@ function mandatoryContextError(context, expectedHead) {
+   if (settleError) return settleError;
+   if (!Array.isArray(context.checks) || context.checks.some(malformedCheckObservation)
+     || context.checks.some((check) => !safeTerminalCheck(check))) {
+-    return 'Every check-run and status observation must be complete and terminal.';
++    return 'Every check-run and status observation must be complete and have a safe terminal conclusion (SUCCESS, NEUTRAL, or SKIPPED).';
+   }
+   if (Object.prototype.hasOwnProperty.call(context, 'providerObservations')) {
+     if (!Array.isArray(context.providerObservations)
+       || context.providerObservations.some(malformedRollupObservation)
+       || context.providerObservations.some((check) => !safeTerminalCheck(check))) {
+-      return 'The complete provider rollup must contain only safe terminal observations.';
++      return 'The complete provider rollup must contain only observations with safe terminal conclusions (SUCCESS, NEUTRAL, or SKIPPED).';
+     }
+   }
+   const protectedGate = evaluateProtectedRequiredChecks(context);
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 4b24ddd3..a79973dc 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -218,7 +218,7 @@ describe('merge command — opt-in conditional auto-merge', () => {
+ 
+     expect(out.success).toBe(false);
+     expect(out.merged).toBe(false);
+-    expect(out.error).toMatch(/check-run|successful/i);
++    expect(out.error).toMatch(/safe terminal conclusion.*SUCCESS.*NEUTRAL.*SKIPPED/i);
+     expect(mergeCalled).toBe(false);
+   });
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,441 @@
+From aa1e3b6825f3260fc471c48c669f0fbc68ff3278 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 22:48:56 +0530
+Subject: [PATCH] fix(migrate): auto-import Beads on first kernel use so
+ upgraded repos keep their issues
+
+The kernel is the default backend, but onboarding auto-migrate runs only from
+setup/init. An existing repo whose user merely upgrades forge would read an empty
+kernel on the first issue command and their existing issues would appear to vanish
+(data safe in the jsonl store, but no hint).
+
+Add a one-time runtime auto-migrate hook in resolveCommandOpts (kernel path):
+gated by a sentinel next to the kernel DB (shared across worktrees), idempotent via
+autoMigrateBeadsIfPresent, stderr-only so --json stdout stays a pure contract. Falls
+back to a one-line nudge on import failure. A store with no jsonl export is skipped
+silently (no false positive on an empty leftover dir). Regenerate the D20 kill-list
+artifact (line-number shift only; zero new bd/dolt references).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../bd-call-site-kill-list.md                 |   2 +-
+ lib/commands/_resolve-command-opts.js         |  17 ++
+ lib/commands/migrate.js                       |  80 ++++++
+ test/commands/runtime-auto-migrate.test.js    | 268 ++++++++++++++++++
+ 4 files changed, 366 insertions(+), 1 deletion(-)
+ create mode 100644 test/commands/runtime-auto-migrate.test.js
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index d7ae0b1f..3a6f9050 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -22,7 +22,7 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ - [ ] lib/commands/dev.js (1)
+   - lines: 466 (bd)
+ - [ ] lib/commands/migrate.js (22)
+-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 305 (.beads), 309 (bd, dolt), 310 (bd, dolt), 314 (.beads), 326 (bd, .beads), 348 (.beads), 349 (.beads), 350 (.beads), 351 (.beads)
++  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 305 (.beads), 309 (bd, dolt), 310 (bd, dolt), 314 (.beads), 326 (bd, .beads), 428 (.beads), 429 (.beads), 430 (.beads), 431 (.beads)
+ - [ ] lib/commands/plan.js (9)
+   - lines: 252 (bd), 288 (bd), 290 (bd), 304 (bd), 325 (bd), 336 (bd), 339 (bd), 738 (bd), 773 (bd)
+ - [ ] lib/commands/status.js (10)
+diff --git a/lib/commands/_resolve-command-opts.js b/lib/commands/_resolve-command-opts.js
+index 265db708..141aa0a9 100644
+--- a/lib/commands/_resolve-command-opts.js
++++ b/lib/commands/_resolve-command-opts.js
+@@ -209,6 +209,23 @@ async function resolveCommandOpts(command, rawArgs = [], deps = {}) {
+     gitCommonDir: deps.gitCommonDir,
+   });
+ 
++  // Safety net: the kernel is the default backend, but onboarding auto-migrate runs
++  // only from `forge setup`/`init`. An existing repo whose user merely upgrades forge
++  // would read an EMPTY kernel here and their existing Beads issues would appear to
++  // vanish. Import them ONCE on first kernel use (idempotent, sentinel next to the DB,
++  // stderr only). Wrapped so a safety-net failure NEVER breaks command-opts resolution.
++  const autoMigrate = deps.autoMigrateBeadsAtRuntime
++    || require('./migrate').autoMigrateBeadsAtRuntime;
++  try {
++    await autoMigrate({
++      projectRoot: deps.projectRoot,
++      databasePath: kernelDeps.kernelDatabasePath,
++      broker: kernelDeps.kernelBroker,
++    });
++  } catch {
++    // The command must run even if the one-time import hook throws.
++  }
++
+   return {
+     commandOpts: {
+       issueBackend: KERNEL,
+diff --git a/lib/commands/migrate.js b/lib/commands/migrate.js
+index ea7a9282..2192e1e2 100644
+--- a/lib/commands/migrate.js
++++ b/lib/commands/migrate.js
+@@ -337,11 +337,91 @@ async function autoMigrateBeadsIfPresent(projectRoot, opts = {}) {
+   return { migrated: result.success === true, result };
+ }
+ 
++const BEADS_MIGRATE_NUDGE =
++  'Forge could not import your Beads issues into the Kernel automatically. '
++  + 'Run `forge migrate --from beads` to import them.';
++
++function writeSentinelFile(fsImpl, sentinelPath, payload) {
++  fsImpl.mkdirSync(path.dirname(sentinelPath), { recursive: true });
++  fsImpl.writeFileSync(sentinelPath, `${JSON.stringify(payload, null, 2)}\n`);
++}
++
++/**
++ * First-use safety net for the kernel default backend. Onboarding auto-migrate runs
++ * only from `forge setup`/`init`; an existing repo whose user merely upgrades forge
++ * reads an EMPTY kernel on the first issue command, so their existing Beads issues
++ * appear to vanish. This imports them ONCE — gated by a sentinel next to the kernel
++ * DB (`<gitCommonDir>/forge/beads-import.json`, shared across worktrees like the DB)
++ * — idempotently, announcing on stderr only so `--json` stdout stays a pure contract.
++ * NEVER throws: the safety net must never break the command it rides on.
++ *
++ * Only a jsonl-backed store is auto-imported (the migration binary is never shelled).
++ * A store with no jsonl export is skipped silently — `forge migrate --from beads`
++ * remains the explicit path for those.
++ *
++ * @param {object} params
++ * @param {string} params.projectRoot
++ * @param {string} params.databasePath - kernel DB path; the sentinel lives beside it.
++ * @param {object} params.broker - an initialized kernel broker to import through.
++ * @param {object} [deps] - { fs, warn, now, _fs } seams for tests.
++ * @returns {Promise<{action:'migrated'|'nudge'|'skip', reason?:string, inserted?:number}>}
++ */
++async function autoMigrateBeadsAtRuntime({ projectRoot, databasePath, broker } = {}, deps = {}) {
++  const fsImpl = deps.fs || fs;
++  const warn = deps.warn || ((msg) => process.stderr.write(`${msg}\n`));
++  const stampedAt = () => deps.now || new Date().toISOString();
++  try {
++    if (!databasePath) {
++      return { action: 'skip', reason: 'no-db-path' };
++    }
++    const sentinel = path.join(path.dirname(databasePath), 'beads-import.json');
++
++    // One-time gate: an import was already attempted on this clone.
++    if (fsImpl.existsSync(sentinel)) {
++      return { action: 'skip', reason: 'already-attempted' };
++    }
++
++    // Only a jsonl export can be imported automatically; anything else is skipped
++    // silently (an empty or export-less store must never trigger a false nudge).
++    if (!detectBeadsJsonlSource(projectRoot, { fs: fsImpl })) {
++      return { action: 'skip', reason: 'no-jsonl' };
++    }
++
++    // Import (idempotent) through the already-initialized broker.
++    let outcome;
++    try {
++      outcome = await autoMigrateBeadsIfPresent(projectRoot, { _broker: broker, _now: deps.now, _fs: deps._fs });
++    } catch (err) {
++      outcome = { migrated: false, result: { success: false, error: err.message } };
++    }
++
++    if (outcome.migrated) {
++      const inserted = outcome.result?.imported?.issues?.inserted ?? 0;
++      const skipped = outcome.result?.imported?.issues?.skipped ?? 0;
++      // Write the sentinel LAST so a concurrent first run is a benign idempotent skip.
++      writeSentinelFile(fsImpl, sentinel, { migratedAt: stampedAt(), inserted, skipped });
++      if (inserted > 0) {
++        warn(`Forge: imported ${inserted} Beads issue(s) into the Kernel — your issues are here, not lost.`);
++      }
++      return { action: 'migrated', inserted, skipped };
++    }
++
++    const error = outcome.result?.error || outcome.reason || 'unknown error';
++    writeSentinelFile(fsImpl, sentinel, { failedAt: stampedAt(), error });
++    warn(BEADS_MIGRATE_NUDGE);
++    return { action: 'nudge', reason: 'migrate-failed', error };
++  } catch (err) {
++    // Absolutely never break the command we ride on.
++    return { action: 'skip', reason: 'error', error: err.message };
++  }
++}
++
+ module.exports = {
+   name: 'migrate',
+   description: 'Migrate a Beads issue store into the Forge Kernel, or preview the v2→v3 migration',
+   detectBeadsJsonlSource,
+   autoMigrateBeadsIfPresent,
++  autoMigrateBeadsAtRuntime,
+   usage: 'forge migrate --from beads [--dry-run] [--source <dir>] [--json]',
+   flags: {
+     '--from <source>': 'Migration source. Use "beads" to import a Beads issue store into the Kernel.',
+diff --git a/test/commands/runtime-auto-migrate.test.js b/test/commands/runtime-auto-migrate.test.js
+new file mode 100644
+index 00000000..a80781f5
+--- /dev/null
++++ b/test/commands/runtime-auto-migrate.test.js
+@@ -0,0 +1,268 @@
++'use strict';
++
++const { describe, test, expect, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const migrateCommand = require('../../lib/commands/migrate');
++const { resolveCommandOpts } = require('../../lib/commands/_resolve-command-opts');
++const { createLocalBroker } = require('../../lib/kernel/broker');
++const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++
++// Runtime safety net (fix/upgrade-safety-beads-nudge): the kernel is the DEFAULT
++// backend, but onboarding auto-migrate only runs from `forge setup`/`init`. An
++// existing repo whose user merely upgrades forge would read an EMPTY kernel on the
++// first issue command and their `.beads` issues would appear to vanish. The runtime
++// hook imports them ONCE (sentinel next to the DB), idempotently, announcing on
++// stderr only so `--json` stdout stays a pure contract.
++const NOW = '2026-07-05T00:00:00.000Z';
++const fixtureDir = path.join(__dirname, '..', 'fixtures', 'beads-migrate', 'legacy-backup');
++
++const cleanups = [];
++
++afterEach(() => {
++	while (cleanups.length > 0) {
++		const cleanup = cleanups.pop();
++		try {
++			cleanup();
++		} catch (_err) {
++			/* best-effort temp cleanup */ // NOSONAR S2486
++		}
++	}
++});
++
++// A freshly-initialized kernel broker + the DB path the sentinel is derived from.
++function freshKernel() {
++	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runtime-migrate-db-'));
++	const dbPath = path.join(tmpDir, 'kernel.sqlite');
++	const driver = createBuiltinSQLiteDriver({});
++	const broker = createLocalBroker({
++		projectRoot: tmpDir,
++		execFileSync: () => path.join(tmpDir, '.git'),
++		databasePath: dbPath,
++		driver,
++	});
++	cleanups.push(() => {
++		driver.close();
++		fs.rmSync(tmpDir, { recursive: true, force: true });
++	});
++	return { tmpDir, dbPath, driver, broker };
++}
++
++function projectWithBeadsJsonl() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runtime-migrate-repo-'));
++	const beadsDir = path.join(root, '.beads');
++	fs.mkdirSync(beadsDir, { recursive: true });
++	for (const entry of fs.readdirSync(fixtureDir)) {
++		if (entry.endsWith('.jsonl')) {
++			fs.copyFileSync(path.join(fixtureDir, entry), path.join(beadsDir, entry));
++		}
++	}
++	cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
++	return root;
++}
++
++function doltOnlyProject() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runtime-migrate-dolt-'));
++	const beadsDir = path.join(root, '.beads');
++	fs.mkdirSync(beadsDir, { recursive: true });
++	fs.writeFileSync(path.join(beadsDir, 'beads.db'), 'not-jsonl');
++	cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
++	return root;
++}
++
++function bareProject() {
++	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-runtime-migrate-bare-'));
++	cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
++	return root;
++}
++
++function sentinelPathFor(dbPath) {
++	return path.join(path.dirname(dbPath), 'beads-import.json');
++}
++
++describe('autoMigrateBeadsAtRuntime — first-use safety net', () => {
++	test('imports a jsonl-backed Beads store into the kernel, writes the sentinel, announces', async () => {
++		const { broker, dbPath } = freshKernel();
++		await broker.initialize();
++		const projectRoot = projectWithBeadsJsonl();
++		const warnings = [];
++
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: dbPath, broker },
++			{ now: NOW, warn: (m) => warnings.push(m) },
++		);
++
++		expect(outcome.action).toBe('migrated');
++		expect(outcome.inserted).toBe(2);
++
++		const sentinel = JSON.parse(fs.readFileSync(sentinelPathFor(dbPath), 'utf8'));
++		expect(sentinel.inserted).toBe(2);
++		expect(sentinel.skipped).toBe(0);
++		expect(sentinel.migratedAt).toBe(NOW);
++		expect(warnings.join('\n')).toMatch(/imported 2/i);
++	});
++
++	test('skips (no migrate, no warn) when the sentinel already exists', async () => {
++		const { broker, dbPath } = freshKernel();
++		await broker.initialize();
++		const projectRoot = projectWithBeadsJsonl();
++		fs.writeFileSync(sentinelPathFor(dbPath), JSON.stringify({ migratedAt: 'earlier', inserted: 9 }));
++		const warnings = [];
++
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: dbPath, broker },
++			{ now: NOW, warn: (m) => warnings.push(m) },
++		);
++
++		expect(outcome.action).toBe('skip');
++		expect(warnings).toHaveLength(0);
++		// sentinel untouched
++		const sentinel = JSON.parse(fs.readFileSync(sentinelPathFor(dbPath), 'utf8'));
++		expect(sentinel.inserted).toBe(9);
++	});
++
++	test('a second runtime run is a skip (the first wrote the sentinel)', async () => {
++		const { broker, dbPath } = freshKernel();
++		await broker.initialize();
++		const projectRoot = projectWithBeadsJsonl();
++
++		await migrateCommand.autoMigrateBeadsAtRuntime({ projectRoot, databasePath: dbPath, broker }, { now: NOW });
++		const second = await migrateCommand.autoMigrateBeadsAtRuntime({ projectRoot, databasePath: dbPath, broker }, { now: NOW });
++
++		expect(second.action).toBe('skip');
++	});
++
++	test('a kernel already holding the beads issues re-imports nothing and does not announce', async () => {
++		const { broker, dbPath } = freshKernel();
++		await broker.initialize();
++		const projectRoot = projectWithBeadsJsonl();
++		// Pre-import (as `forge setup` would) WITHOUT writing the runtime sentinel.
++		await migrateCommand.autoMigrateBeadsIfPresent(projectRoot, { _broker: broker, _now: NOW });
++		const warnings = [];
++
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: dbPath, broker },
++			{ now: NOW, warn: (m) => warnings.push(m) },
++		);
++
++		expect(outcome.action).toBe('migrated');
++		expect(outcome.inserted).toBe(0);
++		expect(warnings).toHaveLength(0); // nothing new imported → no announcement
++		expect(fs.existsSync(sentinelPathFor(dbPath))).toBe(true);
++	});
++
++	test('a failed import writes a failure sentinel and nudges once', async () => {
++		const { dbPath } = freshKernel();
++		const projectRoot = projectWithBeadsJsonl();
++		const throwingBroker = { importIssues: async () => { throw new Error('boom'); } };
++		const warnings = [];
++
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: dbPath, broker: throwingBroker },
++			{ now: NOW, warn: (m) => warnings.push(m) },
++		);
++
++		expect(outcome.action).toBe('nudge');
++		expect(outcome.reason).toBe('migrate-failed');
++		const sentinel = JSON.parse(fs.readFileSync(sentinelPathFor(dbPath), 'utf8'));
++		expect(sentinel.error).toMatch(/boom/);
++		expect(warnings.join('\n')).toMatch(/forge migrate --from beads/);
++	});
++
++	test('a store with no jsonl export is skipped SILENTLY (no false nudge, no sentinel)', async () => {
++		// Covers both an empty `.beads/` leftover and an export-less store: neither
++		// can be auto-imported, and neither should nudge (the empty-dir false positive
++		// that removing the Dolt branch fixes).
++		const { dbPath } = freshKernel();
++		const projectRoot = doltOnlyProject();
++		const warnings = [];
++
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: dbPath, broker: null },
++			{ now: NOW, warn: (m) => warnings.push(m) },
++		);
++
++		expect(outcome.action).toBe('skip');
++		expect(outcome.reason).toBe('no-jsonl');
++		expect(warnings).toHaveLength(0);
++		expect(fs.existsSync(sentinelPathFor(dbPath))).toBe(false);
++	});
++
++	test('no Beads store at all → skip, no sentinel, no warn', async () => {
++		const { dbPath } = freshKernel();
++		const projectRoot = bareProject();
++		const warnings = [];
++
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: dbPath, broker: null },
++			{ now: NOW, warn: (m) => warnings.push(m) },
++		);
++
++		expect(outcome.action).toBe('skip');
++		expect(warnings).toHaveLength(0);
++		expect(fs.existsSync(sentinelPathFor(dbPath))).toBe(false);
++	});
++
++	test('never throws — a broken fs is swallowed (safety net must not break commands)', async () => {
++		const projectRoot = projectWithBeadsJsonl();
++		const outcome = await migrateCommand.autoMigrateBeadsAtRuntime(
++			{ projectRoot, databasePath: undefined, broker: null },
++			{ now: NOW },
++		);
++		expect(outcome.action).toBe('skip');
++	});
++});
++
++describe('resolveCommandOpts wires the runtime auto-migrate on the kernel path only', () => {
++	function fakeKernelDeps(dbPath) {
++		return {
++			useKernelBroker: true,
++			kernelBroker: { id: 'broker' },
++			kernelDriver: {},
++			kernelDatabasePath: dbPath,
++		};
++	}
++
++	test('kernel default path invokes autoMigrateBeadsAtRuntime with the DB path + broker', async () => {
++		const calls = [];
++		const dbPath = '/tmp/x/forge/kernel.sqlite';
++		const { commandOpts } = await resolveCommandOpts('list', [], {
++			env: {},
++			projectRoot: '/tmp/x',
++			buildKernelIssueDeps: async () => fakeKernelDeps(dbPath),
++			autoMigrateBeadsAtRuntime: async (params) => { calls.push(params); },
++		});
++
++		expect(commandOpts.issueBackend).toBe('kernel');
++		expect(calls).toHaveLength(1);
++		expect(calls[0].databasePath).toBe(dbPath);
++		expect(calls[0].broker).toEqual({ id: 'broker' });
++		expect(calls[0].projectRoot).toBe('/tmp/x');
++	});
++
++	test('explicit beads backend does NOT invoke the runtime auto-migrate', async () => {
++		const calls = [];
++		const { commandOpts } = await resolveCommandOpts('list', ['--issue-backend', 'beads'], {
++			env: {},
++			projectRoot: '/tmp/x',
++			buildKernelIssueDeps: async () => fakeKernelDeps('/tmp/x/forge/kernel.sqlite'),
++			autoMigrateBeadsAtRuntime: async (params) => { calls.push(params); },
++		});
++
++		expect(commandOpts.issueBackend).toBe('beads');
++		expect(calls).toHaveLength(0);
++	});
++
++	test('a throwing auto-migrate never breaks command-opts resolution', async () => {
++		const dbPath = '/tmp/x/forge/kernel.sqlite';
++		const { commandOpts } = await resolveCommandOpts('list', [], {
++			env: {},
++			projectRoot: '/tmp/x',
++			buildKernelIssueDeps: async () => fakeKernelDeps(dbPath),
++			autoMigrateBeadsAtRuntime: async () => { throw new Error('should be swallowed'); },
++		});
++		expect(commandOpts.issueBackend).toBe('kernel');
++	});
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,73 @@
+From fb83c7cf6a8fd73e3388b36beb7357e6d6b931bb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 6 Aug 2026 18:36:57 +0530
+Subject: [PATCH] fix(eval): validate replay query entries
+
+---
+ scripts/lib/eval-evidence.js    | 23 ++++++++++++++++-------
+ test/eval/eval-evidence.test.js | 15 +++++++++++++++
+ 2 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/scripts/lib/eval-evidence.js b/scripts/lib/eval-evidence.js
+index 0b7a4010..6dafb4ed 100644
+--- a/scripts/lib/eval-evidence.js
++++ b/scripts/lib/eval-evidence.js
+@@ -103,13 +103,22 @@ function buildEvalReplayPayload(evalSet) {
+   if (!Array.isArray(evalSet.queries)) throw new Error('evalSet.queries must be an array');
+   return {
+     command: evalSet.command,
+-    queries: evalSet.queries.map((query) => ({
+-      name: query.name,
+-      prompt: query.prompt,
+-      setup: query.setup ?? null,
+-      teardown: query.teardown ?? null,
+-      assertions: query.assertions,
+-    })),
++    queries: evalSet.queries.map((query, index) => {
++      const queryPath = 'evalSet.queries[' + index + ']';
++      assertObject(query, queryPath);
++      assertString(query.name, queryPath + '.name');
++      assertString(query.prompt, queryPath + '.prompt');
++      if (!Array.isArray(query.assertions) || query.assertions.length === 0) {
++        throw new Error(queryPath + '.assertions must be a non-empty array');
++      }
++      return {
++        name: query.name,
++        prompt: query.prompt,
++        setup: query.setup ?? null,
++        teardown: query.teardown ?? null,
++        assertions: query.assertions,
++      };
++    }),
+   };
+ }
+ 
+diff --git a/test/eval/eval-evidence.test.js b/test/eval/eval-evidence.test.js
+index c477c46e..78adca2b 100644
+--- a/test/eval/eval-evidence.test.js
++++ b/test/eval/eval-evidence.test.js
+@@ -129,6 +129,21 @@ describe('eval evidence', () => {
+     expect(first.eval_set).toMatch(/^[0-9a-f]{64}$/);
+   });
+ 
++  test('rejects malformed query entries before hashing', () => {
++    const base = { command: '/status', queries: [] };
++    expect(() => buildEvalEvidenceHashes({
++      evalSet: { ...base, queries: [null] }, skill: 'skill', tool: 'tool',
++    })).toThrow(/evalSet\.queries\[0\] must be an object/i);
++
++    for (const field of ['name', 'prompt', 'assertions']) {
++      const query = { name: 'query', prompt: 'prompt', assertions: [{ type: 'standard', check: 'ok' }] };
++      delete query[field];
++      expect(() => buildEvalEvidenceHashes({
++        evalSet: { ...base, queries: [query] }, skill: 'skill', tool: 'tool',
++      })).toThrow(new RegExp('evalSet\\.queries\\[0\\]\\.' + field));
++    }
++  });
++
+   test('strictly allows only canonical replay inputs', () => {
+     const envelope = createEvalEvidence(validCase());
+     expect(() => verifyEvalReplay(envelope, {
+-- 
+2.51.0.windows.1
+

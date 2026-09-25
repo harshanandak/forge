@@ -1,0 +1,823 @@
+From 4e21b53ca49cce085f9ae2ced583bdde6ecaf134 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 18 Jul 2026 16:43:45 +0530
+Subject: [PATCH] =?UTF-8?q?fix(skills):=20address=20W1=20review=20?=
+ =?UTF-8?q?=E2=80=94=20package-root=20skills,=20read-only=20prime,=20safe?=
+ =?UTF-8?q?=20router=20(W1)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Applies the PR #417 review findings:
+
+- BLOCKER: loadSkillCatalog/loadDispatchText read from the Forge PACKAGE root
+  (getPackageRoot: npm dir or compiled-binary embedded assets), NOT projectRoot.
+  A set-up consumer project has no root skills/ (only mirrors), so the feature was
+  a no-op outside the source checkout. Callers (hooks session-start, skill router)
+  now resolve the package assets; an explicit override stays for tests.
+- MAJOR: collectPrimeLiveState is now strictly read-only — gated on an ALREADY-
+  EXISTING Kernel DB (resolveKernelDatabasePath only computes a path), so `forge
+  prime` in a fresh repo never lazily creates/migrates the DB.
+- MAJOR: prime now LEADS with live state — prepended to the COMPLETE orientation and
+  prioritized to sort first (sections[0].id == live_state).
+- MAJOR: routeSkill only scores skills present in the catalog; an empty/unavailable
+  catalog returns no matches (unknown:true) instead of fabricating skill names.
+- MAJOR: refactored using-forge (frontmatter/catalog/router) into small helpers for
+  the cognitive-complexity gate; behavior identical.
+- MINOR: injectable snapshot seam (_readSnapshot/_workflowState) + tests for the
+  activeAssigned->claimed{id,title} / ready->readyCount mapping and no-DB-creation.
+
+Tests paired to convention: using-forge-router.test.js -> using-forge.test.js (pairs
+lib/using-forge.js); new test/commands/skill.test.js pairs lib/commands/skill.js.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/hooks.js                         |   4 +-
+ lib/commands/skill.js                         |  10 +-
+ lib/orientation.js                            | 118 ++++++---
+ lib/using-forge.js                            | 232 +++++++++++-------
+ test/commands/skill.test.js                   |  50 ++++
+ test/hooks-session-start.test.js              |   7 +-
+ test/orientation-prime-live-state.test.js     |  54 ++++
+ ...rge-router.test.js => using-forge.test.js} |  63 ++---
+ 8 files changed, 359 insertions(+), 179 deletions(-)
+ create mode 100644 test/commands/skill.test.js
+ rename test/{using-forge-router.test.js => using-forge.test.js} (57%)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index fb392c63..ff9d4eeb 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -126,7 +126,9 @@ async function handleSessionStart(rest, projectRoot, opts = {}) {
+   // inject; a total blank yields '' (the harness injects nothing). FAIL-OPEN throughout.
+   let dispatch = '';
+   try {
+-    dispatch = (opts.loadDispatchText || loadDispatchText)(projectRoot) || '';
++    // No projectRoot: the dispatch skill is read from the Forge PACKAGE's canonical skills/
++    // (a set-up consumer project has no root skills/, only generated mirrors).
++    dispatch = (opts.loadDispatchText || loadDispatchText)() || '';
+   } catch { /* keep '' — a missing dispatch skill must not break session start */ }
+ 
+   let digestText = '';
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+index 6e606ab4..762e6ef2 100644
+--- a/lib/commands/skill.js
++++ b/lib/commands/skill.js
+@@ -49,12 +49,14 @@ function formatRouting(result) {
+ }
+ 
+ /** "forge skill for <situation>" -- deterministic router. */
+-function handleFor(rest, flags, projectRoot) {
++function handleFor(rest, flags) {
+   const { situation, json } = parseForArgs(rest, flags);
+   if (!situation) {
+     return { success: false, error: 'Missing situation.\n' + USAGE };
+   }
+-  const catalog = loadSkillCatalog(projectRoot);
++  // Read the canonical catalog from the Forge PACKAGE (not projectRoot): a set-up consumer
++  // project has no root skills/, so the routable skills live in the package assets.
++  const catalog = loadSkillCatalog();
+   const result = routeSkill(situation, { catalog });
+   if (json) {
+     return { success: true, result, output: JSON.stringify(result, null, 2) + '\n' };
+@@ -69,10 +71,10 @@ module.exports = {
+   flags: {
+     '--json': 'Emit the machine-readable routing result',
+   },
+-  handler: (args, flags = {}, projectRoot = process.cwd()) => {
++  handler: (args, flags = {}, _projectRoot) => {
+     const verb = args[0];
+     if (verb === 'for') {
+-      return handleFor(args.slice(1), flags, projectRoot);
++      return handleFor(args.slice(1), flags);
+     }
+     if (!verb) {
+       return { success: false, error: 'Missing verb.\n' + USAGE };
+diff --git a/lib/orientation.js b/lib/orientation.js
+index 05c2880e..c8472e9e 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -761,16 +761,16 @@ function buildIssueRecap(projectRoot, issueId, options = {}) {
+ 
+ function buildPrime(projectRoot, options = {}) {
+   const { project, sections } = buildOrientationSections(projectRoot, options);
+-  // Prime is the session-entry command, so it leads with LIVE state (stage / claims / ready /
+-  // gates / one adoption nudge) when the caller supplied it — collected async by the command
+-  // handler and injected here so buildPrime itself stays pure and synchronous.
+-  const extraSections = [buildPrimeKeyCommandsSection()];
+-  if (options.liveState) extraSections.unshift(buildPrimeLiveStateSection(options.liveState));
+-  const orientation = assembleOrientationResult(
+-    project,
+-    [...sections, ...extraSections],
+-    options
+-  );
++  // Prime is the session-entry command, so it LEADS the COMPLETE orientation with LIVE state
++  // (stage / claims / ready / gates / one adoption nudge) when the caller supplied it — the
++  // live-state section is prepended to the full section list (not just the extra sections), so
++  // prime leads with it in every output path. Collected async by the command handler and injected
++  // here so buildPrime itself stays pure and synchronous.
++  const keyCommands = buildPrimeKeyCommandsSection();
++  const allSections = options.liveState
++    ? [buildPrimeLiveStateSection(options.liveState), ...sections, keyCommands]
++    : [...sections, keyCommands];
++  const orientation = assembleOrientationResult(project, allSections, options);
+   return {
+     schema_version: 1,
+     kind: 'prime',
+@@ -833,7 +833,10 @@ function buildPrimeLiveStateSection(liveState) {
+     title: 'Live State',
+     content: formatPrimeLiveState(liveState),
+     sources: [source('kernel.live_state', 'kernel_read_model', 'live_session_state', 'live_state')],
+-    priority: 1,
++    // Priority 0 so prime LEADS with live state in every output path: applyBudget orders sections
++    // by priority (project_identity is also 0), and the id tiebreak ('live_state' < 'project_
++    // identity') puts live state first — the session-entry "where am I right now" belongs on top.
++    priority: 0,
+     preserve: true,
+   });
+ }
+@@ -846,51 +849,90 @@ function buildAdoptionNudge({ claimed = [], readyCount = 0, topReady = null } =
+ }
+ 
+ /**
+- * Best-effort LIVE-state collector for prime. Async + NON-THROWING: any failure (no kernel, no
+- * git, locked DB) degrades each field to an honest fallback rather than crashing the command.
+- * A caller/test may inject `options.liveState` to bypass all reads.
+- *
++ * True only when a Kernel DB ALREADY EXISTS on disk. `forge prime` is a read-only, session-entry
++ * command, so the live-state read must NEVER lazily create/migrate the Kernel DB (which the
++ * default snapshot path would otherwise do in a fresh repo). resolveKernelDatabasePath only
++ * COMPUTES the path (no side effects); we check the file separately. Never throws.
+  * @param {string} projectRoot
+- * @param {object} [options] - `{ liveState, env }` (all injectable).
+- * @returns {Promise<{stage: object|null, claimed: object[], readyCount: number, gates: string[], nudge: string}>}
++ * @returns {boolean}
+  */
+-async function collectPrimeLiveState(projectRoot, options = {}) {
+-  if (options.liveState) return options.liveState;
+-  const env = options.env || process.env;
+-
+-  // No reachable git repo -> no shared kernel. Skip the kernel-backed reads entirely (mirrors the
+-  // memory-section guard): touching the issue store here would fall back to creating a DB handle
+-  // under a non-repo path and strand it, breaking Windows temp cleanup (rmSync EBUSY).
+-  if (!fs.existsSync(path.join(projectRoot, '.git'))) {
+-    return { stage: null, claimed: [], readyCount: 0, gates: readEnabledGates(projectRoot), nudge: buildAdoptionNudge({}) };
++function hasExistingKernelDb(projectRoot) {
++  try {
++    const { resolveKernelDatabasePath } = require('./kernel/cli-broker-factory');
++    const databasePath = resolveKernelDatabasePath({ projectRoot });
++    return !!databasePath && fs.existsSync(databasePath);
++  } catch {
++    return false;
+   }
++}
+ 
+-  let snapshot = { activeAssigned: [], ready: [] };
++/**
++ * Acquire the status snapshot for live-state WITHOUT ever creating state. An injected
++ * `_readSnapshot` (tests) bypasses the guards; otherwise the read is gated on a real git repo AND
++ * an already-existing Kernel DB, so a fresh/un-initialized repo returns null (honest fallback)
++ * and nothing is written. Never throws.
++ * @returns {Promise<object|null>}
++ */
++async function acquireLiveSnapshot(projectRoot, env, options) {
++  if (options._readSnapshot) {
++    try { return await options._readSnapshot(); } catch { return null; }
++  }
++  if (!fs.existsSync(path.join(projectRoot, '.git'))) return null;
++  if (!hasExistingKernelDb(projectRoot)) return null; // read-only: never create the store
+   try {
+     const { readStatusSnapshot } = require('./status/snapshot');
+-    snapshot = (await readStatusSnapshot(projectRoot, { env })) || snapshot;
+-  } catch { /* honest fallback: empty snapshot */ }
+-
+-  const claimed = (Array.isArray(snapshot.activeAssigned) ? snapshot.activeAssigned : [])
+-    .map(issue => ({ id: issue.id, title: issue.title || null }));
+-  const readyList = Array.isArray(snapshot.ready) ? snapshot.ready : [];
+-  const readyCount = readyList.length;
++    return await readStatusSnapshot(projectRoot, { env });
++  } catch {
++    return null;
++  }
++}
+ 
+-  let stage = null;
++/** Resolve the current stage for live-state (best-effort, non-throwing). Injectable via options. */
++function resolveLiveStage(projectRoot, claimed, options) {
++  if (Object.hasOwn(options, '_workflowState')) {
++    const ws = options._workflowState;
++    return ws && ws.currentStage ? { id: ws.currentStage, name: ws.currentStage } : null;
++  }
+   try {
+     const status = require('./commands/status');
+     const issueId = claimed[0] ? claimed[0].id : null;
+     const { workflowState } = status.resolveWorkflowState({ projectRoot, issueId });
+     if (workflowState && workflowState.currentStage) {
+-      stage = { id: workflowState.currentStage, name: status.buildAuthoritativeStatus(workflowState).stageName };
++      return { id: workflowState.currentStage, name: status.buildAuthoritativeStatus(workflowState).stageName };
+     }
+   } catch { /* stage stays null */ }
++  return null;
++}
++
++/**
++ * Best-effort LIVE-state collector for prime. Async + NON-THROWING and strictly READ-ONLY: it
++ * never creates or migrates the Kernel DB (a fresh repo yields honest fallbacks, not a new DB).
++ * `options.liveState` bypasses all reads; `options._readSnapshot` injects a snapshot (tests).
++ *
++ * @param {string} projectRoot
++ * @param {object} [options] - `{ liveState, env, _readSnapshot, _workflowState }` (all injectable).
++ * @returns {Promise<{stage: object|null, claimed: object[], readyCount: number, gates: string[], nudge: string}>}
++ */
++async function collectPrimeLiveState(projectRoot, options = {}) {
++  if (options.liveState) return options.liveState;
++  const env = options.env || process.env;
++  const gates = readEnabledGates(projectRoot); // config-file backed — safe even with no repo/DB
++
++  const snapshot = await acquireLiveSnapshot(projectRoot, env, options);
++  if (!snapshot) {
++    return { stage: null, claimed: [], readyCount: 0, gates, nudge: buildAdoptionNudge({}) };
++  }
++
++  const claimed = (Array.isArray(snapshot.activeAssigned) ? snapshot.activeAssigned : [])
++    .map(issue => ({ id: issue.id, title: issue.title || null }));
++  const readyList = Array.isArray(snapshot.ready) ? snapshot.ready : [];
++  const readyCount = readyList.length;
+ 
+   return {
+-    stage,
++    stage: resolveLiveStage(projectRoot, claimed, options),
+     claimed,
+     readyCount,
+-    gates: readEnabledGates(projectRoot),
++    gates,
+     nudge: buildAdoptionNudge({ claimed, readyCount, topReady: readyList[0] || null }),
+   };
+ }
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index dc00344d..77de7f57 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -10,14 +10,18 @@
+  *  - the "forge skill for" router (lib/commands/skill.js), the DETERMINISTIC intent-to-skill
+  *    fallback for harnesses without a SessionStart hook.
+  *
+- * Everything here is deterministic and file-based (reads the canonical skills/ frontmatter); it
+- * NEVER opens the kernel and NEVER throws -- a missing skills dir degrades to empty results.
++ * Skills are read from the Forge PACKAGE's canonical skills/ dir (resolved via getPackageRoot:
++ * the on-disk npm/dev package, or the compiled binary's extracted embedded assets) -- NEVER from
++ * the consumer's projectRoot, which after `forge setup` has only generated mirrors and no root
++ * skills/. Everything here is deterministic and NEVER throws -- an unresolved asset root or a
++ * missing skills dir degrades to empty results.
+  *
+  * @module using-forge
+  */
+ 
+ const fs = require('node:fs');
+ const path = require('node:path');
++const { getPackageRoot } = require('./package-root');
+ 
+ const DISPATCH_SKILL = 'using-forge';
+ 
+@@ -28,22 +32,39 @@ function stripBom(value) {
+ }
+ 
+ /**
+- * Read the using-forge SKILL.md body (everything AFTER the frontmatter). This is the dispatch
+- * bootstrap text the SessionStart hook injects. Returns empty string when the file is
+- * absent/unreadable so injection fails open.
+- * @param {string} projectRoot
++ * Resolve the root that carries the canonical `skills/` dir. Default: the Forge PACKAGE root
++ * (getPackageRoot) so the dispatch skill/catalog work in a consumer project and a compiled
++ * binary, not only in the Forge source checkout. An explicit `override` is honored where a
++ * caller intentionally wants a specific root (tests / repo-local use). Never throws -> null.
++ * @param {string} [override]
++ * @returns {string|null}
++ */
++function resolveSkillsRoot(override) {
++  if (override) return override;
++  try {
++    return getPackageRoot();
++  } catch {
++    return null;
++  }
++}
++
++/**
++ * Read the using-forge SKILL.md body (everything AFTER the frontmatter) -- the dispatch
++ * bootstrap text the SessionStart hook injects. Empty string when unresolved/absent (fail-open).
++ * @param {string} [override] - optional skills-root override (defaults to the package root).
+  * @returns {string}
+  */
+-function loadDispatchText(projectRoot) {
+-  const raw = readSkillFile(projectRoot, DISPATCH_SKILL);
+-  if (!raw) return '';
+-  return stripFrontmatter(raw).trim();
++function loadDispatchText(override) {
++  const root = resolveSkillsRoot(override);
++  if (!root) return '';
++  const raw = readSkillFile(root, DISPATCH_SKILL);
++  return raw ? stripFrontmatter(raw).trim() : '';
+ }
+ 
+-/** Read a canonical skill's SKILL.md text, or null when absent. */
+-function readSkillFile(projectRoot, name) {
++/** Read a canonical skill's SKILL.md text under `<root>/skills/<name>`, or null when absent. */
++function readSkillFile(root, name) {
+   try {
+-    const filePath = path.join(projectRoot, 'skills', name, 'SKILL.md');
++    const filePath = path.join(root, 'skills', name, 'SKILL.md');
+     if (!fs.existsSync(filePath)) return null;
+     return fs.readFileSync(filePath, 'utf8');
+   } catch {
+@@ -61,68 +82,80 @@ function stripFrontmatter(raw) {
+   return afterClose === -1 ? '' : text.slice(afterClose + 1);
+ }
+ 
+-/** Parse the name and (flattened) description from a SKILL.md frontmatter block. */
+-function parseFrontmatter(raw) {
++/** Return the raw frontmatter block (between the leading `---` fences), or null when absent. */
++function frontmatterBlock(raw) {
+   const text = stripBom(String(raw));
+-  if (!text.startsWith('---')) return { name: null, description: '' };
++  if (!text.startsWith('---')) return null;
+   const end = text.indexOf('\n---', 3);
+-  const block = end === -1 ? text.slice(3) : text.slice(3, end);
+-  const lines = block.split(/\r?\n/);
+-
+-  let name = null;
+-  const descParts = [];
+-  let inDescription = false;
+-
+-  for (const line of lines) {
+-    const nameMatch = /^name:\s*(.+)\s*$/.exec(line);
+-    if (nameMatch && !inDescription) {
+-      name = nameMatch[1].trim().replace(/^['"]|['"]$/g, '');
+-      continue;
+-    }
+-    const descMatch = /^description:\s*(.*)$/.exec(line);
+-    if (descMatch && !inDescription) {
+-      inDescription = true;
+-      const inline = descMatch[1].trim();
+-      // A folded/literal block scalar has its text on the following indented lines.
+-      if (inline && inline !== '>' && inline !== '|' && inline !== '>-' && inline !== '|-') {
+-        descParts.push(inline.replace(/^['"]|['"]$/g, ''));
+-      }
+-      continue;
+-    }
+-    if (inDescription) {
+-      // The description block continues while lines are indented, ends at a new top-level key.
+-      if (/^\s+\S/.test(line)) {
+-        descParts.push(line.trim());
+-      } else if (line.trim() !== '') {
+-        inDescription = false;
+-      }
++  return end === -1 ? text.slice(3) : text.slice(3, end);
++}
++
++/** Strip a single pair of leading/trailing quotes from a scalar value. */
++function unquote(value) {
++  return value.replace(/^['"]|['"]$/g, '');
++}
++
++/** Apply one frontmatter line to the running parse state (name / folded description block). */
++function applyFrontmatterLine(state, line) {
++  if (state.inDescription) {
++    if (/^\s+\S/.test(line)) {
++      state.descParts.push(line.trim());
++    } else if (line.trim() !== '') {
++      state.inDescription = false;
+     }
++    return;
+   }
++  const nameMatch = /^name:\s*(.+)\s*$/.exec(line);
++  if (nameMatch) {
++    state.name = unquote(nameMatch[1].trim());
++    return;
++  }
++  const descMatch = /^description:\s*(.*)$/.exec(line);
++  if (descMatch) {
++    state.inDescription = true;
++    const inline = descMatch[1].trim();
++    if (inline && !['>', '|', '>-', '|-'].includes(inline)) state.descParts.push(unquote(inline));
++  }
++}
+ 
+-  return { name, description: descParts.join(' ').replace(/\s+/g, ' ').trim() };
++/** Parse the name and (flattened) description from a SKILL.md frontmatter block. */
++function parseFrontmatter(raw) {
++  const block = frontmatterBlock(raw);
++  if (block === null) return { name: null, description: '' };
++  const state = { name: null, descParts: [], inDescription: false };
++  for (const line of block.split(/\r?\n/)) applyFrontmatterLine(state, line);
++  return { name: state.name, description: state.descParts.join(' ').replace(/\s+/g, ' ').trim() };
++}
++
++/** Read one skill dir into a `{ name, description }` catalog entry, or null when unreadable. */
++function readCatalogEntry(root, name) {
++  const raw = readSkillFile(root, name);
++  if (!raw) return null;
++  const fm = parseFrontmatter(raw);
++  return { name: fm.name || name, description: fm.description || '' };
+ }
+ 
+ /**
+- * Load the canonical Forge skill catalog: name + description for every skills/*\/SKILL.md.
+- * Sorted by name for determinism. Never throws -- an absent dir yields an empty array.
+- * @param {string} projectRoot
++ * Load the canonical Forge skill catalog: name + description for every skills/*\/SKILL.md under
++ * the resolved root. Sorted by name for determinism. Never throws -- an unresolved root or
++ * absent dir yields an empty array (the router then honestly returns no matches).
++ * @param {string} [override] - optional skills-root override (defaults to the package root).
+  * @returns {{name: string, description: string}[]}
+  */
+-function loadSkillCatalog(projectRoot) {
+-  const skillsDir = path.join(projectRoot, 'skills');
++function loadSkillCatalog(override) {
++  const root = resolveSkillsRoot(override);
++  if (!root) return [];
+   let entries;
+   try {
+-    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
++    entries = fs.readdirSync(path.join(root, 'skills'), { withFileTypes: true });
+   } catch {
+     return [];
+   }
+   const catalog = [];
+   for (const entry of entries) {
+     if (!entry.isDirectory()) continue;
+-    const raw = readSkillFile(projectRoot, entry.name);
+-    if (!raw) continue;
+-    const fm = parseFrontmatter(raw);
+-    catalog.push({ name: fm.name || entry.name, description: fm.description || '' });
++    const item = readCatalogEntry(root, entry.name);
++    if (item) catalog.push(item);
+   }
+   catalog.sort((a, b) => a.name.localeCompare(b.name));
+   return catalog;
+@@ -159,12 +192,55 @@ function normalizeSituation(situation) {
+     .trim();
+ }
+ 
++/** Accumulate a weighted score + reason for a skill into the scores map. */
++function bumpScore(scores, skill, amount, reason) {
++  if (!scores.has(skill)) scores.set(skill, { score: 0, reasons: new Set() });
++  const entry = scores.get(skill);
++  entry.score += amount;
++  if (reason) entry.reasons.add(reason);
++}
++
++/**
++ * Score curated intent rules. Only skills PRESENT in the catalog (`known`) are ever scored, so an
++ * empty/unavailable catalog produces no matches instead of fabricating nonexistent skill names.
++ */
++function scoreCuratedRules(norm, known, scores) {
++  for (const rule of INTENT_RULES) {
++    if (!known.has(rule.skill)) continue;
++    for (const kw of rule.keywords) {
++      if (norm.includes(kw)) bumpScore(scores, rule.skill, rule.weight, 'matches "' + kw.trim() + '"');
++    }
++  }
++}
++
++/** Score a light token-overlap bonus against each skill's own description (fractional). */
++function scoreDescriptionOverlap(norm, catalog, scores) {
++  const tokens = new Set(norm.split(' ').filter(t => t.length >= 4));
++  for (const skill of catalog) {
++    const desc = normalizeSituation(skill.description);
++    let overlap = 0;
++    for (const token of tokens) {
++      if (desc.includes(token)) overlap += 1;
++    }
++    if (overlap > 0) bumpScore(scores, skill.name, Math.min(overlap * 0.25, 1), 'described intent');
++  }
++}
++
++/** Rank scored skills highest-first (name tiebreak) and cap to `limit`. */
++function rankMatches(scores, limit) {
++  return [...scores.entries()]
++    .filter(([, v]) => v.score > 0)
++    .map(([name, v]) => ({ name, score: Math.round(v.score * 100) / 100, why: [...v.reasons].join('; ') }))
++    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
++    .slice(0, limit);
++}
++
+ /**
+  * Deterministically route a natural-language situation to the best-fit Forge skill(s).
+  *
+- * Scoring: curated INTENT_RULES keyword hits (weighted) PLUS a light token-overlap bonus against
+- * each skill's own description (so a skill whose description literally mentions the situation's
+- * words still ranks even without a curated rule). Ties break by skill name for determinism.
++ * Scoring: curated INTENT_RULES keyword hits (weighted, catalog-gated) PLUS a light token-overlap
++ * bonus against each skill's own description. Ties break by skill name for determinism. When the
++ * catalog is empty/unavailable, returns no matches (unknown:true) rather than nonexistent skills.
+  *
+  * @param {string} situation
+  * @param {object} [options]
+@@ -178,40 +254,13 @@ function routeSkill(situation, options = {}) {
+   const norm = normalizeSituation(situation);
+   const known = new Set(catalog.map(s => s.name));
+ 
+-  const scores = new Map(); // skill -> { score, reasons:Set }
+-  const bump = (skill, amount, reason) => {
+-    if (!scores.has(skill)) scores.set(skill, { score: 0, reasons: new Set() });
+-    const entry = scores.get(skill);
+-    entry.score += amount;
+-    if (reason) entry.reasons.add(reason);
+-  };
+-
++  const scores = new Map();
+   if (norm) {
+-    // 1) Curated intent rules (only for skills that actually exist in the catalog).
+-    for (const rule of INTENT_RULES) {
+-      if (known.size > 0 && !known.has(rule.skill)) continue;
+-      for (const kw of rule.keywords) {
+-        if (norm.includes(kw)) bump(rule.skill, rule.weight, 'matches "' + kw.trim() + '"');
+-      }
+-    }
+-    // 2) Description token-overlap bonus (fractional so it never outranks a curated hit).
+-    const tokens = norm.split(' ').filter(t => t.length >= 4);
+-    for (const skill of catalog) {
+-      const desc = normalizeSituation(skill.description);
+-      let overlap = 0;
+-      for (const token of new Set(tokens)) {
+-        if (desc.includes(token)) overlap += 1;
+-      }
+-      if (overlap > 0) bump(skill.name, Math.min(overlap * 0.25, 1), 'described intent');
+-    }
++    scoreCuratedRules(norm, known, scores);
++    scoreDescriptionOverlap(norm, catalog, scores);
+   }
+ 
+-  const matches = [...scores.entries()]
+-    .filter(([, v]) => v.score > 0)
+-    .map(([name, v]) => ({ name, score: Math.round(v.score * 100) / 100, why: [...v.reasons].join('; ') }))
+-    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+-    .slice(0, limit);
+-
++  const matches = rankMatches(scores, limit);
+   return {
+     situation: String(situation || ''),
+     matches,
+@@ -223,6 +272,7 @@ function routeSkill(situation, options = {}) {
+ module.exports = {
+   DISPATCH_SKILL,
+   INTENT_RULES,
++  resolveSkillsRoot,
+   loadDispatchText,
+   loadSkillCatalog,
+   parseFrontmatter,
+diff --git a/test/commands/skill.test.js b/test/commands/skill.test.js
+new file mode 100644
+index 00000000..1bfe9057
+--- /dev/null
++++ b/test/commands/skill.test.js
+@@ -0,0 +1,50 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const skillCommand = require('../../lib/commands/skill');
++
++// The `forge skill` noun routes a situation to the best-fit Forge skill via the deterministic
++// router (lib/using-forge). The catalog is read from the Forge PACKAGE root (getPackageRoot),
++// which in this dev checkout is the repo root — so routing resolves against the real skills/.
++describe('forge skill command', () => {
++  test('forge skill for "<situation>" --json returns a machine-readable result', () => {
++    const res = skillCommand.handler(['for', 'open a PR', '--json'], {});
++    expect(res.success).toBe(true);
++    const parsed = JSON.parse(res.output);
++    expect(parsed.best).toBe('ship');
++    expect(parsed.unknown).toBe(false);
++    expect(Array.isArray(parsed.matches)).toBe(true);
++  });
++
++  test('text mode names the best skill and the announce line', () => {
++    const res = skillCommand.handler(['for', 'add a feature'], {});
++    expect(res.success).toBe(true);
++    expect(res.output).toContain('plan');
++    expect(res.output).toContain('Announce:');
++  });
++
++  test('multi-word unquoted situation is joined from positional args', () => {
++    const res = skillCommand.handler(['for', 'run', 'the', 'tests', '--json'], {});
++    const parsed = JSON.parse(res.output);
++    expect(parsed.best).toBe('validate');
++  });
++
++  test('missing situation errors with usage', () => {
++    const res = skillCommand.handler(['for'], {});
++    expect(res.success).toBe(false);
++    expect(res.error).toContain('Usage: forge skill for');
++  });
++
++  test('unknown verb errors and lists supported verbs', () => {
++    const res = skillCommand.handler(['bogus'], {});
++    expect(res.success).toBe(false);
++    expect(res.error).toContain('Supported: for');
++  });
++
++  test('exports the standard command interface', () => {
++    expect(skillCommand.name).toBe('skill');
++    expect(typeof skillCommand.description).toBe('string');
++    expect(typeof skillCommand.handler).toBe('function');
++  });
++});
+diff --git a/test/hooks-session-start.test.js b/test/hooks-session-start.test.js
+index 2e40dfb3..880106a4 100644
+--- a/test/hooks-session-start.test.js
++++ b/test/hooks-session-start.test.js
+@@ -24,8 +24,11 @@ describe('forge hooks session-start (context hook — memory push)', () => {
+     expect(parsed.hookSpecificOutput.additionalContext).toContain('[ready] Wire auto-file rail');
+   });
+ 
+-  test('empty digest → empty output (harness injects nothing), exit-safe', async () => {
++  test('empty digest AND no dispatch bootstrap → empty output (harness injects nothing), exit-safe', async () => {
++    // Isolate the digest path: disable the always-on using-forge dispatch bootstrap so this test
++    // asserts digest-empty behavior alone (the bootstrap is covered in its own describe block).
+     const res = await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => '',
+       fetchNotes: () => [],
+       fetchIssues: () => [],
+     });
+@@ -43,7 +46,9 @@ describe('forge hooks session-start (context hook — memory push)', () => {
+   });
+ 
+   test('fail-open: a throwing fetcher never errors the hook', async () => {
++    // Disable the dispatch bootstrap so this isolates the digest fail-open path -> '' on throw.
+     const res = await run(['session-start', '--harness', 'claude'], {
++      loadDispatchText: () => '',
+       fetchNotes: () => { throw new Error('kernel down'); },
+       fetchIssues: () => { throw new Error('issue store down'); },
+     });
+diff --git a/test/orientation-prime-live-state.test.js b/test/orientation-prime-live-state.test.js
+index f03c5f2e..e40a25f5 100644
+--- a/test/orientation-prime-live-state.test.js
++++ b/test/orientation-prime-live-state.test.js
+@@ -88,6 +88,21 @@ describe('buildPrime live-state section', () => {
+     }
+   });
+ 
++  test('prime LEADS with live state — it is the first section of the complete orientation', () => {
++    const root = tmpRoot();
++    try {
++      const result = buildPrime(root, { liveState: SAMPLE });
++      // Prepended to the FULL orientation (not just extras) and prioritized to sort first.
++      expect(result.orientation.sections[0].id).toBe('live_state');
++      const text = formatOrientationText(result);
++      // The Live State heading appears before any other section heading.
++      expect(text.indexOf('## Live State')).toBeGreaterThan(-1);
++      expect(text.indexOf('## Live State')).toBeLessThan(text.indexOf('## Key Commands'));
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++
+   test('existing prime output is unchanged when no live state is supplied', () => {
+     const root = tmpRoot();
+     try {
+@@ -116,4 +131,43 @@ describe('collectPrimeLiveState', () => {
+     expect(Array.isArray(state.gates)).toBe(true);
+     expect(typeof state.nudge).toBe('string');
+   });
++
++  test('maps an injected snapshot: activeAssigned->claimed{id,title}, ready->readyCount, stage', async () => {
++    const snapshot = {
++      activeAssigned: [{ id: 'k1', title: 'Fix the parser' }, { id: 'k2', title: 'Add tests' }],
++      ready: [{ id: 'r1' }, { id: 'r2' }, { id: 'r3' }],
++    };
++    const state = await collectPrimeLiveState('/nonexistent', {
++      _readSnapshot: async () => snapshot,
++      _workflowState: { currentStage: 'dev' },
++    });
++    expect(state.claimed).toEqual([{ id: 'k1', title: 'Fix the parser' }, { id: 'k2', title: 'Add tests' }]);
++    expect(state.readyCount).toBe(3);
++    expect(state.stage).toEqual({ id: 'dev', name: 'dev' });
++    // claimed work -> resume nudge referencing the first claimed id.
++    expect(state.nudge).toContain('forge recap k1');
++  });
++
++  test('missing title maps to null and an empty ready list maps to 0', async () => {
++    const state = await collectPrimeLiveState('/nonexistent', {
++      _readSnapshot: async () => ({ activeAssigned: [{ id: 'x' }], ready: [] }),
++    });
++    expect(state.claimed).toEqual([{ id: 'x', title: null }]);
++    expect(state.readyCount).toBe(0);
++  });
++
++  test('read-only: does NOT create a Kernel DB in a repo that has none (session-entry contract)', async () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-prime-nodb-'));
++    fs.mkdirSync(path.join(root, '.git'));
++    try {
++      const state = await collectPrimeLiveState(root);
++      // Fresh repo with no Kernel DB -> honest fallback, and crucially NO DB was created.
++      expect(state.claimed).toEqual([]);
++      expect(state.readyCount).toBe(0);
++      expect(state.stage).toBeNull();
++      expect(fs.existsSync(path.join(root, '.git', 'forge', 'kernel.sqlite'))).toBe(false);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
+ });
+diff --git a/test/using-forge-router.test.js b/test/using-forge.test.js
+similarity index 57%
+rename from test/using-forge-router.test.js
+rename to test/using-forge.test.js
+index 29f3b97d..7ef06757 100644
+--- a/test/using-forge-router.test.js
++++ b/test/using-forge.test.js
+@@ -3,8 +3,7 @@
+ const { describe, test, expect } = require('bun:test');
+ const path = require('node:path');
+ 
+-const { routeSkill, loadSkillCatalog, parseFrontmatter } = require('../lib/using-forge');
+-const skillCommand = require('../lib/commands/skill');
++const { routeSkill, loadSkillCatalog, loadDispatchText, parseFrontmatter } = require('../lib/using-forge');
+ 
+ const repoRoot = path.resolve(__dirname, '..');
+ const catalog = loadSkillCatalog(repoRoot);
+@@ -18,6 +17,16 @@ describe('using-forge router (forge skill for)', () => {
+     }
+   });
+ 
++  test('catalog + dispatch text load from the PACKAGE root with no argument (works outside a source checkout)', () => {
++    // The BLOCKER fix: skills are read from the Forge package (getPackageRoot), not projectRoot.
++    // With no override, both resolve against the packaged canonical skills/.
++    expect(loadSkillCatalog().length).toBeGreaterThan(0);
++    expect(loadDispatchText().length).toBeGreaterThan(0);
++    // An explicit override that has no skills/ yields an empty catalog (honest, no throw).
++    expect(loadSkillCatalog(path.join(__dirname, 'no-such-skills-root'))).toEqual([]);
++    expect(loadDispatchText(path.join(__dirname, 'no-such-skills-root'))).toBe('');
++  });
++
+   test.each([
+     ['add a feature', 'plan'],
+     ['scope a new feature', 'plan'],
+@@ -44,6 +53,14 @@ describe('using-forge router (forge skill for)', () => {
+     expect(result.matches).toEqual([]);
+   });
+ 
++  test('an empty/unavailable catalog returns no matches (never fabricates skill names)', () => {
++    // Even a strong curated-keyword situation must NOT return a skill the catalog does not have.
++    const result = routeSkill('open a PR', { catalog: [] });
++    expect(result.best).toBeNull();
++    expect(result.unknown).toBe(true);
++    expect(result.matches).toEqual([]);
++  });
++
+   test('empty situation is safe and returns unknown', () => {
+     const result = routeSkill('', { catalog });
+     expect(result.unknown).toBe(true);
+@@ -57,48 +74,6 @@ describe('using-forge router (forge skill for)', () => {
+   });
+ });
+ 
+-describe('forge skill command', () => {
+-  test('forge skill for "<situation>" --json returns a machine-readable result', () => {
+-    const res = skillCommand.handler(['for', 'open a PR', '--json'], {}, repoRoot);
+-    expect(res.success).toBe(true);
+-    const parsed = JSON.parse(res.output);
+-    expect(parsed.best).toBe('ship');
+-    expect(parsed.unknown).toBe(false);
+-    expect(Array.isArray(parsed.matches)).toBe(true);
+-  });
+-
+-  test('text mode names the best skill and the announce line', () => {
+-    const res = skillCommand.handler(['for', 'add a feature'], {}, repoRoot);
+-    expect(res.success).toBe(true);
+-    expect(res.output).toContain('plan');
+-    expect(res.output).toContain('Announce:');
+-  });
+-
+-  test('multi-word unquoted situation is joined from positional args', () => {
+-    const res = skillCommand.handler(['for', 'run', 'the', 'tests', '--json'], {}, repoRoot);
+-    const parsed = JSON.parse(res.output);
+-    expect(parsed.best).toBe('validate');
+-  });
+-
+-  test('missing situation errors with usage', () => {
+-    const res = skillCommand.handler(['for'], {}, repoRoot);
+-    expect(res.success).toBe(false);
+-    expect(res.error).toContain('Usage: forge skill for');
+-  });
+-
+-  test('unknown verb errors and lists supported verbs', () => {
+-    const res = skillCommand.handler(['bogus'], {}, repoRoot);
+-    expect(res.success).toBe(false);
+-    expect(res.error).toContain('Supported: for');
+-  });
+-
+-  test('exports the standard command interface', () => {
+-    expect(skillCommand.name).toBe('skill');
+-    expect(typeof skillCommand.description).toBe('string');
+-    expect(typeof skillCommand.handler).toBe('function');
+-  });
+-});
+-
+ describe('parseFrontmatter', () => {
+   test('extracts name and flattens a folded description block', () => {
+     const raw = [
+-- 
+2.51.0.windows.1
+

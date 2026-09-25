@@ -1,0 +1,256 @@
+From 109a014e6dfab993cca0b1e7fdada11489185e2a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 07:55:58 +0530
+Subject: [PATCH] fix(flow): preserve fail-closed runtime evidence
+
+---
+ packages/flow/src/executor.js              |  2 ++
+ packages/flow/src/monitor-runtime.js       | 26 ++++++++++++++--
+ packages/flow/src/skill-runtime.js         | 35 ++++++++++++++++++++++
+ packages/flow/test/executor.test.js        | 19 ++++++++++++
+ packages/flow/test/monitor-runtime.test.js | 34 +++++++++++++++++++++
+ packages/flow/test/skill-runtime.test.js   |  9 ++++--
+ 6 files changed, 121 insertions(+), 4 deletions(-)
+
+diff --git a/packages/flow/src/executor.js b/packages/flow/src/executor.js
+index 84892968..16164d21 100644
+--- a/packages/flow/src/executor.js
++++ b/packages/flow/src/executor.js
+@@ -1,6 +1,7 @@
+ "use strict";
+ 
+ const {
++  canonicalize,
+   computeContentHash,
+   semanticIdentity,
+   validateContract,
+@@ -89,6 +90,7 @@ function normalizeProviderResult(result, failure) {
+   if (failure) return incompleteProviderResult("PROVIDER_FAILURE");
+   try {
+     const cloned = structuredClone(result);
++    canonicalize(cloned, { maxBytes: 16_384, maxDepth: 8, maxNodes: 128 });
+     const valid = isRecord(cloned)
+       && TERMINAL_STATUSES.has(cloned.status)
+       && isRecord(cloned.executor)
+diff --git a/packages/flow/src/monitor-runtime.js b/packages/flow/src/monitor-runtime.js
+index 6aee48b1..fd812404 100644
+--- a/packages/flow/src/monitor-runtime.js
++++ b/packages/flow/src/monitor-runtime.js
+@@ -164,6 +164,28 @@ function callbackBoolean(name, callback, ...args) {
+   return decision;
+ }
+ 
++function callbackValue(spec, name, callback, ...args) {
++  let value;
++  try {
++    value = callback(...args);
++  } catch {
++    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
++  }
++  let thenable;
++  try {
++    thenable = value !== null
++      && (typeof value === "object" || typeof value === "function")
++      && typeof value.then === "function";
++    if (thenable) Promise.resolve(value).catch(() => {});
++  } catch {
++    throw new MonitorRuntimeError("CALLBACK_FAILURE", `${name} failed`);
++  }
++  if (thenable) {
++    throw new MonitorRuntimeError("INVALID_CALLBACK_VALUE", `${name} must be synchronous`);
++  }
++  return callbackClone(spec, value);
++}
++
+ function cloneIdentityMap(source) {
+   const clone = Object.create(null);
+   for (const key of Object.keys(source)) {
+@@ -215,11 +237,11 @@ function reduceObservation(spec, state, event) {
+     callbackClone(spec, event),
+   )) return result(next);
+ 
+-  const nextValue = callbackClone(spec, spec.reducer(
++  const nextValue = callbackValue(spec, "reducer", spec.reducer,
+     callbackClone(spec, state.value),
+     callbackClone(spec, payload.bounded_payload ?? {}),
+     callbackClone(spec, event),
+-  ));
++  );
+   const nextDigest = computeContentHash({ value: nextValue });
+   const changed = nextDigest !== state.valueDigest;
+   next.value = structuredClone(nextValue);
+diff --git a/packages/flow/src/skill-runtime.js b/packages/flow/src/skill-runtime.js
+index 49218d90..2bb5b8e2 100644
+--- a/packages/flow/src/skill-runtime.js
++++ b/packages/flow/src/skill-runtime.js
+@@ -125,6 +125,23 @@ class SkillRuntime {
+       return this._failure("BOUNDED_INPUT_EXCEEDED", {}, skipped);
+     }
+ 
++    const preflightInvoked = resolution.ordered.map((node) => ({
++      nodeId: node.id,
++      status: "INCOMPLETE",
++      evidence: [],
++    }));
++    try {
++      boundedClone({
++        status: "INCOMPLETE",
++        invoked: preflightInvoked,
++        skipped,
++        evidence: preflightInvoked,
++        error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
++      }, this.limits);
++    } catch {
++      return this._failure("BOUNDED_OUTPUT_EXCEEDED");
++    }
++
+     this.active = true;
+     const invoked = [];
+     const evidenceByNode = new Map();
+@@ -205,6 +222,24 @@ class SkillRuntime {
+       return output;
+     } catch {
+       if (invoked.length === 0 && error?.code) return safeFailure(error.code);
++      const compactInvoked = invoked.map(({ nodeId, status: invokedStatus }) => ({
++        nodeId,
++        status: invokedStatus,
++        evidence: [],
++      }));
++      const compactFailure = {
++        status: "INCOMPLETE",
++        invoked: compactInvoked,
++        skipped,
++        evidence: compactInvoked,
++        error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
++      };
++      try {
++        boundedClone(compactFailure, this.limits);
++        return compactFailure;
++      } catch {
++        // Preflight normally makes this unreachable; retain a bounded fail-closed fallback.
++      }
+       return safeFailure("BOUNDED_OUTPUT_EXCEEDED");
+     }
+   }
+diff --git a/packages/flow/test/executor.test.js b/packages/flow/test/executor.test.js
+index 9f4b1b6f..889edb88 100644
+--- a/packages/flow/test/executor.test.js
++++ b/packages/flow/test/executor.test.js
+@@ -273,4 +273,23 @@ describe("WorkPacket executor", () => {
+     expect(validateContractStructure(receipt).ok).toBe(true);
+     expect(emitted).toEqual([receipt]);
+   });
++
++  test("normalizes oversized shape-valid provider output into one classified receipt", () => {
++    const emitted = [];
++    const executor = createWorkPacketExecutor({
++      run: () => successfulResult({
++        executor: { product_id: "forge-flow", mode: "x".repeat(20_000) },
++      }),
++      onReceipt: (receipt) => emitted.push(receipt),
++    });
++
++    const receipt = executor.execute(packet(), context());
++
++    expect(receipt.payload).toMatchObject({
++      status: "INCOMPLETE",
++      validation: { code: "INVALID_PROVIDER_RESULT" },
++    });
++    expect(validateContractStructure(receipt).ok).toBe(true);
++    expect(emitted).toEqual([receipt]);
++  });
+ });
+diff --git a/packages/flow/test/monitor-runtime.test.js b/packages/flow/test/monitor-runtime.test.js
+index f52c2405..b448b4ae 100644
+--- a/packages/flow/test/monitor-runtime.test.js
++++ b/packages/flow/test/monitor-runtime.test.js
+@@ -110,6 +110,40 @@ describe("MonitorSpec deterministic reducer", () => {
+     expect(rejectionConsumed).toBe(true);
+   });
+ 
++  test("classifies a synchronous reducer failure", () => {
++    const monitorSpec = spec({ reducer: () => { throw new Error("reducer unavailable"); } });
++
++    try {
++      reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++        kind: "observation",
++        event: observation(0, "PENDING"),
++      });
++      throw new Error("expected reducer failure");
++    } catch (error) {
++      expect(error).toBeInstanceOf(MonitorRuntimeError);
++      expect(error.code).toBe("CALLBACK_FAILURE");
++    }
++  });
++
++  test("consumes and classifies a rejected asynchronous reducer", async () => {
++    let rejectionConsumed = false;
++    const rejection = {
++      then(_resolve, reject) {
++        rejectionConsumed = true;
++        reject(new Error("reducer unavailable"));
++      },
++    };
++    const monitorSpec = spec({ reducer: () => rejection });
++
++    expect(() => reduceMonitor(monitorSpec, createMonitorState(monitorSpec), {
++      kind: "observation",
++      event: observation(0, "PENDING"),
++    })).toThrow("reducer must be synchronous");
++    await Promise.resolve();
++    await Promise.resolve();
++    expect(rejectionConsumed).toBe(true);
++  });
++
+   test.each([
+     ["source adapter item", { sourceAdapters: [42] }],
+     ["delivery target item", { deliveryTargets: [""] }],
+diff --git a/packages/flow/test/skill-runtime.test.js b/packages/flow/test/skill-runtime.test.js
+index 7acfcbf0..e4dcf126 100644
+--- a/packages/flow/test/skill-runtime.test.js
++++ b/packages/flow/test/skill-runtime.test.js
+@@ -268,11 +268,12 @@ describe("SkillRuntime", () => {
+ 
+   test("fails closed when aggregate returned evidence exceeds maxNodes", async () => {
+     const nodes = Array.from({ length: 129 }, (_value, index) => ({ id: `node-${index}` }));
++    let calls = 0;
+     const runtime = new SkillRuntime({
+       metadata: metadata(nodes),
+       handlers: Object.fromEntries(nodes.map((node) => [
+         node.id,
+-        async () => ({ status: "PASS", evidence: [] }),
++        async () => { calls += 1; return { status: "PASS", evidence: [] }; },
+       ])),
+     });
+ 
+@@ -283,16 +284,18 @@ describe("SkillRuntime", () => {
+       error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
+     });
+     expect(result.invoked).toEqual([]);
++    expect(calls).toBe(0);
+   });
+ 
+   test("fails closed when aggregate returned evidence exceeds maxBytes", async () => {
+     const nodes = [{ id: "one" }, { id: "two" }];
++    let calls = 0;
+     const runtime = new SkillRuntime({
+       metadata: metadata(nodes),
+       limits: { maxBytes: 1_000 },
+       handlers: Object.fromEntries(nodes.map((node) => [
+         node.id,
+-        async () => ({ status: "PASS", evidence: [{ summary: "x".repeat(300) }] }),
++        async () => { calls += 1; return { status: "PASS", evidence: [{ summary: "x".repeat(300) }] }; },
+       ])),
+     });
+ 
+@@ -303,5 +306,7 @@ describe("SkillRuntime", () => {
+       error: { code: "BOUNDED_OUTPUT_EXCEEDED" },
+     });
+     expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThanOrEqual(1_000);
++    expect(result.invoked.length).toBeGreaterThan(0);
++    expect(result.invoked).toHaveLength(calls);
+   });
+ });
+-- 
+2.51.0.windows.1
+

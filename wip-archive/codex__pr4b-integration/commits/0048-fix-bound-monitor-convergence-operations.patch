@@ -1,0 +1,967 @@
+From 697e01643b741e5132e2d220d402a5ef99eddbc0 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 01:02:00 +0530
+Subject: [PATCH] fix: bound monitor convergence operations
+
+---
+ lib/commands/shepherd.js             |  21 +-
+ lib/pr-monitor/flow-monitor.js       | 303 +++++++++++++++++++--------
+ lib/pr-monitor/monitor.js            |   1 +
+ test/commands/shepherd.test.js       |  40 +++-
+ test/pr-monitor/flow-monitor.test.js | 189 +++++++++++++++--
+ test/pr-monitor/monitor.test.js      |  15 ++
+ 6 files changed, 457 insertions(+), 112 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 0033ccb4..48767903 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -534,6 +534,7 @@ async function collectConvergenceEvidence({ args, pr, projectRoot, context, adap
+       deltas: Array.isArray(polled.events) ? polled.events : [],
+       deltaOverflow: polled.overflow === true,
+       receiptIds: Array.isArray(polled.receiptIds) ? polled.receiptIds : [],
++      continuationPending: polled.continuationPending === true,
+       ...(polled.terminalReceiptId ? { terminalReceiptId: polled.terminalReceiptId } : {}),
+       exactHead,
+     };
+@@ -735,7 +736,8 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   let confirmedResult = result;
+-  if (localPreflight.blocking !== true && result.state === 'MERGE_READY') {
++  if (localPreflight.blocking !== true && result.state === 'MERGE_READY'
++    && evidence.continuationPending !== true) {
+     const confirmation = await runPass({
+       ...ctx,
+       adapter,
+@@ -800,13 +802,17 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     }
+   }
+ 
+-  const effectiveState = localPreflight.blocking === true && confirmedResult.state === 'MERGE_READY'
+-    ? (localPreflight.status === 'INCOMPLETE' ? 'INCOMPLETE' : 'PENDING')
+-    : confirmedResult.state;
++  const effectiveState = evidence.continuationPending === true
++    ? 'PENDING'
++    : localPreflight.blocking === true && confirmedResult.state === 'MERGE_READY'
++      ? (localPreflight.status === 'INCOMPLETE' ? 'INCOMPLETE' : 'PENDING')
++      : confirmedResult.state;
+   const effectiveReason = effectiveState !== confirmedResult.state
+-    ? (effectiveState === 'INCOMPLETE'
+-      ? 'Local review preflight is incomplete; merge readiness is not established.'
+-      : 'Local review preflight is blocking merge readiness.')
++    ? (evidence.continuationPending === true
++      ? 'Durable convergence work remains; run another bounded shepherd pass.'
++      : effectiveState === 'INCOMPLETE'
++        ? 'Local review preflight is incomplete; merge readiness is not established.'
++        : 'Local review preflight is blocking merge readiness.')
+     : confirmedResult.reason;
+ 
+   // Surface the pass outcome so the monitor is legible when run interactively or
+@@ -823,6 +829,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     deltas: evidence.deltas,
+     deltaOverflow: evidence.deltaOverflow,
+     receiptIds: evidence.receiptIds,
++    continuationPending: evidence.continuationPending === true,
+     ...(evidence.terminalReceiptId ? { terminalReceiptId: evidence.terminalReceiptId } : {}),
+     ...(convergenceHandoff(effectiveState, pr, evidence)
+       ? { handoff: convergenceHandoff(effectiveState, pr, evidence) }
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index f04c5035..087d2c43 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -12,7 +12,7 @@ const {
+ } = require('../../packages/flow');
+ const { diffSnapshots } = require('./differ');
+ const { EVENT_TYPES: T, makeEvent } = require('./events');
+-const { finalizeRecords } = require('./monitor');
++const { finalizeRecords, MAX_EVENT_DELTAS } = require('./monitor');
+ 
+ const MAX_HISTORY = 128;
+ const DELIVERY_TARGET = 'legacy-journal';
+@@ -594,7 +594,16 @@ function terminalReplay(deliveryState, monitorId) {
+   };
+ }
+ 
+-async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEvents, deliveryState, now) {
++async function redeliverOutstanding(
++  ctx,
++  bridge,
++  spec,
++  initialState,
++  durableEvents,
++  deliveryState,
++  now,
++  recordLimit = MAX_EVENT_DELTAS,
++) {
+   let state = initialState;
+   const receiptIds = [];
+   const cursor = deliveryState.cursors.find(item => item.target === DELIVERY_TARGET)?.sequence ?? 0;
+@@ -607,7 +616,8 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+   if (cursorEvent && cursorEvent.payload.actionability !== 'advisory' && cursor > 0) {
+     state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: cursor }).state;
+   }
+-  for (const event of durableEvents.filter(item => item.payload.sequence > cursor)) {
++  const outstanding = durableEvents.filter(item => item.payload.sequence > cursor);
++  for (const event of outstanding.slice(0, recordLimit)) {
+     if (event.payload.actionability !== 'advisory') {
+       await ctx.deliverLegacy(event.payload.bounded_payload.record, event.payload.event_id);
+     }
+@@ -618,7 +628,11 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+       state = reduceMonitor(spec, state, { kind: 'acknowledge', sequence: event.payload.sequence }).state;
+     }
+   }
+-  return { state, receiptIds };
++  return {
++    state,
++    receiptIds,
++    continuationPending: outstanding.length > recordLimit,
++  };
+ }
+ 
+ async function persistRecords(ctx, bridge, spec, {
+@@ -632,41 +646,77 @@ async function persistRecords(ctx, bridge, spec, {
+   pendingBatch = null,
+   recordsAreBounded = false,
+   batchPlan = null,
++  recordLimit = MAX_EVENT_DELTAS,
+ }) {
+-  let state = initialState;
+-  const receiptIds = [];
+   const batchEvidence = batchPlan ? null : pendingBatch || (batchRecords.length > 1
+     ? encodePendingBatch(ctx, subjectRevision, batchRecords, snapshot)
+     : null);
+-  const prepared = [];
+-  let validatedState = state;
+-  for (const [index, record] of records.entries()) {
++  const entries = records.map((record, index) => {
+     const checkpointComplete = batchOffset + index === batchRecords.length - 1;
++    return {
++      record,
++      snapshot: checkpointComplete ? snapshot : null,
++      checkpointComplete,
++      pendingBatch: checkpointComplete ? null : batchEvidence,
++      recordIsBounded: recordsAreBounded,
++      batchPlan: typeof batchPlan === 'function' ? batchPlan(batchOffset + index) : batchPlan,
++      actual: true,
++    };
++  });
++  return persistEntries(ctx, bridge, spec, {
++    initialState,
++    entries,
++    subjectRevision,
++    timestamp,
++    recordLimit,
++  });
++}
++
++async function persistEntries(ctx, bridge, spec, {
++  initialState,
++  entries,
++  subjectRevision,
++  timestamp,
++  recordLimit = MAX_EVENT_DELTAS,
++}) {
++  let validatedState = initialState;
++  const prepared = [];
++  for (const entry of entries) {
+     const event = monitorEvent(
+       ctx,
+-      record,
+-      checkpointComplete ? snapshot : null,
++      entry.record,
++      entry.snapshot,
+       subjectRevision,
+-      checkpointComplete,
+-      checkpointComplete ? null : batchEvidence,
+-      recordsAreBounded,
+-      typeof batchPlan === 'function' ? batchPlan(batchOffset + index) : batchPlan,
++      entry.checkpointComplete,
++      entry.pendingBatch,
++      entry.recordIsBounded === true,
++      entry.batchPlan,
+     );
+     const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+     const receipt = deliveryReceipt(ctx, event, timestamp);
+     const nextState = event.payload.actionability === 'advisory'
+       ? transition.state
+-      : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: record.seq }).state;
+-    prepared.push({ event, receipt, nextState });
++      : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: entry.record.seq }).state;
++    prepared.push({ entry, event, receipt, nextState });
+     validatedState = nextState;
+   }
+-  for (const { event, receipt, nextState } of prepared) {
++
++  let state = initialState;
++  const receiptIds = [];
++  const boundedPrepared = prepared.slice(0, recordLimit);
++  for (const { event, receipt, nextState } of boundedPrepared) {
+     await bridge.persistEvent(event);
+     await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+     receiptIds.push(receipt.object_id);
+     state = nextState;
+   }
+-  return { state, receiptIds };
++  return {
++    state,
++    receiptIds,
++    records: boundedPrepared.filter(item => item.entry.actual === true).map(item => item.entry.record),
++    checkpointComplete: boundedPrepared.at(-1)?.entry.checkpointComplete === true,
++    continuationPending: boundedPrepared.length < entries.length,
++  };
+ }
+ 
+ async function persistSegmentedRecords(ctx, bridge, spec, {
+@@ -675,6 +725,7 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+   snapshot,
+   subjectRevision,
+   timestamp,
++  recordLimit = MAX_EVENT_DELTAS,
+ }) {
+   let segmentCount = 2;
+   let shiftedRecords;
+@@ -715,6 +766,7 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+       checkpointComplete: false,
+       pendingBatch: batch.encoded,
+       batchPlan: batchPlanReference(planId, startSequence, segmentCount, { index }),
++      actual: false,
+     })),
+     {
+       record: planRecords.at(-1),
+@@ -722,6 +774,7 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+       checkpointComplete: false,
+       pendingBatch: null,
+       batchPlan: batchPlanReference(planId, startSequence, segmentCount, { committed: true }),
++      actual: false,
+     },
+     ...shiftedRecords.map((record, index) => ({
+       record,
+@@ -731,40 +784,16 @@ async function persistSegmentedRecords(ctx, bridge, spec, {
+       batchPlan: batchPlanReference(planId, startSequence, segmentCount, {
+         segment_index: batchPlanSegmentIndex(batches, index),
+       }),
++      actual: true,
+     })),
+   ];
+-
+-  let validatedState = initialState;
+-  const prepared = [];
+-  for (const entry of entries) {
+-    const event = monitorEvent(
+-      ctx,
+-      entry.record,
+-      entry.snapshot,
+-      subjectRevision,
+-      entry.checkpointComplete,
+-      entry.pendingBatch,
+-      false,
+-      entry.batchPlan,
+-    );
+-    const transition = reduceMonitor(spec, validatedState, { kind: 'observation', event });
+-    const receipt = deliveryReceipt(ctx, event, timestamp);
+-    const nextState = event.payload.actionability === 'advisory'
+-      ? transition.state
+-      : reduceMonitor(spec, transition.state, { kind: 'acknowledge', sequence: entry.record.seq }).state;
+-    prepared.push({ event, receipt, nextState });
+-    validatedState = nextState;
+-  }
+-
+-  let state = initialState;
+-  const receiptIds = [];
+-  for (const { event, receipt, nextState } of prepared) {
+-    await bridge.persistEvent(event);
+-    await bridge.acknowledgeDelivery(ctx.monitorId, receipt);
+-    receiptIds.push(receipt.object_id);
+-    state = nextState;
+-  }
+-  return { state, receiptIds, records: shiftedRecords };
++  return persistEntries(ctx, bridge, spec, {
++    initialState,
++    entries,
++    subjectRevision,
++    timestamp,
++    recordLimit,
++  });
+ }
+ 
+ function planRecordKey(planId, index) {
+@@ -816,34 +845,43 @@ async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectR
+       if (committedHint) {
+         throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is missing');
+       }
+-      continue;
++      const segmentIndexes = referenceEvents
++        .map(event => event.payload.bounded_payload.batch_plan?.index)
++        .filter(Number.isSafeInteger);
++      if (segmentIndexes.length !== reference.segment_count
++        || new Set(segmentIndexes).size !== reference.segment_count
++        || !segmentIndexes.every(index => index >= 0 && index < reference.segment_count)) {
++        continue;
++      }
+     }
+-    const markerReference = marker.payload.bounded_payload.batch_plan;
+-    const markerRecord = marker.payload.bounded_payload.record;
+-    const markerKey = planRecordKey(reference.id, 'commit');
+-    if (!validBatchPlanReference(markerReference)
+-      || markerReference.id !== reference.id
+-      || markerReference.start_sequence !== reference.start_sequence
+-      || markerReference.segment_count !== reference.segment_count
+-      || markerReference.committed !== true
+-      || marker.payload.event_id !== monitorEventId(
+-        ctx.monitorId,
+-        markerSequence,
+-        T.SNAPSHOT_CHECKPOINT,
+-        markerKey,
+-      )
+-      || marker.payload.sequence !== markerSequence
+-      || marker.payload.subject_revision !== subjectRevision
+-      || marker.payload.type !== T.SNAPSHOT_CHECKPOINT
+-      || marker.payload.actionability !== 'advisory'
+-      || markerRecord?.key !== boundIdentity(markerKey)
+-      || markerRecord?.seq !== markerSequence
+-      || markerRecord?.type !== T.SNAPSHOT_CHECKPOINT
+-      || marker.payload.observed_at !== markerRecord?.ts
+-      || marker.payload.bounded_payload.snapshot !== null
+-      || marker.payload.bounded_payload.checkpoint_complete !== false
+-      || marker.payload.bounded_payload.pending_batch !== undefined) {
+-      throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is inconsistent');
++    if (marker) {
++      const markerReference = marker.payload.bounded_payload.batch_plan;
++      const markerRecord = marker.payload.bounded_payload.record;
++      const markerKey = planRecordKey(reference.id, 'commit');
++      if (!validBatchPlanReference(markerReference)
++        || markerReference.id !== reference.id
++        || markerReference.start_sequence !== reference.start_sequence
++        || markerReference.segment_count !== reference.segment_count
++        || markerReference.committed !== true
++        || marker.payload.event_id !== monitorEventId(
++          ctx.monitorId,
++          markerSequence,
++          T.SNAPSHOT_CHECKPOINT,
++          markerKey,
++        )
++        || marker.payload.sequence !== markerSequence
++        || marker.payload.subject_revision !== subjectRevision
++        || marker.payload.type !== T.SNAPSHOT_CHECKPOINT
++        || marker.payload.actionability !== 'advisory'
++        || markerRecord?.key !== boundIdentity(markerKey)
++        || markerRecord?.seq !== markerSequence
++        || markerRecord?.type !== T.SNAPSHOT_CHECKPOINT
++        || marker.payload.observed_at !== markerRecord?.ts
++        || marker.payload.bounded_payload.snapshot !== null
++        || marker.payload.bounded_payload.checkpoint_complete !== false
++        || marker.payload.bounded_payload.pending_batch !== undefined) {
++        throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is inconsistent');
++      }
+     }
+ 
+     const batches = [];
+@@ -951,6 +989,7 @@ async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectR
+         reference.segment_count,
+       ),
+       batches,
++      needsCommit: !marker,
+     };
+   }
+   return null;
+@@ -1039,20 +1078,65 @@ function remainingSegmentedRecords(segmented) {
+   return remaining;
+ }
+ 
++function segmentedContinuationEntries(segmented) {
++  const entries = [];
++  if (segmented.needsCommit) {
++    const markerSequence = segmented.reference.start_sequence + segmented.reference.segment_count;
++    const markerRecord = finalizeRecords([
++      makeEvent(T.SNAPSHOT_CHECKPOINT, planRecordKey(segmented.reference.id, 'commit'), {}),
++    ], {
++      baseSeq: markerSequence - 1,
++      ts: segmented.records[0].ts,
++      snapshot: segmented.snapshot,
++    })[0];
++    entries.push({
++      record: markerRecord,
++      snapshot: null,
++      checkpointComplete: false,
++      pendingBatch: null,
++      batchPlan: { ...segmented.reference, committed: true },
++      actual: false,
++    });
++  }
++  for (let offset = segmented.remainingOffset; offset < segmented.records.length; offset += 1) {
++    entries.push({
++      record: segmented.records[offset],
++      snapshot: offset === segmented.records.length - 1 ? segmented.snapshot : null,
++      checkpointComplete: offset === segmented.records.length - 1,
++      pendingBatch: null,
++      batchPlan: {
++        ...segmented.reference,
++        segment_index: batchPlanSegmentIndex(segmented.batches, offset),
++      },
++      actual: true,
++      recordIsBounded: true,
++    });
++  }
++  return entries;
++}
++
+ async function finalizePass(ctx, bridge, spec, {
+   state,
+   snapshot,
+   receiptIds,
+   createdAt,
+   records,
++  continuationPending = false,
+ }) {
+-  const terminalReceiptId = await recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt);
++  const terminalDeferred = !continuationPending
++    && receiptIds.length >= MAX_EVENT_DELTAS
++    && terminalPrState(snapshot) !== null;
++  const hasContinuation = continuationPending || terminalDeferred;
++  const terminalReceiptId = hasContinuation
++    ? null
++    : await recordTerminalHandoff(ctx, bridge, spec, state, snapshot, createdAt);
+   if (terminalReceiptId) receiptIds.push(terminalReceiptId);
+   return {
+     events: records,
+     changed: records.length > 0,
+     authority: 'memory',
+     receiptIds,
++    ...(hasContinuation ? { continuationPending: true } : {}),
+     ...(terminalReceiptId ? { terminalReceiptId } : {}),
+   };
+ }
+@@ -1128,11 +1212,30 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+   const replayed = await redeliverOutstanding(ctx, bridge, spec, state, durableEvents, deliveryState, now);
+   state = replayed.state;
+   const receiptIds = replayed.receiptIds;
++  let remainingBudget = MAX_EVENT_DELTAS - receiptIds.length;
++  if (replayed.continuationPending || remainingBudget === 0) {
++    return finalizePass(ctx, bridge, spec, {
++      state,
++      snapshot: previousSnapshot,
++      receiptIds,
++      createdAt: now(),
++      records: [],
++      continuationPending: true,
++    });
++  }
+   if (pendingEvents.length > 0) {
+     if (segmented) {
+       const remaining = remainingSegmentedRecords(segmented);
+       const timestamp = remaining[0].ts;
+-      const persisted = await persistRecords(ctx, bridge, spec, {
++      const persisted = segmented.needsCommit
++        ? await persistEntries(ctx, bridge, spec, {
++          initialState: state,
++          entries: segmentedContinuationEntries(segmented),
++          subjectRevision,
++          timestamp,
++          recordLimit: remainingBudget,
++        })
++        : await persistRecords(ctx, bridge, spec, {
+         initialState: state,
+         records: remaining,
+         snapshot: segmented.snapshot,
+@@ -1145,14 +1248,16 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+           ...segmented.reference,
+           segment_index: batchPlanSegmentIndex(segmented.batches, offset),
+         }),
+-      });
++          recordLimit: remainingBudget,
++        });
+       receiptIds.push(...persisted.receiptIds);
+       return finalizePass(ctx, bridge, spec, {
+         state: persisted.state,
+-        snapshot: segmented.snapshot,
++        snapshot: persisted.checkpointComplete ? segmented.snapshot : null,
+         receiptIds,
+         createdAt: timestamp,
+-        records: remaining,
++        records: persisted.records,
++        continuationPending: persisted.checkpointComplete !== true,
+       });
+     }
+     if (orphanedPlan) {
+@@ -1185,18 +1290,41 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+       batchOffset: remainingOffset,
+       pendingBatch: batch.encoded,
+       recordsAreBounded: true,
++      recordLimit: remainingBudget,
+     });
+     receiptIds.push(...persisted.receiptIds);
+     return finalizePass(ctx, bridge, spec, {
+       state: persisted.state,
+-      snapshot: batch.snapshot,
++      snapshot: persisted.checkpointComplete ? batch.snapshot : null,
+       receiptIds,
+       createdAt: timestamp,
+-      records: remaining,
++      records: persisted.records,
++      continuationPending: persisted.checkpointComplete !== true,
+     });
+     }
+   }
+ 
++  if (receiptIds.length > 0) {
++    return finalizePass(ctx, bridge, spec, {
++      state,
++      snapshot: previousSnapshot,
++      receiptIds,
++      createdAt: now(),
++      records: [],
++      continuationPending: true,
++    });
++  }
++
++  if (pendingEvents.length === 0 && terminalPrState(previousSnapshot) !== null) {
++    return finalizePass(ctx, bridge, spec, {
++      state,
++      snapshot: previousSnapshot,
++      receiptIds,
++      createdAt: now(),
++      records: [],
++    });
++  }
++
+   const gathered = await ctx.gather();
+   const next = compactSnapshot(gathered);
+   const previous = previousSnapshot == null
+@@ -1233,6 +1361,7 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+       snapshot: next,
+       subjectRevision,
+       timestamp,
++      recordLimit: remainingBudget,
+     });
+   } catch (error) {
+     if (!segmentablePendingBatchError(error)) throw error;
+@@ -1242,15 +1371,17 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+       snapshot: next,
+       subjectRevision,
+       timestamp,
++      recordLimit: remainingBudget,
+     });
+   }
+   receiptIds.push(...persisted.receiptIds);
+   return finalizePass(ctx, bridge, spec, {
+     state: persisted.state,
+-    snapshot: next,
++    snapshot: persisted.checkpointComplete === false ? null : next,
+     receiptIds,
+     createdAt: timestamp,
+     records: persisted.records || records,
++    continuationPending: persisted.checkpointComplete !== true,
+   });
+ }
+ 
+diff --git a/lib/pr-monitor/monitor.js b/lib/pr-monitor/monitor.js
+index d48a2f80..4793b587 100644
+--- a/lib/pr-monitor/monitor.js
++++ b/lib/pr-monitor/monitor.js
+@@ -196,6 +196,7 @@ async function pollEvents(ctx) {
+     ranPass,
+     overflow,
+     receiptIds: Array.isArray(pass?.receiptIds) ? pass.receiptIds.slice(0, MAX_EVENT_DELTAS) : [],
++    continuationPending: pass?.continuationPending === true,
+     ...(pass?.terminalReceiptId ? { terminalReceiptId: pass.terminalReceiptId } : {}),
+   };
+ }
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 6c9fec23..20fa06d2 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -146,6 +146,40 @@ describe('shepherd command handler', () => {
+     expect(out.handoff).toMatchObject({ next: 'merge', humanApprovalRequired: true });
+   });
+ 
++  test('keeps merge-ready remote state pending while durable continuation remains', async () => {
++    let passes = 0;
++    let evidenceCalls = 0;
++    const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
++      ...CONVERGENCE_DEPS,
++      runPass: async () => (++passes === 1
++        ? { state: 'MERGE_READY', actions: [], reason: 'ready', expectedHead: 'a'.repeat(40) }
++        : { state: 'NEEDS_REVIEW', actions: [], reason: 'changed', expectedHead: 'a'.repeat(40) }),
++      collectConvergenceEvidence: async () => {
++        evidenceCalls += 1;
++        return {
++          deltas: [], deltaOverflow: false,
++          receiptIds: Array.from({ length: 128 }, (_, index) => `receipt-${index}`),
++          continuationPending: true, exactHead: 'a'.repeat(40),
++        };
++      },
++      buildContext: async () => ({
++        pr: '7', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++        headSha: 'a'.repeat(40), localHead: 'a'.repeat(40),
++      }),
++      git: (_command, args) => (args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : ''),
++    });
++
++    expect(out).toMatchObject({
++      success: true,
++      state: 'PENDING',
++      remoteState: 'MERGE_READY',
++      continuationPending: true,
++    });
++    expect(passes).toBe(1);
++    expect(evidenceCalls).toBe(1);
++    expect(out.handoff).toBeUndefined();
++  });
++
+   test('reconfirms mutable PR evidence before returning a merge handoff', async () => {
+     let passes = 0;
+     const out = await shepherdCmd.handler(['7'], {}, process.cwd(), {
+@@ -292,13 +326,17 @@ describe('shepherd command handler', () => {
+         watcherRunning: () => true,
+         pollEvents: async input => {
+           observedWatcherRunning = input.watcherRunning(input.dir);
+-          return { events: [], overflow: false, receiptIds: [], ranPass: !observedWatcherRunning };
++          return {
++            events: [], overflow: false, receiptIds: [], continuationPending: true,
++            ranPass: !observedWatcherRunning,
++          };
+         },
+       },
+     });
+ 
+     expect(observedWatcherRunning).toBe(false);
+     expect(evidence.exactHead).toBe(head);
++    expect(evidence.continuationPending).toBe(true);
+   });
+ 
+   test('compares exact heads case-insensitively at evidence and handoff fences', async () => {
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 16805d2b..3673587e 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -269,8 +269,32 @@ describe('Flow-backed PR monitor authority', () => {
+     ctx.gather = async () => { throw new Error('accepted batch recovery must precede provider state'); };
+ 
+     const resumed = await runFlowMonitorPass(ctx);
++    const completed = await runFlowMonitorPass(ctx);
+ 
+-    expect(resumed.events).toHaveLength(129);
++    expect(resumed.events).toHaveLength(128);
++    expect(completed.events).toHaveLength(1);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
++  });
++
++  test('bounds a captured transition across restart-safe passes before gathering again', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    const first = await runFlowMonitorPass(ctx);
++    expect(first.events).toHaveLength(128);
++    expect(first.receiptIds.length).toBeLessThanOrEqual(128);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(false);
++
++    ctx.gather = async () => { throw new Error('captured continuation must precede provider state'); };
++    const second = await runFlowMonitorPass(ctx);
++    expect(second.events).toHaveLength(2);
++    expect(second.receiptIds.length).toBeLessThanOrEqual(128);
++    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(130);
+     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+   });
+ 
+@@ -493,7 +517,13 @@ describe('Flow-backed PR monitor authority', () => {
+       }
+     };
+ 
+-    await runFlowMonitorPass(ctx);
++    const first = await runFlowMonitorPass(ctx);
++    expect(first.receiptIds.length).toBeLessThanOrEqual(128);
++    if (store.events.at(-1).payload.bounded_payload.checkpoint_complete === false) {
++      ctx.gather = async () => { throw new Error('segmented continuation must precede provider state'); };
++      const resumed = await runFlowMonitorPass(ctx);
++      expect(resumed.receiptIds.length).toBeLessThanOrEqual(128);
++    }
+ 
+     const segments = store.events.filter(event => event.payload.bounded_payload.pending_batch);
+     expect(segments.length).toBeGreaterThan(1);
+@@ -512,6 +542,46 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(batches).toHaveLength(128);
+   });
+ 
++  test('continues a complete 128-segment pre-commit plan before provider observation', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    ctx.enrich = async records => {
++      for (const [index, record] of records.entries()) {
++        record.repo = `owner/${index}-${Array.from(
++          { length: 160 },
++          (_value, salt) => crypto.createHash('sha256')
++            .update(`${index}:${salt}`)
++            .digest('base64url')
++            .replace(/[-_A]/g, '.'),
++        ).join('')}`;
++      }
++    };
++
++    const prepared = await runFlowMonitorPass(ctx);
++    expect(prepared).toMatchObject({ continuationPending: true });
++    expect(prepared.receiptIds).toHaveLength(128);
++    expect(store.events.filter(event => Number.isSafeInteger(
++      event.payload.bounded_payload.batch_plan?.index,
++    ))).toHaveLength(128);
++    expect(store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true)).toBe(false);
++
++    ctx.gather = async () => { throw new Error('complete pre-commit continuation must precede provider state'); };
++    const committed = await runFlowMonitorPass(ctx);
++    const completed = await runFlowMonitorPass(ctx);
++
++    expect(committed.receiptIds).toHaveLength(128);
++    expect(committed.events).toHaveLength(127);
++    expect(committed).toMatchObject({ continuationPending: true });
++    expect(completed.events).toHaveLength(1);
++    expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
++    expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
++  }, 30_000);
++
+   test('fails closed when segmented recovery has no remaining records', () => {
+     expect(() => _internals.remainingSegmentedRecords({
+       records: [{ seq: 1 }],
+@@ -519,7 +589,7 @@ describe('Flow-backed PR monitor authority', () => {
+     })).toThrow('Pending monitor transition has no remaining records');
+   });
+ 
+-  test('supersedes a pre-commit plan truncated by its replacement at the bounded tail', async () => {
++  test('supersedes consecutive incomplete pre-commit plans at the bounded tail', async () => {
+     const store = durableStore();
+     const checks = Array.from({ length: 128 }, (_, index) => ({
+       name: `check-${index}`,
+@@ -546,34 +616,38 @@ describe('Flow-backed PR monitor authority', () => {
+     const appendEvent = store.appendEvent.bind(store);
+     let markerFailures = 0;
+     store.appendEvent = async (...args) => {
+-      if (args[0].payload.bounded_payload.batch_plan?.committed === true && markerFailures === 0) {
++      const reference = args[0].payload.bounded_payload.batch_plan;
++      if (reference?.index === reference?.segment_count - 1 && markerFailures === 0) {
+         markerFailures += 1;
+-        throw new Error('first commit marker interruption');
++        throw new Error('first pre-commit interruption');
+       }
+       return appendEvent(...args);
+     };
+     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+     expect(enrichedRecordCount).toBe(128);
+     const originalPlanId = store.events.at(-1).payload.bounded_payload.batch_plan.id;
++    const originalSegmentCount = store.events.at(-1).payload.bounded_payload.batch_plan.segment_count;
+     expect(store.events.filter(event => (
+       event.payload.bounded_payload.batch_plan?.id === originalPlanId
+-    ))).toHaveLength(127);
++    ))).toHaveLength(originalSegmentCount - 1);
+ 
+     store.appendEvent = async (...args) => {
+       const reference = args[0].payload.bounded_payload.batch_plan;
+-      if (reference?.id !== originalPlanId && reference?.index === 2) {
++      if (reference?.id !== originalPlanId && reference?.index === 1) {
+         throw new Error('replacement pre-commit interruption');
+       }
+       return appendEvent(...args);
+     };
+     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+     store.appendEvent = appendEvent;
+-    const retainedPlans = store.events.slice(-128);
++    const retainedPlans = store.events.slice(-128).filter(event => (
++      event.payload.bounded_payload.batch_plan
++    ));
+     const truncatedOriginal = retainedPlans.filter(event => (
+       event.payload.bounded_payload.batch_plan?.id === originalPlanId
+     ));
+-    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(1);
+-    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(false);
++    expect(truncatedOriginal[0].payload.bounded_payload.batch_plan.index).toBe(0);
++    expect(_internals.validOrphanedPrecommitPlan(ctx, truncatedOriginal, ctx.subjectId)).toBe(true);
+     expect(_internals.validOrphanedPrecommitPlan(ctx, retainedPlans, ctx.subjectId)).toBe(true);
+     for (const mutate of [
+       event => { event.payload.bounded_payload.batch_plan.committed = false; },
+@@ -587,10 +661,14 @@ describe('Flow-backed PR monitor authority', () => {
+       expect(_internals.validOrphanedPrecommitPlan(ctx, malformed, ctx.subjectId)).toBe(false);
+     }
+ 
+-    const resumed = await runFlowMonitorPass(ctx);
++    const resumedRecords = [];
++    for (let attempt = 0; attempt < 4; attempt += 1) {
++      const resumed = await runFlowMonitorPass(ctx);
++      resumedRecords.push(...resumed.events);
++      if (!resumed.continuationPending) break;
++    }
+ 
+-    expect(resumed).toMatchObject({ changed: true, authority: 'memory' });
+-    expect(resumed.events).toHaveLength(1);
++    expect(resumedRecords.filter(event => event.type === 'check.failed')).toHaveLength(128);
+     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+   }, 60_000);
+ 
+@@ -619,9 +697,14 @@ describe('Flow-backed PR monitor authority', () => {
+     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+     store.appendEvent = appendEvent;
+ 
+-    const resumed = await runFlowMonitorPass(ctx);
++    const resumedEvents = [];
++    for (let attempt = 0; attempt < 4; attempt += 1) {
++      const resumed = await runFlowMonitorPass(ctx);
++      resumedEvents.push(...resumed.events);
++      if (!resumed.continuationPending) break;
++    }
+ 
+-    expect(resumed.events.filter(event => event.type === 'check.failed')).toHaveLength(128);
++    expect(resumedEvents.filter(event => event.type === 'check.failed')).toHaveLength(128);
+     expect(delivered.filter(event => event.type === 'check.failed')).toHaveLength(128);
+     expect(store.events.at(-1).payload.bounded_payload.checkpoint_complete).toBe(true);
+   }, 30_000);
+@@ -707,7 +790,10 @@ describe('Flow-backed PR monitor authority', () => {
+       let next = snapshot({ checks });
+       const delivered = [];
+       const ctx = context(store, async () => next, async record => delivered.push(record));
+-      await runFlowMonitorPass(ctx);
++      for (let attempt = 0; attempt < 3; attempt += 1) {
++        const resumed = await runFlowMonitorPass(ctx);
++        if (!resumed.continuationPending) break;
++      }
+       next = failed;
+       const appendEvent = store.appendEvent.bind(store);
+       let interrupted = false;
+@@ -718,7 +804,16 @@ describe('Flow-backed PR monitor authority', () => {
+         }
+         return appendEvent(...args);
+       };
+-      await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++      let observedFailure = null;
++      for (let attempt = 0; attempt < 3 && !observedFailure; attempt += 1) {
++        try {
++          const partial = await runFlowMonitorPass(ctx);
++          expect(partial).toMatchObject({ continuationPending: true });
++        } catch (error) {
++          observedFailure = error;
++        }
++      }
++      expect(observedFailure).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+       const committed = store.events.some(event => event.payload.bounded_payload.batch_plan?.committed === true);
+       if (!committed) expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(0);
+       store.appendEvent = appendEvent;
+@@ -726,7 +821,15 @@ describe('Flow-backed PR monitor authority', () => {
+         ctx.gather = async () => { throw new Error('committed transition recovery must precede provider state'); };
+       }
+ 
+-      await runFlowMonitorPass(ctx);
++      for (let attempt = 0; attempt < 3; attempt += 1) {
++        let resumed;
++        try {
++          resumed = await runFlowMonitorPass(ctx);
++        } catch (error) {
++          throw new Error(`recovery failed at sequence ${failureSequence}: ${error.message}`, { cause: error });
++        }
++        if (!resumed.continuationPending) break;
++      }
+       const actualEvents = store.events.filter(event => event.payload.type === 'check.failed');
+       expect(delivered.filter(record => record.type === 'check.failed')).toHaveLength(128);
+       expect(actualEvents).toHaveLength(128);
+@@ -754,6 +857,8 @@ describe('Flow-backed PR monitor authority', () => {
+       return appendEvent(...args);
+     };
+ 
++    const captured = await runFlowMonitorPass(ctx);
++    expect(captured).toMatchObject({ continuationPending: true });
+     await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+     store.appendEvent = appendEvent;
+     ctx.gather = async () => { throw new Error('retained suffix recovery must precede provider state'); };
+@@ -786,6 +891,30 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(store.events).toHaveLength(before);
+   });
+ 
++  test('validates records beyond the pass budget before the first durable mutation', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    const before = store.events.length;
++    const deliveredBefore = delivered.length;
++    next = snapshot({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++    ctx.enrich = async records => {
++      Object.assign(records[128].data, Object.fromEntries(Array.from({ length: 24 }, (_, outer) => [
++        `group-${outer}`,
++        Object.fromEntries(Array.from({ length: 24 }, (_, inner) => [`item-${inner}`, 'x'.repeat(64)])),
++      ])));
++    };
++
++    await expect(runFlowMonitorPass(ctx)).rejects.toMatchObject({
++      code: 'INVALID_OBSERVATION', message: 'MonitorEvent validation failed',
++    });
++    expect(store.events).toHaveLength(before);
++    expect(delivered).toHaveLength(deliveredBefore);
++  });
++
+   test('preserves the provider root cause when durable history is unavailable', async () => {
+     const store = durableStore();
+     const cause = new Error('socket closed');
+@@ -1227,5 +1356,29 @@ describe('Flow-backed PR monitor authority', () => {
+     await expect(runFlowMonitorPass(context(store, async () => {
+       throw new Error('corrupt terminal replay must not poll the provider');
+     }, async () => {}))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    });
++
++  test('defers a terminal receipt when event receipts consume the full pass budget', async () => {
++    const store = durableStore();
++    const checks = Array.from({ length: 128 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let next = snapshot({ checks });
++    const ctx = context(store, async () => next, async () => {});
++    await runFlowMonitorPass(ctx);
++    next = snapshot({
++      state: 'MERGED',
++      checks: checks.map(check => ({ ...check, class: 'failed' })),
++    });
++
++    const bounded = await runFlowMonitorPass(ctx);
++    expect(bounded.events).toHaveLength(128);
++    expect(bounded.receiptIds).toHaveLength(128);
++    expect(bounded).toMatchObject({ continuationPending: true });
++    expect(bounded.terminalReceiptId).toBeUndefined();
++
++    ctx.gather = async () => { throw new Error('terminal continuation must precede provider state'); };
++    const completed = await runFlowMonitorPass(ctx);
++    expect(completed.events).toEqual([]);
++    expect(completed.receiptIds).toHaveLength(1);
++    expect(completed.terminalReceiptId).toBeString();
+   });
+ });
+diff --git a/test/pr-monitor/monitor.test.js b/test/pr-monitor/monitor.test.js
+index 2102dd9e..3972c9a0 100644
+--- a/test/pr-monitor/monitor.test.js
++++ b/test/pr-monitor/monitor.test.js
+@@ -294,4 +294,19 @@ describe('pollEvents (events --since)', () => {
+     expect(res.events).toHaveLength(128);
+     expect(res.events[0].seq).toBe(13);
+   });
++
++  test('propagates durable continuation separately from journal overflow', async () => {
++    const store = memoryStore();
++    const checks = Array.from({ length: 130 }, (_, index) => ({ name: `check-${index}`, class: 'green' }));
++    let current = snap({ checks });
++    const ctx = memoryContext(store, async () => current);
++    await runMonitorPass(ctx);
++    current = snap({ checks: checks.map(check => ({ ...check, class: 'failed' })) });
++
++    const res = await pollEvents({ ...ctx, since: 0, watcherRunning: () => false });
++
++    expect(res.continuationPending).toBe(true);
++    expect(res.receiptIds).toHaveLength(128);
++    expect(res.receiptIds.length).toBeLessThanOrEqual(128);
++  });
+ });
+-- 
+2.51.0.windows.1
+

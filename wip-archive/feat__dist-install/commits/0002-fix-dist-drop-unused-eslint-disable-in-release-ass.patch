@@ -1,0 +1,23 @@
+From 52a0f7ba8829d39d82e18e79715e565e662010af Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 16:39:17 +0530
+Subject: [PATCH] fix(dist): drop unused eslint-disable in
+ release-asset.test.js
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ scripts/release-asset.test.js | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/scripts/release-asset.test.js b/scripts/release-asset.test.js
+index f71a6124..a6826d19 100644
+--- a/scripts/release-asset.test.js
++++ b/scripts/release-asset.test.js
+@@ -1,4 +1,3 @@
+-/* eslint-disable no-undef -- Bun globals are provided by the Bun runtime */
+ // Tests the canonical release asset-name mapping (scripts/lib/release-asset.mjs)
+ // for all seven published targets, and cross-checks that the shipping installer
+ // scripts/install.sh derives the SAME names via its hidden --print-asset mode.
+-- 
+2.51.0.windows.1
+

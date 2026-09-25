@@ -1,0 +1,1247 @@
+From 7a22b751171860edd1f635f836ead0b21efc5ab9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 1 Aug 2026 01:46:56 +0530
+Subject: [PATCH] fix: reconcile shepherd bot review refreshes
+
+---
+ .../decisions.md                              |  35 ++
+ .../2026-07-31-s0-packaged-dispatch/tasks.md  |  21 +
+ lib/adapters/pr-state-adapter.js              |  76 +++-
+ lib/pr-pull.js                                | 350 +++++++++++++--
+ test/pr-pull.test.js                          |   9 +
+ test/pr-state-adapter.test.js                 |  47 +-
+ test/shepherd-merge-safety.test.js            | 415 +++++++++++++++++-
+ 7 files changed, 876 insertions(+), 77 deletions(-)
+
+diff --git a/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md b/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md
+index cbcf2b14..b4f01916 100644
+--- a/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md
++++ b/docs/work/2026-07-31-s0-packaged-dispatch/decisions.md
+@@ -1,3 +1,38 @@
+ # Decisions
+ 
+ No spec gaps identified before implementation. The issue explicitly requires a canonical/packaged AGENTS pointer to `using-forge`, preservation of user content and harness behavior, and no duplicated dynamic output. Forbidden shared files will remain untouched.
++
++## 2026-08-01 — Shepherd release-gate recovery
++
++Exact-head shipping exposed a permanent false `BLOCKED-THREADS` projection: post-push automation/completion comments were counted as actionable while their adapter IDs were omitted from evidence. After that was removed, Qodo's in-place exact-head review refresh remained falsely stale because the adapter discarded `updatedAt`.
++
++The narrow recovery stays fail-closed:
++- unknown bot comments and CodeRabbit finding comments remain actionable;
++- actor identity alone never suppresses a direct comment; only bounded, recognized status/lifecycle body envelopes are non-actionable;
++- known GitHub Actions package-size, exact Actions-run review-trigger, refreshed-success, and Forge-monitor bodies are informational only when their complete envelope matches and no explicit finding is appended;
++- CodeRabbit's explicit `Review finished` command envelope and its full-exact-head `No actionable comments` summary require complete provider framing and no contradictory finding marker;
++- Qodo's clean refresh requires complete provider framing, zero active counts, a generated full-exact-head commit URL, a known footer, and no unresolved provider-native finding summary; struck-and-resolved historical details remain allowed;
++- stale-head CodeRabbit/Qodo summaries remain actionable;
++- blocker evidence accepts the adapter's stable `id` shape;
++- comment freshness consistently uses the later valid `createdAt` / `updatedAt`, so in-place finding/status edits cannot disappear;
++- an older bot Review is superseded only by the same Qodo bot's explicit zero-bug/zero-rule-violation summary, updated after the head push and containing the full exact head SHA;
++- exact-SHA finding text, wrong-bot summaries, abbreviated SHAs, and pre-push summaries remain blocked;
++- comment updates extend the ten-minute settle window.
++
++This ship-blocking gate fix remains in #471 because deleting bot comments or bypassing `forge merge --auto` would violate the release policy.
++
++Independent review of local SHA `5012d028` invalidated its pending approval before push by reproducing false-clean cases in the initial predicates. The repair is intentionally one convergence amendment: RED provider/automation mutations, production hardening, live-shape compatibility, focused aggregate, then a fresh exact-SHA review wave. No prior exact-SHA approval survives that amendment.
++
++## 2026-08-01 — Final false-clean boundary
++
++Exact-SHA review of `cdabb072` proved that bounded framing was still too permissive: success substrings and header/footer checks allowed arbitrary middle text; malformed timestamps, missing bot-review commit identity, and absent GraphQL connections could disappear; exact push-time equality was treated as stale; and `login`/`login[bot]` aliases bypassed latest-per-author dedupe.
++
++The final convergence amendment therefore applies these invariants:
++- every recognized multi-line provider envelope consumes the complete ordered line grammar; unknown, extra, duplicate, or contradictory lines remain actionable;
++- the Forge monitor's complete renderer grammar is informational for every verdict, preventing its sticky comment from feeding back into and permanently locking its own verdict;
++- malformed GraphQL connections and missing actor identities throw into `safeRead` and become explicit unreadable/degraded evidence rather than empty collections;
++- bot aliases canonicalize before latest-review dedupe;
++- missing/invalid comment timestamps, review timestamps, or full bot-review commit OIDs force `UNKNOWN`, retaining stable IDs in evidence where records reached the verdict core;
++- actionable comment activity exactly equal to the recorded push time blocks conservatively; clean lifecycle refreshes still require strictly post-push activity before superseding stale review evidence.
++
++The live patched verdict remains diagnostic only. It cannot authorize push or merge, and every amendment invalidates earlier exact-SHA review.
+diff --git a/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md b/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+index 3799b5bb..f4a420b6 100644
+--- a/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
++++ b/docs/work/2026-07-31-s0-packaged-dispatch/tasks.md
+@@ -5,3 +5,24 @@
+ - RED: add/update focused test proving packaged/setup AGENTS output lacks or loses the `using-forge` dispatch pointer; run it and capture the expected failure.
+ - GREEN: make the smallest implementation/doc-source change in owned files; preserve user content, generated parity, and other harnesses.
+ - Run focused generation/onboarding/rules-parity tests and commit the implementation.
++
++## Task 2 — Repair the ship-blocking Shepherd projection
++- [x] Reproduce the false `BLOCKED-THREADS` verdict against exact #471 head and identify hidden post-push bot comments.
++- [x] RED/GREEN: preserve actionable unknown-bot and CodeRabbit findings while suppressing only automation/status plumbing and the explicit CodeRabbit completion envelope.
++- [x] Surface adapter comment IDs in blocker evidence.
++- [x] RED/GREEN: carry comment `updatedAt` through the adapter and recognize same-bot exact-head in-place review refreshes.
++- [x] Preserve the ten-minute settle window after comment updates.
++- [x] Prove live patched Shepherd returns `CLEAN-MERGEABLE` on the exact head.
++- [x] Recover independent exact-delta review of `5012d028`; keep push blocked after `REQUEST_CHANGES` reproduced identity-wide automation suppression and contradictory provider-clean envelopes as false-clean.
++- [x] RED: add five integration regressions proving arbitrary GitHub Actions findings, appended Forge-monitor text, and contradictory CodeRabbit/Qodo completion bodies block; observe 5 failures.
++- [x] GREEN: replace identity-wide suppression with bounded body-envelope classifiers; require provider framing, full exact head, and no explicit/provider-native actionable marker.
++- [x] Validate live #471 provider bodies, including the Actions-run review trigger and Qodo summaries with resolved historical findings.
++- [x] Re-probe live remote head `587ff5a83df4d7b422444bb7843134b3cf526164`: `CLEAN-MERGEABLE`, zero bot comments, zero stale reviews, zero unresolved threads, zero settle remaining, no unreadable inputs.
++- [x] Run the complete focused aggregate: 212 tests / 572 expectations passed across smart merge, onboarding, PR pull, adapter, Shepherd merge safety, monitor gather/pass, and acceptance; targeted ESLint and `git diff --check` passed.
++- [x] Harvest replacement exact-SHA review of `cdabb072`: three independent lanes reproduced provider-envelope, malformed metadata/commit identity, push-boundary, and adapter-alias blockers; the fourth exhausted its turn without reviewing the diff and was not counted as approval.
++- [x] RED: add strict envelope, boundary, metadata-evidence, alias-dedupe, and malformed-connection regressions; observe 5 failing contracts with 93 existing tests still passing.
++- [x] GREEN: consume complete Sonar/package/Forge-monitor grammars, reject arbitrary or contradictory lines, canonicalize `[bot]` review aliases before dedupe, throw on malformed GraphQL connections/authors, retain invalid metadata IDs, require exact bot-review commit identity, and block actionable equality at the push boundary.
++- [x] Detect and repair monitor self-lock during the live probe: validate the complete renderer grammar for every verdict so a valid non-clean sticky is informational, while unrecognized middle/appended text remains actionable.
++- [x] Re-probe remote head `587ff5a83df4d7b422444bb7843134b3cf526164`: patched gather is `CLEAN-MERGEABLE` with no invalid metadata, bot comments, stale reviews, unresolved threads, or unreadable inputs.
++- [x] Run the final affected aggregate: 255 tests / 660 expectations passed across every changed test and all pull/monitor consumers; targeted ESLint and `git diff --check` passed. Exact output retained externally.
++- [ ] Amend once and obtain fresh exact-SHA review before push.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 94749761..0cf473cd 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -418,10 +418,26 @@ class PrStateAdapter {
+     const MAX_PAGES = 1000;
+     do {
+       const conn = runPage(after);
+-      for (const node of (conn?.nodes || [])) all.push(mapNode(node));
+-      after = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
++      if (!conn || typeof conn !== 'object' || !Array.isArray(conn.nodes)
++          || !conn.pageInfo || typeof conn.pageInfo !== 'object'
++          || typeof conn.pageInfo.hasNextPage !== 'boolean') {
++        throw new Error('Malformed GraphQL connection: expected nodes[] and pageInfo.hasNextPage');
++      }
++      for (const node of conn.nodes) {
++        if (!node || typeof node !== 'object') throw new Error('Malformed GraphQL connection node');
++        all.push(mapNode(node));
++      }
++      if (conn.pageInfo.hasNextPage) {
++        if (typeof conn.pageInfo.endCursor !== 'string' || !conn.pageInfo.endCursor) {
++          throw new Error('Malformed GraphQL connection: next page has no endCursor');
++        }
++        after = conn.pageInfo.endCursor;
++      } else {
++        after = null;
++      }
+       guard += 1;
+     } while (after && guard < MAX_PAGES);
++    if (after) throw new Error(`GraphQL connection exceeded ${MAX_PAGES} pages`);
+     return all;
+   }
+ 
+@@ -459,29 +475,35 @@ class PrStateAdapter {
+    * comment, Vercel/Netlify deployment comments, Codecov coverage comments. These
+    * are regular PR comments, never resolvable review threads, so `readComments`
+    * (reviewThreads GraphQL) never sees them. Fully paginated by cursor so a long
+-   * PR never drops a bot's latest comment. Returns `{ author, body, createdAt }`.
++   * PR never drops a bot's latest comment. Returns
++   * `{ author, body, createdAt, updatedAt }`.
+    *
+    * @param {{ owner: string, repo: string, pr: string }} ctx
+-   * @returns {Promise<Array<{ author: string, body: string, createdAt: string }>>}
++   * @returns {Promise<Array<{ author: string, body: string, createdAt: string, updatedAt: string }>>}
+    */
+   async readIssueComments({ owner, repo, pr }) {
+     // `author{__typename login}` surfaces the GraphQL actor TYPE ('Bot' vs 'User')
+     // so a non-human direct comment can be detected GENERICALLY — by mechanism,
+     // not by a hardcoded bot-name list — which fails closed for unknown bots.
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body createdAt}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body createdAt updatedAt}}}}}';
+     return this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.comments,
+-      (c) => ({
+-        // `id` is the stable REST comment id — the PR monitor keys `comment.posted`
+-        // on it so a re-read never re-emits an already-seen comment. Falls back to
+-        // author+createdAt when GitHub omits it.
+-        id: c.fullDatabaseId ? String(c.fullDatabaseId) : `${c.author?.login || ''}:${c.createdAt || ''}`,
+-        author: c.author?.login || '',
+-        authorTypename: c.author?.__typename || '',
+-        body: c.body || '',
+-        createdAt: c.createdAt || '',
+-      }),
++      (c) => {
++        const id = c.fullDatabaseId ? String(c.fullDatabaseId) : `${c.author?.login || ''}:${c.createdAt || ''}`;
++        if (!c.author?.login) throw new Error(`Issue comment ${id || '(unknown)'} is missing author identity`);
++        return {
++          // `id` is the stable REST comment id — the PR monitor keys `comment.posted`
++          // on it so a re-read never re-emits an already-seen comment. Falls back to
++          // author+createdAt when GitHub omits it.
++          id,
++          author: c.author.login,
++          authorTypename: c.author.__typename || '',
++          body: c.body || '',
++          createdAt: c.createdAt || '',
++          updatedAt: c.updatedAt || c.createdAt || '',
++        };
++      },
+     );
+   }
+ 
+@@ -497,18 +519,24 @@ class PrStateAdapter {
+    * @returns {Promise<Array<{ author: string, state: string, submittedAt: string|null, commitOid: string|null, body: string }>>}
+    */
+   async readReviews({ owner, repo, pr }) {
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{author{__typename login} state submittedAt commit{oid} body}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id author{__typename login} state submittedAt commit{oid} body}}}}}';
+     const all = this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviews,
+-      (r) => ({
+-        author: String(r.author?.login || '').toLowerCase(),
+-        authorTypename: r.author?.__typename || '',
+-        state: String(r.state || '').toUpperCase(),
+-        submittedAt: r.submittedAt || null,
+-        commitOid: r.commit?.oid || null,
+-        body: r.body || '',
+-      }),
++      (r) => {
++        const rawAuthor = String(r.author?.login || '').toLowerCase();
++        const id = r.id ? String(r.id) : null;
++        if (!rawAuthor) throw new Error(`Review ${id || '(unknown)'} is missing author identity`);
++        return {
++          ...(id ? { id } : {}),
++          author: rawAuthor.replace(/\[bot\]$/, ''),
++          authorTypename: r.author?.__typename || '',
++          state: String(r.state || '').toUpperCase(),
++          submittedAt: r.submittedAt || null,
++          commitOid: r.commit?.oid || null,
++          body: r.body || '',
++        };
++      },
+     );
+     // Keep only the LATEST review per author (first:100 yields oldest→newest, so
+     // a later entry supersedes an earlier one from the same login).
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index a62a6b3f..d33353a4 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -235,13 +235,14 @@ function botFailureSummary(body) {
+  * Scan plain PR ISSUE comments from known status/deploy/quality bots and surface
+  * an actionable blocker for each bot whose LATEST comment signals failure.
+  *
+- * ACTIONABLE-ONLY + SUPERSESSION: only the newest comment per bot (by
+- * `createdAt`, not array order) is examined — a later success comment supersedes
+- * an earlier failure, and a bot edit-in-place is reflected in that one comment's
+- * final body. Comments from non-status bots and humans are ignored (their
+- * feedback flows through the review-thread path, not here). Capped at `cap`.
++ * ACTIONABLE-ONLY + SUPERSESSION: only the newest comment per bot (by the later
++ * of `createdAt` / `updatedAt`, not array order) is examined — a later success
++ * comment supersedes an earlier failure, and a bot edit-in-place is reflected in
++ * that one comment's final body. Comments from non-status bots and humans are
++ * ignored (their feedback flows through the review-thread path, not here).
++ * Capped at `cap`.
+  *
+- * @param {Array<{author:(object|string),body:string,createdAt?:string}>} comments
++ * @param {Array<{author:(object|string),body:string,createdAt?:string,updatedAt?:string}>} comments
+  * @param {{ cap?: number }} [opts]
+  * @returns {Array<{ type: 'bot-status', detail: string }>}
+  */
+@@ -251,7 +252,7 @@ function buildBotStatusBlockers(comments, opts = {}) {
+   for (const c of (Array.isArray(comments) ? comments : [])) {
+     const login = issueCommentLogin(c);
+     if (!STATUS_BOT_LOGINS.has(login)) continue;
+-    const ts = Date.parse(c.createdAt || c.updatedAt || '') || 0;
++    const ts = commentActivityTime(c) ?? 0;
+     const prev = latestByBot.get(login);
+     // `>=` so a same-timestamp (or timestamp-less) tie keeps the LATER array
+     // entry — GitHub returns issue comments oldest-first.
+@@ -735,26 +736,210 @@ function summarize({ state, failureCount, threadCount, blockers = [] }) {
+   return `${state}: ${parts.join(', ')}.${primary}`;
+ }
+ 
+-// --- AGNOSTIC ACTOR CLASSIFICATION (by mechanism, not by a hardcoded name
+-// list). New/unknown review bots exist that we cannot enumerate; a "known
+-// actionable" name list would fail closed the WRONG way (an unknown bot's signal
+-// silently ignored → false-clean). So: classify by HOW the signal arrived, and
+-// default an unrecognized actor to BLOCKING.
++// --- AGNOSTIC ACTOR CLASSIFICATION (by mechanism, not by a hardcoded
++// actionable-bot name list). Unknown non-human direct comments block. A known
++// actor is suppressed only when the BODY matches one bounded lifecycle/status
++// envelope; actor identity alone never proves a comment informational.
+ //   - THREADS: any unresolved, non-outdated review thread blocks, author-agnostic.
+-//   - CHECKS/STATUS: any failing/pending/skipped-required check OR a failing
+-//     bot-status comment blocks — no name knowledge needed.
+-//   - DIRECT COMMENTS: a non-human top-level comment newer than the last head
+-//     push blocks, UNLESS its author is on the small SUPPRESSION allowlist below.
+-// The ONLY name list is that suppression allowlist, and it INVERTS the old model:
+-// it lists KNOWN-safe-to-suppress status bots; every OTHER bot (known or unknown)
+-// is actionable.
+-
+-/** Suppression ALLOWLIST: status/deploy/quality bots whose failing gate already
+- * surfaces via a check or the bot-status-comment scanner (BLOCKED-CHECKS), so
+- * their plain PR comment must NOT also drive an unresolvable BLOCKED-THREADS.
+- * Reuses STATUS_BOT_LOGINS — the same bots buildBotStatusBlockers scans. Every
+- * bot NOT on this list is treated as actionable (fail-closed for unknowns). */
+-const SUPPRESSED_COMMENT_BOT_LOGINS = STATUS_BOT_LOGINS;
++//   - CHECKS/STATUS: any failing/pending/skipped-required check OR a recognized
++//     failing status envelope blocks through BLOCKED-CHECKS.
++//   - DIRECT COMMENTS: every other non-human top-level comment after the head
++//     push blocks. Provider format drift therefore fails closed.
++
++const CODERABBIT_LOGINS = new Set(['coderabbitai', 'coderabbitai[bot]']);
++const QODO_REVIEW_LOGINS = new Set(['qodo-code-review', 'qodo-code-review[bot]']);
++
++/** Full exact heads only; abbreviated or non-hex tokens cannot clear a review. */
++function isFullHeadOid(headOid) {
++  return /^[0-9a-f]{40}$/i.test(String(headOid || ''));
++}
++
++/** True when a Qodo finding summary is not explicitly struck and resolved. Parse
++ * one summary line at a time; a negative-lookahead regex can backtrack through
++ * whitespace and misclassify `<s>…</s> ✓ Resolved` historical findings. */
++function hasUnresolvedQodoFinding(body) {
++  const summaries = String(body || '').match(/<summary>\s*\d+\.[^\r\n]*/gi) || [];
++  return summaries.some((line) => /(?:🐞\s*Bug|Rule violation)/i.test(line)
++    && !/<s>[\s\S]*<\/s>\s*<code>✓ Resolved<\/code>/i.test(line));
++}
++
++/** Explicit contradiction markers that must defeat an otherwise-clean provider
++ * envelope. Keep this deliberately narrow so resolved historical findings in a
++ * Qodo summary do not create a permanent false block. */
++function hasExplicitActionableFinding(body) {
++  const text = String(body || '');
++  return /Actionable comments posted:\s*[1-9]\d*/i.test(text)
++    || /(?:^|\n)\s*(?:[-*]\s*)?(?:(?:critical|major|security|actionable)(?:\s+(?:finding|issue|bug))?|finding|bug|vulnerability)\s*:/im.test(text)
++    || hasUnresolvedQodoFinding(text);
++}
++
++/** CodeRabbit edits its review-command acknowledgement into this terminal
++ * envelope. Match framing as well as the completion phrase, and reject any
++ * appended/embedded finding signal. */
++function isCodeRabbitCompletion(comment) {
++  const login = String(comment?.author || '').toLowerCase();
++  const body = String(comment?.body || '').trim();
++  return CODERABBIT_LOGINS.has(login)
++    && body.startsWith('<!-- This is an auto-generated reply by CodeRabbit -->')
++    && /<!-- CodeRabbit review command invocation: [^\r\n]+ -->/i.test(body)
++    && /<summary>✅ Action performed<\/summary>/i.test(body)
++    && /\bReview finished\./i.test(body)
++    && /CodeRabbit is an incremental review system/i.test(body)
++    && body.endsWith('</details>')
++    && !hasExplicitActionableFinding(body);
++}
++
++/** CodeRabbit's generated review summary is lifecycle evidence only when its
++ * complete summary envelope reports zero actionable comments for the full exact
++ * current head. Unknown provider-format changes fail closed. */
++function isCodeRabbitCleanReviewSummary(comment, headOid) {
++  const login = String(comment?.author || '').toLowerCase();
++  const body = String(comment?.body || '').trim();
++  return CODERABBIT_LOGINS.has(login)
++    && isFullHeadOid(headOid)
++    && body.includes(String(headOid))
++    && body.startsWith('<!-- This is an auto-generated comment: summarize by coderabbit.ai -->')
++    && /No actionable comments were generated in the recent review\./i.test(body)
++    && body.endsWith('<!-- tips_end -->')
++    && !hasExplicitActionableFinding(body);
++}
++
++/** Qodo refreshes one top-level review summary in place. A clean refresh must
++ * carry the complete provider envelope, zero active counts, and the full exact
++ * head in its generated commit URL. Resolved historical detail is allowed. */
++function isQodoCleanReviewSummary(comment, headOid) {
++  const login = String(comment?.author || '').toLowerCase();
++  const body = String(comment?.body || '').trim();
++  if (!QODO_REVIEW_LOGINS.has(login) || !isFullHeadOid(headOid)) return false;
++  const commitMarker = new RegExp(`<!-- https://github\\.com/[^\\s]+/commit/${headOid} -->`, 'i');
++  return body.startsWith('<h3>Code Review by Qodo</h3>')
++    && /Bugs\s*\(0\)/i.test(body)
++    && /Rule violations\s*\(0\)/i.test(body)
++    && commitMarker.test(body)
++    && /<a href="https:\/\/www\.qodo\.ai"><img[^>]+alt="Qodo Logo"><\/a>$/i.test(body)
++    && !hasExplicitActionableFinding(body);
++}
++
++/** Normalize a provider body to meaningful lines while preserving every non-empty
++ * line. Strict envelope parsers compare the complete sequence, so arbitrary
++ * inserted text cannot hide between a valid header/footer. */
++function providerLines(body) {
++  return String(body || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
++}
++
++/** SonarQube Cloud's current zero-finding clean comment. Every meaningful line is
++ * consumed in order; changed/extra/duplicate lines fail closed as direct feedback. */
++function isSonarCleanEnvelope(body) {
++  const lines = providerLines(body);
++  const patterns = [
++    /^## \[!\[Quality Gate Passed\]\(https:\/\/sonarsource\.github\.io\/sonarcloud-github-static-resources\/v2\/checks\/QualityGateBadge\/qg-passed-20px\.png 'Quality Gate Passed'\)\]\(https:\/\/sonarcloud\.io\/dashboard\?[^)\s]+\) \*\*Quality Gate passed\*\*$/,
++    /^Issues$/,
++    /^!\[\]\(https:\/\/sonarsource\.github\.io\/sonarcloud-github-static-resources\/v2\/common\/passed-16px\.png ''\) \[0 New issues\]\(https:\/\/sonarcloud\.io\/project\/issues\?[^)\s]+\)$/,
++    /^!\[\]\(https:\/\/sonarsource\.github\.io\/sonarcloud-github-static-resources\/v2\/common\/accepted-16px\.png ''\) \[0 Accepted issues\]\(https:\/\/sonarcloud\.io\/project\/issues\?[^)\s]+\)$/,
++    /^Measures$/,
++    /^!\[\]\(https:\/\/sonarsource\.github\.io\/sonarcloud-github-static-resources\/v2\/common\/passed-16px\.png ''\) \[0 Security Hotspots\]\(https:\/\/sonarcloud\.io\/project\/security_hotspots\?[^)\s]+\)$/,
++    /^!\[\]\(https:\/\/sonarsource\.github\.io\/sonarcloud-github-static-resources\/v2\/common\/passed-16px\.png ''\) \[\d+(?:\.\d+)?% Coverage on New Code\]\(https:\/\/sonarcloud\.io\/component_measures\?[^)\s]+\)$/,
++    /^!\[\]\(https:\/\/sonarsource\.github\.io\/sonarcloud-github-static-resources\/v2\/common\/passed-16px\.png ''\) \[\d+(?:\.\d+)?% Duplication on New Code\]\(https:\/\/sonarcloud\.io\/component_measures\?[^)\s]+\)$/,
++    /^<!-- sqra-placement-anchor -->$/,
++    /^\[See analysis details on SonarQube Cloud\]\(https:\/\/sonarcloud\.io\/dashboard\?[^)\s]+\)$/,
++  ];
++  return lines.length === patterns.length && patterns.every((pattern, index) => pattern.test(lines[index]));
++}
++
++/** Current package-size action grammar: exactly header, size, threshold, status. */
++function isPackageSizeEnvelope(body) {
++  const lines = providerLines(body);
++  const quantity = '\\d+(?:\\.\\d+)?(?:B|KB|MB|GB)';
++  return lines.length === 4
++    && lines[0] === '## 📦 Package Size Report'
++    && new RegExp(`^\\*\\*Size:\\*\\* ${quantity}(?: \\(${quantity}\\))?$`, 'i').test(lines[1])
++    && new RegExp(`^\\*\\*Threshold:\\*\\* ${quantity}$`, 'i').test(lines[2])
++    && /^\*\*Status:\*\* ✅ Within threshold$/i.test(lines[3]);
++}
++
++/** Validate the monitor renderer's complete grammar for every verdict. The sticky
++ * must not classify itself as feedback, but every meaningful line is consumed so
++ * arbitrary inserted prose still fails closed. */
++function isForgeMonitorEnvelope(body) {
++  const lines = providerLines(body);
++  const headlines = new Set([
++    '⚪ **Verdict: `unknown`** — a signal was unreadable; state unconfirmed (fail-closed).',
++    '🔀 **Verdict: `blocked-conflict`** — branch conflicts with base; rebase/merge and resolve.',
++    '⬇️ **Verdict: `behind`** — branch is behind base; update/rebase (protection requires up-to-date).',
++    '🔴 **Verdict: `blocked-checks`** — a required check is failing/missing; fix it.',
++    '🟠 **Verdict: `blocked-threads`** — unresolved review threads need addressing.',
++    '🟡 **Verdict: `review-pending`** — awaiting review / settle window; not ready yet.',
++    '🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.',
++  ]);
++  let i = 0;
++  if (lines[i++] !== '<!-- forge-pr-monitor -->'
++      || lines[i++] !== '## 🔭 Forge PR Monitor'
++      || !headlines.has(lines[i++])) return false;
++  if (/^> Unreadable signal\(s\): /.test(lines[i] || '')) {
++    if (!/^> Unreadable signal\(s\): `[^`\r\n]+`(?:, `[^`\r\n]+`)*\.$/.test(lines[i++])) return false;
++  }
++  if (lines[i++] !== '_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._') return false;
++
++  if (lines[i] === '### Review threads') {
++    i += 1;
++    const threadSummary = lines[i++] || '';
++    const cleanThreads = threadSummary === '✅ No unresolved review threads.';
++    const unreadThreads = /^⚠️ Review threads were \*\*unreadable\*\* this pass \(`[^`\r\n]{1,500}`\) — not treated as zero\. Re-run once the read recovers\.$/.test(threadSummary);
++    if (!cleanThreads && !unreadThreads) return false;
++  } else if (/^### Unresolved review threads \([1-9]\d*\)$/.test(lines[i] || '')) {
++    i += 1;
++    let groups = 0;
++    while (i < lines.length && lines[i] !== '### Checks') {
++      if (/^- \*\*[^*`\r\n]+\*\* — [1-9]\d*$/.test(lines[i])) {
++        groups += 1;
++      } else if (!/^- `[^`\r\n]+`$|^- …and [1-9]\d* more$/.test(lines[i])) {
++        return false;
++      }
++      i += 1;
++    }
++    if (groups === 0) return false;
++  } else {
++    return false;
++  }
++
++  if (lines[i++] !== '### Checks') return false;
++  const checkSummary = lines[i++] || '';
++  const cleanChecks = checkSummary === '✅ No failing or pending checks.';
++  const unreadChecks = checkSummary === '⚠️ Checks were **unreadable** this pass — not treated as green. Re-run once the read recovers.';
++  const checkBullet = /^- (?:❌ \*\*Failing|⏳ \*\*Pending) \([1-9]\d*\):\*\* `[^`\r\n]+`(?:, `[^`\r\n]+`)*$/;
++  if (!cleanChecks && !unreadChecks && !checkBullet.test(checkSummary)) return false;
++  if (checkBullet.test(checkSummary) && checkBullet.test(lines[i] || '')) i += 1;
++  if (/^> Branch is \*\*[1-9]\d*\*\* commit\(s\) behind base\.$/.test(lines[i] || '')) i += 1;
++  if (lines[i++] !== '---') return false;
++  const footer = (lines[i++] || '').match(/^<sub>Updated (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) · surface-only monitor · labels state, never merges, never resolves threads\.<\/sub>$/);
++  return i === lines.length && Boolean(footer && parseTime(footer[1]) !== null);
++}
++
++/** Recognized status/deploy bodies are safe to omit from the direct-review path:
++ * failures are independently surfaced by buildBotStatusBlockers; successes must
++ * match a complete provider grammar. Actor identity alone is never sufficient. */
++function isRecognizedStatusEnvelope(comment) {
++  const login = issueCommentLogin(comment);
++  const body = String(comment?.body || '').trim();
++  if (!STATUS_BOT_LOGINS.has(login) || hasExplicitActionableFinding(body)) return false;
++  if (botFailureSummary(body)) return true;
++  if (['sonarqubecloud', 'sonarqubecloud[bot]'].includes(login)) return isSonarCleanEnvelope(body);
++  return /^(?:Deployment (?:has )?completed|Deploy Preview ready|Preview ready)(?: ✅)?$/i.test(body)
++    || /^coverage (?:passed|increased|stable)(?: ✅)?$/i.test(body);
++}
++
++/** GitHub Actions posts several known plumbing envelopes. Every multi-line body
++ * uses a complete grammar; arbitrary middle/duplicate/contradictory lines block. */
++function isRecognizedGitHubActionsEnvelope(comment) {
++  const login = issueCommentLogin(comment);
++  const body = String(comment?.body || '').trim();
++  if (!['github-actions', 'github-actions[bot]'].includes(login)
++      || hasExplicitActionableFinding(body)) return false;
++  const reviewTrigger = /^(?:Tests passed\.|Tests passed in https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+\.)\s*@coderabbitai review$/i.test(body);
++  const refreshedSuccess = /^Status refreshed:\s*(?:success|passed|ready)$/i.test(body);
++  return isPackageSizeEnvelope(body) || reviewTrigger || refreshedSuccess
++    || isForgeMonitorEnvelope(body);
++}
+ 
+ /** Detect a NON-HUMAN comment author by MECHANISM: the GraphQL actor type is a
+  * Bot, or the login carries the GitHub App `[bot]` suffix. No name list. */
+@@ -764,14 +949,19 @@ function isBotAuthor(comment) {
+   return String(comment.author || '').toLowerCase().endsWith('[bot]');
+ }
+ 
+-/** A bot's direct PR comment is ACTIONABLE (can block) unless it is the
+- * shepherd's own comment or a suppressed status/deploy/quality bot. Humans do
+- * not block via direct comments (they block via threads/reviews). */
+-function isActionableBotComment(comment, self) {
++/** A bot's direct PR comment is ACTIONABLE unless it is the shepherd itself or
++ * one recognized, complete lifecycle/status envelope. Humans block through
++ * threads/reviews rather than direct-comment classification. */
++function isActionableBotComment(comment, self, headOid) {
+   const login = String(comment?.author || '').toLowerCase();
+   if (!login || login === String(self || '').toLowerCase()) return false;
+   if (!isBotAuthor(comment)) return false;
+-  return !SUPPRESSED_COMMENT_BOT_LOGINS.has(login);
++  if (isRecognizedStatusEnvelope(comment)) return false;
++  if (isRecognizedGitHubActionsEnvelope(comment)) return false;
++  if (isCodeRabbitCompletion(comment)) return false;
++  if (isCodeRabbitCleanReviewSummary(comment, headOid)) return false;
++  if (isQodoCleanReviewSummary(comment, headOid)) return false;
++  return true;
+ }
+ 
+ /** Count unresolved, non-outdated review threads AUTHOR-AGNOSTICALLY — any such
+@@ -788,6 +978,47 @@ function parseTime(s) {
+   return Number.isFinite(t) ? t : null;
+ }
+ 
++/** A top-level comment can be created once and edited in place by review bots.
++ * Use the later valid timestamp everywhere comment freshness affects a gate. */
++function commentActivityTime(comment) {
++  const createdAt = parseTime(comment?.createdAt);
++  const updatedAt = parseTime(comment?.updatedAt);
++  const times = [createdAt, updatedAt].filter((t) => t !== null);
++  return times.length ? Math.max(...times) : null;
++}
++
++function metadataEvidenceId(record, prefix, index) {
++  return String(record?.commentId || record?.databaseId || record?.id
++    || `${prefix}:${issueCommentLogin(record) || 'unknown'}:${index}`);
++}
++
++function invalidIssueCommentMetadata(comments) {
++  if (!Array.isArray(comments)) return ['issueComments:not-an-array'];
++  const invalid = [];
++  comments.forEach((comment, index) => {
++    const createdAt = parseTime(comment?.createdAt);
++    const hasUpdatedAt = comment?.updatedAt != null && String(comment.updatedAt).length > 0;
++    const updatedAt = hasUpdatedAt ? parseTime(comment.updatedAt) : createdAt;
++    if (!issueCommentLogin(comment) || createdAt === null || updatedAt === null) {
++      invalid.push(metadataEvidenceId(comment, 'comment', index));
++    }
++  });
++  return invalid;
++}
++
++function invalidReviewMetadata(reviews) {
++  if (!Array.isArray(reviews)) return ['reviews:not-an-array'];
++  const invalid = [];
++  reviews.forEach((review, index) => {
++    const author = String(review?.author?.login || review?.author || '').toLowerCase();
++    const invalidCommit = isBotAuthor(review) && !isFullHeadOid(review?.commitOid);
++    if (!author || parseTime(review?.submittedAt) === null || invalidCommit) {
++      invalid.push(metadataEvidenceId(review, 'review', index));
++    }
++  });
++  return invalid;
++}
++
+ /** The ONLY mergeStateStatus values from which CLEAN-MERGEABLE is reachable.
+  * Everything else — UNKNOWN, '', BLOCKED, BEHIND, DIRTY, UNSTABLE, HAS_HOOKS —
+  * fails closed (GitHub returns UNKNOWN while recomputing right after a push, and
+@@ -830,10 +1061,19 @@ function buildVerdictContext(input) {
+ 
+   const mss = String(mergeStateStatus || '').toUpperCase();
+   const rc = requiredClass || {};
++  const reviewList = Array.isArray(reviews) ? reviews : [];
++  const commentList = Array.isArray(issueComments) ? issueComments : [];
++  const unreadableSources = Array.isArray(unreadable) ? [...unreadable] : ['unreadable:not-an-array'];
++  const invalidIssueComments = invalidIssueCommentMetadata(issueComments);
++  const invalidReviews = invalidReviewMetadata(reviews);
++  if (invalidIssueComments.length > 0) unreadableSources.push('issueCommentMetadata');
++  if (invalidReviews.length > 0) unreadableSources.push('reviewMetadata');
+   const evidence = {
+     headOid: headOidStart || null,
+     mergeStateStatus: mss || null,
+-    unreadable: [...unreadable],
++    unreadable: [...new Set(unreadableSources)],
++    invalidIssueComments,
++    invalidReviews,
+     tornRead: false,
+     failingRequired: rc.failing || [],
+     missingRequired: rc.missing || [],
+@@ -853,7 +1093,7 @@ function buildVerdictContext(input) {
+     headOidStart, headOidEnd, mss, mergeable, reviewDecision,
+     requiredClass: rc, behind, conflicts,
+     unresolvedThreadCount, botStatusBlockerCount, botDirectComments,
+-    reviews, headPushTimeMs, headPushKnown, issueComments,
++    reviews: reviewList, headPushTimeMs, headPushKnown, issueComments: commentList,
+     now, settleWindowMs, evidence,
+   };
+ }
+@@ -913,29 +1153,59 @@ function rankChecks(v) {
+ function rankThreads(v) {
+   const anchor = v.headPushKnown ? v.headPushTimeMs : 0;
+   const botComments = v.botDirectComments.filter((c) => {
+-    const t = parseTime(c.createdAt);
+-    return t !== null && t > anchor;
++    const t = commentActivityTime(c);
++    return t !== null && t >= anchor;
+   });
+-  v.evidence.botComments = botComments.map((c) => c.commentId || null).filter(Boolean);
++  v.evidence.botComments = botComments
++    .map((c) => c.commentId || c.databaseId || c.id || null)
++    .filter(Boolean);
+   const changesRequested = String(v.reviewDecision || '').toUpperCase() === 'CHANGES_REQUESTED';
+   v.evidence.changesRequested = changesRequested;
+   const blocked = v.unresolvedThreadCount > 0 || botComments.length > 0 || changesRequested;
+   return blocked ? 'BLOCKED-THREADS' : null;
+ }
+ 
++/** A bot Review against an older commit can be superseded by bots that refresh
++ * a top-level issue comment in place instead of creating a new Review object.
++ * Fail closed unless the SAME bot produced an explicitly clean Qodo summary,
++ * updated it after the head push, and included the full exact current head SHA. */
++function hasExactHeadCommentRefresh(v, review) {
++  if (!v.headPushKnown || v.headPushTimeMs == null || !v.headOidStart) return false;
++  const reviewLogin = String((review?.author && review.author.login) || review?.author || '')
++    .toLowerCase()
++    .replace(/\[bot\]$/, '');
++  if (!reviewLogin) return false;
++
++  return v.issueComments.some((comment) => {
++    const commentLogin = issueCommentLogin(comment).replace(/\[bot\]$/, '');
++    const refreshedAt = commentActivityTime(comment);
++    return isBotAuthor(comment)
++      && isQodoCleanReviewSummary(comment, v.headOidStart)
++      && commentLogin === reviewLogin
++      && refreshedAt !== null
++      && refreshedAt > v.headPushTimeMs;
++  });
++}
++
+ /** Rank 6: review-pending — an ANY-bot review against an OLDER commit (stale
+  * re-review, #365), a REVIEW_REQUIRED decision, or activity that has not settled
+  * (window anchored to the head push). */
+ function rankReviewPending(v) {
+   const staleReviews = v.reviews.filter(
+-    (r) => isBotAuthor(r) && r.commitOid && r.commitOid !== v.headOidStart,
++    (r) => isBotAuthor(r)
++      && r.commitOid
++      && r.commitOid !== v.headOidStart
++      && !hasExactHeadCommentRefresh(v, r),
+   );
+   v.evidence.staleReviews = staleReviews.map((r) => r.author).filter(Boolean);
+ 
+   const anchors = [];
+   if (v.headPushKnown && v.headPushTimeMs != null) anchors.push(v.headPushTimeMs);
+-  for (const r of v.reviews) { const t = parseTime(r.submittedAt); if (t) anchors.push(t); }
+-  for (const c of v.issueComments) { const t = parseTime(c.createdAt); if (t) anchors.push(t); }
++  for (const r of v.reviews) { const t = parseTime(r.submittedAt); if (t !== null) anchors.push(t); }
++  for (const c of v.issueComments) {
++    const t = commentActivityTime(c);
++    if (t !== null) anchors.push(t);
++  }
+   const lastActivity = anchors.length ? Math.max(...anchors) : null;
+   const settleRemaining = lastActivity === null ? 0 : v.settleWindowMs - (v.now - lastActivity);
+   v.evidence.settleRemainingMs = Math.max(settleRemaining, 0);
+@@ -1230,7 +1500,7 @@ async function gatherPrSnapshot(ctx) {
+   // filtered) and an AUTHOR-AGNOSTIC unresolved-thread count — both independent
+   // of the display fix-list so the verdict never drops an unknown-bot signal.
+   const botDirectComments = (Array.isArray(issueComments) ? issueComments : [])
+-    .filter((c) => isActionableBotComment(c, self));
++    .filter((c) => isActionableBotComment(c, self, state.headSha));
+   const unresolvedThreadCount = countUnresolvedThreads(threads);
+ 
+   const { verdict, evidence } = computeVerdict({
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index 3d91a571..fe6e53ae 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -774,6 +774,15 @@ describe('buildBotStatusBlockers (bot status/deploy/quality comment scanner)', (
+     expect(out).toHaveLength(0);
+   });
+ 
++  test('an older-created status comment edited later supersedes by updatedAt', () => {
++    const out = buildBotStatusBlockers([
++      { author: 'sonarqubecloud', body: 'Quality Gate passed ✅', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
++      { author: 'sonarqubecloud', body: 'Quality Gate failed ❌', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T12:00:00Z' },
++    ]);
++    expect(out).toHaveLength(1);
++    expect(out[0].detail).toMatch(/quality gate failed/i);
++  });
++
+   test('ignores comments from non-status bots and humans', () => {
+     const out = buildBotStatusBlockers([
+       { author: 'coderabbitai', body: 'Quality issue: guard null ❌', createdAt: '2026-07-12T10:00:00Z' },
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index c9c55619..b1748902 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -308,7 +308,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readComments surfaces threadId, path and line per thread', async () => {
+     const graphqlJson = JSON.stringify({
+-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
++      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+           comments: { nodes: [{ author: { login: 'coderabbitai' }, body: 'nit' }] },
+@@ -331,7 +331,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readComments surfaces the REST commentId (fullDatabaseId) for replies', async () => {
+     const graphqlJson = JSON.stringify({
+-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
++      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+           comments: { nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
+@@ -350,7 +350,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readComments coerces a missing line to null', async () => {
+     const graphqlJson = JSON.stringify({
+-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
++      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { nodes: [] } },
+       ] } } } },
+     });
+@@ -458,15 +458,15 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(vercel.detailsUrl).toBe('https://vercel.com/x'); // targetUrl → detailsUrl
+   });
+ 
+-  test('readIssueComments returns id/author/authorTypename/body/createdAt from paginated GraphQL', async () => {
++  test('readIssueComments returns id/author/type/body/createdAt/updatedAt from paginated GraphQL', async () => {
+     const page = JSON.stringify({
+       data: { repository: { pullRequest: { comments: {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+           // With fullDatabaseId → the stable REST id is used as the monitor key.
+-          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
++          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
+           // Without fullDatabaseId → falls back to `${author}:${createdAt}`.
+-          { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
++          { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
+         ],
+       } } } },
+     });
+@@ -475,7 +475,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
+     expect(comments).toHaveLength(2);
+     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
+-    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
++    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' });
+     expect(comments[1].id).toBe('a-human:2026-07-12T11:00:00Z');
+     expect(comments[1].authorTypename).toBe('User');
+     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+@@ -535,6 +535,39 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(reviews.map((r) => r.author).sort()).toEqual(['bot-a', 'bot-b']);
+   });
+ 
++  test('readReviews canonicalizes trailing [bot] before latest-per-author dedupe', async () => {
++    const page = JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++      pageInfo: { hasNextPage: false, endCursor: null },
++      nodes: [
++        { id: 'R1', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old' }, body: '' },
++        { id: 'R2', author: { __typename: 'Bot', login: 'coderabbitai[bot]' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head' }, body: '' },
++      ],
++    } } } } });
++    const { run } = makeRunner([['reviews(first', page]]);
++    const reviews = await new PrStateAdapter({ gh: run, git: run })
++      .readReviews({ owner: 'o', repo: 'r', pr: '7' });
++    expect(reviews).toHaveLength(1);
++    expect(reviews[0].author).toBe('coderabbitai');
++    expect(reviews[0].id).toBe('R2');
++  });
++
++  test('paginated review/comment reads reject malformed connections and missing authors with ids', async () => {
++    const malformed = makeRunner([['reviews(first', JSON.stringify({
++      data: { repository: { pullRequest: { reviews: { pageInfo: {}, nodes: null } } } },
++    })]]);
++    await expect(new PrStateAdapter({ gh: malformed.run, git: malformed.run })
++      .readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/connection|nodes/i);
++
++    const missingAuthor = makeRunner([['reviews(first', JSON.stringify({
++      data: { repository: { pullRequest: { reviews: {
++        pageInfo: { hasNextPage: false, endCursor: null },
++        nodes: [{ id: 'REVIEW-NO-AUTHOR', author: null, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head' } }],
++      } } } },
++    })]]);
++    await expect(new PrStateAdapter({ gh: missingAuthor.run, git: missingAuthor.run })
++      .readReviews({ owner: 'o', repo: 'r', pr: '7' })).rejects.toThrow(/REVIEW-NO-AUTHOR/);
++  });
++
+   test('readHeadCommitTime parses the head commit committedDate to epoch ms', async () => {
+     const iso = '2026-07-12T10:00:00Z';
+     const { run, calls } = makeRunner([['.commits[-1].committedDate', iso]]);
+diff --git a/test/shepherd-merge-safety.test.js b/test/shepherd-merge-safety.test.js
+index 994f4ee7..727f5f27 100644
+--- a/test/shepherd-merge-safety.test.js
++++ b/test/shepherd-merge-safety.test.js
+@@ -13,11 +13,37 @@ const { runShepherdPass } = require('../lib/pr-shepherd');
+ const shepherdCmd = require('../lib/commands/shepherd');
+ const { loadCommands, executeCommand } = require('../lib/commands/_registry');
+ 
+-const HEAD = 'head-sha';
++const FULL_HEAD = '0123456789abcdef0123456789abcdef01234567';
++const HEAD = FULL_HEAD;
++const STALE_HEAD = 'fedcba9876543210fedcba9876543210fedcba98';
+ const NOW = Date.now();
+ const SETTLED = NOW - 3600 * 1000; // 1h ago → outside the 600s settle window
+ const GREEN_CLASS = { missing: [], skipped: [], pending: [], failing: [], unreadable: false };
+ 
++function qodoCleanSummary(sha) {
++  return `<h3>Code Review by Qodo</h3>\n<code>🐞 Bugs (0)</code> <code>📘 Rule violations (0)</code>\n<!-- https://github.com/o/r/commit/${sha} -->\n<a href="https://www.qodo.ai"><img src="qodo.svg" alt="Qodo Logo"></a>`;
++}
++
++function coderabbitCleanSummary(sha) {
++  return `<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nNo actionable comments were generated in the recent review. 🎉\nReviewing through ${sha}.\n<!-- tips_end -->`;
++}
++
++function coderabbitCompletion() {
++  return '<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: run-1 -->\n<details>\n<summary>✅ Action performed</summary>\nReview finished.\n> Note: CodeRabbit is an incremental review system.\n</details>';
++}
++
++function sonarCleanSummary() {
++  return "## [![Quality Gate Passed](https://sonarsource.github.io/sonarcloud-github-static-resources/v2/checks/QualityGateBadge/qg-passed-20px.png 'Quality Gate Passed')](https://sonarcloud.io/dashboard?id=o_r&pullRequest=471) **Quality Gate passed**  \nIssues  \n![](https://sonarsource.github.io/sonarcloud-github-static-resources/v2/common/passed-16px.png '') [0 New issues](https://sonarcloud.io/project/issues?id=o_r&pullRequest=471&issueStatuses=OPEN,CONFIRMED&sinceLeakPeriod=true)  \n![](https://sonarsource.github.io/sonarcloud-github-static-resources/v2/common/accepted-16px.png '') [0 Accepted issues](https://sonarcloud.io/project/issues?id=o_r&pullRequest=471&issueStatuses=ACCEPTED)\n\nMeasures  \n![](https://sonarsource.github.io/sonarcloud-github-static-resources/v2/common/passed-16px.png '') [0 Security Hotspots](https://sonarcloud.io/project/security_hotspots?id=o_r&pullRequest=471&issueStatuses=OPEN,CONFIRMED&sinceLeakPeriod=true)  \n![](https://sonarsource.github.io/sonarcloud-github-static-resources/v2/common/passed-16px.png '') [0.0% Coverage on New Code](https://sonarcloud.io/component_measures?id=o_r&pullRequest=471&metric=new_coverage&view=list)  \n![](https://sonarsource.github.io/sonarcloud-github-static-resources/v2/common/passed-16px.png '') [0.0% Duplication on New Code](https://sonarcloud.io/component_measures?id=o_r&pullRequest=471&metric=new_duplicated_lines_density&view=list)  \n  \n<!-- sqra-placement-anchor -->\n[See analysis details on SonarQube Cloud](https://sonarcloud.io/dashboard?id=o_r&pullRequest=471)";
++}
++
++function forgeCleanMonitorSummary() {
++  return '<!-- forge-pr-monitor -->\n## 🔭 Forge PR Monitor\n\n🟢 **Verdict: `clean-mergeable`** — green + zero unresolved threads; ready for a human to merge.\n\n_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._\n\n### Review threads\n✅ No unresolved review threads.\n\n### Checks\n✅ No failing or pending checks.\n\n---\n<sub>Updated 2026-07-31T19:55:37.285Z · surface-only monitor · labels state, never merges, never resolves threads.</sub>';
++}
++
++function forgeBlockedMonitorSummary() {
++  return '<!-- forge-pr-monitor -->\n## 🔭 Forge PR Monitor\n\n🔴 **Verdict: `blocked-checks`** — a required check is failing/missing; fix it.\n\n_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._\n\n### Review threads\n✅ No unresolved review threads.\n\n### Checks\n- ⏳ **Pending (1):** `CodeRabbit`\n\n---\n<sub>Updated 2026-07-31T19:55:37.285Z · surface-only monitor · labels state, never merges, never resolves threads.</sub>';
++}
++
+ // A clean, explicitly-good baseline verdict input. Individual tests override.
+ const cleanBase = {
+   headOidStart: HEAD, headOidEnd: HEAD,
+@@ -59,6 +85,26 @@ describe('computeVerdict precedence (fail-closed, never false-clean)', () => {
+     expect(computeVerdict({ ...cleanBase, headPushKnown: false, headPushTimeMs: null }).verdict).not.toBe('CLEAN-MERGEABLE');
+   });
+ 
++  test('missing/invalid comment and bot-review metadata → UNKNOWN with stable evidence ids', () => {
++    const badComment = computeVerdict({
++      ...cleanBase,
++      issueComments: [{
++        id: 'COMMENT-INVALID', author: 'bot[bot]', authorTypename: 'Bot', createdAt: 'not-a-time',
++      }],
++    });
++    expect(badComment.verdict).toBe('UNKNOWN');
++    expect(badComment.evidence.invalidIssueComments).toContain('COMMENT-INVALID');
++
++    const badReview = computeVerdict({
++      ...cleanBase,
++      reviews: [{
++        id: 'REVIEW-INVALID', author: 'coderabbitai', authorTypename: 'Bot', submittedAt: '', commitOid: null,
++      }],
++    });
++    expect(badReview.verdict).toBe('UNKNOWN');
++    expect(badReview.evidence.invalidReviews).toContain('REVIEW-INVALID');
++  });
++
+   test('BLOCKED-CONFLICT for DIRTY / CONFLICTING / predicted conflict', () => {
+     expect(computeVerdict({ ...cleanBase, mergeStateStatus: 'DIRTY' }).verdict).toBe('BLOCKED-CONFLICT');
+     expect(computeVerdict({ ...cleanBase, mergeable: 'CONFLICTING' }).verdict).toBe('BLOCKED-CONFLICT');
+@@ -136,12 +182,49 @@ describe('computeVerdict precedence (fail-closed, never false-clean)', () => {
+   test('(#365) latest coderabbit review commitOid != head → REVIEW-PENDING', () => {
+     const out = computeVerdict({
+       ...cleanBase,
+-      reviews: [{ author: 'coderabbitai', authorTypename: 'Bot', state: 'COMMENTED', submittedAt: new Date(SETTLED).toISOString(), commitOid: 'stale-old' }],
++      reviews: [{ author: 'coderabbitai', authorTypename: 'Bot', state: 'COMMENTED', submittedAt: new Date(SETTLED).toISOString(), commitOid: STALE_HEAD }],
+     });
+     expect(out.verdict).toBe('REVIEW-PENDING');
+     expect(out.evidence.staleReviews).toContain('coderabbitai');
+   });
+ 
++  const staleQodoReview = {
++    author: 'qodo-code-review', authorTypename: 'Bot', state: 'COMMENTED',
++    submittedAt: new Date(SETTLED - 2000).toISOString(), commitOid: STALE_HEAD,
++  };
++  const afterPush = new Date(SETTLED + 1000).toISOString();
++  const beforePush = new Date(SETTLED - 1000).toISOString();
++  const rejectedRefreshes = [
++    ['same-bot exact-SHA finding text', {
++      author: 'qodo-code-review', authorTypename: 'Bot',
++      body: `Found a correctness issue at ${FULL_HEAD}`, createdAt: beforePush, updatedAt: afterPush,
++    }],
++    ['wrong-bot clean summary', {
++      author: 'other-review-bot', authorTypename: 'Bot',
++      body: qodoCleanSummary(FULL_HEAD), createdAt: beforePush, updatedAt: afterPush,
++    }],
++    ['same-bot abbreviated-SHA clean summary', {
++      author: 'qodo-code-review', authorTypename: 'Bot',
++      body: qodoCleanSummary(FULL_HEAD.slice(0, 8)), createdAt: beforePush, updatedAt: afterPush,
++    }],
++    ['same-bot pre-push clean summary', {
++      author: 'qodo-code-review', authorTypename: 'Bot',
++      body: qodoCleanSummary(FULL_HEAD), createdAt: beforePush, updatedAt: beforePush,
++    }],
++  ];
++  for (const [name, comment] of rejectedRefreshes) {
++    test(`${name} does not supersede a stale Review object`, () => {
++      const out = computeVerdict({
++        ...cleanBase,
++        headOidStart: FULL_HEAD, headOidEnd: FULL_HEAD,
++        headPushTimeMs: SETTLED,
++        reviews: [staleQodoReview], issueComments: [comment], botDirectComments: [],
++      });
++      expect(out.verdict).toBe('REVIEW-PENDING');
++      expect(out.evidence.staleReviews).toContain('qodo-code-review');
++    });
++  }
++
+   // F3 — settle window anchored to head push: a fresh green PR is REVIEW-PENDING.
+   test('(F3) reviews=[], green CI, head pushed <600s ago → REVIEW-PENDING, never CLEAN', () => {
+     const out = computeVerdict({ ...cleanBase, reviews: [], headPushTimeMs: NOW - 120 * 1000, headPushKnown: true });
+@@ -251,20 +334,60 @@ describe('gatherPullSignal verdict integration', () => {
+   test('(a) #365 threads resolved but coderabbit review against an older commit → REVIEW-PENDING', async () => {
+     const payload = await gather({
+       mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, threads: coderabbitThreads(2, true),
+-      reviews: [{ author: 'coderabbitai', authorTypename: 'Bot', state: 'COMMENTED', submittedAt: new Date(SETTLED).toISOString(), commitOid: 'stale-old' }],
++      reviews: [{ author: 'coderabbitai', authorTypename: 'Bot', state: 'COMMENTED', submittedAt: new Date(SETTLED).toISOString(), commitOid: STALE_HEAD }],
+     });
+     expect(payload.verdict).toBe('REVIEW-PENDING');
+     expect(payload.evidence.staleReviews).toContain('coderabbitai');
+   });
+ 
++  test('same-bot issue-comment refresh at exact head supersedes a stale Review object', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      reviews: [{ author: 'qodo-code-review', authorTypename: 'Bot', state: 'COMMENTED', submittedAt: new Date(SETTLED - 1000).toISOString(), commitOid: STALE_HEAD }],
++      issueComments: [{
++        author: 'qodo-code-review', authorTypename: 'Bot',
++        body: qodoCleanSummary(FULL_HEAD),
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('CLEAN-MERGEABLE');
++    expect(payload.evidence.staleReviews).toHaveLength(0);
++  });
++
++  test('fresh exact-head comment refresh clears staleness but still observes settle window', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: NOW - 300 * 1000,
++      reviews: [{ author: 'qodo-code-review', authorTypename: 'Bot', state: 'COMMENTED', submittedAt: new Date(NOW - 400 * 1000).toISOString(), commitOid: STALE_HEAD }],
++      issueComments: [{
++        author: 'qodo-code-review', authorTypename: 'Bot',
++        body: qodoCleanSummary(FULL_HEAD),
++        createdAt: new Date(NOW - 400 * 1000).toISOString(),
++        updatedAt: new Date(NOW - 100 * 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('REVIEW-PENDING');
++    expect(payload.evidence.staleReviews).toHaveLength(0);
++    expect(payload.evidence.settleRemainingMs).toBeGreaterThan(0);
++  });
++
+   // (b) #353 — a bot direct issue comment (detected by mechanism: __typename Bot).
+-  test('(b) #353 coderabbit "Additional Comments" issue comment post-push → BLOCKED-THREADS', async () => {
++  test('(b) #353 coderabbit finding edited post-push → BLOCKED-THREADS', async () => {
+     const payload = await gather({
+       mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi, threads: [],
+-      headPushTimeMs: NOW - 300 * 1000,
+-      issueComments: [{ author: 'coderabbitai', authorTypename: 'Bot', body: 'Additional Comments (3)', createdAt: new Date(NOW - 100 * 1000).toISOString() }],
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'IC2', author: 'coderabbitai', authorTypename: 'Bot', body: 'Additional Comments (3)',
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
+     });
+     expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('IC2');
+   });
+ 
+   // (d) fail-closed — a verdict-relevant read throws.
+@@ -319,6 +442,34 @@ describe('agnostic classification (no hardcoded bot names, fail-closed)', () =>
+     expect(payload.verdict).toBe('BLOCKED-THREADS');
+   });
+ 
++  test('unknown bot comment created pre-push but edited post-push → BLOCKED-THREADS', async () => {
++    const payload = await gather({
++      mergeStateStatus: 'BLOCKED', required: ['ci'], checks: greenCi, threads: [],
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'UNKNOWN-EDIT', author: 'brandnewbot', authorTypename: 'Bot', body: 'new finding after edit',
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('UNKNOWN-EDIT');
++  });
++
++  test('actionable bot activity exactly at the push boundary blocks conservatively', async () => {
++    const boundary = new Date(SETTLED).toISOString();
++    const payload = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, threads: [],
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'AT-BOUNDARY', author: 'brandnewbot', authorTypename: 'Bot', body: 'unsafe path',
++        createdAt: boundary, updatedAt: boundary,
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('AT-BOUNDARY');
++  });
++
+   // (c) a failing check from an UNNAMED app → BLOCKED-CHECKS (required-check path,
+   // zero name knowledge).
+   test('(c) failing required check from an unnamed app → BLOCKED-CHECKS', async () => {
+@@ -340,6 +491,258 @@ describe('agnostic classification (no hardcoded bot names, fail-closed)', () =>
+     expect(payload.verdict).toBe('CLEAN-MERGEABLE');
+   });
+ 
++  test('settled GitHub Actions status and review-trigger comments do not block', async () => {
++    const afterPush = new Date(SETTLED + 1000).toISOString();
++    const payload = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      issueComments: [
++        {
++          author: 'github-actions', authorTypename: 'Bot',
++          body: '## 📦 Package Size Report\n\n**Size:** 8MB (8500KB)\n**Threshold:** 10MB\n**Status:** ✅ Within threshold',
++          createdAt: afterPush,
++        },
++        {
++          author: 'github-actions', authorTypename: 'Bot',
++          body: 'Tests passed in https://github.com/o/r/actions/runs/30659913503. @coderabbitai review',
++          createdAt: afterPush,
++        },
++      ],
++    });
++    expect(payload.verdict).toBe('CLEAN-MERGEABLE');
++  });
++
++  test('complete Sonar clean envelope is informational; arbitrary provider middle text blocks', async () => {
++    const at = new Date(SETTLED + 1000).toISOString();
++    const clean = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        author: 'sonarqubecloud[bot]', authorTypename: 'Bot', body: sonarCleanSummary(), createdAt: at,
++      }],
++    });
++    expect(clean.verdict).toBe('CLEAN-MERGEABLE');
++
++    const monitor = forgeCleanMonitorSummary();
++    const cases = [
++      {
++        id: 'SONAR-MIDDLE', author: 'sonarqubecloud[bot]',
++        body: sonarCleanSummary().replace('<!-- sqra-placement-anchor -->', 'Authorization bypass remains.\n<!-- sqra-placement-anchor -->'),
++      },
++      {
++        id: 'PACKAGE-MIDDLE', author: 'github-actions[bot]',
++        body: '## 📦 Package Size Report\n\n**Size:** 8MB (8500KB)\nAuthorization bypass remains.\n**Threshold:** 10MB\n**Status:** ✅ Within threshold',
++      },
++      {
++        id: 'PACKAGE-CONTRADICTION', author: 'github-actions[bot]',
++        body: '## 📦 Package Size Report\n\n**Size:** 8MB (8500KB)\n**Threshold:** 10MB\n**Status:** ❌ Over threshold\n**Status:** ✅ Within threshold',
++      },
++      {
++        id: 'MONITOR-MIDDLE', author: 'github-actions[bot]',
++        body: monitor.replace('\n---\n', '\nAuthorization bypass remains.\n---\n'),
++      },
++    ];
++    for (const item of cases) {
++      const payload = await gather({
++        mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++        issueComments: [{ ...item, authorTypename: 'Bot', createdAt: at }],
++      });
++      expect(payload.verdict).toBe('BLOCKED-THREADS');
++      expect(payload.evidence.botComments).toContain(item.id);
++    }
++  });
++
++  test('suppressed automation comment updated inside quiet window extends settle only', async () => {
++    const payload = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: NOW - 300 * 1000,
++      issueComments: [{
++        author: 'github-actions', authorTypename: 'Bot', body: 'Status refreshed: success',
++        createdAt: new Date(NOW - 400 * 1000).toISOString(),
++        updatedAt: new Date(NOW - 100 * 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('REVIEW-PENDING');
++    expect(payload.evidence.botComments).toHaveLength(0);
++    expect(payload.evidence.settleRemainingMs).toBeGreaterThan(0);
++  });
++
++  test('settled CodeRabbit review-command completion reply does not block', async () => {
++    const payload = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        author: 'coderabbitai', authorTypename: 'Bot',
++        body: coderabbitCompletion(),
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('CLEAN-MERGEABLE');
++  });
++
++  test('settled CodeRabbit no-actionable summary for exact head does not block', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        author: 'coderabbitai[bot]', authorTypename: 'Bot',
++        body: coderabbitCleanSummary(FULL_HEAD),
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('CLEAN-MERGEABLE');
++  });
++
++  test('CodeRabbit no-actionable summary for another head remains blocking', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'STALE-CR', author: 'coderabbitai[bot]', authorTypename: 'Bot',
++        body: coderabbitCleanSummary('fedcba9876543210fedcba9876543210fedcba98'),
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('STALE-CR');
++  });
++
++  test('Qodo zero-finding summary for another head remains blocking', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'STALE-QODO', author: 'qodo-code-review', authorTypename: 'Bot',
++        body: qodoCleanSummary('fedcba9876543210fedcba9876543210fedcba98'),
++        createdAt: new Date(SETTLED - 1000).toISOString(),
++        updatedAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('STALE-QODO');
++  });
++
++  test('arbitrary GitHub Actions finding posted after the head push remains blocking', async () => {
++    const payload = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi,
++      headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'GH-ACTIONABLE', author: 'github-actions', authorTypename: 'Bot',
++        body: 'Critical finding: merge authorization can be bypassed.',
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('GH-ACTIONABLE');
++  });
++
++  test('known Forge monitor envelope is informational but appended text is blocking', async () => {
++    const monitor = forgeCleanMonitorSummary();
++    const clean = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        author: 'github-actions', authorTypename: 'Bot', body: monitor,
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(clean.verdict).toBe('CLEAN-MERGEABLE');
++
++    const priorBlocked = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        author: 'github-actions', authorTypename: 'Bot', body: forgeBlockedMonitorSummary(),
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(priorBlocked.verdict).toBe('CLEAN-MERGEABLE');
++
++    const contradictory = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'MONITOR-APPEND', author: 'github-actions', authorTypename: 'Bot',
++        body: `${monitor}\nCritical finding: unsafe merge path.`,
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(contradictory.verdict).toBe('BLOCKED-THREADS');
++    expect(contradictory.evidence.botComments).toContain('MONITOR-APPEND');
++  });
++
++  test('CodeRabbit completion reply with appended finding remains blocking', async () => {
++    const payload = await gather({
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'CR-COMPLETION-FINDING', author: 'coderabbitai', authorTypename: 'Bot',
++        body: `${coderabbitCompletion()}\nCritical finding: unsafe fallback.`,
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('CR-COMPLETION-FINDING');
++  });
++
++  test('CodeRabbit no-actionable summary with appended finding remains blocking', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'CR-CONTRADICTORY', author: 'coderabbitai[bot]', authorTypename: 'Bot',
++        body: `${coderabbitCleanSummary(FULL_HEAD)}\nCritical finding: unsafe exact-head refresh.`,
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('CR-CONTRADICTORY');
++  });
++
++  test('Qodo zero-count summary with appended unresolved finding remains blocking', async () => {
++    const payload = await gather({
++      headSha: FULL_HEAD,
++      mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++      issueComments: [{
++        id: 'QODO-CONTRADICTORY', author: 'qodo-code-review', authorTypename: 'Bot',
++        body: `${qodoCleanSummary(FULL_HEAD)}\nCritical finding: unsafe exact-head refresh.`,
++        createdAt: new Date(SETTLED + 1000).toISOString(),
++      }],
++    });
++    expect(payload.verdict).toBe('BLOCKED-THREADS');
++    expect(payload.evidence.botComments).toContain('QODO-CONTRADICTORY');
++  });
++
++  test('provider-native contradiction markers defeat otherwise-clean summaries', async () => {
++    const cases = [
++      {
++        id: 'CR-NONZERO', author: 'coderabbitai[bot]',
++        body: coderabbitCleanSummary(FULL_HEAD).replace(
++          '<!-- tips_end -->',
++          'Actionable comments posted: 1\n<!-- tips_end -->',
++        ),
++      },
++      {
++        id: 'QODO-UNRESOLVED', author: 'qodo-code-review',
++        body: qodoCleanSummary(FULL_HEAD).replace(
++          '<!-- https://github.com/o/r/commit/',
++          '<summary> 1. Active unsafe path <code>🐞 Bug</code></summary>\n<!-- https://github.com/o/r/commit/',
++        ),
++      },
++    ];
++    for (const item of cases) {
++      const payload = await gather({
++        headSha: FULL_HEAD,
++        mergeStateStatus: 'CLEAN', required: ['ci'], checks: greenCi, headPushTimeMs: SETTLED,
++        issueComments: [{
++          ...item, authorTypename: 'Bot', createdAt: new Date(SETTLED + 1000).toISOString(),
++        }],
++      });
++      expect(payload.verdict).toBe('BLOCKED-THREADS');
++      expect(payload.evidence.botComments).toContain(item.id);
++    }
++  });
++
+   // A failing quality-gate COMMENT from a status bot (via buildBotStatusBlockers)
+   // blocks under CHECKS, not threads.
+   test('failing bot-status quality-gate comment → BLOCKED-CHECKS (not THREADS)', async () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,84 @@
+From 9071f4c6102aa3ed6646ef7f7d56d16c32711ec8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 16 Aug 2026 02:39:39 +0530
+Subject: [PATCH] test(lane): map .coderabbit.yaml to a real reviewer-config
+ suite
+
+An edit to .coderabbit.yaml resolved to zero tests, so every PR touching the
+reviewer config fell through to the 10-minute local full-suite lane. Add a
+suite that actually asserts the config (valid YAML, auto review on, the
+pre-user regime encoded in tone_instructions) and map the path to it in both
+classifiers.
+---
+ lib/commands/test.js           |  1 +
+ scripts/test.js                |  1 +
+ test/coderabbit-config.test.js | 33 +++++++++++++++++++++++++++++++++
+ 3 files changed, 35 insertions(+)
+ create mode 100644 test/coderabbit-config.test.js
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 38364ab1..3a190019 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -69,6 +69,7 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/commands/lefthook-user-config.test.js',
+ 	],
+ 	'eslint.config.js': ['test/lint-script.test.js'],
++	'.coderabbit.yaml': ['test/coderabbit-config.test.js'],
+ 	'.claude-plugin/marketplace.json': [
+ 		'test/activation/plugin-scaffold.test.js',
+ 		'test/plugin-catalog.test.js',
+diff --git a/scripts/test.js b/scripts/test.js
+index 6e13462c..3a3d1027 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -55,6 +55,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
+   'bun.lock',
+   'lefthook.yml',
+   'eslint.config.js',
++  '.coderabbit.yaml',
+   '.claude-plugin/marketplace.json',
+ ]);
+ 
+diff --git a/test/coderabbit-config.test.js b/test/coderabbit-config.test.js
+new file mode 100644
+index 00000000..82af6da0
+--- /dev/null
++++ b/test/coderabbit-config.test.js
+@@ -0,0 +1,33 @@
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++const yaml = require('js-yaml');
++
++const CONFIG_PATH = path.join(__dirname, '..', '.coderabbit.yaml');
++
++function loadConfig() {
++	return yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8'));
++}
++
++describe('.coderabbit.yaml', () => {
++	test('parses as YAML and keeps auto review enabled', () => {
++		const config = loadConfig();
++
++		expect(typeof config).toBe('object');
++		expect(config.reviews.auto_review.enabled).toBe(true);
++	});
++
++	test('encodes the pre-user shipping regime for the reviewer', () => {
++		const config = loadConfig();
++
++		// The regime is advisory-by-default: only always-wrong findings block.
++		expect(config.reviews.profile).toBe('chill');
++
++		const tone = String(config.tone_instructions || '').toLowerCase();
++		expect(tone).toContain('secret');
++		expect(tone).toContain('injection');
++		expect(tone).toContain('build');
++		// The reviewer must never grow the PR; follow-ups go to their own issue.
++		expect(tone).toContain('follow-up');
++	});
++});
+-- 
+2.51.0.windows.1
+

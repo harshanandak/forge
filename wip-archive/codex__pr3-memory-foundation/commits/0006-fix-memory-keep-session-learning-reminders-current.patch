@@ -1,0 +1,59 @@
+From beba7b76400e0e79d4d061205c22fb303c652c67 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 04:21:23 +0530
+Subject: [PATCH] fix(memory): keep session learning reminders current
+
+---
+ lib/memory-digest.js                     | 10 +++-------
+ test/memory-digest-session-nudge.test.js |  4 ++--
+ 2 files changed, 5 insertions(+), 9 deletions(-)
+
+diff --git a/lib/memory-digest.js b/lib/memory-digest.js
+index 3990c10d..3663dd24 100644
+--- a/lib/memory-digest.js
++++ b/lib/memory-digest.js
+@@ -178,12 +178,8 @@ function issuesSection(ready, claimed) {
+   });
+ }
+ 
+-function hasSessionSummary(notes) {
+-  return notes.some(note => Array.isArray(note?.tags) && note.tags.includes('type:session-summary'));
+-}
+-
+-function sessionSummarySection(notes, claimed) {
+-  if (!claimed.length || hasSessionSummary(notes)) return null;
++function sessionSummarySection(claimed) {
++  if (!claimed.length) return null;
+   return buildSection({
+     id: 'session_summary_nudge',
+     title: 'Session learning reminder',
+@@ -253,7 +249,7 @@ function buildMemoryDigest(data = {}, options = {}) {
+   // Inbox (priority 5) is a THIRD section beside notes + issues; a fresh human directive
+   // outranks stale notes (10) and the agent's own issue list (20) under budget pressure.
+   const sections = [
+-    sessionSummarySection(notes, claimed),
++    sessionSummarySection(claimed),
+     inboxSection(inbox),
+     ...notesSections(notes, budgetTokens),
+     issuesSection(ready, claimed),
+diff --git a/test/memory-digest-session-nudge.test.js b/test/memory-digest-session-nudge.test.js
+index f586e6b0..b08a787f 100644
+--- a/test/memory-digest-session-nudge.test.js
++++ b/test/memory-digest-session-nudge.test.js
+@@ -12,11 +12,11 @@ describe('session-learning nudge', () => {
+     expect(result.text).not.toContain('block');
+   });
+ 
+-  test('an existing explicit session summary suppresses the reminder', () => {
++  test('a historical session summary does not suppress a future-session reminder', () => {
+     const result = buildMemoryDigest({
+       notes: [{ note: 'Learned the hook contract.', tags: ['type:session-summary'] }],
+       claimed: [{ id: 'i1', title: 'Hook lane' }],
+     });
+-    expect(result.text).not.toContain('forge remember --session-summary');
++    expect(result.text.match(/forge remember --session-summary/g)).toHaveLength(1);
+   });
+ });
+-- 
+2.51.0.windows.1
+

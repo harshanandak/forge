@@ -1,0 +1,48 @@
+From b9a255d38582ecb53d6a1301cb67b09566401a62 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 13:40:14 +0530
+Subject: [PATCH] test: strengthen memory recall leakage holdout
+
+---
+ docs/work/2026-07-29-memory-recall-s0/plan.md | 2 +-
+ test/e2e/memory-recall-holdout.test.js        | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/docs/work/2026-07-29-memory-recall-s0/plan.md b/docs/work/2026-07-29-memory-recall-s0/plan.md
+index 49d3de45..4748fe46 100644
+--- a/docs/work/2026-07-29-memory-recall-s0/plan.md
++++ b/docs/work/2026-07-29-memory-recall-s0/plan.md
+@@ -6,7 +6,7 @@ Issue: `36461e50-da2e-43e4-bb4a-ae58aac08591`
+ 
+ Branch: `feat/memory-recall-s0`
+ 
+-Status: awaiting plan approval
++Status: ship stage active; PR #468 open
+ 
+ ## Purpose
+ 
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 3cf31ae1..adeedd96 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -85,7 +85,7 @@ describe('project-local memory recall holdout', () => {
+     for (let index = 0; index < fixture.foreign.count; index += 1) {
+       projectMemory.write(root, {
+         key: `foreign-${index}`,
+-        value: `auth token ${'auth '.repeat(20)}`,
++        value: `FOREIGN-RECALL-LEAK-MARKER auth token ${'auth '.repeat(20)}`,
+         sourceAgent: 'forge remember',
+         scope: fixture.foreign.scope,
+         tags: [],
+@@ -130,7 +130,7 @@ describe('project-local memory recall holdout', () => {
+     const context = JSON.parse(result.output).hookSpecificOutput.additionalContext;
+     expect(projectId).not.toBe(fixture.foreign.scope);
+     expect(context).toContain(fixture.projectLocal.content);
+-    expect(context).not.toContain('foreign-');
++    expect(context).not.toContain('FOREIGN-RECALL-LEAK-MARKER');
+   });
+ 
+   test('keeps suggested authority separate and denies stale or superseded memories', async () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,105 @@
+From 6993754e3537fd0aa027d22cac759f5f37130999 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 21:36:43 +0530
+Subject: [PATCH] fix: fail closed on incomplete full-suite discovery
+
+---
+ scripts/test-full-suite.js           |  8 ++++----
+ test/scripts/test-full-suite.test.js | 20 ++++++++++++--------
+ 2 files changed, 16 insertions(+), 12 deletions(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index bda45acf..5607b1ae 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -170,7 +170,7 @@ function aggregateShardReceipts(receipts, expectedCount) {
+     }
+ 
+     const root = typeof receipt.output === 'string'
+-      ? receipt.output.match(/<testsuites\b([^>]*)>/)
++      ? receipt.output.match(/<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>/)
+       : null;
+     if (!root) {
+       incomplete = true;
+@@ -304,10 +304,10 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+     const shardSpecs = buildShardSpecs(allTests, shardTotal, durationMap);
+ 
+     if (shardSpecs.length === 0) {
+-      console.log('Full suite aggregate: status=PASS tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+-      console.log('Full suite exit: 0');
++      console.log('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
++      console.log('Full suite exit: 1');
+       completed = true;
+-      return 0;
++      return 1;
+     }
+ 
+     console.log(`Running local full suite in ${shardSpecs.length} shard(s)`);
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index b33b1eeb..82a1cdf7 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -18,7 +18,7 @@ const {
+   runFullSuiteInParallel,
+   spawnShard,
+ } = require('../../scripts/test-full-suite');
+-const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0">';
++const passingShardReceipt = '<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>';
+ 
+ function fakeShardChild(code, pid, args = []) {
+   const child = new EventEmitter();
+@@ -357,26 +357,26 @@ describe('scripts/test-full-suite.js', () => {
+     }
+     expect(logs.some((line) => line.includes('status=INCOMPLETE'))).toBe(true);
+   });
+-  test('runFullSuiteInParallel prints an authoritative empty aggregate', async () => {
++  test('runFullSuiteInParallel fails closed when no tests are discovered', async () => {
+     const logs = [];
+     const log = spyOn(console, 'log').mockImplementation((message) => logs.push(message));
+     try {
+       expect(await runFullSuiteInParallel({}, {
+         allTests: [],
+         durationMap: new Map(),
+-      })).toBe(0);
++      })).toBe(1);
+     } finally {
+       log.mockRestore();
+     }
+ 
+-    expect(logs).toContain('Full suite aggregate: status=PASS tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+-    expect(logs).toContain('Full suite exit: 0');
++    expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
++    expect(logs).toContain('Full suite exit: 1');
+   });
+ 
+   test('aggregates complete shard receipts and fails closed when one is malformed', () => {
+     expect(aggregateShardReceipts([
+-      { code: 0, index: 0, output: '<testsuites tests="12" assertions="15" failures="0" skipped="2">' },
+-      { code: 1, index: 1, output: '<testsuites tests="9" assertions="12" failures="1" errors="1" skipped="0">' },
++      { code: 0, index: 0, output: '<testsuites tests="12" assertions="15" failures="0" skipped="2"></testsuites>' },
++      { code: 1, index: 1, output: '<testsuites tests="9" assertions="12" failures="1" errors="1" skipped="0"></testsuites>' },
+     ], 2)).toEqual({
+       assertions: 27,
+       errors: 1,
+@@ -389,7 +389,7 @@ describe('scripts/test-full-suite.js', () => {
+     });
+ 
+     expect(aggregateShardReceipts([
+-      { code: 0, index: 0, output: '<testsuites tests="10" assertions="10" failures="0" skipped="0">' },
++      { code: 0, index: 0, output: '<testsuites tests="10" assertions="10" failures="0" skipped="0"></testsuites>' },
+       { code: 1, index: 1, output: null },
+     ], 2)).toEqual({
+       errors: 0,
+@@ -413,5 +413,9 @@ describe('scripts/test-full-suite.js', () => {
+     expect(aggregateShardReceipts([
+       { code: 0, index: 0, output: '<testsuites tests="0" assertions="0" failures="0" skipped="0">' },
+     ], 1).status).toBe('INCOMPLETE');
++
++    expect(aggregateShardReceipts([
++      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" skipped="0">' },
++    ], 1).status).toBe('INCOMPLETE');
+   });
+ });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,161 @@
+From 718c1c4786c8f581ff577c95daac47013083136c Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 17:06:12 +0530
+Subject: [PATCH] fix(setup): same-repo guard so git-hook resolution never
+ touches an ancestor repo (N1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Delta review (N1): F3's resolveHooksDirViaGit ran `git -C projectRoot rev-parse --git-path
+hooks` with no same-repo guard. When projectRoot is NOT its own repo but sits UNDER one (a
+not-yet-`git init`'d project inside a dotfiles-managed $HOME, a subdir of any repo), git
+resolved the ANCESTOR repo -> installNativeGitHooks would write pre-commit/pre-push into a
+repo the user never pointed forge at (cross-repo mutation), and verifyHooksActive reported
+false-ACTIVE while enforcement was actually inert. Pre-F3 fs-only behavior was the safe one.
+
+Fix (one guard): require projectRoot to have its OWN .git (dir or worktree file) before
+trusting git's answer; otherwise return null so the filesystem fallback fires and the caller
+warns "not a git repository". core.hooksPath still works for every legit (own-repo) case.
+
+Also fixed a comment nit: installGitHooks's loud=true doc claimed `forge init` is loud, but
+ensureGitHooksInstalled (init) calls it QUIET (init deliberately degrades to a warning). The
+comment now says loud = the setup handlers only.
+
+Tests: unit — a non-git subdir under a real git parent resolves to null (not the ancestor);
+e2e (d) — `forge setup` in a non-git subdir under a repo writes NO hooks into the parent.
+All lefthook-wiring + live-handler e2e pass (28/28).
+
+Note: SonarCloud's actual flag (S4036, fixed in 3bbdff2a via secureExecFileSync) is already
+green; this is the separate cross-repo correctness/security bug from the delta review.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/setup.js                     | 10 ++++++----
+ lib/lefthook-wiring.js                    | 11 +++++++++++
+ test/lefthook-wiring.test.js              | 18 +++++++++++++++--
+ test/setup-native-fallback-wiring.test.js | 24 +++++++++++++++++++++++
+ 4 files changed, 57 insertions(+), 6 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index fe77aa3c..6e1c143d 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -2735,10 +2735,12 @@ function installForgeHookScripts() {
+ // re-exported below for the existing test surface.
+ 
+ function installGitHooks(options = {}) { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
+-  // loud=true (the `forge setup` / `forge init` handlers) surfaces an inert-hooks
+-  // result as a HARD failure — a banner + non-zero exit — so setup never ends green
+-  // with TDD enforcement silently off (B3). loud=false (mid-stage repairRuntimeReadiness)
+-  // only warns, since it can run inside another command's flow.
++  // loud=true (the `forge setup` handlers — quickSetup + executeSetup) surfaces an
++  // inert-hooks result as a HARD failure — a banner + non-zero exit — so setup never ends
++  // green with TDD enforcement silently off (B3). loud=false (the default: mid-stage
++  // repairRuntimeReadiness AND `forge init` via ensureGitHooksInstalled) only warns, since
++  // init deliberately degrades to a warning rather than failing, and repair runs inside
++  // another command's flow.
+   const loud = options.loud === true;
+   console.log('Installing git hooks (TDD enforcement)...');
+ 
+diff --git a/lib/lefthook-wiring.js b/lib/lefthook-wiring.js
+index e9131cdf..385e7356 100644
+--- a/lib/lefthook-wiring.js
++++ b/lib/lefthook-wiring.js
+@@ -116,6 +116,17 @@ function resolveGitHooksDir(projectRoot) {
+ // Authoritative resolution via git (honors core.hooksPath). One fast spawn; returns
+ // null on any failure (git missing, not a repo) so the filesystem fallback can run.
+ function resolveHooksDirViaGit(projectRoot) {
++  // SAME-REPO GUARD (kernel N1 / B3): only trust git's answer when projectRoot is its OWN
++  // repo — a `.git` directory or a linked-worktree `.git` file present right here. Without
++  // this, `git -C <projectRoot> rev-parse` walks UP to an ANCESTOR repo when projectRoot is
++  // a not-yet-initialized folder sitting under one (e.g. a project inside a dotfiles-managed
++  // $HOME, or a subdir of any repo). We'd then write hooks into — and report ACTIVE from —
++  // a repo the user never pointed forge at (cross-repo mutation + a false-active verify).
++  // Returning null here defers to the filesystem fallback (which also returns null for such
++  // a path), so the caller warns "not a git repository" — the safe pre-F3 behavior.
++  if (!fs.existsSync(path.join(projectRoot, '.git'))) {
++    return null;
++  }
+   try {
+     // secureExecFileSync resolves `git` to its absolute path first (no PATH search, S4036).
+     // projectRoot is passed as an ARGUMENT to execFile (never a shell string), so it cannot
+diff --git a/test/lefthook-wiring.test.js b/test/lefthook-wiring.test.js
+index b9749025..e30c23a5 100644
+--- a/test/lefthook-wiring.test.js
++++ b/test/lefthook-wiring.test.js
+@@ -5,8 +5,8 @@
+ // bailed out writing NO lefthook.yml and wiring NO git hooks, so raw `git commit`/
+ // `git push` had zero enforcement and `forge ship` then hard-blocked on a missing hook.
+ //
+-// This suite covers the shared wiring module that both `bin/forge.js` (the live
+-// `forge setup` path) and `lib/commands/setup.js` (the repair path) delegate to:
++// This suite covers the shared wiring module that the LIVE `forge setup` path
++// (lib/commands/setup.js, the registry command) and the mid-stage repair path delegate to:
+ //   1. a REAL lefthook.yml is written (never the stock commented-out example),
+ //   2. a native `.git/hooks` fallback wires pre-commit/pre-push when lefthook is absent,
+ //   3. verifyHooksActive() reports honestly so setup can fail LOUDLY instead of no-op.
+@@ -15,6 +15,9 @@ const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
++const { spawnSync } = require('node:child_process');
++
++const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
+ 
+ const {
+   FORGE_USER_LEFTHOOK_YML,
+@@ -106,6 +109,17 @@ describe('resolveGitHooksDir', () => {
+     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-nogit-'));
+     expect(resolveGitHooksDir(tmp)).toBeNull();
+   });
++
++  test('same-repo guard: a non-git subdir UNDER a git repo resolves to null, not the ancestor (N1)', () => {
++    if (!gitAvailable) return; // git required to make the ancestor real
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-ancestor-'));
++    spawnSync('git', ['init'], { cwd: tmp }); // parent IS a real repo
++    const child = path.join(tmp, 'not-a-repo-yet');
++    fs.mkdirSync(child, { recursive: true });
++    // Without the guard, `git -C child rev-parse --git-path hooks` returns the PARENT's
++    // hooks dir. The guard requires child to have its OWN .git, so this must be null.
++    expect(resolveGitHooksDir(child)).toBeNull();
++  });
+   test('resolves the linked-worktree .git file to the common hooks dir', () => {
+     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-'));
+     const commonGit = path.join(tmp, 'main', '.git');
+diff --git a/test/setup-native-fallback-wiring.test.js b/test/setup-native-fallback-wiring.test.js
+index cdfcf03e..d0fb50b2 100644
+--- a/test/setup-native-fallback-wiring.test.js
++++ b/test/setup-native-fallback-wiring.test.js
+@@ -175,4 +175,28 @@ describe('forge setup — LIVE handler end-to-end (B3)', () => {
+       fs.rmSync(repo, { recursive: true, force: true });
+     }
+   }, 120000);
++
++  test('(d) non-git subdir UNDER a repo → NO hooks written to the parent (N1 cross-repo guard)', () => {
++    if (!gitAvailable) return; // git required to make the ancestor real
++    // The user points forge at a not-yet-initialized project folder that happens to live
++    // inside another repo (e.g. a dotfiles-managed $HOME). Forge must NOT resolve/mutate the
++    // ANCESTOR repo's hooks — that would be a cross-repo write + a false-active verify.
++    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-parent-'));
++    try {
++      gitInit(parent); // parent IS a real git repo
++      const child = path.join(parent, 'app'); // a non-git subdir under it
++      fs.mkdirSync(child, { recursive: true });
++      fs.writeFileSync(path.join(child, 'AGENTS.md'), '# demo\n');
++
++      runForgeSetup(child);
++
++      // The parent repo must NOT have received Forge's native hooks.
++      const parentPreCommit = path.join(parent, '.git', 'hooks', 'pre-commit');
++      const wroteToParent = fs.existsSync(parentPreCommit)
++        && fs.readFileSync(parentPreCommit, 'utf8').includes(FORGE_NATIVE_HOOK_SENTINEL);
++      expect(wroteToParent).toBe(false);
++    } finally {
++      fs.rmSync(parent, { recursive: true, force: true });
++    }
++  }, 120000);
+ });
+-- 
+2.51.0.windows.1
+

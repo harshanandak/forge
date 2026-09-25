@@ -1,0 +1,421 @@
+From 8e94ee5f7343309af9870dd3bf771ff67a3e8a81 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 18:09:49 +0530
+Subject: [PATCH] fix(shepherd): close rebased review gaps
+
+---
+ CHANGELOG.md                           |  2 +-
+ lib/adapters/pr-state-adapter.js       | 45 ++++++++++++++--
+ lib/commands/shepherd.js               | 24 +++++++--
+ lib/pr-monitor/flow-monitor.js         | 73 +++++++++++++++-----------
+ lib/pr-monitor/shepherd-lease.js       | 12 ++++-
+ test/commands/shepherd.test.js         | 19 +++++--
+ test/pr-monitor/flow-monitor.test.js   |  8 ++-
+ test/pr-monitor/shepherd-lease.test.js |  9 ++++
+ test/pr-state-adapter.test.js          | 36 +++++++++++++
+ 9 files changed, 183 insertions(+), 45 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f0fc4158..7986789c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
+ 
+ ### Added
+ 
+-- **Bounded Shepherd convergence and guarded merge handoff.** Shepherd now resumes PR monitoring from public Flow/Memory checkpoints, adopts and reaps watchers, consolidates exact-head local review evidence, segments oversized recovery manifests, and records one terminal receipt only after the human-authorized guarded merge succeeds. Repeated immutable history validation is cached by exact serialized bytes without weakening corruption checks. (#537, replaces #531, issue `1eddb71d-f630-4584-9816-30bb3db16b8f`)
++- **Bounded Shepherd convergence and guarded merge handoff.** Shepherd now resumes PR monitoring from public Flow/Memory checkpoints, adopts and reaps watchers, consolidates exact-head local review evidence, segments oversized recovery manifests, and records one idempotent terminal receipt after merged or closed evidence is durably confirmed; guarded merge remains human-authorized. Repeated immutable history validation is cached by exact serialized bytes without weakening corruption checks. (#537, replaces #531, issue `1eddb71d-f630-4584-9816-30bb3db16b8f`)
+ - **Public receipt-bound PR lifecycle authority.** `@forge/memory` now issues exact-head WorkPackets, authenticates RunReceipts, durably links exact `pr.opened` evidence through public Kernel provider seams, requires and rechecks live session-bound ownership and authoritative readiness, preserves Kernel ready order, and fails closed on replay conflicts, stale evidence, unsafe paths, provider loss, and unbounded operations. External merge and terminal `pr.merged` linkage remain owned by the guarded Forge merge path; canonical LeaseReceipt epochs remain explicitly deferred for 0.1. (issue `c2a3c655-ade2-4156-a8dc-e6b4ee2827ad`)
+ - **Human-gated legacy claim repair.** Adds a fixed-time, privacy-safe claim preflight, separately restored SQLite backup proof, and exact-digest `BEGIN IMMEDIATE` repair with terminal precedence, null-expiry preservation, CAS drift rejection, idempotent receipts, and interruption rollback. The operator-only script is never run at startup. (PR #528, issue `0fd8b8c1-686c-4808-8d99-f9ed5b9571de`)
+ - **Memory recall and session-attention stabilization.** Typed recall now filters before limits, superseded notes hide by default but remain recoverable, Claude read-attention injects only fenced path-matched notes, and session-summary reminders remain current and idempotent. (#504, issue `0874844f-9c0c-449a-994e-a804fe3fc3a5`)
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 0c0961b3..a2d3f60d 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -16,9 +16,8 @@
+  * This adapter is its own SPI; it does NOT extend the review adapter and is
+  * validated by `validatePrStateAdapter` (lib/pr-state-validator.js).
+  *
+- * It contains no merge or rebase machinery. Divergence handling (rebase) lives
+- * in the core/CLI behind an opt-in flag and is injected as `rebaseOntoBase`
+- * when enabled — it is never a default capability of this read surface.
++ * Divergence handling remains opt-in in the core. The adapter exposes the
++ * lease-bound rebase capability used only when `--auto-rebase` is enabled.
+  *
+  * @module adapters/pr-state-adapter
+  */
+@@ -131,6 +130,7 @@ class PrStateAdapter {
+     });
+     this._gh = options.gh || defaultRunner;
+     this._git = options.git || defaultRunner;
++    this._cwd = options.cwd;
+     this.lastProtectionStatus = null;
+   }
+ 
+@@ -398,6 +398,45 @@ class PrStateAdapter {
+     this._git('git', ['fetch', remote, branch], cwd ? { cwd } : undefined);
+   }
+ 
++  /** Rebase the checked-out PR head and force-push only under its exact prior-head lease. */
++  async rebaseOntoBase({ baseRef, expectedHead }) {
++    const fullHead = String(expectedHead || '').toLowerCase();
++    if (!/^[0-9a-f]{40}$/.test(fullHead)) throw new Error('Rebase requires one exact expected head.');
++    const opts = this._cwd ? { cwd: this._cwd } : undefined;
++    const previousHead = this._git('git', ['rev-parse', 'HEAD'], opts).trim().toLowerCase();
++    if (previousHead !== fullHead) {
++      const error = new Error('HEAD changed before the rebase lease was armed.');
++      error.leaseRejected = true;
++      throw error;
++    }
++    const upstream = this._git(
++      'git',
++      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'],
++      opts,
++    ).trim();
++    const slash = upstream.indexOf('/');
++    if (slash <= 0 || slash === upstream.length - 1) throw new Error('The PR branch has no pushable upstream.');
++    const remote = upstream.slice(0, slash);
++    const branch = upstream.slice(slash + 1);
++    this._git('git', ['rebase', baseRef], opts);
++    const headSha = this._git('git', ['rev-parse', 'HEAD'], opts).trim().toLowerCase();
++    if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('Rebase did not produce one exact head.');
++    try {
++      this._git('git', [
++        'push',
++        `--force-with-lease=refs/heads/${branch}:${previousHead}`,
++        remote,
++        `HEAD:refs/heads/${branch}`,
++      ], opts);
++    } catch (error) {
++      if (/stale info|rejected|force-with-lease/i.test(`${error?.message || ''} ${error?.stderr || ''}`)) {
++        error.leaseRejected = true;
++      }
++      throw error;
++    }
++    return { previousHead, headSha };
++  }
++
+   /**
+    * Post a status reply to a review thread via the existing shell helper.
+    * Reply ONLY — never resolve (resolution is the semantic `/review` agent's job).
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 4f083c3e..200bcc5f 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -77,7 +77,7 @@ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', tim
+  * @returns {Promise<{ pr: string, owner: string, repo: string, base: string, baseRef: string, cwd?: string }>}
+  */
+ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+-  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName,headRefOid']);
++  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName,headRefOid,url']);
+   const prInfo = JSON.parse(prJson || '{}');
+   const base = prInfo.baseRefName || 'master';
+   const headSha = typeof prInfo.headRefOid === 'string' && /^[0-9a-f]{40}$/i.test(prInfo.headRefOid)
+@@ -89,12 +89,28 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+   const owner = repo.owner?.login || '';
+   const name = repo.name || '';
+ 
++  const match = String(prInfo.url || '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/i);
++  const baseRepository = match ? `${match[1]}/${match[2]}`.toLowerCase() : null;
+   let baseRemote;
+   try {
+-    baseRemote = git('git', ['remote']).split(/\s+/).filter(Boolean)[0] || 'origin';
++    const remotes = git('git', ['remote']).split(/\s+/).filter(Boolean);
++    if (baseRepository) {
++      baseRemote = remotes.find((remote) => {
++        try {
++          const url = git('git', ['remote', 'get-url', remote]).trim();
++          const remoteMatch = url.match(/(?:github\.com[/:])([^/]+)\/([^/]+?)(?:\.git)?$/i);
++          return remoteMatch && `${remoteMatch[1]}/${remoteMatch[2]}`.toLowerCase() === baseRepository;
++        } catch {
++          return false;
++        }
++      }) || null;
++    } else {
++      [baseRemote] = remotes;
++    }
+   } catch (_err) {
+-    baseRemote = 'origin';
++    baseRemote = null;
+   }
++  if (!baseRemote) throw new Error('The PR base repository has no matching local Git remote.');
+ 
+   let localHead = null;
+   try {
+@@ -601,7 +617,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+ 
+   const ctx = await buildContext({ pr, gh, git, projectRoot });
+ 
+-  const adapter = deps.adapter || new PrStateAdapter({ gh, git });
++  const adapter = deps.adapter || new PrStateAdapter({ gh, git, cwd: projectRoot });
+   const validation = validatePrStateAdapter(adapter);
+   if (!validation.valid) {
+     return { success: false, error: `Invalid pr-state adapter: ${validation.errors.join('; ')}` };
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index e94025b2..2f7aac2f 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -822,7 +822,7 @@ async function readPlannedEvent(ctx, durableEvents, sequence, key) {
+     throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable monitor transition plan is unavailable', { cause: error });
+   }
+   if (!row) return null;
+-  const event = parseEventRow(row, ctx.monitorId);
++  const event = parseEventRow(row, ctx.monitorId, eventValidationCache(ctx.store));
+   return event.payload.event_id === expectedId && event.payload.sequence === sequence ? event : null;
+ }
+ 
+@@ -955,6 +955,44 @@ async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectR
+   return null;
+ }
+ 
++function validPrecommitSegmentEvent(ctx, event, reference, index) {
++  const candidate = event.payload.bounded_payload.batch_plan;
++  const record = event.payload.bounded_payload.record;
++  const key = planRecordKey(reference.id, index);
++  return event.payload.actionability === 'advisory'
++    && validBatchPlanReference(candidate)
++    && candidate.start_sequence === reference.start_sequence
++    && candidate.segment_count === reference.segment_count
++    && candidate.index === index
++    && index < reference.segment_count
++    && candidate.committed !== true
++    && event.payload.sequence === reference.start_sequence + index
++    && event.payload.event_id === monitorEventId(
++      ctx.monitorId,
++      event.payload.sequence,
++      T.SNAPSHOT_CHECKPOINT,
++      key,
++    )
++    && event.payload.type === T.SNAPSHOT_CHECKPOINT
++    && event.payload.bounded_payload.snapshot === null
++    && event.payload.bounded_payload.checkpoint_complete === false
++    && record?.type === T.SNAPSHOT_CHECKPOINT
++    && record?.key === boundIdentity(key)
++    && record?.seq === event.payload.sequence
++    && typeof event.payload.bounded_payload.pending_batch === 'string';
++}
++
++function validPrecommitPlanIdentity(ctx, batches, reference, subjectRevision) {
++  const planId = computeContentHash({
++    monitor_id: ctx.monitorId,
++    subject_revision: subjectRevision,
++    segments: batches.map(batch => batch.encoded),
++  });
++  return planId === reference.id
++    && !batches.slice(0, -1).some(batch => batch.snapshot !== null)
++    && batches.at(-1).snapshot !== null;
++}
++
+ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+   if (pendingEvents.length === 0) return false;
+   let offset = 0;
+@@ -970,29 +1008,7 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+       if (candidate?.id !== reference.id) break;
+       const index = batches.length;
+       const pendingBatch = event.payload.bounded_payload.pending_batch;
+-      const record = event.payload.bounded_payload.record;
+-      const key = planRecordKey(reference.id, index);
+-      if (event.payload.actionability !== 'advisory'
+-        || !validBatchPlanReference(candidate)
+-        || candidate.start_sequence !== reference.start_sequence
+-        || candidate.segment_count !== reference.segment_count
+-        || candidate.index !== index
+-        || index >= reference.segment_count
+-        || candidate.committed === true
+-        || event.payload.sequence !== reference.start_sequence + index
+-        || event.payload.event_id !== monitorEventId(
+-          ctx.monitorId,
+-          event.payload.sequence,
+-          T.SNAPSHOT_CHECKPOINT,
+-          key,
+-        )
+-        || event.payload.type !== T.SNAPSHOT_CHECKPOINT
+-        || event.payload.bounded_payload.snapshot !== null
+-        || event.payload.bounded_payload.checkpoint_complete !== false
+-        || record?.type !== T.SNAPSHOT_CHECKPOINT
+-        || record?.key !== boundIdentity(key)
+-        || record?.seq !== event.payload.sequence
+-        || typeof pendingBatch !== 'string') return false;
++      if (!validPrecommitSegmentEvent(ctx, event, reference, index)) return false;
+       try {
+         batches.push(decodePendingBatch(pendingBatch, ctx, subjectRevision));
+       } catch {
+@@ -1004,14 +1020,7 @@ function validOrphanedPrecommitPlan(ctx, pendingEvents, subjectRevision) {
+       if (batches.some(batch => batch.snapshot !== null)) return false;
+       continue;
+     }
+-    const planId = computeContentHash({
+-      monitor_id: ctx.monitorId,
+-      subject_revision: subjectRevision,
+-      segments: batches.map(batch => batch.encoded),
+-    });
+-    if (planId !== reference.id
+-      || batches.slice(0, -1).some(batch => batch.snapshot !== null)
+-      || batches.at(-1).snapshot === null) return false;
++    if (!validPrecommitPlanIdentity(ctx, batches, reference, subjectRevision)) return false;
+   }
+   return true;
+ }
+diff --git a/lib/pr-monitor/shepherd-lease.js b/lib/pr-monitor/shepherd-lease.js
+index 7a9830c6..2e062cad 100644
+--- a/lib/pr-monitor/shepherd-lease.js
++++ b/lib/pr-monitor/shepherd-lease.js
+@@ -41,6 +41,7 @@ const { resolveGitCommonDir } = require('../kernel/broker');
+ // enough margin that a blocked event loop cannot be reclaimed mid-read.
+ const STALE_MS = 90000;
+ const LOCK_FILE_MODE = 0o600;
++const MAX_WATCHER_PAYLOAD_BYTES = 1024 * 1024;
+ 
+ /**
+  * Resolve the shared lock path. `gitCommonDir` may be injected (tests, or a
+@@ -211,7 +212,15 @@ function updateWatchers(projectRoot, prNumbers, { gitCommonDir, token, pid = pro
+   const file = lockFilePath(projectRoot, { gitCommonDir });
+   const held = readLock(file);
+   if (!held || !ownsLock(held, { token, pid })) return false;
+-  held.watchers = Array.isArray(prNumbers) ? prNumbers : [];
++  const watchers = Array.isArray(prNumbers) ? prNumbers : [];
++  let watcherBytes;
++  try {
++    watcherBytes = Buffer.byteLength(JSON.stringify(watchers), 'utf8');
++  } catch {
++    return false;
++  }
++  if (watcherBytes > MAX_WATCHER_PAYLOAD_BYTES) return false;
++  held.watchers = watchers;
+   writeLock(file, held);
+   return true;
+ }
+@@ -239,6 +248,7 @@ function owns(projectRoot, { gitCommonDir, token, pid = process.pid } = {}) {
+ 
+ module.exports = {
+   STALE_MS,
++  MAX_WATCHER_PAYLOAD_BYTES,
+   lockFilePath,
+   pidAlive,
+   ownsLock,
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 735055bf..75797fc9 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -66,19 +66,32 @@ describe('shepherd command handler', () => {
+     const gh = (cmd, args) => {
+       ghCalls.push(args.join(' '));
+       if (args.includes('pr') && args.includes('view')) {
+-        return JSON.stringify({ baseRefName: 'release/2.0', headRefOid: 'a'.repeat(40) });
++        return JSON.stringify({
++          baseRefName: 'release/2.0',
++          headRefOid: 'a'.repeat(40),
++          url: 'https://github.com/acme/widget/pull/42',
++        });
+       }
+       if (args.includes('repo') && args.includes('view')) {
+         return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+       }
+       return '{}';
+     };
+-    const git = () => 'origin\n';
++    const git = (_cmd, args) => {
++      if (args[0] === 'remote' && args.length === 1) return 'fork\nupstream\n';
++      if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'fork') {
++        return 'git@github.com:contributor/widget.git\n';
++      }
++      if (args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'upstream') {
++        return 'https://github.com/acme/widget.git\n';
++      }
++      return '';
++    };
+ 
+     const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
+ 
+     expect(ctx.base).toBe('release/2.0');
+-    expect(ctx.baseRef).toBe('origin/release/2.0');
++    expect(ctx.baseRef).toBe('upstream/release/2.0');
+     expect(ctx.headSha).toBe('a'.repeat(40));
+     expect(ctx.owner).toBe('acme');
+     expect(ctx.repo).toBe('widget');
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 8dfe209c..5d7eb6b0 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -52,7 +52,13 @@ function durableStore() {
+     },
+     async getEvent(eventId) {
+       const event = events.find(item => item.payload.event_id === eventId);
+-      return event ? { envelope_json: JSON.stringify(event) } : null;
++      return event ? {
++        event_id: event.payload.event_id,
++        envelope_json: JSON.stringify(event),
++        content_hash: event.content_hash,
++        monitor_id: event.payload.monitor_id,
++        sequence: event.payload.sequence,
++      } : null;
+     },
+     async readEventTail(monitorId, { limit }) {
+       const matching = events.filter(event => event.payload.monitor_id === monitorId);
+diff --git a/test/pr-monitor/shepherd-lease.test.js b/test/pr-monitor/shepherd-lease.test.js
+index 38f73fbf..cb61b431 100644
+--- a/test/pr-monitor/shepherd-lease.test.js
++++ b/test/pr-monitor/shepherd-lease.test.js
+@@ -134,6 +134,15 @@ describe('shepherd-lease', () => {
+     expect(readHolder().watchers).toEqual([7, 8]);
+   });
+ 
++  test('updateWatchers rejects an aggregate watcher payload above the lock-file bound', () => {
++    const held = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
++    expect(lease.updateWatchers(null, [7], opts({ token: held.token }))).toBe(true);
++    const oversized = [{ lifecycle: 'x'.repeat(lease.MAX_WATCHER_PAYLOAD_BYTES) }];
++
++    expect(lease.updateWatchers(null, oversized, opts({ token: held.token }))).toBe(false);
++    expect(readHolder().watchers).toEqual([7]);
++  });
++
+   test('heartbeat stamp refreshes heartbeatAt for the token owner and start/stop are safe', () => {
+     const held = lease.acquire(null, opts({ pid: 100, isAlive: alive, now: () => 1000 }));
+     const before = readHolder().heartbeatAt;
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 449c854f..ac868c52 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -845,3 +845,39 @@ describe('PrStateAdapter — fetchBase (audit A6: stale-ref guard)', () => {
+     expect(calls).toHaveLength(0);
+   });
+ });
++
++describe('PrStateAdapter — lease-bound rebase', () => {
++  test('rebases and force-pushes the current upstream branch with the exact prior head lease', async () => {
++    const previousHead = 'a'.repeat(40);
++    const nextHead = 'b'.repeat(40);
++    let headReads = 0;
++    const calls = [];
++    const git = (cmd, args, opts) => {
++      calls.push({ cmd, args, opts });
++      if (args.join(' ') === 'rev-parse HEAD') {
++        headReads += 1;
++        return `${headReads === 1 ? previousHead : nextHead}\n`;
++      }
++      if (args.join(' ') === 'rev-parse --abbrev-ref --symbolic-full-name @{upstream}') {
++        return 'origin/feature\n';
++      }
++      return '';
++    };
++    const adapter = new PrStateAdapter({ gh: () => '', git, cwd: '/wt' });
++
++    const result = await adapter.rebaseOntoBase({ baseRef: 'upstream/master', expectedHead: previousHead });
++
++    expect(result).toEqual({ previousHead, headSha: nextHead });
++    expect(calls).toContainEqual({ cmd: 'git', args: ['rebase', 'upstream/master'], opts: { cwd: '/wt' } });
++    expect(calls).toContainEqual({
++      cmd: 'git',
++      args: [
++        'push',
++        `--force-with-lease=refs/heads/feature:${previousHead}`,
++        'origin',
++        'HEAD:refs/heads/feature',
++      ],
++      opts: { cwd: '/wt' },
++    });
++  });
++});
+-- 
+2.51.0.windows.1
+

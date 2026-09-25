@@ -1,0 +1,39 @@
+From eb624052a56443bdb8fbc56db34ebab92352692b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 13:32:29 +0530
+Subject: [PATCH] chore: ignore .forge/config.yaml
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The file is written by forge's own config commands, and the protected-state
+pre-commit gate blocks hand-commits to it — so a tracked copy can only ever be
+stale, and it surfaces as permanent noise in git status on any machine where
+forge has run.
+
+This was the one piece of the old local-only master commits that PR #534 did
+not carry across.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .gitignore | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/.gitignore b/.gitignore
+index 5ec9d5af..257d503a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -99,6 +99,10 @@ docs/planning/
+ # written by the per-turn recall hook). Machine- and session-specific — never source.
+ .forge/memory-recall/
+ 
++# Managed by `forge` config commands, not by hand — the protected-state gate
++# blocks direct commits, so a tracked copy can only ever be stale.
++.forge/config.yaml
++
+ # Protected-state audit log (capped append-only record of blocked protected-path
+ # edits, written by the pre-commit check). Machine-local — never source.
+ .forge/protected-state-audit.jsonl
+-- 
+2.51.0.windows.1
+

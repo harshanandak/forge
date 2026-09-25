@@ -1,0 +1,125 @@
+From 998edbe43d26aad7d377aabaee6b034e824fa2f2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 10:54:30 +0530
+Subject: [PATCH] fix(activation): drop gate/stage from MUTATING_VERBS
+ (read-only subcommands)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+gate and stage each have read-only subcommands (`gate status`/`gate check`,
+`stage --list`/`--current`) that were wrongly creating .forge/config.yaml in a
+bare repo via ensureForgeHome — violating the foundation's own "read-only
+writes nothing" invariant.
+
+Verified their mutating forms self-manage without ensureForgeHome:
+`gate enable|disable` writes via the config writer (self-creates config.yaml),
+and `gate approve|reject` / `stage --start|--complete` write through the kernel
+broker (self-creates its store, graceful git fallback). So dropping the whole
+verb is safe. `role` is retained — it has no read-only form.
+
+Tests: +3 (classifier excludes gate/stage, retains role; dispatch pins that
+gate/stage read-only subcommands write nothing in a bare repo). 28/28 green,
+ESLint clean, real-CLI bare-repo smoke confirms no .forge written.
+---
+ lib/activation/ensure-forge-home.js        | 17 +++++++++++++----
+ test/activation/ensure-forge-home.test.js  | 14 ++++++++++++++
+ test/activation/registry-lazy-init.test.js | 19 +++++++++++++++++++
+ 3 files changed, 46 insertions(+), 4 deletions(-)
+
+diff --git a/lib/activation/ensure-forge-home.js b/lib/activation/ensure-forge-home.js
+index 13252070..5d5c506d 100644
+--- a/lib/activation/ensure-forge-home.js
++++ b/lib/activation/ensure-forge-home.js
+@@ -32,9 +32,20 @@ const { renderAdoptionConfigYaml } = require('../adoption-profiles');
+  * own (richer) logic, and pre-creating a minimal config would trip their
+  * no-clobber guard. Also excludes every read-only verb, so those write nothing.
+  *
++ * Deliberately EXCLUDES `gate` and `stage`: each has read-only subcommands
++ * (`gate status`/`gate check`, `stage --list`/`--current`) that must not create
++ * `.forge/` — a verb-level trigger would violate the foundation's own
++ * "read-only writes nothing" invariant. Their genuinely-mutating forms
++ * self-manage without ensureForgeHome: `gate enable|disable` and `role` write
++ * via the config writer (which creates `.forge/config.yaml` if absent), while
++ * `gate approve|reject` and `stage --start|--complete` write kernel events/runs
++ * through the broker (which lazily creates its own store). Subcommand-level
++ * granularity is deferred; excluding the whole verb is the correct, safe default
++ * because the read-only forms are the common case. `role` is retained: it has NO
++ * read-only form (every valid invocation writes config), so it violates nothing.
++ *
+  * A command module may override membership by exporting `mutating: true|false`;
+- * this Set is the default classification for the foundation. Refining the full
+- * per-command `mutating` flags is follow-up work.
++ * this Set is the default classification for the foundation.
+  */
+ const MUTATING_VERBS = new Set([
+   'claim',
+@@ -44,10 +55,8 @@ const MUTATING_VERBS = new Set([
+   'update',
+   'add',
+   'new',
+-  'stage',
+   'remember',
+   'role',
+-  'gate',
+   'patch',
+ ]);
+ 
+diff --git a/test/activation/ensure-forge-home.test.js b/test/activation/ensure-forge-home.test.js
+index a66f5bc2..2e6a0ccf 100644
+--- a/test/activation/ensure-forge-home.test.js
++++ b/test/activation/ensure-forge-home.test.js
+@@ -111,6 +111,20 @@ describe('isMutatingVerb', () => {
+     expect(MUTATING_VERBS.has('setup')).toBe(false);
+   });
+ 
++  test('excludes gate/stage — they have read-only subcommands that must write nothing', () => {
++    // gate status|check and stage --list|--current are read-only; a verb-level
++    // trigger would wrongly create .forge/ for them. Their mutating forms
++    // self-manage (config writer / kernel broker) without ensureForgeHome.
++    expect(isMutatingVerb('gate')).toBe(false);
++    expect(isMutatingVerb('stage')).toBe(false);
++    expect(MUTATING_VERBS.has('gate')).toBe(false);
++    expect(MUTATING_VERBS.has('stage')).toBe(false);
++  });
++
++  test('retains role — it has no read-only form (every invocation writes config)', () => {
++    expect(isMutatingVerb('role')).toBe(true);
++  });
++
+   test("a command module's explicit mutating flag overrides the default set", () => {
+     expect(isMutatingVerb('ready', { mutating: true })).toBe(true);
+     expect(isMutatingVerb('claim', { mutating: false })).toBe(false);
+diff --git a/test/activation/registry-lazy-init.test.js b/test/activation/registry-lazy-init.test.js
+index 090285dc..1d0c9d7d 100644
+--- a/test/activation/registry-lazy-init.test.js
++++ b/test/activation/registry-lazy-init.test.js
+@@ -73,6 +73,25 @@ describe('executeCommand lazy .forge/ home', () => {
+     expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
+   });
+ 
++  test('gate/stage read-only subcommands write NOTHING in a bare repo', async () => {
++    // Verb-level guard: because gate/stage are not in MUTATING_VERBS, dispatch
++    // never calls ensureForgeHome for them — regardless of subcommand — so their
++    // read-only forms (gate status/check, stage --list/--current) leave a bare
++    // repo untouched. (Their mutating forms self-manage inside their handlers.)
++    const cases = [
++      ['gate', ['status', 'gate.plan-exit']],
++      ['gate', ['check', 'gate.plan-exit']],
++      ['stage', ['--list']],
++      ['stage', ['--current']],
++    ];
++    for (const [verb, args] of cases) {
++      const root = makeBareRepo();
++      const commands = makeCommands({ [verb]: {} });
++      await executeCommand(commands, verb, args, {}, root);
++      expect(fs.existsSync(path.join(root, '.forge'))).toBe(false);
++    }
++  });
++
+   test('an existing .forge/ is never clobbered by a mutating verb', async () => {
+     const root = makeBareRepo();
+     const configPath = path.join(root, '.forge', 'config.yaml');
+-- 
+2.51.0.windows.1
+

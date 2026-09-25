@@ -1,0 +1,116 @@
+From 6202b6b847576cb0c76f84087587abddaeafad0a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 17:08:36 +0530
+Subject: [PATCH] fix(memory): serialize linkage transactions
+
+---
+ lib/kernel/broker.js                            | 17 +++++++++++++++++
+ packages/memory/src/pr-lifecycle-authority.js   |  6 +++++-
+ .../memory/test/pr-lifecycle-authority.test.js  | 12 ++++++++++++
+ test/kernel/trace.test.js                       | 10 ++++++++++
+ 4 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index b8049574..3f741754 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -32,6 +32,21 @@ const LOCAL_BROKER_PRAGMAS = Object.freeze([
+ 	'PRAGMA foreign_keys=ON;',
+ 	'PRAGMA busy_timeout=5000;',
+ ]);
++const PR_LINKAGE_TURNS = new WeakMap();
++
++async function withPrLinkageTurn(driver, operation) {
++	const prior = PR_LINKAGE_TURNS.get(driver) || Promise.resolve();
++	let release;
++	const current = new Promise(resolve => { release = resolve; });
++	PR_LINKAGE_TURNS.set(driver, current);
++	await prior;
++	try {
++		return await operation();
++	} finally {
++		release();
++		if (PR_LINKAGE_TURNS.get(driver) === current) PR_LINKAGE_TURNS.delete(driver);
++	}
++}
+ 
+ // Bounded wall-clock ceiling for the single `git rev-parse --git-common-dir`
+ // probe below. This synchronous spawn has intermittently hung on Windows/Node
+@@ -1749,6 +1764,7 @@ function createLocalBroker(options = {}) {
+ 			const linkageInput = preparePrLinkageInput(input, driver);
+ 			const evidence = derivePrEvidence(linkageInput);
+ 			const config = getConfig();
++			return withPrLinkageTurn(driver, async () => {
+ 			await beginImmediate(driver, config);
+ 			try {
+ 				if (context.requireExactLifecycleOwnership === true) {
+@@ -1803,6 +1819,7 @@ function createLocalBroker(options = {}) {
+ 				await driver.exec(`PRAGMA busy_timeout=${config.busyTimeoutMs ?? 5000};`, config);
+ 				throw error;
+ 			}
++			});
+ 		},
+ 
+ 		async recordOpenedPrLinkage(input, context = {}) {
+diff --git a/packages/memory/src/pr-lifecycle-authority.js b/packages/memory/src/pr-lifecycle-authority.js
+index 81981bdc..802d240d 100644
+--- a/packages/memory/src/pr-lifecycle-authority.js
++++ b/packages/memory/src/pr-lifecycle-authority.js
+@@ -892,7 +892,11 @@ function createPrLifecycleAuthority({ provider, liveProbes = {}, receiptVerifier
+     const method = typeof provider.listReadyWork === 'function' ? 'listReadyWork' : undefined;
+     const response = method
+       ? await callMethod(provider, method, [input], 'ready', { timeoutMs, project: projectReadyResponse })
+-      : await callMethod(provider, 'runIssueOperation', ['ready', [input], {}], 'ready', { timeoutMs, unwrap: true, project: projectReadyResponse });
++      : await callMethod(provider, 'runIssueOperation', ['ready', [], {
++        actor: input.actor_id ?? input.actorId,
++        sessionId: input.session_id ?? input.sessionId,
++        worktreeId: input.worktree_id ?? input.worktreeId,
++      }], 'ready', { timeoutMs, unwrap: true, project: projectReadyResponse });
+     const ready = Array.isArray(response) ? response : response?.issues;
+     if (!Array.isArray(ready)) fail('PR_LIFECYCLE_UNAVAILABLE', 'ready provider returned a malformed queue');
+     return ready;
+diff --git a/packages/memory/test/pr-lifecycle-authority.test.js b/packages/memory/test/pr-lifecycle-authority.test.js
+index d78407a7..88200edf 100644
+--- a/packages/memory/test/pr-lifecycle-authority.test.js
++++ b/packages/memory/test/pr-lifecycle-authority.test.js
+@@ -1022,4 +1022,16 @@ describe('public PR lifecycle authority', () => {
+         .rejects.toMatchObject({ code: 'PR_LIFECYCLE_CAPABILITY_INVALID' });
+     }
+   });
++
++  test('forwards requester context to the public ready operation', async () => {
++    const base = provider();
++    delete base.listReadyWork;
++    let seen;
++    base.runIssueOperation = async (operation, args, context) => { seen = { operation, args, context }; return { ok: true, data: [] }; };
++    const authority = createPrLifecycleAuthority({ provider: base });
++    await authority.requestNextWork({ actor_id: 'agent-1', session_id: 'session-1', worktree_id: 'worktree-1' });
++    expect(seen).toEqual({ operation: 'ready', args: [], context: {
++      actor: 'agent-1', sessionId: 'session-1', worktreeId: 'worktree-1',
++    } });
++  });
+ });
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 2d33e144..24b8d260 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -216,6 +216,16 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		}
+ 	});
+ 
++	test('serializes same-driver linkage turns and releases the queue after failure', async () => {
++		const invalidPacket = workPacket({ target_head: 'f'.repeat(40) });
++		const invalid = linkage('opened', invalidPacket, runReceipt(invalidPacket, { exact_head: HEAD_SHA }));
++		const first = broker.recordPrLinkage(invalid).then(() => null, error => error);
++		const second = broker.recordPrLinkage(linkage());
++		await expect(first).resolves.toBeInstanceOf(Error);
++		await expect(second).resolves.toHaveProperty('iteration');
++		await expect(broker.recordPrLinkage(linkage())).resolves.toHaveProperty('iteration');
++	});
++
+ 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+ 		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+ 			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+-- 
+2.51.0.windows.1
+

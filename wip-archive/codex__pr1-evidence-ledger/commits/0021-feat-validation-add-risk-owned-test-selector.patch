@@ -1,0 +1,1010 @@
+From 914c872b125a7c94638611e48c42172bf511933a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 16:23:52 +0530
+Subject: [PATCH] feat(validation): add risk-owned test selector
+
+---
+ lib/validation/risk-manifest.js               | 228 +++++++++++++++
+ scripts/generate-risk-manifest.js             |  79 ++++++
+ .../risk-manifest-generator.test.js           |  32 +++
+ test/validation/risk-manifest.test.js         | 145 ++++++++++
+ validation/risk-manifest.source.yaml          |  97 +++++++
+ validation/risk-manifest.v1.json              | 263 ++++++++++++++++++
+ validation/risk-manifest.v1.schema.json       |  99 +++++++
+ 7 files changed, 943 insertions(+)
+ create mode 100644 lib/validation/risk-manifest.js
+ create mode 100644 scripts/generate-risk-manifest.js
+ create mode 100644 test/validation/risk-manifest-generator.test.js
+ create mode 100644 test/validation/risk-manifest.test.js
+ create mode 100644 validation/risk-manifest.source.yaml
+ create mode 100644 validation/risk-manifest.v1.json
+ create mode 100644 validation/risk-manifest.v1.schema.json
+
+diff --git a/lib/validation/risk-manifest.js b/lib/validation/risk-manifest.js
+new file mode 100644
+index 00000000..9c314b21
+--- /dev/null
++++ b/lib/validation/risk-manifest.js
+@@ -0,0 +1,228 @@
++'use strict';
++
++const crypto = require('node:crypto');
++const fs = require('node:fs');
++const { stableStringify } = require('../kernel/evaluators');
++
++const SURFACE_KINDS = new Set(['path', 'command', 'schema']);
++
++function sha256(value) {
++  return `sha256:${crypto.createHash('sha256').update(value, 'utf8').digest('hex')}`;
++}
++
++function hashManifest(manifest) {
++  const { manifest_hash: _manifestHash, ...payload } = manifest;
++  return sha256(stableStringify(payload));
++}
++
++function assert(condition, message) {
++  if (!condition) throw new Error(`Invalid risk manifest: ${message}`);
++}
++
++function assertUniqueIds(entries, label) {
++  const ids = new Set();
++  for (const entry of entries) {
++    assert(entry && typeof entry.id === 'string' && entry.id.length > 0, `${label} id is required`);
++    assert(!ids.has(entry.id), `duplicate ${label} id "${entry.id}"`);
++    ids.add(entry.id);
++  }
++  return ids;
++}
++
++function selectorsOverlap(left, right) {
++  return left.kind === right.kind
++    && (left.prefix.startsWith(right.prefix) || right.prefix.startsWith(left.prefix));
++}
++
++function validateManifest(manifest, { verifyHash = true } = {}) {
++  assert(manifest && typeof manifest === 'object' && !Array.isArray(manifest), 'root must be an object');
++  assert(manifest.schema_id === 'forge.validation.risk-manifest.v1', 'unsupported schema_id');
++  assert(Number.isInteger(manifest.revision) && manifest.revision > 0, 'revision must be a positive integer');
++  assert(/^sha256:[a-f0-9]{64}$/.test(manifest.source_hash), 'source_hash must be a SHA-256 digest');
++  assert(typeof manifest.generator_version === 'string' && manifest.generator_version.length > 0,
++    'generator_version is required');
++  assert(Array.isArray(manifest.risks) && manifest.risks.length > 0, 'risks must be non-empty');
++  assert(Array.isArray(manifest.owners) && manifest.owners.length > 0, 'owners must be non-empty');
++
++  const riskIds = assertUniqueIds(manifest.risks, 'risk');
++  const ownerIds = assertUniqueIds(manifest.owners, 'owner');
++  const selectors = [];
++  const packageRoots = [];
++
++  for (const risk of manifest.risks) {
++    assert(/^S[0-3]$/.test(risk.severity), `risk "${risk.id}" has invalid severity`);
++    assert(typeof risk.non_quarantinable === 'boolean', `risk "${risk.id}" must declare non_quarantinable`);
++    assert(Array.isArray(risk.gate_ids) && risk.gate_ids.length > 0,
++      `risk "${risk.id}" must own at least one gate`);
++  }
++
++  for (const owner of manifest.owners) {
++    assert(typeof owner.product === 'string' && owner.product.length > 0, `owner "${owner.id}" needs product`);
++    assert(typeof owner.package === 'string' && owner.package.length > 0, `owner "${owner.id}" needs package`);
++    assert(Array.isArray(owner.risk_ids) && owner.risk_ids.length > 0, `owner "${owner.id}" needs risk_ids`);
++    assert(owner.risk_ids.every((id) => riskIds.has(id)), `owner "${owner.id}" references an unknown risk`);
++    assert(Array.isArray(owner.canonical_test_ids) && owner.canonical_test_ids.length > 0,
++      `owner "${owner.id}" needs canonical_test_ids`);
++    assert(Array.isArray(owner.lanes) && owner.lanes.length > 0, `owner "${owner.id}" needs lanes`);
++    assert(Array.isArray(owner.selectors) && owner.selectors.length > 0, `owner "${owner.id}" needs selectors`);
++    assert(Array.isArray(owner.package_roots) && owner.package_roots.length > 0,
++      `owner "${owner.id}" needs package_roots`);
++
++    for (const selector of owner.selectors) {
++      assert(SURFACE_KINDS.has(selector.kind), `owner "${owner.id}" has invalid selector kind`);
++      assert(typeof selector.prefix === 'string' && selector.prefix.length > 0,
++        `owner "${owner.id}" has an empty selector prefix`);
++      selectors.push({ ...selector, owner_id: owner.id });
++    }
++    for (const prefix of owner.package_roots) {
++      assert(typeof prefix === 'string' && prefix.length > 0, `owner "${owner.id}" has an empty package root`);
++      packageRoots.push({ prefix, owner_id: owner.id });
++    }
++  }
++
++  for (let index = 0; index < selectors.length; index += 1) {
++    for (let peer = index + 1; peer < selectors.length; peer += 1) {
++      assert(!selectorsOverlap(selectors[index], selectors[peer]),
++        `selectors overlap between "${selectors[index].owner_id}" and "${selectors[peer].owner_id}"`);
++    }
++  }
++  for (let index = 0; index < packageRoots.length; index += 1) {
++    for (let peer = index + 1; peer < packageRoots.length; peer += 1) {
++      const left = packageRoots[index];
++      const right = packageRoots[peer];
++      assert(!(left.prefix.startsWith(right.prefix) || right.prefix.startsWith(left.prefix)),
++        `package roots overlap between "${left.owner_id}" and "${right.owner_id}"`);
++    }
++  }
++
++  assert(manifest.unknown_owner_fallback?.lane === 'repository-baseline',
++    'unknown_owner_fallback must select repository-baseline');
++  assert(Array.isArray(manifest.unknown_owner_fallback.required_gates)
++    && manifest.unknown_owner_fallback.required_gates.length > 0,
++  'unknown_owner_fallback must declare required_gates');
++  assert(ownerIds.size === manifest.owners.length, 'owner ids must be unique');
++
++  if (verifyHash) {
++    assert(/^sha256:[a-f0-9]{64}$/.test(manifest.manifest_hash), 'manifest_hash must be a SHA-256 digest');
++    assert(manifest.manifest_hash === hashManifest(manifest), 'manifest hash mismatch');
++  }
++  return manifest;
++}
++
++function loadRiskManifest(input) {
++  const manifest = typeof input === 'string'
++    ? JSON.parse(fs.readFileSync(input, 'utf8'))
++    : structuredClone(input);
++  return validateManifest(manifest);
++}
++
++function normalizeSurface(surface) {
++  assert(surface && SURFACE_KINDS.has(surface.kind), 'changed surface has an invalid kind');
++  assert(typeof surface.value === 'string' && surface.value.trim().length > 0,
++    'changed surface value is required');
++  const value = surface.kind === 'path'
++    ? surface.value.trim().replaceAll('\\', '/').replace(/^\.\//, '')
++    : surface.value.trim();
++  return { kind: surface.kind, value };
++}
++
++function uniqueSorted(values) {
++  return [...new Set(values)].sort(compareText);
++}
++
++function compareText(left, right) {
++  if (left === right) return 0;
++  return left < right ? -1 : 1;
++}
++
++function normalizeChangedSurfaces(changedSurfaces) {
++  assert(Array.isArray(changedSurfaces), 'changedSurfaces must be an array');
++  const keyed = new Map();
++  for (const surface of changedSurfaces) {
++    const normalized = normalizeSurface(surface);
++    keyed.set(`${normalized.kind}\0${normalized.value}`, normalized);
++  }
++  return [...keyed.values()].sort((left, right) => compareText(left.kind, right.kind)
++    || compareText(left.value, right.value));
++}
++
++function ownerForExactSurface(manifest, surface) {
++  for (const owner of manifest.owners) {
++    const selector = owner.selectors.find((candidate) => candidate.kind === surface.kind
++      && surface.value.startsWith(candidate.prefix));
++    if (selector) return { owner, selector };
++  }
++  return undefined;
++}
++
++function ownerForKnownPackage(manifest, surface) {
++  if (surface.kind !== 'path') return undefined;
++  return manifest.owners.find((owner) => owner.package_roots.some((prefix) => surface.value.startsWith(prefix)));
++}
++
++function ownerRisks(manifest, owners) {
++  const ids = new Set(owners.flatMap((owner) => owner.risk_ids));
++  return manifest.risks.filter((risk) => ids.has(risk.id));
++}
++
++function selectValidation({ manifest, changedSurfaces }) {
++  validateManifest(manifest);
++  const surfaces = normalizeChangedSurfaces(changedSurfaces);
++  const selections = surfaces.map((surface) => ({
++    surface,
++    exact: ownerForExactSurface(manifest, surface),
++    package: ownerForKnownPackage(manifest, surface),
++  }));
++  const unowned = selections.filter((selection) => !selection.exact && !selection.package)
++    .map((selection) => selection.surface);
++  const ambiguous = selections.filter((selection) => !selection.exact && selection.package);
++  const exactOwners = selections.map((selection) => selection.exact?.owner).filter(Boolean);
++  const packageOwners = ambiguous.map((selection) => selection.package);
++  const owners = [...new Map([...exactOwners, ...packageOwners].map((owner) => [owner.id, owner])).values()]
++    .sort((left, right) => compareText(left.id, right.id));
++  const risks = ownerRisks(manifest, owners);
++
++  let status = 'exact';
++  let targetedPassAllowed = surfaces.length > 0;
++  let lanes = owners.flatMap((owner) => owner.lanes);
++  let requiredGates = risks.flatMap((risk) => risk.gate_ids);
++
++  if (unowned.length > 0 || surfaces.length === 0) {
++    status = 'repository-baseline';
++    targetedPassAllowed = false;
++    lanes = [manifest.unknown_owner_fallback.lane];
++    requiredGates = manifest.unknown_owner_fallback.required_gates;
++  } else if (ambiguous.length > 0) {
++    status = 'conservative-package';
++    targetedPassAllowed = false;
++    lanes.push('contract-baseline', 'affected-platform-baseline');
++    requiredGates.push('G0', 'G1', 'G3', 'G6');
++  }
++
++  return {
++    schema_id: 'forge.validation.selection.v1',
++    manifest_revision: manifest.revision,
++    manifest_digest: manifest.manifest_hash,
++    status,
++    targeted_pass_allowed: targetedPassAllowed,
++    changed_surfaces: surfaces,
++    unowned_surfaces: unowned,
++    matched_selectors: selections.filter((selection) => selection.exact).map((selection) => ({
++      surface: selection.surface,
++      owner_id: selection.exact.owner.id,
++      selector: selection.exact.selector,
++    })),
++    owner_ids: owners.map((owner) => owner.id),
++    risk_ids: uniqueSorted(risks.map((risk) => risk.id)),
++    required_gates: uniqueSorted(requiredGates),
++    lanes: uniqueSorted(lanes),
++    test_ids: uniqueSorted(owners.flatMap((owner) => owner.canonical_test_ids)),
++  };
++}
++
++module.exports = {
++  hashManifest,
++  loadRiskManifest,
++  selectValidation,
++  validateManifest,
++};
+diff --git a/scripts/generate-risk-manifest.js b/scripts/generate-risk-manifest.js
+new file mode 100644
+index 00000000..ffb5c128
+--- /dev/null
++++ b/scripts/generate-risk-manifest.js
+@@ -0,0 +1,79 @@
++#!/usr/bin/env node
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { parse } = require('yaml');
++const { stableStringify } = require('../lib/kernel/evaluators');
++const { hashManifest, validateManifest } = require('../lib/validation/risk-manifest');
++const crypto = require('node:crypto');
++
++const ROOT = path.resolve(__dirname, '..');
++const SOURCE_PATH = path.join(ROOT, 'validation', 'risk-manifest.source.yaml');
++const OUTPUT_PATH = path.join(ROOT, 'validation', 'risk-manifest.v1.json');
++
++function sha256(value) {
++  return `sha256:${crypto.createHash('sha256').update(value, 'utf8').digest('hex')}`;
++}
++
++function compareText(left, right) {
++  if (left === right) return 0;
++  return left < right ? -1 : 1;
++}
++
++function sortById(entries) {
++  return [...entries].sort((left, right) => compareText(left.id, right.id));
++}
++
++function normalizeSource(source) {
++  const canonicalSource = source.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
++  const parsed = parse(canonicalSource);
++  const manifest = {
++    schema_id: parsed.schema_id,
++    revision: parsed.revision,
++    source_hash: sha256(canonicalSource),
++    generator_version: 'forge-risk-manifest-generator.v1',
++    risks: sortById(parsed.risks).map((risk) => ({
++      ...risk,
++      gate_ids: [...risk.gate_ids].sort(),
++    })),
++    owners: sortById(parsed.owners).map((owner) => ({
++      ...owner,
++      risk_ids: [...owner.risk_ids].sort(),
++      canonical_test_ids: [...owner.canonical_test_ids].sort(),
++      dependent_routes: [...owner.dependent_routes].sort(),
++      platform_runtime_additions: [...owner.platform_runtime_additions].sort(),
++      lanes: [...owner.lanes].sort(),
++      package_roots: [...owner.package_roots].sort(),
++      selectors: [...owner.selectors].sort((left, right) => compareText(left.kind, right.kind)
++        || compareText(left.prefix, right.prefix)),
++    })),
++    unknown_owner_fallback: {
++      ...parsed.unknown_owner_fallback,
++      required_gates: [...parsed.unknown_owner_fallback.required_gates].sort(),
++    },
++  };
++  manifest.manifest_hash = hashManifest(manifest);
++  validateManifest(manifest);
++  return JSON.parse(stableStringify(manifest));
++}
++
++function generateRiskManifest(source) {
++  return `${JSON.stringify(normalizeSource(source), null, 2)}\n`;
++}
++
++function main(args = process.argv.slice(2)) {
++  const generated = generateRiskManifest(fs.readFileSync(SOURCE_PATH, 'utf8'));
++  if (args.includes('--check')) {
++    if (!fs.existsSync(OUTPUT_PATH) || fs.readFileSync(OUTPUT_PATH, 'utf8') !== generated) {
++      console.error('Risk manifest is stale. Run: node scripts/generate-risk-manifest.js');
++      process.exitCode = 1;
++    }
++    return;
++  }
++  fs.writeFileSync(OUTPUT_PATH, generated, 'utf8');
++}
++
++if (require.main === module) main();
++
++module.exports = { generateRiskManifest, normalizeSource };
+diff --git a/test/validation/risk-manifest-generator.test.js b/test/validation/risk-manifest-generator.test.js
+new file mode 100644
+index 00000000..a4412b72
+--- /dev/null
++++ b/test/validation/risk-manifest-generator.test.js
+@@ -0,0 +1,32 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const { generateRiskManifest } = require('../../scripts/generate-risk-manifest');
++
++const ROOT = path.resolve(__dirname, '../..');
++const SOURCE_PATH = path.join(ROOT, 'validation/risk-manifest.source.yaml');
++
++describe('risk manifest generator', () => {
++  test('generates byte-identical canonical output without host or time data', () => {
++    const source = fs.readFileSync(SOURCE_PATH, 'utf8');
++    const first = generateRiskManifest(source);
++    const second = generateRiskManifest(source);
++    const windowsCheckout = generateRiskManifest(source.replaceAll('\n', '\r\n'));
++
++    expect(first).toBe(second);
++    expect(windowsCheckout).toBe(first);
++    expect(first.endsWith('\n')).toBe(true);
++    expect(first).not.toContain('generated_at');
++    expect(first).not.toContain(process.cwd());
++    expect(JSON.parse(first).owners.map((owner) => owner.id)).toEqual([
++      'facade-cli',
++      'kernel-authority',
++      'memory-foundation',
++      'validation-control',
++      'workflow-runtime',
++    ]);
++  });
++});
+diff --git a/test/validation/risk-manifest.test.js b/test/validation/risk-manifest.test.js
+new file mode 100644
+index 00000000..702bd260
+--- /dev/null
++++ b/test/validation/risk-manifest.test.js
+@@ -0,0 +1,145 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const fs = require('node:fs');
++const path = require('node:path');
++
++const {
++  hashManifest,
++  loadRiskManifest,
++  selectValidation,
++} = require('../../lib/validation/risk-manifest');
++
++const ROOT = path.resolve(__dirname, '../..');
++const MANIFEST_PATH = path.join(ROOT, 'validation/risk-manifest.v1.json');
++
++describe('risk-owned validation manifest', () => {
++  test('loads a versioned, self-hashed manifest', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++
++    expect(manifest.schema_id).toBe('forge.validation.risk-manifest.v1');
++    expect(manifest.revision).toBe(1);
++    expect(manifest.source_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
++    expect(manifest.manifest_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
++    expect(manifest.unknown_owner_fallback.lane).toBe('repository-baseline');
++  });
++
++  test('selects exact canonical owners with deterministic gates and tests', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [
++        { kind: 'path', value: 'lib/kernel/broker.js' },
++        { kind: 'path', value: 'lib/validation/risk-manifest.js' },
++      ],
++    });
++
++    expect(selected.status).toBe('exact');
++    expect(selected.targeted_pass_allowed).toBe(true);
++    expect(selected.manifest_digest).toBe(manifest.manifest_hash);
++    expect(selected.owner_ids).toEqual(['kernel-authority', 'validation-control']);
++    expect(selected.matched_selectors).toEqual([
++      {
++        surface: { kind: 'path', value: 'lib/kernel/broker.js' },
++        owner_id: 'kernel-authority',
++        selector: { kind: 'path', prefix: 'lib/kernel/' },
++      },
++      {
++        surface: { kind: 'path', value: 'lib/validation/risk-manifest.js' },
++        owner_id: 'validation-control',
++        selector: { kind: 'path', prefix: 'lib/validation/' },
++      },
++    ]);
++    expect(selected.required_gates).toEqual(['G0', 'G1', 'G4']);
++    expect(selected.test_ids).toEqual([
++      'test/kernel/**/*.test.js',
++      'test/validation/risk-manifest.test.js',
++    ]);
++    expect(selected.changed_surfaces.map((surface) => surface.value)).toEqual([
++      'lib/kernel/broker.js',
++      'lib/validation/risk-manifest.js',
++    ]);
++  });
++
++  test('uses package, contract, and platform baselines when package is known but surface is ambiguous', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'lib/kernel-next/prototype.js' }],
++    });
++
++    expect(selected.status).toBe('conservative-package');
++    expect(selected.targeted_pass_allowed).toBe(false);
++    expect(selected.owner_ids).toEqual(['kernel-authority']);
++    expect(selected.required_gates).toEqual(['G0', 'G1', 'G3', 'G4', 'G6']);
++    expect(selected.lanes).toEqual([
++      'affected-platform-baseline',
++      'contract-baseline',
++      'kernel-package',
++    ]);
++  });
++
++  test('maps public commands and contract schemas through the same ownership contract', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [
++        { kind: 'command', value: 'forge issue list' },
++        { kind: 'schema', value: 'forge.kernel.issue.v1' },
++      ],
++    });
++
++    expect(selected.status).toBe('exact');
++    expect(selected.owner_ids).toEqual(['facade-cli', 'kernel-authority']);
++    expect(selected.required_gates).toEqual(['G0', 'G1', 'G4', 'G7']);
++  });
++
++  test('fails closed to the repository baseline for an unowned changed surface', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [{ kind: 'path', value: 'experimental/unowned.js' }],
++    });
++
++    expect(selected.status).toBe('repository-baseline');
++    expect(selected.targeted_pass_allowed).toBe(false);
++    expect(selected.owner_ids).toEqual([]);
++    expect(selected.lanes).toEqual(['repository-baseline']);
++    expect(selected.unowned_surfaces).toEqual([{ kind: 'path', value: 'experimental/unowned.js' }]);
++  });
++
++  test('does not claim targeted PASS when no changed surfaces were supplied', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({ manifest, changedSurfaces: [] });
++
++    expect(selected.status).toBe('repository-baseline');
++    expect(selected.targeted_pass_allowed).toBe(false);
++  });
++
++  test('rejects a modified or overlapping manifest instead of selecting optimistically', () => {
++    const original = fs.readFileSync(MANIFEST_PATH, 'utf8');
++    const tampered = JSON.parse(original);
++    tampered.revision += 1;
++
++    expect(() => loadRiskManifest(tampered)).toThrow(/manifest hash mismatch/i);
++
++    const overlapping = JSON.parse(original);
++    overlapping.owners.push({ ...overlapping.owners[0], id: 'overlap' });
++    overlapping.manifest_hash = hashManifest(overlapping);
++
++    expect(() => loadRiskManifest(overlapping)).toThrow(/selectors overlap/i);
++  });
++
++  test('normalizes and de-duplicates changed surfaces before selection', () => {
++    const manifest = loadRiskManifest(MANIFEST_PATH);
++    const selected = selectValidation({
++      manifest,
++      changedSurfaces: [
++        { kind: 'path', value: '.\\lib\\kernel\\broker.js' },
++        { kind: 'path', value: 'lib/kernel/broker.js' },
++      ],
++    });
++
++    expect(selected.changed_surfaces).toEqual([{ kind: 'path', value: 'lib/kernel/broker.js' }]);
++  });
++});
+diff --git a/validation/risk-manifest.source.yaml b/validation/risk-manifest.source.yaml
+new file mode 100644
+index 00000000..9861dc8f
+--- /dev/null
++++ b/validation/risk-manifest.source.yaml
+@@ -0,0 +1,97 @@
++schema_id: forge.validation.risk-manifest.v1
++revision: 1
++
++risks:
++  - id: authority-integrity
++    severity: S0
++    non_quarantinable: true
++    gate_ids: [G0, G1, G4]
++  - id: contract-compatibility
++    severity: S1
++    non_quarantinable: true
++    gate_ids: [G0, G1, G3]
++  - id: facade-routing
++    severity: S1
++    non_quarantinable: false
++    gate_ids: [G0, G1, G7]
++  - id: memory-data-integrity
++    severity: S0
++    non_quarantinable: true
++    gate_ids: [G0, G1, G5]
++  - id: monitor-cleanup
++    severity: S1
++    non_quarantinable: true
++    gate_ids: [G0, G1, G4, G6]
++  - id: validation-selection
++    severity: S0
++    non_quarantinable: true
++    gate_ids: [G0, G1]
++
++owners:
++  - id: facade-cli
++    product: facade
++    package: forge-workflow
++    package_roots: [bin, lib/commands]
++    selectors:
++      - { kind: path, prefix: "bin/" }
++      - { kind: path, prefix: "lib/commands/" }
++      - { kind: command, prefix: "forge " }
++    risk_ids: [facade-routing]
++    canonical_test_ids: ["test/commands/**/*.test.js"]
++    dependent_routes: [installed-cli]
++    platform_runtime_additions: [windows-shell]
++    lanes: [facade-package]
++  - id: kernel-authority
++    product: memory
++    package: forge-kernel
++    package_roots: [lib/kernel]
++    selectors:
++      - { kind: path, prefix: "lib/kernel/" }
++      - { kind: schema, prefix: "forge.kernel." }
++    risk_ids: [authority-integrity]
++    canonical_test_ids: ["test/kernel/**/*.test.js"]
++    dependent_routes: [memory-contract]
++    platform_runtime_additions: [windows-sqlite, linux-sqlite]
++    lanes: [kernel-package]
++  - id: memory-foundation
++    product: memory
++    package: forge-memory
++    package_roots: [lib/memory]
++    selectors:
++      - { kind: path, prefix: "lib/memory/" }
++      - { kind: schema, prefix: "forge.memory." }
++    risk_ids: [memory-data-integrity, contract-compatibility]
++    canonical_test_ids: ["test/memory/**/*.test.js"]
++    dependent_routes: [memory-contract]
++    platform_runtime_additions: [windows-sqlite, linux-sqlite]
++    lanes: [memory-package]
++  - id: validation-control
++    product: memory
++    package: forge-validation
++    package_roots: [lib/validation, validation, scripts/generate-risk-manifest.js]
++    selectors:
++      - { kind: path, prefix: "lib/validation/" }
++      - { kind: path, prefix: "scripts/generate-risk-manifest.js" }
++      - { kind: path, prefix: "validation/" }
++      - { kind: schema, prefix: "forge.validation." }
++    risk_ids: [validation-selection]
++    canonical_test_ids: ["test/validation/risk-manifest.test.js"]
++    dependent_routes: [work-packet, run-receipt]
++    platform_runtime_additions: []
++    lanes: [validation-selector]
++  - id: workflow-runtime
++    product: flow
++    package: forge-flow
++    package_roots: [lib/workflow]
++    selectors:
++      - { kind: path, prefix: "lib/workflow/" }
++      - { kind: schema, prefix: "forge.flow." }
++    risk_ids: [monitor-cleanup, contract-compatibility]
++    canonical_test_ids: ["test/workflow/**/*.test.js"]
++    dependent_routes: [flow-memory-contract]
++    platform_runtime_additions: [windows-process, linux-process, macos-process]
++    lanes: [flow-package]
++
++unknown_owner_fallback:
++  lane: repository-baseline
++  required_gates: [G0, G1]
+diff --git a/validation/risk-manifest.v1.json b/validation/risk-manifest.v1.json
+new file mode 100644
+index 00000000..05f328a1
+--- /dev/null
++++ b/validation/risk-manifest.v1.json
+@@ -0,0 +1,263 @@
++{
++  "generator_version": "forge-risk-manifest-generator.v1",
++  "manifest_hash": "sha256:3c38e59d6ab084f6871b330e863c747e769118f2a5999d7d1787bbeae65b4d74",
++  "owners": [
++    {
++      "canonical_test_ids": [
++        "test/commands/**/*.test.js"
++      ],
++      "dependent_routes": [
++        "installed-cli"
++      ],
++      "id": "facade-cli",
++      "lanes": [
++        "facade-package"
++      ],
++      "package": "forge-workflow",
++      "package_roots": [
++        "bin",
++        "lib/commands"
++      ],
++      "platform_runtime_additions": [
++        "windows-shell"
++      ],
++      "product": "facade",
++      "risk_ids": [
++        "facade-routing"
++      ],
++      "selectors": [
++        {
++          "kind": "command",
++          "prefix": "forge "
++        },
++        {
++          "kind": "path",
++          "prefix": "bin/"
++        },
++        {
++          "kind": "path",
++          "prefix": "lib/commands/"
++        }
++      ]
++    },
++    {
++      "canonical_test_ids": [
++        "test/kernel/**/*.test.js"
++      ],
++      "dependent_routes": [
++        "memory-contract"
++      ],
++      "id": "kernel-authority",
++      "lanes": [
++        "kernel-package"
++      ],
++      "package": "forge-kernel",
++      "package_roots": [
++        "lib/kernel"
++      ],
++      "platform_runtime_additions": [
++        "linux-sqlite",
++        "windows-sqlite"
++      ],
++      "product": "memory",
++      "risk_ids": [
++        "authority-integrity"
++      ],
++      "selectors": [
++        {
++          "kind": "path",
++          "prefix": "lib/kernel/"
++        },
++        {
++          "kind": "schema",
++          "prefix": "forge.kernel."
++        }
++      ]
++    },
++    {
++      "canonical_test_ids": [
++        "test/memory/**/*.test.js"
++      ],
++      "dependent_routes": [
++        "memory-contract"
++      ],
++      "id": "memory-foundation",
++      "lanes": [
++        "memory-package"
++      ],
++      "package": "forge-memory",
++      "package_roots": [
++        "lib/memory"
++      ],
++      "platform_runtime_additions": [
++        "linux-sqlite",
++        "windows-sqlite"
++      ],
++      "product": "memory",
++      "risk_ids": [
++        "contract-compatibility",
++        "memory-data-integrity"
++      ],
++      "selectors": [
++        {
++          "kind": "path",
++          "prefix": "lib/memory/"
++        },
++        {
++          "kind": "schema",
++          "prefix": "forge.memory."
++        }
++      ]
++    },
++    {
++      "canonical_test_ids": [
++        "test/validation/risk-manifest.test.js"
++      ],
++      "dependent_routes": [
++        "run-receipt",
++        "work-packet"
++      ],
++      "id": "validation-control",
++      "lanes": [
++        "validation-selector"
++      ],
++      "package": "forge-validation",
++      "package_roots": [
++        "lib/validation",
++        "scripts/generate-risk-manifest.js",
++        "validation"
++      ],
++      "platform_runtime_additions": [],
++      "product": "memory",
++      "risk_ids": [
++        "validation-selection"
++      ],
++      "selectors": [
++        {
++          "kind": "path",
++          "prefix": "lib/validation/"
++        },
++        {
++          "kind": "path",
++          "prefix": "scripts/generate-risk-manifest.js"
++        },
++        {
++          "kind": "path",
++          "prefix": "validation/"
++        },
++        {
++          "kind": "schema",
++          "prefix": "forge.validation."
++        }
++      ]
++    },
++    {
++      "canonical_test_ids": [
++        "test/workflow/**/*.test.js"
++      ],
++      "dependent_routes": [
++        "flow-memory-contract"
++      ],
++      "id": "workflow-runtime",
++      "lanes": [
++        "flow-package"
++      ],
++      "package": "forge-flow",
++      "package_roots": [
++        "lib/workflow"
++      ],
++      "platform_runtime_additions": [
++        "linux-process",
++        "macos-process",
++        "windows-process"
++      ],
++      "product": "flow",
++      "risk_ids": [
++        "contract-compatibility",
++        "monitor-cleanup"
++      ],
++      "selectors": [
++        {
++          "kind": "path",
++          "prefix": "lib/workflow/"
++        },
++        {
++          "kind": "schema",
++          "prefix": "forge.flow."
++        }
++      ]
++    }
++  ],
++  "revision": 1,
++  "risks": [
++    {
++      "gate_ids": [
++        "G0",
++        "G1",
++        "G4"
++      ],
++      "id": "authority-integrity",
++      "non_quarantinable": true,
++      "severity": "S0"
++    },
++    {
++      "gate_ids": [
++        "G0",
++        "G1",
++        "G3"
++      ],
++      "id": "contract-compatibility",
++      "non_quarantinable": true,
++      "severity": "S1"
++    },
++    {
++      "gate_ids": [
++        "G0",
++        "G1",
++        "G7"
++      ],
++      "id": "facade-routing",
++      "non_quarantinable": false,
++      "severity": "S1"
++    },
++    {
++      "gate_ids": [
++        "G0",
++        "G1",
++        "G5"
++      ],
++      "id": "memory-data-integrity",
++      "non_quarantinable": true,
++      "severity": "S0"
++    },
++    {
++      "gate_ids": [
++        "G0",
++        "G1",
++        "G4",
++        "G6"
++      ],
++      "id": "monitor-cleanup",
++      "non_quarantinable": true,
++      "severity": "S1"
++    },
++    {
++      "gate_ids": [
++        "G0",
++        "G1"
++      ],
++      "id": "validation-selection",
++      "non_quarantinable": true,
++      "severity": "S0"
++    }
++  ],
++  "schema_id": "forge.validation.risk-manifest.v1",
++  "source_hash": "sha256:a804175455227f87a4f0ef6b08c790a252a8a2849539baa00379d804ce221537",
++  "unknown_owner_fallback": {
++    "lane": "repository-baseline",
++    "required_gates": [
++      "G0",
++      "G1"
++    ]
++  }
++}
+diff --git a/validation/risk-manifest.v1.schema.json b/validation/risk-manifest.v1.schema.json
+new file mode 100644
+index 00000000..1bdf02c0
+--- /dev/null
++++ b/validation/risk-manifest.v1.schema.json
+@@ -0,0 +1,99 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://forge.dev/schemas/validation/risk-manifest.v1.schema.json",
++  "title": "Forge risk-to-test ownership manifest",
++  "type": "object",
++  "additionalProperties": false,
++  "required": [
++    "schema_id",
++    "revision",
++    "source_hash",
++    "manifest_hash",
++    "generator_version",
++    "risks",
++    "owners",
++    "unknown_owner_fallback"
++  ],
++  "properties": {
++    "schema_id": { "const": "forge.validation.risk-manifest.v1" },
++    "revision": { "type": "integer", "minimum": 1 },
++    "source_hash": { "$ref": "#/$defs/digest" },
++    "manifest_hash": { "$ref": "#/$defs/digest" },
++    "generator_version": { "type": "string", "minLength": 1 },
++    "risks": {
++      "type": "array",
++      "minItems": 1,
++      "items": { "$ref": "#/$defs/risk" }
++    },
++    "owners": {
++      "type": "array",
++      "minItems": 1,
++      "items": { "$ref": "#/$defs/owner" }
++    },
++    "unknown_owner_fallback": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["lane", "required_gates"],
++      "properties": {
++        "lane": { "const": "repository-baseline" },
++        "required_gates": { "$ref": "#/$defs/nonEmptyStrings" }
++      }
++    }
++  },
++  "$defs": {
++    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
++    "nonEmptyStrings": {
++      "type": "array",
++      "minItems": 1,
++      "items": { "type": "string", "minLength": 1 }
++    },
++    "risk": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["id", "severity", "non_quarantinable", "gate_ids"],
++      "properties": {
++        "id": { "type": "string", "minLength": 1 },
++        "severity": { "enum": ["S0", "S1", "S2", "S3"] },
++        "non_quarantinable": { "type": "boolean" },
++        "gate_ids": { "$ref": "#/$defs/nonEmptyStrings" }
++      }
++    },
++    "selector": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": ["kind", "prefix"],
++      "properties": {
++        "kind": { "enum": ["path", "command", "schema"] },
++        "prefix": { "type": "string", "minLength": 1 }
++      }
++    },
++    "owner": {
++      "type": "object",
++      "additionalProperties": false,
++      "required": [
++        "id",
++        "product",
++        "package",
++        "package_roots",
++        "selectors",
++        "risk_ids",
++        "canonical_test_ids",
++        "dependent_routes",
++        "platform_runtime_additions",
++        "lanes"
++      ],
++      "properties": {
++        "id": { "type": "string", "minLength": 1 },
++        "product": { "type": "string", "minLength": 1 },
++        "package": { "type": "string", "minLength": 1 },
++        "package_roots": { "$ref": "#/$defs/nonEmptyStrings" },
++        "selectors": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/selector" } },
++        "risk_ids": { "$ref": "#/$defs/nonEmptyStrings" },
++        "canonical_test_ids": { "$ref": "#/$defs/nonEmptyStrings" },
++        "dependent_routes": { "type": "array", "items": { "type": "string" } },
++        "platform_runtime_additions": { "type": "array", "items": { "type": "string" } },
++        "lanes": { "$ref": "#/$defs/nonEmptyStrings" }
++      }
++    }
++  }
++}
+-- 
+2.51.0.windows.1
+

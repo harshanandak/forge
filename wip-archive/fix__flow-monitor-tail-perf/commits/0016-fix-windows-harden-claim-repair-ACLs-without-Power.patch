@@ -1,0 +1,1051 @@
+From 25572d9f23eaa3352c54a0b4f1212872ebf23a71 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 09:10:23 +0530
+Subject: [PATCH] fix(windows): harden claim repair ACLs without PowerShell
+
+---
+ lib/kernel/sqlite-driver.js             | 219 +++++++++++----------
+ lib/kernel/windows-private-acl.js       | 212 +++++++++++++++++++++
+ test/kernel/legacy-claim-repair.test.js | 241 +++++++++++-------------
+ test/kernel/windows-private-acl.test.js | 199 +++++++++++++++++++
+ test/package-distribution.test.js       |   4 +
+ 5 files changed, 650 insertions(+), 225 deletions(-)
+ create mode 100644 lib/kernel/windows-private-acl.js
+ create mode 100644 test/kernel/windows-private-acl.test.js
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 1fe47a17..63dd61c0 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3,7 +3,7 @@
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+-const { execFileSync } = require('node:child_process');
++const { spawn: nodeSpawn } = require('node:child_process');
+ const { createHash, randomUUID } = require('node:crypto');
+ const { types: { isProxy } } = require('node:util');
+ 
+@@ -27,6 +27,7 @@ const {
+ } = require('./legacy-claim-repair');
+ const { CONFLICT_SIGNAL, classifyConflictSignal } = require('./conflict-signal');
+ const { normalizeRecallHit } = require('../memory-recall');
++const { isCompiledBinary } = require('../package-root');
+ const { appendUsageEvidence, rebuildUsageProjection } = require('../../packages/memory');
+ 
+ const BUILTIN_SQLITE_RUNTIME_ORDER = Object.freeze(['bun:sqlite', 'node:sqlite']);
+@@ -4558,126 +4559,151 @@ async function hardenBackupPermissionsBatch(filePaths, options = {}) {
+ 	for (const filePath of paths) await hardenBackupPermissions(filePath, options);
+ }
+ 
+-const WINDOWS_PRIVATE_ACL_SCRIPT = [
+-	'$ErrorActionPreference = "Stop"',
+-	'$targets = $env:FORGE_PRIVATE_ACL_TARGETS | ConvertFrom-Json',
+-	'$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+-	'$ownerSection = [System.Security.AccessControl.AccessControlSections]::Owner',
+-	'$checkedTargets = @()',
+-	'foreach ($targetPath in $targets) {',
+-	'$isDirectory = [System.IO.Directory]::Exists($targetPath)',
+-	'$isFile = [System.IO.File]::Exists($targetPath)',
+-	'if (-not $isDirectory -and -not $isFile) { throw "ACL target does not exist" }',
+-	'$existing = if ($isDirectory) { [System.IO.Directory]::GetAccessControl($targetPath, $ownerSection) } else { [System.IO.File]::GetAccessControl($targetPath, $ownerSection) }',
+-	'$existingOwner = $existing.GetOwner([System.Security.Principal.SecurityIdentifier])',
+-	'if ($existingOwner.Value -ne $sid.Value) { throw "owner verification failed" }',
+-	'$checkedTargets += [pscustomobject]@{ Path = $targetPath; IsDirectory = $isDirectory }',
+-	'}',
+-	'foreach ($target in $checkedTargets) {',
+-	'$targetPath = $target.Path',
+-	'$isDirectory = $target.IsDirectory',
+-	'$immediate = if ($isDirectory) { [System.IO.Directory]::GetAccessControl($targetPath, $ownerSection) } else { [System.IO.File]::GetAccessControl($targetPath, $ownerSection) }',
+-	'$immediateOwner = $immediate.GetOwner([System.Security.Principal.SecurityIdentifier])',
+-	'if ($immediateOwner.Value -ne $sid.Value) { throw "owner verification failed" }',
+-	'$acl = if ($isDirectory) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }',
+-	'$acl.SetAccessRuleProtection($true, $false)',
+-	'$inheritance = if ($isDirectory) { "ContainerInherit,ObjectInherit" } else { "None" }',
+-	'$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, "FullControl", $inheritance, "None", "Allow")',
+-	'$acl.SetAccessRule($rule)',
+-	'if ($isDirectory) { [System.IO.Directory]::SetAccessControl($targetPath, $acl) } else { [System.IO.File]::SetAccessControl($targetPath, $acl) }',
+-	'$verified = if ($isDirectory) { [System.IO.Directory]::GetAccessControl($targetPath) } else { [System.IO.File]::GetAccessControl($targetPath) }',
+-	'$owner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier])',
+-	'$rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
+-	'$private = $owner.Value -eq $sid.Value -and $verified.AreAccessRulesProtected -and $rules.Count -eq 1',
+-	'$private = $private -and $rules[0].IdentityReference.Value -eq $sid.Value',
+-	'$private = $private -and -not $rules[0].IsInherited -and $rules[0].AccessControlType -eq "Allow"',
+-	'$expectedInheritance = if ($isDirectory) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }',
+-	'$private = $private -and $rules[0].InheritanceFlags -eq $expectedInheritance',
+-	'$private = $private -and $rules[0].PropagationFlags -eq [System.Security.AccessControl.PropagationFlags]::None',
+-	'$private = $private -and $rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl',
+-	'if (-not $private) { throw "owner-only ACL verification failed" }',
+-	'}',
+-].join('\n');
+-
+-function resolveWindowsPowerShellPath(environment = process.env) {
++const WINDOWS_PRIVATE_ACL_SCRIPT_PATH = path.join(__dirname, 'windows-private-acl.js');
++const WINDOWS_PRIVATE_ACL_SCRIPT_SHA256 = '14e0143c217cc28d74eac21d6560a1aa66deb2a0e897a9cb25c60a17943f6491';
++
++function resolveWindowsSystemExecutable(name, environment = process.env) {
+ 	const systemRoot = environment.SystemRoot;
+ 	if (typeof systemRoot !== 'string' || !path.win32.isAbsolute(systemRoot)) {
+ 		throw new Error('Windows backup hardening requires an absolute SystemRoot');
+ 	}
+-	return path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
++	return path.win32.join(systemRoot, 'System32', name);
+ }
+ 
+-function windowsAclRuntimeDirectory(value, fsApi = fs) {
+-	if (typeof value !== 'string' || !/^[A-Za-z]:[\\/]/.test(value)) return null;
+-	try {
+-		return fsApi.statSync(value).isDirectory() ? value : null;
+-	} catch {
+-		return null;
+-	}
++function resolveWindowsCscriptPath(environment = process.env) {
++	return resolveWindowsSystemExecutable('cscript.exe', environment);
+ }
+ 
+-function windowsAclChildEnvironment(environment, filePaths, fsApi = fs) {
+-	const childEnvironment = {
+-		FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
+-		SystemRoot: environment.SystemRoot,
+-		WINDIR: environment.SystemRoot,
+-	};
+-	for (const name of ['TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA']) {
+-		const directory = windowsAclRuntimeDirectory(environment[name], fsApi);
+-		if (directory) childEnvironment[name] = directory;
++function windowsAclScriptPath(fsApi = fs) {
++	const script = fsApi.readFileSync(WINDOWS_PRIVATE_ACL_SCRIPT_PATH);
++	const digest = createHash('sha256').update(script).digest('hex');
++	if (digest !== WINDOWS_PRIVATE_ACL_SCRIPT_SHA256) {
++		throw new Error('Windows ACL hardening script integrity check failed');
+ 	}
+-	return childEnvironment;
++	return WINDOWS_PRIVATE_ACL_SCRIPT_PATH;
+ }
+ 
+-async function secureWindowsPathsAclWithPowerShell(filePaths, options = {}) {
+-	const execute = options.execFile || execFileSync;
+-	const environment = options.environment || process.env;
+-	const powerShellPath = resolveWindowsPowerShellPath(environment);
+-	const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', options.script || WINDOWS_PRIVATE_ACL_SCRIPT];
+-	const childEnvironment = windowsAclChildEnvironment(environment, filePaths, options.fsApi);
++async function runWindowsProcess(command, args, options = {}) {
+ 	const runtime = options.runtime || (process.versions.bun ? 'bun' : 'node');
++	const timeout = options.timeout;
++	if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('Windows ACL hardening subprocess timed out');
++	const setTimer = options.setTimer || setTimeout;
++	const clearTimer = options.clearTimer || clearTimeout;
++	let timedOut = false;
++	let exitCode;
++	let stdout;
++
+ 	if (runtime === 'bun') {
+ 		const spawn = options.bunSpawn || globalThis.Bun.spawn;
+-		const child = spawn([powerShellPath, ...args], {
+-			cwd: path.win32.dirname(powerShellPath),
+-			env: childEnvironment,
++		const child = spawn([command, ...args], {
++			cwd: options.cwd,
++			env: options.env,
+ 			stderr: 'ignore',
+-			stdout: 'ignore',
++			stdout: options.captureStdout ? 'pipe' : 'ignore',
+ 			windowsHide: false,
+ 		});
+-		const setTimer = options.setTimer || setTimeout;
+-		const clearTimer = options.clearTimer || clearTimeout;
+-		let timedOut = false;
+ 		const timer = setTimer(() => {
+ 			timedOut = true;
+ 			child.kill('SIGKILL');
+-		}, options.timeout || 15_000);
+-		let exitCode;
++		}, timeout);
+ 		try {
+-			exitCode = await child.exited;
++			const output = options.captureStdout ? new Response(child.stdout).text() : Promise.resolve('');
++			[exitCode, stdout] = await Promise.all([child.exited, output]);
++		} finally {
++			clearTimer(timer);
++		}
++	} else {
++		const spawn = options.nodeSpawn || nodeSpawn;
++		const child = spawn(command, args, {
++			cwd: options.cwd,
++			env: options.env,
++			stdio: ['ignore', options.captureStdout ? 'pipe' : 'ignore', 'ignore'],
++			windowsHide: false,
++		});
++		const chunks = [];
++		if (options.captureStdout) child.stdout.on('data', chunk => chunks.push(Buffer.from(chunk)));
++		const timer = setTimer(() => {
++			timedOut = true;
++			child.kill('SIGKILL');
++		}, timeout);
++		try {
++			exitCode = await new Promise((resolve, reject) => {
++				child.once('error', reject);
++				child.once('close', resolve);
++			});
++			stdout = options.captureStdout ? Buffer.concat(chunks).toString('utf8') : '';
+ 		} finally {
+ 			clearTimer(timer);
+ 		}
+-		if (timedOut) throw new Error('Windows ACL hardening subprocess timed out');
+-		if (exitCode !== 0) throw new Error('Windows ACL hardening subprocess failed');
+-		return;
+ 	}
+-	execute(
+-		powerShellPath,
+-		args,
+-		{
+-			cwd: path.win32.dirname(powerShellPath),
+-			encoding: 'utf8',
+-			env: childEnvironment,
+-			stdio: 'pipe',
+-			timeout: 15_000,
+-			windowsHide: true,
+-		},
+-	);
++
++	if (timedOut) throw new Error('Windows ACL hardening subprocess timed out');
++	if (exitCode !== 0) throw new Error('Windows ACL hardening subprocess failed');
++	return stdout;
+ }
+ 
+-function secureWindowsPathsAcl(filePaths, options = {}) {
+-	return secureWindowsPathsAclWithPowerShell(filePaths, options);
++function parseWhoamiSid(stdout) {
++	const matches = String(stdout).match(/S-1-[0-9]+(?:-[0-9]+)+/g) || [];
++	if (matches.length !== 1) throw new Error('Windows ACL hardening could not resolve the current SID');
++	return matches[0];
++}
++
++async function secureWindowsPathsAcl(filePaths, options = {}) {
++	if (!Array.isArray(filePaths) || filePaths.length === 0 || filePaths.length > 128) {
++		throw new Error('Windows ACL hardening requires one to 128 targets');
++	}
++	for (const filePath of filePaths) {
++		if (typeof filePath !== 'string' || !path.win32.isAbsolute(filePath) || filePath.includes('\0')) {
++			throw new Error('Windows ACL hardening requires absolute target paths');
++		}
++	}
++	const detectCompiledBinary = options.isCompiledBinary || isCompiledBinary;
++	if (detectCompiledBinary()) {
++		throw new Error(
++			'Legacy claim repair Windows ACL hardening is unavailable in the standalone Forge binary; '
++			+ 'run the documented bun scripts/legacy-claim-repair.js operator tool',
++		);
++	}
++	const environment = options.environment || process.env;
++	const cscriptPath = resolveWindowsCscriptPath(environment);
++	const whoamiPath = resolveWindowsSystemExecutable('whoami.exe', environment);
++	const systemDirectory = path.win32.dirname(cscriptPath);
++	const scriptPath = windowsAclScriptPath(options.fsApi || fs);
++	const now = options.now || Date.now;
++	const deadline = now() + (options.timeout || 15_000);
++	const remainingTimeout = () => {
++		const remaining = deadline - now();
++		if (remaining <= 0) throw new Error('Windows ACL hardening subprocess timed out');
++		return remaining;
++	};
++	const processOptions = {
++		bunSpawn: options.bunSpawn,
++		clearTimer: options.clearTimer,
++		cwd: systemDirectory,
++		nodeSpawn: options.nodeSpawn,
++		runtime: options.runtime,
++		setTimer: options.setTimer,
++	};
++	const sid = parseWhoamiSid(await runWindowsProcess(whoamiPath, ['/user', '/fo', 'csv', '/nh'], {
++		...processOptions,
++		captureStdout: true,
++		env: { SystemRoot: environment.SystemRoot },
++		timeout: remainingTimeout(),
++	}));
++	const childEnvironment = {
++		FORGE_PRIVATE_ACL_COUNT: String(filePaths.length),
++		FORGE_PRIVATE_ACL_SID: sid,
++		SystemRoot: environment.SystemRoot,
++	};
++	filePaths.forEach((filePath, index) => {
++		childEnvironment[`FORGE_PRIVATE_ACL_TARGET_${index}`] = filePath;
++	});
++	await runWindowsProcess(cscriptPath, ['//B', '//Nologo', '//E:JScript', '//T:14', scriptPath], {
++		...processOptions,
++		captureStdout: false,
++		env: childEnvironment,
++		timeout: remainingTimeout(),
++	});
+ }
+ 
+ async function secureWindowsPathAcl(filePath) {
+@@ -4812,9 +4838,12 @@ module.exports = {
+ 	hardenBackupPermissions,
+ 	hardenBackupPermissionsBatch,
+ 	requireSqliteRuntimeModule,
+-	resolveWindowsPowerShellPath,
++	resolveWindowsCscriptPath,
+ 	secureWindowsPathsAcl,
+ 	selectBuiltinSQLiteRuntime,
+ 	syncClaimRepairRecoveryDirectory,
+ 	validateBuiltinSQLiteRuntimeDriver,
++	WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
++	WINDOWS_PRIVATE_ACL_SCRIPT_SHA256,
++	_runWindowsProcess: runWindowsProcess,
+ };
+diff --git a/lib/kernel/windows-private-acl.js b/lib/kernel/windows-private-acl.js
+new file mode 100644
+index 00000000..f40744b7
+--- /dev/null
++++ b/lib/kernel/windows-private-acl.js
+@@ -0,0 +1,212 @@
++'use strict';
++
++/* global ActiveXObject, Enumerator, VBArray, WScript */
++
++// This file is executed by Windows Script Host and loaded by Bun/Node tests.
++// Keep its syntax compatible with the system JScript engine.
++var ADS_PATH_FILE = 1;
++var ADS_SD_FORMAT_IID = 1;
++var ADS_SD_FORMAT_RAW = 2;
++var ADS_SECURITY_INFO_OWNER = 1;
++var ADS_SECURITY_INFO_DACL = 4;
++var PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000;
++var SE_DACL_PRESENT = 0x0004;
++var SE_DACL_PROTECTED = 0x1000;
++var SE_SELF_RELATIVE = 0x8000;
++var FILE_ALL_ACCESS = 0x001f01ff;
++var ACCESS_ALLOWED_ACE_TYPE = 0;
++var OBJECT_INHERIT_ACE = 1;
++var CONTAINER_INHERIT_ACE = 2;
++var MAX_TARGETS = 128;
++
++function invariant(condition, message) {
++	if (!condition) throw new Error(message);
++}
++
++function bytesFromSafeArray(value) {
++	var values = new VBArray(value).toArray();
++	var bytes = [];
++	for (var i = 0; i < values.length; i++) bytes.push(values[i] & 0xff);
++	return bytes;
++}
++
++function u16(bytes, offset) {
++	invariant(offset >= 0 && offset + 2 <= bytes.length, 'truncated uint16');
++	return bytes[offset] | (bytes[offset + 1] << 8);
++}
++
++function u32(bytes, offset) {
++	invariant(offset >= 0 && offset + 4 <= bytes.length, 'truncated uint32');
++	return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
++}
++
++function sidAt(bytes, offset) {
++	invariant(offset > 0 && offset + 8 <= bytes.length, 'missing SID');
++	var revision = bytes[offset];
++	var count = bytes[offset + 1];
++	var end = offset + 8 + (count * 4);
++	invariant(revision === 1 && end <= bytes.length, 'malformed SID');
++	var authority = 0;
++	for (var i = 0; i < 6; i++) authority = (authority * 256) + bytes[offset + 2 + i];
++	invariant(authority <= 9007199254740991, 'unsupported SID authority');
++	var parts = ['S', String(revision), String(authority)];
++	for (var j = 0; j < count; j++) parts.push(String(u32(bytes, offset + 8 + (j * 4))));
++	return { end: end, value: parts.join('-') };
++}
++
++function inspectDescriptor(bytes, expectedOwnerSid, expectedAceFlags) {
++	invariant(bytes && typeof bytes.length === 'number' && bytes.length >= 20, 'malformed security descriptor');
++	invariant(/^S-1-[0-9]+(?:-[0-9]+)+$/.test(expectedOwnerSid), 'invalid expected SID');
++	invariant(bytes[0] === 1, 'unsupported security descriptor revision');
++	var control = u16(bytes, 2);
++	invariant((control & SE_SELF_RELATIVE) !== 0, 'security descriptor is not self-relative');
++	invariant((control & SE_DACL_PRESENT) !== 0, 'DACL is absent');
++	invariant((control & SE_DACL_PROTECTED) !== 0, 'DACL is not protected');
++	var owner = sidAt(bytes, u32(bytes, 4));
++	invariant(owner.value === expectedOwnerSid, 'owner changed');
++	var daclOffset = u32(bytes, 16);
++	invariant(daclOffset > 0 && daclOffset + 8 <= bytes.length, 'DACL is malformed');
++	var aclRevision = bytes[daclOffset];
++	var aclSize = u16(bytes, daclOffset + 2);
++	var aceCount = u16(bytes, daclOffset + 4);
++	invariant(aclRevision === 2, 'unsupported ACL revision');
++	invariant(aclSize >= 8 && daclOffset + aclSize <= bytes.length, 'ACL size is malformed');
++	invariant(aceCount === 1, 'DACL must contain one ACE');
++	var aceOffset = daclOffset + 8;
++	invariant(aceOffset + 8 <= daclOffset + aclSize, 'ACE is truncated');
++	var aceType = bytes[aceOffset];
++	var aceFlags = bytes[aceOffset + 1];
++	var aceSize = u16(bytes, aceOffset + 2);
++	invariant(aceType === ACCESS_ALLOWED_ACE_TYPE, 'ACE must allow access');
++	invariant(aceFlags === expectedAceFlags, 'ACE flags are not exact');
++	invariant(aceSize >= 16 && aceOffset + aceSize === daclOffset + aclSize, 'ACE size is not exact');
++	invariant(u32(bytes, aceOffset + 4) === FILE_ALL_ACCESS, 'ACE is not full control');
++	var trustee = sidAt(bytes, aceOffset + 8);
++	invariant(trustee.value === expectedOwnerSid, 'ACE trustee is not the owner');
++	invariant(trustee.end === aceOffset + aceSize, 'ACE contains trailing data');
++	return { aceFlags: aceFlags, ownerSid: owner.value };
++}
++
++function inspectIidDescriptor(descriptor, expectedOwner, expectedAceFlags, enumeratorFactory) {
++	invariant(descriptor && descriptor.Owner, 'IID owner is absent');
++	invariant(String(descriptor.Owner) === expectedOwner, 'IID owner changed');
++	invariant((descriptor.Control & SE_DACL_PRESENT) !== 0, 'IID DACL is absent');
++	invariant((descriptor.Control & SE_DACL_PROTECTED) !== 0, 'IID DACL is not protected');
++	var dacl = descriptor.DiscretionaryAcl;
++	invariant(dacl && dacl.AceCount === 1, 'IID DACL must contain one ACE');
++	var entries = enumeratorFactory ? enumeratorFactory(dacl) : new Enumerator(dacl);
++	invariant(!entries.atEnd(), 'IID ACE is absent');
++	var ace = entries.item();
++	invariant(ace.AceType === ACCESS_ALLOWED_ACE_TYPE, 'IID ACE must allow access');
++	invariant((ace.AccessMask >>> 0) === FILE_ALL_ACCESS, 'IID ACE is not full control');
++	invariant(ace.AceFlags === expectedAceFlags, 'IID ACE flags are not exact');
++	entries.moveNext();
++	invariant(entries.atEnd(), 'IID DACL contains extra ACEs');
++}
++
++function rawDescriptor(utility, targetPath) {
++	utility.SecurityMask = ADS_SECURITY_INFO_OWNER | ADS_SECURITY_INFO_DACL;
++	return bytesFromSafeArray(utility.GetSecurityDescriptor(targetPath, ADS_PATH_FILE, ADS_SD_FORMAT_RAW));
++}
++
++function iidDescriptor(utility, targetPath) {
++	utility.SecurityMask = ADS_SECURITY_INFO_OWNER | ADS_SECURITY_INFO_DACL;
++	return utility.GetSecurityDescriptor(targetPath, ADS_PATH_FILE, ADS_SD_FORMAT_IID);
++}
++
++function ownerSid(bytes) {
++	return sidAt(bytes, u32(bytes, 4)).value;
++}
++
++function readTargets(environment, fso) {
++	var countText = String(environment('FORGE_PRIVATE_ACL_COUNT'));
++	invariant(/^[1-9][0-9]*$/.test(countText), 'invalid target count');
++	var count = Number(countText);
++	invariant(count <= MAX_TARGETS, 'too many ACL targets');
++	var targets = [];
++	for (var i = 0; i < count; i++) {
++		var targetPath = String(environment('FORGE_PRIVATE_ACL_TARGET_' + i));
++		invariant(targetPath.length > 0 && targetPath.indexOf('\0') === -1, 'invalid ACL target');
++		var isDirectory = fso.FolderExists(targetPath);
++		var isFile = fso.FileExists(targetPath);
++		invariant(isDirectory !== isFile, 'ACL target does not exist');
++		targets.push({ isDirectory: isDirectory, path: targetPath });
++	}
++	return targets;
++}
++
++function applyOwnerOnlyDacl(utility, target, currentSid, createObject) {
++	var descriptor = iidDescriptor(utility, target.path);
++	var dacl = createObject('AccessControlList');
++	dacl.AclRevision = 2;
++	var ace = createObject('AccessControlEntry');
++	ace.Trustee = currentSid;
++	ace.AccessMask = FILE_ALL_ACCESS;
++	ace.AceType = ACCESS_ALLOWED_ACE_TYPE;
++	ace.AceFlags = target.isDirectory ? (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : 0;
++	dacl.AddAce(ace);
++	descriptor.DiscretionaryAcl = dacl;
++	descriptor.Control = descriptor.Control | SE_DACL_PRESENT | SE_DACL_PROTECTED;
++	utility.SecurityMask = ADS_SECURITY_INFO_DACL | PROTECTED_DACL_SECURITY_INFORMATION;
++	utility.SetSecurityDescriptor(target.path, ADS_PATH_FILE, descriptor, ADS_SD_FORMAT_IID);
++}
++
++function runWithDependencies(dependencies) {
++	var environment = dependencies.environment;
++	var fso = dependencies.fso;
++	var utility = dependencies.utility;
++	var createObject = dependencies.createObject;
++	var enumeratorFactory = dependencies.enumeratorFactory;
++	var currentSid = String(environment('FORGE_PRIVATE_ACL_SID'));
++	invariant(/^S-1-[0-9]+(?:-[0-9]+)+$/.test(currentSid), 'invalid current SID');
++	var targets = readTargets(environment, fso);
++	var owners = [];
++	var iidOwners = [];
++	var i;
++
++	// Prove ownership for every target before the first DACL mutation.
++	for (i = 0; i < targets.length; i++) {
++		var beforeRaw = rawDescriptor(utility, targets[i].path);
++		var beforeIid = iidDescriptor(utility, targets[i].path);
++		invariant(beforeIid && beforeIid.Owner, 'precheck IID owner is absent');
++		owners.push(ownerSid(beforeRaw));
++		iidOwners.push(String(beforeIid.Owner));
++		invariant(owners[i] === currentSid, 'precheck owner mismatch');
++	}
++
++	for (i = 0; i < targets.length; i++) {
++		// Recheck immediately before changing only the DACL.
++		invariant(ownerSid(rawDescriptor(utility, targets[i].path)) === owners[i], 'owner changed before mutation');
++		applyOwnerOnlyDacl(utility, targets[i], currentSid, createObject);
++		var expectedFlags = targets[i].isDirectory ? (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : 0;
++		inspectDescriptor(rawDescriptor(utility, targets[i].path), owners[i], expectedFlags);
++		inspectIidDescriptor(iidDescriptor(utility, targets[i].path), iidOwners[i], expectedFlags, enumeratorFactory);
++	}
++	return true;
++}
++
++function main() {
++	try {
++		var shell = new ActiveXObject('WScript.Shell');
++		runWithDependencies({
++			createObject: function (name) { return new ActiveXObject(name); },
++			environment: shell.Environment('PROCESS'),
++			fso: new ActiveXObject('Scripting.FileSystemObject'),
++			utility: new ActiveXObject('ADsSecurityUtility')
++		});
++		WScript.Quit(0);
++	} catch (_error) {
++		WScript.Quit(1);
++	}
++}
++
++if (typeof module !== 'undefined' && module.exports) {
++	module.exports = {
++		FILE_ALL_ACCESS: FILE_ALL_ACCESS,
++		inspectDescriptor: inspectDescriptor,
++		inspectIidDescriptor: inspectIidDescriptor,
++		runWithDependencies: runWithDependencies
++	};
++} else {
++	main();
++}
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 39f596f6..8b101556 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -1,8 +1,10 @@
+ 'use strict';
+ 
+ const fs = require('node:fs');
++const { EventEmitter } = require('node:events');
+ const os = require('node:os');
+ const path = require('node:path');
++const { PassThrough } = require('node:stream');
+ const { afterEach, describe, expect, test } = require('bun:test');
+ 
+ const { createLocalBroker } = require('../../lib/kernel/broker');
+@@ -10,9 +12,11 @@ const {
+ 	createBuiltinSQLiteDriver,
+ 	hardenBackupPermissions,
+ 	hardenBackupPermissionsBatch,
+-	resolveWindowsPowerShellPath,
++	resolveWindowsCscriptPath,
+ 	secureWindowsPathsAcl,
+ 	syncClaimRepairRecoveryDirectory,
++	WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
++	_runWindowsProcess,
+ } = require('../../lib/kernel/sqlite-driver');
+ const {
+ 	cleanupRestoreProofDirectory,
+@@ -157,9 +161,9 @@ describe('legacy claim repair preflight', () => {
+ 	});
+ 
+ 	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', async () => {
+-		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
+-			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+-		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
++		expect(resolveWindowsCscriptPath({ SystemRoot: 'C:\\Windows' }))
++			.toBe('C:\\Windows\\System32\\cscript.exe');
++		expect(() => resolveWindowsCscriptPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
+ 		const calls = [];
+ 		await hardenBackupPermissions('backup.sqlite', {
+ 			platform: 'linux',
+@@ -212,170 +216,147 @@ describe('legacy claim repair preflight', () => {
+ 		})).rejects.toThrow('owner-only permissions');
+ 	});
+ 
+-	test('uses one direct bounded async PowerShell process for Bun ACL hardening', async () => {
+-		const invocations = [];
+-		let timeoutDelay;
+-		let clearedTimer;
+-		await secureWindowsPathsAcl(['backup.sqlite', 'restore-dir'], {
++	test('fails before reading the cscript asset in the standalone binary', async () => {
++		let readAsset = false;
++		let spawned = false;
++		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+ 			runtime: 'bun',
+ 			environment: { SystemRoot: 'C:\\Windows' },
+-			bunSpawn(command, options) {
+-				invocations.push({ command, options });
+-				return { exited: Promise.resolve(0), kill() {} };
+-			},
+-			setTimer(_callback, delay) { timeoutDelay = delay; return 17; },
+-			clearTimer(timer) { clearedTimer = timer; },
+-		});
+-		expect(invocations).toHaveLength(1);
+-		const [{ command, options }] = invocations;
+-		expect(command.slice(0, -1)).toEqual([
+-			'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+-			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+-		]);
+-		expect(options).toEqual({
+-			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+-			env: {
+-				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite","restore-dir"]',
+-				SystemRoot: 'C:\\Windows',
+-				WINDIR: 'C:\\Windows',
++			isCompiledBinary: () => true,
++			fsApi: {
++				readFileSync() { readAsset = true; throw new Error('asset must not be read'); },
+ 			},
+-			stderr: 'ignore',
+-			stdout: 'ignore',
+-			windowsHide: false,
+-		});
+-		expect(timeoutDelay).toBe(15_000);
+-		expect(clearedTimer).toBe(17);
++			bunSpawn() { spawned = true; throw new Error('child must not spawn'); },
++		})).rejects.toThrow('bun scripts/legacy-claim-repair.js');
++		expect(readAsset).toBe(false);
++		expect(spawned).toBe(false);
+ 	});
+ 
+-	test('allowlists only existing local Windows runtime directories for PowerShell startup', async () => {
+-		let childEnvironment;
+-		const environment = {
+-			SystemRoot: 'C:\\Windows',
+-			TEMP: 'C:\\Temp',
+-			TMP: 'relative-temp',
+-			USERPROFILE: 'D:\\Users\\runner',
+-			LOCALAPPDATA: 'C:\\missing',
+-			PATH: 'secret-path-sentinel',
+-			PATHEXT: 'secret-pathext-sentinel',
+-			COMSPEC: 'secret-comspec-sentinel',
+-			PSModulePath: 'C:\\hostile-modules',
+-			APPDATA: 'C:\\secret-appdata',
+-			ProgramData: 'C:\\secret-program-data',
+-			FORGE_API_TOKEN: 'secret-token-sentinel',
+-		};
+-		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
++	test('uses direct bounded whoami and cscript children with one shared Bun deadline', async () => {
++		const invocations = [];
++		const timerDelays = [];
++		const clearedTimers = [];
++		const times = [1_000, 1_005, 1_010];
++		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite', 'C:\\private\\restore-dir'], {
+ 			runtime: 'bun',
+-			environment,
+-			fsApi: {
+-				statSync(directory) {
+-					if (['C:\\Temp', 'D:\\Users\\runner'].includes(directory)) return { isDirectory: () => true };
+-					throw new Error('missing');
+-				},
+-			},
+-			bunSpawn(_command, options) {
+-				childEnvironment = options.env;
+-				return { exited: Promise.resolve(0), kill() {} };
++			environment: { SystemRoot: 'C:\\Windows', PATH: 'secret-path-sentinel' },
++			bunSpawn(command, options) {
++				invocations.push({ command, options });
++				return {
++					exited: Promise.resolve(0),
++					kill() {},
++					stdout: command[0].endsWith('whoami.exe')
++						? new Blob(['"runner","S-1-5-21-1-2-3-4"\r\n']).stream()
++						: undefined,
++				};
+ 			},
+-			setTimer() { return 21; },
+-			clearTimer() {},
++			now() { return times.shift(); },
++			setTimer(_callback, delay) { timerDelays.push(delay); return timerDelays.length; },
++			clearTimer(timer) { clearedTimers.push(timer); },
+ 		});
+-		expect(childEnvironment).toEqual({
+-			FORGE_PRIVATE_ACL_TARGETS: '["C:\\\\private\\\\backup.sqlite"]',
+-			SystemRoot: 'C:\\Windows',
+-			WINDIR: 'C:\\Windows',
+-			TEMP: 'C:\\Temp',
+-			USERPROFILE: 'D:\\Users\\runner',
++		expect(invocations).toHaveLength(2);
++		expect(invocations[0]).toEqual({
++			command: ['C:\\Windows\\System32\\whoami.exe', '/user', '/fo', 'csv', '/nh'],
++			options: {
++				cwd: 'C:\\Windows\\System32',
++				env: { SystemRoot: 'C:\\Windows' },
++				stderr: 'ignore',
++				stdout: 'pipe',
++				windowsHide: false,
++			},
+ 		});
+-		expect(JSON.stringify(childEnvironment)).not.toMatch(/sentinel|PSModulePath|TOKEN|APPDATA|ProgramData|PATH|PATHEXT|COMSPEC/);
+-	});
+-
+-	test('prechecks every owner and verifies one protected current-SID DACL without changing ownership', async () => {
+-		let script;
+-		await secureWindowsPathsAcl(['backup.sqlite'], {
+-			runtime: 'bun',
+-			environment: { SystemRoot: 'C:\\Windows' },
+-			bunSpawn(command) {
+-				script = command.at(-1);
+-				return { exited: Promise.resolve(0), kill() {} };
++		expect(invocations[1]).toEqual({
++			command: [
++				'C:\\Windows\\System32\\cscript.exe',
++				'//B', '//Nologo', '//E:JScript', '//T:14', WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
++			],
++			options: {
++				cwd: 'C:\\Windows\\System32',
++				env: {
++					FORGE_PRIVATE_ACL_COUNT: '2',
++					FORGE_PRIVATE_ACL_SID: 'S-1-5-21-1-2-3-4',
++					FORGE_PRIVATE_ACL_TARGET_0: 'C:\\private\\backup.sqlite',
++					FORGE_PRIVATE_ACL_TARGET_1: 'C:\\private\\restore-dir',
++					SystemRoot: 'C:\\Windows',
++				},
++				stderr: 'ignore',
++				stdout: 'ignore',
++				windowsHide: false,
+ 			},
+-			setTimer() { return 18; },
+-			clearTimer() {},
+ 		});
+-		expect(script).toStartWith('$ErrorActionPreference = "Stop"');
+-		expect(script).not.toMatch(/SetOwner|icacls|whoami|\/reset|\/setowner/i);
+-		const precheck = script.indexOf('foreach ($targetPath in $targets)');
+-		const mutationPass = script.indexOf('foreach ($target in $checkedTargets)');
+-		const immediateOwnerCheck = script.indexOf('$immediateOwner =');
+-		const mutation = script.indexOf('SetAccessControl($targetPath, $acl)');
+-		const postReadback = script.indexOf('$verified =');
+-		expect(precheck).toBeGreaterThan(-1);
+-		expect(mutationPass).toBeGreaterThan(precheck);
+-		expect(immediateOwnerCheck).toBeGreaterThan(mutationPass);
+-		expect(mutation).toBeGreaterThan(immediateOwnerCheck);
+-		expect(postReadback).toBeGreaterThan(mutation);
+-		expect(script).toContain('SetAccessRuleProtection($true, $false)');
+-		expect(script).toContain('$rules.Count -eq 1');
+-		expect(script).toContain('$verified.AreAccessRulesProtected');
+-		expect(script).toContain('$rules[0].IdentityReference.Value -eq $sid.Value');
+-		expect(script).toContain('$rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl');
++		expect(timerDelays).toEqual([14_995, 14_990]);
++		expect(clearedTimers).toEqual([1, 2]);
++		expect(JSON.stringify(invocations)).not.toContain('secret-path-sentinel');
+ 	});
+ 
+-	test('fails closed after killing and awaiting a timed-out Bun PowerShell subprocess', async () => {
++	test('fails closed after killing and awaiting timed-out or failed Bun children', async () => {
+ 		let killedWith;
+ 		let resolveExit;
+ 		const exited = new Promise(resolve => { resolveExit = resolve; });
+-		await expect(secureWindowsPathsAcl(['backup.sqlite'], {
++		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+ 			runtime: 'bun',
+ 			environment: { SystemRoot: 'C:\\Windows' },
+ 			bunSpawn() {
+ 				return {
+ 					exited,
+ 					kill(signal) { killedWith = signal; resolveExit(1); },
++					stdout: new Blob(['']).stream(),
+ 				};
+ 			},
+ 			setTimer(callback) { callback(); return 19; },
+ 			clearTimer() {},
+ 		})).rejects.toThrow('subprocess timed out');
+ 		expect(killedWith).toBe('SIGKILL');
+-		await expect(secureWindowsPathsAcl(['backup.sqlite'], {
+-				runtime: 'bun',
+-				environment: { SystemRoot: 'C:\\Windows' },
+-				bunSpawn() { return { exited: Promise.resolve(9), kill() {} }; },
+-				setTimer() { return 20; },
+-				clearTimer() {},
+-			})).rejects.toThrow('subprocess failed');
++		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
++			runtime: 'bun',
++			environment: { SystemRoot: 'C:\\Windows' },
++			bunSpawn() { return { exited: Promise.resolve(9), kill() {}, stdout: new Blob(['']).stream() }; },
++			setTimer() { return 20; },
++			clearTimer() {},
++		})).rejects.toThrow('subprocess failed');
+ 	});
+ 
+-	test('retains the same direct bounded PowerShell script for Node', async () => {
+-		let invocation;
+-		await secureWindowsPathsAcl(['backup.sqlite'], {
++	test('uses the same direct whoami and cscript contract for Node', async () => {
++		const invocations = [];
++		await secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
+ 			runtime: 'node',
+ 			environment: { SystemRoot: 'C:\\Windows' },
+-			execFile(command, args, options) { invocation = { command, args, options }; },
+-		});
+-		expect(invocation.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+-		expect(invocation.args.at(-1)).not.toContain('{;');
+-		expect(invocation.args.at(-1)).toStartWith('$ErrorActionPreference = "Stop"');
+-		expect(invocation.options).toEqual({
+-			cwd: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+-			encoding: 'utf8',
+-			env: {
+-				FORGE_PRIVATE_ACL_TARGETS: '["backup.sqlite"]',
+-				SystemRoot: 'C:\\Windows',
+-				WINDIR: 'C:\\Windows',
++			nodeSpawn(command, args, options) {
++				invocations.push({ args, command, options });
++				const child = new EventEmitter();
++				child.kill = () => {};
++				if (options.stdio[1] === 'pipe') child.stdout = new PassThrough();
++				queueMicrotask(() => {
++					if (child.stdout) child.stdout.end('"runner","S-1-5-21-1-2-3-4"\r\n');
++					child.emit('close', 0);
++				});
++				return child;
+ 			},
+-			stdio: 'pipe',
+-			timeout: 15_000,
+-			windowsHide: true,
++		});
++		expect(invocations).toHaveLength(2);
++		expect(invocations[0]).toMatchObject({
++			command: 'C:\\Windows\\System32\\whoami.exe',
++			args: ['/user', '/fo', 'csv', '/nh'],
++			options: { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: false },
++		});
++		expect(invocations[1]).toMatchObject({
++			command: 'C:\\Windows\\System32\\cscript.exe',
++			args: ['//B', '//Nologo', '//E:JScript', '//T:14', WINDOWS_PRIVATE_ACL_SCRIPT_PATH],
++			options: { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: false },
+ 		});
+ 	});
+ 
+-	(process.platform === 'win32' ? test : test.skip)('kills and awaits a timed-out real Bun PowerShell child', async () => {
++	(process.platform === 'win32' && globalThis.Bun ? test : test.skip)('kills and awaits a timed-out real cscript child', async () => {
++		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-cscript-timeout-'));
++		tempDirs.push(root);
++		const script = path.join(root, 'timeout.js');
++		fs.writeFileSync(script, 'WScript.Sleep(30000);\r\n');
+ 		let childPid;
+-		await expect(secureWindowsPathsAcl(['C:\\private\\backup.sqlite'], {
++		const cscript = resolveWindowsCscriptPath(process.env);
++		await expect(_runWindowsProcess(cscript, ['//B', '//Nologo', '//E:JScript', '//T:14', script], {
+ 			runtime: 'bun',
+-			environment: process.env,
+-			script: 'Start-Sleep -Seconds 30',
++			cwd: path.win32.dirname(cscript),
++			env: { SystemRoot: process.env.SystemRoot },
+ 			timeout: 200,
+ 			bunSpawn(command, options) {
+ 				const child = globalThis.Bun.spawn(command, options);
+diff --git a/test/kernel/windows-private-acl.test.js b/test/kernel/windows-private-acl.test.js
+new file mode 100644
+index 00000000..4023bc40
+--- /dev/null
++++ b/test/kernel/windows-private-acl.test.js
+@@ -0,0 +1,199 @@
++'use strict';
++
++const fs = require('node:fs');
++const { createHash } = require('node:crypto');
++const { describe, expect, test } = require('bun:test');
++
++const {
++	FILE_ALL_ACCESS,
++	inspectDescriptor,
++	inspectIidDescriptor,
++	runWithDependencies,
++} = require('../../lib/kernel/windows-private-acl');
++const {
++	WINDOWS_PRIVATE_ACL_SCRIPT_PATH,
++	WINDOWS_PRIVATE_ACL_SCRIPT_SHA256,
++} = require('../../lib/kernel/sqlite-driver');
++
++const OWNER_SID = 'S-1-5-21-101-202-303-404';
++const FOREIGN_SID = 'S-1-5-21-999-888-777-666';
++
++function u16(value) {
++	return [value & 0xff, (value >>> 8) & 0xff];
++}
++
++function u32(value) {
++	return [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
++}
++
++function sidBytes(value) {
++	const parts = value.split('-').slice(1).map(Number);
++	const [revision, authority, ...subAuthorities] = parts;
++	return [revision, subAuthorities.length, 0, 0, 0, 0, 0, authority, ...subAuthorities.flatMap(u32)];
++}
++
++function descriptorBytes({
++	aceFlags = 0,
++	aceMask = FILE_ALL_ACCESS,
++	aceType = 0,
++	control = 0x9004,
++	extraAceBytes = [],
++	ownerSid = OWNER_SID,
++	trusteeSid = ownerSid,
++} = {}) {
++	const owner = sidBytes(ownerSid);
++	const trustee = sidBytes(trusteeSid);
++	const aceSize = 8 + trustee.length + extraAceBytes.length;
++	const ace = [aceType, aceFlags, ...u16(aceSize), ...u32(aceMask), ...trustee, ...extraAceBytes];
++	const acl = [2, 0, ...u16(8 + ace.length), ...u16(1), 0, 0, ...ace];
++	const ownerOffset = 20;
++	const daclOffset = ownerOffset + owner.length;
++	return [1, 0, ...u16(control), ...u32(ownerOffset), ...u32(0), ...u32(0), ...u32(daclOffset), ...owner, ...acl];
++}
++
++function environmentFor(paths, sid = OWNER_SID) {
++	const values = {
++		FORGE_PRIVATE_ACL_COUNT: String(paths.length),
++		FORGE_PRIVATE_ACL_SID: sid,
++	};
++	paths.forEach((targetPath, index) => { values[`FORGE_PRIVATE_ACL_TARGET_${index}`] = targetPath; });
++	return name => values[name] || '';
++}
++
++function enumeratorFactory(dacl) {
++	let index = 0;
++	return {
++		atEnd: () => index >= dacl.entries.length,
++		item: () => dacl.entries[index],
++		moveNext: () => { index += 1; },
++	};
++}
++
++function fakeDependencies(states, events) {
++	const utility = {
++		SecurityMask: 0,
++		GetSecurityDescriptor(targetPath, _pathFormat, format) {
++			events.push(['get', targetPath, format, this.SecurityMask]);
++			return format === 2 ? states[targetPath].raw : states[targetPath].iid;
++		},
++		SetSecurityDescriptor(targetPath, _pathFormat, descriptor, format) {
++			events.push(['set', targetPath, format, this.SecurityMask]);
++			expect(this.SecurityMask).toBe(4 | 0x80000000);
++			const ace = descriptor.DiscretionaryAcl.entries[0];
++			states[targetPath] = {
++				iid: descriptor,
++				raw: descriptorBytes({ aceFlags: ace.AceFlags }),
++			};
++		},
++	};
++	return {
++		createObject(name) {
++			if (name === 'AccessControlList') {
++				return { AceCount: 0, entries: [], AddAce(ace) { this.entries.push(ace); this.AceCount += 1; } };
++			}
++			if (name === 'AccessControlEntry') return {};
++			throw new Error(`unexpected object ${name}`);
++		},
++		enumeratorFactory,
++		environment: environmentFor(Object.keys(states)),
++		fso: {
++			FileExists: targetPath => !states[targetPath].isDirectory,
++			FolderExists: targetPath => states[targetPath].isDirectory,
++		},
++		utility,
++	};
++}
++
++describe('Windows private ACL cscript verifier', () => {
++	test('exports the exact file full-control mask and raw descriptor verifier', () => {
++		expect(FILE_ALL_ACCESS).toBe(0x001f01ff);
++		expect(typeof inspectDescriptor).toBe('function');
++		const source = fs.readFileSync(WINDOWS_PRIVATE_ACL_SCRIPT_PATH);
++		expect(createHash('sha256').update(source).digest('hex'))
++			.toBe(WINDOWS_PRIVATE_ACL_SCRIPT_SHA256);
++		expect(source.toString('utf8')).not.toMatch(/SetOwner|PowerShell|icacls|child_process/i);
++	});
++
++	test('accepts only protected exact owner full-control file and directory descriptors', () => {
++		expect(inspectDescriptor(descriptorBytes(), OWNER_SID, 0)).toEqual({ aceFlags: 0, ownerSid: OWNER_SID });
++		expect(inspectDescriptor(descriptorBytes({ aceFlags: 3 }), OWNER_SID, 3))
++			.toEqual({ aceFlags: 3, ownerSid: OWNER_SID });
++	});
++
++	test('rejects unprotected, foreign, deny, inherited, partial, object, trailing, and malformed descriptors', () => {
++		expect(() => inspectDescriptor(descriptorBytes({ control: 0x8004 }), OWNER_SID, 0)).toThrow('not protected');
++		expect(() => inspectDescriptor(descriptorBytes({ ownerSid: FOREIGN_SID }), OWNER_SID, 0)).toThrow('owner changed');
++		expect(() => inspectDescriptor(descriptorBytes({ trusteeSid: FOREIGN_SID }), OWNER_SID, 0)).toThrow('trustee');
++		expect(() => inspectDescriptor(descriptorBytes({ aceType: 1 }), OWNER_SID, 0)).toThrow('allow');
++		expect(() => inspectDescriptor(descriptorBytes({ aceFlags: 0x10 }), OWNER_SID, 0)).toThrow('flags');
++		expect(() => inspectDescriptor(descriptorBytes({ aceMask: 0x00120089 }), OWNER_SID, 0)).toThrow('full control');
++		expect(() => inspectDescriptor(descriptorBytes({ aceType: 5 }), OWNER_SID, 0)).toThrow('allow');
++		expect(() => inspectDescriptor(descriptorBytes({ extraAceBytes: [1, 2, 3, 4] }), OWNER_SID, 0)).toThrow('trailing');
++		expect(() => inspectDescriptor(descriptorBytes().slice(0, 24), OWNER_SID, 0)).toThrow();
++		const iid = {
++			Control: 0x9004,
++			DiscretionaryAcl: {
++				AceCount: 1,
++				entries: [{ AccessMask: FILE_ALL_ACCESS, AceFlags: 0, AceType: 0 }],
++			},
++			Owner: OWNER_SID,
++		};
++		expect(() => inspectIidDescriptor({ ...iid, Owner: FOREIGN_SID }, OWNER_SID, 0, enumeratorFactory))
++			.toThrow('IID owner changed');
++		expect(() => inspectIidDescriptor(iid, OWNER_SID, 0, enumeratorFactory)).not.toThrow();
++	});
++
++	test('prechecks every owner before DACL-only mutation and immediately rechecks each target', () => {
++		const states = {
++			'C:\\one': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
++			'C:\\two': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: OWNER_SID }, isDirectory: true, raw: descriptorBytes() },
++		};
++		const events = [];
++		const originalVBArray = globalThis.VBArray;
++		globalThis.VBArray = function (value) { this.toArray = () => value; };
++		try {
++			expect(runWithDependencies(fakeDependencies(states, events))).toBe(true);
++		} finally {
++			globalThis.VBArray = originalVBArray;
++		}
++		const sets = events.filter(([operation]) => operation === 'set');
++		expect(sets).toEqual([
++			['set', 'C:\\one', 1, 4 | 0x80000000],
++			['set', 'C:\\two', 1, 4 | 0x80000000],
++		]);
++		const firstSet = events.findIndex(([operation]) => operation === 'set');
++		expect(events.slice(0, firstSet).filter(([operation]) => operation === 'get')).toHaveLength(6);
++		expect(events[firstSet - 2]).toEqual(['get', 'C:\\one', 2, 5]);
++		expect(events[firstSet - 1]).toEqual(['get', 'C:\\one', 1, 5]);
++	});
++
++	test('a non-owner precheck or owner race causes zero DACL mutation', () => {
++		const originalVBArray = globalThis.VBArray;
++		globalThis.VBArray = function (value) { this.toArray = () => value; };
++		try {
++			const nonOwnerStates = {
++				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
++				'C:\\two': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
++			};
++			const nonOwnerEvents = [];
++			expect(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents))).toThrow('precheck owner mismatch');
++			expect(nonOwnerEvents.some(([operation]) => operation === 'set')).toBe(false);
++
++			const racedStates = {
++				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
++			};
++			const racedEvents = [];
++			const dependencies = fakeDependencies(racedStates, racedEvents);
++			let rawReads = 0;
++			const get = dependencies.utility.GetSecurityDescriptor;
++			dependencies.utility.GetSecurityDescriptor = function (targetPath, pathFormat, format) {
++				if (format === 2 && ++rawReads === 2) racedStates[targetPath].raw = descriptorBytes({ ownerSid: FOREIGN_SID });
++				return get.call(this, targetPath, pathFormat, format);
++			};
++			expect(() => runWithDependencies(dependencies)).toThrow('owner changed before mutation');
++			expect(racedEvents.some(([operation]) => operation === 'set')).toBe(false);
++		} finally {
++			globalThis.VBArray = originalVBArray;
++		}
++	});
++});
+diff --git a/test/package-distribution.test.js b/test/package-distribution.test.js
+index 9994db43..afdae3d1 100644
+--- a/test/package-distribution.test.js
++++ b/test/package-distribution.test.js
+@@ -39,6 +39,10 @@ function getPackFiles() {
+ describe('package distribution (npm pack --dry-run)', () => {
+   const packFiles = getPackFiles();
+ 
++  it('includes the fixed Windows ACL cscript verifier', () => {
++    expect(packFiles).toContain('lib/kernel/windows-private-acl.js');
++  });
++
+   describe('scripts/ directory — hook scripts', () => {
+     const requiredScripts = [
+       'scripts/commitlint.js',
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,45 @@
+From f5b821d3b876ce8373963fcfeb932dd10887dffb Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 22:55:03 +0530
+Subject: [PATCH] docs: record github lifecycle review fixes
+
+---
+ docs/work/2026-09-08-github-account-context/decisions.md | 2 ++
+ docs/work/2026-09-08-github-account-context/tasks.md     | 4 ++--
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/docs/work/2026-09-08-github-account-context/decisions.md b/docs/work/2026-09-08-github-account-context/decisions.md
+index 1b64843d..d8452099 100644
+--- a/docs/work/2026-09-08-github-account-context/decisions.md
++++ b/docs/work/2026-09-08-github-account-context/decisions.md
+@@ -16,6 +16,8 @@
+ - Mixed-purpose team Bash processes never receive selected credentials. Their existing `GH_CMD` executable seam points to a checked-in, secret-free bridge that re-enters the same Forge runtime, which scopes the credential to the final `gh` child.
+ - Detached monitor/watch workers re-enter Forge and prepare their own context from the clone-local binding. Snapshot generation prepares context inside the worker and scopes it to `gh`; neither design delegates a token to unrelated descendants.
+ - The new `github` command participates in normal skill-coverage validation; it receives no exemption.
++- Repository access resolves a validated `owner/repo` and passes it explicitly to `gh`. HTTPS and direct GitHub SSH work directly; custom SSH aliases are accepted only when local `ssh -G` resolves their host to `github.com`. Insecure HTTP/Git and non-GitHub origins fail before repository access or binding writes.
++- Changes to the GitHub command or public CLI select both lifecycle and launcher regression suites through Forge's normal targeted-test maps.
+ 
+ ## Plan-review evidence
+ 
+diff --git a/docs/work/2026-09-08-github-account-context/tasks.md b/docs/work/2026-09-08-github-account-context/tasks.md
+index 60ffa325..61e7231c 100644
+--- a/docs/work/2026-09-08-github-account-context/tasks.md
++++ b/docs/work/2026-09-08-github-account-context/tasks.md
+@@ -18,12 +18,12 @@
+ 
+ ### Task 2: `forge github` lifecycle and launcher
+ 
+-**Owns:** `lib/commands/github.js`, `bin/forge.js`, `test/commands/github.test.js`, `test/github-launcher.test.js`, `skills/coverage.json`, `package.json`, `bun.lock`, generated `lib/commands/_manifest.js`
++**Owns:** `lib/commands/github.js`, `bin/forge.js`, `lib/commands/test.js`, `scripts/test.js`, `test/commands/github.test.js`, `test/github-launcher.test.js`, `test/scripts/test-runner.test.js`, `skills/coverage.json`, `package.json`, `bun.lock`, generated `lib/commands/_manifest.js`
+ 
+ 1. Write failing command tests for `use`, `status`, `status --json`, `run --`, and `unset`. Prove `use` prepares and verifies the supplied account before writing only clone-local `github.account`; failures leave any previous binding unchanged; missing accounts never trigger login/switch; status reports classified data only.
+ 2. Add `cross-spawn` as a direct runtime dependency and test interactive launch on POSIX/direct executables, Windows `.exe`, Windows `.cmd`, missing programs, spaced arguments, metacharacter arguments, signals, and exit-code propagation without caller-built shell strings. Make the public parser stop interpreting options after `github run --`; prove child `--help`, `--version`, `-p`, and `--path=...` arguments arrive unchanged.
+ 3. For `run`, set `GH_TOKEN`, `GITHUB_TOKEN`, and `GH_HOST=github.com` only on the explicit child. Add canaries for credential-bearing remotes, helper commands, subprocess errors, and JSON output.
+-4. Regenerate and drift-check the command manifest, and map `github` to its normal owning skill in `skills/coverage.json`.
++4. Regenerate and drift-check the command manifest, map `github` to its normal owning skill in `skills/coverage.json`, and map both lifecycle and launcher suites into Forge's targeted-test selectors.
+ 
+ **Exit:** one-time clone binding and cross-harness launching work without changing native `gh` active-account state or leaking credentials.
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,194 @@
+From 5fbb35217f1259f117aaabde86ca87238bd33472 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 11:45:13 +0530
+Subject: [PATCH] fix: gate npm publish on full release suite
+
+---
+ .github/workflows/npm-publish.yml | 89 ++++++++++++++++++++++++++++++-
+ test/npm-publish-workflow.test.js | 54 +++++++++++++++++++
+ 2 files changed, 142 insertions(+), 1 deletion(-)
+ create mode 100644 test/npm-publish-workflow.test.js
+
+diff --git a/.github/workflows/npm-publish.yml b/.github/workflows/npm-publish.yml
+index 73e1feec..afe659a8 100644
+--- a/.github/workflows/npm-publish.yml
++++ b/.github/workflows/npm-publish.yml
+@@ -12,12 +12,46 @@ permissions:
+   contents: read
+ 
+ jobs:
++  resolve-release:
++    name: Resolve immutable release SHA
++    runs-on: ubuntu-latest
++    permissions:
++      contents: read
++    outputs:
++      commitSha: ${{ steps.resolve.outputs.commitSha }}
++    steps:
++      - uses: actions/checkout@v7
++        with:
++          ref: ${{ github.event.release.tag_name }}
++          fetch-depth: 0
++      - name: Resolve release tag
++        id: resolve
++        shell: bash
++        env:
++          RELEASE_TAG: ${{ github.event.release.tag_name }}
++        run: |
++          set -euo pipefail
++          COMMIT_SHA="$(git rev-parse "${RELEASE_TAG}^{commit}")"
++          if [ -z "$COMMIT_SHA" ] || [ "$COMMIT_SHA" != "$(git rev-parse HEAD)" ]; then
++            echo "::error::Release tag did not resolve to the checked out commit"
++            exit 1
++          fi
++          echo "commitSha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
++
+   build:
++    needs: resolve-release
++    outputs:
++      commitSha: ${{ steps.evidence.outputs.commitSha }}
++      suite: ${{ steps.evidence.outputs.suite }}
++      passed: ${{ steps.evidence.outputs.passed }}
+     runs-on: ubuntu-latest
+     permissions:
+       contents: read
+     steps:
+       - uses: actions/checkout@v7
++        with:
++          ref: ${{ needs.resolve-release.outputs.commitSha }}
++          fetch-depth: 1
+       - uses: actions/setup-node@v7
+         with:
+           node-version: 22
+@@ -25,7 +59,30 @@ jobs:
+         with:
+           bun-version: 1.3.12
+       - run: bun install
+-      - run: bun test --timeout 15000 test/  # Exclude test-env/ (uses node:test, incompatible with Bun)
++      - name: Setup test fixtures
++        shell: bash
++        run: bash test-env/automation/setup-fixtures.sh --force
++      - name: Run complete release suite
++        shell: bash
++        run: |
++          set -euo pipefail
++          node scripts/test-full-suite.js --label-prefix release-full
++          bun test --timeout 15000 test-env/
++      - name: Emit release suite evidence
++        id: evidence
++        shell: bash
++        env:
++          EXPECTED_SHA: ${{ needs.resolve-release.outputs.commitSha }}
++        run: |
++          set -euo pipefail
++          ACTUAL_SHA="$(git rev-parse HEAD)"
++          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
++            echo "::error::Verification checkout SHA ($ACTUAL_SHA) != resolved release SHA ($EXPECTED_SHA)"
++            exit 1
++          fi
++          echo "commitSha=$ACTUAL_SHA" >> "$GITHUB_OUTPUT"
++          echo "suite=release-full" >> "$GITHUB_OUTPUT"
++          echo "passed=true" >> "$GITHUB_OUTPUT"
+ 
+   publish-npm:
+     needs: build
+@@ -35,6 +92,36 @@ jobs:
+       id-token: write  # Required for npm provenance
+     steps:
+       - uses: actions/checkout@v7
++        with:
++          ref: ${{ needs.build.outputs.commitSha }}
++          fetch-depth: 1
++      - name: Verify release suite evidence
++        shell: bash
++        env:
++          EXPECTED_SHA: ${{ needs.build.outputs.commitSha }}
++          SUITE: ${{ needs.build.outputs.suite }}
++          PASSED: ${{ needs.build.outputs.passed }}
++        run: |
++          set -euo pipefail
++          for field in EXPECTED_SHA SUITE PASSED; do
++            if [ -z "${!field}" ]; then
++              echo "::error::Missing release suite evidence field: $field"
++              exit 1
++            fi
++          done
++          ACTUAL_SHA="$(git rev-parse HEAD)"
++          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
++            echo "::error::Publish checkout SHA ($ACTUAL_SHA) != verified release SHA ($EXPECTED_SHA)"
++            exit 1
++          fi
++          if [ "$SUITE" != "release-full" ]; then
++            echo "::error::Incomplete release suite evidence: $SUITE"
++            exit 1
++          fi
++          if [ "$PASSED" != "true" ]; then
++            echo "::error::Release suite did not pass"
++            exit 1
++          fi
+       - uses: oven-sh/setup-bun@v2
+         with:
+           bun-version: 1.3.12
+diff --git a/test/npm-publish-workflow.test.js b/test/npm-publish-workflow.test.js
+new file mode 100644
+index 00000000..64a62f77
+--- /dev/null
++++ b/test/npm-publish-workflow.test.js
+@@ -0,0 +1,54 @@
++const fs = require('node:fs');
++const path = require('node:path');
++const { describe, test, expect } = require('bun:test');
++
++const workflowPath = path.join(__dirname, '..', '.github', 'workflows', 'npm-publish.yml');
++const workflowContent = fs.readFileSync(workflowPath, 'utf8').replace(/\r\n/g, '\n');
++
++function jobSection(name) {
++  const match = workflowContent.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [A-Za-z0-9_-]+:|$)`));
++  return match?.[1] || '';
++}
++
++describe('npm release workflow', () => {
++  test('resolves one immutable release SHA and pins verification and publish checkouts', () => {
++    const resolveJob = jobSection('resolve-release');
++    const buildJob = jobSection('build');
++    const publishJob = jobSection('publish-npm');
++
++    expect(resolveJob).toContain('ref: ${{ github.event.release.tag_name }}');
++    expect(resolveJob).toContain('fetch-depth: 0');
++    expect(resolveJob).toContain('git rev-parse HEAD');
++    expect(resolveJob).toContain('commitSha=');
++    expect(buildJob).toContain('needs: resolve-release');
++    expect(buildJob).toContain('ref: ${{ needs.resolve-release.outputs.commitSha }}');
++    expect(publishJob).toContain('needs: build');
++    expect(publishJob).toContain('ref: ${{ needs.build.outputs.commitSha }}');
++  });
++
++  test('verification runs the complete release suite without swallowing test-env failures', () => {
++    const buildJob = jobSection('build');
++
++    expect(buildJob).toContain('node scripts/test-full-suite.js --label-prefix release-full');
++    expect(buildJob).toContain('bash test-env/automation/setup-fixtures.sh --force');
++    expect(buildJob).toContain('bun test --timeout 15000 test-env/');
++    expect(buildJob).not.toContain('test-env/ || true');
++  });
++
++  test('publish consumes complete-suite evidence and fails closed on mismatch', () => {
++    const buildJob = jobSection('build');
++    const publishJob = jobSection('publish-npm');
++
++    expect(buildJob).toContain('commitSha: ${{ steps.evidence.outputs.commitSha }}');
++    expect(buildJob).toContain('suite: ${{ steps.evidence.outputs.suite }}');
++    expect(buildJob).toContain('passed: ${{ steps.evidence.outputs.passed }}');
++    expect(buildJob).toContain('commitSha=');
++    expect(buildJob).toContain('suite=release-full');
++    expect(buildJob).toContain('passed=true');
++
++    expect(publishJob).toContain('git rev-parse HEAD');
++    expect(publishJob).toContain('if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then');
++    expect(publishJob).toContain('if [ "$SUITE" != "release-full" ]; then');
++    expect(publishJob).toContain('if [ "$PASSED" != "true" ]; then');
++  });
++});
+-- 
+2.51.0.windows.1
+

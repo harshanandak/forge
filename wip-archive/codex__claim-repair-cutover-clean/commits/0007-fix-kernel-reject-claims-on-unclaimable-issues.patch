@@ -1,0 +1,116 @@
+From 3cbdc37119ed5d27654297962c8e064f69bf04a9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 00:35:13 +0530
+Subject: [PATCH] fix(kernel): reject claims on unclaimable issues
+
+---
+ docs/reference/LEGACY_CLAIM_REPAIR.md   |  3 ++-
+ lib/kernel/legacy-claim-repair.js       |  8 +++++---
+ lib/kernel/sqlite-driver.js             |  2 +-
+ test/kernel/legacy-claim-repair.test.js | 18 ++++++++++++++++--
+ 4 files changed, 24 insertions(+), 7 deletions(-)
+
+diff --git a/docs/reference/LEGACY_CLAIM_REPAIR.md b/docs/reference/LEGACY_CLAIM_REPAIR.md
+index e4007ba6..c2a09e98 100644
+--- a/docs/reference/LEGACY_CLAIM_REPAIR.md
++++ b/docs/reference/LEGACY_CLAIM_REPAIR.md
+@@ -19,7 +19,8 @@ claim acquisition, or any background process.
+   authority table, while the report exposes only the digest and aggregate claim
+   counts. Any intervening Kernel write invalidates approval.
+ - Preflight fails closed on integrity, foreign-key, schema/index, duplicate-row,
+-  state, timestamp, or read faults.
++  state, timestamp, read faults, or active claims attached to unclaimable issue
++  types.
+ - Apply requires the human-approved exact digest and the verified backup. It
+   acquires `BEGIN IMMEDIATE`, re-reads the complete repair snapshot, rejects any
+   digest drift, and compare-and-swaps every exact row before committing one
+diff --git a/lib/kernel/legacy-claim-repair.js b/lib/kernel/legacy-claim-repair.js
+index 41a650b3..b5084543 100644
+--- a/lib/kernel/legacy-claim-repair.js
++++ b/lib/kernel/legacy-claim-repair.js
+@@ -6,11 +6,11 @@ const path = require('node:path');
+ const { createHash } = require('node:crypto');
+ 
+ const { ISSUE_STATUSES } = require('./issue-command-contract');
+-const { CLAIM_STATES, isTerminalStatus } = require('./taxonomy-validator');
++const { CLAIM_STATES, isClaimableType, isTerminalStatus } = require('./taxonomy-validator');
+ const REQUIRED_CLAIM_COLUMNS = Object.freeze([
+ 	'id', 'issue_id', 'actor', 'state', 'session_id', 'worktree_id', 'claimed_at', 'expires_at',
+ ]);
+-const REQUIRED_ISSUE_COLUMNS = Object.freeze(['id', 'status']);
++const REQUIRED_ISSUE_COLUMNS = Object.freeze(['id', 'status', 'type']);
+ const REQUIRED_INDEXES = Object.freeze({
+ 	idx_kernel_claims_active_lease: Object.freeze({ columns: ['issue_id'], unique: true, partial: true }),
+ 	idx_kernel_claims_actor_state: Object.freeze({ columns: ['actor', 'state'], unique: false, partial: false }),
+@@ -121,7 +121,7 @@ function digestSnapshot(snapshot, observedAt, claims) {
+ 	const referencedIssueIds = new Set(claims.map(claim => claim.issue_id));
+ 	const issues = (snapshot.issues || [])
+ 		.filter(issue => referencedIssueIds.has(issue.id))
+-		.map(issue => ({ id: issue.id, status: issue.status }))
++		.map(issue => ({ id: issue.id, status: issue.status, type: issue.type }))
+ 		.sort((left, right) => compareCanonical(left.id, right.id));
+ 	const canonicalClaims = claims.map(exactClaimRow)
+ 		.sort((left, right) => compareCanonical(left.id, right.id));
+@@ -193,6 +193,8 @@ function validateClaimRows(claims, issuesById, errors) {
+ 		claimIds.add(claim.id);
+ 		if (claim.state === 'active') {
+ 			activeByIssue.set(claim.issue_id, Number(activeByIssue.get(claim.issue_id) || 0) + 1);
++			const issue = issuesById.get(claim.issue_id);
++			if (issue && !isClaimableType(issue.type)) errors.push('unclaimable_active_claim');
+ 		}
+ 	}
+ 	if ([...activeByIssue.values()].some(count => count > 1)) errors.push('duplicate_active_claim');
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index f336c935..90ac9a43 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -3197,7 +3197,7 @@ function loadLegacyClaimRepairSnapshot(runtime, db) {
+ 	});
+ 	const issues = guardedRead(
+ 		'issues',
+-		() => allParams(runtime, db, 'SELECT id, status FROM kernel_issues ORDER BY id ASC'),
++		() => allParams(runtime, db, 'SELECT id, status, type FROM kernel_issues ORDER BY id ASC'),
+ 	);
+ 	const claims = guardedRead(
+ 		'claims',
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index c006350d..9536ab0d 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -55,10 +55,10 @@ async function createFixture(driverOptions = {}) {
+ 	});
+ 	await broker.initialize();
+ 
+-	async function issue(id, status = 'open') {
++	async function issue(id, status = 'open', type = 'task') {
+ 		const created = await broker.runIssueOperation(
+ 			'create',
+-			['--id', id, '--title', `Issue ${id}`, '--type', 'task'],
++			['--id', id, '--title', `Issue ${id}`, '--type', type],
+ 			{ now: '2026-08-12T06:00:00.000Z', actor: 'fixture' },
+ 		);
+ 		expect(created.ok).toBe(true);
+@@ -306,6 +306,20 @@ describe('legacy claim repair preflight', () => {
+ 		});
+ 		brokenAuthority.driver.close();
+ 	});
++
++	test('fails closed when an active claim targets an unclaimable issue type', async () => {
++		const fixture = await createFixture();
++		await fixture.issue('unclaimable-epic', 'open', 'epic');
++		await fixture.claim('invalid-epic-claim', 'unclaimable-epic', { expires_at: null });
++
++		await expect(fixture.driver.preflightLegacyClaimRepair(
++			{ observedAt: OBSERVED_AT }, fixture.config,
++		)).rejects.toMatchObject({
++			code: 'CLAIM_REPAIR_PREFLIGHT_FAILED',
++			details: { errors: { unclaimable_active_claim: 1 } },
++		});
++		fixture.driver.close();
++	});
+ });
+ 
+ describe('legacy claim repair backup and apply', () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,114 @@
+From ed0ffee59a0da61106956295623d83aef90be96a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 16:38:10 +0530
+Subject: [PATCH] fix(memory): preserve project-local recall metadata
+
+---
+ lib/memory/router.js       | 19 ++++++++++++++--
+ test/memory/router.test.js | 46 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 63 insertions(+), 2 deletions(-)
+
+diff --git a/lib/memory/router.js b/lib/memory/router.js
+index 9fefd2e0..d0940fba 100644
+--- a/lib/memory/router.js
++++ b/lib/memory/router.js
+@@ -242,6 +242,21 @@ function legacyJsonlPath(projectRoot) {
+   return path.join(projectRoot, ...LEGACY_JSONL_RELATIVE);
+ }
+ 
++function legacyTags(parsed) {
++  const tags = Array.isArray(parsed.tags)
++    ? parsed.tags.filter(tag => typeof tag === 'string')
++    : [];
++  if (
++    typeof parsed.type === 'string'
++    && /^[a-z0-9][a-z0-9-]{0,63}$/i.test(parsed.type)
++    && !tags.some(tag => tag.startsWith('type:'))
++  ) {
++    tags.push(`type:${parsed.type.toLowerCase()}`);
++  }
++  if (!tags.some(tag => tag.startsWith('trust:'))) tags.push('trust:suggested');
++  return tags;
++}
++
+ // A STABLE key for a legacy record that lacks an `id`, derived from its content — so a
+ // re-run (or a failed rename) upserts the same row instead of double-inserting under a
+ // fresh random UUID.
+@@ -249,7 +264,7 @@ function legacyContentKey(parsed) {
+   const basis = JSON.stringify({
+     note: parsed.note,
+     timestamp: typeof parsed.timestamp === 'string' ? parsed.timestamp : '',
+-    tags: Array.isArray(parsed.tags) ? parsed.tags.filter(tag => typeof tag === 'string') : [],
++    tags: legacyTags(parsed),
+   });
+   return `import:${crypto.createHash('sha256').update(basis).digest('hex').slice(0, 32)}`;
+ }
+@@ -292,7 +307,7 @@ function migrateJsonlNotesOnce(projectRoot, options = {}) {
+       key: typeof parsed.id === 'string' && parsed.id ? parsed.id : legacyContentKey(parsed),
+       value: parsed.note,
+       sourceAgent: IMPORT_SOURCE_AGENT,
+-      tags: Array.isArray(parsed.tags) ? parsed.tags.filter(tag => typeof tag === 'string') : [],
++      tags: legacyTags(parsed),
+     };
+     if (typeof parsed.timestamp === 'string' && parsed.timestamp && !Number.isNaN(Date.parse(parsed.timestamp))) {
+       entry.timestamp = parsed.timestamp;
+diff --git a/test/memory/router.test.js b/test/memory/router.test.js
+index 49cf8ce1..a4ee2a69 100644
+--- a/test/memory/router.test.js
++++ b/test/memory/router.test.js
+@@ -233,6 +233,52 @@ describe('memory-router: graphiti backend (experimental — local kernel is alwa
+ });
+ 
+ describe('memory-router: one-time JSONL import onto the kernel', () => {
++  test('ignores user-global .remember content and unknown markdown headings', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    const fakeHome = makeProjectRoot();
++    fs.writeFileSync(
++      path.join(fakeHome, '.remember'),
++      '# Global memory\n\n## Unknown heading\nNever import this user-global note.\n',
++      'utf8',
++    );
++
++    const result = router.recall(projectRoot, {}, { store, homeDir: fakeHome });
++
++    expect(result.total).toBe(0);
++    expect(result.notes).toEqual([]);
++  });
++
++  test('preserves legacy type and suggested-trust metadata in deterministic ids', () => {
++    const projectRoot = makeProjectRoot();
++    const store = makeStore(projectRoot);
++    writeLegacyJsonl(projectRoot, [
++      {
++        note: 'same legacy note',
++        timestamp: '2026-01-01T00:00:00.000Z',
++        tags: ['old'],
++        type: 'decision',
++      },
++      {
++        note: 'same legacy note',
++        timestamp: '2026-01-01T00:00:00.000Z',
++        tags: ['old'],
++        type: 'gotcha',
++      },
++    ]);
++
++    router.migrateJsonlNotesOnce(projectRoot, { store });
++    const imported = store.listMemories();
++
++    expect(imported).toHaveLength(2);
++    expect(imported.map(entry => entry.key).sort()[0]).not.toBe(imported.map(entry => entry.key).sort()[1]);
++    expect(imported.map(entry => entry.tags).sort()).toEqual([
++      ['old', 'type:decision', 'trust:suggested'],
++      ['old', 'type:gotcha', 'trust:suggested'],
++    ]);
++    expect(imported.every(entry => entry.sourceAgent === 'forge remember (imported)')).toBe(true);
++  });
++
+   test('imports a legacy notes.jsonl on first use and renames it so it never re-imports', () => {
+     const projectRoot = makeProjectRoot();
+     const store = makeStore(projectRoot);
+-- 
+2.51.0.windows.1
+

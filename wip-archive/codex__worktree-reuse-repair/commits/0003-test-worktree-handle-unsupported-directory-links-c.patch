@@ -1,0 +1,33 @@
+From 345ff5ac58a8668c067b2690a4eb9f8fb23539d6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 14:31:55 +0530
+Subject: [PATCH] test(worktree): handle unsupported directory links cb8c7ab6
+
+---
+ test/commands/worktree-linkage.test.js | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/test/commands/worktree-linkage.test.js b/test/commands/worktree-linkage.test.js
+index 3cad8e98..d0e701fb 100644
+--- a/test/commands/worktree-linkage.test.js
++++ b/test/commands/worktree-linkage.test.js
+@@ -24,6 +24,7 @@ const { buildMigratedKernelIssueDeps } = require('../../lib/kernel/cli-broker-fa
+ 
+ const TIMEOUT = 15000;
+ const cleanups = [];
++const DIRECTORY_LINK_UNSUPPORTED_ERRORS = new Set(['EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+ 
+ function probeDirectoryLinkSupport() {
+   const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-linkage-link-probe-'));
+@@ -32,7 +33,7 @@ function probeDirectoryLinkSupport() {
+     fs.symlinkSync(probeRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+     return true;
+   } catch (error) {
+-    if (error.code === 'EPERM') return false;
++    if (DIRECTORY_LINK_UNSUPPORTED_ERRORS.has(error.code)) return false;
+     throw error;
+   } finally {
+     try { fs.rmSync(probeRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,226 @@
+From 81351cf13401ac7ae2bd25902567a5d48ffc880d Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 02:08:23 +0530
+Subject: [PATCH] fix: avoid Bun Windows ACL spawn stalls
+
+---
+ lib/kernel/sqlite-driver.js             | 115 +++++++++++++++---------
+ test/kernel/legacy-claim-repair.test.js |  42 ++++++++-
+ 2 files changed, 110 insertions(+), 47 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index f93a22aa..1b6be157 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4500,8 +4500,8 @@ function hardenBackupPermissionsBatch(filePaths, options = {}) {
+ 	const platform = options.platform || process.platform;
+ 	if (platform === 'win32' && !options.aclSecurer && !options.fsApi) {
+ 		try {
+-			// PowerShell startup dominates ACL work on Windows; the script still
+-			// resets and verifies every path, but one process serves the whole batch.
++			// Bun's synchronous PowerShell transport has high-variance startup on Windows;
++			// native tools keep the same reset-and-verify boundary within the test budget.
+ 			secureWindowsPathsAcl(paths);
+ 			return;
+ 		} catch (error) {
+@@ -4515,52 +4515,80 @@ function hardenBackupPermissionsBatch(filePaths, options = {}) {
+ 	for (const filePath of paths) hardenBackupPermissions(filePath, options);
+ }
+ 
+-const WINDOWS_PRIVATE_ACL_SCRIPT = [
+-	'$targets = $env:FORGE_PRIVATE_ACL_TARGETS | ConvertFrom-Json',
+-	'$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+-	'foreach ($targetPath in $targets) {',
+-	'$isDirectory = [System.IO.Directory]::Exists($targetPath)',
+-	'$acl = if ($isDirectory) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }',
+-	'$acl.SetOwner($sid)',
+-	'$acl.SetAccessRuleProtection($true, $false)',
+-	'$inheritance = if ($isDirectory) { "ContainerInherit,ObjectInherit" } else { "None" }',
+-	'$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, "FullControl", $inheritance, "None", "Allow")',
+-	'$acl.SetAccessRule($rule)',
+-	'if ($isDirectory) { [System.IO.Directory]::SetAccessControl($targetPath, $acl) } else { [System.IO.File]::SetAccessControl($targetPath, $acl) }',
+-	'$verified = if ($isDirectory) { [System.IO.Directory]::GetAccessControl($targetPath) } else { [System.IO.File]::GetAccessControl($targetPath) }',
+-	'$owner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier])',
+-	'$rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
+-	'$private = $owner.Value -eq $sid.Value -and $verified.AreAccessRulesProtected -and $rules.Count -eq 1',
+-	'$private = $private -and $rules[0].IdentityReference.Value -eq $sid.Value',
+-	'$private = $private -and -not $rules[0].IsInherited -and $rules[0].AccessControlType -eq "Allow"',
+-	'$private = $private -and (($rules[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl)',
+-	'if (-not $private) { throw "owner-only ACL verification failed" }',
+-	'}',
+-].join('; ');
+-
+-function resolveWindowsPowerShellPath(environment = process.env) {
++function resolveWindowsSystemToolPath(toolName, environment = process.env) {
+ 	const systemRoot = environment.SystemRoot;
+ 	if (typeof systemRoot !== 'string' || !path.win32.isAbsolute(systemRoot)) {
+ 		throw new Error('Windows backup hardening requires an absolute SystemRoot');
+ 	}
+-	return path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
++	return path.win32.join(systemRoot, 'System32', toolName);
+ }
+ 
+-function secureWindowsPathsAcl(filePaths) {
+-	execFileSync(
+-		resolveWindowsPowerShellPath(),
+-		['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PRIVATE_ACL_SCRIPT],
+-		{
+-			encoding: 'utf8',
+-			env: {
+-				FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
+-				SystemRoot: process.env.SystemRoot,
+-			},
+-			stdio: 'pipe',
+-			timeout: 15_000,
+-			windowsHide: true,
+-		},
+-	);
++function parseCurrentWindowsSid(output) {
++	const match = String(output).trim().match(/,"(S-\d+(?:-\d+)+)"$/);
++	if (!match) throw new Error('Windows backup hardening could not resolve the current user SID');
++	return match[1];
++}
++
++function isOwnerOnlyWindowsDacl(serializedAcl, sid, isDirectory) {
++	const descriptor = String(serializedAcl)
++		.split(/\r?\n/)
++		.find(line => line.startsWith('D:'));
++	if (!descriptor) return false;
++	const dacl = descriptor.match(/^D:([A-Z]*)(.*)$/);
++	if (!dacl || !dacl[1].includes('P')) return false;
++	const aces = dacl[2].match(/\([^)]*\)/g) || [];
++	if (aces.length !== 1 || aces[0] !== dacl[2]) return false;
++	const [type, inheritance, rights, objectGuid, inheritObjectGuid, identity] = aces[0].slice(1, -1).split(';');
++	return type === 'A'
++		&& inheritance === (isDirectory ? 'OICI' : '')
++		&& rights === 'FA'
++		&& objectGuid === ''
++		&& inheritObjectGuid === ''
++		&& identity === sid;
++}
++
++let currentWindowsSid;
++
++function secureWindowsPathsAcl(filePaths, options = {}) {
++	const execute = options.execFile || execFileSync;
++	const environment = options.environment || process.env;
++	const cacheSid = !options.execFile && !options.environment;
++	const fsApi = options.fsApi || fs;
++	const commandOptions = {
++		encoding: 'utf8',
++		env: environment,
++		stdio: 'ignore',
++		timeout: 15_000,
++		windowsHide: !process.versions.bun,
++	};
++	const whoamiPath = resolveWindowsSystemToolPath('whoami.exe', environment);
++	const icaclsPath = resolveWindowsSystemToolPath('icacls.exe', environment);
++	const sid = cacheSid && currentWindowsSid
++		? currentWindowsSid
++		: parseCurrentWindowsSid(execute(
++			whoamiPath,
++			['/user', '/fo', 'csv', '/nh'],
++			{ ...commandOptions, stdio: ['ignore', 'pipe', 'ignore'] },
++		));
++	if (cacheSid) currentWindowsSid = sid;
++	const proofDirectory = fsApi.mkdtempSync(path.join(os.tmpdir(), 'forge-private-acl-'));
++	try {
++		for (const [index, filePath] of filePaths.entries()) {
++			const isDirectory = fsApi.statSync(filePath).isDirectory();
++			const grant = `*${sid}:${isDirectory ? '(OI)(CI)F' : 'F'}`;
++			const proofPath = path.join(proofDirectory, `${index}.acl`);
++			execute(icaclsPath, [filePath, '/reset', '/q'], commandOptions);
++			execute(icaclsPath, [filePath, '/inheritance:r', '/q'], commandOptions);
++			execute(icaclsPath, [filePath, '/grant:r', grant, '/q'], commandOptions);
++			execute(icaclsPath, [filePath, '/setowner', `*${sid}`, '/q'], commandOptions);
++			execute(icaclsPath, [filePath, '/save', proofPath, '/q'], commandOptions);
++			if (!isOwnerOnlyWindowsDacl(fsApi.readFileSync(proofPath, 'utf16le'), sid, isDirectory)) {
++				throw new Error('owner-only ACL verification failed');
++			}
++		}
++	} finally {
++		fsApi.rmSync(proofDirectory, { recursive: true, force: true });
++	}
+ }
+ 
+ function secureWindowsPathAcl(filePath) {
+@@ -4694,7 +4722,8 @@ module.exports = {
+ 	hardenBackupPermissions,
+ 	hardenBackupPermissionsBatch,
+ 	requireSqliteRuntimeModule,
+-	resolveWindowsPowerShellPath,
++	resolveWindowsSystemToolPath,
++	secureWindowsPathsAcl,
+ 	selectBuiltinSQLiteRuntime,
+ 	syncClaimRepairRecoveryDirectory,
+ 	validateBuiltinSQLiteRuntimeDriver,
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 45e1a70a..82b28ea5 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -10,7 +10,8 @@ const {
+ 	createBuiltinSQLiteDriver,
+ 	hardenBackupPermissions,
+ 	hardenBackupPermissionsBatch,
+-	resolveWindowsPowerShellPath,
++	resolveWindowsSystemToolPath,
++	secureWindowsPathsAcl,
+ 	syncClaimRepairRecoveryDirectory,
+ } = require('../../lib/kernel/sqlite-driver');
+ const {
+@@ -146,9 +147,9 @@ describe('legacy claim repair preflight', () => {
+ 	});
+ 
+ 	test('hardens backup files to owner-only mode and fails closed when permissions remain broad', () => {
+-		expect(resolveWindowsPowerShellPath({ SystemRoot: 'C:\\Windows' }))
+-			.toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+-		expect(() => resolveWindowsPowerShellPath({ SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
++		expect(resolveWindowsSystemToolPath('icacls.exe', { SystemRoot: 'C:\\Windows' }))
++			.toBe('C:\\Windows\\System32\\icacls.exe');
++		expect(() => resolveWindowsSystemToolPath('icacls.exe', { SystemRoot: 'relative' })).toThrow('absolute SystemRoot');
+ 		const calls = [];
+ 		hardenBackupPermissions('backup.sqlite', {
+ 			platform: 'linux',
+@@ -201,6 +202,39 @@ describe('legacy claim repair preflight', () => {
+ 		})).toThrow('owner-only permissions');
+ 	});
+ 
++	test('uses native Windows ACL tools and verifies the saved owner-only DACL', () => {
++		const invocations = [];
++		const fsCalls = [];
++		const sid = 'S-1-5-21-1000';
++		secureWindowsPathsAcl(['backup.sqlite'], {
++			environment: { SystemRoot: 'C:\\Windows' },
++			execFile(command, args, options) {
++				invocations.push({ command, args, options });
++				return command.endsWith('whoami.exe') ? `"runner","${sid}"\r\n` : '';
++			},
++			fsApi: {
++				mkdtempSync() { return 'C:\\Temp\\acl-proof'; },
++				statSync() { return { isDirectory: () => false }; },
++				readFileSync() { return `backup.sqlite\r\nD:PAI(A;;FA;;;${sid})\r\n`; },
++				rmSync(filePath, options) { fsCalls.push({ filePath, options }); },
++			},
++		});
++		expect(invocations.map(({ command, args }) => [path.win32.basename(command), args])).toEqual([
++			['whoami.exe', ['/user', '/fo', 'csv', '/nh']],
++			['icacls.exe', ['backup.sqlite', '/reset', '/q']],
++			['icacls.exe', ['backup.sqlite', '/inheritance:r', '/q']],
++			['icacls.exe', ['backup.sqlite', '/grant:r', `*${sid}:F`, '/q']],
++			['icacls.exe', ['backup.sqlite', '/setowner', `*${sid}`, '/q']],
++			['icacls.exe', ['backup.sqlite', '/save', path.join('C:\\Temp\\acl-proof', '0.acl'), '/q']],
++		]);
++		expect(invocations[0].options.stdio).toEqual(['ignore', 'pipe', 'ignore']);
++		expect(invocations.slice(1).every(({ options }) => options.stdio === 'ignore')).toBe(true);
++		expect(fsCalls).toEqual([{
++			filePath: 'C:\\Temp\\acl-proof',
++			options: { recursive: true, force: true },
++		}]);
++	});
++
+ 	test('restore-proof cleanup retries Windows file locks without replacing valid proof', () => {
+ 		let cleanupOptions;
+ 		expect(() => cleanupRestoreProofDirectory('restore-proof', {
+-- 
+2.51.0.windows.1
+

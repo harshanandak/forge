@@ -1,0 +1,236 @@
+From dc2bf2f8c555766cc4f88f68ce4f2ee8aad14a75 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:52:33 +0530
+Subject: [PATCH] fix(merge): replay persisted exact-head authority
+
+---
+ lib/commands/merge.js                         | 15 ++++-
+ lib/kernel/broker.js                          | 56 +++++++++++++++++--
+ ...merge-authority-review-regressions.test.js | 25 +++++++++
+ test/kernel/trace.test.js                     | 18 +++++-
+ 4 files changed, 105 insertions(+), 9 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index e1aec365..a9624b41 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -543,7 +543,12 @@ async function defaultPersistMergeDecision({ decision, pr, expectedHead, reposit
+     if (!result?.iteration || !['accept', 'duplicate'].includes(result.iteration.decision)) {
+       throw new TypeError('Kernel did not confirm durable merge authority.');
+     }
+-    return { persisted: true, decisionId: decision.decisionId, expectedHead };
++    return {
++      persisted: true,
++      decisionId: result.authority?.work_packet?.object_id || decision.decisionId,
++      expectedHead,
++      ...(result.authority?.work_packet ? { packet: result.authority.work_packet } : {}),
++    };
+   } finally {
+     if (ownsDriver && built?.driver && typeof built.driver.close === 'function') {
+       try { await built.driver.close(); } catch { /* persisted authority outcome remains authoritative */ }
+@@ -1269,6 +1274,14 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+         error: 'Failed to persist merge authority: durable confirmation is unavailable.',
+       };
+     }
++    if (authority.packet) {
++      decision = {
++        ...decision,
++        packet: authority.packet,
++        decisionId: authority.packet.object_id,
++        occurredAt: authority.packet.created_at,
++      };
++    }
+   } catch (err) {
+     return {
+       success: false,
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index a4a73a50..e9324970 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -382,6 +382,7 @@ function derivePrEvidence(input) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage WorkPacket and RunReceipt bindings conflict');
+ 	}
+ 	return {
++		packet,
+ 		...packetEvidence,
+ 		run_receipt_hash: receipt.content_hash,
+ 		run_id: receiptPayload.run_id,
+@@ -578,9 +579,39 @@ function buildPrMergeAuthorityPayload(input, evidence, worktreeId, gateReceipts)
+ 		packet_revision: evidence.packet_revision,
+ 		risk_manifest_digest: evidence.risk_manifest_digest,
+ 		gate_receipts: gateReceipts,
++		work_packet: evidence.packet,
+ 	};
+ }
+ 
++function mergeAuthorityPacketIdentity(packet) {
++	const identity = structuredClone(packet);
++	delete identity.created_at;
++	delete identity.content_hash;
++	return stableStringify(identity);
++}
++
++function assertCompatiblePrMergeAuthority(existingEvent, payload, actor) {
++	if (!existingEvent) return;
++	const existing = normalizePayload(existingEvent);
++	if (stableStringify(existing) === stableStringify(payload)) return;
++	if (!existing.work_packet || existingEvent.actor !== actor) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'INCOMPLETE: conflicting evidence for idempotency key');
++	}
++	const existingPacket = assertReceiptEnvelope(existing.work_packet, 'forge.memory.work-packet.v1');
++	const proposedPacket = assertReceiptEnvelope(payload.work_packet, 'forge.memory.work-packet.v1');
++	const existingAuthority = { ...existing };
++	const proposedAuthority = { ...payload };
++	delete existingAuthority.work_packet;
++	delete existingAuthority.work_packet_hash;
++	delete proposedAuthority.work_packet;
++	delete proposedAuthority.work_packet_hash;
++	const sameAuthority = stableStringify(existingAuthority) === stableStringify(proposedAuthority);
++	const samePacket = mergeAuthorityPacketIdentity(existingPacket) === mergeAuthorityPacketIdentity(proposedPacket);
++	if (!sameAuthority || !samePacket) {
++		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'INCOMPLETE: conflicting evidence for idempotency key');
++	}
++}
++
+ function assertPersistedMergeAuthority(event, payload) {
+ 	if (!event) {
+ 		throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage requires persisted exact-head merge authority');
+@@ -1876,7 +1907,7 @@ function createLocalBroker(options = {}) {
+ 						const payload = buildPrMergeAuthorityPayload(linkageInput, evidence, inferred.worktree_id, gateReceipts);
+ 						const idempotencyKey = `pr.merge-authorized:${linked.id}:${evidence.head_sha}`;
+ 						const existingEvent = await transactionDriver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
+-						assertCompatiblePrEvidence(existingEvent, payload);
++						assertCompatiblePrMergeAuthority(existingEvent, payload, context.actor);
+ 						let iteration;
+ 						if (existingEvent) {
+ 							iteration = { decision: 'duplicate', originalEvent: existingEvent, projection: false };
+@@ -1896,7 +1927,11 @@ function createLocalBroker(options = {}) {
+ 						await transactionDriver.exec('COMMIT;', config);
+ 						transactionOpen = false;
+ 						await restoreBusyTimeout(transactionDriver, config);
+-						return { link: linked, iteration };
++						return {
++							link: linked,
++							iteration,
++							authority: existingEvent ? normalizePayload(existingEvent) : payload,
++						};
+ 					} catch (error) {
+ 						if (transactionOpen) {
+ 							try { await transactionDriver.exec('ROLLBACK;', config); } catch { /* preserve original error */ }
+@@ -1938,15 +1973,21 @@ function createLocalBroker(options = {}) {
+ 				const inferred = await transactionDriver.resolvePrLinkage({ ...linkageInput, issue_id: evidence.issue_id }, context, config);
+ 				assertResolvedPrLinkage(inferred, evidence);
+ 				const issueEvents = await transactionDriver.listKernelEvents('issue', evidence.issue_id, context, config);
+-				const gateReceipts = resolveGateReceipts(issueEvents, evidence.gate_ids, linkageInput.occurred_at);
+ 				const issueRows = await transactionDriver.readTrace({ issue_id: evidence.issue_id, pr_number: linkageInput.number,
+ 					repo: linkageInput.repo, git_common_dir: linkageInput.git_common_dir }, context, config);
+ 				assertAtomicPrEvidence(issueRows, linkageInput, evidence);
+ 				const priorPr = findPriorPr(issueRows.pull_requests, linkageInput);
+ 				const worktreeId = inferred.worktree_id;
+ 				const eventType = `pr.${linkageInput.phase}`;
+-				const payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
+-				assertAtomicRunIdentity(await transactionDriver.loadPrEventsByRunId(evidence.run_id, context, config), payload);
++				const requiresPersistedAuthority = linkageInput.phase === 'merged'
++					&& context.requirePersistedMergeAuthority === true;
++				let gateReceipts;
++				let payload;
++				if (!requiresPersistedAuthority) {
++					gateReceipts = resolveGateReceipts(issueEvents, evidence.gate_ids, linkageInput.occurred_at);
++					payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
++					assertAtomicRunIdentity(await transactionDriver.loadPrEventsByRunId(evidence.run_id, context, config), payload);
++				}
+ 				if (priorPr && priorPr.head_sha !== evidence.head_sha) {
+ 					throw traceError('FORGE_TRACE_STALE_AUTHORITY', 'recordPrLinkage receipt head conflicts with current PR authority');
+ 				}
+@@ -1956,13 +1997,16 @@ function createLocalBroker(options = {}) {
+ 					...linkageInput, head_sha: evidence.head_sha, issue_id: evidence.issue_id,
+ 					worktree_id: worktreeId, registered_at: linkageInput.occurred_at,
+ 				}, context, config);
+-				if (linkageInput.phase === 'merged' && context.requirePersistedMergeAuthority === true) {
++				if (requiresPersistedAuthority) {
+ 					const authorityKey = `pr.merge-authorized:${linked.id}:${evidence.head_sha}`;
+ 					const authority = await transactionDriver.loadKernelEventByIdempotencyKey(authorityKey, context, config);
++					gateReceipts = authority ? normalizePayload(authority).gate_receipts : undefined;
+ 					assertPersistedMergeAuthority(
+ 						authority,
+ 						buildPrMergeAuthorityPayload(linkageInput, evidence, worktreeId, gateReceipts),
+ 					);
++					payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
++					assertAtomicRunIdentity(await transactionDriver.loadPrEventsByRunId(evidence.run_id, context, config), payload);
+ 				}
+ 				const idempotencyKey = `${eventType}:${linked.id}:${evidence.head_sha}`;
+ 				const existingEvent = await transactionDriver.loadKernelEventByIdempotencyKey(idempotencyKey, context, config);
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index f4257fef..412c0eeb 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -130,6 +130,31 @@ const validThreads = {
+ };
+ 
+ describe('merge authority — exact reviewer regressions', () => {
++	test('reuses the canonical persisted packet before an exact-head retry mutates GitHub', async () => {
++		const attemptedPacket = { object_id: 'attempted', created_at: '2026-08-01T12:00:05.000Z', content_hash: 'b'.repeat(64) };
++		const canonicalPacket = { object_id: 'canonical', created_at: '2026-08-01T12:00:00.000Z', content_hash: 'c'.repeat(64) };
++		let terminalDecision;
++		const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++			prepareMergeDecision: async () => ({
++				decisionId: attemptedPacket.object_id,
++				packet: attemptedPacket,
++				occurredAt: attemptedPacket.created_at,
++			}),
++			persistMergeDecision: async () => ({
++				persisted: true,
++				packet: canonicalPacket,
++			}),
++			recordMergeDecision: async ({ decision }) => {
++				terminalDecision = decision;
++				return { receiptId: 'receipt-1' };
++			},
++		}));
++		expect(out.merged).toBe(true);
++		expect(terminalDecision.packet).toBe(canonicalPacket);
++		expect(terminalDecision.decisionId).toBe('canonical');
++		expect(terminalDecision.occurredAt).toBe('2026-08-01T12:00:00.000Z');
++	});
++
+   test('allows an immediate merge when config omits settle_min', async () => {
+     let merges = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 3bccbf46..77cf0267 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -212,14 +212,28 @@ describe('Kernel receipt-bound PR trace', () => {
+ 	test('persists exact-head merge authority before mutation and accepts its terminal receipt after lease expiry', async () => {
+ 		const packet = workPacket();
+ 		await broker.recordPrLinkage(linkage('opened', packet, runReceipt(packet)));
+-		const authorityInput = linkage('merged', packet);
++		const authorityInput = linkage('merged', packet, undefined, { occurred_at: '2026-08-11T00:06:30.000Z' });
+ 		delete authorityInput.run_receipt;
+ 
+ 		const authority = await broker.recordPrMergeAuthority(authorityInput, LIFECYCLE_CONTEXT);
+ 		expect(authority.iteration.decision).toBe('accept');
++		const retryPacket = structuredClone(packet);
++		retryPacket.created_at = '2026-08-11T00:05:30.000Z';
++		retryPacket.content_hash = computeContentHash(retryPacket);
++		const retryInput = linkage('merged', retryPacket, undefined, { occurred_at: '2026-08-11T00:06:30.000Z' });
++		delete retryInput.run_receipt;
++		const retried = await broker.recordPrMergeAuthority(retryInput, LIFECYCLE_CONTEXT);
++		expect(retried.iteration.decision).toBe('duplicate');
++		expect(retried.authority.work_packet).toEqual(packet);
++		await driver.insertKernelEvent({
++			entity_type: 'issue', entity_id: 'issue-trace', event_type: 'gate.rejected',
++			idempotency_key: 'gate.rejected:issue-trace:gate.merge:maintainer', expected_revision: 0,
++			actor: 'maintainer', origin: 'test',
++			payload: { gate: GATE_ID, expires_at: null, generation: 1 }, created_at: '2026-08-11T00:07:00.000Z',
++		}, {}, config);
+ 		brokerNow = '2026-08-11T02:00:00.000Z';
+ 		const merged = await rawRecordPrLinkage(
+-			linkage('merged', packet, runReceipt(packet, {}, 'merged')),
++			linkage('merged', packet, runReceipt(packet, {}, 'merged'), { occurred_at: '2026-08-11T00:08:00.000Z' }),
+ 			{ ...LIFECYCLE_CONTEXT, requirePersistedMergeAuthority: true },
+ 		);
+ 
+-- 
+2.51.0.windows.1
+

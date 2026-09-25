@@ -1,0 +1,48 @@
+From c957c504ff2764bb57b35f56785ffba0dc48b90c Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 02:49:11 +0530
+Subject: [PATCH] fix(windows): retain PowerShell pipe transport
+
+---
+ lib/kernel/sqlite-driver.js             | 2 +-
+ test/kernel/legacy-claim-repair.test.js | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index a221a52c..f81df374 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4558,7 +4558,7 @@ function secureWindowsPathsAcl(filePaths, options = {}) {
+ 				FORGE_PRIVATE_ACL_TARGETS: JSON.stringify(filePaths),
+ 				SystemRoot: environment.SystemRoot,
+ 			},
+-			stdio: 'ignore',
++			stdio: 'pipe',
+ 			timeout: 15_000,
+ 			windowsHide: !process.versions.bun,
+ 		},
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 588b4a68..8434582e 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -202,7 +202,7 @@ describe('legacy claim repair preflight', () => {
+ 		})).toThrow('owner-only permissions');
+ 	});
+ 
+-	test('runs Windows ACL hardening without Bun hidden-window or output-pipe overhead', () => {
++	test('runs Windows ACL hardening without Bun hidden-window overhead', () => {
+ 		let invocation;
+ 		secureWindowsPathsAcl(['backup.sqlite'], {
+ 			environment: { SystemRoot: 'C:\\Windows' },
+@@ -213,7 +213,7 @@ describe('legacy claim repair preflight', () => {
+ 			'-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String),
+ 		]);
+ 		expect(invocation.options).toMatchObject({
+-			stdio: 'ignore',
++			stdio: 'pipe',
+ 			timeout: 15_000,
+ 			windowsHide: false,
+ 			env: {
+-- 
+2.51.0.windows.1
+

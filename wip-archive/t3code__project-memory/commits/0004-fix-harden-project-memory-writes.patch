@@ -1,0 +1,203 @@
+From ac622b45946d6b12a90158675cb0b280aa161ec9 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 27 Apr 2026 00:31:43 +0530
+Subject: [PATCH] fix: harden project memory writes
+
+---
+ lib/project-memory.js       | 90 ++++++++++++++++++++++++++++---------
+ test/project-memory.test.js | 51 +++++++++++++++++++++
+ 2 files changed, 121 insertions(+), 20 deletions(-)
+
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 86544557..d166d9fa 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -2,15 +2,59 @@ const fs = require('node:fs');
+ const path = require('node:path');
+ 
+ const DEFAULT_MEMORY_FILE = path.join('.forge', 'memory', 'entries.jsonl');
++const DEFAULT_LOCK_TIMEOUT_MS = 5000;
++const DEFAULT_LOCK_RETRY_MS = 10;
+ 
+ function memoryPath(projectRoot, options = {}) {
++  const root = path.resolve(projectRoot);
+   if (!options.filePath) {
+-    return path.join(projectRoot, DEFAULT_MEMORY_FILE);
++    return path.join(root, DEFAULT_MEMORY_FILE);
+   }
+ 
+-  return path.isAbsolute(options.filePath)
++  const candidate = path.isAbsolute(options.filePath)
+     ? options.filePath
+-    : path.join(projectRoot, options.filePath);
++    : path.join(root, options.filePath);
++  const resolved = path.resolve(candidate);
++  const relative = path.relative(root, resolved);
++
++  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
++    throw new Error('project memory filePath must stay within projectRoot');
++  }
++
++  return resolved;
++}
++
++function sleep(ms) {
++  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
++}
++
++function acquireLock(filePath, options = {}) {
++  const lockPath = `${filePath}.lock`;
++  const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
++  const retryMs = options.lockRetryMs ?? DEFAULT_LOCK_RETRY_MS;
++  const startedAt = Date.now();
++
++  fs.mkdirSync(path.dirname(filePath), { recursive: true });
++
++  while (true) {
++    try {
++      const fd = fs.openSync(lockPath, 'wx');
++      fs.writeFileSync(fd, JSON.stringify({
++        pid: process.pid,
++        createdAt: new Date().toISOString(),
++      }));
++
++      return () => {
++        fs.closeSync(fd);
++        fs.rmSync(lockPath, { force: true });
++      };
++    } catch (err) {
++      if (err.code !== 'EEXIST' || Date.now() - startedAt >= timeoutMs) {
++        throw err;
++      }
++      sleep(retryMs);
++    }
++  }
+ }
+ 
+ function toApiEntry(entry) {
+@@ -161,25 +205,31 @@ function read(projectRoot, key, options = {}) {
+ 
+ function write(projectRoot, entry, options = {}) {
+   validateEntry(entry);
++  const filePath = memoryPath(projectRoot, options);
++  const releaseLock = acquireLock(filePath, options);
++
++  try {
++    const entries = readEntries(projectRoot, options);
++    const normalized = toDiskEntry({
++      ...entry,
++      key: entry.key.trim(),
++      sourceAgent: (entry.sourceAgent || entry['source-agent']).trim(),
++      tags: entry.tags || [],
++    });
++
++    const existingIndex = entries.findIndex((candidate) => candidate.key === normalized.key);
++    const nextEntries = entries.filter((candidate) => candidate.key !== normalized.key);
++    if (existingIndex === -1) {
++      nextEntries.push(normalized);
++    } else {
++      nextEntries.splice(existingIndex, 0, normalized);
++    }
+ 
+-  const entries = readEntries(projectRoot, options);
+-  const normalized = toDiskEntry({
+-    ...entry,
+-    key: entry.key.trim(),
+-    sourceAgent: (entry.sourceAgent || entry['source-agent']).trim(),
+-    tags: entry.tags || [],
+-  });
+-
+-  const existingIndex = entries.findIndex((candidate) => candidate.key === normalized.key);
+-  const nextEntries = entries.filter((candidate) => candidate.key !== normalized.key);
+-  if (existingIndex === -1) {
+-    nextEntries.push(normalized);
+-  } else {
+-    nextEntries.splice(existingIndex, 0, normalized);
++    writeEntries(projectRoot, nextEntries, options);
++    return toApiEntry(normalized);
++  } finally {
++    releaseLock();
+   }
+-
+-  writeEntries(projectRoot, nextEntries, options);
+-  return toApiEntry(normalized);
+ }
+ 
+ function searchableText(entry) {
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index 78b100d2..1d98678e 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -1,4 +1,5 @@
+ const { describe, test, expect, afterEach } = require('bun:test');
++const { spawnSync } = require('node:child_process');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
+@@ -6,6 +7,7 @@ const path = require('node:path');
+ const projectMemory = require('../lib/project-memory');
+ 
+ const tempRoots = [];
++const workerModulePath = path.resolve(__dirname, '..', 'lib', 'project-memory');
+ 
+ function tempRoot() {
+   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-project-memory-'));
+@@ -206,6 +208,55 @@ describe('project memory', () => {
+     });
+   });
+ 
++  test('rejects filePath overrides outside the project root', () => {
++    const root = tempRoot();
++
++    expect(() => projectMemory.write(root, {
++      key: 'policy.escape',
++      value: 'must stay in repo',
++      sourceAgent: 'Codex',
++      tags: [],
++    }, {
++      filePath: path.join('..', 'outside.jsonl'),
++    })).toThrow('projectRoot');
++
++    expect(() => projectMemory.write(root, {
++      key: 'policy.absolute-escape',
++      value: 'must stay in repo',
++      sourceAgent: 'Codex',
++      tags: [],
++    }, {
++      filePath: path.join(os.tmpdir(), `outside-${path.basename(root)}.jsonl`),
++    })).toThrow('projectRoot');
++  });
++
++  test('serializes concurrent writers without losing entries', () => {
++    const root = tempRoot();
++    const worker = `
++const projectMemory = require(${JSON.stringify(workerModulePath)});
++const root = process.argv[1];
++const index = Number(process.argv[2]);
++projectMemory.write(root, {
++  key: \`decision.concurrent.\${index}\`,
++  value: \`writer-\${index}\`,
++  sourceAgent: 'Codex',
++  timestamp: '2026-04-26T00:00:00.000Z',
++  tags: ['concurrent'],
++});
++`;
++
++    const results = Array.from({ length: 8 }, (_unused, index) => spawnSync(
++      process.execPath,
++      ['-e', worker, root, String(index)],
++      { encoding: 'utf8', timeout: 15000 }
++    ));
++
++    for (const result of results) {
++      expect(result.status).toBe(0);
++    }
++    expect(projectMemory.search(root, 'concurrent')).toHaveLength(8);
++  });
++
+   test('validates required schema fields before writing', () => {
+     const root = tempRoot();
+ 
+-- 
+2.51.0.windows.1
+

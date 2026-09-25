@@ -1,0 +1,122 @@
+From 21f02a38f402ba16f96be64947c5814a450dcfb6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 7 Jul 2026 15:49:59 +0530
+Subject: [PATCH] fix(clean): normalize Windows path separators in
+ worktree-branch lookup
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+git worktree list --porcelain emits forward-slash paths (C:/...) while
+path.resolve emits backslashes, so worktreeMap.get() never matched on win32 —
+every merged worktree read 'active' and clean removed nothing (86b04c20).
+Canonicalize map keys + lookups via normalizeWorktreeKey (separators +
+drive-letter case). Verified live: detection went 0 -> 14 merged worktrees.
+26/26 tests pass.
+---
+ lib/commands/clean.js       | 22 +++++++++++++++++++---
+ test/commands/clean.test.js | 31 +++++++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/clean.js b/lib/commands/clean.js
+index e64d815d..c496b03c 100644
+--- a/lib/commands/clean.js
++++ b/lib/commands/clean.js
+@@ -54,10 +54,24 @@ function getDefaultBranch(runFile) {
+   }
+ }
+ 
++/**
++ * Canonicalize a worktree path for MAP KEYS ONLY (86b04c20): on Windows, git
++ * worktree list --porcelain emits forward-slash paths (C:/...) while
++ * path.resolve emits backslashes (C:\...), so a raw-string lookup never matches
++ * and every merged worktree reads "active". Normalizes separators + drive-letter
++ * case. Real fs/git calls keep the native path form.
++ * @param {string} p - Path in either separator style
++ * @returns {string} Canonical forward-slash key
++ */
++function normalizeWorktreeKey(p) {
++  return String(p).replace(/\\/g, '/').replace(/^([a-z]):/, (m, d) => `${d.toUpperCase()}:`);
++}
++
+ /**
+  * Parse `git worktree list --porcelain` output into a map of path -> branch.
++ * Keys are canonicalized via normalizeWorktreeKey so lookups match on Windows.
+  * @param {string} output - Raw porcelain output
+- * @returns {Map<string, string>} Map of worktree path -> branch name
++ * @returns {Map<string, string>} Map of canonical worktree path -> branch name
+  */
+ function parseWorktreeList(output) {
+   const map = new Map();
+@@ -76,7 +90,7 @@ function parseWorktreeList(output) {
+       }
+     }
+     if (wtPath && branch) {
+-      map.set(wtPath, branch);
++      map.set(normalizeWorktreeKey(wtPath), branch);
+     }
+   }
+   return map;
+@@ -256,7 +270,8 @@ async function removeWorktreeRobust(wtPath, runFile, fsApi, opts = {}) {
+  */
+ async function cleanWorktree(dir, worktreeMap, isMergedFn, worktreesDir, dryRun, runFile, fsApi, opts) {
+   const wtPath = path.resolve(worktreesDir, dir);
+-  const branch = worktreeMap.get(wtPath) || null;
++  // Lookup by canonical key (86b04c20): porcelain emits C:/ paths, resolve emits C:\.
++  const branch = worktreeMap.get(normalizeWorktreeKey(wtPath)) || null;
+ 
+   if (!branch || !isMergedFn(branch)) {
+     return { status: 'active', path: wtPath, branch };
+@@ -554,6 +569,7 @@ module.exports = {
+   // Exported for unit tests / reuse.
+   _internals: {
+     getDefaultBranch,
++    normalizeWorktreeKey,
+     parseWorktreeList,
+     parseMainWorktree,
+     getGhMergedRefs,
+diff --git a/test/commands/clean.test.js b/test/commands/clean.test.js
+index 145fc944..ae8120cf 100644
+--- a/test/commands/clean.test.js
++++ b/test/commands/clean.test.js
+@@ -362,6 +362,37 @@ describe('forge clean — squash-merge aware detection', () => {
+     expect(removed[0]).toBe(wt('wt'));
+   });
+ 
++  test('matches worktree paths across Windows separator styles (git C:/ vs resolve C:\\)', async () => {
++    // Regression for 86b04c20: git worktree list --porcelain emits forward-slash
++    // paths on Windows while path.resolve emits backslashes — the branch lookup
++    // must match regardless, or every merged worktree reads "active".
++    const { _internals } = require('../../lib/commands/clean');
++    expect(_internals.normalizeWorktreeKey('C:\\repo\\.worktrees\\x'))
++      .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
++    expect(_internals.normalizeWorktreeKey('c:/repo/.worktrees/x'))
++      .toBe(_internals.normalizeWorktreeKey('C:/repo/.worktrees/x'));
++
++    const mod = require('../../lib/commands/clean');
++    const removed = [];
++    // Porcelain reports the worktree with FORWARD slashes even when the lookup
++    // side computes the path natively (backslashes on win32).
++    const porcelainPath = wt('sep').replace(/\\/g, '/');
++    const mockExec = (cmd, args) => {
++      if (cmd === 'gh') return Buffer.from('[]');
++      if (cmd !== 'git') return Buffer.from('');
++      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return Buffer.from('origin/main');
++      if (args[0] === 'branch' && args[1] === '--merged') return Buffer.from('  feat/sep\n  main\n');
++      if (args[0] === 'worktree' && args[1] === 'list') {
++        return Buffer.from(`worktree ${porcelainPath}\nbranch refs/heads/feat/sep\n\n`);
++      }
++      if (args[0] === 'worktree' && args[1] === 'remove') { removed.push(args[2]); return Buffer.from(''); }
++      return Buffer.from('');
++    };
++    const result = await mod.handler([], {}, ROOT, { _exec: mockExec, _fs: fsWith(['sep']), _syncMaster: noopSync });
++    expect(result.cleaned).toBe(1);
++    expect(result.active).toBe(0);
++  });
++
+   test('_internals.isSquashMerged returns true only when cherry emits a "-" line', () => {
+     const { _internals } = require('../../lib/commands/clean');
+     const runMerged = (cmd, args) => {
+-- 
+2.51.0.windows.1
+

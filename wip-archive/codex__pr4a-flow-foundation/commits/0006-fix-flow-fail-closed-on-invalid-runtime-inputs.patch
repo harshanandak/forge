@@ -1,0 +1,138 @@
+From c4839b913e82937bdaca6b68f93577b6362f3cb1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 06:48:52 +0530
+Subject: [PATCH] fix(flow): fail closed on invalid runtime inputs
+
+---
+ packages/flow/src/efficiency-supervisor.js    |  3 ++
+ packages/flow/src/skill-runtime.js            | 17 +++++++++
+ .../flow/test/efficiency-supervisor.test.js   |  4 +++
+ packages/flow/test/skill-runtime.test.js      | 36 +++++++++++++++++++
+ 4 files changed, 60 insertions(+)
+
+diff --git a/packages/flow/src/efficiency-supervisor.js b/packages/flow/src/efficiency-supervisor.js
+index 7f7fd15f..82c09ad3 100644
+--- a/packages/flow/src/efficiency-supervisor.js
++++ b/packages/flow/src/efficiency-supervisor.js
+@@ -23,6 +23,9 @@ class EfficiencySupervisor {
+   }
+ 
+   observe(sample = {}) {
++    if (sample === null || typeof sample !== "object" || Array.isArray(sample)) {
++      return this._failClosed("INVALID_USAGE");
++    }
+     if (this.terminal) {
+       return this._result([]);
+     }
+diff --git a/packages/flow/src/skill-runtime.js b/packages/flow/src/skill-runtime.js
+index 34bb9ec6..f73a0082 100644
+--- a/packages/flow/src/skill-runtime.js
++++ b/packages/flow/src/skill-runtime.js
+@@ -1,6 +1,7 @@
+ "use strict";
+ 
+ const DEFAULT_LIMITS = Object.freeze({ maxBytes: 8_192, maxDepth: 8, maxNodes: 128 });
++const LIMIT_CEILINGS = DEFAULT_LIMITS;
+ const NODE_STATUSES = new Set(["PASS", "FAIL", "INCOMPLETE"]);
+ 
+ function isPlainObject(value) {
+@@ -64,11 +65,14 @@ class SkillRuntime {
+     this.limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
+     this.active = false;
+     this.nodes = new Map();
++    this.limitError = this._validateLimits(options.limits);
+     this.metadataError = this._indexMetadata();
+   }
+ 
+   async invoke(request = {}) {
+     if (this.active) return safeFailure("RECURSIVE_INVOCATION");
++    if (!isPlainObject(request)) return safeFailure("INVALID_REQUEST");
++    if (this.limitError) return safeFailure("INVALID_LIMITS", this.limitError);
+     if (this.metadataError) return safeFailure(this.metadataError.code, this.metadataError.details);
+ 
+     const requestedNodes = request.nodes;
+@@ -190,6 +194,19 @@ class SkillRuntime {
+     return { status: "PASS", invoked, skipped, evidence: invoked };
+   }
+ 
++  _validateLimits(overrides) {
++    if (overrides !== undefined && !isPlainObject(overrides)) {
++      return { limit: "limits" };
++    }
++    for (const [name, ceiling] of Object.entries(LIMIT_CEILINGS)) {
++      const value = this.limits[name];
++      if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
++        return { limit: name };
++      }
++    }
++    return null;
++  }
++
+   _indexMetadata() {
+     if (!isPlainObject(this.metadata)
+       || typeof this.metadata.id !== "string"
+diff --git a/packages/flow/test/efficiency-supervisor.test.js b/packages/flow/test/efficiency-supervisor.test.js
+index 95a4d04a..be16b9f0 100644
+--- a/packages/flow/test/efficiency-supervisor.test.js
++++ b/packages/flow/test/efficiency-supervisor.test.js
+@@ -55,6 +55,10 @@ describe("EfficiencySupervisor", () => {
+   });
+ 
+   test.each([
++    ["null", null],
++    ["string", "not-a-sample"],
++    ["number", 10],
++    ["array", []],
+     ["missing", {}],
+     ["negative", { totalTokens: -1 }],
+     ["fractional", { totalTokens: 10.5 }],
+diff --git a/packages/flow/test/skill-runtime.test.js b/packages/flow/test/skill-runtime.test.js
+index e1911646..63984950 100644
+--- a/packages/flow/test/skill-runtime.test.js
++++ b/packages/flow/test/skill-runtime.test.js
+@@ -15,6 +15,42 @@ function passingHandler(id, calls) {
+ }
+ 
+ describe("SkillRuntime", () => {
++  test.each([null, "not-a-request", 42, []])(
++    "fails safely for a non-object invocation request (%j)",
++    async (request) => {
++      const runtime = new SkillRuntime({
++        metadata: metadata([{ id: "intent" }]),
++        handlers: {},
++      });
++
++      expect(await runtime.invoke(request)).toMatchObject({
++        status: "INCOMPLETE",
++        invoked: [],
++        error: { code: "INVALID_REQUEST" },
++      });
++    },
++  );
++
++  test.each([
++    ["infinite", Infinity],
++    ["NaN", Number.NaN],
++    ["zero", 0],
++    ["negative", -1],
++    ["oversized", Number.MAX_SAFE_INTEGER],
++  ])("fails safely for an %s limit override", async (_label, maxBytes) => {
++    const runtime = new SkillRuntime({
++      metadata: metadata([{ id: "intent" }]),
++      handlers: {},
++      limits: { maxBytes },
++    });
++
++    expect(await runtime.invoke({ nodes: ["intent"] })).toMatchObject({
++      status: "INCOMPLETE",
++      invoked: [],
++      error: { code: "INVALID_LIMITS", limit: "maxBytes" },
++    });
++  });
++
+   test("invokes only required nodes in dependency order and records skipped nodes", async () => {
+     const calls = [];
+     const runtime = new SkillRuntime({
+-- 
+2.51.0.windows.1
+

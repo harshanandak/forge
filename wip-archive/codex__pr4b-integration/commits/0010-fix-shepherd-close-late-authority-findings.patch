@@ -1,0 +1,292 @@
+From ac8a542fd1bef4d1f18054400de9f1e83fa82470 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 01:32:25 +0530
+Subject: [PATCH] fix(shepherd): close late authority findings
+
+---
+ lib/commands/merge.js                         | 90 ++++++++++++++++++-
+ lib/pr-monitor/flow-monitor.js                | 17 +++-
+ ...merge-authority-review-regressions.test.js | 19 ++--
+ test/commands/merge-authority.test.js         | 14 +++
+ test/commands/merge.test.js                   |  7 +-
+ test/pr-monitor/flow-monitor.test.js          | 20 +++++
+ 6 files changed, 151 insertions(+), 16 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 606a1bb5..c0a88bbe 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -597,6 +597,74 @@ function mandatoryContextError(context, expectedHead) {
+   return protectedGate.allowed ? null : protectedGate.reason;
+ }
+ 
++async function recoverMergedTerminal({
++  pr, parsed, root, config, prContext, ownershipActor, ownershipEnv, deps,
++}) {
++  const repository = normalizeRepository(prContext?.repository);
++  if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead || !repository) {
++    return { success: false, merged: true, error: 'Merged PR identity does not match the expected head and repository.' };
++  }
++  const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
++  const binding = await verifyPrIssueBinding({
++    issueId: parsed.issueId,
++    pr,
++    projectRoot: root,
++    prContext,
++    buildBroker: deps.buildPrBindingBroker,
++  });
++  if (!binding || binding.bound !== true) {
++    return { success: false, merged: true, error: 'Merged PR is not authoritatively linked to the supplied Forge issue.' };
++  }
++  const decisionAt = currentTimestamp(deps.now || Date.now);
++  const verifyMergeGate = deps.verifyMergeGate || defaultVerifyMergeGate;
++  const gateApproval = await verifyMergeGate({
++    issueId: parsed.issueId, projectRoot: root, actor: ownershipActor, now: decisionAt,
++  });
++  if (gateApproval !== true && gateApproval?.approved !== true) {
++    return { success: false, merged: true, error: `${MERGE_GATE} is not approved for this issue.` };
++  }
++  const prepareMergeDecision = deps.prepareMergeDecision || defaultPrepareMergeDecision;
++  const decision = await prepareMergeDecision({
++    issueId: parsed.issueId,
++    pr,
++    expectedHead: parsed.expectedHead,
++    repository,
++    binding,
++    actor: ownershipActor,
++    sessionId: ownershipEnv.FORGE_SESSION_ID || null,
++    config,
++    projectRoot: root,
++    now: decisionAt,
++  });
++  if (!decision || typeof decision.decisionId !== 'string' || !decision.decisionId) {
++    return { success: false, merged: true, error: 'Merge recovery decision evidence is unavailable.' };
++  }
++  const recordMergeDecision = deps.recordMergeDecision || defaultRecordMergeDecision;
++  try {
++    const terminal = await recordMergeDecision({
++      decision,
++      mergeResult: { merged: true, recovered: true },
++      pr,
++      expectedHead: parsed.expectedHead,
++      repository,
++      projectRoot: root,
++      buildBroker: deps.buildMergeBroker,
++    });
++    if (!terminal || typeof terminal.receiptId !== 'string' || !terminal.receiptId) {
++      throw new Error('terminal receipt evidence is unavailable');
++    }
++    return {
++      success: true, merged: true, enabled: true, recovered: true,
++      decisionId: decision.decisionId, ...terminal,
++    };
++  } catch (error) {
++    return {
++      success: false, merged: true, enabled: true, decisionId: decision.decisionId,
++      error: `Merged PR terminal linkage recovery failed: ${error.message}`,
++    };
++  }
++}
++
+ /** Default `gh` runner. Only reached by the default fetch/merge seams (never in unit tests). */
+ function defaultGh(args, options = {}) {
+   return execFileSync('gh', args, { encoding: 'utf8', ...options }); // NOSONAR S4036 - hardcoded CLI (gh), args array (no shell), developer-tool context
+@@ -909,7 +977,16 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   // command must be an idempotent NO-OP — never an error and never a second merge
+   // attempt. (An absent/unknown state falls through to the fail-closed rules.)
+   const prState = prContext && prContext.state ? String(prContext.state).toUpperCase() : '';
+-  if (prState === 'MERGED' || prState === 'CLOSED') {
++  if (prState === 'MERGED') {
++    try {
++      return await recoverMergedTerminal({
++        pr, parsed, root, config, prContext, ownershipActor, ownershipEnv, deps,
++      });
++    } catch (error) {
++      return { success: false, merged: true, error: `Merged PR terminal linkage recovery failed: ${error.message}` };
++    }
++  }
++  if (prState === 'CLOSED') {
+     const reason = `PR #${pr} is ${prState} (not OPEN) — nothing to merge. No action taken.`;
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: true, state: prState, reason };
+@@ -962,7 +1039,16 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   // Re-apply the terminal-state guard on the FRESH context: the PR may have been
+   // merged or closed between the first fetch and now. Never merge a terminal PR.
+   const freshState = freshContext && freshContext.state ? String(freshContext.state).toUpperCase() : '';
+-  if (freshState === 'MERGED' || freshState === 'CLOSED') {
++  if (freshState === 'MERGED') {
++    try {
++      return await recoverMergedTerminal({
++        pr, parsed, root, config, prContext: freshContext, ownershipActor, ownershipEnv, deps,
++      });
++    } catch (error) {
++      return { success: false, merged: true, error: `Merged PR terminal linkage recovery failed: ${error.message}` };
++    }
++  }
++  if (freshState === 'CLOSED') {
+     const reason = `PR #${pr} became ${freshState} (not OPEN) before merge — nothing to merge. No action taken.`;
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: true, state: freshState, reason };
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index d828033c..9e4f27a5 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -14,6 +14,9 @@ const { finalizeRecords } = require('./monitor');
+ 
+ const MAX_HISTORY = 128;
+ const DELIVERY_TARGET = 'legacy-journal';
++const SNAPSHOT_ARRAY_LIMIT = 3;
++const SNAPSHOT_TEXT_LIMIT = 64;
++const SNAPSHOT_OBJECT_KEY_LIMIT = 24;
+ 
+ class FlowMonitorError extends Error {
+   constructor(code, message) {
+@@ -25,6 +28,18 @@ class FlowMonitorError extends Error {
+ 
+ function defaultNow() { return new Date().toISOString(); }
+ 
++function boundSnapshotValue(value, depth = 0) {
++  if (typeof value === 'string') return value.slice(0, SNAPSHOT_TEXT_LIMIT);
++  if (value === null || typeof value !== 'object') return value;
++  if (depth >= 4) return null;
++  if (Array.isArray(value)) {
++    return value.slice(0, SNAPSHOT_ARRAY_LIMIT).map(item => boundSnapshotValue(item, depth + 1));
++  }
++  return Object.fromEntries(Object.entries(value)
++    .slice(0, SNAPSHOT_OBJECT_KEY_LIMIT)
++    .map(([key, item]) => [key, boundSnapshotValue(item, depth + 1)]));
++}
++
+ function uuidFrom(seed) {
+   const hex = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32).split('');
+   hex[12] = '4';
+@@ -328,7 +343,7 @@ async function runFlowMonitorPass(ctx) {
+   state = replayed.state;
+   const receiptIds = replayed.receiptIds;
+ 
+-  const next = await ctx.gather();
++  const next = boundSnapshotValue(await ctx.gather());
+   const previous = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
+   const candidates = diffSnapshots(previous, next);
+   if (candidates.length === 0) {
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 864c47ac..d14392f7 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -408,7 +408,7 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(mergeCmd.parseMergeArgs(args('42')).pr).toBe('42');
+   });
+ 
+-  test('only OPEN proceeds and only MERGED/CLOSED are terminal no-ops on either read', async () => {
++  test('only OPEN proceeds, MERGED reconciles evidence, and CLOSED is a terminal no-op', async () => {
+     for (const state of [undefined, null, '', 'UNKNOWN', 'DRAFT', 'BOGUS']) {
+       let merges = 0;
+       const first = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -432,14 +432,15 @@ describe('merge authority — exact reviewer regressions', () => {
+       expect(merges).toBe(0);
+     }
+ 
+-    for (const state of ['MERGED', 'CLOSED']) {
+-      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+-        fetchPrContext: async () => context({ state }),
+-      }));
+-      expect(out.success).toBe(true);
+-      expect(out.merged).toBe(false);
+-      expect(out.state).toBe(state);
+-    }
++    const merged = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++    }));
++    expect(merged).toMatchObject({ success: true, merged: true, recovered: true });
++
++    const closed = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'CLOSED' }),
++    }));
++    expect(closed).toMatchObject({ success: true, merged: false, state: 'CLOSED' });
+   });
+ 
+   test('ownership requires explicit expired=false', async () => {
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 4143d522..73d1964c 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -143,6 +143,20 @@ describe('merge command — mandatory release authority', () => {
+     expect(out.error).toContain('terminal linkage failed');
+   });
+ 
++  test('reconciles missing terminal linkage when GitHub already reports the exact PR merged', async () => {
++    let merges = 0;
++    let records = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ state: 'MERGED' }),
++      mergePr: async () => { merges += 1; },
++      recordMergeDecision: async () => { records += 1; return { receiptId: 'receipt-recovered' }; },
++    }));
++
++    expect(out).toMatchObject({ success: true, merged: true, recovered: true, receiptId: 'receipt-recovered' });
++    expect(merges).toBe(0);
++    expect(records).toBe(1);
++  });
++
+   test('default evidence binds the live issue revision and terminal merged linkage', async () => {
+     const decision = await mergeCmd.defaultPrepareMergeDecision({
+       issueId: ISSUE,
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 9447e49f..1c8dbf9e 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -269,17 +269,16 @@ describe('merge command — opt-in conditional auto-merge', () => {
+     expect((await mergeCmd.handler(['--auto'], {}, root, {})).success).toBe(false);
+   });
+ 
+-  test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
++  test('pre-flight reconciles terminal evidence without a second merge when the PR is already MERGED', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
+     let mergeCalled = false;
+     const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
+       ...AUTHORITY_DEPS,
+-      fetchPrContext: async () => ({ state: 'MERGED' }),
++      fetchPrContext: async () => authorizedContext({ state: 'MERGED' }),
+       mergePr: async () => { mergeCalled = true; },
+     });
+     expect(out.success).toBe(true);
+-    expect(out.merged).toBe(false);
+-    expect(out.state).toBe('MERGED');
++    expect(out).toMatchObject({ merged: true, recovered: true, receiptId: 'receipt-1' });
+     expect(mergeCalled).toBe(false);
+   });
+ 
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 09813d93..9ee4c603 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -169,6 +169,26 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(deliveries).toBe(0);
+   });
+ 
++  test('bounds high-cardinality snapshots before Flow validation and durable persistence', async () => {
++    const store = durableStore();
++    const large = snapshot({
++      checks: Array.from({ length: 100 }, (_, index) => ({ name: `check-${index}-${'x'.repeat(256)}`, class: 'green' })),
++      threads: Array.from({ length: 100 }, (_, index) => ({
++        threadId: `thread-${index}-${'x'.repeat(256)}`, isResolved: false, isOutdated: false,
++        commentCount: 1, actionable: true, path: `path-${index}-${'x'.repeat(256)}`,
++      })),
++      reviews: Array.from({ length: 100 }, (_, index) => ({ author: `reviewer-${index}-${'x'.repeat(256)}`, state: 'APPROVED' })),
++      comments: Array.from({ length: 100 }, (_, index) => ({ id: `comment-${index}-${'x'.repeat(256)}`, author: 'author' })),
++    });
++
++    const result = await runFlowMonitorPass(context(store, async () => large, async () => {}));
++
++    expect(result.changed).toBe(true);
++    const persisted = store.events.at(-1).payload.bounded_payload.snapshot;
++    expect(persisted.checks.length).toBeLessThan(100);
++    expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
++  });
++
+   test('rejects truncated durable history instead of treating it as a complete restart checkpoint', async () => {
+     const store = durableStore();
+     store.readEventTail = async () => ({ events: [], overflow: true, truncated_before_sequence: 1 });
+-- 
+2.51.0.windows.1
+

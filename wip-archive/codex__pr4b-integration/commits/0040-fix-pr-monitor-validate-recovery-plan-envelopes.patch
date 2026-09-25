@@ -1,0 +1,159 @@
+From 8235d0c40fa50e5cce9ef93b330dc8a8c820c093 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 18 Aug 2026 17:44:01 +0530
+Subject: [PATCH] fix(pr-monitor): validate recovery plan envelopes
+
+---
+ lib/pr-monitor/flow-monitor.js       | 46 +++++++++++++++++++++--
+ test/pr-monitor/flow-monitor.test.js | 56 ++++++++++++++++++++++++++++
+ 2 files changed, 99 insertions(+), 3 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 54897789..aacaa713 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -791,30 +791,70 @@ async function readSegmentedRecovery(ctx, durableEvents, pendingEvents, subjectR
+       continue;
+     }
+     const markerReference = marker.payload.bounded_payload.batch_plan;
++    const markerRecord = marker.payload.bounded_payload.record;
++    const markerKey = planRecordKey(reference.id, 'commit');
+     if (!validBatchPlanReference(markerReference)
+       || markerReference.id !== reference.id
+       || markerReference.start_sequence !== reference.start_sequence
+       || markerReference.segment_count !== reference.segment_count
+-      || markerReference.committed !== true) {
++      || markerReference.committed !== true
++      || marker.payload.event_id !== monitorEventId(
++        ctx.monitorId,
++        markerSequence,
++        T.SNAPSHOT_CHECKPOINT,
++        markerKey,
++      )
++      || marker.payload.sequence !== markerSequence
++      || marker.payload.subject_revision !== subjectRevision
++      || marker.payload.type !== T.SNAPSHOT_CHECKPOINT
++      || marker.payload.actionability !== 'advisory'
++      || markerRecord?.key !== boundIdentity(markerKey)
++      || markerRecord?.seq !== markerSequence
++      || markerRecord?.type !== T.SNAPSHOT_CHECKPOINT
++      || marker.payload.observed_at !== markerRecord?.ts
++      || marker.payload.bounded_payload.snapshot !== null
++      || marker.payload.bounded_payload.checkpoint_complete !== false
++      || marker.payload.bounded_payload.pending_batch !== undefined) {
+       throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan marker is inconsistent');
+     }
+ 
+     const batches = [];
+     for (let index = 0; index < reference.segment_count; index += 1) {
++      const segmentSequence = reference.start_sequence + index;
++      const segmentKey = planRecordKey(reference.id, index);
+       const segment = await readPlannedEvent(
+         ctx,
+         durableEvents,
+-        reference.start_sequence + index,
+-        planRecordKey(reference.id, index),
++        segmentSequence,
++        segmentKey,
+       );
+       const segmentReference = segment?.payload.bounded_payload.batch_plan;
+       const pendingBatch = segment?.payload.bounded_payload.pending_batch;
++      const segmentRecord = segment?.payload.bounded_payload.record;
+       if (!segment
+         || !validBatchPlanReference(segmentReference)
+         || segmentReference.id !== reference.id
+         || segmentReference.start_sequence !== reference.start_sequence
+         || segmentReference.segment_count !== reference.segment_count
+         || segmentReference.index !== index
++        || segmentReference.committed !== undefined
++        || segmentReference.segment_index !== undefined
++        || segment.payload.event_id !== monitorEventId(
++          ctx.monitorId,
++          segmentSequence,
++          T.SNAPSHOT_CHECKPOINT,
++          segmentKey,
++        )
++        || segment.payload.sequence !== segmentSequence
++        || segment.payload.subject_revision !== subjectRevision
++        || segment.payload.type !== T.SNAPSHOT_CHECKPOINT
++        || segment.payload.actionability !== 'advisory'
++        || segmentRecord?.key !== boundIdentity(segmentKey)
++        || segmentRecord?.seq !== segmentSequence
++        || segmentRecord?.type !== T.SNAPSHOT_CHECKPOINT
++        || segment.payload.observed_at !== segmentRecord?.ts
++        || segment.payload.bounded_payload.snapshot !== null
++        || segment.payload.bounded_payload.checkpoint_complete !== false
+         || typeof pendingBatch !== 'string') {
+         throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor transition plan segment is inconsistent');
+       }
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index 8dfe209c..32c31fc8 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -335,7 +335,63 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(boundary).toBe(actualEvents.length);
+     expect(JSON.stringify(segmentEvents)).not.toContain(checks[0].name);
+ 
++    const markerTampered = durableStore();
++    markerTampered.events.push(...structuredClone(acceptedEvents));
++    const unsafeMarker = markerTampered.events.find(
++      event => event.payload.bounded_payload.batch_plan?.committed === true,
++    );
++    markerTampered.setCursor('legacy-journal', unsafeMarker.payload.sequence - 1);
++    unsafeMarker.payload.actionability = 'action_required';
++    unsafeMarker.content_hash = computeContentHash(unsafeMarker);
++    const markerLeaks = [];
++    await expect(runFlowMonitorPass(context(
++      markerTampered,
++      async () => { throw new Error('tampered commit marker must not gather'); },
++      async record => markerLeaks.push(record),
++    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++    expect(markerLeaks).toHaveLength(0);
++
++    const segmentTampered = durableStore();
++    segmentTampered.events.push(...structuredClone(acceptedEvents));
++    const unsafeSegment = segmentTampered.events.find(
++      event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index),
++    );
++    segmentTampered.setCursor('legacy-journal', unsafeSegment.payload.sequence - 1);
++    unsafeSegment.payload.actionability = 'action_required';
++    unsafeSegment.content_hash = computeContentHash(unsafeSegment);
++    const segmentLeaks = [];
++    await expect(runFlowMonitorPass(context(
++      segmentTampered,
++      async () => { throw new Error('tampered plan segment must not gather'); },
++      async record => segmentLeaks.push(record),
++    ))).rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
++    expect(segmentLeaks).toHaveLength(0);
++
++    const tamperMarker = (events, tamper) => {
++      const marker = events.find(event => event.payload.bounded_payload.batch_plan?.committed === true);
++      tamper(marker);
++      marker.content_hash = computeContentHash(marker);
++    };
++    const tamperSegment = (events, tamper) => {
++      const segment = events.find(event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index));
++      tamper(segment);
++      segment.content_hash = computeContentHash(segment);
++    };
+     const tamperCases = [
++      events => tamperMarker(events, marker => { marker.payload.event_id = '0'.repeat(64); }),
++      events => tamperMarker(events, marker => { marker.payload.type = 'check.failed'; }),
++      events => tamperMarker(events, marker => { marker.payload.bounded_payload.record.key = 'wrong'; }),
++      events => tamperMarker(events, marker => { marker.payload.bounded_payload.record.seq += 1; }),
++      events => tamperMarker(events, marker => { marker.payload.bounded_payload.snapshot = {}; }),
++      events => tamperMarker(events, marker => { marker.payload.bounded_payload.checkpoint_complete = true; }),
++      events => tamperMarker(events, marker => { marker.payload.bounded_payload.pending_batch = 'tampered'; }),
++      events => tamperSegment(events, segment => { segment.payload.event_id = '0'.repeat(64); }),
++      events => tamperSegment(events, segment => { segment.payload.type = 'check.failed'; }),
++      events => tamperSegment(events, segment => { segment.payload.bounded_payload.record.key = 'wrong'; }),
++      events => tamperSegment(events, segment => { segment.payload.bounded_payload.record.seq += 1; }),
++      events => tamperSegment(events, segment => { segment.payload.bounded_payload.snapshot = {}; }),
++      events => tamperSegment(events, segment => { segment.payload.bounded_payload.checkpoint_complete = true; }),
++      events => tamperSegment(events, segment => { segment.payload.bounded_payload.batch_plan.committed = true; }),
+       (events) => {
+         const segment = events.find(event => Number.isSafeInteger(event.payload.bounded_payload.batch_plan?.index));
+         segment.payload.bounded_payload.batch_plan.index += 1;
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,126 @@
+From 7e4b8cb54484c8612be476a11600fb2c61b57656 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 18:05:38 +0530
+Subject: [PATCH] fix(plan): create feature branch without switching shared
+ checkout HEAD
+
+createFeatureBranch used `git checkout -b`, which flipped the shared
+working tree onto feat/<slug>. With concurrent agents in the main
+checkout this switched HEAD mid-task, so commits landed on the wrong
+branch (kernel issue aa14966c). Use `git branch` to create the ref at
+current HEAD without touching the working tree; isolated work happens in
+a dedicated worktree, never the shared tree.
+
+Adds a regression test asserting the shared checkout HEAD stays put.
+
+Refs: aa14966c-6fcb-42e5-bd54-44ea851db703
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/plan.js                        | 14 ++++-
+ test/commands/plan-branch-isolation.test.js | 61 +++++++++++++++++++++
+ 2 files changed, 72 insertions(+), 3 deletions(-)
+ create mode 100644 test/commands/plan-branch-isolation.test.js
+
+diff --git a/lib/commands/plan.js b/lib/commands/plan.js
+index ac9bafee..ec98b860 100644
+--- a/lib/commands/plan.js
++++ b/lib/commands/plan.js
+@@ -659,7 +659,10 @@ async function createKernelIssue(featureName, researchPath, scope, options = {})
+ 
+ /**
+  * Create feature branch
+- * Creates and checks out a new git branch following feat/<slug> convention
++ * Creates a new git branch following feat/<slug> convention WITHOUT switching
++ * the shared checkout's HEAD (uses `git branch`, not `git checkout -b`).
++ * Switching HEAD in the shared working tree corrupts concurrent agents
++ * (kernel issue aa14966c); isolated work happens in a dedicated worktree.
+  *
+  * Security: Uses execFileSync with array args to prevent command injection
+  *
+@@ -695,8 +698,13 @@ function createFeatureBranch(featureSlug) {
+ 			// Branch doesn't exist, continue (expected case)
+ 		}
+ 
+-		// Create and checkout branch
+-		execFileSync('git', ['checkout', '-b', branchName], getExecOptions());  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
++		// Create the branch WITHOUT switching the shared checkout's HEAD.
++		// Historically this used `git checkout -b`, which flipped the shared
++		// working tree onto the new branch and corrupted concurrent agents
++		// (kernel issue aa14966c). `git branch` creates the ref at the current
++		// HEAD without touching the working tree; isolated work happens in a
++		// dedicated worktree (`forge worktree create`), never the shared tree.
++		execFileSync('git', ['branch', branchName], getExecOptions());  // NOSONAR S4036 - hardcoded CLI command, no user input, developer tool context
+ 
+ 		return {
+ 			success: true,
+diff --git a/test/commands/plan-branch-isolation.test.js b/test/commands/plan-branch-isolation.test.js
+new file mode 100644
+index 00000000..cf48d84b
+--- /dev/null
++++ b/test/commands/plan-branch-isolation.test.js
+@@ -0,0 +1,61 @@
++// Regression test for kernel issue aa14966c:
++// A Forge process must NEVER switch the shared checkout's HEAD branch.
++// `/plan` (executePlan -> createFeatureBranch) previously ran `git checkout -b`,
++// which flipped the shared working tree onto feat/<slug>, corrupting concurrent
++// agents. createFeatureBranch must create the branch WITHOUT switching HEAD.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const { createFeatureBranch } = require('../../lib/commands/plan.js');
++
++const nodeFs = require('node:fs');
++const nodeOs = require('node:os');
++const nodePath = require('node:path');
++const { execFileSync } = require('node:child_process');
++
++function git(cwd, args) {
++	return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
++}
++
++function currentBranch(cwd) {
++	return git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
++}
++
++describe('createFeatureBranch — shared-checkout HEAD isolation (aa14966c)', () => {
++	let repoDir;
++	let originalCwd;
++
++	beforeEach(() => {
++		originalCwd = process.cwd();
++		repoDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'forge-headbug-'));
++		git(repoDir, ['init', '-b', 'master']);
++		git(repoDir, ['config', 'user.email', 'test@example.com']);
++		git(repoDir, ['config', 'user.name', 'Test']);
++		nodeFs.writeFileSync(nodePath.join(repoDir, 'README.md'), '# test\n');
++		git(repoDir, ['add', '.']);
++		git(repoDir, ['commit', '-m', 'initial']);
++		// createFeatureBranch resolves cwd via process.cwd()
++		process.chdir(repoDir);
++	});
++
++	afterEach(() => {
++		process.chdir(originalCwd);
++		nodeFs.rmSync(repoDir, { recursive: true, force: true });
++	});
++
++	test('creates the branch but leaves the shared checkout HEAD on master', () => {
++		const before = currentBranch(repoDir);
++		expect(before).toBe('master');
++
++		const result = createFeatureBranch('head-isolation-demo');
++
++		expect(result.success).toBe(true);
++		expect(result.branchName).toBe('feat/head-isolation-demo');
++
++		// The branch must now exist...
++		const branches = git(repoDir, ['branch', '--list', 'feat/head-isolation-demo']);
++		expect(branches).toContain('feat/head-isolation-demo');
++
++		// ...but the shared working tree must STILL be on master (no HEAD flip).
++		expect(currentBranch(repoDir)).toBe('master');
++	});
++});
+-- 
+2.51.0.windows.1
+

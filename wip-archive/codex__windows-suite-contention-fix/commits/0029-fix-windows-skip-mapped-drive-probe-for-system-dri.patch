@@ -1,0 +1,94 @@
+From 5d2d7525f9e4d448b1ec7b7a08870aa2ee392f71 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 02:58:54 +0530
+Subject: [PATCH] fix(windows): skip mapped-drive probe for system drive
+
+---
+ lib/kernel/fs-class.js       | 16 +++++++++-------
+ test/kernel/fs-class.test.js |  8 ++++----
+ 2 files changed, 13 insertions(+), 11 deletions(-)
+
+diff --git a/lib/kernel/fs-class.js b/lib/kernel/fs-class.js
+index 2283c9a8..e829809e 100644
+--- a/lib/kernel/fs-class.js
++++ b/lib/kernel/fs-class.js
+@@ -311,9 +311,9 @@ function parseNetUseDriveType(stdout, driveLetter) {
+ }
+ 
+ // Windows: detect whether a drive letter is a mapped network drive.
+-// `net use` is authoritative for mapped drive letters. A successful no-match
+-// keeps the normal local C: drive fixed, but non-C letters remain unknown: a
+-// miss does not prove that an SMB/cloud redirector is absent. The unknown
++// The conventional local C: drive is fixed without a subprocess. `net use` is
++// authoritative for other mapped drive letters, while a no-match remains
++// unknown because it does not prove that an SMB/cloud redirector is absent. The unknown
+ // result is fail-open (warn), while UNC and cloud path signals still refuse.
+ // Do not launch a second shell process for every kernel child. Under a heavily
+ // sharded suite those redundant fallback probes contend for host resources and
+@@ -322,6 +322,9 @@ function parseNetUseDriveType(stdout, driveLetter) {
+ // fail-safe `unknown`/warn classification.
+ // The probe uses an arg ARRAY (no shell) so it remains injection-free.
+ function defaultProbeDriveType(driveLetter, deps = {}) {
++	const normalizedDriveLetter = String(driveLetter || '').trim().toUpperCase();
++	if (normalizedDriveLetter === 'C:') return 'fixed';
++
+ 	const exec = deps.execFileSync || execFileSync;
+ 
+ 	// Primary: `net use` lists mapped drive letters (and their remote paths).
+@@ -330,10 +333,9 @@ function defaultProbeDriveType(driveLetter, deps = {}) {
+ 		return 'network';
+ 	}
+ 
+-	// `net use` completed successfully without listing this letter. C: is the
+-	// conventional local Windows system drive; all other letters stay unknown
+-	// because a no-match is not evidence that an SMB/cloud redirector is absent.
+-	return String(driveLetter || '').trim().toUpperCase() === 'C:' ? 'fixed' : 'unknown';
++	// `net use` completed successfully without listing this non-system letter.
++	// A no-match is not evidence that an SMB/cloud redirector is absent.
++	return 'unknown';
+ }
+ 
+ // Linux: read /proc/mounts, return fs type of the longest mountpoint prefixing absPath.
+diff --git a/test/kernel/fs-class.test.js b/test/kernel/fs-class.test.js
+index d88f91ac..dda54785 100644
+--- a/test/kernel/fs-class.test.js
++++ b/test/kernel/fs-class.test.js
+@@ -698,7 +698,7 @@ describe('classifyLinux — mountProbeThrew distinguishes threw vs no-match (M3)
+ });
+ 
+ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M5)', () => {
+-	test('preserves the fixed local C: drive after a successful net use miss', () => {
++	test('preserves the fixed local C: drive without launching a network probe', () => {
+ 		const seenFiles = [];
+ 		const fakeExec = (file) => {
+ 			seenFiles.push(file);
+@@ -706,7 +706,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
+ 			return '';
+ 		};
+ 		expect(defaultProbeDriveType('C:', { execFileSync: fakeExec })).toBe('fixed');
+-		expect(seenFiles).toEqual(['net']);
++		expect(seenFiles).toEqual([]);
+ 	}, T);
+ 
+ 	test('returns unknown for a non-C drive after a successful net use miss', () => {
+@@ -723,7 +723,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
+ 			seenOptions.push(options);
+ 			return '';
+ 		};
+-		const result = defaultProbeDriveType('C:', { execFileSync: fakeExec });
++		const result = defaultProbeDriveType('Z:', { execFileSync: fakeExec });
+ 		expect(seenOptions).toHaveLength(1);
+ 		for (const options of seenOptions) {
+ 			expect(options.timeout).toBe(1500);
+@@ -732,7 +732,7 @@ describe('defaultProbeDriveType — bounded exec (B1) + canned-stdout parsing (M
+ 			expect(options.encoding).toBe('utf8');
+ 		}
+ 		// No network backing detected → fixed.
+-		expect(result).toBe('fixed');
++		expect(result).toBe('unknown');
+ 	}, T);
+ 
+ 	test('B1: a hanging exec that throws (timeout-style) propagates so gather maps it to unknown/warn', () => {
+-- 
+2.51.0.windows.1
+

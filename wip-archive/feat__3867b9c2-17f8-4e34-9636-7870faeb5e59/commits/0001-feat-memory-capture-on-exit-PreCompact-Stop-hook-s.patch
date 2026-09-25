@@ -1,0 +1,655 @@
+From ee1b0886137c9720989690732231ba0315cae093 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 22:08:22 +0530
+Subject: [PATCH] =?UTF-8?q?feat(memory):=20capture-on-exit=20=E2=80=94=20P?=
+ =?UTF-8?q?reCompact/Stop=20hook=20+=20--session-summary?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Forge SessionStart INJECTS memory but nothing CAPTURES on the way out, so
+long sessions lose learnings and memory stays orphaned (the eval scored
+memory pull-only). Add the write half:
+
+- New memory-capture CONTEXT intent in FORGE_HOOK_CONTRACT (schema 1.2.0);
+  renderClaudeHooks emits PreCompact + Stop groups calling
+  `forge hooks capture --harness claude --trigger precompact|stop`. The
+  trigger rides as a CLI arg stamped by the event, so the CLI never reads
+  hook stdin. Honest matrix: only Claude renders; cursor/codex/hermes carry
+  a skip reason (SESSION_END_SUPPORT).
+- `forge hooks capture`: persists a deterministic, token-bounded
+  session-summary note (trigger + in-progress issues) to the memory store
+  BEFORE context is compacted. FAIL-OPEN, emits no stdout (never injects
+  into the turn, never drives the agent). Flood guards: a plain Stop with
+  nothing in progress is a no-op, and a byte-identical repeat is deduped;
+  PreCompact always records a boundary. The note omits a timestamp so
+  identical session state dedupes cleanly (the store stamps its own).
+- `forge remember --session-summary`: one-flag alias for
+  --kind session-summary, the explicit agent-written path (reuses #392
+  typed-notes --what/--why/--learned), surfaced via `forge memory add`.
+
+Auto-capture is a deterministic safety-net, not an LLM summary; the rich
+learnings capture is the explicit --session-summary path. Follow-up filed
+under epic 0093a02a for prompting the agent to write learnings at exit
+(PreCompact/Stop are trigger-only surfaces per the repo's verified matrix;
+a Stop-block nudge would drive the agent — Usage Policy, kernel 6d10c1a1).
+
+Kernel issue: 3867b9c2-17f8-4e34-9636-7870faeb5e59
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/hooks.js          | 101 ++++++++++++++++++-
+ lib/commands/remember.js       |   8 +-
+ lib/hook-renderer.js           |  59 ++++++++++-
+ test/commands/remember.test.js |  27 +++++
+ test/hook-renderer.test.js     |  61 +++++++++++-
+ test/hooks-capture.test.js     | 174 +++++++++++++++++++++++++++++++++
+ 6 files changed, 420 insertions(+), 10 deletions(-)
+ create mode 100644 test/hooks-capture.test.js
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index a31f96a7..8b3e9eea 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -27,14 +27,15 @@ const {
+   renderGlobalHookBlock,
+   installGlobalHooks,
+ } = require('../hook-global-installer');
+-const { sessionStartCapability, userPromptSubmitCapability } = require('../hook-renderer');
+-const { collectDigestData, buildMemoryDigest } = require('../memory-digest');
++const { sessionStartCapability, userPromptSubmitCapability, sessionEndCapability } = require('../hook-renderer');
++const { collectDigestData, buildMemoryDigest, defaultFetchIssues, defaultFetchNotes } = require('../memory-digest');
+ const { collectInbox, buildInboxNudge } = require('../inbox');
+ 
+ function usage() {
+   return 'Usage: forge hooks install --global [--harness codex|hermes|all] [--dry-run]\n'
+     + '       forge hooks session-start --harness <claude> (machine-facing; emits SessionStart context)\n'
+-    + '       forge hooks inbox-pickup --harness <claude> (machine-facing; emits UserPromptSubmit context)';
++    + '       forge hooks inbox-pickup --harness <claude> (machine-facing; emits UserPromptSubmit context)\n'
++    + '       forge hooks capture --harness <claude> --trigger <precompact|stop> (machine-facing; captures a session summary on exit)';
+ }
+ 
+ /** Parse `--harness <h>` (defaults to claude) from a session-start arg slice. */
+@@ -46,6 +47,46 @@ function parseHarness(rest) {
+   return 'claude';
+ }
+ 
++/** Parse `--trigger <t>` (defaults to stop) from a capture arg slice. */
++function parseTrigger(rest) {
++  for (let i = 0; i < rest.length; i += 1) {
++    if (rest[i] === '--trigger') return rest[i + 1] || 'stop';
++    if (rest[i].startsWith('--trigger=')) return rest[i].slice('--trigger='.length);
++  }
++  return 'stop';
++}
++
++// Capture bounds — the snapshot is a small NUDGE, not a manual. A hard issue cap + per-title
++// cap + overall body cap keep the note (which is re-injected at the NEXT session's SessionStart
++// digest) token-bounded. Tags mark it a session-summary typed note AND a Forge auto-capture
++// (the latter is the dedupe/idempotency key that stops per-turn Stop flooding).
++const CAPTURE_ISSUE_CAP = 5;
++const CAPTURE_TITLE_CAP = 80;
++const CAPTURE_NOTE_CAP = 1000;
++const CAPTURE_AUTO_TAG = 'forge:auto-capture';
++const CAPTURE_TAGS = ['type:session-summary', CAPTURE_AUTO_TAG];
++
++/**
++ * Build the deterministic, token-bounded capture note body. PURE. The body deliberately
++ * carries NO timestamp (the store stamps its own) so an unchanged session state yields a
++ * byte-identical body across repeated Stops — that identity is what the dedupe keys on.
++ * @param {string} trigger - 'precompact' | 'stop'
++ * @param {object[]} issues - in-progress issues (title/id defensively resolved)
++ * @returns {string}
++ */
++function buildCaptureNote(trigger, issues) {
++  const capped = issues.slice(0, CAPTURE_ISSUE_CAP);
++  const lines = capped.map(issue => {
++    const title = String((issue && (issue.title || issue.id)) || 'untitled').replace(/\s+/g, ' ').trim();
++    return `- ${title.length > CAPTURE_TITLE_CAP ? `${title.slice(0, CAPTURE_TITLE_CAP)}…` : title}`;
++  });
++  const more = issues.length > capped.length ? `\n- …and ${issues.length - capped.length} more` : '';
++  const body = lines.length
++    ? `Session boundary (${trigger}) — in-progress:\n${lines.join('\n')}${more}`
++    : `Session boundary (${trigger}) — no in-progress issues.`;
++  return body.length > CAPTURE_NOTE_CAP ? `${body.slice(0, CAPTURE_NOTE_CAP)}…` : body;
++}
++
+ /** Wrap a digest into a harness-native SessionStart payload, or '' when unsupported. */
+ function formatSessionStart(harness, text) {
+   if (harness === 'claude') {
+@@ -126,6 +167,57 @@ async function handleInboxPickup(rest, projectRoot, opts = {}) {
+   }
+ }
+ 
++/**
++ * `forge hooks capture --harness <h> --trigger <precompact|stop>` — the CAPTURE-on-exit hook.
++ * PreCompact (before context compaction) and Stop (turn end) fire it; it snapshots a bounded
++ * session-summary note into the memory store BEFORE learnings are lost. This is the WRITE half
++ * of Forge memory (SessionStart only INJECTS). It PERSISTS to the store and emits NO stdout — a
++ * Stop hook that printed text would inject into the turn, and it never drives the agent
++ * (Anthropic Usage Policy). FAIL-OPEN: any failure, an unsupported harness, or nothing worth
++ * capturing yields '' and no write. NEVER throws.
++ *
++ * Flooding guard: a plain Stop with nothing in progress is skipped (Stop fires every turn), and
++ * a byte-identical repeat of the newest auto-capture note is skipped — so only meaningful,
++ * changed session state is written. PreCompact ALWAYS records a boundary (context is being lost).
++ *
++ * @param {string[]} rest - args after the `capture` action.
++ * @param {string} projectRoot
++ * @param {object} [opts] - injectable { fetchIssues, fetchNotes, append } for tests.
++ * @returns {Promise<{ success: boolean, output: string }>}
++ */
++async function handleCapture(rest, projectRoot, opts = {}) {
++  try {
++    const harness = parseHarness(rest);
++    if (!sessionEndCapability(harness).rendered) return { success: true, output: '' };
++    const trigger = parseTrigger(rest);
++
++    const fetchIssues = opts.fetchIssues || defaultFetchIssues;
++    const claimed = await fetchIssues(projectRoot, 'in_progress', opts);
++    const issues = Array.isArray(claimed) ? claimed : [];
++
++    // Stop fires every turn; a plain Stop with nothing in progress is not worth a note.
++    // PreCompact is rare and precedes real context loss, so it always records a boundary.
++    if (trigger !== 'precompact' && issues.length === 0) return { success: true, output: '' };
++
++    const body = buildCaptureNote(trigger, issues);
++
++    // Content dedupe: if the newest auto-capture note is byte-identical, this is a repeat of
++    // an unchanged session — skip the write so the store never floods with duplicates.
++    const fetchNotes = opts.fetchNotes || defaultFetchNotes;
++    const recent = await fetchNotes(projectRoot, { ...opts, noteLimit: 10 });
++    const lastCapture = (Array.isArray(recent) ? recent : [])
++      .find(note => Array.isArray(note && note.tags) && note.tags.includes(CAPTURE_AUTO_TAG));
++    if (lastCapture && lastCapture.note === body) return { success: true, output: '' };
++
++    const append = opts.append || require('../memory/router').append;
++    append(projectRoot, body, { tags: CAPTURE_TAGS });
++    return { success: true, output: '' };
++  } catch {
++    // Fail-open: a capture hook must never break a session.
++    return { success: true, output: '' };
++  }
++}
++
+ function parseInstallArgs(rest) {
+   const parsed = { global: false, dryRun: false, harness: 'all', unknown: [] };
+   for (let i = 0; i < rest.length; i += 1) {
+@@ -222,10 +314,11 @@ async function handler(args, flags = {}, projectRoot, opts = {}) {
+   const action = args[0];
+   if (action === 'session-start') return handleSessionStart(args.slice(1), projectRoot, opts);
+   if (action === 'inbox-pickup') return handleInboxPickup(args.slice(1), projectRoot, opts);
++  if (action === 'capture') return handleCapture(args.slice(1), projectRoot, opts);
+   if (action === 'install') return handleInstall(args, flags, opts);
+   return {
+     success: false,
+-    error: `forge hooks supports: install, session-start, inbox-pickup.\n${usage()}`,
++    error: `forge hooks supports: install, session-start, inbox-pickup, capture.\n${usage()}`,
+   };
+ }
+ 
+diff --git a/lib/commands/remember.js b/lib/commands/remember.js
+index 890ad5da..6f4ad81b 100644
+--- a/lib/commands/remember.js
++++ b/lib/commands/remember.js
+@@ -4,7 +4,7 @@ const memoryRouter = require('../memory/router');
+ const { stripGlobalFlags } = require('../global-flags');
+ 
+ const usage =
+-  'Usage: forge remember <note> [--kind <type>] [--tag <label>]... ' +
++  'Usage: forge remember <note> [--kind <type>] [--session-summary] [--tag <label>]... ' +
+   '[--what <text>] [--why <text>] [--where <text>] [--learned <text>] [--json]';
+ 
+ // Structured note fields (kernel issue 8cc1db4d). Each is optional and, when present, is
+@@ -56,6 +56,11 @@ function parseArgs(rawArgs) {
+     const bare = arg.startsWith('--') ? arg.split('=', 1)[0] : arg;
+     if (arg === '--json') {
+       json = true;
++    } else if (arg === '--session-summary') {
++      // Memorable one-flag alias for `--kind session-summary` — the explicit capture-on-exit
++      // path an agent calls (via `forge memory add --session-summary` / `forge remember`) to
++      // persist a structured session summary with the same --what/--why/--learned fields.
++      type = 'session-summary';
+     } else if (bare === '--kind') {
+       const { value, consumed } = takeValue(index);
+       if (value) type = value.trim();
+@@ -123,6 +128,7 @@ module.exports = {
+   usage,
+   flags: {
+     '--kind': 'Type the note (decision|bugfix|gotcha|...) — filterable by recall (--type is reserved)',
++    '--session-summary': 'Alias for --kind session-summary — capture a session summary on exit',
+     '--tag': 'Attach a search label (repeatable)',
+     '--what': 'Structured field: what happened/changed',
+     '--why': 'Structured field: why',
+diff --git a/lib/hook-renderer.js b/lib/hook-renderer.js
+index dc234600..5c3bf3af 100644
+--- a/lib/hook-renderer.js
++++ b/lib/hook-renderer.js
+@@ -75,6 +75,10 @@ const FORGE_CONTEXT_MARKER = 'hooks session-start';
+ // re-merge recognizes + replaces the Forge-owned UserPromptSubmit entry in place, exactly
+ // as FORGE_CONTEXT_MARKER does for the SessionStart entry.
+ const FORGE_INBOX_CONTEXT_MARKER = 'hooks inbox-pickup';
++// The capture-on-exit context hook (PreCompact + Stop tier). A THIRD context marker so a
++// re-merge recognizes + replaces the Forge-owned PreCompact/Stop entries in place. Both
++// events share this one marker (they differ only by a --trigger suffix on the command).
++const FORGE_CAPTURE_CONTEXT_MARKER = 'hooks capture';
+ 
+ // Per-harness SessionStart context-injection capability. Honest capability matrix —
+ // only Claude exposes a native session-start surface that can inject additionalContext.
+@@ -99,6 +103,18 @@ const USER_PROMPT_SUBMIT_SUPPORT = Object.freeze({
+   hermes: Object.freeze({ rendered: false, reason: 'global-config' }),
+ });
+ 
++// Per-harness session-END (capture-on-exit) capability. Only Claude exposes native
++// PreCompact + Stop hook surfaces where Forge can snapshot session learnings BEFORE
++// context is compacted or the session ends. Cursor 1.7 hooks are deny-oriented with no
++// session-end surface; Codex and Hermes hooks live in GLOBAL home config project setup
++// never writes. Same honesty rule as the other context tiers — no faked parity.
++const SESSION_END_SUPPORT = Object.freeze({
++  claude: Object.freeze({ rendered: true }),
++  cursor: Object.freeze({ rendered: false, reason: 'no-session-end-surface' }),
++  codex: Object.freeze({ rendered: false, reason: 'global-config' }),
++  hermes: Object.freeze({ rendered: false, reason: 'global-config' }),
++});
++
+ // Claude exposes $CLAUDE_PROJECT_DIR (absolute project root) to hook commands and
+ // documents it as THE cwd-independent way to reference project-local hook scripts —
+ // a bare relative path breaks whenever Claude runs the hook from another cwd. Cursor
+@@ -114,7 +130,7 @@ function adapterInvocation(harness) {
+  * (per-commit) so the rendered Claude PreToolUse groups read write-guard first.
+  */
+ const FORGE_HOOK_CONTRACT = Object.freeze({
+-  schemaVersion: '1.1.0',
++  schemaVersion: '1.2.0',
+   kind: 'forge.hookContract',
+   adapter: FORGE_HOOK_ADAPTER,
+   intents: Object.freeze([
+@@ -152,6 +168,21 @@ const FORGE_HOOK_CONTRACT = Object.freeze({
+       lifecycle: 'user-prompt-submit',
+       command: `${FORGE_CLI} hooks inbox-pickup`,
+     }),
++    Object.freeze({
++      id: 'memory-capture',
++      kind: 'context',
++      cliAction: 'capture',
++      // CAPTURE-ON-EXIT: the write half of Forge memory. SessionStart INJECTS remembered
++      // notes but nothing ever CAPTURES on the way out, so long sessions lose learnings and
++      // memory stays orphaned (the eval scored memory pull-only). PreCompact + Stop fire this
++      // to snapshot a bounded session-summary note BEFORE context is compacted / the session
++      // ends. Persists to the memory store — it NEVER injects into the turn and never drives
++      // the agent (Anthropic Usage Policy). The trigger (precompact|stop) rides as a --trigger
++      // suffix stamped by the rendered hook, so the CLI never has to read hook stdin.
++      enforces: 'Capture-on-exit: snapshot a bounded session-summary note (trigger + in-progress issues) into the memory store on PreCompact and Stop, BEFORE context is compacted or the session ends. Additive and FAIL-OPEN — a capture failure never blocks a session.',
++      lifecycle: 'session-end',
++      command: `${FORGE_CLI} hooks capture`,
++    }),
+   ]),
+ });
+ 
+@@ -202,6 +233,16 @@ function userPromptSubmitCapability(harness) {
+   return USER_PROMPT_SUBMIT_SUPPORT[harness] || { rendered: false, reason: 'unknown-harness' };
+ }
+ 
++/**
++ * Report the per-harness session-END (capture-on-exit) capability (the honest matrix for
++ * the PreCompact + Stop capture tier).
++ * @param {string} harness
++ * @returns {{ rendered: boolean, reason?: string }}
++ */
++function sessionEndCapability(harness) {
++  return SESSION_END_SUPPORT[harness] || { rendered: false, reason: 'unknown-harness' };
++}
++
+ /**
+  * Render the Claude `.claude/settings.json` `hooks` block (PreToolUse groups only).
+  * Write/Edit/MultiEdit/NotebookEdit → protected-path deny; Bash → TDD gate.
+@@ -232,6 +273,16 @@ function renderClaudeHooks(contract) {
+     UserPromptSubmit: [
+       { hooks: [{ type: 'command', command: harnessCommand(contract, 'inbox-pickup', 'claude') }] },
+     ],
++    // Capture-on-exit (memory capture). PreCompact fires before context is compacted; Stop
++    // fires when the agent finishes. Both call the same capture command; the event stamps the
++    // --trigger so the CLI never reads hook stdin. The command persists a bounded session
++    // summary — it emits NO stdout (a Stop hook that printed text would inject into the turn).
++    PreCompact: [
++      { hooks: [{ type: 'command', command: `${harnessCommand(contract, 'memory-capture', 'claude')} --trigger precompact` }] },
++    ],
++    Stop: [
++      { hooks: [{ type: 'command', command: `${harnessCommand(contract, 'memory-capture', 'claude')} --trigger stop` }] },
++    ],
+   };
+ }
+ 
+@@ -311,7 +362,8 @@ function isForgeCommand(command) {
+   return typeof command === 'string'
+     && (command.includes(FORGE_HOOK_MARKER)
+       || command.includes(FORGE_CONTEXT_MARKER)
+-      || command.includes(FORGE_INBOX_CONTEXT_MARKER));
++      || command.includes(FORGE_INBOX_CONTEXT_MARKER)
++      || command.includes(FORGE_CAPTURE_CONTEXT_MARKER));
+ }
+ 
+ /** True when a hook group/entry is Forge-owned (any inner command is Forge-owned). */
+@@ -436,10 +488,13 @@ module.exports = {
+   FORGE_HOOK_MARKER,
+   FORGE_CONTEXT_MARKER,
+   FORGE_INBOX_CONTEXT_MARKER,
++  FORGE_CAPTURE_CONTEXT_MARKER,
+   SESSION_START_SUPPORT,
+   USER_PROMPT_SUBMIT_SUPPORT,
++  SESSION_END_SUPPORT,
+   sessionStartCapability,
+   userPromptSubmitCapability,
++  sessionEndCapability,
+   HookConfigParseError,
+   renderClaudeHooks,
+   renderCursorHooks,
+diff --git a/test/commands/remember.test.js b/test/commands/remember.test.js
+index 5a172d93..44e92d30 100644
+--- a/test/commands/remember.test.js
++++ b/test/commands/remember.test.js
+@@ -106,4 +106,31 @@ describe('forge remember command', () => {
+     const [entry] = await recalledNotes(projectRoot);
+     expect(entry.note).toBe('multi word note');
+   });
++
++  // Explicit session-summary path (kernel 3867b9c2): `--session-summary` is the memorable
++  // one-flag alias for `--kind session-summary`, so an agent can capture on the way out with
++  // the same #392 structured fields (--what/--why/--learned). Surfaced via `forge memory add`.
++  test('--session-summary writes a retrievable type:session-summary typed note', async () => {
++    const projectRoot = makeProjectRoot();
++    const result = await remember.handler(
++      ['--session-summary', 'wrapped the capture hook', '--what', 'added PreCompact/Stop capture',
++        '--why', 'memory was pull-only', '--learned', 'trigger rides as a CLI arg', '--json'],
++      {},
++      projectRoot
++    );
++
++    expect(result.success).toBe(true);
++    const payload = JSON.parse(result.output);
++    expect(payload.type).toBe('session-summary');
++
++    const [entry] = await recalledNotes(projectRoot);
++    expect(entry.tags).toContain('type:session-summary');
++    // Structured fields are folded into the body so they stay FTS-searchable.
++    expect(entry.note).toContain('What: added PreCompact/Stop capture');
++    expect(entry.note).toContain('Learned: trigger rides as a CLI arg');
++  });
++
++  test('--session-summary is advertised in the command flags', () => {
++    expect(remember.flags['--session-summary']).toBeDefined();
++  });
+ });
+diff --git a/test/hook-renderer.test.js b/test/hook-renderer.test.js
+index 608416dc..393d778f 100644
+--- a/test/hook-renderer.test.js
++++ b/test/hook-renderer.test.js
+@@ -7,7 +7,9 @@ const {
+   HARNESS_HOOK_FILES,
+   FORGE_CONTEXT_MARKER,
+   SESSION_START_SUPPORT,
++  SESSION_END_SUPPORT,
+   sessionStartCapability,
++  sessionEndCapability,
+   HookConfigParseError,
+   renderClaudeHooks,
+   renderCursorHooks,
+@@ -31,12 +33,16 @@ const {
+ const FORGE_MARK = 'forge-native-hook.js';
+ 
+ describe('Forge hook contract', () => {
+-  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup) intents', () => {
++  test('declares enforcement (protected-path, tdd-gate) + context (memory-inject, inbox-pickup, memory-capture) intents', () => {
+     expect(FORGE_HOOK_CONTRACT.kind).toBe('forge.hookContract');
+     const ids = FORGE_HOOK_CONTRACT.intents.map(i => i.id);
+-    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup']);
++    expect(ids).toEqual(['protected-path', 'tdd-gate', 'memory-inject', 'inbox-pickup', 'memory-capture']);
+     // Each context intent routes to the `forge` CLI via a `hooks <cliAction>` marker.
+-    const CONTEXT_MARKERS = { 'memory-inject': FORGE_CONTEXT_MARKER, 'inbox-pickup': 'hooks inbox-pickup' };
++    const CONTEXT_MARKERS = {
++      'memory-inject': FORGE_CONTEXT_MARKER,
++      'inbox-pickup': 'hooks inbox-pickup',
++      'memory-capture': 'hooks capture',
++    };
+     for (const intent of FORGE_HOOK_CONTRACT.intents) {
+       expect(typeof intent.enforces).toBe('string');
+       expect(intent.enforces.length).toBeGreaterThan(0);
+@@ -150,6 +156,55 @@ describe('SessionStart context injection (memory push)', () => {
+   });
+ });
+ 
++describe('PreCompact + Stop capture-on-exit (memory capture)', () => {
++  test('Claude renders PreCompact and Stop groups wired to `forge hooks capture`', () => {
++    const block = renderClaudeHooks(FORGE_HOOK_CONTRACT);
++    for (const [event, trigger] of [['PreCompact', 'precompact'], ['Stop', 'stop']]) {
++      expect(Array.isArray(block[event])).toBe(true);
++      expect(block[event].length).toBe(1);
++      const cmd = block[event][0].hooks[0].command;
++      expect(cmd).toContain('hooks capture --harness claude');
++      // The event stamps the trigger so the CLI never needs to read hook stdin.
++      expect(cmd).toContain(`--trigger ${trigger}`);
++      // Context hook goes through the CLI, NOT the self-contained enforcement adapter.
++      expect(cmd).not.toContain(FORGE_MARK);
++      expect(cmd).toContain('hooks capture');
++      // A RESOLVED node invocation, never a bare `forge`.
++      expect(cmd.startsWith('node ')).toBe(true);
++      expect(cmd).toContain('forge.js');
++    }
++  });
++
++  test('capability matrix is honest — only Claude captures; others carry a skip reason', () => {
++    expect(sessionEndCapability('claude')).toEqual({ rendered: true });
++    expect(sessionEndCapability('cursor')).toEqual({ rendered: false, reason: 'no-session-end-surface' });
++    expect(sessionEndCapability('codex')).toEqual({ rendered: false, reason: 'global-config' });
++    expect(sessionEndCapability('hermes')).toEqual({ rendered: false, reason: 'global-config' });
++    expect(sessionEndCapability('nope')).toEqual({ rendered: false, reason: 'unknown-harness' });
++    expect(SESSION_END_SUPPORT.claude.rendered).toBe(true);
++  });
++
++  test('Cursor does NOT fake a capture surface (no capture hook rendered)', () => {
++    const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
++    const allCommands = Object.values(cfg.hooks).flat().map(h => h.command).join('\n');
++    expect(allCommands).not.toContain('hooks capture');
++  });
++
++  test('merging PreCompact + Stop groups is idempotent and preserves user hooks', () => {
++    const existing = JSON.stringify({
++      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node user-stop.js' }] }] },
++    }, null, 2);
++    const once = mergeClaudeSettings(existing, FORGE_HOOK_CONTRACT);
++    const twice = mergeClaudeSettings(once, FORGE_HOOK_CONTRACT);
++    const b = JSON.parse(twice);
++    expect(b.hooks.PreCompact.length).toBe(1);
++    // user Stop hook + one Forge Stop group, idempotent across a re-merge.
++    const stopCommands = b.hooks.Stop.flatMap(g => g.hooks.map(h => h.command));
++    expect(stopCommands).toContain('node user-stop.js');
++    expect(stopCommands.filter(c => c.includes('hooks capture')).length).toBe(1);
++  });
++});
++
+ describe('renderCursorHooks (.cursor/hooks.json)', () => {
+   test('renders version 1 with before* gating events (Cursor has no pre-edit deny)', () => {
+     const cfg = renderCursorHooks(FORGE_HOOK_CONTRACT);
+diff --git a/test/hooks-capture.test.js b/test/hooks-capture.test.js
+new file mode 100644
+index 00000000..73c01d55
+--- /dev/null
++++ b/test/hooks-capture.test.js
+@@ -0,0 +1,174 @@
++'use strict';
++
++const { afterEach, describe, test, expect } = require('bun:test');
++
++const hooks = require('../lib/commands/hooks');
++const recall = require('../lib/commands/recall');
++const projectMemory = require('../lib/project-memory');
++const { createKernelProjectRoots } = require('./helpers/kernel-project-root');
++
++// `forge hooks capture` (kernel 3867b9c2) — the CAPTURE-on-exit context hook. PreCompact and
++// Stop fire it; it snapshots a deterministic, token-bounded session-summary note into the
++// memory store BEFORE context is lost. Machine-facing + FAIL-OPEN: any failure, an unsupported
++// harness, or nothing worth capturing yields empty output and NO write. Fetchers/writer are
++// injectable so these unit tests never touch a real store.
++
++const CLAIMED = [{ id: 'i1', title: 'Wire auto-file rail' }, { id: 'i2', title: 'Fix head-branch bug' }];
++
++function run(args, opts) {
++  return hooks.handler(args, {}, '/root', opts);
++}
++
++// A recording writer that also feeds dedupe: appended notes come back through fetchNotes.
++function recordingStore() {
++  const writes = [];
++  return {
++    writes,
++    append(_root, note, options = {}) {
++      const entry = { id: `n${writes.length}`, note, timestamp: '2026-07-15T00:00:00.000Z', tags: options.tags || [] };
++      writes.push(entry);
++      return entry;
++    },
++    fetchNotes: () => [...writes].reverse(), // newest-first, like recall
++  };
++}
++
++describe('forge hooks capture (context hook — capture on exit)', () => {
++  test('claude + stop with in-progress issues writes ONE session-summary typed note', async () => {
++    const store = recordingStore();
++    const res = await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: (_root, kind) => (kind === 'ready' ? [] : CLAIMED),
++    });
++    expect(res.success).toBe(true);
++    expect(res.output).toBe(''); // capture is SILENT persistence — never injects into the turn
++    expect(store.writes).toHaveLength(1);
++    const [entry] = store.writes;
++    expect(entry.tags).toContain('type:session-summary');
++    expect(entry.tags).toContain('forge:auto-capture');
++    expect(entry.note).toContain('stop');
++    expect(entry.note).toContain('Wire auto-file rail');
++  });
++
++  test('dedupe: an identical consecutive capture does NOT write a second note', async () => {
++    const store = recordingStore();
++    const opts = {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: (_root, kind) => (kind === 'ready' ? [] : CLAIMED),
++    };
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], opts);
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], opts);
++    // Same trigger + same in-progress set → same body → the second Stop is a no-op.
++    expect(store.writes).toHaveLength(1);
++  });
++
++  test('a changed in-progress set DOES write a fresh capture (not deduped)', async () => {
++    const store = recordingStore();
++    const base = { append: store.append, fetchNotes: store.fetchNotes };
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'],
++      { ...base, fetchIssues: (_r, k) => (k === 'ready' ? [] : CLAIMED) });
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'],
++      { ...base, fetchIssues: (_r, k) => (k === 'ready' ? [] : [{ id: 'i3', title: 'New work' }]) });
++    expect(store.writes).toHaveLength(2);
++  });
++
++  test('precompact ALWAYS captures a boundary marker, even with no in-progress issues', async () => {
++    const store = recordingStore();
++    const res = await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: () => [],
++    });
++    expect(res.success).toBe(true);
++    expect(store.writes).toHaveLength(1);
++    expect(store.writes[0].note).toContain('precompact');
++  });
++
++  test('a plain Stop with nothing in progress is a no-op (avoids per-turn flooding)', async () => {
++    const store = recordingStore();
++    const res = await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: () => [],
++    });
++    expect(res.success).toBe(true);
++    expect(res.output).toBe('');
++    expect(store.writes).toHaveLength(0);
++  });
++
++  test('unsupported harness (cursor) → empty output, no write (honest no-op)', async () => {
++    const store = recordingStore();
++    const res = await run(['capture', '--harness', 'cursor', '--trigger', 'stop'], {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: () => CLAIMED,
++    });
++    expect(res.success).toBe(true);
++    expect(res.output).toBe('');
++    expect(store.writes).toHaveLength(0);
++  });
++
++  test('fail-open: a throwing fetcher never errors the hook and never half-writes', async () => {
++    const store = recordingStore();
++    const res = await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: () => { throw new Error('issue store down'); },
++    });
++    expect(res.success).toBe(true);
++    expect(res.output).toBe('');
++    expect(store.writes).toHaveLength(0);
++  });
++
++  test('fail-open: a throwing writer is swallowed (capture must never break a session)', async () => {
++    const res = await run(['capture', '--harness', 'claude', '--trigger', 'precompact'], {
++      append: () => { throw new Error('store write failed'); },
++      fetchNotes: () => [],
++      fetchIssues: () => CLAIMED,
++    });
++    expect(res.success).toBe(true);
++    expect(res.output).toBe('');
++  });
++
++  test('token-bounded: a huge in-progress set is capped, not dumped verbatim', async () => {
++    const store = recordingStore();
++    const many = Array.from({ length: 50 }, (_i, n) => ({ id: `x${n}`, title: `Issue number ${n} `.repeat(20) }));
++    await run(['capture', '--harness', 'claude', '--trigger', 'stop'], {
++      append: store.append,
++      fetchNotes: store.fetchNotes,
++      fetchIssues: (_r, k) => (k === 'ready' ? [] : many),
++    });
++    expect(store.writes).toHaveLength(1);
++    // A hard ceiling keeps the injected-at-next-session digest small.
++    expect(store.writes[0].note.length).toBeLessThan(1200);
++  });
++});
++
++describe('forge hooks capture (end-to-end against the real kernel store)', () => {
++  const { makeProjectRoot, cleanup } = createKernelProjectRoots('forge-capture-e2e-');
++
++  afterEach(() => {
++    projectMemory.closeAll();
++    cleanup();
++  });
++
++  test('the captured note is retrievable via recall (real store, default writer)', async () => {
++    const projectRoot = makeProjectRoot();
++    // Real append + dedupe read; only the issue fetch is stubbed to a deterministic claim.
++    const res = await hooks.handler(
++      ['capture', '--harness', 'claude', '--trigger', 'precompact'],
++      {},
++      projectRoot,
++      { fetchIssues: (_r, k) => (k === 'ready' ? [] : [{ id: 'i9', title: 'Persisted work item' }]) }
++    );
++    expect(res.success).toBe(true);
++
++    const recalled = JSON.parse((await recall.handler(['--json'], {}, projectRoot)).output).notes;
++    const capture = recalled.find(n => (n.tags || []).includes('forge:auto-capture'));
++    expect(capture).toBeDefined();
++    expect(capture.note).toContain('Persisted work item');
++    expect(capture.tags).toContain('type:session-summary');
++  });
++});
+-- 
+2.51.0.windows.1
+

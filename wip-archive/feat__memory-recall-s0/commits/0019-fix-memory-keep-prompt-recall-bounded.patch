@@ -1,0 +1,152 @@
+From ebbbfad468fe3ea52034e926a532414767fc69f8 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 13:37:54 +0530
+Subject: [PATCH] fix(memory): keep prompt recall bounded
+
+---
+ lib/commands/hooks.js            |  9 +++------
+ lib/project-memory.js            |  9 ++++++++-
+ test/hooks-memory-recall.test.js | 21 +++++++++++++++++++++
+ test/project-memory.test.js      | 19 +++++++++++++++++++
+ 4 files changed, 51 insertions(+), 7 deletions(-)
+
+diff --git a/lib/commands/hooks.js b/lib/commands/hooks.js
+index 4ac352bd..71f38cc2 100644
+--- a/lib/commands/hooks.js
++++ b/lib/commands/hooks.js
+@@ -36,7 +36,6 @@ const { collectDigest } = require('../pr-monitor/digest');
+ const { loadDispatchText } = require('../using-forge');
+ const projectMemory = require('../project-memory');
+ const { parseHookInput, selectInjection, meaningfulTokens, DEFAULT_TOKEN_BUDGET, DEFAULT_SCORE_FLOOR } = require('../memory-recall');
+-const { recordMemoryRecallEvent } = require('../memory-recall-events');
+ const { getResolvedRuntimeGraph } = require('../core/runtime-graph');
+ const { fireAndForget } = require('../pr-monitor/reconcile-executor');
+ 
+@@ -511,6 +510,7 @@ async function handleMemoryRecall(rest, projectRoot, opts = {}) {
+   const startedAt = Date.now();
+   const observation = { harness };
+   const record = result => {
++    if (!opts.recordRecallEvent) return result;
+     const outcome = result.reason === 'timeout'
+       ? 'timeout'
+       : (observation.outcome || (result.output ? 'selected' : 'empty'));
+@@ -522,7 +522,7 @@ async function handleMemoryRecall(rest, projectRoot, opts = {}) {
+     };
+     const write = () => {
+       try {
+-        const pending = (opts.recordRecallEvent || recordMemoryRecallEvent)(
++        const pending = opts.recordRecallEvent(
+           projectRoot,
+           eventObservation
+         );
+@@ -531,10 +531,7 @@ async function handleMemoryRecall(rest, projectRoot, opts = {}) {
+         // Operational evidence is best-effort and must never delay or suppress a prompt.
+       }
+     };
+-    // The real SQLite event append is deliberately off the prompt's critical path. Injected
+-    // recorders stay synchronous so focused tests can inspect the exact observation.
+-    if (opts.recordRecallEvent) write();
+-    else setTimeout(write, 0);
++    write();
+     return result;
+   };
+   const capability = userPromptSubmitCapability(harness);
+diff --git a/lib/project-memory.js b/lib/project-memory.js
+index 99e7acbd..8ee2e3fd 100644
+--- a/lib/project-memory.js
++++ b/lib/project-memory.js
+@@ -40,7 +40,13 @@ function resolveProjectId(projectRoot, options = {}) {
+   const commonDir = options.gitCommonDir || resolveGitCommonDir(projectRoot, options);
+   const absolute = pathImpl.resolve(projectRoot, commonDir);
+   const realpath = options.realpath || fs.realpathSync.native;
+-  const canonical = realpath(absolute).replaceAll('\\', '/');
++  let canonical;
++  try {
++    canonical = realpath(absolute);
++  } catch {
++    canonical = absolute;
++  }
++  canonical = canonical.replaceAll('\\', '/');
+   return platform === 'win32'
+     ? canonical.toLowerCase()
+     : canonical;
+@@ -165,6 +171,7 @@ function searchRankedScored(projectRoot, query, limit, options = {}) {
+     projectId,
+     excludeKeys: options.excludeKeys || [],
+     ...(options.now ? { now: options.now } : {}),
++    ...(options.busyTimeoutMs !== undefined ? { busyTimeoutMs: options.busyTimeoutMs } : {}),
+   };
+   return resolveStore(projectRoot, options)
+     .searchMemoriesRankedScored(query, limit, searchOptions)
+diff --git a/test/hooks-memory-recall.test.js b/test/hooks-memory-recall.test.js
+index d67d8aaa..77ddbe10 100644
+--- a/test/hooks-memory-recall.test.js
++++ b/test/hooks-memory-recall.test.js
+@@ -145,6 +145,27 @@ describe('forge hooks memory-recall', () => {
+     expect(res).toEqual({ success: true, output: '', reason: 'timeout' });
+   });
+ 
++  test('does not schedule a telemetry timer after a prompt', async () => {
++    const originalSetTimeout = global.setTimeout;
++    const originalClearTimeout = global.clearTimeout;
++    const delays = [];
++    global.setTimeout = (_callback, delay) => {
++      delays.push(delay);
++      return null;
++    };
++    global.clearTimeout = () => {};
++
++    try {
++      const opts = baseOpts();
++      delete opts.recordRecallEvent;
++      await run(opts);
++      expect(delays).toEqual([4500]);
++    } finally {
++      global.setTimeout = originalSetTimeout;
++      global.clearTimeout = originalClearTimeout;
++    }
++  });
++
+   test('a result arriving after the deadline is not marked as injected', async () => {
+     let saved = false;
+     const res = await run(baseOpts({
+diff --git a/test/project-memory.test.js b/test/project-memory.test.js
+index a62e7140..9f9489d9 100644
+--- a/test/project-memory.test.js
++++ b/test/project-memory.test.js
+@@ -56,6 +56,14 @@ describe('project memory kernel adapter', () => {
+     })).toBe('/repo/.git');
+   });
+ 
++  test('falls back to the resolved path when the git directory cannot be canonicalized', () => {
++    expect(projectMemory.resolveProjectId('C:\\Repo\\worktree-a', {
++      gitCommonDir: 'C:\\Repo\\missing-git-dir',
++      realpath: () => { throw new Error('ENOENT'); },
++      platform: 'win32',
++    })).toBe('c:/repo/missing-git-dir');
++  });
++
+   test('normalizes ranked hits and derives one project id for sibling worktrees', () => {
+     const store = fakeStore();
+     store.__rankedScored = [{
+@@ -121,6 +129,17 @@ describe('project memory kernel adapter', () => {
+     expect(hits[0].score).toBe(-2.5);
+   });
+ 
++  test('searchRankedScored forwards a caller-supplied SQLite busy timeout', () => {
++    const store = fakeStore();
++
++    projectMemory.searchRankedScored(process.cwd(), 'auth bug', 5, {
++      store,
++      busyTimeoutMs: 50,
++    });
++
++    expect(store.rankedScoredCalls[0].options.busyTimeoutMs).toBe(50);
++  });
++
+   test('writes a canonical entry to the store and returns it', () => {
+     const store = fakeStore();
+ 
+-- 
+2.51.0.windows.1
+

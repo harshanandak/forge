@@ -1,0 +1,450 @@
+From c914564e995a92596efd53de8959dac7b8e89e13 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 21:28:54 +0530
+Subject: [PATCH] feat(github): add private account context
+
+---
+ lib/github-context.js       | 251 ++++++++++++++++++++++++++++++++++++
+ test/github-context.test.js | 172 ++++++++++++++++++++++++
+ 2 files changed, 423 insertions(+)
+ create mode 100644 lib/github-context.js
+ create mode 100644 test/github-context.test.js
+
+diff --git a/lib/github-context.js b/lib/github-context.js
+new file mode 100644
+index 00000000..eadcb326
+--- /dev/null
++++ b/lib/github-context.js
+@@ -0,0 +1,251 @@
++'use strict';
++
++const { execFileSync } = require('node:child_process');
++
++const ACCOUNT_KEY = 'github.account';
++const HOST = 'github.com';
++const LOGIN_RE = /^(?=.{1,39}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
++const GITHUB_ENV_NAMES = new Set(['gh_token', 'github_token', 'gh_host']);
++
++class GithubContextError extends Error {
++  constructor(code, message) {
++    super(message);
++    this.name = 'GithubContextError';
++    this.code = code;
++  }
++
++  toJSON() {
++    return { code: this.code, message: this.message };
++  }
++}
++
++function validateGithubLogin(login) {
++  return typeof login === 'string' && LOGIN_RE.test(login);
++}
++
++function safeLogin(login) {
++  return validateGithubLogin(login) ? login : null;
++}
++
++function runnerFor(options) {
++  return options.runner || options._runner || options._exec || options.execFileSync || defaultRunner;
++}
++
++function defaultRunner(command, args, options = {}) {
++  return execFileSync(command, args, {
++    encoding: 'utf8',
++    stdio: ['ignore', 'pipe', 'pipe'],
++    windowsHide: true,
++    ...options,
++  });
++}
++
++function errorText(error) {
++  return [error?.message, error?.stderr?.toString?.(), error?.stdout?.toString?.()]
++    .filter(Boolean)
++    .join(' ')
++    .toLowerCase();
++}
++
++function isUnsupportedTokenCapability(error) {
++  const text = errorText(error);
++  return /unknown (?:flag|option)|invalid (?:flag|option)|unexpected argument|does not support/.test(text)
++    && /user|hostname/.test(text);
++}
++
++function safeCommandFailure(code, message) {
++  return new GithubContextError(code, message);
++}
++
++function gitConfig(projectRoot, args, options, absentIsOkay = false) {
++  try {
++    return runnerFor(options)('git', ['config', '--local', ...args], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++  } catch (error) {
++    if (absentIsOkay && (error?.status === 1 || /key does not contain|not found|no such key/i.test(errorText(error)))) {
++      return '';
++    }
++    throw safeCommandFailure('GIT_CONFIG_FAILED', 'Unable to read this clone-local GitHub account binding.');
++  }
++}
++
++function readGithubAccount(projectRoot, options = {}) {
++  const output = gitConfig(projectRoot, ['--get', ACCOUNT_KEY], options, true);
++  const value = output == null ? '' : output.toString().trim();
++  return value || null;
++}
++
++function writeGithubAccount(projectRoot, login, options = {}) {
++  if (!validateGithubLogin(login)) {
++    throw safeCommandFailure('INVALID_GITHUB_LOGIN', 'GitHub login must be 1-39 letters, numbers, or internal hyphens.');
++  }
++  try {
++    runnerFor(options)('git', ['config', '--local', ACCOUNT_KEY, login], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++  } catch (_error) {
++    throw safeCommandFailure('GIT_CONFIG_FAILED', 'Unable to write the clone-local GitHub account binding.');
++  }
++}
++
++function unsetGithubAccount(projectRoot, options = {}) {
++  try {
++    runnerFor(options)('git', ['config', '--local', '--unset', ACCOUNT_KEY], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++  } catch (error) {
++    if (error?.status === 5 || /key does not contain|not found|no such key/i.test(errorText(error))) return;
++    throw safeCommandFailure('GIT_CONFIG_FAILED', 'Unable to remove the clone-local GitHub account binding.');
++  }
++}
++
++function withoutGithubEnvironment(environment) {
++  const result = {};
++  for (const [key, value] of Object.entries(environment || {})) {
++    if (!GITHUB_ENV_NAMES.has(key.toLowerCase())) result[key] = value;
++  }
++  return result;
++}
++
++function selectedEnvironment(baseEnv, token, additions = {}) {
++  const result = withoutGithubEnvironment(baseEnv);
++  Object.assign(result, withoutGithubEnvironment(additions));
++  result.GH_TOKEN = token;
++  result.GITHUB_TOKEN = token;
++  result.GH_HOST = HOST;
++  return result;
++}
++
++function retrieveGithubToken(login, options) {
++  if (!validateGithubLogin(login)) {
++    throw safeCommandFailure('INVALID_GITHUB_LOGIN', 'GitHub login must be 1-39 letters, numbers, or internal hyphens.');
++  }
++  const baseEnv = options.baseEnv || options.env || process.env;
++  let output;
++  try {
++    output = runnerFor(options)('gh', ['auth', 'token', '--hostname', HOST, '--user', login], {
++      env: withoutGithubEnvironment(baseEnv),
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++  } catch (error) {
++    if (isUnsupportedTokenCapability(error)) {
++      throw safeCommandFailure('GITHUB_CLI_UNSUPPORTED', 'Upgrade GitHub CLI, then authenticate the account with gh auth login.');
++    }
++    throw safeCommandFailure('GITHUB_NOT_AUTHENTICATED', 'GitHub account is not authenticated; run gh auth login for this account.');
++  }
++
++  const token = output == null ? '' : output.toString().trim();
++  if (!token) {
++    throw safeCommandFailure('GITHUB_NOT_AUTHENTICATED', 'GitHub account is not authenticated; run gh auth login for this account.');
++  }
++  return token;
++}
++
++function loginFromOutput(output) {
++  const text = output == null ? '' : output.toString().trim();
++  if (!text) return null;
++  try {
++    const parsed = JSON.parse(text);
++    return safeLogin(parsed?.login);
++  } catch (_error) {
++    return safeLogin(text.split(/\r?\n/, 1)[0].trim());
++  }
++}
++
++function resolveGithubLogin(token, baseEnv, options) {
++  try {
++    const output = runnerFor(options)('gh', ['api', '--hostname', HOST, 'user', '--jq', '.login'], {
++      env: selectedEnvironment(baseEnv, token),
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      windowsHide: true,
++    });
++    const login = loginFromOutput(output);
++    if (!login) throw new Error('missing login');
++    return login;
++  } catch (_error) {
++    throw safeCommandFailure('GITHUB_AUTH_FAILED', 'Unable to verify the selected GitHub account; run gh auth login and try again.');
++  }
++}
++
++function publicStatus(state, account, login) {
++  return Object.freeze({ state, account: account || null, login: login || null });
++}
++
++function createPublicContext(status, token, baseEnv, options) {
++  const context = {
++    status,
++    bound: status.state !== 'unbound',
++    account: status.account,
++    login: status.login,
++  };
++  const childEnv = (additions = {}) => selectedEnvironment(baseEnv, token, additions);
++  const runGh = (args, runOptions = {}) => {
++    if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
++      throw safeCommandFailure('INVALID_GH_ARGUMENTS', 'GitHub CLI arguments must be an array of strings.');
++    }
++    try {
++      const output = runnerFor(options)('gh', args, {
++        ...runOptions,
++        env: childEnv(runOptions.env),
++        encoding: 'utf8',
++        stdio: ['ignore', 'pipe', 'pipe'],
++        windowsHide: true,
++      });
++      return redactToken(output, token);
++    } catch (_error) {
++      throw safeCommandFailure('GITHUB_COMMAND_FAILED', 'The GitHub CLI command failed without exposing its output.');
++    }
++  };
++  Object.defineProperties(context, {
++    buildChildEnv: { value: childEnv, enumerable: false },
++    runGh: { value: runGh, enumerable: false },
++    getStatus: { value: () => ({ ...status }), enumerable: false },
++  });
++  return context;
++}
++
++function redactToken(value, token) {
++  if (value == null) return value;
++  return value.toString().split(token).join('[REDACTED]');
++}
++
++function createGithubContext(projectRoot, options = {}) {
++  const account = readGithubAccount(projectRoot, options);
++  if (!account) return createPublicContext(publicStatus('unbound', null, null), null, {}, options);
++  if (!validateGithubLogin(account)) {
++    throw safeCommandFailure('INVALID_GITHUB_LOGIN', 'The clone-local github.account value is not a valid GitHub login.');
++  }
++
++  const baseEnv = { ...(options.baseEnv || options.env || process.env) };
++  const token = retrieveGithubToken(account, { ...options, baseEnv });
++  const login = resolveGithubLogin(token, baseEnv, options);
++  if (login.toLowerCase() !== account.toLowerCase()) {
++    throw safeCommandFailure('GITHUB_ACCOUNT_MISMATCH', `GitHub account mismatch: expected ${account}, received ${login}.`);
++  }
++  return createPublicContext(publicStatus('ready', account, login), token, baseEnv, options);
++}
++
++module.exports = {
++  ACCOUNT_KEY,
++  GithubContextError,
++  createGithubContext,
++  prepareGithubContext: createGithubContext,
++  readGithubAccount,
++  resolveGithubLogin,
++  unsetGithubAccount,
++  validateGithubLogin,
++  writeGithubAccount,
++};
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+new file mode 100644
+index 00000000..fca97d35
+--- /dev/null
++++ b/test/github-context.test.js
+@@ -0,0 +1,172 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const {
++  createGithubContext,
++  prepareGithubContext,
++  readGithubAccount,
++  unsetGithubAccount,
++  validateGithubLogin,
++  writeGithubAccount,
++} = require('../lib/github-context');
++
++function fakeRunner(calls, { account = null, liveLogin = account, token = 'token-canary' } = {}) {
++  return (command, args, options = {}) => {
++    calls.push({ command, args: [...args], options: { ...options, env: options.env && { ...options.env } } });
++    if (command === 'git' && args[0] === 'config' && args.includes('--get')) {
++      return account ? `${account}\n` : '';
++    }
++    if (command === 'git' && args[0] === 'config' && args.includes('--unset')) return '';
++    if (command === 'git' && args[0] === 'config') return '';
++    if (command === 'gh' && args[0] === 'auth') return `${token}\n`;
++    if (command === 'gh' && args[0] === 'api') return `${liveLogin}\n`;
++    throw new Error(`unexpected ${command}`);
++  };
++}
++
++describe('github context', () => {
++  test('accepts bounded GitHub logins and rejects malformed values', () => {
++    expect(validateGithubLogin('octo-user')).toBe(true);
++    expect(validateGithubLogin('a')).toBe(true);
++    expect(validateGithubLogin('')).toBe(false);
++    expect(validateGithubLogin('-octo')).toBe(false);
++    expect(validateGithubLogin('octo-')).toBe(false);
++    expect(validateGithubLogin('octo user')).toBe(false);
++    expect(validateGithubLogin('x'.repeat(40))).toBe(false);
++  });
++
++  test('reads and writes only clone-local github.account using argument arrays', () => {
++    const calls = [];
++    const runner = fakeRunner(calls, { account: 'Work-Login' });
++    expect(readGithubAccount('/repo', { runner })).toBe('Work-Login');
++    writeGithubAccount('/repo', 'Work-Login', { runner });
++    unsetGithubAccount('/repo', { runner });
++
++    expect(calls[0]).toMatchObject({ command: 'git', args: ['config', '--local', '--get', 'github.account'] });
++    expect(calls[1]).toMatchObject({ command: 'git', args: ['config', '--local', 'github.account', 'Work-Login'] });
++    expect(calls[2]).toMatchObject({ command: 'git', args: ['config', '--local', '--unset', 'github.account'] });
++  });
++
++  test('unbound preparation performs one local lookup and no gh or environment work', () => {
++    const calls = [];
++    const before = { ...process.env };
++    const context = createGithubContext('/repo', {
++      runner: fakeRunner(calls),
++      baseEnv: { GH_TOKEN: 'ambient-token', GITHUB_TOKEN: 'ambient-token', GH_HOST: 'evil.example' },
++    });
++
++    expect(context.status).toEqual({ state: 'unbound', account: null, login: null });
++    expect(calls).toHaveLength(1);
++    expect(calls[0].command).toBe('git');
++    expect(JSON.stringify(context)).not.toContain('ambient-token');
++    expect({ ...process.env }).toEqual(before);
++  });
++
++  test('retrieves a named token without ambient GitHub variables and verifies live login case-insensitively', () => {
++    const calls = [];
++    const context = createGithubContext('/repo', {
++      runner: fakeRunner(calls, { account: 'Work-Login', liveLogin: 'work-login', token: 'token-canary' }),
++      baseEnv: { Path: 'kept', GH_TOKEN: 'wrong-token', GITHUB_TOKEN: 'wrong-token', GH_HOST: 'evil.example', gh_token: 'also-wrong' },
++    });
++
++    expect(context.status).toEqual({ state: 'ready', account: 'Work-Login', login: 'work-login' });
++    expect(calls).toHaveLength(3);
++    expect(calls[1]).toMatchObject({
++      command: 'gh',
++      args: ['auth', 'token', '--hostname', 'github.com', '--user', 'Work-Login'],
++    });
++    expect(calls[1].options.env).not.toHaveProperty('GH_TOKEN');
++    expect(calls[1].options.env).not.toHaveProperty('GITHUB_TOKEN');
++    expect(calls[1].options.env).not.toHaveProperty('GH_HOST');
++    expect(calls[1].options.env).not.toHaveProperty('gh_token');
++    expect(calls[2].options.env).toMatchObject({ GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com', Path: 'kept' });
++    expect(JSON.stringify(context)).not.toContain('token-canary');
++  });
++
++  test('private child helpers use selected variables without exposing the token in public values', () => {
++    const calls = [];
++    const context = prepareGithubContext('/repo', {
++      runner: fakeRunner(calls, { account: 'octo', liveLogin: 'octo', token: 'token-canary' }),
++      baseEnv: { PATH: 'kept', GH_TOKEN: 'ambient' },
++    });
++    const childEnv = context.buildChildEnv({ CUSTOM: 'value' });
++
++    expect(childEnv).toMatchObject({ PATH: 'kept', CUSTOM: 'value', GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
++    expect(context).not.toHaveProperty('token');
++    expect(JSON.stringify(context)).not.toContain('token-canary');
++    expect(() => JSON.stringify(context)).not.toThrow();
++  });
++
++  test('redacts selected credentials from gh output and leaves process.env unchanged', () => {
++    const before = { ...process.env };
++    const calls = [];
++    const runner = (command, args, options = {}) => {
++      calls.push({ command, args, options });
++      if (command === 'git') return 'octo\n';
++      if (args[0] === 'auth') return 'token-canary\n';
++      if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
++      return 'token-canary\n';
++    };
++    const context = createGithubContext('/repo', { runner, baseEnv: { GH_TOKEN: 'ambient' } });
++
++    expect(context.runGh(['api', 'user'])).toBe('[REDACTED]\n');
++    expect(JSON.stringify(context.runGh(['api', 'user']))).not.toContain('token-canary');
++    expect({ ...process.env }).toEqual(before);
++    expect(calls.at(-1).options.env).toMatchObject({ GH_TOKEN: 'token-canary', GITHUB_TOKEN: 'token-canary', GH_HOST: 'github.com' });
++  });
++
++  test('fails safely on wrong live account, missing token, and unsupported named-token capability', () => {
++    const mismatchCalls = [];
++    let mismatchError;
++    try {
++      createGithubContext('/repo', {
++      runner: fakeRunner(mismatchCalls, { account: 'octo', liveLogin: 'other', token: 'token-canary' }),
++      });
++    } catch (error) {
++      mismatchError = error;
++    }
++    expect(mismatchError).toMatchObject({ code: 'GITHUB_ACCOUNT_MISMATCH' });
++    expect(mismatchError.message).toMatch(/octo.*other/i);
++    expect(mismatchError.message).not.toContain('token-canary');
++
++    const missingCalls = [];
++    expect(() => createGithubContext('/repo', {
++      runner: fakeRunner(missingCalls, { account: 'octo', token: '' }),
++    })).toThrow(/gh auth login/i);
++
++    const unsupportedCalls = [];
++    const unsupported = () => {
++      unsupportedCalls.push('called');
++      throw new Error('unknown flag: --user');
++    };
++    expect(() => createGithubContext('/repo', {
++      runner: (command, args, options) => {
++        if (command === 'git') return 'octo\n';
++        return unsupported(command, args, options);
++      },
++    })).toThrow(/upgrade|GitHub CLI|gh auth login/i);
++    expect(unsupportedCalls).toHaveLength(1);
++  });
++
++  test('validates account before named-token subprocess and redacts credential-bearing failures', () => {
++    const calls = [];
++    expect(() => createGithubContext('/repo', {
++      runner: fakeRunner(calls, { account: 'bad value' }),
++    })).toThrow(/login|account/i);
++    expect(calls).toHaveLength(1);
++
++    const failureCalls = [];
++    expect(() => createGithubContext('/repo', {
++      runner: (command, args, options) => {
++        failureCalls.push({ command, args, options });
++        if (command === 'git') return 'octo\n';
++        const error = new Error('token-canary leaked in stderr');
++        error.stderr = Buffer.from('token-canary');
++        error.stdout = Buffer.from('token-canary');
++        throw error;
++      },
++    })).toThrow(/gh auth login|GitHub CLI|upgrade/i);
++    expect(failureCalls.some(call => JSON.stringify(call).includes('token-canary'))).toBe(false);
++  });
++});
+-- 
+2.51.0.windows.1
+

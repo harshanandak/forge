@@ -1,0 +1,364 @@
+From 834b528940614c07235fe8984a05f990c17fa959 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 05:11:04 +0530
+Subject: [PATCH] fix(memory): close feedback and review boundaries
+
+---
+ lib/commands/memory.js                        |  9 ++--
+ lib/memory/hygiene.js                         | 13 +++--
+ packages/memory/index.test.js                 |  5 ++
+ packages/memory/package.json                  |  2 +-
+ packages/memory/src/authority-provider.js     |  7 +++
+ packages/memory/src/feedback-intake.js        | 28 +++++++----
+ .../memory/test/authority-provider.test.js    | 21 ++++++++
+ packages/memory/test/feedback-intake.test.js  | 50 ++++++++++++++-----
+ test/commands/memory.test.js                  | 10 +++-
+ 9 files changed, 114 insertions(+), 31 deletions(-)
+
+diff --git a/lib/commands/memory.js b/lib/commands/memory.js
+index 9632c0dc..324d0614 100644
+--- a/lib/commands/memory.js
++++ b/lib/commands/memory.js
+@@ -5,7 +5,7 @@ const recall = require('./recall');
+ const insights = require('./insights');
+ const { stripGlobalFlags } = require('../global-flags');
+ const projectMemory = require('../project-memory');
+-const { reviewMemories } = require('../memory/hygiene');
++const { MEMORY_REVIEW_ENTRY_LIMIT, reviewMemories } = require('../memory/hygiene');
+ 
+ function renderReview(review) {
+   const lines = [`Memory hygiene: ${review.findings.length} finding(s), ${review.scanned}/${review.total} scanned.`];
+@@ -17,8 +17,11 @@ function renderReview(review) {
+ }
+ 
+ async function reviewHandler(args, flags, projectRoot, opts = {}) {
+-  const listMemories = opts.listMemories || projectMemory.list;
+-  const review = reviewMemories(await listMemories(projectRoot, opts));
++  const recentMemories = opts.recentMemories || projectMemory.recent;
++  const countMemories = opts.countMemories || projectMemory.count;
++  const entries = await recentMemories(projectRoot, MEMORY_REVIEW_ENTRY_LIMIT, opts);
++  const total = await countMemories(projectRoot, opts);
++  const review = reviewMemories(entries, { total });
+   return {
+     success: true,
+     output: args.includes('--json') || flags.json ? JSON.stringify(review, null, 2) : renderReview(review),
+diff --git a/lib/memory/hygiene.js b/lib/memory/hygiene.js
+index dcf3cd28..f1610aa9 100644
+--- a/lib/memory/hygiene.js
++++ b/lib/memory/hygiene.js
+@@ -2,7 +2,7 @@
+ 
+ const { createHash } = require('node:crypto');
+ 
+-const DEFAULT_ENTRY_LIMIT = 200;
++const MEMORY_REVIEW_ENTRY_LIMIT = 200;
+ const DEFAULT_FINDING_LIMIT = 50;
+ const VOLATILE_FIELDS = new Set([
+   'id', 'key', 'memory_id', 'created_at', 'updated_at', 'timestamp', 'revision',
+@@ -64,7 +64,7 @@ function claimFor(entry) {
+ 
+ function reviewMemories(entries, options = {}) {
+   const source = Array.isArray(entries) ? entries : [];
+-  const entryLimit = Math.max(1, Math.min(options.entryLimit || DEFAULT_ENTRY_LIMIT, DEFAULT_ENTRY_LIMIT));
++  const entryLimit = Math.max(1, Math.min(options.entryLimit || MEMORY_REVIEW_ENTRY_LIMIT, MEMORY_REVIEW_ENTRY_LIMIT));
+   const findingLimit = Math.max(1, Math.min(options.findingLimit || DEFAULT_FINDING_LIMIT, DEFAULT_FINDING_LIMIT));
+   const selected = source.slice(0, entryLimit);
+   const findings = [];
+@@ -106,12 +106,15 @@ function reviewMemories(entries, options = {}) {
+   }
+ 
+   findings.sort((a, b) => a.review_id.localeCompare(b.review_id));
++  const total = Number.isInteger(options.total) && options.total >= source.length
++    ? options.total
++    : source.length;
+   return {
+-    total: source.length,
++    total,
+     scanned: selected.length,
+-    truncated: source.length > selected.length || findings.length > findingLimit,
++    truncated: total > selected.length || findings.length > findingLimit,
+     findings: findings.slice(0, findingLimit),
+   };
+ }
+ 
+-module.exports = { reviewMemories };
++module.exports = { MEMORY_REVIEW_ENTRY_LIMIT, reviewMemories };
+diff --git a/packages/memory/index.test.js b/packages/memory/index.test.js
+index 67ec627d..db8dec48 100644
+--- a/packages/memory/index.test.js
++++ b/packages/memory/index.test.js
+@@ -2,6 +2,7 @@
+ 
+ const { expect, mock, test } = require('bun:test');
+ const contracts = require('../memory-contracts');
++const manifest = require('./package.json');
+ mock.module('@forge/memory-contracts', () => contracts);
+ const memory = require('./index');
+ 
+@@ -9,3 +10,7 @@ test('@forge/memory exposes the stable backend registry entrypoint', () => {
+   expect(memory.BACKEND_METHODS).toEqual(['add', 'recall', 'search', 'capture', 'digest']);
+   expect(typeof memory.createMemoryBackendRegistry).toBe('function');
+ });
++
++test('@forge/memory supports at least the runtime floor required by memory-contracts', () => {
++  expect(manifest.engines.node).toBe('>=22.16.0');
++});
+diff --git a/packages/memory/package.json b/packages/memory/package.json
+index a1e4e4bd..2f2aeefe 100644
+--- a/packages/memory/package.json
++++ b/packages/memory/package.json
+@@ -15,7 +15,7 @@
+     "@forge/memory-contracts": "0.1.0-beta.6"
+   },
+   "engines": {
+-    "node": ">=20.0.0"
++    "node": ">=22.16.0"
+   },
+   "license": "MIT"
+ }
+diff --git a/packages/memory/src/authority-provider.js b/packages/memory/src/authority-provider.js
+index 4e8d6f87..b4bd2652 100644
+--- a/packages/memory/src/authority-provider.js
++++ b/packages/memory/src/authority-provider.js
+@@ -35,6 +35,13 @@ function createMemoryAuthorityProvider({ broker } = {}) {
+   for (const method of MEMORY_AUTHORITY_METHODS) {
+     provider[method] = (...args) => broker[method](...args);
+   }
++  provider.initialize = async (...args) => {
++    const result = await broker.initialize(...args);
++    if (!result || typeof result !== 'object' || Array.isArray(result)) {
++      throw new TypeError('Kernel broker initialize() must return an object');
++    }
++    return { success: result.success === true };
++  };
+   return Object.freeze(provider);
+ }
+ 
+diff --git a/packages/memory/src/feedback-intake.js b/packages/memory/src/feedback-intake.js
+index dbe718b4..72b4325a 100644
+--- a/packages/memory/src/feedback-intake.js
++++ b/packages/memory/src/feedback-intake.js
+@@ -39,7 +39,15 @@ function redactValue(value) {
+   if (typeof value === 'string') return redactString(value);
+   if (Array.isArray(value)) return value.map(redactValue);
+   if (!value || typeof value !== 'object') return value;
+-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactValue(child)]));
++  const output = {};
++  for (const [key, child] of Object.entries(value)) {
++    const safeKey = redactString(key);
++    if (Object.hasOwn(output, safeKey)) {
++      throw new TypeError('redaction produced duplicate returnChannel keys');
++    }
++    output[safeKey] = redactValue(child);
++  }
++  return output;
+ }
+ 
+ function sha256(value) {
+@@ -65,13 +73,13 @@ function createFeedbackReport(input = {}, options = {}) {
+   }
+   const redactedSteps = reproductionSteps.map((step, index) =>
+     redactString(requiredString(step, `reproductionSteps[${index}]`)));
+-  const stableErrorCode = requiredString(input.stableErrorCode, 'stableErrorCode');
+-  const affectedCapability = requiredString(input.affectedCapability, 'affectedCapability');
+-  const expectedClassification = requiredString(input.expectedClassification, 'expectedClassification');
+-  const actualClassification = requiredString(input.actualClassification, 'actualClassification');
+-  const productVersion = requiredString(input.productVersion, 'productVersion');
+-  const redactionPolicyRevision = requiredString(input.redactionPolicyRevision, 'redactionPolicyRevision');
+-  const consentEventId = requiredString(input.consentEventId, 'consentEventId');
++  const stableErrorCode = redactString(requiredString(input.stableErrorCode, 'stableErrorCode'));
++  const affectedCapability = redactString(requiredString(input.affectedCapability, 'affectedCapability'));
++  const expectedClassification = redactString(requiredString(input.expectedClassification, 'expectedClassification'));
++  const actualClassification = redactString(requiredString(input.actualClassification, 'actualClassification'));
++  const productVersion = redactString(requiredString(input.productVersion, 'productVersion'));
++  const redactionPolicyRevision = redactString(requiredString(input.redactionPolicyRevision, 'redactionPolicyRevision'));
++  const consentEventId = redactString(requiredString(input.consentEventId, 'consentEventId'));
+   const occurrenceCount = input.occurrenceCount ?? 1;
+   if (!Number.isInteger(occurrenceCount) || occurrenceCount < 1) {
+     throw new TypeError('occurrenceCount must be a positive integer');
+@@ -128,7 +136,9 @@ function createFeedbackReport(input = {}, options = {}) {
+ function assertConsent(report, consent) {
+   if (!consent || consent.approved !== true) return false;
+   if (consent.eventId !== report.payload.consent_event_id
+-      || consent.redactionPolicyRevision !== report.payload.redaction_policy_revision) {
++      || consent.redactionPolicyRevision !== report.payload.redaction_policy_revision
++      || consent.reportId !== report.payload.report_id
++      || consent.contentHash !== report.content_hash) {
+     throw new FeedbackIntakeError(
+       'FEEDBACK_CONSENT_MISMATCH',
+       'Feedback consent must match this report and redaction-policy revision',
+diff --git a/packages/memory/test/authority-provider.test.js b/packages/memory/test/authority-provider.test.js
+index 8ca635b6..85fa3b86 100644
+--- a/packages/memory/test/authority-provider.test.js
++++ b/packages/memory/test/authority-provider.test.js
+@@ -12,6 +12,15 @@ const {
+ function brokerStub(calls) {
+   return Object.fromEntries(MEMORY_AUTHORITY_METHODS.map(method => [method, async (...args) => {
+     calls.push({ method, args });
++    if (method === 'initialize') {
++      return {
++        success: true,
++        mode: 'local',
++        databasePath: 'C:\\Users\\alice\\private.sqlite',
++        gitCommonDir: 'C:\\Users\\alice\\repo\\.git',
++        migrationsApplied: ['001'],
++      };
++    }
+     return { method, args };
+   }]));
+ }
+@@ -26,10 +35,14 @@ describe('Memory authority provider', () => {
+     expect(Object.keys(provider)).toEqual([...MEMORY_AUTHORITY_METHODS]);
+     expect(Object.isFrozen(provider)).toBe(true);
+     expect(provider.config).toBeUndefined();
++    expect(await provider.initialize()).toEqual({
++      success: true,
++    });
+     await provider.runIssueOperation('show', ['issue-1'], { actor: 'agent-1' });
+     await provider.runGuardedEvent({ type: 'run.accepted' }, { actor: 'agent-1' });
+ 
+     expect(calls).toEqual([
++      { method: 'initialize', args: [] },
+       { method: 'runIssueOperation', args: ['show', ['issue-1'], { actor: 'agent-1' }] },
+       { method: 'runGuardedEvent', args: [{ type: 'run.accepted' }, { actor: 'agent-1' }] },
+     ]);
+@@ -41,4 +54,12 @@ describe('Memory authority provider', () => {
+     delete broker.runGuardedEvent;
+     expect(() => createMemoryAuthorityProvider({ broker })).toThrow('runGuardedEvent()');
+   });
++
++  test('rejects an unstructured initialization result instead of leaking it', async () => {
++    const broker = brokerStub([]);
++    broker.initialize = async () => 'C:\\Users\\alice\\private.sqlite';
++    const provider = createMemoryAuthorityProvider({ broker });
++
++    await expect(provider.initialize()).rejects.toThrow('must return an object');
++  });
+ });
+diff --git a/packages/memory/test/feedback-intake.test.js b/packages/memory/test/feedback-intake.test.js
+index b7f61ed3..28b6ee02 100644
+--- a/packages/memory/test/feedback-intake.test.js
++++ b/packages/memory/test/feedback-intake.test.js
+@@ -36,6 +36,16 @@ function report(overrides = {}, id = IDS[0]) {
+   });
+ }
+ 
++function consentFor(value) {
++  return {
++    approved: true,
++    eventId: value.payload.consent_event_id,
++    redactionPolicyRevision: value.payload.redaction_policy_revision,
++    reportId: value.payload.report_id,
++    contentHash: value.content_hash,
++  };
++}
++
+ function atomicFeedbackStore() {
+   const accepted = new Map();
+   const calls = [];
+@@ -75,6 +85,21 @@ describe('structured feedback intake', () => {
+     expect(JSON.stringify(value)).not.toContain('userId');
+   });
+ 
++  test('redacts privacy-sensitive content from every caller-controlled string field', () => {
++    const value = report({
++      stableErrorCode: 'token=ghp_123456789012345678901234567890',
++      affectedCapability: 'C:\\Users\\alice\\private-capability',
++      expectedClassification: 'secret=abcdefghijk',
++      returnChannel: { 'C:\\Users\\alice\\private-channel': 'safe' },
++    });
++    const serialized = JSON.stringify(value);
++
++    expect(validateContractStructure(value)).toEqual({ ok: true, errors: [] });
++    expect(serialized).not.toContain('ghp_');
++    expect(serialized).not.toContain('alice');
++    expect(serialized).not.toContain('abcdefghijk');
++  });
++
+   test('preview is side-effect free and submission requires exact per-report consent', async () => {
+     const store = atomicFeedbackStore();
+     let deliveries = 0;
+@@ -93,6 +118,8 @@ describe('structured feedback intake', () => {
+       approved: true,
+       eventId: 'wrong-consent',
+       redactionPolicyRevision: 'redaction-1',
++      reportId: value.payload.report_id,
++      contentHash: value.content_hash,
+     })).rejects.toMatchObject({ code: 'FEEDBACK_CONSENT_MISMATCH' });
+     expect(store.calls).toHaveLength(0);
+   });
+@@ -105,21 +132,23 @@ describe('structured feedback intake', () => {
+       deliverFeedback: async value => delivered.push(value.content_hash),
+     });
+     const value = report();
+-    const consent = {
+-      approved: true,
+-      eventId: 'consent-101',
+-      redactionPolicyRevision: 'redaction-1',
+-    };
++    const consent = consentFor(value);
+ 
+     expect(await intake.submit(value, consent)).toMatchObject({ status: 'accepted', accepted: true, delivered: true });
+     expect(await intake.submit(value, consent)).toMatchObject({ status: 'retry-identical', accepted: false, delivered: false });
+     expect(delivered).toHaveLength(1);
+ 
++    const otherReport = report({}, IDS[1]);
++    await expect(intake.submit(otherReport, consent)).rejects.toMatchObject({
++      code: 'FEEDBACK_CONSENT_MISMATCH',
++    });
++
+     const conflict = structuredClone(value);
+     conflict.payload.occurrence_count = 3;
+     conflict.content_hash = computeContentHash(conflict);
+-    await expect(intake.submit(conflict, consent)).rejects.toBeInstanceOf(FeedbackIntakeError);
+-    await expect(intake.submit(conflict, consent)).rejects.toMatchObject({ code: 'FEEDBACK_IDENTITY_CONFLICT' });
++    const conflictConsent = consentFor(conflict);
++    await expect(intake.submit(conflict, conflictConsent)).rejects.toBeInstanceOf(FeedbackIntakeError);
++    await expect(intake.submit(conflict, conflictConsent)).rejects.toMatchObject({ code: 'FEEDBACK_IDENTITY_CONFLICT' });
+     expect(delivered).toHaveLength(1);
+   });
+ 
+@@ -130,11 +159,8 @@ describe('structured feedback intake', () => {
+       deliverFeedback: async () => { throw new Error('offline'); },
+     });
+ 
+-    expect(await intake.submit(report(), {
+-      approved: true,
+-      eventId: 'consent-101',
+-      redactionPolicyRevision: 'redaction-1',
+-    })).toMatchObject({
++    const value = report();
++    expect(await intake.submit(value, consentFor(value))).toMatchObject({
+       status: 'accepted-local',
+       accepted: true,
+       delivered: false,
+diff --git a/test/commands/memory.test.js b/test/commands/memory.test.js
+index 5d04fbb7..2d516ea3 100644
+--- a/test/commands/memory.test.js
++++ b/test/commands/memory.test.js
+@@ -110,13 +110,21 @@ describe('forge memory command surface (25362344)', () => {
+       { note: 'use bun for installs', timestamp: '2026-08-02' },
+       { note: 'Do not use Bun for installs', timestamp: '2026-08-03' },
+     ];
++    const calls = [];
+     const result = await memory.handler(['review', '--json'], {}, projectRoot, {
+-      listMemories: () => entries,
++      recentMemories: (_root, limit) => {
++        calls.push(limit);
++        return entries;
++      },
++      countMemories: () => 1_000,
+     });
+ 
+     expect(result.success).toBe(true);
+     const parsed = JSON.parse(result.output);
+     expect(parsed.scanned).toBe(3);
++    expect(parsed.total).toBe(1_000);
++    expect(parsed.truncated).toBe(true);
++    expect(calls).toEqual([200]);
+     expect(parsed.findings.map(finding => finding.kind).sort()).toEqual(['contradiction', 'duplicate']);
+     expect(parsed.findings.every(finding => /^memory-(duplicate|contradiction)-[a-f0-9]{16}$/.test(finding.review_id))).toBe(true);
+   });
+-- 
+2.51.0.windows.1
+

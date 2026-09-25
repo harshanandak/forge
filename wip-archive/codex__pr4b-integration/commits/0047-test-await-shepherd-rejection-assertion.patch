@@ -1,0 +1,25 @@
+From 5921e523750d6f47a5ef6a22c994fdf0dee4ebd9 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:12:52 +0530
+Subject: [PATCH] test: await shepherd rejection assertion
+
+---
+ test/commands/shepherd.test.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index f26b9886..6c9fec23 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -110,7 +110,7 @@ describe('shepherd command handler', () => {
+       return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+     };
+ 
+-    expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
++    await expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
+       .rejects.toThrow(/base commit/i);
+   });
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,267 @@
+From a27077596a76420036c18407248fe5ae9be8fae2 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:52:04 +0530
+Subject: [PATCH] fix(memory): separate structural contract validation
+
+---
+ .../compatibility-matrix.v1.json              |  2 +-
+ .../contract-baseline.v1.json                 | 14 +++---
+ .../fixtures/v1/not-executed-receipt.json     |  1 +
+ .../fixtures/v1/valid-full.json               |  2 +-
+ .../fixtures/v1/valid-minimal.json            |  2 +-
+ packages/memory-contracts/index.js            |  2 +
+ packages/memory-contracts/index.test.js       |  2 +-
+ .../schemas/v1/run-receipt.schema.json        |  2 +-
+ packages/memory-contracts/src/definitions.js  |  2 +-
+ packages/memory-contracts/src/validate.js     | 13 +++++-
+ .../memory-contracts/test/spec-review.test.js | 45 ++++++++++++++++++-
+ 11 files changed, 73 insertions(+), 14 deletions(-)
+ create mode 100644 packages/memory-contracts/fixtures/v1/not-executed-receipt.json
+
+diff --git a/packages/memory-contracts/compatibility-matrix.v1.json b/packages/memory-contracts/compatibility-matrix.v1.json
+index 59e66f95..983856b3 100644
+--- a/packages/memory-contracts/compatibility-matrix.v1.json
++++ b/packages/memory-contracts/compatibility-matrix.v1.json
+@@ -1 +1 @@
+-{"matrix_version":1,"readers":{"0.1.0-beta.6":{"accepted":{"forge.memory.work-packet.v1":[1],"forge.memory.context-packet.v1":[1],"forge.memory.claim-request.v1":[1],"forge.memory.lease-receipt.v1":[1],"forge.memory.capability-manifest.v1":[1],"forge.memory.run-receipt.v1":[1],"forge.memory.feedback-report.v1":[1],"forge.memory.structured-error.v1":[1],"forge.memory.monitor-event.v1":[1],"forge.memory.delivery-receipt.v1":[1],"forge.memory.monitor-receipt.v1":[1]},"unknown_advisory":"preserve","unknown_consequential":"reject","unknown_schema_version":"reject"}}}
++{"matrix_version":1,"readers":{"0.1.0-beta.6":{"accepted":{"forge.memory.work-packet.v1":[1],"forge.memory.context-packet.v1":[1],"forge.memory.claim-request.v1":[1],"forge.memory.lease-receipt.v1":[1],"forge.memory.capability-manifest.v1":[1],"forge.memory.run-receipt.v1":[1],"forge.memory.feedback-report.v1":[1],"forge.memory.structured-error.v1":[1],"forge.memory.monitor-event.v1":[1],"forge.memory.delivery-receipt.v1":[1],"forge.memory.monitor-receipt.v1":[1]},"validation_surfaces":{"structural":"no_authority_or_freshness_claim","consequential":"requires_independent_live_expected"},"run_receipt_non_authoritative_statuses":["NOT_EXECUTED"],"unknown_advisory":"preserve","unknown_consequential":"reject","unknown_schema_version":"reject"}}}
+diff --git a/packages/memory-contracts/contract-baseline.v1.json b/packages/memory-contracts/contract-baseline.v1.json
+index 19c428c6..f7564246 100644
+--- a/packages/memory-contracts/contract-baseline.v1.json
++++ b/packages/memory-contracts/contract-baseline.v1.json
+@@ -1,10 +1,10 @@
+ {
+   "baseline_version": 1,
+-  "generator_version": "memory-contracts-schema-gen/2",
++  "generator_version": "memory-contracts-schema-gen/3",
+   "artifacts": [
+     {
+       "path": "compatibility-matrix.v1.json",
+-      "sha256": "40235512903a54acd8420c97dc803d23988d0521c690dd6eb52be52034cd9b89"
++      "sha256": "aed7099ebde7294ca8b8415c31589ac1b711a6532859a591e543d5058a02fae8"
+     },
+     {
+       "path": "fixtures/v1/canonical-hash.json",
+@@ -26,6 +26,10 @@
+       "path": "fixtures/v1/malformed-missing-required.json",
+       "sha256": "e4031505309e8b172d274ef7c4ef617e71217742ff2b7285f37859db0eea42b9"
+     },
++    {
++      "path": "fixtures/v1/not-executed-receipt.json",
++      "sha256": "4582002c36cca422ac1ad9a5858558234d5ed162dbe72b36665fe09ab098099f"
++    },
+     {
+       "path": "fixtures/v1/privacy-redaction.json",
+       "sha256": "be4bae1d68db334875b3d198525dcd46f3efb46dbeea62de03399a915b716e20"
+@@ -48,11 +52,11 @@
+     },
+     {
+       "path": "fixtures/v1/valid-full.json",
+-      "sha256": "38edd65bce8d3589faad31c15041ee37e19a2327b13fa0f73a66600406da74b1"
++      "sha256": "2ba47dfcd5bc6dc4fae83160b05eeca480b51b065d251a0f531ca2c3effb0397"
+     },
+     {
+       "path": "fixtures/v1/valid-minimal.json",
+-      "sha256": "1479962779ee723aa0411ec01e2ad12c86363509c0caa32bbed6385d3a0f40f5"
++      "sha256": "e7d4e7d5cb11b4de809140d572c6f40a5ed4fc813f0044983930a6fbaab99444"
+     },
+     {
+       "path": "fixtures/v1/wrong-capability-digest.json",
+@@ -92,7 +96,7 @@
+     },
+     {
+       "path": "schemas/v1/run-receipt.schema.json",
+-      "sha256": "2deae8830aa239f9fd6390c11f15a1a00698e595f7308d68681fb5a25d5fa232"
++      "sha256": "b4ebd9610b1389754d7ea6175eea9bc96880d6587766440044a5cd94dad4c9dd"
+     },
+     {
+       "path": "schemas/v1/structured-error.schema.json",
+diff --git a/packages/memory-contracts/fixtures/v1/not-executed-receipt.json b/packages/memory-contracts/fixtures/v1/not-executed-receipt.json
+new file mode 100644
+index 00000000..1610c6b7
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/not-executed-receipt.json
+@@ -0,0 +1 @@
++{"fixture_id":"not-executed-receipt","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.run-receipt.v1"},"mutation":{"operation":"replace","path":"payload.status","value":"NOT_EXECUTED","rehash":true},"operation":"validate-structure-then-authority","expected":{"structural_ok":true,"authority_ok":false,"authority_code":"NOT_EXECUTED_NO_TRANSITION"}}
+diff --git a/packages/memory-contracts/fixtures/v1/valid-full.json b/packages/memory-contracts/fixtures/v1/valid-full.json
+index 3c72443b..3b254f31 100644
+--- a/packages/memory-contracts/fixtures/v1/valid-full.json
++++ b/packages/memory-contracts/fixtures/v1/valid-full.json
+@@ -1 +1 @@
+-{"fixture_id":"valid-full","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"mutations":[{"operation":"add","path":"payload.acceptance_criteria","value":["all gates pass"]},{"operation":"add","path":"payload.prohibited_actions","value":["merge"]}],"operation":"rehash-and-validate","expected":{"ok":true}}
++{"fixture_id":"valid-full","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"mutations":[{"operation":"add","path":"payload.acceptance_criteria","value":["all gates pass"]},{"operation":"add","path":"payload.prohibited_actions","value":["merge"]}],"operation":"rehash-and-validate-structure","authority_claim":false,"expected":{"ok":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/valid-minimal.json b/packages/memory-contracts/fixtures/v1/valid-minimal.json
+index 7f151d0d..9716fd5d 100644
+--- a/packages/memory-contracts/fixtures/v1/valid-minimal.json
++++ b/packages/memory-contracts/fixtures/v1/valid-minimal.json
+@@ -1 +1 @@
+-{"fixture_id":"valid-minimal","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"validate","expected":{"ok":true}}
++{"fixture_id":"valid-minimal","input_ref":{"file":"contract-inputs.v1.json","schema_id":"forge.memory.work-packet.v1"},"operation":"validate-structure","authority_claim":false,"expected":{"ok":true}}
+diff --git a/packages/memory-contracts/index.js b/packages/memory-contracts/index.js
+index e66a2e2a..4e8fa302 100644
+--- a/packages/memory-contracts/index.js
++++ b/packages/memory-contracts/index.js
+@@ -10,6 +10,7 @@ const {
+   ENVELOPE_FIELDS,
+   parseContract,
+   validateContract,
++  validateContractStructure,
+   validateEnvelope,
+ } = require("./src/validate.js");
+ 
+@@ -25,6 +26,7 @@ module.exports = {
+   semanticIdentity,
+   supportedSchemaVersions,
+   validateContract,
++  validateContractStructure,
+   validateEnvelope,
+   verifyContractBaseline,
+ };
+diff --git a/packages/memory-contracts/index.test.js b/packages/memory-contracts/index.test.js
+index 52db8807..8f69f841 100644
+--- a/packages/memory-contracts/index.test.js
++++ b/packages/memory-contracts/index.test.js
+@@ -4,7 +4,7 @@ const { expect, test } = require("bun:test");
+ const contracts = require("./index.js");
+ 
+ test("exports the complete contract surface", () => {
+-  for (const name of ["canonicalize", "computeContentHash", "semanticIdentity", "validateContract", "verifyContractBaseline"]) {
++  for (const name of ["canonicalize", "computeContentHash", "semanticIdentity", "validateContract", "validateContractStructure", "verifyContractBaseline"]) {
+     expect(typeof contracts[name]).toBe("function");
+   }
+ });
+diff --git a/packages/memory-contracts/schemas/v1/run-receipt.schema.json b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+index c57e1c8e..91c5130f 100644
+--- a/packages/memory-contracts/schemas/v1/run-receipt.schema.json
++++ b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+@@ -1 +1 @@
+-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object"},"cleanup":{"type":"object"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object","required":["product_id","product_version","instance_id"],"properties":{"product_id":{"type":"string","minLength":1},"product_version":{"type":"string","minLength":1},"instance_id":{"type":"string","minLength":1}}},"capabilities_used":{"type":"array","items":{"type":"object","required":["capability_id","manifest_digest"],"properties":{"capability_id":{"type":"string","minLength":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false}},"provenance":{"type":"object","required":["source_kind","actor_class","actor_id"],"properties":{"source_kind":{"type":"string","minLength":1},"actor_class":{"type":"string","minLength":1},"actor_id":{"type":"string","minLength":1}}},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"run_id":{"type":"string","minLength":1},"attempt_id":{"type":"string","minLength":1},"exact_head":{"type":"string","pattern":"^[0-9a-f]{40}(?:[0-9a-f]{24})?$"},"packet_revision":{"type":"integer","minimum":1},"manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"workflow_config_revision":{"type":"string","minLength":1},"status":{"type":"string","enum":["PASS","FAIL","INCOMPLETE","NOT_EXECUTED"]},"executor":{"type":"object"},"started_at":{"type":"string","format":"date-time"},"ended_at":{"type":"string","format":"date-time"},"evidence_refs":{"type":"array","items":{"type":"object"}},"validation":{"type":"object"},"cleanup":{"type":"object"},"lease_epoch":{"type":"integer","minimum":1},"tokens":{"type":"object"},"retries":{"type":"integer","minimum":0},"corrections":{"type":"integer","minimum":0},"mutations_attempted":{"type":"array","items":{"type":"string"}},"mutations_authorized":{"type":"array","items":{"type":"string"}},"structured_error":{"type":"object"},"active_time_ms":{"type":"integer","minimum":0},"passive_time_ms":{"type":"integer","minimum":0}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/src/definitions.js b/packages/memory-contracts/src/definitions.js
+index 5a49cbc5..265cacfa 100644
+--- a/packages/memory-contracts/src/definitions.js
++++ b/packages/memory-contracts/src/definitions.js
+@@ -113,7 +113,7 @@ const PAYLOAD_FIELDS = Object.freeze({
+   },
+   "forge.memory.run-receipt.v1": {
+     packet_hash: HASH, run_id: STRING, attempt_id: STRING, exact_head: HEAD, packet_revision: POSITIVE_INTEGER,
+-    manifest_digest: HASH, workflow_config_revision: STRING, status: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE"] },
++    manifest_digest: HASH, workflow_config_revision: STRING, status: { type: "string", enum: ["PASS", "FAIL", "INCOMPLETE", "NOT_EXECUTED"] },
+     executor: OBJECT, started_at: TIMESTAMP, ended_at: TIMESTAMP, evidence_refs: OBJECT_ARRAY, validation: OBJECT, cleanup: OBJECT,
+     lease_epoch: POSITIVE_INTEGER, tokens: OBJECT, retries: INTEGER, corrections: INTEGER,
+     mutations_attempted: STRING_ARRAY, mutations_authorized: STRING_ARRAY, structured_error: OBJECT,
+diff --git a/packages/memory-contracts/src/validate.js b/packages/memory-contracts/src/validate.js
+index 119224ef..4d48141f 100644
+--- a/packages/memory-contracts/src/validate.js
++++ b/packages/memory-contracts/src/validate.js
+@@ -118,6 +118,9 @@ function validateShape(value, shape, path, errors) {
+ 
+ function validateConsequentialEvidence(value, expected, errors) {
+   if (!value?.payload) return;
++  if (value.schema_id === "forge.memory.run-receipt.v1" && value.payload.status === "NOT_EXECUTED") {
++    error(errors, "$.payload.status", "NOT_EXECUTED_NO_TRANSITION");
++  }
+   const requiredEvidence = LIVE_EVIDENCE_FIELDS[value.schema_id] ?? [];
+   for (const field of requiredEvidence) {
+     if (!expected || !Object.hasOwn(expected, field)) error(errors, `$.live_expected.${field}`, "MISSING_LIVE_EVIDENCE");
+@@ -171,7 +174,7 @@ function validateConsequentialEvidence(value, expected, errors) {
+   }
+ }
+ 
+-function validateContract(value, options = {}) {
++function validateContractStructure(value, options = {}) {
+   const envelope = validateEnvelope(value, options);
+   const errors = [...envelope.errors];
+   const definition = CONTRACTS[value?.schema_id];
+@@ -186,6 +189,12 @@ function validateContract(value, options = {}) {
+     }
+   }
+   validateExtensions(value?.extensions, errors);
++  return { ok: errors.length === 0, errors };
++}
++
++function validateContract(value, options = {}) {
++  const structural = validateContractStructure(value, options);
++  const errors = [...structural.errors];
+   validateConsequentialEvidence(value, options.expected, errors);
+   return { ok: errors.length === 0, errors };
+ }
+@@ -205,4 +214,4 @@ function parseContract(json, options = {}) {
+   return value;
+ }
+ 
+-module.exports = { ContractValidationError, ENVELOPE_FIELDS, parseContract, validateContract, validateEnvelope };
++module.exports = { ContractValidationError, ENVELOPE_FIELDS, parseContract, validateContract, validateContractStructure, validateEnvelope };
+diff --git a/packages/memory-contracts/test/spec-review.test.js b/packages/memory-contracts/test/spec-review.test.js
+index 443f43de..56f5e22f 100644
+--- a/packages/memory-contracts/test/spec-review.test.js
++++ b/packages/memory-contracts/test/spec-review.test.js
+@@ -8,6 +8,7 @@ const {
+   computeContentHash,
+   generateJsonSchema,
+   validateContract,
++  validateContractStructure,
+   validateEnvelope,
+ } = require("../index.js");
+ 
+@@ -47,6 +48,48 @@ describe("fail-closed live evidence", () => {
+   });
+ });
+ 
++describe("structural versus consequential validation", () => {
++  test("accepts a valid packet structure without making a freshness claim", () => {
++    expect(validateContractStructure(validWorkPacket())).toEqual({ ok: true, errors: [] });
++  });
++
++  test("structural validation rejects bad hashes, payload types, and consequential extensions", () => {
++    const badHash = validWorkPacket();
++    badHash.content_hash = "0".repeat(64);
++    expect(validateContractStructure(badHash).errors.map((item) => item.code)).toContain("CONTENT_HASH_MISMATCH");
++
++    const badType = validWorkPacket();
++    badType.payload.expected_issue_revision = "7";
++    badType.content_hash = computeContentHash(badType);
++    expect(validateContractStructure(badType).errors.map((item) => item.code)).toContain("INVALID_TYPE");
++
++    const consequential = validWorkPacket();
++    consequential.extensions["vendor.example/authority"] = { impact: "consequential", schema_version: 1, value: true };
++    consequential.content_hash = computeContentHash(consequential);
++    expect(validateContractStructure(consequential).errors.map((item) => item.code)).toContain("UNKNOWN_CONSEQUENTIAL_EXTENSION");
++  });
++
++  test("NOT_EXECUTED is structurally valid but cannot satisfy transition evidence", () => {
++    const corpus = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "v1", "contract-inputs.v1.json"), "utf8"));
++    const receipt = structuredClone(corpus.inputs.find((input) => input.schema_id === "forge.memory.run-receipt.v1"));
++    receipt.payload.status = "NOT_EXECUTED";
++    receipt.content_hash = computeContentHash(receipt);
++    expect(validateContractStructure(receipt).ok).toBe(true);
++    const result = validateContract(receipt, {
++      expected: {
++        packetHash: receipt.payload.packet_hash,
++        workflowConfigRevision: receipt.payload.workflow_config_revision,
++        capabilityManifestDigest: receipt.payload.manifest_digest,
++        exactHead: receipt.payload.exact_head,
++      },
++    });
++    expect(result.ok).toBe(false);
++    expect(result.errors.map((item) => item.code)).toContain("NOT_EXECUTED_NO_TRANSITION");
++    const matrix = JSON.parse(readFileSync(join(__dirname, "..", "compatibility-matrix.v1.json"), "utf8"));
++    expect(matrix.readers["0.1.0-beta.6"].run_receipt_non_authoritative_statuses).toContain("NOT_EXECUTED");
++  });
++});
++
+ describe("concrete runtime and schema shapes", () => {
+   test("rejects non-integer issue revisions and incomplete capability bindings", () => {
+     const packet = validWorkPacket();
+@@ -96,7 +139,7 @@ describe("portable executable fixture corpus", () => {
+     const corpus = JSON.parse(readFileSync(join(fixtureRoot, "contract-inputs.v1.json"), "utf8"));
+     expect(corpus.inputs).toHaveLength(11);
+     expect(new Set(corpus.inputs.map((input) => input.schema_id))).toEqual(new Set(Object.keys(CONTRACTS)));
+-    for (const input of corpus.inputs) expect(validateEnvelope(input).ok).toBe(true);
++    for (const input of corpus.inputs) expect(validateContractStructure(input).ok).toBe(true);
+   });
+ 
+   test("contains an executable missing-field input per envelope field", () => {
+-- 
+2.51.0.windows.1
+

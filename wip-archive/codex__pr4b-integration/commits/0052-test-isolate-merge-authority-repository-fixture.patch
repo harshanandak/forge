@@ -1,0 +1,24 @@
+From 32c8672e573793a5ff7123044ef78a2bdecd2f59 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 03:25:51 +0530
+Subject: [PATCH] test: isolate merge authority repository fixture
+
+---
+ test/commands/merge-authority-review-regressions.test.js | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index c7650954..f5ac9a59 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -42,6 +42,7 @@ function deps(overrides = {}) {
+     verifyIssueOwnership: async () => ({
+       owned: true, actor: 'release-actor', claimedBy: 'release-actor', sessionId: 'release-session', expired: false,
+     }),
++    resolveLocalRepository: async () => 'acme/forge',
+     verifyPrIssueBinding: async () => ({ bound: true }),
+     verifyMergeGate: async () => true,
+     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+-- 
+2.51.0.windows.1
+

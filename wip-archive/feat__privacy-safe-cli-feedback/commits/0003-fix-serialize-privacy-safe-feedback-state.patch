@@ -1,0 +1,773 @@
+From c30d3956c7e5a3b05b3f134b67ffaabaa9cac1bb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 18:14:29 +0530
+Subject: [PATCH] fix: serialize privacy-safe feedback state
+
+---
+ lib/commands/feedback.js              |  14 +-
+ lib/feedback.js                       | 326 +++++++++++++++++++-------
+ test/commands/feedback.test.js        |  30 +++
+ test/feedback.test.js                 | 229 ++++++++++++++++++
+ test/fixtures/feedback-race-worker.js |  29 +++
+ 5 files changed, 546 insertions(+), 82 deletions(-)
+ create mode 100644 test/fixtures/feedback-race-worker.js
+
+diff --git a/lib/commands/feedback.js b/lib/commands/feedback.js
+index 740123aa..10cfc714 100644
+--- a/lib/commands/feedback.js
++++ b/lib/commands/feedback.js
+@@ -12,8 +12,14 @@ const {
+ const USAGE = 'Usage: forge feedback [status|preview|enable|disable]';
+ const PRIVACY_NOTICE = 'Forge itself encountered an issue. Only the structured fields shown below will be sent. No prompts, source code, personal/device/repository data, secrets, or user model tokens are used.';
+ 
++function actionableDrafts(state) {
++  if (state.consent === 'disabled') return [];
++  const suppressed = new Set(state.suppressed_fingerprints);
++  return Object.values(state.drafts).filter(draft => !suppressed.has(draft.incident_fingerprint));
++}
++
+ function statusOutput(state) {
+-  return `Consent: ${state.consent}\nPending drafts: ${Object.keys(state.drafts).length}\n`;
++  return `Consent: ${state.consent}\nPending drafts: ${actionableDrafts(state).length}\n`;
+ }
+ 
+ async function askDefault(prompt) {
+@@ -31,7 +37,7 @@ async function handler(args, _flags, _projectRoot, options = {}) {
+     return { success: true, output: statusOutput(loadFeedbackState(options)) };
+   }
+   if (subcommand === 'preview') {
+-    const drafts = Object.values(loadFeedbackState(options).drafts);
++    const drafts = actionableDrafts(loadFeedbackState(options));
+     return { success: true, output: `${JSON.stringify(drafts, null, 2)}\n` };
+   }
+   if (subcommand === 'enable') {
+@@ -45,7 +51,9 @@ async function handler(args, _flags, _projectRoot, options = {}) {
+   if (subcommand) return { success: false, error: USAGE };
+ 
+   const state = loadFeedbackState(options);
+-  const fingerprint = Object.keys(state.drafts).sort()[0];
++  const fingerprint = actionableDrafts(state)
++    .map(draft => draft.incident_fingerprint)
++    .sort()[0];
+   const interactive = options.isInteractive === true && (typeof options.question === 'function' || process.stdin.isTTY);
+   if (!interactive || !fingerprint) {
+     return { success: true, output: statusOutput(state) };
+diff --git a/lib/feedback.js b/lib/feedback.js
+index 53bf8dc6..6a31e0ef 100644
+--- a/lib/feedback.js
++++ b/lib/feedback.js
+@@ -16,6 +16,11 @@ const CONSENTS = new Set(['disabled', 'pending', 'enabled']);
+ const SCHEMA_VERSION = 1;
+ const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/;
+ const OPAQUE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++const DEFAULT_FETCH_TIMEOUT_MS = 5000;
++const DEFAULT_LOCK_STALE_MS = 30000;
++const DEFAULT_LOCK_ATTEMPTS = 500;
++const DEFAULT_LOCK_WAIT_MS = 10;
++const LOCK_CONTENTION_CODES = new Set(['EEXIST', 'EACCES', 'EPERM', 'EBUSY']);
+ 
+ function isOpaqueId(value) {
+   return typeof value === 'string' && OPAQUE_ID_PATTERN.test(value);
+@@ -82,32 +87,138 @@ function normalizeDrafts(value) {
+ }
+ 
+ function normalizeState(value) {
+-  if (!value || typeof value !== 'object' || Array.isArray(value)) return emptyState();
+-  const suppressed = Array.isArray(value.suppressed_fingerprints)
+-    ? [...new Set(value.suppressed_fingerprints.filter(item => typeof item === 'string' && FINGERPRINT_PATTERN.test(item)))]
+-    : [];
++  const suppressed = [...new Set(
++    value.suppressed_fingerprints.filter(item => typeof item === 'string' && FINGERPRINT_PATTERN.test(item)),
++  )];
+   return {
+-    consent: CONSENTS.has(value.consent) ? value.consent : 'pending',
++    consent: value.consent,
+     anonymous_source_id: isOpaqueId(value.anonymous_source_id) ? value.anonymous_source_id : null,
+     drafts: normalizeDrafts(value.drafts),
+     suppressed_fingerprints: suppressed,
+   };
+ }
+ 
++function isReadableState(value) {
++  return Boolean(
++    value
++    && typeof value === 'object'
++    && !Array.isArray(value)
++    && CONSENTS.has(value.consent)
++    && value.drafts
++    && typeof value.drafts === 'object'
++    && !Array.isArray(value.drafts)
++    && Array.isArray(value.suppressed_fingerprints),
++  );
++}
++
++function unreadableStateError(cause) {
++  const error = new Error('Feedback state is unreadable. Original state was preserved.');
++  error.code = 'FORGE_FEEDBACK_STATE_UNREADABLE';
++  error.cause = cause;
++  return error;
++}
++
+ function loadFeedbackState(options = {}) {
++  const io = options.fs || fs;
++  let raw;
++  try {
++    raw = io.readFileSync(feedbackStatePath(options), 'utf8');
++  } catch (error) {
++    if (error?.code === 'ENOENT') return emptyState();
++    throw unreadableStateError(error);
++  }
++
++  let parsed;
+   try {
+-    return normalizeState(JSON.parse(fs.readFileSync(feedbackStatePath(options), 'utf8')));
+-  } catch (_error) {
+-    return emptyState();
++    parsed = JSON.parse(raw);
++  } catch (error) {
++    throw unreadableStateError(error);
+   }
++  if (!isReadableState(parsed)) throw unreadableStateError();
++  return normalizeState(parsed);
+ }
+ 
+ function saveFeedbackState(state, options = {}) {
++  const io = options.fs || fs;
+   const file = feedbackStatePath(options);
+-  fs.mkdirSync(path.dirname(file), { recursive: true });
++  io.mkdirSync(path.dirname(file), { recursive: true });
+   const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+-  fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+-  fs.renameSync(temporary, file);
++  io.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
++  io.renameSync(temporary, file);
++}
++
++function sleepSync(ms) {
++  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
++}
++
++function processIsAlive(pid) {
++  if (!Number.isInteger(pid) || pid <= 0) return false;
++  try {
++    process.kill(pid, 0);
++    return true;
++  } catch (error) {
++    return error?.code === 'EPERM';
++  }
++}
++
++function feedbackLockPath(options = {}) {
++  return `${feedbackStatePath(options)}.lock`;
++}
++
++function lockIsStale(io, file, staleMs) {
++  let owner;
++  try {
++    owner = JSON.parse(io.readFileSync(file, 'utf8'));
++  } catch {
++    owner = null;
++  }
++  if (owner?.pid && !processIsAlive(owner.pid)) return true;
++  try {
++    return Date.now() - io.statSync(file).mtimeMs > staleMs;
++  } catch {
++    return true;
++  }
++}
++
++function acquireFeedbackLock(options = {}) {
++  const io = options.fs || fs;
++  const file = feedbackLockPath(options);
++  const staleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
++  const attempts = options.lockAttempts ?? DEFAULT_LOCK_ATTEMPTS;
++  const waitMs = options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS;
++  io.mkdirSync(path.dirname(file), { recursive: true });
++
++  for (let attempt = 0; attempt < attempts; attempt += 1) {
++    let handle;
++    try {
++      handle = io.openSync(file, 'wx', 0o600);
++      io.writeSync(handle, JSON.stringify({ pid: process.pid, created_at: Date.now() }));
++      io.closeSync(handle);
++      return file;
++    } catch (error) {
++      if (handle !== undefined) {
++        try { io.closeSync(handle); } catch { /* already closed */ }
++        try { io.unlinkSync(file); } catch { /* incomplete acquire */ }
++      }
++      if (!LOCK_CONTENTION_CODES.has(error?.code)) throw error;
++      if (lockIsStale(io, file, staleMs)) {
++        try { io.unlinkSync(file); } catch { /* another process reclaimed first */ }
++        continue;
++      }
++      if (attempt + 1 < attempts) sleepSync(waitMs);
++    }
++  }
++  throw new Error('Feedback state is busy.');
++}
++
++function withFeedbackStateLock(options, mutate) {
++  const io = options.fs || fs;
++  const file = acquireFeedbackLock(options);
++  try {
++    return mutate();
++  } finally {
++    try { io.unlinkSync(file); } catch { /* already reclaimed after a crash boundary */ }
++  }
+ }
+ 
+ function versionBucket(version) {
+@@ -147,98 +258,155 @@ function nextOpaqueId(options = {}) {
+ }
+ 
+ async function sendDraft(incidentFingerprint, options = {}) {
+-  const state = loadFeedbackState(options);
+-  const draft = Object.hasOwn(state.drafts, incidentFingerprint) ? state.drafts[incidentFingerprint] : null;
+-  if (!draft) throw new Error('Feedback draft not found.');
+-  const endpoint = resolveEndpoint(options);
+-  const anonymousSourceId = state.anonymous_source_id || nextOpaqueId(options);
+-  const receiptId = nextOpaqueId(options);
+-  const payload = {
+-    schema_version: draft.schema_version,
+-    error_code: draft.error_code,
+-    subsystem: draft.subsystem,
+-    failure_class: draft.failure_class,
+-    forge_version_bucket: draft.forge_version_bucket,
+-    incident_fingerprint: draft.incident_fingerprint,
+-    anonymous_source_id: anonymousSourceId,
+-    receipt_id: receiptId,
+-  };
+-
+-  state.anonymous_source_id = anonymousSourceId;
+-  saveFeedbackState(state, options);
+-  if (options.preview) options.preview(payload);
++  const prepared = withFeedbackStateLock(options, () => {
++    const state = loadFeedbackState(options);
++    if (state.consent === 'disabled') throw new Error('Feedback is disabled.');
++    if (state.suppressed_fingerprints.includes(incidentFingerprint)) {
++      throw new Error('Feedback draft is suppressed.');
++    }
++    const draft = Object.hasOwn(state.drafts, incidentFingerprint) ? state.drafts[incidentFingerprint] : null;
++    if (!draft) throw new Error('Feedback draft not found.');
++    const anonymousSourceId = state.anonymous_source_id || nextOpaqueId(options);
++    const receiptId = nextOpaqueId(options);
++    const payload = {
++      schema_version: draft.schema_version,
++      error_code: draft.error_code,
++      subsystem: draft.subsystem,
++      failure_class: draft.failure_class,
++      forge_version_bucket: draft.forge_version_bucket,
++      incident_fingerprint: draft.incident_fingerprint,
++      anonymous_source_id: anonymousSourceId,
++      receipt_id: receiptId,
++    };
++    if (state.anonymous_source_id !== anonymousSourceId) {
++      state.anonymous_source_id = anonymousSourceId;
++      saveFeedbackState(state, options);
++    }
++    return { payload, receiptId };
++  });
+ 
++  const endpoint = resolveEndpoint(options);
++  if (options.preview) options.preview(prepared.payload);
+   const post = options.fetch || globalThis.fetch;
+   if (typeof post !== 'function') throw new Error('HTTPS transport is unavailable.');
+-  const response = await post(endpoint, {
+-    method: 'POST',
+-    headers: { 'content-type': 'application/json' },
+-    body: JSON.stringify(payload),
+-    redirect: 'error',
+-  });
++  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
++    ? options.timeoutMs
++    : DEFAULT_FETCH_TIMEOUT_MS;
++  const controller = new AbortController();
++  let timedOut = false;
++  const timeout = setTimeout(() => {
++    timedOut = true;
++    controller.abort();
++  }, timeoutMs);
++  let response;
++  try {
++    response = await Promise.race([
++      post(endpoint, {
++        method: 'POST',
++        headers: { 'content-type': 'application/json' },
++        body: JSON.stringify(prepared.payload),
++        redirect: 'error',
++        signal: controller.signal,
++      }),
++      new Promise((_, reject) => {
++        controller.signal.addEventListener(
++          'abort',
++          () => reject(new Error('Feedback transport timed out.')),
++          { once: true },
++        );
++      }),
++    ]);
++  } catch (error) {
++    if (timedOut) throw new Error('Feedback transport timed out.');
++    throw error;
++  } finally {
++    clearTimeout(timeout);
++  }
+   if (!response?.ok) throw new Error(`Feedback transport failed with status ${response?.status || 'unknown'}.`);
+ 
+-  delete state.drafts[incidentFingerprint];
+-  if (options.enable === true) state.consent = 'enabled';
+-  saveFeedbackState(state, options);
+-  return { receiptId, payload };
++  withFeedbackStateLock(options, () => {
++    const state = loadFeedbackState(options);
++    const suppressed = state.suppressed_fingerprints.includes(incidentFingerprint);
++    const draftStillPending = Object.hasOwn(state.drafts, incidentFingerprint);
++    if (state.consent === 'disabled' || suppressed || !draftStillPending) return;
++    delete state.drafts[incidentFingerprint];
++    if (options.enable === true) state.consent = 'enabled';
++    saveFeedbackState(state, options);
++  });
++  return { receiptId: prepared.receiptId, payload: prepared.payload };
+ }
+ 
+ async function captureFailure(failure, options = {}) {
+   const draft = buildDraft(failure, options.version || require('../package.json').version);
+   if (!draft) return { captured: false, reason: 'ineligible' };
+-  const state = loadFeedbackState(options);
+-  if (state.consent === 'disabled') return { captured: false, reason: 'disabled' };
+-  const fingerprint = draft.incident_fingerprint;
+-  if (state.suppressed_fingerprints.includes(fingerprint)) {
+-    return { captured: false, suppressed: true, incidentFingerprint: fingerprint };
+-  }
+-  if (state.drafts[fingerprint]) {
+-    return { captured: true, deduplicated: true, incidentFingerprint: fingerprint };
+-  }
++  const mutation = withFeedbackStateLock(options, () => {
++    const state = loadFeedbackState(options);
++    if (state.consent === 'disabled') return { result: { captured: false, reason: 'disabled' } };
++    const fingerprint = draft.incident_fingerprint;
++    if (state.suppressed_fingerprints.includes(fingerprint)) {
++      return {
++        result: { captured: false, suppressed: true, incidentFingerprint: fingerprint },
++      };
++    }
++    if (Object.hasOwn(state.drafts, fingerprint)) {
++      return {
++        result: { captured: true, deduplicated: true, incidentFingerprint: fingerprint },
++      };
++    }
++    state.drafts[fingerprint] = draft;
++    saveFeedbackState(state, options);
++    return {
++      autoSend: state.consent === 'enabled'
++        && options.inputInteractive === true
++        && options.outputInteractive === true,
++      result: { captured: true, deduplicated: false, incidentFingerprint: fingerprint },
++    };
++  });
+ 
+-  state.drafts[fingerprint] = draft;
+-  saveFeedbackState(state, options);
+-  const result = { captured: true, deduplicated: false, incidentFingerprint: fingerprint };
+-  const interactive = options.inputInteractive === true && options.outputInteractive === true;
+-  if (state.consent === 'enabled' && interactive) {
++  if (mutation.autoSend) {
+     try {
+-      const sent = await sendDraft(fingerprint, options);
+-      return { ...result, sent: true, receiptId: sent.receiptId };
++      const sent = await sendDraft(mutation.result.incidentFingerprint, options);
++      return { ...mutation.result, sent: true, receiptId: sent.receiptId };
+     } catch (_error) {
+-      return { ...result, sent: false };
++      return { ...mutation.result, sent: false };
+     }
+   }
+-  return result;
++  return mutation.result;
+ }
+ 
+ function declineDraft(incidentFingerprint, options = {}) {
+-  const state = loadFeedbackState(options);
+-  delete state.drafts[incidentFingerprint];
+-  if (!state.suppressed_fingerprints.includes(incidentFingerprint)) {
+-    state.suppressed_fingerprints.push(incidentFingerprint);
+-  }
+-  saveFeedbackState(state, options);
+-  return state;
++  return withFeedbackStateLock(options, () => {
++    const state = loadFeedbackState(options);
++    delete state.drafts[incidentFingerprint];
++    if (!state.suppressed_fingerprints.includes(incidentFingerprint)) {
++      state.suppressed_fingerprints.push(incidentFingerprint);
++    }
++    saveFeedbackState(state, options);
++    return state;
++  });
+ }
+ 
+ function disableFeedback(options = {}) {
+-  const state = loadFeedbackState(options);
+-  state.consent = 'disabled';
+-  state.anonymous_source_id = null;
+-  state.drafts = {};
+-  saveFeedbackState(state, options);
+-  return state;
++  return withFeedbackStateLock(options, () => {
++    const state = loadFeedbackState(options);
++    state.consent = 'disabled';
++    state.anonymous_source_id = null;
++    state.drafts = {};
++    saveFeedbackState(state, options);
++    return state;
++  });
+ }
+ 
+ function enableFeedback(options = {}) {
+-  const state = loadFeedbackState(options);
+-  if (state.consent === 'enabled' && state.anonymous_source_id) return state;
+-  if (state.consent === 'disabled') state.drafts = {};
+-  state.consent = 'enabled';
+-  state.anonymous_source_id = nextOpaqueId(options);
+-  saveFeedbackState(state, options);
+-  return state;
++  return withFeedbackStateLock(options, () => {
++    const state = loadFeedbackState(options);
++    if (state.consent === 'enabled' && state.anonymous_source_id) return state;
++    if (state.consent === 'disabled') state.drafts = {};
++    state.consent = 'enabled';
++    state.anonymous_source_id = nextOpaqueId(options);
++    saveFeedbackState(state, options);
++    return state;
++  });
+ }
+ 
+ module.exports = {
+diff --git a/test/commands/feedback.test.js b/test/commands/feedback.test.js
+index e4982519..fcd3431e 100644
+--- a/test/commands/feedback.test.js
++++ b/test/commands/feedback.test.js
+@@ -112,4 +112,34 @@ describe('forge feedback command', () => {
+     expect(state.anonymous_source_id).toBe('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+     expect(state.drafts).toEqual({});
+   });
++
++  test('interactive handler does not offer disabled or suppressed persisted drafts', async () => {
++    for (const mode of ['disabled', 'suppressed']) {
++      const homeDir = tempHome();
++      const captured = await seed(homeDir);
++      const file = path.join(homeDir, 'state.json');
++      const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
++      if (mode === 'disabled') persisted.consent = 'disabled';
++      else persisted.suppressed_fingerprints.push(captured.incidentFingerprint);
++      fs.writeFileSync(file, JSON.stringify(persisted));
++      let asked = 0;
++      let sent = 0;
++      let displayed = '';
++
++      const result = await feedbackCommand.handler([], {}, '.', {
++        homeDir,
++        isInteractive: true,
++        endpoint: 'https://feedback.forge.test/v1/reports',
++        question: async () => { asked += 1; return '1'; },
++        write: value => { displayed += value; },
++        fetch: async () => { sent += 1; return { ok: true, status: 202 }; },
++      });
++
++      expect(result.success).toBe(true);
++      expect(result.output).toContain(`Consent: ${persisted.consent}`);
++      expect(displayed).toBe('');
++      expect(asked).toBe(0);
++      expect(sent).toBe(0);
++    }
++  });
+ });
+diff --git a/test/feedback.test.js b/test/feedback.test.js
+index 62ba5f9b..6dd46f8e 100644
+--- a/test/feedback.test.js
++++ b/test/feedback.test.js
+@@ -4,6 +4,7 @@ const { describe, expect, test } = require('bun:test');
+ const fs = require('node:fs');
+ const os = require('node:os');
+ const path = require('node:path');
++const { spawn } = require('node:child_process');
+ 
+ const {
+   captureFailure,
+@@ -19,6 +20,47 @@ function tempHome() {
+   return fs.mkdtempSync(path.join(os.tmpdir(), 'forge-feedback-'));
+ }
+ 
++function stateFile(homeDir) {
++  return path.join(homeDir, 'state.json');
++}
++
++function validEmptyState(overrides = {}) {
++  return {
++    consent: 'pending',
++    anonymous_source_id: null,
++    drafts: {},
++    suppressed_fingerprints: [],
++    ...overrides,
++  };
++}
++
++function writeState(homeDir, state) {
++  fs.writeFileSync(stateFile(homeDir), `${JSON.stringify(state, null, 2)}\n`);
++}
++
++async function waitFor(predicate, message, timeoutMs = 3000) {
++  const deadline = Date.now() + timeoutMs;
++  while (!predicate()) {
++    if (Date.now() >= deadline) throw new Error(message);
++    await new Promise(resolve => { setTimeout(resolve, 10); });
++  }
++}
++
++function runCaptureWorker(homeDir, readyFile, goFile, code, subsystem) {
++  const worker = path.join(__dirname, 'fixtures', 'feedback-race-worker.js');
++  return spawn(process.execPath, [worker, homeDir, readyFile, goFile, code, subsystem], {
++    cwd: path.join(__dirname, '..'),
++    stdio: ['ignore', 'pipe', 'pipe'],
++  });
++}
++
++async function workerExit(child) {
++  let stderr = '';
++  child.stderr.on('data', chunk => { stderr += chunk; });
++  const code = await new Promise(resolve => child.once('exit', resolve));
++  if (code !== 0) throw new Error(`feedback worker exited ${code}: ${stderr}`);
++}
++
+ const eligible = {
+   code: 'FORGE_STATE_CORRUPTION',
+   subsystem: 'kernel',
+@@ -351,4 +393,191 @@ describe('privacy-safe feedback core', () => {
+     }
+     expect(sends).toBe(0);
+   });
++
++  test('send boundary rejects disabled and suppressed persisted drafts without fetching', async () => {
++    for (const mode of ['disabled', 'suppressed']) {
++      const homeDir = tempHome();
++      const captured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++      const persisted = JSON.parse(fs.readFileSync(stateFile(homeDir), 'utf8'));
++      if (mode === 'disabled') persisted.consent = 'disabled';
++      else persisted.suppressed_fingerprints.push(captured.incidentFingerprint);
++      writeState(homeDir, persisted);
++      let sends = 0;
++
++      await expect(sendDraft(captured.incidentFingerprint, {
++        homeDir,
++        endpoint: 'https://feedback.forge.test/v1/reports',
++        fetch: async () => { sends += 1; return { ok: true, status: 202 }; },
++      })).rejects.toThrow(mode === 'disabled' ? 'Feedback is disabled' : 'Feedback draft is suppressed');
++      expect(sends).toBe(0);
++    }
++  });
++
++  test('concurrent capture processes preserve every valid draft', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const goFile = path.join(homeDir, 'go');
++    const readyA = path.join(homeDir, 'ready-a');
++    const readyB = path.join(homeDir, 'ready-b');
++    const first = runCaptureWorker(homeDir, readyA, goFile, 'FORGE_INTERNAL_ERROR', 'cli');
++    const second = runCaptureWorker(homeDir, readyB, goFile, 'FORGE_INTERNAL_TIMEOUT', 'workflow');
++
++    await waitFor(() => {
++      const readyCount = Number(fs.existsSync(readyA)) + Number(fs.existsSync(readyB));
++      return readyCount === 2 || (readyCount >= 1 && fs.existsSync(`${stateFile(homeDir)}.lock`));
++    }, 'capture workers never reached the deterministic interleaving point');
++    fs.writeFileSync(goFile, 'go');
++    await Promise.all([workerExit(first), workerExit(second)]);
++
++    expect(Object.keys(loadFeedbackState({ homeDir }).drafts)).toHaveLength(2);
++  });
++
++  test('send completion cannot roll back a concurrent disable or resurrect a declined draft', async () => {
++    const homeDir = tempHome();
++    const captured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    let releaseFetch;
++    let fetchStarted;
++    const started = new Promise(resolve => { fetchStarted = resolve; });
++    const sending = sendDraft(captured.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      fetch: async () => {
++        fetchStarted();
++        await new Promise(resolve => { releaseFetch = resolve; });
++        return { ok: true, status: 202 };
++      },
++    });
++    await started;
++    declineDraft(captured.incidentFingerprint, { homeDir });
++    disableFeedback({ homeDir });
++    releaseFetch();
++    await sending;
++
++    const finalState = loadFeedbackState({ homeDir });
++    expect(finalState.consent).toBe('disabled');
++    expect(finalState.anonymous_source_id).toBeNull();
++    expect(finalState.drafts).toEqual({});
++    expect(finalState.suppressed_fingerprints).toContain(captured.incidentFingerprint);
++    expect((await captureFailure(eligible, { homeDir, version: '1.7.0' })).reason).toBe('disabled');
++  });
++
++
++  test('send completion preserves a concurrently captured different draft', async () => {
++    const homeDir = tempHome();
++    const first = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    let releaseFetch;
++    let fetchStarted;
++    const started = new Promise(resolve => { fetchStarted = resolve; });
++    const sending = sendDraft(first.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      fetch: async () => {
++        fetchStarted();
++        await new Promise(resolve => { releaseFetch = resolve; });
++        return { ok: true, status: 202 };
++      },
++    });
++    await started;
++    const concurrent = await captureFailure(
++      { code: 'FORGE_INTERNAL_TIMEOUT', subsystem: 'workflow' },
++      { homeDir, version: '1.7.0' },
++    );
++    releaseFetch();
++    await sending;
++
++    const finalState = loadFeedbackState({ homeDir });
++    expect(finalState.drafts[first.incidentFingerprint]).toBeUndefined();
++    expect(finalState.drafts[concurrent.incidentFingerprint]).toBeDefined();
++  });
++
++  test('send completion preserves decline suppression so the sent draft cannot resurrect', async () => {
++    const homeDir = tempHome();
++    const captured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    let releaseFetch;
++    let fetchStarted;
++    const started = new Promise(resolve => { fetchStarted = resolve; });
++    const sending = sendDraft(captured.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      fetch: async () => {
++        fetchStarted();
++        await new Promise(resolve => { releaseFetch = resolve; });
++        return { ok: true, status: 202 };
++      },
++    });
++    await started;
++    declineDraft(captured.incidentFingerprint, { homeDir });
++    releaseFetch();
++    await sending;
++
++    const afterSend = loadFeedbackState({ homeDir });
++    expect(afterSend.drafts[captured.incidentFingerprint]).toBeUndefined();
++    expect(afterSend.suppressed_fingerprints).toContain(captured.incidentFingerprint);
++    const recaptured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    expect(recaptured.suppressed).toBe(true);
++    expect(loadFeedbackState({ homeDir }).drafts).toEqual({});
++  });
++
++
++  test('reclaims a stale feedback lock before mutating state', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    fs.writeFileSync(lock, JSON.stringify({ pid: 999999999, created_at: 0 }));
++    const old = new Date(Date.now() - 60000);
++    fs.utimesSync(lock, old, old);
++
++    const result = await captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      lockStaleMs: 10,
++    });
++
++    expect(result.captured).toBe(true);
++    expect(fs.existsSync(lock)).toBe(false);
++  });
++
++  test('corrupt or unreadable state fails closed and preserves original bytes', async () => {
++    for (const raw of ['{"consent":"disabled"', '[]']) {
++      const homeDir = tempHome();
++      fs.writeFileSync(stateFile(homeDir), raw);
++      await expect(captureFailure(eligible, { homeDir, version: '1.7.0' }))
++        .rejects.toThrow('Feedback state is unreadable');
++      expect(() => disableFeedback({ homeDir })).toThrow('Feedback state is unreadable');
++      expect(fs.readFileSync(stateFile(homeDir), 'utf8')).toBe(raw);
++    }
++
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState({ consent: 'disabled' }));
++    let writes = 0;
++    const deniedFs = {
++      ...fs,
++      readFileSync() {
++        const error = new Error('permission denied');
++        error.code = 'EACCES';
++        throw error;
++      },
++      writeFileSync() { writes += 1; },
++    };
++    expect(() => enableFeedback({ homeDir, fs: deniedFs })).toThrow('Feedback state is unreadable');
++    expect(writes).toBe(0);
++    expect(JSON.parse(fs.readFileSync(stateFile(homeDir), 'utf8')).consent).toBe('disabled');
++  });
++
++  test('stalled transport times out and retains the draft', async () => {
++    const homeDir = tempHome();
++    const captured = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++    let signal;
++    await expect(sendDraft(captured.incidentFingerprint, {
++      homeDir,
++      endpoint: 'https://feedback.forge.test/v1/reports',
++      timeoutMs: 20,
++      fetch: async (_url, request) => {
++        signal = request.signal;
++        return new Promise(() => {});
++      },
++    })).rejects.toThrow('Feedback transport timed out');
++    expect(signal.aborted).toBe(true);
++    expect(loadFeedbackState({ homeDir }).drafts[captured.incidentFingerprint]).toBeDefined();
++  });
+ });
+diff --git a/test/fixtures/feedback-race-worker.js b/test/fixtures/feedback-race-worker.js
+new file mode 100644
+index 00000000..c953ac3c
+--- /dev/null
++++ b/test/fixtures/feedback-race-worker.js
+@@ -0,0 +1,29 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++const [homeDir, readyFile, goFile, code, subsystem] = process.argv.slice(2);
++const stateFile = path.join(homeDir, 'state.json');
++const originalRead = fs.readFileSync;
++let paused = false;
++
++fs.readFileSync = function readWithBarrier(file, ...args) {
++  const result = originalRead.call(this, file, ...args);
++  if (!paused && path.resolve(String(file)) === path.resolve(stateFile)) {
++    paused = true;
++    fs.writeFileSync(readyFile, 'ready');
++    const sleeper = new Int32Array(new SharedArrayBuffer(4));
++    while (!fs.existsSync(goFile)) Atomics.wait(sleeper, 0, 0, 10);
++  }
++  return result;
++};
++
++const { captureFailure } = require('../../lib/feedback');
++
++captureFailure({ code, subsystem }, { homeDir, version: '1.7.0' })
++  .then(() => { process.exitCode = 0; })
++  .catch(error => {
++    process.stderr.write(`${error.stack || error}\n`);
++    process.exitCode = 1;
++  });
+-- 
+2.51.0.windows.1
+

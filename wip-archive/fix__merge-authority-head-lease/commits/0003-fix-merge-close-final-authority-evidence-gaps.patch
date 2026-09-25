@@ -1,0 +1,666 @@
+From 331943cce424ed57ef9afcd5dc773a89692fc41b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 2 Aug 2026 14:36:48 +0530
+Subject: [PATCH] fix(merge): close final authority evidence gaps
+
+---
+ .../decisions.md                              |  4 +
+ .../tasks.md                                  |  3 +
+ lib/adapters/pr-state-adapter.js              |  6 +-
+ lib/commands/merge.js                         | 91 +++++++++++++++----
+ lib/pr-pull.js                                |  8 +-
+ lib/pr-shepherd.js                            | 24 +++--
+ ...merge-authority-review-regressions.test.js | 73 ++++++++++++++-
+ test/commands/merge-authority.test.js         | 24 ++---
+ test/commands/merge.test.js                   |  6 +-
+ test/pr-pull.test.js                          | 28 +++++-
+ test/pr-shepherd.test.js                      | 17 +++-
+ test/pr-state-adapter.test.js                 |  9 ++
+ 12 files changed, 244 insertions(+), 49 deletions(-)
+
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+index 520b9ea3..a8f34aaf 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -40,6 +40,10 @@ Candidate `7d02625888820f9afa83737cc30fbf1d20f955c5` is rejected. Required revie
+ 
+ The replacement enforces an unconditional minimum ten-minute quiet period using the newest creation/edit/submission timestamp. Check-run and status-context collections validate provider enums collection-wide; only terminal `SUCCESS` is green, while optional `NEUTRAL`, `SKIPPED`, unknown, missing, or contradictory evidence blocks mutation. Pull requires full 40-character head OIDs. Authoritative protection parse failure never falls back to rollup-derived authorization; rollup data remains diagnostic only and accepts only canonical positive-decimal PR selectors. Shared provider state carries an explicit readability signal so missing lifecycle fields or malformed rollup members produce `ESCALATE`/`UNKNOWN`, and nested thread authors require a valid GraphQL actor type. Injected Kernel brokers retain caller ownership for same-command grounding; only internally created brokers are disposed by the issue-operation layer.
+ 
++Candidate `3274e04cf71c24c255360fc70007e4dbd4e9687c` is also rejected. Its terminal exact-SHA review reproduced three remaining authority gaps: settle ignored the aggregate PR/review activity timestamp, optional GraphQL CheckRuns were dropped before complete-envelope validation, and ownership/binding helpers accepted incomplete identities or disposed injected resources. Shared Pull/Shepherd paths also needed a missing final-head read to stay unknown, canonical GraphQL selectors on every surface, actor type on nested pages, and explicit escalation for malformed non-auth provider responses.
++
++The terminal amendment validates every REST and rollup observation before policy filtering, requires explicit CheckRun `COMPLETED` + `SUCCESS` and explicit StatusContext `SUCCESS`, requires structured policy entries to carry an explicit app identity field, and requires both ownership probes to return the frozen actor and claimant identities. Mandatory settle includes the newest aggregate activity timestamp. Injected binding drivers remain caller-owned. Pull requires valid full start and end heads without fallback, every review-thread GraphQL path rejects non-canonical PR selectors and requests nested actor type, and Shepherd converts malformed provider evidence into `ESCALATE`. Focused RED reproduced ten counterexamples; focused GREEN passed 191 tests and the bounded affected manifest passed 320 tests, with ESLint, 22 syntax checks, and `git diff --check` green.
++
+ ## Bounded residuals
+ 
+ GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+index d860a40a..f9ac7ab7 100644
+--- a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -28,6 +28,9 @@
+ - [x] Reconcile both exact-SHA review batches for `7d02625888820f9afa83737cc30fbf1d20f955c5`: required lanes returned `REQUEST_CHANGES`; reject the candidate and do not push or install it.
+ - [x] Retain final convergence RED evidence for mandatory settle/edit freshness, malformed optional observations, shared SUCCESS-only semantics, full head OIDs, authoritative-protection no-fallback, provider lifecycle readability, canonical selectors, nested actor identity, and injected Kernel broker lifetime.
+ - [x] Validate the replacement worktree: focused 232 tests / 772 expectations across 8 files; bounded 311 tests / 973 expectations across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
++- [x] Reconcile terminal exact-SHA review of `3274e04cf71c24c255360fc70007e4dbd4e9687c`: all three lanes returned `REQUEST_CHANGES`; reject the candidate and retain its concrete counterexamples.
++- [x] Add focused RED coverage for aggregate activity settle, optional rollup CheckRuns, strict policy/check/ownership identity, injected binding-driver ownership, full final-head evidence, canonical GraphQL selectors, nested actor type, and Shepherd malformed-provider escalation.
++- [x] Validate the terminal amendment: focused 191 tests / 637 expectations across 6 files; bounded 320 tests across 13 files; ESLint, 22 syntax checks, and `git diff --check` passed.
+ - [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
+ - [ ] Push/open PR only after PASS.
+ - [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index eba9ab08..65aaa134 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -413,6 +413,8 @@ class PrStateAdapter {
+    * @returns {Promise<object[]>}
+    */
+   async readComments({ owner, repo, pr }) {
++    const number = canonicalPrNumber(pr);
++    if (!number) throw new Error('PR selector must be one canonical positive decimal number');
+     // `id`/`path`/`line` are surfaced so a consumer (e.g. the monitor bundle in
+     // lib/pr-bundle.js) can hand an agent the thread id to resolve and the
+     // file/line to act on — not just the body. Added fields are backward
+@@ -421,7 +423,7 @@ class PrStateAdapter {
+     // Both connections are FULLY paginated (cursors, not a first:100 cap): a
+     // large PR must never silently drop a thread or a later reply, or the bundle
+     // would declare "complete" on partial data and the monitor would skip work.
+-    const threads = this._fetchAllReviewThreads({ owner, repo, pr });
++    const threads = this._fetchAllReviewThreads({ owner, repo, pr: number });
+     return threads.map((t) => {
+       const allComments = t.comments.nodes;
+       return {
+@@ -559,7 +561,7 @@ class PrStateAdapter {
+    * @returns {object[]} the full comment-node list (first page + all later pages)
+    */
+   _fetchAllThreadComments(threadId, initial) {
+-    const query = 'query($id:ID!,$after:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{login} body}}}}}';
++    const query = 'query($id:ID!,$after:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body}}}}}';
+     if (typeof threadId !== 'string' || !threadId) throw new Error('Review thread id is malformed');
+     let conn = this._validateGraphqlConnection(initial, `Review thread ${threadId} comments`);
+     const acc = [...conn.nodes];
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 8f190ce3..48658d2e 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -187,6 +187,7 @@ async function defaultVerifyPrIssueBinding({
+   }
+ 
+   let built;
++  const ownsDriver = !buildBroker;
+   try {
+     if (buildBroker) {
+       built = await buildBroker({ projectRoot });
+@@ -224,7 +225,7 @@ async function defaultVerifyPrIssueBinding({
+   } catch (err) {
+     return { bound: false, error: `Kernel PR linkage verification failed: ${err.message}` };
+   } finally {
+-    if (built && built.driver && typeof built.driver.close === 'function') built.driver.close();
++    if (ownsDriver && built && built.driver && typeof built.driver.close === 'function') built.driver.close();
+   }
+ }
+ 
+@@ -233,30 +234,33 @@ function strictCheckSuccess(check) {
+   const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
+   const hasConclusion = Object.prototype.hasOwnProperty.call(check, 'conclusion');
+   const hasState = Object.prototype.hasOwnProperty.call(check, 'state');
+-  if (hasStatus && String(check.status || '').toUpperCase() !== 'COMPLETED') return false;
+-  if (hasConclusion && String(check.conclusion || '').toUpperCase() !== 'SUCCESS') return false;
+-  if (hasState && String(check.state || '').toUpperCase() !== 'SUCCESS') return false;
+-  return hasConclusion || hasState;
++  if (hasState) {
++    return !hasStatus && !hasConclusion && String(check.state || '').toUpperCase() === 'SUCCESS';
++  }
++  return hasStatus && hasConclusion
++    && String(check.status || '').toUpperCase() === 'COMPLETED'
++    && String(check.conclusion || '').toUpperCase() === 'SUCCESS';
+ }
+ 
+ function malformedCheckObservation(check) {
+   if (!check || typeof check !== 'object') return true;
+   const name = check.name || check.context;
+   if (typeof name !== 'string' || !name.trim()) return true;
+-  if (check.appId !== null && check.appId !== undefined
+-    && (!Number.isInteger(check.appId) || check.appId <= 0)) return true;
++  if (!Object.prototype.hasOwnProperty.call(check, 'appId')) return true;
+   const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
+   const hasConclusion = Object.prototype.hasOwnProperty.call(check, 'conclusion');
+   const hasState = Object.prototype.hasOwnProperty.call(check, 'state');
+-  if (!hasStatus && !hasConclusion && !hasState) return true;
+   const status = String(check.status || '').toUpperCase();
+   const conclusion = String(check.conclusion || '').toUpperCase();
+   const state = String(check.state || '').toUpperCase();
++  if (hasState) {
++    return hasStatus || hasConclusion || check.appId !== null
++      || typeof check.state !== 'string' || !STATUS_CONTEXT_STATES.has(state);
++  }
++  if (!hasStatus || !hasConclusion || !Number.isInteger(check.appId) || check.appId <= 0) return true;
+   if (hasStatus && (typeof check.status !== 'string' || !CHECK_RUN_STATUSES.has(status))) return true;
+   if (hasConclusion && check.conclusion !== null && typeof check.conclusion !== 'string') return true;
+   if (hasConclusion && !CHECK_RUN_CONCLUSIONS.has(conclusion)) return true;
+-  if (hasState && (typeof check.state !== 'string' || !STATUS_CONTEXT_STATES.has(state))) return true;
+-  if (hasStatus && !hasConclusion) return true;
+   if (hasStatus && status === 'COMPLETED' && !conclusion) return true;
+   if (hasStatus && status !== 'COMPLETED' && conclusion) return true;
+   return ['status', 'conclusion', 'state']
+@@ -265,11 +269,17 @@ function malformedCheckObservation(check) {
+ 
+ function mandatorySettleError(context) {
+   if (!context || !Array.isArray(context.comments)) return 'Mandatory settle evidence is unreadable.';
+-  if (context.comments.length === 0) return null;
+   const nowMs = typeof context.now === 'number' ? context.now : Date.parse(context.now);
+   if (!Number.isFinite(nowMs)) return 'Mandatory settle clock is unreadable.';
+   const stamps = context.comments.map((comment) => Date.parse(comment && comment.at));
+   if (stamps.some((stamp) => Number.isNaN(stamp))) return 'Mandatory settle comment evidence is unreadable.';
++  if (context.lastActivityAt !== undefined && context.lastActivityAt !== null) {
++    const lastActivity = typeof context.lastActivityAt === 'number'
++      ? context.lastActivityAt : Date.parse(context.lastActivityAt);
++    if (!Number.isFinite(lastActivity)) return 'Mandatory settle activity evidence is unreadable.';
++    stamps.push(lastActivity);
++  }
++  if (stamps.length === 0) return null;
+   const quietMs = nowMs - Math.max(...stamps);
+   return quietMs >= 10 * 60_000
+     ? null
+@@ -277,11 +287,39 @@ function mandatorySettleError(context) {
+ }
+ 
+ function normalizeRequiredEntry(entry) {
+-  if (typeof entry === 'string' && entry.trim()) return { context: entry, appId: null };
+   if (!entry || typeof entry.context !== 'string' || !entry.context.trim()) return null;
+-  if (entry.appId !== null && entry.appId !== undefined
+-    && (!Number.isInteger(entry.appId) || entry.appId <= 0)) return null;
+-  return { context: entry.context, appId: entry.appId ?? null };
++  if (!Object.prototype.hasOwnProperty.call(entry, 'appId')) return null;
++  if (entry.appId !== null && (!Number.isInteger(entry.appId) || entry.appId <= 0)) return null;
++  return { context: entry.context, appId: entry.appId };
++}
++
++function normalizeRollupObservation(entry) {
++  if (!entry || typeof entry !== 'object') return null;
++  if (entry.__typename === 'StatusContext') {
++    return { name: entry.context, state: entry.state };
++  }
++  if (entry.__typename === 'CheckRun') {
++    return { name: entry.name, status: entry.status, conclusion: entry.conclusion };
++  }
++  return null;
++}
++
++function malformedRollupObservation(observation) {
++  if (!observation || typeof observation.name !== 'string' || !observation.name.trim()) return true;
++  const hasState = Object.prototype.hasOwnProperty.call(observation, 'state');
++  if (hasState) {
++    return Object.prototype.hasOwnProperty.call(observation, 'status')
++      || Object.prototype.hasOwnProperty.call(observation, 'conclusion')
++      || typeof observation.state !== 'string'
++      || !STATUS_CONTEXT_STATES.has(observation.state.toUpperCase());
++  }
++  const status = String(observation.status || '').toUpperCase();
++  const conclusion = String(observation.conclusion || '').toUpperCase();
++  if (typeof observation.status !== 'string' || !CHECK_RUN_STATUSES.has(status)) return true;
++  if (observation.conclusion !== null && typeof observation.conclusion !== 'string') return true;
++  if (!CHECK_RUN_CONCLUSIONS.has(conclusion)) return true;
++  if (status === 'COMPLETED' && !conclusion) return true;
++  return status !== 'COMPLETED' && Boolean(conclusion);
+ }
+ 
+ function evaluateProtectedRequiredChecks(context) {
+@@ -338,6 +376,17 @@ function mandatoryContextError(context, expectedHead) {
+   if (context.unresolvedThreads !== 0) return 'Review-thread state is unreadable or unresolved threads remain.';
+   const settleError = mandatorySettleError(context);
+   if (settleError) return settleError;
++  if (!Array.isArray(context.checks) || context.checks.some(malformedCheckObservation)
++    || context.checks.some((check) => !strictCheckSuccess(check))) {
++    return 'Every check-run and status observation must be complete and successful.';
++  }
++  if (Object.prototype.hasOwnProperty.call(context, 'providerObservations')) {
++    if (!Array.isArray(context.providerObservations)
++      || context.providerObservations.some(malformedRollupObservation)
++      || context.providerObservations.some((check) => !strictCheckSuccess(check))) {
++      return 'The complete provider rollup must contain only terminal successful observations.';
++    }
++  }
+   const protectedGate = evaluateProtectedRequiredChecks(context);
+   return protectedGate.allowed ? null : protectedGate.reason;
+ }
+@@ -500,12 +549,13 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   let requiredChecks = null;
+   let requiredCheckSource = null;
+   let checks = null;
++  const providerObservations = rollup ? rollup.map(normalizeRollupObservation) : null;
+   if (owner && repo && base) {
+     const adapter = new PrStateAdapter({ gh: (_cmd, adapterArgs) => gh(adapterArgs) });
+     requiredChecks = await adapter.readRequiredCheckPolicy({ owner, repo, base });
+     requiredCheckSource = adapter.lastRequiredSource;
+     const checkRuns = headSha ? fetchCheckRunObservations(gh, { owner, repo, head: headSha }) : null;
+-    if (rollup && checkRuns) {
++    if (rollup && checkRuns && providerObservations.every((entry) => entry !== null)) {
+       const statuses = rollup
+         .filter((entry) => entry && entry.__typename === 'StatusContext')
+         .map((entry) => ({
+@@ -522,6 +572,7 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     repository: owner && repo ? `${owner}/${repo}` : null,
+     headSha: view.headRefOid || null,
+     checks,
++    providerObservations,
+     requiredChecks,
+     requiredCheckSource,
+     requiredChecksKnown: requiredCheckSource === 'protection' && Array.isArray(requiredChecks),
+@@ -623,8 +674,8 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: `Failed to verify issue ownership: ${err.message}` };
+   }
+   if (!ownership || ownership.owned !== true || ownership.expired !== false
+-    || (ownership.actor != null && ownership.actor !== ownershipActor)
+-    || (ownership.claimedBy != null && ownership.claimedBy !== ownershipActor)) {
++    || typeof ownership.actor !== 'string' || ownership.actor !== ownershipActor
++    || typeof ownership.claimedBy !== 'string' || ownership.claimedBy !== ownershipActor) {
+     return {
+       success: false,
+       merged: false,
+@@ -744,8 +795,8 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: `Failed to re-verify issue ownership before merge: ${err.message}` };
+   }
+   if (!finalOwnership || finalOwnership.owned !== true || finalOwnership.expired !== false
+-    || (finalOwnership.actor != null && finalOwnership.actor !== ownershipActor)
+-    || (finalOwnership.claimedBy != null && finalOwnership.claimedBy !== ownershipActor)) {
++    || typeof finalOwnership.actor !== 'string' || finalOwnership.actor !== ownershipActor
++    || typeof finalOwnership.claimedBy !== 'string' || finalOwnership.claimedBy !== ownershipActor) {
+     return { success: false, merged: false, error: 'Kernel ownership changed or expired before merge; refusing to merge.' };
+   }
+ 
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index 94c33e52..95b5acd7 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -870,12 +870,14 @@ function buildVerdictContext(input) {
+ /** Rank 1: UNKNOWN (fail-closed) — unreadable input/required set, missing head
+  * oid, or a torn read (head moved during the gather). */
+ function rankUnknown(v) {
+-  const torn = Boolean(v.headOidStart) && Boolean(v.headOidEnd) && v.headOidStart !== v.headOidEnd;
++  const startValid = normalizeHeadSha(v.headOidStart) !== null;
++  const endValid = normalizeHeadSha(v.headOidEnd) !== null;
++  const torn = startValid && endValid && v.headOidStart !== v.headOidEnd;
+   v.evidence.tornRead = torn;
+   if (v.requiredClass.unreadable && !v.evidence.unreadable.includes('requiredChecks')) {
+     v.evidence.unreadable.push('requiredChecks');
+   }
+-  if (!v.headOidStart && !v.evidence.unreadable.includes('headOid')) {
++  if ((!startValid || !endValid) && !v.evidence.unreadable.includes('headOid')) {
+     v.evidence.unreadable.push('headOid');
+   }
+   return (v.evidence.unreadable.length > 0 || torn) ? 'UNKNOWN' : null;
+@@ -1232,7 +1234,7 @@ async function gatherPrSnapshot(ctx) {
+   const headPushKnown = headPushTimeMs != null;
+   // Torn-read guard: re-read the head oid at the END of the gather.
+   const endState = await safeRead('headEnd', () => adapter.readState(pr), { degraded, unreadable });
+-  const headOidEnd = normalizeHeadSha(endState ? endState.headSha : state.headSha);
++  const headOidEnd = normalizeHeadSha(endState && endState.headSha);
+   if (!headOidEnd && !unreadable.includes('headOid')) unreadable.push('headOid');
+ 
+   // Actionable NON-HUMAN direct comments (mechanism-detected, suppression-list
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index d3695cf0..a0465176 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -75,8 +75,8 @@ function actionableComments(threads, _self) {
+ const SUCCESS_CONCLUSIONS = new Set(['SUCCESS']);
+ 
+ function isGreen(check) {
+-  if (Object.prototype.hasOwnProperty.call(check || {}, 'status')
+-    && String(check.status || '').toUpperCase() !== 'COMPLETED') return false;
++  if (!Object.prototype.hasOwnProperty.call(check || {}, 'status')
++    || String(check.status || '').toUpperCase() !== 'COMPLETED') return false;
+   const c = String(check.conclusion || '').toUpperCase();
+   return SUCCESS_CONCLUSIONS.has(c);
+ }
+@@ -396,7 +396,12 @@ async function runShepherdPass(ctx) {
+   // even when the branch-protection (required-checks) read would fail with an
+   // auth/scope error — the scheduler must always get the terminal signal for a
+   // landed/closed PR. ---
+-  const stateRead = await guardAuth(() => adapter.readState(pr), actions);
++  let stateRead;
++  try {
++    stateRead = await guardAuth(() => adapter.readState(pr), actions);
++  } catch (err) {
++    return result('ESCALATE', { actions, reason: `PR provider state is unreadable: ${err.message}` });
++  }
+   if (stateRead.outcome) return stateRead.outcome;
+   const startState = stateRead.value;
+   const startSha = startState.headSha;
+@@ -413,10 +418,15 @@ async function runShepherdPass(ctx) {
+ 
+   // --- Required-checks set (only matters for non-terminal PRs); this is where
+   // auth/scope fails fast. ---
+-  const requiredRead = await guardAuth(
+-    () => adapter.readRequiredChecks({ owner, repo, base }),
+-    actions,
+-  );
++  let requiredRead;
++  try {
++    requiredRead = await guardAuth(
++      () => adapter.readRequiredChecks({ owner, repo, base }),
++      actions,
++    );
++  } catch (err) {
++    return result('ESCALATE', { actions, reason: `Required-check policy is unreadable: ${err.message}` });
++  }
+   if (requiredRead.outcome) return requiredRead.outcome;
+   const required = requiredRead.value;
+ 
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 1cfdfa41..fec498bb 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -36,7 +36,7 @@ function context(overrides = {}) {
+ function deps(overrides = {}) {
+   return {
+     loadConfig: () => ENABLED,
+-    verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
++    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+     verifyPrIssueBinding: async () => ({ bound: true }),
+     env: { FORGE_ACTOR: 'release-actor' },
+     fetchPrContext: async () => context(),
+@@ -121,6 +121,17 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(fetched.comments[0].at).toBe(editedAt);
+   });
+ 
++  test('uses recent PR or review activity for mandatory settle without comments', async () => {
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ comments: [], lastActivityAt: NOW - 60_000 }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++    expect(out.error || out.reason).toMatch(/settle|quiet|10.minute/i);
++  });
++
+   test('rejects a malformed optional StatusContext before protected evaluation', async () => {
+     let merges = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -155,6 +166,25 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(merges).toBe(0);
+   });
+ 
++  test('default provider collection does not drop nonterminal optional rollup CheckRuns', async () => {
++    const fetched = await mergeCmd.defaultFetchPrContext({
++      pr: '42',
++      now: NOW,
++      gh: makeGh(validThreads, {
++        statusCheckRollup: [{
++          __typename: 'CheckRun', name: 'optional', status: 'IN_PROGRESS', conclusion: 'SUCCESS',
++        }],
++      }),
++    });
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => fetched,
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++  });
++
+   test('optional NEUTRAL and SKIPPED checks block the mutation seam', async () => {
+     for (const conclusion of ['NEUTRAL', 'SKIPPED']) {
+       let merges = 0;
+@@ -228,6 +258,47 @@ describe('merge authority — exact reviewer regressions', () => {
+     }
+   });
+ 
++  test('both ownership probes require explicit actor and claimedBy identity', async () => {
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyIssueOwnership: async () => ({ owned: true, expired: false }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++  });
++
++  test('injected Kernel binding drivers remain caller-owned', async () => {
++    let closes = 0;
++    const driver = { close() { closes += 1; } };
++    const broker = { listOpenPrs: async () => [{ repo: 'acme/forge', number: 42, state: 'open', issue_id: ISSUE }] };
++    const result = await mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context(),
++      buildBroker: async () => ({ broker, driver, gitCommonDir: 'C:/repo/.git' }),
++    });
++    expect(result.bound).toBe(true);
++    expect(closes).toBe(0);
++    expect(await broker.listOpenPrs()).toHaveLength(1);
++  });
++
++  test('missing policy application identity or check-run status is non-authorizing', async () => {
++    for (const overrides of [
++      { requiredChecks: [{ context: 'ci' }] },
++      { checks: [{ name: 'ci', appId: 123, conclusion: 'SUCCESS' }] },
++    ]) {
++      let merges = 0;
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context(overrides),
++        mergePr: async () => { merges += 1; return { merged: true }; },
++      }));
++      expect(out.merged).toBe(false);
++      expect(merges).toBe(0);
++    }
++  });
++
+   test('freezes actor identity across both ownership probes', async () => {
+     const env = { FORGE_ACTOR: 'alice' };
+     let ownershipCalls = 0;
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index b8738cf1..e1d64046 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -22,8 +22,8 @@ function context(overrides = {}) {
+     isDraft: false,
+     conflicting: false,
+     unresolvedThreads: 0,
+-    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+-    requiredChecks: ['ci'],
++    checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' }],
++    requiredChecks: [{ context: 'ci', appId: null }],
+     requiredCheckSource: 'protection',
+     requiredChecksKnown: true,
+     comments: [],
+@@ -35,7 +35,7 @@ function context(overrides = {}) {
+ function deps(overrides = {}) {
+   return {
+     loadConfig: () => ENABLED,
+-    verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
++    verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+     verifyPrIssueBinding: async () => ({ bound: true }),
+     env: { FORGE_ACTOR: 'release-actor' },
+     fetchPrContext: async () => context(),
+@@ -128,10 +128,10 @@ describe('merge command — mandatory release authority', () => {
+   test('blocks missing, pending, failed, and skipped required checks', async () => {
+     for (const checks of [
+       [],
+-      [{ name: 'ci', status: 'IN_PROGRESS', conclusion: null }],
+-      [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }],
+-      [{ name: 'ci', status: 'COMPLETED', conclusion: 'SKIPPED' }],
+-      [{ name: 'ci', status: 'COMPLETED', conclusion: 'NEUTRAL' }],
++      [{ name: 'ci', appId: 123, status: 'IN_PROGRESS', conclusion: null }],
++      [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'FAILURE' }],
++      [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SKIPPED' }],
++      [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'NEUTRAL' }],
+     ]) {
+       let mergeCalls = 0;
+       const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -140,7 +140,7 @@ describe('merge command — mandatory release authority', () => {
+       }));
+       expect(out.success).toBe(false);
+       expect(out.merged).toBe(false);
+-      expect(out.error).toMatch(/required check/i);
++      expect(out.error).toMatch(/required check|observation/i);
+       expect(mergeCalls).toBe(0);
+     }
+   });
+@@ -152,8 +152,8 @@ describe('merge command — mandatory release authority', () => {
+       verifyIssueOwnership: async () => {
+         ownershipCalls += 1;
+         return ownershipCalls === 1
+-          ? { owned: true, claimedBy: 'release-actor', expired: false }
+-          : { owned: false, claimedBy: 'other', expired: false };
++          ? { owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }
++          : { owned: false, actor: 'other', claimedBy: 'other', expired: false };
+       },
+       mergePr: async () => { mergeCalls += 1; return { merged: true }; },
+     }));
+@@ -265,7 +265,9 @@ describe('merge command — mandatory release authority', () => {
+           isDraft: false,
+           mergeable: 'MERGEABLE',
+           mergeStateStatus: 'CLEAN',
+-          statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS' }],
++          statusCheckRollup: [{
++            __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS',
++          }],
+           reviews: [],
+           comments: [],
+           updatedAt: '2026-08-01T00:00:00Z',
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 536ec1d3..dffa63aa 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -27,8 +27,8 @@ function authorizedContext(overrides = {}) {
+     isDraft: false,
+     conflicting: false,
+     unresolvedThreads: 0,
+-    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+-    requiredChecks: ['ci'],
++    checks: [{ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' }],
++    requiredChecks: [{ context: 'ci', appId: null }],
+     requiredCheckSource: 'protection',
+     requiredChecksKnown: true,
+     comments: [],
+@@ -39,7 +39,7 @@ function authorizedContext(overrides = {}) {
+ 
+ const AUTHORITY_DEPS = {
+   env: { FORGE_ACTOR: 'release-actor' },
+-  verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
++  verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+   verifyPrIssueBinding: async () => ({ bound: true }),
+ };
+ 
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index a960d0a3..3b94a8e7 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -551,6 +551,32 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     expect(payload.state).toBe('UNKNOWN');
+   });
+ 
++  test('a missing final head read cannot fall back to the valid starting head', async () => {
++    let reads = 0;
++    const adapter = {
++      id: 'fake', kind: 'pr-state',
++      async readState() {
++        reads += 1;
++        return reads === 1 ? {
++          headSha: FULL_HEAD, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE',
++          mergeStateStatus: 'CLEAN', checks: [], threads: [],
++        } : null;
++      },
++      async readRequiredChecks() { return []; },
++      async readDivergence() { return { behind: 0, ahead: 1 }; },
++      async detectConflicts() { return { supported: true, conflicted: false, files: [] }; },
++      async readComments() { return []; },
++      async readIssueComments() { return []; },
++      async readReviews() { return []; },
++      async readHeadCommitTime() { return Date.parse('2026-08-01T11:30:00Z'); },
++    };
++    const payload = await gatherPullSignal({
++      pr: '464', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter, runGh: () => '', self: 'me', now: Date.parse('2026-08-01T12:00:00Z'),
++    });
++    expect(payload.verdict).toBe('UNKNOWN');
++  });
++
+   test('only fetches logs for FAILED checks (never for green ones)', async () => {
+     const { adapter, runGh, runPass, ghCalls } = makeCtx();
+     await gatherPullSignal({
+@@ -932,7 +958,7 @@ describe('legacyStateFor (terminal lifecycle wins over the verdict projection)',
+ // or non-blocking behind-count>0 must NOT escalate a mergeable PR to BEHIND, or the
+ // pr-verdict label falsely reads `behind` on a PR GitHub considers up-to-date.
+ describe('BEHIND verdict reconciles with mergeStateStatus (5291f2d2)', () => {
+-  const settled = { headOidStart: 'h', headOidEnd: 'h' };
++  const settled = { headOidStart: FULL_HEAD, headOidEnd: FULL_HEAD };
+ 
+   test('behind-count>0 but mss=UNSTABLE (the #402 case) is NOT BEHIND', () => {
+     const { verdict } = computeVerdict({ mergeStateStatus: 'UNSTABLE', behind: 25, ...settled });
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index d617856c..b10f9f5f 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -65,6 +65,10 @@ describe('runShepherdPass — bounded pass state machine', () => {
+     expect(isGreen({ status: 'IN_PROGRESS', conclusion: 'SUCCESS' })).toBe(false);
+   });
+ 
++  test('missing status plus SUCCESS is not green', () => {
++    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(false);
++  });
++
+   test('malformed provider evidence escalates before required-check evaluation', async () => {
+     const { adapter } = makeAdapter({
+       providerEvidenceReadable: false,
+@@ -74,6 +78,17 @@ describe('runShepherdPass — bounded pass state machine', () => {
+     expect(out.state).toBe('ESCALATE');
+   });
+ 
++  test('malformed non-auth state or protection reads escalate instead of throwing', async () => {
++    for (const spec of [
++      { stateAuthError: new Error('malformed GraphQL envelope') },
++      { requiredAuthError: new Error('malformed protection payload') },
++    ]) {
++      const { adapter } = makeAdapter(spec);
++      const out = await runShepherdPass({ ...BASE_CTX, adapter });
++      expect(out.state).toBe('ESCALATE');
++    }
++  });
++
+   // 1
+   test('all required green + behind=0 → MERGE_READY, NO merge emitted', async () => {
+     const { adapter, actions } = makeAdapter({
+@@ -339,7 +354,7 @@ describe('isFailed covers StatusContext error states (Vercel/Netlify)', () => {
+   test('only SUCCESS is green; NEUTRAL and SKIPPED remain non-authorizing', () => {
+     expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
+     expect(isFailed({ conclusion: 'PENDING' })).toBe(false);
+-    expect(isGreen({ conclusion: 'SUCCESS' })).toBe(true);
++    expect(isGreen({ status: 'COMPLETED', conclusion: 'SUCCESS' })).toBe(true);
+     expect(isGreen({ conclusion: 'NEUTRAL' })).toBe(false);
+     expect(isGreen({ conclusion: 'SKIPPED' })).toBe(false);
+   });
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 093df440..1241ac1a 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -523,6 +523,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(q).toContain('path line');
+   });
+ 
++  test('readComments rejects non-canonical PR selectors before GraphQL', async () => {
++    let calls = 0;
++    const adapter = new PrStateAdapter({ gh: () => { calls += 1; return '{}'; }, git: () => '' });
++    await expect(adapter.readComments({ owner: 'o', repo: 'r', pr: '042' })).rejects.toThrow(/PR selector/i);
++    expect(calls).toBe(0);
++  });
++
+   test('readComments surfaces the REST commentId (fullDatabaseId) for replies', async () => {
+     const graphqlJson = JSON.stringify({
+       data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+@@ -615,6 +622,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     expect(firstGraphql.args.join(' ')).not.toContain('after=');
+     // The query declares the cursor variable + pageInfo on both connections.
+     expect(firstGraphql.args.join(' ')).toContain('pageInfo{hasNextPage endCursor}');
++    const innerGraphql = calls.find((c) => c.args.join(' ').includes('id=PRRT_B'));
++    expect(innerGraphql.args.join(' ')).toContain('author{__typename login}');
+   });
+ 
+   test('detectConflicts reports a clean merge when merge-tree exits 0', async () => {
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,128 @@
+From fa159406c31dde2565cdaccd62a2bc21971730f0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 12:50:41 +0530
+Subject: [PATCH] fix(setup): address skills-only review feedback c81eb263
+
+---
+ bin/forge.js                   |  2 +-
+ lib/commands/setup.js          |  6 +++++
+ test/setup-skills-only.test.js | 47 +++++++++++++++++++++++++++++-----
+ 3 files changed, 48 insertions(+), 7 deletions(-)
+
+diff --git a/bin/forge.js b/bin/forge.js
+index d9f93de4..5c3dfdf8 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -2563,7 +2563,7 @@ function showHelp() {
+   console.log('  --type <type>        Set workflow profile type manually');
+   console.log('                       Options: critical, standard, simple, hotfix, docs, refactor');
+   console.log('  --dry-run            Preview planned actions without writing any files');
+-  console.log('  --skills-only        Install skills without Git, Forge-native, or harness hooks');
++  console.log('  --skills-only        Install skills without Git hooks, Forge-native, or harness hooks');
+   console.log('                       Alias: --no-hooks');
+   console.log('  --interview          Force context interview (gather project information)');
+   console.log('  --budget <mode>      Budget mode for recommend (free, open-source, startup, professional, custom)');
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index b7e37175..1d06ac88 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -4422,6 +4422,12 @@ module.exports = {
+       }
+ 
+       const [profile] = selectedProfiles;
++      if (flags.skillsOnly) {
++        return {
++          success: false,
++          error: `--skills-only cannot be combined with --${profile}.`,
++        };
++      }
+       return initCommand.handler([`--profile=${profile}`, '--yes', ...(flags.force ? ['--force'] : [])], flags, projectRoot);
+     }
+ 
+diff --git a/test/setup-skills-only.test.js b/test/setup-skills-only.test.js
+index 6829270a..3a084882 100644
+--- a/test/setup-skills-only.test.js
++++ b/test/setup-skills-only.test.js
+@@ -9,6 +9,9 @@ const { afterEach, describe, expect, test } = require('bun:test');
+ const FORGE_BIN = path.join(__dirname, '..', 'bin', 'forge.js');
+ const tempDirs = [];
+ const gitAvailable = spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
++const gitRequiredTest = gitAvailable
++  ? test
++  : (name, _callback, timeout) => test.skip(`${name} (requires a Git executable)`, () => {}, timeout);
+ 
+ function makeTempRepo() {
+   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skills-only-'));
+@@ -39,8 +42,7 @@ afterEach(() => {
+ });
+ 
+ describe('forge setup --skills-only', () => {
+-  test('installs skills while leaving Git, Forge-native, and Claude hooks absent', () => {
+-    if (!gitAvailable) return;
++  gitRequiredTest('installs skills while leaving Git, Forge-native, and Claude hooks absent', () => {
+     const repo = makeTempRepo();
+     const result = runSetup(repo, '--skills-only');
+     const output = `${result.stdout || ''}${result.stderr || ''}`;
+@@ -56,8 +58,7 @@ describe('forge setup --skills-only', () => {
+     expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).hooks).toBeUndefined();
+   }, 120000);
+ 
+-  test('keeps default setup hook installation unchanged and reruns safely', () => {
+-    if (!gitAvailable) return;
++  gitRequiredTest('keeps default setup hook installation unchanged and reruns safely', () => {
+     const repo = makeTempRepo();
+     const first = runSetup(repo);
+     const second = runSetup(repo);
+@@ -71,8 +72,7 @@ describe('forge setup --skills-only', () => {
+     expect(fs.readFileSync(path.join(repo, '.claude', 'settings.json'), 'utf8')).toContain('hooks');
+   }, 120000);
+ 
+-  test('accepts --no-hooks as an alias for --skills-only', () => {
+-    if (!gitAvailable) return;
++  gitRequiredTest('accepts --no-hooks as an alias for --skills-only', () => {
+     const repo = makeTempRepo();
+     const result = runSetup(repo, '--no-hooks');
+ 
+@@ -81,4 +81,39 @@ describe('forge setup --skills-only', () => {
+     expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(false);
+     expect(fs.existsSync(path.join(repo, '.forge', 'hooks'))).toBe(false);
+   }, 120000);
++
++  gitRequiredTest('preserves existing hooks and harness settings on a skills-only rerun', () => {
++    const repo = makeTempRepo();
++    const initial = runSetup(repo);
++    const preservedPaths = [
++      path.join(repo, '.git', 'hooks', 'pre-commit'),
++      path.join(repo, '.forge', 'hooks', 'check-tdd.js'),
++      path.join(repo, '.forge', 'hooks', 'forge-native-hook.js'),
++      path.join(repo, '.claude', 'settings.json'),
++    ];
++
++    expect(initial.status).toBe(0);
++    preservedPaths.forEach((filePath) => expect(fs.existsSync(filePath)).toBe(true));
++    const before = new Map(
++      preservedPaths.map(filePath => [filePath, fs.readFileSync(filePath, 'utf8')]),
++    );
++
++    const rerun = runSetup(repo, '--skills-only');
++
++    expect(rerun.status).toBe(0);
++    preservedPaths.forEach((filePath) => {
++      expect(fs.readFileSync(filePath, 'utf8')).toBe(before.get(filePath));
++    });
++  }, 120000);
++
++  gitRequiredTest('rejects skills-only profile shortcuts before init installs hooks', () => {
++    const repo = makeTempRepo();
++    const result = runSetup(repo, '--skills-only', '--minimal');
++    const output = `${result.stdout || ''}${result.stderr || ''}`;
++
++    expect(result.status).toBe(1);
++    expect(output).toContain('--skills-only cannot be combined with --minimal');
++    expect(fs.existsSync(path.join(repo, '.forge', 'config.yaml'))).toBe(false);
++    expect(fs.existsSync(path.join(repo, '.git', 'hooks', 'pre-commit'))).toBe(false);
++  }, 120000);
+ });
+-- 
+2.51.0.windows.1
+

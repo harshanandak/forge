@@ -1,0 +1,113 @@
+From b2e535e9ce5baebbb661de59f76475ecb50731c1 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 30 Jul 2026 17:30:48 +0530
+Subject: [PATCH] test(skills): harden invocation metadata edges
+
+---
+ lib/using-forge.js                |  2 +-
+ packages/skills/test/sync.test.js | 17 ++++++++++++-----
+ test/skills/context-cost.test.js  |  9 +++++++--
+ test/using-forge.test.js          | 11 +++++++----
+ 4 files changed, 27 insertions(+), 12 deletions(-)
+
+diff --git a/lib/using-forge.js b/lib/using-forge.js
+index ab0d5b84..90f6e7c3 100644
+--- a/lib/using-forge.js
++++ b/lib/using-forge.js
+@@ -115,7 +115,7 @@ function applyFrontmatterLine(state, line) {
+   }
+   if (line.startsWith('invocation:')) {
+     const value = line.slice('invocation:'.length).trim();
+-    if (value) state.invocation = unquote(value);
++    state.invocation = unquote(value);
+     return;
+   }
+   const descMatch = /^description:\s*(.*)$/.exec(line);
+diff --git a/packages/skills/test/sync.test.js b/packages/skills/test/sync.test.js
+index a7d3f33f..bd071872 100644
+--- a/packages/skills/test/sync.test.js
++++ b/packages/skills/test/sync.test.js
+@@ -252,24 +252,31 @@ describe('Sync Command', () => {
+   });
+ 
+   test('syncCommand reads skills from root skills/ directory', async () => {
+-    mkdirSync('.cursor', { recursive: true });
++    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
++      mkdirSync(harness, { recursive: true });
++    }
+     mkdirSync('skills/root-skill', { recursive: true });
+     const source = '---\nname: root-skill\ninvocation: user\ndescription: A root skill\n---\n\n# Root Skill';
+     writeFileSync('skills/root-skill/SKILL.md', source);
+     await syncCommand({});
+-    expect(readFileSync('.cursor/skills/root-skill/SKILL.md', 'utf8')).toBe(source);
++    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
++      expect(readFileSync(`${harness}/skills/root-skill/SKILL.md`, 'utf8')).toBe(source);
++    }
+   });
+ 
+   test('syncCommand deduplicates: .skills/ takes priority over skills/', async () => {
+-    mkdirSync('.cursor', { recursive: true });
++    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
++      mkdirSync(harness, { recursive: true });
++    }
+     mkdirSync('skills/test-skill', { recursive: true });
+     writeFileSync('skills/test-skill/SKILL.md',
+       '---\nname: test-skill\ninvocation: model\ndescription: Root version\n---\n\n# Root Version');
+     const shadow = '---\nname: test-skill\ninvocation: user\ndescription: Shadow version\n---\n\n# Test Skill';
+     writeFileSync('.skills/test-skill/SKILL.md', shadow);
+     await syncCommand({});
+-    const content = readFileSync('.cursor/skills/test-skill/SKILL.md', 'utf8');
+-    expect(content).toBe(shadow);
++    for (const harness of ['.cursor', '.claude', '.codex', '.hermes']) {
++      expect(readFileSync(`${harness}/skills/test-skill/SKILL.md`, 'utf8')).toBe(shadow);
++    }
+   });
+ 
+   test('syncCommand updates registry with sync timestamp', async () => {
+diff --git a/test/skills/context-cost.test.js b/test/skills/context-cost.test.js
+index 3f0e2b44..1138f935 100644
+--- a/test/skills/context-cost.test.js
++++ b/test/skills/context-cost.test.js
+@@ -73,8 +73,13 @@ describe('skill context cost', () => {
+       .toEqual(['review', 'rollback', 'ship']);
+   });
+ 
+-  test('invalid invocation fails visibly', () => {
+-    expect(() => assertValidInvocation({ name: 'invalid', invocation: 'automatic' }))
++  test.each(['invocation:', 'invocation: Model', 'invocation: true',
++    'invocation: [model]', 'invocation: automatic'])
++  ('invalid invocation fails visibly for %j', (line) => {
++    const invocation = parseFrontmatter(
++      `---\nname: invalid\n${line}\ndescription: Invalid\n---\n# Invalid\n`,
++    ).invocation;
++    expect(() => assertValidInvocation({ name: 'invalid', invocation }))
+       .toThrow('invalid invocation');
+   });
+ 
+diff --git a/test/using-forge.test.js b/test/using-forge.test.js
+index 7a24544d..71f871b8 100644
+--- a/test/using-forge.test.js
++++ b/test/using-forge.test.js
+@@ -146,12 +146,15 @@ describe('parseFrontmatter', () => {
+   test.each([
+     ['invocation: model', 'model'],
+     ['invocation: user', 'user'],
+-    ['', 'model'],
++    [null, 'model'],
++    ['invocation:', ''],
++    ['invocation: Model', 'Model'],
++    ['invocation: true', 'true'],
++    ['invocation: [model]', '[model]'],
+     ['invocation: automatic', 'automatic'],
+   ])('exposes effective invocation for %j', (line, expected) => {
+-    const raw = ['---', 'name: demo', line, 'description: Demo skill', '---', '# body']
+-      .filter(Boolean)
+-      .join('\n');
++    const raw = ['---', 'name: demo', ...(line === null ? [] : [line]),
++      'description: Demo skill', '---', '# body'].join('\n');
+     expect(parseFrontmatter(raw).invocation).toBe(expected);
+   });
+ 
+-- 
+2.51.0.windows.1
+

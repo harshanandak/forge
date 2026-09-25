@@ -1,0 +1,25 @@
+From 272c4879d539e74444aca0270ea10c7afcb985e9 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 03:24:09 +0530
+Subject: [PATCH] test(validation): align manifest owner expectations
+
+---
+ test/validation/risk-manifest.test.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/validation/risk-manifest.test.js b/test/validation/risk-manifest.test.js
+index ba8966de..60fea66f 100644
+--- a/test/validation/risk-manifest.test.js
++++ b/test/validation/risk-manifest.test.js
+@@ -150,7 +150,7 @@ describe('risk-owned validation manifest', () => {
+       package: 'forge-flow',
+       risk_ids: ['contract-compatibility', 'monitor-cleanup'],
+       lanes: ['flow-package'],
+-      canonical_test_ids: ['test/workflow/**/*.test.js'],
++      canonical_test_ids: ['packages/flow/**/*.test.js', 'test/workflow/**/*.test.js'],
+       dependent_routes: ['flow-memory-contract'],
+       platform_runtime_additions: ['linux-process', 'macos-process', 'windows-process'],
+     }]);
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,1170 @@
+From ac9e60fcbd0ef06f88657cd5afa73a7f9110eef4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:27:09 +0530
+Subject: [PATCH] feat(memory): add portable contract package
+
+---
+ .../compatibility-matrix.v1.json              |   1 +
+ .../contract-baseline.v1.json                 |  29 ++
+ .../fixtures/v1/canonical-hash.json           |   1 +
+ .../fixtures/v1/identity-conflict.json        |   1 +
+ .../v1/malformed-missing-required.json        |   1 +
+ .../fixtures/v1/privacy-redaction.json        |   1 +
+ .../fixtures/v1/retry-identical.json          |   1 +
+ .../fixtures/v1/stale-authority-reject.json   |   1 +
+ .../v1/unknown-advisory-roundtrip.json        |   1 +
+ .../v1/unknown-consequential-reject.json      |   1 +
+ .../fixtures/v1/valid-full.json               |   1 +
+ .../fixtures/v1/valid-minimal.json            |   1 +
+ .../fixtures/v1/wrong-capability-digest.json  |   1 +
+ packages/memory-contracts/index.js            |  30 ++
+ packages/memory-contracts/index.test.js       |  10 +
+ packages/memory-contracts/package.json        |  22 ++
+ .../v1/capability-manifest.schema.json        |   1 +
+ .../schemas/v1/claim-request.schema.json      |   1 +
+ .../schemas/v1/context-packet.schema.json     |   1 +
+ .../schemas/v1/delivery-receipt.schema.json   |   1 +
+ .../schemas/v1/feedback-report.schema.json    |   1 +
+ .../schemas/v1/lease-receipt.schema.json      |   1 +
+ .../schemas/v1/monitor-event.schema.json      |   1 +
+ .../schemas/v1/monitor-receipt.schema.json    |   1 +
+ .../schemas/v1/run-receipt.schema.json        |   1 +
+ .../schemas/v1/structured-error.schema.json   |   1 +
+ .../schemas/v1/work-packet.schema.json        |   1 +
+ packages/memory-contracts/src/baseline.js     |  23 ++
+ packages/memory-contracts/src/canonical.js    |  73 +++++
+ packages/memory-contracts/src/definitions.js  |  72 +++++
+ packages/memory-contracts/src/identity.js     |  42 +++
+ packages/memory-contracts/src/schema.js       |  36 +++
+ packages/memory-contracts/src/validate.js     | 129 ++++++++
+ .../memory-contracts/test/baseline.test.js    |   8 +
+ .../memory-contracts/test/canonical.test.js   |   8 +
+ .../memory-contracts/test/contracts.test.js   | 300 ++++++++++++++++++
+ .../memory-contracts/test/definitions.test.js |   9 +
+ .../memory-contracts/test/identity.test.js    |   8 +
+ packages/memory-contracts/test/schema.test.js |   9 +
+ .../memory-contracts/test/validate.test.js    |   8 +
+ 40 files changed, 839 insertions(+)
+ create mode 100644 packages/memory-contracts/compatibility-matrix.v1.json
+ create mode 100644 packages/memory-contracts/contract-baseline.v1.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/canonical-hash.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/identity-conflict.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/malformed-missing-required.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/privacy-redaction.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/retry-identical.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/stale-authority-reject.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/valid-full.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/valid-minimal.json
+ create mode 100644 packages/memory-contracts/fixtures/v1/wrong-capability-digest.json
+ create mode 100644 packages/memory-contracts/index.js
+ create mode 100644 packages/memory-contracts/index.test.js
+ create mode 100644 packages/memory-contracts/package.json
+ create mode 100644 packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/claim-request.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/context-packet.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/feedback-report.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/monitor-event.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/run-receipt.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/structured-error.schema.json
+ create mode 100644 packages/memory-contracts/schemas/v1/work-packet.schema.json
+ create mode 100644 packages/memory-contracts/src/baseline.js
+ create mode 100644 packages/memory-contracts/src/canonical.js
+ create mode 100644 packages/memory-contracts/src/definitions.js
+ create mode 100644 packages/memory-contracts/src/identity.js
+ create mode 100644 packages/memory-contracts/src/schema.js
+ create mode 100644 packages/memory-contracts/src/validate.js
+ create mode 100644 packages/memory-contracts/test/baseline.test.js
+ create mode 100644 packages/memory-contracts/test/canonical.test.js
+ create mode 100644 packages/memory-contracts/test/contracts.test.js
+ create mode 100644 packages/memory-contracts/test/definitions.test.js
+ create mode 100644 packages/memory-contracts/test/identity.test.js
+ create mode 100644 packages/memory-contracts/test/schema.test.js
+ create mode 100644 packages/memory-contracts/test/validate.test.js
+
+diff --git a/packages/memory-contracts/compatibility-matrix.v1.json b/packages/memory-contracts/compatibility-matrix.v1.json
+new file mode 100644
+index 00000000..59e66f95
+--- /dev/null
++++ b/packages/memory-contracts/compatibility-matrix.v1.json
+@@ -0,0 +1 @@
++{"matrix_version":1,"readers":{"0.1.0-beta.6":{"accepted":{"forge.memory.work-packet.v1":[1],"forge.memory.context-packet.v1":[1],"forge.memory.claim-request.v1":[1],"forge.memory.lease-receipt.v1":[1],"forge.memory.capability-manifest.v1":[1],"forge.memory.run-receipt.v1":[1],"forge.memory.feedback-report.v1":[1],"forge.memory.structured-error.v1":[1],"forge.memory.monitor-event.v1":[1],"forge.memory.delivery-receipt.v1":[1],"forge.memory.monitor-receipt.v1":[1]},"unknown_advisory":"preserve","unknown_consequential":"reject","unknown_schema_version":"reject"}}}
+diff --git a/packages/memory-contracts/contract-baseline.v1.json b/packages/memory-contracts/contract-baseline.v1.json
+new file mode 100644
+index 00000000..a3a60763
+--- /dev/null
++++ b/packages/memory-contracts/contract-baseline.v1.json
+@@ -0,0 +1,29 @@
++{
++  "baseline_version": 1,
++  "generator_version": "memory-contracts-schema-gen/1",
++  "artifacts": [
++    { "path": "compatibility-matrix.v1.json", "sha256": "40235512903a54acd8420c97dc803d23988d0521c690dd6eb52be52034cd9b89" },
++    { "path": "fixtures/v1/canonical-hash.json", "sha256": "bea6e4567c07edfa7bcb2dd256a735b9519604b94358d25f707e98676f1ab6e8" },
++    { "path": "fixtures/v1/identity-conflict.json", "sha256": "cb824e8dc5120d89437dd5854b402204cfd8b5e1d20cead8aafc1554ff4f354e" },
++    { "path": "fixtures/v1/malformed-missing-required.json", "sha256": "f4bb351ff69e8a01dbc8b9f1d5284929808287b3fd76a4bb43cee1709bd674e5" },
++    { "path": "fixtures/v1/privacy-redaction.json", "sha256": "ef1b23e5704fa9c2f954ef13892e5f9382e29e35dc741ebea38d8c2616b32b23" },
++    { "path": "fixtures/v1/retry-identical.json", "sha256": "d8b8a7f3829db4ec14c2ecab619a784ad7c5abb1023d98998a2437b331c99341" },
++    { "path": "fixtures/v1/stale-authority-reject.json", "sha256": "352c81d3ebc9b0a75101780fc34f93d57ffb6a143edbccbb6c05e2be5e4b4e6c" },
++    { "path": "fixtures/v1/unknown-advisory-roundtrip.json", "sha256": "8e221261138fbb39c2995e9382174d82ea809c70c482be6107e878c07e8c1658" },
++    { "path": "fixtures/v1/unknown-consequential-reject.json", "sha256": "9b690f48f6da63c3ee9464e18ed4c147939cacbe24024f9d0cf543f06c648e14" },
++    { "path": "fixtures/v1/valid-full.json", "sha256": "ea2268039b0c22469c989432e2eebdbde85c9d27c01e3c735ae8f8d4757c14f8" },
++    { "path": "fixtures/v1/valid-minimal.json", "sha256": "69c9d245704db95c57ac277132576d5fe70c5f05e386ae507a589c0d74c6bbdc" },
++    { "path": "fixtures/v1/wrong-capability-digest.json", "sha256": "4516f659a0c3ecdef4362c99fc023823c750ce5c7a943181b25d8deb7d41a3d6" },
++    { "path": "schemas/v1/capability-manifest.schema.json", "sha256": "9d519af7c827675a9dafa47ea85e2877992ba5e2692a275bb71c1baad62035a7" },
++    { "path": "schemas/v1/claim-request.schema.json", "sha256": "a72d628cc47fbc4049c07c90e5aae0ae6cc14a5523c839640e295d096c053477" },
++    { "path": "schemas/v1/context-packet.schema.json", "sha256": "893490056933855622e63899e9f2f4a4e62175902f1abf8cdbebf3a468cafe18" },
++    { "path": "schemas/v1/delivery-receipt.schema.json", "sha256": "98bb20237101356bbf41813831b324ec519fadfd5ff7eae2315cb66455b7b405" },
++    { "path": "schemas/v1/feedback-report.schema.json", "sha256": "c8fd0f2b75e72f060daafc51fb5697479fcb2ec3d42750397e892e9c3c396db8" },
++    { "path": "schemas/v1/lease-receipt.schema.json", "sha256": "fef4be06a0bd3d64cb5d25dd935ff150d6abe47e0ed3247466877419d26cee50" },
++    { "path": "schemas/v1/monitor-event.schema.json", "sha256": "bf4e8e9dbf07c0b8bfe7b1547813ff96d5d1de1a62615e98935c14b9a9a26501" },
++    { "path": "schemas/v1/monitor-receipt.schema.json", "sha256": "93998a98467cb6dda5d333b7571da0df54cd5df423f0f21d9077fc0766dfb5bd" },
++    { "path": "schemas/v1/run-receipt.schema.json", "sha256": "00a977b8b38040c169bea267a92e2d7d35db72b4db1f03e3a2be6d9f1741c3b2" },
++    { "path": "schemas/v1/structured-error.schema.json", "sha256": "a931a74ec0a3f526522f3c755df8393f3ec20a07eaba24ef5f7eff1274197b31" },
++    { "path": "schemas/v1/work-packet.schema.json", "sha256": "de738ef3d1cb65c7bbc33e3b90e34f69d08ecdb2f635ade05849b24656b66260" }
++  ]
++}
+diff --git a/packages/memory-contracts/fixtures/v1/canonical-hash.json b/packages/memory-contracts/fixtures/v1/canonical-hash.json
+new file mode 100644
+index 00000000..a6029804
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/canonical-hash.json
+@@ -0,0 +1 @@
++{"fixture_id":"canonical-hash","schema_id":"forge.memory.work-packet.v1","operation":"canonical-hash","expected":{"stable_under_key_reordering":true,"content_hash_excluded":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/identity-conflict.json b/packages/memory-contracts/fixtures/v1/identity-conflict.json
+new file mode 100644
+index 00000000..0e5cb2eb
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/identity-conflict.json
+@@ -0,0 +1 @@
++{"fixture_id":"identity-conflict","schema_id":"forge.memory.work-packet.v1","operation":"classify-semantic-attempt","mutation":"payload.objective","expected":{"status":"identity-conflict"}}
+diff --git a/packages/memory-contracts/fixtures/v1/malformed-missing-required.json b/packages/memory-contracts/fixtures/v1/malformed-missing-required.json
+new file mode 100644
+index 00000000..ebb57f2d
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/malformed-missing-required.json
+@@ -0,0 +1 @@
++{"fixture_id":"malformed-missing-required","schema_id":"forge.memory.work-packet.v1","operation":"delete-each-required-field","expected":{"code":"MISSING_REQUIRED"}}
+diff --git a/packages/memory-contracts/fixtures/v1/privacy-redaction.json b/packages/memory-contracts/fixtures/v1/privacy-redaction.json
+new file mode 100644
+index 00000000..bde605d0
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/privacy-redaction.json
+@@ -0,0 +1 @@
++{"fixture_id":"privacy-redaction","schema_id":"forge.memory.context-packet.v1","operation":"validate-expected","mismatch":"privacy_scope_hash","expected":{"code":"STALE_PRIVACY_SCOPE","raw_content_embedded":false}}
+diff --git a/packages/memory-contracts/fixtures/v1/retry-identical.json b/packages/memory-contracts/fixtures/v1/retry-identical.json
+new file mode 100644
+index 00000000..aa1e124f
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/retry-identical.json
+@@ -0,0 +1 @@
++{"fixture_id":"retry-identical","schema_id":"forge.memory.work-packet.v1","operation":"classify-semantic-attempt","mutation":"none","expected":{"status":"retry-identical"}}
+diff --git a/packages/memory-contracts/fixtures/v1/stale-authority-reject.json b/packages/memory-contracts/fixtures/v1/stale-authority-reject.json
+new file mode 100644
+index 00000000..eee49749
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/stale-authority-reject.json
+@@ -0,0 +1 @@
++{"fixture_id":"stale-authority-reject","schema_id":"forge.memory.work-packet.v1","operation":"validate-expected","mismatch":"expected_issue_revision","expected":{"code":"STALE_ISSUE_REVISION"}}
+diff --git a/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json b/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json
+new file mode 100644
+index 00000000..14cb2ff4
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/unknown-advisory-roundtrip.json
+@@ -0,0 +1 @@
++{"fixture_id":"unknown-advisory-roundtrip","schema_id":"forge.memory.work-packet.v1","operation":"roundtrip-extension","extension":{"id":"vendor.example/advisory","impact":"advisory"},"expected":{"preserved":true}}
+diff --git a/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json b/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json
+new file mode 100644
+index 00000000..675c22fd
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/unknown-consequential-reject.json
+@@ -0,0 +1 @@
++{"fixture_id":"unknown-consequential-reject","schema_id":"forge.memory.work-packet.v1","operation":"validate-extension","extension":{"id":"vendor.example/authority","impact":"consequential"},"expected":{"code":"UNKNOWN_CONSEQUENTIAL_EXTENSION"}}
+diff --git a/packages/memory-contracts/fixtures/v1/valid-full.json b/packages/memory-contracts/fixtures/v1/valid-full.json
+new file mode 100644
+index 00000000..d36d75ea
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/valid-full.json
+@@ -0,0 +1 @@
++{"fixture_id":"valid-full","schema_id":"forge.memory.work-packet.v1","operation":"validate","expected":{"ok":true},"variant":"all-optional-fields"}
+diff --git a/packages/memory-contracts/fixtures/v1/valid-minimal.json b/packages/memory-contracts/fixtures/v1/valid-minimal.json
+new file mode 100644
+index 00000000..a2956f9e
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/valid-minimal.json
+@@ -0,0 +1 @@
++{"fixture_id":"valid-minimal","schema_id":"forge.memory.work-packet.v1","operation":"validate","expected":{"ok":true},"variant":"minimal"}
+diff --git a/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json b/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json
+new file mode 100644
+index 00000000..0c2d3652
+--- /dev/null
++++ b/packages/memory-contracts/fixtures/v1/wrong-capability-digest.json
+@@ -0,0 +1 @@
++{"fixture_id":"wrong-capability-digest","schema_id":"forge.memory.work-packet.v1","operation":"validate-expected","mismatch":"capability_manifest_digest","expected":{"code":"WRONG_CAPABILITY_DIGEST"}}
+diff --git a/packages/memory-contracts/index.js b/packages/memory-contracts/index.js
+new file mode 100644
+index 00000000..e66a2e2a
+--- /dev/null
++++ b/packages/memory-contracts/index.js
+@@ -0,0 +1,30 @@
++"use strict";
++
++const { canonicalize, computeContentHash } = require("./src/canonical.js");
++const { verifyContractBaseline } = require("./src/baseline.js");
++const { CONTRACTS } = require("./src/definitions.js");
++const { classifySemanticAttempt, semanticIdentity } = require("./src/identity.js");
++const { generateJsonSchema, supportedSchemaVersions } = require("./src/schema.js");
++const {
++  ContractValidationError,
++  ENVELOPE_FIELDS,
++  parseContract,
++  validateContract,
++  validateEnvelope,
++} = require("./src/validate.js");
++
++module.exports = {
++  ENVELOPE_FIELDS,
++  CONTRACTS,
++  ContractValidationError,
++  canonicalize,
++  classifySemanticAttempt,
++  computeContentHash,
++  generateJsonSchema,
++  parseContract,
++  semanticIdentity,
++  supportedSchemaVersions,
++  validateContract,
++  validateEnvelope,
++  verifyContractBaseline,
++};
+diff --git a/packages/memory-contracts/index.test.js b/packages/memory-contracts/index.test.js
+new file mode 100644
+index 00000000..52db8807
+--- /dev/null
++++ b/packages/memory-contracts/index.test.js
+@@ -0,0 +1,10 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const contracts = require("./index.js");
++
++test("exports the complete contract surface", () => {
++  for (const name of ["canonicalize", "computeContentHash", "semanticIdentity", "validateContract", "verifyContractBaseline"]) {
++    expect(typeof contracts[name]).toBe("function");
++  }
++});
+diff --git a/packages/memory-contracts/package.json b/packages/memory-contracts/package.json
+new file mode 100644
+index 00000000..b701a723
+--- /dev/null
++++ b/packages/memory-contracts/package.json
+@@ -0,0 +1,22 @@
++{
++  "name": "@forge/memory-contracts",
++  "version": "0.1.0-beta.6",
++  "description": "Behavior-neutral packet and receipt contracts for Forge products",
++  "main": "index.js",
++  "type": "commonjs",
++  "files": [
++    "index.js",
++    "src/",
++    "schemas/",
++    "fixtures/",
++    "contract-baseline.v1.json"
++  ],
++  "scripts": {
++    "test": "bun test test",
++    "lint": "eslint . --max-warnings 0"
++  },
++  "license": "MIT",
++  "engines": {
++    "node": ">=22.16.0"
++  }
++}
+diff --git a/packages/memory-contracts/schemas/v1/capability-manifest.schema.json b/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+new file mode 100644
+index 00000000..ee56cdd2
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/capability-manifest.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.capability-manifest.v1","title":"CapabilityManifest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.capability-manifest.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["provider_id","manifest_revision","config_revision","executable_identity","provider_version","probe_revision","result_hash","capabilities","evaluator_status","probed_at","expires_at"],"properties":{"provider_id":{},"manifest_revision":{},"config_revision":{},"executable_identity":{},"provider_version":{},"probe_revision":{},"result_hash":{},"capabilities":{},"evaluator_status":{},"probed_at":{},"expires_at":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/claim-request.schema.json b/packages/memory-contracts/schemas/v1/claim-request.schema.json
+new file mode 100644
+index 00000000..b3bfc265
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/claim-request.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.claim-request.v1","title":"ClaimRequest","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.claim-request.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","actor_id","request_id","requested_scope","idempotency_key"],"properties":{"issue_id":{},"expected_issue_revision":{},"actor_id":{},"request_id":{},"requested_scope":{},"idempotency_key":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/context-packet.schema.json b/packages/memory-contracts/schemas/v1/context-packet.schema.json
+new file mode 100644
+index 00000000..981433c7
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/context-packet.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.context-packet.v1","title":"ContextPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.context-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["work_packet_hash","context_selection_revision","privacy_scope_hash","retention_class","disclosure_class"],"properties":{"work_packet_hash":{},"context_selection_revision":{},"privacy_scope_hash":{},"retention_class":{},"disclosure_class":{},"references":{},"summaries":{},"redaction_policy_revision":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json b/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+new file mode 100644
+index 00000000..5e5a3b5d
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/delivery-receipt.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.delivery-receipt.v1","title":"DeliveryReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.delivery-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["event_id","target","transport_tier","attempt","delivered_at","acknowledged","outcome"],"properties":{"event_id":{},"target":{},"transport_tier":{},"attempt":{},"delivered_at":{},"acknowledged":{},"outcome":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/feedback-report.schema.json b/packages/memory-contracts/schemas/v1/feedback-report.schema.json
+new file mode 100644
+index 00000000..a85c4dc9
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/feedback-report.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.feedback-report.v1","title":"FeedbackReport","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.feedback-report.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["report_id","product_version","contract_version","stable_error_code","affected_capability","redacted_reproduction_steps","expected_classification","actual_classification","occurrence_count","content_fingerprint","consent_event_id","redaction_policy_revision"],"properties":{"report_id":{},"product_version":{},"contract_version":{},"stable_error_code":{},"affected_capability":{},"redacted_reproduction_steps":{},"expected_classification":{},"actual_classification":{},"occurrence_count":{},"content_fingerprint":{},"consent_event_id":{},"redaction_policy_revision":{},"proposed_fix":{},"return_channel":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/lease-receipt.schema.json b/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+new file mode 100644
+index 00000000..1266d063
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/lease-receipt.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.lease-receipt.v1","title":"LeaseReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.lease-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["claim_request_id","lease_id","lease_epoch","issue_revision","actor_id","scope","expires_at","durable","authority_signature"],"properties":{"claim_request_id":{},"lease_id":{},"lease_epoch":{},"issue_revision":{},"actor_id":{},"scope":{},"expires_at":{},"durable":{},"authority_signature":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/monitor-event.schema.json b/packages/memory-contracts/schemas/v1/monitor-event.schema.json
+new file mode 100644
+index 00000000..37447cff
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/monitor-event.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-event.v1","title":"MonitorEvent","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-event.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","event_id","sequence","subject_revision","type","actionability","observed_at"],"properties":{"monitor_id":{},"event_id":{},"sequence":{},"subject_revision":{},"type":{},"actionability":{},"observed_at":{},"bounded_payload":{},"artifact_digest":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json b/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+new file mode 100644
+index 00000000..fe318cd9
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/monitor-receipt.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.monitor-receipt.v1","title":"MonitorReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.monitor-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["monitor_id","owner_run_id","terminal_state","terminal_reason","last_sequence","evidence_digest","cancellation_acknowledged","process_cleanup","lease_cleanup"],"properties":{"monitor_id":{},"owner_run_id":{},"terminal_state":{},"terminal_reason":{},"last_sequence":{},"evidence_digest":{},"cancellation_acknowledged":{},"process_cleanup":{},"lease_cleanup":{},"undelivered_cursor":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/run-receipt.schema.json b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+new file mode 100644
+index 00000000..13c8e8dd
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/run-receipt.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.run-receipt.v1","title":"RunReceipt","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.run-receipt.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["packet_hash","run_id","attempt_id","exact_head","packet_revision","manifest_digest","workflow_config_revision","status","executor","started_at","ended_at","evidence_refs","validation","cleanup"],"properties":{"packet_hash":{},"run_id":{},"attempt_id":{},"exact_head":{},"packet_revision":{},"manifest_digest":{},"workflow_config_revision":{},"status":{},"executor":{},"started_at":{},"ended_at":{},"evidence_refs":{},"validation":{},"cleanup":{},"lease_epoch":{},"tokens":{},"retries":{},"corrections":{},"mutations_attempted":{},"mutations_authorized":{},"structured_error":{},"active_time_ms":{},"passive_time_ms":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/structured-error.schema.json b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+new file mode 100644
+index 00000000..078d4273
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/structured-error.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.structured-error.v1","title":"StructuredError","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.structured-error.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["parent_object_hash","error_occurrence_id","code","terminal_classification","safe_details"],"properties":{"parent_object_hash":{},"error_occurrence_id":{},"code":{},"terminal_classification":{},"safe_details":{},"retryable":{},"evidence_refs":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/schemas/v1/work-packet.schema.json b/packages/memory-contracts/schemas/v1/work-packet.schema.json
+new file mode 100644
+index 00000000..3a73ce1f
+--- /dev/null
++++ b/packages/memory-contracts/schemas/v1/work-packet.schema.json
+@@ -0,0 +1 @@
++{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"forge.memory.work-packet.v1","title":"WorkPacket","type":"object","required":["schema_id","schema_version","object_id","created_at","producer","capabilities_used","provenance","content_hash","payload","extensions"],"properties":{"schema_id":{"const":"forge.memory.work-packet.v1"},"schema_version":{"const":1},"object_id":{"type":"string","format":"uuid"},"created_at":{"type":"string","format":"date-time"},"producer":{"type":"object"},"capabilities_used":{"type":"array"},"provenance":{"type":"object"},"content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"},"payload":{"type":"object","required":["issue_id","expected_issue_revision","packet_id","packet_revision","repository_id","target_head","objective","authority","allowed_mutations","workflow_config_revision","capability_manifest_digest"],"properties":{"issue_id":{},"expected_issue_revision":{},"packet_id":{},"packet_revision":{},"repository_id":{},"target_head":{},"objective":{},"authority":{},"allowed_mutations":{},"workflow_config_revision":{},"capability_manifest_digest":{},"acceptance_criteria":{},"prohibited_actions":{},"dependencies":{},"constraints":{},"risk":{},"platform":{},"context_references":{},"expected_outputs":{},"target":{},"receipt_requirements":{},"idempotency_key":{},"token_budget":{},"budget_metric":{},"risk_manifest_digest":{}},"additionalProperties":false},"extensions":{"type":"object"}},"additionalProperties":false}
+diff --git a/packages/memory-contracts/src/baseline.js b/packages/memory-contracts/src/baseline.js
+new file mode 100644
+index 00000000..3135f32d
+--- /dev/null
++++ b/packages/memory-contracts/src/baseline.js
+@@ -0,0 +1,23 @@
++"use strict";
++
++const { createHash } = require("node:crypto");
++const { readFileSync } = require("node:fs");
++const { join } = require("node:path");
++
++const PACKAGE_ROOT = join(__dirname, "..");
++
++function sha256File(path) {
++  return createHash("sha256").update(readFileSync(path)).digest("hex");
++}
++
++function verifyContractBaseline() {
++  const baseline = JSON.parse(readFileSync(join(PACKAGE_ROOT, "contract-baseline.v1.json"), "utf8"));
++  const mismatches = [];
++  for (const entry of baseline.artifacts) {
++    const actual = sha256File(join(PACKAGE_ROOT, ...entry.path.split("/")));
++    if (actual !== entry.sha256) mismatches.push({ path: entry.path, expected: entry.sha256, actual });
++  }
++  return { ok: mismatches.length === 0, mismatches };
++}
++
++module.exports = { verifyContractBaseline };
+diff --git a/packages/memory-contracts/src/canonical.js b/packages/memory-contracts/src/canonical.js
+new file mode 100644
+index 00000000..e1d74f47
+--- /dev/null
++++ b/packages/memory-contracts/src/canonical.js
+@@ -0,0 +1,73 @@
++"use strict";
++
++const { createHash } = require("node:crypto");
++
++function assertUnicode(value) {
++  for (let index = 0; index < value.length; index += 1) {
++    const code = value.charCodeAt(index);
++    if (code >= 0xd800 && code <= 0xdbff) {
++      const next = value.charCodeAt(index + 1);
++      if (!(next >= 0xdc00 && next <= 0xdfff)) {
++        throw new TypeError("Canonical JSON rejects unpaired UTF-16 surrogates");
++      }
++      index += 1;
++    } else if (code >= 0xdc00 && code <= 0xdfff) {
++      throw new TypeError("Canonical JSON rejects unpaired UTF-16 surrogates");
++    }
++  }
++}
++
++function serialize(value) {
++  if (value === null || typeof value === "boolean") return JSON.stringify(value);
++  if (typeof value === "string") {
++    assertUnicode(value);
++    return JSON.stringify(value);
++  }
++  if (typeof value === "number") {
++    if (!Number.isFinite(value)) {
++      throw new TypeError("Canonical JSON requires finite numbers");
++    }
++    return JSON.stringify(value);
++  }
++  if (Array.isArray(value)) {
++    const items = [];
++    for (let index = 0; index < value.length; index += 1) {
++      if (!Object.hasOwn(value, index)) {
++        throw new TypeError("Canonical JSON rejects sparse arrays");
++      }
++      items.push(serialize(value[index]));
++    }
++    return `[${items.join(",")}]`;
++  }
++  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
++    const entries = Object.keys(value)
++      .sort()
++      .map((key) => {
++        assertUnicode(key);
++        return `${JSON.stringify(key)}:${serialize(value[key])}`;
++      });
++    return `{${entries.join(",")}}`;
++  }
++  throw new TypeError(`Canonical JSON cannot encode ${typeof value}`);
++}
++
++function canonicalize(value) {
++  return serialize(value);
++}
++
++function withoutContentHash(value) {
++  if (!value || typeof value !== "object" || Array.isArray(value)) {
++    throw new TypeError("Contract object must be a JSON object");
++  }
++  const copy = { ...value };
++  delete copy.content_hash;
++  return copy;
++}
++
++function computeContentHash(value) {
++  return createHash("sha256")
++    .update(canonicalize(withoutContentHash(value)), "utf8")
++    .digest("hex");
++}
++
++module.exports = { canonicalize, computeContentHash };
+diff --git a/packages/memory-contracts/src/definitions.js b/packages/memory-contracts/src/definitions.js
+new file mode 100644
+index 00000000..c0bbf89d
+--- /dev/null
++++ b/packages/memory-contracts/src/definitions.js
+@@ -0,0 +1,72 @@
++"use strict";
++
++const CONTRACTS = Object.freeze({
++  "forge.memory.work-packet.v1": {
++    name: "WorkPacket",
++    identity: ["issue_id", "expected_issue_revision", "packet_id", "packet_revision", "repository_id", "target_head"],
++    required: ["issue_id", "expected_issue_revision", "packet_id", "packet_revision", "repository_id", "target_head", "objective", "authority", "allowed_mutations", "workflow_config_revision", "capability_manifest_digest"],
++    optional: ["acceptance_criteria", "prohibited_actions", "dependencies", "constraints", "risk", "platform", "context_references", "expected_outputs", "target", "receipt_requirements", "idempotency_key", "token_budget", "budget_metric", "risk_manifest_digest"],
++  },
++  "forge.memory.context-packet.v1": {
++    name: "ContextPacket",
++    identity: ["work_packet_hash", "context_selection_revision", "privacy_scope_hash"],
++    required: ["work_packet_hash", "context_selection_revision", "privacy_scope_hash", "retention_class", "disclosure_class"],
++    optional: ["references", "summaries", "redaction_policy_revision"],
++  },
++  "forge.memory.claim-request.v1": {
++    name: "ClaimRequest",
++    identity: ["issue_id", "expected_issue_revision", "actor_id", "request_id"],
++    required: ["issue_id", "expected_issue_revision", "actor_id", "request_id", "requested_scope", "idempotency_key"],
++    optional: [],
++  },
++  "forge.memory.lease-receipt.v1": {
++    name: "LeaseReceipt",
++    identity: ["claim_request_id", "lease_id", "lease_epoch"],
++    required: ["claim_request_id", "lease_id", "lease_epoch", "issue_revision", "actor_id", "scope", "expires_at", "durable", "authority_signature"],
++    optional: [],
++  },
++  "forge.memory.capability-manifest.v1": {
++    name: "CapabilityManifest",
++    identity: ["provider_id", "manifest_revision", "config_revision"],
++    required: ["provider_id", "manifest_revision", "config_revision", "executable_identity", "provider_version", "probe_revision", "result_hash", "capabilities", "evaluator_status", "probed_at", "expires_at"],
++    optional: [],
++  },
++  "forge.memory.run-receipt.v1": {
++    name: "RunReceipt",
++    identity: ["packet_hash", "run_id", "attempt_id", "exact_head"],
++    required: ["packet_hash", "run_id", "attempt_id", "exact_head", "packet_revision", "manifest_digest", "workflow_config_revision", "status", "executor", "started_at", "ended_at", "evidence_refs", "validation", "cleanup"],
++    optional: ["lease_epoch", "tokens", "retries", "corrections", "mutations_attempted", "mutations_authorized", "structured_error", "active_time_ms", "passive_time_ms"],
++  },
++  "forge.memory.feedback-report.v1": {
++    name: "FeedbackReport",
++    identity: ["report_id", "product_version", "content_fingerprint"],
++    required: ["report_id", "product_version", "contract_version", "stable_error_code", "affected_capability", "redacted_reproduction_steps", "expected_classification", "actual_classification", "occurrence_count", "content_fingerprint", "consent_event_id", "redaction_policy_revision"],
++    optional: ["proposed_fix", "return_channel"],
++  },
++  "forge.memory.structured-error.v1": {
++    name: "StructuredError",
++    identity: ["parent_object_hash", "error_occurrence_id"],
++    required: ["parent_object_hash", "error_occurrence_id", "code", "terminal_classification", "safe_details"],
++    optional: ["retryable", "evidence_refs"],
++  },
++  "forge.memory.monitor-event.v1": {
++    name: "MonitorEvent",
++    identity: ["monitor_id", "event_id", "sequence"],
++    required: ["monitor_id", "event_id", "sequence", "subject_revision", "type", "actionability", "observed_at"],
++    optional: ["bounded_payload", "artifact_digest"],
++  },
++  "forge.memory.delivery-receipt.v1": {
++    name: "DeliveryReceipt",
++    identity: ["event_id", "target", "attempt"],
++    required: ["event_id", "target", "transport_tier", "attempt", "delivered_at", "acknowledged", "outcome"],
++    optional: [],
++  },
++  "forge.memory.monitor-receipt.v1": {
++    name: "MonitorReceipt",
++    identity: ["monitor_id", "owner_run_id", "last_sequence"],
++    required: ["monitor_id", "owner_run_id", "terminal_state", "terminal_reason", "last_sequence", "evidence_digest", "cancellation_acknowledged", "process_cleanup", "lease_cleanup"],
++    optional: ["undelivered_cursor"],
++  },
++});
++
++module.exports = { CONTRACTS };
+diff --git a/packages/memory-contracts/src/identity.js b/packages/memory-contracts/src/identity.js
+new file mode 100644
+index 00000000..0aa43267
+--- /dev/null
++++ b/packages/memory-contracts/src/identity.js
+@@ -0,0 +1,42 @@
++"use strict";
++
++const { canonicalize, computeContentHash } = require("./canonical.js");
++const { CONTRACTS } = require("./definitions.js");
++
++function semanticIdentity(value) {
++  const definition = CONTRACTS[value?.schema_id];
++  if (!definition) throw new TypeError(`Unsupported schema_id: ${value?.schema_id}`);
++  const identity = {};
++  for (const field of definition.identity) {
++    if (!Object.hasOwn(value.payload ?? {}, field)) {
++      throw new TypeError(`Semantic identity requires payload.${field}`);
++    }
++    identity[field] = value.payload[field];
++  }
++  return `${value.schema_id}:${canonicalize(identity)}`;
++}
++
++function classifySemanticAttempt(accepted, candidate) {
++  const acceptedIdentity = semanticIdentity(accepted);
++  const candidateIdentity = semanticIdentity(candidate);
++  if (acceptedIdentity !== candidateIdentity) {
++    return { status: "new-identity", identity: candidateIdentity };
++  }
++  const acceptedHash = computeContentHash(accepted);
++  const candidateHash = computeContentHash(candidate);
++  if (acceptedHash === candidateHash) {
++    return {
++      status: "retry-identical",
++      identity: candidateIdentity,
++      content_hash: candidateHash,
++    };
++  }
++  return {
++    status: "identity-conflict",
++    identity: candidateIdentity,
++    accepted_hash: acceptedHash,
++    candidate_hash: candidateHash,
++  };
++}
++
++module.exports = { classifySemanticAttempt, semanticIdentity };
+diff --git a/packages/memory-contracts/src/schema.js b/packages/memory-contracts/src/schema.js
+new file mode 100644
+index 00000000..65699e15
+--- /dev/null
++++ b/packages/memory-contracts/src/schema.js
+@@ -0,0 +1,36 @@
++"use strict";
++
++const { CONTRACTS } = require("./definitions.js");
++
++function generateJsonSchema(schemaId) {
++  const definition = CONTRACTS[schemaId];
++  if (!definition) throw new TypeError(`Unsupported schema_id: ${schemaId}`);
++  const payloadProperties = {};
++  for (const field of [...definition.required, ...definition.optional]) payloadProperties[field] = {};
++  return {
++    $schema: "https://json-schema.org/draft/2020-12/schema",
++    $id: schemaId,
++    title: definition.name,
++    type: "object",
++    required: ["schema_id", "schema_version", "object_id", "created_at", "producer", "capabilities_used", "provenance", "content_hash", "payload", "extensions"],
++    properties: {
++      schema_id: { const: schemaId },
++      schema_version: { const: 1 },
++      object_id: { type: "string", format: "uuid" },
++      created_at: { type: "string", format: "date-time" },
++      producer: { type: "object" },
++      capabilities_used: { type: "array" },
++      provenance: { type: "object" },
++      content_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
++      payload: { type: "object", required: definition.required, properties: payloadProperties, additionalProperties: false },
++      extensions: { type: "object" },
++    },
++    additionalProperties: false,
++  };
++}
++
++function supportedSchemaVersions(schemaId) {
++  return CONTRACTS[schemaId] ? [1] : [];
++}
++
++module.exports = { generateJsonSchema, supportedSchemaVersions };
+diff --git a/packages/memory-contracts/src/validate.js b/packages/memory-contracts/src/validate.js
+new file mode 100644
+index 00000000..c98dbd71
+--- /dev/null
++++ b/packages/memory-contracts/src/validate.js
+@@ -0,0 +1,129 @@
++"use strict";
++
++const { computeContentHash } = require("./canonical.js");
++const { CONTRACTS } = require("./definitions.js");
++
++const ENVELOPE_FIELDS = Object.freeze([
++  "schema_id", "schema_version", "object_id", "created_at", "producer",
++  "capabilities_used", "provenance", "content_hash", "payload", "extensions",
++]);
++const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++const SHA256 = /^[0-9a-f]{64}$/;
++const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
++
++function error(errors, path, code) {
++  errors.push({ path, code });
++}
++
++function validateEnvelope(value, options = {}) {
++  const errors = [];
++  if (!value || typeof value !== "object" || Array.isArray(value)) {
++    return { ok: false, errors: [{ path: "$", code: "INVALID_ENVELOPE" }] };
++  }
++  for (const field of ENVELOPE_FIELDS) {
++    if (!Object.hasOwn(value, field)) error(errors, `$.${field}`, "MISSING_REQUIRED");
++  }
++  if (errors.length > 0) return { ok: false, errors };
++  if (!CONTRACTS[value.schema_id]) error(errors, "$.schema_id", "UNSUPPORTED_SCHEMA");
++  if (value.schema_version !== 1) error(errors, "$.schema_version", "UNSUPPORTED_VERSION");
++  if (typeof value.schema_id !== "string" || value.schema_id.length === 0) error(errors, "$.schema_id", "INVALID_TYPE");
++  if (!UUID.test(value.object_id)) error(errors, "$.object_id", "INVALID_UUID");
++  if (typeof value.created_at !== "string" || !RFC3339_UTC.test(value.created_at) || Number.isNaN(Date.parse(value.created_at))) error(errors, "$.created_at", "INVALID_TIMESTAMP");
++  if (!value.producer || typeof value.producer !== "object" || Array.isArray(value.producer)) error(errors, "$.producer", "INVALID_TYPE");
++  else for (const field of ["product_id", "product_version", "instance_id"]) if (typeof value.producer[field] !== "string" || value.producer[field].length === 0) error(errors, `$.producer.${field}`, "MISSING_REQUIRED");
++  if (!Array.isArray(value.capabilities_used)) error(errors, "$.capabilities_used", "INVALID_TYPE");
++  else {
++    const keys = value.capabilities_used.map((item) => `${item?.capability_id ?? ""}:${item?.manifest_digest ?? ""}`);
++    if (keys.some((key) => !key.includes(":" ) || key.startsWith(":"))) error(errors, "$.capabilities_used", "INVALID_CAPABILITY_BINDING");
++    if (keys.join("\0") !== [...keys].sort().join("\0")) error(errors, "$.capabilities_used", "NOT_SORTED");
++  }
++  if (!value.provenance || typeof value.provenance !== "object" || Array.isArray(value.provenance)) error(errors, "$.provenance", "INVALID_TYPE");
++  else for (const field of ["source_kind", "actor_class", "actor_id"]) if (typeof value.provenance[field] !== "string" || value.provenance[field].length === 0) error(errors, `$.provenance.${field}`, "MISSING_REQUIRED");
++  if (!SHA256.test(value.content_hash)) error(errors, "$.content_hash", "INVALID_CONTENT_HASH");
++  if (!value.payload || typeof value.payload !== "object" || Array.isArray(value.payload)) error(errors, "$.payload", "INVALID_TYPE");
++  if (!value.extensions || typeof value.extensions !== "object" || Array.isArray(value.extensions)) error(errors, "$.extensions", "INVALID_TYPE");
++  if (options.verifyHash !== false && SHA256.test(value.content_hash)) {
++    try {
++      if (computeContentHash(value) !== value.content_hash) error(errors, "$.content_hash", "CONTENT_HASH_MISMATCH");
++    } catch {
++      error(errors, "$", "NON_CANONICAL_VALUE");
++    }
++  }
++  return { ok: errors.length === 0, errors };
++}
++
++function validateExtensions(extensions, errors) {
++  if (!extensions || typeof extensions !== "object" || Array.isArray(extensions)) return;
++  for (const [extensionId, extension] of Object.entries(extensions)) {
++    const path = `$.extensions[${JSON.stringify(extensionId)}]`;
++    if (!extension || typeof extension !== "object" || Array.isArray(extension)) {
++      error(errors, path, "INVALID_EXTENSION");
++      continue;
++    }
++    if (extension.impact === "consequential") error(errors, path, "UNKNOWN_CONSEQUENTIAL_EXTENSION");
++    else if (extension.impact !== "advisory" || !Number.isInteger(extension.schema_version) || extension.schema_version < 1 || !Object.hasOwn(extension, "value")) error(errors, path, "INVALID_EXTENSION");
++  }
++}
++
++function compare(errors, actual, expected, path, code) {
++  if (expected !== undefined && actual !== expected) error(errors, path, code);
++}
++
++function validateConsequentialEvidence(value, expected, errors) {
++  if (!expected || !value?.payload) return;
++  const payload = value.payload;
++  if (value.schema_id === "forge.memory.work-packet.v1") {
++    compare(errors, payload.expected_issue_revision, expected.issueRevision, "$.payload.expected_issue_revision", "STALE_ISSUE_REVISION");
++    compare(errors, payload.workflow_config_revision, expected.workflowConfigRevision, "$.payload.workflow_config_revision", "STALE_WORKFLOW_CONFIG");
++    compare(errors, payload.capability_manifest_digest, expected.capabilityManifestDigest, "$.payload.capability_manifest_digest", "WRONG_CAPABILITY_DIGEST");
++    compare(errors, payload.target_head, expected.exactHead, "$.payload.target_head", "STALE_EXACT_HEAD");
++  } else if (value.schema_id === "forge.memory.context-packet.v1") {
++    compare(errors, payload.work_packet_hash, expected.workPacketHash, "$.payload.work_packet_hash", "STALE_WORK_PACKET");
++    compare(errors, payload.privacy_scope_hash, expected.privacyScopeHash, "$.payload.privacy_scope_hash", "STALE_PRIVACY_SCOPE");
++    compare(errors, payload.redaction_policy_revision, expected.redactionPolicyRevision, "$.payload.redaction_policy_revision", "STALE_REDACTION_POLICY");
++    if (expected.allowedDisclosureClasses && !expected.allowedDisclosureClasses.includes(payload.disclosure_class)) {
++      error(errors, "$.payload.disclosure_class", "DISCLOSURE_NOT_ALLOWED");
++    }
++  } else if (value.schema_id === "forge.memory.run-receipt.v1") {
++    compare(errors, payload.packet_hash, expected.packetHash, "$.payload.packet_hash", "STALE_WORK_PACKET");
++    compare(errors, payload.workflow_config_revision, expected.workflowConfigRevision, "$.payload.workflow_config_revision", "STALE_WORKFLOW_CONFIG");
++    compare(errors, payload.manifest_digest, expected.capabilityManifestDigest, "$.payload.manifest_digest", "WRONG_CAPABILITY_DIGEST");
++    compare(errors, payload.exact_head, expected.exactHead, "$.payload.exact_head", "STALE_EXACT_HEAD");
++    compare(errors, payload.lease_epoch, expected.leaseEpoch, "$.payload.lease_epoch", "STALE_LEASE_EPOCH");
++  }
++}
++
++function validateContract(value, options = {}) {
++  const envelope = validateEnvelope(value, options);
++  const errors = [...envelope.errors];
++  const definition = CONTRACTS[value?.schema_id];
++  if (definition && value?.payload && typeof value.payload === "object" && !Array.isArray(value.payload)) {
++    for (const field of definition.required) {
++      if (!Object.hasOwn(value.payload, field)) error(errors, `$.payload.${field}`, "MISSING_REQUIRED");
++    }
++    const allowed = new Set([...definition.required, ...definition.optional]);
++    for (const field of Object.keys(value.payload)) {
++      if (!allowed.has(field)) error(errors, `$.payload.${field}`, "UNKNOWN_PAYLOAD_FIELD");
++    }
++  }
++  validateExtensions(value?.extensions, errors);
++  validateConsequentialEvidence(value, options.expected, errors);
++  return { ok: errors.length === 0, errors };
++}
++
++class ContractValidationError extends Error {
++  constructor(errors) {
++    super("Contract validation failed");
++    this.name = "ContractValidationError";
++    this.errors = errors;
++  }
++}
++
++function parseContract(json, options = {}) {
++  const value = JSON.parse(json);
++  const result = validateContract(value, options);
++  if (!result.ok) throw new ContractValidationError(result.errors);
++  return value;
++}
++
++module.exports = { ContractValidationError, ENVELOPE_FIELDS, parseContract, validateContract, validateEnvelope };
+diff --git a/packages/memory-contracts/test/baseline.test.js b/packages/memory-contracts/test/baseline.test.js
+new file mode 100644
+index 00000000..0d9cce9d
+--- /dev/null
++++ b/packages/memory-contracts/test/baseline.test.js
+@@ -0,0 +1,8 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const { verifyContractBaseline } = require("../src/baseline.js");
++
++test("baseline artifacts match their SHA-256 digests", () => {
++  expect(verifyContractBaseline()).toEqual({ ok: true, mismatches: [] });
++});
+diff --git a/packages/memory-contracts/test/canonical.test.js b/packages/memory-contracts/test/canonical.test.js
+new file mode 100644
+index 00000000..51872d7a
+--- /dev/null
++++ b/packages/memory-contracts/test/canonical.test.js
+@@ -0,0 +1,8 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const { canonicalize } = require("../src/canonical.js");
++
++test("canonical JSON recursively sorts object keys", () => {
++  expect(canonicalize({ z: 1, a: { y: 2, x: 1 } })).toBe('{"a":{"x":1,"y":2},"z":1}');
++});
+diff --git a/packages/memory-contracts/test/contracts.test.js b/packages/memory-contracts/test/contracts.test.js
+new file mode 100644
+index 00000000..f2487a41
+--- /dev/null
++++ b/packages/memory-contracts/test/contracts.test.js
+@@ -0,0 +1,300 @@
++"use strict";
++
++const { describe, expect, test } = require("bun:test");
++const { existsSync, readFileSync, readdirSync } = require("node:fs");
++const { join } = require("node:path");
++const {
++  canonicalize,
++  classifySemanticAttempt,
++  computeContentHash,
++  generateJsonSchema,
++  parseContract,
++  semanticIdentity,
++  supportedSchemaVersions,
++  validateContract,
++  verifyContractBaseline,
++  validateEnvelope,
++} = require("../index.js");
++
++function workPacket(overrides = {}) {
++  const packet = {
++    schema_id: "forge.memory.work-packet.v1",
++    schema_version: 1,
++    object_id: "4c9d9e6a-4f14-47e7-aac8-9ec7731aa523",
++    created_at: "2026-08-09T12:00:00.000Z",
++    producer: {
++      product_id: "forge-memory",
++      product_version: "0.1.0-beta.6",
++      instance_id: "run-1",
++    },
++    capabilities_used: [],
++    provenance: {
++      source_kind: "kernel",
++      actor_class: "agent",
++      actor_id: "agent-1",
++      repository_id: "github.com/harshanandak/forge",
++      exact_head: "a".repeat(40),
++    },
++    payload: {
++      issue_id: "5037a7da-d49b-4015-a3fa-aac34425078e",
++      expected_issue_revision: 7,
++      packet_id: "packet-1",
++      packet_revision: 1,
++      repository_id: "github.com/harshanandak/forge",
++      target_head: "a".repeat(40),
++      objective: "test contracts",
++      authority: { kind: "kernel", issue_revision: 7 },
++      allowed_mutations: ["files"],
++      workflow_config_revision: "config-1",
++      capability_manifest_digest: "c".repeat(64),
++    },
++    extensions: {},
++    ...overrides,
++  };
++  packet.content_hash = computeContentHash(packet);
++  return packet;
++}
++
++function contextPacket(overrides = {}) {
++  const packet = {
++    schema_id: "forge.memory.context-packet.v1",
++    schema_version: 1,
++    object_id: "f1f99076-d454-495e-acb4-77286b5b206d",
++    created_at: "2026-08-09T12:00:00.000Z",
++    producer: { product_id: "forge-memory", product_version: "0.1.0-beta.6", instance_id: "run-1" },
++    capabilities_used: [],
++    provenance: { source_kind: "kernel", actor_class: "agent", actor_id: "agent-1" },
++    payload: {
++      work_packet_hash: "a".repeat(64),
++      context_selection_revision: 3,
++      privacy_scope_hash: "b".repeat(64),
++      retention_class: "local_sensitive",
++      disclosure_class: "remote_redacted",
++      redaction_policy_revision: "redaction-2",
++      summaries: [{ kind: "issue", text: "bounded redacted summary" }],
++    },
++    extensions: {},
++    ...overrides,
++  };
++  packet.content_hash = computeContentHash(packet);
++  return packet;
++}
++
++describe("contract envelope validation", () => {
++  test("rejects every missing required envelope field", () => {
++    const complete = {
++      schema_id: "forge.memory.work-packet.v1",
++      schema_version: 1,
++      object_id: "4c9d9e6a-4f14-47e7-aac8-9ec7731aa523",
++      created_at: "2026-08-09T12:00:00.000Z",
++      producer: {
++        product_id: "forge-memory",
++        product_version: "0.1.0-beta.6",
++        instance_id: "run-1",
++      },
++      capabilities_used: [],
++      provenance: {
++        source_kind: "kernel",
++        actor_class: "agent",
++        actor_id: "agent-1",
++      },
++      content_hash: "0".repeat(64),
++      payload: {},
++      extensions: {},
++    };
++
++    for (const field of Object.keys(complete)) {
++      const malformed = { ...complete };
++      delete malformed[field];
++      const result = validateEnvelope(malformed, { verifyHash: false });
++      expect(result.ok).toBe(false);
++      expect(result.errors.some((error) => error.path === `$.${field}`)).toBe(true);
++    }
++  });
++});
++
++describe("RFC 8785 canonical content hashing", () => {
++  test("sorts object keys recursively and uses JSON number serialization", () => {
++    expect(canonicalize({ z: 1, a: { y: -0, x: "€" } })).toBe(
++      '{"a":{"x":"€","y":0},"z":1}',
++    );
++  });
++
++  test("rejects values that JSON Canonicalization Scheme cannot encode", () => {
++    expect(() => canonicalize({ invalid: Number.NaN })).toThrow();
++    expect(() => canonicalize({ invalid: Number.POSITIVE_INFINITY })).toThrow();
++    expect(() => canonicalize({ invalid: undefined })).toThrow();
++  });
++
++  test("excludes only content_hash from its own digest", () => {
++    const value = {
++      schema_id: "forge.memory.work-packet.v1",
++      extensions: { "example.test": { impact: "advisory", schema_version: 1, value: true } },
++      payload: { objective: "test" },
++      content_hash: "a".repeat(64),
++    };
++    const first = computeContentHash(value);
++    value.content_hash = "b".repeat(64);
++    expect(computeContentHash(value)).toBe(first);
++    value.extensions["example.test"].value = false;
++    expect(computeContentHash(value)).not.toBe(first);
++    expect(first).toMatch(/^[a-f0-9]{64}$/);
++  });
++});
++
++describe("semantic retry and conflict detection", () => {
++  test("derives a stable identity from contract-defined fields", () => {
++    const packet = workPacket();
++    const retried = { ...packet, created_at: "2026-08-09T12:01:00.000Z" };
++    expect(semanticIdentity(retried)).toBe(semanticIdentity(packet));
++  });
++
++  test("deduplicates exact retry but rejects changed content at one identity", () => {
++    const accepted = workPacket();
++    expect(classifySemanticAttempt(accepted, { ...accepted })).toEqual({
++      status: "retry-identical",
++      identity: semanticIdentity(accepted),
++      content_hash: accepted.content_hash,
++    });
++
++    const changed = workPacket({
++      payload: { ...accepted.payload, objective: "different intent" },
++    });
++    expect(semanticIdentity(changed)).toBe(semanticIdentity(accepted));
++    expect(classifySemanticAttempt(accepted, changed).status).toBe("identity-conflict");
++
++    const staleDigest = { ...changed, content_hash: accepted.content_hash };
++    expect(classifySemanticAttempt(accepted, staleDigest).status).toBe("identity-conflict");
++  });
++
++  test("treats a different semantic identity as new", () => {
++    const accepted = workPacket();
++    const next = workPacket({
++      payload: { ...accepted.payload, packet_revision: 2 },
++    });
++    expect(classifySemanticAttempt(accepted, next).status).toBe("new-identity");
++  });
++});
++
++describe("extension compatibility", () => {
++  test("preserves unknown advisory extensions through canonical round-trip", () => {
++    const packet = workPacket({
++      extensions: {
++        "vendor.example/annotation": {
++          impact: "advisory",
++          schema_version: 1,
++          value: { note: "preserve me", rank: 2 },
++        },
++      },
++    });
++    packet.content_hash = computeContentHash(packet);
++    const parsed = parseContract(canonicalize(packet));
++    expect(parsed.extensions).toEqual(packet.extensions);
++    expect(parsed.content_hash).toBe(packet.content_hash);
++  });
++
++  test("fails closed on an unknown consequential extension", () => {
++    const packet = workPacket({
++      extensions: {
++        "vendor.example/authority": {
++          impact: "consequential",
++          schema_version: 1,
++          value: { permit: true },
++        },
++      },
++    });
++    packet.content_hash = computeContentHash(packet);
++    const result = validateContract(packet);
++    expect(result.ok).toBe(false);
++    expect(result.errors).toContainEqual({
++      path: '$.extensions["vendor.example/authority"]',
++      code: "UNKNOWN_CONSEQUENTIAL_EXTENSION",
++    });
++  });
++});
++
++describe("consequential authority, capability, and privacy evidence", () => {
++  test("rejects stale issue and workflow authority", () => {
++    const result = validateContract(workPacket(), {
++      expected: { issueRevision: 8, workflowConfigRevision: "config-2" },
++    });
++    expect(result.errors.map((item) => item.code)).toEqual(
++      expect.arrayContaining(["STALE_ISSUE_REVISION", "STALE_WORKFLOW_CONFIG"]),
++    );
++  });
++
++  test("rejects the wrong capability digest and exact head", () => {
++    const result = validateContract(workPacket(), {
++      expected: { capabilityManifestDigest: "d".repeat(64), exactHead: "b".repeat(40) },
++    });
++    expect(result.errors.map((item) => item.code)).toEqual(
++      expect.arrayContaining(["WRONG_CAPABILITY_DIGEST", "STALE_EXACT_HEAD"]),
++    );
++  });
++
++  test("rejects widened or stale privacy evidence", () => {
++    const result = validateContract(contextPacket(), {
++      expected: {
++        workPacketHash: "c".repeat(64),
++        privacyScopeHash: "d".repeat(64),
++        redactionPolicyRevision: "redaction-3",
++        allowedDisclosureClasses: ["local_sensitive"],
++      },
++    });
++    expect(result.errors.map((item) => item.code)).toEqual(
++      expect.arrayContaining([
++        "STALE_WORK_PACKET",
++        "STALE_PRIVACY_SCOPE",
++        "STALE_REDACTION_POLICY",
++        "DISCLOSURE_NOT_ALLOWED",
++      ]),
++    );
++  });
++});
++
++describe("versioned schemas, fixtures, and compatibility baseline", () => {
++  const packageRoot = join(__dirname, "..");
++  const requiredFixtureIds = [
++    "valid-minimal",
++    "valid-full",
++    "canonical-hash",
++    "retry-identical",
++    "identity-conflict",
++    "unknown-advisory-roundtrip",
++    "unknown-consequential-reject",
++    "stale-authority-reject",
++    "wrong-capability-digest",
++    "privacy-redaction",
++    "malformed-missing-required",
++  ];
++
++  test("materializes one v1 JSON schema for every public contract", () => {
++    const schemaFiles = readdirSync(join(packageRoot, "schemas", "v1"))
++      .filter((file) => file.endsWith(".schema.json"));
++    expect(schemaFiles).toHaveLength(11);
++    for (const schemaId of Object.keys(require("../index.js").CONTRACTS)) {
++      const file = `${schemaId.replace("forge.memory.", "").replace(".v1", "")}.schema.json`;
++      const schema = JSON.parse(readFileSync(join(packageRoot, "schemas", "v1", file), "utf8"));
++      expect(schema.$id).toBe(schemaId);
++      expect(schema.properties.schema_id.const).toBe(schemaId);
++      expect(schema).toEqual(generateJsonSchema(schemaId));
++    }
++  });
++
++  test("exposes every required executable fixture id", () => {
++    for (const fixtureId of requiredFixtureIds) {
++      expect(existsSync(join(packageRoot, "fixtures", "v1", `${fixtureId}.json`))).toBe(true);
++    }
++  });
++
++  test("accepts exact v1 readers and rejects unadvertised versions", () => {
++    for (const schemaId of Object.keys(require("../index.js").CONTRACTS)) {
++      expect(supportedSchemaVersions(schemaId)).toEqual([1]);
++    }
++    expect(supportedSchemaVersions("forge.memory.unknown.v1")).toEqual([]);
++  });
++
++  test("verifies every recorded schema and fixture digest", () => {
++    expect(verifyContractBaseline()).toEqual({ ok: true, mismatches: [] });
++  });
++});
+diff --git a/packages/memory-contracts/test/definitions.test.js b/packages/memory-contracts/test/definitions.test.js
+new file mode 100644
+index 00000000..c20346c9
+--- /dev/null
++++ b/packages/memory-contracts/test/definitions.test.js
+@@ -0,0 +1,9 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const { CONTRACTS } = require("../src/definitions.js");
++
++test("defines all packet, receipt, feedback, error, and monitor contracts", () => {
++  expect(Object.keys(CONTRACTS)).toHaveLength(11);
++  expect(Object.values(CONTRACTS).every((definition) => definition.identity.length > 0)).toBe(true);
++});
+diff --git a/packages/memory-contracts/test/identity.test.js b/packages/memory-contracts/test/identity.test.js
+new file mode 100644
+index 00000000..c1e16702
+--- /dev/null
++++ b/packages/memory-contracts/test/identity.test.js
+@@ -0,0 +1,8 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const { semanticIdentity } = require("../src/identity.js");
++
++test("semantic identity rejects incomplete identity material", () => {
++  expect(() => semanticIdentity({ schema_id: "forge.memory.work-packet.v1", payload: {} })).toThrow();
++});
+diff --git a/packages/memory-contracts/test/schema.test.js b/packages/memory-contracts/test/schema.test.js
+new file mode 100644
+index 00000000..afb17274
+--- /dev/null
++++ b/packages/memory-contracts/test/schema.test.js
+@@ -0,0 +1,9 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const { generateJsonSchema } = require("../src/schema.js");
++
++test("generated schemas reject undeclared payload fields", () => {
++  const schema = generateJsonSchema("forge.memory.work-packet.v1");
++  expect(schema.properties.payload.additionalProperties).toBe(false);
++});
+diff --git a/packages/memory-contracts/test/validate.test.js b/packages/memory-contracts/test/validate.test.js
+new file mode 100644
+index 00000000..ab7dc18a
+--- /dev/null
++++ b/packages/memory-contracts/test/validate.test.js
+@@ -0,0 +1,8 @@
++"use strict";
++
++const { expect, test } = require("bun:test");
++const { validateEnvelope } = require("../src/validate.js");
++
++test("non-object envelopes fail closed", () => {
++  expect(validateEnvelope(null)).toEqual({ ok: false, errors: [{ path: "$", code: "INVALID_ENVELOPE" }] });
++});
+-- 
+2.51.0.windows.1
+

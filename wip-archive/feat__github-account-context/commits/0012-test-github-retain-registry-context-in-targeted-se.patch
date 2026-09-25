@@ -1,0 +1,77 @@
+From 7f3d1d7761b3eaddd87e1692f7d2b446ef7f7f89 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 23:09:21 +0530
+Subject: [PATCH] test(github): retain registry context in targeted selection
+
+---
+ lib/commands/test.js             |  4 ++++
+ scripts/test.js                  |  1 +
+ test/scripts/test-runner.test.js | 18 ++++++++++++++++++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index 995b307c..57bcbac3 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -82,6 +82,10 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/commands/github.test.js',
+ 		'test/github-launcher.test.js',
+ 	],
++	'lib/commands/_registry.js': [
++		'test/commands/_registry.test.js',
++		'test/commands/_registry-github-context.test.js',
++	],
+ 	// The shared SQLite driver has more consumers than a bounded direct list can
+ 	// safely represent; its empty mapping deliberately selects the full-suite lane.
+ 	'lib/kernel/sqlite-driver.js': [],
+diff --git a/scripts/test.js b/scripts/test.js
+index 78c81844..53f0a132 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -64,6 +64,7 @@ const KNOWN_TARGETABLE_FILES = new Set([
+   'lib/kernel/sqlite-driver.js',
+   'lib/commands/shepherd.js',
+   'lib/commands/github.js',
++  'lib/commands/_registry.js',
+   'lib/pr-monitor/watch-owner.js',
+   'lib/pr-monitor/reconcile.js',
+   'lib/pr-monitor/reconcile-executor.js',
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 5b88e4a9..9bf38cc7 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -3,6 +3,7 @@
+ const { describe, expect, test } = require('bun:test');
+ const { EventEmitter } = require('node:events');
+ const path = require('node:path');
++const { getTestCandidatesForChangedFile } = require('../../lib/commands/test');
+ 
+ const {
+   ALWAYS_RUN_RISK_TEST_TARGETS,
+@@ -69,6 +70,23 @@ function makeSpawnSync(exitCode = 0) {
+ }
+ 
+ describe('scripts/test pre-push runner', () => {
++  test('registry changes directly select both core and GitHub-context regression suites', () => {
++    expect(getTestCandidatesForChangedFile('lib/commands/_registry.js')).toEqual([
++      'test/commands/_registry.test.js',
++      'test/commands/_registry-github-context.test.js',
++    ]);
++    const plan = classifyPushTests(repoRoot, makeExecFileSync({
++      changedFiles: 'lib/commands/_registry.js\n',
++    }));
++    expect(plan.mode).toBe('targeted');
++    expect(plan.hasUnmappedFiles).toBe(false);
++    expect(plan.testTargets).toEqual([
++      'test/commands/_registry-github-context.test.js',
++      'test/commands/_registry.test.js',
++      ...riskTargets,
++    ]);
++  });
++
+   test('stripGitHookEnv removes git hook environment variables', () => {
+     const env = stripGitHookEnv({
+       GIT_DIR: '.git',
+-- 
+2.51.0.windows.1
+

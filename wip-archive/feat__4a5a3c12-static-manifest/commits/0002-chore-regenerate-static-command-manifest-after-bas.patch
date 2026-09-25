@@ -1,0 +1,24 @@
+From 50d4130ab4d53736eb03f3eade8894ab4f53126b Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 12 Jul 2026 17:31:55 +0530
+Subject: [PATCH] chore: regenerate static command manifest after base rebase
+
+---
+ lib/commands/_manifest.js | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index ac46e04c..f202fc48 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -54,6 +54,7 @@ const commands = [
+   { file: "orphans.js", module: require("./orphans") },
+   { file: "patch.js", module: require("./patch") },
+   { file: "plan.js", module: require("./plan") },
++  { file: "preflight.js", module: require("./preflight") },
+   { file: "prime.js", module: require("./prime") },
+   { file: "push.js", module: require("./push") },
+   { file: "ready.js", module: require("./ready") },
+-- 
+2.51.0.windows.1
+

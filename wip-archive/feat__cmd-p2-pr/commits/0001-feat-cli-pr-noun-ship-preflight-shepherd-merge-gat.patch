@@ -1,0 +1,605 @@
+From 918d668cd6f17dd0e33a24ac26f6b4063f4063e0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 16:00:03 +0530
+Subject: [PATCH] feat(cli): pr noun (ship/preflight/shepherd/merge) + gate doc
+ (P2, 6ab3f30c)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Introduce the `pr` noun over the existing PR commands and fold doc-gate under
+the existing `gate` noun, per the command-surface unification design (epic
+eea186fa, phase 2). No handler logic moves — the noun surfaces route to the SAME
+ship/preflight/shepherd/merge/doc-gate handlers.
+
+- lib/commands/pr.js: thin noun dispatcher (mirrors the P1 memory noun); delegates
+  ship/preflight/shepherd/merge at call time so the standalone commands stay the
+  single source of truth for their own behaviour.
+- lib/commands/gate.js: `gate doc [sub]` delegates to the doc-gate handler.
+- lib/commands/_aliases.js: ship/preflight VISIBLE shortcuts, shepherd/merge/doc-gate
+  HIDDEN back-compat aliases; canonical `pr `/`gate ` forms so they never enter the
+  issue flag-passthrough set (shepherd/ship flags keep parsing intact).
+- bin/forge.js: route the canonical noun form of a stage (`pr ship`) through the
+  SAME top-level stage dispatch as the bare verb, so stage-entry enforcement +
+  kernel stage-run recording + ensureForgeHome apply identically. Detected via the
+  declarative alias map (subcommand is a stage AND its bare alias's canonical is
+  exactly `<noun> <sub>`) — only `pr ship` matches today.
+
+Backward-compat is byte-identical: bare ship/preflight/shepherd/merge/doc-gate
+behave exactly as before (proven by CLI-spawn diff of stdout+stderr+exit code,
+including `pr shepherd <pr> --pull --json` and `pr ship` stage enforcement).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                      |  19 +++++
+ lib/commands/_aliases.js          |  17 +++++
+ lib/commands/_manifest.js         |   1 +
+ lib/commands/gate.js              |  14 ++++
+ lib/commands/pr.js                |  88 +++++++++++++++++++++
+ test/cli/pr-noun-dispatch.test.js |  68 +++++++++++++++++
+ test/commands/_aliases.test.js    |  71 ++++++++++++++++-
+ test/commands/gate-doc.test.js    |  60 +++++++++++++++
+ test/commands/pr.test.js          | 123 ++++++++++++++++++++++++++++++
+ 9 files changed, 459 insertions(+), 2 deletions(-)
+ create mode 100644 lib/commands/pr.js
+ create mode 100644 test/cli/pr-noun-dispatch.test.js
+ create mode 100644 test/commands/gate-doc.test.js
+ create mode 100644 test/commands/pr.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index aad96647..f28711a8 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -4074,6 +4074,25 @@ async function main() {
+     dispatchArgv = resolved.args;
+   }
+ 
++  // A workflow stage reached through its canonical noun form (e.g. `pr ship`,
++  // whose bare alias `ship` IS a stage) must dispatch through the SAME top-level
++  // stage path as the bare verb — stage-entry enforcement, kernel stage-run
++  // recording, and ensureForgeHome all key on the stage token, which sits at the
++  // subcommand position under a noun. Rewrite `<noun> <stage> [args]` to the
++  // top-level `<stage> [args]` so behavior is byte-identical to the bare stage
++  // alias. Detected precisely via the declarative alias map: the subcommand is a
++  // stage AND its bare alias's canonical is exactly `<command> <sub>` (so only a
++  // genuine noun→stage form matches; non-stage pr/gate subcommands route via
++  // their noun handler as usual). Only `pr ship` matches today.
++  const nounSub = dispatchArgv[1];
++  if (nounSub && normalizeStageId(nounSub) && registry.commands.has(nounSub)) {
++    const bareAlias = resolveAlias(nounSub);
++    if (bareAlias && bareAlias.canonical === `${command} ${nounSub}`) {
++      command = nounSub;
++      dispatchArgv = dispatchArgv.slice(1);
++    }
++  }
++
+   // Registry command dispatch — auto-discovered commands take priority
+   if (registry.commands.has(command)) {
+     try {
+diff --git a/lib/commands/_aliases.js b/lib/commands/_aliases.js
+index c189851d..2b16d61d 100644
+--- a/lib/commands/_aliases.js
++++ b/lib/commands/_aliases.js
+@@ -66,6 +66,23 @@ const ALIASES = {
+   remember: { canonical: 'memory add', visible: true },
+   recall: { canonical: 'memory recall', visible: true },
+   insights: { canonical: 'memory insights', visible: true },
++
++  // P2 (kernel issue 6ab3f30c) — the `pr` noun (ship/preflight/shepherd/merge) plus
++  // folding doc-gate under the existing `gate` noun. `pr ship` is the canonical
++  // PR-creation form, but bare `ship` stays a VISIBLE shortcut (hot workflow verb,
++  // zero keystroke loss); `preflight` is likewise VISIBLE. shepherd/merge/doc-gate
++  // are less-hot, so they stay HIDDEN back-compat aliases. Every one keeps its own
++  // registered command file (ship.js/preflight.js/shepherd.js/merge.js/doc-gate.js),
++  // so resolveDispatch is a strict no-op for them and bare-verb dispatch stays
++  // byte-identical — the entries document the mapping and drive the `forge --help`
++  // Shortcuts block. Their canonical is a `pr `/`gate ` form (NOT `issue `), so
++  // passthroughAliasNames() excludes them and their global flags (`--pull`,
++  // `--json`, `--bundle`, `--all`, `-h`) parse exactly as the standalone commands'.
++  ship: { canonical: 'pr ship', visible: true },
++  preflight: { canonical: 'pr preflight', visible: true },
++  shepherd: { canonical: 'pr shepherd', visible: false },
++  merge: { canonical: 'pr merge', visible: false },
++  'doc-gate': { canonical: 'gate doc', visible: false },
+ };
+ 
+ /**
+diff --git a/lib/commands/_manifest.js b/lib/commands/_manifest.js
+index f2358f0e..c93ca997 100644
+--- a/lib/commands/_manifest.js
++++ b/lib/commands/_manifest.js
+@@ -57,6 +57,7 @@ const commands = [
+   { file: "orphans.js", module: require("./orphans") },
+   { file: "patch.js", module: require("./patch") },
+   { file: "plan.js", module: require("./plan") },
++  { file: "pr.js", module: require("./pr") },
+   { file: "preflight.js", module: require("./preflight") },
+   { file: "prime.js", module: require("./prime") },
+   { file: "push.js", module: require("./push") },
+diff --git a/lib/commands/gate.js b/lib/commands/gate.js
+index 11aa8e4a..26a22f55 100644
+--- a/lib/commands/gate.js
++++ b/lib/commands/gate.js
+@@ -29,6 +29,13 @@ const {
+   isGateApproved,
+ } = require('../gate-events');
+ 
++// The doc-update gate folds under this noun as `gate doc` (P2, kernel issue
++// 6ab3f30c) — it is a gate concern, not a `pr` one. `doc` delegates to the
++// standalone doc-gate command (same code); bare `forge doc-gate` stays registered
++// as a back-compat alias. Required lazily so the module graph has no cycle and the
++// routed handler is resolved at dispatch time.
++const docGate = require('./doc-gate');
++
+ const TOGGLE_ACTIONS = new Set(['enable', 'disable']);
+ const EVENT_ACTIONS = new Set(['approve', 'reject', 'status', 'check']);
+ 
+@@ -165,6 +172,13 @@ async function handleCheck(issueId, gateId, projectRoot, opts) {
+ async function handler(args, flags = {}, projectRoot = process.cwd(), opts = {}) {
+   const [action, ...rest] = args;
+ 
++  // `gate doc [<doc-gate sub> ...]` → the standalone doc-gate handler, with the
++  // consumed `doc` token dropped so its own arg shape (detect/check/init/okf …)
++  // and flags (`--base`/`--head`/`--json`/`--skip` …) reach it byte-identically.
++  if (action === 'doc') {
++    return docGate.handler(rest, flags, projectRoot, opts);
++  }
++
+   if (TOGGLE_ACTIONS.has(action)) {
+     return handleToggle(action, rest[0], projectRoot);
+   }
+diff --git a/lib/commands/pr.js b/lib/commands/pr.js
+new file mode 100644
+index 00000000..50ddb09e
+--- /dev/null
++++ b/lib/commands/pr.js
+@@ -0,0 +1,88 @@
++'use strict';
++
++const ship = require('./ship');
++const preflight = require('./preflight');
++const shepherd = require('./shepherd');
++const merge = require('./merge');
++const { stripGlobalFlags } = require('../global-flags');
++
++// One memorable surface over the EXISTING pull-request commands (kernel issue
++// 6ab3f30c): every subcommand delegates to the standalone ship/preflight/shepherd/
++// merge handlers — the same code, not a reimplementation. The standalone
++// `forge ship`/`preflight`/`shepherd`/`merge` commands remain registered as
++// back-compat aliases (see lib/commands/_aliases.js), so nothing that already
++// calls them breaks. `pr ship` is the canonical PR-creation form; bare `ship`
++// stays a visible shortcut.
++//
++// Delegates are referenced by MODULE (not a pre-bound `.handler`) so the routed
++// handler is resolved at dispatch time — dispatch always reaches whatever the
++// command module currently exports, keeping the standalone command the single
++// source of truth for its own behaviour.
++const SUBCOMMANDS = {
++  ship: {
++    module: ship,
++    summary: 'Create a pull request from validated feature work (= forge ship)',
++  },
++  preflight: {
++    module: preflight,
++    summary: 'Fast deterministic-gate parity with CI (= forge preflight; supports --all)',
++  },
++  shepherd: {
++    module: shepherd,
++    summary: 'Run one bounded monitor pass over a PR (= forge shepherd; --bundle/--pull/--json, events, watch)',
++  },
++  merge: {
++    module: merge,
++    summary: 'Opt-in conditional auto-merge, OFF by default (= forge merge --auto <pr>)',
++  },
++};
++
++const usage = 'Usage: forge pr <ship|preflight|shepherd|merge> [args]';
++
++function renderHelp() {
++  const width = Math.max(...Object.keys(SUBCOMMANDS).map(name => name.length));
++  const lines = [
++    usage,
++    '',
++    'Subcommands:',
++    ...Object.entries(SUBCOMMANDS).map(
++      ([name, { summary }]) => `  ${name.padEnd(width)}  ${summary}`
++    ),
++    '',
++    'Back-compat: forge ship / forge preflight / forge shepherd / forge merge remain available as aliases.',
++  ];
++  return lines.join('\n');
++}
++
++async function handler(args, flags, projectRoot, opts) {
++  // The subcommand is the first positional token; global flags (e.g. `-p <dir>`) are stripped
++  // first so they never masquerade as the subcommand.
++  const positional = stripGlobalFlags(args).find(arg => !arg.startsWith('-'));
++
++  if (!positional || positional === 'help' || args.includes('--help') || args.includes('-h')) {
++    return { success: true, output: renderHelp() };
++  }
++
++  const sub = SUBCOMMANDS[positional];
++  if (!sub) {
++    return {
++      success: false,
++      error: `Unknown pr subcommand: ${positional}\n\n${renderHelp()}`,
++    };
++  }
++
++  // Forward everything EXCEPT the consumed subcommand token to the delegate, preserving
++  // every remaining token (including flags like `--pull`/`--json`/`--bundle`, and the
++  // `events`/`watch` shepherd sub-shapes) so passthrough stays byte-identical.
++  const idx = args.indexOf(positional);
++  const childArgs = idx >= 0 ? [...args.slice(0, idx), ...args.slice(idx + 1)] : args;
++  return sub.module.handler(childArgs, flags, projectRoot, opts);
++}
++
++module.exports = {
++  name: 'pr',
++  description:
++    'Unified pull-request surface: forge pr ship|preflight|shepherd|merge (wraps ship/preflight/shepherd/merge)',
++  usage,
++  handler,
++};
+diff --git a/test/cli/pr-noun-dispatch.test.js b/test/cli/pr-noun-dispatch.test.js
+new file mode 100644
+index 00000000..da764a29
+--- /dev/null
++++ b/test/cli/pr-noun-dispatch.test.js
+@@ -0,0 +1,68 @@
++'use strict';
++
++/**
++ * CLI-level back-compat guard for the `pr` noun (P2, kernel issue 6ab3f30c).
++ *
++ * The hard invariant: invoking a command through its canonical noun form
++ * (`forge pr <sub>`) must behave BYTE-IDENTICALLY to the bare verb — same stdout,
++ * stderr, and exit code — because it routes to the SAME handler. This spawns the
++ * real CLI (not the in-process handler) so it also exercises the dispatch-layer
++ * stage-enforcement path that `pr ship` must share with bare `ship`.
++ *
++ * These invocations run against THIS repo checkout with intentionally-invalid
++ * inputs so they fail fast and deterministically without any network mutation.
++ */
++
++const { describe, test, expect } = require('bun:test');
++const { spawnSync } = require('node:child_process');
++const path = require('node:path');
++
++const CLI = path.join(__dirname, '../../bin/forge.js');
++
++function run(argv) {
++  const result = spawnSync(process.execPath, [CLI, ...argv], {
++    encoding: 'utf8',
++    timeout: 30000,
++  });
++  return { status: result.status, out: result.stdout || '', err: result.stderr || '' };
++}
++
++// Each pair: the bare verb invocation vs its canonical `pr <sub>` form. The two
++// MUST produce identical stdout+stderr+exit. Inputs are chosen to fail before any
++// network mutation (nonexistent slug / PR number).
++const EQUIVALENT_INVOCATIONS = [
++  { name: 'ship (stage — must share stage-entry enforcement)', bare: ['ship', 'nonexistent-slug-xyz'], noun: ['pr', 'ship', 'nonexistent-slug-xyz'] },
++  { name: 'shepherd --pull --json (flag passthrough)', bare: ['shepherd', '999999', '--pull', '--json'], noun: ['pr', 'shepherd', '999999', '--pull', '--json'] },
++  { name: 'shepherd events (subcommand shape passthrough)', bare: ['shepherd', 'events', '999999', '--since', '1', '--json'], noun: ['pr', 'shepherd', 'events', '999999', '--since', '1', '--json'] },
++  { name: 'merge --auto (fail-closed preview)', bare: ['merge', '--auto', '999999'], noun: ['pr', 'merge', '--auto', '999999'] },
++];
++
++describe('pr noun CLI dispatch — byte-identical back-compat (6ab3f30c)', () => {
++  for (const { name, bare, noun } of EQUIVALENT_INVOCATIONS) {
++    // Two real CLI spawns per case (kernel/git/gh resolution) — allow ample time.
++    test(`forge ${noun.join(' ')} == forge ${bare.join(' ')} — ${name}`, () => {
++      const b = run(bare);
++      const n = run(noun);
++      expect(n.status).toBe(b.status);
++      expect(n.out).toBe(b.out);
++      expect(n.err).toBe(b.err);
++    }, 60000);
++  }
++
++  test('gate doc == doc-gate (folds under the gate noun)', () => {
++    const b = run(['doc-gate', 'detect']);
++    const n = run(['gate', 'doc', 'detect']);
++    expect(n.status).toBe(b.status);
++    expect(n.out).toBe(b.out);
++    expect(n.err).toBe(b.err);
++  }, 60000);
++
++  test('forge --help shows pr as a noun and ship/preflight in Shortcuts', () => {
++    const help = run(['--help']);
++    expect(help.out).toContain('ship');
++    expect(help.out).toContain('preflight');
++    expect(help.out).toMatch(/Shortcuts/);
++    // pr is enumerated as a base noun in Additional commands.
++    expect(help.out).toMatch(/\bpr\b/);
++  }, 30000);
++});
+diff --git a/test/commands/_aliases.test.js b/test/commands/_aliases.test.js
+index 79d434f9..d9e7379a 100644
+--- a/test/commands/_aliases.test.js
++++ b/test/commands/_aliases.test.js
+@@ -73,8 +73,12 @@ describe('command aliases — memory noun shortcuts (P1, febf7690)', () => {
+     }
+   });
+ 
+-  test('visibleAliasNames() lists exactly the memory shortcuts', () => {
+-    expect([...aliases.visibleAliasNames()].sort()).toEqual(Object.keys(MEMORY_SHORTCUTS).sort());
++  test('visibleAliasNames() includes the memory shortcuts', () => {
++    // P2 adds ship/preflight to the visible set, so this is now a subset check.
++    const visible = new Set(aliases.visibleAliasNames());
++    for (const name of Object.keys(MEMORY_SHORTCUTS)) {
++      expect(visible.has(name)).toBe(true);
++    }
+   });
+ 
+   test('memory shortcuts are NOT in the bd flag-passthrough set (keeps -p / --help byte-identical)', () => {
+@@ -103,6 +107,69 @@ describe('command aliases — memory noun shortcuts (P1, febf7690)', () => {
+   });
+ });
+ 
++describe('command aliases — pr noun shortcuts + gate doc (P2, 6ab3f30c)', () => {
++  // P2 introduces the `pr` noun (ship/preflight/shepherd/merge) and folds doc-gate
++  // under the existing `gate` noun. ship + preflight stay VISIBLE (hot verbs, zero
++  // keystroke loss); shepherd/merge/doc-gate are HIDDEN back-compat aliases. All
++  // keep their standalone command files, so resolveDispatch is a strict no-op.
++  const PR_ALIASES = {
++    ship: { canonical: 'pr ship', visible: true },
++    preflight: { canonical: 'pr preflight', visible: true },
++    shepherd: { canonical: 'pr shepherd', visible: false },
++    merge: { canonical: 'pr merge', visible: false },
++    'doc-gate': { canonical: 'gate doc', visible: false },
++  };
++
++  test('each P2 alias resolves to its canonical noun form with the right visibility', () => {
++    for (const [name, expected] of Object.entries(PR_ALIASES)) {
++      const descriptor = aliases.resolveAlias(name);
++      expect(descriptor).toBeDefined();
++      expect(descriptor.canonical).toBe(expected.canonical);
++      expect(descriptor.visible).toBe(expected.visible);
++      expect(aliases.isVisibleAlias(name)).toBe(expected.visible);
++      expect(aliases.isHiddenAlias(name)).toBe(!expected.visible);
++    }
++  });
++
++  test('ship + preflight are the newly VISIBLE pr shortcuts', () => {
++    const visible = new Set(aliases.visibleAliasNames());
++    expect(visible.has('ship')).toBe(true);
++    expect(visible.has('preflight')).toBe(true);
++  });
++
++  test('no P2 alias enters the issue flag-passthrough set (keeps shepherd/ship flags parsing intact)', () => {
++    // Passthrough is issue-canonical only; pr/gate aliases must be excluded so
++    // bare `shepherd <pr> --pull --json` and `ship` parse flags exactly as before.
++    const passthrough = new Set(aliases.passthroughAliasNames());
++    for (const name of Object.keys(PR_ALIASES)) {
++      expect(passthrough.has(name)).toBe(false);
++    }
++  });
++
++  test('a registered P2 alias is never rewritten (byte-identical dispatch)', () => {
++    for (const name of Object.keys(PR_ALIASES)) {
++      const out = aliases.resolveDispatch(name, [name, '123', '--pull', '--json'], () => true);
++      expect(out.redirected).toBe(false);
++      expect(out.command).toBe(name);
++      expect(out.args).toEqual([name, '123', '--pull', '--json']);
++    }
++  });
++
++  test('an unregistered pr alias would route to its pr subcommand', () => {
++    const out = aliases.resolveDispatch('shepherd', ['shepherd', '123', '--pull', '--json'], () => false);
++    expect(out.redirected).toBe(true);
++    expect(out.command).toBe('pr');
++    expect(out.args).toEqual(['pr', 'shepherd', '123', '--pull', '--json']);
++  });
++
++  test('an unregistered doc-gate alias would route to gate doc', () => {
++    const out = aliases.resolveDispatch('doc-gate', ['doc-gate', 'check', '--base', 'main'], () => false);
++    expect(out.redirected).toBe(true);
++    expect(out.command).toBe('gate');
++    expect(out.args).toEqual(['gate', 'doc', 'check', '--base', 'main']);
++  });
++});
++
+ describe('command aliases — visible vs hidden', () => {
+   test('isHidden() respects the visible flag on a descriptor', () => {
+     expect(aliases.isHidden({ visible: false })).toBe(true);
+diff --git a/test/commands/gate-doc.test.js b/test/commands/gate-doc.test.js
+new file mode 100644
+index 00000000..f3de8432
+--- /dev/null
++++ b/test/commands/gate-doc.test.js
+@@ -0,0 +1,60 @@
++'use strict';
++
++/**
++ * `forge gate doc` — the doc-update gate folded under the existing `gate` noun
++ * (P2, kernel issue 6ab3f30c). `doc-gate` is NOT a `pr` concern; it belongs to
++ * the gate surface. `gate doc <sub>` delegates to the standalone doc-gate handler
++ * (same code), and bare `forge doc-gate` stays registered as a back-compat alias.
++ */
++
++const { describe, test, expect } = require('bun:test');
++
++const gate = require('../../lib/commands/gate');
++const docGate = require('../../lib/commands/doc-gate');
++
++async function withSpy(mod, fn) {
++  const calls = [];
++  const original = mod.handler;
++  mod.handler = async (...args) => {
++    calls.push(args);
++    return { success: true, output: 'spy-ok' };
++  };
++  try {
++    await fn(calls);
++  } finally {
++    mod.handler = original;
++  }
++  return calls;
++}
++
++describe('forge gate doc (6ab3f30c)', () => {
++  test('gate doc forwards the remaining args + flags + root + opts to the doc-gate handler', async () => {
++    const calls = await withSpy(docGate, async () => {
++      await gate.handler(['doc', 'check', '--base', 'main', '--head', 'HEAD'], { json: true }, '/root', { env: {} });
++    });
++    expect(calls).toHaveLength(1);
++    // 'doc' token consumed; everything after forwarded untouched.
++    expect(calls[0][0]).toEqual(['check', '--base', 'main', '--head', 'HEAD']);
++    expect(calls[0][1]).toEqual({ json: true });
++    expect(calls[0][2]).toBe('/root');
++    expect(calls[0][3]).toEqual({ env: {} });
++  });
++
++  test('bare gate doc (no doc subcommand) still delegates — doc-gate defaults to detect', async () => {
++    const calls = await withSpy(docGate, async () => {
++      await gate.handler(['doc'], {}, '/root');
++    });
++    expect(calls).toHaveLength(1);
++    expect(calls[0][0]).toEqual([]);
++  });
++
++  test('gate still routes its own actions (enable/status) — doc does not shadow them', async () => {
++    // A non-doc action must NOT reach doc-gate; the gate toggle/event families win.
++    const calls = await withSpy(docGate, async () => {
++      const result = await gate.handler(['bogus-action'], {}, '/root');
++      expect(result.success).toBe(false);
++      expect(result.error).toContain('enable');
++    });
++    expect(calls).toHaveLength(0);
++  });
++});
+diff --git a/test/commands/pr.test.js b/test/commands/pr.test.js
+new file mode 100644
+index 00000000..0214a5b8
+--- /dev/null
++++ b/test/commands/pr.test.js
+@@ -0,0 +1,123 @@
++'use strict';
++
++/**
++ * Tests for the `pr` noun command surface (P2, kernel issue 6ab3f30c).
++ *
++ * `pr` is one memorable surface over the EXISTING ship/preflight/shepherd/merge
++ * commands: every subcommand delegates to the same standalone handler, not a
++ * reimplementation. The bare `forge ship`/`preflight`/`shepherd`/`merge` commands
++ * stay registered, so nothing that already calls them breaks. These tests pin
++ * that `pr <sub>` forwards args + flags + projectRoot + opts BYTE-IDENTICALLY to
++ * the delegate handler (the hard back-compat invariant) — especially the
++ * flag-rich `pr shepherd <pr> --pull --json` passthrough.
++ */
++
++const { describe, test, expect } = require('bun:test');
++
++const pr = require('../../lib/commands/pr');
++const ship = require('../../lib/commands/ship');
++const preflight = require('../../lib/commands/preflight');
++const shepherd = require('../../lib/commands/shepherd');
++const merge = require('../../lib/commands/merge');
++
++// Swap a delegate module's handler for a spy for the duration of `fn`, then
++// restore it. pr.js reads `<module>.handler` at dispatch time, so the spy is what
++// the subcommand routes to — letting us assert the exact forwarded arguments
++// without touching the network (gh/git).
++async function withSpy(mod, fn) {
++  const calls = [];
++  const original = mod.handler;
++  mod.handler = async (...args) => {
++    calls.push(args);
++    return { success: true, output: 'spy-ok' };
++  };
++  try {
++    await fn(calls);
++  } finally {
++    mod.handler = original;
++  }
++  return calls;
++}
++
++describe('forge pr command surface (6ab3f30c)', () => {
++  test('exports the registry command contract', () => {
++    expect(pr.name).toBe('pr');
++    expect(typeof pr.description).toBe('string');
++    expect(pr.description.length).toBeGreaterThan(0);
++    expect(pr.description.length).toBeLessThanOrEqual(1024);
++    expect(typeof pr.handler).toBe('function');
++    expect(pr.usage).toContain('pr');
++  });
++
++  test('no subcommand lists the available subcommands', async () => {
++    const result = await pr.handler([], {}, '/root');
++    expect(result.success).toBe(true);
++    for (const sub of ['ship', 'preflight', 'shepherd', 'merge']) {
++      expect(result.output).toContain(sub);
++    }
++  });
++
++  test('--help lists the available subcommands', async () => {
++    const result = await pr.handler(['--help'], {}, '/root');
++    expect(result.success).toBe(true);
++    expect(result.output).toContain('ship');
++    expect(result.output).toContain('shepherd');
++  });
++
++  test('an unknown subcommand fails and points at the surface', async () => {
++    const result = await pr.handler(['frobnicate'], {}, '/root');
++    expect(result.success).toBe(false);
++    expect(result.error).toContain('frobnicate');
++    expect(result.error).toContain('ship');
++  });
++
++  test('pr ship forwards the slug + title + flags to the ship handler', async () => {
++    const calls = await withSpy(ship, async () => {
++      await pr.handler(['ship', 'my-slug', 'My Title'], { dryRun: true }, '/root', { env: {} });
++    });
++    expect(calls).toHaveLength(1);
++    // subcommand token consumed; positional args + flags/root/opts forwarded intact.
++    expect(calls[0][0]).toEqual(['my-slug', 'My Title']);
++    expect(calls[0][1]).toEqual({ dryRun: true });
++    expect(calls[0][2]).toBe('/root');
++    expect(calls[0][3]).toEqual({ env: {} });
++  });
++
++  test('pr preflight forwards to the preflight handler (opts become injectable deps)', async () => {
++    const calls = await withSpy(preflight, async () => {
++      await pr.handler(['preflight'], { all: true }, '/root', { log: 'x' });
++    });
++    expect(calls).toHaveLength(1);
++    expect(calls[0][0]).toEqual([]);
++    expect(calls[0][1]).toEqual({ all: true });
++    expect(calls[0][3]).toEqual({ log: 'x' });
++  });
++
++  test('pr shepherd <pr> --pull --json passes flags through BYTE-IDENTICALLY to the shepherd handler', async () => {
++    // The hard invariant: shepherd parses --pull/--json/--bundle out of `args`
++    // itself, so pr must forward every token after the subcommand untouched.
++    const calls = await withSpy(shepherd, async () => {
++      await pr.handler(['shepherd', '123', '--pull', '--json'], {}, '/root', { gh: 'g' });
++    });
++    expect(calls).toHaveLength(1);
++    expect(calls[0][0]).toEqual(['123', '--pull', '--json']);
++    expect(calls[0][2]).toBe('/root');
++    expect(calls[0][3]).toEqual({ gh: 'g' });
++  });
++
++  test('pr shepherd events <pr> --since <seq> forwards the events subcommand shape', async () => {
++    const calls = await withSpy(shepherd, async () => {
++      await pr.handler(['shepherd', 'events', '123', '--since', '5', '--json'], {}, '/root');
++    });
++    expect(calls).toHaveLength(1);
++    expect(calls[0][0]).toEqual(['events', '123', '--since', '5', '--json']);
++  });
++
++  test('pr merge --auto <pr> forwards to the merge handler', async () => {
++    const calls = await withSpy(merge, async () => {
++      await pr.handler(['merge', '--auto', '456'], {}, '/root');
++    });
++    expect(calls).toHaveLength(1);
++    expect(calls[0][0]).toEqual(['--auto', '456']);
++  });
++});
+-- 
+2.51.0.windows.1
+

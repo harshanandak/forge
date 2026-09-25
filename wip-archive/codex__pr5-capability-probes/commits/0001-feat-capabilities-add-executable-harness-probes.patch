@@ -1,0 +1,843 @@
+From 22a9b5e50c72c5673485d1a1aaee54e1b0638a83 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 11 Aug 2026 00:51:54 +0530
+Subject: [PATCH] feat(capabilities): add executable harness probes
+
+---
+ lib/capabilities/index.js              |   9 +
+ lib/capabilities/model.js              | 141 +++++++++++
+ lib/capabilities/probes.js             | 318 +++++++++++++++++++++++++
+ test/capabilities/index.test.js        |  13 +
+ test/capabilities/model.test.js        |  29 +++
+ test/capabilities/probes.test.js       |  19 ++
+ test/capability/fixtures.js            |  44 ++++
+ test/capability/harness-probes.test.js | 195 +++++++++++++++
+ 8 files changed, 768 insertions(+)
+ create mode 100644 lib/capabilities/index.js
+ create mode 100644 lib/capabilities/model.js
+ create mode 100644 lib/capabilities/probes.js
+ create mode 100644 test/capabilities/index.test.js
+ create mode 100644 test/capabilities/model.test.js
+ create mode 100644 test/capabilities/probes.test.js
+ create mode 100644 test/capability/fixtures.js
+ create mode 100644 test/capability/harness-probes.test.js
+
+diff --git a/lib/capabilities/index.js b/lib/capabilities/index.js
+new file mode 100644
+index 00000000..22d56883
+--- /dev/null
++++ b/lib/capabilities/index.js
+@@ -0,0 +1,9 @@
++'use strict';
++
++const model = require('./model');
++const probes = require('./probes');
++
++module.exports = {
++  ...model,
++  ...probes,
++};
+diff --git a/lib/capabilities/model.js b/lib/capabilities/model.js
+new file mode 100644
+index 00000000..12b28c52
+--- /dev/null
++++ b/lib/capabilities/model.js
+@@ -0,0 +1,141 @@
++'use strict';
++
++const { createHash } = require('node:crypto');
++
++const RESULT_STATUSES = Object.freeze(['PASS', 'INCOMPLETE']);
++const AVAILABILITY_STATUSES = Object.freeze(['AVAILABLE', 'UNAVAILABLE']);
++const CAPABILITY_STATUSES = Object.freeze(['AVAILABLE', 'UNAVAILABLE', 'INCOMPLETE']);
++
++function assertEnum(value, allowed, field) {
++  if (!allowed.includes(value)) {
++    throw new TypeError(`${field} must be one of: ${allowed.join(', ')}`);
++  }
++}
++
++function assertOptionalString(value, field) {
++  if (value !== null && (typeof value !== 'string' || value.length === 0)) {
++    throw new TypeError(`${field} must be null or a non-empty string`);
++  }
++}
++
++function normalizeCapability(capability) {
++  if (!capability || typeof capability !== 'object' || Array.isArray(capability)) {
++    throw new TypeError('capability must be an object');
++  }
++  if (typeof capability.id !== 'string' || capability.id.length === 0) {
++    throw new TypeError('capability.id must be a non-empty string');
++  }
++  if (typeof capability.available !== 'boolean') {
++    throw new TypeError('capability.available must be a boolean');
++  }
++  assertEnum(capability.status, CAPABILITY_STATUSES, 'capability.status');
++  if (typeof capability.reason !== 'string' || capability.reason.length === 0) {
++    throw new TypeError('capability.reason must be a non-empty string');
++  }
++  if (typeof capability.probe_id !== 'string' || capability.probe_id.length === 0) {
++    throw new TypeError('capability.probe_id must be a non-empty string');
++  }
++  if (capability.available !== (capability.status === 'AVAILABLE')) {
++    throw new TypeError('capability.available must agree with capability.status');
++  }
++  return {
++    id: capability.id,
++    available: capability.available,
++    status: capability.status,
++    reason: capability.reason,
++    probe_id: capability.probe_id,
++  };
++}
++
++function compareIds(left, right) {
++  if (left.id < right.id) return -1;
++  if (left.id > right.id) return 1;
++  return 0;
++}
++
++function hashProjection(result) {
++  return {
++    schema_version: result.schema_version,
++    probe_revision: result.probe_revision,
++    harness_id: result.harness_id,
++    status: result.status,
++    availability: result.availability,
++    executable: {
++      command: result.executable.command,
++      identity: result.executable.identity,
++      version: result.executable.version,
++    },
++    capabilities: result.capabilities
++      .map(normalizeCapability)
++      .sort(compareIds),
++  };
++}
++
++function computeProbeResultHash(result) {
++  return createHash('sha256')
++    .update(JSON.stringify(hashProjection(result)), 'utf8')
++    .digest('hex');
++}
++
++function deepFreeze(value) {
++  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
++    Object.freeze(value);
++    for (const child of Object.values(value)) deepFreeze(child);
++  }
++  return value;
++}
++
++function createProbeResult(input) {
++  if (!input || typeof input !== 'object' || Array.isArray(input)) {
++    throw new TypeError('probe result input must be an object');
++  }
++  if (typeof input.harnessId !== 'string' || input.harnessId.length === 0) {
++    throw new TypeError('harnessId must be a non-empty string');
++  }
++  if (typeof input.probeRevision !== 'string' || input.probeRevision.length === 0) {
++    throw new TypeError('probeRevision must be a non-empty string');
++  }
++  assertEnum(input.status, RESULT_STATUSES, 'status');
++  assertEnum(input.availability, AVAILABILITY_STATUSES, 'availability');
++  if (!input.executable || typeof input.executable !== 'object' || Array.isArray(input.executable)) {
++    throw new TypeError('executable must be an object');
++  }
++  if (typeof input.executable.command !== 'string' || input.executable.command.length === 0) {
++    throw new TypeError('executable.command must be a non-empty string');
++  }
++  assertOptionalString(input.executable.identity, 'executable.identity');
++  assertOptionalString(input.executable.version, 'executable.version');
++  if (!Array.isArray(input.capabilities)) {
++    throw new TypeError('capabilities must be an array');
++  }
++  const observedAt = new Date(input.observedAt);
++  if (!Number.isFinite(observedAt.getTime())) {
++    throw new TypeError('observedAt must be a valid timestamp');
++  }
++
++  const result = {
++    schema_version: 1,
++    probe_revision: input.probeRevision,
++    harness_id: input.harnessId,
++    status: input.status,
++    availability: input.availability,
++    observed_at: observedAt.toISOString(),
++    executable: {
++      command: input.executable.command,
++      identity: input.executable.identity,
++      version: input.executable.version,
++    },
++    capabilities: input.capabilities.map(normalizeCapability)
++      .sort(compareIds),
++  };
++  result.result_hash = computeProbeResultHash(result);
++  return deepFreeze(result);
++}
++
++module.exports = {
++  AVAILABILITY_STATUSES,
++  CAPABILITY_STATUSES,
++  RESULT_STATUSES,
++  computeProbeResultHash,
++  createProbeResult,
++};
+diff --git a/lib/capabilities/probes.js b/lib/capabilities/probes.js
+new file mode 100644
+index 00000000..2e633364
+--- /dev/null
++++ b/lib/capabilities/probes.js
+@@ -0,0 +1,318 @@
++'use strict';
++
++const { createProbeResult } = require('./model');
++
++const PROBE_REVISION = 'forge.harness-capability-probe.v1';
++const DEFAULT_TIMEOUT_MS = 1500;
++const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024;
++const EXECUTABLE_IDENTITY_PATTERN = /^[0-9a-f]{64}$/;
++const SECRET_PATTERN = /(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:live-|test-)?[A-Za-z0-9]{16,}|(?:api[_ -]?key|authorization|credential|password|private[_ -]?key|secret|token)\s*[:=]\s*\S{8,})/i;
++const PRIVATE_PATH_PATTERN = /(?:[A-Za-z]:\\Users\\[^\\\s]+|\/(?:Users|home)\/[^/\s]+\/)/i;
++
++const HARNESS_IDS = Object.freeze(['claude', 'codex', 'cursor', 'hermes']);
++const CAPABILITY_IDS = Object.freeze([
++  'native_streaming_monitor',
++  'bounded_background_tasks',
++  'wake_resume',
++  'cancellation',
++  'session_scoped_cleanup',
++  'initiating_agent_delivery',
++]);
++
++function capability(id, probeId, args, requiredTokens) {
++  if (args.length === 0 || args.at(-1) !== '--help') {
++    throw new TypeError(`Capability probe ${probeId} must use a side-effect-free help command`);
++  }
++  return Object.freeze({
++    id,
++    probeId,
++    args: Object.freeze(args),
++    requiredTokens: Object.freeze(requiredTokens),
++  });
++}
++
++function harnessSpec(command, versionPattern, capabilities) {
++  return Object.freeze({
++    command,
++    versionArgs: Object.freeze(['--version']),
++    versionPattern,
++    capabilities: Object.freeze(capabilities),
++  });
++}
++
++const HARNESS_PROBE_SPECS = Object.freeze({
++  claude: harnessSpec('claude', /^(?:claude(?:\s+code)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/i, [
++    capability('native_streaming_monitor', 'claude.stream-json-help.v1', ['--help'], ['--output-format', 'stream-json']),
++    capability('bounded_background_tasks', 'claude.remote-help.v1', ['--help'], ['--remote']),
++    capability('wake_resume', 'claude.resume-help.v1', ['--help'], ['--resume']),
++    capability('cancellation', 'claude.cancel-help.v1', ['--help'], ['--cancel']),
++    capability('session_scoped_cleanup', 'claude.session-cleanup-help.v1', ['--help'], ['session', 'delete']),
++    capability('initiating_agent_delivery', 'claude.stream-delivery-help.v1', ['--help'], ['--output-format', 'stream-json']),
++  ]),
++  codex: harnessSpec('codex', /^(?:codex(?:-cli)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/i, [
++    capability('native_streaming_monitor', 'codex.json-help.v1', ['--help'], ['--json', 'output-schema']),
++    capability('bounded_background_tasks', 'codex.cloud-help.v1', ['cloud', '--help'], ['task']),
++    capability('wake_resume', 'codex.resume-help.v1', ['resume', '--help'], ['resume']),
++    capability('cancellation', 'codex.cloud-cancel-help.v1', ['cloud', '--help'], ['cancel']),
++    capability('session_scoped_cleanup', 'codex.cloud-cleanup-help.v1', ['cloud', '--help'], ['delete']),
++    capability('initiating_agent_delivery', 'codex.delivery-help.v1', ['--help'], ['event', 'initiating', 'agent']),
++  ]),
++  cursor: harnessSpec('cursor-agent', /^(?:cursor(?:-agent)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/i, [
++    capability('native_streaming_monitor', 'cursor.json-help.v1', ['--help'], ['--json']),
++    capability('bounded_background_tasks', 'cursor.background-help.v1', ['--help'], ['background']),
++    capability('wake_resume', 'cursor.resume-help.v1', ['resume', '--help'], ['resume']),
++    capability('cancellation', 'cursor.cancel-help.v1', ['cancel', '--help'], ['cancel']),
++    capability('session_scoped_cleanup', 'cursor.session-cleanup-help.v1', ['sessions', '--help'], ['sessions', 'delete']),
++    capability('initiating_agent_delivery', 'cursor.follow-up-help.v1', ['--help'], ['follow-up', 'initiating', 'agent']),
++  ]),
++  hermes: harnessSpec('hermes', /^(?:hermes(?:-agent)?\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/i, [
++    capability('native_streaming_monitor', 'hermes.monitor-help.v1', ['monitor', '--help'], ['monitor', 'stream']),
++    capability('bounded_background_tasks', 'hermes.cron-help.v1', ['cron', '--help'], ['cron', 'task']),
++    capability('wake_resume', 'hermes.resume-help.v1', ['resume', '--help'], ['resume']),
++    capability('cancellation', 'hermes.cron-cancel-help.v1', ['cron', '--help'], ['pause', 'remove']),
++    capability('session_scoped_cleanup', 'hermes.session-cleanup-help.v1', ['sessions', '--help'], ['sessions', 'delete']),
++    capability('initiating_agent_delivery', 'hermes.origin-delivery-help.v1', ['cron', '--help'], ['origin', 'deliver']),
++  ]),
++});
++
++function getHarnessProbeSpec(harness) {
++  const spec = HARNESS_PROBE_SPECS[harness];
++  if (!spec) throw new TypeError(`Unsupported harness: ${harness}`);
++  return spec;
++}
++
++function assertPositiveInteger(value, name) {
++  if (!Number.isInteger(value) || value < 1) {
++    throw new TypeError(`${name} must be a positive integer`);
++  }
++}
++
++function isHostileOutput(output) {
++  return SECRET_PATTERN.test(output)
++    || PRIVATE_PATH_PATTERN.test(output)
++    || [...output].some((character) => {
++      const code = character.charCodeAt(0);
++      return (code >= 0 && code <= 8)
++        || code === 11
++        || code === 12
++        || (code >= 14 && code <= 31)
++        || code === 127;
++    });
++}
++
++function normalizeExecution(response, maxOutputBytes) {
++  if (!response || typeof response !== 'object' || Array.isArray(response)) {
++    return { complete: false, reason: 'MALFORMED_RESULT' };
++  }
++  if (response.timedOut === true) return { complete: false, reason: 'PROBE_TIMEOUT' };
++  if (response.errorCode === 'ENOENT') return { complete: false, reason: 'EXECUTABLE_UNAVAILABLE' };
++  if (typeof response.stdout !== 'string' || typeof response.stderr !== 'string') {
++    return { complete: false, reason: 'MALFORMED_RESULT' };
++  }
++  const outputBytes = Buffer.byteLength(response.stdout, 'utf8') + Buffer.byteLength(response.stderr, 'utf8');
++  if (outputBytes > maxOutputBytes) return { complete: false, reason: 'OUTPUT_LIMIT' };
++  const output = `${response.stdout}\n${response.stderr}`;
++  if (isHostileOutput(output)) return { complete: false, reason: 'HOSTILE_OUTPUT' };
++  if (response.exitCode !== 0) return { complete: false, reason: 'PROBE_FAILED' };
++  return {
++    complete: true,
++    stdout: response.stdout,
++    stderr: response.stderr,
++    executableIdentity: response.executableIdentity,
++  };
++}
++
++async function executeBounded(execute, requestBase, timeoutMs) {
++  const controller = new AbortController();
++  let timer;
++  const timeout = new Promise((resolve) => {
++    timer = setTimeout(() => {
++      controller.abort();
++      resolve({ timedOut: true, stdout: '', stderr: '' });
++    }, timeoutMs);
++  });
++  const request = Object.freeze({ ...requestBase, signal: controller.signal });
++  try {
++    return await Promise.race([
++      Promise.resolve().then(() => execute(request)),
++      timeout,
++    ]);
++  } catch (_error) {
++    return { exitCode: null, stdout: '', stderr: '', errorCode: 'EXECUTION_ERROR' };
++  } finally {
++    clearTimeout(timer);
++  }
++}
++
++function requestFor({ harness, kind, probeId, command, args, timeoutMs, maxOutputBytes }) {
++  return {
++    harness,
++    kind,
++    probeId,
++    command,
++    args: Object.freeze([...args]),
++    timeoutMs,
++    maxOutputBytes,
++    sideEffectFree: true,
++  };
++}
++
++function incompleteCapabilities(spec, reason) {
++  return spec.capabilities.map((item) => ({
++    id: item.id,
++    available: false,
++    status: 'INCOMPLETE',
++    reason,
++    probe_id: item.probeId,
++  }));
++}
++
++function buildResult({ harness, spec, observedAt, status, availability, identity, version, capabilities }) {
++  return createProbeResult({
++    probeRevision: PROBE_REVISION,
++    harnessId: harness,
++    status,
++    availability,
++    observedAt,
++    executable: { command: spec.command, identity, version },
++    capabilities,
++  });
++}
++
++function parseVersion(stdout, pattern) {
++  const normalized = stdout.trim();
++  if (normalized.includes('\n') || normalized.includes('\r')) return null;
++  const match = pattern.exec(normalized);
++  return match ? match[1] : null;
++}
++
++async function probeHarness(options) {
++  if (!options || typeof options !== 'object' || Array.isArray(options)) {
++    throw new TypeError('probe options must be an object');
++  }
++  const { harness, execute } = options;
++  const spec = getHarnessProbeSpec(harness);
++  if (typeof execute !== 'function') throw new TypeError('execute must be a function');
++  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
++  const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
++  assertPositiveInteger(timeoutMs, 'timeoutMs');
++  assertPositiveInteger(maxOutputBytes, 'maxOutputBytes');
++  const observedAt = options.observedAt ?? new Date().toISOString();
++
++  const versionResponse = await executeBounded(execute, requestFor({
++    harness,
++    kind: 'version',
++    probeId: `${harness}.version.v1`,
++    command: spec.command,
++    args: spec.versionArgs,
++    timeoutMs,
++    maxOutputBytes,
++  }), timeoutMs);
++  const versionExecution = normalizeExecution(versionResponse, maxOutputBytes);
++  if (!versionExecution.complete) {
++    return buildResult({
++      harness,
++      spec,
++      observedAt,
++      status: 'INCOMPLETE',
++      availability: 'UNAVAILABLE',
++      identity: null,
++      version: null,
++      capabilities: incompleteCapabilities(spec, versionExecution.reason),
++    });
++  }
++  const identity = versionExecution.executableIdentity;
++  const version = parseVersion(versionExecution.stdout || versionExecution.stderr, spec.versionPattern);
++  if (!EXECUTABLE_IDENTITY_PATTERN.test(identity || '')) {
++    return buildResult({
++      harness,
++      spec,
++      observedAt,
++      status: 'INCOMPLETE',
++      availability: 'UNAVAILABLE',
++      identity: null,
++      version,
++      capabilities: incompleteCapabilities(spec, 'EXECUTABLE_IDENTITY_UNAVAILABLE'),
++    });
++  }
++  if (!version) {
++    return buildResult({
++      harness,
++      spec,
++      observedAt,
++      status: 'INCOMPLETE',
++      availability: 'UNAVAILABLE',
++      identity,
++      version: null,
++      capabilities: incompleteCapabilities(spec, 'MALFORMED_VERSION'),
++    });
++  }
++
++  const cache = new Map();
++  const capabilities = [];
++  for (const item of spec.capabilities) {
++    const cacheKey = JSON.stringify(item.args);
++    let response = cache.get(cacheKey);
++    if (!response) {
++      response = executeBounded(execute, requestFor({
++        harness,
++        kind: 'behavior',
++        probeId: item.probeId,
++        command: spec.command,
++        args: item.args,
++        timeoutMs,
++        maxOutputBytes,
++      }), timeoutMs);
++      cache.set(cacheKey, response);
++    }
++    const execution = normalizeExecution(await response, maxOutputBytes);
++    let status = 'INCOMPLETE';
++    let reason = execution.reason;
++    let available = false;
++    if (execution.complete && execution.executableIdentity !== identity) {
++      reason = 'EXECUTABLE_IDENTITY_CHANGED';
++    } else if (execution.complete) {
++      const output = execution.stdout.toLowerCase();
++      available = item.requiredTokens.every((token) => output.includes(token.toLowerCase()));
++      status = available ? 'AVAILABLE' : 'UNAVAILABLE';
++      reason = available ? 'PROBED_SUPPORTED' : 'PROBED_UNSUPPORTED';
++    }
++    capabilities.push({
++      id: item.id,
++      available,
++      status,
++      reason,
++      probe_id: item.probeId,
++    });
++  }
++
++  return buildResult({
++    harness,
++    spec,
++    observedAt,
++    status: capabilities.some((item) => item.status === 'INCOMPLETE') ? 'INCOMPLETE' : 'PASS',
++    availability: 'AVAILABLE',
++    identity,
++    version,
++    capabilities,
++  });
++}
++
++async function probeAllHarnesses(options) {
++  if (!options || typeof options !== 'object' || Array.isArray(options)) {
++    throw new TypeError('probe options must be an object');
++  }
++  return Promise.all(HARNESS_IDS.map((harness) => probeHarness({ ...options, harness })));
++}
++
++module.exports = {
++  CAPABILITY_IDS,
++  DEFAULT_MAX_OUTPUT_BYTES,
++  DEFAULT_TIMEOUT_MS,
++  HARNESS_IDS,
++  HARNESS_PROBE_SPECS,
++  PROBE_REVISION,
++  getHarnessProbeSpec,
++  probeAllHarnesses,
++  probeHarness,
++};
+diff --git a/test/capabilities/index.test.js b/test/capabilities/index.test.js
+new file mode 100644
+index 00000000..ccbf2993
+--- /dev/null
++++ b/test/capabilities/index.test.js
+@@ -0,0 +1,13 @@
++'use strict';
++
++const test = require('node:test');
++const assert = require('node:assert/strict');
++
++const capabilities = require('../../lib/capabilities');
++
++test('capability package surface exposes model and probe APIs', () => {
++  assert.equal(typeof capabilities.createProbeResult, 'function');
++  assert.equal(typeof capabilities.computeProbeResultHash, 'function');
++  assert.equal(typeof capabilities.probeHarness, 'function');
++  assert.equal(typeof capabilities.probeAllHarnesses, 'function');
++});
+diff --git a/test/capabilities/model.test.js b/test/capabilities/model.test.js
+new file mode 100644
+index 00000000..497effd9
+--- /dev/null
++++ b/test/capabilities/model.test.js
+@@ -0,0 +1,29 @@
++'use strict';
++
++const test = require('node:test');
++const assert = require('node:assert/strict');
++
++const { computeProbeResultHash, createProbeResult } = require('../../lib/capabilities/model');
++
++test('probe result model binds privacy-safe evidence and excludes observation time from its hash', () => {
++  const input = {
++    probeRevision: 'probe.v1',
++    harnessId: 'fixture',
++    status: 'PASS',
++    availability: 'AVAILABLE',
++    executable: { command: 'fixture', identity: 'a'.repeat(64), version: '1.0.0' },
++    capabilities: [{
++      id: 'wake_resume',
++      available: false,
++      status: 'UNAVAILABLE',
++      reason: 'PROBED_UNSUPPORTED',
++      probe_id: 'fixture.resume.v1',
++    }],
++  };
++  const first = createProbeResult({ ...input, observedAt: '2026-08-11T00:00:00.000Z' });
++  const second = createProbeResult({ ...input, observedAt: '2026-08-11T01:00:00.000Z' });
++
++  assert.equal(first.result_hash, second.result_hash);
++  assert.equal(first.result_hash, computeProbeResultHash(first));
++  assert.equal(Object.isFrozen(first), true);
++});
+diff --git a/test/capabilities/probes.test.js b/test/capabilities/probes.test.js
+new file mode 100644
+index 00000000..6f51f293
+--- /dev/null
++++ b/test/capabilities/probes.test.js
+@@ -0,0 +1,19 @@
++'use strict';
++
++const test = require('node:test');
++const assert = require('node:assert/strict');
++
++const { CAPABILITY_IDS, probeHarness } = require('../../lib/capabilities/probes');
++const { successfulExecutor } = require('../capability/fixtures');
++
++test('version-bound harness probe returns one executable receipt per capability', async () => {
++  const result = await probeHarness({
++    harness: 'codex',
++    execute: successfulExecutor(),
++    observedAt: '2026-08-11T00:00:00.000Z',
++  });
++
++  assert.equal(result.status, 'PASS');
++  assert.equal(result.executable.version, '0.147.0');
++  assert.deepEqual(result.capabilities.map((capability) => capability.id), [...CAPABILITY_IDS].sort());
++});
+diff --git a/test/capability/fixtures.js b/test/capability/fixtures.js
+new file mode 100644
+index 00000000..01541bd1
+--- /dev/null
++++ b/test/capability/fixtures.js
+@@ -0,0 +1,44 @@
++'use strict';
++
++const EXECUTABLE_IDENTITIES = Object.freeze({
++  claude: '1'.repeat(64),
++  codex: '2'.repeat(64),
++  cursor: '3'.repeat(64),
++  hermes: '4'.repeat(64),
++});
++
++const VERSIONS = Object.freeze({
++  claude: 'claude code 2.1.226',
++  codex: 'codex-cli 0.147.0',
++  cursor: 'cursor-agent 3.7.42',
++  hermes: 'hermes-agent 0.19.1',
++});
++
++const SUPPORT_OUTPUT = Object.freeze({
++  claude: '--output-format stream-json --remote --resume --cancel session delete',
++  codex: '--json output-schema task resume cancel delete event initiating agent',
++  cursor: '--json background resume cancel sessions delete follow-up initiating agent',
++  hermes: 'monitor stream cron task resume pause remove sessions delete origin deliver',
++});
++
++function successfulExecutor(overrides = {}) {
++  return async (request) => {
++    const base = request.kind === 'version'
++      ? { stdout: VERSIONS[request.harness] }
++      : { stdout: SUPPORT_OUTPUT[request.harness] };
++    return {
++      exitCode: 0,
++      stderr: '',
++      executableIdentity: EXECUTABLE_IDENTITIES[request.harness],
++      ...base,
++      ...overrides,
++    };
++  };
++}
++
++module.exports = {
++  EXECUTABLE_IDENTITIES,
++  SUPPORT_OUTPUT,
++  VERSIONS,
++  successfulExecutor,
++};
+diff --git a/test/capability/harness-probes.test.js b/test/capability/harness-probes.test.js
+new file mode 100644
+index 00000000..bc8a86bb
+--- /dev/null
++++ b/test/capability/harness-probes.test.js
+@@ -0,0 +1,195 @@
++'use strict';
++
++const test = require('node:test');
++const assert = require('node:assert/strict');
++
++const {
++  CAPABILITY_IDS,
++  HARNESS_IDS,
++  PROBE_REVISION,
++  computeProbeResultHash,
++  getHarnessProbeSpec,
++  probeAllHarnesses,
++  probeHarness,
++} = require('../../lib/capabilities');
++const {
++  EXECUTABLE_IDENTITIES,
++  SUPPORT_OUTPUT,
++  VERSIONS,
++  successfulExecutor,
++} = require('./fixtures');
++
++test('every supported harness uses bounded executable behavior probes', async () => {
++  const requests = [];
++  const results = await probeAllHarnesses({
++    execute: async (request) => {
++      requests.push(request);
++      return successfulExecutor()(request);
++    },
++    timeoutMs: 250,
++    maxOutputBytes: 2048,
++  });
++
++  assert.deepEqual(results.map((result) => result.harness_id), HARNESS_IDS);
++  for (const result of results) {
++    assert.equal(result.probe_revision, PROBE_REVISION);
++    assert.equal(result.status, 'PASS');
++    assert.equal(result.availability, 'AVAILABLE');
++    assert.equal(result.executable.identity, EXECUTABLE_IDENTITIES[result.harness_id]);
++    assert.equal(result.capabilities.length, CAPABILITY_IDS.length);
++    assert.ok(result.capabilities.some((capability) => capability.available));
++    assert.match(result.result_hash, /^[0-9a-f]{64}$/);
++    assert.equal(result.result_hash, computeProbeResultHash(result));
++  }
++
++  assert.ok(requests.every((request) => request.timeoutMs === 250));
++  assert.ok(requests.every((request) => request.maxOutputBytes === 2048));
++  assert.ok(requests.every((request) => request.sideEffectFree === true));
++  assert.ok(requests.every((request) => Object.isFrozen(request.args)));
++});
++
++test('product name and version never imply a capability', async () => {
++  const result = await probeHarness({
++    harness: 'codex',
++    execute: async (request) => ({
++      exitCode: 0,
++      stdout: request.kind === 'version' ? VERSIONS.codex : 'Usage: codex command',
++      stderr: '',
++      executableIdentity: EXECUTABLE_IDENTITIES.codex,
++    }),
++  });
++
++  assert.equal(result.status, 'PASS');
++  assert.ok(result.capabilities.every((capability) => capability.available === false));
++  assert.ok(result.capabilities.every((capability) => capability.status === 'UNAVAILABLE'));
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'PROBED_UNSUPPORTED'));
++});
++
++test('absent executables fail closed without attempting behavior probes', async () => {
++  const requests = [];
++  const result = await probeHarness({
++    harness: 'cursor',
++    execute: async (request) => {
++      requests.push(request);
++      return { exitCode: null, stdout: '', stderr: '', errorCode: 'ENOENT' };
++    },
++  });
++
++  assert.equal(requests.length, 1);
++  assert.equal(requests[0].kind, 'version');
++  assert.equal(result.status, 'INCOMPLETE');
++  assert.equal(result.availability, 'UNAVAILABLE');
++  assert.equal(result.executable.version, null);
++  assert.ok(result.capabilities.every((capability) => capability.status === 'INCOMPLETE'));
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'EXECUTABLE_UNAVAILABLE'));
++});
++
++test('timeouts are bounded and reported INCOMPLETE', async () => {
++  const result = await probeHarness({
++    harness: 'hermes',
++    timeoutMs: 10,
++    execute: async (request) => {
++      if (request.kind === 'version') return successfulExecutor()(request);
++      await new Promise((resolve) => setTimeout(resolve, 100));
++      return successfulExecutor()(request);
++    },
++  });
++
++  assert.equal(result.status, 'INCOMPLETE');
++  assert.equal(result.availability, 'AVAILABLE');
++  assert.ok(result.capabilities.every((capability) => capability.status === 'INCOMPLETE'));
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'PROBE_TIMEOUT'));
++});
++
++test('malformed version output fails closed', async () => {
++  const result = await probeHarness({
++    harness: 'claude',
++    execute: successfulExecutor({ stdout: 'latest release' }),
++  });
++
++  assert.equal(result.status, 'INCOMPLETE');
++  assert.equal(result.availability, 'UNAVAILABLE');
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'MALFORMED_VERSION'));
++});
++
++test('hostile output is neither retained nor hashed as evidence', async () => {
++  const secret = 'ghp_123456789012345678901234567890';
++  const privatePath = 'C:\\Users\\victim\\private';
++  const result = await probeHarness({
++    harness: 'codex',
++    execute: async (request) => ({
++      exitCode: 0,
++      stdout: request.kind === 'version'
++        ? VERSIONS.codex
++        : `${SUPPORT_OUTPUT.codex}\nTOKEN=${secret}\n${privatePath}\n\u001b[31mred`,
++      stderr: '',
++      executableIdentity: EXECUTABLE_IDENTITIES.codex,
++    }),
++  });
++
++  const serialized = JSON.stringify(result);
++  assert.equal(result.status, 'INCOMPLETE');
++  assert.ok(result.capabilities.every((capability) => capability.status === 'INCOMPLETE'));
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'HOSTILE_OUTPUT'));
++  assert.doesNotMatch(serialized, /ghp_|victim|TOKEN=|red/);
++  assert.equal(serialized.includes(String.fromCharCode(27)), false);
++});
++
++test('oversized output fails closed', async () => {
++  const result = await probeHarness({
++    harness: 'claude',
++    maxOutputBytes: 32,
++    execute: successfulExecutor(),
++  });
++  assert.equal(result.status, 'INCOMPLETE');
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'OUTPUT_LIMIT'));
++});
++
++test('executable identity changes fail closed', async () => {
++  const result = await probeHarness({
++    harness: 'cursor',
++    execute: async (request) => ({
++      exitCode: 0,
++      stdout: request.kind === 'version' ? VERSIONS.cursor : SUPPORT_OUTPUT.cursor,
++      stderr: '',
++      executableIdentity: request.kind === 'version'
++        ? EXECUTABLE_IDENTITIES.cursor
++        : '9'.repeat(64),
++    }),
++  });
++  assert.equal(result.status, 'INCOMPLETE');
++  assert.ok(result.capabilities.every((capability) => capability.reason === 'EXECUTABLE_IDENTITY_CHANGED'));
++});
++
++test('result hashes are deterministic and exclude observation time', async () => {
++  const first = await probeHarness({
++    harness: 'hermes',
++    execute: successfulExecutor(),
++    observedAt: '2026-08-11T00:00:00.000Z',
++  });
++  const second = await probeHarness({
++    harness: 'hermes',
++    execute: successfulExecutor(),
++    observedAt: '2026-08-11T01:00:00.000Z',
++  });
++
++  assert.notEqual(first.observed_at, second.observed_at);
++  assert.equal(first.result_hash, second.result_hash);
++  assert.equal(first.result_hash, '4fb765aca9e3e5ad1c3a9ca36d17783942e64e2731a0494b16c691eecc8a0c8e');
++  assert.deepEqual(getHarnessProbeSpec('hermes').capabilities.map((item) => item.id), CAPABILITY_IDS);
++});
++
++test('unknown harnesses are rejected before execution', async () => {
++  let called = false;
++  await assert.rejects(
++    probeHarness({
++      harness: 'made-up-product',
++      execute: async () => {
++        called = true;
++        return {};
++      },
++    }),
++    /Unsupported harness/,
++  );
++  assert.equal(called, false);
++});
+-- 
+2.51.0.windows.1
+

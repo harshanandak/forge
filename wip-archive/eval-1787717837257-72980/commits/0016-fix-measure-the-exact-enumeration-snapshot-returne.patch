@@ -1,0 +1,37 @@
+From 2b3e88f6375b23182f991712989979bd5d04016b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 01:28:09 +0530
+Subject: [PATCH] fix: measure the exact enumeration snapshot returned
+
+---
+ lib/pr-monitor/watch-owner.js | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index a053de29..f6d60aaa 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -580,16 +580,14 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 			}
+ 		}
+ 		let bytes = 0;
+-		for (const row of rows) {
+-			bytes += Buffer.byteLength(JSON.stringify(row), 'utf8');
+-			if (bytes > OWNER_ENUMERATION_BYTES) {
+-				return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
+-			}
+-		}
+ 		const records = [];
+ 		for (const row of rows) {
+ 			const record = fromSqliteOwnerRow(row);
+ 			if (validateRecord(record)) return { ok: false, changed: false, reason: 'corrupt', records: [] };
++			bytes += Buffer.byteLength(JSON.stringify(record), 'utf8');
++			if (bytes > OWNER_ENUMERATION_BYTES) {
++				return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
++			}
+ 			records.push(record);
+ 		}
+ 		return { ok: snap.ok, changed: false, reason: snap.reason, records };
+-- 
+2.51.0.windows.1
+

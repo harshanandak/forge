@@ -1,0 +1,71 @@
+From 301bb84cc145e8c7b842bf73d4ee255c4e6f94a8 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 01:20:46 +0530
+Subject: [PATCH] refactor(merge): isolate recovery evidence parsing
+
+---
+ lib/commands/merge.js | 34 ++++++++++++++++++----------------
+ 1 file changed, 18 insertions(+), 16 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index e8334f59..2167b425 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -187,6 +187,19 @@ function mergeAuthorityFromTrace(row, identity) {
+   return { actor: exact[0].actor, occurredAt: exact[0].at, packet: exact[0].work_packet };
+ }
+ 
++function recoveryEvidenceFromTrace(row, identity) {
++  const terminalEvidence = terminalEvidenceFromTrace(row, identity);
++  if (terminalEvidence?.invalid) {
++    return { error: 'Kernel merged PR evidence is incomplete or ambiguous.' };
++  }
++  if (terminalEvidence) return { terminalEvidence };
++  const mergeAuthority = mergeAuthorityFromTrace(row, identity);
++  if (mergeAuthority?.invalid) {
++    return { error: 'Kernel merge authority evidence is incomplete or ambiguous.' };
++  }
++  return mergeAuthority ? { mergeAuthority } : {};
++}
++
+ function parseMergeArgs(argv) {
+   const values = { auto: false, pr: null, expectedHead: null, issueId: null, error: null };
+   const seen = new Set();
+@@ -375,20 +388,10 @@ async function defaultVerifyPrIssueBinding({
+       number: Number(number),
+       expectedHead: normalizeFullHeadSha(prContext?.headSha),
+     };
+-    const terminalEvidence = allowRetired && bound
+-      ? terminalEvidenceFromTrace(row, {
+-        ...traceIdentity,
+-      })
+-      : null;
+-    if (terminalEvidence?.invalid) {
+-      return { bound: false, error: 'Kernel merged PR evidence is incomplete or ambiguous.' };
+-    }
+-    const mergeAuthority = allowRetired && bound && !terminalEvidence
+-      ? mergeAuthorityFromTrace(row, traceIdentity)
+-      : null;
+-    if (mergeAuthority?.invalid) {
+-      return { bound: false, error: 'Kernel merge authority evidence is incomplete or ambiguous.' };
+-    }
++    const recoveryEvidence = allowRetired && bound
++      ? recoveryEvidenceFromTrace(row, traceIdentity)
++      : {};
++    if (recoveryEvidence.error) return { bound: false, error: recoveryEvidence.error };
+     return {
+       bound,
+       repository,
+@@ -398,8 +401,7 @@ async function defaultVerifyPrIssueBinding({
+       url: row.url || null,
+       gitCommonDir: row.git_common_dir || built.gitCommonDir,
+       error: prBindingError(bound, allowRetired),
+-      ...(terminalEvidence ? { terminalEvidence } : {}),
+-      ...(mergeAuthority ? { mergeAuthority } : {}),
++      ...recoveryEvidence,
+     };
+   } catch (err) {
+     return { bound: false, error: `Kernel PR linkage verification failed: ${err.message}` };
+-- 
+2.51.0.windows.1
+

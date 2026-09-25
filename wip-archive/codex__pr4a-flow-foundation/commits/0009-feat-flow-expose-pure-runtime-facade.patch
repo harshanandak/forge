@@ -1,0 +1,103 @@
+From 75135b2d626aa38fba39a451580fa574071e341f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 07:28:43 +0530
+Subject: [PATCH] feat(flow): expose pure runtime facade
+
+---
+ packages/flow/index.js      | 21 ++++++++++++++++++++-
+ packages/flow/index.test.js | 21 ++++++++++++++++++++-
+ packages/flow/package.json  |  3 ++-
+ 3 files changed, 42 insertions(+), 3 deletions(-)
+
+diff --git a/packages/flow/index.js b/packages/flow/index.js
+index 95eb9bb6..6e340ba1 100644
+--- a/packages/flow/index.js
++++ b/packages/flow/index.js
+@@ -1,6 +1,15 @@
+ "use strict";
+ 
+ const { computeContentHash, validateContractStructure } = require("@forge/memory-contracts");
++const { FlowExecutionError, createWorkPacketExecutor } = require("./src/executor");
++const {
++  MonitorRuntimeError,
++  createMonitorReceipt,
++  createMonitorState,
++  reduceMonitor,
++} = require("./src/monitor-runtime");
++const { EfficiencySupervisor } = require("./src/efficiency-supervisor");
++const { SkillRuntime } = require("./src/skill-runtime");
+ 
+ function requiredString(options, name) {
+   const value = options[name];
+@@ -64,4 +73,14 @@ function createRunReceiptSkeleton(workPacket, options = {}) {
+   return receipt;
+ }
+ 
+-module.exports = { createRunReceiptSkeleton };
++module.exports = {
++  EfficiencySupervisor,
++  FlowExecutionError,
++  MonitorRuntimeError,
++  SkillRuntime,
++  createMonitorReceipt,
++  createMonitorState,
++  createRunReceiptSkeleton,
++  createWorkPacketExecutor,
++  reduceMonitor,
++};
+diff --git a/packages/flow/index.test.js b/packages/flow/index.test.js
+index 9c38199b..4ec69efe 100644
+--- a/packages/flow/index.test.js
++++ b/packages/flow/index.test.js
+@@ -4,7 +4,9 @@ const { describe, expect, mock, test } = require("bun:test");
+ const contracts = require("../memory-contracts");
+ mock.module("@forge/memory-contracts", () => contracts);
+ const { computeContentHash, validateContractStructure } = contracts;
+-const { createRunReceiptSkeleton } = require(".");
++const flow = require(".");
++const { createRunReceiptSkeleton } = flow;
++const packageManifest = require("./package.json");
+ 
+ function makeWorkPacket() {
+   const packet = {
+@@ -43,6 +45,23 @@ function makeWorkPacket() {
+ }
+ 
+ describe("Flow contract boundary", () => {
++  test("exports the pure execution, monitoring, supervision, and skill runtime facade", () => {
++    expect(flow).toMatchObject({
++      FlowExecutionError: expect.any(Function),
++      createWorkPacketExecutor: expect.any(Function),
++      MonitorRuntimeError: expect.any(Function),
++      createMonitorReceipt: expect.any(Function),
++      createMonitorState: expect.any(Function),
++      reduceMonitor: expect.any(Function),
++      EfficiencySupervisor: expect.any(Function),
++      SkillRuntime: expect.any(Function),
++    });
++  });
++
++  test("publishes the runtime implementation used by the public facade", () => {
++    expect(packageManifest.files).toContain("src/");
++  });
++
+   test("turns a valid WorkPacket into a contract-valid non-execution RunReceipt", () => {
+     const packet = makeWorkPacket();
+     const receipt = createRunReceiptSkeleton(packet, {
+diff --git a/packages/flow/package.json b/packages/flow/package.json
+index ce292cdb..82c2061d 100644
+--- a/packages/flow/package.json
++++ b/packages/flow/package.json
+@@ -5,7 +5,8 @@
+   "main": "index.js",
+   "type": "commonjs",
+   "files": [
+-    "index.js"
++    "index.js",
++    "src/"
+   ],
+   "scripts": {
+     "test": "bun test index.test.js",
+-- 
+2.51.0.windows.1
+

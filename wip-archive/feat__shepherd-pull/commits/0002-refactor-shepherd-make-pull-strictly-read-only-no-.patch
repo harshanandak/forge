@@ -1,0 +1,166 @@
+From 85c1224d0c67855cd8818d8e7129a6e479bf8bcc Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 10 Jul 2026 17:14:59 +0530
+Subject: [PATCH] refactor(shepherd): make --pull strictly read-only (no Tier-A
+ mutation)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+--pull is a read verb — it pulls signal for an agent; taking actions belongs
+to plain `forge shepherd`. gatherPullSignal now runs the decision pass with a
+new additive `dryRun` option on runShepherdPass: the state is still computed
+from the check rollup, but the Tier-A rerun (and, defensively, the opt-in
+rebase) are skipped — --pull mutates nothing.
+
+- pr-shepherd.js: additive `dryRun` (default OFF; existing callers unchanged).
+  A failing required check in dryRun returns PENDING with a read-only reason
+  instead of calling adapter.rerunFailedChecks; behind-base forces autoRebase
+  off so it can only escalate.
+- pr-pull.js: gatherPullSignal passes dryRun:true to the pass.
+- Test: real runShepherdPass via --pull with a FAILING required check asserts
+  rerunFailedChecks is never called and runGh never sees a rerun.
+
+Refs: 33e1bbd3-ca82-4246-86ff-d1d18717dd9b
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/shepherd.js |  7 ++++---
+ lib/pr-pull.js           |  7 +++++--
+ lib/pr-shepherd.js       | 23 +++++++++++++++++++----
+ test/pr-pull.test.js     | 29 +++++++++++++++++++++++++++++
+ 4 files changed, 57 insertions(+), 9 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 1eb3cc1f..56baf195 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -142,9 +142,10 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   }
+ 
+   // --pull: gather the COMPACT "why it failed + what to fix" payload (failed-check
+-  // log excerpts, matrix-deduped, plus the review-thread fix-list). The `gh` calls
+-  // to fetch logs run through an injected runner so this stays testable; the
+-  // decision pass is still run (via runPass) so the payload carries the state.
++  // log excerpts, matrix-deduped, plus the review-thread fix-list). STRICTLY
++  // READ-ONLY — it computes the decision state via a dry-run pass but takes NO
++  // action (no Tier-A rerun, no rebase); acting belongs to plain `forge shepherd`.
++  // The `gh` calls to fetch logs run through an injected runner so this stays testable.
+   if (wantPull) {
+     const runGh = (ghArgs) => gh('gh', ghArgs);
+     const pull = await gatherPull({ ...ctx, adapter, runGh, runPass, self: deps.self });
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index d9c0f9eb..ef56d70f 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -303,8 +303,11 @@ async function gatherPullSignal(ctx) {
+     throw new Error('gatherPullSignal requires an injected `runGh` runner');
+   }
+ 
+-  // Decision state (reuses the existing state machine unchanged).
+-  const pass = await runPass({ ...ctx, adapter });
++  // Decision state — reuses the existing state machine in READ-ONLY mode
++  // (`dryRun`). `--pull` is a read verb: it computes the state but NEVER fires a
++  // Tier-A rerun or any other mutation. Taking action belongs to plain
++  // `forge shepherd <pr>`.
++  const pass = await runPass({ ...ctx, adapter, dryRun: true });
+ 
+   // Read CI + required set + threads directly for the extraction half.
+   const state = await adapter.readState(pr);
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index 3666c284..888916ef 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -162,8 +162,18 @@ async function guardAuth(call, actions) {
+  * @returns {Promise<object>} decision envelope.
+  */
+ async function handleFailedRequired({
+-  failedRequired, rerunsUsed, rerunBudget, headUnchanged, adapter, actions,
++  failedRequired, rerunsUsed, rerunBudget, headUnchanged, adapter, actions, dryRun,
+ }) {
++  // Read-only pass (e.g. `--pull` signal gathering): report the failing state but
++  // take NO Tier-A action. Reruns/mutations belong to a plain `forge shepherd`.
++  if (dryRun) {
++    return result('PENDING', {
++      actions,
++      dryRun: true,
++      reason: `Required check '${failedRequired[0].name}' is failing. Read-only pass — not re-running (a rerun belongs to \`forge shepherd\`, not \`--pull\`).`,
++      failed: failedRequired.map((c) => c.name),
++    });
++  }
+   if (rerunsUsed >= rerunBudget) {
+     return result('ESCALATE', {
+       actions,
+@@ -272,6 +282,10 @@ async function runShepherdPass(ctx) {
+     cleanTree = false,
+     rerunBudget = 3,
+     rerunsUsed = 0,
++    // Read-only mode: compute the decision state but take NO mutating action
++    // (no rerun, no rebase). Used by `--pull` signal gathering. Additive and
++    // default OFF — existing callers are unaffected.
++    dryRun = false,
+   } = ctx;
+ 
+   const actions = [];
+@@ -359,14 +373,15 @@ async function runShepherdPass(ctx) {
+   // --- Tier-A: flaky required check → rerun (capped, idempotent). ---
+   if (failedRequired.length > 0) {
+     return handleFailedRequired({
+-      failedRequired, rerunsUsed, rerunBudget, headUnchanged, adapter, actions,
++      failedRequired, rerunsUsed, rerunBudget, headUnchanged, adapter, actions, dryRun,
+     });
+   }
+ 
+-  // --- Behind base (Tier-B opt-in rebase, else escalate). ---
++  // --- Behind base (Tier-B opt-in rebase, else escalate). In read-only mode we
++  // never rebase — force autoRebase off so the branch-behind path only escalates. ---
+   if (behind > 0) {
+     return handleBehindBase({
+-      behind, autoRebase, cleanTree, adapter, baseRef, headUnchanged, actions,
++      behind, autoRebase: dryRun ? false : autoRebase, cleanTree, adapter, baseRef, headUnchanged, actions,
+     });
+   }
+ 
+diff --git a/test/pr-pull.test.js b/test/pr-pull.test.js
+index 8bdc0fae..2dc8b6f9 100644
+--- a/test/pr-pull.test.js
++++ b/test/pr-pull.test.js
+@@ -277,6 +277,35 @@ describe('gatherPullSignal (orchestrator — injected gh runner, no live GitHub)
+     expect(ghCalls.some((c) => c.includes('111'))).toBe(true);
+   });
+ 
++  test('is STRICTLY read-only: the real decision pass never fires a Tier-A rerun mutation', async () => {
++    // Use the REAL runShepherdPass (no injected runPass) with a FAILING required
++    // check — the path that would normally rerun. --pull must NOT mutate.
++    let rerunCalls = 0;
++    const checks = [
++      { name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/1/job/111' },
++    ];
++    const adapter = {
++      id: 'fake', kind: 'pr-state',
++      async readState() { return { headSha: 's', state: 'OPEN', mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', checks, threads: [] }; },
++      async readRequiredChecks() { return ['unit']; },
++      async readDivergence() { return { behind: 0, ahead: 1 }; },
++      async readComments() { return []; },
++      async rerunFailedChecks() { rerunCalls += 1; }, // MUST never be called
++    };
++    const ghCalls = [];
++    const runGh = (args) => { ghCalls.push(args.join(' ')); return '2026-07-10T12:00:01.2Z (fail) unit > x\nerror: boom'; };
++
++    const payload = await gatherPullSignal({
++      pr: '5', owner: 'o', repo: 'r', base: 'master', baseRef: 'origin/master',
++      adapter, runGh, self: 'me', // note: NO runPass injected → real runShepherdPass
++    });
++
++    expect(rerunCalls).toBe(0); // no CI mutation
++    expect(ghCalls.some((c) => c.includes('rerun'))).toBe(false); // runGh never asked to rerun
++    expect(payload.state).toBeDefined(); // state still computed
++    expect(payload.failures.length).toBe(1); // and the failure excerpt still extracted
++  });
++
+   test('a failing log fetch degrades to an empty excerpt without sinking the payload', async () => {
+     const { adapter, runPass } = makeCtx({
+       checks: [{ name: 'unit', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/1/job/999' }],
+-- 
+2.51.0.windows.1
+

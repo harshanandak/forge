@@ -1,0 +1,43 @@
+From 9e65bdb7f472b1add7c76c9f986c10e0e769190f Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Tue, 8 Sep 2026 15:26:18 +0530
+Subject: [PATCH] fix: include every .gitignore assertion in the targeted lane
+
+---
+ lib/commands/test.js             | 2 ++
+ test/scripts/test-runner.test.js | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/lib/commands/test.js b/lib/commands/test.js
+index ab233a7c..060ea1a4 100644
+--- a/lib/commands/test.js
++++ b/lib/commands/test.js
+@@ -56,6 +56,8 @@ const DIRECT_TEST_CANDIDATES = Object.freeze({
+ 		'test/coverage-config.test.js',
+ 		'test/eval/eval-history.test.js',
+ 		'test/freshness-token.test.js',
++		'test/mutation-config.test.js',
++		'test/test-dashboard.test.js',
+ 	],
+ 	'lib/lefthook-check.js': ['test/lefthook-check.test.js', 'test/runtime-health.test.js'],
+ 	'lib/runtime-health.js': ['test/runtime-health.test.js'],
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index af58036c..7fa91028 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -203,10 +203,12 @@ describe('scripts/test pre-push runner', () => {
+       'test/forge-commands.test.js',
+       'test/freshness-token.test.js',
+       'test/lefthook-check.test.js',
++      'test/mutation-config.test.js',
+       'test/runtime-health.test.js',
+       'test/scripts/preflight.test.js',
+       'test/scripts/test-runner.test.js',
+       'test/setup-workflow-removal.test.js',
++      'test/test-dashboard.test.js',
+       ...riskTargets,
+     ]);
+   });
+-- 
+2.51.0.windows.1
+

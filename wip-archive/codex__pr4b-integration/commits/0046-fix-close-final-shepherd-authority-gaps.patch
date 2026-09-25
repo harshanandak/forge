@@ -1,0 +1,253 @@
+From 002dd203a0845349def3b8e9bfa8c18816356eeb Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:05:45 +0530
+Subject: [PATCH] fix: close final shepherd authority gaps
+
+---
+ lib/commands/merge.js                      |  4 +++
+ lib/commands/shepherd.js                   | 21 +++++++---------
+ lib/pr-monitor/reconcile-executor.js       |  2 ++
+ test/commands/merge-authority.test.js      | 29 +++++++++++++++++++---
+ test/commands/shepherd.test.js             | 20 ++++++++++++---
+ test/pr-monitor/reconcile-executor.test.js | 24 ++++++++++++++----
+ 6 files changed, 77 insertions(+), 23 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 33e8c296..5272b446 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -1040,6 +1040,10 @@ function defaultMergePr({ pr, expectedHead, repository, gh = defaultGh }) {
+   if (!head) throw new Error('A full 40-character expected PR head SHA is required.');
+   if (!normalizePrNumber(String(pr)) || !repo) throw new Error('A canonical PR number and repository are required.');
+   gh(['pr', 'merge', String(pr), '--repo', repo, '--squash', '--match-head-commit', head]);
++  const confirmed = ghJson(gh, ['pr', 'view', String(pr), '--repo', repo, '--json', 'state,headRefOid']);
++  if (confirmed?.state !== 'MERGED' || normalizeFullHeadSha(confirmed.headRefOid) !== head) {
++    return { merged: false, reason: 'provider merge is not confirmed for the exact reviewed head' };
++  }
+   return { merged: true, method: 'squash' };
+ }
+ 
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 7a4c9bb8..0033ccb4 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -67,9 +67,9 @@ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', tim
+ /**
+  * Resolve owner/repo and base branch for the shepherd pass.
+  *
+- * The base branch is read from the PR itself (`gh pr view <pr> --json
+- * baseRefName`) rather than the current checkout's default branch, so PRs
+- * targeting `release/*`/`develop` are evaluated against the correct branch.
++ * The exact base commit is read from the PR itself (`gh pr view <pr> --json
++ * baseRefOid`) rather than a local remote, so fork checkouts and PRs targeting
++ * `release/*`/`develop` are evaluated against the provider's reviewed base.
+  * `owner`/`name` come from the repository the PR is queried in — that IS the
+  * base repository. `cwd` (the worktree root) is threaded through so divergence
+  * is computed against the right checkout.
+@@ -78,9 +78,13 @@ const defaultGhRunner = (cmd, a) => execFileSync(cmd, a, { encoding: 'utf8', tim
+  * @returns {Promise<{ pr: string, owner: string, repo: string, base: string, baseRef: string, cwd?: string }>}
+  */
+ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+-  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName,headRefOid']);
++  const prJson = gh('gh', ['pr', 'view', String(pr), '--json', 'baseRefName,baseRefOid,headRefOid']);
+   const prInfo = JSON.parse(prJson || '{}');
+   const base = prInfo.baseRefName || 'master';
++  if (typeof prInfo.baseRefOid !== 'string' || !/^[0-9a-f]{40}$/i.test(prInfo.baseRefOid)) {
++    throw new Error('PR base commit is unavailable from the provider');
++  }
++  const baseRef = prInfo.baseRefOid.toLowerCase();
+   const headSha = typeof prInfo.headRefOid === 'string' && /^[0-9a-f]{40}$/i.test(prInfo.headRefOid)
+     ? prInfo.headRefOid.toLowerCase()
+     : null;
+@@ -90,13 +94,6 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+   const owner = repo.owner?.login || '';
+   const name = repo.name || '';
+ 
+-  let baseRemote;
+-  try {
+-    baseRemote = git('git', ['remote']).split(/\s+/).filter(Boolean)[0] || 'origin';
+-  } catch (_err) {
+-    baseRemote = 'origin';
+-  }
+-
+   let localHead = null;
+   try {
+     const candidate = git('git', ['rev-parse', 'HEAD']).trim();
+@@ -110,7 +107,7 @@ async function defaultBuildContext({ pr, gh, git, projectRoot }) {
+     owner,
+     repo: name,
+     base,
+-    baseRef: `${baseRemote}/${base}`,
++    baseRef,
+     headSha,
+     localHead,
+     ...(projectRoot ? { cwd: projectRoot } : {}),
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index c4ccfff2..50b76b0b 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -498,6 +498,8 @@ const ACTION_HANDLERS = {
+ 					&& Number.isSafeInteger(cancelledAt) && at - cancelledAt >= lifecycleOptions(entry).graceMs) {
+ 					checkpointLifecycle(entry, lifecycleEvent(entry, 'grace-expired', at), s);
+ 					verifiedKill(entry, s.ctx, 'SIGKILL');
++				} else if (entry.lifecycle.state.phase === 'FORCE_KILL_REQUESTED') {
++					verifiedKill(entry, s.ctx, 'SIGKILL');
+ 				}
+ 				continue;
+ 			}
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index cc105f5b..6f0bed2c 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -848,19 +848,42 @@ describe('merge command — mandatory release authority', () => {
+   });
+ 
+   test('default merge action uses GitHub server-side expected-head lease', () => {
+-    let observed;
++    const observed = [];
+     const out = mergeCmd.defaultMergePr({
+       pr: '42',
+       expectedHead: HEAD,
+       repository: 'acme/forge',
+-      gh: (argv) => { observed = argv; return ''; },
++      gh: (argv) => {
++        observed.push(argv);
++        if (argv[1] === 'view') return JSON.stringify({ state: 'MERGED', headRefOid: HEAD });
++        return '';
++      },
+     });
+     expect(out.merged).toBe(true);
+     expect(observed).toEqual([
+-      'pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD,
++      ['pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD],
++      ['pr', 'view', '42', '--repo', 'acme/forge', '--json', 'state,headRefOid'],
+     ]);
+   });
+ 
++  test('default merge action does not confirm a merge-queue enrollment as merged', () => {
++    const calls = [];
++    const out = mergeCmd.defaultMergePr({
++      pr: '42',
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      gh: (argv) => {
++        calls.push(argv);
++        if (argv[1] === 'view') return JSON.stringify({ state: 'OPEN', headRefOid: HEAD });
++        return '';
++      },
++    });
++
++    expect(out).toMatchObject({ merged: false });
++    expect(out.reason).toMatch(/not confirmed/i);
++    expect(calls).toHaveLength(2);
++  });
++
+   test('default ownership verifier requires explicit identity and matching unexpired Kernel data', async () => {
+     let calls = 0;
+     const runIssue = async (_operation, _args, _root, { env }) => {
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index 6a460eaf..f26b9886 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -80,7 +80,9 @@ describe('shepherd command handler', () => {
+     const gh = (cmd, args) => {
+       ghCalls.push(args.join(' '));
+       if (args.includes('pr') && args.includes('view')) {
+-        return JSON.stringify({ baseRefName: 'release/2.0', headRefOid: 'a'.repeat(40) });
++        return JSON.stringify({
++          baseRefName: 'release/2.0', baseRefOid: 'b'.repeat(40), headRefOid: 'a'.repeat(40),
++        });
+       }
+       if (args.includes('repo') && args.includes('view')) {
+         return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
+@@ -92,7 +94,7 @@ describe('shepherd command handler', () => {
+     const ctx = await shepherdCmd.defaultBuildContext({ pr: '42', gh, git });
+ 
+     expect(ctx.base).toBe('release/2.0');
+-    expect(ctx.baseRef).toBe('origin/release/2.0');
++    expect(ctx.baseRef).toBe('b'.repeat(40));
+     expect(ctx.headSha).toBe('a'.repeat(40));
+     expect(ctx.owner).toBe('acme');
+     expect(ctx.repo).toBe('widget');
+@@ -100,10 +102,22 @@ describe('shepherd command handler', () => {
+     expect(ghCalls.some((c) => c.includes('pr view') && c.includes('42'))).toBe(true);
+   });
+ 
++  test('defaultBuildContext fails closed without an exact provider base commit', async () => {
++    const gh = (_cmd, args) => {
++      if (args.includes('pr') && args.includes('view')) {
++        return JSON.stringify({ baseRefName: 'release/2.0', baseRefOid: 'not-a-commit' });
++      }
++      return JSON.stringify({ owner: { login: 'acme' }, name: 'widget' });
++    };
++
++    expect(shepherdCmd.defaultBuildContext({ pr: '42', gh, git: () => 'origin\n' }))
++      .rejects.toThrow(/base commit/i);
++  });
++
+   test('defaultBuildContext threads the worktree root through as ctx.cwd', async () => {
+     const gh = (cmd, args) => {
+       if (args.includes('pr') && args.includes('view')) {
+-        return JSON.stringify({ baseRefName: 'master' });
++        return JSON.stringify({ baseRefName: 'master', baseRefOid: 'b'.repeat(40) });
+       }
+       return JSON.stringify({ owner: { login: 'o' }, name: 'r' });
+     };
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index eb552241..87a5ff04 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -214,15 +214,20 @@ describe('execute — watcher lifecycle', () => {
+ 		]);
+ 	});
+ 
+-	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
++	test('retries a failed force-kill after cancellation grace expires', async () => {
+ 		const signals = [];
++		let forceKillAttempts = 0;
++		const kill = (_pid, signal) => {
++			signals.push(signal);
++			if (signal === 'SIGKILL' && forceKillAttempts++ === 0) throw new Error('transient kill failure');
++		};
+ 		const cancelling = await executor.execute(
+ 			[{ type: 'stopWatcher', pr: { number: 5 } }],
+ 			{
+ 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 2000,
+ 				watchers: [{ pr: 5, repo: 'forge', pid: 999, startedAt: '1970-01-01T00:00:01.000Z' }],
+ 				isAlive: () => true, readClaim: () => '1970-01-01T00:00:01.000Z',
+-				kill: (_pid, signal) => signals.push(signal),
++				kill,
+ 			},
+ 		);
+ 		const forced = await executor.execute(
+@@ -230,15 +235,24 @@ describe('execute — watcher lifecycle', () => {
+ 			{
+ 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32000,
+ 				watchers: cancelling, isAlive: () => true,
+-				readClaim: () => '1970-01-01T00:00:01.000Z', kill: (_pid, signal) => signals.push(signal),
++				readClaim: () => '1970-01-01T00:00:01.000Z', kill,
+ 			},
+ 		);
+-		expect(signals).toEqual([undefined, 'SIGKILL']);
+ 		expect(forced[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
++		const retried = await executor.execute(
++			[{ type: 'stopWatcher', pr: { number: 5 } }],
++			{
++				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001,
++				watchers: forced, isAlive: () => true,
++				readClaim: () => '1970-01-01T00:00:01.000Z', kill,
++			},
++		);
++		expect(signals).toEqual([undefined, 'SIGKILL', 'SIGKILL']);
++		expect(retried[0].lifecycle.state.phase).toBe('FORCE_KILL_REQUESTED');
+ 
+ 		const reaped = await executor.execute(
+ 			[{ type: 'stopWatcher', pr: { number: 5 } }],
+-			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32001, watchers: forced, isAlive: () => false },
++			{ projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 32002, watchers: retried, isAlive: () => false },
+ 		);
+ 		expect(reaped).toEqual([]);
+ 	});
+-- 
+2.51.0.windows.1
+

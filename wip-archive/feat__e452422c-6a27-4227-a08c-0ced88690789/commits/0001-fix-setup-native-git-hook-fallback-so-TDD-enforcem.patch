@@ -1,0 +1,915 @@
+From ca064e5f7011e03e94cb2112f48952edfc3114cd Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 14 Jul 2026 13:16:41 +0530
+Subject: [PATCH] fix(setup): native git-hook fallback so TDD enforcement is
+ never silently inert (B3)
+
+The live `forge setup` path (bin/forge.js executeSetup -> installGitHooks) had
+diverged from the fixed copy in lib/commands/setup.js: it still had the stub-shadow
+bug, copied the repo's OWN dev lefthook.yml (which references repo-internal scripts/
+a user project lacks), had no native fallback when the lefthook binary was
+unavailable, and never verified hooks were active. Result: after a clean
+`forge setup`, TDD enforcement was silently inert and `forge ship` then hard-blocked
+on a missing hook (kernel e452422c / c713fce7 / 22e33dbf, beta blocker B3).
+
+- New lib/lefthook-wiring.js: single source of truth shared by bin/forge.js and
+  lib/commands/setup.js so the two copies can never drift again. Exports the real
+  user lefthook.yml, the stub-shadow guard, a native .git/hooks installer
+  (resolves worktree gitdirs; preserves/backs-up pre-existing non-Forge hooks),
+  and an honest verifyHooksActive().
+- installGitHooks now: writes the REAL config (never the repo dev config nor the
+  stock example), installs lefthook when available, falls back to native
+  .git/hooks otherwise, and verifies LOUDLY (non-zero exit) if enforcement is
+  still not active - never a silent no-op.
+- autoInstallLefthook refuses to `npm install --save-dev lefthook` when the
+  project has no package.json (would resolve against an ancestor - 22e33dbf);
+  native hooks back enforcement instead.
+- lib/commands/setup.js repair path converged onto the shared module and gains the
+  same native fallback + verify (warns, never sets exit code - runs mid-stage).
+- cli-lifecycle reinstall test updated: reinstall = reset + fresh setup, so it now
+  correctly leaves a reinstalled .forge (asserts the old empty marker is gone).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ bin/forge.js                              | 154 ++++++++-----
+ lib/commands/setup.js                     |  98 ++++----
+ lib/lefthook-wiring.js                    | 269 ++++++++++++++++++++++
+ test/cli-lifecycle.test.js                |  13 +-
+ test/lefthook-wiring.test.js              | 152 ++++++++++++
+ test/setup-native-fallback-wiring.test.js |  62 +++++
+ 6 files changed, 630 insertions(+), 118 deletions(-)
+ create mode 100644 lib/lefthook-wiring.js
+ create mode 100644 test/lefthook-wiring.test.js
+ create mode 100644 test/setup-native-fallback-wiring.test.js
+
+diff --git a/bin/forge.js b/bin/forge.js
+index dacc46b8..4d77bc6e 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -83,6 +83,12 @@ const { ActionCollector, isNonInteractive } = require('../lib/setup-utils');
+ const { renderSetupSummary } = require('../lib/setup-summary-renderer');
+ const { smartMergeAgentsMd } = require('../lib/smart-merge');
+ const { checkLefthookStatus } = require('../lib/lefthook-check');
++const {
++  FORGE_USER_LEFTHOOK_YML,
++  forgeShouldWriteLefthookConfig,
++  installNativeGitHooks,
++  verifyHooksActive,
++} = require('../lib/lefthook-wiring');
+ const { detectHusky, migrateHusky } = require('../lib/husky-migration');
+ // workflowProfiles: module exists and is tested but not yet wired into setup flow
+ // Will be activated when workflow profile selection is added to interactive setup
+@@ -2695,80 +2701,104 @@ async function handleHuskyMigration() {
+ function installGitHooks() {
+   console.log('Installing git hooks (TDD enforcement)...');
+ 
+-  // Skip lefthook.yml creation if binary is not available
+-  const lefthookStatus = checkLefthookStatus(projectRoot);
+-  if (!lefthookStatus.binaryAvailable) {
+-    if (lefthookStatus.message) {
+-      console.warn(`  \u26A0 Skipping lefthook setup: ${lefthookStatus.message}`);
+-    } else {
+-      console.warn('  \u26A0 Skipping lefthook setup: binary not available');
+-    }
+-    return;
+-  }
++  // Install the Forge hook SCRIPTS first, UNCONDITIONALLY - they back BOTH the lefthook
++  // pre-commit job AND the native .git/hooks fallback below, so they must exist whether
++  // or not the lefthook binary is available.
++  installForgeHookScripts();
+ 
+-  // Check if lefthook.yml exists (it should, as it's in the package)
+-  const lefthookConfig = path.join(packageDir, 'lefthook.yml');
+-  const targetHooks = path.join(projectRoot, '.forge/hooks');
++  const lefthookStatus = checkLefthookStatus(projectRoot);
++  let lefthookInstalled = false;
+ 
+-  try {
+-    // Copy lefthook.yml to project root
+-    const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
+-    if (!fs.existsSync(lefthookTarget)) {
+-      if (copyFile(lefthookConfig, 'lefthook.yml')) {
++  if (lefthookStatus.binaryAvailable) {
++    try {
++      // Write the REAL user-facing lefthook.yml - never the repo's own dev config (which
++      // references repo-internal scripts/ a user project lacks), and never leave
++      // lefthook's stock commented-out example in place. Overwrite only a missing file
++      // or a fully-commented stub, never a config with active jobs (kernel e452422c).
++      const lefthookTarget = path.join(projectRoot, 'lefthook.yml');
++      if (forgeShouldWriteLefthookConfig(lefthookTarget)) {
++        fs.writeFileSync(lefthookTarget, FORGE_USER_LEFTHOOK_YML, 'utf8');
+         console.log('  ✓ Created lefthook.yml');
+       }
+-    }
+ 
+-    // Copy check-tdd.js hook script
+-    const hookSource = path.join(packageDir, '.forge/hooks/check-tdd.js');
+-    if (fs.existsSync(hookSource)) {
+-      // Ensure .forge/hooks directory exists
+-      if (!fs.existsSync(targetHooks)) {
+-        fs.mkdirSync(targetHooks, { recursive: true });
+-      }
+-
+-      const hookTarget = path.join(targetHooks, 'check-tdd.js');
+-      if (copyFile(hookSource, hookTarget)) {
+-        console.log('  ✓ Created .forge/hooks/check-tdd.js');
+-
+-        // Make hook executable (Unix systems)
+-        try {
+-          fs.chmodSync(hookTarget, 0o755);
+-        } catch (err) {
+-          // Windows doesn't need chmod
+-          console.warn('chmod not available (Windows):', err.message);
+-        }
+-      }
+-    }
+-
+-    // Try to install lefthook hooks
+-    // SECURITY: Using execFileSync with hardcoded commands (no user input)
+-    try {
+-      // Try npx first (local install), fallback to global
++      // Install lefthook's git hooks. Try local (npx) first, then a global binary.
++      // SECURITY: execFileSync with hardcoded commands (no user input).
+       try {
+         secureExecFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
+         console.log('  ✓ Lefthook hooks installed (local)');
++        lefthookInstalled = true;
+       } catch (error_) {
+-        // Fallback to global lefthook
+         console.warn('npx lefthook failed, trying global:', error_.message);
+         secureExecFileSync('lefthook', ['version'], { stdio: 'ignore' });
+         secureExecFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
+         console.log('  ✓ Lefthook hooks installed (global)');
++        lefthookInstalled = true;
+       }
+     } catch (err) {
+       console.warn('Lefthook installation failed:', err.message);
+-      console.log('  ℹ Lefthook not found. Install it:');
+-      console.log('    bun add -d lefthook  (recommended)');
+-      console.log('    OR: bun add -g lefthook  (global)');
+-      console.log('    Then run: bunx lefthook install');
+     }
++  } else if (lefthookStatus.message) {
++    console.warn(`  ⚠ lefthook binary unavailable: ${lefthookStatus.message}`);
++  }
++
++  // Native fallback: when lefthook is unavailable or its install failed, wire native
++  // .git/hooks so raw `git commit` / `git push` still enforce the TDD gate - the moat is
++  // never silently inert (B3). Runs regardless of whether a package.json exists.
++  if (!lefthookInstalled) {
++    const native = installNativeGitHooks(projectRoot);
++    if (native.installed) {
++      console.log(`  ✓ Native git hooks installed (${native.written.join(', ')}) - lefthook fallback`);
++    } else if (native.skipped && native.skipped.length > 0) {
++      console.warn(`  ⚠ Native hook(s) skipped to preserve existing hooks: ${native.skipped.join(', ')}`);
++    } else {
++      console.warn(`  ⚠ Could not install native git hooks: ${native.reason || 'unknown'}`);
++    }
++  }
+ 
+-    console.log('');
++  // VERIFY LOUDLY: never let setup silently no-op. If pre-commit enforcement is not
++  // actually active after all of the above, say so unmistakably and set a failure code.
++  const verdict = verifyHooksActive(projectRoot);
++  if (verdict.active) {
++    console.log(`  ✓ Git hook enforcement active (${verdict.method}).`);
++  } else {
++    const addCmd = PKG_MANAGER === 'bun'
++      ? 'bun add -d'
++      : PKG_MANAGER === 'npm'
++        ? 'npm install --save-dev'
++        : `${PKG_MANAGER} add -D`;
++    console.error('');
++    console.error('  ============================================================');
++    console.error('  ⚠ TDD ENFORCEMENT IS NOT ACTIVE');
++    console.error(`     ${verdict.reason || 'no pre-commit hook is installed'}.`);
++    console.error('     `forge ship` will block until hooks are active. To fix:');
++    console.error(`       ${addCmd} lefthook  &&  npx lefthook install`);
++    console.error('     (or re-run `forge setup` in the repo root).');
++    console.error('  ============================================================');
++    console.error('');
++    process.exitCode = 1;
++  }
+ 
+-  } catch (error) {
+-    console.log('  ⚠ Failed to install hooks:', error.message);
+-    console.log('  You can install manually later with: lefthook install');
+-    console.log('');
++  console.log('');
++}
++
++// Copy the Forge hook scripts (check-tdd.js + the native-hook adapter) into the
++// project's .forge/hooks/. Runs UNCONDITIONALLY - independent of the lefthook binary -
++// because both the lefthook pre-commit job and the native fallback invoke them.
++function installForgeHookScripts() {
++  const targetHooks = path.join(projectRoot, '.forge/hooks');
++  for (const name of ['check-tdd.js', 'forge-native-hook.js']) {
++    const src = path.join(packageDir, '.forge/hooks', name);
++    if (!fs.existsSync(src)) continue;
++    if (!fs.existsSync(targetHooks)) fs.mkdirSync(targetHooks, { recursive: true });
++    const dest = path.join(targetHooks, name);
++    if (copyFile(src, dest)) {
++      console.log(`  ✓ Created .forge/hooks/${name}`);
++      try {
++        fs.chmodSync(dest, 0o755); // NOSONAR - hook scripts must be executable
++      } catch (err) {
++        console.warn('chmod not available (Windows):', err.message);
++      }
++    }
+   }
+ }
+ 
+@@ -3264,7 +3294,19 @@ function autoInstallLefthook() {
+     return;
+   }
+ 
+-  // Not in package.json at all — full install
++  // Not in package.json at all — full install.
++  // GUARD (kernel 22e33dbf): with no package.json in projectRoot, an
++  // `npm install --save-dev lefthook` / `bun add lefthook` resolves against the nearest
++  // ANCESTOR package.json and installs lefthook into the WRONG project (or fails). Skip
++  // the package-manager install entirely — installGitHooks() then wires native
++  // .git/hooks, which need no package.json, so enforcement is still live.
++  if (!fs.existsSync(path.join(projectRoot, 'package.json'))) {
++    console.log('  ℹ No package.json here — skipping lefthook npm install (would target an ancestor).');
++    console.log('    Git hook enforcement will use the native .git/hooks fallback instead.');
++    console.log('');
++    return;
++  }
++
+   console.log('📦 Installing lefthook for git hooks...');
+   try {
+     // SECURITY: secureExecFileSync with PKG_MANAGER — cross-platform support
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 4ed668fa..524d6c10 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -67,6 +67,12 @@ const { ActionCollector } = require('../setup-utils');
+ const { renderSetupSummary } = require('../setup-summary-renderer');
+ const { smartMergeAgentsMd } = require('../smart-merge');
+ const { checkLefthookStatus } = require('../lefthook-check');
++const {
++  FORGE_USER_LEFTHOOK_YML,
++  forgeShouldWriteLefthookConfig,
++  installNativeGitHooks,
++  verifyHooksActive,
++} = require('../lefthook-wiring');
+ const { resolveShellRuntime } = require('../runtime-health');
+ const {
+   buildCodexSkillInstallPlan,
+@@ -2720,57 +2726,12 @@ function installForgeHookScripts() {
+   }
+ }
+ 
+-// The lefthook.yml Forge writes into a USER project. The repo's own dev lefthook.yml
+-// references repo-internal scripts (scripts/branch-protection.js, lint.js, test.js, …)
+-// that a user's project never has, so shipping it to users produced hooks that fail on
+-// the first commit. This minimal config references only what every Forge project gets:
+-// the self-contained TDD gate (.forge/hooks/check-tdd.js) on pre-commit, and the
+-// project's own test script (no-op when absent) on pre-push. Both hooks exist, so the
+-// HOOKS_NOT_ACTIVE gate is satisfied and the workflow is reachable out of the box.
+-const FORGE_USER_LEFTHOOK_YML = `# Forge git hooks — installed by \`forge setup\` / \`forge init\`.
+-# pre-commit enforces the TDD gate; pre-push runs your test script if you have one.
+-# Edit freely to add your own checks — Forge only replaces a fully-commented stub.
+-
+-pre-commit:
+-  commands:
+-    forge-tdd:
+-      run: node .forge/hooks/check-tdd.js
+-
+-pre-push:
+-  commands:
+-    tests:
+-      run: npm test --if-present
+-`;
+-
+-// A fresh \`lefthook install\` (run by lefthook's own npm postinstall) drops a stock
+-// EXAMPLE lefthook.yml with every hook commented out. That disposable stub used to block
+-// Forge from writing its config, leaving pre-commit/pre-push unwired so every stage
+-// command dead-ended on HOOKS_NOT_ACTIVE right after \`forge init\` (kernel c713fce7).
+-// Overwrite a missing file or such a stub, but never clobber a lefthook.yml that already
+-// has active (uncommented) jobs — a user's real config, or Forge's own once written.
+-function forgeShouldWriteLefthookConfig(lefthookTarget) {
+-  let stat;
+-  try {
+-    stat = fs.lstatSync(lefthookTarget);
+-  } catch (error) {
+-    if (error && error.code !== 'ENOENT') {
+-      throw error;
+-    }
+-    return true; // no existing file → write Forge's config
+-  }
+-  // Never write THROUGH a symlink (or any non-regular file): a checked-out lefthook.yml
+-  // pointing outside projectRoot could otherwise be created/overwritten via the follow-
+-  // through of readFileSync/writeFileSync. Only regular files are safe to inspect+replace.
+-  if (!stat.isFile() || stat.isSymbolicLink()) {
+-    return false;
+-  }
+-  const content = fs.readFileSync(lefthookTarget, 'utf8');
+-  const activeLines = content
+-    .split(/\r?\n/)
+-    .map((line) => line.trim())
+-    .filter((line) => line.length > 0 && !line.startsWith('#'));
+-  return activeLines.length === 0;
+-}
++// FORGE_USER_LEFTHOOK_YML and forgeShouldWriteLefthookConfig are the single source of
++// truth in lib/lefthook-wiring.js, shared with bin/forge.js so the live `forge setup`
++// path and this repair path can never drift again — that drift is exactly what let the
++// stub-shadow fix (kernel e452422c / c713fce7) live in this module while `forge setup`
++// kept shipping the broken behaviour. They are imported at the top of this file and
++// re-exported below for the existing test surface.
+ 
+ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; complexity reduction deferred
+   console.log('Installing git hooks (TDD enforcement)...');
+@@ -2780,15 +2741,10 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+   // whether the lefthook binary is present.
+   installForgeHookScripts();
+ 
+-  // Skip lefthook.yml creation if binary is not available
+   const lefthookStatus = checkLefthookStatus(projectRoot);
+-  if (!lefthookStatus.binaryAvailable) {
+-    if (lefthookStatus.message) {
+-      console.warn(`  \u26A0 Skipping lefthook setup: ${lefthookStatus.message}`);
+-    } else {
+-      console.warn('  \u26A0 Skipping lefthook setup: binary not available');
+-    }
+-    return;
++  let lefthookInstalled = false;
++  if (!lefthookStatus.binaryAvailable && lefthookStatus.message) {
++    console.warn(`  \u26A0 lefthook binary unavailable: ${lefthookStatus.message}`);
+   }
+ 
+   try {
+@@ -2813,12 +2769,14 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+       try {
+         secureExecFileSync('npx', ['lefthook', 'install'], { stdio: 'inherit', cwd: projectRoot });
+         console.log('  ✓ Lefthook hooks installed (local)');
++        lefthookInstalled = true;
+       } catch (error_) {
+         // Fallback to global lefthook
+         console.warn('npx lefthook failed, trying global:', error_.message);
+         secureExecFileSync('lefthook', ['version'], { stdio: 'ignore' });
+         secureExecFileSync('lefthook', ['install'], { stdio: 'inherit', cwd: projectRoot });
+         console.log('  ✓ Lefthook hooks installed (global)');
++        lefthookInstalled = true;
+       }
+   } catch (err) {
+     console.warn('Lefthook installation failed:', err.message);
+@@ -2837,6 +2795,28 @@ function installGitHooks() { // NOSONAR — Extracted as-is from bin/forge.js; c
+     console.log('  You can install manually later with: lefthook install');
+     console.log('');
+   }
++
++  // Native fallback: when lefthook could not be installed, wire native .git/hooks so
++  // raw git commit / git push still enforce the TDD gate — enforcement is never silently
++  // inert (B3). This repair path only warns (never sets a failure exit code) since it can
++  // run mid-stage under enforce-stage's repairWorkflowRuntimeAssets().
++  if (!lefthookInstalled) {
++    const native = installNativeGitHooks(projectRoot);
++    if (native.installed) {
++      console.log(`  ✓ Native git hooks installed (${native.written.join(', ')}) - lefthook fallback`);
++    } else if (native.skipped && native.skipped.length > 0) {
++      console.warn(`  ⚠ Native hook(s) skipped to preserve existing hooks: ${native.skipped.join(', ')}`);
++    } else {
++      console.warn(`  ⚠ Could not install native git hooks: ${native.reason || 'unknown'}`);
++    }
++  }
++
++  const verdict = verifyHooksActive(projectRoot);
++  if (verdict.active) {
++    console.log(`  ✓ Git hook enforcement active (${verdict.method}).`);
++  } else {
++    console.warn(`  ⚠ TDD enforcement is NOT active: ${verdict.reason || 'no pre-commit hook installed'}.`);
++  }
+ }
+ 
+ // Check if lefthook is already installed in project (delegates to lib/lefthook-check)
+diff --git a/lib/lefthook-wiring.js b/lib/lefthook-wiring.js
+new file mode 100644
+index 00000000..0dfb47c2
+--- /dev/null
++++ b/lib/lefthook-wiring.js
+@@ -0,0 +1,269 @@
++/**
++ * Shared lefthook / git-hook wiring for `forge setup` and `forge init`.
++ *
++ * Single source of truth used by BOTH the live setup path (bin/forge.js) and the
++ * repair path (lib/commands/setup.js). Previously these two copies had diverged:
++ * the shadow-config fix landed only in lib/commands/setup.js while `forge setup`
++ * kept running bin/forge.js's stale copy, so a fresh `forge setup` left TDD
++ * enforcement SILENTLY INERT (kernel e452422c / c713fce7 / 22e33dbf, beta blocker B3).
++ *
++ * Responsibilities:
++ *   - Provide the REAL user-facing lefthook.yml (never lefthook's commented example).
++ *   - Decide when it is safe to (over)write lefthook.yml (replace only a stub).
++ *   - Install a native `.git/hooks` fallback when the lefthook binary is unavailable,
++ *     so raw `git commit` / `git push` still enforce the TDD gate.
++ *   - Verify honestly whether hooks are actually active, so setup can fail LOUDLY
++ *     instead of no-op'ing.
++ *
++ * @module lib/lefthook-wiring
++ */
++
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++
++// Sentinel embedded in every native hook Forge writes. Lets verifyHooksActive
++// distinguish a Forge-managed hook from a lefthook-managed one or a user's own.
++const FORGE_NATIVE_HOOK_SENTINEL = '# forge-native-git-hook (installed by `forge setup`)';
++
++// The lefthook.yml Forge writes into a USER project. The repo's own dev lefthook.yml
++// references repo-internal scripts (scripts/branch-protection.js, lint.js, test.js, …)
++// that a user's project never has, so shipping it produced hooks that fail on the first
++// commit. This minimal config references only what every Forge project gets: the
++// self-contained TDD gate (.forge/hooks/check-tdd.js) on pre-commit, and the project's
++// own test script (a no-op when absent) on pre-push. Both hooks exist, so the
++// HOOKS_NOT_ACTIVE gate is satisfied and the workflow is reachable out of the box.
++const FORGE_USER_LEFTHOOK_YML = `# Forge git hooks — installed by \`forge setup\` / \`forge init\`.
++# pre-commit enforces the TDD gate; pre-push runs your test script if you have one.
++# Edit freely to add your own checks — Forge only replaces a fully-commented stub.
++
++pre-commit:
++  commands:
++    forge-tdd:
++      run: node .forge/hooks/check-tdd.js
++
++pre-push:
++  commands:
++    tests:
++      run: npm test --if-present
++`;
++
++/**
++ * A fresh `lefthook install` (run by lefthook's own npm postinstall) drops a stock
++ * EXAMPLE lefthook.yml with every hook commented out. That disposable stub used to
++ * block Forge from writing its config, leaving pre-commit/pre-push unwired so every
++ * stage command dead-ended on HOOKS_NOT_ACTIVE right after `forge init` (kernel
++ * c713fce7). Overwrite a missing file or such a stub, but never clobber a lefthook.yml
++ * that already has active (uncommented) jobs — a user's real config, or Forge's own
++ * once written.
++ *
++ * @param {string} lefthookTarget - Absolute path to the candidate lefthook.yml.
++ * @returns {boolean} true when Forge should (over)write its config at that path.
++ */
++function forgeShouldWriteLefthookConfig(lefthookTarget) {
++  let stat;
++  try {
++    stat = fs.lstatSync(lefthookTarget);
++  } catch (error) {
++    if (error && error.code !== 'ENOENT') {
++      throw error;
++    }
++    return true; // no existing file → write Forge's config
++  }
++  // Never write THROUGH a symlink (or any non-regular file): a checked-out lefthook.yml
++  // pointing outside projectRoot could otherwise be created/overwritten via the
++  // follow-through of readFileSync/writeFileSync. Only regular files are safe.
++  if (!stat.isFile() || stat.isSymbolicLink()) {
++    return false;
++  }
++  const content = fs.readFileSync(lefthookTarget, 'utf8');
++  const activeLines = content
++    .split(/\r?\n/)
++    .map((line) => line.trim())
++    .filter((line) => line.length > 0 && !line.startsWith('#'));
++  return activeLines.length === 0;
++}
++
++/**
++ * Resolve the directory git actually reads hooks from for a given project root,
++ * WITHOUT spawning git (so it is testable and cross-platform).
++ *
++ * - Normal repo: `.git` is a directory → `<root>/.git/hooks`.
++ * - Linked worktree: `.git` is a file `gitdir: <path>`; hooks live in the common
++ *   git dir (resolved via the worktree's `commondir` file) → `<common>/hooks`.
++ *
++ * @param {string} projectRoot - Absolute path to the project root.
++ * @returns {string|null} Absolute hooks dir, or null when not a git repo.
++ */
++function resolveGitHooksDir(projectRoot) {
++  const gitPath = path.join(projectRoot, '.git');
++  let stat;
++  try {
++    stat = fs.lstatSync(gitPath);
++  } catch {
++    return null;
++  }
++  if (stat.isDirectory()) {
++    return path.join(gitPath, 'hooks');
++  }
++  if (stat.isFile()) {
++    let content;
++    try {
++      content = fs.readFileSync(gitPath, 'utf8');
++    } catch {
++      return null;
++    }
++    const match = content.match(/gitdir:\s*(.+)/);
++    if (!match) return null;
++    let gitdir = match[1].trim();
++    if (!path.isAbsolute(gitdir)) gitdir = path.resolve(projectRoot, gitdir);
++    // A linked worktree's hooks are the common repo's hooks. Follow commondir.
++    const commonDirFile = path.join(gitdir, 'commondir');
++    if (fs.existsSync(commonDirFile)) {
++      try {
++        const rel = fs.readFileSync(commonDirFile, 'utf8').trim();
++        const common = path.isAbsolute(rel) ? rel : path.resolve(gitdir, rel);
++        return path.join(common, 'hooks');
++      } catch {
++        // fall through to the per-worktree hooks dir
++      }
++    }
++    return path.join(gitdir, 'hooks');
++  }
++  return null;
++}
++
++const NATIVE_HOOK_BODIES = {
++  'pre-commit': `#!/bin/sh
++${FORGE_NATIVE_HOOK_SENTINEL}
++# Fallback TDD gate used when the lefthook binary is unavailable. Enforces the same
++# check as the lefthook pre-commit job. Remove this file only if you install lefthook.
++if [ -f ".forge/hooks/check-tdd.js" ]; then
++  node ".forge/hooks/check-tdd.js" || exit 1
++fi
++`,
++  'pre-push': `#!/bin/sh
++${FORGE_NATIVE_HOOK_SENTINEL}
++# Fallback pre-push gate used when the lefthook binary is unavailable. Runs your test
++# script before pushing (a no-op when the project has none).
++npm test --if-present || exit 1
++`,
++};
++
++/**
++ * Install native `.git/hooks` pre-commit/pre-push scripts that invoke Forge's own
++ * TDD gate. This is the fallback that keeps enforcement live when the lefthook binary
++ * cannot be installed (e.g. a fresh consumer repo with no package.json), so `git
++ * commit` / `git push` are never silently unguarded.
++ *
++ * A pre-existing hook that is neither Forge-managed nor lefthook-managed is preserved:
++ * it is backed up to `<hook>.forge-backup` (once) and left in place (reported in
++ * `skipped`) rather than destroyed.
++ *
++ * @param {string} projectRoot - Absolute path to the project root.
++ * @returns {{ installed: boolean, method?: string, hooksDir?: string,
++ *   written?: string[], skipped?: string[], reason?: string }}
++ */
++function installNativeGitHooks(projectRoot) {
++  const hooksDir = resolveGitHooksDir(projectRoot);
++  if (!hooksDir) {
++    return { installed: false, reason: 'not-a-git-repo' };
++  }
++  try {
++    fs.mkdirSync(hooksDir, { recursive: true });
++  } catch (error) {
++    return { installed: false, reason: `hooks-dir-unwritable: ${error.message}` };
++  }
++
++  const written = [];
++  const skipped = [];
++  for (const [name, body] of Object.entries(NATIVE_HOOK_BODIES)) {
++    const dest = path.join(hooksDir, name);
++    if (fs.existsSync(dest)) {
++      let existing;
++      try {
++        existing = fs.readFileSync(dest, 'utf8');
++      } catch {
++        existing = '';
++      }
++      const forgeManaged = existing.includes(FORGE_NATIVE_HOOK_SENTINEL);
++      const lefthookManaged = existing.includes('lefthook');
++      if (!forgeManaged && !lefthookManaged) {
++        // Preserve a real user / third-party hook — back it up once, then skip.
++        const backup = `${dest}.forge-backup`;
++        try {
++          if (!fs.existsSync(backup)) fs.copyFileSync(dest, backup);
++        } catch {
++          // Best-effort backup; still refuse to overwrite below.
++        }
++        skipped.push(name);
++        continue;
++      }
++    }
++    fs.writeFileSync(dest, body, 'utf8');
++    try {
++      fs.chmodSync(dest, 0o755); // NOSONAR — hooks must be executable
++    } catch {
++      // Windows filesystems ignore the mode bits — non-fatal.
++    }
++    written.push(name);
++  }
++
++  return {
++    installed: written.length > 0,
++    method: 'native',
++    hooksDir,
++    written,
++    skipped,
++  };
++}
++
++/**
++ * Report — honestly — whether git hooks are actually active for the project, so
++ * `forge setup` can fail LOUDLY instead of silently no-op'ing. A hook counts as
++ * active only when a `pre-commit` hook exists AND is either lefthook-managed or
++ * carries Forge's native sentinel.
++ *
++ * @param {string} projectRoot - Absolute path to the project root.
++ * @returns {{ active: boolean, method: 'lefthook'|'native'|'none'|'unknown', reason?: string, hook?: string }}
++ */
++function verifyHooksActive(projectRoot) {
++  const hooksDir = resolveGitHooksDir(projectRoot);
++  if (!hooksDir) {
++    return { active: false, method: 'none', reason: 'not a git repository' };
++  }
++  const preCommit = path.join(hooksDir, 'pre-commit');
++  if (!fs.existsSync(preCommit)) {
++    return { active: false, method: 'none', reason: 'no pre-commit hook installed' };
++  }
++  let body;
++  try {
++    body = fs.readFileSync(preCommit, 'utf8');
++  } catch (error) {
++    return { active: false, method: 'unknown', reason: `pre-commit unreadable: ${error.message}` };
++  }
++  // Check the Forge native sentinel FIRST: our native hook body mentions "lefthook"
++  // in a comment, so a substring test for lefthook would otherwise misclassify it.
++  if (body.includes(FORGE_NATIVE_HOOK_SENTINEL)) {
++    return { active: true, method: 'native', hook: preCommit };
++  }
++  if (body.includes('lefthook')) {
++    return { active: true, method: 'lefthook', hook: preCommit };
++  }
++  return {
++    active: false,
++    method: 'unknown',
++    reason: 'pre-commit hook present but not Forge- or lefthook-managed',
++    hook: preCommit,
++  };
++}
++
++module.exports = {
++  FORGE_NATIVE_HOOK_SENTINEL,
++  FORGE_USER_LEFTHOOK_YML,
++  forgeShouldWriteLefthookConfig,
++  resolveGitHooksDir,
++  installNativeGitHooks,
++  verifyHooksActive,
++};
+diff --git a/test/cli-lifecycle.test.js b/test/cli-lifecycle.test.js
+index f1d42f20..37d93e5f 100644
+--- a/test/cli-lifecycle.test.js
++++ b/test/cli-lifecycle.test.js
+@@ -120,10 +120,17 @@ describe('CLI lifecycle commands', () => {
+       // the default 10s execFileSync timeout — bump the inner timeout to 55s
+       // so it completes before bun test's outer 60s test-case timeout fires.
+       const result = runForge(['reinstall', '--force'], { cwd: tmpDir, timeoutMs: 55000 });
+-      const _output = result.stdout + result.stderr;
++      const output = result.stdout + result.stderr;
+ 
+-      // .forge should be removed (hard reset part)
+-      expect(fs.existsSync(path.join(tmpDir, '.forge'))).toBe(false);
++      // resetHard removes the pre-existing .forge (the empty setup-state.json marker),
++      // then setup re-runs and lands a FRESH .forge (hook scripts under .forge/hooks).
++      // So the post-condition is a reinstalled .forge, not its absence — and the original
++      // empty marker must be gone (proving the reset half ran).
++      expect(output).toContain('Reinstall complete');
++      const stateFile = path.join(tmpDir, '.forge', 'setup-state.json');
++      const originalMarkerSurvived =
++        fs.existsSync(stateFile) && fs.readFileSync(stateFile, 'utf-8').trim() === '{}';
++      expect(originalMarkerSurvived).toBe(false);
+ 
+       fs.rmSync(tmpDir, { recursive: true, force: true });
+     }, 60000);
+diff --git a/test/lefthook-wiring.test.js b/test/lefthook-wiring.test.js
+new file mode 100644
+index 00000000..6d7d43af
+--- /dev/null
++++ b/test/lefthook-wiring.test.js
+@@ -0,0 +1,152 @@
++'use strict';
++
++// B3 (kernel e452422c / c713fce7 / 22e33dbf): after a clean `forge setup`, TDD
++// enforcement was SILENTLY INERT — when the lefthook binary was unavailable, setup
++// bailed out writing NO lefthook.yml and wiring NO git hooks, so raw `git commit`/
++// `git push` had zero enforcement and `forge ship` then hard-blocked on a missing hook.
++//
++// This suite covers the shared wiring module that both `bin/forge.js` (the live
++// `forge setup` path) and `lib/commands/setup.js` (the repair path) delegate to:
++//   1. a REAL lefthook.yml is written (never the stock commented-out example),
++//   2. a native `.git/hooks` fallback wires pre-commit/pre-push when lefthook is absent,
++//   3. verifyHooksActive() reports honestly so setup can fail LOUDLY instead of no-op.
++
++const { describe, test, expect, beforeEach, afterEach } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const {
++  FORGE_USER_LEFTHOOK_YML,
++  forgeShouldWriteLefthookConfig,
++  resolveGitHooksDir,
++  installNativeGitHooks,
++  verifyHooksActive,
++  FORGE_NATIVE_HOOK_SENTINEL,
++} = require('../lib/lefthook-wiring');
++
++let tmp;
++function mkGitRepo() {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wiring-'));
++  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
++  return dir;
++}
++
++beforeEach(() => { tmp = null; });
++afterEach(() => {
++  if (tmp && fs.existsSync(tmp)) fs.rmSync(tmp, { recursive: true, force: true });
++});
++
++describe('FORGE_USER_LEFTHOOK_YML (real config, not the example)', () => {
++  test('wires the pre-commit and pre-push jobs the HOOKS_NOT_ACTIVE gate requires', () => {
++    expect(FORGE_USER_LEFTHOOK_YML).toMatch(/^pre-commit:/m);
++    expect(FORGE_USER_LEFTHOOK_YML).toMatch(/^pre-push:/m);
++    expect(FORGE_USER_LEFTHOOK_YML).toContain('.forge/hooks/check-tdd.js');
++  });
++  test('references no repo-internal scripts/ that a user project lacks', () => {
++    expect(FORGE_USER_LEFTHOOK_YML).not.toContain('scripts/');
++  });
++  test('has at least one active (uncommented) job — never the empty example', () => {
++    const active = FORGE_USER_LEFTHOOK_YML
++      .split(/\r?\n/)
++      .map((l) => l.trim())
++      .filter((l) => l.length > 0 && !l.startsWith('#'));
++    expect(active.length).toBeGreaterThan(0);
++  });
++});
++
++describe('forgeShouldWriteLefthookConfig', () => {
++  test('writes when no lefthook.yml exists', () => {
++    expect(forgeShouldWriteLefthookConfig(path.join(os.tmpdir(), 'nope', 'lefthook.yml'))).toBe(true);
++  });
++  test("overwrites lefthook's fully-commented stock example stub", () => {
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-stub-'));
++    const file = path.join(tmp, 'lefthook.yml');
++    fs.writeFileSync(file, '# EXAMPLE USAGE:\n#\n# pre-commit:\n#   commands:\n#     lint:\n#       run: yarn lint\n');
++    expect(forgeShouldWriteLefthookConfig(file)).toBe(true);
++  });
++  test('never clobbers a config that already has active jobs', () => {
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-real-'));
++    const file = path.join(tmp, 'lefthook.yml');
++    fs.writeFileSync(file, 'pre-commit:\n  commands:\n    mine:\n      run: make check\n');
++    expect(forgeShouldWriteLefthookConfig(file)).toBe(false);
++  });
++});
++
++describe('resolveGitHooksDir', () => {
++  test('returns .git/hooks for a normal repo (directory .git)', () => {
++    tmp = mkGitRepo();
++    expect(resolveGitHooksDir(tmp)).toBe(path.join(tmp, '.git', 'hooks'));
++  });
++  test('returns null when not a git repo', () => {
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-nogit-'));
++    expect(resolveGitHooksDir(tmp)).toBeNull();
++  });
++  test('resolves the linked-worktree .git file to the common hooks dir', () => {
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-wt-'));
++    const commonGit = path.join(tmp, 'main', '.git');
++    const wtGit = path.join(commonGit, 'worktrees', 'wt1');
++    fs.mkdirSync(wtGit, { recursive: true });
++    fs.writeFileSync(path.join(wtGit, 'commondir'), '../..\n');
++    const wt = path.join(tmp, 'wt');
++    fs.mkdirSync(wt, { recursive: true });
++    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${wtGit}\n`);
++    expect(resolveGitHooksDir(wt)).toBe(path.join(commonGit, 'hooks'));
++  });
++});
++
++describe('installNativeGitHooks (fallback when lefthook is unavailable)', () => {
++  test('writes Forge-marked pre-commit and pre-push hooks into .git/hooks', () => {
++    tmp = mkGitRepo();
++    const res = installNativeGitHooks(tmp);
++    expect(res.installed).toBe(true);
++    const pre = path.join(tmp, '.git', 'hooks', 'pre-commit');
++    const push = path.join(tmp, '.git', 'hooks', 'pre-push');
++    expect(fs.existsSync(pre)).toBe(true);
++    expect(fs.existsSync(push)).toBe(true);
++    expect(fs.readFileSync(pre, 'utf8')).toContain(FORGE_NATIVE_HOOK_SENTINEL);
++    expect(fs.readFileSync(pre, 'utf8')).toContain('.forge/hooks/check-tdd.js');
++  });
++  test('reports not-a-git-repo instead of throwing when .git is absent', () => {
++    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-nogit2-'));
++    const res = installNativeGitHooks(tmp);
++    expect(res.installed).toBe(false);
++    expect(res.reason).toBe('not-a-git-repo');
++  });
++  test('never destroys a pre-existing non-Forge hook (backs it up and skips)', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    const pre = path.join(hooksDir, 'pre-commit');
++    fs.writeFileSync(pre, '#!/bin/sh\necho custom user hook\n');
++    const res = installNativeGitHooks(tmp);
++    expect(fs.readFileSync(pre, 'utf8')).toContain('custom user hook');
++    expect(res.skipped).toContain('pre-commit');
++    expect(fs.existsSync(pre + '.forge-backup')).toBe(true);
++  });
++});
++
++describe('verifyHooksActive (loud honesty — never silently no-op)', () => {
++  test('reports inactive when no hooks are installed', () => {
++    tmp = mkGitRepo();
++    const res = verifyHooksActive(tmp);
++    expect(res.active).toBe(false);
++    expect(res.method).toBe('none');
++  });
++  test('reports active + native after installNativeGitHooks runs', () => {
++    tmp = mkGitRepo();
++    installNativeGitHooks(tmp);
++    const res = verifyHooksActive(tmp);
++    expect(res.active).toBe(true);
++    expect(res.method).toBe('native');
++  });
++  test('reports active + lefthook when the pre-commit hook is lefthook-managed', () => {
++    tmp = mkGitRepo();
++    const hooksDir = path.join(tmp, '.git', 'hooks');
++    fs.mkdirSync(hooksDir, { recursive: true });
++    fs.writeFileSync(path.join(hooksDir, 'pre-commit'), '#!/bin/sh\n# generated by lefthook\nlefthook run pre-commit\n');
++    const res = verifyHooksActive(tmp);
++    expect(res.active).toBe(true);
++    expect(res.method).toBe('lefthook');
++  });
++});
+diff --git a/test/setup-native-fallback-wiring.test.js b/test/setup-native-fallback-wiring.test.js
+new file mode 100644
+index 00000000..ceef2b02
+--- /dev/null
++++ b/test/setup-native-fallback-wiring.test.js
+@@ -0,0 +1,62 @@
++'use strict';
++
++// B3: the LIVE `forge setup` path is bin/forge.js's installGitHooks/autoInstallLefthook
++// (executeSetup -> installGitHooks). It must delegate to the shared lib/lefthook-wiring
++// module so that: a REAL lefthook.yml is written (not the repo's dev config nor the
++// stock example), a native `.git/hooks` fallback runs when the lefthook binary is
++// unavailable, setup verifies hooks are actually active, and lefthook is never
++// npm-installed into an ancestor package.json (kernel 22e33dbf).
++//
++// bin/forge.js is a CLI entrypoint (not a requireable module), so — matching the
++// existing setup-shared-helper / cross-platform-install suites — these are
++// source-level assertions that lock the wiring in place. The behavioural contract of
++// the helpers themselves is covered by test/lefthook-wiring.test.js.
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { describe, test, expect } = require('bun:test');
++
++const forgeSource = fs.readFileSync(path.join(__dirname, '..', 'bin', 'forge.js'), 'utf8');
++
++function bodyOf(source, signature) {
++  const start = source.indexOf(signature);
++  if (start === -1) return '';
++  const nextFn = source.indexOf('\nfunction ', start + 1);
++  const nextAsync = source.indexOf('\nasync function ', start + 1);
++  const end = Math.min(
++    nextFn > -1 ? nextFn : Infinity,
++    nextAsync > -1 ? nextAsync : Infinity
++  );
++  return source.substring(start, end === Infinity ? source.length : end);
++}
++
++describe('bin/forge.js delegates hook wiring to lib/lefthook-wiring (B3)', () => {
++  test('requires the shared lefthook-wiring module', () => {
++    expect(forgeSource).toContain("require('../lib/lefthook-wiring')");
++  });
++
++  test('installGitHooks writes the REAL user lefthook.yml, not the repo dev config', () => {
++    const body = bodyOf(forgeSource, 'function installGitHooks()');
++    expect(body).toContain('FORGE_USER_LEFTHOOK_YML');
++    expect(body).toContain('forgeShouldWriteLefthookConfig');
++    // The old bug: copying the repo's own dev lefthook.yml (with scripts/*) to users.
++    expect(body).not.toContain("path.join(packageDir, 'lefthook.yml')");
++  });
++
++  test('installGitHooks installs a native .git/hooks fallback', () => {
++    const body = bodyOf(forgeSource, 'function installGitHooks()');
++    expect(body).toContain('installNativeGitHooks');
++  });
++
++  test('installGitHooks verifies hooks are actually active (no silent no-op)', () => {
++    const body = bodyOf(forgeSource, 'function installGitHooks()');
++    expect(body).toContain('verifyHooksActive');
++  });
++
++  test('autoInstallLefthook refuses to npm-install lefthook without a local package.json', () => {
++    const body = bodyOf(forgeSource, 'function autoInstallLefthook()');
++    // Must guard on a package.json in projectRoot before running the package-manager
++    // add/install, so npm/bun never resolves the install against an ancestor (22e33dbf).
++    expect(body).toContain('package.json');
++  });
++});
+-- 
+2.51.0.windows.1
+

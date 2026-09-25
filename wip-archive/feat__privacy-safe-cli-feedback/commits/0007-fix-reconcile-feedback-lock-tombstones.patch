@@ -1,0 +1,217 @@
+From cc300a93d1f13033860319e9acbc18f22825e990 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 18:59:26 +0530
+Subject: [PATCH] fix: reconcile feedback lock tombstones
+
+---
+ lib/feedback.js       | 78 ++++++++++++++++++++++++++++++++++++--
+ test/feedback.test.js | 87 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 162 insertions(+), 3 deletions(-)
+
+diff --git a/lib/feedback.js b/lib/feedback.js
+index 87267d49..5c053cc3 100644
+--- a/lib/feedback.js
++++ b/lib/feedback.js
+@@ -176,12 +176,12 @@ function inspectFeedbackLock(io, file, staleMs) {
+     owner = null;
+   }
+   if (Number.isInteger(owner?.pid)) {
+-    return { raw, stale: !processIsAlive(owner.pid) };
++    return { owner, raw, stale: !processIsAlive(owner.pid) };
+   }
+   try {
+-    return { raw, stale: Date.now() - io.statSync(file).mtimeMs > staleMs };
++    return { owner, raw, stale: Date.now() - io.statSync(file).mtimeMs > staleMs };
+   } catch {
+-    return { raw, stale: true };
++    return { owner, raw, stale: true };
+   }
+ }
+ 
+@@ -220,6 +220,77 @@ function reclaimStaleFeedbackLock(io, file, snapshot) {
+   return 'reclaimed';
+ }
+ 
++function tombstonePaths(io, file) {
++  const dir = path.dirname(file);
++  const prefix = `${path.basename(file)}.stale.`;
++  try {
++    return io.readdirSync(dir)
++      .filter(name => name.startsWith(prefix))
++      .map(name => path.join(dir, name));
++  } catch (error) {
++    if (error?.code === 'ENOENT') return [];
++    throw error;
++  }
++}
++
++function canonicalLockExists(io, file) {
++  try {
++    io.lstatSync(file);
++    return true;
++  } catch (error) {
++    if (error?.code === 'ENOENT') return false;
++    throw error;
++  }
++}
++
++function reconcileFeedbackTombstones(io, file, staleMs) {
++  const canonicalExists = canonicalLockExists(io, file);
++  const live = [];
++  let ambiguous = false;
++
++  for (const tombstone of tombstonePaths(io, file)) {
++    const snapshot = inspectFeedbackLock(io, tombstone, staleMs);
++    const hasPid = Number.isInteger(snapshot.owner?.pid);
++    const hasToken = isOpaqueId(snapshot.owner?.owner_token);
++    if (hasPid && hasToken && processIsAlive(snapshot.owner.pid)) {
++      live.push({ path: tombstone, snapshot });
++      continue;
++    }
++    if (hasPid && !processIsAlive(snapshot.owner.pid)) {
++      reclaimStaleFeedbackLock(io, tombstone, snapshot);
++      continue;
++    }
++    if (!canonicalExists && snapshot.stale && typeof snapshot.raw === 'string') {
++      reclaimStaleFeedbackLock(io, tombstone, snapshot);
++      continue;
++    }
++    ambiguous = true;
++  }
++
++  if (canonicalExists) return;
++  if (live.length > 1 || ambiguous) throw new Error('Feedback state is busy.');
++  if (live.length === 0) return;
++
++  const candidate = live[0];
++  try {
++    io.linkSync(candidate.path, file);
++  } catch (error) {
++    if (error?.code === 'EEXIST') return;
++    throw new Error('Feedback state is busy.');
++  }
++  let restoredRaw;
++  try {
++    restoredRaw = io.readFileSync(file, 'utf8');
++  } catch {
++    throw new Error('Feedback state is busy.');
++  }
++  if (restoredRaw !== candidate.snapshot.raw) throw new Error('Feedback state is busy.');
++  releaseFeedbackLock(io, {
++    file: candidate.path,
++    ownerToken: candidate.snapshot.owner.owner_token,
++  });
++}
++
+ function releaseFeedbackLock(io, lock) {
+   let owner;
+   try {
+@@ -242,6 +313,7 @@ function acquireFeedbackLock(options = {}) {
+   io.mkdirSync(path.dirname(file), { recursive: true });
+ 
+   for (let attempt = 0; attempt < attempts; attempt += 1) {
++    reconcileFeedbackTombstones(io, file, staleMs);
+     let handle;
+     try {
+       handle = io.openSync(file, 'wx', 0o600);
+diff --git a/test/feedback.test.js b/test/feedback.test.js
+index 2c4fa142..8fbfd027 100644
+--- a/test/feedback.test.js
++++ b/test/feedback.test.js
+@@ -658,6 +658,93 @@ describe('privacy-safe feedback core', () => {
+     expect(fs.existsSync(lock)).toBe(false);
+   });
+ 
++  test('next acquisition restores a live successor left in a crash tombstone', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const file = stateFile(homeDir);
++    const original = fs.readFileSync(file, 'utf8');
++    const lock = `${file}.lock`;
++    const successorToken = '44444444-4444-4444-8444-444444444444';
++    fs.writeFileSync(lock, JSON.stringify({ pid: 999999999, owner_token: 'stale-owner' }));
++    const crashingFs = {
++      ...fs,
++      renameSync(from, to) {
++        if (from !== lock) return fs.renameSync(from, to);
++        fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, owner_token: successorToken }));
++        fs.renameSync(from, to);
++        const error = new Error('injected crash after lock rename');
++        error.code = 'EIO';
++        throw error;
++      },
++    };
++
++    await expect(captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      fs: crashingFs,
++    })).rejects.toThrow('injected crash after lock rename');
++    expect(fs.existsSync(lock)).toBe(false);
++    expect(fs.readdirSync(homeDir).filter(name => name.startsWith('state.json.lock.stale.'))).toHaveLength(1);
++
++    await expect(captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      lockAttempts: 1,
++    })).rejects.toThrow('Feedback state is busy');
++    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).owner_token).toBe(successorToken);
++    expect(fs.readFileSync(file, 'utf8')).toBe(original);
++  });
++
++  test('multiple live crash tombstones fail busy without guessing or deleting evidence', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const file = stateFile(homeDir);
++    const original = fs.readFileSync(file, 'utf8');
++    const lock = `${file}.lock`;
++    const tombstones = [
++      `${lock}.stale.55555555-5555-4555-8555-555555555555`,
++      `${lock}.stale.66666666-6666-4666-8666-666666666666`,
++    ];
++    fs.writeFileSync(tombstones[0], JSON.stringify({
++      pid: process.pid,
++      owner_token: '55555555-5555-4555-8555-555555555555',
++    }));
++    fs.writeFileSync(tombstones[1], JSON.stringify({
++      pid: process.pid,
++      owner_token: '66666666-6666-4666-8666-666666666666',
++    }));
++
++    await expect(captureFailure(eligible, {
++      homeDir,
++      version: '1.7.0',
++      lockAttempts: 1,
++    })).rejects.toThrow('Feedback state is busy');
++    expect(fs.existsSync(lock)).toBe(false);
++    expect(tombstones.every(tombstone => fs.existsSync(tombstone))).toBe(true);
++    expect(fs.readFileSync(file, 'utf8')).toBe(original);
++  });
++
++  test('dead and invalid old crash tombstones are cleaned before acquisition', async () => {
++    const homeDir = tempHome();
++    writeState(homeDir, validEmptyState());
++    const lock = `${stateFile(homeDir)}.lock`;
++    const dead = `${lock}.stale.77777777-7777-4777-8777-777777777777`;
++    const invalid = `${lock}.stale.88888888-8888-4888-8888-888888888888`;
++    fs.writeFileSync(dead, JSON.stringify({
++      pid: 999999999,
++      owner_token: '77777777-7777-4777-8777-777777777777',
++    }));
++    fs.writeFileSync(invalid, '{');
++    const old = new Date(Date.now() - 60000);
++    fs.utimesSync(invalid, old, old);
++
++    const result = await captureFailure(eligible, { homeDir, version: '1.7.0' });
++
++    expect(result.captured).toBe(true);
++    expect(fs.existsSync(dead)).toBe(false);
++    expect(fs.existsSync(invalid)).toBe(false);
++  });
++
+   test('corrupt or unreadable state fails closed and preserves original bytes', async () => {
+     for (const raw of ['{"consent":"disabled"', '[]']) {
+       const homeDir = tempHome();
+-- 
+2.51.0.windows.1
+

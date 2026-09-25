@@ -1,0 +1,285 @@
+From bc246a9853a69b50109b68d3eaf4fad0be8e8bc9 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 12:05:13 +0530
+Subject: [PATCH] fix: restore Windows owner-only ACL hardening
+
+---
+ lib/kernel/sqlite-driver.js             |   2 +-
+ lib/kernel/windows-private-acl.js       |  31 ++++---
+ test/kernel/windows-private-acl.test.js | 102 ++++++++++++++++++++----
+ 3 files changed, 106 insertions(+), 29 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 6007136d..316921a0 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -4560,7 +4560,7 @@ async function hardenBackupPermissionsBatch(filePaths, options = {}) {
+ }
+ 
+ const WINDOWS_PRIVATE_ACL_SCRIPT_PATH = path.join(__dirname, 'windows-private-acl.js');
+-const WINDOWS_PRIVATE_ACL_SCRIPT_SHA256 = '0ca95554cf90f8a6fa0e653a7caaccba9b85487aa9c4313a15e0f2bec3935054';
++const WINDOWS_PRIVATE_ACL_SCRIPT_SHA256 = '97f44c740bb843fcca0ea158e21d201b4e34b81eb1636a6a9e9410803a31e349';
+ 
+ function resolveWindowsSystemExecutable(name, environment = process.env) {
+ 	const systemRoot = environment.SystemRoot;
+diff --git a/lib/kernel/windows-private-acl.js b/lib/kernel/windows-private-acl.js
+index d14b98d9..45d85f3d 100644
+--- a/lib/kernel/windows-private-acl.js
++++ b/lib/kernel/windows-private-acl.js
+@@ -98,7 +98,7 @@ function inspectDescriptor(bytes, expectedOwnerSid, expectedAceFlags) {
+ 
+ function inspectIidDescriptor(descriptor, expectedOwner, expectedAceFlags, enumeratorFactory) {
+ 	invariant(descriptor && descriptor.Owner, 'IID owner is absent');
+-	invariant(String(descriptor.Owner) === expectedOwner, 'IID owner changed');
++	if (expectedOwner !== null) invariant(String(descriptor.Owner) === expectedOwner, 'IID owner changed');
+ 	invariant((descriptor.Control & SE_DACL_PRESENT) !== 0, 'IID DACL is absent');
+ 	invariant((descriptor.Control & SE_DACL_PROTECTED) !== 0, 'IID DACL is not protected');
+ 	var dacl = descriptor.DiscretionaryAcl;
+@@ -124,6 +124,9 @@ function iidDescriptor(utility, targetPath) {
+ }
+ 
+ function ownerSid(bytes) {
++	invariant(bytes && typeof bytes.length === 'number' && bytes.length >= 20, 'malformed security descriptor');
++	invariant(bytes[0] === 1, 'unsupported security descriptor revision');
++	invariant((u16(bytes, 2) & SE_SELF_RELATIVE) !== 0, 'security descriptor is not self-relative');
+ 	return sidAt(bytes, u32(bytes, 4)).value;
+ }
+ 
+@@ -144,8 +147,7 @@ function readTargets(environment, fso) {
+ 	return targets;
+ }
+ 
+-function applyOwnerOnlyDacl(utility, target, currentSid, createObject) {
+-	var descriptor = iidDescriptor(utility, target.path);
++function applyOwnerOnlyDacl(utility, target, currentSid, createObject, descriptor) {
+ 	var dacl = createObject('AccessControlList');
+ 	dacl.AclRevision = 2;
+ 	var ace = createObject('AccessControlEntry');
+@@ -154,9 +156,10 @@ function applyOwnerOnlyDacl(utility, target, currentSid, createObject) {
+ 	ace.AceType = ACCESS_ALLOWED_ACE_TYPE;
+ 	ace.AceFlags = target.isDirectory ? (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : 0;
+ 	dacl.AddAce(ace);
++	descriptor.Owner = currentSid;
+ 	descriptor.DiscretionaryAcl = dacl;
+ 	descriptor.Control = descriptor.Control | SE_DACL_PRESENT | SE_DACL_PROTECTED;
+-	utility.SecurityMask = ADS_SECURITY_INFO_DACL | PROTECTED_DACL_SECURITY_INFORMATION;
++	utility.SecurityMask = ADS_SECURITY_INFO_OWNER | ADS_SECURITY_INFO_DACL | PROTECTED_DACL_SECURITY_INFORMATION;
+ 	utility.SetSecurityDescriptor(target.path, ADS_PATH_FILE, descriptor, ADS_SD_FORMAT_IID);
+ }
+ 
+@@ -173,7 +176,7 @@ function runWithDependencies(dependencies) {
+ 	var iidOwners = [];
+ 	var i;
+ 
+-	// Prove ownership for every target before the first DACL mutation.
++	// Prove every target and descriptor are readable before the first mutation.
+ 	for (i = 0; i < targets.length; i++) {
+ 		var beforeRaw = atStage(20, function () { return rawDescriptor(utility, targets[i].path); });
+ 		var beforeIid = atStage(21, function () { return iidDescriptor(utility, targets[i].path); });
+@@ -182,21 +185,27 @@ function runWithDependencies(dependencies) {
+ 			invariant(beforeIid && beforeIid.Owner, 'precheck IID owner is absent');
+ 			return String(beforeIid.Owner);
+ 		}));
+-		atStage(24, function () { invariant(owners[i] === currentSid, 'precheck owner mismatch'); });
+ 	}
+ 
+ 	for (i = 0; i < targets.length; i++) {
+-		// Recheck immediately before changing only the DACL.
+-		atStage(30, function () {
++		// Recheck immediately before changing the owner and DACL together.
++		var currentIid = atStage(30, function () {
++			var isDirectory = fso.FolderExists(targets[i].path);
++			var isFile = fso.FileExists(targets[i].path);
++			invariant(isDirectory === targets[i].isDirectory && isFile !== isDirectory, 'target type changed before mutation');
+ 			invariant(ownerSid(rawDescriptor(utility, targets[i].path)) === owners[i], 'owner changed before mutation');
++			var descriptor = iidDescriptor(utility, targets[i].path);
++			invariant(descriptor && descriptor.Owner, 'IID owner is absent before mutation');
++			invariant(String(descriptor.Owner) === iidOwners[i], 'IID owner changed before mutation');
++			return descriptor;
+ 		});
+-		atStage(31, function () { applyOwnerOnlyDacl(utility, targets[i], currentSid, createObject); });
++		atStage(31, function () { applyOwnerOnlyDacl(utility, targets[i], currentSid, createObject, currentIid); });
+ 		var expectedFlags = targets[i].isDirectory ? (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : 0;
+ 		atStage(32, function () {
+-			inspectDescriptor(rawDescriptor(utility, targets[i].path), owners[i], expectedFlags);
++			inspectDescriptor(rawDescriptor(utility, targets[i].path), currentSid, expectedFlags);
+ 		});
+ 		atStage(33, function () {
+-			inspectIidDescriptor(iidDescriptor(utility, targets[i].path), iidOwners[i], expectedFlags, enumeratorFactory);
++			inspectIidDescriptor(iidDescriptor(utility, targets[i].path), null, expectedFlags, enumeratorFactory);
+ 		});
+ 	}
+ 	return true;
+diff --git a/test/kernel/windows-private-acl.test.js b/test/kernel/windows-private-acl.test.js
+index 8b5b0162..bcf99430 100644
+--- a/test/kernel/windows-private-acl.test.js
++++ b/test/kernel/windows-private-acl.test.js
+@@ -86,12 +86,12 @@ function fakeDependencies(states, events) {
+ 			return format === 2 ? states[targetPath].raw : states[targetPath].iid;
+ 		},
+ 		SetSecurityDescriptor(targetPath, _pathFormat, descriptor, format) {
+-			events.push(['set', targetPath, format, this.SecurityMask]);
+-			expect(this.SecurityMask).toBe(4 | 0x80000000);
++			events.push(['set', targetPath, format, this.SecurityMask, descriptor.Owner]);
++			expect(this.SecurityMask).toBe(1 | 4 | 0x80000000);
+ 			const ace = descriptor.DiscretionaryAcl.entries[0];
+ 			states[targetPath] = {
+ 				iid: descriptor,
+-				raw: descriptorBytes({ aceFlags: ace.AceFlags }),
++				raw: descriptorBytes({ aceFlags: ace.AceFlags, ownerSid: String(descriptor.Owner) }),
+ 			};
+ 		},
+ 	};
+@@ -152,42 +152,52 @@ describe('Windows private ACL cscript verifier', () => {
+ 		expect(() => inspectIidDescriptor(iid, OWNER_SID, 0, enumeratorFactory)).not.toThrow();
+ 	});
+ 
+-	test('prechecks every owner before DACL-only mutation and immediately rechecks each target', () => {
++	test('prechecks every target and tolerates pre-set DACL churn before owner-and-DACL mutation', () => {
+ 		const states = {
+-			'C:\\one': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
++			'C:\\one': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+ 			'C:\\two': { iid: { Control: 0x8004, DiscretionaryAcl: {}, Owner: OWNER_SID }, isDirectory: true, raw: descriptorBytes() },
+ 		};
+ 		const events = [];
++		const dependencies = fakeDependencies(states, events);
++		const get = dependencies.utility.GetSecurityDescriptor;
++		let firstRawReads = 0;
++		dependencies.utility.GetSecurityDescriptor = function (targetPath, pathFormat, format) {
++			const value = get.call(this, targetPath, pathFormat, format);
++			if (targetPath === 'C:\\one' && format === 2 && ++firstRawReads === 2) {
++				return descriptorBytes({ aceMask: 0x00120089, ownerSid: FOREIGN_SID });
++			}
++			return value;
++		};
+ 		const originalVBArray = globalThis.VBArray;
+ 		globalThis.VBArray = function (value) { this.toArray = () => value; };
+ 		try {
+-			expect(runWithDependencies(fakeDependencies(states, events))).toBe(true);
++			expect(runWithDependencies(dependencies)).toBe(true);
+ 		} finally {
+ 			globalThis.VBArray = originalVBArray;
+ 		}
+ 		const sets = events.filter(([operation]) => operation === 'set');
+ 		expect(sets).toEqual([
+-			['set', 'C:\\one', 1, 4 | 0x80000000],
+-			['set', 'C:\\two', 1, 4 | 0x80000000],
++			['set', 'C:\\one', 1, 1 | 4 | 0x80000000, OWNER_SID],
++			['set', 'C:\\two', 1, 1 | 4 | 0x80000000, OWNER_SID],
+ 		]);
++		expect(inspectDescriptor(states['C:\\one'].raw, OWNER_SID, 0)).toEqual({ aceFlags: 0, ownerSid: OWNER_SID });
+ 		const firstSet = events.findIndex(([operation]) => operation === 'set');
+ 		expect(events.slice(0, firstSet).filter(([operation]) => operation === 'get')).toHaveLength(6);
+ 		expect(events[firstSet - 2]).toEqual(['get', 'C:\\one', 2, 5]);
+ 		expect(events[firstSet - 1]).toEqual(['get', 'C:\\one', 1, 5]);
+ 	});
+ 
+-	test('a non-owner precheck or owner race causes zero DACL mutation', () => {
++	test('an invalid later precheck or descriptor race causes zero DACL mutation', () => {
+ 		const originalVBArray = globalThis.VBArray;
+ 		globalThis.VBArray = function (value) { this.toArray = () => value; };
+ 		try {
+ 			const nonOwnerStates = {
+-				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
+-				'C:\\two': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
++				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
++				'C:\\two': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes().slice(0, 24) },
+ 			};
+ 			const nonOwnerEvents = [];
+ 			const nonOwnerError = captureError(() => runWithDependencies(fakeDependencies(nonOwnerStates, nonOwnerEvents)));
+-			expect(nonOwnerError.message).toContain('precheck owner mismatch');
+-			expect(nonOwnerError.forgeExitCode).toBe(24);
++			expect(nonOwnerError.forgeExitCode).toBe(22);
+ 			expect(nonOwnerEvents.some(([operation]) => operation === 'set')).toBe(false);
+ 
+ 			const racedStates = {
+@@ -205,12 +215,38 @@ describe('Windows private ACL cscript verifier', () => {
+ 			expect(raceError.message).toContain('owner changed before mutation');
+ 			expect(raceError.forgeExitCode).toBe(30);
+ 			expect(racedEvents.some(([operation]) => operation === 'set')).toBe(false);
++
++			const iidStates = {
++				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
++			};
++			const iidEvents = [];
++			const iidDependencies = fakeDependencies(iidStates, iidEvents);
++			let iidReads = 0;
++			const getIid = iidDependencies.utility.GetSecurityDescriptor;
++			iidDependencies.utility.GetSecurityDescriptor = function (targetPath, pathFormat, format) {
++				const value = getIid.call(this, targetPath, pathFormat, format);
++				if (format === 1 && ++iidReads === 2) return { ...value, Owner: FOREIGN_SID };
++				return value;
++			};
++			expect(captureError(() => runWithDependencies(iidDependencies)).forgeExitCode).toBe(30);
++			expect(iidEvents.some(([operation]) => operation === 'set')).toBe(false);
++
++			const typeStates = {
++				'C:\\one': { iid: { Owner: OWNER_SID }, isDirectory: false, raw: descriptorBytes() },
++			};
++			const typeEvents = [];
++			const typeDependencies = fakeDependencies(typeStates, typeEvents);
++			let folderReads = 0;
++			typeDependencies.fso.FolderExists = () => ++folderReads > 1;
++			typeDependencies.fso.FileExists = () => folderReads === 1;
++			expect(captureError(() => runWithDependencies(typeDependencies)).forgeExitCode).toBe(30);
++			expect(typeEvents.some(([operation]) => operation === 'set')).toBe(false);
+ 		} finally {
+ 			globalThis.VBArray = originalVBArray;
+ 		}
+ 	});
+ 
+-	test('maps each owner precheck failure to a distinct privacy-safe exit code', () => {
++	test('maps structural owner precheck failures to distinct privacy-safe exit codes', () => {
+ 		const originalVBArray = globalThis.VBArray;
+ 		globalThis.VBArray = function (value) { this.toArray = () => value; };
+ 		try {
+@@ -226,11 +262,43 @@ describe('Windows private ACL cscript verifier', () => {
+ 			const iidError = captureError(() => runWithDependencies(fakeDependencies(iidStates, [])));
+ 			expect(iidError.forgeExitCode).toBe(23);
+ 
+-			const ownerStates = {
++		} finally {
++			globalThis.VBArray = originalVBArray;
++		}
++	});
++
++	test('maps set and post-verification failures to their fixed stages', () => {
++		const originalVBArray = globalThis.VBArray;
++		globalThis.VBArray = function (value) { this.toArray = () => value; };
++		try {
++			const setStates = {
+ 				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
+ 			};
+-			const ownerError = captureError(() => runWithDependencies(fakeDependencies(ownerStates, [])));
+-			expect(ownerError.forgeExitCode).toBe(24);
++			const setDependencies = fakeDependencies(setStates, []);
++			setDependencies.utility.SetSecurityDescriptor = function () { throw new Error('set failed'); };
++			expect(captureError(() => runWithDependencies(setDependencies)).forgeExitCode).toBe(31);
++
++			const rawStates = {
++				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
++			};
++			const rawDependencies = fakeDependencies(rawStates, []);
++			const setRaw = rawDependencies.utility.SetSecurityDescriptor;
++			rawDependencies.utility.SetSecurityDescriptor = function (...args) {
++				setRaw.apply(this, args);
++				rawStates['C:\\one'].raw = descriptorBytes({ ownerSid: OWNER_SID, trusteeSid: FOREIGN_SID });
++			};
++			expect(captureError(() => runWithDependencies(rawDependencies)).forgeExitCode).toBe(32);
++
++			const iidStates = {
++				'C:\\one': { iid: { Owner: FOREIGN_SID }, isDirectory: false, raw: descriptorBytes({ ownerSid: FOREIGN_SID }) },
++			};
++			const iidDependencies = fakeDependencies(iidStates, []);
++			const setIid = iidDependencies.utility.SetSecurityDescriptor;
++			iidDependencies.utility.SetSecurityDescriptor = function (...args) {
++				setIid.apply(this, args);
++				iidStates['C:\\one'].iid.DiscretionaryAcl.AceCount = 2;
++			};
++			expect(captureError(() => runWithDependencies(iidDependencies)).forgeExitCode).toBe(33);
+ 		} finally {
+ 			globalThis.VBArray = originalVBArray;
+ 		}
+-- 
+2.51.0.windows.1
+

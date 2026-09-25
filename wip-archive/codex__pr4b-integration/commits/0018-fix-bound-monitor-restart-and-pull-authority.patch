@@ -1,0 +1,179 @@
+From 9b3696e960dafc80297747d3cf546d8a5302d001 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 03:05:35 +0530
+Subject: [PATCH] fix: bound monitor restart and pull authority
+
+---
+ lib/commands/shepherd.js             | 22 ++++++++++++++++---
+ lib/pr-monitor/flow-monitor.js       |  3 +--
+ test/commands/shepherd.test.js       | 32 ++++++++++++++++++++++++++++
+ test/pr-monitor/flow-monitor.test.js | 24 ++++++++++++++++++---
+ 4 files changed, 73 insertions(+), 8 deletions(-)
+
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 32bd16d4..c284c51d 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -27,6 +27,7 @@
+  */
+ 
+ const { execFileSync } = require('node:child_process');
++const crypto = require('node:crypto');
+ 
+ const { runShepherdPass } = require('../pr-shepherd');
+ const { gatherPrBundle } = require('../pr-bundle');
+@@ -45,6 +46,13 @@ const { autoShepherdRailEnabled } = require('./ship');
+ const { runLocalReviewPreflight } = require('../pr-monitor/review-preflight');
+ 
+ const DEFAULT_RERUN_BUDGET = 3;
++const MAX_MONITOR_ID_LENGTH = 128;
++
++function rootMonitorId(owner, repo, pr) {
++  const raw = `pr:${owner}/${repo}:${pr}`;
++  if (raw.length <= MAX_MONITOR_ID_LENGTH) return raw;
++  return `pr:${crypto.createHash('sha256').update(raw).digest('hex')}`;
++}
+ 
+ // windowsHide: true on EVERY spawn here is load-bearing, not cosmetic. The
+ // shepherd watcher runs detached in the background and re-polls every ~60s; on
+@@ -249,7 +257,7 @@ async function buildMonitorContext(pr, projectRoot, deps) {
+       const kernel = await buildKernelDeps({ projectRoot: projectRoot || process.cwd(), gitCommonDir });
+       authority = {
+         store: createMonitorStore(kernel.kernelDriver),
+-        monitorId: `pr:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
++        monitorId: rootMonitorId(ctx.owner, ctx.repo, ctx.pr),
+         ownerRunId: `shepherd:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+         packetId: `shepherd-packet:${ctx.owner}/${ctx.repo}:${ctx.pr}`,
+         subjectId: `${ctx.owner}/${ctx.repo}#${ctx.pr}`,
+@@ -300,8 +308,16 @@ async function handleEvents(args, projectRoot, deps = {}) {
+   // `output` is the agent-agnostic pull surface: NDJSON, one event per line. The
+   // registry CLI dispatch prints `result.output` (same contract as --pull/--bundle),
+   // so this handler does NOT write to stdout itself (that would double-print).
+-  const output = result.events.map((e) => JSON.stringify(e)).join('\n');
+-  return { success: true, events: result.events, since: result.since, output };
++  const overflow = result.overflow === true;
++  const overflowRecord = overflow ? {
++    type: 'monitor.overflow',
++    since: result.since,
++    firstAvailableSeq: result.events[0]?.seq ?? null,
++    action: 'restart-from-checkpoint',
++  } : null;
++  const outputRecords = overflowRecord ? [overflowRecord, ...result.events] : result.events;
++  const output = outputRecords.map((event) => JSON.stringify(event)).join('\n');
++  return { success: true, events: result.events, since: result.since, overflow, output };
+ }
+ 
+ /**
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index ccead4cb..54276bc0 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -302,8 +302,7 @@ async function readDeliveryAuthority(ctx) {
+   } catch {
+     throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable delivery state is unavailable');
+   }
+-  if (!deliveryState || deliveryState.overflow?.cursors || deliveryState.overflow?.outbox
+-    || !Array.isArray(deliveryState.cursors)) {
++  if (!deliveryState || deliveryState.overflow?.cursors || !Array.isArray(deliveryState.cursors)) {
+     throw new FlowMonitorError('PROVIDER_UNAVAILABLE', 'Durable delivery state is incomplete');
+   }
+   return deliveryState;
+diff --git a/test/commands/shepherd.test.js b/test/commands/shepherd.test.js
+index b541ccee..d001fa02 100644
+--- a/test/commands/shepherd.test.js
++++ b/test/commands/shepherd.test.js
+@@ -289,6 +289,23 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(closed).toBe(true);
+   });
+ 
++  test('hashes an oversized root monitor identity within the public Memory bound', async () => {
++    const owner = 'o'.repeat(70);
++    const repo = 'r'.repeat(70);
++    const built = await shepherdCmd.buildMonitorContext('7', root, {
++      buildContext: async () => ({
++        pr: '7', owner, repo, base: 'master', baseRef: 'origin/master',
++      }),
++      adapter: new (require('../../lib/adapters/pr-state-adapter').PrStateAdapter)({ gh: () => '', git: () => '' }),
++      resolveGitCommonDir: () => path.join(root, '.git'),
++      buildKernelDeps: async () => ({ kernelDriver: {}, kernelBroker: { close: async () => {} } }),
++      createMonitorStore: () => ({}),
++    });
++
++    expect(built.monitorId.length).toBeLessThanOrEqual(128);
++    expect(built.monitorId).toMatch(/^pr:[0-9a-f]{64}$/);
++  });
++
+   test('runs an inline pass and returns NDJSON events since the cursor', async () => {
+     const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
+       dir, gather: async () => snap(), now, watcherRunning: () => false,
+@@ -306,6 +323,21 @@ describe('forge shepherd events — the agent-agnostic monitor pull surface', ()
+     expect(res.events).toEqual([]);
+   });
+ 
++  test('surfaces a bounded overflow control record when the pull cursor is truncated', async () => {
++    const event = { seq: 13, type: T.VERDICT_CHANGED, key: 'state:13', data: {} };
++    const res = await shepherdCmd.handleEvents(['events', '1', '--since', '0'], root, {
++      dir, gather: async () => snap(),
++      pollEvents: async () => ({ events: [event], since: 0, overflow: true, receiptIds: [] }),
++    });
++
++    expect(res.overflow).toBe(true);
++    const records = res.output.split('\n').map(line => JSON.parse(line));
++    expect(records[0]).toMatchObject({
++      type: 'monitor.overflow', since: 0, firstAvailableSeq: 13,
++    });
++    expect(records[1]).toEqual(event);
++  });
++
+   test('errors without a PR argument', async () => {
+     const res = await shepherdCmd.handleEvents(['events'], root, { dir, gather: async () => snap() });
+     expect(res.success).toBe(false);
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index cb6db817..cc71c5cd 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -283,6 +283,17 @@ describe('Flow-backed PR monitor authority', () => {
+     expect(resumed.events[0].seq).toBe(before + 1);
+   });
+ 
++  test('continues after acknowledged historical outbox rows exceed the read bound', async () => {
++    const store = durableStore();
++    await seedHistory(store, 129);
++    store.setOutboxOverflow(true);
++    const current = structuredClone(store.events.at(-1).payload.bounded_payload.snapshot);
++
++    const result = await runFlowMonitorPass(context(store, async () => current, async () => {}));
++
++    expect(result.events).toEqual([]);
++  });
++
+   test('rejects a truncated restart checkpoint when delivery predates its first retained event', async () => {
+     const store = durableStore();
+     await seedHistory(store, 129);
+@@ -293,13 +304,20 @@ describe('Flow-backed PR monitor authority', () => {
+       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+   });
+ 
+-  test('rejects a bounded replay when the durable delivery outbox was truncated', async () => {
++  test('reconstructs pending delivery from the event tail when historical outbox rows overflow', async () => {
+     const store = durableStore();
+     await seedHistory(store, 129);
+     store.setOutboxOverflow(true);
++    store.setCursor('legacy-journal', 128);
++    const delivered = [];
++    const current = structuredClone(store.events.at(-1).payload.bounded_payload.snapshot);
+ 
+-    await expect(runFlowMonitorPass(context(store, async () => snapshot(), async () => {})))
+-      .rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
++    const result = await runFlowMonitorPass(context(
++      store, async () => current, async record => delivered.push(record),
++    ));
++
++    expect(delivered.map(record => record.seq)).toEqual([129]);
++    expect(result.receiptIds).toHaveLength(1);
+   });
+ 
+   test('rejects content-corrupted durable history before provider observation', async () => {
+-- 
+2.51.0.windows.1
+

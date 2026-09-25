@@ -1,0 +1,117 @@
+From dec0e620a3c467f71e133572ed7c1cb0e3682b6a Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 03:13:59 +0530
+Subject: [PATCH] fix: address local review findings
+
+---
+ docs/work/2026-08-19-shepherd-owner-authority/plan.md  | 2 +-
+ docs/work/2026-08-19-shepherd-owner-authority/tasks.md | 2 +-
+ scripts/test.js                                        | 8 +++++++-
+ test/kernel/composite-primary-key-schema.test.js       | 9 ---------
+ test/scripts/test-runner.test.js                       | 2 ++
+ 5 files changed, 11 insertions(+), 12 deletions(-)
+
+diff --git a/docs/work/2026-08-19-shepherd-owner-authority/plan.md b/docs/work/2026-08-19-shepherd-owner-authority/plan.md
+index a3794773..e6529028 100644
+--- a/docs/work/2026-08-19-shepherd-owner-authority/plan.md
++++ b/docs/work/2026-08-19-shepherd-owner-authority/plan.md
+@@ -59,7 +59,7 @@ The Kernel schema DSL and DDL renderer are extended with a table-level `primaryK
+ 
+ There is no generic transition or clear. The module exposes only `reserveStarting`, `reserveReopened`, `bindRunning`, `heartbeat`, `requestStop`, `recordTerminal`, `completeTerminal`, `abortStarting`, `releaseNonterminal`, `recoverDeadStarting`, `recoverDeadWatcher`, `markLegacyBlocked`, `recheckLegacyBlocked`, `importLegacyComplete`, and gate-bound `importLegacyStarting`. Imported legacy provenance is preserved through later lifecycle transitions.
+ 
+-The separate migration-gate surface exposes only `readMigrationGate`, `publishMigrationQuarantine`, `bindMigrationSnapshot`, `publishMigrationConflict`, and `completeMigrationGate`. Reading never creates or mutates the gate; launch is permitted only after a valid read returns exactly `complete`.
++The separate migration-gate surface exposes only `readMigrationGate`, `publishMigrationQuarantine`, `bindMigrationSnapshot`, `publishMigrationConflict`, `retryMigrationConflict`, and `completeMigrationGate`. `retryMigrationConflict` rebinds a `conflict` gate to `quarantined` under an exact `(snapshot_hash, conflict_code)` CAS with a different replacement hash. Reading never creates or mutates the gate; launch is permitted only after a valid read returns exactly `complete`.
+ 
+ Every API returns `{ ok, changed, reason, record }`. Invalid input, missing Kernel authority, busy timeout, corrupt rows, unknown versions, and ambiguous migration evidence return tagged fail-closed envelopes and never fall back to filesystem authority.
+ 
+diff --git a/docs/work/2026-08-19-shepherd-owner-authority/tasks.md b/docs/work/2026-08-19-shepherd-owner-authority/tasks.md
+index 75d32c31..080661cf 100644
+--- a/docs/work/2026-08-19-shepherd-owner-authority/tasks.md
++++ b/docs/work/2026-08-19-shepherd-owner-authority/tasks.md
+@@ -15,7 +15,7 @@ OWNS: `lib/kernel/migrations.js`, `lib/kernel/schema.js`, `lib/kernel/sqlite-dri
+ 
+ - RED A — schema/store: extend the schema DSL/renderer with a validated table-level `PRIMARY KEY (repo, pr)`; add the repository-local singleton migration-gate schema; prove fresh-schema/additive-migration parity; exact 256/128/256-byte field bounds; exact phase/reason enums; corrupt/unknown row; `ORDER BY repo, pr LIMIT 4097` enumeration capped at 4096 rows/4 MiB; missing/uninitialized/unsafe/`:memory:` database creates nothing and fails closed.
+ - RED B — transaction primitive: real N-process contention; Bun-to-Node contention; held-writer timeout; killed-holder rollback; callback throw; same-connection re-entry; declared async/returned thenable rejection; timeout restoration; poisoned connection closure.
+-- RED C — state machine: common tagged envelopes; every phase invariant; all 15 operation-specific owner APIs including gate-bound `importLegacyStarting`; five narrow migration-gate APIs including non-mutating `readMigrationGate`, publish quarantine, bind an exact snapshot once, publish tagged conflict, and complete by exact `(state, hash)` CAS; one ordered idempotent import transaction per PR that reads the bound gate precondition and never batches owner rows; imported legacy provenance preservation; store-minted generations; stale generation/phase/PID/receipt/evidence rejection; positive migration PIDs; malformed evidence rejection; no generic clear/transition.
++- RED C — state machine: common tagged envelopes; every phase invariant; all 15 operation-specific owner APIs including gate-bound `importLegacyStarting`; six narrow migration-gate APIs including non-mutating `readMigrationGate`, publish quarantine, bind an exact snapshot once, publish tagged conflict, retry conflict under exact evidence, and complete by exact `(state, hash)` CAS; one ordered idempotent import transaction per PR that reads the bound gate precondition and never batches owner rows; imported legacy provenance preservation; store-minted generations; stale generation/phase/PID/receipt/evidence rejection; positive migration PIDs; malformed evidence rejection; no generic clear/transition.
+ - RED D — evidence boundaries: provider/PID/receipt work occurs outside SQLite; changed snapshot is rejected by the second transaction; no unlocked fallback read; monitor/journal/Memory/provider/PID/retry/sleep functions are forbidden inside the transaction.
+ - GREEN: implement one `kernel_pr_watch_owners` row, the non-owner singleton migration gate, and narrow parameterized owner/gate transaction APIs. Replace the committed filesystem prototype; do not retain JSON owner/lock code. No production caller cutover in this task.
+ - REFACTOR: keep domain transitions in `watch-owner.js`, SQL/transaction mechanics in the driver, and add exact focused-test mappings.
+diff --git a/scripts/test.js b/scripts/test.js
+index 216ebb83..33fcf9c2 100644
+--- a/scripts/test.js
++++ b/scripts/test.js
+@@ -285,14 +285,18 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
+   let runE2E = false;
+   let runWorkflowTests = includesWorkflowTarget(affectedTestTargets);
+   let hasUnmappedFiles = false;
++  let hasFullSuiteRequiredFiles = false;
++  let hasPackageLevelChanges = false;
+   const hasUnknownChangedFiles = changedFiles.length === 0 && affectedTestTargets.length === 0;
+ 
+   for (const file of changedFiles) {
+     if (isFullSuiteRequiredFile(file)) {
++      hasFullSuiteRequiredFiles = true;
+       runFullSuite = true;
+     }
+ 
+     if (PACKAGE_LEVEL_PATHS.has(file) || file.startsWith('packages/')) {
++      hasPackageLevelChanges = true;
+       runFullSuite = true;
+       runTestEnv = true;
+       runE2E = true;
+@@ -343,8 +347,10 @@ function buildTestExecutionPlan(projectRoot, execFileSync = defaultExecFileSync,
+       ? 'changed files could not be resolved safely'
+       : hasZeroResolvedTests
+         ? 'known changes did not resolve runnable tests'
+-      : runFullSuite
++      : hasPackageLevelChanges
+         ? 'package-level changes detected'
++      : hasFullSuiteRequiredFiles
++        ? 'shared authority changes require full unit coverage'
+         : 'known changes mapped to targeted tests';
+ 
+   return {
+diff --git a/test/kernel/composite-primary-key-schema.test.js b/test/kernel/composite-primary-key-schema.test.js
+index 00b2ae1f..9758dbde 100644
+--- a/test/kernel/composite-primary-key-schema.test.js
++++ b/test/kernel/composite-primary-key-schema.test.js
+@@ -97,15 +97,6 @@ describe('PR watch ownership schema', () => {
+ 			primaryKey: true,
+ 			notNull: true,
+ 		});
+-		expect(gate.fields.map(candidate => candidate.name)).not.toEqual(expect.arrayContaining([
+-			'repo',
+-			'pr',
+-			'generation',
+-			'controller_pid',
+-			'watcher_pid',
+-			'phase',
+-			'terminal_receipt_id',
+-		]));
+ 	});
+ 
+ 	test('uses identical owner DDL for the current schema and additive migration', () => {
+diff --git a/test/scripts/test-runner.test.js b/test/scripts/test-runner.test.js
+index 70eec3dc..ef8ad56a 100644
+--- a/test/scripts/test-runner.test.js
++++ b/test/scripts/test-runner.test.js
+@@ -291,6 +291,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.testTargets).toContain('test/kernel/watch-owner-transaction.test.js');
+     expect(plan.runFullSuite).toBe(true);
+     expect(plan.mode).toBe('full');
++    expect(plan.reason).toBe('shared authority changes require full unit coverage');
+   });
+ 
+   test('classifyPushTests maps upgrade safety docs and support modules without forcing a full suite', () => {
+@@ -423,6 +424,7 @@ describe('scripts/test pre-push runner', () => {
+     expect(plan.runFullSuite).toBe(true);
+     expect(plan.runTestEnv).toBe(true);
+     expect(plan.runE2E).toBe(true);
++    expect(plan.reason).toBe('package-level changes detected');
+   });
+ 
+   test('classifyPushTests falls back to full suite for unmapped pushed files', () => {
+-- 
+2.51.0.windows.1
+

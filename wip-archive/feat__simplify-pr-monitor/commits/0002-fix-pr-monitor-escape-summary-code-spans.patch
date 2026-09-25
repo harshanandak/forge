@@ -1,0 +1,156 @@
+From 0d7f3755a4f2576febf69e11851f8f265c15203a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 21:50:21 +0530
+Subject: [PATCH] fix(pr-monitor): escape summary code spans
+
+---
+ lib/pr-monitor/render-summary.js       | 36 +++++++++++++++++----
+ test/pr-monitor/render-summary.test.js | 43 ++++++++++++++++++++++++++
+ 2 files changed, 73 insertions(+), 6 deletions(-)
+
+diff --git a/lib/pr-monitor/render-summary.js b/lib/pr-monitor/render-summary.js
+index f93efb57..d3500ecf 100644
+--- a/lib/pr-monitor/render-summary.js
++++ b/lib/pr-monitor/render-summary.js
+@@ -33,6 +33,30 @@ function verdictHeadline(verdict) {
+   return VERDICT_HEADLINE[String(verdict || '').toUpperCase()] || VERDICT_HEADLINE.UNKNOWN;
+ }
+ 
++/**
++ * Render untrusted text as a Markdown code span without allowing its backticks
++ * or line breaks to change the surrounding summary structure.
++ *
++ * CommonMark permits a code span to use more than one backtick. Pick a fence
++ * longer than every run in the value, and flatten CR/LF so the summary stays
++ * one line per diagnostic.
++ */
++function mdCode(value) {
++  const text = String(value ?? '').replace(/[\r\n]+/g, ' ');
++  let longestRun = 0;
++  let currentRun = 0;
++  for (const character of text) {
++    if (character === '`') {
++      currentRun += 1;
++      longestRun = Math.max(longestRun, currentRun);
++    } else {
++      currentRun = 0;
++    }
++  }
++  const fence = '`'.repeat(longestRun + 1);
++  return `${fence}${text}${fence}`;
++}
++
+ /** Cap threads listed per author so a noisy PR cannot produce an enormous summary. */
+ const MAX_THREADS_PER_AUTHOR = 8;
+ 
+@@ -62,7 +86,7 @@ function renderThreads(bundle, lines) {
+   if (bundle.unresolvedCommentsAvailable !== true) {
+     const why = bundle.unresolvedCommentsError || 'thread read unavailable (capability absent)';
+     lines.push('### Review threads');
+-    lines.push(`⚠️ Review threads were **unreadable** this pass (\`${why}\`) — not treated as zero. Re-run once the read recovers.`);
++    lines.push(`⚠️ Review threads were **unreadable** this pass (${mdCode(why)}) — not treated as zero. Re-run once the read recovers.`);
+     lines.push('');
+     return;
+   }
+@@ -81,7 +105,7 @@ function renderThreads(bundle, lines) {
+   for (const [author, threads] of groups) {
+     lines.push(`- **${author}** — ${threads.length}`);
+     for (const thread of threads.slice(0, MAX_THREADS_PER_AUTHOR)) {
+-      lines.push(`  - \`${threadLocator(thread)}\``);
++      lines.push(`  - ${mdCode(threadLocator(thread))}`);
+     }
+     if (threads.length > MAX_THREADS_PER_AUTHOR) {
+       lines.push(`  - …and ${threads.length - MAX_THREADS_PER_AUTHOR} more`);
+@@ -109,10 +133,10 @@ function renderChecks(bundle, lines) {
+     lines.push('✅ No failing or pending checks.');
+   } else {
+     if (failing.length > 0) {
+-      lines.push(`- ❌ **Failing (${failing.length}):** ${failing.map((check) => `\`${check.name || '?'}\``).join(', ')}`);
++      lines.push(`- ❌ **Failing (${failing.length}):** ${failing.map((check) => mdCode(check.name || '?')).join(', ')}`);
+     }
+     if (pending.length > 0) {
+-      lines.push(`- ⏳ **Pending (${pending.length}):** ${pending.map((check) => `\`${check.name || '?'}\``).join(', ')}`);
++      lines.push(`- ⏳ **Pending (${pending.length}):** ${pending.map((check) => mdCode(check.name || '?')).join(', ')}`);
+     }
+   }
+   lines.push('');
+@@ -139,7 +163,7 @@ function renderSummary(bundle = {}, opts = {}) {
+   lines.push(verdictHeadline(opts.verdict));
+   if (isUnknown && unreadable.length > 0) {
+     lines.push('');
+-    lines.push(`> Unreadable signal(s): ${unreadable.map((signal) => `\`${signal}\``).join(', ')}.`);
++    lines.push(`> Unreadable signal(s): ${unreadable.map((signal) => mdCode(signal)).join(', ')}.`);
+   }
+   lines.push('');
+   lines.push('_Surfaces open review + check state so async feedback never rots. This monitor **does not merge** and never resolves review threads — a human merges in the GitHub UI._');
+@@ -156,7 +180,7 @@ function renderSummary(bundle = {}, opts = {}) {
+ 
+   const pr = opts.pr || bundle.pr || '<pr>';
+   lines.push('---');
+-  lines.push(`Detailed JSON: \`forge shepherd ${pr} --pull --json\``);
++  lines.push(`Detailed JSON: ${mdCode(`forge shepherd ${pr} --pull --json`)}`);
+   lines.push(`_Updated ${now.toISOString()} · summary-only monitor · labels state, never merges, never resolves threads._`);
+ 
+   return { body: lines.join('\n') };
+diff --git a/test/pr-monitor/render-summary.test.js b/test/pr-monitor/render-summary.test.js
+index f491ce0a..55e56f86 100644
+--- a/test/pr-monitor/render-summary.test.js
++++ b/test/pr-monitor/render-summary.test.js
+@@ -34,6 +34,7 @@ describe('renderSummary', () => {
+     expect(body).toContain('Forge PR Monitor');
+     expect(body).toContain('clean-mergeable');
+     expect(body).toContain('Updated 2026-07-15T10:00:00.000Z');
++    expect(body).toContain('Detailed JSON: `forge shepherd 123 --pull --json`');
+     expect(body).not.toContain('<!-- forge-pr-monitor -->');
+     expect(body.toLowerCase()).not.toContain('sticky comment');
+     expect(body.toLowerCase()).toContain('does not merge');
+@@ -121,4 +122,46 @@ describe('renderSummary', () => {
+     const b = renderSummary(makeBundle(), { now: NOW }).body;
+     expect(a).toBe(b);
+   });
++
++  test('keeps untrusted thread locators and check names inside safe code fences', () => {
++    const { body } = renderSummary(makeBundle({
++      unresolvedComments: [
++        {
++          author: 'qodo-code-review',
++          path: 'src/``danger\nfile.js',
++          line: 7,
++          threadId: 'thread-1',
++          comments: [],
++        },
++      ],
++      ci: {
++        checks: [],
++        failing: [{ name: 'CI `` failure\r\nname' }],
++        pending: [],
++      },
++    }), { now: NOW });
++
++    expect(body).toContain('```src/``danger file.js:7```');
++    expect(body).toContain('```CI `` failure name```');
++    expect(body).not.toContain('`src/``danger\nfile.js:7`');
++    expect(body).not.toContain('`CI `` failure\r\nname`');
++  });
++
++  test('keeps unreadable reasons, signal names, and CLI hints safe in code spans', () => {
++    const unreadableThreads = renderSummary(makeBundle({
++      unresolvedCommentsAvailable: false,
++      unresolvedCommentsError: 'GraphQL `502`\r\nretry',
++    }), { now: NOW }).body;
++    expect(unreadableThreads).toContain('``GraphQL `502` retry``');
++
++    const { body } = renderSummary(makeBundle({ pr: '123`\n456' }), {
++      now: NOW,
++      verdict: 'UNKNOWN',
++      unreadable: ['required`Checks\nstatus'],
++    });
++    expect(body).toContain('``required`Checks status``');
++    expect(body).toContain('``forge shepherd 123` 456 --pull --json``');
++    expect(body).not.toContain('`required`Checks\nstatus`');
++    expect(body).not.toContain('`forge shepherd 123`\n456 --pull --json`');
++  });
+ });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,63 @@
+From d103f2416fa7e10a79e594ba8745739308dfefae Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 20:01:16 +0530
+Subject: [PATCH] fix(github): preserve rate limit status
+
+---
+ lib/adapters/pr-state-adapter.js | 3 +++
+ lib/github-context.js            | 9 +++++----
+ test/github-context.test.js      | 4 ++--
+ 3 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 6f3a0ed0..c01ff8d4 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -102,6 +102,9 @@ function classifyAuthError(error) {
+   if (status === 401 || /HTTP 401|bad credentials|token expired/i.test(text)) {
+     return { class: 'expired' };
+   }
++  if (status === 429 || /HTTP 429/i.test(text)) {
++    return { class: 'rate-limit', retryAfter };
++  }
+   if (status === 403 || /HTTP 403/i.test(text)) {
+     if (retryAfter || /rate limit|secondary rate/i.test(text)) {
+       return { class: 'rate-limit', retryAfter };
+diff --git a/lib/github-context.js b/lib/github-context.js
+index 65cc1111..e2e71b30 100644
+--- a/lib/github-context.js
++++ b/lib/github-context.js
+@@ -66,10 +66,11 @@ function safeGithubCommandFailure(error) {
+       ? 'The GitHub CLI command was rate limited.'
+       : 'The GitHub CLI command failed without exposing its output.',
+   );
+-  const matchedStatus = text.match(/\bhttp\s+(401|403)\b/)?.[1];
+-  const httpStatus = [401, 403].includes(error?.httpStatus)
+-    ? error.httpStatus
+-    : [401, 403].includes(error?.status) ? error.status : Number(matchedStatus) || undefined;
++  const matchedStatus = text.match(/\bhttp\s+(401|403|429)\b/)?.[1];
++  let httpStatus;
++  if ([401, 403, 429].includes(error?.httpStatus)) httpStatus = error.httpStatus;
++  else if ([401, 403, 429].includes(error?.status)) httpStatus = error.status;
++  else httpStatus = Number(matchedStatus) || undefined;
+   const retryAfter = Number(error?.retryAfter);
+   if (httpStatus) failure.httpStatus = httpStatus;
+   if (Number.isFinite(retryAfter) && retryAfter > 0) failure.retryAfter = retryAfter;
+diff --git a/test/github-context.test.js b/test/github-context.test.js
+index be419309..9946bd1c 100644
+--- a/test/github-context.test.js
++++ b/test/github-context.test.js
+@@ -257,8 +257,8 @@ describe('github context', () => {
+       if (command === 'git') return 'octo\n';
+       if (args[0] === 'auth') return 'token-canary\n';
+       if (args[0] === 'api' && args[1] === '--hostname') return 'octo\n';
+-      const error = new Error('HTTP 403 rate limit token-canary in message');
+-      error.httpStatus = 403;
++      const error = new Error('HTTP 429 rate limit token-canary in message');
++      error.httpStatus = 429;
+       error.retryAfter = 60;
+       error.stdout = Buffer.from('token-canary');
+       error.stderr = Buffer.from('token-canary');
+-- 
+2.51.0.windows.1
+

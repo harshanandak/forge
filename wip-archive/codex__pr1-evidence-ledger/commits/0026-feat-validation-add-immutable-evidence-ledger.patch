@@ -1,0 +1,569 @@
+From f99acfc2af1b80e2da3a0ca368e31d086e21038a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 18:22:14 +0530
+Subject: [PATCH] feat(validation): add immutable evidence ledger
+
+---
+ lib/validation/evidence-ledger.js       | 336 ++++++++++++++++++++++++
+ test/validation/evidence-ledger.test.js | 206 +++++++++++++++
+ 2 files changed, 542 insertions(+)
+ create mode 100644 lib/validation/evidence-ledger.js
+ create mode 100644 test/validation/evidence-ledger.test.js
+
+diff --git a/lib/validation/evidence-ledger.js b/lib/validation/evidence-ledger.js
+new file mode 100644
+index 00000000..e6e3ce76
+--- /dev/null
++++ b/lib/validation/evidence-ledger.js
+@@ -0,0 +1,336 @@
++'use strict';
++
++const crypto = require('node:crypto');
++
++const LEDGER_SCHEMA = 'forge.validation.evidence-ledger.v1';
++const RECEIPT_SCHEMA = 'forge.validation.receipt.v1';
++const STATUSES = new Set(['PASS', 'FAIL', 'INCOMPLETE']);
++const DEFAULT_MAX_ENTRIES = 256;
++const DEFAULT_MAX_BYTES = 1024 * 1024;
++const MAX_INPUT_BYTES = 64 * 1024;
++const SHA_40 = /^[a-f0-9]{40}$/;
++const DIGEST = /^sha256:[a-f0-9]{64}$/;
++const INPUT_FIELDS = [
++  'head_sha',
++  'base_sha',
++  'lane',
++  'clean_worktree',
++  'config',
++  'manifest',
++  'tool',
++  'dependency_lock',
++  'command',
++  'test_selection',
++];
++const STORED_INPUT_FIELDS = [
++  'head_sha',
++  'base_sha',
++  'lane',
++  'clean_worktree',
++  'config_digest',
++  'manifest_digest',
++  'tool_digest',
++  'dependency_lock_digest',
++  'command_digest',
++  'test_selection_digest',
++];
++
++function sha256(value) {
++  return `sha256:${crypto.createHash('sha256').update(value, 'utf8').digest('hex')}`;
++}
++
++function compareText(left, right) {
++  if (left === right) return 0;
++  return left < right ? -1 : 1;
++}
++
++function canonicalStringify(value) {
++  if (value === null || typeof value !== 'object') return JSON.stringify(value);
++  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(',')}]`;
++  return `{${Object.keys(value).sort(compareText)
++    .map((key) => `${JSON.stringify(key)}:${canonicalStringify(value[key])}`)
++    .join(',')}}`;
++}
++
++function assert(condition, message) {
++  if (!condition) throw new Error(`Invalid validation evidence: ${message}`);
++}
++
++function assertExactFields(value, expected, label) {
++  assert(value && typeof value === 'object' && !Array.isArray(value), `${label} must be an object`);
++  const actual = Object.keys(value).sort(compareText);
++  const wanted = [...expected].sort(compareText);
++  assert(canonicalStringify(actual) === canonicalStringify(wanted),
++    `${label} fields must be exactly ${wanted.join(', ')}`);
++}
++
++function assertPositiveLimit(value, label) {
++  assert(Number.isSafeInteger(value) && value > 0, `${label} must be a positive integer`);
++}
++
++function canonicalPrivateValue(value, label) {
++  const seen = new Set();
++  let visitedBytes = 0;
++  function addBytes(byteCount) {
++    visitedBytes += byteCount;
++    assert(visitedBytes <= MAX_INPUT_BYTES, `${label} exceeds the byte limit`);
++  }
++  function countEncoded(valueToCount) {
++    if (typeof valueToCount === 'string') {
++      assert(Buffer.byteLength(valueToCount, 'utf8') <= MAX_INPUT_BYTES,
++        `${label} exceeds the byte limit`);
++    }
++    addBytes(Buffer.byteLength(JSON.stringify(valueToCount), 'utf8'));
++  }
++  function visit(current, depth) {
++    assert(depth <= 32, `${label} exceeds the nesting limit`);
++    if (current === null) {
++      countEncoded(null);
++      return;
++    }
++    if (typeof current === 'string' || typeof current === 'boolean') {
++      countEncoded(current);
++      return;
++    }
++    if (typeof current === 'number') {
++      assert(Number.isFinite(current), `${label} contains a non-finite number`);
++      countEncoded(current);
++      return;
++    }
++    assert(typeof current === 'object' && current !== null && !ArrayBuffer.isView(current),
++      `${label} contains an unsupported value`);
++    assert(!seen.has(current), `${label} contains a cycle`);
++    seen.add(current);
++    if (Array.isArray(current)) {
++      addBytes(2 + Math.max(0, current.length - 1));
++      for (let index = 0; index < current.length; index += 1) {
++        const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
++        assert(descriptor && Object.hasOwn(descriptor, 'value'), `${label} contains a sparse or accessor array`);
++        visit(descriptor.value, depth + 1);
++      }
++    } else {
++      assert(Object.getPrototypeOf(current) === Object.prototype,
++        `${label} contains a non-plain object`);
++      const keys = Object.keys(current);
++      assert(Reflect.ownKeys(current).length === keys.length, `${label} contains unsupported properties`);
++      addBytes(2 + Math.max(0, keys.length - 1));
++      for (const key of keys) {
++        countEncoded(key);
++        addBytes(1);
++        const descriptor = Object.getOwnPropertyDescriptor(current, key);
++        assert(descriptor && Object.hasOwn(descriptor, 'value'), `${label} contains an accessor property`);
++        assert(descriptor.value !== undefined, `${label} contains undefined`);
++        visit(descriptor.value, depth + 1);
++      }
++    }
++    seen.delete(current);
++  }
++
++  visit(value, 0);
++  const serialized = canonicalStringify(value);
++  assert(Buffer.byteLength(serialized, 'utf8') <= MAX_INPUT_BYTES, `${label} exceeds the byte limit`);
++  return serialized;
++}
++
++function digestPrivateValue(value, label) {
++  return sha256(canonicalPrivateValue(value, label));
++}
++
++function validateCommand(command) {
++  assertExactFields(command, ['executable', 'argv'], 'inputs.command');
++  assert(typeof command.executable === 'string' && command.executable.length > 0,
++    'inputs.command.executable is required');
++  assert(command.executable.length <= 256, 'inputs.command.executable exceeds the length limit');
++  assert(Array.isArray(command.argv) && command.argv.every((argument) => typeof argument === 'string'),
++    'inputs.command.argv must be a string array');
++}
++
++function normalizeExecutionInputs(inputs) {
++  assertExactFields(inputs, INPUT_FIELDS, 'inputs');
++  assert(SHA_40.test(inputs.head_sha), 'inputs.head_sha must be a full lowercase 40-character SHA');
++  assert(SHA_40.test(inputs.base_sha), 'inputs.base_sha must be a full lowercase 40-character SHA');
++  assert(typeof inputs.lane === 'string' && /^[a-z0-9][a-z0-9-]{0,127}$/.test(inputs.lane),
++    'inputs.lane must be a bounded lowercase lane id');
++  assert(inputs.clean_worktree === true, 'a clean worktree is required');
++  validateCommand(inputs.command);
++  assert(Array.isArray(inputs.test_selection) && inputs.test_selection.length > 0
++    && inputs.test_selection.every((entry) => typeof entry === 'string' && entry.length > 0),
++  'inputs.test_selection must be a non-empty string array');
++
++  return {
++    head_sha: inputs.head_sha,
++    base_sha: inputs.base_sha,
++    lane: inputs.lane,
++    clean_worktree: true,
++    config_digest: digestPrivateValue(inputs.config, 'inputs.config'),
++    manifest_digest: digestPrivateValue(inputs.manifest, 'inputs.manifest'),
++    tool_digest: digestPrivateValue(inputs.tool, 'inputs.tool'),
++    dependency_lock_digest: digestPrivateValue(inputs.dependency_lock, 'inputs.dependency_lock'),
++    command_digest: digestPrivateValue(inputs.command, 'inputs.command'),
++    test_selection_digest: digestPrivateValue(inputs.test_selection, 'inputs.test_selection'),
++  };
++}
++
++function validateStoredInputs(inputs) {
++  assertExactFields(inputs, STORED_INPUT_FIELDS, 'receipt.inputs');
++  assert(SHA_40.test(inputs.head_sha), 'receipt.inputs.head_sha is invalid');
++  assert(SHA_40.test(inputs.base_sha), 'receipt.inputs.base_sha is invalid');
++  assert(typeof inputs.lane === 'string' && /^[a-z0-9][a-z0-9-]{0,127}$/.test(inputs.lane),
++    'receipt.inputs.lane is invalid');
++  assert(inputs.clean_worktree === true, 'receipt inputs must prove a clean worktree');
++  for (const field of STORED_INPUT_FIELDS.filter((field) => field.endsWith('_digest'))) {
++    assert(DIGEST.test(inputs[field]), `receipt.inputs.${field} is invalid`);
++  }
++}
++
++function semanticKey(inputs) {
++  return sha256(canonicalStringify(inputs));
++}
++
++function normalizeProvenance(provenance) {
++  assertExactFields(provenance, ['source', 'run_id', 'artifact_digest'], 'provenance');
++  assert(typeof provenance.source === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provenance.source),
++    'provenance.source must be a bounded lowercase id');
++  assert(typeof provenance.run_id === 'string' && provenance.run_id.length > 0,
++    'provenance.run_id is required');
++  assert(DIGEST.test(provenance.artifact_digest), 'provenance.artifact_digest must be a SHA-256 digest');
++  return {
++    source: provenance.source,
++    run_id_digest: digestPrivateValue(provenance.run_id, 'provenance.run_id'),
++    artifact_digest: provenance.artifact_digest,
++  };
++}
++
++function receiptHashable(receipt) {
++  const { receipt_hash: _receiptHash, ...hashable } = receipt;
++  return hashable;
++}
++
++function createValidationReceipt(request) {
++  assertExactFields(request, ['inputs', 'status', 'evidence', 'provenance'], 'receipt request');
++  const { inputs, status, evidence, provenance } = request;
++  assert(STATUSES.has(status), 'status must be PASS, FAIL, or INCOMPLETE');
++  const normalizedInputs = normalizeExecutionInputs(inputs);
++  const receipt = {
++    schema_id: RECEIPT_SCHEMA,
++    semantic_key: semanticKey(normalizedInputs),
++    inputs: normalizedInputs,
++    status,
++    evidence_digest: digestPrivateValue(evidence, 'evidence'),
++    provenance: normalizeProvenance(provenance),
++  };
++  return { ...receipt, receipt_hash: sha256(canonicalStringify(receipt)) };
++}
++
++function verifyValidationReceipt(receipt) {
++  assertExactFields(receipt, [
++    'schema_id',
++    'semantic_key',
++    'inputs',
++    'status',
++    'evidence_digest',
++    'provenance',
++    'receipt_hash',
++  ], 'receipt');
++  assert(receipt.schema_id === RECEIPT_SCHEMA, `unsupported receipt schema '${receipt.schema_id}'`);
++  validateStoredInputs(receipt.inputs);
++  assert(receipt.semantic_key === semanticKey(receipt.inputs), 'semantic key mismatch');
++  assert(STATUSES.has(receipt.status), 'receipt status is invalid');
++  assert(DIGEST.test(receipt.evidence_digest), 'receipt evidence digest is invalid');
++  assertExactFields(receipt.provenance, ['source', 'run_id_digest', 'artifact_digest'], 'receipt.provenance');
++  assert(typeof receipt.provenance.source === 'string'
++    && /^[a-z0-9][a-z0-9-]{0,63}$/.test(receipt.provenance.source),
++  'receipt provenance source is invalid');
++  assert(DIGEST.test(receipt.provenance.run_id_digest), 'receipt provenance run id digest is invalid');
++  assert(DIGEST.test(receipt.provenance.artifact_digest), 'receipt provenance artifact digest is invalid');
++  assert(DIGEST.test(receipt.receipt_hash), 'receipt hash is invalid');
++  assert(receipt.receipt_hash === sha256(canonicalStringify(receiptHashable(receipt))), 'receipt hash mismatch');
++  return receipt;
++}
++
++function validatedSortedReceipts(receipts) {
++  assert(Array.isArray(receipts), 'receipts must be an array');
++  const byKey = new Map();
++  for (const receipt of receipts) {
++    verifyValidationReceipt(receipt);
++    const existing = byKey.get(receipt.semantic_key);
++    assert(!existing || existing.receipt_hash === receipt.receipt_hash,
++      `conflicting receipts for semantic key ${receipt.semantic_key}`);
++    byKey.set(receipt.semantic_key, receipt);
++  }
++  return [...byKey.values()].sort((left, right) => compareText(left.semantic_key, right.semantic_key));
++}
++
++function recordValidationReceipt(receipts, receipt, options = {}) {
++  const maxEntries = options.max_entries ?? DEFAULT_MAX_ENTRIES;
++  assertPositiveLimit(maxEntries, 'max_entries');
++  const current = validatedSortedReceipts(receipts);
++  verifyValidationReceipt(receipt);
++  const existing = current.find((candidate) => candidate.semantic_key === receipt.semantic_key);
++  if (existing) {
++    return {
++      status: existing.receipt_hash === receipt.receipt_hash ? 'duplicate' : 'conflict',
++      receipts: current,
++      receipt: existing,
++    };
++  }
++  assert(current.length < maxEntries, 'ledger entry limit exceeded');
++  return { status: 'stored', receipts: validatedSortedReceipts([...current, receipt]), receipt };
++}
++
++function findReusableValidationReceipt(receipts, inputs) {
++  const normalizedInputs = normalizeExecutionInputs(inputs);
++  const key = semanticKey(normalizedInputs);
++  const receipt = validatedSortedReceipts(receipts)
++    .find((candidate) => candidate.semantic_key === key);
++  if (!receipt || receipt.status !== 'PASS') return null;
++  return canonicalStringify(receipt.inputs) === canonicalStringify(normalizedInputs) ? receipt : null;
++}
++
++function serializeValidationEvidenceLedger(receipts, options = {}) {
++  const maxEntries = options.max_entries ?? DEFAULT_MAX_ENTRIES;
++  const maxBytes = options.max_bytes ?? DEFAULT_MAX_BYTES;
++  assertPositiveLimit(maxEntries, 'max_entries');
++  assertPositiveLimit(maxBytes, 'max_bytes');
++  const sorted = validatedSortedReceipts(receipts);
++  assert(sorted.length <= maxEntries, 'ledger entry limit exceeded');
++  const ledger = { schema_id: LEDGER_SCHEMA, receipts: sorted };
++  const envelope = { ...ledger, ledger_hash: sha256(canonicalStringify(ledger)) };
++  const serialized = `${JSON.stringify(JSON.parse(canonicalStringify(envelope)), null, 2)}\n`;
++  assert(Buffer.byteLength(serialized, 'utf8') <= maxBytes, 'ledger byte limit exceeded');
++  return serialized;
++}
++
++function parseValidationEvidenceLedger(serialized, options = {}) {
++  const maxEntries = options.max_entries ?? DEFAULT_MAX_ENTRIES;
++  const maxBytes = options.max_bytes ?? DEFAULT_MAX_BYTES;
++  assertPositiveLimit(maxEntries, 'max_entries');
++  assertPositiveLimit(maxBytes, 'max_bytes');
++  assert(typeof serialized === 'string', 'serialized ledger must be a string');
++  assert(Buffer.byteLength(serialized, 'utf8') <= maxBytes, 'ledger byte limit exceeded');
++  let envelope;
++  try {
++    envelope = JSON.parse(serialized);
++  } catch {
++    throw new Error('Invalid validation evidence: serialized ledger is not valid JSON');
++  }
++  assertExactFields(envelope, ['schema_id', 'receipts', 'ledger_hash'], 'ledger');
++  assert(envelope.schema_id === LEDGER_SCHEMA, `unsupported ledger schema '${envelope.schema_id}'`);
++  assert(Array.isArray(envelope.receipts), 'ledger.receipts must be an array');
++  assert(envelope.receipts.length <= maxEntries, 'ledger entry limit exceeded');
++  assert(DIGEST.test(envelope.ledger_hash), 'ledger hash is invalid');
++  const ledger = { schema_id: envelope.schema_id, receipts: envelope.receipts };
++  assert(envelope.ledger_hash === sha256(canonicalStringify(ledger)), 'ledger hash mismatch');
++  return validatedSortedReceipts(envelope.receipts);
++}
++
++module.exports = {
++  LEDGER_SCHEMA,
++  RECEIPT_SCHEMA,
++  createValidationReceipt,
++  findReusableValidationReceipt,
++  parseValidationEvidenceLedger,
++  recordValidationReceipt,
++  serializeValidationEvidenceLedger,
++  verifyValidationReceipt,
++};
+diff --git a/test/validation/evidence-ledger.test.js b/test/validation/evidence-ledger.test.js
+new file mode 100644
+index 00000000..c3fba8f3
+--- /dev/null
++++ b/test/validation/evidence-ledger.test.js
+@@ -0,0 +1,206 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++const crypto = require('node:crypto');
++
++const {
++  createValidationReceipt,
++  findReusableValidationReceipt,
++  parseValidationEvidenceLedger,
++  recordValidationReceipt,
++  serializeValidationEvidenceLedger,
++} = require('../../lib/validation/evidence-ledger');
++
++const SHA_A = 'a'.repeat(40);
++const SHA_B = 'b'.repeat(40);
++
++function canonicalStringify(value) {
++  if (value === null || typeof value !== 'object') return JSON.stringify(value);
++  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(',')}]`;
++  return `{${Object.keys(value).sort((left, right) => left < right ? -1 : Number(left > right))
++    .map((key) => `${JSON.stringify(key)}:${canonicalStringify(value[key])}`)
++    .join(',')}}`;
++}
++
++function sha256(value) {
++  return `sha256:${crypto.createHash('sha256').update(value, 'utf8').digest('hex')}`;
++}
++
++function executionInputs(overrides = {}) {
++  return {
++    head_sha: SHA_A,
++    base_sha: SHA_B,
++    lane: 'pr-targeted',
++    clean_worktree: true,
++    config: { gates: ['G1', 'G0'], secret: 'config-secret' },
++    manifest: { revision: 1, digest: 'manifest-a' },
++    tool: { bun: '1.3.12', node: '24.8.0' },
++    dependency_lock: 'lockfile-secret',
++    command: { executable: 'bun', argv: ['test', '--token=command-secret'] },
++    test_selection: ['test/validation/b.test.js', 'test/validation/a.test.js'],
++    ...overrides,
++  };
++}
++
++function passReceipt(inputs = executionInputs(), overrides = {}) {
++  return createValidationReceipt({
++    inputs,
++    status: 'PASS',
++    evidence: { exit_code: 0, output: 'private-test-output' },
++    provenance: {
++      source: 'local',
++      run_id: 'run-1',
++      artifact_digest: `sha256:${'c'.repeat(64)}`,
++    },
++    ...overrides,
++  });
++}
++
++describe('immutable validation evidence ledger', () => {
++  test('derives a stable semantic key and redacts raw immutable inputs', () => {
++    const first = passReceipt(executionInputs({
++      config: { gates: ['G1', 'G0'], secret: 'config-secret', z: 1, ä: 2 },
++    }));
++    const reordered = passReceipt({
++      ...executionInputs(),
++      config: { ä: 2, secret: 'config-secret', z: 1, gates: ['G1', 'G0'] },
++      tool: { node: '24.8.0', bun: '1.3.12' },
++    });
++
++    expect(first.semantic_key).toBe(reordered.semantic_key);
++    expect(first.semantic_key).toMatch(/^sha256:[a-f0-9]{64}$/);
++    expect(first.inputs.head_sha).toBe(SHA_A);
++    expect(first.inputs.command_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
++    expect(first.inputs.config_digest).toBe(sha256(
++      '{"gates":["G1","G0"],"secret":"config-secret","z":1,"ä":2}'
++    ));
++    expect(JSON.stringify(first)).not.toContain('config-secret');
++    expect(JSON.stringify(first)).not.toContain('command-secret');
++    expect(JSON.stringify(first)).not.toContain('private-test-output');
++  });
++
++  test('invalidates reuse when any immutable execution input changes', () => {
++    const originalInputs = executionInputs();
++    const original = passReceipt(originalInputs);
++    const ledger = recordValidationReceipt([], original).receipts;
++    const changes = [
++      { head_sha: 'd'.repeat(40) },
++      { base_sha: 'e'.repeat(40) },
++      { lane: 'scheduled-compatibility' },
++      { config: { gates: ['G0'] } },
++      { manifest: { revision: 2, digest: 'manifest-b' } },
++      { tool: { bun: '1.3.13', node: '24.8.0' } },
++      { dependency_lock: 'different-lock' },
++      { command: { executable: 'bun', argv: ['test', 'test/kernel'] } },
++      { test_selection: ['test/validation/a.test.js'] },
++    ];
++
++    expect(findReusableValidationReceipt(ledger, originalInputs)).toEqual(original);
++    for (const change of changes) {
++      expect(findReusableValidationReceipt(ledger, executionInputs(change))).toBeNull();
++    }
++  });
++
++  test('reuses only verified PASS receipts', () => {
++    for (const status of ['FAIL', 'INCOMPLETE']) {
++      const receipt = passReceipt(executionInputs(), { status });
++      const ledger = recordValidationReceipt([], receipt).receipts;
++      expect(findReusableValidationReceipt(ledger, executionInputs())).toBeNull();
++    }
++  });
++
++  test('deduplicates identical receipts and conflicts on same key with different evidence', () => {
++    const receipt = passReceipt();
++    const stored = recordValidationReceipt([], receipt);
++    const duplicate = recordValidationReceipt(stored.receipts, receipt);
++    const conflictingReceipt = passReceipt(executionInputs(), {
++      evidence: { exit_code: 0, output: 'different private output' },
++    });
++    const conflict = recordValidationReceipt(stored.receipts, conflictingReceipt);
++
++    expect(stored.status).toBe('stored');
++    expect(duplicate.status).toBe('duplicate');
++    expect(duplicate.receipts).toEqual(stored.receipts);
++    expect(conflict.status).toBe('conflict');
++    expect(conflict.receipts).toEqual(stored.receipts);
++  });
++
++  test('rejects dirty worktrees and never falls back to a false green', () => {
++    expect(() => passReceipt(executionInputs({ clean_worktree: false })))
++      .toThrow(/clean worktree/i);
++    expect(() => findReusableValidationReceipt([], executionInputs({ clean_worktree: false })))
++      .toThrow(/clean worktree/i);
++    expect(() => passReceipt(executionInputs({ test_selection: [] })))
++      .toThrow(/test_selection/i);
++    const privateKey = 'private-key-secret';
++    try {
++      passReceipt(executionInputs({ config: { [privateKey]: undefined } }));
++      throw new Error('expected private input validation to fail');
++    } catch (error) {
++      expect(error.message).not.toContain(privateKey);
++    }
++    const manyEmptyValues = new Array(40_000).fill('');
++    Object.defineProperty(manyEmptyValues, manyEmptyValues.length - 1, {
++      get() {
++        throw new Error('visited late private value');
++      },
++    });
++    expect(() => passReceipt(executionInputs({ config: { values: manyEmptyValues } })))
++      .toThrow(/byte limit/i);
++    expect(() => createValidationReceipt({
++      inputs: executionInputs(),
++      status: 'PASS',
++      evidence: {},
++      provenance: {
++        source: 'local',
++        run_id: 'run-1',
++        artifact_digest: `sha256:${'c'.repeat(64)}`,
++      },
++      unkeyed_gate: 'G4',
++    })).toThrow(/fields must be exactly/i);
++    expect(findReusableValidationReceipt([], executionInputs())).toBeNull();
++  });
++
++  test('serializes deterministically with stable ordering and bounded private storage', () => {
++    const laterKey = passReceipt(executionInputs({ lane: 'z-lane' }));
++    const earlierKey = passReceipt(executionInputs({ lane: 'a-lane' }));
++    const serialized = serializeValidationEvidenceLedger([laterKey, earlierKey]);
++    const reversed = serializeValidationEvidenceLedger([earlierKey, laterKey]);
++    const parsed = parseValidationEvidenceLedger(serialized);
++
++    expect(serialized).toBe(reversed);
++    expect(parsed.map((receipt) => receipt.semantic_key))
++      .toEqual([...parsed.map((receipt) => receipt.semantic_key)].sort());
++    expect(serialized).not.toContain('config-secret');
++    expect(serialized).not.toContain('command-secret');
++    expect(serialized).not.toContain('private-test-output');
++    expect(() => serializeValidationEvidenceLedger([earlierKey, laterKey], { max_entries: 1 }))
++      .toThrow(/entry limit/i);
++    expect(() => serializeValidationEvidenceLedger([earlierKey], { max_bytes: 20 }))
++      .toThrow(/byte limit/i);
++  });
++
++  test('rejects tampered serialized evidence instead of returning PASS', () => {
++    const serialized = serializeValidationEvidenceLedger([passReceipt()]);
++    const parsed = JSON.parse(serialized);
++    parsed.receipts[0].status = 'FAIL';
++    parsed.ledger_hash = sha256(canonicalStringify({
++      schema_id: parsed.schema_id,
++      receipts: parsed.receipts,
++    }));
++
++    expect(() => parseValidationEvidenceLedger(JSON.stringify(parsed))).toThrow(/receipt hash mismatch/i);
++
++    const first = passReceipt();
++    const conflicting = passReceipt(executionInputs(), {
++      evidence: { exit_code: 1, output: 'different private output' },
++    });
++    const conflictEnvelope = {
++      schema_id: parsed.schema_id,
++      receipts: [first, conflicting],
++    };
++    conflictEnvelope.ledger_hash = sha256(canonicalStringify(conflictEnvelope));
++    expect(() => parseValidationEvidenceLedger(JSON.stringify(conflictEnvelope)))
++      .toThrow(/conflicting receipts/i);
++  });
++});
+-- 
+2.51.0.windows.1
+

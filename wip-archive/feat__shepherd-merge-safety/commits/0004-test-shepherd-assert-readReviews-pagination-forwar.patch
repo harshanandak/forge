@@ -1,0 +1,43 @@
+From 03de08e522f2df6e10528e780b1b530aa2b043e3 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 13 Jul 2026 00:50:26 +0530
+Subject: [PATCH] test(shepherd): assert readReviews pagination forwards the
+ cursor
+
+CodeRabbit (PR #366): the pagination test branched only on call count, so a
+second page request that dropped `after=CUR` would still pass. Record the gh
+args and assert the second GraphQL call forwards the returned cursor.
+
+Issues: c01936be, 35ee8d78
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/pr-state-adapter.test.js | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index 482228a3..be07dcac 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -402,7 +402,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readReviews paginates until hasNextPage is false', async () => {
+     let call = 0;
++    const calls = [];
+     const run = (cmd, args) => {
++      calls.push({ cmd, args });
+       const joined = [cmd, ...args].join(' ');
+       if (!joined.includes('reviews(first')) return '';
+       call += 1;
+@@ -420,6 +422,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+     const reviews = await adapter.readReviews({ owner: 'o', repo: 'r', pr: '7' });
+     expect(call).toBe(2); // followed the cursor
++    // The second page request must actually forward the returned cursor.
++    expect(calls[1].args).toContain('after=CUR');
+     expect(reviews.map((r) => r.author).sort()).toEqual(['bot-a', 'bot-b']);
+   });
+ 
+-- 
+2.51.0.windows.1
+

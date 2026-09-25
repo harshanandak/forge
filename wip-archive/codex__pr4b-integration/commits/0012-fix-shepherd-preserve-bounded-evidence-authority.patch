@@ -1,0 +1,364 @@
+From 7e73a78da3ac3c0a5704f2233607aa63fab2cd4a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 01:52:58 +0530
+Subject: [PATCH] fix(shepherd): preserve bounded evidence authority
+
+---
+ lib/commands/merge.js                         | 20 +++--
+ lib/pr-monitor/differ.js                      | 12 ++-
+ lib/pr-monitor/flow-monitor.js                | 82 +++++++++++++++++--
+ ...merge-authority-review-regressions.test.js | 16 +++-
+ test/commands/merge-authority.test.js         |  2 +-
+ test/commands/merge.test.js                   |  2 +-
+ test/pr-monitor/flow-monitor.test.js          | 22 ++++-
+ 7 files changed, 133 insertions(+), 23 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index c0a88bbe..6e792fc1 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -598,7 +598,7 @@ function mandatoryContextError(context, expectedHead) {
+ }
+ 
+ async function recoverMergedTerminal({
+-  pr, parsed, root, config, prContext, ownershipActor, ownershipEnv, deps,
++  pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps,
+ }) {
+   const repository = normalizeRepository(prContext?.repository);
+   if (normalizeFullHeadSha(prContext?.headSha) !== parsed.expectedHead || !repository) {
+@@ -631,7 +631,7 @@ async function recoverMergedTerminal({
+     repository,
+     binding,
+     actor: ownershipActor,
+-    sessionId: ownershipEnv.FORGE_SESSION_ID || null,
++    sessionId: ownershipSessionId,
+     config,
+     projectRoot: root,
+     now: decisionAt,
+@@ -939,6 +939,10 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   const verifyIssueOwnership = deps.verifyIssueOwnership || defaultVerifyIssueOwnership;
+   const ownershipEnv = deps.env || process.env;
+   const ownershipActor = resolveOwnershipActor(ownershipEnv);
++  const ownershipSessionId = typeof ownershipEnv.FORGE_SESSION_ID === 'string'
++    && ownershipEnv.FORGE_SESSION_ID.trim()
++    ? ownershipEnv.FORGE_SESSION_ID.trim()
++    : null;
+   const ownershipInput = {
+     issueId: parsed.issueId,
+     projectRoot: root,
+@@ -978,9 +982,12 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   // attempt. (An absent/unknown state falls through to the fail-closed rules.)
+   const prState = prContext && prContext.state ? String(prContext.state).toUpperCase() : '';
+   if (prState === 'MERGED') {
++    if (!ownershipSessionId) {
++      return { success: false, merged: true, error: 'An exact FORGE_SESSION_ID session identity is required to recover terminal merge evidence.' };
++    }
+     try {
+       return await recoverMergedTerminal({
+-        pr, parsed, root, config, prContext, ownershipActor, ownershipEnv, deps,
++        pr, parsed, root, config, prContext, ownershipActor, ownershipSessionId, deps,
+       });
+     } catch (error) {
+       return { success: false, merged: true, error: `Merged PR terminal linkage recovery failed: ${error.message}` };
+@@ -991,6 +998,9 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: true, state: prState, reason };
+   }
++  if (!ownershipSessionId) {
++    return { success: false, merged: false, error: 'An exact FORGE_SESSION_ID session identity is required before merge.' };
++  }
+ 
+   const mandatoryError = mandatoryContextError(prContext, parsed.expectedHead);
+   if (mandatoryError) return { success: false, merged: false, error: mandatoryError };
+@@ -1042,7 +1052,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   if (freshState === 'MERGED') {
+     try {
+       return await recoverMergedTerminal({
+-        pr, parsed, root, config, prContext: freshContext, ownershipActor, ownershipEnv, deps,
++        pr, parsed, root, config, prContext: freshContext, ownershipActor, ownershipSessionId, deps,
+       });
+     } catch (error) {
+       return { success: false, merged: true, error: `Merged PR terminal linkage recovery failed: ${error.message}` };
+@@ -1123,7 +1133,7 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+       repository: leasedRepository,
+       binding: freshBinding,
+       actor: ownershipActor,
+-      sessionId: ownershipEnv.FORGE_SESSION_ID || null,
++      sessionId: ownershipSessionId,
+       config,
+       projectRoot: root,
+       now: decisionAt,
+diff --git a/lib/pr-monitor/differ.js b/lib/pr-monitor/differ.js
+index 3cfb34fa..2ae0f247 100644
+--- a/lib/pr-monitor/differ.js
++++ b/lib/pr-monitor/differ.js
+@@ -145,9 +145,9 @@ function diffChecks(prev, next, out) {
+     const before = prevByName.get(String(c.name));
+     const wasFailed = before?.class === 'failed';
+     if (c.class === 'failed' && !wasFailed) {
+-      out.push(makeEvent(T.CHECK_FAILED, `${c.name}:${next.headSha}`, { name: c.name }));
++      out.push(makeEvent(T.CHECK_FAILED, `${c.name}:${next.headSha}`, { name: c.displayName || c.name }));
+     } else if (c.class === 'green' && wasFailed) {
+-      out.push(makeEvent(T.CHECK_RECOVERED, `${c.name}:${next.headSha}`, { name: c.name }));
++      out.push(makeEvent(T.CHECK_RECOVERED, `${c.name}:${next.headSha}`, { name: c.displayName || c.name }));
+     }
+   }
+   if (allGreen(next.checks) && !allGreen(prev.checks)) {
+@@ -193,7 +193,9 @@ function diffReviews(prev, next, out) {
+       || before.commitOid !== r.commitOid;
+     if (changed) {
+       out.push(makeEvent(T.REVIEW_SUBMITTED, `${r.author}:${r.commitOid || r.submittedAt}`, {
+-        author: r.author, verdict: r.state, commitOid: r.commitOid || null,
++        author: r.displayAuthor || r.author,
++        verdict: r.state,
++        commitOid: r.displayCommitOid || r.commitOid || null,
+       }));
+     }
+   }
+@@ -240,7 +242,9 @@ function diffDegraded(prev, next, out) {
+   const prevSurfaces = new Set((prev.degraded || []).map((d) => d.surface));
+   for (const d of (next.degraded || [])) {
+     if (!prevSurfaces.has(d.surface)) {
+-      out.push(makeEvent(T.MONITOR_DEGRADED, d.surface, { surface: d.surface, error: d.error || '' }));
++      out.push(makeEvent(T.MONITOR_DEGRADED, d.surface, {
++        surface: d.displaySurface || d.surface, error: d.error || '',
++      }));
+     }
+   }
+ }
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 90adf2a5..338064e0 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ 
+ const crypto = require('node:crypto');
++const zlib = require('node:zlib');
+ 
+ const { computeContentHash, validateContractStructure } = require('../../packages/memory-contracts');
+ const {
+@@ -14,9 +15,9 @@ const { finalizeRecords } = require('./monitor');
+ 
+ const MAX_HISTORY = 128;
+ const DELIVERY_TARGET = 'legacy-journal';
+-const SNAPSHOT_ARRAY_LIMIT = 3;
+ const SNAPSHOT_TEXT_LIMIT = 64;
+ const SNAPSHOT_OBJECT_KEY_LIMIT = 24;
++const SNAPSHOT_FORMAT = 'digest-v1';
+ 
+ class FlowMonitorError extends Error {
+   constructor(code, message) {
+@@ -28,16 +29,80 @@ class FlowMonitorError extends Error {
+ 
+ function defaultNow() { return new Date().toISOString(); }
+ 
+-function boundSnapshotValue(value, depth = 0) {
++function boundSnapshotScalar(value, depth = 0) {
+   if (typeof value === 'string') return value.slice(0, SNAPSHOT_TEXT_LIMIT);
+   if (value === null || typeof value !== 'object') return value;
+   if (depth >= 4) return null;
+   if (Array.isArray(value)) {
+-    return value.slice(0, SNAPSHOT_ARRAY_LIMIT).map(item => boundSnapshotValue(item, depth + 1));
++    return value.map(item => boundSnapshotScalar(item, depth + 1));
+   }
+   return Object.fromEntries(Object.entries(value)
+     .slice(0, SNAPSHOT_OBJECT_KEY_LIMIT)
+-    .map(([key, item]) => [key, boundSnapshotValue(item, depth + 1)]));
++    .map(([key, item]) => [key, boundSnapshotScalar(item, depth + 1)]));
++}
++
++function identityToken(value) {
++  return crypto.createHash('sha256').update(String(value ?? '')).digest('base64url').slice(0, 12);
++}
++
++function compactSnapshot(value) {
++  if (value?._snapshotFormat === SNAPSHOT_FORMAT) return value;
++  const source = value && typeof value === 'object' ? value : {};
++  const {
++    checks: _checks,
++    threads: _threads,
++    reviews: _reviews,
++    comments: _comments,
++    degraded: _degraded,
++    ...scalarSource
++  } = source;
++  const compact = boundSnapshotScalar(scalarSource);
++  const evidence = {
++    checks: (Array.isArray(source.checks) ? source.checks : [])
++      .map(item => [identityToken(item?.name), boundSnapshotScalar(item?.class)]),
++    threads: (Array.isArray(source.threads) ? source.threads : [])
++      .map(item => [identityToken(item?.threadId), Boolean(item?.isResolved), item?.commentCount || 0, Boolean(item?.actionable)]),
++    reviews: (Array.isArray(source.reviews) ? source.reviews : [])
++      .map(item => [identityToken(item?.author), identityToken(item?.submittedAt), identityToken(item?.commitOid)]),
++    comments: (Array.isArray(source.comments) ? source.comments : [])
++      .map(item => [identityToken(item?.id)]),
++    degraded: (Array.isArray(source.degraded) ? source.degraded : [])
++      .map(item => [identityToken(item?.surface)]),
++  };
++  return {
++    ...compact,
++    _snapshotFormat: SNAPSHOT_FORMAT,
++    _snapshotEvidence: zlib.gzipSync(JSON.stringify(evidence), { level: 9 }).toString('base64url'),
++  };
++}
++
++function comparableSnapshot(compact, source = null) {
++  if (compact?._snapshotFormat !== SNAPSHOT_FORMAT) return compact;
++  const evidence = JSON.parse(zlib.gunzipSync(Buffer.from(compact._snapshotEvidence, 'base64url')));
++  return {
++    ...compact,
++    checks: evidence.checks.map((item, index) => ({
++      name: item[0], class: item[1], displayName: source?.checks?.[index]?.name,
++    })),
++    threads: evidence.threads.map((item, index) => ({
++      threadId: item[0], isResolved: item[1], commentCount: item[2], actionable: item[3],
++      path: boundSnapshotScalar(source?.threads?.[index]?.path),
++    })),
++    reviews: evidence.reviews.map((item, index) => ({
++      author: item[0], submittedAt: item[1], commitOid: item[2],
++      state: boundSnapshotScalar(source?.reviews?.[index]?.state),
++      displayAuthor: boundSnapshotScalar(source?.reviews?.[index]?.author),
++      displayCommitOid: boundSnapshotScalar(source?.reviews?.[index]?.commitOid),
++    })),
++    comments: evidence.comments.map((item, index) => ({
++      id: item[0], author: boundSnapshotScalar(source?.comments?.[index]?.author),
++    })),
++    degraded: evidence.degraded.map((item, index) => ({
++      surface: item[0],
++      displaySurface: boundSnapshotScalar(source?.degraded?.[index]?.surface),
++      error: boundSnapshotScalar(source?.degraded?.[index]?.error),
++    })),
++  };
+ }
+ 
+ function uuidFrom(seed) {
+@@ -334,7 +399,7 @@ async function runFlowMonitorPass(ctx) {
+   const replay = terminalReplay(deliveryState, ctx.monitorId);
+   if (replay) {
+     let current;
+-    try { current = boundSnapshotValue(await ctx.gather()); } catch { return replay; }
++    try { current = compactSnapshot(await ctx.gather()); } catch { return replay; }
+     const lifecycle = String(current?.prState || current?.state || '').toUpperCase();
+     if (lifecycle !== 'OPEN') return replay;
+     return runFlowMonitorPass({
+@@ -353,9 +418,10 @@ async function runFlowMonitorPass(ctx) {
+   state = replayed.state;
+   const receiptIds = replayed.receiptIds;
+ 
+-  const next = boundSnapshotValue(await ctx.gather());
+-  const previous = durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null;
+-  const candidates = diffSnapshots(previous, next);
++  const gathered = await ctx.gather();
++  const next = compactSnapshot(gathered);
++  const previous = comparableSnapshot(durableEvents.at(-1)?.payload.bounded_payload.snapshot ?? null);
++  const candidates = diffSnapshots(previous, comparableSnapshot(next, gathered));
+   if (candidates.length === 0) {
+     return finalizePass(ctx, bridge, spec, {
+       state,
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index d14392f7..f7dde306 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -44,7 +44,7 @@ function deps(overrides = {}) {
+     verifyMergeGate: async () => true,
+     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+     recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+-    env: { FORGE_ACTOR: 'release-actor' },
++    env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+     fetchPrContext: async () => context(),
+     mergePr: async () => ({ merged: true }),
+     ...overrides,
+@@ -500,7 +500,7 @@ describe('merge authority — exact reviewer regressions', () => {
+   });
+ 
+   test('freezes actor identity across both ownership probes', async () => {
+-    const env = { FORGE_ACTOR: 'alice' };
++    const env = { FORGE_ACTOR: 'alice', FORGE_SESSION_ID: 'alice-session' };
+     let ownershipCalls = 0;
+     let merges = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -522,6 +522,18 @@ describe('merge authority — exact reviewer regressions', () => {
+     expect(merges).toBe(0);
+   });
+ 
++  test('requires a session identity before the external merge mutation', async () => {
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      env: { FORGE_ACTOR: 'release-actor' },
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(out.error).toMatch(/session identity/i);
++    expect(merges).toBe(0);
++  });
++
+   test('requires an exact authoritative PR-to-issue Kernel binding on both reads', async () => {
+     let bindingCalls = 0;
+     let merges = 0;
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index 73d1964c..ac75bf5c 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -63,7 +63,7 @@ function deps(overrides = {}) {
+     verifyMergeGate: async () => true,
+     prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
+     recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+-    env: { FORGE_ACTOR: 'release-actor' },
++    env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+     fetchPrContext: async () => context(),
+     mergePr: async () => ({ merged: true }),
+     ...overrides,
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 1c8dbf9e..24ed89b2 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -42,7 +42,7 @@ function authorizedContext(overrides = {}) {
+ }
+ 
+ const AUTHORITY_DEPS = {
+-  env: { FORGE_ACTOR: 'release-actor' },
++  env: { FORGE_ACTOR: 'release-actor', FORGE_SESSION_ID: 'release-session' },
+   verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
+   verifyPrIssueBinding: async () => ({ bound: true }),
+   verifyMergeGate: async () => true,
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index bd175b90..615026db 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -192,11 +192,29 @@ describe('Flow-backed PR monitor authority', () => {
+     const result = await runFlowMonitorPass(context(store, async () => large, async () => {}));
+ 
+     expect(result.changed).toBe(true);
+-    const persisted = store.events.at(-1).payload.bounded_payload.snapshot;
+-    expect(persisted.checks.length).toBeLessThan(100);
+     expect(Buffer.byteLength(JSON.stringify(store.events.at(-1).payload.bounded_payload))).toBeLessThanOrEqual(16_384);
+   });
+ 
++  test('retains transition identity beyond the first three snapshot entries', async () => {
++    const store = durableStore();
++    let next = snapshot({
++      checks: Array.from({ length: 4 }, (_, index) => ({ name: `check-${index}`, class: 'green' })),
++    });
++    const delivered = [];
++    const ctx = context(store, async () => next, async record => delivered.push(record));
++    await runFlowMonitorPass(ctx);
++    next = snapshot({
++      checks: Array.from({ length: 4 }, (_, index) => ({
++        name: `check-${index}`,
++        class: index === 3 ? 'failed' : 'green',
++      })),
++    });
++
++    await runFlowMonitorPass(ctx);
++
++    expect(delivered.some(record => record.type === 'check.failed')).toBe(true);
++  });
++
+   test('rejects truncated durable history instead of treating it as a complete restart checkpoint', async () => {
+     const store = durableStore();
+     store.readEventTail = async () => ({ events: [], overflow: true, truncated_before_sequence: 1 });
+-- 
+2.51.0.windows.1
+

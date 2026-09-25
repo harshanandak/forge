@@ -1,0 +1,82 @@
+From fc5ce47293d08f32cbf241424b4b3854ed43e6eb Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Tue, 21 Jul 2026 17:32:36 +0530
+Subject: [PATCH] fix(worktree): hide on-disk-removed worktrees from 'list'
+ output
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Round-10 (Codex): rendering the raw registry surfaced a pre-existing gap —
+'forge worktree remove' / 'forge clean' delete the checkout but don't reconcile
+the kernel_worktrees registry, so 'list' showed already-removed paths as active
+(live registry had 91 rows, 33 stale).
+- handleList now filters to worktrees whose path still exists on disk (injectable
+  _fs seam); list dropped 91 -> 58 live.
+- test covers both directions (permissive fs renders the row; empty fs -> 'No
+  worktrees registered.').
+- full registry reconciliation on remove/clean is the proper fix, tracked in
+  ceeef92f (needs a new driver write method — out of scope for this skills PR).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ lib/commands/worktree.js               |  7 ++++++-
+ test/commands/worktree-linkage.test.js | 17 ++++++++++++++++-
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/lib/commands/worktree.js b/lib/commands/worktree.js
+index 2ccfa3d3..f1053c19 100644
+--- a/lib/commands/worktree.js
++++ b/lib/commands/worktree.js
+@@ -406,7 +406,12 @@ async function handleList(projectRoot, opts) {
+       const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+       driver = (await buildMigratedKernelIssueDeps({ projectRoot })).kernelDriver;
+     }
+-    const worktrees = driver.listWorktrees({});
++    // `forge worktree remove` / `forge clean` delete the checkout but do not yet
++    // reconcile the kernel_worktrees registry (issue ceeef92f), so the raw registry
++    // can still list already-removed paths. Filter to worktrees that still exist on
++    // disk so `forge worktree list` never surfaces stale entries agents could act on.
++    const existsSync = (opts._fs && opts._fs.existsSync) || require('node:fs').existsSync;
++    const worktrees = driver.listWorktrees({}).filter((w) => w && w.path && existsSync(w.path));
+     return { success: true, worktrees, output: renderWorktreeList(worktrees) };
+   } catch (error) {
+     return { success: false, error: error.message, worktrees: [] };
+diff --git a/test/commands/worktree-linkage.test.js b/test/commands/worktree-linkage.test.js
+index 0178b256..0ef75e67 100644
+--- a/test/commands/worktree-linkage.test.js
++++ b/test/commands/worktree-linkage.test.js
+@@ -116,7 +116,12 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', ()
+       { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver },
+     );
+ 
+-    const list = await worktree.handler(['list'], {}, root, { _kernelDriver: driver });
++    // git is stubbed so the checkout dir never lands on disk; inject a permissive
++    // existsSync so the linked row survives the on-disk staleness filter.
++    const list = await worktree.handler(['list'], {}, root, {
++      _kernelDriver: driver,
++      _fs: { existsSync: () => true },
++    });
+     expect(list.success).toBe(true);
+     expect(Array.isArray(list.worktrees)).toBe(true);
+     expect(list.worktrees.some(w => w.issue_id === 'forge-linktest' && w.branch === 'feat/s1')).toBe(true);
+@@ -125,6 +130,16 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', ()
+     expect(typeof list.output).toBe('string');
+     expect(list.output.length).toBeGreaterThan(0);
+     expect(list.output).toContain('feat/s1');
++
++    // Staleness filter: rows whose path no longer exists on disk (removed via
++    // `forge worktree remove` / `forge clean`, which don't yet reconcile the
++    // registry) must NOT be surfaced.
++    const stale = await worktree.handler(['list'], {}, root, {
++      _kernelDriver: driver,
++      _fs: { existsSync: () => false },
++    });
++    expect(stale.worktrees).toHaveLength(0);
++    expect(stale.output).toBe('No worktrees registered.');
+   }, TIMEOUT);
+ });
+ 
+-- 
+2.51.0.windows.1
+

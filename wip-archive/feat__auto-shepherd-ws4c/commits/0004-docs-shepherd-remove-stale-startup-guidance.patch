@@ -1,0 +1,84 @@
+From d7d0a135f1012906e0c853ca19a2885df335f504 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 14:03:02 +0530
+Subject: [PATCH] docs(shepherd): remove stale startup guidance
+
+---
+ AGENTS.md                                        | 2 +-
+ bin/forge.js                                     | 9 ++++-----
+ docs/work/2026-07-29-auto-shepherd/decisions.md  | 2 ++
+ test/pr-monitor/auto-trigger-containment.test.js | 3 +++
+ 4 files changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 7e9e475c..8d59a894 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -17,7 +17,7 @@ This project ships a **default TDD-first workflow template** with 6 workflow sta
+ 
+ **Utility**: `/status` — Context check before starting work (not a numbered stage)
+ 
+-**Utility**: `/shepherd <pr>` — Autonomous PR ownership. `forge shepherd daemon` is a singleton reconcile daemon that owns **all** open PRs for the repo: it converges CI check state into kernel verdicts, re-runs flaky required checks (Tier-A), reaps orphan watchers, and self-retires when no PRs remain — so agents read verdicts (`forge shepherd <pr> --pull --json`, `forge shepherd events`) instead of hand-polling. `forge shepherd <pr>` is the one-shot bounded pass for a single PR. It is a utility, **not** a workflow stage. It **never merges** (the human merges in the GitHub UI) and **never resolves review threads** (that stays with `/review`). `--auto-rebase` is opt-in and default OFF; kill-switches: `FORGE_SHEPHERD_DISABLE`, `forge gate disable rail.auto_shepherd`. **Startup/containment**: the daemon is a repo singleton (O_EXCL lease — a duplicate start is a clean no-op) started in the harness background shell so it is session-reaped; agents never launch it as a detached spawn (automatic per-command launch is a planned follow-up, W-S4c). See [docs/reference/shepherd.md](docs/reference/shepherd.md).
++**Utility**: `/shepherd <pr>` — Autonomous PR ownership. `forge shepherd daemon` is a singleton reconcile daemon that owns **all** open PRs for the repo: it converges CI check state into kernel verdicts, re-runs flaky required checks (Tier-A), reaps orphan watchers, and self-retires when no PRs remain — so agents read verdicts (`forge shepherd <pr> --pull --json`, `forge shepherd events`) instead of hand-polling. `forge shepherd <pr>` is the one-shot bounded pass for a single PR. It is a utility, **not** a workflow stage. It **never merges** (the human merges in the GitHub UI) and **never resolves review threads** (that stays with `/review`). `--auto-rebase` is opt-in and default OFF; kill-switches: `FORGE_SHEPHERD_DISABLE`, `forge gate disable rail.auto_shepherd`. **Startup/containment**: Forge automatically wakes the repo-singleton daemon after a supported session start, every successful push, and every successful non-dry-run ship; duplicate starts remain clean no-ops under the O_EXCL lease. Injected CI/test and kill-switch guards return before lock or process work. Forge prefers the session-reaped harness background shell and otherwise detaches from the stable common repository root, never a disposable worktree cwd. See [docs/reference/shepherd.md](docs/reference/shepherd.md).
+ 
+ ## Automatic Change Classification
+ 
+diff --git a/bin/forge.js b/bin/forge.js
+index f57d6063..c2bc693d 100644
+--- a/bin/forge.js
++++ b/bin/forge.js
+@@ -3819,11 +3819,10 @@ async function main() {
+       console.error(`Error running '${command}':`, err.message);
+       process.exit(1);
+     }
+-    // NOTE: the autonomous-shepherd per-command trigger is intentionally NOT wired here.
+-    // The reconcile engine + daemon land in this PR; the auto-fire wiring is deferred to a
+-    // follow-up (W-S4c) because a naive dispatch-finally trigger spawns a session-outliving
+-    // daemon on EVERY command, which breaks test isolation (Windows rmSync EBUSY) and needs
+-    // its own firing-policy + containment design. Start the daemon via `forge shepherd daemon`.
++    // NOTE: an autonomous-shepherd every-command dispatch-finally trigger is intentionally
++    // NOT wired here. Automatic firing is deliberately limited to the approved seams:
++    // supported session start, successful push, and successful non-dry-run ship. Ordinary
++    // commands cannot spawn a session-outliving daemon or break test isolation.
+     return;
+   }
+ 
+diff --git a/docs/work/2026-07-29-auto-shepherd/decisions.md b/docs/work/2026-07-29-auto-shepherd/decisions.md
+index 92bae162..48a4940f 100644
+--- a/docs/work/2026-07-29-auto-shepherd/decisions.md
++++ b/docs/work/2026-07-29-auto-shepherd/decisions.md
+@@ -22,6 +22,8 @@ changing their requirements or implementation scope.
+   4 skipped, and 0 failed. It covers trigger containment, stable-root fallback,
+   singleton lease behavior, open-PR reconciliation (including drafts), watcher
+   restart and cleanup, current-head events, orphan reaping, and self-retirement.
++  Every disabled containment scenario explicitly asserts both that no lease is
++  acquired and that the injected daemon launcher is not called.
+ - **Task 3**: The canonical shepherd reference and skill now document the exact
+   automatic singleton contract, including the no-local-PR push case and
+   zero-side-effect containment precedence. `node scripts/sync-agent-skills.js`
+diff --git a/test/pr-monitor/auto-trigger-containment.test.js b/test/pr-monitor/auto-trigger-containment.test.js
+index e96102a4..fcd875bd 100644
+--- a/test/pr-monitor/auto-trigger-containment.test.js
++++ b/test/pr-monitor/auto-trigger-containment.test.js
+@@ -13,6 +13,7 @@ describe('automatic singleton trigger containment', () => {
+ 		['rail disabled', { env: {}, rail: false }],
+ 	])('%s context is inert before lease/process work', (_name, scenario) => {
+ 		let acquired = false;
++		let launched = false;
+ 		fireAndForget({
+ 			projectRoot: '/repo',
+ 			gitCommonDir: '/repo/.git',
+@@ -21,8 +22,10 @@ describe('automatic singleton trigger containment', () => {
+ 			kernelInitialized: () => scenario.initialized !== false,
+ 			railEnabled: () => scenario.rail !== false,
+ 			acquire: () => { acquired = true; return { ok: true, token: 't' }; },
++			launch: () => { launched = true; },
+ 			tick: ({ enumerate, execute }) => { enumerate(); execute(); },
+ 		});
+ 		expect(acquired).toBe(false);
++		expect(launched).toBe(false);
+ 	});
+ });
+-- 
+2.51.0.windows.1
+

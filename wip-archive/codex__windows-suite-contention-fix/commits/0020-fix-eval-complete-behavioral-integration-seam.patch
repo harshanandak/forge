@@ -1,0 +1,1645 @@
+From fe5344417676d9d3a13632a6a677f4d8f1c494dd Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 8 Aug 2026 17:19:27 +0530
+Subject: [PATCH] fix(eval): complete behavioral integration seam
+
+---
+ lib/commands/skill.js                       |  52 +++-
+ scripts/lib/behavioral-eval-runner.js       | 231 +++++++++-----
+ scripts/lib/behavioral-eval-runtime.js      | 324 ++++++++++++++++++++
+ scripts/lib/eval-evidence.js                | 141 +++++++--
+ scripts/lib/eval-runner.js                  |  63 ++--
+ scripts/lib/promotion-evidence-loader.js    |  94 ++++++
+ test/commands/skill.test.js                 |  79 ++++-
+ test/e2e/skill-eval-cli.test.js             |  60 ++++
+ test/eval/behavioral-eval-runner.test.js    |  62 +++-
+ test/eval/behavioral-eval-runtime.test.js   |  78 +++++
+ test/eval/eval-evidence.test.js             |  31 ++
+ test/eval/promotion-evidence-loader.test.js |  74 +++++
+ 12 files changed, 1137 insertions(+), 152 deletions(-)
+ create mode 100644 scripts/lib/behavioral-eval-runtime.js
+ create mode 100644 scripts/lib/promotion-evidence-loader.js
+ create mode 100644 test/e2e/skill-eval-cli.test.js
+ create mode 100644 test/eval/behavioral-eval-runtime.test.js
+ create mode 100644 test/eval/promotion-evidence-loader.test.js
+
+diff --git a/lib/commands/skill.js b/lib/commands/skill.js
+index 2469d2bc..dadda30d 100644
+--- a/lib/commands/skill.js
++++ b/lib/commands/skill.js
+@@ -20,6 +20,9 @@ const path = require('node:path');
+ const { routeSkill, loadSkillCatalog } = require('../using-forge');
+ const skillEval = require('../skill-eval');
+ const { runBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-runner');
++const { resolveBehavioralEvaluation } = require('../../scripts/lib/behavioral-eval-runtime');
++const { loadPromotionEvidence } = require('../../scripts/lib/promotion-evidence-loader');
++const { scorePromotion } = require('../../scripts/lib/promotion-scorecard');
+ 
+ const USAGE = 'Usage: forge skill for "<situation>" [--json]\n' +
+   '       forge skill eval [name] --static [--json]\n' +
+@@ -109,19 +112,50 @@ async function handleFullEval(rest, flags, projectRoot, opts) {
+     return { success: false, error: `Skill '${name}' not found.` };
+   }
+ 
++  const scoreResult = (result) => {
++    const loaded = loadPromotionEvidence({ tier, findings: result.findings });
++    const scorecard = scorePromotion({ tier, pairs: loaded.ok ? loaded.pairs : [] });
++    if (!loaded.ok) scorecard.reasons = [loaded.reason];
++    return { ...result, scorecard };
++  };
++  const formatResult = (result) => {
++    const successfulScore = tier === 30 || result.scorecard.status === 'PASS';
++    const success = result.status === 'PASS' && successfulScore;
++    let error;
++    if (!success) {
++      error = result.status !== 'PASS'
++        ? `Behavioral evaluation ${result.status}.`
++        : `Promotion ${result.scorecard.phase || 'evaluation'} ${result.scorecard.status}.`;
++    }
++    const output = json
++      ? JSON.stringify(result, null, 2) + '\n'
++      : `Behavioral evaluation: ${result.status}\nTier: ${tier}\n` +
++        `Completed: ${result.completedRuns}/${result.expectedRuns}\n` +
++        `Promotion: ${result.scorecard.phase || 'unavailable'} / ${result.scorecard.status}`;
++    return { success, error, behavioral: result, output };
++  };
++
+   const runner = opts.runBehavioralEvaluation || runBehavioralEvaluation;
+-  const result = await runner({
+-    ...(opts.behavioralOptions || {}),
++  let behavioralOptions = opts.behavioralOptions || {};
++  if (!opts.runBehavioralEvaluation || opts.resolveBehavioralEvaluation) {
++    const resolver = opts.resolveBehavioralEvaluation || resolveBehavioralEvaluation;
++    const resolved = await resolver({
++      projectRoot,
++      skillName: name,
++      skillPath: path.join(ctx.skillsDir, name, 'SKILL.md'),
++      tier,
++      env: opts.env || process.env,
++    });
++    if (!resolved.ok) return formatResult(scoreResult(resolved.result));
++    behavioralOptions = { ...resolved.options, ...behavioralOptions };
++  }
++  const result = scoreResult(await runner({
++    ...behavioralOptions,
+     projectRoot,
+     skillName: name,
+     tier,
+-  });
+-  const success = result.status === 'PASS';
+-  const error = success ? undefined : `Behavioral evaluation ${result.status}.`;
+-  const output = json
+-    ? JSON.stringify(result, null, 2) + '\n'
+-    : `Behavioral evaluation: ${result.status}\nTier: ${tier}\nCompleted: ${result.completedRuns}/${result.expectedRuns}`;
+-  return { success, error, behavioral: result, output };
++  }));
++  return formatResult(result);
+ }
+ 
+ /**
+diff --git a/scripts/lib/behavioral-eval-runner.js b/scripts/lib/behavioral-eval-runner.js
+index 8def9e8b..110d4bad 100644
+--- a/scripts/lib/behavioral-eval-runner.js
++++ b/scripts/lib/behavioral-eval-runner.js
+@@ -10,6 +10,7 @@ const ATTRIBUTION_FIELDS = Object.freeze([
+ ]);
+ const ATTRIBUTION_HASH_FIELDS = Object.freeze(['prompt', 'skill', 'tool']);
+ const BINDING_FIELDS = Object.freeze(['repoSha', 'configHash', 'budgetHash']);
++const ARM_FIELDS = Object.freeze(['id', 'model', 'config', 'budget']);
+ const STRUCTURAL_FAILURE_PREFIXES = Object.freeze([
+   'evidence.', 'binding.', 'case_id.', 'packet.', 'split.', 'trial.', 'metrics.',
+   'manifest.', 'observation.',
+@@ -43,6 +44,23 @@ function snapshotBinding(binding) {
+   });
+ }
+ 
++function snapshotArms(arms) {
++  if (!Array.isArray(arms) || arms.length !== 4) return null;
++  const snapshots = [];
++  for (const arm of arms) {
++    if (!hasExactFields(arm, ARM_FIELDS)) return null;
++    if ([arm.id, arm.model, arm.config, arm.budget]
++      .some((value) => typeof value !== 'string' || value.length === 0)) return null;
++    if (!['current', 'bounded'].includes(arm.config)) return null;
++    snapshots.push(Object.freeze({ ...arm }));
++  }
++  if (new Set(snapshots.map((arm) => arm.id)).size !== 4) return null;
++  if (new Set(snapshots.map((arm) => arm.model)).size !== 2) return null;
++  const matrix = new Set(snapshots.map((arm) => `${arm.model}\0${arm.config}`));
++  if (matrix.size !== 4) return null;
++  return Object.freeze(snapshots);
++}
++
+ function buildEnvelope(input, identity, binding, evaluation, result) {
+   const attribution = result.attribution;
+   return createEvalEvidence({
+@@ -72,11 +90,43 @@ function buildEnvelope(input, identity, binding, evaluation, result) {
+     gates: [{ name: 'behavioral-case', passed: evaluation.passed }],
+     run_identity: {
+       arm_id: identity.armId,
++      case_id: identity.caseId,
++      risk: identity.risk,
++      split: identity.split,
++      model: identity.model,
++      config: identity.config,
++      budget: identity.budget,
++      tier: input.tier,
+       trial_index: identity.trialIndex,
++      config_hash: binding.configHash,
++      budget_hash: binding.budgetHash,
++    },
++    case_result: {
++      status: evaluation.passed ? 'PASS' : 'FAIL',
++      hard_failure: evaluation.hardFailure === true,
++      latency_ms: result.evidence.metrics.durationMs,
++      tokens: result.evidence.metrics.tokensUsed,
+     },
+   });
+ }
+ 
++function finding(identity, status, failures, evidence, evaluation) {
++  return {
++    caseId: identity.caseId,
++    risk: identity.risk,
++    split: identity.split,
++    model: identity.model,
++    config: identity.config,
++    budget: identity.budget,
++    trialIndex: identity.trialIndex,
++    status,
++    hardFailure: evaluation?.hardFailure === true,
++    latencyMs: Number.isFinite(evidence?.metrics?.durationMs) ? evidence.metrics.durationMs : 0,
++    tokens: Number.isFinite(evidence?.metrics?.tokensUsed) ? evidence.metrics.tokensUsed : 0,
++    failures,
++  };
++}
++
+ function incompleteResult(tier, arms, expectedRuns, reason) {
+   return {
+     status: 'INCOMPLETE',
+@@ -91,8 +141,107 @@ function incompleteResult(tier, arms, expectedRuns, reason) {
+   };
+ }
+ 
++function identityFor(packet, trialIndex, arm) {
++  return {
++    armId: arm.id,
++    caseId: packet.caseId,
++    risk: packet.risk,
++    split: packet.split,
++    model: arm.model,
++    config: arm.config,
++    budget: arm.budget,
++    trialIndex,
++  };
++}
++
++async function invokeExecutor(input, packet, trialIndex, arm, binding) {
++  try {
++    return await input.executor(Object.freeze({
++      armId: arm.id,
++      model: arm.model,
++      config: arm.config,
++      budget: arm.budget,
++      packet,
++      trialIndex,
++      binding,
++      skillName: input.skillName,
++    }));
++  } catch {
++    return null;
++  }
++}
++
++async function persistEvidence(input, append, identity, binding, evaluation, result) {
++  try {
++    const envelope = buildEnvelope(input, identity, binding, evaluation, result);
++    const appended = await append(input.projectRoot, envelope, input.appendOptions || {});
++    if (appended?.conflict) return 'evidence.conflict';
++    if (!appended || appended.ok !== true) return 'evidence.append_failed';
++    return null;
++  } catch {
++    return 'evidence.append_failed';
++  }
++}
++
++async function executeArm({ input, corpus, packet, trialIndex, arm, binding, append }) {
++  const identity = identityFor(packet, trialIndex, arm);
++  const result = await invokeExecutor(input, packet, trialIndex, arm, binding);
++  if (!validExecutorResult(result)) {
++    return { status: 'INCOMPLETE', finding: finding(identity, 'INCOMPLETE', ['evidence.malformed']) };
++  }
++  if (result.attribution.model !== arm.model) {
++    return {
++      status: 'INCOMPLETE',
++      finding: finding(identity, 'INCOMPLETE', ['attribution.model_mismatch'], result.evidence),
++    };
++  }
++
++  const evaluation = evaluateCase({
++    packet,
++    allPackets: corpus.allPackets,
++    manifest: corpus.manifest,
++    evidence: result.evidence,
++    expectedBinding: binding,
++  });
++  if (evaluation.failures.some(isStructuralFailure)) {
++    return {
++      status: 'INCOMPLETE',
++      finding: finding(identity, 'INCOMPLETE', evaluation.failures, result.evidence, evaluation),
++    };
++  }
++
++  const persistenceFailure = await persistEvidence(input, append, identity, binding, evaluation, result);
++  if (persistenceFailure) {
++    return {
++      status: 'INCOMPLETE',
++      finding: finding(identity, 'INCOMPLETE', [persistenceFailure], result.evidence, evaluation),
++    };
++  }
++  const status = evaluation.passed ? 'PASS' : 'FAIL';
++  return {
++    status,
++    finding: finding(identity, status, evaluation.passed ? [] : evaluation.failures, result.evidence, evaluation),
++  };
++}
++
++function recordOutcome(counts, outcome, findings) {
++  findings.push(outcome.finding);
++  if (outcome.status === 'INCOMPLETE') {
++    counts.incompleteRuns += 1;
++    return;
++  }
++  counts.completedRuns += 1;
++  if (outcome.status === 'PASS') counts.passedRuns += 1;
++  else counts.failedRuns += 1;
++}
++
++function finalStatus(counts, expectedRuns) {
++  if (counts.incompleteRuns > 0 || counts.completedRuns !== expectedRuns) return 'INCOMPLETE';
++  return counts.failedRuns > 0 ? 'FAIL' : 'PASS';
++}
++
+ /**
+- * Execute the frozen corpus through two opaque, matched executor arms.
++ * Execute the frozen corpus through four opaque, matched executor arms.
+  * The executor may observe arm ids and immutable packets, but it receives no
+  * merge capability. Only a strict, privacy-safe attribution envelope persists.
+  */
+@@ -104,12 +253,11 @@ async function runBehavioralEvaluation(input) {
+     return incompleteResult(input.tier, input.arms || [], 0, error.message);
+   }
+ 
+-  const arms = Array.isArray(input.arms) ? [...input.arms] : [];
++  const suppliedArms = Array.isArray(input.arms) ? input.arms : [];
+   const trialIndices = corpus.manifest.trialIndices;
+-  const expectedRuns = corpus.cases.length * trialIndices.length * 2;
+-  const validArms = arms.length === 2 && new Set(arms).size === 2 &&
+-    arms.every((arm) => typeof arm === 'string' && arm.length > 0);
+-  if (!validArms) return incompleteResult(input.tier, arms, expectedRuns, 'arms.invalid');
++  const expectedRuns = corpus.cases.length * trialIndices.length * 4;
++  const arms = snapshotArms(suppliedArms);
++  if (!arms) return incompleteResult(input.tier, suppliedArms, expectedRuns, 'arms.invalid');
+   if (typeof input.executor !== 'function') {
+     return incompleteResult(input.tier, arms, expectedRuns, 'executor.missing');
+   }
+@@ -118,82 +266,23 @@ async function runBehavioralEvaluation(input) {
+ 
+   const append = input.appendEvidence || appendEvalEvidence;
+   const findings = [];
+-  let completedRuns = 0;
+-  let passedRuns = 0;
+-  let failedRuns = 0;
+-  let incompleteRuns = 0;
++  const counts = { completedRuns: 0, passedRuns: 0, failedRuns: 0, incompleteRuns: 0 };
+ 
+   for (const packet of corpus.cases) {
+     for (const trialIndex of trialIndices) {
+-      for (const armId of arms) {
+-        const identity = { armId, caseId: packet.caseId, trialIndex };
+-        let result;
+-        try {
+-          result = await input.executor(Object.freeze({
+-            armId,
+-            packet,
+-            trialIndex,
+-            binding,
+-            skillName: input.skillName,
+-          }));
+-        } catch (_error) {
+-          result = null;
+-        }
+-
+-        if (!validExecutorResult(result)) {
+-          incompleteRuns += 1;
+-          findings.push({ ...identity, status: 'INCOMPLETE', failures: ['evidence.malformed'] });
+-          continue;
+-        }
+-
+-        const evaluation = evaluateCase({
+-          packet,
+-          allPackets: corpus.allPackets,
+-          manifest: corpus.manifest,
+-          evidence: result.evidence,
+-          expectedBinding: binding,
+-        });
+-        if (evaluation.failures.some(isStructuralFailure)) {
+-          incompleteRuns += 1;
+-          findings.push({ ...identity, status: 'INCOMPLETE', failures: evaluation.failures });
+-          continue;
+-        }
+-
+-        let envelope;
+-        try {
+-          envelope = buildEnvelope(input, identity, binding, evaluation, result);
+-          const appended = await append(input.projectRoot, envelope, input.appendOptions || {});
+-          if (!appended || appended.ok !== true) throw new Error('evidence.append_failed');
+-        } catch (_error) {
+-          incompleteRuns += 1;
+-          findings.push({ ...identity, status: 'INCOMPLETE', failures: ['evidence.append_failed'] });
+-          continue;
+-        }
+-
+-        completedRuns += 1;
+-        if (evaluation.passed) {
+-          passedRuns += 1;
+-          findings.push({ ...identity, status: 'PASS', failures: [] });
+-        } else {
+-          failedRuns += 1;
+-          findings.push({ ...identity, status: 'FAIL', failures: evaluation.failures });
+-        }
++      for (const arm of arms) {
++        const outcome = await executeArm({ input, corpus, packet, trialIndex, arm, binding, append });
++        recordOutcome(counts, outcome, findings);
+       }
+     }
+   }
+ 
+-  const status = incompleteRuns > 0 || completedRuns !== expectedRuns
+-    ? 'INCOMPLETE'
+-    : failedRuns > 0 ? 'FAIL' : 'PASS';
+   return {
+-    status,
++    status: finalStatus(counts, expectedRuns),
+     tier: input.tier,
+     arms,
+     expectedRuns,
+-    completedRuns,
+-    passedRuns,
+-    failedRuns,
+-    incompleteRuns,
++    ...counts,
+     findings,
+   };
+ }
+diff --git a/scripts/lib/behavioral-eval-runtime.js b/scripts/lib/behavioral-eval-runtime.js
+new file mode 100644
+index 00000000..4621610e
+--- /dev/null
++++ b/scripts/lib/behavioral-eval-runtime.js
+@@ -0,0 +1,324 @@
++'use strict';
++
++const fs = require('node:fs');
++const path = require('node:path');
++const { execFileSync, spawnSync } = require('node:child_process');
++const { contentHash } = require('../../lib/file-hash');
++const { stableStringify } = require('../../lib/kernel/evaluators');
++const { resolveActiveIssueId } = require('../../lib/workflow/enforce-stage');
++const {
++  buildKernelIssueDeps,
++  resolveKernelDatabasePath,
++} = require('../../lib/kernel/cli-broker-factory');
++const { executeCommand } = require('./eval-runner');
++const { parseTranscript } = require('./transcript-parser');
++const { hashPacket } = require('./immutable-eval-corpus');
++
++const FULL_SHA = /^[0-9a-f]{40}$/;
++const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
++const OBSERVATION_KEYS = Object.freeze([
++  'decision', 'contract', 'head', 'review', 'checks', 'ci', 'claim', 'security',
++  'order', 'platform', 'scope', 'compaction', 'wait', 'hardFailure', 'observer',
++]);
++
++function runtimeCommand(env) {
++  const value = env.FORGE_EVAL_RUNTIME;
++  if (!value) return ['claude'];
++  if (value.trim().startsWith('[')) {
++    const parsed = JSON.parse(value);
++    if (!Array.isArray(parsed) || parsed.length === 0
++      || parsed.some((item) => typeof item !== 'string' || item.length === 0)) {
++      throw new Error('runtime.invalid');
++    }
++    return parsed;
++  }
++  return [value];
++}
++
++function parseModels(env) {
++  const models = String(env.FORGE_EVAL_MODELS || 'sol,luna')
++    .split(',')
++    .map((model) => model.trim())
++    .filter(Boolean);
++  if (models.length !== 2 || new Set(models).size !== 2) throw new Error('models.invalid');
++  return models;
++}
++
++function resolveHead(projectRoot, execFile = execFileSync) {
++  const head = execFile('git', ['rev-parse', '--verify', 'HEAD'], {
++    cwd: projectRoot,
++    encoding: 'utf8',
++    stdio: ['ignore', 'pipe', 'pipe'],
++  }).trim().toLowerCase();
++  if (!FULL_SHA.test(head)) throw new Error('binding.head_invalid');
++  return head;
++}
++
++function resolveBranch(projectRoot, execFile = execFileSync) {
++  return execFile('git', ['branch', '--show-current'], {
++    cwd: projectRoot,
++    encoding: 'utf8',
++    stdio: ['ignore', 'pipe', 'pipe'],
++  }).trim();
++}
++
++async function resolveKernelIssue(projectRoot, branch) {
++  let driver;
++  try {
++    const databasePath = resolveKernelDatabasePath({ projectRoot });
++    if (!databasePath || !fs.existsSync(databasePath)) return null;
++    driver = buildKernelIssueDeps({ projectRoot, databasePath }).kernelDriver;
++    return await resolveActiveIssueId(driver, branch);
++  } catch {
++    return null;
++  } finally {
++    if (driver && typeof driver.close === 'function') {
++      try { await driver.close(); } catch { /* read-only cleanup */ }
++    }
++  }
++}
++
++function resolvePrFromGh(projectRoot, head, execFile = execFileSync) {
++  try {
++    const raw = execFile('gh', ['pr', 'view', '--json', 'number,headRefOid'], {
++      cwd: projectRoot,
++      encoding: 'utf8',
++      stdio: ['ignore', 'pipe', 'pipe'],
++      timeout: 30000,
++      windowsHide: true,
++    });
++    const value = JSON.parse(raw);
++    if (!Number.isSafeInteger(value.number) || value.number <= 0) return null;
++    if (String(value.headRefOid || '').toLowerCase() !== head) return null;
++    return value.number;
++  } catch {
++    return null;
++  }
++}
++
++async function resolveAttribution(projectRoot, head, env, deps = {}) {
++  const branch = resolveBranch(projectRoot, deps.execFileSync);
++  const issueId = env.FORGE_EVAL_ISSUE_ID || await resolveKernelIssue(projectRoot, branch);
++  if (!UUID.test(String(issueId || ''))) throw new Error('attribution.issue_unavailable');
++
++  let pr;
++  if (env.FORGE_EVAL_PR !== undefined || env.FORGE_EVAL_PR_HEAD !== undefined) {
++    if (!POSITIVE_INTEGER.test(String(env.FORGE_EVAL_PR || ''))
++      || String(env.FORGE_EVAL_PR_HEAD || '').toLowerCase() !== head) {
++      throw new Error('attribution.pr_mismatch');
++    }
++    pr = Number(env.FORGE_EVAL_PR);
++  } else {
++    pr = resolvePrFromGh(projectRoot, head, deps.execFileSync);
++  }
++  if (!pr) throw new Error('attribution.pr_unavailable');
++  return { issueId, pr };
++}
++
++function buildConfig({ tier, skillName, skillText, models, command, env }) {
++  const budget = {
++    timeoutMs: Number(env.FORGE_EVAL_TIMEOUT_MS || 120000),
++    maxTokens: Number(env.FORGE_EVAL_MAX_TOKENS || 8192),
++  };
++  if (!Number.isSafeInteger(budget.timeoutMs) || budget.timeoutMs <= 0
++    || !Number.isSafeInteger(budget.maxTokens) || budget.maxTokens <= 0) {
++    throw new Error('budget.invalid');
++  }
++  const skillHash = contentHash(skillText);
++  const budgetHash = contentHash(stableStringify(budget));
++  const budgetId = `tier-${tier}-${budgetHash.slice(0, 12)}`;
++  const config = {
++    schemaVersion: 1,
++    tier,
++    skillName,
++    skillHash,
++    models,
++    conditions: ['current', 'bounded'],
++    runtime: command,
++    budget,
++  };
++  const configHash = contentHash(stableStringify(config));
++  const arms = [];
++  for (const model of models) {
++    for (const condition of config.conditions) {
++      const id = `arm-${contentHash(stableStringify({ configHash, model, condition })).slice(0, 16)}`;
++      arms.push({ id, model, config: condition, budget: budgetId });
++    }
++  }
++  return { arms, budget, budgetHash, configHash, skillHash };
++}
++
++function probeRuntime(command, spawn = spawnSync) {
++  const result = spawn(command[0], [...command.slice(1), '--version'], {
++    encoding: 'utf8',
++    timeout: 30000,
++    windowsHide: true,
++  });
++  return result.status === 0;
++}
++
++function parseJsonResult(stdout) {
++  const transcript = parseTranscript(stdout);
++  const lastText = [...transcript.messages].reverse().find((message) => message.text)?.text;
++  const raw = typeof transcript.result === 'string' ? transcript.result : lastText;
++  if (typeof raw !== 'string') throw new Error('runtime.output_missing');
++  const fenced = /^\s*```(?:json)?\s*([\s\S]*?)\s*```\s*$/i.exec(raw);
++  const parsed = JSON.parse(fenced ? fenced[1] : raw);
++  return parsed && typeof parsed === 'object' && Object.hasOwn(parsed, 'observation')
++    ? parsed.observation
++    : parsed;
++}
++
++function countTokens(stdout) {
++  const tokens = { input: 0, output: 0, cached: 0 };
++  for (const line of String(stdout || '').split('\n')) {
++    try {
++      const event = JSON.parse(line);
++      const usage = event?.message?.usage || event?.usage;
++      if (!usage) continue;
++      tokens.input += Number(usage.input_tokens) || 0;
++      tokens.output += Number(usage.output_tokens) || 0;
++      tokens.cached += Number(usage.cache_read_input_tokens) || 0;
++    } catch { /* non-JSON runtime line */ }
++  }
++  return tokens;
++}
++
++function buildPrompt({ armId, packet, skillName, config, skillText }) {
++  const scenario = {
++    schemaVersion: packet.schemaVersion,
++    caseId: packet.caseId,
++    caseClass: packet.caseClass,
++    risk: packet.risk,
++    variant: packet.variant,
++    split: packet.split,
++  };
++  const contract = config === 'bounded' ? skillText : null;
++  return [
++    'Return one JSON object only. Evaluate the frozen scenario without tools, mutations, or polling.',
++    `The observation object must contain exactly: ${OBSERVATION_KEYS.join(', ')}.`,
++    'observer must contain exactly mutationCount and pollCount. Use "not-applicable" when a field does not apply.',
++    stableStringify({ armId, skillName, scenario, contract }),
++  ].join('\n');
++}
++
++function createExecutor({ projectRoot, skillName, skillText, command, budget, skillHash, env }) {
++  return async (input) => {
++    const prompt = buildPrompt({ ...input, skillName, skillText });
++    const startedAt = new Date().toISOString();
++    const started = Date.now();
++    const cmd = [
++      ...command,
++      '-p', prompt,
++      '--output-format', 'stream-json',
++      '--verbose',
++      '--no-session-persistence',
++      '--model', input.model,
++    ];
++    const execution = await executeCommand('behavioral-eval', prompt, projectRoot, budget.timeoutMs, cmd, env);
++    const ended = Date.now();
++    const endedAt = new Date().toISOString();
++    if (execution.timedOut || execution.exitCode !== 0) throw new Error('runtime.execution_failed');
++    const tokens = countTokens(execution.stdout);
++    const observation = parseJsonResult(execution.stdout);
++    const durationMs = ended - started;
++    return {
++      evidence: {
++        schemaVersion: 1,
++        caseId: input.packet.caseId,
++        packetHash: hashPacket(input.packet),
++        split: input.packet.split,
++        trialIndex: input.trialIndex,
++        binding: { ...input.binding },
++        observation,
++        metrics: { durationMs, tokensUsed: tokens.input + tokens.output },
++      },
++      attribution: {
++        model: input.model,
++        effort: env.FORGE_EVAL_EFFORT || 'high',
++        role: 'behavioral-eval',
++        hashes: {
++          prompt: contentHash(prompt),
++          skill: skillHash,
++          tool: contentHash(stableStringify({ command, model: input.model })),
++        },
++        startedAt,
++        endedAt,
++        activeMs: durationMs,
++        passiveMs: 0,
++        tokens,
++        retries: 0,
++        compactions: 0,
++      },
++    };
++  };
++}
++
++function incompleteResult({ tier, arms = [], binding, issueId, pr, reason }) {
++  const expectedRuns = tier * 3 * 4;
++  return {
++    status: 'INCOMPLETE',
++    tier,
++    arms,
++    binding,
++    issueId,
++    pr,
++    expectedRuns,
++    completedRuns: 0,
++    passedRuns: 0,
++    failedRuns: 0,
++    incompleteRuns: expectedRuns,
++    findings: [{ status: 'INCOMPLETE', failures: [reason] }],
++  };
++}
++
++async function resolveBehavioralEvaluation({ projectRoot, skillName, skillPath, tier, env = process.env, deps = {} }) {
++  let arms = [];
++  let binding;
++  let issueId;
++  let pr;
++  try {
++    const head = resolveHead(projectRoot, deps.execFileSync);
++    const attribution = await resolveAttribution(projectRoot, head, env, deps);
++    issueId = attribution.issueId;
++    pr = attribution.pr;
++    const skillText = fs.readFileSync(skillPath || path.join(projectRoot, 'skills', skillName, 'SKILL.md'), 'utf8');
++    const command = runtimeCommand(env);
++    const models = parseModels(env);
++    const config = buildConfig({ tier, skillName, skillText, models, command, env });
++    arms = config.arms;
++    binding = { repoSha: head, configHash: config.configHash, budgetHash: config.budgetHash };
++    if (!probeRuntime(command, deps.spawnSync)) {
++      return { ok: false, result: incompleteResult({ tier, arms, binding, issueId, pr, reason: 'runtime.unavailable' }) };
++    }
++    return {
++      ok: true,
++      options: {
++        arms,
++        binding,
++        issueId,
++        pr,
++        executor: createExecutor({
++          projectRoot, skillName, skillText, command, budget: config.budget,
++          skillHash: config.skillHash, env,
++        }),
++        appendOptions: { env },
++      },
++    };
++  } catch (error) {
++    return {
++      ok: false,
++      result: incompleteResult({
++        tier, arms, binding, issueId, pr, reason: error?.message || 'runtime.config_invalid',
++      }),
++    };
++  }
++}
++
++module.exports = {
++  resolveBehavioralEvaluation,
++  _internal: {
++    buildConfig, buildPrompt, countTokens, createExecutor, parseJsonResult, parseModels, runtimeCommand,
++  },
++};
+diff --git a/scripts/lib/eval-evidence.js b/scripts/lib/eval-evidence.js
+index d82a4dc8..222533b1 100644
+--- a/scripts/lib/eval-evidence.js
++++ b/scripts/lib/eval-evidence.js
+@@ -17,7 +17,12 @@ const CASE_FIELDS = [
+   'started_at', 'ended_at', 'active_ms', 'passive_ms', 'tokens',
+   'retries', 'compactions', 'gates',
+ ];
+-const RUN_IDENTITY_FIELDS = ['arm_id', 'trial_index'];
++const LEGACY_RUN_IDENTITY_FIELDS = ['arm_id', 'trial_index'];
++const RUN_IDENTITY_FIELDS = [
++  'arm_id', 'case_id', 'risk', 'split', 'model', 'config', 'budget', 'tier',
++  'trial_index', 'config_hash', 'budget_hash',
++];
++const CASE_RESULT_FIELDS = ['status', 'hard_failure', 'latency_ms', 'tokens'];
+ 
+ function assertObject(value, path) {
+   if (!value || typeof value !== 'object' || Array.isArray(value)) {
+@@ -49,51 +54,116 @@ function assertTimestamp(value, path) {
+   }
+ }
+ 
+-function validateEvidence(evidence) {
+-  const caseFields = Object.hasOwn(evidence || {}, 'run_identity')
+-    ? [...CASE_FIELDS, 'run_identity']
+-    : CASE_FIELDS;
+-  assertExactFields(evidence, caseFields, 'evidence');
+-  assertString(evidence.issue_id, 'evidence.issue_id');
+-  if (!Number.isSafeInteger(evidence.pr) || evidence.pr <= 0) throw new Error('evidence.pr must be a positive integer');
+-  if (!HEX_40.test(evidence.head_sha)) throw new Error('evidence.head_sha must be a full 40-character commit SHA');
+-  for (const field of ['model', 'effort', 'role']) assertString(evidence[field], `evidence.${field}`);
+-  if (Object.hasOwn(evidence, 'run_identity')) {
+-    assertExactFields(evidence.run_identity, RUN_IDENTITY_FIELDS, 'evidence.run_identity');
+-    assertString(evidence.run_identity.arm_id, 'evidence.run_identity.arm_id');
+-    assertCount(evidence.run_identity.trial_index, 'evidence.run_identity.trial_index');
++function resolveCaseFields(evidence) {
++  const expandedRunIdentity = Object.hasOwn(evidence?.run_identity || {}, 'case_id');
++  const fields = expandedRunIdentity
++    ? [...CASE_FIELDS, 'run_identity', 'case_result']
++    : Object.hasOwn(evidence || {}, 'run_identity') ? [...CASE_FIELDS, 'run_identity'] : CASE_FIELDS;
++  return { expandedRunIdentity, fields };
++}
++
++function validateExpandedRunIdentity(evidence) {
++  const identity = evidence.run_identity;
++  for (const field of ['case_id', 'model', 'config', 'budget']) {
++    assertString(identity[field], `evidence.run_identity.${field}`);
++  }
++  if (!['low', 'medium', 'high'].includes(identity.risk)) {
++    throw new Error('evidence.run_identity.risk is invalid');
++  }
++  if (!['DEV', 'TEST'].includes(identity.split)) {
++    throw new Error('evidence.run_identity.split is invalid');
+   }
++  if (!['current', 'bounded'].includes(identity.config)) {
++    throw new Error('evidence.run_identity.config is invalid');
++  }
++  if (![30, 100, 300].includes(identity.tier)) {
++    throw new Error('evidence.run_identity.tier is invalid');
++  }
++  for (const field of ['config_hash', 'budget_hash']) {
++    if (!HEX_64.test(identity[field])) {
++      throw new Error(`evidence.run_identity.${field} must be a 64-character lowercase SHA-256 hash`);
++    }
++  }
++  if (identity.model !== evidence.model) {
++    throw new Error('evidence.run_identity.model must match evidence.model');
++  }
++}
++
++function validateRunIdentity(evidence, expanded) {
++  if (!Object.hasOwn(evidence, 'run_identity')) return;
++  const identityFields = expanded ? RUN_IDENTITY_FIELDS : LEGACY_RUN_IDENTITY_FIELDS;
++  assertExactFields(evidence.run_identity, identityFields, 'evidence.run_identity');
++  assertString(evidence.run_identity.arm_id, 'evidence.run_identity.arm_id');
++  assertCount(evidence.run_identity.trial_index, 'evidence.run_identity.trial_index');
++  if (expanded) validateExpandedRunIdentity(evidence);
++}
+ 
+-  const hashFields = Object.hasOwn(evidence.hashes, 'eval_set')
++function validateCaseResult(caseResult) {
++  assertExactFields(caseResult, CASE_RESULT_FIELDS, 'evidence.case_result');
++  if (!['PASS', 'FAIL'].includes(caseResult.status)) {
++    throw new Error('evidence.case_result.status is invalid');
++  }
++  if (typeof caseResult.hard_failure !== 'boolean') {
++    throw new Error('evidence.case_result.hard_failure must be a boolean');
++  }
++  assertCount(caseResult.latency_ms, 'evidence.case_result.latency_ms');
++  assertCount(caseResult.tokens, 'evidence.case_result.tokens');
++}
++
++function validateHashes(hashes) {
++  const hashFields = Object.hasOwn(hashes, 'eval_set')
+     ? HASH_FIELDS
+     : HASH_FIELDS.filter((field) => field !== 'eval_set');
+-  assertExactFields(evidence.hashes, hashFields, 'evidence.hashes');
++  assertExactFields(hashes, hashFields, 'evidence.hashes');
+   for (const field of hashFields) {
+-    if (!HEX_64.test(evidence.hashes[field])) {
++    if (!HEX_64.test(hashes[field])) {
+       throw new Error(`evidence.hashes.${field} must be a 64-character lowercase SHA-256 hash`);
+     }
+   }
++}
+ 
++function validateTiming(evidence) {
+   assertTimestamp(evidence.started_at, 'evidence.started_at');
+   assertTimestamp(evidence.ended_at, 'evidence.ended_at');
+   if (Date.parse(evidence.ended_at) < Date.parse(evidence.started_at)) {
+     throw new Error('evidence.ended_at must not precede evidence.started_at');
+   }
++}
+ 
++function validateCounters(evidence) {
+   for (const field of ['active_ms', 'passive_ms', 'retries', 'compactions']) {
+     assertCount(evidence[field], `evidence.${field}`);
+   }
+   assertExactFields(evidence.tokens, ['input', 'output', 'cached'], 'evidence.tokens');
+-  for (const field of ['input', 'output', 'cached']) assertCount(evidence.tokens[field], `evidence.tokens.${field}`);
++  for (const field of ['input', 'output', 'cached']) {
++    assertCount(evidence.tokens[field], `evidence.tokens.${field}`);
++  }
++}
+ 
+-  if (!Array.isArray(evidence.gates)) throw new Error('evidence.gates must be an array');
+-  evidence.gates.forEach((gate, index) => {
++function validateGates(gates) {
++  if (!Array.isArray(gates)) throw new Error('evidence.gates must be an array');
++  gates.forEach((gate, index) => {
+     assertExactFields(gate, ['name', 'passed'], `evidence.gates[${index}]`);
+     assertString(gate.name, `evidence.gates[${index}].name`);
+     if (typeof gate.passed !== 'boolean') throw new Error(`evidence.gates[${index}].passed must be a boolean`);
+   });
+ }
+ 
++function validateEvidence(evidence) {
++  const shape = resolveCaseFields(evidence);
++  assertExactFields(evidence, shape.fields, 'evidence');
++  assertString(evidence.issue_id, 'evidence.issue_id');
++  if (!Number.isSafeInteger(evidence.pr) || evidence.pr <= 0) throw new Error('evidence.pr must be a positive integer');
++  if (!HEX_40.test(evidence.head_sha)) throw new Error('evidence.head_sha must be a full 40-character commit SHA');
++  for (const field of ['model', 'effort', 'role']) assertString(evidence[field], `evidence.${field}`);
++  validateRunIdentity(evidence, shape.expandedRunIdentity);
++  if (shape.expandedRunIdentity) validateCaseResult(evidence.case_result);
++  validateHashes(evidence.hashes);
++  validateTiming(evidence);
++  validateCounters(evidence);
++  validateGates(evidence.gates);
++}
++
+ function hashableEnvelope(evidence) {
+   return { schema_version: SCHEMA_VERSION, kind: EVIDENCE_KIND, evidence };
+ }
+@@ -184,14 +254,39 @@ async function appendEvalEvidence(projectRoot, envelope, options = {}) {
+   const actor = resolveIssueActor(options.env || process.env) || 'forge';
+   const kernel = await resolveOwnedKernel(projectRoot, options.deps);
+   const { driver, config } = kernel;
+-  const idempotencyKey = `${EVENT_TYPE}:${envelope.content_hash}`;
++  const semanticIdentity = evidence.run_identity && Object.hasOwn(evidence.run_identity, 'case_id')
++    ? {
++        issue_id: evidence.issue_id,
++        pr: evidence.pr,
++        head_sha: evidence.head_sha,
++        run_identity: evidence.run_identity,
++      }
++    : null;
++  const identityHash = semanticIdentity ? contentHash(stableStringify(semanticIdentity)) : envelope.content_hash;
++  const idempotencyKey = `${EVENT_TYPE}:${identityHash}`;
++
++  function replay(existing) {
++    const storedEnvelope = parseStoredEnvelope(existing);
++    if (storedEnvelope.content_hash !== envelope.content_hash) {
++      return {
++        ok: false,
++        duplicate: false,
++        conflict: true,
++        status: 'INCOMPLETE',
++        event: existing,
++        envelope: storedEnvelope,
++        actor,
++      };
++    }
++    return { ok: true, duplicate: true, event: existing, envelope: storedEnvelope, actor };
++  }
+ 
+   try {
+     const issue = await driver.loadKernelEntity('issue', evidence.issue_id, {}, config);
+     if (!issue) return { ok: false, issueMissing: true, actor };
+ 
+     const existing = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
+-    if (existing) return { ok: true, duplicate: true, event: existing, envelope: parseStoredEnvelope(existing), actor };
++    if (existing) return replay(existing);
+ 
+     const event = {
+       entity_type: 'issue',
+@@ -210,7 +305,7 @@ async function appendEvalEvidence(projectRoot, envelope, options = {}) {
+     } catch (error) {
+       if (!isIdempotencyRace(error)) throw error;
+       const winner = await driver.loadKernelEventByIdempotencyKey(idempotencyKey, {}, config);
+-      return { ok: true, duplicate: true, event: winner, envelope: parseStoredEnvelope(winner), actor };
++      return replay(winner);
+     }
+   } finally {
+     closeIfOwned(kernel);
+diff --git a/scripts/lib/eval-runner.js b/scripts/lib/eval-runner.js
+index 25ae06da..fbe11d2d 100644
+--- a/scripts/lib/eval-runner.js
++++ b/scripts/lib/eval-runner.js
+@@ -10,7 +10,7 @@
+ 
+ const path = require('path');
+ const fs = require('fs');
+-const { execFileSync, execSync } = require('node:child_process');
++const { execFileSync, execSync, spawn } = require('node:child_process');
+ 
+ const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/;
+ 
+@@ -255,9 +255,10 @@ async function resetWorktree(worktreePath) {
+  * @param {string} worktreePath — absolute path to the worktree (used as cwd)
+  * @param {number} [timeout=120000] — timeout in milliseconds
+  * @param {string[]} [cmdOverride] — optional command array for testing
++ * @param {object} [envOverride] — additional subprocess environment entries
+  * @returns {Promise<{ stdout: string, stderr: string, exitCode: number, timedOut: boolean }>}
+  */
+-async function executeCommand(_command, prompt, worktreePath, timeout = 120000, cmdOverride) {
++async function executeCommand(_command, prompt, worktreePath, timeout = 120000, cmdOverride, envOverride = {}) {
+   // Build the command to run
+   const cmd = cmdOverride || [
+     'claude',
+@@ -270,55 +271,43 @@ async function executeCommand(_command, prompt, worktreePath, timeout = 120000,
+   ];
+ 
+   // Build environment: inherit current env, strip CLAUDECODE, set FORGE_EVAL
+-  const env = { ...process.env };
++  const env = { ...process.env, ...envOverride };
+   delete env.CLAUDECODE;
+   env.FORGE_EVAL = '1';
+ 
+-  // Spawn with Bun.spawn (array form, no shell interpolation)
+-  const proc = Bun.spawn(cmd, { // eslint-disable-line no-undef -- Bun global provided by runtime
++  // Array-form spawn works under both Node and Bun without shell interpolation.
++  const proc = spawn(cmd[0], cmd.slice(1), {
+     cwd: worktreePath,
+     env,
+-    stdout: 'pipe',
+-    stderr: 'pipe',
++    stdio: ['ignore', 'pipe', 'pipe'],
++    windowsHide: true,
+   });
+ 
+   let timedOut = false;
+-  let timeoutId;
++  let stdout = '';
++  let stderr = '';
++
++  proc.stdout.setEncoding('utf8');
++  proc.stderr.setEncoding('utf8');
++  proc.stdout.on('data', (chunk) => { stdout += chunk; });
++  proc.stderr.on('data', (chunk) => { stderr += chunk; });
+ 
+-  // Set up timeout
+-  const timeoutPromise = new Promise((resolve) => {
+-    timeoutId = setTimeout(() => {
++  const exitCode = await new Promise((resolve) => {
++    const timeoutId = setTimeout(() => {
+       timedOut = true;
+       proc.kill();
+-      resolve();
+     }, timeout);
++    proc.once('error', (error) => {
++      clearTimeout(timeoutId);
++      stderr += error.message;
++      resolve(1);
++    });
++    proc.once('close', (code) => {
++      clearTimeout(timeoutId);
++      resolve(code ?? 1);
++    });
+   });
+ 
+-  // Wait for process to exit (or timeout)
+-  const exitPromise = proc.exited.then(() => {
+-    clearTimeout(timeoutId);
+-  });
+-
+-  await Promise.race([exitPromise, timeoutPromise]);
+-
+-  // Read stdout and stderr
+-  let stdout = '';
+-  let stderr = '';
+-
+-  try {
+-    stdout = await new Response(proc.stdout).text();
+-  } catch (_err) {
+-    // stream may be closed on kill — ignore
+-  }
+-
+-  try {
+-    stderr = await new Response(proc.stderr).text();
+-  } catch (_err) {
+-    // stream may be closed on kill — ignore
+-  }
+-
+-  const exitCode = timedOut ? (proc.exitCode ?? 1) : proc.exitCode;
+-
+   return {
+     stdout,
+     stderr,
+diff --git a/scripts/lib/promotion-evidence-loader.js b/scripts/lib/promotion-evidence-loader.js
+new file mode 100644
+index 00000000..f57035a1
+--- /dev/null
++++ b/scripts/lib/promotion-evidence-loader.js
+@@ -0,0 +1,94 @@
++'use strict';
++
++const FINDING_FIELDS = Object.freeze([
++  'caseId', 'risk', 'split', 'model', 'config', 'budget', 'trialIndex',
++  'status', 'hardFailure', 'latencyMs', 'tokens', 'failures',
++]);
++const RISKS = new Set(['low', 'medium', 'high']);
++const SPLITS = new Set(['DEV', 'TEST']);
++const CONFIGS = new Set(['current', 'bounded']);
++const STATUSES = new Set(['PASS', 'FAIL', 'INCOMPLETE']);
++const TRIALS = new Set([0, 1, 2]);
++
++function exactFinding(value) {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
++  const keys = Object.keys(value);
++  if (keys.length !== FINDING_FIELDS.length || !FINDING_FIELDS.every((field) => Object.hasOwn(value, field))) {
++    return false;
++  }
++  return typeof value.caseId === 'string' && value.caseId.length > 0
++    && RISKS.has(value.risk)
++    && SPLITS.has(value.split)
++    && typeof value.model === 'string' && value.model.length > 0
++    && CONFIGS.has(value.config)
++    && typeof value.budget === 'string' && value.budget.length > 0
++    && TRIALS.has(value.trialIndex)
++    && STATUSES.has(value.status)
++    && typeof value.hardFailure === 'boolean'
++    && Number.isFinite(value.latencyMs) && value.latencyMs >= 0
++    && Number.isFinite(value.tokens) && value.tokens >= 0
++    && Array.isArray(value.failures) && value.failures.every((failure) => typeof failure === 'string');
++}
++
++function scoreArm(finding) {
++  return {
++    status: finding.status,
++    hardFailure: finding.hardFailure,
++    latencyMs: finding.latencyMs,
++    tokens: finding.tokens,
++  };
++}
++
++function incomplete(reason) {
++  return { ok: false, reason, pairs: [] };
++}
++
++/**
++ * Validate the privacy-safe runner projection and join current/bounded arms.
++ * No raw runtime output is accepted or forwarded to the pure scorecard.
++ */
++function loadPromotionEvidence({ tier, findings } = {}) {
++  if (![30, 100, 300].includes(tier)) return incomplete('tier_invalid');
++  if (!Array.isArray(findings) || findings.length === 0) return incomplete('evidence_missing');
++  if (findings.some((finding) => !exactFinding(finding))) return incomplete('evidence_malformed');
++
++  const grouped = new Map();
++  for (const finding of findings) {
++    const key = `${finding.caseId}\0${finding.model}\0${finding.trialIndex}`;
++    let group = grouped.get(key);
++    if (!group) {
++      group = {
++        caseId: finding.caseId,
++        risk: finding.risk,
++        split: finding.split,
++        model: finding.model,
++        budget: finding.budget,
++        trialIndex: finding.trialIndex,
++      };
++      grouped.set(key, group);
++    } else if (group.risk !== finding.risk || group.split !== finding.split || group.budget !== finding.budget) {
++      return incomplete('case_metadata_mismatch');
++    }
++    if (Object.hasOwn(group, finding.config)) return incomplete('duplicate_arm_evidence');
++    group[finding.config] = scoreArm(finding);
++  }
++
++  const pairs = [];
++  for (const group of grouped.values()) {
++    if (!group.current || !group.bounded) return incomplete('paired_arm_incomplete');
++    pairs.push({
++      caseId: group.caseId,
++      risk: group.risk,
++      split: group.split,
++      model: group.model,
++      trialIndex: group.trialIndex,
++      current: group.current,
++      bounded: group.bounded,
++    });
++  }
++  pairs.sort((left, right) => left.caseId.localeCompare(right.caseId)
++    || left.model.localeCompare(right.model) || left.trialIndex - right.trialIndex);
++  return { ok: true, pairs };
++}
++
++module.exports = { loadPromotionEvidence };
+diff --git a/test/commands/skill.test.js b/test/commands/skill.test.js
+index 9e28ab41..dde0949d 100644
+--- a/test/commands/skill.test.js
++++ b/test/commands/skill.test.js
+@@ -6,9 +6,38 @@ const os = require('node:os');
+ const path = require('node:path');
+ 
+ const skillCommand = require('../../lib/commands/skill');
++const { loadTier } = require('../../scripts/lib/immutable-eval-corpus');
+ 
+ const repoRoot = path.resolve(__dirname, '../..');
+ 
++function completeBehavioralFindings(tier) {
++  const { cases, manifest } = loadTier(tier);
++  const findings = [];
++  for (const packet of cases) {
++    for (const model of ['model-one', 'model-two']) {
++      for (const config of ['current', 'bounded']) {
++        for (const trialIndex of manifest.trialIndices) {
++          findings.push({
++            caseId: packet.caseId,
++            risk: packet.risk,
++            split: packet.split,
++            model,
++            config,
++            budget: `tier-${tier}`,
++            trialIndex,
++            status: 'PASS',
++            hardFailure: false,
++            latencyMs: 100,
++            tokens: 10,
++            failures: [],
++          });
++        }
++      }
++    }
++  }
++  return findings;
++}
++
+ // The `forge skill` noun routes a situation to the best-fit Forge skill via the deterministic
+ // router (lib/using-forge). The catalog is read from the Forge PACKAGE root (getPackageRoot),
+ // which in this dev checkout is the repo root — so routing resolves against the real skills/.
+@@ -230,9 +259,26 @@ describe('forge skill eval', () => {
+         {},
+         root,
+         {
++          resolveBehavioralEvaluation: async () => ({
++            ok: true,
++            options: {
++              arms: [
++                { id: 'a', model: 'model-one', config: 'current', budget: 'tier-30' },
++                { id: 'b', model: 'model-one', config: 'bounded', budget: 'tier-30' },
++                { id: 'c', model: 'model-two', config: 'current', budget: 'tier-30' },
++                { id: 'd', model: 'model-two', config: 'bounded', budget: 'tier-30' },
++              ],
++            },
++          }),
+           runBehavioralEvaluation: async (input) => {
+             calls.push(input);
+-            return { status: 'PASS', tier: input.tier, expectedRuns: 180, completedRuns: 180 };
++            return {
++              status: 'PASS',
++              tier: input.tier,
++              expectedRuns: 360,
++              completedRuns: 360,
++              findings: completeBehavioralFindings(30),
++            };
+           },
+         },
+       );
+@@ -241,7 +287,12 @@ describe('forge skill eval', () => {
+       expect(calls).toHaveLength(1);
+       expect(calls[0].skillName).toBe('demo');
+       expect(calls[0].tier).toBe(30);
+-      expect(JSON.parse(res.output).status).toBe('PASS');
++      const output = JSON.parse(res.output);
++      expect(output.status).toBe('PASS');
++      expect(output.scorecard).toMatchObject({
++        status: 'INCOMPLETE', phase: 'instrumentation', winner: null,
++        reasons: ['instrumentation_only'], mergeAuthorized: false,
++      });
+       expect(fs.existsSync(path.join(sdir, 'evals', 'scorecard.json'))).toBe(false);
+     } finally {
+       fs.rmSync(root, { recursive: true, force: true });
+@@ -262,6 +313,30 @@ describe('forge skill eval', () => {
+     }
+   });
+ 
++  test.each([[100, 'decision'], [300, 'confirmation']])(
++    'tier %i reports the %s score phase with no winner when thresholds do not pass',
++    async (tier, phase) => {
++      const res = await skillCommand.handler(
++        ['eval', 'dev', '--full', '--tier', String(tier), '--json'],
++        {},
++        repoRoot,
++        {
++          resolveBehavioralEvaluation: async () => ({ ok: true, options: {} }),
++          runBehavioralEvaluation: async () => ({
++            status: 'PASS', tier, expectedRuns: tier * 12, completedRuns: tier * 12,
++            findings: completeBehavioralFindings(tier),
++          }),
++        },
++      );
++      const output = JSON.parse(res.output);
++      expect(res.success).toBe(false);
++      expect(output.scorecard).toMatchObject({
++        status: 'FAIL', phase, winner: null, mergeAuthorized: false,
++      });
++    },
++    30000,
++  );
++
+   test('INCOMPLETE behavioral evidence fails the command closed', async () => {
+     const res = await skillCommand.handler(
+       ['eval', 'dev', '--full', '--tier', '100', '--json'],
+diff --git a/test/e2e/skill-eval-cli.test.js b/test/e2e/skill-eval-cli.test.js
+new file mode 100644
+index 00000000..b644ee12
+--- /dev/null
++++ b/test/e2e/skill-eval-cli.test.js
+@@ -0,0 +1,60 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { spawnSync } = require('node:child_process');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const FORGE_BIN = path.resolve(__dirname, '../../bin/forge.js');
++
++describe('forge skill eval behavioral CLI', () => {
++  test('real node subprocess resolves four arms and exact attribution before failing on an unavailable runtime', () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-skill-eval-cli-'));
++    try {
++      fs.mkdirSync(path.join(root, 'skills', 'demo'), { recursive: true });
++      fs.writeFileSync(path.join(root, 'AGENTS.md'), '# test\n');
++      fs.writeFileSync(
++        path.join(root, 'skills', 'demo', 'SKILL.md'),
++        '---\nname: demo\ndescription: behavioral demo\n---\nbody\n',
++      );
++      for (const args of [
++        ['init', '-q'],
++        ['config', 'user.email', 'eval@example.test'],
++        ['config', 'user.name', 'Eval Test'],
++        ['add', '.'],
++        ['commit', '-qm', 'fixture'],
++      ]) {
++        const git = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
++        expect(git.status).toBe(0);
++      }
++      const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
++      const result = spawnSync(process.execPath, [
++        FORGE_BIN, 'skill', 'eval', 'demo', '--full', '--tier', '30', '--json',
++      ], {
++        cwd: root,
++        encoding: 'utf8',
++        env: {
++          ...process.env,
++          FORGE_EVAL_RUNTIME: 'forge-eval-runtime-does-not-exist',
++          FORGE_EVAL_MODELS: 'model-one,model-two',
++          FORGE_EVAL_ISSUE_ID: '198bec40-0d65-42a8-b2c2-c682f44fdb22',
++          FORGE_EVAL_PR: '500',
++          FORGE_EVAL_PR_HEAD: head,
++        },
++      });
++
++      expect(result.status).toBe(1);
++      const output = JSON.parse(result.stdout);
++      expect(output.status).toBe('INCOMPLETE');
++      expect(output.findings[0].failures).toEqual(['runtime.unavailable']);
++      expect(output.arms).toHaveLength(4);
++      expect(output.binding.repoSha).toBe(head);
++      expect(output.issueId).toBe('198bec40-0d65-42a8-b2c2-c682f44fdb22');
++      expect(output.pr).toBe(500);
++      expect(result.stderr).not.toContain('arms.invalid');
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  }, 30000);
++});
+diff --git a/test/eval/behavioral-eval-runner.test.js b/test/eval/behavioral-eval-runner.test.js
+index 6dd28cfb..a1f3674d 100644
+--- a/test/eval/behavioral-eval-runner.test.js
++++ b/test/eval/behavioral-eval-runner.test.js
+@@ -13,6 +13,12 @@ const BINDING = {
+   configHash: 'b'.repeat(64),
+   budgetHash: 'c'.repeat(64),
+ };
++const ARMS = Object.freeze([
++  { id: 'opaque-a', model: 'model-one', config: 'current', budget: 'tier-30' },
++  { id: 'opaque-b', model: 'model-one', config: 'bounded', budget: 'tier-30' },
++  { id: 'opaque-c', model: 'model-two', config: 'current', budget: 'tier-30' },
++  { id: 'opaque-d', model: 'model-two', config: 'bounded', budget: 'tier-30' },
++]);
+ 
+ function executorResult(input, overrides = {}) {
+   const startedAt = '2026-08-08T10:00:00.000Z';
+@@ -30,7 +36,7 @@ function executorResult(input, overrides = {}) {
+       ...overrides.evidence,
+     },
+     attribution: {
+-      model: input.armId === 'arm-1' ? 'model-one' : 'model-two',
++      model: input.model,
+       effort: 'high',
+       role: 'behavioral-eval',
+       hashes: {
+@@ -62,7 +68,7 @@ function options(overrides = {}) {
+       issueId: ISSUE_ID,
+       pr: 500,
+       binding: BINDING,
+-      arms: ['arm-1', 'arm-2'],
++      arms: ARMS,
+       executor: async (input) => executorResult(input),
+       appendEvidence: async (_root, envelope) => {
+         appended.push(envelope);
+@@ -96,12 +102,12 @@ describe('controlled behavioral evaluation runner', () => {
+     const result = await runBehavioralEvaluation(run.input);
+ 
+     expect(result.status).toBe('PASS');
+-    expect(result.expectedRuns).toBe(30 * 3 * 2);
++    expect(result.expectedRuns).toBe(30 * 3 * 4);
+     expect(result.completedRuns).toBe(result.expectedRuns);
+-    expect(result.arms).toEqual(['arm-1', 'arm-2']);
++    expect(result.arms).toEqual(ARMS);
+     expect(run.appended).toHaveLength(result.expectedRuns);
+     expect(Object.keys(executorInputs[0]).sort()).toEqual([
+-      'armId', 'binding', 'packet', 'skillName', 'trialIndex',
++      'armId', 'binding', 'budget', 'config', 'model', 'packet', 'skillName', 'trialIndex',
+     ]);
+     expect(executorInputs[0]).not.toHaveProperty('merge');
+     expect(executorInputs[0]).not.toHaveProperty('projectRoot');
+@@ -110,12 +116,28 @@ describe('controlled behavioral evaluation runner', () => {
+     expect(envelope.evidence.head_sha).toBe(BINDING.repoSha);
+     expect(envelope.evidence.hashes.eval_set).toMatch(/^[0-9a-f]{64}$/);
+     expect(envelope.evidence.gates).toEqual([{ name: 'behavioral-case', passed: true }]);
++    expect(envelope.evidence.run_identity).toEqual({
++      arm_id: 'opaque-a',
++      case_id: 'case-001',
++      risk: 'low',
++      split: 'DEV',
++      model: 'model-one',
++      config: 'current',
++      budget: 'tier-30',
++      tier: 30,
++      trial_index: 0,
++      config_hash: BINDING.configHash,
++      budget_hash: BINDING.budgetHash,
++    });
++    expect(envelope.evidence.case_result).toEqual({
++      status: 'PASS', hard_failure: false, latency_ms: 1000, tokens: 15,
++    });
+     expect(JSON.stringify(envelope)).not.toMatch(/rawPrompt|transcript|toolPayload|secret/i);
+     expect(result).not.toHaveProperty('merge');
+     expect(result).not.toHaveProperty('winner');
+   });
+ 
+-  test('real evidence append persists a unique allow-listed identity for all 180 runs', async () => {
++  test('real evidence append persists a unique allow-listed identity for all 360 runs', async () => {
+     const kernel = await freshKernel();
+     const run = options({
+       appendEvidence: undefined,
+@@ -136,10 +158,15 @@ describe('controlled behavioral evaluation runner', () => {
+     const identities = evidenceEvents.map((event) => JSON.parse(event.payload_json).evidence.run_identity);
+ 
+     expect(result.status).toBe('PASS');
+-    expect(evidenceEvents).toHaveLength(180);
+-    expect(new Set(evidenceEvents.map((event) => event.idempotency_key)).size).toBe(180);
+-    expect(new Set(identities.map((identity) => `${identity.arm_id}:${identity.trial_index}`))).toEqual(
+-      new Set(['arm-1:0', 'arm-1:1', 'arm-1:2', 'arm-2:0', 'arm-2:1', 'arm-2:2']),
++    expect(evidenceEvents).toHaveLength(360);
++    expect(new Set(evidenceEvents.map((event) => event.idempotency_key)).size).toBe(360);
++    expect(new Set(identities.map((identity) => `${identity.model}:${identity.config}:${identity.trial_index}`))).toEqual(
++      new Set([
++        'model-one:current:0', 'model-one:current:1', 'model-one:current:2',
++        'model-one:bounded:0', 'model-one:bounded:1', 'model-one:bounded:2',
++        'model-two:current:0', 'model-two:current:1', 'model-two:current:2',
++        'model-two:bounded:0', 'model-two:bounded:1', 'model-two:bounded:2',
++      ]),
+     );
+   });
+ 
+@@ -249,4 +276,19 @@ describe('controlled behavioral evaluation runner', () => {
+     expect(result.completedRuns).toBe(0);
+     expect(run.appended).toHaveLength(0);
+   });
++
++  test('rejects an attribution model that does not match the frozen opaque arm', async () => {
++    let calls = 0;
++    const run = options({
++      executor: async (input) => {
++        calls += 1;
++        return executorResult(input, calls === 1 ? { attribution: { model: 'wrong-model' } } : {});
++      },
++    });
++
++    const result = await runBehavioralEvaluation(run.input);
++    expect(result.status).toBe('INCOMPLETE');
++    expect(result.findings[0].failures).toContain('attribution.model_mismatch');
++    expect(run.appended).toHaveLength(result.expectedRuns - 1);
++  });
+ });
+diff --git a/test/eval/behavioral-eval-runtime.test.js b/test/eval/behavioral-eval-runtime.test.js
+new file mode 100644
+index 00000000..5edb2161
+--- /dev/null
++++ b/test/eval/behavioral-eval-runtime.test.js
+@@ -0,0 +1,78 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
++const { _internal } = require('../../scripts/lib/behavioral-eval-runtime');
++const { loadTier } = require('../../scripts/lib/immutable-eval-corpus');
++
++describe('behavioral eval production runtime', () => {
++  test('freezes a deterministic two-model current/bounded routing matrix', () => {
++    const input = {
++      tier: 30,
++      skillName: 'dev',
++      skillText: 'bounded contract',
++      models: ['model-one', 'model-two'],
++      command: ['claude'],
++      env: {},
++    };
++    const first = _internal.buildConfig(input);
++    const second = _internal.buildConfig(input);
++
++    expect(second).toEqual(first);
++    expect(first.arms.map(({ model, config }) => `${model}:${config}`)).toEqual([
++      'model-one:current', 'model-one:bounded',
++      'model-two:current', 'model-two:bounded',
++    ]);
++    expect(new Set(first.arms.map((arm) => arm.id)).size).toBe(4);
++  });
++
++  test('executes the existing stream-json command shape without persisting raw runtime output', async () => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-behavioral-runtime-'));
++    const runtimePath = path.join(root, 'runtime.js');
++    try {
++      fs.writeFileSync(runtimePath, [
++        "const observation = JSON.parse(process.env.FORGE_TEST_OBSERVATION);",
++        "const text = JSON.stringify(observation);",
++        "console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text}],usage:{input_tokens:3,output_tokens:2,cache_read_input_tokens:1}}}));",
++        "console.log(JSON.stringify({type:'result',result:text}));",
++      ].join('\n'));
++      const packet = loadTier(30).cases[0];
++      const env = {
++        FORGE_TEST_OBSERVATION: JSON.stringify(packet.oracle.expected),
++        FORGE_EVAL_EFFORT: 'high',
++      };
++      const executor = _internal.createExecutor({
++        projectRoot: root,
++        skillName: 'dev',
++        skillText: 'bounded contract',
++        command: [process.execPath, runtimePath],
++        budget: { timeoutMs: 10000, maxTokens: 8192 },
++        skillHash: 'a'.repeat(64),
++        env,
++      });
++      const binding = {
++        repoSha: 'b'.repeat(40), configHash: 'c'.repeat(64), budgetHash: 'd'.repeat(64),
++      };
++      const result = await executor({
++        armId: 'opaque-a', model: 'model-one', config: 'bounded', budget: 'tier-30',
++        packet, trialIndex: 0, binding,
++      });
++
++      expect(result.evidence).toMatchObject({
++        caseId: packet.caseId,
++        observation: packet.oracle.expected,
++        metrics: { tokensUsed: 5 },
++      });
++      expect(result.attribution).toMatchObject({
++        model: 'model-one', effort: 'high', role: 'behavioral-eval',
++        tokens: { input: 3, output: 2, cached: 1 },
++      });
++      expect(fs.readdirSync(root)).toEqual(['runtime.js']);
++    } finally {
++      fs.rmSync(root, { recursive: true, force: true });
++    }
++  });
++});
+diff --git a/test/eval/eval-evidence.test.js b/test/eval/eval-evidence.test.js
+index c469a006..104ffad5 100644
+--- a/test/eval/eval-evidence.test.js
++++ b/test/eval/eval-evidence.test.js
+@@ -185,6 +185,37 @@ describe('eval evidence', () => {
+     expect(JSON.parse(evidenceEvents[0].payload_json)).toEqual(envelope);
+   });
+ 
++  test('keys behavioral retries by semantic run identity and rejects conflicting payloads', async () => {
++    const kernel = await freshKernel();
++    const semanticIdentity = {
++      arm_id: 'opaque-a',
++      case_id: 'case-001', risk: 'low', split: 'DEV', model: 'model-a',
++      config: 'current', budget: 'tier-30', tier: 30, trial_index: 0,
++      config_hash: '4'.repeat(64), budget_hash: '5'.repeat(64),
++    };
++    const caseResult = { status: 'PASS', hard_failure: false, latency_ms: 3000, tokens: 125 };
++    const firstEnvelope = createEvalEvidence(validCase({
++      run_identity: semanticIdentity,
++      case_result: caseResult,
++    }));
++    const conflictingEnvelope = createEvalEvidence(validCase({
++      run_identity: semanticIdentity,
++      case_result: caseResult,
++      tokens: { input: 101, output: 25, cached: 5 },
++    }));
++    const options = { deps: deps(kernel), env: { FORGE_ACTOR: 'eval-test' } };
++
++    const first = await appendEvalEvidence('/unused', firstEnvelope, options);
++    const duplicate = await appendEvalEvidence('/unused', firstEnvelope, options);
++    const conflict = await appendEvalEvidence('/unused', conflictingEnvelope, options);
++    const events = await kernel.kernelDriver.listKernelEvents('issue', ISSUE_ID, {}, kernel.kernelBroker.config);
++
++    expect(first.duplicate).toBe(false);
++    expect(duplicate).toMatchObject({ ok: true, duplicate: true });
++    expect(conflict).toMatchObject({ ok: false, duplicate: false, conflict: true, status: 'INCOMPLETE' });
++    expect(events.filter((event) => event.event_type === 'eval.evidence.recorded')).toHaveLength(1);
++  });
++
+   test('persists canonical stable envelope bytes regardless of input key order', async () => {
+     const kernel = await freshKernel();
+     const envelope = createEvalEvidence(validCase());
+diff --git a/test/eval/promotion-evidence-loader.test.js b/test/eval/promotion-evidence-loader.test.js
+new file mode 100644
+index 00000000..cbb7d549
+--- /dev/null
++++ b/test/eval/promotion-evidence-loader.test.js
+@@ -0,0 +1,74 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++
++const { loadPromotionEvidence } = require('../../scripts/lib/promotion-evidence-loader');
++
++function finding(caseId, model, config, trialIndex, overrides = {}) {
++  return {
++    caseId,
++    risk: 'low',
++    split: 'DEV',
++    model,
++    config,
++    budget: 'tier-30',
++    trialIndex,
++    status: 'PASS',
++    hardFailure: false,
++    latencyMs: 100,
++    tokens: 10,
++    failures: [],
++    ...overrides,
++  };
++}
++
++describe('promotion evidence loader', () => {
++  test('joins four opaque arms into current/bounded scorecard pairs', () => {
++    const findings = [];
++    for (const model of ['model-one', 'model-two']) {
++      for (const config of ['current', 'bounded']) {
++        for (const trialIndex of [0, 1, 2]) {
++          findings.push(finding('case-001', model, config, trialIndex));
++        }
++      }
++    }
++
++    const loaded = loadPromotionEvidence({ tier: 30, findings });
++    expect(loaded.ok).toBe(true);
++    expect(loaded.pairs).toHaveLength(6);
++    expect(loaded.pairs[0]).toEqual({
++      caseId: 'case-001',
++      risk: 'low',
++      split: 'DEV',
++      model: 'model-one',
++      trialIndex: 0,
++      current: { status: 'PASS', hardFailure: false, latencyMs: 100, tokens: 10 },
++      bounded: { status: 'PASS', hardFailure: false, latencyMs: 100, tokens: 10 },
++    });
++  });
++
++  test('fails closed on duplicate, missing, or cross-arm metadata evidence', () => {
++    const base = [
++      finding('case-001', 'model-one', 'current', 0),
++      finding('case-001', 'model-one', 'bounded', 0),
++    ];
++    expect(loadPromotionEvidence({ tier: 30, findings: [...base, base[0]] })).toMatchObject({
++      ok: false, reason: 'duplicate_arm_evidence',
++    });
++    expect(loadPromotionEvidence({ tier: 30, findings: base.slice(0, 1) })).toMatchObject({
++      ok: false, reason: 'paired_arm_incomplete',
++    });
++    expect(loadPromotionEvidence({
++      tier: 30,
++      findings: [base[0], { ...base[1], risk: 'high' }],
++    })).toMatchObject({ ok: false, reason: 'case_metadata_mismatch' });
++  });
++
++  test('rejects extra fields so private runtime material cannot reach the scorecard', () => {
++    const unsafe = finding('case-001', 'model-one', 'current', 0);
++    unsafe.transcript = 'private';
++    expect(loadPromotionEvidence({ tier: 30, findings: [unsafe] })).toMatchObject({
++      ok: false, reason: 'evidence_malformed',
++    });
++  });
++});
+-- 
+2.51.0.windows.1
+

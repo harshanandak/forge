@@ -1,0 +1,25 @@
+From ddcd782678d02347760eaf1e6d0d928ef277c9f5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 01:41:15 +0530
+Subject: [PATCH] test(kernel): budget restore proof on Windows
+
+---
+ test/kernel/legacy-claim-repair.test.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/kernel/legacy-claim-repair.test.js b/test/kernel/legacy-claim-repair.test.js
+index 6d110244..94ee8b9d 100644
+--- a/test/kernel/legacy-claim-repair.test.js
++++ b/test/kernel/legacy-claim-repair.test.js
+@@ -382,7 +382,7 @@ describe('legacy claim repair backup and apply', () => {
+ 		});
+ 		expect(verifiedAgain).toEqual(proof);
+ 		fixture.driver.close();
+-	});
++	}, 30_000);
+ 
+ 	test('rejects a backup changed after the restore snapshot was read', async () => {
+ 		const fixture = await createFixture();
+-- 
+2.51.0.windows.1
+

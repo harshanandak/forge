@@ -1,0 +1,176 @@
+From 58407d56b75fb5fd6b338b0259ea2c591737f315 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 02:07:18 +0530
+Subject: [PATCH] fix(flow): validate planned event rows
+
+---
+ lib/pr-monitor/flow-monitor.js       |  20 +++++-
+ test/pr-monitor/flow-monitor.test.js | 100 +++++++++++++++++++++++++++
+ 2 files changed, 118 insertions(+), 2 deletions(-)
+
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 953502b1..44959dde 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -372,7 +372,7 @@ function envelope(schemaId, objectId, createdAt, producerId, payload) {
+   return value;
+ }
+ 
+-function parseEventRow(row) {
++function parseEventEnvelope(row) {
+   let event;
+   try {
+     event = typeof row?.envelope_json === 'string' ? JSON.parse(row.envelope_json) : row;
+@@ -385,6 +385,22 @@ function parseEventRow(row) {
+   return event;
+ }
+ 
++function parseEventRow(row, monitorId) {
++  const event = parseEventEnvelope(row);
++  const validation = validateContractStructure(event);
++  if (!validation.ok
++    || event?.schema_id !== 'forge.memory.monitor-event.v1'
++    || event.payload?.monitor_id !== monitorId
++    || !Number.isSafeInteger(event.payload?.sequence)) {
++    throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history is incomplete');
++  }
++  return event;
++}
++
++function parseAuthorityTailRow(row) {
++  return parseEventEnvelope(row);
++}
++
+ function persistenceRow(event) {
+   return {
+     event_id: event.payload.event_id,
+@@ -542,7 +558,7 @@ async function readAuthority(ctx, spec) {
+     || (tail.overflow && tail.events.length !== MAX_HISTORY)) {
+     throw new FlowMonitorError('MONITOR_HISTORY_INCOMPLETE', 'Durable monitor history exceeds its restart bound');
+   }
+-  const events = tail.events.map(parseEventRow);
++  const events = tail.events.map(parseAuthorityTailRow);
+   let state;
+   try {
+     state = reduceMonitorBatch(
+diff --git a/test/pr-monitor/flow-monitor.test.js b/test/pr-monitor/flow-monitor.test.js
+index cb19dcdf..cc8dac9e 100644
+--- a/test/pr-monitor/flow-monitor.test.js
++++ b/test/pr-monitor/flow-monitor.test.js
+@@ -128,6 +128,37 @@ async function seedHistory(store, count) {
+   store.setCursor('legacy-journal', count);
+ }
+ 
++async function seedExternalPlanTail(store) {
++  await runFlowMonitorPass(context(store, async () => snapshot(), async () => {}));
++  const template = store.events[0];
++  const planId = 'f'.repeat(64);
++  const reference = {
++    format: 'segments-v1',
++    id: planId,
++    start_sequence: 1,
++    segment_count: 2,
++    segment_index: 0,
++  };
++  for (let sequence = 2; sequence <= 131; sequence += 1) {
++    const event = structuredClone(template);
++    event.object_id = `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, '0')}`;
++    event.payload.event_id = sequence.toString(16).padStart(64, '0');
++    event.payload.sequence = sequence;
++    event.payload.bounded_payload.record.seq = sequence;
++    event.payload.bounded_payload.snapshot = null;
++    event.payload.bounded_payload.checkpoint_complete = false;
++    event.payload.bounded_payload.batch_plan = reference;
++    event.content_hash = computeContentHash(event);
++    store.events.push(event);
++  }
++  const markerSequence = reference.start_sequence + reference.segment_count;
++  const markerKey = `batch-plan:${planId}:commit`;
++  const markerId = crypto.createHash('sha256')
++    .update(`pr:owner/forge:42:${markerSequence}:monitor.checkpoint:${markerKey}`)
++    .digest('hex');
++  return { markerId, markerSequence, template };
++}
++
+ describe('Flow-backed PR monitor authority', () => {
+   test('persists through public Memory before legacy journal delivery and ignores legacy snapshot authority', async () => {
+     const store = durableStore();
+@@ -939,6 +970,75 @@ describe('Flow-backed PR monitor authority', () => {
+       .rejects.toMatchObject({ code: 'MONITOR_HISTORY_INCOMPLETE' });
+   });
+ 
++  test('rejects a getEvent row whose envelope hash is self-consistent but content is tampered', async () => {
++    const store = durableStore();
++    const { markerId, markerSequence, template } = await seedExternalPlanTail(store);
++    const marker = structuredClone(template);
++    marker.payload.event_id = markerId;
++    marker.payload.sequence = markerSequence;
++    marker.content_hash = computeContentHash(marker);
++    marker.created_at = '2026-08-12T12:00:01.000Z';
++    let getEventCalls = 0;
++    store.getEvent = async () => {
++      getEventCalls += 1;
++      return { content_hash: marker.content_hash, envelope_json: JSON.stringify(marker) };
++    };
++    let gathers = 0;
++    let deliveries = 0;
++
++    let failure;
++    try {
++      await runFlowMonitorPass(context(
++        store,
++        async () => { gathers += 1; return snapshot(); },
++        async () => { deliveries += 1; },
++      ));
++    } catch (error) {
++      failure = error;
++    }
++    expect(getEventCalls).toBe(1);
++    expect(failure).toMatchObject({
++      code: 'MONITOR_HISTORY_INCOMPLETE',
++      message: 'Durable monitor history is incomplete',
++    });
++    expect(gathers).toBe(0);
++    expect(deliveries).toBe(0);
++  });
++
++  test('rejects structurally malformed valid getEvent JSON before recovery side effects', async () => {
++    const store = durableStore();
++    await seedExternalPlanTail(store);
++    const contentHash = '0'.repeat(64);
++    let getEventCalls = 0;
++    store.getEvent = async () => {
++      getEventCalls += 1;
++      return {
++        content_hash: contentHash,
++        envelope_json: JSON.stringify({ content_hash: contentHash }),
++      };
++    };
++    let gathers = 0;
++    let deliveries = 0;
++
++    let failure;
++    try {
++      await runFlowMonitorPass(context(
++        store,
++        async () => { gathers += 1; return snapshot(); },
++        async () => { deliveries += 1; },
++      ));
++    } catch (error) {
++      failure = error;
++    }
++    expect(getEventCalls).toBe(1);
++    expect(failure).toMatchObject({
++      code: 'MONITOR_HISTORY_INCOMPLETE',
++      message: 'Durable monitor history is incomplete',
++    });
++    expect(gathers).toBe(0);
++    expect(deliveries).toBe(0);
++  });
++
+   test('bounds high-cardinality snapshots before Flow validation and durable persistence', async () => {
+     const store = durableStore();
+     const large = snapshot({
+-- 
+2.51.0.windows.1
+

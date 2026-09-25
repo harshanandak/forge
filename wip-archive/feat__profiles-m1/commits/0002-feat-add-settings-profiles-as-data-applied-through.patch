@@ -1,0 +1,738 @@
+From fce43517b0717c4bd8f47902df1ecfb401b9cb3b Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Thu, 20 Aug 2026 23:50:41 +0530
+Subject: [PATCH] feat: add settings profiles as data, applied through the
+ registry
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Without this, flipping a repo's regime means hand-editing gates, rails and
+protected paths one at a time, and nothing can tell you which regime a repo is
+actually in. Profiles are sparse settings maps: the three presets ship as data,
+user profiles are plain YAML files in user scope that shadow the presets and
+export/import across machines. Apply writes through the canonical config and
+stores no active-profile marker, so the active profile is derived by comparing
+resolved state — a hand-tuned repo honestly reads custom, with the nearest
+profile and the exact drift instead of a dead end.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ lib/settings-profiles.js       | 397 +++++++++++++++++++++++++++++++++
+ test/settings-profiles.test.js | 300 +++++++++++++++++++++++++
+ 2 files changed, 697 insertions(+)
+ create mode 100644 lib/settings-profiles.js
+ create mode 100644 test/settings-profiles.test.js
+
+diff --git a/lib/settings-profiles.js b/lib/settings-profiles.js
+new file mode 100644
+index 00000000..579092aa
+--- /dev/null
++++ b/lib/settings-profiles.js
+@@ -0,0 +1,397 @@
++'use strict';
++
++/**
++ * @module settings-profiles
++ *
++ * A settings profile is a named snapshot of Forge's whole settings surface —
++ * one command flips a repo's entire operating regime (speed, strict,
++ * knowledge-base, or anything a user invents).
++ *
++ * Three properties this module exists to guarantee:
++ *
++ * 1. Profiles are DATA. `speed`/`strict`/`knowledge-base` are sparse
++ *    `{settingId: value}` maps living in `BUILTIN_PROFILES` below; a user
++ *    profile is the same shape in a plain YAML file. Creating a profile never
++ *    requires editing Forge code, and a user file shadows a builtin of the same
++ *    name so even the presets are forkable.
++ *
++ * 2. Profiles STORE NOTHING at apply time. `applyProfile` writes through the
++ *    one settings registry into `.forge/config.yaml` and records no "active
++ *    profile" marker anywhere. Which profile is active is DERIVED by comparing
++ *    the resolved state to each saved profile — so a hand-tuned repo honestly
++ *    reads `custom` instead of lying about matching a preset.
++ *
++ * 3. Profiles are PER-USER artifacts: plain files under `<home>/.forge/profiles`
++ *    that export and import, so a regime travels across machines.
++ */
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const YAML = require('yaml');
++
++const {
++  getSetting,
++  defaultSettings,
++  resolveSettings,
++  readOverrides,
++  applySettings,
++  diffSettings,
++} = require('./settings-registry');
++
++const PROFILE_KIND = 'forge.settingsProfile';
++const PROFILE_VERSION = 1;
++
++/**
++ * The three starter presets, expressed as sparse settings maps. Nothing here is
++ * privileged: a user profile with the same shape behaves identically.
++ */
++const BUILTIN_PROFILES = Object.freeze({
++  speed: {
++    description: 'Pre-user speed: ship fast, review the feature not the diff, revert fast.',
++    settings: Object.freeze({
++      'rail.tdd_intent': false,
++      'gate.plan-exit': false,
++      'gate.dev-exit': false,
++      'gate.validate-exit': false,
++      'gate.plan-approval': false,
++      'gate.merge': false,
++    }),
++  },
++  strict: {
++    description: 'Gated shipping: every stage gate on, line-level review, protected surfaces.',
++    settings: Object.freeze({
++      'rail.tdd_intent': true,
++      'gate.plan-exit': true,
++      'gate.dev-exit': true,
++      'gate.validate-exit': true,
++      'gate.ship-entry': true,
++      'gate.plan-approval': true,
++      'gate.merge': true,
++      protectedPaths: Object.freeze(['.forge/config.yaml', 'AGENTS.md', '.github/workflows/**']),
++    }),
++  },
++  'knowledge-base': {
++    description: 'A docs/knowledge repo: no code stages, citation and grounding rails on.',
++    settings: Object.freeze({
++      'rail.tdd_intent': false,
++      'rail.grounding': true,
++      'phase.dev': false,
++      'phase.validate': false,
++      'gate.dev-exit': false,
++      'gate.validate-exit': false,
++      'gate.cite': true,
++      'gate.read_first': true,
++      protectedPaths: Object.freeze(['AGENTS.md']),
++    }),
++  },
++});
++
++const BUILTIN_PROFILE_NAMES = Object.freeze(Object.keys(BUILTIN_PROFILES));
++
++const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
++
++function resolveHome(home) {
++  return home || process.env.FORGE_HOME || os.homedir();
++}
++
++/** Where a user's saved profiles live. Plain files, so they travel. */
++function profilesDir({ home } = {}) {
++  return path.join(resolveHome(home), '.forge', 'profiles');
++}
++
++function assertName(name) {
++  if (typeof name !== 'string' || name === '' || !NAME_PATTERN.test(name) || name.length > 64) {
++    throw new Error(`Invalid profile name '${name}'. Use letters, digits, '.', '-' or '_'.`);
++  }
++  return name;
++}
++
++function profilePath(name, { home } = {}) {
++  return path.join(profilesDir({ home }), `${assertName(name)}.yaml`);
++}
++
++function cloneSettings(settings) {
++  const out = {};
++  for (const [id, value] of Object.entries(settings || {})) {
++    out[id] = Array.isArray(value) ? [...value] : value;
++  }
++  return out;
++}
++
++function validateSettingsMap(settings, source) {
++  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
++    throw new Error(`${source}: 'settings' must be a map of setting id to value.`);
++  }
++  for (const id of Object.keys(settings)) {
++    if (!getSetting(id)) {
++      throw new Error(`${source}: unknown setting '${id}'.`);
++    }
++  }
++  return cloneSettings(settings);
++}
++
++/** Every profile the user can name: builtins, then user files (which shadow). */
++function listProfiles({ home } = {}) {
++  const byName = new Map();
++  for (const name of BUILTIN_PROFILE_NAMES) {
++    byName.set(name, {
++      name,
++      source: 'builtin',
++      description: BUILTIN_PROFILES[name].description,
++    });
++  }
++  const dir = profilesDir({ home });
++  if (fs.existsSync(dir)) {
++    for (const entry of fs.readdirSync(dir).sort()) {
++      if (!entry.endsWith('.yaml')) continue;
++      const name = entry.slice(0, -'.yaml'.length);
++      if (!NAME_PATTERN.test(name)) continue;
++      let description = '';
++      try {
++        description = readProfile(name, { home }).description;
++      } catch {
++        description = '(unreadable profile file)';
++      }
++      byName.set(name, { name, source: 'user', description });
++    }
++  }
++  return [...byName.values()];
++}
++
++/**
++ * Read a profile by name. A user file wins over a builtin of the same name.
++ * @returns {{name: string, source: 'builtin'|'user', description: string, settings: object}}
++ */
++function readProfile(name, { home } = {}) {
++  assertName(name);
++  const file = profilePath(name, { home });
++  if (fs.existsSync(file)) {
++    const parsed = YAML.parse(fs.readFileSync(file, 'utf8')) || {};
++    return {
++      name,
++      source: 'user',
++      description: typeof parsed.description === 'string' ? parsed.description : '',
++      settings: validateSettingsMap(parsed.settings || {}, file),
++    };
++  }
++  if (Object.hasOwn(BUILTIN_PROFILES, name)) {
++    const builtin = BUILTIN_PROFILES[name];
++    return {
++      name,
++      source: 'builtin',
++      description: builtin.description,
++      settings: cloneSettings(builtin.settings),
++    };
++  }
++  throw new Error(`Unknown profile '${name}'. Known profiles: ${listProfiles({ home }).map(p => p.name).join(', ')}`);
++}
++
++function profileExists(name, { home } = {}) {
++  try {
++    readProfile(name, { home });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/** Write (or overwrite) a user profile file. @returns {string} the file path. */
++function writeProfile(name, { settings = {}, description = '' } = {}, { home } = {}) {
++  assertName(name);
++  const validated = validateSettingsMap(settings, `profile '${name}'`);
++  const file = profilePath(name, { home });
++  fs.mkdirSync(path.dirname(file), { recursive: true });
++  fs.writeFileSync(file, YAML.stringify({
++    kind: PROFILE_KIND,
++    version: PROFILE_VERSION,
++    name,
++    description,
++    settings: validated,
++  }));
++  return file;
++}
++
++/** @returns {boolean} true when a user profile file was actually removed. */
++function deleteProfile(name, { home } = {}) {
++  const file = profilePath(name, { home });
++  if (!fs.existsSync(file)) return false;
++  fs.rmSync(file);
++  return true;
++}
++
++/** A profile's sparse map expanded to the full settings snapshot it means. */
++function expandProfile(profile) {
++  return { ...defaultSettings(), ...cloneSettings(profile.settings) };
++}
++
++/**
++ * Flip the repo's whole regime. Writes through the settings registry into the
++ * canonical config; records no marker of its own.
++ */
++function applyProfile({ projectRoot = process.cwd(), name, home } = {}) {
++  const profile = readProfile(name, { home });
++  const result = applySettings({ projectRoot, settings: expandProfile(profile) });
++  return { name: profile.name, source: profile.source, ...result };
++}
++
++/**
++ * Derive which profile the repo is actually in by comparing resolved state to
++ * every saved profile. No match is reported as `custom` — plus the NEAREST
++ * profile and the exact drift, so "custom" is actionable rather than a dead end.
++ *
++ * @returns {{name: string|null, active: string, nearest: string|null, drift: object, settings: object}}
++ */
++function deriveActiveProfile({ projectRoot = process.cwd(), home } = {}) {
++  const resolved = resolveSettings({ projectRoot });
++  let nearest = null;
++  let nearestDrift = null;
++  let nearestTied = false;
++
++  for (const summary of listProfiles({ home })) {
++    const drift = diffSettings(expandProfile(readProfile(summary.name, { home })), resolved);
++    const size = Object.keys(drift).length;
++    if (size === 0) {
++      return {
++        name: summary.name,
++        active: summary.name,
++        nearest: summary.name,
++        nearestTied: false,
++        drift: {},
++        settings: resolved,
++      };
++    }
++    if (nearestDrift === null || size < Object.keys(nearestDrift).length) {
++      nearest = summary.name;
++      nearestDrift = drift;
++      nearestTied = false;
++    } else if (size === Object.keys(nearestDrift).length) {
++      // Two profiles are equally close. Saving into "the" nearest one would be a
++      // coin flip, so record the tie and let the caller demand an explicit name.
++      nearestTied = true;
++    }
++  }
++
++  return {
++    name: null,
++    active: 'custom',
++    nearest,
++    nearestTied,
++    drift: nearestDrift || {},
++    settings: resolved,
++  };
++}
++
++/** The fully-resolved regime: derived profile, every setting, and the explicit deltas. */
++function dumpRegime({ projectRoot = process.cwd(), home } = {}) {
++  const derived = deriveActiveProfile({ projectRoot, home });
++  return {
++    profile: derived.active,
++    nearest: derived.nearest,
++    drift: derived.drift,
++    settings: derived.settings,
++    overrides: readOverrides({ projectRoot }),
++  };
++}
++
++/**
++ * Save-back. Adjusting settings while a profile is active either updates the
++ * named profile (`mode: 'update'`) or saves the state under a new name
++ * (`mode: 'new'`) — the user's choice. Doing neither leaves the repo honestly
++ * reading `custom`, which is why there is no third "flip to custom" mode: that
++ * is already the state.
++ *
++ * The saved settings are the repo's explicit deltas from the package defaults,
++ * which is what makes a saved profile portable rather than a frozen dump of
++ * whatever this Forge version happened to default to.
++ */
++function saveCurrentProfile({ projectRoot = process.cwd(), home, mode = 'update', name, description } = {}) {
++  if (mode !== 'update' && mode !== 'new') {
++    throw new Error(`Unknown save mode '${mode}'. Use 'update' or 'new'.`);
++  }
++  const settings = readOverrides({ projectRoot });
++
++  let target = name;
++  if (mode === 'update') {
++    if (!target) {
++      const derived = deriveActiveProfile({ projectRoot, home });
++      if (derived.name === null && derived.nearestTied) {
++        throw new Error('No single profile is closest to this state — pass --as <name> to say which profile to save.');
++      }
++      target = derived.name || derived.nearest;
++      if (!target) {
++        throw new Error('No profile to update — pass --as <name> to save this state as a new profile.');
++      }
++    }
++    if (!profileExists(target, { home })) {
++      throw new Error(`Unknown profile '${target}'.`);
++    }
++    if (readProfile(target, { home }).source === 'builtin') {
++      throw new Error(`'${target}' is a builtin preset — pass --as <name> to save your version under a new name.`);
++    }
++  } else {
++    if (!target) throw new Error('Saving a new profile needs a name: --as <name>.');
++    assertName(target);
++  }
++
++  const existingDescription = profileExists(target, { home })
++    ? readProfile(target, { home }).description
++    : '';
++  const file = writeProfile(
++    target,
++    { settings, description: description === undefined ? existingDescription : description },
++    { home },
++  );
++  return { name: target, path: file, settings };
++}
++
++/** Write a profile out as a standalone, shareable bundle file. */
++function exportProfile(name, destPath, { home } = {}) {
++  const profile = readProfile(name, { home });
++  fs.mkdirSync(path.dirname(destPath), { recursive: true });
++  fs.writeFileSync(destPath, YAML.stringify({
++    kind: PROFILE_KIND,
++    version: PROFILE_VERSION,
++    name: profile.name,
++    description: profile.description,
++    settings: profile.settings,
++  }));
++  return destPath;
++}
++
++/** Install a bundle file as a user profile on this machine. */
++function importProfile(srcPath, { home, name } = {}) {
++  const parsed = YAML.parse(fs.readFileSync(srcPath, 'utf8')) || {};
++  if (parsed.kind !== PROFILE_KIND) {
++    throw new Error(`${srcPath} is not a Forge settings profile (expected kind: ${PROFILE_KIND}).`);
++  }
++  const target = name || parsed.name;
++  if (!target) throw new Error(`${srcPath} has no profile name — pass --as <name>.`);
++  const settings = validateSettingsMap(parsed.settings || {}, srcPath);
++  const file = writeProfile(
++    target,
++    { settings, description: typeof parsed.description === 'string' ? parsed.description : '' },
++    { home },
++  );
++  return { name: target, path: file };
++}
++
++module.exports = {
++  PROFILE_KIND,
++  PROFILE_VERSION,
++  BUILTIN_PROFILES,
++  BUILTIN_PROFILE_NAMES,
++  profilesDir,
++  listProfiles,
++  readProfile,
++  profileExists,
++  writeProfile,
++  deleteProfile,
++  expandProfile,
++  applyProfile,
++  deriveActiveProfile,
++  dumpRegime,
++  saveCurrentProfile,
++  exportProfile,
++  importProfile,
++};
+diff --git a/test/settings-profiles.test.js b/test/settings-profiles.test.js
+new file mode 100644
+index 00000000..db16111f
+--- /dev/null
++++ b/test/settings-profiles.test.js
+@@ -0,0 +1,300 @@
++'use strict';
++
++/**
++ * Settings profiles: named, user-owned snapshots of the whole settings surface.
++ * A profile stores nothing at apply time — it writes through the canonical
++ * config, and the ACTIVE profile is derived by comparing resolved state.
++ */
++
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const { afterEach, describe, expect, test } = require('bun:test');
++
++const { resolveSettings, readOverrides, applySettings } = require('../lib/settings-registry');
++const {
++  BUILTIN_PROFILE_NAMES,
++  profilesDir,
++  listProfiles,
++  readProfile,
++  writeProfile,
++  deleteProfile,
++  expandProfile,
++  applyProfile,
++  deriveActiveProfile,
++  dumpRegime,
++  saveCurrentProfile,
++  exportProfile,
++  importProfile,
++} = require('../lib/settings-profiles');
++
++const temps = [];
++
++function makeHome() {
++  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-profiles-home-'));
++  temps.push(home);
++  return home;
++}
++
++function makeProject() {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-profiles-project-'));
++  temps.push(root);
++  fs.mkdirSync(path.join(root, '.forge'), { recursive: true });
++  return root;
++}
++
++afterEach(() => {
++  while (temps.length > 0) fs.rmSync(temps.pop(), { recursive: true, force: true });
++});
++
++describe('the three starter presets', () => {
++  test('ship as data, not code', () => {
++    expect(BUILTIN_PROFILE_NAMES).toEqual(['speed', 'strict', 'knowledge-base']);
++  });
++
++  test('each preset is a valid, distinct settings snapshot', () => {
++    const home = makeHome();
++    const seen = new Map();
++    for (const name of BUILTIN_PROFILE_NAMES) {
++      const profile = readProfile(name, { home });
++      expect(profile.source).toBe('builtin');
++      expect(typeof profile.description).toBe('string');
++      const fingerprint = JSON.stringify(expandProfile(profile));
++      expect(seen.has(fingerprint)).toBe(false);
++      seen.set(fingerprint, name);
++    }
++  });
++
++  test('listed with builtins first and no duplicates', () => {
++    const home = makeHome();
++    const names = listProfiles({ home }).map(p => p.name);
++    expect(names).toEqual(BUILTIN_PROFILE_NAMES);
++  });
++});
++
++describe('applying a profile', () => {
++  test('writes through the canonical config and stores no active-profile marker', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applyProfile({ projectRoot: root, name: 'speed', home });
++
++    const configText = fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8');
++    expect(configText).not.toContain('speed');
++    expect(configText).not.toContain('activeProfile');
++    expect(resolveSettings({ projectRoot: root })['rail.tdd_intent']).toBe(false);
++  });
++
++  test('an unknown profile errors before anything is written', () => {
++    const root = makeProject();
++    const home = makeHome();
++    expect(() => applyProfile({ projectRoot: root, name: 'nope', home })).toThrow(/unknown profile/i);
++    expect(readOverrides({ projectRoot: root })).toEqual({});
++  });
++
++  test('speed -> strict -> speed leaves zero residual diff (acceptance)', () => {
++    const root = makeProject();
++    const home = makeHome();
++
++    applyProfile({ projectRoot: root, name: 'speed', home });
++    const firstOverrides = readOverrides({ projectRoot: root });
++    const firstResolved = resolveSettings({ projectRoot: root });
++    const firstYaml = fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8');
++
++    applyProfile({ projectRoot: root, name: 'strict', home });
++    expect(deriveActiveProfile({ projectRoot: root, home }).name).toBe('strict');
++
++    applyProfile({ projectRoot: root, name: 'speed', home });
++    expect(readOverrides({ projectRoot: root })).toEqual(firstOverrides);
++    expect(resolveSettings({ projectRoot: root })).toEqual(firstResolved);
++    expect(fs.readFileSync(path.join(root, '.forge', 'config.yaml'), 'utf8')).toBe(firstYaml);
++    expect(deriveActiveProfile({ projectRoot: root, home }).name).toBe('speed');
++  });
++});
++
++describe('deriving the active profile', () => {
++  test('a clean repo reports whichever profile matches the defaults, else custom', () => {
++    const root = makeProject();
++    const home = makeHome();
++    const derived = deriveActiveProfile({ projectRoot: root, home });
++    expect(derived.name).toBe(null);
++    expect(derived.active).toBe('custom');
++  });
++
++  test('reports the applied profile by name', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applyProfile({ projectRoot: root, name: 'knowledge-base', home });
++    const derived = deriveActiveProfile({ projectRoot: root, home });
++    expect(derived.name).toBe('knowledge-base');
++    expect(derived.active).toBe('knowledge-base');
++    expect(derived.drift).toEqual({});
++  });
++
++  test('a manual tweak while a profile is active honestly reports custom', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applyProfile({ projectRoot: root, name: 'strict', home });
++    // One hand-edit through the normal toggle surface.
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.merge': false },
++    });
++
++    const derived = deriveActiveProfile({ projectRoot: root, home });
++    expect(derived.name).toBe(null);
++    expect(derived.active).toBe('custom');
++    // It still knows which profile it drifted FROM, and by how much.
++    expect(derived.nearest).toBe('strict');
++    expect(derived.drift['gate.merge']).toEqual({ from: true, to: false });
++  });
++
++  test('a user profile is derivable exactly like a builtin', () => {
++    const root = makeProject();
++    const home = makeHome();
++    writeProfile('mine', { settings: { 'gate.cite': false }, description: 'mine' }, { home });
++    applyProfile({ projectRoot: root, name: 'mine', home });
++    expect(deriveActiveProfile({ projectRoot: root, home }).name).toBe('mine');
++  });
++});
++
++describe('dump', () => {
++  test('prints the fully-resolved regime plus the derived profile', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applyProfile({ projectRoot: root, name: 'speed', home });
++    const dumped = dumpRegime({ projectRoot: root, home });
++    expect(dumped.profile).toBe('speed');
++    expect(dumped.settings['rail.tdd_intent']).toBe(false);
++    expect(dumped.settings['rail.secret_scan']).toBe(true);
++    expect(dumped.overrides['rail.tdd_intent']).toBe(false);
++    expect(Object.keys(dumped.settings).length).toBeGreaterThan(20);
++  });
++});
++
++describe('save-back', () => {
++  test('update folds the current adjustments into the active profile', () => {
++    const root = makeProject();
++    const home = makeHome();
++    writeProfile('mine', { settings: { 'gate.cite': false } }, { home });
++    applyProfile({ projectRoot: root, name: 'mine', home });
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.merge': false },
++    });
++
++    const saved = saveCurrentProfile({ projectRoot: root, home, mode: 'update' });
++    expect(saved.name).toBe('mine');
++    expect(readProfile('mine', { home }).settings['gate.merge']).toBe(false);
++    expect(deriveActiveProfile({ projectRoot: root, home }).name).toBe('mine');
++  });
++
++  test('update refuses to overwrite a builtin preset and says what to do instead', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applyProfile({ projectRoot: root, name: 'speed', home });
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++    expect(() => saveCurrentProfile({ projectRoot: root, home, mode: 'update' }))
++      .toThrow(/builtin|--as/i);
++  });
++
++  test('new saves the current state under a new name, leaving the old profile alone', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applyProfile({ projectRoot: root, name: 'speed', home });
++    applySettings({
++      projectRoot: root,
++      settings: { ...resolveSettings({ projectRoot: root }), 'gate.cite': false },
++    });
++
++    const saved = saveCurrentProfile({ projectRoot: root, home, mode: 'new', name: 'speed-plus' });
++    expect(saved.name).toBe('speed-plus');
++    expect(readProfile('speed-plus', { home }).settings['gate.cite']).toBe(false);
++    // The preset it was forked from is untouched — still a builtin, no file written.
++    expect(readProfile('speed', { home }).source).toBe('builtin');
++    expect(readProfile('speed', { home }).settings['gate.cite']).toBe(undefined);
++    expect(deriveActiveProfile({ projectRoot: root, home }).name).toBe('speed-plus');
++  });
++
++  test('update never silently writes into a builtin — it demands an explicit name', () => {
++    const root = makeProject();
++    const home = makeHome();
++    applySettings({ projectRoot: root, settings: { 'gate.merge': false } });
++    expect(() => saveCurrentProfile({ projectRoot: root, home, mode: 'update' }))
++      .toThrow(/--as/i);
++  });
++
++  test('new refuses to save without a name rather than inventing one', () => {
++    const root = makeProject();
++    const home = makeHome();
++    expect(() => saveCurrentProfile({ projectRoot: root, home, mode: 'new' }))
++      .toThrow(/needs a name/i);
++  });
++});
++
++describe('per-user artifacts travel', () => {
++  test('profiles are plain files under the user profiles dir', () => {
++    const home = makeHome();
++    const file = writeProfile('mine', { settings: { 'gate.cite': false } }, { home });
++    expect(file.startsWith(profilesDir({ home }))).toBe(true);
++    expect(fs.readFileSync(file, 'utf8')).toContain('gate.cite');
++  });
++
++  test('export then import round trips a profile onto another machine', () => {
++    const home = makeHome();
++    const other = makeHome();
++    writeProfile('mine', { settings: { 'gate.cite': false }, description: 'mine' }, { home });
++
++    const bundle = path.join(home, 'mine.forge-profile.yaml');
++    exportProfile('mine', bundle, { home });
++    const imported = importProfile(bundle, { home: other });
++
++    expect(imported.name).toBe('mine');
++    expect(readProfile('mine', { home: other }).settings).toEqual({ 'gate.cite': false });
++    expect(readProfile('mine', { home: other }).description).toBe('mine');
++  });
++
++  test('a builtin preset exports too, so it can be forked and edited', () => {
++    const home = makeHome();
++    const bundle = path.join(home, 'speed.yaml');
++    exportProfile('speed', bundle, { home });
++    expect(fs.existsSync(bundle)).toBe(true);
++  });
++
++  test('import rejects a bundle that is not a settings profile', () => {
++    const home = makeHome();
++    const bogus = path.join(home, 'bogus.yaml');
++    fs.writeFileSync(bogus, 'hello: world\n');
++    expect(() => importProfile(bogus, { home })).toThrow(/not a forge settings profile/i);
++  });
++
++  test('import rejects a bundle carrying an unknown setting id', () => {
++    const home = makeHome();
++    const bogus = path.join(home, 'bogus.yaml');
++    fs.writeFileSync(bogus, 'kind: forge.settingsProfile\nversion: 1\nname: x\nsettings:\n  rail.nope: false\n');
++    expect(() => importProfile(bogus, { home })).toThrow(/unknown setting/i);
++  });
++
++  test('a user profile shadows a builtin of the same name', () => {
++    const home = makeHome();
++    writeProfile('speed', { settings: { 'gate.cite': false } }, { home });
++    expect(readProfile('speed', { home }).source).toBe('user');
++    expect(listProfiles({ home }).filter(p => p.name === 'speed').length).toBe(1);
++  });
++
++  test('delete removes a user profile and restores the builtin', () => {
++    const home = makeHome();
++    writeProfile('speed', { settings: { 'gate.cite': false } }, { home });
++    expect(deleteProfile('speed', { home })).toBe(true);
++    expect(readProfile('speed', { home }).source).toBe('builtin');
++    expect(deleteProfile('speed', { home })).toBe(false);
++  });
++
++  test('a profile name has to be a safe file name', () => {
++    const home = makeHome();
++    expect(() => writeProfile('../escape', { settings: {} }, { home })).toThrow(/profile name/i);
++    expect(() => writeProfile('', { settings: {} }, { home })).toThrow(/profile name/i);
++  });
++});
+-- 
+2.51.0.windows.1
+

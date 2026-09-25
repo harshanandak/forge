@@ -1,0 +1,135 @@
+From 6b1b21818983f393a2edb5440ee0f8ce5e1aae68 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 00:35:13 +0530
+Subject: [PATCH] fix(quality): clear sonar follow-up findings
+
+---
+ lib/commands/merge.js          |  2 +-
+ lib/commands/shepherd.js       |  2 +-
+ lib/kernel/broker.js           |  6 ++----
+ lib/pr-monitor/flow-monitor.js | 24 +++++++++++++++++-------
+ test/commands/merge.test.js    |  1 +
+ 5 files changed, 22 insertions(+), 13 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 0cc1c0ae..e1aec365 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -541,7 +541,7 @@ async function defaultPersistMergeDecision({ decision, pr, expectedHead, reposit
+       sessionId: decision.sessionId,
+     });
+     if (!result?.iteration || !['accept', 'duplicate'].includes(result.iteration.decision)) {
+-      throw new Error('Kernel did not confirm durable merge authority.');
++      throw new TypeError('Kernel did not confirm durable merge authority.');
+     }
+     return { persisted: true, decisionId: decision.decisionId, expectedHead };
+   } finally {
+diff --git a/lib/commands/shepherd.js b/lib/commands/shepherd.js
+index 894d13de..cf9a1e08 100644
+--- a/lib/commands/shepherd.js
++++ b/lib/commands/shepherd.js
+@@ -256,7 +256,7 @@ function parseSince(args) {
+  * @param {string|number} pr
+  * @param {string} projectRoot
+  * @param {object} deps
+- * @returns {Promise<{ dir?: string, gather?: Function, enrich?: Function, error?: string }>}
++ * @returns {{ dir?: string, gather?: Function, enrich?: Function, error?: string }}
+  */
+ function injectedMonitorAuthority(deps) {
+   return deps.store ? {
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index 3c6ea1df..a4a73a50 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -350,10 +350,8 @@ function derivePrPacketEvidence(input) {
+ }
+ 
+ function derivePrEvidence(input) {
+-	const evidence = derivePrPacketEvidence(input);
++	const { packet, packetPayload, ...packetEvidence } = derivePrPacketEvidence(input);
+ 	const receipt = assertReceiptEnvelope(input?.run_receipt, 'forge.memory.run-receipt.v1');
+-	const { packet, packetPayload } = evidence;
+-	const { packet: _packet, packetPayload: _packetPayload, ...packetEvidence } = evidence;
+ 	const receiptPayload = receipt.payload;
+ 	if (receiptPayload.status !== 'PASS' || receiptPayload.validation?.status !== 'PASS') {
+ 		throw traceError('FORGE_TRACE_INVALID_RECEIPT', 'recordPrLinkage requires a PASS RunReceipt');
+@@ -1872,7 +1870,7 @@ function createLocalBroker(options = {}) {
+ 							git_common_dir: linkageInput.git_common_dir,
+ 						}, context, config);
+ 						const linked = findPriorPr(trace.pull_requests, linkageInput);
+-						if (!linked || linked.state !== 'open' || linked.head_sha !== evidence.head_sha) {
++						if (linked?.state !== 'open' || linked.head_sha !== evidence.head_sha) {
+ 							throw traceError('FORGE_TRACE_STALE_AUTHORITY', 'recordPrMergeAuthority requires the current open PR head');
+ 						}
+ 						const payload = buildPrMergeAuthorityPayload(linkageInput, evidence, inferred.worktree_id, gateReceipts);
+diff --git a/lib/pr-monitor/flow-monitor.js b/lib/pr-monitor/flow-monitor.js
+index 99c75466..09c7adf7 100644
+--- a/lib/pr-monitor/flow-monitor.js
++++ b/lib/pr-monitor/flow-monitor.js
+@@ -672,6 +672,14 @@ async function redeliverOutstanding(ctx, bridge, spec, initialState, durableEven
+   return { state, receiptIds };
+ }
+ 
++function pendingBatchEvidence(ctx, subjectRevision, batchRecords, snapshot, pendingBatch, batchPlan) {
++  if (batchPlan) return null;
++  if (pendingBatch) return pendingBatch;
++  return batchRecords.length > 1
++    ? encodePendingBatch(ctx, subjectRevision, batchRecords, snapshot)
++    : null;
++}
++
+ async function persistRecords(ctx, bridge, spec, {
+   initialState,
+   records,
+@@ -686,11 +694,9 @@ async function persistRecords(ctx, bridge, spec, {
+ }) {
+   let state = initialState;
+   const receiptIds = [];
+-  let batchEvidence = null;
+-  if (!batchPlan && pendingBatch) batchEvidence = pendingBatch;
+-  else if (!batchPlan && batchRecords.length > 1) {
+-    batchEvidence = encodePendingBatch(ctx, subjectRevision, batchRecords, snapshot);
+-  }
++  const batchEvidence = pendingBatchEvidence(
++    ctx, subjectRevision, batchRecords, snapshot, pendingBatch, batchPlan,
++  );
+   const prepared = [];
+   let validatedState = state;
+   for (const [index, record] of records.entries()) {
+@@ -1105,7 +1111,9 @@ async function resumeRetainedBatch(ctx, bridge, spec, state, pendingEvents, subj
+   });
+ }
+ 
+-async function persistFreshSnapshot(ctx, bridge, spec, state, previousSnapshot, durableEvents, subjectRevision, receiptIds, now) {
++async function persistFreshSnapshot(ctx, bridge, spec, {
++  state, previousSnapshot, durableEvents, subjectRevision, receiptIds, now,
++}) {
+   const gathered = await ctx.gather();
+   const next = compactSnapshot(gathered);
+   const previous = previousSnapshot == null ? null : comparableSnapshot(compactSnapshot(previousSnapshot));
+@@ -1191,7 +1199,9 @@ async function runFlowMonitorPass(ctx, reopenDepth = 0) {
+       return resumeRetainedBatch(ctx, bridge, spec, state, pendingEvents, subjectRevision, receiptIds);
+     }
+   }
+-  return persistFreshSnapshot(ctx, bridge, spec, state, previousSnapshot, durableEvents, subjectRevision, receiptIds, now);
++  return persistFreshSnapshot(ctx, bridge, spec, {
++    state, previousSnapshot, durableEvents, subjectRevision, receiptIds, now,
++  });
+ }
+ 
+ module.exports = { FlowMonitorError, runFlowMonitorPass };
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 5e28ae85..0e4cf542 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -49,6 +49,7 @@ const AUTHORITY_DEPS = {
+   verifyPrIssueBinding: async () => ({ bound: true }),
+   verifyMergeGate: async () => true,
+   prepareMergeDecision: async () => ({ decisionId: 'decision-1' }),
++  persistMergeDecision: async () => ({ persisted: true }),
+   recordMergeDecision: async () => ({ receiptId: 'receipt-1' }),
+ };
+ 
+-- 
+2.51.0.windows.1
+

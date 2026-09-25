@@ -1,0 +1,218 @@
+From 9a049df667ba2dfa3ca53cea06713cb6c109e330 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 3 Aug 2026 12:48:03 +0530
+Subject: [PATCH] fix(worktree): repair linkage on reuse cb8c7ab6
+
+---
+ lib/commands/worktree.js               | 80 ++++++++++++++++++++------
+ test/commands/worktree-linkage.test.js | 68 ++++++++++++++++++++++
+ 2 files changed, 130 insertions(+), 18 deletions(-)
+
+diff --git a/lib/commands/worktree.js b/lib/commands/worktree.js
+index caebaa1e..3e7720d3 100644
+--- a/lib/commands/worktree.js
++++ b/lib/commands/worktree.js
+@@ -269,30 +269,68 @@ function setupWorktreeDeps(worktreePath, projectRoot, { spawnFn, fsApi, platform
+  * @param {string|null} params.issueId
+  * @param {string|null} params.workFolder - Repo-relative work-folder path.
+  * @param {object} params.opts - DI options (may inject `_kernelDriver`, `_exec`, `_fs`).
++ * @param {boolean} [params.reuse] - Validate existing linkage before reconciling.
+  * @returns {Promise<{registered: boolean, issueId: string|null, workFolder: string|null, reason?: string}>}
+  */
+-async function registerWorktreeLinkage({ projectRoot, worktreePath, branch, issueId, workFolder, opts }) {
++async function registerWorktreeLinkage({ projectRoot, worktreePath, branch, issueId, workFolder, opts, reuse = false }) {
+   const runFile = opts._exec || execFileSync;
+   const fsApi = opts._fs || fs;
+   try {
+-    // Drop the folder → issue marker first — deterministic even if the DB write fails.
+-    if (workFolder && issueId) {
+-      const folderAbs = path.resolve(projectRoot, workFolder);
+-      fsApi.mkdirSync(folderAbs, { recursive: true });
+-      fsApi.writeFileSync(path.join(folderAbs, '.forge-issue'), `${issueId}\n`, 'utf8');
+-    }
+-
+     let driver = opts._kernelDriver;
+     if (!driver) {
+       // No reachable git repo → no shared Kernel; skip quietly (orientation still works
+       // off the folder heuristic). Avoids spawning `git` in a non-repo directory.
+-      if (!fsApi.existsSync(path.join(projectRoot, '.git'))) {
+-        return { registered: false, issueId: issueId || null, workFolder: workFolder || null, reason: 'no git repository' };
++      if (fsApi.existsSync(path.join(projectRoot, '.git'))) {
++        // Lazy require: keep the worktree command light and avoid paying kernel setup
++        // when linkage is not needed. Migrated deps guarantee the 007 columns exist.
++        const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++        driver = (await buildMigratedKernelIssueDeps({ projectRoot })).kernelDriver;
+       }
+-      // Lazy require: keep the worktree command light and avoid paying kernel setup
+-      // when linkage is not needed. Migrated deps guarantee the 007 columns exist.
+-      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
+-      driver = (await buildMigratedKernelIssueDeps({ projectRoot })).kernelDriver;
++    }
++
++    const existing = reuse && driver && typeof driver.getWorktreeLinkage === 'function'
++      ? driver.getWorktreeLinkage({ path: worktreePath }) || null
++      : null;
++    const existingIssue = existing?.issue_id || null;
++    const existingFolder = existing?.work_folder || null;
++    const folderChanged = workFolder && existingFolder
++      && path.resolve(projectRoot, workFolder) !== path.resolve(projectRoot, existingFolder);
++    if (reuse && ((issueId && existingIssue && issueId !== existingIssue) || folderChanged)) {
++      return {
++        registered: false,
++        issueId: issueId || existingIssue,
++        workFolder: workFolder || existingFolder,
++        reason: 'worktree linkage mismatch; existing issue/work-folder was not changed',
++        conflict: true,
++      };
++    }
++
++    const linkedIssue = issueId || (reuse ? existingIssue : null);
++    const linkedFolder = workFolder || (reuse ? existingFolder : null);
++    // A missing work-folder is created by the user/plan later; do not create it here.
++    if (linkedFolder && linkedIssue) {
++      const folderAbs = path.resolve(projectRoot, linkedFolder);
++      if (fsApi.existsSync(folderAbs)) {
++        const markerPath = path.join(folderAbs, '.forge-issue');
++        let markerIssue = null;
++        try {
++          if (fsApi.existsSync(markerPath)) markerIssue = fsApi.readFileSync(markerPath, 'utf8').trim() || null;
++        } catch { /* unreadable marker — let the write below repair it */ }
++        if (markerIssue && markerIssue !== linkedIssue) {
++          return {
++            registered: false,
++            issueId: linkedIssue,
++            workFolder: linkedFolder,
++            reason: 'worktree linkage mismatch; existing issue marker was not changed',
++            conflict: true,
++          };
++        }
++        fsApi.writeFileSync(markerPath, `${linkedIssue}\n`, 'utf8');
++      }
++    }
++
++    if (!driver) {
++      return { registered: false, issueId: linkedIssue || null, workFolder: linkedFolder || null, reason: 'no git repository' };
+     }
+ 
+     const { resolveGitCommonDir } = require('../kernel/broker');
+@@ -303,13 +341,13 @@ async function registerWorktreeLinkage({ projectRoot, worktreePath, branch, issu
+       path: worktreePath,
+       branch,
+       actor: process.env.FORGE_ACTOR || null,
+-      issue_id: issueId || null,
+-      work_folder: workFolder || null,
++      issue_id: linkedIssue || null,
++      work_folder: linkedFolder || null,
+       registered_at: new Date().toISOString(),
+       state: 'active',
+     });
+ 
+-    return { registered: true, issueId: issueId || null, workFolder: workFolder || null };
++    return { registered: true, issueId: linkedIssue || null, workFolder: linkedFolder || null };
+   } catch (error) {
+     // Non-fatal: keep the worktree usable. Only warn when the caller explicitly asked
+     // for linkage (--issue/--work-folder); a plain `worktree create` stays quiet.
+@@ -415,7 +453,10 @@ async function handleCreate(slug, flags, projectRoot, opts) {
+       // A detached worktree reports the literal "HEAD" — don't persist that; keep branchName.
+       if (head && head !== 'HEAD') existingBranch = head;
+     } catch (_error) { /* not a resolvable worktree HEAD — fall back to branchName */ }
+-    const linkage = await registerWorktreeLinkage({ projectRoot, worktreePath, branch: existingBranch, issueId, workFolder, opts });
++    const linkage = await registerWorktreeLinkage({ projectRoot, worktreePath, branch: existingBranch, issueId, workFolder, opts, reuse: true });
++    if (linkage.conflict) {
++      return { success: false, reused: true, error: linkage.reason, worktreePath, linkage };
++    }
+     const backing = await autoFileBackingIssue({ projectRoot, worktreePath, branch: existingBranch, issueId, opts });
+     return {
+       success: true,
+@@ -459,6 +500,9 @@ async function handleCreate(slug, flags, projectRoot, opts) {
+   }
+ 
+   const linkage = await registerWorktreeLinkage({ projectRoot, worktreePath, branch: branchName, issueId, workFolder, opts });
++  if (linkage.conflict) {
++    return { success: false, error: linkage.reason, worktreePath, branch: branchName, linkage };
++  }
+   const backing = await autoFileBackingIssue({ projectRoot, worktreePath, branch: branchName, issueId, opts });
+ 
+   // Report the base so the fork point is never silent. `base` is null when an
+diff --git a/test/commands/worktree-linkage.test.js b/test/commands/worktree-linkage.test.js
+index 0ef75e67..b3b658b7 100644
+--- a/test/commands/worktree-linkage.test.js
++++ b/test/commands/worktree-linkage.test.js
+@@ -141,6 +141,74 @@ describe('P0 kernel linkage: forge worktree create writes kernel_worktrees', ()
+     expect(stale.worktrees).toHaveLength(0);
+     expect(stale.output).toBe('No worktrees registered.');
+   }, TIMEOUT);
++
++  test('keeps a missing work-folder untouched, then repairs its marker on reuse idempotently', async () => {
++    const { root, gitCommonDir, driver } = await setup();
++    const worktreePath = path.resolve(root, '.worktrees', 'late-folder');
++    const workFolder = 'docs/work/2026-07-05-late';
++    const markerPath = path.join(root, workFolder, '.forge-issue');
++    const args = ['create', 'late-folder', '--branch', 'feat/late-folder', '--issue', 'forge-late', '--work-folder', workFolder];
++    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
++
++    const first = await worktree.handler(args, {}, root, opts);
++    expect(first.success).toBe(true);
++    expect(fs.existsSync(path.join(root, workFolder))).toBe(false);
++    expect(fs.existsSync(markerPath)).toBe(false);
++
++    const firstRow = (await driver.queryAll('SELECT * FROM kernel_worktrees'))[0];
++    expect(firstRow.issue_id).toBe('forge-late');
++    expect(firstRow.work_folder).toBe(workFolder);
++
++    fs.mkdirSync(path.join(root, workFolder), { recursive: true });
++    fs.mkdirSync(worktreePath, { recursive: true });
++
++    const repaired = await worktree.handler(args, {}, root, opts);
++    expect(repaired.success).toBe(true);
++    expect(repaired.reused).toBe(true);
++    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-late');
++
++    const rerun = await worktree.handler(args, {}, root, opts);
++    expect(rerun.success).toBe(true);
++    expect(rerun.reused).toBe(true);
++    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-late');
++    const rows = await driver.queryAll('SELECT * FROM kernel_worktrees');
++    expect(rows).toHaveLength(1);
++    expect(rows[0].issue_id).toBe('forge-late');
++    expect(rows[0].work_folder).toBe(workFolder);
++  }, TIMEOUT);
++
++  test('rejects mismatched issue or work-folder on reuse without rewriting linkage', async () => {
++    const { root, gitCommonDir, driver } = await setup();
++    const worktreePath = path.resolve(root, '.worktrees', 'mismatch');
++    const workFolder = 'docs/work/2026-07-06-owned';
++    const otherFolder = 'docs/work/2026-07-06-other';
++    const markerPath = path.join(root, workFolder, '.forge-issue');
++    fs.mkdirSync(path.join(root, workFolder), { recursive: true });
++    const opts = { _exec: gitStub(gitCommonDir, root), _spawn: () => ({ status: 0 }), _platform: 'linux', _kernelDriver: driver };
++    const original = ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-owned', '--work-folder', workFolder];
++
++    const first = await worktree.handler(original, {}, root, opts);
++    expect(first.success).toBe(true);
++    fs.mkdirSync(worktreePath, { recursive: true });
++    const before = await driver.queryAll('SELECT * FROM kernel_worktrees');
++
++    const issueMismatch = await worktree.handler(
++      ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-other', '--work-folder', workFolder],
++      {}, root, opts,
++    );
++    expect(issueMismatch.success).toBe(false);
++    expect(issueMismatch.error).toMatch(/mismatch/i);
++
++    const folderMismatch = await worktree.handler(
++      ['create', 'mismatch', '--branch', 'feat/mismatch', '--issue', 'forge-owned', '--work-folder', otherFolder],
++      {}, root, opts,
++    );
++    expect(folderMismatch.success).toBe(false);
++    expect(folderMismatch.error).toMatch(/mismatch/i);
++    expect(fs.readFileSync(markerPath, 'utf8').trim()).toBe('forge-owned');
++    expect(fs.existsSync(path.join(root, otherFolder))).toBe(false);
++    expect(await driver.queryAll('SELECT * FROM kernel_worktrees')).toEqual(before);
++  }, TIMEOUT);
+ });
+ 
+ describe('P0 kernel linkage: orientation resolves work-folder via the kernel', () => {
+-- 
+2.51.0.windows.1
+

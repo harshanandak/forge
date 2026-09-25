@@ -1,0 +1,63 @@
+From 270cc930b5a54b60a7822b5e8c7fa217452835ef Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 15:43:09 +0530
+Subject: [PATCH] fix(test): drop obsolete .cursorrules stage-naming assertions
+ (C1)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+.cursorrules is removed in this PR; stage-naming.test.js read it at
+describe-eval time → ENOENT crashed the suite. /validate naming is enforced
+on AGENTS.md (validate.test.js) and the canonical rules/ source.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/stage-naming.test.js | 33 +++++----------------------------
+ 1 file changed, 5 insertions(+), 28 deletions(-)
+
+diff --git a/test/stage-naming.test.js b/test/stage-naming.test.js
+index e6e35bbc..6f95b205 100644
+--- a/test/stage-naming.test.js
++++ b/test/stage-naming.test.js
+@@ -81,32 +81,9 @@ describe('Stage naming consistency', () => {
+     }
+   });
+ 
+-  describe('.cursorrules file', () => {
+-    const cursorrules = fs.readFileSync(path.join(ROOT, '.cursorrules'), 'utf8');
+-
+-    test('does not contain backtick-quoted /check as stage name', () => {
+-      const staleRefs = cursorrules.match(/`\/check`/g);
+-      expect(staleRefs).toBeNull();
+-    });
+-
+-    test('does not contain /check in stage table row', () => {
+-      const tableRef = cursorrules.match(/\|\s*`\/check`\s*\|/g);
+-      expect(tableRef).toBeNull();
+-    });
+-
+-    test('does not contain /check in flow diagram', () => {
+-      const flowRef = cursorrules.match(/\/check\s*→/g);
+-      expect(flowRef).toBeNull();
+-    });
+-
+-    test('does not contain "Check (`/check`)" heading', () => {
+-      expect(cursorrules).not.toContain('Check (`/check`)');
+-    });
+-
+-    test('contains /validate where /check was replaced', () => {
+-      expect(cursorrules).toMatch(/\|\s*`\/validate`\s*\|/);
+-      expect(cursorrules).toMatch(/\/validate\s*→/);
+-      expect(cursorrules).toContain('Validate (`/validate`)');
+-    });
+-  });
++  // The legacy `.cursorrules` root file was removed (deprecated in favor of the
++  // generated `.cursor/rules/*.mdc` surface + the canonical AGENTS.md projection).
++  // Stage-name correctness (/validate, not /check) is enforced on AGENTS.md by
++  // validate.test.js and on the canonical `rules/` source, so no `.cursorrules`
++  // assertions remain here.
+ });
+-- 
+2.51.0.windows.1
+

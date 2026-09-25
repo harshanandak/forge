@@ -1,0 +1,76 @@
+From 0409c6d8e4fd5fdc3eb8b6ccc7eae0642f3e519f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 21:56:32 +0530
+Subject: [PATCH] fix: validate full-suite receipt documents
+
+---
+ scripts/test-full-suite.js           | 15 ++++++++++++---
+ test/scripts/test-full-suite.test.js | 19 +++++++++++++++++++
+ 2 files changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index 5607b1ae..39f81027 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -170,17 +170,26 @@ function aggregateShardReceipts(receipts, expectedCount) {
+     }
+ 
+     const root = typeof receipt.output === 'string'
+-      ? receipt.output.match(/<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>/)
++      ? receipt.output.match(/^\s*(?:<\?xml\b[^?]*\?>\s*)?<testsuites\b([^>]*)>[\s\S]*<\/testsuites\s*>\s*$/)
+       : null;
+-    if (!root) {
++    const openingTags = typeof receipt.output === 'string'
++      ? receipt.output.match(/<testsuites\b/g) || []
++      : [];
++    const closingTags = typeof receipt.output === 'string'
++      ? receipt.output.match(/<\/testsuites\s*>/g) || []
++      : [];
++    if (!root || openingTags.length !== 1 || closingTags.length !== 1) {
+       incomplete = true;
+       continue;
+     }
+ 
+     const readAttribute = (name) => root[1].match(new RegExp(`\\b${name}="(\\d+)"`));
+     const values = ['tests', 'assertions', 'failures', 'skipped'].map(readAttribute);
++    const errorsOccurrences = root[1].match(/\berrors\s*=/g) || [];
+     const errorsAttribute = readAttribute('errors');
+-    if (values.some((value) => !value)) {
++    if (values.some((value) => !value)
++      || errorsOccurrences.length > 1
++      || (errorsOccurrences.length === 1 && !errorsAttribute)) {
+       incomplete = true;
+       continue;
+     }
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index 262cf912..a7b74b8e 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -419,5 +419,24 @@ describe('scripts/test-full-suite.js', () => {
+     expect(aggregateShardReceipts([
+       { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" skipped="0">' },
+     ], 1).status).toBe('INCOMPLETE');
++    expect(aggregateShardReceipts([
++      { code: 0, index: 0, output: 'junk<testsuites tests="1" assertions="1" failures="0" skipped="0"></testsuites>' },
++    ], 1).status).toBe('INCOMPLETE');
++
++    expect(aggregateShardReceipts([
++      { code: 0, index: 0, output: passingShardReceipt + passingShardReceipt },
++    ], 1).status).toBe('INCOMPLETE');
++
++    expect(aggregateShardReceipts([
++      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" errors="nope" skipped="0"></testsuites>' },
++    ], 1).status).toBe('INCOMPLETE');
++
++    expect(aggregateShardReceipts([
++      { code: 0, index: 0, output: '<testsuites tests="1" assertions="1" failures="0" errors="0" errors="0" skipped="0"></testsuites>' },
++    ], 1).status).toBe('INCOMPLETE');
++
++    expect(aggregateShardReceipts([
++      { code: 0, index: 0, output: ' ' + String.fromCharCode(10) + '<?xml version="1.0" encoding="UTF-8"?>' + String.fromCharCode(10) + passingShardReceipt + String.fromCharCode(10) },
++    ], 1).status).toBe('PASS');
+   });
+ });
+-- 
+2.51.0.windows.1
+

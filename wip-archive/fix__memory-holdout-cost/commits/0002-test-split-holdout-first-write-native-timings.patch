@@ -1,0 +1,210 @@
+From 4335e46808f360db7e0fa1aef4338a73d8ec7548 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 00:43:06 +0530
+Subject: [PATCH] test: split holdout first-write native timings
+
+Observe existing SQLite runtime calls without changing fixture behavior.
+
+Preserve lazy opening, errors, receivers, and original test assertions.
+
+Kernel-Issue: 5e085fe5-21ff-4d2b-9615-44098d79f492
+---
+ .../decisions.md                              | 50 +++++++++++++
+ .../2026-09-20-memory-holdout-cost/tasks.md   | 18 +++++
+ test/e2e/memory-recall-holdout.test.js        | 74 ++++++++++++++++++-
+ 3 files changed, 139 insertions(+), 3 deletions(-)
+
+diff --git a/docs/work/2026-09-20-memory-holdout-cost/decisions.md b/docs/work/2026-09-20-memory-holdout-cost/decisions.md
+index 47473023..0d386ce8 100644
+--- a/docs/work/2026-09-20-memory-holdout-cost/decisions.md
++++ b/docs/work/2026-09-20-memory-holdout-cost/decisions.md
+@@ -62,3 +62,53 @@ Independent Luna spec review and subsequent Sol quality/final review both
+ passed. The final review included the driver lifecycle and repository coding
+ standards. No blocking findings remain for this diagnostic-only change. Canonical
+ validation and the hosted Windows exposure remain separate evidence steps.
++
++## First hosted exposure: writes dominate, timeout not reproduced
++
++Diagnostic head `547cb25119f518d7abd71c7e36c96423f522d0e8` passed canonical
++local validation in approximately 13m38s; unchanged push reused its receipt.
++[Run 35518511452](https://github.com/harshanandak/forge/actions/runs/35518511452)
++completed all 18 jobs. Both Windows full-matrix jobs passed; the workflow failed
++only on the separately tracked mutation source-integrity defect
++`f5d0087a-fc74-4c0d-ab1c-9621398fac0b`.
++
++| Job / case | First write | Later writes | Search | Total |
++| --- | ---: | ---: | ---: | ---: |
++| Node 22 identity | 131.980 ms | 72.534 ms | 1.875 ms | 209.291 ms |
++| Node 24 identity | 1,024.135 ms | 560.005 ms | 1.701 ms | 1,588.190 ms |
++| Node 24 single-write harness | 868.687 ms | none | 1.229 ms | 871.523 ms |
++| Node 24 foreign crowding | 840.015 ms | 2,960.666 ms | 1.696 ms | 3,807.932 ms |
++
++Both jobs use Bun 1.4.2; job labels do not establish Node-version causality.
++The original 17.65-second timeout did not recur. First write includes lazy
++database opening, schema/FTS initialization and insertion, which remain
++unseparated. Batching can reduce repeated writes but cannot explain the slow
++single-write case. The incident and merged PR verification remain open.
++
++Full content-free timing payloads and SHA-256 hashes are preserved in verified
++Kernel comments `bc399064-3b02-43a4-b43a-e1b8c7e2ff2d` and
++`03acb0a4-dfce-40ec-b122-e8b402843545`; synthesis is in
++`632ec1c3-71df-465c-adb7-742c083e737d`. Downloaded artifacts remain under
++`test-results/hosted/35518511452/node22/` and `node24/`.
++
++## Decision 5: Observe native operations through existing runtime injection
++
++Date: 2026-09-21. Task: split first-record timing. Status: RESOLVED.
++User approved continuation. Independent Sol review confirmed the existing
++`createBuiltinSQLiteDriver({ runtime })` injection and observed database wrapper
++pattern in `test/kernel/watch-owner-transaction.test.js`. Reuse that seam in the
++holdout test, without changing production code or eagerly opening the database.
++Keep the prepared batching patch unchanged. Native timing aggregates overlap
++store-level timings; they are diagnostic partitions, not additive total costs.
++
++The refinement passed the original 10 cases / 177 assertions in 7.84 seconds
++with the unchanged 15-second default. Focused ESLint exited 0. A disposable
++fake-runtime probe passed nine assertions for return/error identity, native
++receivers, lazy construction and context restoration; it was removed afterward
++so the benchmark keeps exactly its original cases. Luna's spec review passed.
++Final quality review and canonical validation are separate gates.
++
++Fresh artifact: `test-results/memory-recall-holdout-timing-17280-1789931237492.json`.
++It contains 10 cases and 16 bounded phase labels, no recording failure, negative
++durations, fixture contents or absolute paths. Host load varied during local
++measurements, so the elapsed-time difference does not establish probe overhead.
+diff --git a/docs/work/2026-09-20-memory-holdout-cost/tasks.md b/docs/work/2026-09-20-memory-holdout-cost/tasks.md
+index b9d9f8e5..f5a22398 100644
+--- a/docs/work/2026-09-20-memory-holdout-cost/tasks.md
++++ b/docs/work/2026-09-20-memory-holdout-cost/tasks.md
+@@ -47,3 +47,21 @@ phase dominates, scope the root repair to that phase before implementation. A
+ passing exposure without recurrence leaves the cause unproven; no rerun loop.
+ Remove temporary instrumentation before final landing and preserve evidence.
+ Keep the resource-budget and prior SQLite-driver work separate.
++
++## Task 4: Split the dominant first-record measurement
++
++User approved continuation on 2026-09-21 after the first hosted exposure.
++Sol owns only the holdout test; root owns evidence, review and publication.
++Use the driver's existing `options.runtime` injection and the real selected
++database class to observe open, exec, prepare and statement execution. Preserve
++lazy initialization, runtime selection, constructor options, native receivers,
++returns and errors. Keep the original store-level measurements for comparison.
++Only stable phase names, counts and durations may be retained; nested native
++timings overlap store timings and must not be added together.
++
++No eager initialization, global patching, production changes, fixture batching,
++timeout changes or workflow changes. Retain all 10 cases and 177 assertions.
++Run focused tests, lint and a small return/error/receiver probe; obtain spec then
++quality review. Commit, run one canonical validation, reuse its receipt on push,
++and capture one hosted exposure of the changed diagnostic experiment. Preserve
++the findings without calling a passing exposure a reliability repair.
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 6a51ce18..c5da9fe3 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -9,7 +9,10 @@ const { performance } = require('node:perf_hooks');
+ 
+ const hooks = require('../../lib/commands/hooks');
+ const projectMemory = require('../../lib/project-memory');
+-const { createBuiltinSQLiteDriver } = require('../../lib/kernel/sqlite-driver');
++const {
++  createBuiltinSQLiteDriver,
++  selectBuiltinSQLiteRuntime,
++} = require('../../lib/kernel/sqlite-driver');
+ const fixture = require('../fixtures/memory-recall-holdouts.json');
+ 
+ const roots = [];
+@@ -73,8 +76,65 @@ function measureSync(caseLabel, phase, operation) {
+   }
+ }
+ 
++function createProfiledRuntime(caseLabel, runtime, currentContext) {
++  const Database = runtime.module[runtime.databaseClassName];
++
++  function measureNative(phase, operation) {
++    const context = currentContext();
++    return context
++      ? measureSync(caseLabel, `${context}.native.${phase}`, operation)
++      : operation();
++  }
++
++  function wrapStatement(statement) {
++    return new Proxy(statement, {
++      get(target, property) {
++        const value = Reflect.get(target, property, target);
++        if (typeof value !== 'function') return value;
++        if (property === 'all' || property === 'run') {
++          return (...args) => measureNative('statement', () => value.apply(target, args));
++        }
++        return value.bind(target);
++      },
++    });
++  }
++
++  class ProfiledDatabase {
++    constructor(...args) {
++      this.inner = measureNative('open', () => new Database(...args));
++    }
++
++    exec(...args) {
++      return measureNative('exec', () => this.inner.exec(...args));
++    }
++
++    query(...args) {
++      return wrapStatement(measureNative('prepare', () => this.inner.query(...args)));
++    }
++
++    prepare(...args) {
++      return wrapStatement(measureNative('prepare', () => this.inner.prepare(...args)));
++    }
++
++    close(...args) {
++      return this.inner.close(...args);
++    }
++  }
++
++  return {
++    ...runtime,
++    module: {
++      ...runtime.module,
++      [runtime.databaseClassName]: ProfiledDatabase,
++    },
++  };
++}
++
+ function createProfiledDriver(caseLabel, options) {
+-  const store = createBuiltinSQLiteDriver(options);
++  let nativeContext = null;
++  const selectedRuntime = options.runtime || selectBuiltinSQLiteRuntime();
++  const runtime = createProfiledRuntime(caseLabel, selectedRuntime, () => nativeContext);
++  const store = createBuiltinSQLiteDriver({ ...options, runtime });
+   let recordCount = 0;
+   const phases = new Map([
+     ['recordMemory', () => (recordCount++ === 0 ? 'record.first' : 'record.later')],
+@@ -85,7 +145,14 @@ function createProfiledDriver(caseLabel, options) {
+     const original = store[method];
+     if (typeof original !== 'function') continue;
+     store[method] = function profiledDriverMethod(...args) {
+-      return measureSync(caseLabel, phaseForCall(), () => original.apply(this, args));
++      const phase = phaseForCall();
++      const previousContext = nativeContext;
++      nativeContext = phase === 'close' ? null : phase;
++      try {
++        return measureSync(caseLabel, phase, () => original.apply(this, args));
++      } finally {
++        nativeContext = previousContext;
++      }
+     };
+   }
+   return store;
+@@ -109,6 +176,7 @@ function timingSummary() {
+     schema: 'forge.memory-recall-holdout-timing.v1',
+     timingRecordFailed,
+     hardKillLimit: 'A hard process termination can prevent the active case from reaching afterEach.',
++    nestedPhaseNote: 'record and search totals contain native subphases; durations are non-additive.',
+     cases,
+   };
+ }
+-- 
+2.51.0.windows.1
+

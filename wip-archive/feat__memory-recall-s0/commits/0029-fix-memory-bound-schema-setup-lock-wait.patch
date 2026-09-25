@@ -1,0 +1,113 @@
+From f216406b5eb1652cb667b733a02132ab16f1380a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 31 Jul 2026 14:46:29 +0530
+Subject: [PATCH] fix(memory): bound schema setup lock wait
+
+---
+ lib/kernel/sqlite-driver.js              | 48 ++++++++++++++----------
+ test/e2e/memory-recall-holdout.test.js   |  1 -
+ test/kernel/sqlite-driver-memory.test.js |  1 -
+ 3 files changed, 29 insertions(+), 21 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 5bd17e3e..bd8000e5 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2218,12 +2218,17 @@ function createDriver(runtime, configuredDatabasePath) {
+ 	// synchronous project-memory facade writes WITHOUT first running migrations. Lazily
+ 	// ensure the table (idempotent CREATE IF NOT EXISTS, rendered from the same migration)
+ 	// plus a busy_timeout for the second connection the issue backend may hold open.
+-	function ensureMemorySchema(database) {
++	function ensureMemorySchema(database, busyTimeoutMs) {
+ 		if (memorySchemaEnsured) return;
+-		execSql(runtime, database, 'PRAGMA busy_timeout=5000;');
+-		for (const statement of buildMemoryProjectionMigration().apply) {
+-			execSql(runtime, database, statement);
+-		}
++		const requestedBusyTimeout = Number(busyTimeoutMs);
++		const busyTimeout = Number.isFinite(requestedBusyTimeout) && requestedBusyTimeout >= 0
++			? Math.floor(requestedBusyTimeout)
++			: 5_000;
++		execSql(runtime, database, `PRAGMA busy_timeout=${busyTimeout};`);
++		try {
++			for (const statement of buildMemoryProjectionMigration().apply) {
++				execSql(runtime, database, statement);
++			}
+ 		// FTS5 recall index (migration 008): create the virtual table + sync triggers
+ 		// idempotently so a synchronous memory write stays indexed without a prior
+ 		// broker.initialize(). When the index is NEWLY created, rebuild once to backfill any
+@@ -2234,20 +2239,25 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		// Staleness is detected by TABLE EXISTENCE (sqlite_master), never by count(*): on an
+ 		// external-content FTS5 table `count(*)` returns the CONTENT row count, not the
+ 		// indexed-doc count, so it can never reveal an un-backfilled index.
+-		const ftsDdl = memoryFtsDdl();
+-		const ftsExisted = Number(queryOne(
+-			runtime,
+-			database,
+-			"SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'kernel_memories_fts'",
+-		).count) > 0;
+-		execSql(runtime, database, ftsDdl.create);
+-		for (const trigger of ftsDdl.triggers) {
+-			execSql(runtime, database, trigger);
+-		}
+-		if (!ftsExisted) {
+-			execSql(runtime, database, ftsDdl.rebuild);
++			const ftsDdl = memoryFtsDdl();
++			const ftsExisted = Number(queryOne(
++				runtime,
++				database,
++				"SELECT count(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'kernel_memories_fts'",
++			).count) > 0;
++			execSql(runtime, database, ftsDdl.create);
++			for (const trigger of ftsDdl.triggers) {
++				execSql(runtime, database, trigger);
++			}
++			if (!ftsExisted) {
++				execSql(runtime, database, ftsDdl.rebuild);
++			}
++			memorySchemaEnsured = true;
++		} finally {
++			if (busyTimeout !== 5_000) {
++				execSql(runtime, database, 'PRAGMA busy_timeout=5000;');
++			}
+ 		}
+-		memorySchemaEnsured = true;
+ 	}
+ 
+ 	function resolveDatabasePath(config) {
+@@ -2574,7 +2584,7 @@ function createDriver(runtime, configuredDatabasePath) {
+ 		// fallback). Used by the per-turn memory-recall hook.
+ 		searchMemoriesRankedScored(query, limit, config = {}) {
+ 			const database = getDatabase(config);
+-			ensureMemorySchema(database);
++			ensureMemorySchema(database, config.busyTimeoutMs);
+ 			return searchMemoryRowsRankedScored(runtime, database, query, limit, config);
+ 		},
+ 		// The newest `limit` entries (default recall with no query). `options.agents` scopes
+diff --git a/test/e2e/memory-recall-holdout.test.js b/test/e2e/memory-recall-holdout.test.js
+index 9d639eaa..07290049 100644
+--- a/test/e2e/memory-recall-holdout.test.js
++++ b/test/e2e/memory-recall-holdout.test.js
+@@ -243,7 +243,6 @@ describe('project-local memory recall holdout', () => {
+       sourceAgent: 'forge remember',
+       tags: [],
+     }, { store: locker });
+-    reader.countMemories();
+     await locker.exec('PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
+     const startedAt = performance.now();
+     const result = await hooks.handler(['memory-recall', '--harness', 'claude'], {}, root, {
+diff --git a/test/kernel/sqlite-driver-memory.test.js b/test/kernel/sqlite-driver-memory.test.js
+index a753b32a..045acda2 100644
+--- a/test/kernel/sqlite-driver-memory.test.js
++++ b/test/kernel/sqlite-driver-memory.test.js
+@@ -346,7 +346,6 @@ describe('Kernel SQLite driver — FTS5 memory recall (token-efficient read laye
+ 			scope: LOCAL_PROJECT_ID,
+ 			tags: [],
+ 		});
+-		reader.countMemories();
+ 		await locker.exec('PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE;');
+ 		const startedAt = performance.now();
+ 		expect(() => reader.searchMemoriesRankedScored('auth token', 25, {
+-- 
+2.51.0.windows.1
+

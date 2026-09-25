@@ -1,0 +1,35 @@
+From 5580c17c24dcf64be5ba187774a0a28ec6bc5604 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 14:57:55 +0530
+Subject: [PATCH] fix: read reviewer state from shared journal
+
+---
+ lib/commands/merge.js | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index c175f243..52da3bbc 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -603,8 +603,17 @@ async function defaultFetchPrContext({ pr, projectRoot, gitCommonDir, gh = defau
+     }
+   }
+ 
++  let sharedGitCommonDir = gitCommonDir;
++  if (!sharedGitCommonDir && projectRoot) {
++    try {
++      const { resolveGitCommonDir } = require('../kernel/broker');
++      sharedGitCommonDir = resolveGitCommonDir(projectRoot, { warn: () => {} });
++    } catch {
++      sharedGitCommonDir = undefined;
++    }
++  }
+   const reviewerSnapshot = owner && repo
+-    ? readAuthoritativeReviewerLedger({ root: projectRoot, gitCommonDir, repo: `${owner}/${repo}`, pr })
++    ? readAuthoritativeReviewerLedger({ root: projectRoot, gitCommonDir: sharedGitCommonDir, repo: `${owner}/${repo}`, pr })
+     : { ledger: null, cursor: null, fingerprint: null, source: 'unavailable', error: 'repository identity is unreadable' };
+ 
+   return {
+-- 
+2.51.0.windows.1
+

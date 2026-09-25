@@ -1,0 +1,707 @@
+From 9f5cef58829a0cc36e7d6a7c4299692727fedd04 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 12:19:12 +0530
+Subject: [PATCH] feat(memory): add durable usage evidence seam
+
+---
+ lib/memory/hygiene.js              |  65 ++++++-
+ lib/memory/usage-evidence.js       | 232 +++++++++++++++++++++++
+ test/memory/hygiene.test.js        |  54 +++++-
+ test/memory/usage-evidence.test.js | 292 +++++++++++++++++++++++++++++
+ 4 files changed, 641 insertions(+), 2 deletions(-)
+ create mode 100644 lib/memory/usage-evidence.js
+ create mode 100644 test/memory/usage-evidence.test.js
+
+diff --git a/lib/memory/hygiene.js b/lib/memory/hygiene.js
+index db4536ff..7c546c22 100644
+--- a/lib/memory/hygiene.js
++++ b/lib/memory/hygiene.js
+@@ -4,6 +4,8 @@ const { createHash } = require('node:crypto');
+ 
+ const MEMORY_REVIEW_ENTRY_LIMIT = 200;
+ const DEFAULT_FINDING_LIMIT = 50;
++const STALE_AFTER_DAYS = 90;
++const STALE_AFTER_MS = STALE_AFTER_DAYS * 24 * 60 * 60 * 1000;
+ const VOLATILE_FIELDS = new Set([
+   'id', 'key', 'memory_id', 'created_at', 'updated_at', 'timestamp', 'revision',
+   'createdAt', 'updatedAt',
+@@ -70,6 +72,62 @@ function claimFor(entry) {
+   return text ? { basis: text, negative } : null;
+ }
+ 
++function readOwnDataProperty(value, fieldName, subject) {
++  let descriptor;
++  try {
++    descriptor = Object.getOwnPropertyDescriptor(value, fieldName);
++  } catch {
++    throw new TypeError(`${subject} ${fieldName} must be an own data property`);
++  }
++  if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
++    throw new TypeError(`${subject} ${fieldName} must be an own data property`);
++  }
++  return descriptor.value;
++}
++
++function stalenessForMemory(memory, usageProjection, options = {}) {
++  if (!memory || typeof memory !== 'object') {
++    throw new TypeError('memory must be an object');
++  }
++  const assertCanonicalIso = (value, fieldName) => {
++    if (typeof value !== 'string' || Number.isNaN(Date.parse(value))
++      || new Date(value).toISOString() !== value) {
++      throw new TypeError(`${fieldName} must be a canonical ISO timestamp`);
++    }
++  };
++  const createdAt = readOwnDataProperty(memory, 'created_at', 'memory');
++  assertCanonicalIso(createdAt, 'memory created_at');
++  let useCount = 0;
++  let baselineAt = createdAt;
++  if (usageProjection !== null && usageProjection !== undefined) {
++    if (!usageProjection || typeof usageProjection !== 'object') {
++      throw new TypeError('durable usage projection must be an object');
++    }
++    const lastUsedAt = readOwnDataProperty(usageProjection, 'last_used_at', 'durable usage projection');
++    const projectedUseCount = readOwnDataProperty(usageProjection, 'use_count', 'durable usage projection');
++    assertCanonicalIso(lastUsedAt, 'durable last_used_at');
++    if (!Number.isSafeInteger(projectedUseCount) || projectedUseCount < 0) {
++      throw new TypeError('durable usage projection use_count must be a nonnegative safe integer');
++    }
++    baselineAt = lastUsedAt;
++    useCount = projectedUseCount;
++  }
++  if (!options || typeof options !== 'object') {
++    throw new TypeError('staleness review options must be an object');
++  }
++  const now = readOwnDataProperty(options, 'now', 'staleness review options');
++  assertCanonicalIso(now, 'staleness review now');
++  const ageMs = Date.parse(now) - Date.parse(baselineAt);
++  const stale = ageMs > STALE_AFTER_MS;
++  return {
++    baseline_at: baselineAt,
++    use_count: useCount,
++    stale,
++    demote: stale,
++    age_days: Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000))),
++  };
++}
++
+ function reviewMemories(entries, options = {}) {
+   const source = Array.isArray(entries) ? entries : [];
+   const entryLimit = Math.max(1, Math.min(options.entryLimit || MEMORY_REVIEW_ENTRY_LIMIT, MEMORY_REVIEW_ENTRY_LIMIT));
+@@ -125,4 +183,9 @@ function reviewMemories(entries, options = {}) {
+   };
+ }
+ 
+-module.exports = { MEMORY_REVIEW_ENTRY_LIMIT, reviewMemories };
++module.exports = {
++  MEMORY_REVIEW_ENTRY_LIMIT,
++  STALE_AFTER_DAYS,
++  reviewMemories,
++  stalenessForMemory,
++};
+diff --git a/lib/memory/usage-evidence.js b/lib/memory/usage-evidence.js
+new file mode 100644
+index 00000000..b676e1d2
+--- /dev/null
++++ b/lib/memory/usage-evidence.js
+@@ -0,0 +1,232 @@
++'use strict';
++
++// Private adapter seam for durable usage evidence. The kernel driver wires this module
++// separately so existing memory reads retain their current behaviour until that wiring lands.
++// Its transaction(callback) implementation must serialize writes (SQLite: BEGIN IMMEDIATE).
++const USE_KINDS = Object.freeze([
++  'cli-recall',
++  'prompt-injection',
++  'read-attention',
++  'session-digest',
++]);
++const MAX_IDENTIFIER_LENGTH = 255;
++const DIGEST_PATTERN = /^[a-f0-9]{64}$/i;
++const SQLITE_CONTENTION_CODES = new Set(['SQLITE_BUSY', 'SQLITE_LOCKED']);
++
++const USAGE_EVIDENCE_MIGRATION = Object.freeze({
++  id: 'memory-usage-evidence-v1',
++  additive: true,
++  rollback: 'disable-writes-preserve-evidence',
++  statements: Object.freeze([
++    `CREATE TABLE IF NOT EXISTS memory_usage_events (
++      event_id TEXT NOT NULL PRIMARY KEY,
++      memory_id TEXT NOT NULL,
++      scope TEXT NOT NULL,
++      use_kind TEXT NOT NULL,
++      consumer_id TEXT NOT NULL,
++      selection_digest TEXT NOT NULL,
++      observed_at TEXT NOT NULL,
++      idempotency_key TEXT NOT NULL UNIQUE
++    )`,
++    'CREATE INDEX IF NOT EXISTS idx_memory_usage_events_memory_observed ON memory_usage_events(memory_id, observed_at)',
++    `CREATE TABLE IF NOT EXISTS memory_usage_projection (
++      scope TEXT NOT NULL,
++      memory_id TEXT NOT NULL PRIMARY KEY,
++      last_used_at TEXT NOT NULL,
++      use_count INTEGER NOT NULL CHECK (typeof(use_count) = 'integer' AND use_count >= 0)
++    )`,
++    'CREATE INDEX IF NOT EXISTS idx_memory_usage_projection_scope_last_used_memory ON memory_usage_projection(scope, last_used_at, memory_id)',
++  ]),
++});
++
++class UsageIdempotencyConflictError extends Error {
++  constructor(idempotencyKey) {
++    super(`usage evidence idempotency key conflicts: ${idempotencyKey}`);
++    this.name = 'UsageIdempotencyConflictError';
++  }
++}
++
++class UsageMemoryScopeConflictError extends Error {
++  constructor(memoryId) {
++    super(`usage evidence memory scope conflicts: ${memoryId}`);
++    this.name = 'UsageMemoryScopeConflictError';
++  }
++}
++
++function assertAdapter(store, method) {
++  if (!store || typeof store[method] !== 'function') {
++    throw new TypeError(`usage evidence store must implement ${method}()`);
++  }
++}
++
++function assertOpaqueIdentifier(value, fieldName) {
++  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_IDENTIFIER_LENGTH
++    || /[\\/]/.test(value) || [...value].some(character => character.charCodeAt(0) < 32)) {
++    throw new TypeError(`usage evidence ${fieldName} must be a bounded opaque identifier`);
++  }
++}
++
++function assertObservedAt(value) {
++  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))
++    || new Date(value).toISOString() !== value) {
++    throw new TypeError('usage evidence observed_at must be a canonical ISO timestamp');
++  }
++}
++
++function readOwnDataProperty(input, fieldName) {
++  let descriptor;
++  try {
++    descriptor = Object.getOwnPropertyDescriptor(input, fieldName);
++  } catch {
++    throw new TypeError(`usage evidence ${fieldName} must be an own data property`);
++  }
++  if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
++    throw new TypeError(`usage evidence ${fieldName} must be an own data property`);
++  }
++  return descriptor.value;
++}
++
++function normalizeUsageEvidence(input) {
++  if (!input || typeof input !== 'object' || Array.isArray(input)) {
++    throw new TypeError('usage evidence must be an object');
++  }
++  const event = {
++    event_id: readOwnDataProperty(input, 'event_id'),
++    memory_id: readOwnDataProperty(input, 'memory_id'),
++    scope: readOwnDataProperty(input, 'scope'),
++    use_kind: readOwnDataProperty(input, 'use_kind'),
++    consumer_id: readOwnDataProperty(input, 'consumer_id'),
++    selection_digest: readOwnDataProperty(input, 'selection_digest'),
++    observed_at: readOwnDataProperty(input, 'observed_at'),
++    idempotency_key: readOwnDataProperty(input, 'idempotency_key'),
++  };
++  for (const fieldName of ['event_id', 'memory_id', 'scope', 'consumer_id', 'idempotency_key']) {
++    assertOpaqueIdentifier(event[fieldName], fieldName);
++  }
++  if (!USE_KINDS.includes(event.use_kind)) {
++    throw new TypeError(`usage evidence use_kind must be one of: ${USE_KINDS.join(', ')}`);
++  }
++  if (typeof event.selection_digest !== 'string' || !DIGEST_PATTERN.test(event.selection_digest)) {
++    throw new TypeError('usage evidence selection_digest must be a SHA-256 digest');
++  }
++  assertObservedAt(event.observed_at);
++  return event;
++}
++
++function installUsageEvidenceSchema(store) {
++  assertAdapter(store, 'exec');
++  for (const statement of USAGE_EVIDENCE_MIGRATION.statements) store.exec(statement);
++}
++
++function sameUsageEvidence(left, right) {
++  return left.event_id === right.event_id
++    && left.memory_id === right.memory_id
++    && left.scope === right.scope
++    && left.use_kind === right.use_kind
++    && left.consumer_id === right.consumer_id
++    && left.selection_digest === right.selection_digest
++    && left.observed_at === right.observed_at
++    && left.idempotency_key === right.idempotency_key;
++}
++
++function loadProjection(store, event) {
++  return store.one(
++    'SELECT last_used_at, use_count FROM memory_usage_projection WHERE memory_id = ?',
++    [event.memory_id],
++  );
++}
++
++function runTransactionWithSingleContentionRetry(store, callback) {
++  try {
++    return store.transaction(callback);
++  } catch (error) {
++    if (!SQLITE_CONTENTION_CODES.has(error?.code)) throw error;
++    return store.transaction(callback);
++  }
++}
++
++function appendUsageEvidence(store, input) {
++  assertAdapter(store, 'transaction');
++  assertAdapter(store, 'one');
++  assertAdapter(store, 'run');
++  const event = normalizeUsageEvidence(input);
++  return runTransactionWithSingleContentionRetry(store, () => {
++    const existing = store.one(
++      `SELECT event_id, memory_id, scope, use_kind, consumer_id, selection_digest, observed_at, idempotency_key
++       FROM memory_usage_events WHERE idempotency_key = ?`,
++      [event.idempotency_key],
++    );
++    if (existing) {
++      if (!sameUsageEvidence(existing, event)) {
++        throw new UsageIdempotencyConflictError(event.idempotency_key);
++      }
++      return { appended: false, ...loadProjection(store, event) };
++    }
++    const conflictingEvent = store.one(
++      'SELECT scope FROM memory_usage_events WHERE memory_id = ? AND scope <> ? LIMIT 1',
++      [event.memory_id, event.scope],
++    );
++    const existingProjection = store.one(
++      'SELECT scope FROM memory_usage_projection WHERE memory_id = ?',
++      [event.memory_id],
++    );
++    if (conflictingEvent || (existingProjection && existingProjection.scope !== event.scope)) {
++      throw new UsageMemoryScopeConflictError(event.memory_id);
++    }
++    store.run(
++      `INSERT INTO memory_usage_events (
++        event_id, memory_id, scope, use_kind, consumer_id, selection_digest, observed_at, idempotency_key
++      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
++      [
++        event.event_id,
++        event.memory_id,
++        event.scope,
++        event.use_kind,
++        event.consumer_id,
++        event.selection_digest,
++        event.observed_at,
++        event.idempotency_key,
++      ],
++    );
++    store.run(
++      `INSERT INTO memory_usage_projection (scope, memory_id, last_used_at, use_count)
++       VALUES (?, ?, ?, 1)
++       ON CONFLICT(memory_id) DO UPDATE SET
++         last_used_at = MAX(memory_usage_projection.last_used_at, excluded.last_used_at),
++         use_count = memory_usage_projection.use_count + 1`,
++      [event.scope, event.memory_id, event.observed_at],
++    );
++    return { appended: true, ...loadProjection(store, event) };
++  });
++}
++
++function rebuildUsageProjection(store) {
++  assertAdapter(store, 'transaction');
++  assertAdapter(store, 'exec');
++  assertAdapter(store, 'one');
++  return runTransactionWithSingleContentionRetry(store, () => {
++    const conflict = store.one(`SELECT memory_id
++      FROM memory_usage_events
++      GROUP BY memory_id
++      HAVING COUNT(DISTINCT scope) > 1
++      LIMIT 1`);
++    if (conflict) throw new UsageMemoryScopeConflictError(conflict.memory_id);
++    store.exec('DELETE FROM memory_usage_projection');
++    store.exec(`INSERT INTO memory_usage_projection (scope, memory_id, last_used_at, use_count)
++      SELECT MIN(scope), memory_id, MAX(observed_at), COUNT(*)
++      FROM memory_usage_events
++      GROUP BY memory_id`);
++    return { projections: Number(store.one('SELECT COUNT(*) AS count FROM memory_usage_projection').count) };
++  });
++}
++
++module.exports = {
++  USE_KINDS,
++  USAGE_EVIDENCE_MIGRATION,
++  UsageIdempotencyConflictError,
++  UsageMemoryScopeConflictError,
++  appendUsageEvidence,
++  installUsageEvidenceSchema,
++  normalizeUsageEvidence,
++  rebuildUsageProjection,
++};
+diff --git a/test/memory/hygiene.test.js b/test/memory/hygiene.test.js
+index ab0b0e2e..b45f91fb 100644
+--- a/test/memory/hygiene.test.js
++++ b/test/memory/hygiene.test.js
+@@ -1,9 +1,61 @@
+ 'use strict';
+ 
+ const { describe, expect, test } = require('bun:test');
+-const { reviewMemories } = require('../../lib/memory/hygiene');
++const { reviewMemories, stalenessForMemory } = require('../../lib/memory/hygiene');
+ 
+ describe('memory hygiene review', () => {
++  test('uses durable last use when present and created_at only for never-used age', () => {
++    const now = '2026-08-10T00:00:00.000Z';
++    expect(stalenessForMemory({ memory_id: 'one', created_at: '2026-01-01T00:00:00.000Z' }, null, { now }))
++      .toMatchObject({ baseline_at: '2026-01-01T00:00:00.000Z', stale: true, demote: true, use_count: 0 });
++    expect(stalenessForMemory(
++      { memory_id: 'one', created_at: '2026-01-01T00:00:00.000Z' },
++      { last_used_at: '2026-05-12T00:00:00.000Z', use_count: 2 },
++      { now },
++    )).toMatchObject({ baseline_at: '2026-05-12T00:00:00.000Z', stale: false, demote: false, use_count: 2 });
++  });
++
++  test('demotes only after the exact 90-day staleness boundary', () => {
++    const memory = { memory_id: 'one', created_at: '2026-05-12T00:00:00.000Z' };
++    expect(stalenessForMemory(memory, null, { now: '2026-08-10T00:00:00.000Z' }))
++      .toMatchObject({ age_days: 90, stale: false, demote: false });
++    expect(stalenessForMemory(memory, null, { now: '2026-08-10T00:00:00.001Z' }))
++      .toMatchObject({ age_days: 90, stale: true, demote: true });
++  });
++
++  test('rejects non-canonical timestamps and malformed durable usage counts', () => {
++    const memory = { memory_id: 'one', created_at: '2026-01-01T00:00:00.000Z' };
++    const now = '2026-08-10T00:00:00.000Z';
++
++    expect(() => stalenessForMemory({ ...memory, created_at: '1' }, null, { now }))
++      .toThrow(/canonical ISO/i);
++    expect(() => stalenessForMemory(memory, { last_used_at: '2026-05-12', use_count: 2 }, { now }))
++      .toThrow(/canonical ISO/i);
++    expect(() => stalenessForMemory(memory, { last_used_at: '2026-05-12T00:00:00.000Z', use_count: 'oops' }, { now }))
++      .toThrow(/use_count/i);
++    expect(() => stalenessForMemory(memory, { last_used_at: '2026-05-12T00:00:00.000Z', use_count: -1 }, { now }))
++      .toThrow(/use_count/i);
++  });
++
++  test('rejects inherited or accessor staleness fields without invoking getters', () => {
++    let getterCalls = 0;
++    const memory = { memory_id: 'one' };
++    Object.defineProperty(memory, 'created_at', {
++      get() {
++        getterCalls += 1;
++        return '2026-01-01T00:00:00.000Z';
++      },
++    });
++    expect(() => stalenessForMemory(memory, null, { now: '2026-08-10T00:00:00.000Z' }))
++      .toThrow(/own data property/i);
++    expect(getterCalls).toBe(0);
++    expect(() => stalenessForMemory(
++      Object.create({ created_at: '2026-01-01T00:00:00.000Z' }),
++      null,
++      { now: '2026-08-10T00:00:00.000Z' },
++    )).toThrow(/own data property/i);
++  });
++
+   test('duplicate ids are stable across input, object-key, and volatile-field ordering', () => {
+     const first = reviewMemories([
+       { id: 'new-id', updated_at: '2026-08-10', value: { why: 'fast', what: 'Use Bun' } },
+diff --git a/test/memory/usage-evidence.test.js b/test/memory/usage-evidence.test.js
+new file mode 100644
+index 00000000..103dd963
+--- /dev/null
++++ b/test/memory/usage-evidence.test.js
+@@ -0,0 +1,292 @@
++'use strict';
++
++const { describe, expect, test } = require('bun:test');
++const { Database } = require('bun:sqlite');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const {
++  appendUsageEvidence,
++  installUsageEvidenceSchema,
++  rebuildUsageProjection,
++  UsageIdempotencyConflictError,
++} = require('../../lib/memory/usage-evidence');
++
++function createStore({ databasePath = ':memory:', failProjectionWrite = false } = {}) {
++  const database = new Database(databasePath);
++  return {
++    exec(sql) { database.exec(sql); },
++    run(sql, params = []) {
++      if (failProjectionWrite && sql.includes('INSERT INTO memory_usage_projection')) {
++        throw new Error('simulated projection crash');
++      }
++      return database.query(sql).run(...params);
++    },
++    all(sql, params = []) { return database.query(sql).all(...params); },
++    one(sql, params = []) { return database.query(sql).get(...params); },
++    transaction(callback) {
++      database.exec('BEGIN IMMEDIATE');
++      try {
++        const result = callback();
++        database.exec('COMMIT');
++        return result;
++      } catch (error) {
++        database.exec('ROLLBACK');
++        throw error;
++      }
++    },
++    close() { database.close(); },
++  };
++}
++
++function event(overrides = {}) {
++  return {
++    event_id: 'event-1',
++    memory_id: 'memory-1',
++    scope: 'project-7f2d',
++    use_kind: 'cli-recall',
++    consumer_id: 'session-1',
++    selection_digest: 'a'.repeat(64),
++    observed_at: '2026-08-10T00:00:00.000Z',
++    idempotency_key: 'selection-1',
++    ...overrides,
++  };
++}
++
++function withTransactionFailures(store, codes) {
++  let attempts = 0;
++  return {
++    ...store,
++    transaction(callback) {
++      const code = codes[attempts];
++      attempts += 1;
++      if (code) {
++        const error = new Error(`simulated ${code}`);
++        error.code = code;
++        throw error;
++      }
++      return store.transaction(callback);
++    },
++    attempts() { return attempts; },
++  };
++}
++
++describe('memory usage evidence', () => {
++  test('records only bounded opaque fields and derives usage projection atomically', () => {
++    const store = createStore();
++    try {
++      installUsageEvidenceSchema(store);
++      expect(appendUsageEvidence(store, event({
++        query: 'never persisted', prompt: 'never persisted', note: 'never persisted', secret: 'never persisted',
++      }))).toMatchObject({ appended: true, use_count: 1 });
++      expect(store.all('SELECT * FROM memory_usage_events')).toEqual([event()]);
++      expect(store.one('SELECT scope, memory_id, last_used_at, use_count FROM memory_usage_projection'))
++        .toEqual({
++          scope: 'project-7f2d',
++          memory_id: 'memory-1',
++          last_used_at: '2026-08-10T00:00:00.000Z',
++          use_count: 1,
++        });
++    } finally {
++      store.close();
++    }
++  });
++
++  test('same retry is a no-op, divergent reuse conflicts, and later use advances last_used_at', () => {
++    const store = createStore();
++    try {
++      installUsageEvidenceSchema(store);
++      appendUsageEvidence(store, event());
++      expect(appendUsageEvidence(store, event())).toMatchObject({ appended: false, use_count: 1 });
++      expect(() => appendUsageEvidence(store, event({ memory_id: 'other-memory' })))
++        .toThrow(UsageIdempotencyConflictError);
++      appendUsageEvidence(store, event({
++        event_id: 'event-2',
++        idempotency_key: 'selection-2',
++        observed_at: '2026-08-11T00:00:00.000Z',
++      }));
++      expect(store.one('SELECT last_used_at, use_count FROM memory_usage_projection'))
++        .toEqual({ last_used_at: '2026-08-11T00:00:00.000Z', use_count: 2 });
++    } finally {
++      store.close();
++    }
++  });
++
++  test('rejects a scope conflict for a globally unique memory id', () => {
++    const store = createStore();
++    try {
++      installUsageEvidenceSchema(store);
++      appendUsageEvidence(store, event());
++      expect(() => appendUsageEvidence(store, event({
++        event_id: 'event-2',
++        idempotency_key: 'selection-2',
++        scope: 'project-other',
++      }))).toThrow(/scope/i);
++      expect(store.all('SELECT scope, memory_id, use_count FROM memory_usage_projection'))
++        .toEqual([{ scope: 'project-7f2d', memory_id: 'memory-1', use_count: 1 }]);
++      expect(store.all('SELECT event_id FROM memory_usage_events')).toEqual([{ event_id: 'event-1' }]);
++    } finally {
++      store.close();
++    }
++  });
++
++  test('rejects a cross-scope append from authoritative events when the projection is missing', () => {
++    const store = createStore();
++    try {
++      installUsageEvidenceSchema(store);
++      appendUsageEvidence(store, event());
++      store.exec('DELETE FROM memory_usage_projection');
++      expect(() => appendUsageEvidence(store, event({
++        event_id: 'event-2',
++        idempotency_key: 'selection-2',
++        scope: 'project-other',
++      }))).toThrow(/scope/i);
++      expect(store.all('SELECT event_id, scope FROM memory_usage_events'))
++        .toEqual([{ event_id: 'event-1', scope: 'project-7f2d' }]);
++    } finally {
++      store.close();
++    }
++  });
++
++  test('rebuild restores projection from append-only events without fabricating historical use', () => {
++    const store = createStore();
++    try {
++      installUsageEvidenceSchema(store);
++      appendUsageEvidence(store, event());
++      appendUsageEvidence(store, event({
++        event_id: 'event-2',
++        idempotency_key: 'selection-2',
++        observed_at: '2026-08-11T00:00:00.000Z',
++      }));
++      store.exec('DELETE FROM memory_usage_projection');
++      expect(rebuildUsageProjection(store)).toEqual({ projections: 1 });
++      expect(store.one('SELECT last_used_at, use_count FROM memory_usage_projection'))
++        .toEqual({ last_used_at: '2026-08-11T00:00:00.000Z', use_count: 2 });
++    } finally {
++      store.close();
++    }
++  });
++
++  test('projection failure rolls back the event, and the additive schema carries required indexes', () => {
++    const store = createStore({ failProjectionWrite: true });
++    try {
++      installUsageEvidenceSchema(store);
++      expect(() => appendUsageEvidence(store, event())).toThrow('simulated projection crash');
++      expect(store.all('SELECT * FROM memory_usage_events')).toEqual([]);
++      expect(store.all("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name"))
++        .toEqual(expect.arrayContaining([
++          { name: 'idx_memory_usage_events_memory_observed' },
++          { name: 'idx_memory_usage_projection_scope_last_used_memory' },
++          { name: 'sqlite_autoindex_memory_usage_events_2' },
++        ]));
++      expect(store.all('PRAGMA table_info(memory_usage_events)')
++        .find(column => column.name === 'event_id')).toMatchObject({ notnull: 1, pk: 1 });
++      expect(store.all('PRAGMA table_info(memory_usage_projection)')
++        .find(column => column.name === 'memory_id')).toMatchObject({ notnull: 1, pk: 1 });
++    } finally {
++      store.close();
++    }
++  });
++
++  test('a retry through a separate SQLite connection still counts the surfaced selection once', () => {
++    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-usage-evidence-'));
++    const databasePath = path.join(directory, 'kernel.sqlite');
++    const first = createStore({ databasePath });
++    const second = createStore({ databasePath });
++    try {
++      installUsageEvidenceSchema(first);
++      expect(appendUsageEvidence(first, event())).toMatchObject({ appended: true, use_count: 1 });
++      expect(appendUsageEvidence(second, event())).toMatchObject({ appended: false, use_count: 1 });
++      expect(second.one('SELECT use_count FROM memory_usage_projection')).toEqual({ use_count: 1 });
++    } finally {
++      first.close();
++      second.close();
++      fs.rmSync(directory, { recursive: true, force: true });
++    }
++  });
++
++  test.each(['SQLITE_BUSY', 'SQLITE_LOCKED'])(
++    'retries one transient %s transaction contention failure without sleeping',
++    code => {
++      const baseStore = createStore();
++      const store = withTransactionFailures(baseStore, [code]);
++      try {
++        installUsageEvidenceSchema(store);
++        expect(appendUsageEvidence(store, event())).toMatchObject({ appended: true, use_count: 1 });
++        expect(store.attempts()).toBe(2);
++      } finally {
++        store.close();
++      }
++    },
++  );
++
++  test('propagates a second contention failure after exactly one bounded retry', () => {
++    const baseStore = createStore();
++    const store = withTransactionFailures(baseStore, ['SQLITE_BUSY', 'SQLITE_BUSY']);
++    try {
++      installUsageEvidenceSchema(store);
++      expect(() => appendUsageEvidence(store, event())).toThrow('simulated SQLITE_BUSY');
++      expect(store.attempts()).toBe(2);
++      expect(store.all('SELECT * FROM memory_usage_events')).toEqual([]);
++    } finally {
++      store.close();
++    }
++  });
++
++  test('rebuild retries one transient contention failure and no more', () => {
++    const baseStore = createStore();
++    try {
++      installUsageEvidenceSchema(baseStore);
++      appendUsageEvidence(baseStore, event());
++      baseStore.exec('DELETE FROM memory_usage_projection');
++
++      const recovered = withTransactionFailures(baseStore, ['SQLITE_LOCKED']);
++      expect(rebuildUsageProjection(recovered)).toEqual({ projections: 1 });
++      expect(recovered.attempts()).toBe(2);
++
++      baseStore.exec('DELETE FROM memory_usage_projection');
++      const blocked = withTransactionFailures(baseStore, ['SQLITE_BUSY', 'SQLITE_BUSY']);
++      expect(() => rebuildUsageProjection(blocked)).toThrow('simulated SQLITE_BUSY');
++      expect(blocked.attempts()).toBe(2);
++    } finally {
++      baseStore.close();
++    }
++  });
++
++  test('rejects inherited and accessor evidence without invoking getters', () => {
++    const store = createStore();
++    let getterCalls = 0;
++    const inherited = Object.create(event());
++    const accessor = event();
++    Object.defineProperty(accessor, 'event_id', {
++      enumerable: true,
++      get() {
++        getterCalls += 1;
++        return 'event-accessor';
++      },
++    });
++    try {
++      installUsageEvidenceSchema(store);
++      expect(() => appendUsageEvidence(store, inherited)).toThrow(/own data property/i);
++      expect(() => appendUsageEvidence(store, accessor)).toThrow(/own data property/i);
++      expect(getterCalls).toBe(0);
++      expect(store.all('SELECT * FROM memory_usage_events')).toEqual([]);
++    } finally {
++      store.close();
++    }
++  });
++
++  test('rejects raw path-like identifiers and unsupported use kinds before persistence', () => {
++    const store = createStore();
++    try {
++      installUsageEvidenceSchema(store);
++      expect(() => appendUsageEvidence(store, event({ consumer_id: 'C:\\Users\\private' })))
++        .toThrow(/opaque/i);
++      expect(() => appendUsageEvidence(store, event({ use_kind: 'raw-prompt' })))
++        .toThrow(/use_kind/i);
++      expect(store.all('SELECT * FROM memory_usage_events')).toEqual([]);
++    } finally {
++      store.close();
++    }
++  });
++});
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,163 @@
+From ac69cec8d9e6fe3c3761714f193bb0ca7c92ac0e Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 04:06:18 +0530
+Subject: [PATCH] fix(shepherd): persist successful watcher cleanup
+
+---
+ lib/pr-monitor/reconcile-executor.js       | 31 +++++++++++++++++-----
+ test/pr-monitor/reconcile-executor.test.js | 24 +++++++++++++++--
+ 2 files changed, 46 insertions(+), 9 deletions(-)
+
+diff --git a/lib/pr-monitor/reconcile-executor.js b/lib/pr-monitor/reconcile-executor.js
+index a564a70f..0918b2d2 100644
+--- a/lib/pr-monitor/reconcile-executor.js
++++ b/lib/pr-monitor/reconcile-executor.js
+@@ -170,7 +170,7 @@ function replayLifecycle(entry, now) {
+ 	return entry;
+ }
+ 
+-function checkpointLifecycle(entry, event, s) {
++function advanceLifecycle(entry, event) {
+ 	const options = lifecycleOptions(entry);
+ 	const transition = reduceProcessLifecycle(entry.lifecycle.state, event, { ...options, now: event.at });
+ 	entry.lifecycle = {
+@@ -178,12 +178,17 @@ function checkpointLifecycle(entry, event, s) {
+ 		events: [...entry.lifecycle.events, structuredClone(event)],
+ 		state: transition.state,
+ 	};
++	return structuredClone(entry.lifecycle);
++}
++
++function checkpointLifecycle(entry, event, s) {
++	const checkpoint = advanceLifecycle(entry, event);
+ 	if (s.persistLifecycleCheckpoint(s.watchers) === false) {
+ 		const error = new Error('Watcher lifecycle checkpoint persistence failed');
+ 		error.code = 'PROVIDER_UNAVAILABLE';
+ 		throw error;
+ 	}
+-	s.onLifecycleCheckpoint(structuredClone(entry.lifecycle));
++	s.onLifecycleCheckpoint(checkpoint);
+ }
+ 
+ function lifecycleEvent(entry, type, at, extra = {}) {
+@@ -619,16 +624,26 @@ function buildExecutionState(ctx) {
+ }
+ 
+ async function cleanupNewWatchers(s, seedIdentities) {
++	const additions = s.watchers.filter(watcher => !seedIdentities.has(processIdentity(watcher)));
++	if (additions.length === 0) return;
+ 	const survivors = [];
++	const terminalCheckpoints = [];
+ 	const isAlive = s.ctx.isAlive || shepherdLease.pidAlive;
+ 	const waitForRetry = s.ctx.waitForKillRetry
+ 		|| (delayMs => new Promise(resolve => setTimeout(resolve, delayMs)));
+-	for (const entry of s.watchers.filter(watcher => !seedIdentities.has(processIdentity(watcher)))) {
++	for (const entry of additions) {
+ 		let terminated = false;
+ 		for (let attempt = 0; attempt < NEW_WATCHER_KILL_ATTEMPTS; attempt += 1) {
+ 			verifiedKill(entry, s.ctx, 'SIGKILL');
+ 			if (!isAlive(entry.pid)) {
++				const at = s.now();
++				terminalCheckpoints.push(
++					advanceLifecycle(entry, lifecycleEvent(entry, 'exit', at, { signal: 'SIGKILL' })),
++					advanceLifecycle(entry, lifecycleEvent(entry, 'termination-acknowledged', at)),
++					advanceLifecycle(entry, lifecycleEvent(entry, 'reap', at, { childReaped: true })),
++				);
+ 				s.removeClaim(entry);
++				s.watchers = s.watchers.filter(watcher => watcher !== entry);
+ 				terminated = true;
+ 				break;
+ 			}
+@@ -636,16 +651,18 @@ async function cleanupNewWatchers(s, seedIdentities) {
+ 		}
+ 		if (!terminated) survivors.push(entry);
+ 	}
+-	if (survivors.length === 0) return;
+ 	try {
+-		if (s.persistLifecycleCheckpoint(s.watchers) !== false) return;
++		if (s.persistLifecycleCheckpoint(s.watchers) !== false) {
++			for (const checkpoint of terminalCheckpoints) s.onLifecycleCheckpoint(checkpoint);
++			return;
++		}
+ 	} catch (cause) {
+-		const error = new Error('New watcher cleanup failed and the surviving watcher checkpoint was not persisted', { cause });
++		const error = new Error('New watcher cleanup failed because the watcher checkpoint was not persisted', { cause });
+ 		error.code = 'WATCHER_CLEANUP_FAILED';
+ 		error.watchers = survivors.map(normalizeWatcher);
+ 		throw error;
+ 	}
+-	const error = new Error('New watcher cleanup failed and the surviving watcher checkpoint was rejected');
++	const error = new Error('New watcher cleanup failed because the watcher checkpoint was rejected');
+ 	error.code = 'WATCHER_CLEANUP_FAILED';
+ 	error.watchers = survivors.map(normalizeWatcher);
+ 	throw error;
+diff --git a/test/pr-monitor/reconcile-executor.test.js b/test/pr-monitor/reconcile-executor.test.js
+index a8d109f0..2a1cae6f 100644
+--- a/test/pr-monitor/reconcile-executor.test.js
++++ b/test/pr-monitor/reconcile-executor.test.js
+@@ -219,19 +219,33 @@ describe('execute — watcher lifecycle', () => {
+ 		let writes = 0;
+ 		let alive = true;
+ 		const killed = [];
++		const persisted = [];
++		const checkpoints = [];
++		let removed = false;
+ 		await expect(executor.execute(
+ 			[{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } }],
+ 			{
+ 				projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+ 				spawnWatcher: () => ({ pid: 1234 }),
+-				persistLifecycleCheckpoint: () => { writes += 1; return writes === 1; },
++				persistLifecycleCheckpoint: current => {
++					writes += 1;
++					persisted.push(structuredClone(current));
++					return writes === 1 || current.length === 0;
++				},
+ 				writeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+ 				isAlive: () => alive,
+ 				kill: (pid, signal) => { killed.push([pid, signal]); alive = false; },
++				removeClaim: () => { removed = true; },
++				onLifecycleCheckpoint: checkpoint => checkpoints.push(checkpoint),
+ 				waitForKillRetry: async () => {},
+ 			},
+ 		)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+ 		expect(killed).toEqual([[1234, 'SIGKILL']]);
++		expect(removed).toBe(true);
++		expect(persisted.at(-1)).toEqual([]);
++		expect(checkpoints.map(checkpoint => checkpoint.state.phase)).toEqual([
++			'EXITED', 'TERMINATION_ACKNOWLEDGED', 'TERMINAL',
++		]);
+ 	});
+ 
+ 	test('retries verified cleanup when the first SIGKILL leaves a new watcher alive', async () => {
+@@ -289,13 +303,18 @@ describe('execute — watcher lifecycle', () => {
+ 		let nextPid = 1000;
+ 		const alive = new Set([1000, 1001]);
+ 		const killed = [];
++		const persisted = [];
+ 		await expect(executor.execute([
+ 			{ type: 'startWatcher', pr: { repo: 'forge', number: 41 } },
+ 			{ type: 'startWatcher', pr: { repo: 'forge', number: 42 } },
+ 		], {
+ 			projectRoot: '/repo', gitCommonDir: '/repo/.git', now: () => 1000, watchers: [],
+ 			spawnWatcher: () => ({ pid: nextPid++ }),
+-			persistLifecycleCheckpoint: () => { writes += 1; return writes < 4; },
++			persistLifecycleCheckpoint: current => {
++				writes += 1;
++				persisted.push(structuredClone(current));
++				return writes < 4 || current.length === 0;
++			},
+ 			writeClaim: () => {}, removeClaim: () => {}, readClaim: () => '1970-01-01T00:00:01.000Z',
+ 			isAlive: pid => alive.has(pid),
+ 			kill: (pid, signal) => { killed.push([pid, signal]); alive.delete(pid); },
+@@ -305,6 +324,7 @@ describe('execute — watcher lifecycle', () => {
+ 		expect(killed.sort((a, b) => a[0] - b[0])).toEqual([
+ 			[1000, 'SIGKILL'], [1001, 'SIGKILL'],
+ 		]);
++		expect(persisted.at(-1)).toEqual([]);
+ 	});
+ 
+ 	test('force-kills only after cancellation grace expires and reaps after acknowledgement', async () => {
+-- 
+2.51.0.windows.1
+

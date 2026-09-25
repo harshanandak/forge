@@ -1,0 +1,26 @@
+From 4cdf7cd3bf9594c07a8621180734458b86c45b07 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 19:36:18 +0530
+Subject: [PATCH] fix(skills): satisfy protected authority analysis
+
+---
+ lib/protected-state-authority.js | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/lib/protected-state-authority.js b/lib/protected-state-authority.js
+index 26f7c8c2..9d27f34f 100644
+--- a/lib/protected-state-authority.js
++++ b/lib/protected-state-authority.js
+@@ -339,8 +339,7 @@ async function completeNpmPublishWorkflowAuthorization(projectRoot, params = {},
+ 			.filter(row => row?.event_type === PROTECTED_STATE_AUTHORIZATION_CONSUMED)
+ 			.map(parseAuthorizationEvent)
+ 			.some(event => event.capabilityId === params.capabilityId);
+-		const exactIssued = issued &&
+-			issued.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
++		const exactIssued = issued?.version === PROTECTED_STATE_AUTHORIZATION_VERSION &&
+ 			issued.origin === PROTECTED_STATE_AUTHORIZATION_ORIGIN &&
+ 			issued.actor === actor &&
+ 			issued.payloadActor === actor &&
+-- 
+2.51.0.windows.1
+

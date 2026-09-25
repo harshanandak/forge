@@ -1,0 +1,255 @@
+From 86793605920b6c2d63be9dc925f73f6025b17ab4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 23:12:39 +0530
+Subject: [PATCH] fix(preflight): reuse resolved changed files
+
+---
+ lib/preflight/gates.js       | 77 +++++++++++++++++++++++++++---------
+ test/preflight/gates.test.js | 66 +++++++++++++++++++++++++++++++
+ 2 files changed, 125 insertions(+), 18 deletions(-)
+
+diff --git a/lib/preflight/gates.js b/lib/preflight/gates.js
+index 1d1c5d90..474068bd 100644
+--- a/lib/preflight/gates.js
++++ b/lib/preflight/gates.js
+@@ -17,10 +17,11 @@
+  */
+ 
+ const path = require('node:path');
++const crypto = require('node:crypto');
+ const { spawnSync } = require('node:child_process');
+-const { execFileSync } = require('node:child_process');
+ const nodeFs = require('node:fs');
+-const { getAffectedTestFiles } = require('../commands/test');
++const { getTestCandidatesForChangedFile } = require('../commands/test');
++const { selectDocAssertingTests } = require('../doc-assertions');
+ 
+ const IS_WINDOWS = process.platform === 'win32';
+ 
+@@ -37,6 +38,30 @@ function statusSummary(result, okMsg, failMsg) {
+     : { ok: false, summary: failMsg };
+ }
+ 
++function normalizeChangedFiles(files) {
++  if (!Array.isArray(files)) return Object.freeze([]);
++  return Object.freeze([...new Set(
++    files.map((file) => String(file).trim().replaceAll('\\', '/')).filter(Boolean),
++  )].sort());
++}
++
++function fingerprintChangedFiles(files) {
++  return crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex');
++}
++
++function selectAffectedTests(projectRoot, changedFiles, fs = nodeFs) {
++  const tests = new Set();
++  for (const file of changedFiles) {
++    for (const candidate of getTestCandidatesForChangedFile(file)) {
++      if (fs.existsSync(path.join(projectRoot, candidate))) tests.add(candidate);
++    }
++  }
++  for (const candidate of selectDocAssertingTests(changedFiles, projectRoot, fs)) {
++    tests.add(candidate);
++  }
++  return [...tests].sort();
++}
++
+ /**
+  * Gate 1 — ESLint on the change blast radius (or the whole tree with --all).
+  * `files === null` means "lint everything" (`eslint .`).
+@@ -152,38 +177,50 @@ function runSonar(files, { projectRoot, spawn = spawnSync } = {}) {
+  */
+ function runAffectedTests({
+   projectRoot,
+-  changedFiles: _changedFiles,
++  changedFiles,
+   spawn = spawnSync,
+   resolveTests,
+ } = {}) {
++  const inputs = Array.isArray(changedFiles) && Object.isFrozen(changedFiles)
++    ? changedFiles
++    : normalizeChangedFiles(changedFiles);
++  const inputFingerprint = fingerprintChangedFiles(inputs);
+   const resolver = typeof resolveTests === 'function'
+     ? resolveTests
+-    // strict:true so a failed `git diff` THROWS here instead of returning [] —
+-    // otherwise a git error would masquerade as "no affected tests" (fast-lane
+-    // green), a fail-OPEN. The catch below turns that throw into a closed gate.
+-    : () => getAffectedTestFiles(projectRoot, execFileSync, nodeFs, { strict: true });
++    : (files) => selectAffectedTests(projectRoot, files);
+   let targets;
+   try {
+-    targets = resolver() || [];
++    targets = resolver(inputs) || [];
+   } catch (err) {
+     // A resolver ERROR must NOT masquerade as "no affected tests" (green).
+     // We could not determine what to run, so fail closed — never a vacuous pass.
+     const reason = err && err.message ? err.message : String(err);
+-    return { ok: false, summary: `affected-test resolution failed — fail-closed (${reason})` };
++    return {
++      ok: false,
++      summary: `affected-test resolution failed — fail-closed (${reason})`,
++      inputFingerprint,
++    };
+   }
+   if (targets.length === 0) {
+-    return { ok: true, summary: 'no affected tests resolved (fast lane)' };
++    return {
++      ok: true,
++      summary: 'no affected tests resolved (fast lane)',
++      inputFingerprint,
++    };
+   }
+   const result = spawn(
+     'bun',
+     ['test', '--timeout', '15000', ...targets],
+     { cwd: projectRoot, stdio: 'inherit', shell: IS_WINDOWS },
+   );
+-  return statusSummary(
+-    result,
+-    `${targets.length} affected test file(s) passed`,
+-    'affected tests failed',
+-  );
++  return {
++    ...statusSummary(
++      result,
++      `${targets.length} affected test file(s) passed`,
++      'affected tests failed',
++    ),
++    inputFingerprint,
++  };
+ }
+ 
+ /**
+@@ -198,15 +235,18 @@ function runAffectedTests({
+  * @returns {{ name: string, run: () => Promise<{ok:boolean, summary?:string}> }[]}
+  */
+ function buildGates({ projectRoot, changedFiles = [], runAll = false, deps = {} }) {
++  const normalizedChangedFiles = normalizeChangedFiles(changedFiles);
++  const inputFingerprint = fingerprintChangedFiles(normalizedChangedFiles);
+   const eslint = deps.eslint || ((files) => runEslint(files, { projectRoot }));
+   const structural = deps.structural || (() => runStructural({ projectRoot }));
+   const sonar = deps.sonar || ((files) => runSonar(files, { projectRoot }));
+-  const affected = deps.affected || (() => runAffectedTests({ projectRoot, changedFiles }));
++  const affected = deps.affected
++    || ((files) => runAffectedTests({ projectRoot, changedFiles: files }));
+ 
+   // Under --all, scope BOTH lint and sonar to the whole tree (null). Otherwise
+   // sonar would receive changedFiles=[] and report a vacuous "no changed files"
+   // pass while lint scanned everything — a fail-open hole on the remedy path.
+-  const scanTargets = runAll ? null : changedFiles;
++  const scanTargets = runAll ? null : normalizedChangedFiles;
+ 
+   // Affected-tests maps from the change set, which is empty under --all. Running
+   // the WHOLE suite here defeats preflight's fast purpose (and hangs on Windows),
+@@ -216,8 +256,9 @@ function buildGates({ projectRoot, changedFiles = [], runAll = false, deps = {}
+       ok: true,
+       skipped: true,
+       summary: 'whole-tree mode (--all): affected-test mapping N/A — run the full suite (CI does)',
++      inputFingerprint,
+     })
+-    : async () => affected();
++    : async () => affected(normalizedChangedFiles);
+ 
+   return [
+     { name: 'lint', run: async () => eslint(scanTargets) },
+diff --git a/test/preflight/gates.test.js b/test/preflight/gates.test.js
+index d7e55c7c..f9e5adff 100644
+--- a/test/preflight/gates.test.js
++++ b/test/preflight/gates.test.js
+@@ -1,5 +1,6 @@
+ 'use strict';
+ 
++const path = require('node:path');
+ const { describe, test, expect } = require('bun:test');
+ const {
+   buildGates,
+@@ -54,6 +55,25 @@ describe('buildGates — composition', () => {
+     const all = buildGates({ projectRoot: '/x', changedFiles: changed, runAll: true, deps });
+     expect((await all[0].run()).summary).toBe('lint:null');
+   });
++
++  test('normalizes changed files once and passes the immutable snapshot to affected tests', async () => {
++    let received;
++    const gates = buildGates({
++      projectRoot: '/x',
++      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js'],
++      deps: {
++        ...deps,
++        affected: (changedFiles) => {
++          received = changedFiles;
++          return { ok: true };
++        },
++      },
++    });
++
++    await gates[3].run();
++    expect(received).toEqual(['lib/a.js', 'lib/b.js']);
++    expect(Object.isFrozen(received)).toBe(true);
++  });
+ });
+ 
+ describe('runEslint — real runner (injected spawn)', () => {
+@@ -108,6 +128,51 @@ describe('runSonar — real runner (injected spawn)', () => {
+ });
+ 
+ describe('runAffectedTests — real runner (injected)', () => {
++  test('consumes one normalized immutable changed-file snapshot and fingerprints it', () => {
++    let received;
++    const first = runAffectedTests({
++      projectRoot: '/x',
++      changedFiles: ['lib\\b.js', 'lib/a.js', 'lib/a.js', '  '],
++      resolveTests: (changedFiles) => {
++        received = changedFiles;
++        return [];
++      },
++    });
++    const second = runAffectedTests({
++      projectRoot: '/x',
++      changedFiles: ['lib/a.js', 'lib/b.js'],
++      resolveTests: () => [],
++    });
++    const changed = runAffectedTests({
++      projectRoot: '/x',
++      changedFiles: ['lib/c.js'],
++      resolveTests: () => [],
++    });
++
++    expect(received).toEqual(['lib/a.js', 'lib/b.js']);
++    expect(Object.isFrozen(received)).toBe(true);
++    expect(first.inputFingerprint).toMatch(/^[a-f0-9]{64}$/);
++    expect(second.inputFingerprint).toBe(first.inputFingerprint);
++    expect(changed.inputFingerprint).not.toBe(first.inputFingerprint);
++  });
++
++  test('default selection maps the supplied snapshot without resolving Git again', () => {
++    const calls = [];
++    const projectRoot = path.resolve(__dirname, '../..');
++    const res = runAffectedTests({
++      projectRoot,
++      changedFiles: ['test/commands/preflight.test.js'],
++      spawn: (cmd, args) => {
++        calls.push({ cmd, args });
++        return { status: 0 };
++      },
++    });
++
++    expect(res.ok).toBe(true);
++    expect(calls).toHaveLength(1);
++    expect(calls[0].args).toContain('test/commands/preflight.test.js');
++  });
++
+   test('no affected tests → fast-lane pass without spawning', () => {
+     let called = false;
+     const spawn = () => { called = true; return { status: 0 }; };
+@@ -200,6 +265,7 @@ describe('buildGates --all — no vacuous green gates (R2)', () => {
+     });
+     const out = await gates[3].run(); // affected-tests gate
+     expect(out.skipped).toBe(true);
++    expect(out.inputFingerprint).toMatch(/^[a-f0-9]{64}$/);
+     expect(affectedCalled).toBe(false);
+     expect(out.summary).toMatch(/--all|full suite/i);
+   });
+-- 
+2.51.0.windows.1
+

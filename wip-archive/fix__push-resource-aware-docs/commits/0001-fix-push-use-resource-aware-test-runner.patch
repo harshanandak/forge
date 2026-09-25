@@ -1,0 +1,249 @@
+From b330cbe7b9cac6593ef171326654d4e9929c7858 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 17:43:23 +0530
+Subject: [PATCH] fix(push): use resource-aware test runner
+
+---
+ lib/commands/push.js       | 13 ++++---
+ test/commands/push.test.js | 73 +++++++++++++++++++++++---------------
+ 2 files changed, 54 insertions(+), 32 deletions(-)
+
+diff --git a/lib/commands/push.js b/lib/commands/push.js
+index f90b4c36..19ec715c 100644
+--- a/lib/commands/push.js
++++ b/lib/commands/push.js
+@@ -283,6 +283,7 @@ function reportTestRunTermination(testResult, timeoutMs, log) {
+  * Run tests unless in quick mode, logging warnings for first push.
+  * @param {function} spawnFn - spawnSync or mock
+  * @param {function} execFn - execFileSync or mock
++ * @param {function} existsFn - fs.existsSync or mock
+  * @param {string} pkgManager - Package manager command
+  * @param {string} projectRoot - Absolute path to project root
+  * @param {boolean} quickMode - Whether to skip tests
+@@ -290,7 +291,7 @@ function reportTestRunTermination(testResult, timeoutMs, log) {
+  * @param {NodeJS.ProcessEnv} [env] - Environment used to resolve the test budget
+  * @returns {boolean|undefined} True if tests passed, undefined if skipped
+  */
+-function runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, env = process.env) {
++function runTests(spawnFn, execFn, existsFn, pkgManager, projectRoot, quickMode, log, env = process.env) {
+ 	if (quickMode) {
+ 		log('Tests skipped (--quick) — CI will run full suite on GitHub');
+ 		const branch = getCurrentBranch(execFn);
+@@ -300,7 +301,11 @@ function runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, env
+ 		return undefined;
+ 	}
+ 
+-	// `forge push` runs the package-level `test` script, i.e. the whole suite.
++	const testRunner = path.join(projectRoot, 'scripts', 'test.js');
++	const hasResourceAwareRunner = existsFn(testRunner);
++	const testCommand = hasResourceAwareRunner ? 'node' : pkgManager;
++	const testArgs = hasResourceAwareRunner ? [testRunner] : ['run', 'test'];
++
+ 	// Budget it from the shared full-suite budget in scripts/test.js — which is
+ 	// sized as ~2x the measured healthy full-suite runtime and overridable with
+ 	// FORGE_TEST_TIMEOUT_MS — instead of an arbitrary local cap: the old fixed
+@@ -308,7 +313,7 @@ function runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, env
+ 	// reintroduce a local constant here; change the shared budget with a fresh
+ 	// measurement instead.
+ 	const timeoutMs = resolveFullSuiteTimeoutMs(env);
+-	const testResult = spawnFn(pkgManager, ['run', 'test'], {
++	const testResult = spawnFn(testCommand, testArgs, {
+ 		stdio: 'inherit',
+ 		shell: isWindows,
+ 		cwd: projectRoot,
+@@ -368,7 +373,7 @@ module.exports = {
+ 		}
+ 
+ 		// Step 3: Tests (skip in quick mode)
+-		const testsPassed = runTests(spawnFn, execFn, pkgManager, projectRoot, quickMode, log, deps?.env || process.env);
++		const testsPassed = runTests(spawnFn, execFn, existsFn, pkgManager, projectRoot, quickMode, log, deps?.env || process.env);
+ 		if (!quickMode && !testsPassed) {
+ 			return { success: false, quickMode, lintPassed: true, testsPassed: false, pushed: false };
+ 		}
+diff --git a/test/commands/push.test.js b/test/commands/push.test.js
+index 4d837950..b7a98480 100644
+--- a/test/commands/push.test.js
++++ b/test/commands/push.test.js
+@@ -19,6 +19,10 @@ const {
+ 	resolveFullSuiteTimeoutMs,
+ } = require('../../scripts/test.js');
+ 
++function isResourceAwareTestRunnerCall(cmd, args) {
++	return cmd === 'node' && args.some(arg => /scripts[\\/]test\.js$/.test(arg));
++}
++
+ describe('Forge Push Command', () => {
+ 	describe('Module exports', () => {
+ 		test('should export correct command shape', () => {
+@@ -120,9 +124,7 @@ describe('Forge Push Command', () => {
+ 
+ 			const result = await pushModule.handler([], { '--quick': true }, '/fake/project', deps);
+ 
+-			const testCall = spawnCalls.find(
+-				c => c.args.includes('run') && c.args.includes('test'),
+-			);
++			const testCall = spawnCalls.find(c => isResourceAwareTestRunnerCall(c.cmd, c.args));
+ 			expect(testCall).toBeFalsy(); // tests should NOT be called
+ 			expect(result.quickMode).toBe(true);
+ 			expect(result.success).toBe(true);
+@@ -165,7 +167,7 @@ describe('Forge Push Command', () => {
+ 	});
+ 
+ 	describe('Full mode (no --quick)', () => {
+-		test('should run lint and tests in full mode', async () => {
++		test('should run lint and route tests through the resource-aware runner', async () => {
+ 			const spawnCalls = [];
+ 			const deps = makeDeps({
+ 				spawnSync: (cmd, args, _opts) => {
+@@ -179,19 +181,34 @@ describe('Forge Push Command', () => {
+ 			const lintCall = spawnCalls.find(
+ 				c => c.args.includes('run') && c.args.includes('lint'),
+ 			);
+-			const testCall = spawnCalls.find(
+-				c => c.args.includes('run') && c.args.includes('test'),
+-			);
++			const testCall = spawnCalls.find(c => isResourceAwareTestRunnerCall(c.cmd, c.args));
+ 			expect(lintCall).toBeTruthy();
+ 			expect(testCall).toBeTruthy();
++			expect(spawnCalls.some(c => c.args.includes('run') && c.args.includes('test'))).toBe(false);
+ 			expect(result.quickMode).toBe(false);
+ 			expect(result.testsPassed).toBe(true);
+ 		});
+ 
++		test('should fall back to the package test script when the shared runner is absent', async () => {
++			const spawnCalls = [];
++			const deps = makeDeps({
++				existsSync: file => !/scripts[\\/]test\.js$/.test(file),
++				spawnSync: (cmd, args, _opts) => {
++					spawnCalls.push({ cmd, args: [...args] });
++					return { status: 0 };
++				},
++			});
++
++			await pushModule.handler([], {}, '/external/project', deps);
++
++			expect(spawnCalls.some(c => isResourceAwareTestRunnerCall(c.cmd, c.args))).toBe(false);
++			expect(spawnCalls).toContainEqual({ cmd: 'bun', args: ['run', 'test'] });
++		});
++
+ 		test('should block push if tests fail in full mode', async () => {
+ 			const deps = makeDeps({
+ 				spawnSync: (cmd, args, _opts) => {
+-					if (args.includes('test')) {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return { status: 1 };
+ 					}
+ 					return { status: 0 };
+@@ -207,8 +224,8 @@ describe('Forge Push Command', () => {
+ 		test('should not cap the full suite with a hardcoded 120s timeout', async () => {
+ 			let testOpts = null;
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						testOpts = opts;
+ 					}
+ 					return { status: 0 };
+@@ -224,8 +241,8 @@ describe('Forge Push Command', () => {
+ 		test('should budget the test run from the shared full-suite budget', async () => {
+ 			let testOpts = null;
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						testOpts = opts;
+ 					}
+ 					return { status: 0 };
+@@ -241,8 +258,8 @@ describe('Forge Push Command', () => {
+ 		test('should budget the push test run well above the measured full-suite runtime', async () => {
+ 			let testOpts = null;
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						testOpts = opts;
+ 					}
+ 					return { status: 0 };
+@@ -259,8 +276,8 @@ describe('Forge Push Command', () => {
+ 		test('should honor FORGE_TEST_TIMEOUT_MS for the push test run', async () => {
+ 			let testOpts = null;
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						testOpts = opts;
+ 					}
+ 					return { status: 0 };
+@@ -280,8 +297,8 @@ describe('Forge Push Command', () => {
+ 			// sends the user to raise a timeout that was never the problem.
+ 			const logs = [];
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, _opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, _opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return { status: null, signal: 'SIGKILL' };
+ 					}
+ 					return { status: 0 };
+@@ -307,8 +324,8 @@ describe('Forge Push Command', () => {
+ 			// timeout diagnostic in the exact case it was written for.
+ 			const logs = [];
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, _opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, _opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return {
+ 							status: null,
+ 							signal: 'SIGKILL',
+@@ -335,8 +352,8 @@ describe('Forge Push Command', () => {
+ 			// of an ETIMEDOUT error. Handle both field spellings.
+ 			const logs = [];
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, _opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, _opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return { status: null, signalCode: 'SIGKILL', exitedDueToTimeout: true };
+ 					}
+ 					return { status: 0 };
+@@ -358,8 +375,8 @@ describe('Forge Push Command', () => {
+ 			// blaming the budget there sends the user after the wrong lever.
+ 			const logs = [];
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, _opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, _opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return { status: null, signal: 'SIGTERM' };
+ 					}
+ 					return { status: 0 };
+@@ -379,8 +396,8 @@ describe('Forge Push Command', () => {
+ 		test('should report a genuine spawn failure as a spawn error, not a timeout', async () => {
+ 			const logs = [];
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, _opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, _opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return {
+ 							status: null,
+ 							signal: null,
+@@ -403,8 +420,8 @@ describe('Forge Push Command', () => {
+ 		test('should report the spawn error when the test runner cannot start', async () => {
+ 			const logs = [];
+ 			const deps = makeDeps({
+-				spawnSync: (_cmd, args, _opts) => {
+-					if (args.includes('test')) {
++				spawnSync: (cmd, args, _opts) => {
++					if (isResourceAwareTestRunnerCall(cmd, args)) {
+ 						return { status: null, signal: null, error: new Error('spawn ENOENT') };
+ 					}
+ 					return { status: 0 };
+-- 
+2.51.0.windows.1
+

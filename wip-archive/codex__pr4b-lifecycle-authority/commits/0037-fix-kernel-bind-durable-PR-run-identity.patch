@@ -1,0 +1,213 @@
+From e2e5fadfc639afbd05f71d4042fd1cbc0cf9da19 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 12 Aug 2026 17:50:34 +0530
+Subject: [PATCH] fix(kernel): bind durable PR run identity
+
+---
+ lib/kernel/broker.js        | 39 ++++++++++++++++++++++++++++++-------
+ lib/kernel/sqlite-driver.js |  7 +++++++
+ test/kernel/trace.test.js   | 30 +++++++++++++++++++++++++++-
+ 3 files changed, 68 insertions(+), 8 deletions(-)
+
+diff --git a/lib/kernel/broker.js b/lib/kernel/broker.js
+index f4332773..797105c4 100644
+--- a/lib/kernel/broker.js
++++ b/lib/kernel/broker.js
+@@ -351,6 +351,8 @@ function derivePrEvidence(input) {
+ 		issue_id: packetPayload.issue_id,
+ 		issue_revision: packetPayload.expected_issue_revision,
+ 		head_sha: packetPayload.target_head,
++		packet_id: packetPayload.packet_id,
++		packet_revision: packetPayload.packet_revision,
+ 		work_packet_hash: packet.content_hash,
+ 		work_packet_identity: stableStringify([
+ 			packetPayload.issue_id,
+@@ -361,6 +363,8 @@ function derivePrEvidence(input) {
+ 			packetPayload.target_head,
+ 		]),
+ 		run_receipt_hash: receipt.content_hash,
++		run_id: receiptPayload.run_id,
++		attempt_id: receiptPayload.attempt_id,
+ 		risk_manifest_digest: packetPayload.risk_manifest_digest,
+ 		gate_ids: gateIds,
+ 	};
+@@ -470,7 +474,7 @@ function assertCompatiblePrEvidence(existingEvent, payload) {
+ 
+ const PR_LINKAGE_DRIVER_METHODS = [
+ 	'exec', 'resolvePrLinkage', 'upsertPr', 'retirePr', 'readTrace',
+-	'listKernelEvents', 'loadKernelEventByIdempotencyKey', 'insertKernelEvent', 'enqueueKernelProjection',
++	'listKernelEvents', 'loadKernelEventByIdempotencyKey', 'loadPrEventsByRunId', 'insertKernelEvent', 'enqueueKernelProjection',
+ ];
+ 
+ function preparePrLinkageInput(input, driver) {
+@@ -515,16 +519,23 @@ function findPriorPr(pullRequests, input) {
+ 
+ function buildPrLinkagePayload(input, evidence, worktreeId, gateReceipts) {
+ 	return {
++		phase: input.phase,
+ 		issue_id: evidence.issue_id,
+ 		issue_revision: evidence.issue_revision,
+ 		worktree_id: worktreeId,
+ 		repo: input.repo,
+ 		number: input.number,
++		git_common_dir: input.git_common_dir,
++		branch: input.branch,
+ 		url: input.url ?? null,
+ 		head_sha: evidence.head_sha,
+ 		work_packet_hash: evidence.work_packet_hash,
+ 		work_packet_identity: evidence.work_packet_identity,
++		packet_id: evidence.packet_id,
++		packet_revision: evidence.packet_revision,
+ 		run_receipt_hash: evidence.run_receipt_hash,
++		run_id: evidence.run_id,
++		attempt_id: evidence.attempt_id,
+ 		risk_manifest_digest: evidence.risk_manifest_digest,
+ 		gate_receipts: gateReceipts,
+ 	};
+@@ -569,6 +580,17 @@ function assertAtomicPrEvidence(trace, input, evidence) {
+ 	}
+ }
+ 
++function assertAtomicRunIdentity(events, payload) {
++	const identityFields = ['issue_id', 'repo', 'number', 'git_common_dir', 'branch', 'head_sha',
++		'work_packet_identity', 'packet_id', 'packet_revision', 'run_id', 'attempt_id'];
++	for (const event of events) {
++		const existing = normalizePayload(event);
++		if (identityFields.some(field => stableStringify(existing[field]) !== stableStringify(payload[field]))) {
++			throw traceError('FORGE_TRACE_EVIDENCE_CONFLICT', 'recordPrLinkage run identity conflicts with durable PR evidence');
++		}
++	}
++}
++
+ async function assertExactLifecycleOwnership(driver, evidence, context, config) {
+ 	for (const method of ['loadActiveKernelClaim', 'loadKernelEntity']) requireDriverMethod(driver, method);
+ 	if (typeof context.actor !== 'string' || !context.actor || typeof context.sessionId !== 'string' || !context.sessionId) {
+@@ -1783,12 +1805,13 @@ function createLocalBroker(options = {}) {
+ 			if (!transactionDriver || transactionDriver === driver || typeof transactionDriver.close !== 'function') {
+ 				throw traceError('FORGE_TRACE_UNAVAILABLE', 'recordPrLinkage received an invalid isolated transaction connection');
+ 			}
+-			const linkageInput = preparePrLinkageInput(input, transactionDriver);
+-			const evidence = derivePrEvidence(linkageInput);
+ 			const config = getConfig();
+-			return withPrLinkageTurn(transactionDriver, async () => {
+-			let transactionOpen = false;
+ 			try {
++				return await withPrLinkageTurn(transactionDriver, async () => {
++				const linkageInput = preparePrLinkageInput(input, transactionDriver);
++				const evidence = derivePrEvidence(linkageInput);
++				let transactionOpen = false;
++				try {
+ 				await beginImmediate(transactionDriver, config);
+ 				transactionOpen = true;
+ 				if (context.requireExactLifecycleOwnership === true) {
+@@ -1805,6 +1828,7 @@ function createLocalBroker(options = {}) {
+ 				const worktreeId = inferred.worktree_id;
+ 				const eventType = `pr.${linkageInput.phase}`;
+ 				const payload = buildPrLinkagePayload(linkageInput, evidence, worktreeId, gateReceipts);
++				assertAtomicRunIdentity(await transactionDriver.loadPrEventsByRunId(evidence.run_id, context, config), payload);
+ 				const terminalPr = priorPr && ['merged', 'closed'].includes(priorPr.state) ? priorPr : null;
+ 				assertTerminalPrCompatibility(terminalPr, linkageInput, evidence, worktreeId);
+ 				const linked = terminalPr ? { ok: true, ...terminalPr } : await transactionDriver.upsertPr({
+@@ -1839,16 +1863,17 @@ function createLocalBroker(options = {}) {
+ 				transactionOpen = false;
+ 				await restoreBusyTimeout(transactionDriver, config);
+ 				return { link: linked, iteration };
+-			} catch (error) {
++				} catch (error) {
+ 				if (transactionOpen) {
+ 					try { await transactionDriver.exec('ROLLBACK;', config); } catch { /* preserve original error */ }
+ 				}
+ 				await restoreBusyTimeout(transactionDriver, config);
+ 				throw error;
++				}
++				});
+ 			} finally {
+ 				transactionDriver.close();
+ 			}
+-			});
+ 		},
+ 
+ 		async recordOpenedPrLinkage(input, context = {}) {
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 1318f334..a2eb1d02 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -1377,6 +1377,8 @@ function parseTraceEvent(row) {
+ 		work_packet_hash: payload.work_packet_hash ?? null,
+ 		work_packet_identity: payload.work_packet_identity ?? null,
+ 		run_receipt_hash: payload.run_receipt_hash ?? null,
++		run_id: payload.run_id ?? null,
++		attempt_id: payload.attempt_id ?? null,
+ 		risk_manifest_digest: payload.risk_manifest_digest ?? null,
+ 		gate_receipts: payload.gate_receipts ?? null,
+ 		url: payload.url ?? null,
+@@ -3384,6 +3386,11 @@ function createDriver(runtime, configuredDatabasePath, driverOptions = {}) {
+ 		async loadKernelEventByIdempotencyKey(idempotencyKey, _context = {}, config = {}) {
+ 			return loadKernelEventByIdempotencyKeyRow(runtime, getDatabase(config), idempotencyKey);
+ 		},
++		async loadPrEventsByRunId(runId, _context = {}, config = {}) {
++			return allParams(runtime, getDatabase(config),
++				"SELECT * FROM kernel_events WHERE entity_type = 'pr' AND json_extract(payload_json, '$.run_id') = ? ORDER BY created_at ASC, rowid ASC",
++				[runId]);
++		},
+ 		async insertKernelConflict(conflict, _context = {}, config = {}) {
+ 			return insertKernelConflictRow(runtime, getDatabase(config), conflict);
+ 		},
+diff --git a/test/kernel/trace.test.js b/test/kernel/trace.test.js
+index 7d87d736..88cf812f 100644
+--- a/test/kernel/trace.test.js
++++ b/test/kernel/trace.test.js
+@@ -253,6 +253,18 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		}
+ 	});
+ 
++	test('atomically rejects reuse of one Flow run identity across PR targets', async () => {
++		const firstPacket = workPacket();
++		await broker.recordPrLinkage(linkage('opened', firstPacket, runReceipt(firstPacket)));
++		const secondPacket = rehash({ ...structuredClone(firstPacket), object_id: '10000000-0000-4000-8000-000000000099',
++			payload: { ...structuredClone(firstPacket.payload), packet_id: 'packet-other' } });
++		await expect(broker.recordPrLinkage(linkage('opened', secondPacket, runReceipt(secondPacket), {
++			number: 515, url: 'https://github.com/owner/forge/pull/515',
++		}))).rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
++		expect(await driver.queryAll("SELECT COUNT(*) AS n FROM kernel_events WHERE event_type = 'pr.opened';", config))
++			.toEqual([{ n: 1 }]);
++	});
++
+ 	test('serializes same-driver linkage turns and releases the queue after failure', async () => {
+ 		const invalidPacket = workPacket({ target_head: 'f'.repeat(40) });
+ 		const invalid = linkage('opened', invalidPacket, runReceipt(invalidPacket, { exact_head: HEAD_SHA }));
+@@ -312,6 +324,22 @@ describe('Kernel receipt-bound PR trace', () => {
+ 		driver.forkConnection = originalFork;
+ 	});
+ 
++	test('closes the isolated linkage connection when input or receipt validation fails', async () => {
++		const originalFork = driver.forkConnection;
++		let closes = 0;
++		driver.forkConnection = () => {
++			const fork = originalFork.call(driver);
++			const close = fork.close;
++			fork.close = () => { closes += 1; close.call(fork); };
++			return fork;
++		};
++		await expect(broker.recordPrLinkage({})).rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		await expect(broker.recordPrLinkage(linkage('opened', workPacket(), { invalid: true })))
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_INVALID_RECEIPT' });
++		expect(closes).toBe(2);
++		driver.forkConnection = originalFork;
++	});
++
+ 	test('revalidates exact claim ownership inside opened linkage persistence', async () => {
+ 		await driver.insertKernelClaim({ id: 'claim-1', issue_id: 'issue-trace', actor: 'agent-1', session_id: 'session-1',
+ 			state: 'active', claimed_at: '2026-08-11T00:00:00.000Z', expires_at: '2026-08-11T01:00:00.000Z' }, {}, config);
+@@ -612,7 +640,7 @@ describe('Kernel receipt-bound PR trace', () => {
+ 			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+ 		const changedHeadPacket = workPacket({ target_head: 'f'.repeat(40) });
+ 		await expect(broker.recordPrLinkage(linkage('merged', changedHeadPacket, runReceipt(changedHeadPacket, {}, 'merged'))))
+-			.rejects.toMatchObject({ code: 'FORGE_TRACE_TERMINAL_CONFLICT' });
++			.rejects.toMatchObject({ code: 'FORGE_TRACE_EVIDENCE_CONFLICT' });
+ 		expect((await driver.queryAll('SELECT * FROM kernel_pr;', config))[0]).toEqual(before);
+ 	});
+ 
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,272 @@
+From efe09b50033becfdb2d38f7737fd9471897b9bf0 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 4 Jul 2026 07:25:21 +0530
+Subject: [PATCH] fix(migrate): fold external_ref/started_at + read split
+ .beads layout
+
+Fable-review honesty fix: issues.external_ref (6 issues, e.g. gh-88) and
+issues.started_at were silently dropped with NO gap entry, contradicting the
+"sole remaining gap" claim. Both now fold into the issue metadata blob
+(metadata.beads_external_ref / metadata.beads_started_at), matching the
+owner -> metadata.beads_owner handling. Documented that beads-internal/derived
+fields (content_hash, etc.) are intentionally not carried; the only remaining
+reported gap is now genuinely dependencies.created_by.
+
+Also make loadBeadsSnapshotFromDirectory tolerant of the SPLIT .beads layout
+(events under .beads/backup/, interactions at .beads/interactions.jsonl): a
+file missing from the given dir is also read from a backup/ subdir and the
+parent dir, so pointing --source at either location no longer silently
+half-reads the memory/activity sidecars. Fixed the owner-trim comparison so a
+padded assignee/created_by no longer double-stores the owner.
+
+Tests: external_ref/started_at survive into metadata; owner not double-stored;
+split-layout loading. CHANGELOG wording corrected. Regenerated the D20 artifact.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ CHANGELOG.md                                  |  2 +-
+ .../bd-call-site-kill-list.md                 | 12 ++--
+ lib/adapters/beads-kernel-compat.js           | 58 ++++++++++------
+ lib/commands/migrate.js                       |  5 +-
+ test/adapters/beads-kernel-compat.test.js     | 66 +++++++++++++++++++
+ 5 files changed, 115 insertions(+), 28 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 07a9b610..2efda3a9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -13,7 +13,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Added
+ 
+-- `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fidelity gaps are also resolved onto existing columns: beads `owner` → `assignee` (falling back after an explicit assignee, otherwise retained under `metadata.beads_owner`), and `design`/`assignee` now land on their Kernel columns instead of being dropped. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. (The dependency `created_by` provenance remains a single documented gap — the Kernel dependency row has no creator column.)
++- `forge migrate --from beads` now transfers the full legacy **activity log** — every `events.jsonl` lifecycle event (created/closed/status_changed/updated/label_added/…) and every `interactions.jsonl` agent interaction/memory record — into the Kernel `kernel_events` table (namespaced `beads.event.*` / `beads.interaction.*`, `origin=beads_import`), preserving each record's kind, actor, timestamp and payload. The write is idempotent (deterministic id, `ON CONFLICT DO NOTHING`) so re-migration mints no duplicates, and needs no schema change. Issue-level fields with no dedicated Kernel column are folded into the issue `metadata` blob instead of being dropped: beads `owner` → `assignee` (falling back after an explicit assignee, else `metadata.beads_owner`), plus `metadata.beads_external_ref` (linked GitHub issue/run) and `metadata.beads_started_at`; `design`/`assignee` land on their Kernel columns. The loader also tolerates a split `.beads` layout (events under `.beads/backup/`, interactions at `.beads/interactions.jsonl`) so neither sidecar is silently half-read. As a result `forge migrate` reports **no data-loss gap for events or interactions**, and the dry-run/import summaries surface an `events` count. The **only remaining reported gap is `dependencies.created_by`** (the Kernel dependency row has no creator column); beads-internal/derived fields such as `content_hash` are intentionally not carried (not user data).
+ 
+ - `forge export --import` now **hydrates** the Kernel from a committed JSONL snapshot: it reads `.forge/kernel/*.jsonl` and upserts issues, comments, and dependencies into `kernel.sqlite`, so a fresh clone (whose `.git/forge/kernel.sqlite` is never cloned) restores its backlog from git instead of showing zero issues. The import is idempotent (upsert by id — re-importing applies nothing and never duplicates) and honors the versioned manifest (a snapshot whose `schema_version` is newer than this forge understands is refused with a clear message). The projection now carries `created_by` for author fidelity on round-trip (`schema_version` bumped 1 → 2; older v1 snapshots still import, with `created_by` defaulting to null). (#276)
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+index 1eb0734e..b6e2365d 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/bd-call-site-kill-list.md
+@@ -7,8 +7,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+ 
+ | Group | Call sites | Files |
+ | --- | ---: | ---: |
+-| command | 68 | 8 |
+-| runtime | 256 | 34 |
++| command | 71 | 8 |
++| runtime | 260 | 34 |
+ | docs | 394 | 47 |
+ | skills | 1 | 1 |
+ | hooks | 0 | 0 |
+@@ -21,8 +21,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 8 (bd), 10 (bd)
+ - [ ] lib/commands/dev.js (1)
+   - lines: 466 (bd)
+-- [ ] lib/commands/migrate.js (14)
+-  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 310 (.beads)
++- [ ] lib/commands/migrate.js (17)
++  - lines: 80 (bd, dolt), 81 (bd), 84 (bd), 91 (bd), 93 (bd), 98 (dolt), 105 (bd, dolt), 106 (bd), 109 (bd), 116 (.beads), 117 (bd, .beads, dolt), 132 (.beads), 142 (.beads), 310 (.beads), 311 (.beads), 312 (.beads), 313 (.beads)
+ - [ ] lib/commands/plan.js (9)
+   - lines: 237 (bd), 273 (bd), 275 (bd), 289 (bd), 310 (bd), 321 (bd), 324 (bd), 718 (bd), 753 (bd)
+ - [ ] lib/commands/status.js (10)
+@@ -38,8 +38,8 @@ Purpose: tracked migration artifact for D20 so later PRs can remove Beads/Dolt h
+   - lines: 21 (.beads), 25 (.beads), 26 (.beads), 27 (bd), 127 (.beads), 128 (.beads), 145 (bd), 147 (.beads), 148 (bd), 149 (bd)
+ - [ ] lib/adapters/beads-issue-adapter.js (1)
+   - lines: 78 (bd)
+-- [ ] lib/adapters/beads-kernel-compat.js (1)
+-  - lines: 809 (.beads)
++- [ ] lib/adapters/beads-kernel-compat.js (5)
++  - lines: 81 (.beads), 82 (.beads), 83 (.beads), 84 (.beads), 827 (.beads)
+ - [ ] lib/audit-evidence.js (3)
+   - lines: 148 (bd), 214 (bd), 240 (bd)
+ - [ ] lib/beads-bootstrap.js (6)
+diff --git a/lib/adapters/beads-kernel-compat.js b/lib/adapters/beads-kernel-compat.js
+index abbe9e55..26402a44 100644
+--- a/lib/adapters/beads-kernel-compat.js
++++ b/lib/adapters/beads-kernel-compat.js
+@@ -78,12 +78,21 @@ function stringifyJsonl(records = []) {
+   return `${records.map(record => JSON.stringify(record)).join('\n')}\n`;
+ }
+ 
+-function readJsonlIfPresent(filePath) {
+-  if (!fs.existsSync(filePath)) {
+-    return [];
+-  }
+-
+-  return parseJsonl(fs.readFileSync(filePath, 'utf8'), path.basename(filePath));
++// Read one beads sidecar file, tolerant of the SPLIT layout a real `.beads/` store uses: the
++// backup export (issues/comments/dependencies/labels/events) lives under `.beads/backup/`, while
++// the live interactions/memory log lives at `.beads/interactions.jsonl`. So neither `.beads/` nor
++// `.beads/backup/` alone holds every file. We read from `beadsDir` first (it always wins), then
++// fall back to a `backup/` subdir and the parent dir — so pointing `--source` at EITHER location
++// picks up both events and interactions instead of silently half-reading (a missed memory sidecar
++// is exactly the data-loss class this migrater exists to close).
++function readBeadsSidecar(beadsDir, file) {
++  const candidates = [
++    path.join(beadsDir, file),
++    path.join(beadsDir, 'backup', file),
++    path.join(path.dirname(beadsDir), file),
++  ];
++  const found = candidates.find(candidate => fs.existsSync(candidate));
++  return found ? parseJsonl(fs.readFileSync(found, 'utf8'), path.basename(found)) : [];
+ }
+ 
+ function loadBeadsSnapshotFromDirectory(beadsDir) {
+@@ -93,12 +102,12 @@ function loadBeadsSnapshotFromDirectory(beadsDir) {
+ 
+   return {
+     beadsDir,
+-    issues: readJsonlIfPresent(path.join(beadsDir, 'issues.jsonl')),
+-    comments: readJsonlIfPresent(path.join(beadsDir, 'comments.jsonl')),
+-    dependencies: readJsonlIfPresent(path.join(beadsDir, 'dependencies.jsonl')),
+-    events: readJsonlIfPresent(path.join(beadsDir, 'events.jsonl')),
+-    interactions: readJsonlIfPresent(path.join(beadsDir, 'interactions.jsonl')),
+-    labels: readJsonlIfPresent(path.join(beadsDir, 'labels.jsonl')),
++    issues: readBeadsSidecar(beadsDir, 'issues.jsonl'),
++    comments: readBeadsSidecar(beadsDir, 'comments.jsonl'),
++    dependencies: readBeadsSidecar(beadsDir, 'dependencies.jsonl'),
++    events: readBeadsSidecar(beadsDir, 'events.jsonl'),
++    interactions: readBeadsSidecar(beadsDir, 'interactions.jsonl'),
++    labels: readBeadsSidecar(beadsDir, 'labels.jsonl'),
+   };
+ }
+ 
+@@ -386,12 +395,13 @@ function serializeBeadsMetadata(value) {
+   return Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
+ }
+ 
+-// Serialize the Kernel `metadata` column for an imported issue, ALSO preserving the beads
+-// `owner` when it is not already captured on created_by/assignee (otherwise it would be
+-// silently dropped). owner primarily maps to the Kernel assignee; for an issue that carries a
+-// DISTINCT explicit assignee AND author, the owner is retained here as metadata.beads_owner so
+-// no field is lost. A raw (non-object) metadata blob that must coexist with beads_owner is
+-// nested under metadata.beads_metadata rather than discarded.
++// Beads issue fields with no dedicated Kernel column are folded into the metadata blob so nothing
++// is silently dropped: the `owner` (only when not already captured on created_by/assignee — it
++// primarily maps to the Kernel assignee), the `external_ref` (e.g. a linked GitHub issue/run),
++// and the work-start timestamp `started_at`. A raw (non-object) metadata blob that must coexist
++// is nested under metadata.beads_metadata rather than discarded. NOTE: beads-internal/derived
++// fields (content_hash, agent_state, compaction_*, ephemeral, and other runtime plumbing) are
++// intentionally NOT carried — they are not user data and would only pollute the Kernel row.
+ function serializeIssueMetadata(issue, resolved = {}) {
+   const base = serializeBeadsMetadata(issue.metadata);
+   let metadata = {};
+@@ -409,11 +419,19 @@ function serializeIssueMetadata(issue, resolved = {}) {
+     }
+   }
+ 
+-  const owner = typeof issue.owner === 'string' ? issue.owner.trim() : issue.owner;
+-  const ownerCaptured = owner && (owner === resolved.createdBy || owner === resolved.assignee);
++  // Compare trimmed on BOTH sides so a padded assignee/created_by does not double-store the owner.
++  const trim = value => (typeof value === 'string' ? value.trim() : value);
++  const owner = trim(issue.owner);
++  const ownerCaptured = owner && (owner === trim(resolved.createdBy) || owner === trim(resolved.assignee));
+   if (owner && !ownerCaptured) {
+     metadata.beads_owner = issue.owner;
+   }
++  if (hasBeadsFieldValue(issue.external_ref)) {
++    metadata.beads_external_ref = issue.external_ref;
++  }
++  if (hasBeadsFieldValue(issue.started_at)) {
++    metadata.beads_started_at = issue.started_at;
++  }
+ 
+   if (rawPreserved !== null) {
+     if (Object.keys(metadata).length === 0) return rawPreserved;
+diff --git a/lib/commands/migrate.js b/lib/commands/migrate.js
+index 736b061f..84fd9094 100644
+--- a/lib/commands/migrate.js
++++ b/lib/commands/migrate.js
+@@ -307,7 +307,10 @@ module.exports = {
+   usage: 'forge migrate --from beads [--dry-run] [--source <dir>] [--json]',
+   flags: {
+     '--from <source>': 'Migration source. Use "beads" to import a Beads issue store into the Kernel.',
+-    '--source <dir>': 'Directory of exported beads *.jsonl files (defaults to auto-detecting .beads/).',
++    '--source <dir>': 'Directory of exported beads *.jsonl files (defaults to auto-detecting .beads/). '
++      + 'A split .beads layout is tolerated: files missing from the given dir are also read from a '
++      + 'backup/ subdir and the parent dir, so events (under .beads/backup/) and interactions '
++      + '(at .beads/interactions.jsonl) are both picked up regardless of which you point at.',
+     '--dry-run': 'Read + map only; print what WOULD be imported without writing to the Kernel.',
+     '--json': 'Emit a structured JSON result (counts + gaps + dryRun flag).',
+     '--fixture-corpus': 'v2→v3 PoC only: also dry-run the source-tree v2 fixture corpus when available.',
+diff --git a/test/adapters/beads-kernel-compat.test.js b/test/adapters/beads-kernel-compat.test.js
+index 773654f0..e935aa9e 100644
+--- a/test/adapters/beads-kernel-compat.test.js
++++ b/test/adapters/beads-kernel-compat.test.js
+@@ -211,6 +211,72 @@ describe('Beads Kernel compatibility adapter', () => {
+ 		expect(result.kernel.issues[0].created_by).toBe('owner@example.com');
+ 	});
+ 
++	test('folds beads external_ref and started_at into metadata instead of dropping them', () => {
++		// Mirrors the real corpus: external_ref links (e.g. gh-88) and a started_at timestamp have
++		// no dedicated Kernel column and MUST NOT be silently dropped — they fold into metadata.
++		const result = importBeadsSnapshot({
++			issues: [{
++				id: 'forge-6wy',
++				title: 'Linked to GitHub',
++				status: 'open',
++				owner: 'harsha@example.com',
++				created_by: 'Harsha Nanda',
++				external_ref: 'gh-88',
++				started_at: '2026-04-26T18:00:32Z',
++			}],
++		}, { importedAt: IMPORTED_AT });
++
++		const [imported] = result.kernel.issues;
++		const metadata = JSON.parse(imported.metadata);
++		expect(metadata.beads_external_ref).toBe('gh-88');
++		expect(metadata.beads_started_at).toBe('2026-04-26T18:00:32Z');
++		// Folded, not gapped — and not silently dropped.
++		const gapFields = result.report.gaps.map(gap => gap.field);
++		expect(gapFields).not.toContain('issues.external_ref');
++		expect(gapFields).not.toContain('issues.started_at');
++	});
++
++	test('does not double-store owner in metadata when it already maps to assignee', () => {
++		const result = importBeadsSnapshot({
++			issues: [{
++				id: 'forge-owned2',
++				title: 'Owner equals assignee',
++				status: 'open',
++				owner: '  harsha@example.com  ',
++				assignee: 'harsha@example.com',
++			}],
++		}, { importedAt: IMPORTED_AT });
++
++		// A padded owner that matches the (trimmed) assignee is captured, so metadata stays null.
++		expect(result.kernel.issues[0].metadata).toBeNull();
++	});
++
++	test('reads a split .beads layout — events under backup/, interactions in the parent dir', () => {
++		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'beads-split-'));
++		try {
++			const beadsDir = path.join(tmp, '.beads');
++			const backupDir = path.join(beadsDir, 'backup');
++			fs.mkdirSync(backupDir, { recursive: true });
++			// The backup export holds issues + events; the live interactions/memory log sits in .beads.
++			fs.writeFileSync(path.join(backupDir, 'issues.jsonl'), '{"id":"forge-aa1","title":"A","status":"open"}\n');
++			fs.writeFileSync(path.join(backupDir, 'events.jsonl'), '{"id":"ev-1","event_type":"created","issue_id":"forge-aa1","actor":"Harsha"}\n');
++			fs.writeFileSync(path.join(beadsDir, 'interactions.jsonl'), '{"id":"int-1","kind":"note","issue_id":"forge-aa1","actor":"Harsha","extra":{"note":"hi"}}\n');
++
++			// Pointing at .beads/backup still finds the parent's interactions (memory not missed).
++			const fromBackup = loadBeadsSnapshotFromDirectory(backupDir);
++			expect(fromBackup.events).toHaveLength(1);
++			expect(fromBackup.interactions).toHaveLength(1);
++
++			// Pointing at .beads still finds events under backup/ AND the sibling interactions.
++			const fromBeads = loadBeadsSnapshotFromDirectory(beadsDir);
++			expect(fromBeads.issues).toHaveLength(1);
++			expect(fromBeads.events).toHaveLength(1);
++			expect(fromBeads.interactions).toHaveLength(1);
++		} finally {
++			fs.rmSync(tmp, { recursive: true, force: true });
++		}
++	});
++
+ 	test('strips the internal forge_projection marker from carried Kernel metadata', () => {
+ 		const snapshot = {
+ 			issues: [{
+-- 
+2.51.0.windows.1
+

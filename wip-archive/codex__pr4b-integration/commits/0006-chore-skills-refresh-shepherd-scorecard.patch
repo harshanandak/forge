@@ -1,0 +1,57 @@
+From 1291eba380d4d41820a74db535f83574c36a7763 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 01:07:05 +0530
+Subject: [PATCH] chore(skills): refresh shepherd scorecard
+
+---
+ .agents/skills/shepherd/evals/scorecard.json | 6 +++---
+ skills/shepherd/evals/scorecard.json         | 6 +++---
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/.agents/skills/shepherd/evals/scorecard.json b/.agents/skills/shepherd/evals/scorecard.json
+index 556c16d8..b50fc3f4 100644
+--- a/.agents/skills/shepherd/evals/scorecard.json
++++ b/.agents/skills/shepherd/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 987,
+-      "body_lines": 92,
+-      "score": 43
++      "body_lines": 108,
++      "score": 41
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 83
++  "composite": 82
+ }
+diff --git a/skills/shepherd/evals/scorecard.json b/skills/shepherd/evals/scorecard.json
+index 556c16d8..b50fc3f4 100644
+--- a/skills/shepherd/evals/scorecard.json
++++ b/skills/shepherd/evals/scorecard.json
+@@ -4,8 +4,8 @@
+   "static": {
+     "token_cost": {
+       "desc_chars": 987,
+-      "body_lines": 92,
+-      "score": 43
++      "body_lines": 108,
++      "score": 41
+     },
+     "caps": {
+       "desc_within": true,
+@@ -37,5 +37,5 @@
+     "variance": null,
+     "note": "behavioral — W5 (LLM judge): semantic recall/precision/chain/outcome/variance, not deterministic"
+   },
+-  "composite": 83
++  "composite": 82
+ }
+-- 
+2.51.0.windows.1
+

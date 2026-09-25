@@ -1,0 +1,278 @@
+From 2902bae21bffb91f66181ebf64bb8a5ff28add34 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sun, 20 Sep 2026 15:34:02 +0530
+Subject: [PATCH] fix(validate): preserve truthful resource budgets
+
+---
+ .../2026-09-18-delivery-budget/decisions.md   |  3 +
+ lib/commands/validate.js                      | 21 +++---
+ scripts/test-full-suite.js                    | 39 +++++++---
+ test/commands/validate.test.js                |  6 ++
+ test/scripts/test-full-suite.test.js          | 71 ++++++++++++++++++-
+ 5 files changed, 118 insertions(+), 22 deletions(-)
+
+diff --git a/docs/work/2026-09-18-delivery-budget/decisions.md b/docs/work/2026-09-18-delivery-budget/decisions.md
+index 4c81f4cd..f85929be 100644
+--- a/docs/work/2026-09-18-delivery-budget/decisions.md
++++ b/docs/work/2026-09-18-delivery-budget/decisions.md
+@@ -4,5 +4,8 @@ No specification gaps encountered.
+ 
+ - Keep `--shards N` as the public spelling and treat `N` as a resource budget across the validate and full-suite boundaries.
+ - Reject an explicit budget that cannot fund one required lane worker before any child process starts.
++- Normalize only an automatically selected default up to the required lane cost; never widen an operator-requested budget.
++- Report successful runs as requested/effective and rejected runs as requested/minimum/rejected, because a rejected run has no effective execution budget.
++- Validate every repeated `--shards` occurrence and keep the last valid value, matching the standalone full-suite parser.
+ - Reject `--shards` for consumer repositories because their package-owned test command has no Forge resource-budget contract.
+ - Record requested and effective budgets in full-suite run output; keep validation receipt identity and schema unchanged.
+diff --git a/lib/commands/validate.js b/lib/commands/validate.js
+index 4f9481ee..dc8ccd8a 100644
+--- a/lib/commands/validate.js
++++ b/lib/commands/validate.js
+@@ -605,15 +605,18 @@ function parseTestCounts(output) {
+ }
+ 
+ function parseResourceBudget(args = []) {
+-	const index = args.indexOf('--shards');
+-	if (index === -1) return null;
+-	const value = args[index + 1];
+-	if (!/^[1-9]\d*$/.test(String(value ?? ''))) {
+-		throw new Error('--shards must be a positive integer resource budget');
+-	}
+-	const budget = Number(value);
+-	if (!Number.isSafeInteger(budget)) {
+-		throw new Error('--shards must be a positive integer resource budget');
++	let budget = null;
++	for (let index = 0; index < args.length; index += 1) {
++		if (args[index] !== '--shards') continue;
++		const value = args[index + 1];
++		if (!/^[1-9]\d*$/.test(String(value ?? ''))) {
++			throw new Error('--shards must be a positive integer resource budget');
++		}
++		budget = Number(value);
++		if (!Number.isSafeInteger(budget)) {
++			throw new Error('--shards must be a positive integer resource budget');
++		}
++		index += 1;
+ 	}
+ 	return budget;
+ }
+diff --git a/scripts/test-full-suite.js b/scripts/test-full-suite.js
+index 713e515b..4f63f1e6 100644
+--- a/scripts/test-full-suite.js
++++ b/scripts/test-full-suite.js
+@@ -496,6 +496,15 @@ function laneWorkerCost(laneName, platform = process.platform) {
+   return laneName === 'unit' ? 1 : 2;
+ }
+ 
++function minimumResourceBudget(lanes, platform = process.platform) {
++  return lanes
++    .filter((lane) => lane.shards.length > 0)
++    .reduce(
++      (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
++      0,
++    );
++}
++
+ function computeLaneGrants(lanes, options = {}) {
+   const platform = options.platform || process.platform;
+   const workerBudget = Number.isInteger(options.workerBudget) && options.workerBudget > 0
+@@ -526,13 +535,11 @@ function computeLaneGrants(lanes, options = {}) {
+     }
+     return grants;
+   }
+-  const requiredLanes = lanes.filter((lane) => lane.shards.length > 0);
+-  const minimumBudget = requiredLanes.reduce(
+-    (minimum, lane) => Math.max(minimum, laneWorkerCost(lane.name, platform)),
+-    0,
+-  );
++  const minimumBudget = minimumResourceBudget(lanes, platform);
+   if (workerBudget < minimumBudget) {
+-    throw new Error(`Full suite minimum resource budget is ${minimumBudget} for the required lanes`);
++    throw new Error(
++      `Full suite resource budget: requested=${workerBudget} minimum=${minimumBudget} outcome=rejected`,
++    );
+   }
+   for (const lane of lanes.filter((candidate) => candidate.name === 'exclusive')) {
+     const entry = grants.get(lane);
+@@ -973,9 +980,21 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+       subprocessShardTotal,
+     });
+     const shardSpecs = lanePlan.flatMap((lane) => lane.shards);
+-    const laneGrants = computeLaneGrants(lanePlan, { platform, workerBudget: shardTotal });
++    const minimumBudget = minimumResourceBudget(lanePlan, platform);
++    const effectiveResourceBudget = requestedResourceBudget === null
++      ? Math.max(shardTotal, minimumBudget)
++      : shardTotal;
++    if (requestedResourceBudget !== null && requestedResourceBudget < minimumBudget) {
++      console.log(
++        `Full suite resource budget: requested=${requestedResourceBudget} minimum=${minimumBudget} outcome=rejected`,
++      );
++    }
++    const laneGrants = computeLaneGrants(lanePlan, {
++      platform,
++      workerBudget: effectiveResourceBudget,
++    });
+ 
+-    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${shardTotal}`);
++    console.log(`Full suite resource budget: requested=${requestedResourceBudget ?? 'default'} effective=${effectiveResourceBudget}`);
+ 
+     if (shardSpecs.length === 0) {
+       const exitCode = signal ? signalExitCode(signal) : 1;
+@@ -993,7 +1012,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+       const grant = laneGrants.get(lane);
+       const granted = grant.deferred ? grant.deferredConcurrency : grant.granted;
+       const files = lane.shards.reduce((total, shard) => total + shard.files.length, 0);
+-      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${shardTotal}${grant.deferred ? ' deferred' : ''})`);
++      console.log(`Resource lane ${lane.name}: files=${files} shards=${lane.shards.length} concurrency=${granted} (nominal=${lane.concurrency} cost=${grant.cost} budget=${effectiveResourceBudget}${grant.deferred ? ' deferred' : ''})`);
+     }
+     const childEnv = stripFullSuiteChildEnv(
+       typeof processTree.envFor === 'function' ? processTree.envFor(env) : env,
+@@ -1027,7 +1046,7 @@ async function runFullSuiteInParallel(args = {}, deps = {}) {
+       }, {
+         grants: laneGrants,
+         platform,
+-        workerBudget: shardTotal,
++        workerBudget: effectiveResourceBudget,
+       });
+     } catch (error) {
+       console.error('Full suite shard execution failed:', error);
+diff --git a/test/commands/validate.test.js b/test/commands/validate.test.js
+index 14c41179..15ba20cb 100644
+--- a/test/commands/validate.test.js
++++ b/test/commands/validate.test.js
+@@ -34,6 +34,12 @@ describe('Validate Command - Validation Orchestration', () => {
+ 			expect(parseResourceBudget([])).toBeNull();
+ 		});
+ 
++		test('validates every repeated budget and keeps the last valid value', () => {
++			expect(() => parseResourceBudget(['--shards', '2', '--shards', '0']))
++				.toThrow('--shards must be a positive integer resource budget');
++			expect(parseResourceBudget(['--shards', '2', '--shards', '3'])).toBe(3);
++		});
++
+ 		test('threads a validated budget through the command handler', async () => {
+ 			const calls = [];
+ 			const result = await validateHandler(['--shards', '2'], {}, 'C:/repo', {
+diff --git a/test/scripts/test-full-suite.test.js b/test/scripts/test-full-suite.test.js
+index cdabebab..fe960477 100644
+--- a/test/scripts/test-full-suite.test.js
++++ b/test/scripts/test-full-suite.test.js
+@@ -126,6 +126,12 @@ describe('scripts/test-full-suite.js', () => {
+     },
+   );
+ 
++  test('parseArgs validates every repeated resource budget and keeps the last valid value', () => {
++    expect(() => parseArgs(['--shards', '2', '--shards', '0']))
++      .toThrow('--shards must be a positive integer resource budget');
++    expect(parseArgs(['--shards', '2', '--shards', '3']).shards).toBe(3);
++  });
++
+   test('buildShardTestArgs preserves an explicit shard timeout', () => {
+     const args = buildShardTestArgs({
+       files: ['test/example.test.js'],
+@@ -422,11 +428,11 @@ describe('scripts/test-full-suite.js', () => {
+     let executions = 0;
+ 
+     expect(() => computeLaneGrants(lanes, { platform: 'win32', workerBudget: 1 }))
+-      .toThrow('minimum resource budget is 2');
++      .toThrow('requested=1 minimum=2 outcome=rejected');
+     await expect(runLaneSchedule(lanes, async () => { executions += 1; }, () => {}, {
+       platform: 'win32',
+       workerBudget: 1,
+-    })).rejects.toThrow('minimum resource budget is 2');
++    })).rejects.toThrow('requested=1 minimum=2 outcome=rejected');
+     expect(executions).toBe(0);
+   });
+ 
+@@ -471,7 +477,7 @@ describe('scripts/test-full-suite.js', () => {
+       shards: [{ id: 'e0' }],
+     };
+     expect(() => computeLaneGrants([exclusiveLane], { platform: 'win32', workerBudget: 1 }))
+-      .toThrow('minimum resource budget is 2');
++      .toThrow('requested=1 minimum=2 outcome=rejected');
+   });
+ 
+   test('runLaneSchedule settles in-flight shared work before propagating a failure', async () => {
+@@ -829,6 +835,63 @@ describe('scripts/test-full-suite.js', () => {
+     expect(maxWeightedCost).toBeLessThanOrEqual(3);
+   });
+ 
++  test.each(['subprocess', 'exclusive'])(
++    'normalizes a one-CPU Windows default for the required %s lane',
++    async (resource) => {
++      const logged = [];
++      let spawned = 0;
++      const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
++        logged.push(parts.join(' '));
++      });
++      try {
++        const status = await runFullSuiteInParallel({}, {
++          allTests: [`test/${resource}.test.js`],
++          classify: () => resource,
++          cpuCount: 1,
++          durationMap: new Map(),
++          platform: 'win32',
++          processTree: fakeProcessTree(),
++          spawn: (_command, args) => {
++            spawned += 1;
++            return fakeShardChild(0, 9850 + spawned, args);
++          },
++        });
++        expect(status).toBe(0);
++      } finally {
++        logSpy.mockRestore();
++      }
++
++      expect(spawned).toBe(1);
++      expect(logged).toContain('Full suite resource budget: requested=default effective=2');
++    },
++  );
++
++  test('reports an explicitly rejected Windows budget before spawning', async () => {
++    const logged = [];
++    let spawned = 0;
++    const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
++      logged.push(parts.join(' '));
++    });
++    try {
++      await expect(runFullSuiteInParallel({ shards: 1 }, {
++        allTests: ['test/spawn.test.js'],
++        classify: () => 'subprocess',
++        durationMap: new Map(),
++        platform: 'win32',
++        processTree: fakeProcessTree(),
++        spawn: () => {
++          spawned += 1;
++          throw new Error('spawn must not run');
++        },
++      })).rejects.toThrow('requested=1 minimum=2 outcome=rejected');
++    } finally {
++      logSpy.mockRestore();
++    }
++
++    expect(spawned).toBe(0);
++    expect(logged).toContain('Full suite resource budget: requested=1 minimum=2 outcome=rejected');
++  });
++
+   test('resource lane plan output reports granted concurrency and budget', async () => {
+     const logged = [];
+     const logSpy = spyOn(console, 'log').mockImplementation((...parts) => {
+@@ -1477,6 +1540,7 @@ describe('scripts/test-full-suite.js', () => {
+     try {
+       expect(await runFullSuiteInParallel({ labelPrefix: unitLabelPrefix }, {
+         allTests: [],
++        cpuCount: 5,
+         durationMap: new Map(),
+         processTree: fakeProcessTree(),
+       })).toBe(1);
+@@ -1486,6 +1550,7 @@ describe('scripts/test-full-suite.js', () => {
+ 
+     expect(logs).toContain('Full suite aggregate: status=INCOMPLETE tests=0 assertions=0 passed=0 failed=0 errors=0 skipped=0');
+     expect(logs).toContain('Full suite exit: 1');
++    expect(logs).toContain('Full suite resource budget: requested=default effective=4');
+   });
+ 
+   test('missing Node executable follows the incomplete aggregate path without spawning', async () => {
+-- 
+2.51.0.windows.1
+

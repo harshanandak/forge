@@ -1,0 +1,237 @@
+From 63781a1243ca115c86cbb40d126724bdc27649d4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 23:11:53 +0530
+Subject: [PATCH] fix(setup): make agent link fallback race-safe
+
+---
+ lib/symlink-utils.js      |  65 ++++++++++++++-------
+ test/symlink-flag.test.js | 118 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 162 insertions(+), 21 deletions(-)
+
+diff --git a/lib/symlink-utils.js b/lib/symlink-utils.js
+index 663338b0..78f7d2f2 100644
+--- a/lib/symlink-utils.js
++++ b/lib/symlink-utils.js
+@@ -18,6 +18,28 @@ const path = require('node:path');
+ const HEADER_COMMENT =
+   '<!-- This file is a copy of AGENTS.md. Keep in sync manually or use: bunx forge setup --symlink -->';
+ 
++const SYMLINK_FALLBACK_ERRORS = new Set(['EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM']);
++
++function inspectExistingDestination(linkPath) {
++  let stat;
++  try {
++    stat = fs.lstatSync(linkPath);
++  } catch (err) {
++    if (err.code === 'ENOENT') return null;
++    throw err;
++  }
++
++  if (stat.isDirectory()) {
++    console.warn(`  Warning: Skipped ${linkPath} because it is a directory. Remove it manually and re-run setup.`);
++    return '';
++  }
++  if (stat.isFile() && fs.readFileSync(linkPath, 'utf8').trim() === '@AGENTS.md') {
++    return 'existing-import';
++  }
++  console.warn(`  Warning: Skipped ${linkPath} because an existing destination must be preserved.`);
++  return '';
++}
++
+ /**
+  * Create a symlink from `linkPath` pointing to `target`.
+  * If symlink creation fails (e.g., EPERM on Windows without admin),
+@@ -38,22 +60,9 @@ function createSymlinkOrCopy(target, linkPath, options = {}) {
+       return '';
+     }
+ 
+-    // Existing agent files belong to the user. A thin import is already the
+-    // desired projection; anything else must be left untouched.
+-    if (fs.existsSync(linkPath)) {
+-      const stat = fs.lstatSync(linkPath);
+-      if (stat.isDirectory()) {
+-        console.warn(
+-          `  ⚠ Skipped ${linkPath} (a directory exists at this path). Remove it manually and re-run setup.`
+-        );
+-        return '';
+-      }
+-      if (fs.readFileSync(linkPath, 'utf8').trim() === '@AGENTS.md') {
+-        return 'existing-import';
+-      }
+-      console.warn(`  Warning: Skipped ${linkPath} (existing file is not an @AGENTS.md import).`);
+-      return '';
+-    }
++    // Existing agent files belong to the user. lstat also sees dangling links.
++    const existing = inspectExistingDestination(linkPath);
++    if (existing !== null) return existing;
+ 
+     // Ensure parent directory exists
+     const linkDir = path.dirname(linkPath);
+@@ -66,16 +75,30 @@ function createSymlinkOrCopy(target, linkPath, options = {}) {
+       const relPath = path.relative(linkDir, target);
+       fs.symlinkSync(relPath, linkPath);
+       return 'linked';
+-    } catch (_symlinkErr) {
+-      // Expected: symlink creation fails with EPERM on Windows without admin privileges — fall back to copy
++    } catch (symlinkErr) {
++      if (symlinkErr.code === 'EEXIST') {
++        return inspectExistingDestination(linkPath) || '';
++      }
++      if (!SYMLINK_FALLBACK_ERRORS.has(symlinkErr.code)) {
++        throw symlinkErr;
++      }
+       if (options.symlinkOnly) {
+         console.warn(`  ⚠ Symlink failed for ${linkPath} (--symlink requires symlink support)`);
+         return '';
+       }
+-      // Fall back to copy with header
+       const content = fs.readFileSync(target, 'utf-8');
+-      fs.writeFileSync(linkPath, HEADER_COMMENT + '\n' + content, 'utf-8');
+-      return 'copied';
++      try {
++        fs.writeFileSync(linkPath, HEADER_COMMENT + '\n' + content, {
++          encoding: 'utf8',
++          flag: 'wx',
++        });
++        return 'copied';
++      } catch (copyErr) {
++        if (copyErr.code === 'EEXIST') {
++          return inspectExistingDestination(linkPath) || '';
++        }
++        throw copyErr;
++      }
+     }
+   } catch (err) {
+     console.error(`  ✗ Failed to link/copy ${target} -> ${linkPath}: ${err.message}`);
+diff --git a/test/symlink-flag.test.js b/test/symlink-flag.test.js
+index 71ce0502..d27e4921 100644
+--- a/test/symlink-flag.test.js
++++ b/test/symlink-flag.test.js
+@@ -181,6 +181,124 @@ describe('lib/symlink-utils.js — createSymlinkOrCopy', () => {
+     }
+   });
+ 
++  test('preserves a file created during symlink creation', () => {
++    const tmpDir = makeTmpDir();
++    const originalSymlinkSync = fs.symlinkSync;
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      const userContent = '# Created concurrently\n';
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.symlinkSync = function () {
++        fs.writeFileSync(linkPath, userContent);
++        const err = new Error('File exists');
++        err.code = 'EEXIST';
++        throw err;
++      };
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('');
++      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
++    } finally {
++      fs.symlinkSync = originalSymlinkSync;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
++  test('preserves a file created during copy fallback', () => {
++    const tmpDir = makeTmpDir();
++    const originalSymlinkSync = fs.symlinkSync;
++    const originalWriteFileSync = fs.writeFileSync;
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      const userContent = '# Created concurrently\n';
++      originalWriteFileSync(targetPath, '# Forge Workflow\n');
++      fs.symlinkSync = function () {
++        const err = new Error('Operation not permitted');
++        err.code = 'EPERM';
++        throw err;
++      };
++      fs.writeFileSync = function (file, content, options) {
++        if (file === linkPath) {
++          originalWriteFileSync(linkPath, userContent);
++        }
++        return originalWriteFileSync(file, content, options);
++      };
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('');
++      expect(fs.readFileSync(linkPath, 'utf8')).toBe(userContent);
++    } finally {
++      fs.symlinkSync = originalSymlinkSync;
++      fs.writeFileSync = originalWriteFileSync;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
++  test('does not copy when symlink creation fails unexpectedly', () => {
++    const tmpDir = makeTmpDir();
++    const originalSymlinkSync = fs.symlinkSync;
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.symlinkSync = function () {
++        const err = new Error('I/O error');
++        err.code = 'EIO';
++        throw err;
++      };
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('');
++      expect(fs.existsSync(linkPath)).toBe(false);
++    } finally {
++      fs.symlinkSync = originalSymlinkSync;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
++  test('uses lstat to detect a dangling symlink destination', () => {
++    const tmpDir = makeTmpDir();
++    const originalExistsSync = fs.existsSync;
++    const originalLstatSync = fs.lstatSync;
++    const originalSymlinkSync = fs.symlinkSync;
++    let symlinkAttempts = 0;
++    try {
++      const targetPath = path.join(tmpDir, 'AGENTS.md');
++      const linkPath = path.join(tmpDir, 'CLAUDE.md');
++      fs.writeFileSync(targetPath, '# Forge Workflow\n');
++      fs.existsSync = file => file === linkPath ? false : originalExistsSync(file);
++      fs.lstatSync = file => file === linkPath
++        ? { isDirectory: () => false, isFile: () => false }
++        : originalLstatSync(file);
++      fs.symlinkSync = function () {
++        symlinkAttempts += 1;
++        const err = new Error('File exists');
++        err.code = 'EEXIST';
++        throw err;
++      };
++
++      const { createSymlinkOrCopy } = require('../lib/symlink-utils');
++      const result = createSymlinkOrCopy(targetPath, linkPath);
++
++      expect(result).toBe('');
++      expect(symlinkAttempts).toBe(0);
++      expect(originalExistsSync(linkPath)).toBe(false);
++    } finally {
++      fs.existsSync = originalExistsSync;
++      fs.lstatSync = originalLstatSync;
++      fs.symlinkSync = originalSymlinkSync;
++      cleanTmpDir(tmpDir);
++    }
++  });
++
+   test('HEADER_COMMENT constant is exported', () => {
+     const { HEADER_COMMENT } = require('../lib/symlink-utils');
+     expect(typeof HEADER_COMMENT).toBe('string');
+-- 
+2.51.0.windows.1
+

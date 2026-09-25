@@ -1,0 +1,50 @@
+From 8caa3a771d82f971ce2271856fb20400d1e81d01 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Thu, 16 Jul 2026 14:43:51 +0530
+Subject: [PATCH] test(shepherd): update BEHIND-verdict test to the corrected
+ mss-gated contract (5291f2d2)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CI red across Full Matrix + Coverage + Unit Shard 3 (run 29485819716) traced to
+this ONE stale assertion: test/shepherd-merge-safety.test.js asserted the OLD
+behavior `computeVerdict({behind: 2}).verdict === 'BEHIND'`. The 5291f2d2 fix
+(rankBehind gates on mergeStateStatus==='BEHIND', not a raw behind-count) makes
+that PR CLEAN-MERGEABLE — so the test encoded the very bug that was fixed. It
+wasn't in my targeted set, so local passed while the full matrix/coverage/shard
+lanes reded. Updated to assert `{behind: 2}` on a clean state stays
+CLEAN-MERGEABLE, and mss=BEHIND still yields BEHIND.
+
+Verified: 264 tests pass across pr-pull/pr-bundle/pr-shepherd/pr-monitor/
+shepherd-merge-safety/snapshot/label/shepherd-cmd; ESLint clean; D20 release
+gate clean (release check PASS).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ test/shepherd-merge-safety.test.js | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/test/shepherd-merge-safety.test.js b/test/shepherd-merge-safety.test.js
+index bc8b66a3..994f4ee7 100644
+--- a/test/shepherd-merge-safety.test.js
++++ b/test/shepherd-merge-safety.test.js
+@@ -65,9 +65,13 @@ describe('computeVerdict precedence (fail-closed, never false-clean)', () => {
+     expect(computeVerdict({ ...cleanBase, conflicts: { conflicted: true, files: ['a'] } }).verdict).toBe('BLOCKED-CONFLICT');
+   });
+ 
+-  test('BEHIND for mergeStateStatus BEHIND or behind>0', () => {
++  test('BEHIND only for mergeStateStatus BEHIND, NOT a raw behind-count (5291f2d2)', () => {
+     expect(computeVerdict({ ...cleanBase, mergeStateStatus: 'BEHIND' }).verdict).toBe('BEHIND');
+-    expect(computeVerdict({ ...cleanBase, behind: 2 }).verdict).toBe('BEHIND');
++    // A behind-count>0 on a PR GitHub still considers mergeable (mss=CLEAN) must NOT
++    // falsely escalate to BEHIND — the compareCommits count is often stale or
++    // non-blocking (strict-up-to-date not required). It stays CLEAN-MERGEABLE; the
++    // count is surfaced only as evidence/blocker context.
++    expect(computeVerdict({ ...cleanBase, behind: 2 }).verdict).toBe('CLEAN-MERGEABLE');
+   });
+ 
+   test('BLOCKED-CHECKS for failing/missing/skipped/pending required or UNSTABLE', () => {
+-- 
+2.51.0.windows.1
+

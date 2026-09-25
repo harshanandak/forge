@@ -1,0 +1,60 @@
+From 8852166c9fc8c25f346e095f8315b03f4a7ce63e Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 10 Aug 2026 16:25:00 +0530
+Subject: [PATCH] fix: detect spaced monitor user paths
+
+---
+ lib/kernel/sqlite-driver.js       | 6 +-----
+ packages/memory/index.js          | 6 +-----
+ test/memory/monitor-store.test.js | 1 +
+ 3 files changed, 3 insertions(+), 10 deletions(-)
+
+diff --git a/lib/kernel/sqlite-driver.js b/lib/kernel/sqlite-driver.js
+index 4aadf032..2c392190 100644
+--- a/lib/kernel/sqlite-driver.js
++++ b/lib/kernel/sqlite-driver.js
+@@ -2444,11 +2444,7 @@ const MONITOR_PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
+ const MONITOR_MAX_PRIVATE_SCAN_LENGTH = MONITOR_MAX_ENVELOPE_BYTES;
+ 
+ function hasNonWhitespacePathSegment(segment) {
+-	if (!segment) return false;
+-	for (const character of segment) {
+-		if (character.trim() === '') return false;
+-	}
+-	return true;
++	return Boolean(segment && segment.trim());
+ }
+ 
+ function containsMonitorPrivatePath(value) {
+diff --git a/packages/memory/index.js b/packages/memory/index.js
+index 905d5255..37436cef 100644
+--- a/packages/memory/index.js
++++ b/packages/memory/index.js
+@@ -17,11 +17,7 @@ const PRIVATE_PATH_ROOTS = ['users', 'home', 'root'];
+ const MAX_PRIVATE_SCAN_LENGTH = 16_384;
+ 
+ function hasNonWhitespacePathSegment(segment) {
+-  if (!segment) return false;
+-  for (const character of segment) {
+-    if (character.trim() === '') return false;
+-  }
+-  return true;
++  return Boolean(segment && segment.trim());
+ }
+ 
+ function containsPrivateMonitorPath(value) {
+diff --git a/test/memory/monitor-store.test.js b/test/memory/monitor-store.test.js
+index 85ccb44f..57f68dac 100644
+--- a/test/memory/monitor-store.test.js
++++ b/test/memory/monitor-store.test.js
+@@ -358,6 +358,7 @@ const driver = createBuiltinSQLiteDriver({ databasePath: process.env.MONITOR_RAC
+ 			`github_pat_${'x'.repeat(30)}`,
+ 			'/root/forge/private.txt',
+ 			'\\\\server\\Users\\alice\\private.txt',
++			'C:\\Users\\John Doe\\secret.txt',
+ 		];
+ 
+ 		for (const [index, value] of privateValues.entries()) {
+-- 
+2.51.0.windows.1
+

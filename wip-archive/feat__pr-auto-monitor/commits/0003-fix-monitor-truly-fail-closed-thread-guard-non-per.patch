@@ -1,0 +1,100 @@
+From a19a90e816a4e244626d0b526f29fe18600672d6 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 15 Jul 2026 12:22:41 +0530
+Subject: [PATCH] fix(monitor): truly fail-closed thread guard + non-persisted
+ checkout creds
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Address 2 CodeRabbit Major threads on #384:
+
+1. Functional correctness (render-sticky.js): the fail-closed guard required
+   BOTH unresolvedCommentsAvailable===false AND a truthy unresolvedCommentsError,
+   so the capability-absent case (gatherUnresolvedComments returns
+   available:false, error:null) bypassed it and fell through to the empty-list
+   'No unresolved review threads' render — a misleading zero on data we could
+   not read. Guard now fires on unavailable ALONE; only a genuine available:true
+   read may report zero. Added a regression test for the exact bypass.
+
+2. Security (pr-monitor.yml): set persist-credentials: false on checkout. All
+   GitHub access goes through gh/GH_TOKEN and the bundle's git ops are read-only
+   against already-fetched refs, so no credential belongs in .git/config.
+
+Refs: 35ee8d78, b5c154cd, c2d398e5.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ .github/workflows/pr-monitor.yml      |  5 +++++
+ lib/pr-monitor/render-sticky.js       | 11 ++++++++---
+ test/pr-monitor/render-sticky.test.js | 15 +++++++++++++++
+ 3 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/.github/workflows/pr-monitor.yml b/.github/workflows/pr-monitor.yml
+index a11f3a58..99d5bc95 100644
+--- a/.github/workflows/pr-monitor.yml
++++ b/.github/workflows/pr-monitor.yml
+@@ -85,6 +85,11 @@ jobs:
+         uses: actions/checkout@v6
+         with:
+           fetch-depth: 0
++          # Do not persist GITHUB_TOKEN in the checkout's git config: all GitHub
++          # access goes through gh/the API (GH_TOKEN env), and the bundle's git
++          # ops are read-only against already-fetched refs. No credential is needed
++          # in .git/config, so leaving one there only widens the attack surface.
++          persist-credentials: false
+ 
+       - name: Setup Bun
+         if: steps.resolve.outputs.should_run == 'true'
+diff --git a/lib/pr-monitor/render-sticky.js b/lib/pr-monitor/render-sticky.js
+index 5d9513c3..5bf73abc 100644
+--- a/lib/pr-monitor/render-sticky.js
++++ b/lib/pr-monitor/render-sticky.js
+@@ -45,10 +45,15 @@ function threadLocator(t) {
+ 
+ /** Render the unresolved-review-threads section (author-agnostic + fail-closed). */
+ function renderThreads(bundle, lines) {
+-  // Fail-closed: unreadable threads are NEVER rendered as "zero / clean".
+-  if (bundle.unresolvedCommentsAvailable === false && bundle.unresolvedCommentsError) {
++  // Fail-closed: if the thread read was not available for ANY reason — it threw
++  // (error set) OR the adapter cannot read comments at all (capability absent,
++  // error null) — NEVER render "zero / clean". Only a genuine available:true read
++  // may report "no unresolved threads". Guarding on the error string too would let
++  // the capability-absent case fall through to a misleading zero.
++  if (bundle.unresolvedCommentsAvailable === false) {
++    const why = bundle.unresolvedCommentsError || 'thread read unavailable (capability absent)';
+     lines.push('### Review threads');
+-    lines.push(`⚠️ Review threads were **unreadable** this pass (\`${bundle.unresolvedCommentsError}\`) — not treated as zero. Re-run once the read recovers.`);
++    lines.push(`⚠️ Review threads were **unreadable** this pass (\`${why}\`) — not treated as zero. Re-run once the read recovers.`);
+     lines.push('');
+     return;
+   }
+diff --git a/test/pr-monitor/render-sticky.test.js b/test/pr-monitor/render-sticky.test.js
+index d2b4fd5e..8e56cb32 100644
+--- a/test/pr-monitor/render-sticky.test.js
++++ b/test/pr-monitor/render-sticky.test.js
+@@ -84,6 +84,21 @@ describe('renderStickyComment', () => {
+     expect(body.toLowerCase()).not.toContain('no unresolved review threads');
+   });
+ 
++  test('unavailable thread read with NO error string (capability absent) still renders degraded, never zero', () => {
++    // The bypass: gatherUnresolvedComments returns { available:false, error:null }
++    // when the adapter cannot read comments at all. A guard that also required a
++    // truthy error would fall through to the empty-list "clean" render — a
++    // misleading zero on data we genuinely could not read.
++    const bundle = makeBundle({
++      unresolvedComments: [],
++      unresolvedCommentsAvailable: false,
++      unresolvedCommentsError: null,
++    });
++    const { body } = renderStickyComment(bundle, { now: NOW });
++    expect(body.toLowerCase()).not.toContain('no unresolved review threads');
++    expect(body.toLowerCase()).toContain('unreadable');
++  });
++
+   test('clean state surfaces clear signals but NEVER a merge/pass verdict', () => {
+     const { body } = renderStickyComment(makeBundle(), { now: NOW });
+     expect(body.toLowerCase()).toContain('no unresolved review threads');
+-- 
+2.51.0.windows.1
+

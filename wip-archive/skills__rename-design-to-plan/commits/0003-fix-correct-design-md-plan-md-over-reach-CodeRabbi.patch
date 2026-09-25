@@ -1,0 +1,319 @@
+From 51368946509322d6908153f20fd5a29a767cfd5f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sun, 5 Jul 2026 18:59:53 +0530
+Subject: [PATCH] fix: correct design.md->plan.md over-reach (CodeRabbit #297)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The blanket rename inverted legacy/backward-compat references. Fixes:
+- lib/orientation.js: the `active_work_legacy_design` section reads `design.md`
+  (the legacy fallback), not plan.md — restores the historical work-folder fallback.
+- Revert docs/work/2026-06-06-kernel-backlog-memory-roadmap/ to master: those docs
+  DISCUSS the design.md->plan.md migration ("legacy design.md", "design.md -> plan.md"),
+  so blanket-replacing design.md->plan.md there produced nonsense ("plan.md -> plan.md",
+  "legacy plan.md"). That folder already used plan.md as its own filename on master; only
+  its migration-discussion content was corrupted, now restored.
+
+Principle: rename current work-folder artifacts to plan.md, but preserve design.md wherever
+it names the LEGACY/backward-compatible file or DISCUSSES the migration.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ .../agent-memory-federation.md                     |  2 +-
+ .../beads/design-md-plan-md-migration.md           | 14 +++++++-------
+ .../beads/new-project-work-folder-structure.md     |  6 +++---
+ .../decision-options.md                            |  2 +-
+ .../decisions.md                                   |  6 +++---
+ .../issue-map.md                                   |  6 +++---
+ .../plan-evaluation.md                             |  2 +-
+ .../plan.md                                        |  4 ++--
+ .../tasks.md                                       |  6 +++---
+ .../workflow-friction-amendments.md                | 12 ++++++------
+ .../workflow-friction-evaluator-review.md          |  4 ++--
+ lib/orientation.js                                 |  2 +-
+ 12 files changed, 33 insertions(+), 33 deletions(-)
+
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-memory-federation.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-memory-federation.md
+index e3338409..e21ee88e 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-memory-federation.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/agent-memory-federation.md
+@@ -48,7 +48,7 @@ Sources:
+ - `docs/work/**/plan.md`
+ - `docs/work/**/tasks.md`
+ - `docs/work/**/decisions.md`
+-- legacy `plan.md`
++- legacy `design.md`
+ - issue bodies/comments
+ - validation logs
+ - evidence files
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/design-md-plan-md-migration.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/design-md-plan-md-migration.md
+index 4e45eff7..a5dda8f3 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/design-md-plan-md-migration.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/design-md-plan-md-migration.md
+@@ -1,22 +1,22 @@
+ ## Description
+-The migration from `plan.md` to `plan.md` is incomplete across docs, skills, command templates, tests, and generated agent guidance. This creates inconsistent instructions and weakens Project Knowledge indexing.
++The migration from `design.md` to `plan.md` is incomplete across docs, skills, command templates, tests, and generated agent guidance. This creates inconsistent instructions and weakens Project Knowledge indexing.
+ 
+ Reference: `docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md#3-designmd-to-planmd-migration-is-incomplete`
+ 
+ ## Scope
+-- Audit repository references to `plan.md`, `plan.md`, work-item planning, design docs, and command contracts.
++- Audit repository references to `design.md`, `plan.md`, work-item planning, design docs, and command contracts.
+ - Seed the audit with known stale/default-work-item surfaces: `AGENTS.md`, `.claude/commands/plan.md`, `.claude/commands/dev.md`, `.claude/rules/workflow.md`, `lib/core/runtime-graph.js`, and `test/structural/command-contracts.test.js`.
+ - Replace default work-item planning references with `plan.md`.
+-- Preserve `plan.md` support for true durable architecture/product designs and legacy reads.
++- Preserve `design.md` support for true durable architecture/product designs and legacy reads.
+ - Update drift guards and tests to prevent the old default from returning.
+ - Ensure KnowledgeStore and orient/recap source classification distinguish `work_plan`, `legacy_work_design`, `architecture_design`, `task_list`, `decision_log`, `evidence`, `issue_body`, `comment`, `stage_run`, `generated_harness`, `runtime_projection`, `derived_summary`, and `proposal`.
+ - Define proof artifact classification for `evidence.md`, `validation.md`, `validation-notes.md`, stage-run logs, and command evidence.
+ - Define the minimum evidence artifact contract for Project Knowledge ingestion: issue/work item id, stage/task id, command/run id, command string or tool name, exit code/verdict, timestamp, actor/session, stdout/stderr or log path, source file refs, commit SHA/revision/hash, redaction state, provenance/source type, and links back to the relevant `tasks.md` and `decisions.md` entries.
+ 
+ ## Acceptance Criteria
+-- Search results show no command/template/skill teaching `plan.md` as the default work-item planning output.
+-- Legacy `plan.md` inputs are still read where backward compatibility is required.
+-- `forge orient` and `forge recap` prefer `plan.md`, label legacy `plan.md` correctly, surface missing `tasks.md`/`decisions.md`/evidence, and expose JSON source types.
++- Search results show no command/template/skill teaching `design.md` as the default work-item planning output.
++- Legacy `design.md` inputs are still read where backward compatibility is required.
++- `forge orient` and `forge recap` prefer `plan.md`, label legacy `design.md` correctly, surface missing `tasks.md`/`decisions.md`/evidence, and expose JSON source types.
+ - Evidence artifacts missing the minimum contract are surfaced as incomplete evidence/proposals rather than accepted proof.
+ - Tests cover command contract alignment, KnowledgeStore source classification, and stale reference regression fixtures.
+-- Docs clearly state `plan.md` is for per-work-item intent/research/approach while `plan.md` is reserved for durable design.
++- Docs clearly state `plan.md` is for per-work-item intent/research/approach while `design.md` is reserved for durable design.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/new-project-work-folder-structure.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/new-project-work-folder-structure.md
+index 4ce3fb8b..ba0959ae 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/new-project-work-folder-structure.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/beads/new-project-work-folder-structure.md
+@@ -8,7 +8,7 @@ Reference: `docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction
+ - Teach `plan.md` as the default work-item planning document.
+ - Teach `tasks.md`, `decisions.md`, and validation/evidence files as sibling artifacts.
+ - Teach the minimum evidence artifact fields: issue/work item id, stage/task id, command/run id, command string or tool name, exit code/verdict, timestamp, actor/session, stdout/stderr or log path, source file refs, commit SHA/revision/hash, redaction state, provenance/source type, and links back to task/decision entries.
+-- Keep `plan.md` as a durable architecture/product design artifact or backward-compatible legacy input.
++- Keep `design.md` as a durable architecture/product design artifact or backward-compatible legacy input.
+ - Cover existing-project update/repair, not just greenfield setup: `forge update`, `forge setup --repair`, generated harness preview/apply flows, and stale instruction migration.
+ - Include concrete renderer/template surfaces: `AGENTS.md`/`CLAUDE.md` projections, `.claude/commands/**`, `.claude/rules/**`, cross-agent skills/templates, `docs/reference/AGENT_SKILL_PARITY.md`, `lib/harness-capability-matrix.js`, and packages/skills templates.
+ - Add fresh-project fixtures for all supported agent harnesses.
+@@ -18,5 +18,5 @@ Reference: `docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction
+ - An existing Forge project can preview and apply the updated artifact contract without surprise dirty generated files.
+ - `/plan`, `/dev`, `/validate`, `/ship`, `forge plan`, and generated skills agree on artifact names and locations.
+ - Fresh and existing-project guidance explains how validation evidence links to `tasks.md` and `decisions.md` so future `forge recap` can cite proof instead of loose notes.
+-- Tests prove new projects do not regress to legacy `plan.md` as the default work-item plan.
+-- Documentation explains when `plan.md` is still appropriate.
++- Tests prove new projects do not regress to legacy `design.md` as the default work-item plan.
++- Documentation explains when `design.md` is still appropriate.
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-options.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-options.md
+index 21b2678b..973d9365 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-options.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decision-options.md
+@@ -29,7 +29,7 @@ Project truth is Kernel events. Project Knowledge is a rebuildable SQLite read m
+ Sources:
+ 
+ - Kernel issue/decision/evidence/stage events.
+-- `docs/work/**/plan.md`, `tasks.md`, `decisions.md`, legacy `plan.md`.
++- `docs/work/**/plan.md`, `tasks.md`, `decisions.md`, legacy `design.md`.
+ - Issue bodies/comments, validation logs, evidence, PR reviews.
+ - Derived summaries/facts only with citations.
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md
+index ad0ab146..06e8d725 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/decisions.md
+@@ -22,7 +22,7 @@
+ 
+ **Rationale:** MemPalace's strongest memory lesson is that verbatim storage avoids losing rationale and context. Summaries are useful, but they should not replace source material.
+ 
+-**Implication:** `plan.md`, legacy `plan.md`, `tasks.md`, `decisions.md`, `evidence.md`, comments, issue bodies, stage runs, and validation logs are source material.
++**Implication:** `plan.md`, legacy `design.md`, `tasks.md`, `decisions.md`, `evidence.md`, comments, issue bodies, stage runs, and validation logs are source material.
+ 
+ ## D4 — Scoped retrieval, not flat memory
+ 
+@@ -92,7 +92,7 @@
+ 
+ ## D12 — Fresh Forge setup must teach the work-folder artifact contract
+ 
+-**Decision:** New projects should be guided to create per-work-item artifacts under `docs/work/<date>-<slug>/` using `plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files. `plan.md` remains for durable architecture/product design or backward-compatible reads, not the default work-item planning document.
++**Decision:** New projects should be guided to create per-work-item artifacts under `docs/work/<date>-<slug>/` using `plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files. `design.md` remains for durable architecture/product design or backward-compatible reads, not the default work-item planning document.
+ 
+ **Rationale:** Project Knowledge and future `forge orient`/`forge recap` depend on predictable source artifacts. If fresh installs or skills teach inconsistent folders and filenames, later indexing and agent handoff will lose context.
+ 
+@@ -142,7 +142,7 @@ Source: `plan-evaluation.md` (full-folder re-evaluation, all decisions confirmed
+ - **D5 amendment:** `ready`/`blocked` are derived read-model facts, never stored statuses. Resolves the contradiction between `multi-evaluator-review.md` (derived) and the first-pass `backlog-frontend-model.md` (stored).
+ - **D7 amendment:** Dolt's "first-class projection/history" status is scoped to **the migration period only**. Once D16 ships and Beads parity gates pass, Dolt demotes to an optional export adapter; its residual history/branch-experiment value does not justify a permanent test surface.
+ - **D9/D10 amendment:** architecture capture blocks in CI on manifest paths only; humans get warn-at-commit, never block-at-commit; agents auto-draft the architecture note.
+-- **D12 amendment:** `plan.md` → `plan.md` is a one-shot scripted migration of legacy work folders, after which dual-handling language is deleted from skills/templates/fixtures.
++- **D12 amendment:** `design.md` → `plan.md` is a one-shot scripted migration of legacy work folders, after which dual-handling language is deleted from skills/templates/fixtures.
+ 
+ ## D16 — Kernel JSONL portability projection
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/issue-map.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/issue-map.md
+index 77eda4c8..a2184a23 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/issue-map.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/issue-map.md
+@@ -195,7 +195,7 @@ Recommended dependency and acceptance notes:
+ | --- | --- | --- |
+ | `forge-2agy.9.7.7` | `.9.3.37`, `.9.5.11`, `.9.5.9` | Lifecycle commands are idempotent; generated harness/runtime churn no longer forces agents to stash files during push/review/verify/merge cleanup. Includes generated-state manifest, protected-state-aware writes, and clean-checkout/linked-worktree lifecycle smoke gate. |
+ | `forge-2agy.9.7.8` | `.9.3.36`, `.9.2.10`, `.9.7.5` | Fresh setup, existing-project update/repair, generated instructions, skills, and command prompts teach `docs/work/<date>-<slug>/plan.md`, `tasks.md`, `decisions.md`, and the minimum evidence artifact contract. |
+-| `forge-2agy.9.3.36` | `.9.3.1` | Default work-item planning references migrate from `plan.md` to `plan.md`; KnowledgeStore/orient/recap source classes distinguish work plans, legacy design files, architecture designs, task lists, decisions, evidence, generated harnesses, runtime projections, summaries, and proposals. |
++| `forge-2agy.9.3.36` | `.9.3.1` | Default work-item planning references migrate from `design.md` to `plan.md`; KnowledgeStore/orient/recap source classes distinguish work plans, legacy design files, architecture designs, task lists, decisions, evidence, generated harnesses, runtime projections, summaries, and proposals. |
+ | `forge-2agy.9.3.37` | `.9.1.7`, `.9.5.5` | General worktree hook/lint doctor detects missing/stale local gates and provides safe `--json`/`--dry-run` repair commands, independent of later architecture-capture policy. |
+ | `forge-2agy.9.5.11` | `.9.1.7`, `.9.5.5`, `.9.5.7`, `.9.5.8`, `.9.3.37` | Worktree Forge state doctor verifies `.forge`, projection/Beads state, Kernel bootstrap state, common-dir mapping, and hooks with idempotent protected-state-safe repair. |
+ | `forge-2agy.9.5.12` | `.9.5.7`, `.9.5.8`, `.9.5.9` | `forge close` and `/verify` persist local close state through local SQLite authority, define the team-mode server-required contract, and never require protected-branch tracker metadata commits. Local-only, server-required, server-accepted, and projection-pending states are reported distinctly; server acceptance implementation waits for `.9.8.1` and the team-authority lane. |
+@@ -219,7 +219,7 @@ See `evaluator-beads-proposed.tsv`, `decision-registry-beads-proposed.tsv`, `arc
+ | --- | --- | --- | --- | --- |
+ | Release coordinator | `forge-2agy.9.9` | Merge this lane map first so downstream PRs can cite one ordering source. | Standalone docs PR. | `issue-map.md` contains lane membership, dependency notes, PR concurrency limits, and next-release gates. |
+ | Self-hosting stability | `forge-2agy.9.3.37`, `forge-2agy.9.5.11`, `forge-2agy.9.7.7` | Stack `forge-2agy.9.3.37` before `forge-2agy.9.5.11`; gate `.9.5.11` on `.9.5.8`; stack `forge-2agy.9.7.7` after `forge-2agy.9.5.11` and `forge-2agy.9.5.9`. | Mostly sequential/stacked because generated lifecycle cleanup depends on hook/lint doctor, filesystem/WAL doctor, state bootstrap, and idempotency semantics. | Clean checkout plus linked worktree can complete push, review, verify, merge, and post-merge cleanup without surprise generated dirt, stashes, or manual repair. |
+-| Fresh setup correctness | `forge-2agy.9.3.36`, `forge-2agy.9.2.10`, `forge-2agy.9.7.8` | `forge-2agy.9.3.36` and `forge-2agy.9.2.10` may proceed independently once their own prerequisites are satisfied; `forge-2agy.9.7.8` stacks after both and `forge-2agy.9.7.5`. | The two foundation PRs can run in parallel with self-hosting work, but the setup-alignment PR is sequential after them. | Fresh setup and existing-project repair teach `plan.md`, `tasks.md`, `decisions.md`, and evidence artifacts consistently without reviving `plan.md` as the default work-item plan. |
++| Fresh setup correctness | `forge-2agy.9.3.36`, `forge-2agy.9.2.10`, `forge-2agy.9.7.8` | `forge-2agy.9.3.36` and `forge-2agy.9.2.10` may proceed independently once their own prerequisites are satisfied; `forge-2agy.9.7.8` stacks after both and `forge-2agy.9.7.5`. | The two foundation PRs can run in parallel with self-hosting work, but the setup-alignment PR is sequential after them. | Fresh setup and existing-project repair teach `plan.md`, `tasks.md`, `decisions.md`, and evidence artifacts consistently without reviving `design.md` as the default work-item plan. |
+ | Kernel state foundation | `forge-2agy.9.5.7`, `forge-2agy.9.5.8`, `forge-2agy.9.5.6`, `forge-2agy.9.5.9`, `forge-2agy.9.5.10`, `forge-2agy.9.5.12` | Start with `forge-2agy.9.5.7` driver validation and `forge-2agy.9.5.8` filesystem/WAL safety doctor. Then implement the transaction contract (`.9.5.6`), idempotency semantics (`.9.5.9`), claim lease invariants (`.9.5.10`), and local close/verify authority semantics (`.9.5.12`) as stacked or tightly coordinated PRs. Team-server acceptance remains in the `.9.8.*` lane. | Driver validation and filesystem/WAL doctor work can run in parallel with hook/lint work; transaction/idempotency/lease/local close semantics should be stacked or merged in dependency order. | Real SQLite driver proof covers WAL, busy timeout, FTS5, backup, checkpoint, Windows behavior, atomic broker writes, idempotency replay/collision handling, DB-enforced claim leases, and local close/verify persistence without protected-branch tracker commits. |
+ | Beads projection safety | `forge-2agy.9.6.1`-`forge-2agy.9.6.6`, then `forge-2agy.9.1.8` as the Dolt hot-path retirement consumer | Complete baseline provider-extension preservation, ready-work parity, import/export rollback, projection quarantine, echo-loop prevention, and real Dolt ready-queue fixtures before any PR claims Beads/Dolt is removed from the hot path. | Baseline projection fixtures can run in parallel with later Kernel foundation PRs if they use the same authority/projection contract; `forge-2agy.9.1.8` is sequential after the full `.9.6.1`-`.9.6.6` set and Kernel state foundation. | Projection writes cannot echo back over Kernel authority, unsupported Beads fields are preserved, rollback/dry-run paths exist, stale external writes are quarantined, and ready-queue parity differences are either passing or intentionally documented. |
+ | Knowledge and architecture capture | `forge-2agy.9.3.*`, `forge-2agy.9.4.*` | Follow self-hosting, fresh setup, and Kernel authority gates; build Knowledge/orient/recap source contracts before hook UX depends on them. | Do not start broad Knowledge or architecture-hook UX implementation while core setup/state/hooks blockers are still open. | Project Knowledge indexes work artifacts verbatim, summaries stay proposals until accepted by Kernel events, and architecture capture uses Forge policy/agent-native hooks with CI as the merge gate. |
+@@ -231,7 +231,7 @@ The next reliable feature release must pass these gates before downstream Knowle
+ 
+ 1. Self-hosting lifecycle smoke gate: clean checkout plus linked worktree plus generated harness plus hooks plus Forge state plus projection state completes push/review/verify/merge/post-merge cleanup without stash/manual repair.
+ 2. Worktree gate: hook/lint doctor and Forge state doctor both report machine-readable status and safe repair behavior for main and linked worktrees.
+-3. Fresh setup gate: fresh setup and existing-project update/repair generate the current work-folder contract and keep legacy `plan.md` compatibility without teaching it as the default.
++3. Fresh setup gate: fresh setup and existing-project update/repair generate the current work-folder contract and keep legacy `design.md` compatibility without teaching it as the default.
+ 4. Kernel authority gate: normal Forge issue/state writes go through the SQLite broker contract with expected revision, idempotency, projection outbox, and claim lease invariants.
+ 5. Beads projection gate: Dolt/Beads remains compatibility/projection/import-export state only; projection parity, echo-loop prevention, quarantine, and rollback/dry-run paths are proven before retirement claims.
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md
+index c7e71dbc..6b3f8d76 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan-evaluation.md
+@@ -97,7 +97,7 @@ The lifecycle has `blocked` as a status that must remember the previous status 
+ 
+ ## Naming / artifact-contract notes (the "text tags")
+ 
+-- **`plan.md` vs `plan.md` (D12):** the rename is fine, but the legacy support tail ("index legacy design.md", dual wording in skills/fixtures/drift tests) appears in 6+ places in the plan. Make migration one-shot: a script that renames work-folder `design.md → plan.md` in old folders (or adds a frontmatter alias), then *remove* all dual-handling language. Eternal dual support costs more than the migration.
++- **`plan.md` vs `design.md` (D12):** the rename is fine, but the legacy support tail ("index legacy design.md", dual wording in skills/fixtures/drift tests) appears in 6+ places in the plan. Make migration one-shot: a script that renames work-folder `design.md → plan.md` in old folders (or adds a frontmatter alias), then *remove* all dual-handling language. Eternal dual support costs more than the migration.
+ - **Stage-exit context blocks** inside planning docs are agent ceremony embedded in human documents. If the Kernel will own stage runs (it should), stage-exit data belongs in Kernel events/`evidence` files, not appended to plan prose.
+ - **Scope fields list** (plan.md §3) is good but long (10 dimensions). Mark the indexed-from-day-one subset (project, issue, artifact type, source path) vs later (sprint, actor/session) so the first schema doesn't carry dead columns.
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan.md
+index 232089fd..cac18fea 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/plan.md
+@@ -30,7 +30,7 @@ MemPalace's core benchmark claim is that raw/verbatim session storage plus seman
+ 
+ **Forge implication:**
+ 
+-- Index `plan.md`, legacy `plan.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs, and validation logs as verbatim source chunks.
++- Index `plan.md`, legacy `design.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs, and validation logs as verbatim source chunks.
+ - Keep summaries, memory proposals, accepted facts, and knowledge graph triples as derived/read-model records with provenance back to exact source files/events.
+ - Do not let an extracted memory/fact become authority unless it is accepted through a Kernel event.
+ 
+@@ -82,7 +82,7 @@ If Forge adds a project knowledge graph, it should be temporal and source-backed
+ - `issue X assigned_to agent Y` valid during claim lease.
+ - `workflow stage validate required` valid under config revision.
+ - `plan chose SQLite WAL for local mode` valid from decision event until superseded.
+-- legacy work-item `plan.md` files may be indexed/read during migration; new work-item planning uses `plan.md`; `plan.md` is reserved for durable architecture/product design.
++- legacy work-item `design.md` files may be indexed/read during migration; new work-item planning uses `plan.md`; `design.md` is reserved for durable architecture/product design.
+ 
+ Contradiction checks then become possible: new plan conflicts with locked decision, stale sprint date, wrong assignee, or projection trying to override Kernel authority.
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/tasks.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/tasks.md
+index 183ea501..1fb32d60 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/tasks.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/tasks.md
+@@ -43,7 +43,7 @@
+ - Later create: tests under `test/kernel/`
+ 
+ **Steps:**
+-1. Index verbatim `plan.md`, legacy `plan.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs.
++1. Index verbatim `plan.md`, legacy `design.md`, `tasks.md`, `decisions.md`, `evidence.md`, issue bodies, comments, stage runs.
+ 2. Add artifact metadata: issue, release, sprint, stage, source path, event id, actor, timestamp.
+ 3. Start with FTS5/read-model style retrieval; leave vectors optional.
+ 4. Treat summaries/facts as derived proposals with source refs.
+@@ -120,9 +120,9 @@
+ - Later modify: setup templates, generated agent instructions, skills, command prompts, docs, and tests
+ 
+ **Steps:**
+-1. Audit generated instructions and skills for `plan.md`, stage, and work-folder wording.
++1. Audit generated instructions and skills for `design.md`, stage, and work-folder wording.
+ 2. Teach `docs/work/<date>-<slug>/plan.md`, `tasks.md`, `decisions.md`, and evidence/validation files as the default contract.
+-3. Keep `plan.md` only for durable architecture/product designs or legacy compatibility reads.
++3. Keep `design.md` only for durable architecture/product designs or legacy compatibility reads.
+ 4. Recast pre-merge as a task-type gate/checkpoint rather than a universal top-level stage.
+ 5. Add fresh-project fixtures and drift tests.
+ 
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md
+index d3acf84a..f0627710 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-amendments.md
+@@ -27,23 +27,23 @@ When Forge is added to a new project, generated instructions/skills/templates ma
+ - `tasks.md` for executable task breakdown.
+ - `decisions.md` for decision log.
+ - `evidence.md` or validation notes for proof.
+-- `plan.md` only for durable product/architecture design or as a legacy compatibility alias.
++- `design.md` only for durable product/architecture design or as a legacy compatibility alias.
+ 
+ Required direction:
+ 
+ - Update setup templates, skills, command prompts, and generated agent guidance so new projects follow this structure by default.
+ - Add fixtures proving a fresh Forge install creates/mentions the correct folder and document names.
+-- Keep legacy `plan.md` readable, but stop teaching it as the default work-item planning artifact.
++- Keep legacy `design.md` readable, but stop teaching it as the default work-item planning artifact.
+ 
+-### 3. `plan.md` to `plan.md` migration is incomplete
++### 3. `design.md` to `plan.md` migration is incomplete
+ 
+-Forge has shifted work-item planning from `plan.md` to `plan.md`, but commands, skills, tests, docs, and generated instructions may still mention `plan.md` as the ordinary planning output.
++Forge has shifted work-item planning from `design.md` to `plan.md`, but commands, skills, tests, docs, and generated instructions may still mention `design.md` as the ordinary planning output.
+ 
+ Required direction:
+ 
+ - Audit every command, skill, fixture, and doc reference.
+ - Replace default work-item planning references with `plan.md`.
+-- Keep `plan.md` for true architecture/product design docs and backward-compatible reads.
++- Keep `design.md` for true architecture/product design docs and backward-compatible reads.
+ - Add drift tests so the old default wording cannot come back.
+ 
+ ### 4. Hooks and lint checks are not reliably installed in worktrees
+@@ -116,7 +116,7 @@ The amendments created from this addendum should be linked into existing roadmap
+ | --- | --- | --- |
+ | Generated docs/harness churn | `forge-2agy.9.7` plus hook/state dependencies | Agent/harness workflow reliability |
+ | New project work-folder structure | `forge-2agy.9.7` and `forge-2agy.9.3` | Skills/templates must feed Project Knowledge |
+-| `plan.md` -> `plan.md` migration | `forge-2agy.9.3` | Knowledge indexing and work artifact naming |
++| `design.md` -> `plan.md` migration | `forge-2agy.9.3` | Knowledge indexing and work artifact naming |
+ | Worktree hook/lint install | `forge-2agy.9.3` / `.9.3.32` | Hook doctor and architecture capture enforcement |
+ | Worktree Forge state bootstrap | `forge-2agy.9.5` | Local multi-worktree state safety |
+ | Pre-merge as embedded gate | `forge-2agy.9.2` | Workflow taxonomy and stage model |
+diff --git a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-evaluator-review.md b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-evaluator-review.md
+index f2676d3c..1acbebf3 100644
+--- a/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-evaluator-review.md
++++ b/docs/work/2026-06-06-kernel-backlog-memory-roadmap/workflow-friction-evaluator-review.md
+@@ -10,7 +10,7 @@ Initial scores:
+ | --- | --- | --- | --- |
+ | Self-hosting workflow UX / release readiness | REQUEST_CHANGES | 78/100 | Release-lane dependency direction was inverted; broad parent/self dependencies; hook/lint fix was coupled to downstream architecture-hook work; existing-project update path and release smoke gate were under-specified. |
+ | Plumbing / state / worktree / hooks | REQUEST_CHANGES | 82/100 | Dependencies were too broad; generated-state manifest/contract missing; hook install semantics, protected-state repair constraints, and Dolt hot-path criteria needed sharper acceptance. |
+-| Project Knowledge / setup / skills | REQUEST_CHANGES | 82/100 | `plan.md`/`plan.md` dependency cycle; orient/recap source classification missing; concrete renderer/template surfaces and evidence artifact contract were under-specified; Beads traceability needed command verification. |
++| Project Knowledge / setup / skills | REQUEST_CHANGES | 82/100 | `design.md`/`plan.md` dependency cycle; orient/recap source classification missing; concrete renderer/template surfaces and evidence artifact contract were under-specified; Beads traceability needed command verification. |
+ 
+ ## Changes made after evaluator feedback
+ 
+@@ -30,7 +30,7 @@ Initial scores:
+ - Added clean-checkout + linked-worktree lifecycle smoke gate for push/review/verify/merge/post-merge cleanup without stash/manual repair.
+ - Added existing-project update/repair coverage for fresh setup alignment.
+ - Added concrete renderer/template surfaces: `AGENTS.md`, `CLAUDE.md`, `.claude/commands/**`, `.claude/rules/**`, cross-agent skills/templates, `docs/reference/AGENT_SKILL_PARITY.md`, `lib/harness-capability-matrix.js`, and packages/skills templates.
+-- Added seed stale-reference surfaces for the `plan.md` to `plan.md` migration.
++- Added seed stale-reference surfaces for the `design.md` to `plan.md` migration.
+ - Added KnowledgeStore/orient/recap source classes: `work_plan`, `legacy_work_design`, `architecture_design`, `task_list`, `decision_log`, `evidence`, `issue_body`, `comment`, `stage_run`, `generated_harness`, `runtime_projection`, `derived_summary`, and `proposal`.
+ - Added proof artifact classification for `evidence.md`, `validation.md`, `validation-notes.md`, stage-run logs, and command evidence.
+ - Added exact hook/lint Git path checks, lint discovery order, `--json`/`--dry-run`, and no-private-profile-write constraints.
+diff --git a/lib/orientation.js b/lib/orientation.js
+index da5e702c..968217bd 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -343,7 +343,7 @@ function buildWorkSections(projectRoot, options = {}) {
+       preserve: false,
+     },
+     {
+-      file: 'plan.md',
++      file: 'design.md',
+       id: 'active_work_legacy_design',
+       title: 'Active Work Legacy Design',
+       sourceKind: 'legacy_work_design',
+-- 
+2.51.0.windows.1
+

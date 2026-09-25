@@ -1,0 +1,1107 @@
+From 22c97719ac74201352e38b196a810d33642e18f4 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Fri, 7 Aug 2026 14:54:14 +0530
+Subject: [PATCH] fix: make reviewer ledger validation fail closed
+
+---
+ lib/commands/merge.js                         |  50 +-
+ lib/reviewer-ledger.js                        | 488 +++++++++++++++---
+ ...merge-authority-review-regressions.test.js |  32 +-
+ test/commands/merge-authority.test.js         |  21 +
+ test/commands/merge.test.js                   |  21 +
+ test/reviewer-ledger.test.js                  | 169 +++++-
+ 6 files changed, 697 insertions(+), 84 deletions(-)
+
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index c3d9f0a4..c175f243 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -43,7 +43,12 @@ const { execFileSync } = require('node:child_process');
+ 
+ const { loadRawConfig } = require('../config-writer');
+ const { evaluateMergeRules } = require('../merge-rules');
+-const { atomicPreMergeRecheck } = require('../reviewer-ledger');
++const {
++  atomicPreMergeRecheck,
++  buildMergeEvidenceSnapshot,
++  evaluateReviewerLedger,
++  readAuthoritativeReviewerLedger,
++} = require('../reviewer-ledger');
+ const { runIssueOperation } = require('../forge-issues');
+ const { PrStateAdapter } = require('../adapters/pr-state-adapter');
+ const { stripGlobalFlags } = require('../global-flags');
+@@ -524,7 +529,7 @@ function fetchCheckRunObservations(gh, { owner, repo, head }) {
+  *
+  * @returns {object} prContext
+  */
+-async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
++async function defaultFetchPrContext({ pr, projectRoot, gitCommonDir, gh = defaultGh, now = Date.now() }) {
+   const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
+     'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,comments,updatedAt']) || {};
+ 
+@@ -598,6 +603,10 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     }
+   }
+ 
++  const reviewerSnapshot = owner && repo
++    ? readAuthoritativeReviewerLedger({ root: projectRoot, gitCommonDir, repo: `${owner}/${repo}`, pr })
++    : { ledger: null, cursor: null, fingerprint: null, source: 'unavailable', error: 'repository identity is unreadable' };
++
+   return {
+     number: Number.isInteger(view.number) ? view.number : null,
+     repository: owner && repo ? `${owner}/${repo}` : null,
+@@ -618,6 +627,11 @@ async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+     comments,
+     lastActivityAt,
+     now,
++    reviewerLedger: reviewerSnapshot.ledger,
++    reviewerLedgerCursor: reviewerSnapshot.cursor,
++    reviewerLedgerFingerprint: reviewerSnapshot.fingerprint,
++    reviewerLedgerSource: reviewerSnapshot.source,
++    reviewerLedgerError: reviewerSnapshot.error,
+   };
+ }
+ 
+@@ -761,6 +775,20 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: 'PR is not authoritatively linked to the supplied Forge issue.' };
+   }
+ 
++  const reviewerGate = evaluateReviewerLedger(prContext && prContext.reviewerLedger, {
++    now: prContext && prContext.now !== undefined ? prContext.now : (deps.now || Date.now()),
++    headSha: prContext && prContext.headSha,
++    requiredChecks: prContext && prContext.requiredChecksEvidence,
++    emergencyBypass: prContext && prContext.emergencyBypass,
++  });
++  if (reviewerGate.status !== 'ready') {
++    const reason = reviewerGate.reason || 'reviewer ledger is not ready.';
++    return {
++      success: true, merged: false, enabled: true, allowed: false,
++      unmet: [{ rule: 'reviewer_ledger', reason }], reason,
++    };
++  }
++
+   const { allowed, unmet } = evaluateMergeRules(prContext, rules);
+ 
+   if (!allowed) {
+@@ -797,14 +825,28 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, error: 'PR repository identity changed or became unreadable before merge.' };
+   }
+   const reviewerRecheck = atomicPreMergeRecheck(
+-    { headSha: prContext && prContext.headSha, reviewerLedger: prContext && prContext.reviewerLedger },
+-    { headSha: freshContext && freshContext.headSha, reviewerLedger: freshContext && freshContext.reviewerLedger },
++    buildMergeEvidenceSnapshot(prContext, { issueId: parsed.issueId }),
++    buildMergeEvidenceSnapshot(freshContext, { issueId: parsed.issueId }),
+   );
+   if (!reviewerRecheck.ok) {
+     return { success: true, merged: false, enabled: true, allowed: false,
+       reason: reviewerRecheck.reason || 'reviewer ledger changed before merge.' };
+   }
+ 
++  const freshReviewerGate = evaluateReviewerLedger(freshContext && freshContext.reviewerLedger, {
++    now: freshContext && freshContext.now !== undefined ? freshContext.now : (deps.now || Date.now()),
++    headSha: freshContext && freshContext.headSha,
++    requiredChecks: freshContext && freshContext.requiredChecksEvidence,
++    emergencyBypass: freshContext && freshContext.emergencyBypass,
++  });
++  if (freshReviewerGate.status !== 'ready') {
++    const reason = freshReviewerGate.reason || 'reviewer ledger is not ready.';
++    return {
++      success: true, merged: false, enabled: true, allowed: false,
++      unmet: [{ rule: 'reviewer_ledger', reason }], reason,
++    };
++  }
++
+   const recheck = evaluateMergeRules(freshContext, rules);
+   if (!recheck.allowed) {
+     process.stdout.write(`Auto-merge ABORTED for PR #${pr} — state changed since first check; ${recheck.unmet.length} rule(s) now unmet:\n`);
+diff --git a/lib/reviewer-ledger.js b/lib/reviewer-ledger.js
+index 1246c0a2..137899ba 100644
+--- a/lib/reviewer-ledger.js
++++ b/lib/reviewer-ledger.js
+@@ -1,13 +1,16 @@
+ 'use strict';
+ 
+ /**
+- * Pure reviewer-state and quiet-window policy.
++ * Reviewer terminal state and passive quiet-window policy.
+  *
+- * The ledger is deliberately in-memory and event-shaped. Shepherd (the only
+- * PR observer) owns persistence/timers; merge authority consumes a snapshot
+- * and rechecks it immediately before mutation.
++ * Shepherd is the observer/persistence owner. Merge authority consumes the
++ * persisted snapshot, validates it strictly, and rechecks its evidence before
++ * mutation. This module keeps the state transitions deterministic and pure.
+  */
+ 
++const crypto = require('node:crypto');
++const path = require('node:path');
++
+ const FULL_SHA = /^[0-9a-f]{40}$/i;
+ const DEFAULT_QUIET_WINDOW_MS = 10 * 60_000;
+ const REVIEWER_TERMINAL_STATES = new Set([
+@@ -16,9 +19,30 @@ const REVIEWER_TERMINAL_STATES = new Set([
+ ]);
+ const RISK_CLASSES = new Set(['required', 'optional']);
+ const UNAVAILABLE_POLICIES = new Set(['pending', 'allow', 'fail']);
+-const IGNORED_EVENT_CLASSES = new Set([
+-  'status', 'status-only', 'duplicate', 'neutral', 'skipped', 'empty', 'outdated',
+-]);
++// These observations are passive transport/status noise. Every other review
++// observation, including empty/outdated payloads, resets the quiet timer.
++const IGNORED_EVENT_CLASSES = new Set(['status', 'duplicate', 'neutral', 'skipped']);
++const REQUIRED_RECHECK_FIELDS = [
++  ['headSha', 'head'],
++  ['commentsFingerprint', 'comment'],
++  ['threadsFingerprint', 'thread'],
++  ['checksFingerprint', 'required checks'],
++  ['leaseFingerprint', 'lease'],
++  ['conflictFingerprint', 'conflict'],
++  ['dependencyFingerprint', 'dependency'],
++];
++
++function canonicalStringify(value) {
++  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(',')}]`;
++  if (value && typeof value === 'object') {
++    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalStringify(value[key])}`).join(',')}}`;
++  }
++  return JSON.stringify(value === undefined ? null : value);
++}
++
++function evidenceFingerprint(value) {
++  return crypto.createHash('sha256').update(canonicalStringify(value)).digest('hex');
++}
+ 
+ function asSha(value, label = 'head SHA') {
+   if (typeof value !== 'string' || !FULL_SHA.test(value)) {
+@@ -92,8 +116,8 @@ function createReviewerLedger({
+ }) {
+   const normalizedPolicy = normalizeReviewerPolicy(policy);
+   const head = asSha(headSha);
+-  if (!Number.isFinite(quietWindowMs) || quietWindowMs < 0) {
+-    throw new Error('quietWindowMs must be a non-negative finite number.');
++  if (!Number.isSafeInteger(quietWindowMs) || quietWindowMs < DEFAULT_QUIET_WINDOW_MS) {
++    throw new Error(`quietWindowMs must be at least ${DEFAULT_QUIET_WINDOW_MS}ms (10 minutes).`);
+   }
+   if (finalCorrectionSha !== null) asSha(finalCorrectionSha, 'final correction SHA');
+   return {
+@@ -121,9 +145,13 @@ function findReviewer(ledger, provider, accountId) {
+   return { id, index };
+ }
+ 
+-function maybeStartQuiet(ledger, at) {
+-  const allRequested = ledger.reviewers.every((reviewer) => reviewer.requestedAt !== null
++function allReviewersRequested(ledger) {
++  return ledger.reviewers.every((reviewer) => reviewer.requestedAt !== null
+     || (reviewer.riskClass === 'optional' && reviewer.unavailable === 'allow'));
++}
++
++function maybeStartQuiet(ledger, at) {
++  const allRequested = allReviewersRequested(ledger);
+   if (!ledger.finalCorrectionSha || !allRequested || ledger.quietWindow.startsAt !== null) return;
+   ledger.quietWindow.startsAt = at;
+ }
+@@ -149,16 +177,24 @@ function registerReviewerRequest(ledger, request) {
+   return out;
+ }
+ 
+-function setFinalCorrectionSha(ledger, headSha, at = null) {
++function setFinalCorrectionSha(ledger, headSha, at) {
+   const out = cloneLedger(ledger);
+   const head = asSha(headSha, 'final correction SHA');
+   if (head !== out.headSha) throw new Error('final correction SHA must equal the ledger head.');
++  if (at === undefined || at === null) {
++    throw new Error('final correction timestamp is required and must be explicit.');
++  }
++  const correctionAt = asTime(at, 'final correction timestamp');
++  const latestRequestAt = out.reviewers.reduce((latest, reviewer) => {
++    if (reviewer.requestedAt === null) return latest;
++    return Math.max(latest, asTime(reviewer.requestedAt, 'reviewer request timestamp'));
++  }, -Infinity);
++  if (correctionAt < latestRequestAt) {
++    throw new Error('final correction timestamp cannot predate a reviewer request.');
++  }
+   out.finalCorrectionSha = head;
+   out.revision += 1;
+-  const startAt = at === null
+-    ? out.reviewers.reduce((latest, reviewer) => Math.max(latest, reviewer.requestedAt || 0), 0)
+-    : asTime(at, 'final correction timestamp');
+-  if (startAt > 0) maybeStartQuiet(out, startAt);
++  maybeStartQuiet(out, correctionAt);
+   return out;
+ }
+ 
+@@ -173,13 +209,14 @@ function recordReviewerState(ledger, event) {
+   const at = asTime(event.at, 'reviewer state timestamp');
+   const reviewer = out.reviewers[index];
+   if (reviewer.requestedAt === null) throw new Error(`reviewer "${reviewer.id}" has no request on this head.`);
++  if (at < reviewer.requestedAt) throw new Error(`reviewer state for "${reviewer.id}" predates its request.`);
+   if (reviewer.state === state && reviewer.stateAt === at && reviewer.stateReason === (event.reason || null)) return out;
+   reviewer.state = state;
+   reviewer.stateAt = at;
+   reviewer.stateReason = event.reason || null;
+   out.revision += 1;
+   if (state === 'findings' && out.quietWindow.startsAt !== null) {
+-    out.quietWindow.startsAt = at;
++    out.quietWindow.startsAt = Math.max(out.quietWindow.startsAt, at);
+     out.quietWindow.resets.push({ at, reason: 'reviewer_findings', eventId: event.id || null });
+   }
+   return out;
+@@ -198,47 +235,217 @@ function recordReviewEvent(ledger, event) {
+   const at = asTime(event.at, 'review event timestamp');
+   const classification = eventClass(event);
+   const eventId = event.id === undefined || event.id === null ? null : String(event.id);
++  let eventHead = null;
++  if (event.headSha !== undefined) {
++    eventHead = asSha(event.headSha);
++    if (eventHead !== out.headSha) throw new Error('review event belongs to a different exact head.');
++  }
+   if (eventId && out.events.some((seen) => seen.id === eventId)) return out;
+   const recorded = { id: eventId, classification, at };
++  if (eventHead) recorded.headSha = eventHead;
+   out.events.push(recorded);
+-  if (event.headSha !== undefined && asSha(event.headSha) !== out.headSha) {
+-    throw new Error('review event belongs to a different exact head.');
+-  }
+-  if (classification !== 'actionable' && IGNORED_EVENT_CLASSES.has(classification)) return out;
+-  // Unknown non-empty review events are actionable by default; only explicit
+-  // neutral/status/duplicate/skipped classes may leave the quiet window intact.
+-  if (classification !== 'actionable') {
+-    out.quietWindow.startsAt = at;
++  if (IGNORED_EVENT_CLASSES.has(classification)) return out;
++  // Unknown, empty, and outdated observations are actionable by default.
++  // Events received before the final request must not start the timer early.
++  if (out.finalCorrectionSha && allReviewersRequested(out)) {
++    out.quietWindow.startsAt = out.quietWindow.startsAt === null
++      ? at : Math.max(out.quietWindow.startsAt, at);
+     out.quietWindow.resets.push({ at, reason: 'actionable_review', eventId });
+-    out.revision += 1;
+-    return out;
+   }
+-  out.quietWindow.startsAt = at;
+-  out.quietWindow.resets.push({ at, reason: 'actionable_review', eventId });
+   out.revision += 1;
+   return out;
+ }
+ 
++function validateTimestamp(value, label, errors, { nullable = true } = {}) {
++  if (value === null && nullable) return;
++  if (value === undefined && nullable) {
++    errors.push(`${label} must be null or a finite timestamp.`);
++    return;
++  }
++  try { asTime(value, label); } catch (error) { errors.push(error.message); }
++}
++
++function validateReviewerLedgerSnapshot(ledger) {
++  const errors = [];
++  try {
++    if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) {
++      return { valid: false, errors: ['reviewer ledger snapshot must be an object.'] };
++    }
++    if (ledger.version !== 1) errors.push('reviewer ledger version is unsupported.');
++    if (!Number.isSafeInteger(ledger.revision) || ledger.revision < 0) errors.push('reviewer ledger revision is invalid.');
++    if (typeof ledger.headSha !== 'string' || !FULL_SHA.test(ledger.headSha)) {
++      errors.push('reviewer ledger head SHA must be a full 40-character SHA.');
++    }
++    if (!Object.prototype.hasOwnProperty.call(ledger, 'finalCorrectionSha')) {
++      errors.push('final correction SHA field is missing.');
++    } else if (ledger.finalCorrectionSha !== null
++      && (typeof ledger.finalCorrectionSha !== 'string' || !FULL_SHA.test(ledger.finalCorrectionSha))) {
++      errors.push('final correction SHA must be null or a full 40-character SHA.');
++    } else if (ledger.finalCorrectionSha !== null && typeof ledger.headSha === 'string'
++      && ledger.finalCorrectionSha.toLowerCase() !== ledger.headSha.toLowerCase()) {
++      errors.push('final correction SHA must equal the exact ledger head.');
++    }
++    if (Object.prototype.hasOwnProperty.call(ledger, 'cursor')
++      && (!Number.isSafeInteger(ledger.cursor) || ledger.cursor < 0)) {
++      errors.push('reviewer ledger cursor is invalid.');
++    }
++    if (Object.prototype.hasOwnProperty.call(ledger, 'fingerprint')
++      && (typeof ledger.fingerprint !== 'string' || !ledger.fingerprint.trim())) {
++      errors.push('reviewer ledger fingerprint is invalid.');
++    }
++
++    let normalizedPolicy = null;
++    try {
++      if (!ledger.policy || typeof ledger.policy !== 'object' || Array.isArray(ledger.policy)) {
++        throw new Error('reviewer policy snapshot is missing.');
++      }
++      normalizedPolicy = normalizeReviewerPolicy(ledger.policy);
++    } catch (error) {
++      errors.push(error.message);
++    }
++
++    if (!Array.isArray(ledger.reviewers) || ledger.reviewers.length === 0) {
++      errors.push('reviewer state snapshot must declare a non-empty reviewer list.');
++    } else if (normalizedPolicy) {
++      if (ledger.reviewers.length !== normalizedPolicy.reviewers.length) {
++        errors.push('reviewer state list does not match the registered policy.');
++      }
++      const expectedById = new Map(normalizedPolicy.reviewers.map((reviewer) => [reviewer.id, reviewer]));
++      const seen = new Set();
++      for (const reviewer of ledger.reviewers) {
++        if (!reviewer || typeof reviewer !== 'object' || Array.isArray(reviewer)) {
++          errors.push('reviewer state entries must be objects.');
++          continue;
++        }
++        const id = typeof reviewer.id === 'string' ? reviewer.id : '';
++        if (!id || seen.has(id)) {
++          errors.push(`reviewer state identity "${id || '?'}" is missing or duplicated.`);
++          continue;
++        }
++        seen.add(id);
++        const expected = expectedById.get(id);
++        if (!expected || reviewer.provider !== expected.provider || reviewer.accountId !== expected.accountId
++          || reviewer.riskClass !== expected.riskClass || reviewer.unavailable !== expected.unavailable) {
++          errors.push(`reviewer state identity "${id}" is not registered with stable policy metadata.`);
++        }
++        if (!Object.prototype.hasOwnProperty.call(reviewer, 'requestedAt')) {
++          errors.push(`reviewer "${id}" request timestamp is missing.`);
++        } else if (reviewer.requestedAt !== null) {
++          validateTimestamp(reviewer.requestedAt, `reviewer "${id}" request timestamp`, errors, { nullable: false });
++        }
++        if (!Object.prototype.hasOwnProperty.call(reviewer, 'state')
++          || (reviewer.state !== null && (typeof reviewer.state !== 'string' || !REVIEWER_TERMINAL_STATES.has(reviewer.state)))) {
++          errors.push(`reviewer "${id}" terminal state is invalid.`);
++        }
++        if (!Object.prototype.hasOwnProperty.call(reviewer, 'stateAt')) {
++          errors.push(`reviewer "${id}" state timestamp is missing.`);
++        } else {
++          validateTimestamp(reviewer.stateAt, `reviewer "${id}" state timestamp`, errors);
++        }
++        if (reviewer.state === null && reviewer.stateAt !== null) {
++          errors.push(`reviewer "${id}" has a state timestamp without a terminal state.`);
++        }
++        if (reviewer.state !== null && reviewer.requestedAt === null) {
++          errors.push(`reviewer "${id}" has a terminal state without a request.`);
++        }
++        if (reviewer.requestedAt !== null && reviewer.stateAt !== null) {
++          try {
++            if (asTime(reviewer.stateAt) < asTime(reviewer.requestedAt)) {
++              errors.push(`reviewer "${id}" state timestamp predates its request.`);
++            }
++          } catch { /* timestamp errors already recorded above */ }
++        }
++        if (!Object.prototype.hasOwnProperty.call(reviewer, 'stateReason')
++          || (reviewer.stateReason !== null && typeof reviewer.stateReason !== 'string')) {
++          errors.push(`reviewer "${id}" state reason is invalid.`);
++        }
++      }
++    }
++
++    const quiet = ledger.quietWindow;
++    if (!quiet || typeof quiet !== 'object' || Array.isArray(quiet)) {
++      errors.push('quiet window shape is invalid.');
++    } else {
++      if (!Number.isSafeInteger(quiet.durationMs) || quiet.durationMs < DEFAULT_QUIET_WINDOW_MS) {
++        errors.push('quiet window duration must be at least 10 minutes.');
++      }
++      if (!Object.prototype.hasOwnProperty.call(quiet, 'startsAt')) {
++        errors.push('quiet window start timestamp is missing.');
++      } else {
++        validateTimestamp(quiet.startsAt, 'quiet window start timestamp', errors);
++      }
++      if (!Array.isArray(quiet.resets)) {
++        errors.push('quiet window reset history is invalid.');
++      } else {
++        for (const reset of quiet.resets) {
++          if (!reset || typeof reset !== 'object') {
++            errors.push('quiet window reset entries must be objects.');
++            continue;
++          }
++          validateTimestamp(reset.at, 'quiet window reset timestamp', errors, { nullable: false });
++          if (typeof reset.reason !== 'string' || !reset.reason.trim()) errors.push('quiet window reset reason is invalid.');
++          if (reset.eventId !== undefined && reset.eventId !== null && typeof reset.eventId !== 'string') {
++            errors.push('quiet window reset event identity is invalid.');
++          }
++        }
++      }
++    }
++
++    if (!Array.isArray(ledger.events)) {
++      errors.push('review event history is invalid.');
++    } else {
++      for (const event of ledger.events) {
++        if (!event || typeof event !== 'object') {
++          errors.push('review event entries must be objects.');
++          continue;
++        }
++        if (event.id !== undefined && event.id !== null && typeof event.id !== 'string') errors.push('review event identity is invalid.');
++        if (typeof event.classification !== 'string' || !event.classification.trim()) errors.push('review event classification is invalid.');
++        validateTimestamp(event.at, 'review event timestamp', errors, { nullable: false });
++        if (event.headSha !== undefined) {
++          try {
++            if (asSha(event.headSha) !== asSha(ledger.headSha)) errors.push('review event belongs to a different exact head.');
++          } catch (error) { errors.push(error.message); }
++        }
++      }
++    }
++  } catch (error) {
++    errors.push(`reviewer ledger snapshot is unreadable: ${error.message}`);
++  }
++  return { valid: errors.length === 0, errors };
++}
++
++function pending(reason, extras = {}) {
++  return { status: 'pending', reason, ...extras };
++}
++
+ function evaluateReviewerLedger(ledger, {
+   now,
+   headSha,
+   requiredChecks,
+   emergencyBypass,
+ } = {}) {
+-  if (!ledger || typeof ledger !== 'object') return { status: 'pending', reason: 'reviewer ledger is missing.' };
++  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return pending('reviewer ledger is missing.');
+   let nowMs;
+-  try { nowMs = asTime(now, 'current time'); } catch (error) { return { status: 'pending', reason: error.message }; }
++  try { nowMs = asTime(now, 'current time'); } catch (error) { return pending(error.message); }
++  const validation = validateReviewerLedgerSnapshot(ledger);
++  if (!validation.valid) return pending(`reviewer ledger snapshot is invalid: ${validation.errors.join(' ')}`);
+   try {
+-    if (headSha !== undefined && asSha(headSha) !== ledger.headSha) {
+-      return { status: 'pending', reason: 'reviewer ledger head changed.' };
++    if (headSha !== undefined && asSha(headSha) !== asSha(ledger.headSha)) {
++      return pending('reviewer ledger head changed.');
+     }
+-  } catch (error) { return { status: 'pending', reason: error.message }; }
++  } catch (error) { return pending(error.message); }
++
+   if (emergencyBypass) {
+-    const audit = authorizeEmergencyBypass(emergencyBypass);
+-    return { status: 'ready', bypassed: true, audit, quietRemainingMs: 0, reviewers: ledger.reviewers };
++    try {
++      const audit = authorizeEmergencyBypass(emergencyBypass);
++      return { status: 'ready', bypassed: true, audit, quietRemainingMs: 0, reviewers: ledger.reviewers };
++    } catch (error) {
++      return pending(error.message);
++    }
+   }
+-  if (!ledger.finalCorrectionSha) return { status: 'pending', reason: 'final correction SHA is not registered.' };
+-  const reviewers = Array.isArray(ledger.reviewers) ? ledger.reviewers : [];
++  if (!ledger.finalCorrectionSha) return pending('final correction SHA is not registered.');
++  const reviewers = ledger.reviewers;
+   const requiredPending = reviewers.filter((reviewer) => reviewer.riskClass === 'required'
+     && (reviewer.requestedAt === null || reviewer.state === null));
+   const requiredFindings = reviewers.filter((reviewer) => reviewer.state === 'findings').map((reviewer) => reviewer.id);
+@@ -247,63 +454,194 @@ function evaluateReviewerLedger(ledger, {
+   const optionalPending = reviewers.filter((reviewer) => reviewer.riskClass === 'optional'
+     && reviewer.state === null && reviewer.unavailable !== 'allow').map((reviewer) => reviewer.id);
+   if (requiredChecks && requiredChecks.readable !== true) {
+-    return {
+-      status: 'pending', reason: 'required check policy is unreadable.', reviewers,
+-      requiredPending: requiredPending.map((reviewer) => reviewer.id), requiredFindings,
+-      optionalUnavailableAllowed, optionalPending,
+-    };
++    return pending('required check policy is unreadable.', {
++      reviewers,
++      requiredPending: requiredPending.map((reviewer) => reviewer.id),
++      requiredFindings,
++      optionalUnavailableAllowed,
++      optionalPending,
++    });
+   }
+   const missingRequests = reviewers.filter((reviewer) => reviewer.requestedAt === null
+     && !(reviewer.riskClass === 'optional' && reviewer.unavailable === 'allow')).map((reviewer) => reviewer.id);
+   if (requiredPending.length || requiredFindings.length || optionalPending.length || missingRequests.length) {
+-    return {
+-      status: 'pending', reason: requiredPending.length || missingRequests.length
+-        ? 'reviewer request or terminal state is pending.' : 'reviewer findings require correction.',
+-      reviewers, requiredPending: [...new Set([...requiredPending.map((r) => r.id), ...missingRequests])],
+-      requiredFindings, optionalUnavailableAllowed, optionalPending,
+-    };
++    return pending(requiredPending.length || missingRequests.length
++      ? 'reviewer request or terminal state is pending.' : 'reviewer findings require correction.', {
++      reviewers,
++      requiredPending: [...new Set([...requiredPending.map((r) => r.id), ...missingRequests])],
++      requiredFindings,
++      optionalUnavailableAllowed,
++      optionalPending,
++    });
+   }
+-  if (ledger.quietWindow.startsAt === null) {
+-    return { status: 'pending', reason: 'quiet window has not started.', reviewers, requiredPending: [], requiredFindings, optionalUnavailableAllowed, optionalPending };
++  const quiet = ledger.quietWindow;
++  if (quiet.startsAt === null) {
++    return pending('quiet window has not started.', {
++      reviewers, requiredPending: [], requiredFindings, optionalUnavailableAllowed, optionalPending,
++    });
+   }
+-  const elapsed = nowMs - ledger.quietWindow.startsAt;
+-  const quietRemainingMs = Math.max(ledger.quietWindow.durationMs - elapsed, 0);
++  const elapsed = nowMs - asTime(quiet.startsAt, 'quiet window start timestamp');
++  const quietRemainingMs = Math.max(quiet.durationMs - elapsed, 0);
+   if (quietRemainingMs > 0) {
+-    return { status: 'pending', reason: `quiet window has ${quietRemainingMs}ms remaining.`, quietRemainingMs, reviewers, requiredPending: [], requiredFindings, optionalUnavailableAllowed, optionalPending };
++    return pending(`quiet window has ${quietRemainingMs}ms remaining.`, {
++      quietRemainingMs, reviewers, requiredPending: [], requiredFindings, optionalUnavailableAllowed, optionalPending,
++    });
+   }
+-  return { status: 'ready', reason: 'reviewers are terminal and the passive quiet window elapsed.', quietRemainingMs: 0, reviewers, requiredPending: [], requiredFindings, optionalUnavailableAllowed, optionalPending };
++  return {
++    status: 'ready',
++    reason: 'reviewers are terminal and the passive quiet window elapsed.',
++    quietRemainingMs: 0,
++    reviewers,
++    requiredPending: [],
++    requiredFindings,
++    optionalUnavailableAllowed,
++    optionalPending,
++  };
++}
++
++function validEvidence(value) {
++  return typeof value === 'string' && value.trim() !== '';
++}
++
++function ledgerEvidence(ledger, label) {
++  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return `${label} snapshot is unreadable.`;
++  try {
++    if (!Number.isSafeInteger(ledger.revision) || ledger.revision < 0) return `${label} revision is unreadable.`;
++    asSha(ledger.headSha, `${label} head SHA`);
++    if (ledger.finalCorrectionSha !== null) asSha(ledger.finalCorrectionSha, `${label} final correction SHA`);
++    if (!ledger.quietWindow || typeof ledger.quietWindow !== 'object'
++      || !Object.prototype.hasOwnProperty.call(ledger.quietWindow, 'startsAt')) return `${label} quiet window is unreadable.`;
++    if (ledger.quietWindow.startsAt !== null) asTime(ledger.quietWindow.startsAt, `${label} quiet window start timestamp`);
++    if (!Number.isSafeInteger(ledger.quietWindow.durationMs)
++      || ledger.quietWindow.durationMs < DEFAULT_QUIET_WINDOW_MS) return `${label} quiet window duration is unreadable.`;
++    if (!Number.isSafeInteger(ledger.cursor) || ledger.cursor < 0) return `${label} cursor is unreadable.`;
++    if (!validEvidence(ledger.fingerprint)) return `${label} fingerprint is unreadable.`;
++    return null;
++  } catch (error) { return `${label} snapshot is unreadable: ${error.message}`; }
+ }
+ 
+ function atomicPreMergeRecheck(expected, current) {
+   if (!expected || !current || typeof expected !== 'object' || typeof current !== 'object') {
+     return { ok: false, reason: 'pre-merge snapshot is unreadable.' };
+   }
+-  const fields = [
+-    ['headSha', 'head'],
+-    ['checksFingerprint', 'required checks'],
+-    ['leaseFingerprint', 'lease'],
+-    ['conflictFingerprint', 'conflict'],
+-    ['dependencyFingerprint', 'dependency'],
+-  ];
+-  for (const [field, label] of fields) {
+-    if (expected[field] !== undefined || current[field] !== undefined) {
+-      if (expected[field] === undefined || current[field] === undefined || expected[field] !== current[field]) {
+-        return { ok: false, reason: `${label} evidence changed before merge.` };
+-      }
++  for (const [field, label] of REQUIRED_RECHECK_FIELDS) {
++    if (!validEvidence(expected[field]) || !validEvidence(current[field])) {
++      return { ok: false, reason: `${label} evidence is unreadable before merge.` };
++    }
++    if (field === 'headSha') {
++      try {
++        if (asSha(expected[field]) !== asSha(current[field])) return { ok: false, reason: 'head evidence changed before merge.' };
++      } catch (error) { return { ok: false, reason: error.message }; }
++    } else if (expected[field] !== current[field]) {
++      return { ok: false, reason: `${label} evidence changed before merge.` };
+     }
+   }
+   const expectedLedger = expected.reviewerLedger;
+   const currentLedger = current.reviewerLedger;
+-  if (expectedLedger !== undefined || currentLedger !== undefined) {
+-    if (!expectedLedger || !currentLedger || expectedLedger.revision !== currentLedger.revision
+-      || expectedLedger.headSha !== currentLedger.headSha
+-      || expectedLedger.quietWindow?.startsAt !== currentLedger.quietWindow?.startsAt) {
+-      return { ok: false, reason: 'reviewer ledger changed before merge.' };
+-    }
++  const expectedError = ledgerEvidence(expectedLedger, 'reviewer ledger');
++  const currentError = ledgerEvidence(currentLedger, 'current reviewer ledger');
++  if (expectedError || currentError) {
++    return { ok: false, reason: expectedError || currentError };
++  }
++  const ledgerPairs = [
++    ['revision', 'reviewer ledger revision'],
++    ['headSha', 'reviewer ledger head'],
++    ['finalCorrectionSha', 'reviewer final correction'],
++    ['cursor', 'reviewer ledger cursor'],
++    ['fingerprint', 'reviewer ledger fingerprint'],
++  ];
++  for (const [field, label] of ledgerPairs) {
++    const left = field === 'headSha' || field === 'finalCorrectionSha'
++      ? (expectedLedger[field] || null) && String(expectedLedger[field]).toLowerCase()
++      : expectedLedger[field];
++    const right = field === 'headSha' || field === 'finalCorrectionSha'
++      ? (currentLedger[field] || null) && String(currentLedger[field]).toLowerCase()
++      : currentLedger[field];
++    if (left !== right) return { ok: false, reason: `${label} changed before merge.` };
++  }
++  if (expectedLedger.quietWindow.startsAt !== currentLedger.quietWindow.startsAt
++    || expectedLedger.quietWindow.durationMs !== currentLedger.quietWindow.durationMs) {
++    return { ok: false, reason: 'reviewer ledger quiet-window evidence changed before merge.' };
+   }
+   return { ok: true };
+ }
+ 
++function selectEvidenceFingerprint(context, field, source) {
++  if (Object.prototype.hasOwnProperty.call(context, field)) return context[field];
++  return evidenceFingerprint(source);
++}
++
++/**
++ * Build the immutable evidence tuple used by the merge command's final check.
++ * Explicit fingerprints from an authoritative adapter are preserved; absent
++ * projections are hashed deterministically so a newly observed item changes
++ * the tuple instead of silently disappearing from the recheck.
++ */
++function buildMergeEvidenceSnapshot(context, { issueId } = {}) {
++  const source = context && typeof context === 'object' ? context : {};
++  const rawLedger = source.reviewerLedger;
++  let reviewerLedger = rawLedger && typeof rawLedger === 'object' && !Array.isArray(rawLedger)
++    ? { ...rawLedger } : null;
++  if (reviewerLedger) {
++    reviewerLedger.cursor = source.reviewerLedgerCursor
++      ?? reviewerLedger.cursor ?? 0;
++    reviewerLedger.fingerprint = source.reviewerLedgerFingerprint
++      ?? reviewerLedger.fingerprint ?? evidenceFingerprint(rawLedger);
++  }
++  return {
++    headSha: source.headSha,
++    commentsFingerprint: selectEvidenceFingerprint(source, 'commentsFingerprint', source.comments),
++    threadsFingerprint: selectEvidenceFingerprint(source, 'threadsFingerprint', source.reviewThreads
++      ?? source.threads ?? source.unresolvedThreads),
++    checksFingerprint: selectEvidenceFingerprint(source, 'checksFingerprint', {
++      checks: source.checks,
++      requiredChecks: source.requiredChecks,
++      requiredCheckSource: source.requiredCheckSource,
++      requiredChecksKnown: source.requiredChecksKnown,
++      providerObservations: source.providerObservations,
++    }),
++    leaseFingerprint: selectEvidenceFingerprint(source, 'leaseFingerprint', source.lease ?? source.ownership ?? issueId ?? null),
++    conflictFingerprint: selectEvidenceFingerprint(source, 'conflictFingerprint', {
++      conflicting: source.conflicting,
++      mergeStateStatus: source.mergeStateStatus,
++    }),
++    dependencyFingerprint: selectEvidenceFingerprint(source, 'dependencyFingerprint', source.dependencies
++      ?? source.dependencyState ?? source.issueBinding ?? issueId ?? null),
++    reviewerLedger,
++  };
++}
++
++/** Read the reviewer-ledger projection from the shared PR-monitor snapshot. */
++function readAuthoritativeReviewerLedger({ root, gitCommonDir, repo, pr } = {}) {
++  const unavailable = (source, error = null, record = null) => ({
++    ledger: null,
++    cursor: record ? record.appliedSeq : null,
++    fingerprint: record ? record.fingerprint : null,
++    source,
++    error,
++  });
++  if (typeof root !== 'string' || !root || typeof repo !== 'string' || !repo || pr === undefined || pr === null) {
++    return unavailable('invalid-input');
++  }
++  try {
++    const { resolveJournalRoot, sanitize, readSnapshot } = require('./pr-monitor/journal');
++    const journalRoot = resolveJournalRoot({ root, gitCommonDir });
++    const dir = path.join(journalRoot, `${sanitize(repo)}-${sanitize(pr)}`);
++    const record = readSnapshot(dir);
++    if (!record || !record.snapshot || typeof record.snapshot !== 'object') return unavailable('missing', null, record);
++    if (!record.snapshot.reviewerLedger) return unavailable('missing', null, record);
++    return {
++      ledger: record.snapshot.reviewerLedger,
++      cursor: record.appliedSeq,
++      fingerprint: record.fingerprint,
++      source: 'journal',
++      error: null,
++    };
++  } catch (error) {
++    return unavailable('unreadable', error.message);
++  }
++}
++
+ function authorizeEmergencyBypass(input) {
+   if (!input || typeof input !== 'object') throw new Error('emergency bypass audit is required.');
+   const actor = typeof input.humanActor === 'string' ? input.humanActor.trim() : '';
+@@ -323,7 +661,11 @@ module.exports = {
+   registerReviewerRequest,
+   recordReviewerState,
+   recordReviewEvent,
++  validateReviewerLedgerSnapshot,
+   evaluateReviewerLedger,
+   atomicPreMergeRecheck,
++  buildMergeEvidenceSnapshot,
++  readAuthoritativeReviewerLedger,
+   authorizeEmergencyBypass,
++  evidenceFingerprint,
+ };
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+index 4f9be026..a9138f0f 100644
+--- a/test/commands/merge-authority-review-regressions.test.js
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -5,11 +5,31 @@ const { describe, test, expect } = require('bun:test');
+ const mergeCmd = require('../../lib/commands/merge');
+ const { PrStateAdapter } = require('../../lib/adapters/pr-state-adapter');
+ 
++const {
++  createReviewerLedger,
++  registerReviewerRequest,
++  recordReviewerState,
++} = require('../../lib/reviewer-ledger');
++
+ const HEAD = 'a'.repeat(40);
+ const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
+ const ENABLED = { merge: { auto: { enabled: true, rules: ['checks_green'] } } };
+ const NOW = Date.parse('2026-08-01T12:00:00Z');
+ 
++function readyReviewerLedger(now) {
++  let ledger = createReviewerLedger({
++    policy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++    headSha: HEAD,
++    finalCorrectionSha: HEAD,
++  });
++  ledger = registerReviewerRequest(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: now - 20 * 60_000,
++  });
++  return recordReviewerState(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, state: 'clean', at: now - 19 * 60_000,
++  });
++}
++
+ function args(pr = '42') {
+   return [pr, '--auto', '--expect-head', HEAD, '--issue', ISSUE];
+ }
+@@ -32,6 +52,7 @@ function context(overrides = {}) {
+     comments: [],
+     lastActivityAt: NOW - 60 * 60_000,
+     now: NOW,
++    reviewerLedger: readyReviewerLedger(NOW),
+     ...overrides,
+   };
+ }
+@@ -182,6 +203,7 @@ describe('merge authority — exact reviewer regressions', () => {
+         }],
+       }),
+     });
++    fetched.reviewerLedger = readyReviewerLedger(NOW);
+     let merges = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+       fetchPrContext: async () => fetched,
+@@ -290,7 +312,7 @@ describe('merge authority — exact reviewer regressions', () => {
+     }
+   });
+ 
+-  test('TOCTOU allows a new comment when settle_min is unconfigured', async () => {
++  test('TOCTOU blocks a new comment even when settle_min is unconfigured', async () => {
+     let reads = 0;
+     let merges = 0;
+     const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
+@@ -303,8 +325,9 @@ describe('merge authority — exact reviewer regressions', () => {
+       },
+       mergePr: async () => { merges += 1; return { merged: true }; },
+     }));
+-    expect(out.merged).toBe(true);
+-    expect(merges).toBe(1);
++    expect(out.merged).toBe(false);
++    expect(out.reason).toMatch(/comment|evidence|changed/i);
++    expect(merges).toBe(0);
+   });
+ 
+   test('TOCTOU blocks a new comment when settle_min is configured', async () => {
+@@ -323,8 +346,7 @@ describe('merge authority — exact reviewer regressions', () => {
+       mergePr: async () => { merges += 1; return { merged: true }; },
+     }));
+     expect(out.merged).toBe(false);
+-    expect(out.allowed).toBe(false);
+-    expect(out.unmet.some((item) => item.rule === 'settle_min:10')).toBe(true);
++    expect(out.reason).toMatch(/comment|evidence|changed/i);
+     expect(merges).toBe(0);
+   });
+ 
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+index d25d5a80..161c2c55 100644
+--- a/test/commands/merge-authority.test.js
++++ b/test/commands/merge-authority.test.js
+@@ -4,11 +4,31 @@ const { describe, test, expect } = require('bun:test');
+ 
+ const mergeCmd = require('../../lib/commands/merge');
+ 
++const {
++  createReviewerLedger,
++  registerReviewerRequest,
++  recordReviewerState,
++} = require('../../lib/reviewer-ledger');
++
+ const HEAD = 'a'.repeat(40);
+ const OTHER_HEAD = 'b'.repeat(40);
+ const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
+ const ENABLED = { merge: { auto: { enabled: true, rules: ['checks_green'] } } };
+ 
++function readyReviewerLedger(now) {
++  let ledger = createReviewerLedger({
++    policy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++    headSha: HEAD,
++    finalCorrectionSha: HEAD,
++  });
++  ledger = registerReviewerRequest(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: now - 20 * 60_000,
++  });
++  return recordReviewerState(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, state: 'clean', at: now - 19 * 60_000,
++  });
++}
++
+ function args(head = HEAD) {
+   return ['42', '--auto', '--expect-head', head, '--issue', ISSUE];
+ }
+@@ -31,6 +51,7 @@ function context(overrides = {}) {
+     comments: [],
+     lastActivityAt: '2026-08-01T11:00:00Z',
+     now: Date.parse('2026-08-01T12:00:00Z'),
++    reviewerLedger: readyReviewerLedger(Date.parse('2026-08-01T12:00:00Z')),
+     ...overrides,
+   };
+ }
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index a79973dc..8ba6063b 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -10,10 +10,30 @@ const YAML = require('yaml');
+ const mergeCmd = require('../../lib/commands/merge');
+ const { validateCommand } = require('../../lib/commands/_registry');
+ 
++const {
++  createReviewerLedger,
++  registerReviewerRequest,
++  recordReviewerState,
++} = require('../../lib/reviewer-ledger');
++
+ const tempRoots = [];
+ const HEAD = 'a'.repeat(40);
+ const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
+ 
++function readyReviewerLedger(now) {
++  let ledger = createReviewerLedger({
++    policy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++    headSha: HEAD,
++    finalCorrectionSha: HEAD,
++  });
++  ledger = registerReviewerRequest(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: now - 20 * 60_000,
++  });
++  return recordReviewerState(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, state: 'clean', at: now - 19 * 60_000,
++  });
++}
++
+ function mergeArgs(pr) {
+   return [String(pr), '--auto', '--expect-head', HEAD, '--issue', ISSUE];
+ }
+@@ -37,6 +57,7 @@ function authorizedContext(overrides = {}) {
+     comments: [],
+     lastActivityAt: now - 60 * 60_000,
+     now,
++    reviewerLedger: readyReviewerLedger(now),
+     ...overrides,
+   };
+ }
+diff --git a/test/reviewer-ledger.test.js b/test/reviewer-ledger.test.js
+index 44785007..cc3edb05 100644
+--- a/test/reviewer-ledger.test.js
++++ b/test/reviewer-ledger.test.js
+@@ -1,5 +1,9 @@
+ 'use strict';
+ 
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++
+ const { describe, test, expect } = require('bun:test');
+ 
+ const {
+@@ -11,6 +15,8 @@ const {
+   recordReviewerState,
+   recordReviewEvent,
+   evaluateReviewerLedger,
++  validateReviewerLedgerSnapshot,
++  readAuthoritativeReviewerLedger,
+   atomicPreMergeRecheck,
+   setFinalCorrectionSha,
+ } = require('../lib/reviewer-ledger');
+@@ -116,7 +122,9 @@ describe('reviewer ledger and passive quiet window', () => {
+     expect(bypass.status).toBe('ready');
+     expect(bypass.bypassed).toBe(true);
+     expect(bypass.audit.humanActor).toBe('release-manager');
+-    expect(() => evaluateReviewerLedger(ledger, { now: START, headSha: HEAD, emergencyBypass: { humanActor: 'release-manager' } })).toThrow(/audit|reason/i);
++    const invalidBypass = evaluateReviewerLedger(ledger, { now: START, headSha: HEAD, emergencyBypass: { humanActor: 'release-manager' } });
++    expect(invalidBypass.status).toBe('pending');
++    expect(invalidBypass.reason).toMatch(/audit|reason/i);
+   });
+ 
+   test('reviewer_ledger merge rule fails closed until the passive window is eligible', () => {
+@@ -156,7 +164,9 @@ describe('reviewer ledger and passive quiet window', () => {
+   test('TOCTOU recheck blocks head, actionable event, checks, lease, conflict, and dependency changes', () => {
+     const baseline = {
+       headSha: HEAD,
+-      reviewerLedger: { revision: 2 },
++      commentsFingerprint: 'comments-a',
++      threadsFingerprint: 'threads-a',
++      reviewerLedger: { revision: 2, headSha: HEAD, finalCorrectionSha: HEAD, cursor: 0, fingerprint: 'ledger-a', quietWindow: { startsAt: START, durationMs: DEFAULT_QUIET_WINDOW_MS } },
+       checksFingerprint: 'checks-a',
+       leaseFingerprint: 'lease-a',
+       conflictFingerprint: 'conflict-a',
+@@ -176,4 +186,159 @@ describe('reviewer ledger and passive quiet window', () => {
+   });
+ });
+ 
++
++test('merge reads the reviewer ledger from the shared monitor snapshot', () => {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-reviewer-ledger-'));
++  try {
++    const dir = path.join(root, '.forge', 'pr-monitor', 'acme-forge-42');
++    fs.mkdirSync(dir, { recursive: true });
++    const ledger = createReviewerLedger({
++      policy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++      headSha: HEAD,
++      finalCorrectionSha: HEAD,
++    });
++    fs.writeFileSync(path.join(dir, 'snapshot.json'), JSON.stringify({
++      snapshot: { reviewerLedger: ledger }, fingerprint: 'journal-fingerprint', appliedSeq: 7,
++    }));
++    expect(readAuthoritativeReviewerLedger({ root, repo: 'acme/forge', pr: '42' })).toEqual({
++      ledger, cursor: 7, fingerprint: 'journal-fingerprint', source: 'journal', error: null,
++    });
++  } finally {
++    fs.rmSync(root, { recursive: true, force: true });
++  }
++});
++
++test('malformed or incomplete ledger snapshots fail closed without throwing', () => {
++  const singlePolicy = { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] };
++  let readyLedger = createReviewerLedger({ policy: singlePolicy, headSha: HEAD, finalCorrectionSha: HEAD });
++  readyLedger = registerReviewerRequest(readyLedger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START,
++  });
++  readyLedger = recordReviewerState(readyLedger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, state: 'clean', at: START + 1_000,
++  });
++  expect(validateReviewerLedgerSnapshot(readyLedger).valid).toBe(true);
++  const malformed = [
++    { ...readyLedger, policy: { reviewers: [] } },
++    { ...readyLedger, finalCorrectionSha: 'not-a-sha' },
++    { ...readyLedger, quietWindow: null },
++    { ...readyLedger, quietWindow: { durationMs: DEFAULT_QUIET_WINDOW_MS - 1, startsAt: START, resets: [] } },
++    { ...readyLedger, reviewers: [{ ...readyLedger.reviewers[0], requestedAt: 'not-a-time' }] },
++    { ...readyLedger, reviewers: [null] },
++  ];
++  for (const snapshot of malformed) {
++    let result;
++    expect(() => { result = evaluateReviewerLedger(snapshot, { now: START + 20 * 60_000, headSha: HEAD }); }).not.toThrow();
++    expect(result.status).toBe('pending');
++  }
++});
++
++test('quiet windows shorter than ten minutes are rejected', () => {
++  expect(() => createReviewerLedger({
++    policy: { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] },
++    headSha: HEAD,
++    quietWindowMs: DEFAULT_QUIET_WINDOW_MS - 1,
++  })).toThrow(/10 minutes|600000/);
++});
++
++test('final correction timestamp is explicit and cannot predate a reviewer request', () => {
++  const singlePolicy = { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] };
++  let ledger = createReviewerLedger({ policy: singlePolicy, headSha: HEAD });
++  ledger = registerReviewerRequest(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START,
++  });
++  expect(() => setFinalCorrectionSha(ledger, HEAD)).toThrow(/timestamp/i);
++  expect(() => setFinalCorrectionSha(ledger, HEAD, START - 1)).toThrow(/before|request|timestamp/i);
++  expect(setFinalCorrectionSha(ledger, HEAD, START + 1).finalCorrectionSha).toBe(HEAD);
++});
++
++test('review events before all requests do not start the quiet window early', () => {
++  const singlePolicy = { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] };
++  let ledger = createReviewerLedger({ policy: singlePolicy, headSha: HEAD, finalCorrectionSha: HEAD });
++  ledger = recordReviewEvent(ledger, { id: 'early-1', classification: 'actionable', at: START });
++  expect(ledger.quietWindow.startsAt).toBe(null);
++  ledger = registerReviewerRequest(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START + 1_000,
++  });
++  expect(ledger.quietWindow.startsAt).toBe(START + 1_000);
++});
++
++test('empty and outdated review events reset the quiet window as actionable observations', () => {
++  const singlePolicy = { reviewers: [{ provider: 'codex', accountId: 'sol', riskClass: 'required' }] };
++  let ledger = createReviewerLedger({ policy: singlePolicy, headSha: HEAD, finalCorrectionSha: HEAD });
++  ledger = registerReviewerRequest(ledger, {
++    provider: 'codex', accountId: 'sol', headSha: HEAD, requestedAt: START,
++  });
++  ledger = recordReviewEvent(ledger, { id: 'empty-1', classification: 'empty', at: START + 1_000 });
++  expect(ledger.quietWindow.startsAt).toBe(START + 1_000);
++  ledger = recordReviewEvent(ledger, { id: 'outdated-1', classification: 'outdated', at: START + 2_000 });
++  expect(ledger.quietWindow.startsAt).toBe(START + 2_000);
++});
++
++test('atomic final recheck covers comments, threads, checks, lease, conflict, dependency, and ledger cursor/fingerprint', () => {
++  const baseline = {
++    headSha: HEAD,
++    commentsFingerprint: 'comments-a',
++    threadsFingerprint: 'threads-a',
++    checksFingerprint: 'checks-a',
++    leaseFingerprint: 'lease-a',
++    conflictFingerprint: 'conflict-a',
++    dependencyFingerprint: 'deps-a',
++    reviewerLedger: {
++      revision: 2,
++      headSha: HEAD,
++      finalCorrectionSha: HEAD,
++      quietWindow: { startsAt: START, durationMs: DEFAULT_QUIET_WINDOW_MS },
++      cursor: 17,
++      fingerprint: 'ledger-a',
++    },
++  };
++  for (const change of [
++    { commentsFingerprint: 'comments-b' },
++    { threadsFingerprint: 'threads-b' },
++    { checksFingerprint: 'checks-b' },
++    { leaseFingerprint: 'lease-b' },
++    { conflictFingerprint: 'conflict-b' },
++    { dependencyFingerprint: 'deps-b' },
++    { reviewerLedger: { ...baseline.reviewerLedger, cursor: 18 } },
++    { reviewerLedger: { ...baseline.reviewerLedger, fingerprint: 'ledger-b' } },
++  ]) {
++    expect(atomicPreMergeRecheck(baseline, { ...baseline, ...change }).ok).toBe(false);
++  }
++  expect(atomicPreMergeRecheck(baseline, baseline)).toEqual({ ok: true });
++});
++
++test('merge command requires a reviewer ledger even when configured rules omit it', async () => {
++  let merges = 0;
++  const context = {
++    number: 42,
++    repository: 'acme/forge',
++    state: 'OPEN',
++    headSha: HEAD,
++    isDraft: false,
++    conflicting: false,
++    unresolvedThreads: 0,
++    reviewEvidenceReadable: true,
++    reviews: [],
++    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', appId: 123 }],
++    requiredChecks: [{ context: 'ci', appId: 123 }],
++    requiredCheckSource: 'protection',
++    requiredChecksKnown: true,
++  };
++  const out = await mergeCmd.handler(
++    ['42', '--auto', '--expect-head', HEAD, '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++    {}, process.cwd(), {
++      loadConfig: () => ({ merge: { auto: { enabled: true, rules: ['checks_green'] } } }),
++      env: { FORGE_ACTOR: 'release-actor' },
++      verifyIssueOwnership: async () => ({ owned: true, actor: 'release-actor', claimedBy: 'release-actor', expired: false }),
++      verifyPrIssueBinding: async () => ({ bound: true }),
++      fetchPrContext: async () => ({ ...context }),
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    },
++  );
++  expect(out.merged).toBe(false);
++  expect(out.error || out.reason).toMatch(/reviewer ledger|review evidence/i);
++  expect(merges).toBe(0);
++});
++
+ expect(DEFAULT_QUIET_WINDOW_MS).toBe(10 * 60_000);
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,33 @@
+From 03b4b082d767d8bc76a068ecd48184a313c3529a Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Wed, 8 Jul 2026 00:12:07 +0530
+Subject: [PATCH] fix(setup): surface the memory-config validator message in
+ the Graphiti notice
+
+---
+ lib/commands/setup.js | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index f3d2e15b..2881e52d 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -1799,10 +1799,12 @@ function graphitiMcpDescriptors() {
+     if (backend !== 'graphiti') return [];
+     const { buildGraphitiServerDescriptor } = require('../memory/graphiti-mcp');
+     return [buildGraphitiServerDescriptor(graphiti)];
+-  } catch {
++  } catch (err) {
++    // Surface the validator's specific message (it names the missing key and
++    // where to configure it) instead of a generic notice that hides the cause.
+     console.log(
+-      '  Notice: memory.backend is "graphiti" but its config is incomplete — '
+-      + 'Graphiti MCP server not wired. Run `forge doctor` for details.',
++      `  Notice: Graphiti MCP server not wired — ${err && err.message ? err.message : 'memory config invalid'}`
++      + ' Run `forge doctor` for details.',
+     );
+     return [];
+   }
+-- 
+2.51.0.windows.1
+

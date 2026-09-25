@@ -1,0 +1,977 @@
+From e29b1536aeee2e2daa10f7c47b984d51a7dae09f Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Mon, 6 Jul 2026 19:41:46 +0530
+Subject: [PATCH] =?UTF-8?q?chore(review):=20rename=20greptile-resolve=20?=
+ =?UTF-8?q?=E2=86=92=20review-resolve=20+=20de-brand=20review=20skill=20(a?=
+ =?UTF-8?q?gent-agnostic)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The review-thread resolution machinery already resolved GitHub PR review
+threads from ANY author — CodeRabbit, Qodo, Greptile, or a human — via
+GraphQL/REST, but its "greptile" naming implied it was Greptile-specific.
+
+- Rename .claude/scripts/greptile-resolve.sh → review-resolve.sh
+- Rename .claude/rules/greptile-review-process.md → review-process.md
+- De-brand skills/review + skills/shepherd (canonical) and the review-process
+  rule to tool-neutral "review agent" language; Greptile kept as ONE example
+- Regenerate .codex skill mirror (populateAgentSkills; in sync)
+- Update all in-repo refs: lib/adapters/pr-state-adapter.js default script path,
+  lib/reset.js inventory, lib/commands/setup.js scaffold list, affected tests,
+  and the manual/Greptile review guides
+- Greptile-the-product surfaces unchanged: greptile-review-adapter.js,
+  greptile-match.js, greptile-quality-gate.yml, GREPTILE_SETUP.md framing
+
+Full suite 4405 pass / 0 fail; eslint --max-warnings 0 clean; release check 0.1.0 = 0 blockers.
+
+Refs: 092098de-20e1-47ce-99d8-2767cc02983e
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ ...le-review-process.md => review-process.md} | 97 +++++++++++--------
+ ...{greptile-resolve.sh => review-resolve.sh} | 11 ++-
+ .codex/skills/review/SKILL.md                 | 66 ++++++-------
+ .codex/skills/shepherd/SKILL.md               |  2 +-
+ CHANGELOG.md                                  |  1 +
+ docs/guides/GREPTILE_SETUP.md                 |  4 +-
+ docs/guides/MANUAL_REVIEW_GUIDE.md            |  4 +-
+ lib/adapters/pr-state-adapter.js              |  4 +-
+ lib/commands/setup.js                         |  2 +-
+ lib/reset.js                                  |  4 +-
+ skills/review/SKILL.md                        | 66 ++++++-------
+ skills/shepherd/SKILL.md                      |  2 +-
+ test/bash-bootstrap-source.test.js            |  2 +-
+ test/pr-shepherd.test.js                      |  2 +-
+ test/reset-hard.test.js                       |  2 +-
+ test/reset-inventory.test.js                  |  2 +-
+ test/setup-runtime-assets.test.js             |  2 +-
+ test/setup-runtime-flags.test.js              |  4 +-
+ 18 files changed, 149 insertions(+), 128 deletions(-)
+ rename .claude/rules/{greptile-review-process.md => review-process.md} (60%)
+ rename .claude/scripts/{greptile-resolve.sh => review-resolve.sh} (97%)
+
+diff --git a/.claude/rules/greptile-review-process.md b/.claude/rules/review-process.md
+similarity index 60%
+rename from .claude/rules/greptile-review-process.md
+rename to .claude/rules/review-process.md
+index ad060e9d..b7545291 100644
+--- a/.claude/rules/greptile-review-process.md
++++ b/.claude/rules/review-process.md
+@@ -1,17 +1,22 @@
+-# Greptile Review Handling Process
++# Review Thread Handling Process
+ 
+-**Purpose**: Standardized process for AI agents to systematically handle Greptile review comments.
++**Purpose**: Standardized process for AI agents to systematically handle PR
++review threads from **any review agent** — CodeRabbit, Qodo, Greptile, or a
++human reviewer. The mechanism (GitHub review threads via GraphQL/REST) is the
++same regardless of which tool or person authored the comment; the examples below
++name specific tools only as illustrations.
+ 
+-**Critical**: This process has been problematic for days. AI agents MUST follow these exact steps for EVERY Greptile comment.
++**Critical**: Review threads left unresolved block merges. AI agents MUST follow
++these exact steps for EVERY review comment, whoever authored it.
+ 
+ ---
+ 
+ ## Problem Background
+ 
+ **Previous Issues:**
+-- ❌ AI agents replied to PR with general comments instead of replying directly to each Greptile review thread
++- ❌ AI agents replied to the PR with general comments instead of replying directly to each review thread
+ - ❌ AI agents didn't mark conversation threads as "resolved" after fixing issues
+-- ❌ No systematic process for tracking which Greptile comments are addressed vs pending
++- ❌ No systematic process for tracking which review comments are addressed vs pending
+ - ❌ Caused confusion and manual tracking overhead for maintainers
+ 
+ **Why This Matters:**
+@@ -39,28 +44,31 @@
+ - Reply explains what was fixed and why
+ - Resolve marks the thread as addressed
+ 
++These two GitHub operations are author-agnostic: they work identically for a
++CodeRabbit thread, a Qodo thread, a Greptile thread, or a human reviewer's thread.
++
+ ---
+ 
+ ## For AI Agents: Mandatory Steps
+ 
+-When Greptile Quality Gate fails (score < 4/5) or when review comments exist:
++When a review-agent quality gate fails or when review comments exist:
+ 
+-### Step 1: List ALL Greptile Feedback (Inline + Direct Comments)
++### Step 1: List ALL Review Feedback (Inline + Direct Comments)
+ 
+-Greptile posts feedback in **two places**:
++Review agents post feedback in **two places**:
+ 1. **Inline review threads** — attached to specific code lines (resolvable via GraphQL)
+-2. **Direct PR issue comments** — "Additional Comments (N)" posted as regular PR comments (reply with `gh pr comment`)
++2. **Direct PR issue comments** — summaries or "Additional Comments (N)" posted as regular PR comments (reply with `gh pr comment`)
+ 
+ Always run `list-all` to see both:
+ 
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list-all <pr-number>
++bash .claude/scripts/review-resolve.sh list-all <pr-number>
+ ```
+ 
+ Or just inline threads (unresolved only):
+ 
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+ ```
+ 
+ **Output shows:**
+@@ -68,6 +76,7 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+ - Comment ID (for replying to inline threads)
+ - File path and line number
+ - Issue description
++- Author (so you can see whether it came from CodeRabbit, Greptile, Qodo, a human, etc.)
+ - Direct PR comment IDs and previews (reply with `gh pr comment`)
+ 
+ **Example:**
+@@ -85,7 +94,7 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+ 
+ 1. **Read the comment** and understand the issue
+    - Use the file path and line number to locate the code
+-   - Understand what Greptile is flagging
++   - Understand what the reviewer is flagging
+ 
+ 2. **Fix the issue** if the comment is valid
+    - Make the necessary code changes
+@@ -93,7 +102,7 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+ 
+ 3. **Reply to the thread** with explanation
+    ```bash
+-   bash .claude/scripts/greptile-resolve.sh reply <pr-number> <comment-id> "✅ Fixed: [description]
++   bash .claude/scripts/review-resolve.sh reply <pr-number> <comment-id> "✅ Fixed: [description]
+ 
+    Changed: [what was changed]
+    Reason: [why this fixes the issue]
+@@ -102,14 +111,14 @@ bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+ 
+ 4. **Resolve the thread**
+    ```bash
+-   bash .claude/scripts/greptile-resolve.sh resolve <pr-number> <thread-id>
++   bash .claude/scripts/review-resolve.sh resolve <pr-number> <thread-id>
+    ```
+ 
+ 5. **Track progress**: Mark comment as addressed in your notes
+ 
+ **Alternative (all-in-one):**
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "✅ Fixed: [description]
++bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "✅ Fixed: [description]
+ 
+ Changed: [what was changed]
+ Reason: [why this fixes the issue]
+@@ -119,17 +128,17 @@ Commit: [commit-sha]"
+ ### Step 3: Verify All Threads Resolved
+ 
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+ ```
+ 
+ **Should show**: "No unresolved comments" or empty list
+ 
+ **Confirm with stats:**
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+ 
+-**Should show**: "✓ All Greptile threads resolved!"
++**Should show**: all tracked review threads resolved.
+ 
+ ### Step 4: Push Changes & Poll Briefly for Re-review
+ 
+@@ -137,10 +146,10 @@ bash .claude/scripts/greptile-resolve.sh stats <pr-number>
+ git push
+ ```
+ 
+-**Greptile will automatically:**
++**The review agent will automatically:**
+ - Re-analyze the PR
+-- Update the confidence score
+-- Re-run the Quality Gate check
++- Update any confidence/quality score
++- Re-run its quality gate check
+ 
+ ---
+ 
+@@ -148,7 +157,7 @@ git push
+ 
+ ```bash
+ # 1. List unresolved threads
+-$ bash .claude/scripts/greptile-resolve.sh list 24 --unresolved
++$ bash .claude/scripts/review-resolve.sh list 24 --unresolved
+ 
+ ✗ UNRESOLVED | docs/ROADMAP.md:280
+   Thread ID: PRRT_kwDORErEU85tuh6I
+@@ -160,7 +169,7 @@ $ git add docs/ROADMAP.md
+ $ git commit -m "fix: replace Windows absolute paths with relative paths"
+ 
+ # 3. Reply and resolve in one step
+-$ bash .claude/scripts/greptile-resolve.sh reply-and-resolve 24 2787717459 PRRT_kwDORErEU85tuh6I \
++$ bash .claude/scripts/review-resolve.sh reply-and-resolve 24 2787717459 PRRT_kwDORErEU85tuh6I \
+   "✅ Fixed: Replaced Windows absolute paths with repo-relative paths
+ 
+ Changed: C:\\Users\\...\\plans\\... → .claude/plans/*.md
+@@ -171,10 +180,10 @@ Commit: abc123"
+ ✅ Thread resolved successfully
+ 
+ # 4. Verify all resolved
+-$ bash .claude/scripts/greptile-resolve.sh stats 24
++$ bash .claude/scripts/review-resolve.sh stats 24
+ 
+-Greptile unresolved: 0
+-✓ All Greptile threads resolved!
++Unresolved: 0
++✓ All review threads resolved!
+ 
+ # 5. Push changes
+ $ git push
+@@ -188,7 +197,7 @@ $ git push
+ - **Reply to EACH comment thread** using the script (not as separate PR comment)
+ - **Mark EACH thread as resolved** after fixing using the script
+ - **Track progress** (X of Y fixed) in your notes
+-- **Poll for Greptile re-review for at most 60 seconds** after pushing fixes, then stop and hand off if it is still pending
++- **Poll for re-review for at most 60 seconds** after pushing fixes, then stop and hand off if it is still pending
+ - **Use comment ID for replies**, thread ID for resolving
+ - **Commit fixes BEFORE replying** so you can reference commit SHA
+ 
+@@ -204,54 +213,60 @@ $ git push
+ 
+ ## Script Commands Reference
+ 
++The `.claude/scripts/review-resolve.sh` helper works for review threads authored
++by any tool or person. The `list-all`, `resolve-all`, and `stats` commands
++additionally recognize `greptile-apps`-authored threads as a built-in convenience
++(Greptile is one supported review tool); the core commands below are fully
++author-agnostic.
++
+ ### List Threads
+ ```bash
+ # All threads
+-bash .claude/scripts/greptile-resolve.sh list <pr-number>
++bash .claude/scripts/review-resolve.sh list <pr-number>
+ 
+ # Only unresolved
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+ ```
+ 
+ ### Reply to Thread
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh reply <pr-number> <comment-id> "<message>"
++bash .claude/scripts/review-resolve.sh reply <pr-number> <comment-id> "<message>"
+ ```
+ 
+ ### Resolve Thread
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh resolve <pr-number> <thread-id>
++bash .claude/scripts/review-resolve.sh resolve <pr-number> <thread-id>
+ ```
+ 
+ ### Reply and Resolve (Recommended)
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "<message>"
++bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> "<message>"
+ ```
+ 
+ ### Batch Resolve (After all issues fixed)
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh resolve-all <pr-number>
++bash .claude/scripts/review-resolve.sh resolve-all <pr-number>
+ ```
+ **⚠️ Warning**: Only use after ALL issues are fixed and replied to
+ 
+ ### Statistics
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+ 
+ ---
+ 
+ ## Integration with `/review` Command
+ 
+-The `/review` command should now include these steps:
++The `/review` command includes these steps:
+ 
+ 1. Run `/review` as usual to analyze PR feedback
+-2. For Greptile comments, use the script to:
++2. For review-agent comments (CodeRabbit, Qodo, Greptile, human), use the script to:
+    - List unresolved threads
+    - Fix each issue
+    - Reply and resolve systematically
+ 3. Verify all threads resolved before declaring review complete
+-4. Push changes and poll briefly for Greptile re-review
++4. Push changes and poll briefly for re-review
+ 
+ ---
+ 
+@@ -269,17 +284,17 @@ The `/review` command should now include these steps:
+ **Cause**: GitHub UI caching
+ **Solution**: Refresh page, or check with GraphQL query
+ 
+-### Greptile score not updating after fixes
++### Review score not updating after fixes
+ **Cause**: Must push commits to trigger re-analysis
+-**Solution**: `git push`, check once immediately, and poll for up to 60 seconds. If Greptile is still pending after that, stop and wait for the user to resume later.
++**Solution**: `git push`, check once immediately, and poll for up to 60 seconds. If the review agent is still pending after that, stop and wait for the user to resume later.
+ 
+ ---
+ 
+ ## Success Criteria
+ 
+ **A review is complete when:**
+-- ✅ All Greptile threads are resolved (verified with `stats` command)
++- ✅ All review threads are resolved (verified with the `stats` command)
+ - ✅ All threads have replies explaining fixes
+-- ✅ Greptile Quality Gate passes (≥4/5 score)
++- ✅ Any review-agent quality gate passes
+ - ✅ Branch protection allows merge
+ - ✅ No manual tracking needed by maintainers
+diff --git a/.claude/scripts/greptile-resolve.sh b/.claude/scripts/review-resolve.sh
+similarity index 97%
+rename from .claude/scripts/greptile-resolve.sh
+rename to .claude/scripts/review-resolve.sh
+index 08016da9..defb0fd1 100644
+--- a/.claude/scripts/greptile-resolve.sh
++++ b/.claude/scripts/review-resolve.sh
+@@ -1,7 +1,12 @@
+ #!/bin/bash
+-# Greptile Review Thread Resolution Tool
+-# Uses GitHub GraphQL API to systematically resolve review threads
+-# Uses GitHub REST API to reply to review comments
++# Review Thread Resolution Tool
++# Resolves GitHub PR review threads from ANY review author — CodeRabbit, Qodo,
++# Greptile, or a human reviewer — the mechanism is author-agnostic.
++# Uses GitHub GraphQL API to systematically resolve review threads.
++# Uses GitHub REST API to reply to review comments.
++# Note: the `list-all`, `resolve-all`, and `stats` convenience commands additionally
++# recognize `greptile-apps`-authored threads (Greptile is one supported review tool);
++# the core list/reply/resolve/reply-and-resolve commands work for every author.
+ 
+ set -e
+ 
+diff --git a/.codex/skills/review/SKILL.md b/.codex/skills/review/SKILL.md
+index b8591aa9..73e8b278 100644
+--- a/.codex/skills/review/SKILL.md
++++ b/.codex/skills/review/SKILL.md
+@@ -15,7 +15,7 @@ description: >
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+-Process ALL pull request issues including GitHub Actions failures, Greptile inline comments, SonarCloud analysis, and other CI/CD checks.
++Process ALL pull request issues including GitHub Actions failures, review-agent inline comments (Greptile, CodeRabbit, Qodo, or human reviewers), SonarCloud analysis, and other CI/CD checks.
+ 
+ # Review
+ 
+@@ -75,22 +75,22 @@ gh run view <run-id> --log-failed
+ - Type failures: TypeScript type errors
+ - Deployment failures: Env vars, configuration issues
+ 
+-### Step 3: Process Greptile Review
++### Step 3: Process Review-Agent Feedback
+ 
+-Greptile provides TWO types of feedback:
++Review agents (Greptile, CodeRabbit, Qodo, or human reviewers) provide TWO types of feedback:
+ 1. **Inline comments** on specific code lines
+ 2. **Summary** with overall recommendations
+ 
+-**IMPORTANT**: Use the **systematic Greptile resolution process** documented in `.claude/rules/greptile-review-process.md`. This process has been standardized to ensure:
++**IMPORTANT**: Use the **systematic review-thread resolution process** documented in `.claude/rules/review-process.md`. This process is author-agnostic — it works the same whichever tool or person left the comment — and has been standardized to ensure:
+ - All threads are replied to directly (not as separate PR comments)
+ - All threads are marked as resolved after fixing
+ - No manual tracking overhead for maintainers
+ 
+-#### 3A. Check Greptile Inline Comments (Use Systematic Process)
++#### 3A. Check Inline Review Comments (Use Systematic Process)
+ 
+ **Step 1: List all unresolved threads**
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+ ```
+ 
+ This shows:
+@@ -107,7 +107,7 @@ This shows:
+ 
+ 2. **Categorize the comment**:
+    - **Valid**: Should be implemented (security issue, bug, clear improvement)
+-   - **Invalid**: Greptile misunderstood context
++   - **Invalid**: the review agent misunderstood context
+    - **Conflicting**: Contradicts research decisions with good reason
+    - **Out of scope**: Valid but not for this PR
+ 
+@@ -118,7 +118,7 @@ This shows:
+ 4. **Reply and resolve** (for ALL comments, even invalid ones)
+    ```bash
+    # For valid issues (fixed):
+-   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++   bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+      "✅ Fixed: [description]
+ 
+      Changed: [what was changed]
+@@ -126,11 +126,11 @@ This shows:
+      Commit: [commit-sha]"
+ 
+    # For invalid/conflicting issues:
+-   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++   bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+      "This approach is correct because:
+      - Reasoning: [from design doc]
+      - Evidence: [link to source]
+-     - Alternative considered: [what Greptile suggested]
++     - Alternative considered: [what the review agent suggested]
+      - Why rejected: [specific reason]
+ 
+      See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
+@@ -138,15 +138,15 @@ This shows:
+ 
+ **Step 3: Verify all resolved**
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+-Should show: "✓ All Greptile threads resolved!"
++Should show: all review threads resolved.
+ 
+-**See complete process**: `.claude/rules/greptile-review-process.md`
++**See complete process**: `.claude/rules/review-process.md`
+ 
+-#### 3B. Check Greptile Summary
++#### 3B. Check the Review-Agent Summary
+ ```bash
+-# Greptile usually posts a summary comment on the PR
++# Review agents usually post a summary comment on the PR
+ # Review the overall assessment and recommendations
+ ```
+ 
+@@ -197,8 +197,8 @@ Review any other automated checks:
+ 
+ Create a master list of all issues from:
+ - GitHub Actions failures
+-- Greptile inline comments
+-- Greptile summary recommendations
++- Review-agent inline comments
++- Review-agent summary recommendations
+ - SonarCloud issues
+ - Other CI/CD tool failures
+ 
+@@ -225,13 +225,13 @@ git push
+ # Actions will auto-rerun
+ ```
+ 
+-For **Greptile inline comments** (Use Systematic Script):
++For **inline review comments** (Use Systematic Script):
+ ```bash
+-# Use the standardized Greptile resolution script
+-# See .claude/rules/greptile-review-process.md for complete process
++# Use the standardized review-thread resolution script
++# See .claude/rules/review-process.md for complete process
+ 
+ # For valid comments (fixed):
+-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+   "✅ Fixed: [description]
+ 
+   Changed: [what was changed]
+@@ -239,23 +239,23 @@ bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-
+   Commit: [commit-sha]"
+ 
+ # For invalid/conflicting comments:
+-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+   "This approach is correct because:
+   - Reasoning: [from design doc]
+   - Evidence: [link to source]
+-  - Alternative considered: [what Greptile suggested]
++  - Alternative considered: [what the review agent suggested]
+   - Why rejected: [specific reason]
+ 
+   See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
+ 
+ # Verify all threads resolved:
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+ 
+-For **Greptile summary recommendations**:
++For **review-agent summary recommendations**:
+ ```bash
+ # Add a PR comment addressing the summary
+-gh pr comment <pr-number> --body "## Greptile Summary Response
++gh pr comment <pr-number> --body "## Review Summary Response
+ 
+ Addressed all key recommendations:
+ - [Recommendation 1]: ✓ Fixed in commit <sha>
+@@ -291,7 +291,7 @@ git commit -m "fix: address ALL PR review feedback
+ GitHub Actions:
+ - Fixed: [list of workflow failures resolved]
+ 
+-Greptile:
++Review agents:
+ - Fixed: [list of valid inline comments addressed]
+ - Explained: [list of invalid comments with reasoning]
+ - Summary: [key recommendations addressed]
+@@ -319,7 +319,7 @@ gh pr checks <pr-number>
+ #
+ # Ensure all completed status checks are green:
+ # ✓ GitHub Actions workflows
+-# ✓ Greptile review (no unresolved critical comments)
++# ✓ Review agents (no unresolved critical comments)
+ # ✓ SonarCloud quality gate
+ # ✓ Other CI/CD checks
+ ```
+@@ -339,7 +339,7 @@ forge sync
+   - Tests: ✓ Passing
+   - Deploy Preview: ✓ Passing
+ 
+-✓ Greptile Review:
++✓ Review-Agent Feedback:
+   Inline Comments: 8 total
+   - Valid: 5 → Fixed & replied inline
+   - Invalid: 2 → Explained with research evidence & replied inline
+@@ -377,7 +377,7 @@ Next: pre-merge gate — finish docs + confirm CI green, then hand off the PR fo
+ ```
+ <HARD-GATE: /review exit>
+ Do NOT declare /review complete until:
+-1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
++1. bash .claude/scripts/review-resolve.sh stats <pr-number> shows all review threads resolved
+ 2. ALL human reviewer comments are either resolved or have a reply with explanation
+ 3. gh pr checks <pr-number> shows all checks passing
+ 4. Context check: confirm design + acceptance on the Forge issue (`forge issue show <id>`); if the beads-context helper is present, run `bash scripts/beads-context.sh validate <id>` and address any warnings
+@@ -477,10 +477,10 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review
+ 
+ ## Tips
+ 
+-- **Address ALL issues**: Not just Greptile and SonarCloud
++- **Address ALL issues**: Not just one review agent and SonarCloud
+ - **Prioritize critical**: Fix blockers first (GitHub Actions failures, security issues)
+-- **Reply inline to Greptile**: Respond to each comment directly
+-- **Post summary response**: Address Greptile's overall assessment
++- **Reply inline to review agents**: Respond to each comment directly
++- **Post summary response**: Address the review agent's overall assessment
+ - **Use sonarcloud skill**: Don't just check the web UI
+ - **Verify all checks**: Ensure everything is green before the pre-merge gate / merge
+ - **Update the Forge issue**: Keep issue status current
+diff --git a/.codex/skills/shepherd/SKILL.md b/.codex/skills/shepherd/SKILL.md
+index 21127b63..cfa73b30 100644
+--- a/.codex/skills/shepherd/SKILL.md
++++ b/.codex/skills/shepherd/SKILL.md
+@@ -39,7 +39,7 @@ A `--watch` affordance, if you want one, lives in an **external scheduler** (e.g
+ ## What it never does
+ 
+ - **Never merges.** There is no merge action and no server-side auto-merge latch. The shepherd terminates at `MERGE_READY` and hands off to the human, who merges in the GitHub UI (mirroring the pre-merge gate's merge handoff).
+-- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/greptile-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
++- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/review-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
+ 
+ ## Action ladder
+ 
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0ff8d70f..f70ee75b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -26,6 +26,7 @@ The default issue backend changed from Beads to the built-in kernel store.
+ 
+ ### Changed
+ 
++- **Review-thread resolution machinery is now named agent-agnostically.** Renamed `.claude/scripts/greptile-resolve.sh` → `.claude/scripts/review-resolve.sh` and `.claude/rules/greptile-review-process.md` → `.claude/rules/review-process.md`. The helper always resolved GitHub PR review threads from ANY author — CodeRabbit, Qodo, Greptile, or a human — via GraphQL/REST; the old naming misleadingly implied it was Greptile-specific. The `review` and `shepherd` skills (canonical + generated `.codex` mirror), the review-process rule, and the manual/Greptile review guides now describe review threads in tool-neutral language, keeping Greptile as one supported example rather than THE brand. All in-repo references point at the new names (`lib/adapters/pr-state-adapter.js` default script path, `lib/reset.js` inventory, `lib/commands/setup.js` scaffold list, and the affected tests). Greptile-the-product surfaces are intentionally unchanged: `lib/adapters/greptile-review-adapter.js`, `lib/greptile-match.js`, the `greptile-quality-gate.yml` workflow, and `GREPTILE_SETUP.md` still document Greptile as a specific supported review tool. (092098de)
+ - Internal de-stage of pre-merge: the AGENTS.md/Cursor workflow generator, the plugin catalog, `forge recommend`, and the harness capability matrix no longer model pre-merge as a standalone `/premerge` stage or command. Pre-merge is now consistently presented as a documentation gate embedded in `/ship` and `/review`. Legacy `currentStage: 'premerge'` workflow state still round-trips on read, and the release-readiness gate now certifies the de-stage across those generator/taxonomy surfaces. (#275)
+ - Pre-merge is presented as an embedded documentation gate inside the `/ship` and `/review` stages — not a numbered workflow stage, and not an invokable `/premerge` command. (#269)
+ - Packaging: added an `engines.node` requirement of `>=22.16.0`, excluded a stray test file from the published npm tarball, and documented the `forge doc-gate` command. (#271)
+diff --git a/docs/guides/GREPTILE_SETUP.md b/docs/guides/GREPTILE_SETUP.md
+index 6765b94c..3ddd7279 100644
+--- a/docs/guides/GREPTILE_SETUP.md
++++ b/docs/guides/GREPTILE_SETUP.md
+@@ -32,8 +32,8 @@ Forge does not guarantee that Greptile is installed or enforced. Treat Greptile
+ When the repo includes the helper script:
+ 
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+ 
+ Reply to each valid, invalid, conflicting, or out-of-scope thread before resolving it.
+diff --git a/docs/guides/MANUAL_REVIEW_GUIDE.md b/docs/guides/MANUAL_REVIEW_GUIDE.md
+index 9ba95760..66afd23f 100644
+--- a/docs/guides/MANUAL_REVIEW_GUIDE.md
++++ b/docs/guides/MANUAL_REVIEW_GUIDE.md
+@@ -37,10 +37,10 @@ Check all available inputs:
+ 
+ ## Greptile
+ 
+-If Greptile is configured for the repository, use the repo's Greptile resolution script when available:
++If Greptile is configured for the repository, use the repo's review-thread resolution script when available (it handles Greptile and any other review author):
+ 
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+ ```
+ 
+ Then reply to each thread with the fix, rejection reason, or follow-up issue.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index a5adef09..6fd4131e 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -10,7 +10,7 @@
+  *   - `readDivergence`      → `git rev-list --left-right --count {baseRef}...HEAD`
+  *   - `detectConflicts`     → `git merge-tree --write-tree {baseRef} HEAD` (predict-only)
+  *   - `rerunFailedChecks`   → `gh run rerun <id> --failed`
+- *   - `replyToThread`       → shell-out to `.claude/scripts/greptile-resolve.sh reply` (reply ONLY,
++ *   - `replyToThread`       → shell-out to `.claude/scripts/review-resolve.sh reply` (reply ONLY,
+  *                             never resolve — resolution stays with the semantic `/review` agent)
+  *
+  * This adapter is its own SPI; it does NOT extend the review adapter and is
+@@ -180,7 +180,7 @@ class PrStateAdapter {
+    * @returns {Promise<void>}
+    */
+   async replyToThread({ pr, commentId, message, script }) {
+-    const scriptPath = script || '.claude/scripts/greptile-resolve.sh';
++    const scriptPath = script || '.claude/scripts/review-resolve.sh';
+     this._gh('bash', [scriptPath, 'reply', String(pr), String(commentId), String(message)]);
+   }
+ 
+diff --git a/lib/commands/setup.js b/lib/commands/setup.js
+index 1e4dbbee..a483d21e 100644
+--- a/lib/commands/setup.js
++++ b/lib/commands/setup.js
+@@ -175,7 +175,7 @@ const WORKFLOW_RUNTIME_ASSETS = Object.freeze([
+   'scripts/forge-team/lib/sync-github.sh',
+   'scripts/forge-team/lib/verify.sh',
+   'scripts/forge-team/lib/workload.sh',
+-  '.claude/scripts/greptile-resolve.sh'
++  '.claude/scripts/review-resolve.sh'
+ ]);
+ 
+ /**
+diff --git a/lib/reset.js b/lib/reset.js
+index bb53a3a5..efbd79b8 100644
+--- a/lib/reset.js
++++ b/lib/reset.js
+@@ -21,11 +21,11 @@ const FORGE_SKILL_DIRS = [
+ 
+ const FORGE_RULES = [
+   '.claude/rules/workflow.md',
+-  '.claude/rules/greptile-review-process.md',
++  '.claude/rules/review-process.md',
+ ];
+ 
+ const FORGE_SCRIPTS = [
+-  '.claude/scripts/greptile-resolve.sh',
++  '.claude/scripts/review-resolve.sh',
+   '.claude/scripts/validate.sh',
+ ];
+ 
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index b8591aa9..73e8b278 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -15,7 +15,7 @@ description: >
+ allowed-tools: Bash, Read, Edit, Grep, Glob
+ ---
+ 
+-Process ALL pull request issues including GitHub Actions failures, Greptile inline comments, SonarCloud analysis, and other CI/CD checks.
++Process ALL pull request issues including GitHub Actions failures, review-agent inline comments (Greptile, CodeRabbit, Qodo, or human reviewers), SonarCloud analysis, and other CI/CD checks.
+ 
+ # Review
+ 
+@@ -75,22 +75,22 @@ gh run view <run-id> --log-failed
+ - Type failures: TypeScript type errors
+ - Deployment failures: Env vars, configuration issues
+ 
+-### Step 3: Process Greptile Review
++### Step 3: Process Review-Agent Feedback
+ 
+-Greptile provides TWO types of feedback:
++Review agents (Greptile, CodeRabbit, Qodo, or human reviewers) provide TWO types of feedback:
+ 1. **Inline comments** on specific code lines
+ 2. **Summary** with overall recommendations
+ 
+-**IMPORTANT**: Use the **systematic Greptile resolution process** documented in `.claude/rules/greptile-review-process.md`. This process has been standardized to ensure:
++**IMPORTANT**: Use the **systematic review-thread resolution process** documented in `.claude/rules/review-process.md`. This process is author-agnostic — it works the same whichever tool or person left the comment — and has been standardized to ensure:
+ - All threads are replied to directly (not as separate PR comments)
+ - All threads are marked as resolved after fixing
+ - No manual tracking overhead for maintainers
+ 
+-#### 3A. Check Greptile Inline Comments (Use Systematic Process)
++#### 3A. Check Inline Review Comments (Use Systematic Process)
+ 
+ **Step 1: List all unresolved threads**
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh list <pr-number> --unresolved
++bash .claude/scripts/review-resolve.sh list <pr-number> --unresolved
+ ```
+ 
+ This shows:
+@@ -107,7 +107,7 @@ This shows:
+ 
+ 2. **Categorize the comment**:
+    - **Valid**: Should be implemented (security issue, bug, clear improvement)
+-   - **Invalid**: Greptile misunderstood context
++   - **Invalid**: the review agent misunderstood context
+    - **Conflicting**: Contradicts research decisions with good reason
+    - **Out of scope**: Valid but not for this PR
+ 
+@@ -118,7 +118,7 @@ This shows:
+ 4. **Reply and resolve** (for ALL comments, even invalid ones)
+    ```bash
+    # For valid issues (fixed):
+-   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++   bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+      "✅ Fixed: [description]
+ 
+      Changed: [what was changed]
+@@ -126,11 +126,11 @@ This shows:
+      Commit: [commit-sha]"
+ 
+    # For invalid/conflicting issues:
+-   bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++   bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+      "This approach is correct because:
+      - Reasoning: [from design doc]
+      - Evidence: [link to source]
+-     - Alternative considered: [what Greptile suggested]
++     - Alternative considered: [what the review agent suggested]
+      - Why rejected: [specific reason]
+ 
+      See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
+@@ -138,15 +138,15 @@ This shows:
+ 
+ **Step 3: Verify all resolved**
+ ```bash
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+-Should show: "✓ All Greptile threads resolved!"
++Should show: all review threads resolved.
+ 
+-**See complete process**: `.claude/rules/greptile-review-process.md`
++**See complete process**: `.claude/rules/review-process.md`
+ 
+-#### 3B. Check Greptile Summary
++#### 3B. Check the Review-Agent Summary
+ ```bash
+-# Greptile usually posts a summary comment on the PR
++# Review agents usually post a summary comment on the PR
+ # Review the overall assessment and recommendations
+ ```
+ 
+@@ -197,8 +197,8 @@ Review any other automated checks:
+ 
+ Create a master list of all issues from:
+ - GitHub Actions failures
+-- Greptile inline comments
+-- Greptile summary recommendations
++- Review-agent inline comments
++- Review-agent summary recommendations
+ - SonarCloud issues
+ - Other CI/CD tool failures
+ 
+@@ -225,13 +225,13 @@ git push
+ # Actions will auto-rerun
+ ```
+ 
+-For **Greptile inline comments** (Use Systematic Script):
++For **inline review comments** (Use Systematic Script):
+ ```bash
+-# Use the standardized Greptile resolution script
+-# See .claude/rules/greptile-review-process.md for complete process
++# Use the standardized review-thread resolution script
++# See .claude/rules/review-process.md for complete process
+ 
+ # For valid comments (fixed):
+-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+   "✅ Fixed: [description]
+ 
+   Changed: [what was changed]
+@@ -239,23 +239,23 @@ bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-
+   Commit: [commit-sha]"
+ 
+ # For invalid/conflicting comments:
+-bash .claude/scripts/greptile-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
++bash .claude/scripts/review-resolve.sh reply-and-resolve <pr-number> <comment-id> <thread-id> \
+   "This approach is correct because:
+   - Reasoning: [from design doc]
+   - Evidence: [link to source]
+-  - Alternative considered: [what Greptile suggested]
++  - Alternative considered: [what the review agent suggested]
+   - Why rejected: [specific reason]
+ 
+   See: docs/work/YYYY-MM-DD-<slug>/plan.md (Decision #X)"
+ 
+ # Verify all threads resolved:
+-bash .claude/scripts/greptile-resolve.sh stats <pr-number>
++bash .claude/scripts/review-resolve.sh stats <pr-number>
+ ```
+ 
+-For **Greptile summary recommendations**:
++For **review-agent summary recommendations**:
+ ```bash
+ # Add a PR comment addressing the summary
+-gh pr comment <pr-number> --body "## Greptile Summary Response
++gh pr comment <pr-number> --body "## Review Summary Response
+ 
+ Addressed all key recommendations:
+ - [Recommendation 1]: ✓ Fixed in commit <sha>
+@@ -291,7 +291,7 @@ git commit -m "fix: address ALL PR review feedback
+ GitHub Actions:
+ - Fixed: [list of workflow failures resolved]
+ 
+-Greptile:
++Review agents:
+ - Fixed: [list of valid inline comments addressed]
+ - Explained: [list of invalid comments with reasoning]
+ - Summary: [key recommendations addressed]
+@@ -319,7 +319,7 @@ gh pr checks <pr-number>
+ #
+ # Ensure all completed status checks are green:
+ # ✓ GitHub Actions workflows
+-# ✓ Greptile review (no unresolved critical comments)
++# ✓ Review agents (no unresolved critical comments)
+ # ✓ SonarCloud quality gate
+ # ✓ Other CI/CD checks
+ ```
+@@ -339,7 +339,7 @@ forge sync
+   - Tests: ✓ Passing
+   - Deploy Preview: ✓ Passing
+ 
+-✓ Greptile Review:
++✓ Review-Agent Feedback:
+   Inline Comments: 8 total
+   - Valid: 5 → Fixed & replied inline
+   - Invalid: 2 → Explained with research evidence & replied inline
+@@ -377,7 +377,7 @@ Next: pre-merge gate — finish docs + confirm CI green, then hand off the PR fo
+ ```
+ <HARD-GATE: /review exit>
+ Do NOT declare /review complete until:
+-1. bash .claude/scripts/greptile-resolve.sh stats <pr-number> shows "All Greptile threads resolved"
++1. bash .claude/scripts/review-resolve.sh stats <pr-number> shows all review threads resolved
+ 2. ALL human reviewer comments are either resolved or have a reply with explanation
+ 3. gh pr checks <pr-number> shows all checks passing
+ 4. Context check: confirm design + acceptance on the Forge issue (`forge issue show <id>`); if the beads-context helper is present, run `bash scripts/beads-context.sh validate <id>` and address any warnings
+@@ -477,10 +477,10 @@ Pre-merge gate: doc updates + CI-green checkpoint embedded in /ship and /review
+ 
+ ## Tips
+ 
+-- **Address ALL issues**: Not just Greptile and SonarCloud
++- **Address ALL issues**: Not just one review agent and SonarCloud
+ - **Prioritize critical**: Fix blockers first (GitHub Actions failures, security issues)
+-- **Reply inline to Greptile**: Respond to each comment directly
+-- **Post summary response**: Address Greptile's overall assessment
++- **Reply inline to review agents**: Respond to each comment directly
++- **Post summary response**: Address the review agent's overall assessment
+ - **Use sonarcloud skill**: Don't just check the web UI
+ - **Verify all checks**: Ensure everything is green before the pre-merge gate / merge
+ - **Update the Forge issue**: Keep issue status current
+diff --git a/skills/shepherd/SKILL.md b/skills/shepherd/SKILL.md
+index 21127b63..cfa73b30 100644
+--- a/skills/shepherd/SKILL.md
++++ b/skills/shepherd/SKILL.md
+@@ -39,7 +39,7 @@ A `--watch` affordance, if you want one, lives in an **external scheduler** (e.g
+ ## What it never does
+ 
+ - **Never merges.** There is no merge action and no server-side auto-merge latch. The shepherd terminates at `MERGE_READY` and hands off to the human, who merges in the GitHub UI (mirroring the pre-merge gate's merge handoff).
+-- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/greptile-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
++- **Never resolves review threads.** It may post a status **reply** to a thread (via the existing `.claude/scripts/review-resolve.sh reply` helper), but thread **resolution** is semantic and stays with `/review`.
+ 
+ ## Action ladder
+ 
+diff --git a/test/bash-bootstrap-source.test.js b/test/bash-bootstrap-source.test.js
+index fd12c7bd..dda7e4bc 100644
+--- a/test/bash-bootstrap-source.test.js
++++ b/test/bash-bootstrap-source.test.js
+@@ -21,7 +21,7 @@ const entrypointPaths = [
+   'scripts/smart-status.sh',
+   'scripts/sync-utils.sh',
+   'scripts/validate.sh',
+-  '.claude/scripts/greptile-resolve.sh',
++  '.claude/scripts/review-resolve.sh',
+ ];
+ 
+ function readsTool(content) {
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index eb9b9a69..a1adebac 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -289,7 +289,7 @@ describe('runShepherdPass — bounded pass state machine', () => {
+   });
+ 
+   // 10
+-  test('NEVER emits a greptile thread resolve (reply allowed)', async () => {
++  test('NEVER emits a review thread resolve (reply allowed)', async () => {
+     const { adapter, actions } = makeAdapter({
+       required: ['unit'],
+       checks: [{ name: 'unit', conclusion: 'SUCCESS' }],
+diff --git a/test/reset-hard.test.js b/test/reset-hard.test.js
+index 601a1cdf..6fff325f 100644
+--- a/test/reset-hard.test.js
++++ b/test/reset-hard.test.js
+@@ -37,7 +37,7 @@ describe('resetHard', () => {
+       '.forge/setup-state.json',
+       '.claude/skills/plan/SKILL.md',
+       '.claude/rules/workflow.md',
+-      '.claude/scripts/greptile-resolve.sh',
++      '.claude/scripts/review-resolve.sh',
+       '.cursor/rules/forge-workflow.mdc',
+       '.github/workflows/beads-to-github.yml',
+       'scripts/github-beads-sync/config.mjs',
+diff --git a/test/reset-inventory.test.js b/test/reset-inventory.test.js
+index a7c16c6b..beb98449 100644
+--- a/test/reset-inventory.test.js
++++ b/test/reset-inventory.test.js
+@@ -41,7 +41,7 @@ describe('getForgeFiles', () => {
+       '.forge/hooks/pre-commit',
+       '.claude/skills/plan/SKILL.md',
+       '.claude/rules/workflow.md',
+-      '.claude/scripts/greptile-resolve.sh',
++      '.claude/scripts/review-resolve.sh',
+       '.cursor/rules/forge-workflow.mdc',
+       '.github/workflows/beads-to-github.yml',
+       'scripts/github-beads-sync/config.mjs',
+diff --git a/test/setup-runtime-assets.test.js b/test/setup-runtime-assets.test.js
+index 72d2ff4b..2c4e0649 100644
+--- a/test/setup-runtime-assets.test.js
++++ b/test/setup-runtime-assets.test.js
+@@ -31,6 +31,6 @@ describe('setup runtime assets', () => {
+       missing: [],
+     });
+     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(false);
+-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(false);
++    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'review-resolve.sh'))).toBe(false);
+   });
+ });
+diff --git a/test/setup-runtime-flags.test.js b/test/setup-runtime-flags.test.js
+index f13463e9..120fb823 100644
+--- a/test/setup-runtime-flags.test.js
++++ b/test/setup-runtime-flags.test.js
+@@ -209,7 +209,7 @@ describe('setup runtime flags', () => {
+     expect(result.status).toBe(0);
+     expect(result.stdout).toContain('scripts/smart-status.sh');
+     expect(result.stdout).toContain('scripts/forge-team/index.sh');
+-    expect(result.stdout).toContain('.claude/scripts/greptile-resolve.sh');
++    expect(result.stdout).toContain('.claude/scripts/review-resolve.sh');
+   });
+ 
+   serialTest('setup scaffolds workflow runtime assets before reporting success', async () => {
+@@ -221,7 +221,7 @@ describe('setup runtime flags', () => {
+     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'smart-status.sh'))).toBe(true);
+     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'lib', 'sanitize.sh'))).toBe(true);
+     expect(fs.existsSync(path.join(tmpDir, 'scripts', 'forge-team', 'index.sh'))).toBe(true);
+-    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'greptile-resolve.sh'))).toBe(true);
++    expect(fs.existsSync(path.join(tmpDir, '.claude', 'scripts', 'review-resolve.sh'))).toBe(true);
+   });
+ 
+   serialTest('bare setup --sync removes deprecated generated sync files', async () => {
+-- 
+2.51.0.windows.1
+

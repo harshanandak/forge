@@ -1,0 +1,2747 @@
+From 7d02625888820f9afa83737cc30fbf1d20f955c5 Mon Sep 17 00:00:00 2001
+From: forge-shepherd <noreply@anthropic.com>
+Date: Sat, 1 Aug 2026 12:48:37 +0530
+Subject: [PATCH] fix(merge): bind authority to exact head and protected gates
+
+---
+ AGENTS.md                                     |   2 +-
+ README.md                                     |   2 +-
+ .../decisions.md                              |  39 ++
+ .../plan.md                                   |  28 +
+ .../tasks.md                                  |  30 ++
+ lib/adapters/pr-state-adapter.js              | 278 +++++++---
+ lib/commands/merge.js                         | 503 ++++++++++++++++--
+ lib/commands/pr.js                            |   2 +-
+ lib/forge-issues.js                           |  87 +--
+ lib/kernel/cli-broker-factory.js              |  13 +-
+ lib/orientation.js                            |   4 +-
+ lib/pr-pull.js                                |   2 +-
+ lib/pr-shepherd.js                            |   2 +-
+ test/cli/pr-noun-dispatch.test.js             |  22 +
+ ...merge-authority-review-regressions.test.js | 373 +++++++++++++
+ test/commands/merge-authority.test.js         | 318 +++++++++++
+ test/commands/merge.test.js                   |  57 +-
+ test/commands/pr.test.js                      |  12 +-
+ test/commands/status.test.js                  |   4 +-
+ test/forge-issues.test.js                     |  24 +
+ test/kernel/cli-broker-factory.test.js        |  42 ++
+ test/pr-bundle.test.js                        |   4 +-
+ test/pr-shepherd.test.js                      |   4 +-
+ test/pr-state-adapter.test.js                 | 188 ++++++-
+ 24 files changed, 1842 insertions(+), 198 deletions(-)
+ create mode 100644 docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+ create mode 100644 docs/work/2026-08-01-merge-authority-head-lease/plan.md
+ create mode 100644 docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+ create mode 100644 test/commands/merge-authority-review-regressions.test.js
+ create mode 100644 test/commands/merge-authority.test.js
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 0cc2f9c3..d77688b5 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -302,7 +302,7 @@ forge insights                 # Detect recurring evidence patterns, suggest con
+ forge upgrade                  # Preview and self-heal safe Forge upgrade readiness
+ forge gate <verb> <gate-id>    # Toggle a workflow gate, or record/query human-gate approval events
+ forge role <role> --use <skill> # Bind a role to a skill/ideology in .forge/config.yaml
+-forge merge --auto <pr>        # Opt-in conditional auto-merge — merges only when configured rules pass (OFF by default)
++forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id>  # Opt-in guarded merge; exact head + owned issue required (OFF by default)
+ ```
+ 
+ ### Rules
+diff --git a/README.md b/README.md
+index 29f28c22..429c4027 100644
+--- a/README.md
++++ b/README.md
+@@ -156,7 +156,7 @@ so a claim can't quietly outrun the code. What's not delivered yet says
+ | --- | --- |
+ | Knowledge-graph memory (Graphiti) | `memory.backend: graphiti` in `.forge/config.yaml` — temporal, relational recall ([guide](docs/guides/memory-backends.md)) |
+ | Global hooks for Codex/Hermes | `forge hooks install --global` (consent-guarded, `--dry-run` first) |
+-| Conditional auto-merge | `forge merge --auto <pr>` — off by default, merges only when configured rules pass |
++| Conditional auto-merge | `forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id>` — off by default; requires exact-head and active issue-ownership leases plus protected checks |
+ 
+ ## A workflow you own
+ 
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/decisions.md b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+new file mode 100644
+index 00000000..e214d1d5
+--- /dev/null
++++ b/docs/work/2026-08-01-merge-authority-head-lease/decisions.md
+@@ -0,0 +1,39 @@
++# Decisions
++
++## Stable-base prerequisite, not #471 scope expansion
++
++The merge-authority defect is pre-existing control-plane work. It remains in this isolated lane and must be merged/installed before #471 is allowed to invoke merge authority.
++
++## Caller lease is immutable authority
++
++The expected head is never inferred from the first provider read. The caller supplies one full SHA; both reads and the server mutation must match it.
++
++## Ownership is re-proved
++
++An explicit issue ID and actor-scoped active Kernel claim are required before reads and again immediately before mutation. The same issue must also be the unique open `kernel_pr` linkage for the observed repository and numeric PR on both provider reads. The merge command never acquires, reclaims, or relinks authority. Command-owned Kernel drivers are deterministically disposed after successful and failed issue reads, and factory initialization failures close the driver before propagating.
++
++## Protected policy is mandatory
++
++Configured rules are supplemental. A branch-protection policy from the authoritative endpoint and literal successful observations are mandatory. The structured policy preserves each required context's app ID and matches it against complete paginated check-run observations for the exact head. Rollup-derived required sets, malformed payloads, wrong-app observations, contradictory states, skipped/neutral checks, and unknown policy state cannot authorize.
++
++## Server closes the residual head race
++
++Two client reads do not eliminate a force-push between read and mutation. GitHub receives `--match-head-commit` and no unsafe fallback exists.
++
++The normalized repository identity is also an immutable caller-side lease: the initial and fresh contexts must name the same repository, and that initial normalized identity is the only repository forwarded to the mutation. A provider-shaped repository drift cannot redirect the merge.
++
++## Provider and lifecycle observations fail closed
++
++Review-thread evidence uses the already leased repository identity; no nested helper may rediscover a different repository. The ownership actor is resolved once, copied into an immutable environment snapshot, and reused for both ownership probes. Complete check-observation collections are unreadable if any member is malformed, and duplicate protection requirements with conflicting app IDs are unreadable policy.
++
++Only explicit `OPEN` authorizes mutation; only explicit `MERGED` or `CLOSED` are terminal no-ops. Review-thread GraphQL pages require error-free data, arrays of structurally valid nodes, boolean page state, and progressing cursors. Check-run pages require consistent totals, exact-head observations, producing app IDs, and strict `COMPLETED` + `SUCCESS` agreement.
++
++Terminal as well as continuing GraphQL pages require an explicit `endCursor` whose value is either a string or `null`; omission is unreadable. The shared PR-state adapter applies the same error-envelope, connection-shape, node-shape, nested-page, cursor-progress, and page-cap rules, so Shepherd and bundle consumers cannot project partial evidence as empty state.
++
++Kernel PR linkage accepts only positive safe integers or canonical positive-decimal strings. Numeric coercions such as `0x2a`, `42e0`, `042`, and `42.0` are malformed linkage evidence, not aliases for PR 42.
++
++Global CLI flags are stripped before guarded merge argument parsing. Both `forge merge --path ...` and `forge pr --path ... merge` reach the same authority path rather than failing with usage or interpreting a global flag as a merge selector.
++
++## Bounded residuals
++
++GitHub's protected merge remains the final server-side enforcement after the local app-scoped proof. Rulesets-only policy retrieval and durable Kernel-backed verdict authority remain separate follow-ups; unsupported policy sources fail closed.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/plan.md b/docs/work/2026-08-01-merge-authority-head-lease/plan.md
+new file mode 100644
+index 00000000..58784082
+--- /dev/null
++++ b/docs/work/2026-08-01-merge-authority-head-lease/plan.md
+@@ -0,0 +1,28 @@
++# Merge-authority exact-head lease hotfix
++
++## Objective
++
++Ship an independently reviewed stable-base prerequisite that prevents `forge merge --auto` from authorizing or merging an unreviewed/changing PR head before release PR #471 resumes.
++
++## Scope
++
++- Require caller-supplied full `--expect-head` and Forge `--issue` values when auto-merge is enabled.
++- Prove the active Kernel claim before provider reads and immediately before mutation.
++- Read and compare the current PR head twice.
++- Read the classic branch-protection required set; reject rollup fallback as merge authority.
++- Require literal `SUCCESS` for every observed protected context; missing, pending, failing, skipped, neutral, aliases, and unknown states do not authorize.
++- Require known non-draft, conflict-free, zero-unresolved-thread state independent of configurable rules.
++- Pass `--match-head-commit <sha>` to GitHub for an atomic server-side lease.
++- Preserve default-off and terminal/idempotent behavior.
++
++## Validation
++
++Use focused merge, adapter, Shepherd/pull, CLI dispatch, status/help, lint, and diff checks. Obtain independent exact-SHA review before push.
++
++## Out of scope
++
++- Durable continuation-controller implementation.
++- Cryptographically authenticated actor identity.
++- Persisted Kernel verdict authority.
++- Local app-ID matching when `gh pr view` omits the producing app. GitHub's protected merge remains the final app-ID enforcement; malformed app IDs and inconsistent protection payloads fail closed locally.
++- Rulesets-only repositories without a readable classic protected-check endpoint. They fail closed rather than using rollup inference.
+diff --git a/docs/work/2026-08-01-merge-authority-head-lease/tasks.md b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+new file mode 100644
+index 00000000..63a6bc03
+--- /dev/null
++++ b/docs/work/2026-08-01-merge-authority-head-lease/tasks.md
+@@ -0,0 +1,30 @@
++# Tasks
++
++- [x] Create/claim P0 issue `36230258-7b64-4de0-8683-fd8b8eabab51` under actor `forge-release-gate-bootstrap`.
++- [x] Create isolated stable-base worktree at `78f2b7aae98e1e05b0e6729d6af19f5be2d65494`.
++- [x] Verify installed GitHub CLI supports `--match-head-commit`.
++- [x] Verify live `master` protection endpoint exposes six required contexts and app IDs.
++- [x] Run four-role read-only design/threat review.
++- [x] Retain RED evidence: 0 pass / 9 fail for missing authority behavior.
++- [x] Implement exact-head parsing, double-read comparison, and server lease.
++- [x] Implement initial/final Kernel ownership proof.
++- [x] Implement mandatory authoritative protected-context evaluation.
++- [x] Harden protection payload parsing against malformed/conflicting fields.
++- [x] Add mandatory draft/conflict/thread gates.
++- [x] Update help, orientation, README, AGENTS, and noun passthrough.
++- [x] Focused affected validation before final parser regression: 245 tests / 696 expectations passed; targeted ESLint and `git diff --check` passed.
++- [x] Re-run affected validation after final parser regression: 246 tests / 699 expectations passed; targeted ESLint and `git diff --check` passed.
++- [x] Reconcile exact-SHA review of `85239037`: `REQUEST_CHANGES`; do not push or install the rejected candidate.
++- [x] Retain remediation RED evidence: 0 pass / 7 fail across selector, lifecycle, ownership, issue-linkage, thread-envelope, app-identity, and contradictory-state regressions.
++- [x] Implement explicit-OPEN lifecycle authority, strict ownership, double PR↔issue linkage, validated thread pagination, app-scoped protected policy, paginated exact-head check runs, and repository-bound mutation.
++- [x] Validate remediated tree after final cursor/page-total hardening: 239 tests / 749 expectations across 11 affected suites; targeted ESLint, syntax checks, and `git diff --check` passed.
++- [x] Reconcile exact-SHA review of `7a88c3e3`: two `REQUEST_CHANGES` lanes and one `PASS`; do not push or install the rejected candidate.
++- [x] Retain reviewer-remediation RED evidence: 4 authority failures plus real-CLI exit-1 usage failure across malformed terminal cursors, partial shared-adapter evidence, repository drift, malformed Kernel PR numbers, and global-flag dispatch.
++- [x] Remediate canonical Kernel row identity, two-read repository leasing, complete terminal cursors, strict shared adapter pagination, and global-flag merge parsing.
++- [x] Validate the expanded affected scope: 331 tests / 995 expectations across 18 files with zero failures; targeted ESLint, syntax checks, and `git diff --check` passed.
++- [x] Reconcile exact-SHA review of `d33b65f4`: explicit `REQUEST_CHANGES`; do not push or install the rejected candidate.
++- [x] Remediate leased thread repository propagation, frozen ownership actor identity, complete observation validation, conflicting app-qualified policy, strict rollup/shared GraphQL collections, SUCCESS-only green semantics, and deterministic cleanup of command-owned Kernel drivers.
++- [x] Validate the final replacement tree: focused authority gate 76 tests / 270 expectations; final affected scope 403 tests / 1,181 expectations across 22 files; targeted ESLint, 19 syntax checks, and `git diff --check` passed.
++- [ ] Commit replacement immutable candidate and obtain independent exact-SHA review.
++- [ ] Push/open PR only after PASS.
++- [ ] Merge, verify, install, and prove guarded dry-run behavior before #471 resumes.
+diff --git a/lib/adapters/pr-state-adapter.js b/lib/adapters/pr-state-adapter.js
+index 94749761..b0bad511 100644
+--- a/lib/adapters/pr-state-adapter.js
++++ b/lib/adapters/pr-state-adapter.js
+@@ -25,6 +25,10 @@
+ 
+ const { execFileSync } = require('node:child_process');
+ 
++const GITHUB_ACTOR_TYPENAMES = new Set([
++  'Bot', 'EnterpriseUserAccount', 'Mannequin', 'Organization', 'User',
++]);
++
+ // NOTE: `reviewThreads` is NOT a valid `gh pr view --json` field — requesting it
+ // makes `gh` exit non-zero ("Unknown JSON field"), which crashed readState on every
+ // real PR. Review threads are read separately via GraphQL in readComments().
+@@ -156,13 +160,19 @@ class PrStateAdapter {
+    * @param {{ owner: string, repo: string, base: string, pr?: string|number }} ctx
+    * @returns {Promise<string[] | null>}
+    */
+-  async readRequiredChecks({ owner, repo, base, pr }) {
++  async readRequiredCheckPolicy({ owner, repo, base }) {
+     this.lastRequiredSource = null;
+     const fromProtection = this._readProtectionRequired({ owner, repo, base });
+     if (Array.isArray(fromProtection)) {
+       this.lastRequiredSource = 'protection';
+       return fromProtection;
+     }
++    return null;
++  }
++
++  async readRequiredChecks({ owner, repo, base, pr }) {
++    const fromProtection = await this.readRequiredCheckPolicy({ owner, repo, base });
++    if (Array.isArray(fromProtection)) return [...new Set(fromProtection.map((entry) => entry.context))];
+     // Protection unreadable (auth/scope/not-protected/unexpected shape) — fall back
+     // to the rollup `isRequired` set the Actions token CAN read.
+     const fromRollup = this._readRollupRequired({ owner, repo, pr });
+@@ -187,8 +197,44 @@ class PrStateAdapter {
+     try {
+       const raw = this._gh('gh', ['api', apiPath]);
+       const data = JSON.parse(raw || '{}');
+-      if (Array.isArray(data.contexts)) return data.contexts;
+-      if (Array.isArray(data.checks)) return data.checks.map((c) => c.context).filter(Boolean);
++      const hasContexts = Object.prototype.hasOwnProperty.call(data, 'contexts');
++      const hasChecks = Object.prototype.hasOwnProperty.call(data, 'checks');
++      if ((hasContexts && !Array.isArray(data.contexts))
++        || (hasChecks && !Array.isArray(data.checks))) return null;
++      const normalizeContexts = (items) => {
++        if (!Array.isArray(items)) return null;
++        if (items.some((item) => typeof item !== 'string' || item.trim().length === 0)) return null;
++        return [...new Set(items)];
++      };
++      const contexts = normalizeContexts(data.contexts);
++      let checks = null;
++      if (Array.isArray(data.checks)) {
++        if (data.checks.some((item) => !item || typeof item.context !== 'string'
++          || item.context.length === 0
++          || !Object.prototype.hasOwnProperty.call(item, 'app_id')
++          || (item.app_id !== null
++            && (!Number.isInteger(item.app_id) || item.app_id <= 0)))) return null;
++        const deduped = new Map();
++        const identityByContext = new Map();
++        for (const item of data.checks) {
++          const entry = { context: item.context, appId: item.app_id };
++          const identity = entry.appId === null ? '*' : String(entry.appId);
++          if (identityByContext.has(entry.context)
++            && identityByContext.get(entry.context) !== identity) return null;
++          identityByContext.set(entry.context, identity);
++          deduped.set(`${entry.context}\u0000${identity}`, entry);
++        }
++        checks = [...deduped.values()];
++      }
++      if (contexts && checks) {
++        const contextNames = [...contexts].sort();
++        const checkNames = [...new Set(checks.map((entry) => entry.context))].sort();
++        if (contextNames.length !== checkNames.length
++          || contextNames.some((value, index) => value !== checkNames[index])) return null;
++        return checks;
++      }
++      if (contexts) return contexts.map((context) => ({ context, appId: null }));
++      if (checks) return checks;
+       // Unexpected/changed payload shape — treat as unreadable, not "no required
+       // checks", so merge readiness is never computed from bad data.
+       return null;
+@@ -215,39 +261,36 @@ class PrStateAdapter {
+   _readRollupRequired({ owner, repo, pr }) {
+     const prNum = Number.parseInt(String(pr), 10);
+     if (!Number.isInteger(prNum) || prNum <= 0) return null;
+-    // pr is inlined as a validated integer (no injection); owner/repo are GitHub
+-    // name-charset identifiers. Shape verified against the live GraphQL API.
+-    const query = `query { repository(owner: "${owner}", name: "${repo}") { `
+-      + `pullRequest(number: ${prNum}) { headRef { target { ... on Commit { `
+-      + `statusCheckRollup { contexts(first: 100) { nodes { __typename `
+-      + `... on CheckRun { name isRequired(pullRequestNumber: ${prNum}) } `
+-      + `... on StatusContext { context isRequired(pullRequestNumber: ${prNum}) } `
+-      + `} } } } } } } } }`;
++    const query = [
++      'query($after:String){repository(owner:"', owner, '",name:"', repo, '"){',
++      'pullRequest(number:', prNum, '){headRef{target{... on Commit{statusCheckRollup{',
++      'contexts(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{__typename ',
++      '... on CheckRun{name isRequired(pullRequestNumber:', prNum, ')} ',
++      '... on StatusContext{context isRequired(pullRequestNumber:', prNum, ')}}}}}}}}}}',
++    ].join('');
+     try {
+-      const raw = this._gh('gh', ['api', 'graphql', '-f', `query=${query}`]);
+-      const data = JSON.parse(raw || '{}');
+-      const nodes = data
+-        && data.data
+-        && data.data.repository
+-        && data.data.repository.pullRequest
+-        && data.data.repository.pullRequest.headRef
+-        && data.data.repository.pullRequest.headRef.target
+-        && data.data.repository.pullRequest.headRef.target.statusCheckRollup
+-        && data.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts
+-        && data.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.nodes;
+-      // No rollup at all (e.g. statusCheckRollup null) → cannot determine the set.
+-      if (!Array.isArray(nodes)) return null;
+-      const required = [];
+-      for (const node of nodes) {
+-        if (node && node.isRequired === true) {
+-          const name = node.name || node.context;
+-          if (name) required.push(name);
+-        }
+-      }
+-      // Dedupe matrix duplicates (same context reported by multiple jobs).
+-      return [...new Set(required)];
++      const projected = this._paginateConnection(
++        (after) => {
++          const args = ['api', 'graphql', '-f', `query=${query}`];
++          if (after) args.push('-f', `after=${after}`);
++          const data = this._parseGraphqlResponse(this._gh('gh', args));
++          return data?.data?.repository?.pullRequest?.headRef?.target
++            ?.statusCheckRollup?.contexts;
++        },
++        (node) => {
++          if (!['CheckRun', 'StatusContext'].includes(node.__typename)
++            || typeof node.isRequired !== 'boolean') {
++            throw new Error('Rollup required-check node is malformed');
++          }
++          const name = node.__typename === 'CheckRun' ? node.name : node.context;
++          if (typeof name !== 'string' || !name.trim()) {
++            throw new Error('Rollup required-check node has no context identity');
++          }
++          return node.isRequired ? name : null;
++        },
++      );
++      return [...new Set(projected.filter(Boolean))];
+     } catch {
+-      // GraphQL unreadable (auth/network/etc.) — fail closed to null.
+       return null;
+     }
+   }
+@@ -337,20 +380,21 @@ class PrStateAdapter {
+     // would declare "complete" on partial data and the monitor would skip work.
+     const threads = this._fetchAllReviewThreads({ owner, repo, pr });
+     return threads.map((t) => {
+-      const allComments = (t.comments && t.comments.nodes) || [];
++      const allComments = t.comments.nodes;
+       return {
+-        threadId: t.id || '',
++        threadId: t.id,
+         path: t.path || null,
+         line: typeof t.line === 'number' ? t.line : null,
+-        isResolved: !!t.isResolved,
+-        isOutdated: !!t.isOutdated,
+-        comments: allComments.map(c => ({
+-          author: (c.author && c.author.login) || '',
+-          body: c.body || '',
+-          // REST comment id (needed to REPLY to the thread). `fullDatabaseId` is
+-          // the string-encoded integer id; null when GitHub omits it.
+-          commentId: c.fullDatabaseId ? String(c.fullDatabaseId) : null,
+-        })),
++        isResolved: t.isResolved,
++        isOutdated: t.isOutdated,
++        comments: allComments.map((c) => {
++          const commentId = c.fullDatabaseId ? String(c.fullDatabaseId) : '';
++          const author = String(c.author?.login || '');
++          if (!commentId) throw new Error(`Review thread ${t.id} comment is missing stable database id`);
++          if (!author) throw new Error(`Review thread ${t.id} comment ${commentId} is missing author identity`);
++          if (typeof c.body !== 'string') throw new Error(`Review thread ${t.id} comment ${commentId} has malformed body`);
++          return { author, body: c.body, commentId };
++        }),
+       };
+     });
+   }
+@@ -370,11 +414,15 @@ class PrStateAdapter {
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviewThreads,
+       (t) => {
+-        // A thread whose first comment page is truncated → fetch the rest.
+-        if (t.comments?.pageInfo?.hasNextPage) {
+-          t.comments = { nodes: this._fetchAllThreadComments(t.id, t.comments) };
++        if (typeof t.id !== 'string' || !t.id
++          || typeof t.isResolved !== 'boolean' || typeof t.isOutdated !== 'boolean') {
++          throw new Error('GraphQL review thread node is malformed');
+         }
+-        return t;
++        const comments = this._validateGraphqlConnection(t.comments, `Review thread ${t.id} comments`);
++        const nodes = comments.pageInfo.hasNextPage
++          ? this._fetchAllThreadComments(t.id, comments)
++          : comments.nodes;
++        return { ...t, comments: { nodes } };
+       },
+     );
+   }
+@@ -396,7 +444,31 @@ class PrStateAdapter {
+       '-F', `o=${owner}`, '-F', `n=${repo}`, '-F', `pr=${pr}`,
+     ];
+     if (after) args.push('-f', `after=${after}`);
+-    return JSON.parse(this._gh('gh', args) || '{}');
++    return this._parseGraphqlResponse(this._gh('gh', args));
++  }
++
++  _parseGraphqlResponse(raw) {
++    const parsed = JSON.parse(raw || '{}');
++    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
++      throw new Error('GraphQL response envelope is malformed');
++    }
++    if (Object.prototype.hasOwnProperty.call(parsed, 'errors')
++      && (!Array.isArray(parsed.errors) || parsed.errors.length > 0)) {
++      throw new Error('GraphQL response contains errors');
++    }
++    return parsed;
++  }
++
++  _validateGraphqlConnection(conn, label = 'GraphQL connection') {
++    if (!conn || typeof conn !== 'object' || Array.isArray(conn)
++      || !Array.isArray(conn.nodes) || conn.nodes.some((node) => !node || typeof node !== 'object' || Array.isArray(node))
++      || !conn.pageInfo || typeof conn.pageInfo !== 'object' || Array.isArray(conn.pageInfo)
++      || typeof conn.pageInfo.hasNextPage !== 'boolean'
++      || (conn.pageInfo.endCursor !== null && typeof conn.pageInfo.endCursor !== 'string')
++      || (conn.pageInfo.hasNextPage && !conn.pageInfo.endCursor)) {
++      throw new Error(`${label} is missing valid nodes/pageInfo`);
++    }
++    return conn;
+   }
+ 
+   /**
+@@ -417,11 +489,18 @@ class PrStateAdapter {
+     let guard = 0;
+     const MAX_PAGES = 1000;
+     do {
+-      const conn = runPage(after);
+-      for (const node of (conn?.nodes || [])) all.push(mapNode(node));
+-      after = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
++      const previous = after;
++      const conn = this._validateGraphqlConnection(runPage(after));
++      for (const node of conn.nodes) all.push(mapNode(node));
++      after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
++      if (after !== null && after === previous) {
++        throw new Error('GraphQL pagination cursor did not advance');
++      }
+       guard += 1;
+-    } while (after && guard < MAX_PAGES);
++      if (guard >= MAX_PAGES && after !== null) {
++        throw new Error('GraphQL pagination exceeded the page limit');
++      }
++    } while (after !== null);
+     return all;
+   }
+ 
+@@ -435,20 +514,32 @@ class PrStateAdapter {
+    */
+   _fetchAllThreadComments(threadId, initial) {
+     const query = 'query($id:ID!,$after:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{login} body}}}}}';
+-    const acc = [...((initial && initial.nodes) || [])];
+-    let after = initial && initial.pageInfo && initial.pageInfo.hasNextPage ? initial.pageInfo.endCursor : null;
++    if (typeof threadId !== 'string' || !threadId) throw new Error('Review thread id is malformed');
++    let conn = this._validateGraphqlConnection(initial, `Review thread ${threadId} comments`);
++    const acc = [...conn.nodes];
++    let after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+     let guard = 0;
+     const MAX_PAGES = 1000;
+-    while (after && guard < MAX_PAGES) {
++    while (after !== null) {
++      const previous = after;
+       const raw = this._gh('gh', [
+         'api', 'graphql', '-f', `query=${query}`,
+         '-f', `id=${threadId}`, '-f', `after=${after}`,
+       ]);
+-      const data = JSON.parse(raw || '{}');
+-      const conn = data.data && data.data.node && data.data.node.comments;
+-      acc.push(...((conn && conn.nodes) || []));
+-      after = conn && conn.pageInfo && conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
++      const data = this._parseGraphqlResponse(raw);
++      conn = this._validateGraphqlConnection(
++        data?.data?.node?.comments,
++        `Review thread ${threadId} comments`,
++      );
++      acc.push(...conn.nodes);
++      after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
++      if (after !== null && after === previous) {
++        throw new Error('GraphQL pagination cursor did not advance');
++      }
+       guard += 1;
++      if (guard >= MAX_PAGES && after !== null) {
++        throw new Error('GraphQL pagination exceeded the page limit');
++      }
+     }
+     return acc;
+   }
+@@ -468,20 +559,29 @@ class PrStateAdapter {
+     // `author{__typename login}` surfaces the GraphQL actor TYPE ('Bot' vs 'User')
+     // so a non-human direct comment can be detected GENERICALLY — by mechanism,
+     // not by a hardcoded bot-name list — which fails closed for unknown bots.
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body createdAt}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{fullDatabaseId author{__typename login} body createdAt updatedAt}}}}}';
+     return this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.comments,
+-      (c) => ({
+-        // `id` is the stable REST comment id — the PR monitor keys `comment.posted`
+-        // on it so a re-read never re-emits an already-seen comment. Falls back to
+-        // author+createdAt when GitHub omits it.
+-        id: c.fullDatabaseId ? String(c.fullDatabaseId) : `${c.author?.login || ''}:${c.createdAt || ''}`,
+-        author: c.author?.login || '',
+-        authorTypename: c.author?.__typename || '',
+-        body: c.body || '',
+-        createdAt: c.createdAt || '',
+-      }),
++      (c) => {
++        const id = c.fullDatabaseId ? String(c.fullDatabaseId) : '';
++        if (!id) throw new Error('Issue comment is missing stable database id');
++        if (!c.author?.login) throw new Error(`Issue comment ${id} is missing author identity`);
++        if (!GITHUB_ACTOR_TYPENAMES.has(String(c.author?.__typename || ''))) {
++          throw new Error(`Issue comment ${id} has missing or malformed actor type`);
++        }
++        if (typeof c.body !== 'string' || typeof c.createdAt !== 'string' || !c.createdAt) {
++          throw new Error(`Issue comment ${id} has malformed body or timestamp`);
++        }
++        return {
++          id,
++          author: c.author.login,
++          authorTypename: c.author.__typename,
++          body: c.body,
++          createdAt: c.createdAt,
++          updatedAt: c.updatedAt || c.createdAt,
++        };
++      },
+     );
+   }
+ 
+@@ -497,18 +597,34 @@ class PrStateAdapter {
+    * @returns {Promise<Array<{ author: string, state: string, submittedAt: string|null, commitOid: string|null, body: string }>>}
+    */
+   async readReviews({ owner, repo, pr }) {
+-    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{author{__typename login} state submittedAt commit{oid} body}}}}}';
++    const query = 'query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id author{__typename login} state submittedAt commit{oid} body}}}}}';
+     const all = this._paginateConnection(
+       (after) => this._ghGraphqlPage(query, { owner, repo, pr }, after)
+         ?.data?.repository?.pullRequest?.reviews,
+-      (r) => ({
+-        author: String(r.author?.login || '').toLowerCase(),
+-        authorTypename: r.author?.__typename || '',
+-        state: String(r.state || '').toUpperCase(),
+-        submittedAt: r.submittedAt || null,
+-        commitOid: r.commit?.oid || null,
+-        body: r.body || '',
+-      }),
++      (r) => {
++        const id = r.id ? String(r.id) : '';
++        const author = String(r.author?.login || '').toLowerCase();
++        if (!id) throw new Error('Review is missing stable GraphQL id');
++        if (!author) throw new Error(`Review ${id} is missing author identity`);
++        if (!GITHUB_ACTOR_TYPENAMES.has(String(r.author?.__typename || ''))) {
++          throw new Error(`Review ${id} has missing or malformed actor type`);
++        }
++        if (typeof r.state !== 'string' || !r.state
++          || typeof r.submittedAt !== 'string' || !r.submittedAt
++          || typeof r.commit?.oid !== 'string' || !r.commit.oid
++          || typeof r.body !== 'string') {
++          throw new Error(`Review ${id} has malformed state, timestamp, commit, or body`);
++        }
++        return {
++          id,
++          author: author.replace(/\[bot\]$/, ''),
++          authorTypename: r.author.__typename,
++          state: r.state.toUpperCase(),
++          submittedAt: r.submittedAt,
++          commitOid: r.commit.oid,
++          body: r.body,
++        };
++      },
+     );
+     // Keep only the LATEST review per author (first:100 yields oldest→newest, so
+     // a later entry supersedes an earlier one from the same login).
+diff --git a/lib/commands/merge.js b/lib/commands/merge.js
+index 24ca1fd9..0cb71d76 100644
+--- a/lib/commands/merge.js
++++ b/lib/commands/merge.js
+@@ -3,7 +3,7 @@
+ /**
+  * merge command — opt-in conditional auto-merge.
+  *
+- * `forge merge --auto <pr>` is the ONLY path by which Forge will merge a PR on
++ * `forge merge --auto <pr> --expect-head <sha> --issue <id>` is the ONLY path by which Forge will merge a PR on
+  * its own, and it stays OFF unless the user has explicitly opted in. It reads
+  * the `merge.auto` section of `.forge/config.yaml`:
+  *
+@@ -43,6 +43,266 @@ const { execFileSync } = require('node:child_process');
+ 
+ const { loadRawConfig } = require('../config-writer');
+ const { evaluateMergeRules } = require('../merge-rules');
++const { runIssueOperation } = require('../forge-issues');
++const { PrStateAdapter } = require('../adapters/pr-state-adapter');
++const { stripGlobalFlags } = require('../global-flags');
++
++const FULL_HEAD_SHA = /^[0-9a-f]{40}$/i;
++const FORGE_ISSUE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++const POSITIVE_PR_NUMBER = /^[1-9][0-9]*$/;
++const REPOSITORY_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
++
++function normalizeFullHeadSha(value) {
++  return typeof value === 'string' && FULL_HEAD_SHA.test(value) ? value.toLowerCase() : null;
++}
++
++function normalizePrNumber(value) {
++  if (typeof value !== 'string' || !POSITIVE_PR_NUMBER.test(value)) return null;
++  const parsed = Number(value);
++  return Number.isSafeInteger(parsed) && parsed > 0 ? String(parsed) : null;
++}
++
++function normalizeKernelPrNumber(value) {
++  if (Number.isSafeInteger(value) && value > 0) return String(value);
++  return typeof value === 'string' ? normalizePrNumber(value) : null;
++}
++
++function normalizeRepository(value) {
++  return typeof value === 'string' && REPOSITORY_NAME.test(value) ? value.toLowerCase() : null;
++}
++
++function parseMergeArgs(argv) {
++  const values = { auto: false, pr: null, expectedHead: null, issueId: null, error: null };
++  const seen = new Set();
++  const input = Array.isArray(argv) ? argv : [];
++
++  for (let index = 0; index < input.length; index += 1) {
++    const raw = String(input[index]);
++    if (raw === '--auto') {
++      values.auto = true;
++      continue;
++    }
++
++    let option = null;
++    let inlineValue = null;
++    if (raw === '--expect-head' || raw === '--issue') option = raw;
++    else if (raw.startsWith('--expect-head=')) {
++      option = '--expect-head';
++      inlineValue = raw.slice('--expect-head='.length);
++    } else if (raw.startsWith('--issue=')) {
++      option = '--issue';
++      inlineValue = raw.slice('--issue='.length);
++    }
++
++    if (option) {
++      if (seen.has(option)) {
++        values.error = `Duplicate ${option} is not allowed.`;
++        break;
++      }
++      seen.add(option);
++      let value = inlineValue;
++      if (value === null) {
++        const candidate = input[index + 1];
++        if (candidate === undefined || String(candidate).startsWith('--')) {
++          values.error = `${option} requires a value.`;
++          break;
++        }
++        value = String(candidate);
++        index += 1;
++      }
++      if (!value) {
++        values.error = `${option} requires a value.`;
++        break;
++      }
++      if (option === '--expect-head') values.expectedHead = normalizeFullHeadSha(value);
++      else values.issueId = FORGE_ISSUE_ID.test(value) ? value.toLowerCase() : null;
++      if ((option === '--expect-head' && !values.expectedHead)
++        || (option === '--issue' && !values.issueId)) {
++        values.error = `${option} has an invalid value.`;
++        break;
++      }
++      continue;
++    }
++
++    if (raw.startsWith('--')) {
++      values.error = `Unknown merge option: ${raw}`;
++      break;
++    }
++    if (values.pr !== null) {
++      values.error = 'Exactly one PR number is required.';
++      break;
++    }
++    values.pr = normalizePrNumber(raw);
++    if (!values.pr) {
++      values.error = 'PR selector must be one positive decimal PR number.';
++      break;
++    }
++  }
++
++  return values;
++}
++
++function resolveOwnershipActor(env = process.env) {
++  return (typeof env.FORGE_ACTOR === 'string' && env.FORGE_ACTOR.trim())
++    || (typeof env.FORGE_SESSION_ID === 'string' && env.FORGE_SESSION_ID.trim())
++    || null;
++}
++
++async function defaultVerifyIssueOwnership({
++  issueId, projectRoot, actor: expectedActor, env = process.env, runIssue = runIssueOperation,
++}) {
++  const actor = expectedActor || resolveOwnershipActor(env);
++  if (!actor) return { owned: false, actor: null, error: 'FORGE_ACTOR or FORGE_SESSION_ID is required.' };
++  const frozenEnv = { ...env, FORGE_ACTOR: actor };
++  const result = await runIssue('owns', [issueId], projectRoot, { env: frozenEnv });
++  const data = result && result.data;
++  const owned = result && result.ok === true && data && data.owned === true
++    && data.expired === false && data.actor === actor && data.claimed_by === actor;
++  return {
++    owned: Boolean(owned),
++    actor,
++    claimedBy: data && data.claimed_by,
++    expired: data && typeof data.expired === 'boolean' ? data.expired : null,
++    error: result && result.error,
++  };
++}
++
++async function defaultVerifyPrIssueBinding({
++  issueId,
++  pr,
++  projectRoot,
++  prContext,
++  buildBroker,
++}) {
++  const number = normalizePrNumber(String(pr));
++  const repository = normalizeRepository(prContext && prContext.repository);
++  if (!number || !repository || !prContext || prContext.number !== Number(number)) {
++    return { bound: false, error: 'PR identity is unreadable or does not match the requested PR number.' };
++  }
++
++  let built;
++  try {
++    if (buildBroker) {
++      built = await buildBroker({ projectRoot });
++    } else {
++      const { resolveGitCommonDir } = require('../kernel/broker');
++      const { buildMigratedKernelIssueDeps } = require('../kernel/cli-broker-factory');
++      const gitCommonDir = resolveGitCommonDir(projectRoot);
++      const deps = await buildMigratedKernelIssueDeps({ projectRoot, gitCommonDir });
++      built = { gitCommonDir, broker: deps.kernelBroker, driver: deps.kernelDriver };
++    }
++    if (!built || !built.broker || typeof built.broker.listOpenPrs !== 'function'
++      || typeof built.gitCommonDir !== 'string' || !built.gitCommonDir) {
++      return { bound: false, error: 'Kernel PR linkage reader is unavailable.' };
++    }
++    const rows = await built.broker.listOpenPrs(built.gitCommonDir);
++    if (!Array.isArray(rows)) return { bound: false, error: 'Kernel PR linkage is unreadable.' };
++    const sameRepositoryRows = rows.filter((row) => row && normalizeRepository(row.repo) === repository);
++    if (sameRepositoryRows.some((row) => !normalizeKernelPrNumber(row.number))) {
++      return { bound: false, error: 'Kernel PR linkage contains a malformed PR number.' };
++    }
++    const matches = sameRepositoryRows.filter((row) => row
++      && normalizeKernelPrNumber(row.number) === number);
++    if (matches.length !== 1) {
++      return { bound: false, error: 'Kernel PR linkage is missing or ambiguous.' };
++    }
++    const row = matches[0];
++    const bound = row.state === 'open' && row.issue_id === issueId;
++    return {
++      bound,
++      repository,
++      number: Number(number),
++      issueId: row.issue_id || null,
++      error: bound ? null : 'Kernel PR row is not open or is linked to a different issue.',
++    };
++  } catch (err) {
++    return { bound: false, error: `Kernel PR linkage verification failed: ${err.message}` };
++  } finally {
++    if (built && built.driver && typeof built.driver.close === 'function') built.driver.close();
++  }
++}
++
++function strictCheckSuccess(check) {
++  if (!check || typeof check !== 'object') return false;
++  const hasStatus = Object.prototype.hasOwnProperty.call(check, 'status');
++  const hasConclusion = Object.prototype.hasOwnProperty.call(check, 'conclusion');
++  const hasState = Object.prototype.hasOwnProperty.call(check, 'state');
++  if (hasStatus && String(check.status || '').toUpperCase() !== 'COMPLETED') return false;
++  if (hasConclusion && String(check.conclusion || '').toUpperCase() !== 'SUCCESS') return false;
++  if (hasState && String(check.state || '').toUpperCase() !== 'SUCCESS') return false;
++  return hasConclusion || hasState;
++}
++
++function normalizeRequiredEntry(entry) {
++  if (typeof entry === 'string' && entry.trim()) return { context: entry, appId: null };
++  if (!entry || typeof entry.context !== 'string' || !entry.context.trim()) return null;
++  if (entry.appId !== null && entry.appId !== undefined
++    && (!Number.isInteger(entry.appId) || entry.appId <= 0)) return null;
++  return { context: entry.context, appId: entry.appId ?? null };
++}
++
++function evaluateProtectedRequiredChecks(context) {
++  if (!context || context.requiredCheckSource !== 'protection'
++    || !Array.isArray(context.requiredChecks) || !Array.isArray(context.checks)) {
++    return { allowed: false, reason: 'Protected required-check policy is unreadable or non-authoritative.' };
++  }
++  const required = context.requiredChecks.map(normalizeRequiredEntry);
++  if (required.some((entry) => !entry)) {
++    return { allowed: false, reason: 'Protected required-check policy contains malformed entries.' };
++  }
++  const policyApps = new Map();
++  for (const entry of required) {
++    if (!policyApps.has(entry.context)) policyApps.set(entry.context, new Set());
++    policyApps.get(entry.context).add(entry.appId === null ? '*' : String(entry.appId));
++  }
++  if ([...policyApps.values()].some((apps) => apps.size > 1)) {
++    return { allowed: false, reason: 'Protected required-check policy contains conflicting application identities.' };
++  }
++  if (context.checks.some((check) => {
++    if (!check || typeof check !== 'object') return true;
++    const name = check.name || check.context;
++    if (typeof name !== 'string' || !name.trim()) return true;
++    if (check.appId !== null && check.appId !== undefined
++      && (!Number.isInteger(check.appId) || check.appId <= 0)) return true;
++    return ['status', 'conclusion', 'state'].some((key) => String(check[key] || '').toUpperCase() === 'UNREADABLE');
++  })) {
++    return { allowed: false, reason: 'Check-run observation collection contains malformed entries.' };
++  }
++  const missing = [];
++  const nonSuccess = [];
++  for (const entry of required) {
++    const matching = context.checks.filter((check) => check
++      && (check.name || check.context) === entry.context
++      && (entry.appId === null || check.appId === entry.appId));
++    const label = entry.appId === null ? entry.context : `${entry.context}@app:${entry.appId}`;
++    if (matching.length === 0) missing.push(label);
++    else if (matching.some((check) => !strictCheckSuccess(check))) nonSuccess.push(label);
++  }
++  if (missing.length || nonSuccess.length) {
++    const parts = [];
++    if (missing.length) parts.push(`missing: ${missing.join(', ')}`);
++    if (nonSuccess.length) parts.push(`non-success: ${nonSuccess.join(', ')}`);
++    return {
++      allowed: false,
++      reason: `Protected required checks are not successful (${parts.join('; ')}).`,
++      details: { missing, nonSuccess },
++    };
++  }
++  return { allowed: true, details: { missing: [], nonSuccess: [] } };
++}
++
++function mandatoryContextError(context, expectedHead) {
++  const observedHead = normalizeFullHeadSha(context && context.headSha);
++  if (!observedHead || observedHead !== expectedHead) {
++    return 'PR head changed or could not be verified against --expect-head.';
++  }
++  if (context.state !== 'OPEN') return 'PR lifecycle state is unreadable or is not OPEN.';
++  if (context.isDraft !== false) return 'PR draft status is unreadable or the PR is still a draft.';
++  if (context.conflicting !== false) return 'PR conflict status is unreadable or conflicting.';
++  if (context.unresolvedThreads !== 0) return 'Review-thread state is unreadable or unresolved threads remain.';
++  const protectedGate = evaluateProtectedRequiredChecks(context);
++  return protectedGate.allowed ? null : protectedGate.reason;
++}
+ 
+ /** Default `gh` runner. Only reached by the default fetch/merge seams (never in unit tests). */
+ function defaultGh(args, options = {}) {
+@@ -63,12 +323,9 @@ function ghJson(gh, args) {
+  * is not a valid `gh pr view --json` field, so this needs a dedicated query.
+  * Returns `undefined` on any failure so `threads_resolved` fails closed.
+  */
+-function fetchUnresolvedThreadCount(gh, pr) {
++function fetchUnresolvedThreadCount(gh, { owner, repo, pr }) {
+   try {
+-    const repo = ghJson(gh, ['repo', 'view', '--json', 'owner,name']);
+-    const owner = repo && repo.owner && repo.owner.login;
+-    const name = repo && repo.name;
+-    if (!owner || !name) return undefined;
++    if (!owner || !repo) return undefined;
+     // Paginate through ALL review threads — a PR can have >100, and the ones on
+     // later pages could be the unresolved/newest ones. Stopping at page 1 would
+     // both miss them and make a large PR un-mergeable. Loop on the GraphQL cursor
+@@ -79,15 +336,22 @@ function fetchUnresolvedThreadCount(gh, pr) {
+     let count = 0;
+     for (let page = 0; page < 100; page += 1) { // 100-page cap = 10k threads backstop
+       const args = ['api', 'graphql', '-f', `query=${query}`,
+-        '-F', `o=${owner}`, '-F', `n=${name}`, '-F', `pr=${Number(pr)}`];
++        '-F', `o=${owner}`, '-F', `n=${repo}`, '-F', `pr=${Number(pr)}`];
+       if (after) args.push('-F', `after=${after}`);
+       const data = JSON.parse(gh(args) || '{}');
++      if (Object.prototype.hasOwnProperty.call(data, 'errors')
++        && (!Array.isArray(data.errors) || data.errors.length > 0)) return undefined;
+       const threads = (((data.data || {}).repository || {}).pullRequest || {}).reviewThreads;
+-      if (!threads) return undefined; // unreadable page → fail closed
+-      count += (threads.nodes || []).filter((t) => t && t.isResolved === false && t.isOutdated === false).length;
+-      if (!threads.pageInfo || !threads.pageInfo.hasNextPage) return count;
+-      after = threads.pageInfo.endCursor;
+-      if (!after) return undefined; // hasNextPage but no cursor → fail closed
++      if (!threads || !Array.isArray(threads.nodes) || !threads.pageInfo
++        || typeof threads.pageInfo.hasNextPage !== 'boolean'
++        || (threads.pageInfo.endCursor !== null && typeof threads.pageInfo.endCursor !== 'string')
++        || threads.nodes.some((thread) => !thread || typeof thread.isResolved !== 'boolean'
++          || typeof thread.isOutdated !== 'boolean')) return undefined;
++      count += threads.nodes.filter((thread) => thread.isResolved === false && thread.isOutdated === false).length;
++      if (!threads.pageInfo.hasNextPage) return count;
++      const nextCursor = threads.pageInfo.endCursor;
++      if (typeof nextCursor !== 'string' || !nextCursor || nextCursor === after) return undefined;
++      after = nextCursor;
+     }
+     return undefined; // exceeded the page cap → fail closed rather than undercount
+   } catch (_err) {
+@@ -95,6 +359,43 @@ function fetchUnresolvedThreadCount(gh, pr) {
+   }
+ }
+ 
++function fetchCheckRunObservations(gh, { owner, repo, head }) {
++  try {
++    const pages = JSON.parse(gh([
++      'api', '--paginate', '--slurp',
++      `repos/${owner}/${repo}/commits/${head}/check-runs?filter=latest&per_page=100`,
++    ]) || 'null');
++    if (!Array.isArray(pages) || pages.length === 0
++      || pages.some((page) => !page || !Array.isArray(page.check_runs)
++        || !Number.isInteger(page.total_count) || page.total_count < 0)) return null;
++    const runs = pages.flatMap((page) => page.check_runs);
++    if (pages.some((page) => page.total_count !== pages[0].total_count)
++      || pages[0].total_count !== runs.length) return null;
++    if (runs.some((run) => {
++      const name = run && typeof run.name === 'string' && run.name.trim() ? run.name : null;
++      const appId = run && run.app && Number.isInteger(run.app.id) && run.app.id > 0 ? run.app.id : null;
++      const headSha = normalizeFullHeadSha(run && run.head_sha);
++      return !run || !Number.isInteger(run.id) || run.id <= 0 || !name || !appId || headSha !== head
++        || typeof run.status !== 'string' || !run.status.trim()
++        || !Object.prototype.hasOwnProperty.call(run, 'conclusion')
++        || (run.conclusion !== null && typeof run.conclusion !== 'string');
++    })) return null;
++    return runs.map((run) => {
++      const name = run.name;
++      const appId = run.app.id;
++      return {
++        id: run.id,
++        name,
++        appId,
++        status: String(run.status).toUpperCase(),
++        conclusion: String(run.conclusion || '').toUpperCase(),
++      };
++    });
++  } catch (_err) {
++    return null;
++  }
++}
++
+ /**
+  * Default PR-context fetcher (the network seam). Assembles the shape consumed
+  * by `evaluateMergeRules` from `gh`. Anything it cannot read is left absent so
+@@ -103,15 +404,11 @@ function fetchUnresolvedThreadCount(gh, pr) {
+  *
+  * @returns {object} prContext
+  */
+-function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
++async function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   const view = ghJson(gh, ['pr', 'view', String(pr), '--json',
+-    'number,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,updatedAt']) || {};
++    'number,headRefOid,baseRefName,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments,updatedAt']) || {};
+ 
+   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : null;
+-  const checks = (rollup || []).map((c) => ({
+-    name: c.name || c.context || '?',
+-    conclusion: String(c.conclusion || c.state || c.status || ''),
+-  }));
+ 
+   const comments = Array.isArray(view.comments)
+     ? view.comments.map((c) => ({
+@@ -151,10 +448,40 @@ function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   ].map((s) => Date.parse(s)).filter((n) => !Number.isNaN(n));
+   const lastActivityAt = stamps.length ? Math.max(...stamps) : undefined;
+ 
++  const repoIdentity = ghJson(gh, ['repo', 'view', '--json', 'owner,name']);
++  const owner = repoIdentity && repoIdentity.owner && repoIdentity.owner.login;
++  const repo = repoIdentity && repoIdentity.name;
++  const base = typeof view.baseRefName === 'string' ? view.baseRefName : null;
++  const headSha = normalizeFullHeadSha(view.headRefOid);
++  let requiredChecks = null;
++  let requiredCheckSource = null;
++  let checks = null;
++  if (owner && repo && base) {
++    const adapter = new PrStateAdapter({ gh: (_cmd, adapterArgs) => gh(adapterArgs) });
++    requiredChecks = await adapter.readRequiredCheckPolicy({ owner, repo, base });
++    requiredCheckSource = adapter.lastRequiredSource;
++    const checkRuns = headSha ? fetchCheckRunObservations(gh, { owner, repo, head: headSha }) : null;
++    if (rollup && checkRuns) {
++      const statuses = rollup
++        .filter((entry) => entry && entry.__typename === 'StatusContext')
++        .map((entry) => ({
++          name: typeof entry.context === 'string' ? entry.context : '',
++          appId: null,
++          state: String(entry.state || '').toUpperCase(),
++        }));
++      checks = [...checkRuns, ...statuses];
++    }
++  }
++
+   return {
++    number: Number.isInteger(view.number) ? view.number : null,
++    repository: owner && repo ? `${owner}/${repo}` : null,
++    headSha: view.headRefOid || null,
+     checks,
+-    requiredChecksKnown: rollup !== null,
+-    unresolvedThreads: fetchUnresolvedThreadCount(gh, pr),
++    requiredChecks,
++    requiredCheckSource,
++    requiredChecksKnown: requiredCheckSource === 'protection' && Array.isArray(requiredChecks),
++    unresolvedThreads: fetchUnresolvedThreadCount(gh, { owner, repo, pr }),
+     behindBase,
+     conflicting,
+     isDraft,
+@@ -166,9 +493,13 @@ function defaultFetchPrContext({ pr, gh = defaultGh, now = Date.now() }) {
+   };
+ }
+ 
+-/** Default merge action (squash). Fully replaced by `deps.mergePr` in tests. */
+-function defaultMergePr({ pr, gh = defaultGh }) {
+-  gh(['pr', 'merge', String(pr), '--squash']);
++/** Default merge action (squash), atomically bound to the reviewed remote head. */
++function defaultMergePr({ pr, expectedHead, repository, gh = defaultGh }) {
++  const head = normalizeFullHeadSha(expectedHead);
++  const repo = normalizeRepository(repository);
++  if (!head) throw new Error('A full 40-character expected PR head SHA is required.');
++  if (!normalizePrNumber(String(pr)) || !repo) throw new Error('A canonical PR number and repository are required.');
++  gh(['pr', 'merge', String(pr), '--repo', repo, '--squash', '--match-head-commit', head]);
+   return { merged: true, method: 'squash' };
+ }
+ 
+@@ -183,16 +514,16 @@ function defaultMergePr({ pr, gh = defaultGh }) {
+  */
+ async function handler(args, _flags, projectRoot, deps = {}) {
+   const argv = Array.isArray(args) ? args : [];
+-  const positional = argv.filter((a) => !String(a).startsWith('--'));
+-  const flags = new Set(argv.filter((a) => String(a).startsWith('--')));
+-  const pr = positional[0];
++  const parsed = parseMergeArgs(stripGlobalFlags(argv));
++  const pr = parsed.pr;
+   const root = projectRoot || process.cwd();
+ 
+-  if (!flags.has('--auto')) {
+-    return { success: false, error: 'Usage: forge merge --auto <pr>  (opt-in conditional auto-merge; OFF by default)' };
+-  }
+-  if (!pr) {
+-    return { success: false, error: 'Usage: forge merge --auto <pr>' };
++  if (!parsed.auto || !pr) {
++    return {
++      success: false,
++      merged: false,
++      error: 'Usage: forge merge --auto <pr> --expect-head <40-char-sha> --issue <issue-id>',
++    };
+   }
+ 
+   const loadConfig = deps.loadConfig || loadRawConfig;
+@@ -226,8 +557,40 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: false, merged: false, enabled: true, reason };
+   }
+ 
++  if (parsed.error || !parsed.expectedHead || !parsed.issueId) {
++    const reason = parsed.error
++      || 'Enabled auto-merge requires --expect-head <full 40-character SHA> and --issue <Forge issue ID>.';
++    return { success: false, merged: false, enabled: true, error: reason };
++  }
++
++  const verifyIssueOwnership = deps.verifyIssueOwnership || defaultVerifyIssueOwnership;
++  const ownershipEnv = deps.env || process.env;
++  const ownershipActor = resolveOwnershipActor(ownershipEnv);
++  const ownershipInput = {
++    issueId: parsed.issueId,
++    projectRoot: root,
++    actor: ownershipActor,
++    env: { ...ownershipEnv },
++  };
++  let ownership;
++  try {
++    ownership = await verifyIssueOwnership(ownershipInput);
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to verify issue ownership: ${err.message}` };
++  }
++  if (!ownership || ownership.owned !== true || ownership.expired !== false
++    || (ownership.actor != null && ownership.actor !== ownershipActor)
++    || (ownership.claimedBy != null && ownership.claimedBy !== ownershipActor)) {
++    return {
++      success: false,
++      merged: false,
++      error: `Active Kernel ownership claim is required for issue ${parsed.issueId}; refusing to merge.`,
++    };
++  }
++
+   const fetchPrContext = deps.fetchPrContext || defaultFetchPrContext;
+   const mergePr = deps.mergePr || defaultMergePr;
++  const verifyPrIssueBinding = deps.verifyPrIssueBinding || defaultVerifyPrIssueBinding;
+   const gh = deps.gh || defaultGh;
+ 
+   let prContext;
+@@ -241,12 +604,35 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   // command must be an idempotent NO-OP — never an error and never a second merge
+   // attempt. (An absent/unknown state falls through to the fail-closed rules.)
+   const prState = prContext && prContext.state ? String(prContext.state).toUpperCase() : '';
+-  if (prState && prState !== 'OPEN') {
++  if (prState === 'MERGED' || prState === 'CLOSED') {
+     const reason = `PR #${pr} is ${prState} (not OPEN) — nothing to merge. No action taken.`;
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: true, state: prState, reason };
+   }
+ 
++  const mandatoryError = mandatoryContextError(prContext, parsed.expectedHead);
++  if (mandatoryError) return { success: false, merged: false, error: mandatoryError };
++  const leasedRepository = normalizeRepository(prContext && prContext.repository);
++  if (!leasedRepository) {
++    return { success: false, merged: false, error: 'PR repository identity is unreadable; refusing to merge.' };
++  }
++
++  let binding;
++  try {
++    binding = await verifyPrIssueBinding({
++      issueId: parsed.issueId,
++      pr,
++      projectRoot: root,
++      prContext,
++      buildBroker: deps.buildPrBindingBroker,
++    });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to verify PR issue binding: ${err.message}` };
++  }
++  if (!binding || binding.bound !== true) {
++    return { success: false, merged: false, error: 'PR is not authoritatively linked to the supplied Forge issue.' };
++  }
++
+   const { allowed, unmet } = evaluateMergeRules(prContext, rules);
+ 
+   if (!allowed) {
+@@ -271,11 +657,17 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+   // Re-apply the terminal-state guard on the FRESH context: the PR may have been
+   // merged or closed between the first fetch and now. Never merge a terminal PR.
+   const freshState = freshContext && freshContext.state ? String(freshContext.state).toUpperCase() : '';
+-  if (freshState && freshState !== 'OPEN') {
++  if (freshState === 'MERGED' || freshState === 'CLOSED') {
+     const reason = `PR #${pr} became ${freshState} (not OPEN) before merge — nothing to merge. No action taken.`;
+     process.stdout.write(`${reason}\n`);
+     return { success: true, merged: false, enabled: true, state: freshState, reason };
+   }
++  const freshMandatoryError = mandatoryContextError(freshContext, parsed.expectedHead);
++  if (freshMandatoryError) return { success: false, merged: false, error: freshMandatoryError };
++  const freshRepository = normalizeRepository(freshContext && freshContext.repository);
++  if (!freshRepository || freshRepository !== leasedRepository) {
++    return { success: false, merged: false, error: 'PR repository identity changed or became unreadable before merge.' };
++  }
+   const recheck = evaluateMergeRules(freshContext, rules);
+   if (!recheck.allowed) {
+     process.stdout.write(`Auto-merge ABORTED for PR #${pr} — state changed since first check; ${recheck.unmet.length} rule(s) now unmet:\n`);
+@@ -285,8 +677,43 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+     return { success: true, merged: false, enabled: true, allowed: false, unmet: recheck.unmet, reason: 'PR state changed before merge (live re-check failed)' };
+   }
+ 
++  let freshBinding;
++  try {
++    freshBinding = await verifyPrIssueBinding({
++      issueId: parsed.issueId,
++      pr,
++      projectRoot: root,
++      prContext: freshContext,
++      buildBroker: deps.buildPrBindingBroker,
++    });
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to re-verify PR issue binding: ${err.message}` };
++  }
++  if (!freshBinding || freshBinding.bound !== true) {
++    return { success: false, merged: false, error: 'PR issue linkage changed or is unreadable before merge.' };
++  }
++
++  let finalOwnership;
++  try {
++    finalOwnership = await verifyIssueOwnership(ownershipInput);
++  } catch (err) {
++    return { success: false, merged: false, error: `Failed to re-verify issue ownership before merge: ${err.message}` };
++  }
++  if (!finalOwnership || finalOwnership.owned !== true || finalOwnership.expired !== false
++    || (finalOwnership.actor != null && finalOwnership.actor !== ownershipActor)
++    || (finalOwnership.claimedBy != null && finalOwnership.claimedBy !== ownershipActor)) {
++    return { success: false, merged: false, error: 'Kernel ownership changed or expired before merge; refusing to merge.' };
++  }
++
+   try {
+-    const mergeResult = await mergePr({ pr, projectRoot: root, gh });
++    const mergeResult = await mergePr({
++      pr,
++      expectedHead: parsed.expectedHead,
++      repository: leasedRepository,
++      issueId: parsed.issueId,
++      projectRoot: root,
++      gh,
++    });
+     process.stdout.write(`All ${rules.length} merge rule(s) passed — merged PR #${pr}.\n`);
+     return {
+       success: true,
+@@ -304,9 +731,15 @@ async function handler(args, _flags, projectRoot, deps = {}) {
+ module.exports = {
+   name: 'merge',
+   description: 'Opt-in conditional auto-merge: merge a PR only when all user-configured rules pass (OFF by default)',
+-  usage: 'Usage: forge merge --auto <pr>',
++  usage: 'Usage: forge merge --auto <pr> --expect-head <40-char-sha> --issue <issue-id>',
+   handler,
+   // Exported seams for testing / reuse.
+   defaultFetchPrContext,
+   defaultMergePr,
++  defaultVerifyPrIssueBinding,
++  defaultVerifyIssueOwnership,
++  evaluateProtectedRequiredChecks,
++  normalizeFullHeadSha,
++  normalizePrNumber,
++  parseMergeArgs,
+ };
+diff --git a/lib/commands/pr.js b/lib/commands/pr.js
+index 50ddb09e..c110104f 100644
+--- a/lib/commands/pr.js
++++ b/lib/commands/pr.js
+@@ -33,7 +33,7 @@ const SUBCOMMANDS = {
+   },
+   merge: {
+     module: merge,
+-    summary: 'Opt-in conditional auto-merge, OFF by default (= forge merge --auto <pr>)',
++    summary: 'Opt-in guarded merge, OFF by default (= forge merge --auto <pr> --expect-head <sha> --issue <id>)',
+   },
+ };
+ 
+diff --git a/lib/forge-issues.js b/lib/forge-issues.js
+index 8efb99ec..610d2883 100644
+--- a/lib/forge-issues.js
++++ b/lib/forge-issues.js
+@@ -25,6 +25,7 @@ function isHelpInvocation(args = []) {
+ // on a missing `exec` method before ever reaching the "no tables" case.
+ function createDefaultKernelBroker(brokerContext, deps) {
+   let driver = deps.kernelDriver;
++  const ownsDriver = !driver;
+   if (!driver) {
+     const config = buildLocalBrokerConfig({
+       projectRoot: brokerContext.projectRoot,
+@@ -35,7 +36,7 @@ function createDefaultKernelBroker(brokerContext, deps) {
+     driver = createBuiltinSQLiteDriver({ databasePath: config.databasePath });
+   }
+ 
+-  return createLocalBroker({
++  const broker = createLocalBroker({
+     projectRoot: brokerContext.projectRoot,
+     gitCommonDir: deps.gitCommonDir,
+     databasePath: deps.kernelDatabasePath,
+@@ -46,6 +47,10 @@ function createDefaultKernelBroker(brokerContext, deps) {
+     // classifier instead of paying the real Windows drive probe per per-op broker.
+     classifyFilesystem: deps.classifyFilesystem,
+   });
++  if (ownsDriver && typeof driver.close === 'function') {
++    broker.close = () => driver.close();
++  }
++  return broker;
+ }
+ 
+ // Symbol marker for the memoized lazy-init promise. Stored ON the broker object
+@@ -82,6 +87,11 @@ function withLazyKernelInit(broker) {
+     async initialize() {
+       return ensureInitialized();
+     },
++    async close() {
++      if (typeof broker.close === 'function') {
++        await broker.close();
++      }
++    },
+     async runIssueOperation(operation, args = [], context = {}) {
+       await ensureInitialized();
+       return broker.runIssueOperation(operation, args, context);
+@@ -95,10 +105,12 @@ function createKernelIssueBackend(context = {}) {
+     || ((brokerContext) => createDefaultKernelBroker(brokerContext, deps));
+ 
+   const broker = deps.kernelBroker || createBroker(context);
+-
+-  return new KernelIssueAdapter({
+-    broker: withLazyKernelInit(broker),
+-  });
++  const managedBroker = withLazyKernelInit(broker);
++  const backend = new KernelIssueAdapter({ broker: managedBroker });
++  if (typeof managedBroker?.close === 'function') {
++    backend.dispose = () => managedBroker.close();
++  }
++  return backend;
+ }
+ 
+ function createIssueService({ backend } = {}) {
+@@ -108,6 +120,11 @@ function createIssueService({ backend } = {}) {
+   const resolvedBackend = backend || createKernelIssueBackend();
+ 
+   return {
++    async dispose() {
++      if (typeof resolvedBackend?.dispose === 'function') {
++        await resolvedBackend.dispose();
++      }
++    },
+     async run(operation, args = [], context = {}) {
+       const methodName = operation === 'show' && typeof resolvedBackend?.show !== 'function'
+         ? 'read'
+@@ -205,36 +222,42 @@ async function runIssueOperation(operation, rawArgs, projectRoot, deps = {}) {
+   const isClaim = operation === 'claim';
+   const worktreeId = isClaim ? resolveWorktreeId(projectRoot, actorEnv, deps) : undefined;
+   const leaseTtlMs = isClaim ? resolveLeaseTtlMs(actorEnv) : undefined;
+-  const result = await service.run(operation, rawArgs, {
+-    projectRoot,
+-    deps,
+-    ...(actor ? { actor } : {}),
+-    ...(sessionId ? { sessionId } : {}),
+-    ...(worktreeId ? { worktreeId } : {}),
+-    ...(leaseTtlMs ? { leaseTtlMs } : {}),
+-    // Kernel mutations enqueue a projection-outbox "dirty marker" that `forge export`
+-    // (the D16 git-JSONL portability projection) drains under target 'jsonl'. The
+-    // broker's legacy primitive default is still 'beads', so without steering the target
+-    // here every Kernel-created issue would be enqueued as 'beads' and `forge export` —
+-    // which drains 'jsonl' — would find nothing, silently never emitting git-tracked
+-    // JSONL. Unconditional now that the Kernel is the only backend.
+-    projectionTarget: 'jsonl',
+-  });
++  try {
++    const result = await service.run(operation, rawArgs, {
++      projectRoot,
++      deps,
++      ...(actor ? { actor } : {}),
++      ...(sessionId ? { sessionId } : {}),
++      ...(worktreeId ? { worktreeId } : {}),
++      ...(leaseTtlMs ? { leaseTtlMs } : {}),
++      // Kernel mutations enqueue a projection-outbox "dirty marker" that `forge export`
++      // (the D16 git-JSONL portability projection) drains under target 'jsonl'. The
++      // broker's legacy primitive default is still 'beads', so without steering the target
++      // here every Kernel-created issue would be enqueued as 'beads' and `forge export` —
++      // which drains 'jsonl' — would find nothing, silently never emitting git-tracked
++      // JSONL. Unconditional now that the Kernel is the only backend.
++      projectionTarget: 'jsonl',
++    });
+ 
+-  const queueGitHubProjection = deps.enqueueGitHubProjection || deps.queueGitHubProjection;
+-  if (result?.success && typeof queueGitHubProjection === 'function') {
+-    const projectionPlan = createGitHubProjectionPlan(operation, rawArgs);
+-    if (projectionPlan) {
+-      await queueGitHubProjection(projectionPlan, {
+-        operation,
+-        args: rawArgs,
+-        projectRoot,
+-        result,
+-      });
++    const queueGitHubProjection = deps.enqueueGitHubProjection || deps.queueGitHubProjection;
++    if (result?.success && typeof queueGitHubProjection === 'function') {
++      const projectionPlan = createGitHubProjectionPlan(operation, rawArgs);
++      if (projectionPlan) {
++        await queueGitHubProjection(projectionPlan, {
++          operation,
++          args: rawArgs,
++          projectRoot,
++          result,
++        });
++      }
+     }
+-  }
+ 
+-  return result;
++    return result;
++  } finally {
++    if (!injectedService && typeof service.dispose === 'function') {
++      await service.dispose();
++    }
++  }
+ }
+ 
+ module.exports = {
+diff --git a/lib/kernel/cli-broker-factory.js b/lib/kernel/cli-broker-factory.js
+index 4b2f6c4f..8440cf19 100644
+--- a/lib/kernel/cli-broker-factory.js
++++ b/lib/kernel/cli-broker-factory.js
+@@ -113,7 +113,18 @@ async function buildMigratedKernelIssueDeps(options = {}) {
+     databasePath: deps.kernelDatabasePath,
+     driver: deps.kernelDriver,
+   });
+-  await ensureKernelMigrated(broker);
++  const close = async () => {
++    if (typeof deps.kernelDriver.close === 'function') {
++      await deps.kernelDriver.close();
++    }
++  };
++  broker.close = close;
++  try {
++    await ensureKernelMigrated(broker);
++  } catch (error) {
++    await close();
++    throw error;
++  }
+   return {
+     useKernelBroker: true,
+     kernelBroker: broker,
+diff --git a/lib/orientation.js b/lib/orientation.js
+index 0653edd7..cc03975f 100644
+--- a/lib/orientation.js
++++ b/lib/orientation.js
+@@ -685,8 +685,8 @@ const PRIME_KEY_COMMANDS_CONTENT = [
+   'forge upgrade [--dry-run] — preview/self-heal safe Forge upgrade readiness',
+   'forge gate <verb> <gate-id> — toggle a workflow gate, or approve/reject a human gate',
+   'forge role <role> --use <skill> — bind a role to a skill/ideology',
+-  'forge merge --auto <pr> — opt-in conditional auto-merge (off by default)',
+-  'post-ship loop: forge ship → forge shepherd watch <pr> → forge merge --auto <pr>',
++  'forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id> — opt-in guarded merge (off by default)',
++  'post-ship loop: forge ship → forge shepherd <pr> --pull --json → guarded forge merge with exact head + owned issue',
+ ].map(line => `- ${line}`).join('\n');
+ 
+ function buildPrimeKeyCommandsSection() {
+diff --git a/lib/pr-pull.js b/lib/pr-pull.js
+index a62a6b3f..8bb49a57 100644
+--- a/lib/pr-pull.js
++++ b/lib/pr-pull.js
+@@ -320,7 +320,7 @@ function isSkipped(check) {
+ /** A check still in flight (not green, not failed) — e.g. IN_PROGRESS/QUEUED or
+  * a status context with no conclusion yet. */
+ function isPending(check) {
+-  return !isGreen(check) && !isFailed(check);
++  return !isSkipped(check) && !isGreen(check) && !isFailed(check);
+ }
+ 
+ /**
+diff --git a/lib/pr-shepherd.js b/lib/pr-shepherd.js
+index f3a91ee2..3201fbbb 100644
+--- a/lib/pr-shepherd.js
++++ b/lib/pr-shepherd.js
+@@ -72,7 +72,7 @@ function actionableComments(threads, _self) {
+   );
+ }
+ 
+-const SUCCESS_CONCLUSIONS = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
++const SUCCESS_CONCLUSIONS = new Set(['SUCCESS']);
+ 
+ function isGreen(check) {
+   const c = String(check.conclusion || '').toUpperCase();
+diff --git a/test/cli/pr-noun-dispatch.test.js b/test/cli/pr-noun-dispatch.test.js
+index 4fdd96f6..3a89a532 100644
+--- a/test/cli/pr-noun-dispatch.test.js
++++ b/test/cli/pr-noun-dispatch.test.js
+@@ -47,6 +47,16 @@ const EQUIVALENT_INVOCATIONS = [
+   { name: 'shepherd --pull --json (flag passthrough)', bare: ['shepherd', '999999', '--pull', '--json'], noun: ['pr', 'shepherd', '999999', '--pull', '--json'] },
+   { name: 'shepherd events (subcommand shape passthrough)', bare: ['shepherd', 'events', '999999', '--since', '1', '--json'], noun: ['pr', 'shepherd', 'events', '999999', '--since', '1', '--json'] },
+   { name: 'merge --auto (fail-closed preview)', bare: ['merge', '--auto', '999999'], noun: ['pr', 'merge', '--auto', '999999'] },
++  {
++    name: 'guarded merge leases (byte-identical passthrough)',
++    bare: ['merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++    noun: ['pr', 'merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++  },
++  {
++    name: 'guarded merge with global flag between noun and subcommand',
++    bare: ['merge', '--path', '.', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++    noun: ['pr', '--path', '.', 'merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++  },
+ ];
+ 
+ describe('pr noun CLI dispatch — byte-identical back-compat (6ab3f30c)', () => {
+@@ -61,6 +71,18 @@ describe('pr noun CLI dispatch — byte-identical back-compat (6ab3f30c)', () =>
+     }, 60000);
+   }
+ 
++  test('guarded merge global-path forms are parsed rather than rejected as usage', () => {
++    for (const argv of [
++      ['merge', '--path', '.', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++      ['pr', '--path', '.', 'merge', '--auto', '999999', '--expect-head', 'a'.repeat(40), '--issue', '36230258-7b64-4de0-8683-fd8b8eabab51'],
++    ]) {
++      const result = run(argv);
++      expect(result.status).toBe(0);
++      expect(result.out).not.toMatch(/^Usage: forge merge/m);
++      expect(result.err).not.toMatch(/^Usage: forge merge/m);
++    }
++  }, 60000);
++
+   test('gate doc == doc-gate (folds under the gate noun)', () => {
+     const b = run(['doc-gate', 'detect']);
+     const n = run(['gate', 'doc', 'detect']);
+diff --git a/test/commands/merge-authority-review-regressions.test.js b/test/commands/merge-authority-review-regressions.test.js
+new file mode 100644
+index 00000000..eefe37df
+--- /dev/null
++++ b/test/commands/merge-authority-review-regressions.test.js
+@@ -0,0 +1,373 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const mergeCmd = require('../../lib/commands/merge');
++const { PrStateAdapter } = require('../../lib/adapters/pr-state-adapter');
++
++const HEAD = 'a'.repeat(40);
++const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
++const ENABLED = { merge: { auto: { enabled: true, rules: ['checks_green'] } } };
++
++function args(pr = '42') {
++  return [pr, '--auto', '--expect-head', HEAD, '--issue', ISSUE];
++}
++
++function context(overrides = {}) {
++  return {
++    number: 42,
++    repository: 'acme/forge',
++    state: 'OPEN',
++    headSha: HEAD,
++    isDraft: false,
++    conflicting: false,
++    unresolvedThreads: 0,
++    checks: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', appId: 123 }],
++    requiredChecks: [{ context: 'ci', appId: 123 }],
++    requiredCheckSource: 'protection',
++    requiredChecksKnown: true,
++    ...overrides,
++  };
++}
++
++function deps(overrides = {}) {
++  return {
++    loadConfig: () => ENABLED,
++    verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
++    verifyPrIssueBinding: async () => ({ bound: true }),
++    env: { FORGE_ACTOR: 'release-actor' },
++    fetchPrContext: async () => context(),
++    mergePr: async () => ({ merged: true }),
++    ...overrides,
++  };
++}
++
++function makeGh(threadPayload) {
++  return (argv) => {
++    if (argv[0] === 'pr' && argv[1] === 'view') {
++      return JSON.stringify({
++        number: 42,
++        headRefOid: HEAD,
++        baseRefName: 'master',
++        state: 'OPEN',
++        isDraft: false,
++        mergeable: 'MERGEABLE',
++        mergeStateStatus: 'CLEAN',
++        statusCheckRollup: [],
++        reviews: [],
++        comments: [],
++        updatedAt: '2026-08-01T00:00:00Z',
++      });
++    }
++    if (argv[0] === 'repo' && argv[1] === 'view') {
++      return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
++    }
++    if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
++      return JSON.stringify({ contexts: ['ci'], checks: [{ context: 'ci', app_id: 123 }] });
++    }
++    if (argv[0] === 'api' && argv.includes('--paginate') && argv.includes('--slurp')) {
++      return JSON.stringify([{
++        total_count: 1,
++        check_runs: [{
++          id: 7,
++          name: 'ci',
++          head_sha: HEAD,
++          status: 'completed',
++          conclusion: 'success',
++          app: { id: 123 },
++        }],
++      }]);
++    }
++    if (argv[0] === 'api' && argv[1] === 'graphql') return JSON.stringify(threadPayload);
++    throw new Error(`unexpected gh call: ${argv.join(' ')}`);
++  };
++}
++
++const validThreads = {
++  data: { repository: { pullRequest: { reviewThreads: {
++    nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
++  } } } },
++};
++
++describe('merge authority — exact reviewer regressions', () => {
++  test('requires a canonical positive-decimal PR number', () => {
++    for (const selector of ['-R=evil/other', '--repo=evil/other', '0', '-1', '1.5', 'https://github.com/acme/forge/pull/42', '', ' 42']) {
++      const parsed = mergeCmd.parseMergeArgs(args(selector));
++      expect(parsed.error).toMatch(/PR number|selector|invalid|unknown merge option/i);
++      expect(parsed.pr).toBeNull();
++    }
++    expect(mergeCmd.parseMergeArgs(args('42')).pr).toBe('42');
++  });
++
++  test('only OPEN proceeds and only MERGED/CLOSED are terminal no-ops on either read', async () => {
++    for (const state of [undefined, null, '', 'UNKNOWN', 'DRAFT', 'BOGUS']) {
++      let merges = 0;
++      const first = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context({ state }),
++        mergePr: async () => { merges += 1; return { merged: true }; },
++      }));
++      expect(first.success).toBe(false);
++      expect(first.merged).toBe(false);
++      expect(merges).toBe(0);
++
++      let reads = 0;
++      const second = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => {
++          reads += 1;
++          return context({ state: reads === 1 ? 'OPEN' : state });
++        },
++        mergePr: async () => { merges += 1; return { merged: true }; },
++      }));
++      expect(second.success).toBe(false);
++      expect(second.merged).toBe(false);
++      expect(merges).toBe(0);
++    }
++
++    for (const state of ['MERGED', 'CLOSED']) {
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context({ state }),
++      }));
++      expect(out.success).toBe(true);
++      expect(out.merged).toBe(false);
++      expect(out.state).toBe(state);
++    }
++  });
++
++  test('ownership requires explicit expired=false', async () => {
++    for (const expired of [undefined, null, 'false', 0, true]) {
++      const out = await mergeCmd.defaultVerifyIssueOwnership({
++        issueId: ISSUE,
++        projectRoot: process.cwd(),
++        env: { FORGE_ACTOR: 'release-actor' },
++        runIssue: async () => ({
++          ok: true,
++          data: { owned: true, actor: 'release-actor', claimed_by: 'release-actor', expired },
++        }),
++      });
++      expect(out.owned).toBe(false);
++    }
++  });
++
++  test('freezes actor identity across both ownership probes', async () => {
++    const env = { FORGE_ACTOR: 'alice' };
++    let ownershipCalls = 0;
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      env,
++      verifyIssueOwnership: async (input) => {
++        ownershipCalls += 1;
++        expect(input.actor).toBe('alice');
++        if (ownershipCalls === 1) {
++          env.FORGE_ACTOR = 'bob';
++          return { owned: true, expired: false, actor: 'alice', claimedBy: 'alice' };
++        }
++        return { owned: true, expired: false, actor: 'bob', claimedBy: 'bob' };
++      },
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(ownershipCalls).toBe(2);
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++  });
++
++  test('requires an exact authoritative PR-to-issue Kernel binding on both reads', async () => {
++    let bindingCalls = 0;
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyPrIssueBinding: async () => {
++        bindingCalls += 1;
++        return bindingCalls === 1 ? { bound: true } : { bound: false };
++      },
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(bindingCalls).toBe(2);
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(merges).toBe(0);
++  });
++
++  test('default binding verifier rejects absent, foreign, duplicate, and wrong-issue rows', async () => {
++    expect(typeof mergeCmd.defaultVerifyPrIssueBinding).toBe('function');
++    const run = (rows) => mergeCmd.defaultVerifyPrIssueBinding({
++      issueId: ISSUE,
++      pr: '42',
++      projectRoot: process.cwd(),
++      prContext: context(),
++      buildBroker: async () => ({
++        gitCommonDir: '/repo/.git',
++        broker: { listOpenPrs: async () => rows },
++        driver: { close() {} },
++      }),
++    });
++    expect((await run([])).bound).toBe(false);
++    expect((await run([{ repo: 'other/forge', number: 42, issue_id: ISSUE, state: 'open' }])).bound).toBe(false);
++    expect((await run([{ repo: 'acme/forge', number: 42, issue_id: 'wrong', state: 'open' }])).bound).toBe(false);
++    expect((await run([
++      { repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open' },
++      { repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open' },
++    ])).bound).toBe(false);
++    expect((await run([{ repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open' }])).bound).toBe(true);
++    for (const malformedNumber of ['0x2a', '42e0', '042', '42.0']) {
++      expect((await run([{
++        repo: 'acme/forge', number: malformedNumber, issue_id: ISSUE, state: 'open',
++      }])).bound).toBe(false);
++    }
++    expect((await run([
++      { repo: 'acme/forge', number: 42, issue_id: ISSUE, state: 'open' },
++      { repo: 'acme/forge', number: '0x2a', issue_id: 'other', state: 'open' },
++    ])).bound).toBe(false);
++  });
++
++  test('leases normalized repository identity across both reads and final mutation', async () => {
++    let reads = 0;
++    let merges = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => {
++        reads += 1;
++        return context({ repository: reads === 1 ? 'acme/forge' : 'evil/other' });
++      },
++      mergePr: async () => { merges += 1; return { merged: true }; },
++    }));
++    expect(reads).toBe(2);
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(out.error).toMatch(/repository|identity|changed/i);
++    expect(merges).toBe(0);
++  });
++
++  test('malformed or partial GraphQL thread envelopes are unreadable', async () => {
++    const malformed = [
++      { errors: [{ message: 'partial' }], ...validThreads },
++      { errors: { message: 'malformed' }, ...validThreads },
++      { data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false } } } } } },
++      { data: { repository: { pullRequest: { reviewThreads: { nodes: null, pageInfo: { hasNextPage: false } } } } } },
++      { data: { repository: { pullRequest: { reviewThreads: { nodes: [null], pageInfo: { hasNextPage: false } } } } } },
++      { data: { repository: { pullRequest: { reviewThreads: { nodes: [{}], pageInfo: { hasNextPage: false } } } } } },
++      { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: {} } } } } },
++      { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } },
++      { data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } } } } } },
++    ];
++    for (const payload of malformed) {
++      const out = await mergeCmd.defaultFetchPrContext({ pr: '42', gh: makeGh(payload) });
++      expect(out.unresolvedThreads).toBeUndefined();
++    }
++    const valid = await mergeCmd.defaultFetchPrContext({ pr: '42', gh: makeGh(validThreads) });
++    expect(valid.unresolvedThreads).toBe(0);
++  });
++
++  test('uses the leased repository for thread evidence without resolving it again', async () => {
++    const baseGh = makeGh(validThreads);
++    let repoReads = 0;
++    let graphqlArgs = [];
++    const gh = (argv) => {
++      if (argv[0] === 'repo' && argv[1] === 'view') {
++        repoReads += 1;
++        return JSON.stringify(repoReads === 1
++          ? { owner: { login: 'acme' }, name: 'forge' }
++          : { owner: { login: 'evil' }, name: 'other' });
++      }
++      if (argv[0] === 'api' && argv[1] === 'graphql') graphqlArgs = argv;
++      return baseGh(argv);
++    };
++    const fetched = await mergeCmd.defaultFetchPrContext({ pr: '42', gh });
++    expect(fetched.repository).toBe('acme/forge');
++    expect(repoReads).toBe(1);
++    expect(graphqlArgs).toContain('o=acme');
++    expect(graphqlArgs).toContain('n=forge');
++  });
++
++  test('rejects the complete check-run collection when any optional observation is malformed', async () => {
++    const baseGh = makeGh(validThreads);
++    const gh = (argv) => {
++      if (argv[0] === 'api' && argv.includes('--paginate') && argv.includes('--slurp')) {
++        return JSON.stringify([{
++          total_count: 2,
++          check_runs: [
++            { id: 7, name: 'ci', head_sha: HEAD, status: 'completed', conclusion: 'success', app: { id: 123 } },
++            { id: 8, name: 'optional', head_sha: HEAD, status: 'completed', conclusion: 'success', app: null },
++          ],
++        }]);
++      }
++      return baseGh(argv);
++    };
++    const fetched = await mergeCmd.defaultFetchPrContext({ pr: '42', gh });
++    expect(fetched.checks).toBeNull();
++  });
++
++  test('shared adapter rejects GraphQL errors, missing connections, and non-progressing cursors', async () => {
++    const partial = new PrStateAdapter({
++      gh: () => JSON.stringify({
++        errors: [{ message: 'partial' }],
++        data: { repository: { pullRequest: { reviews: {
++          nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
++        } } } },
++      }),
++      git: () => '',
++    });
++    await expect(partial.readReviews({ owner: 'o', repo: 'r', pr: '42' })).rejects.toThrow(/GraphQL|error/i);
++
++    const missing = new PrStateAdapter({
++      gh: () => JSON.stringify({ data: { repository: { pullRequest: {} } } }),
++      git: () => '',
++    });
++    await expect(missing.readComments({ owner: 'o', repo: 'r', pr: '42' })).rejects.toThrow(/connection|nodes|pageInfo/i);
++
++    const repeated = new PrStateAdapter({
++      gh: () => JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++        nodes: [], pageInfo: { hasNextPage: true, endCursor: 'SAME' },
++      } } } } }),
++      git: () => '',
++    });
++    await expect(repeated.readReviews({ owner: 'o', repo: 'r', pr: '42' })).rejects.toThrow(/cursor|advance/i);
++
++    const terminalPage = { hasNextPage: false, endCursor: null };
++    const malformedReview = new PrStateAdapter({
++      gh: () => JSON.stringify({ data: { repository: { pullRequest: { reviews: {
++        nodes: [{ state: 'CHANGES_REQUESTED', submittedAt: '2026-08-01T00:00:00Z', commit: { oid: HEAD }, body: 'blocker' }],
++        pageInfo: terminalPage,
++      } } } } }),
++      git: () => '',
++    });
++    await expect(malformedReview.readReviews({ owner: 'o', repo: 'r', pr: '42' })).rejects.toThrow(/review|node|author|id/i);
++
++    const malformedIssueComment = new PrStateAdapter({
++      gh: () => JSON.stringify({ data: { repository: { pullRequest: { comments: {
++        nodes: [{ author: { __typename: 'Bot', login: 'bot' }, body: 'blocker', createdAt: '2026-08-01T00:00:00Z' }],
++        pageInfo: terminalPage,
++      } } } } }),
++      git: () => '',
++    });
++    await expect(malformedIssueComment.readIssueComments({ owner: 'o', repo: 'r', pr: '42' })).rejects.toThrow(/comment|node|id/i);
++
++    const malformedThreadComment = new PrStateAdapter({
++      gh: () => JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
++        nodes: [{
++          id: 'T1', isResolved: false, isOutdated: false,
++          comments: { nodes: [{ body: 'blocker' }], pageInfo: terminalPage },
++        }],
++        pageInfo: terminalPage,
++      } } } } }),
++      git: () => '',
++    });
++    await expect(malformedThreadComment.readComments({ owner: 'o', repo: 'r', pr: '42' })).rejects.toThrow(/comment|node|author|id/i);
++  });
++
++  test('preserves required app identity and rejects wrong-app or contradictory observations', async () => {
++    const fetched = await mergeCmd.defaultFetchPrContext({ pr: '42', gh: makeGh(validThreads) });
++    expect(fetched.requiredChecks).toEqual([{ context: 'ci', appId: 123 }]);
++    expect(fetched.checks).toEqual(expect.arrayContaining([
++      expect.objectContaining({ name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' }),
++    ]));
++
++    const wrongApp = mergeCmd.evaluateProtectedRequiredChecks(context({
++      checks: [{ name: 'ci', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' }],
++    }));
++    expect(wrongApp.allowed).toBe(false);
++
++    const contradictory = mergeCmd.evaluateProtectedRequiredChecks(context({
++      checks: [{ name: 'ci', appId: 123, status: 'IN_PROGRESS', conclusion: 'SUCCESS' }],
++    }));
++    expect(contradictory.allowed).toBe(false);
++  });
++});
+diff --git a/test/commands/merge-authority.test.js b/test/commands/merge-authority.test.js
+new file mode 100644
+index 00000000..03d7a9f6
+--- /dev/null
++++ b/test/commands/merge-authority.test.js
+@@ -0,0 +1,318 @@
++'use strict';
++
++const { describe, test, expect } = require('bun:test');
++
++const mergeCmd = require('../../lib/commands/merge');
++
++const HEAD = 'a'.repeat(40);
++const OTHER_HEAD = 'b'.repeat(40);
++const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
++const ENABLED = { merge: { auto: { enabled: true, rules: ['checks_green'] } } };
++
++function args(head = HEAD) {
++  return ['42', '--auto', '--expect-head', head, '--issue', ISSUE];
++}
++
++function context(overrides = {}) {
++  return {
++    number: 42,
++    repository: 'acme/forge',
++    state: 'OPEN',
++    headSha: HEAD,
++    isDraft: false,
++    conflicting: false,
++    unresolvedThreads: 0,
++    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
++    requiredChecks: ['ci'],
++    requiredCheckSource: 'protection',
++    requiredChecksKnown: true,
++    ...overrides,
++  };
++}
++
++function deps(overrides = {}) {
++  return {
++    loadConfig: () => ENABLED,
++    verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
++    verifyPrIssueBinding: async () => ({ bound: true }),
++    env: { FORGE_ACTOR: 'release-actor' },
++    fetchPrContext: async () => context(),
++    mergePr: async () => ({ merged: true }),
++    ...overrides,
++  };
++}
++
++describe('merge command — mandatory release authority', () => {
++  test('requires one full expected head and issue before ownership or provider I/O', async () => {
++    for (const argv of [
++      ['42', '--auto', '--issue', ISSUE],
++      ['42', '--auto', '--expect-head', 'abc', '--issue', ISSUE],
++      ['42', '--auto', '--expect-head', HEAD, '--expect-head', HEAD, '--issue', ISSUE],
++      ['42', '--auto', '--expect-head', HEAD],
++      ['42', '--auto', '--expect-head', HEAD, '--issue'],
++    ]) {
++      let ownershipCalls = 0;
++      let fetchCalls = 0;
++      const out = await mergeCmd.handler(argv, {}, process.cwd(), deps({
++        verifyIssueOwnership: async () => { ownershipCalls += 1; return { owned: true }; },
++        fetchPrContext: async () => { fetchCalls += 1; return context(); },
++      }));
++      expect(out.success).toBe(false);
++      expect(out.merged).toBe(false);
++      expect(ownershipCalls).toBe(0);
++      expect(fetchCalls).toBe(0);
++    }
++  });
++
++  test('requires an active Kernel claim owned by the resolved lane actor', async () => {
++    let fetchCalls = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyIssueOwnership: async () => ({
++        owned: false,
++        claimedBy: 'another-actor',
++        expired: false,
++      }),
++      fetchPrContext: async () => { fetchCalls += 1; return context(); },
++    }));
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(out.error).toMatch(/ownership|claim/i);
++    expect(fetchCalls).toBe(0);
++  });
++
++  test('aborts when the first observed head does not match the caller lease', async () => {
++    let mergeCalls = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => context({ headSha: OTHER_HEAD }),
++      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
++    }));
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(out.error).toMatch(/head/i);
++    expect(mergeCalls).toBe(0);
++  });
++
++  test('aborts when the second observed head changes after the first pass', async () => {
++    let fetchCalls = 0;
++    let mergeCalls = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      fetchPrContext: async () => {
++        fetchCalls += 1;
++        return context({ headSha: fetchCalls === 1 ? HEAD : OTHER_HEAD });
++      },
++      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
++    }));
++    expect(fetchCalls).toBe(2);
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(out.error).toMatch(/head/i);
++    expect(mergeCalls).toBe(0);
++  });
++
++  test('blocks when protected required-check policy is unreadable or non-authoritative', async () => {
++    for (const requiredCheckSource of [null, 'rollup']) {
++      let mergeCalls = 0;
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context({ requiredChecks: [], requiredCheckSource }),
++        mergePr: async () => { mergeCalls += 1; return { merged: true }; },
++      }));
++      expect(out.success).toBe(false);
++      expect(out.merged).toBe(false);
++      expect(out.error).toMatch(/required.check|protection|policy/i);
++      expect(mergeCalls).toBe(0);
++    }
++  });
++
++  test('blocks missing, pending, failed, and skipped required checks', async () => {
++    for (const checks of [
++      [],
++      [{ name: 'ci', conclusion: 'IN_PROGRESS' }],
++      [{ name: 'ci', conclusion: 'FAILURE' }],
++      [{ name: 'ci', conclusion: 'SKIPPED' }],
++      [{ name: 'ci', conclusion: 'NEUTRAL' }],
++    ]) {
++      let mergeCalls = 0;
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context({ checks }),
++        mergePr: async () => { mergeCalls += 1; return { merged: true }; },
++      }));
++      expect(out.success).toBe(false);
++      expect(out.merged).toBe(false);
++      expect(out.error).toMatch(/required check/i);
++      expect(mergeCalls).toBe(0);
++    }
++  });
++
++  test('re-proves ownership immediately before mutation and blocks lease loss', async () => {
++    let ownershipCalls = 0;
++    let mergeCalls = 0;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      verifyIssueOwnership: async () => {
++        ownershipCalls += 1;
++        return ownershipCalls === 1
++          ? { owned: true, claimedBy: 'release-actor', expired: false }
++          : { owned: false, claimedBy: 'other', expired: false };
++      },
++      mergePr: async () => { mergeCalls += 1; return { merged: true }; },
++    }));
++    expect(ownershipCalls).toBe(2);
++    expect(out.success).toBe(false);
++    expect(out.merged).toBe(false);
++    expect(out.error).toMatch(/ownership|expired/i);
++    expect(mergeCalls).toBe(0);
++  });
++
++  test('enforces draft, conflict, and unresolved-thread gates independently of config rules', async () => {
++    for (const override of [
++      { isDraft: true },
++      { isDraft: undefined },
++      { conflicting: true },
++      { conflicting: undefined },
++      { unresolvedThreads: 1 },
++      { unresolvedThreads: undefined },
++    ]) {
++      let mergeCalls = 0;
++      const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++        fetchPrContext: async () => context(override),
++        mergePr: async () => { mergeCalls += 1; return { merged: true }; },
++      }));
++      expect(out.success).toBe(false);
++      expect(out.merged).toBe(false);
++      expect(mergeCalls).toBe(0);
++    }
++  });
++
++  test('passes the immutable head and issue through the injected merge seam', async () => {
++    let mutation;
++    const out = await mergeCmd.handler(args(), {}, process.cwd(), deps({
++      mergePr: async (input) => { mutation = input; return { merged: true }; },
++    }));
++    expect(out.success).toBe(true);
++    expect(out.merged).toBe(true);
++    expect(mutation.expectedHead).toBe(HEAD);
++    expect(mutation.repository).toBe('acme/forge');
++    expect(mutation.issueId).toBe(ISSUE);
++  });
++
++  test('default merge action uses GitHub server-side expected-head lease', () => {
++    let observed;
++    const out = mergeCmd.defaultMergePr({
++      pr: '42',
++      expectedHead: HEAD,
++      repository: 'acme/forge',
++      gh: (argv) => { observed = argv; return ''; },
++    });
++    expect(out.merged).toBe(true);
++    expect(observed).toEqual([
++      'pr', 'merge', '42', '--repo', 'acme/forge', '--squash', '--match-head-commit', HEAD,
++    ]);
++  });
++
++  test('default ownership verifier requires explicit identity and matching unexpired Kernel data', async () => {
++    let calls = 0;
++    const runIssue = async (_operation, _args, _root, { env }) => {
++      calls += 1;
++      return {
++        ok: true,
++        data: {
++          owned: true,
++          actor: env.FORGE_ACTOR,
++          claimed_by: env.FORGE_ACTOR,
++          expired: false,
++        },
++      };
++    };
++
++    const missing = await mergeCmd.defaultVerifyIssueOwnership({
++      issueId: ISSUE, projectRoot: process.cwd(), env: {}, runIssue,
++    });
++    expect(missing.owned).toBe(false);
++    expect(calls).toBe(0);
++
++    const matching = await mergeCmd.defaultVerifyIssueOwnership({
++      issueId: ISSUE,
++      projectRoot: process.cwd(),
++      env: { FORGE_ACTOR: 'release-actor' },
++      runIssue,
++    });
++    expect(matching.owned).toBe(true);
++    expect(calls).toBe(1);
++
++    const foreign = await mergeCmd.defaultVerifyIssueOwnership({
++      issueId: ISSUE,
++      projectRoot: process.cwd(),
++      env: { FORGE_ACTOR: 'release-actor' },
++      runIssue: async () => ({
++        ok: true,
++        data: { owned: true, actor: 'release-actor', claimed_by: 'other', expired: false },
++      }),
++    });
++    expect(foreign.owned).toBe(false);
++  });
++
++  test('default fetch exposes exact head and only authoritative protection requirements', async () => {
++    const seen = [];
++    const gh = (argv) => {
++      seen.push(argv);
++      if (argv[0] === 'pr' && argv[1] === 'view') {
++        return JSON.stringify({
++          number: 42,
++          headRefOid: HEAD,
++          baseRefName: 'master',
++          state: 'OPEN',
++          isDraft: false,
++          mergeable: 'MERGEABLE',
++          mergeStateStatus: 'CLEAN',
++          statusCheckRollup: [{ name: 'ci', conclusion: 'SUCCESS' }],
++          reviews: [],
++          comments: [],
++          updatedAt: '2026-08-01T00:00:00Z',
++        });
++      }
++      if (argv[0] === 'repo' && argv[1] === 'view') {
++        return JSON.stringify({ owner: { login: 'acme' }, name: 'forge' });
++      }
++      if (argv[0] === 'api' && argv[1] === 'repos/acme/forge/branches/master/protection/required_status_checks') {
++        return JSON.stringify({
++          contexts: ['ci'],
++          checks: [{ context: 'ci', app_id: 123 }],
++        });
++      }
++      if (argv[0] === 'api' && argv.includes(`repos/acme/forge/commits/${HEAD}/check-runs?filter=latest&per_page=100`)) {
++        return JSON.stringify([{ total_count: 2, check_runs: [{
++          id: 1,
++          name: 'ci',
++          head_sha: HEAD,
++          status: 'completed',
++          conclusion: 'success',
++          app: { id: 123 },
++        }] }, { total_count: 2, check_runs: [{
++          id: 2,
++          name: 'optional',
++          head_sha: HEAD,
++          status: 'completed',
++          conclusion: 'success',
++          app: { id: 999 },
++        }] }]);
++      }
++      if (argv[0] === 'api' && argv[1] === 'graphql') {
++        return JSON.stringify({
++          data: { repository: { pullRequest: { reviewThreads: {
++            nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
++          } } } },
++        });
++      }
++      throw new Error(`unexpected gh call: ${argv.join(' ')}`);
++    };
++
++    const out = await mergeCmd.defaultFetchPrContext({ pr: '42', gh });
++    expect(out.headSha).toBe(HEAD);
++    expect(out.requiredChecks).toEqual([{ context: 'ci', appId: 123 }]);
++    expect(out.checks).toEqual([
++      { id: 1, name: 'ci', appId: 123, status: 'COMPLETED', conclusion: 'SUCCESS' },
++      { id: 2, name: 'optional', appId: 999, status: 'COMPLETED', conclusion: 'SUCCESS' },
++    ]);
++    expect(out.requiredCheckSource).toBe('protection');
++    expect(seen[0].join(' ')).toContain('headRefOid');
++  });
++});
+diff --git a/test/commands/merge.test.js b/test/commands/merge.test.js
+index 282b4cf7..1a0496b0 100644
+--- a/test/commands/merge.test.js
++++ b/test/commands/merge.test.js
+@@ -11,6 +11,35 @@ const mergeCmd = require('../../lib/commands/merge');
+ const { validateCommand } = require('../../lib/commands/_registry');
+ 
+ const tempRoots = [];
++const HEAD = 'a'.repeat(40);
++const ISSUE = '36230258-7b64-4de0-8683-fd8b8eabab51';
++
++function mergeArgs(pr) {
++  return [String(pr), '--auto', '--expect-head', HEAD, '--issue', ISSUE];
++}
++
++function authorizedContext(overrides = {}) {
++  return {
++    number: 42,
++    repository: 'acme/forge',
++    state: 'OPEN',
++    headSha: HEAD,
++    isDraft: false,
++    conflicting: false,
++    unresolvedThreads: 0,
++    checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
++    requiredChecks: ['ci'],
++    requiredCheckSource: 'protection',
++    requiredChecksKnown: true,
++    ...overrides,
++  };
++}
++
++const AUTHORITY_DEPS = {
++  env: { FORGE_ACTOR: 'release-actor' },
++  verifyIssueOwnership: async () => ({ owned: true, claimedBy: 'release-actor', expired: false }),
++  verifyPrIssueBinding: async () => ({ bound: true }),
++};
+ 
+ /** Create an isolated temp project; when `configObj` is given, write it to `.forge/config.yaml`. */
+ function makeProject(configObj) {
+@@ -64,8 +93,9 @@ describe('merge command — opt-in conditional auto-merge', () => {
+   test('does NOTHING (no merge) when a configured rule is unmet', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['settle_min:10'] } } });
+     let mergeCalled = false;
+-    const out = await mergeCmd.handler(['9', '--auto'], {}, root, {
+-      fetchPrContext: async () => ({
++    const out = await mergeCmd.handler(mergeArgs('9'), {}, root, {
++      ...AUTHORITY_DEPS,
++      fetchPrContext: async () => authorizedContext({
+         comments: [{ author: 'x', at: '2026-07-04T11:58:00Z' }], // 2 min before `now`
+         now: Date.parse('2026-07-04T12:00:00Z'),
+       }),
+@@ -80,12 +110,9 @@ describe('merge command — opt-in conditional auto-merge', () => {
+   test('MERGES when enabled and every rule passes', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green', 'threads_resolved'] } } });
+     let mergedPr = null;
+-    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
+-      fetchPrContext: async () => ({
+-        checks: [{ name: 'ci', conclusion: 'SUCCESS' }],
+-        requiredChecksKnown: true,
+-        unresolvedThreads: 0,
+-      }),
++    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
++      ...AUTHORITY_DEPS,
++      fetchPrContext: async () => authorizedContext(),
+       mergePr: async ({ pr }) => { mergedPr = pr; return { merged: true }; },
+     });
+     expect(out.success).toBe(true);
+@@ -115,7 +142,8 @@ describe('merge command — opt-in conditional auto-merge', () => {
+   test('pre-flight NO-OP (idempotent) when the PR is already MERGED', async () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['checks_green'] } } });
+     let mergeCalled = false;
+-    const out = await mergeCmd.handler(['42', '--auto'], {}, root, {
++    const out = await mergeCmd.handler(mergeArgs('42'), {}, root, {
++      ...AUTHORITY_DEPS,
+       fetchPrContext: async () => ({ state: 'MERGED' }),
+       mergePr: async () => { mergeCalled = true; },
+     });
+@@ -129,20 +157,21 @@ describe('merge command — opt-in conditional auto-merge', () => {
+     const root = makeProject({ merge: { auto: { enabled: true, rules: ['no_conflicts'] } } });
+     let mergeCalled = false;
+     let call = 0;
+-    const out = await mergeCmd.handler(['77', '--auto'], {}, root, {
++    const out = await mergeCmd.handler(mergeArgs('77'), {}, root, {
++      ...AUTHORITY_DEPS,
+       // 1st fetch: allowed (no conflicts). 2nd (pre-merge) fetch: now conflicting.
+       fetchPrContext: async () => {
+         call += 1;
+         return call === 1
+-          ? { state: 'OPEN', conflicting: false }
+-          : { state: 'OPEN', conflicting: true };
++          ? authorizedContext({ conflicting: false })
++          : authorizedContext({ conflicting: true });
+       },
+       mergePr: async () => { mergeCalled = true; return { merged: true }; },
+     });
+     expect(call).toBe(2);
++    expect(out.success).toBe(false);
+     expect(out.merged).toBe(false);
+-    expect(out.allowed).toBe(false);
+     expect(mergeCalled).toBe(false);
+-    expect(out.reason).toMatch(/state changed|re-check/i);
++    expect(out.error).toMatch(/conflict/i);
+   });
+ });
+diff --git a/test/commands/pr.test.js b/test/commands/pr.test.js
+index 0214a5b8..0269e3de 100644
+--- a/test/commands/pr.test.js
++++ b/test/commands/pr.test.js
+@@ -113,11 +113,17 @@ describe('forge pr command surface (6ab3f30c)', () => {
+     expect(calls[0][0]).toEqual(['events', '123', '--since', '5', '--json']);
+   });
+ 
+-  test('pr merge --auto <pr> forwards to the merge handler', async () => {
++  test('pr merge forwards exact-head and issue leases byte-identically', async () => {
++    const head = 'a'.repeat(40);
++    const issue = '36230258-7b64-4de0-8683-fd8b8eabab51';
+     const calls = await withSpy(merge, async () => {
+-      await pr.handler(['merge', '--auto', '456'], {}, '/root');
++      await pr.handler([
++        'merge', '--auto', '456', '--expect-head', head, '--issue', issue,
++      ], {}, '/root');
+     });
+     expect(calls).toHaveLength(1);
+-    expect(calls[0][0]).toEqual(['--auto', '456']);
++    expect(calls[0][0]).toEqual([
++      '--auto', '456', '--expect-head', head, '--issue', issue,
++    ]);
+   });
+ });
+diff --git a/test/commands/status.test.js b/test/commands/status.test.js
+index 314c2503..568d2a60 100644
+--- a/test/commands/status.test.js
++++ b/test/commands/status.test.js
+@@ -478,8 +478,8 @@ describe('Status Command - Stage Detection', () => {
+ 
+ 				expect(result.success).toBe(true);
+ 				expect(result.output).toContain('Key Commands');
+-				expect(result.output).toContain('forge shepherd watch <pr>');
+-				expect(result.output).toContain('forge merge --auto <pr>');
++				expect(result.output).toContain('forge shepherd <pr> --pull --json');
++				expect(result.output).toContain('forge merge --auto <pr> --expect-head <full-sha> --issue <issue-id>');
+ 			} finally {
+ 				fs.rmSync(projectRoot, { recursive: true, force: true });
+ 			}
+diff --git a/test/forge-issues.test.js b/test/forge-issues.test.js
+index 2abff8d7..b9b610de 100644
+--- a/test/forge-issues.test.js
++++ b/test/forge-issues.test.js
+@@ -218,6 +218,30 @@ describe('forge issue service contract', () => {
+     }]);
+   });
+ 
++  test('closes an owned Kernel broker after successful and failed issue reads', async () => {
++    const { runIssueOperation } = require('../lib/forge-issues');
++    for (const shouldFail of [false, true]) {
++      let closed = 0;
++      const run = runIssueOperation('list', [], '/repo', {
++        createKernelBroker: () => ({
++          async runIssueOperation() {
++            if (shouldFail) throw new Error('read failed');
++            return { success: true, output: [] };
++          },
++          async close() {
++            closed += 1;
++          },
++        }),
++      });
++      if (shouldFail) {
++        await expect(run).rejects.toThrow('read failed');
++      } else {
++        await expect(run).resolves.toEqual({ success: true, output: [] });
++      }
++      expect(closed).toBe(1);
++    }
++  });
++
+   test('threads session_id, worktree_id, and lease TTL into the claim mutation context (kernel d71a824b)', async () => {
+     const { runIssueOperation } = require('../lib/forge-issues');
+     let captured;
+diff --git a/test/kernel/cli-broker-factory.test.js b/test/kernel/cli-broker-factory.test.js
+index 5caa82cf..f36d1ea0 100644
+--- a/test/kernel/cli-broker-factory.test.js
++++ b/test/kernel/cli-broker-factory.test.js
+@@ -4,6 +4,7 @@ const { describe, test, expect } = require('bun:test');
+ 
+ const {
+   buildKernelIssueDeps,
++  buildMigratedKernelIssueDeps,
+   ensureKernelMigrated,
+   resolveKernelDatabasePath,
+ } = require('../../lib/kernel/cli-broker-factory');
+@@ -31,6 +32,30 @@ function fakeRuntime() {
+   return { kind: 'bun', module: { Database: FakeDb } };
+ }
+ 
++function failingRuntime(state) {
++  class FakeDb {
++    constructor() {
++      state.opened += 1;
++    }
++    exec() {
++      throw new Error('migration failed');
++    }
++    query() {
++      return { all: () => [], get: () => undefined, run: () => ({}) };
++    }
++    close() {
++      state.closed += 1;
++    }
++  }
++  return {
++    id: 'bun:sqlite',
++    module: { Database: FakeDb },
++    databaseClassName: 'Database',
++    nativeCompileDependency: false,
++    experimental: false,
++  };
++}
++
+ describe('buildKernelIssueDeps', () => {
+   test(
+     'returns kernel deps with useKernelBroker + an injected driver',
+@@ -85,6 +110,23 @@ describe('buildKernelIssueDeps', () => {
+   );
+ });
+ 
++describe('buildMigratedKernelIssueDeps', () => {
++  test(
++    'closes its driver when broker initialization fails',
++    async () => {
++      const state = { opened: 0, closed: 0 };
++      await expect(buildMigratedKernelIssueDeps({
++        projectRoot: '/repo',
++        gitCommonDir: '/repo/.git',
++        databasePath: ':memory:',
++        runtime: failingRuntime(state),
++      })).rejects.toThrow('migration failed');
++      expect(state).toEqual({ opened: 1, closed: 1 });
++    },
++    TIMEOUT,
++  );
++});
++
+ describe('ensureKernelMigrated', () => {
+   test(
+     'invokes broker.initialize once and returns its result',
+diff --git a/test/pr-bundle.test.js b/test/pr-bundle.test.js
+index 6fd5adc9..a49a376e 100644
+--- a/test/pr-bundle.test.js
++++ b/test/pr-bundle.test.js
+@@ -220,13 +220,13 @@ describe('gatherPrBundle — complete PR-state gather', () => {
+ });
+ 
+ describe('buildCi / toUnresolvedComment helpers', () => {
+-  test('buildCi treats NEUTRAL/SKIPPED as green (not failing, not pending)', () => {
++  test('buildCi treats NEUTRAL/SKIPPED as non-authorizing pending observations', () => {
+     const ci = buildCi([
+       { name: 'a', conclusion: 'NEUTRAL' },
+       { name: 'b', conclusion: 'SKIPPED' },
+     ], ['a']);
+     expect(ci.failing).toHaveLength(0);
+-    expect(ci.pending).toHaveLength(0);
++    expect(ci.pending.map((check) => check.name)).toEqual(['a', 'b']);
+   });
+ 
+   test('toUnresolvedComment uses the thread opener and tolerates missing fields', () => {
+diff --git a/test/pr-shepherd.test.js b/test/pr-shepherd.test.js
+index 5d2020e9..a20a49e2 100644
+--- a/test/pr-shepherd.test.js
++++ b/test/pr-shepherd.test.js
+@@ -322,9 +322,11 @@ describe('isFailed covers StatusContext error states (Vercel/Netlify)', () => {
+     expect(isFailed({ conclusion: 'STARTUP_FAILURE' })).toBe(true);
+     expect(isFailed({ conclusion: 'FAILURE' })).toBe(true);
+   });
+-  test('SUCCESS / PENDING are not failures', () => {
++  test('only SUCCESS is green; NEUTRAL and SKIPPED remain non-authorizing', () => {
+     expect(isFailed({ conclusion: 'SUCCESS' })).toBe(false);
+     expect(isFailed({ conclusion: 'PENDING' })).toBe(false);
+     expect(isGreen({ conclusion: 'SUCCESS' })).toBe(true);
++    expect(isGreen({ conclusion: 'NEUTRAL' })).toBe(false);
++    expect(isGreen({ conclusion: 'SKIPPED' })).toBe(false);
+   });
+ });
+diff --git a/test/pr-state-adapter.test.js b/test/pr-state-adapter.test.js
+index c9c55619..d536ffca 100644
+--- a/test/pr-state-adapter.test.js
++++ b/test/pr-state-adapter.test.js
+@@ -53,6 +53,7 @@ const ROLLUP_REQUIRED_JSON = JSON.stringify({
+           target: {
+             statusCheckRollup: {
+               contexts: {
++                pageInfo: { hasNextPage: false, endCursor: null },
+                 nodes: [
+                   { __typename: 'CheckRun', name: 'unit', isRequired: true },
+                   { __typename: 'CheckRun', name: 'optional-bench', isRequired: false },
+@@ -109,6 +110,25 @@ describe('PrStateAdapter', () => {
+     expect(apiCall.args.join(' ')).toContain('repos/o/r/branches/master/protection/required_status_checks');
+   });
+ 
++  test('readRequiredCheckPolicy preserves app identity while the compatibility API returns names', async () => {
++    const payload = JSON.stringify({
++      contexts: ['unit', 'lint'],
++      checks: [
++        { context: 'unit', app_id: 15368 },
++        { context: 'lint', app_id: null },
++      ],
++    });
++    const { run } = makeRunner([['protection/required_status_checks', payload]]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++
++    expect(await adapter.readRequiredCheckPolicy({ owner: 'o', repo: 'r', base: 'master' })).toEqual([
++      { context: 'unit', appId: 15368 },
++      { context: 'lint', appId: null },
++    ]);
++    expect(adapter.lastRequiredSource).toBe('protection');
++    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' })).toEqual(['unit', 'lint']);
++  });
++
+   test('readRequiredChecks returns null for an unexpected payload shape (not [])', async () => {
+     // A malformed/changed protection payload must NOT look like "no required
+     // checks" — that would let the shepherd compute merge readiness from bad data.
+@@ -121,6 +141,74 @@ describe('PrStateAdapter', () => {
+     expect(result).toBeNull();
+   });
+ 
++  test('readRequiredChecks fails closed when contexts and app-scoped checks disagree', async () => {
++    const { run } = makeRunner([
++      ['protection/required_status_checks', JSON.stringify({
++        contexts: ['unit'],
++        checks: [{ context: 'different', app_id: 123 }],
++      })],
++    ]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
++
++    expect(result).toBeNull();
++  });
++
++  test('readRequiredChecks fails closed on malformed app identity', async () => {
++    const { run } = makeRunner([
++      ['protection/required_status_checks', JSON.stringify({
++        checks: [{ context: 'unit', app_id: 'not-an-integer' }],
++      })],
++    ]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
++
++    expect(result).toBeNull();
++  });
++
++  test('readRequiredCheckPolicy rejects missing or conflicting application identity', async () => {
++    for (const checks of [
++      [{ context: 'ci' }],
++      [{ context: 'ci', app_id: 12 }, { context: 'ci', app_id: 13 }],
++    ]) {
++      const { run } = makeRunner([[
++        'protection/required_status_checks', JSON.stringify({ contexts: ['ci'], checks }),
++      ]]);
++      const adapter = new PrStateAdapter({ gh: run, git: run });
++      expect(await adapter.readRequiredCheckPolicy({ owner: 'o', repo: 'r', base: 'master' })).toBeNull();
++    }
++  });
++
++  test('readRequiredCheckPolicy deduplicates exact duplicate identities', async () => {
++    const { run } = makeRunner([[
++      'protection/required_status_checks',
++      JSON.stringify({
++        contexts: ['ci'],
++        checks: [{ context: 'ci', app_id: 12 }, { context: 'ci', app_id: 12 }],
++      }),
++    ]]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    expect(await adapter.readRequiredCheckPolicy({ owner: 'o', repo: 'r', base: 'master' }))
++      .toEqual([{ context: 'ci', appId: 12 }]);
++    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' }))
++      .toEqual(['ci']);
++  });
++
++  test('readRequiredChecks rejects wrong-typed dual policy fields instead of using the other field', async () => {
++    for (const payload of [
++      { contexts: ['unit'], checks: {} },
++      { contexts: {}, checks: [{ context: 'unit', app_id: 123 }] },
++      { contexts: ['   '] },
++    ]) {
++      const { run } = makeRunner([
++        ['protection/required_status_checks', JSON.stringify(payload)],
++      ]);
++      const adapter = new PrStateAdapter({ gh: run, git: run });
++      const result = await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master' });
++      expect(result).toBeNull();
++    }
++  });
++
+   test('readRequiredChecks returns [] for a valid empty contexts payload', async () => {
+     const { run } = makeRunner([
+       ['protection/required_status_checks', JSON.stringify({ contexts: [] })],
+@@ -162,6 +250,67 @@ describe('PrStateAdapter', () => {
+     expect(adapter.lastRequiredSource).toBe('rollup');
+   });
+ 
++  test('rollup fallback rejects GraphQL errors, missing pagination, and malformed nodes', async () => {
++    const protectionError = new Error('403');
++    protectionError.stderr = 'HTTP 403: Resource not accessible by integration';
++    const validData = JSON.parse(ROLLUP_REQUIRED_JSON);
++    const malformedPayloads = [
++      { ...validData, errors: [{ message: 'partial' }] },
++      (() => {
++        const value = JSON.parse(ROLLUP_REQUIRED_JSON);
++        delete value.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.pageInfo;
++        return value;
++      })(),
++      (() => {
++        const value = JSON.parse(ROLLUP_REQUIRED_JSON);
++        value.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.pageInfo = {
++          hasNextPage: true, endCursor: null,
++        };
++        return value;
++      })(),
++      (() => {
++        const value = JSON.parse(ROLLUP_REQUIRED_JSON);
++        value.data.repository.pullRequest.headRef.target.statusCheckRollup.contexts.nodes = [
++          { __typename: 'CheckRun', name: 'unit' },
++        ];
++        return value;
++      })(),
++    ];
++    for (const payload of malformedPayloads) {
++      const { run } = makeRunner([
++        ['protection/required_status_checks', () => { throw protectionError; }],
++        ['api graphql', JSON.stringify(payload)],
++      ]);
++      const adapter = new PrStateAdapter({ gh: run, git: run });
++      expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
++        .toBeNull();
++    }
++  });
++
++  test('rollup fallback consumes every cursor page before projecting required names', async () => {
++    const protectionError = new Error('403');
++    protectionError.stderr = 'HTTP 403: Resource not accessible by integration';
++    let page = 0;
++    const pagePayload = (nodes, hasNextPage, endCursor) => JSON.stringify({
++      data: { repository: { pullRequest: { headRef: { target: { statusCheckRollup: {
++        contexts: { nodes, pageInfo: { hasNextPage, endCursor } },
++      } } } } } },
++    });
++    const { run } = makeRunner([
++      ['protection/required_status_checks', () => { throw protectionError; }],
++      ['api graphql', () => {
++        page += 1;
++        return page === 1
++          ? pagePayload([{ __typename: 'CheckRun', name: 'unit', isRequired: true }], true, 'NEXT')
++          : pagePayload([{ __typename: 'StatusContext', context: 'lint', isRequired: true }], false, null);
++      }],
++    ]);
++    const adapter = new PrStateAdapter({ gh: run, git: run });
++    expect(await adapter.readRequiredChecks({ owner: 'o', repo: 'r', base: 'master', pr: '419' }))
++      .toEqual(['unit', 'lint']);
++    expect(page).toBe(2);
++  });
++
+   test('readRequiredChecks stamps requiredSource=protection when protection is readable', async () => {
+     const { run } = makeRunner([
+       ['protection/required_status_checks', REQUIRED_CHECKS_JSON],
+@@ -308,10 +457,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readComments surfaces threadId, path and line per thread', async () => {
+     const graphqlJson = JSON.stringify({
+-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
++      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+-          comments: { nodes: [{ author: { login: 'coderabbitai' }, body: 'nit' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '1', author: { login: 'coderabbitai' }, body: 'nit' }] },
+         },
+       ] } } } },
+     });
+@@ -331,10 +480,10 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readComments surfaces the REST commentId (fullDatabaseId) for replies', async () => {
+     const graphqlJson = JSON.stringify({
+-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
++      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+         {
+           id: 'PRRT_1', isResolved: false, isOutdated: false, path: 'src/a.js', line: 42,
+-          comments: { nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '987654321', author: { login: 'coderabbitai' }, body: 'nit' }] },
+         },
+       ] } } } },
+     });
+@@ -350,8 +499,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
+ 
+   test('readComments coerces a missing line to null', async () => {
+     const graphqlJson = JSON.stringify({
+-      data: { repository: { pullRequest: { reviewThreads: { nodes: [
+-        { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { nodes: [] } },
++      data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
++        { id: 'T', isResolved: false, isOutdated: false, path: 'f', line: null, comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } },
+       ] } } } },
+     });
+     const { run } = makeRunner([['api graphql', graphqlJson]]);
+@@ -367,7 +516,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: true, endCursor: 'C1' },
+         nodes: [{
+           id: 'PRRT_A', isResolved: false, isOutdated: false, path: 'a.js', line: 1,
+-          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'bot' }, body: 'a1' }] },
++          comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '11', author: { login: 'bot' }, body: 'a1' }] },
+         }],
+       } } } },
+     });
+@@ -377,13 +526,13 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: 'C1' },
+         nodes: [{
+           id: 'PRRT_B', isResolved: false, isOutdated: false, path: 'b.js', line: 2,
+-          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ author: { login: 'bot' }, body: 'b1' }] },
++          comments: { pageInfo: { hasNextPage: true, endCursor: 'CB1' }, nodes: [{ fullDatabaseId: '21', author: { login: 'bot' }, body: 'b1' }] },
+         }],
+       } } } },
+     });
+     // Remaining comments of thread B, fetched by node id.
+     const innerCommentsPage = JSON.stringify({
+-      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ author: { login: 'human' }, body: 'b2' }] } } },
++      data: { node: { comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ fullDatabaseId: '22', author: { login: 'human' }, body: 'b2' }] } } },
+     });
+     // Order matters: inner (id=) before the generic after= rule; page-1 has neither.
+     const { run, calls } = makeRunner([
+@@ -464,9 +613,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+           // With fullDatabaseId → the stable REST id is used as the monitor key.
+-          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' },
+-          // Without fullDatabaseId → falls back to `${author}:${createdAt}`.
+-          { author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z' },
++          { fullDatabaseId: '999', author: { __typename: 'Bot', login: 'sonarqubecloud' }, body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' },
++          { fullDatabaseId: '1000', author: { __typename: 'User', login: 'a-human' }, body: 'thanks', createdAt: '2026-07-12T11:00:00Z', updatedAt: '2026-07-12T11:00:00Z' },
+         ],
+       } } } },
+     });
+@@ -475,8 +623,8 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     const comments = await adapter.readIssueComments({ owner: 'o', repo: 'r', pr: '7' });
+     expect(comments).toHaveLength(2);
+     // The actor TYPE is surfaced so a bot direct-comment is detectable by mechanism.
+-    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z' });
+-    expect(comments[1].id).toBe('a-human:2026-07-12T11:00:00Z');
++    expect(comments[0]).toEqual({ id: '999', author: 'sonarqubecloud', authorTypename: 'Bot', body: 'Quality Gate failed', createdAt: '2026-07-12T10:00:00Z', updatedAt: '2026-07-12T10:05:00Z' });
++    expect(comments[1].id).toBe('1000');
+     expect(comments[1].authorTypename).toBe('User');
+     expect(calls.some((c) => [c.cmd, ...c.args].join(' ').includes('api graphql'))).toBe(true);
+   });
+@@ -487,9 +635,9 @@ describe('PrStateAdapter — bundle gather fields', () => {
+         pageInfo: { hasNextPage: false, endCursor: null },
+         nodes: [
+           // Oldest→newest: coderabbitai's second review supersedes its first.
+-          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
+-          { author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
+-          { author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
++          { id: 'R-OLD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'old-sha' }, body: 'first pass' },
++          { id: 'R-HEAD', author: { __typename: 'Bot', login: 'coderabbitai' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'head-sha' }, body: 'second pass' },
++          { id: 'R-ALICE', author: { __typename: 'User', login: 'alice' }, state: 'APPROVED', submittedAt: '2026-07-12T11:00:00Z', commit: { oid: 'head-sha' }, body: 'lgtm' },
+         ],
+       } } } },
+     });
+@@ -500,7 +648,7 @@ describe('PrStateAdapter — bundle gather fields', () => {
+     // Latest-per-author: coderabbitai collapses to its newer (second) review.
+     expect(reviews).toHaveLength(2);
+     const cr = reviews.find((r) => r.author === 'coderabbitai');
+-    expect(cr).toEqual({ author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
++    expect(cr).toEqual({ id: 'R-HEAD', author: 'coderabbitai', authorTypename: 'Bot', state: 'CHANGES_REQUESTED', submittedAt: '2026-07-12T10:00:00Z', commitOid: 'head-sha', body: 'second pass' });
+     const alice = reviews.find((r) => r.author === 'alice');
+     expect(alice.commitOid).toBe('head-sha');
+     expect(alice.authorTypename).toBe('User');
+@@ -519,12 +667,12 @@ describe('PrStateAdapter — bundle gather fields', () => {
+       if (call === 1) {
+         return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+           pageInfo: { hasNextPage: true, endCursor: 'CUR' },
+-          nodes: [{ author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
++          nodes: [{ id: 'R-A', author: { __typename: 'Bot', login: 'bot-a' }, state: 'COMMENTED', submittedAt: '2026-07-12T09:00:00Z', commit: { oid: 'x' }, body: '' }],
+         } } } } });
+       }
+       return JSON.stringify({ data: { repository: { pullRequest: { reviews: {
+         pageInfo: { hasNextPage: false, endCursor: null },
+-        nodes: [{ author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
++        nodes: [{ id: 'R-B', author: { __typename: 'Bot', login: 'bot-b' }, state: 'COMMENTED', submittedAt: '2026-07-12T10:00:00Z', commit: { oid: 'y' }, body: '' }],
+       } } } } });
+     };
+     const adapter = new PrStateAdapter({ gh: run, git: run });
+-- 
+2.51.0.windows.1
+

@@ -1,0 +1,144 @@
+From 7653a7c9e603a8f22c088ac26e3a421452458853 Mon Sep 17 00:00:00 2001
+From: Harsha Nanda <harshanandak@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 14:01:10 +0530
+Subject: [PATCH] fix: bind heartbeat routing and exact gate envelopes
+
+---
+ lib/pr-monitor/watch-owner.js       | 40 ++++++++++++++++++++++++++
+ test/pr-monitor/watch-owner.test.js | 44 +++++++++++++++++++++++++++++
+ 2 files changed, 84 insertions(+)
+
+diff --git a/lib/pr-monitor/watch-owner.js b/lib/pr-monitor/watch-owner.js
+index e1767d91..b4641ab4 100644
+--- a/lib/pr-monitor/watch-owner.js
++++ b/lib/pr-monitor/watch-owner.js
+@@ -597,10 +597,16 @@ async function enumerateOwners(_ctx, opts = {}) {
+ 			}
+ 		}
+ 		let bytes = 0;
++		let previous = null;
+ 		const records = [];
+ 		for (const row of rows) {
+ 			const record = fromSqliteOwnerRow(row);
+ 			if (validateRecord(record)) return { ok: false, changed: false, reason: 'corrupt', records: [] };
++			if (previous && !(record.repo > previous.repo
++				|| (record.repo === previous.repo && record.pr > previous.pr))) {
++				return { ok: false, changed: false, reason: 'corrupt', records: [] };
++			}
++			previous = record;
+ 			bytes += Buffer.byteLength(JSON.stringify(record), 'utf8');
+ 			if (bytes > OWNER_ENUMERATION_BYTES) {
+ 				return { ok: false, changed: false, reason: 'enumeration_overflow', records: [] };
+@@ -670,6 +676,8 @@ async function heartbeat(ctx, input, opts = {}) {
+ 	if (!captured.snapshot || !['running', 'stop_requested'].includes(captured.snapshot.phase)) {
+ 		return invalid('phase_mismatch');
+ 	}
++	if (captured.snapshot.generation !== value.generation) return invalid('generation_mismatch');
++	if (captured.snapshot.watcher_pid !== Number(input.pid)) return invalid('pid_mismatch');
+ 	return invoke('watchOwnerHeartbeat', value, {
+ 		watcherPid: Number(input.pid), expectedSnapshot: captured.snapshot,
+ 	}, boundOpts);
+@@ -933,6 +941,32 @@ function gateInput(input, opts) {
+ 	return now ? { now } : null;
+ }
+ 
++// Exact success envelopes the builtin gate driver can produce per method;
++// anything else is a mutating or malformed adapter response.
++const GATE_ENVELOPE_CONTRACTS = Object.freeze({
++	watchGateRead: Object.freeze([Object.freeze({ changed: false, reason: 'read' })]),
++	watchGatePublishQuarantine: Object.freeze([
++		Object.freeze({ changed: true, reason: 'quarantined' }),
++		Object.freeze({ changed: false, reason: 'idempotent' }),
++	]),
++	watchGateBindSnapshot: Object.freeze([
++		Object.freeze({ changed: true, reason: 'bound' }),
++		Object.freeze({ changed: false, reason: 'idempotent' }),
++	]),
++	watchGatePublishConflict: Object.freeze([
++		Object.freeze({ changed: true, reason: 'conflict' }),
++		Object.freeze({ changed: false, reason: 'idempotent' }),
++	]),
++	watchGateRetryConflict: Object.freeze([
++		Object.freeze({ changed: true, reason: 'retry_bound' }),
++		Object.freeze({ changed: false, reason: 'idempotent' }),
++	]),
++	watchGateCompleteMigration: Object.freeze([
++		Object.freeze({ changed: true, reason: 'complete' }),
++		Object.freeze({ changed: false, reason: 'idempotent' }),
++	]),
++});
++
+ function invokeGate(method, input, opts) {
+ 	const operation = opts?.authorityMethods?.[method];
+ 	if (typeof operation !== 'function') return { ok: false, changed: false, reason: 'authority_unavailable', gate: null };
+@@ -948,6 +982,12 @@ function invokeGate(method, input, opts) {
+ 			reason: typeof result.reason === 'string' ? result.reason : '',
+ 			gate: result.gate,
+ 		};
++		if (snap.ok) {
++			const contract = GATE_ENVELOPE_CONTRACTS[method] || [];
++			if (!contract.some(entry => entry.changed === snap.changed && entry.reason === snap.reason)) {
++				return invalidGate('corrupt');
++			}
++		}
+ 		if (method === 'watchGateRead' && snap.ok
+ 			&& (snap.changed !== false || snap.reason !== 'read')) {
+ 			return invalidGate('corrupt');
+diff --git a/test/pr-monitor/watch-owner.test.js b/test/pr-monitor/watch-owner.test.js
+index 43c862b9..be6bf8de 100644
+--- a/test/pr-monitor/watch-owner.test.js
++++ b/test/pr-monitor/watch-owner.test.js
+@@ -2501,6 +2501,50 @@ describe('watch owner successful-result postcondition validation', () => {
+ 		expect(submitted.expectedSnapshot.started_at).toBe(startedReads[0]);
+ 	});
+ 
++	test('rejects heartbeats routed to a foreign generation or pid', async () => {
++		const ctx = { repo: 'acme/forge', pr: 969 };
++		const prior = await seedLifecycle(ctx, 'running');
++		const foreignGeneration = await owner.heartbeat(ctx, {
++			generation: `other-${prior.generation}`, pid: WATCHER_PID, updatedAt: NEXT,
++		}, authorityOpts());
++		expect(foreignGeneration).toEqual({
++			ok: false, changed: false, reason: 'generation_mismatch', record: null,
++		});
++		const foreignPid = await owner.heartbeat(ctx, {
++			generation: prior.generation, pid: WATCHER_PID + 1, updatedAt: NEXT,
++		}, authorityOpts());
++		expect(foreignPid).toEqual({ ok: false, changed: false, reason: 'pid_mismatch', record: null });
++	});
++
++	test('rejects gate mutation envelopes the builtin driver cannot produce', async () => {
++		await seedGate({ repo: 'acme/forge', pr: 970 });
++		const mismatched = await owner.bindMigrationSnapshot({
++			snapshotHash: HASH, updatedAt: LATER,
++		}, authorityOpts({
++			...driver,
++			watchGateBindSnapshot: () => ({
++				ok: true, changed: false, reason: 'bound',
++				gate: { singleton: 1, state: 'quarantined', snapshot_hash: HASH, conflict_code: null, updated_at: LATER },
++			}),
++		}));
++		expect(mismatched).toEqual({ ok: false, changed: false, reason: 'corrupt', gate: null });
++	});
++
++	test('rejects enumeration sequences that are not strictly increasing', async () => {
++		const validRow = pr => ({
++			repo: 'acme/forge', pr, version: 1, generation: `generation-${pr}`, phase: 'starting',
++			controller_pid: CONTROLLER_PID, watcher_pid: null, started_at: NOW, updated_at: NOW,
++			heartbeat_at: null, terminal_receipt_id: null, block_reason: null, legacy_evidence_hash: null,
++		});
++		const result = await owner.enumerateOwners(null, authorityOpts({
++			...driver,
++			watchOwnerList: () => ({
++				ok: true, changed: false, reason: 'read', rows: [validRow(2), validRow(1)],
++			}),
++		}));
++		expect(result).toEqual({ ok: false, changed: false, reason: 'corrupt', records: [] });
++	});
++
+ 	test('rejects read successes that claim corrupt or arbitrary reasons for null rows', async () => {
+ 		const ctx = { repo: 'acme/forge', pr: 960 };
+ 		const result = await owner.readOwner(ctx, authorityOpts({
+-- 
+2.51.0.windows.1
+
